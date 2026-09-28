@@ -334,3 +334,384 @@ describe("capture-motion.mjs: the masked share catches a cut the whole-canvas sh
     expect(fails.join("\n")).toMatch(new RegExp(`masked .*bar ${T.FADE_MAX_PIXEL_SHARE}`));
   });
 });
+
+/* ── C5-R2-2: the step bar is judged at FULL precision plus FADE_STEP_EPS, never on the rounded figure ─
+ *
+ * Verifier round 2 mutated the verdict to judge the PRINTED (2-decimal) step with a looser tolerance
+ * (`maxOpacityStep > FADE_MAX_STEP + 0.015`) and every known answer above stayed green: they used only
+ * 0.2 (passes) and 0.22 (fails), so a 0.2005-0.2149 step was never exercised. These pin the rule itself,
+ * both ways, at the tolerance's own scale — including a step that PRINTS as 0.2 and must still fail. */
+function stepTrace(steps: readonly number[], frameMs = 16.7): FadeFrame[] {
+  const pts: [number, number | null][] = Array.from({ length: 10 }, (_, i) => [i * 16.7, 1]);
+  let op = 1;
+  let t = 9 * 16.7;
+  for (const s of steps) {
+    op -= s;
+    t += frameMs;
+    pts.push([t, op <= 0 ? null : op]);
+  }
+  pts.push([t + 16.7, null]);
+  return trace(pts);
+}
+
+describe("capture-motion.mjs judges one frame's step on the full-precision opacity plus FADE_STEP_EPS (C5-R2-2)", () => {
+  it("a step of FADE_MAX_STEP + 2 x FADE_STEP_EPS fails though it prints as 0.2; FADE_MAX_STEP + FADE_STEP_EPS / 2 passes", async () => {
+    const { T, analyseFade, fadeFailures } = (await harness()) as Harness & { T: { FADE_STEP_EPS: number } };
+    const E = T.FADE_STEP_EPS;
+    expect(E).toBeGreaterThan(0);
+    expect(E).toBeLessThan(0.005);
+    const over = analyseFade({ id: "x" }, stepTrace([T.FADE_MAX_STEP + 2 * E, 0.2, 0.2, 0.2]), [], 10, 10);
+    expect(over.maxOpacityStep, "the printed figure rounds to the bar").toBe(T.FADE_MAX_STEP);
+    expect(fadeFailures("over", over).filter((m) => /opacity fell/.test(m)).join("\n")).toMatch(/over: opacity fell 0\.2 in one frame/);
+    const within = analyseFade({ id: "x" }, stepTrace([T.FADE_MAX_STEP + E / 2, 0.2, 0.2, 0.2]), [], 10, 10);
+    expect(within.maxOpacityStepRaw).toBeGreaterThan(T.FADE_MAX_STEP);
+    expect(fadeFailures("within", within).filter((m) => /opacity fell/.test(m))).toEqual([]);
+  });
+
+  it("the catch-up rule the same way: past 300 ms a stalled fade's step of FADE_MAX_STEP - 2 x FADE_STEP_EPS (prints 0.2) is dawdling; - FADE_STEP_EPS / 2 is the cap", async () => {
+    const { T, analyseFade, fadeFailures } = (await harness()) as Harness & { T: { FADE_STEP_EPS: number } };
+    const E = T.FADE_STEP_EPS;
+    /* 16.7 ms frames, one 100 ms host stall early (0.2), 0.03 steps to 0.45 at 283.7 ms, then the frame
+       at 300.4 ms steps `x`, the next the full 0.2, and the one after ends the fade. */
+    const catchUp = (x: number): FadeFrame[] => {
+      const pts: [number, number | null][] = Array.from({ length: 12 }, (_, i) => [i * 16.7, i < 4 ? null : 1]);
+      let t = 11 * 16.7;
+      let op = 1;
+      const push = (dt: number, s: number | null): void => {
+        t = Math.round((t + dt) * 10) / 10;
+        op = s === null ? 0 : op - s;
+        pts.push([t, s === null ? null : op]);
+      };
+      push(16.7, 0.05);
+      push(100, 0.2);
+      for (let k = 0; k < 10; k += 1) push(16.7, 0.03);
+      push(16.7, x);
+      push(16.7, 0.2);
+      push(16.7, null);
+      return trace(pts);
+    };
+    const dawdle = analyseFade({ id: "x" }, catchUp(T.FADE_MAX_STEP - 2 * E), [], 10, 10);
+    expect(dawdle.stallExtended).toBe(true);
+    expect(fadeFailures("dawdle", dawdle).join("\n")).toMatch(/dawdle: fade lasted [\d.]+ ms, extended by a host stall .*moved only 0\.2 \(/);
+    const cap = analyseFade({ id: "x" }, catchUp(T.FADE_MAX_STEP - E / 2), [], 10, 10);
+    expect(cap.stallExtended).toBe(true);
+    expect(fadeFailures("cap", cap)).toEqual([]);
+  });
+});
+
+/* ── C5-R2-3: a recording that lost frames is never dense, and its fade is UNPROVEN ─────────────────
+ *
+ * Verifier round 2's run exited 4 on one fade that "never started in the recorded window": 63 frames
+ * over 1,183 ms of a 2.5 s sequence, then nothing for ~1.3 s, and `density.ok` read TRUE because the
+ * rules looked only at the frames that were recorded. Density is now judged against the recording
+ * WINDOW (capture-motion.mjs T.MAX_EDGE_GAP_MS). */
+interface Density {
+  ok: boolean;
+  why: string;
+  lost: string[];
+  tailGapMs: number | null;
+}
+interface RecordingWindow {
+  startedAt: number;
+  stoppedAt: number;
+  skipped: number;
+  hookErrors: number;
+}
+type FadeWithDensity = FadeAnalysis & { density: Density; why?: string };
+interface HarnessR3 {
+  T: { MAX_EDGE_GAP_MS: number };
+  density: (meta: FadeFrame[], win?: RecordingWindow) => Density;
+  fadeEvidence: (tag: string, f: FadeWithDensity, opts?: { stalled?: boolean }) => { established: boolean; why: string; fails: string[] };
+  analyseFade: (seq: { id: string }, meta: FadeFrame[], L: Uint8Array[], w: number, h: number, win?: RecordingWindow) => FadeWithDensity;
+}
+const r3 = async (): Promise<HarnessR3> => (await harness()) as unknown as HarnessR3;
+/** `n` frames of 16.7 ms from t = 0, the overlay at `op(i)`. */
+const steady = (n: number, op: (i: number) => number | null = () => null): FadeFrame[] => trace(Array.from({ length: n }, (_, i) => [i * 16.7, op(i)] as const));
+
+describe("capture-motion.mjs never records a sequence as dense when frames were lost (C5-R2-3)", () => {
+  it("the verifier's shape — 63 frames over 1,183 ms of a 2,500 ms window, then nothing — is NOT dense, and says why", async () => {
+    const { T, density } = await r3();
+    const meta = trace(Array.from({ length: 63 }, (_, i) => [(i * 1183) / 62, 1] as const));
+    const d = density(meta, { startedAt: 0, stoppedAt: 2500, skipped: 0, hookErrors: 0 });
+    expect(d.ok).toBe(false);
+    expect(d.tailGapMs).toBeGreaterThan(T.MAX_EDGE_GAP_MS);
+    expect(d.why).toMatch(/no frame for the last 1317 ms of the recording/);
+  });
+
+  it("the same frames covering their window are dense; a frame the hook skipped, a hook error, or no window at all is not", async () => {
+    const { density } = await r3();
+    const meta = steady(150);
+    const covered = { startedAt: -5, stoppedAt: 149 * 16.7 + 10, skipped: 0, hookErrors: 0 };
+    expect(density(meta, covered).ok, density(meta, covered).why).toBe(true);
+    expect(density(meta, { ...covered, skipped: 1 }).why).toMatch(/1 frame\(s\) the hook could not record/);
+    expect(density(meta, { ...covered, hookErrors: 2 }).why).toMatch(/2 hook error/);
+    expect(density(meta).ok, "without a window, lost edges cannot be ruled out").toBe(false);
+    // A frameless HEAD is lost time too.
+    expect(density(meta, { ...covered, startedAt: -400 }).why).toMatch(/no frame for the first 400 ms/);
+  });
+
+  it("a fade whose recording lost frames is UNPROVEN in its verdict — and a cut it did record still FAILS", async () => {
+    const { analyseFade, fadeEvidence } = await r3();
+    const win = (meta: FadeFrame[], tail: number): RecordingWindow => ({ startedAt: meta[0]!.ts - 5, stoppedAt: meta[meta.length - 1]!.ts + tail, skipped: 0, hookErrors: 0 });
+    // A clean fade inside a covered window: evidence.
+    const cleanMeta = steady(60, (i) => (i < 20 ? null : i < 25 ? 1 : i >= 41 ? null : Math.max(0.01, 1 - (i - 24) * 0.055)));
+    const clean = analyseFade({ id: "tier-fade-high-to-low" }, cleanMeta, [], 10, 10, win(cleanMeta, 10));
+    expect(clean.established).toBe(true);
+    expect(fadeEvidence("clean", clean)).toEqual({ established: true, why: "", fails: [] });
+    // The same fade, then 1.3 s with no frame before the recording stopped: not evidence.
+    const lost = analyseFade({ id: "tier-fade-high-to-low" }, cleanMeta, [], 10, 10, win(cleanMeta, 1300));
+    const ev = fadeEvidence("lost", lost);
+    expect(ev.established).toBe(false);
+    expect(ev.why).toMatch(/frames lost or too sparse: .*no frame for the last 1300 ms/);
+    expect(ev.fails).toEqual([]);
+    // The graded 0.36 cut in a recording that lost its tail: UNPROVEN as evidence of a pass, FAIL as a cut.
+    const cutMeta = trace(GRADED);
+    const cut = fadeEvidence("cut", analyseFade({ id: "tier-fade-high-to-low" }, cutMeta, [], 10, 10, win(cutMeta, 1300)));
+    expect(cut.established).toBe(false);
+    expect(cut.fails.join("\n")).toMatch(/opacity fell 0\.36 in one frame/);
+    // The stalled item goes through the same gate before its own stall rule.
+    const stalled = fadeEvidence("stalled", { ...lost, stalledAtFrame: 30, stallDtMs: 120 }, { stalled: true });
+    expect(stalled.established).toBe(false);
+    expect(stalled.why).toMatch(/frames lost/);
+  });
+});
+
+/* ── C5-R2-1 in the browser: capture-motion.mjs's handover item, known answers both ways ────────────
+ *
+ * The hook measures, whenever the overlay on screen last frame leaves (replaced or removed) above
+ * 0.005, how far the screen moved against how far a plain removal would move it (share, over the
+ * pixels a removal would visibly change). `analyseHandover` turns the trace into the verdict. */
+interface HFrame {
+  i: number;
+  ts: number;
+  quality: string;
+  framesTimed: number;
+  fade: { opacity: number; transition: string; id: number } | null;
+  handover: { kind: "replaced" | "removed"; fromOpacity: number; share: number | null; maskedPx: number; why?: string } | null;
+}
+interface Trig {
+  below: number;
+  hideMs: number;
+  tier: string;
+  firedAt: number | null;
+  firedOpacity: number | null;
+  returnedAt: number | null;
+  appliedAt: number | null;
+}
+interface Handover {
+  sequence?: string;
+  established: boolean;
+  notApplicable: boolean;
+  why: string;
+  events: { how: string }[];
+  outcome: string | null;
+  fails: string[];
+  judgedEvents: number;
+  returnStep: { frame: number; dtMs: number; step: number | null } | null;
+}
+const analyseHandover = async (meta: HFrame[], win: RecordingWindow, trig: Trig): Promise<Handover> =>
+  ((await harness()) as unknown as { analyseHandover: (s: { id: string }, m: HFrame[], w: RecordingWindow, t: Trig) => Handover }).analyseHandover(
+    { id: "tier-change-mid-fade" },
+    meta,
+    win,
+    trig,
+  );
+/** A recorded handover sequence: overlay 1 appears at frame 12, holds 8 frames, fades 0.05 per frame
+ *  until frame `at` (the tier change); from frame `at + 1`, `after` gives [overlay id, opacity] per
+ *  frame (its first frame after `gapBefore` more ms), then 20 frames without an overlay. */
+function handoverTrace(at: number, leave: HFrame["handover"], after: readonly (readonly [number, number])[], gapBefore = 0): HFrame[] {
+  const f: HFrame[] = [];
+  let t = 0;
+  const push = (fade: HFrame["fade"], h: HFrame["handover"] = null, dt = 16.7): void => {
+    t = Math.round((t + dt) * 10) / 10;
+    f.push({ i: f.length, ts: t, quality: "low", framesTimed: f.length, fade, handover: h });
+  };
+  for (let i = 0; i < 12; i += 1) push(null);
+  for (let i = 0; i < 8; i += 1) push({ opacity: 1, transition: "", id: 1 });
+  for (let op = 0.95; f.length <= at; op -= 0.05) push({ opacity: Math.round(op * 100) / 100, transition: "", id: 1 });
+  after.forEach(([id, op], k) => push({ opacity: op, transition: "", id }, k === 0 ? leave : null, k === 0 ? 16.7 + gapBefore : 16.7));
+  for (let i = 0; i < 20; i += 1) push(null);
+  return f;
+}
+/** One overlay fading from `from` by 0.1 per frame while above 0.005. */
+const fadeFrom = (id: number, from: number): [number, number][] => {
+  const out: [number, number][] = [];
+  for (let v = from; v > 0.005; v = Math.round((v - 0.1) * 1000) / 1000) out.push([id, v]);
+  return out;
+};
+const winOf = (m: HFrame[]): RecordingWindow => ({ startedAt: m[0]!.ts - 5, stoppedAt: m[m.length - 1]!.ts + 10, skipped: 0, hookErrors: 0 });
+const trigAt = (at: number, opacity: number, hideMs = 0): Trig => ({ below: 0.6, hideMs, tier: "high", firedAt: hideMs ? at - 1 : at, firedOpacity: opacity, returnedAt: hideMs ? at : null, appliedAt: at });
+
+describe("capture-motion.mjs: a running cross-fade must be handed over, never cut (C5-R2-1)", () => {
+  it("a composed handover (the new overlay shows the screen: share ~0) that then fades by the cap PASSES", async () => {
+    const at = 30;
+    const meta = handoverTrace(at, { kind: "replaced", fromOpacity: 0.5, share: 0.004, maskedPx: 7800 }, [[2, 1], [2, 0.97], ...fadeFrom(2, 0.9)]);
+    const h = await analyseHandover(meta, winOf(meta), trigAt(at, 0.5));
+    expect(h.established, h.why).toBe(true);
+    expect(h.outcome).toBe("replaced");
+    expect(h.judgedEvents).toBe(1);
+    expect(h.fails).toEqual([]);
+  });
+
+  it("the pre-fix product — cleared, then a copy of the canvas UNDER it (share 1) — FAILS on pixels", async () => {
+    const at = 30;
+    const meta = handoverTrace(at, { kind: "replaced", fromOpacity: 0.5, share: 1, maskedPx: 7800 }, [[2, 1], ...fadeFrom(2, 0.9)]);
+    const h = await analyseHandover(meta, winOf(meta), trigAt(at, 0.5));
+    expect(h.fails.join("\n")).toMatch(/the running overlay \(opacity 0\.5\) was replaced: the screen moved 1 of what removing it moves/);
+  });
+
+  it("a removal above the cap FAILS on its opacity even where the tiers differ in too few pixels to judge (the light theme)", async () => {
+    const at = 30;
+    const meta = handoverTrace(at, null, []);
+    meta[at + 1]!.handover = { kind: "removed", fromOpacity: 0.5, share: 1, maskedPx: 4 };
+    const h = await analyseHandover(meta, winOf(meta), trigAt(at, 0.5));
+    expect(h.outcome).toBe("removed");
+    expect(h.judgedEvents).toBe(0);
+    expect(h.fails.join("\n")).toMatch(/removed at opacity 0\.5 \(a removal above 0\.2 is a cut, whatever the pixels\)/);
+  });
+
+  it("a replacement the tiers' pixels cannot judge is 'not applicable' — no pass is claimed from it, and none is failed", async () => {
+    const at = 30;
+    const meta = handoverTrace(at, { kind: "replaced", fromOpacity: 0.5, share: 0.9, maskedPx: 4 }, [[2, 1], ...fadeFrom(2, 0.9)]);
+    const h = await analyseHandover(meta, winOf(meta), trigAt(at, 0.5));
+    expect(h.judgedEvents).toBe(0);
+    expect(h.fails).toEqual([]);
+    /* R4-VR1-3 (verifier, 2026-09-27): this sequence used to count as ESTABLISHED — "6 of 6" in a run
+       whose light-theme leaves were never judged. It is reported apart, never as a pass. */
+    expect(h.established, "a sequence whose leave was never judged is not established").toBe(false);
+    expect(h.notApplicable).toBe(true);
+    expect(h.why).toMatch(/^not applicable: frame 31: replaced at opacity 0\.5, where a removal would change 4 px \(under \d+\)$/);
+  });
+
+  it("a leave the hook could NOT measure (the canvas resized, no screen before it) is UNPROVEN, not 'not applicable' — and not established", async () => {
+    const at = 30;
+    const meta = handoverTrace(at, { kind: "replaced", fromOpacity: 0.5, share: null, maskedPx: 0, why: "canvas resized" }, [[2, 1], ...fadeFrom(2, 0.9)]);
+    const h = await analyseHandover(meta, winOf(meta), trigAt(at, 0.5));
+    expect(h.established).toBe(false);
+    expect(h.notApplicable).toBe(false);
+    expect(h.why).toMatch(/frame 31: the overlay replaced at opacity 0\.5 was not judged \(canvas resized\)/);
+    expect(h.fails).toEqual([]);
+  });
+
+  it("a removal at or under the cap is judged on its opacity (it moves the screen by exactly that share of a removal), wherever the pixels cannot show it", async () => {
+    const at = 30;
+    const meta = handoverTrace(at, null, []);
+    meta[at + 1]!.handover = { kind: "removed", fromOpacity: 0.15, share: null, maskedPx: 0 };
+    const h = await analyseHandover(meta, winOf(meta), trigAt(at, 0.15));
+    expect(h.events.map((e) => e.how)).toEqual(["opacity"]);
+    expect(h.established, h.why).toBe(true);
+    expect(h.fails).toEqual([]);
+  });
+
+  it("the tier change KEPT the running overlay (no copy could be taken): the same element carries on, judged frame by frame", async () => {
+    const at = 30;
+    const meta = handoverTrace(at, null, fadeFrom(1, 0.4));
+    const h = await analyseHandover(meta, winOf(meta), trigAt(at, 0.5));
+    expect(h.established, h.why).toBe(true);
+    expect(h.outcome).toBe("kept");
+    expect(h.fails).toEqual([]);
+  });
+
+  it("the first frame back from a hidden tab is held to the cap: 0.2 passes, a larger jump of the same overlay fails", async () => {
+    const at = 30;
+    const good = handoverTrace(at, null, [[1, 0.25], ...fadeFrom(1, 0.15)], 2600);
+    const g = await analyseHandover(good, winOf(good), trigAt(at + 1, 0.45, 2600));
+    expect(g.returnStep).toMatchObject({ step: 0.2 });
+    expect(g.returnStep!.dtMs).toBeGreaterThan(2600);
+    expect(g.fails).toEqual([]);
+    const jump = handoverTrace(at, null, [[1, 0.05]], 2600);
+    const j = await analyseHandover(jump, winOf(jump), trigAt(at + 1, 0.45, 2600));
+    expect(j.fails.join("\n")).toMatch(/one overlay's opacity moved 0\.4 in one frame \(a 2616\.7 ms frame; bar 0\.2\)/);
+  });
+
+  it("never established vacuously: a trigger that never fired, a tab that never returned, a fade still up at the end, or lost frames", async () => {
+    const at = 30;
+    const meta = handoverTrace(at, { kind: "replaced", fromOpacity: 0.5, share: 0.004, maskedPx: 7800 }, [[2, 1], ...fadeFrom(2, 0.9)]);
+    const w = winOf(meta);
+    expect((await analyseHandover(meta, w, { ...trigAt(at, 0.5), firedAt: null, appliedAt: null })).why).toMatch(/the trigger never fired/);
+    expect((await analyseHandover(meta, w, { ...trigAt(at, 0.5, 2600), returnedAt: null, appliedAt: null })).why).toMatch(/hidden tab never returned/);
+    const unfinished = meta.slice(0, at + 4);
+    expect((await analyseHandover(unfinished, winOf(unfinished), trigAt(at, 0.5))).why).toMatch(/never finished/);
+    const lost = await analyseHandover(meta, { ...w, stoppedAt: w.stoppedAt + 1300 }, trigAt(at, 0.5));
+    expect(lost.established).toBe(false);
+    expect(lost.why).toMatch(/frames lost/);
+  });
+});
+
+/* ── The handover ITEM (R4-VR1-3): what the verdict may claim from the sequences ─────────────────── */
+type ItemHv = { sequence: string; established: boolean; notApplicable: boolean; why: string; outcome: string; fails: string[]; events: { how: string }[] };
+interface HandoverItem {
+  fails: string[];
+  established: boolean;
+  why: string;
+  judged: number;
+  total: number;
+}
+const handoverItem = async (legs: { theme: string; tier: string; handovers?: ItemHv[] }[], problems: string[] = []): Promise<HandoverItem> =>
+  (
+    (await harness()) as unknown as {
+      handoverItem: (l: typeof legs, themes: string[], ids: string[], p: string[]) => HandoverItem;
+    }
+  ).handoverItem(legs, ["dark", "light"], ["tier-change-mid-hold", "tier-change-mid-fade", "tier-change-tab-hidden"], problems);
+const IDS = ["tier-change-mid-hold", "tier-change-mid-fade", "tier-change-tab-hidden"] as const;
+const judgedHv = (id: string): ItemHv => ({ sequence: id, established: true, notApplicable: false, why: "", outcome: "replaced", fails: [], events: [{ how: "pixels" }] });
+const naHv = (id: string): ItemHv => ({ sequence: id, established: false, notApplicable: true, why: "not applicable: frame 31: replaced at opacity 0.5, where a removal would change 0 px (under 64)", outcome: "replaced", fails: [], events: [{ how: "not applicable" }] });
+
+describe("capture-motion.mjs: the handover item claims only what was judged (R4-VR1-3)", () => {
+  it("every sequence judged in both themes: established, 'judged 6 of 6'", async () => {
+    const legs = ["dark", "light"].map((theme) => ({ theme, tier: "high", handovers: IDS.map(judgedHv) }));
+    const it6 = await handoverItem(legs);
+    expect(it6.established, it6.why).toBe(true);
+    expect(it6.why).toMatch(/^judged 6 of 6 handover sequences/);
+  });
+
+  it("the light theme's leaves not applicable, every sequence judged in the dark: established, and the count says 4 of 6 with the rest named", async () => {
+    const legs = [
+      { theme: "dark", tier: "high", handovers: IDS.map(judgedHv) },
+      { theme: "light", tier: "high", handovers: [judgedHv(IDS[0]), naHv(IDS[1]), naHv(IDS[2])] },
+    ];
+    const r = await handoverItem(legs);
+    expect(r.established, r.why).toBe(true);
+    expect(r.judged).toBe(4);
+    expect(r.why).toMatch(/^judged 4 of 6 handover sequences/);
+    expect(r.why).toMatch(/not applicable \(no leave could show there\): light\/tier-change-mid-fade: not applicable: .*; light\/tier-change-tab-hidden: not applicable/);
+  });
+
+  it("a sequence judged in NO theme is not proven by the themes where nothing could show: UNPROVEN", async () => {
+    const legs = [
+      { theme: "dark", tier: "high", handovers: [judgedHv(IDS[0]), naHv(IDS[1]), judgedHv(IDS[2])] },
+      { theme: "light", tier: "high", handovers: [judgedHv(IDS[0]), naHv(IDS[1]), naHv(IDS[2])] },
+    ];
+    const r = await handoverItem(legs);
+    expect(r.established).toBe(false);
+    expect(r.why).toMatch(/judged in no theme: tier-change-mid-fade/);
+  });
+
+  it("an unjudged leave, a sequence never recorded, or a leg problem is UNPROVEN; a recorded failure still fails", async () => {
+    const unjudged: ItemHv = { ...judgedHv(IDS[1]), established: false, why: "frame 31: the overlay replaced at opacity 0.5 was not judged (canvas resized)", events: [{ how: "unjudged" }] };
+    const a = await handoverItem([
+      { theme: "dark", tier: "high", handovers: [judgedHv(IDS[0]), unjudged, judgedHv(IDS[2])] },
+      { theme: "light", tier: "high", handovers: IDS.map(judgedHv) },
+    ]);
+    expect(a.established).toBe(false);
+    expect(a.why).toMatch(/not established: dark\/tier-change-mid-fade: frame 31: .*canvas resized/);
+    const b = await handoverItem([{ theme: "dark", tier: "high", handovers: IDS.map(judgedHv) }, { theme: "light", tier: "high", handovers: [judgedHv(IDS[0])] }]);
+    expect(b.established).toBe(false);
+    expect(b.why).toMatch(/light\/tier-change-mid-fade: not recorded/);
+    const c = await handoverItem(["dark", "light"].map((theme) => ({ theme, tier: "high", handovers: IDS.map(judgedHv) })), ["dark/high: tier was balanced"]);
+    expect(c.established).toBe(false);
+    const cut = { ...judgedHv(IDS[1]), fails: ["tier-change-mid-fade: frame 31, the running overlay (opacity 0.5) was replaced: the screen moved 1 of what removing it moves"] };
+    const d = await handoverItem([{ theme: "dark", tier: "high", handovers: [judgedHv(IDS[0]), cut, judgedHv(IDS[2])] }, { theme: "light", tier: "high", handovers: IDS.map(judgedHv) }]);
+    expect(d.fails).toEqual([`dark/${cut.fails[0]}`]);
+  });
+
+  it("the handover legs are found by their recorded handovers, not by position: a leg without them contributes nothing", async () => {
+    const legs = [
+      { theme: "dark", tier: "low" },
+      { theme: "dark", tier: "high", handovers: IDS.map(judgedHv) },
+      { theme: "light", tier: "high", handovers: IDS.map(judgedHv) },
+      { theme: "light", tier: "low" },
+    ];
+    expect((await handoverItem(legs)).established).toBe(true);
+  });
+});

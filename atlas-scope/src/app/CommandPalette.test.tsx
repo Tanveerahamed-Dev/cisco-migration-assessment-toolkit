@@ -15,9 +15,9 @@
  * No testing-library: this project does not depend on one. React's own `act` over a real
  * `createRoot` in jsdom is enough, and it keeps the dependency surface honest.
  */
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { actAsync } from "../test-support/act-turns";
@@ -470,7 +470,7 @@ describe("flow-shaped queries", () => {
 
 const openPaletteUI = (): HTMLElement => {
   const container = mount(<CommandPalette />);
-  act(() => useInvestigation.getState().setPaletteOpen(true));
+  act(() => { useInvestigation.getState().setPaletteOpen(true); });
   return container;
 };
 
@@ -611,7 +611,7 @@ describe("command palette", () => {
     trigger.focus();
 
     mount(<CommandPalette />);
-    act(() => useInvestigation.getState().setPaletteOpen(true, trigger));
+    act(() => { useInvestigation.getState().setPaletteOpen(true, trigger); });
     expect(document.activeElement).toBe(paletteInput());
 
     press("Escape", {}, paletteInput());
@@ -628,7 +628,7 @@ describe("command palette", () => {
     trigger.focus();
 
     mount(<CommandPalette />);
-    act(() => useInvestigation.getState().setPaletteOpen(true, trigger));
+    act(() => { useInvestigation.getState().setPaletteOpen(true, trigger); });
     trigger.disabled = true;
     press("Escape", {}, paletteInput());
     await actAsync(async () => {
@@ -911,13 +911,13 @@ describe("per-keystroke work", () => {
     mount(<CommandPalette />);
     // The first open pays for the command list and the row builders; every later one is the
     // steady state a user actually experiences.
-    act(() => useInvestigation.getState().setPaletteOpen(true));
-    act(() => useInvestigation.getState().setPaletteOpen(false));
+    act(() => { useInvestigation.getState().setPaletteOpen(true); });
+    act(() => { useInvestigation.getState().setPaletteOpen(false); });
     let reads = 0;
     for (let i = 0; i < 3; i++) {
-      reads += datasetReads(() => act(() => useInvestigation.getState().setPaletteOpen(true)));
+      reads += datasetReads(() => act(() => { useInvestigation.getState().setPaletteOpen(true); }));
       expect(paletteInput(), "precondition: the palette opened").toBeTruthy();
-      act(() => useInvestigation.getState().setPaletteOpen(false));
+      act(() => { useInvestigation.getState().setPaletteOpen(false); });
     }
     expect(reads, "opening the palette read the dataset — an index built on open").toBe(0);
   });
@@ -1011,7 +1011,7 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
     for (let guard = 0; idle.size > 0 && guard < 50; guard++) {
       const [id, cb] = idle.entries().next().value as [number, IdleCb];
       idle.delete(id);
-      act(() => cb());
+      act(() => { cb(); });
       ran += 1;
     }
     return ran;
@@ -1264,7 +1264,7 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
       const [id, cb] = idle.entries().next().value as [number, IdleCb];
       idle.delete(id);
       const before = warmFrame();
-      const reads = datasetReads(() => act(() => cb()), fresh.data.fabric);
+      const reads = datasetReads(() => act(() => { cb(); }), fresh.data.fabric);
       if (before === null && warmFrame() !== null) mountingSliceReads = reads;
       else idleReads += reads;
     }
@@ -1273,10 +1273,10 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
     expect(mountingSliceReads, "the slice that renders the pre-warm frame read the dataset").toBe(0);
     await presentFrames(4);
     await holdElapsed();
-    const openReads = datasetReads(() => act(() => fresh.store.useInvestigation.getState().setPaletteOpen(true)), fresh.data.fabric);
+    const openReads = datasetReads(() => act(() => { fresh.store.useInvestigation.getState().setPaletteOpen(true); }), fresh.data.fabric);
     expect(document.querySelector(".palette__input")?.getAttribute("role"), "precondition: the first open happened").toBe("combobox");
     expect(openReads, "the first open read the dataset").toBe(0);
-    act(() => fresh.store.useInvestigation.getState().setPaletteOpen(false));
+    act(() => { fresh.store.useInvestigation.getState().setPaletteOpen(false); });
     act(() => fresh.telemetry.releaseSceneStats());
   });
 
@@ -1418,4 +1418,172 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
     );
     expect(document.querySelector(".ui-dialog, .ui-dialog__scrim")).toBeNull();
   });
+
+  /* ══ every pair of the app's dialogs, in both opening orders (D1) ═════════════
+     MEASURED (verifier round 2, 2026-09-27, release build, 1280x800 dark): with the palette parked
+     and the keyboard reference open, the first Ctrl+K opened the palette UNDER the reference — focus
+     in a search box nobody could see (WCAG 2.4.11), the reference inert and unusable. The owner is the
+     dialog stack in src/ui/primitives.tsx (its own sweep there covers every mount order, opening order
+     and pre-warm mode of two Dialogs). This sweep runs the APP's dialogs through it.
+
+     THE SET IS DISCOVERED, NOT LISTED: every source module that renders `<Dialog` is found by
+     scanning src. The table below says only HOW each one is opened; a consumer it has no opener for
+     fails the completeness check, so a new dialog cannot arrive unpaired. Each ordered pair runs in
+     both mount orders, with the palette cold and with its frame parked (the state D1 was found in).
+     IN A BROWSER, jsdom paints nothing, so this sweep pins attributes (layer, inert, focus, keys), not
+     pixels. A rendered check was run on the release build (1280x800, dark and light; reported with
+     cluster R6, 2026-09-27) for the ONE opening order a user can reach — the keyboard reference, then
+     Ctrl+K; the reverse cannot be reached by any gesture, since the page and its help button are inert
+     under the palette and "?" is refused inside a modal. It ranks the dialogs covering the focused
+     control by computed z-index, then DOM order — NOT `elementFromPoint`, which skips inert nodes in
+     Chromium and so looks straight through a dialog painted over the control (a probe built on it
+     passed on the broken build). That procedure is in the repository: `checkPaletteOverDialog` in
+     review/palette-warm.mjs, runnable alone as `node review/palette-warm.mjs --dialog-stack <url>`,
+     and its paint-order rule is pinned below. It is run against a release preview, not by this suite;
+     the D3 focus audit (review/audit-d3-focus.mjs) is where it belongs in the routine browser pass. */
+
+  it("the rendered D1 check ranks by paint order: the measured failure reads as broken, the fixed stack as held", async () => {
+    const pw = (await import(/* @vite-ignore */ pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "review", "palette-warm.mjs")).href)) as {
+      topmostByPaint: <B extends { z: number; index: number }>(boxes: readonly B[]) => B | null;
+      focusedOnTop: (s: { covering: { z: number; index: number; holdsFocus: boolean }[]; activeInert: boolean | null; activeIn: string | null }, want: string) => boolean;
+    };
+    /* MEASURED on the broken build (verifier round 2): both dialogs at z 60, the parked palette EARLIER in
+       <body> (index 2) than the keyboard reference (index 4). Chromium paints the later one on top. */
+    const broken = {
+      covering: [
+        { z: 60, index: 1, holdsFocus: false },
+        { z: 61, index: 2, holdsFocus: true },
+        { z: 60, index: 3, holdsFocus: false },
+        { z: 61, index: 4, holdsFocus: false },
+      ],
+      activeInert: false,
+      activeIn: "ui-dialog palette",
+    };
+    expect(pw.topmostByPaint(broken.covering)?.index, "a z-index tie goes to the later DOM position").toBe(4);
+    expect(pw.focusedOnTop(broken, "palette"), "the measured D1 state").toBe(false);
+    /* The fixed stack: the palette opened last is layer 1 (scrim 62, panel 63) over the reference's 60/61. */
+    const held = { ...broken, covering: [broken.covering[0]!, { z: 63, index: 2, holdsFocus: true }, { z: 62, index: 1.5, holdsFocus: false }, broken.covering[3]!] };
+    expect(pw.focusedOnTop(held, "palette")).toBe(true);
+    expect(pw.focusedOnTop({ ...held, activeInert: true }, "palette"), "a focused control that is inert is not usable").toBe(false);
+    expect(pw.focusedOnTop({ ...held, activeIn: "ui-dialog kb-help" }, "palette"), "focus in the wrong dialog").toBe(false);
+    expect(pw.focusedOnTop({ ...held, covering: [] }, "palette"), "nothing covering the focused control is not a pass").toBe(false);
+  });
+
+  const SRC_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const sourceTsx = (dir: string): string[] =>
+    readdirSync(dir).flatMap((name) => {
+      if (name.startsWith("_") || name === "node_modules") return [];
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) return sourceTsx(p);
+      return name.endsWith(".tsx") && !name.endsWith(".test.tsx") ? [p] : [];
+    });
+  const dialogConsumers = sourceTsx(SRC_ROOT)
+    .map((f) => ({ file: relative(SRC_ROOT, f).split(sep).join("/"), text: readFileSync(f, "utf8") }))
+    .filter((f) => f.file !== "ui/primitives.tsx" && /<Dialog\b/.test(f.text))
+    .map((f) => f.file)
+    .sort();
+
+  interface AppDialog {
+    render: () => ReactNode;
+    /** Opened the way a user opens it; `overAnother` when a modal already holds focus. */
+    open: (overAnother: boolean) => void;
+    panel: () => HTMLElement | null;
+  }
+  const APP_DIALOGS: Record<string, AppDialog> = {
+    "app/CommandPalette.tsx": {
+      render: () => <CommandPalette key="palette" />,
+      /* Its own chord, pressed where focus is: mod+k is live behind a modal by design (keyboard.ts `eligible`). */
+      open: () => press("k", MOD, document.activeElement ?? document),
+      panel: () => document.querySelector<HTMLElement>('.ui-dialog.palette[role="dialog"]'),
+    },
+    "app/ShortcutHelp.tsx": {
+      render: () => <ShortcutHelp key="help" />,
+      /* `?` alone; over another modal a plain key is refused by design (keyboard.ts `eligible`), so there
+         it opens through its owner — the stack's rule is about ANY opening order, not only the keyed ones. */
+      open: (overAnother) => (overAnother ? act(() => setHelpOpen(true)) : press("?")),
+      panel: () => document.querySelector<HTMLElement>('.ui-dialog.kb-help[role="dialog"]'),
+    },
+  };
+
+  it("the dialog set is discovered from the source, and every discovered dialog has an opener here", () => {
+    expect(dialogConsumers.length, "a pair sweep over fewer than two dialogs pins nothing").toBeGreaterThanOrEqual(2);
+    expect(Object.keys(APP_DIALOGS).sort(), "a module renders <Dialog but this sweep cannot open it").toEqual(dialogConsumers);
+  });
+
+  const scrimOf = (panel: HTMLElement): HTMLElement | null => {
+    const s = panel.previousElementSibling;
+    return s instanceof HTMLElement && s.classList.contains("ui-dialog__scrim") ? s : null;
+  };
+  /** Paint order in the root stacking context, as primitives.css derives it from the stack layer. */
+  const paintKey = (el: HTMLElement): number => 2 * Number(el.getAttribute("data-dialog-layer") ?? "-1") + (el.classList.contains("ui-dialog") ? 1 : 0);
+  /** One presented frame and the deferred timers behind it: every open dialog's page-wide inert lands. */
+  const settleDialogs = async (): Promise<void> => {
+    await presentFrames(2);
+    await actAsync(async () => {
+      await new Promise((r) => setTimeout(r, 130));
+    });
+  };
+  const expectOnTop = (top: AppDialog, under: AppDialog, where: string): void => {
+    const tp = top.panel();
+    const up = under.panel();
+    expect(tp, `${where}: the dialog opened last is open`).not.toBeNull();
+    expect(up, `${where}: the dialog under it is still open`).not.toBeNull();
+    const ts = scrimOf(tp!)!;
+    const us = scrimOf(up!)!;
+    for (const el of [tp!, ts]) expect(el.hasAttribute("inert") || el.hasAttribute("aria-hidden"), `${where}: the top dialog is inert or hidden`).toBe(false);
+    for (const el of [up!, us]) expect(el.hasAttribute("inert"), `${where}: the dialog underneath is live`).toBe(true);
+    expect(paintKey(ts), `${where}: the top dialog's scrim paints over the other dialog's panel`).toBeGreaterThan(paintKey(up!));
+    expect(paintKey(tp!)).toBeGreaterThan(paintKey(ts));
+    expect(tp!.contains(document.activeElement), `${where}: focus is in the dialog on top (WCAG 2.4.11)`).toBe(true);
+    /* Nothing INSIDE the top dialog is inert either: a page-wide inert that descended into a dialog
+       holding a live region marks its children one by one, and the panel's own attribute says nothing. */
+    expect([...tp!.querySelectorAll("[inert]")].map((el) => el.outerHTML.slice(0, 80)), `${where}: a node inside the top dialog is inert`).toEqual([]);
+  };
+
+  const pairIds = Object.keys(APP_DIALOGS).flatMap((a) => Object.keys(APP_DIALOGS).filter((b) => b !== a).map((b) => [a, b] as const));
+  for (const [firstId, secondId] of pairIds)
+    for (const mountFirst of [firstId, secondId])
+      for (const palette of ["cold", "parked"] as const)
+        for (const settleBetween of [true, false])
+        it(`${firstId} opened, then ${secondId} over it (mounted ${mountFirst} first; palette ${palette}${settleBetween ? "" : "; before the first one's deferred inert landed"})`, async () => {
+          const first = APP_DIALOGS[firstId]!;
+          const second = APP_DIALOGS[secondId]!;
+          const outside = outsideButton();
+          mount(
+            <>
+              {(mountFirst === firstId ? [first, second] : [second, first]).map((d) => d.render())}
+            </>,
+          );
+          if (palette === "parked") {
+            converge();
+            flushIdle();
+            await presentFrames(4);
+            await holdElapsed();
+            expect(warmFrame()?.getAttribute("data-dialog-prewarm"), "precondition: the palette's frame is parked").toBe("parked");
+          }
+
+          first.open(false);
+          expect(first.panel()?.contains(document.activeElement), "the first dialog opened and took focus").toBe(true);
+          if (settleBetween) await settleDialogs();
+          second.open(true);
+          expectOnTop(second, first, "as it opens");
+          await settleDialogs();
+          expectOnTop(second, first, "after both page-wide inerts");
+
+          press("Escape", {}, document.activeElement ?? document);
+          expect(second.panel(), "one Escape closed the dialog on top").toBeNull();
+          expect(first.panel(), "...and not the one under it").not.toBeNull();
+          await settleDialogs();
+          const back = first.panel()!;
+          expect(back.hasAttribute("inert") || scrimOf(back)!.hasAttribute("inert"), "the first dialog is live again").toBe(false);
+          expect(back.contains(document.activeElement), "focus came back into the first dialog").toBe(true);
+          expect([...back.querySelectorAll("[inert]")].map((el) => el.outerHTML.slice(0, 80)), "a node inside the first dialog, on top again, is inert").toEqual([]);
+
+          press("Escape", {}, document.activeElement ?? document);
+          await settleDialogs();
+          expect(first.panel(), "the second Escape closed the first dialog").toBeNull();
+          expect(document.querySelector("[data-dialog-layer]"), "no layer outlives its dialog").toBeNull();
+          expect([...document.querySelectorAll("[inert]")].filter((el) => !el.hasAttribute("data-dialog-prewarm")), "nothing is left inert").toEqual([]);
+          expect(document.activeElement, "focus is back where it started").toBe(outside);
+        });
 });

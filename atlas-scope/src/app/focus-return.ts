@@ -72,10 +72,42 @@
  * lost opener and a resize; `review/audit-d3-focus.mjs --sweep` drives them in Chromium at every
  * drawer width derived from the ladder, with the real 240 ms step.
  *
+ * A FOURTH DOOR, SAME RULE: a LAYOUT CHANGE that takes the focused element away
+ * (`releaseFocusAfterLayoutChange`, and its React form `useReleaseFocusOnLayoutChange`). A rung
+ * crossing, or a fold decided by measurement, mounts one form of a control and unmounts the other, or
+ * stops rendering a whole region: nothing "closes", nobody "removes itself", and no container is
+ * declared hidden — the element holding focus is simply not in the new layout. MEASURED (independent
+ * verifier, D3-R2-1, release build): 11 of 74 tab stops lost to <body> across 7 rung crossings — the
+ * pane switch below 1024 px ('900->1100 BUTTON.paneswitch__btn "Queue" -> BODY'), the header's More
+ * button, popover and inline toolbar ('1100 "Copy the link…" -> 1100->900 BODY'), the queue's View
+ * disclosure ('1100->1440 BUTTON.ui-btn "View" -> BODY') and the fabric's controls when the stage
+ * collapses ('768->390 BUTTON.fabric3d__btn "Legend" -> BODY'). The owner follows focus (`focusin`, so
+ * it still knows the element and its ancestors after React has removed them), and the component that
+ * DECIDES the layout declares it — `useReleaseFocusOnLayoutChange(<the value the layout is keyed on>)`
+ * — so the release runs in the layout phase of the very commit that took the element away. It acts
+ * only when that element is gone from the rendered page and focus is nowhere real, and hands focus to
+ * its DOCUMENTED SUCCESSOR, in order:
+ *   a. its TWIN in the new layout — a rendered control with the same role and accessible name (the
+ *      inline "Copy the link…" for the same button inside the More popover that just unmounted);
+ *   b. the successor its surface STATES: `data-focus-successor` (FOCUS_SUCCESSOR_ATTR) on the lost
+ *      element or its nearest recorded ancestor that carries one — selectors tried in order, each
+ *      match landed on itself when it takes focus, else on its first rendered tab stop (the pane
+ *      switch names the region of the pane it chose; the stage names the fabric toggle that stands for
+ *      it below 768 px; the header names More, else its inline surface toolbar);
+ *   c. the caller's fallbacks; d. the landmark around the nearest surviving ancestor, then its first
+ *      tab stop.
+ * `src/app/rung-focus-crossing.test.tsx` drives the unmount shapes through the real frame at the
+ * real ladder widths, and `review/audit-d3-focus.mjs --sweep` (its rung-crossing pass) focuses EVERY
+ * rendered tab stop — and every tab stop inside every popover a visible trigger opens — at one width
+ * per rung, crosses to each neighbouring rung, and fails on <body> or on a landing that is not seen.
+ *
  * `src/app/focus-return.guard.test.ts` parses every source
  * file and fails on a `.blur()` call anywhere but here, on an `isConnected` focus branch whose
- * else-arm does not call this module, and on a state-driven `hidden`/`inert` attribute on an element
- * whose `ref` is not the container a third-door call names.
+ * else-arm does not call this module, on a state-driven `hidden`/`inert` attribute on an element
+ * whose `ref` is not the container a third-door call names, on a hide written from script (`hidden` /
+ * `inert` assigned or set as an attribute, `display: none`, `visibility: hidden`) on an element no
+ * third-door call names, and on a component that renders from the viewport ladder without declaring
+ * the fourth door keyed on it.
  */
 import { useLayoutEffect, useRef, type RefObject } from "react";
 
@@ -404,4 +436,204 @@ export function handOffFocus(control: EventTarget | null | undefined, action: ()
   };
   queueMicrotask(attempt);
   if (typeof setTimeout === "function") for (const ms of HANDOFF_DELAYS_MS) setTimeout(attempt, ms);
+}
+
+/* ══ a layout change that takes the focused element away ═════════════════════ */
+
+/**
+ * The attribute a surface states its successor in: a comma-separated list of selectors, tried in
+ * order, each match "landed on" as `landOn` says. Read from the lost element first and then from each
+ * of its recorded ancestors, nearest first — so a control can name its own successor and a region can
+ * name one for everything inside it. Read at release time: a surviving ancestor answers for the NEW
+ * layout (its attribute has re-rendered), a removed one for the layout it was removed from.
+ */
+export const FOCUS_SUCCESSOR_ATTR = "data-focus-successor";
+
+/** The last element that received focus, and the ancestors it had then (a removed subtree loses them). */
+interface FocusTrail {
+  readonly el: HTMLElement;
+  readonly ancestors: readonly HTMLElement[];
+}
+let trail: FocusTrail | null = null;
+let trackers = 0;
+
+function trailOf(el: HTMLElement): FocusTrail {
+  const ancestors: HTMLElement[] = [];
+  for (let n = el.parentElement; n !== null && n !== document.body && n !== document.documentElement; n = n.parentElement) ancestors.push(n);
+  return { el, ancestors };
+}
+const onTrailFocusIn = (e: FocusEvent): void => {
+  const t = e.target;
+  if (t instanceof HTMLElement && t !== document.body) trail = trailOf(t);
+};
+/* A pointer press starts a new focus decision: whatever it focuses records itself on `focusin`; a
+   press on nothing leaves focus on <body> BY THE READER'S CHOICE, which no later layout change undoes. */
+const onTrailPointerDown = (): void => {
+  trail = null;
+};
+
+/** Start following focus (ref-counted: every door user shares one listener pair). Returns the stop. */
+function followFocus(): () => void {
+  if (typeof document === "undefined") return () => {};
+  if (trackers === 0) {
+    document.addEventListener("focusin", onTrailFocusIn, true);
+    document.addEventListener("pointerdown", onTrailPointerDown, true);
+    const a = document.activeElement;
+    trail = a instanceof HTMLElement && a !== document.body ? trailOf(a) : null;
+  }
+  trackers += 1;
+  return () => {
+    trackers -= 1;
+    if (trackers > 0) return;
+    document.removeEventListener("focusin", onTrailFocusIn, true);
+    document.removeEventListener("pointerdown", onTrailPointerDown, true);
+    trail = null;
+  };
+}
+
+/**
+ * Is `el` RENDERED: in the document, outside a `hidden` subtree, with a box, and not `visibility:
+ * hidden`? `checkVisibility` answers in a browser (it forces the style the new layout needs); without
+ * it (a test DOM) the computed `display` chain and `visibility` are read instead.
+ */
+function isRendered(el: Element): boolean {
+  if (!el.isConnected || el.closest("[hidden]") !== null) return false;
+  const check = (el as Element & { checkVisibility?: (o?: { visibilityProperty?: boolean }) => boolean }).checkVisibility;
+  if (typeof check === "function") return check.call(el, { visibilityProperty: true });
+  if (typeof getComputedStyle !== "function") return true;
+  for (let n: Element | null = el; n !== null; n = n.parentElement) if (getComputedStyle(n).display === "none") return false;
+  return getComputedStyle(el).visibility !== "hidden";
+}
+
+const roleOf = (el: Element): string => el.getAttribute("role") ?? el.tagName.toLowerCase();
+const nameOf = (el: Element): string => (el.getAttribute("aria-label") ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
+
+/**
+ * Land on what a successor names: the element itself when it can take focus (a control, or a region
+ * that is programmatically focusable, `tabindex=-1`), else its first rendered tab stop, else the
+ * element made focusable as a landmark (rule 4). Nothing unrendered, inert or `aria-hidden`.
+ */
+function landOn(el: Element | null | undefined): HTMLElement | null {
+  if (!(el instanceof HTMLElement) || !isRendered(el) || !takesFocus(el)) return null;
+  if (el.matches(TAB_STOP_SELECTOR) && tryFocus(el)) return el;
+  for (const s of tabStopsOf(el)) if (isRendered(s) && tryFocus(s)) return s;
+  return focusLandmark(el) ? el : null;
+}
+
+/**
+ * The FOURTH DOOR (see the module comment): a layout change has just been committed. If it took the
+ * focused element away — removed it, or left it unrendered — hand focus to its successor, in order:
+ *   a. its TWIN: a rendered control with the same role and the same accessible name, preferring one
+ *      inside the nearest ancestor that survived (the header's inline "Copy the link…" for the same
+ *      button inside the More popover that just unmounted);
+ *   b. the successor the lost element, or its nearest recorded ancestor that states one, names in
+ *      `data-focus-successor` (FOCUS_SUCCESSOR_ATTR), each selector in order;
+ *   c. the caller's fallbacks, in order;
+ *   d. the region landmark around the nearest surviving ancestor, then that ancestor's first tab stop.
+ * It acts ONLY when the element that last took focus is gone from the rendered page AND focus is
+ * nowhere real (on <body>, or still on that unrendered element): focus the crossing did not take stays
+ * exactly where it is, and so does a <body> the reader chose with a pointer press on nothing. Returns
+ * the element that now holds focus, or null when there was nothing to do (or nowhere to go).
+ */
+export function releaseFocusAfterLayoutChange(fallbacks: readonly Candidate[] = []): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  const t = trail;
+  if (t === null) return null;
+  const a = document.activeElement;
+  const nowhere = a === null || a === document.body || a === document.documentElement;
+  if (!nowhere && a !== t.el) return null;
+  if (a === t.el && isRendered(t.el) && takesFocus(t.el)) return null;
+  if (nowhere && isRendered(t.el)) return null;
+
+  const scope = t.ancestors.find((n) => isRendered(n)) ?? null;
+
+  const name = nameOf(t.el);
+  if (name !== "") {
+    const role = roleOf(t.el);
+    const twins = [...document.querySelectorAll<HTMLElement>(TAB_STOP_SELECTOR)].filter(
+      (c) => c !== t.el && roleOf(c) === role && nameOf(c) === name,
+    );
+    const inScope = scope === null ? [] : twins.filter((c) => scope.contains(c));
+    for (const c of [...inScope, ...twins.filter((c) => !inScope.includes(c))]) {
+      if (isRendered(c) && takesFocus(c) && tryFocus(c)) return c;
+    }
+  }
+
+  for (const n of [t.el, ...t.ancestors]) {
+    const spec = n.getAttribute(FOCUS_SUCCESSOR_ATTR);
+    if (spec === null) continue;
+    for (const sel of spec.split(",").map((s) => s.trim()).filter((s) => s !== "")) {
+      let matches: HTMLElement[] = [];
+      try {
+        matches = [...document.querySelectorAll<HTMLElement>(sel)];
+      } catch {
+        continue; /* a malformed successor names nothing; the next one is tried */
+      }
+      for (const m of matches) {
+        const landed = landOn(m);
+        if (landed !== null) return landed;
+      }
+    }
+  }
+
+  for (const c of fallbacks) {
+    const landed = landOn(c);
+    if (landed !== null) return landed;
+  }
+
+  if (scope !== null) {
+    const mark = scope.matches(REGION_SELECTOR) && isNamed(scope) ? scope : landmarkOf(scope);
+    if (mark !== null && isRendered(mark) && focusLandmark(mark)) return mark;
+    return landOn(scope);
+  }
+  return null;
+}
+
+/** Fallbacks the declared layout changes of the current commit asked for; null when none is pending. */
+let pendingRelease: Candidate[] | null = null;
+
+/**
+ * Run the fourth door ONCE for the commit being laid out, AFTER every layout effect of that commit —
+ * a microtask queued from the layout phase runs when the commit's synchronous work is done and before
+ * the browser renders (and so before its own focus fix-up). Why not in the effect itself: a commit
+ * that crosses a rung also hides containers whose THIRD door knows more (Rail B knows the control that
+ * opened the drawer), and React runs an earlier sibling's layout effects first. MEASURED
+ * (drawer-focus-return.test.tsx, 1100 -> 900 with focus in the drawer): the header's door ran before
+ * Rail B's and sent focus to the first tab stop of the body, the pane switch's "Queue", instead of the
+ * drawer's opener. Deferred, the third door acts first and this one finds focus somewhere real. Every
+ * caller's fallbacks in the commit are kept, in call order.
+ */
+function scheduleLayoutRelease(fallbacks: readonly Candidate[]): void {
+  if (pendingRelease !== null) {
+    pendingRelease.push(...fallbacks);
+    return;
+  }
+  pendingRelease = [...fallbacks];
+  queueMicrotask(() => {
+    const all = pendingRelease ?? [];
+    pendingRelease = null;
+    releaseFocusAfterLayoutChange(all);
+  });
+}
+
+/**
+ * The fourth door as a React hook, for the component whose LAYOUT decides what is rendered: `layout`
+ * is the value that decision is keyed on (a rung, a fold, a visibility flag). On every commit that
+ * changes it, `releaseFocusAfterLayoutChange` runs once that commit's layout effects are done — after
+ * React has removed what the change removed, after any container's own third door, and before the
+ * browser paints or runs its own focus fix-up (which parks focus on <body> for an element left
+ * unrendered). `fallbacks` is read in the commit's layout phase. While any user of the hook is
+ * mounted, the owner follows focus (`focusin`), so it knows what held focus BEFORE the commit even
+ * when that element has since been removed.
+ */
+export function useReleaseFocusOnLayoutChange(layout: unknown, fallbacks: () => readonly Candidate[] = NO_FALLBACKS): void {
+  const was = useRef(layout);
+  const latestFallbacks = useRef(fallbacks);
+  latestFallbacks.current = fallbacks;
+  useLayoutEffect(() => followFocus(), []);
+  useLayoutEffect(() => {
+    if (Object.is(was.current, layout)) return;
+    was.current = layout;
+    scheduleLayoutRelease(latestFallbacks.current());
+  }, [layout]);
 }

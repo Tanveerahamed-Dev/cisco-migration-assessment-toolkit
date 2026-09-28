@@ -122,6 +122,17 @@ export const T = {
   MAX_MEDIAN_DT_MS: 33.4,
   MAX_GAP_MS: 50,
   MAX_GAP_SHARE: 0.1,
+  /* LOST FRAMES (C5-R2-3, verifier round 2). The rules above read only the frames that WERE recorded,
+     so a recording that stopped getting frames part-way — measured: 63 frames over 1,183 ms of a
+     2.5 s sequence, then nothing for ~1.3 s — passed as dense, and its fade read "never started in
+     the recorded window". Density is now judged against the recording WINDOW (the in-page clock at
+     start and at stop): no stretch at either edge of the window may go without a frame for longer
+     than MAX_EDGE_GAP_MS, and no frame may be skipped or errored by the hook. An interval BETWEEN two
+     recorded frames is a real (long) host frame, which the items judge; a frameless edge is time the
+     recorder never saw. 250 ms is the longest single host frame the graded runs recorded
+     (2026-09-26), so a longer edge is not one frame in progress. A sequence without a window is
+     never dense. A lost-frame sequence is UNPROVEN, never ok. */
+  MAX_EDGE_GAP_MS: 250,
   /* STILL-FRAME POP. With the camera still, no emphasis animating and no fade, the scene is
      deterministic (acceptance F6: two captures are byte-identical), so two consecutive frames must
      be the same picture. 4/255 tolerates 8-bit rounding in the copy; 60 px (~0.01 % of the canvas,
@@ -278,6 +289,32 @@ export const T = {
      from. A wall-clock fade steps >= 0.36 there (the model: 0.36-0.65 by where the stall lands); a
      per-frame-capped one steps at most its cap. It turns a 1-in-24 host event into a certain test. */
   FADE_STALL_MS: 120,
+  /* THE HANDOVER (C5-R2-1, verifier round 2; owner decision 2026-09-27: no path — a tier change
+     mid-fade, the tab-switch step-up, … — may remove, replace or reset a fade overlay faster than the
+     per-frame cap). Three sequences per theme, on the high leg: a tier change on the first frame the
+     overlay is up (mid-hold), one once the fade is under HANDOVER_MID_OPACITY (mid-fade), and a tab
+     hidden for HIDE_MS once the fade is under HANDOVER_HIDE_OPACITY, with the tier change landed on
+     the first frame back (the step-up a returning tab lands; the leg is pinned, so it is driven by
+     `setQuality` through the same `applyQuality` path). A hidden tab is EMULATED as the browser
+     specifies one: `document.visibilityState` reads "hidden" and `visibilitychange` fires, and the
+     harness's rAF pump runs no frame until the tab returns (timers keep running).
+     How it is JUDGED, without the product's word: whenever the overlay on screen last frame LEAVES
+     (replaced by another element, or removed) while above 0.005, the hook measures, at half
+     resolution in the page, the screen before (P: canvas + old overlay at its opacity), the screen now
+     (Q: canvas + whatever overlay is up), and what a plain removal would show now (R: the canvas
+     alone). Over the pixels a removal would visibly change (|R - P| >= FADE_MASK_DELTA), the screen
+     may move at most FADE_MAX_STEP of what the removal moves: share = sum|Q - P| / sum|R - P|. A
+     removal is share 1; a handover that shows the same picture is ~0. Under FADE_MIN_CHANGED_PX such
+     pixels (the light theme's tiers differ in about one) it is "not applicable", never a pass by
+     arithmetic — but a REMOVAL above FADE_MAX_STEP fails on its opacity alone. Within one overlay
+     element, every frame (the first one back from the hidden tab included) is held to FADE_MAX_STEP. */
+  HANDOVER_MID_OPACITY: 0.6,
+  HANDOVER_HIDE_OPACITY: 0.8,
+  /* Longer than THREE 1,200 ms windows: the old driver's watchdog removed the overlay after two
+     consecutive windows without a frame, and whatever their alignment to the hide, two whole idle
+     windows fit in 3,600 ms. (A first measurement at 2,600 ms did not reach them: the pre-fix build
+     then failed this item on the tier change alone.) */
+  HIDE_MS: 3800,
 };
 
 /* ── in-page instrumentation (init script; self-contained) ─────────────────────────────────── */
@@ -308,8 +345,93 @@ function instrument() {
     ids: null,
     label: null,
     hookErrors: 0,
+    /* the recording window on the page's clock, and frames the hook could not record (T.MAX_EDGE_GAP_MS) */
+    startedAt: null,
+    stoppedAt: null,
+    hookSkips: 0,
+    /* THE HANDOVER (T.HIDE_MS and after): a hidden tab, emulated; the trigger that lands a tier change
+       mid-hold / mid-fade / on the first frame back; the in-page measure of an overlay leaving. */
+    hidden: false,
+    suspendUntil: 0,
+    trigger: null,
+    maskDelta: 8,
+    lastFade: null,
+    small: {},
+    screenKey: "a",
+    havePrev: false,
   };
   window.__motion = M;
+
+  /* A HIDDEN TAB, as the browser specifies one: the document reads hidden, `visibilitychange` fires,
+     and no animation frame runs until it returns (the pump below holds them). Timers keep running. */
+  const visDesc = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+  const hidDesc = Object.getOwnPropertyDescriptor(Document.prototype, "hidden");
+  try {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get() { return M.hidden ? "hidden" : visDesc.get.call(this); } });
+    Object.defineProperty(document, "hidden", { configurable: true, get() { return M.hidden ? true : hidDesc.get.call(this); } });
+  } catch {
+    /* left native: a hidden-tab sequence then records that its trigger never returned */
+  }
+
+  /* Each overlay element gets a serial, so the trace can tell one overlay's fade from a replacement. */
+  const overlayIds = new WeakMap();
+  let overlaySerial = 0;
+  const overlayId = (el) => {
+    let v = overlayIds.get(el);
+    if (v === undefined) {
+      overlaySerial += 1;
+      v = overlaySerial;
+      overlayIds.set(el, v);
+    }
+    return v;
+  };
+  /* The screen at half resolution: the canvas, and an overlay over it at `alpha`. */
+  const SMALL = 2;
+  function small(key, c) {
+    const w = Math.max(1, Math.ceil(c.width / SMALL));
+    const h = Math.max(1, Math.ceil(c.height / SMALL));
+    let s = M.small[key];
+    if (!s || s.width !== w || s.height !== h) {
+      s = new OffscreenCanvas(w, h);
+      M.small[key] = s;
+    }
+    return s;
+  }
+  function paint(s, c, overlay, alpha) {
+    const g = s.getContext("2d");
+    g.globalAlpha = 1;
+    g.clearRect(0, 0, s.width, s.height);
+    g.drawImage(c, 0, 0, s.width, s.height);
+    if (overlay) {
+      g.globalAlpha = alpha;
+      g.drawImage(overlay, 0, 0, s.width, s.height);
+      g.globalAlpha = 1;
+    }
+  }
+  function lumaOf(s) {
+    const d = s.getContext("2d").getImageData(0, 0, s.width, s.height).data;
+    const L = new Float32Array(s.width * s.height);
+    for (let p = 0, q = 0; p < L.length; p++, q += 4) L[p] = d[q] * 0.2126 + d[q + 1] * 0.7152 + d[q + 2] * 0.0722;
+    return L;
+  }
+  /** P: the screen last frame; Q: the screen now; R: the canvas alone now (a plain removal). */
+  function leaveMeasure(P, Q, R) {
+    if (P.width !== Q.width || P.height !== Q.height) return { share: null, maskedPx: 0, why: "canvas resized" };
+    const lp = lumaOf(P);
+    const lq = lumaOf(Q);
+    const lr = lumaOf(R);
+    let px = 0;
+    let moved = 0;
+    let removal = 0;
+    for (let p = 0; p < lp.length; p++) {
+      const r = Math.abs(lr[p] - lp[p]);
+      if (r < M.maskDelta) continue;
+      px++;
+      removal += r;
+      moved += Math.abs(lq[p] - lp[p]);
+    }
+    return { share: removal > 0 ? Math.round((moved / removal) * 1000) / 1000 : null, maskedPx: px * SMALL * SMALL };
+  }
 
   function hook(ts) {
     if (!M.recording) return;
@@ -317,7 +439,11 @@ function instrument() {
     try {
       const scene = window.__atlasScene;
       const c = document.querySelector(".fabric3d canvas, canvas");
-      if (!scene || !c) return;
+      if (!scene || !c) {
+        /* a frame the page presented and this recording lost (see T.MAX_EDGE_GAP_MS) */
+        M.hookSkips += 1;
+        return;
+      }
       const i = M.frames.length;
       let g = null;
       let buf = null;
@@ -336,13 +462,34 @@ function instrument() {
       let fade = null;
       if (fadeEl) {
         const op = Number(getComputedStyle(fadeEl).opacity);
-        fade = { opacity: op, transition: fadeEl.style.transition || "" };
+        fade = { opacity: op, transition: fadeEl.style.transition || "", id: overlayId(fadeEl) };
         if (g) {
           g.globalAlpha = op;
           g.drawImage(fadeEl, 0, 0, buf.width, buf.height);
           g.globalAlpha = 1;
         }
       }
+      /* THE OVERLAY LEAVING (T.HIDE_MS and after): the overlay on screen last frame is gone — replaced
+         or removed — while it was above 0.005. Measured against what a plain removal would show. */
+      const last = M.lastFade;
+      const left = last !== null && (fade === null || last.id !== fade.id) && last.opacity > 0.005;
+      let leave = null;
+      if (fade !== null || left) {
+        const curKey = M.screenKey === "a" ? "b" : "a";
+        const cur = small(curKey, c);
+        paint(cur, c, fadeEl, fade !== null ? fade.opacity : 0);
+        if (left) {
+          const kind = fade === null ? "removed" : "replaced";
+          if (M.havePrev) {
+            const alone = small("alone", c);
+            paint(alone, c, null, 0);
+            leave = { kind, fromOpacity: last.opacity, ...leaveMeasure(M.small[M.screenKey], cur, alone) };
+          } else leave = { kind, fromOpacity: last.opacity, share: null, maskedPx: 0, why: "no screen recorded for the frame before" };
+        }
+        M.screenKey = curKey;
+        M.havePrev = fade !== null;
+      } else M.havePrev = false;
+      M.lastFade = fade !== null ? { id: fade.id, opacity: fade.opacity } : null;
       const s = scene.stats();
       const cam = [];
       for (const id of M.ids) {
@@ -371,9 +518,29 @@ function instrument() {
         vis,
         hover,
         fade,
+        handover: leave,
         w: c.width,
         h: c.height,
       });
+      /* The handover sequences' trigger: a tier change (or a hidden tab, then the tier change on the
+         first frame back) once the overlay is up and under `below`. After this frame is recorded, so
+         the next recorded frame is the first to show what the page did. */
+      const tr = M.trigger;
+      if (tr && tr.firedAt === null && fade && fade.opacity > 0.005 && fade.opacity < tr.below) {
+        tr.firedAt = i;
+        tr.firedOpacity = fade.opacity;
+        if (tr.hideMs > 0) {
+          M.hidden = true;
+          M.suspendUntil = performance.now() + tr.hideMs;
+          document.dispatchEvent(new Event("visibilitychange"));
+        } else {
+          scene.setQuality(tr.tier);
+          tr.appliedAt = i;
+        }
+      } else if (tr && tr.returnedAt !== null && tr.appliedAt === null) {
+        scene.setQuality(tr.tier);
+        tr.appliedAt = i;
+      }
       if (M.stallMs > 0 && M.stalledAt === null && fade && fade.opacity < 1) {
         M.stalledAt = i;
         const until = performance.now() + M.stallMs;
@@ -389,6 +556,18 @@ function instrument() {
 
   function pump(ts) {
     scheduled = false;
+    /* A frame requested before the tab hid (the page re-requests at the top of its own callback) is
+       held, like every other, until the tab returns. */
+    if (M.hidden && performance.now() < M.suspendUntil) {
+      ensure();
+      return;
+    }
+    /* The emulated tab returns: visible again, `visibilitychange` first, then the frame. */
+    if (M.hidden && performance.now() >= M.suspendUntil) {
+      M.hidden = false;
+      if (M.trigger && M.trigger.returnedAt === null) M.trigger.returnedAt = M.frames.length;
+      document.dispatchEvent(new Event("visibilitychange"));
+    }
     const q = queue;
     queue = new Map();
     for (const cb of q.values()) {
@@ -404,10 +583,12 @@ function instrument() {
     if (queue.size > 0 || M.recording) ensure();
   }
   function ensure() {
-    if (!scheduled) {
-      scheduled = true;
-      nativeRAF(pump);
-    }
+    if (scheduled) return;
+    scheduled = true;
+    /* While the emulated tab is hidden no animation frame runs; the first one after it is the return. */
+    const wait = M.hidden ? M.suspendUntil - performance.now() : 0;
+    if (wait > 0) setTimeout(() => nativeRAF(pump), wait);
+    else nativeRAF(pump);
   }
   window.requestAnimationFrame = (cb) => {
     const id = nextId++;
@@ -424,13 +605,22 @@ function instrument() {
     M.stalledAt = null;
     M.ids = ids;
     M.label = label;
+    M.hookErrors = 0;
+    M.hookSkips = 0;
+    M.lastFade = null;
+    M.havePrev = false;
+    M.startedAt = performance.now();
+    M.stoppedAt = null;
     M.recording = true;
     ensure();
   };
   M.stop = () => {
     M.recording = false;
+    M.stoppedAt = performance.now();
     return M.frames.map((f) => ({ ...f }));
   };
+  /** The recording window and what the hook could not record (see T.MAX_EDGE_GAP_MS). */
+  M.window = () => ({ startedAt: M.startedAt, stoppedAt: M.stoppedAt, skipped: M.hookSkips, hookErrors: M.hookErrors });
   /** Raw RGBA of frame k as base64 (FileReader is native and fast for megabytes). */
   M.read = (k) =>
     new Promise((res, rej) => {
@@ -605,6 +795,9 @@ const SEQUENCES = [
 ];
 
 const FADE_REPEATS = Number(process.env.ATLAS_FADE_REPEATS || 3);
+/* ATLAS_MOTION_ONLY=handover records only the handover sequences (iteration; such a run can never
+   PASS: every other item is then UNPROVEN). */
+const ONLY_HANDOVER = process.env.ATLAS_MOTION_ONLY === "handover";
 const FADE_SEQUENCES = [
   {
     id: "tier-fade-high-to-low",
@@ -626,13 +819,53 @@ const FADE_SEQUENCES = [
   },
 ];
 
+/* THE HANDOVER SEQUENCES (T.HIDE_MS and after). Each starts at the high leg's pinned tier, steps down
+   to low, lands a tier change back to high at its trigger, and so ends where it began. */
+const HANDOVER_SEQUENCES = [
+  {
+    id: "tier-change-mid-hold",
+    what: "setQuality('low'), then setQuality('high') on the first frame the overlay is up (held at 1, the low tier still warming up)",
+    trigger: { below: 1.01, hideMs: 0, tier: "high" },
+  },
+  {
+    id: "tier-change-mid-fade",
+    what: `setQuality('low'), then setQuality('high') on the first frame the fade is under ${T.HANDOVER_MID_OPACITY}`,
+    trigger: { below: T.HANDOVER_MID_OPACITY, hideMs: 0, tier: "high" },
+  },
+  {
+    id: "tab-hidden-mid-fade-then-tier-change",
+    what: `setQuality('low'); once the fade is under ${T.HANDOVER_HIDE_OPACITY} the tab is hidden for ${T.HIDE_MS} ms, and on the first frame back setQuality('high') (the step-up a returning tab lands)`,
+    trigger: { below: T.HANDOVER_HIDE_OPACITY, hideMs: T.HIDE_MS, tier: "high" },
+  },
+].map((s) => ({
+  ...s,
+  async run(page) {
+    await sleep(page, 300);
+    await page.evaluate(() => window.__atlasScene.setQuality("low"));
+    await sleep(page, 3200 + s.trigger.hideMs);
+  },
+}));
+
 /* ── recording ────────────────────────────────────────────────────────────────────────────────── */
-async function record(page, ids, seqId, run, box, dir, { copy = true, keepRgba = false, stallMs = 0 } = {}) {
+async function record(page, ids, seqId, run, box, dir, { copy = true, keepRgba = false, stallMs = 0, trigger = null } = {}) {
   await page.evaluate((c) => (window.__motion.copy = c), copy);
   await page.evaluate((ms) => (window.__motion.stallMs = ms), stallMs);
+  await page.evaluate(
+    ({ trigger, maskDelta }) => {
+      window.__motion.maskDelta = maskDelta;
+      window.__motion.trigger = trigger === null ? null : { ...trigger, firedAt: null, firedOpacity: null, returnedAt: null, appliedAt: null };
+    },
+    { trigger, maskDelta: T.FADE_MASK_DELTA },
+  );
   await page.evaluate(({ l, ids }) => window.__motion.start(l, ids), { l: seqId, ids });
   await run(page, box);
   const meta = await page.evaluate(() => window.__motion.stop());
+  const win = await page.evaluate(() => window.__motion.window());
+  const trig = await page.evaluate(() => {
+    const t = window.__motion.trigger;
+    window.__motion.trigger = null;
+    return t;
+  });
   const stalledAt = await page.evaluate(() => {
     const at = window.__motion.stalledAt;
     window.__motion.stallMs = 0;
@@ -660,7 +893,7 @@ async function record(page, ids, seqId, run, box, dir, { copy = true, keepRgba =
     });
   }
   await page.evaluate(() => window.__motion.release());
-  return { meta, frames, rgbaFrames, hookErrors, stalledAt };
+  return { meta, frames, rgbaFrames, hookErrors, stalledAt, win, trig };
 }
 
 /* ── analysis ─────────────────────────────────────────────────────────────────────────────────── */
@@ -717,26 +950,49 @@ function diffBBox(A, B, w, delta) {
   return x1 < 0 ? null : { x0, y0, x1, y1 };
 }
 
-function density(meta) {
+/** Pure: is this recording dense evidence? Judged against its WINDOW (`win`: the page clock at start
+ *  and stop, and the frames the hook skipped or errored on): see T.MAX_EDGE_GAP_MS. Without a window
+ *  it is never ok — lost frames at its edges could not be ruled out. Pinned by known answers in
+ *  src/fabric3d/stepdown.fadehold.test.ts, on the verifier's lost-tail recording. */
+export function density(meta, win) {
   const dts = [];
   for (let t = 1; t < meta.length; t++) dts.push(meta[t].ts - meta[t - 1].ts);
   const med = median(dts);
   const gaps = dts.filter((d) => d > T.MAX_GAP_MS).length;
   const renderedEvery = meta.slice(1).every((f, i) => f.framesTimed === meta[i].framesTimed + 1);
-  const ok = meta.length >= 30 && med !== null && med <= T.MAX_MEDIAN_DT_MS && gaps / Math.max(1, dts.length) <= T.MAX_GAP_SHARE;
+  const rateOk = meta.length >= 30 && med !== null && med <= T.MAX_MEDIAN_DT_MS && gaps / Math.max(1, dts.length) <= T.MAX_GAP_SHARE;
+  const lost = [];
+  let headGapMs = null;
+  let tailGapMs = null;
+  if (!win || !Number.isFinite(win.startedAt) || !Number.isFinite(win.stoppedAt)) {
+    lost.push("no recording window: frames lost at its edges cannot be ruled out");
+  } else {
+    headGapMs = r2(meta.length ? meta[0].ts - win.startedAt : win.stoppedAt - win.startedAt);
+    tailGapMs = r2(meta.length ? win.stoppedAt - meta[meta.length - 1].ts : win.stoppedAt - win.startedAt);
+    if (headGapMs > T.MAX_EDGE_GAP_MS) lost.push(`no frame for the first ${headGapMs} ms of the recording`);
+    if (tailGapMs > T.MAX_EDGE_GAP_MS) lost.push(`no frame for the last ${tailGapMs} ms of the recording`);
+    if (win.skipped > 0) lost.push(`${win.skipped} frame(s) the hook could not record`);
+    if (win.hookErrors > 0) lost.push(`${win.hookErrors} hook error(s)`);
+  }
+  const ok = rateOk && lost.length === 0;
   return {
     frames: meta.length,
     durationMs: r2(meta.length ? meta[meta.length - 1].ts - meta[0].ts : 0),
+    windowMs: win && Number.isFinite(win.startedAt) && Number.isFinite(win.stoppedAt) ? r2(win.stoppedAt - win.startedAt) : null,
+    headGapMs,
+    tailGapMs,
     medianDtMs: r2(med),
     maxDtMs: r2(dts.length ? Math.max(...dts) : null),
     gapsOver50ms: gaps,
     fps: r2(med ? 1000 / med : null),
     oneSceneFramePerCapture: renderedEvery,
+    lost,
     ok,
+    why: ok ? "" : [...(rateOk ? [] : [`below the frame-rate bar (${meta.length} frames, median ${r2(med)} ms, ${gaps} gaps over ${T.MAX_GAP_MS} ms)`]), ...lost].join("; "),
   };
 }
 
-export function analyseMotion(seq, meta, L, w, h, tier) {
+export function analyseMotion(seq, meta, L, w, h, tier, win) {
   const n = w * h;
   const cd = camDeltaSeries(meta);
   const diffs = [null];
@@ -911,7 +1167,7 @@ export function analyseMotion(seq, meta, L, w, h, tier) {
     sequence: seq.id,
     tier,
     what: seq.what,
-    density: density(meta),
+    density: density(meta, win),
     tiersSeen: [...new Set(meta.map((f) => f.quality))],
     tierHeld: tierHeldBy(meta, tier),
     cameraFramesMoving: cd.filter((x) => x > T.STILL_PX).length,
@@ -1108,10 +1364,10 @@ export function aoLogEntry(x) {
 
 /** Pure: the fade in one recorded sequence. Exported so its rules are pinned by known answers
  *  (src/fabric3d/stepdown.fadehold.test.ts), including on the recorded 2026-09-26 failure. */
-export function analyseFade(seq, meta, L, w, h) {
+export function analyseFade(seq, meta, L, w, h, win) {
   const n = w * h;
   const firstPresent = meta.findIndex((f) => f.fade);
-  if (firstPresent < 0) return { sequence: seq.id, established: false, why: "the tier-fade overlay never appeared", density: density(meta) };
+  if (firstPresent < 0) return { sequence: seq.id, established: false, why: "the tier-fade overlay never appeared", density: density(meta, win) };
   let start = -1;
   for (let t = firstPresent; t < meta.length; t++) {
     if (meta[t].fade && meta[t].fade.opacity < 0.995) {
@@ -1132,7 +1388,7 @@ export function analyseFade(seq, meta, L, w, h) {
     opacity: f.fade ? r2(f.fade.opacity) : null,
     quality: f.quality,
   }));
-  if (start < 0 || end < 0) return { sequence: seq.id, established: false, why: `fade ${start < 0 ? "never started" : "never finished"} in the recorded window`, trace, density: density(meta) };
+  if (start < 0 || end < 0) return { sequence: seq.id, established: false, why: `fade ${start < 0 ? "never started" : "never finished"} in the recorded window`, trace, density: density(meta, win) };
   let maxStep = 0;
   let maxStepFrame = -1;
   const op = (t) => (meta[t].fade ? meta[t].fade.opacity : 0);
@@ -1209,7 +1465,7 @@ export function analyseFade(seq, meta, L, w, h) {
   return {
     sequence: seq.id,
     established: true,
-    density: density(meta),
+    density: density(meta, win),
     overlayAppearedFrame: firstPresent,
     holdMs: r2(meta[start].ts - meta[firstPresent].ts),
     fadeStartFrame: start,
@@ -1278,6 +1534,129 @@ export function stalledFadeVerdict(tag, f) {
   if (f.stallDtMs === null || f.stallDtMs === undefined || f.stallDtMs < floor)
     return { established: false, why: `the frame after the injected stall lasted ${f.stallDtMs} ms (bar: at least ${floor}): no stall landed`, fails: [] };
   return { established: true, why: "", fails: fadeFailures(tag, f) };
+}
+
+/** Pure: what one recorded fade contributes to its verdict item (C5-R2-3). A fade is evidence only if
+ *  its recording lost no frames (`density`, judged against the window): otherwise it is NOT
+ *  established — the item is UNPROVEN, never PASS — while any failure it did record still counts,
+ *  because a cut that was seen is a cut. `stalled` applies the injected-stall rule on top. */
+export function fadeEvidence(tag, f, { stalled = false } = {}) {
+  const base = stalled ? stalledFadeVerdict(tag, f) : { established: f.established, why: f.why ?? "", fails: fadeFailures(tag, f) };
+  if (!f.density || !f.density.ok) return { established: false, why: `frames lost or too sparse: ${f.density ? f.density.why : "no density recorded"}${base.established ? "" : `; ${base.why}`}`, fails: base.fails };
+  return base;
+}
+
+/** Pure: one handover sequence (T.HIDE_MS and after), from the recorded trace, its window and its
+ *  trigger. Pinned by known answers in src/fabric3d/stepdown.fadehold.test.ts. */
+export function analyseHandover(seq, meta, win, trig) {
+  const d = density(meta, win);
+  const out = { sequence: seq.id, established: false, notApplicable: false, why: "", density: d, trigger: trig, events: [], judgedEvents: 0, outcome: null, maxSameOverlayStep: 0, maxSameOverlayStepFrame: -1, returnStep: null, fails: [] };
+  const op = (t) => (meta[t].fade ? meta[t].fade.opacity : 0);
+  /* Every overlay that left while above 0.005 (the hook's in-page measure), and every frame within one
+     overlay element. Judged whether or not the sequence is established: a cut that was seen is a cut.
+     HOW each leave was judged (R4-VR1-3, verifier 2026-09-27: a sequence whose leave was never judged
+     counted as established): on pixels (`share` over at least FADE_MIN_CHANGED_PX); a REMOVAL on its
+     opacity too — a removal moves the screen by exactly its opacity's share of a removal, so one at or
+     under the cap passes and one above fails whatever the pixels; "not applicable" when a plain removal
+     would change fewer than FADE_MIN_CHANGED_PX pixels (no leave could show there); "unjudged" when the
+     hook could not measure it (it says why). Only a sequence whose every leave was judged is
+     established; one with a not-applicable leave is reported apart, never as a pass. */
+  const unjudged = [];
+  const inapplicable = [];
+  for (let t = 0; t < meta.length; t++) {
+    const h = meta[t].handover;
+    if (h) {
+      const judged = h.share !== null && h.share !== undefined && h.maskedPx >= T.FADE_MIN_CHANGED_PX;
+      const how = judged ? "pixels" : h.kind === "removed" ? "opacity" : h.why ? "unjudged" : "not applicable";
+      out.events.push({ frame: t, kind: h.kind, fromOpacity: r2(h.fromOpacity), share: h.share ?? null, maskedPx: h.maskedPx, judged, how, ...(h.why ? { why: h.why } : {}) });
+      if (how === "unjudged") unjudged.push(`frame ${t}: the overlay ${h.kind} at opacity ${r2(h.fromOpacity)} was not judged (${h.why})`);
+      if (how === "not applicable") inapplicable.push(`frame ${t}: ${h.kind} at opacity ${r2(h.fromOpacity)}, where a removal would change ${h.maskedPx} px (under ${T.FADE_MIN_CHANGED_PX})`);
+      if (judged) {
+        out.judgedEvents += 1;
+        if (h.share > T.FADE_MAX_STEP)
+          out.fails.push(`${seq.id}: frame ${t}, the running overlay (opacity ${r2(h.fromOpacity)}) was ${h.kind}: the screen moved ${h.share} of what removing it moves, over ${h.maskedPx} px (bar ${T.FADE_MAX_STEP})`);
+      }
+      if (h.kind === "removed" && h.fromOpacity > T.FADE_MAX_STEP + T.FADE_STEP_EPS)
+        out.fails.push(`${seq.id}: frame ${t}, the overlay was removed at opacity ${r2(h.fromOpacity)} (a removal above ${T.FADE_MAX_STEP} is a cut, whatever the pixels)`);
+    }
+    if (t > 0 && meta[t].fade && meta[t - 1].fade && meta[t].fade.id === meta[t - 1].fade.id) {
+      const s = Math.abs(op(t - 1) - op(t));
+      if (s > out.maxSameOverlayStep) {
+        out.maxSameOverlayStep = s;
+        out.maxSameOverlayStepFrame = t;
+      }
+      if (s > T.FADE_MAX_STEP + T.FADE_STEP_EPS) out.fails.push(`${seq.id}: frame ${t}, one overlay's opacity moved ${r2(s)} in one frame (a ${r2(meta[t].ts - meta[t - 1].ts)} ms frame; bar ${T.FADE_MAX_STEP})`);
+    }
+  }
+  out.maxSameOverlayStep = r2(out.maxSameOverlayStep);
+  if (trig && trig.returnedAt !== null && trig.returnedAt !== undefined && trig.returnedAt > 0 && trig.returnedAt < meta.length) {
+    const t = trig.returnedAt;
+    out.returnStep = { frame: t, dtMs: r2(meta[t].ts - meta[t - 1].ts), step: meta[t].fade && meta[t - 1].fade && meta[t].fade.id === meta[t - 1].fade.id ? r2(Math.abs(op(t - 1) - op(t))) : null };
+  }
+  const notEst = [];
+  if (!d.ok) notEst.push(`frames lost or too sparse: ${d.why}`);
+  if (!trig || trig.firedAt === null || trig.firedAt === undefined) notEst.push(`the trigger never fired (no overlay frame under ${trig ? trig.below : "?"})`);
+  else {
+    if (trig.hideMs > 0 && (trig.returnedAt === null || trig.returnedAt === undefined)) notEst.push("the hidden tab never returned in the recorded window");
+    if (trig.appliedAt === null || trig.appliedAt === undefined) notEst.push("the tier change was never applied");
+    else {
+      /* What the tier change did to the overlay on screen: replaced it (an event on the next frame),
+         removed it, or kept it (the same element carried on). */
+      const next = trig.appliedAt + 1;
+      const ev = out.events.find((e) => e.frame === next);
+      if (next >= meta.length) notEst.push("no frame was recorded after the tier change");
+      else if (ev) out.outcome = ev.kind;
+      else if (meta[next].fade && meta[trig.appliedAt].fade && meta[next].fade.id === meta[trig.appliedAt].fade.id) out.outcome = "kept";
+      else out.outcome = "none";
+    }
+  }
+  if (meta.length === 0 || meta[meta.length - 1].fade) notEst.push("the fade never finished in the recorded window");
+  notEst.push(...unjudged);
+  out.notApplicable = notEst.length === 0 && inapplicable.length > 0;
+  out.established = notEst.length === 0 && inapplicable.length === 0;
+  out.why = out.notApplicable ? `not applicable: ${inapplicable.join("; ")}` : notEst.join("; ");
+  return out;
+}
+
+/** Pure: the handover item's verdict over every leg (pinned by known answers alongside analyseHandover).
+ *  It is established only when every (theme x sequence) was recorded and is either established or not
+ *  applicable, and every sequence was established in at least one theme: a path judged nowhere is not
+ *  proven by the themes where nothing could show. */
+export function handoverItem(legs, themes, sequenceIds, legProblems) {
+  const fails = [];
+  const notEst = [];
+  const notApplicable = [];
+  const outcomes = [];
+  let judged = 0;
+  let judgedLeaves = 0;
+  const judgedIn = new Map(sequenceIds.map((id) => [id, []]));
+  for (const theme of themes) {
+    const leg = legs.find((l) => l.theme === theme && Array.isArray(l.handovers));
+    for (const id of sequenceIds) {
+      const hv = (leg?.handovers ?? []).find((h) => h.sequence === id);
+      if (!hv) {
+        notEst.push(`${theme}/${id}: not recorded`);
+        continue;
+      }
+      for (const m of hv.fails) fails.push(`${theme}/${m}`);
+      judgedLeaves += hv.events.filter((e) => e.how === "pixels" || e.how === "opacity").length;
+      outcomes.push(`${theme}/${id}: ${hv.outcome}`);
+      if (hv.established) {
+        judged++;
+        judgedIn.get(id).push(theme);
+      } else if (hv.notApplicable) notApplicable.push(`${theme}/${id}: ${hv.why}`);
+      else notEst.push(`${theme}/${id}: ${hv.why}`);
+    }
+  }
+  const nowhere = sequenceIds.filter((id) => judgedIn.get(id).length === 0);
+  const total = themes.length * sequenceIds.length;
+  const established = notEst.length === 0 && nowhere.length === 0 && legProblems.length === 0;
+  const why =
+    `judged ${judged} of ${total} handover sequences (${themes.length} themes x ${sequenceIds.length}); outcomes ${outcomes.join(", ")}; ${judgedLeaves} overlay leave(s) judged` +
+    `${notApplicable.length ? `; not applicable (no leave could show there): ${notApplicable.join("; ")}` : ""}` +
+    `${nowhere.length ? `; judged in no theme: ${nowhere.join(", ")}` : ""}` +
+    `${notEst.length ? `; not established: ${notEst.join("; ")}` : ""}`;
+  return { fails, established, why, judged, total };
 }
 
 /* ── evidence images for the worst frames ─────────────────────────────────────────────────────── */
@@ -1400,12 +1779,12 @@ async function main() {
       const ids = env.ids;
       console.log(`leg ${theme}/${tier}: tier ${leg.pin.quality} (pinned: ${leg.pin.qualityAuto === false}), canvas ${env.canvas.w}x${env.canvas.h}, ${ids.length} anchors, ${env.renderer}`);
 
-      for (const seq of SEQUENCES) {
+      for (const seq of ONLY_HANDOVER ? [] : SEQUENCES) {
         await awaitSettled(page);
         const dir = resolve(OUT, theme, tier, seq.id);
-        const { meta, frames, rgbaFrames, hookErrors } = await record(page, ids, seq.id, seq.run, box, dir, { keepRgba: true });
+        const { meta, frames, rgbaFrames, hookErrors, win } = await record(page, ids, seq.id, seq.run, box, dir, { keepRgba: true });
         const w = meta[0]?.w, h = meta[0]?.h;
-        const a = analyseMotion(seq, meta, frames, w, h, tier);
+        const a = analyseMotion(seq, meta, frames, w, h, tier, win);
         a.hookErrors = hookErrors;
         a.dir = dir;
         a.labelIds = ids;
@@ -1446,12 +1825,12 @@ async function main() {
            Each direction is therefore recorded FADE_REPEATS times with the pixel copy ON (composite
            evidence) and FADE_REPEATS times with it OFF (opacity trace only): a stall that appears with
            the copy off is the product's, not the harness's. */
-        for (let rep = 0; rep < FADE_REPEATS; rep++) for (const copy of [true, false]) for (const seq of FADE_SEQUENCES) {
+        for (let rep = 0; rep < (ONLY_HANDOVER ? 0 : FADE_REPEATS); rep++) for (const copy of [true, false]) for (const seq of FADE_SEQUENCES) {
           await awaitSettled(page);
           const tag = `${seq.id}-r${rep + 1}-${copy ? "copy" : "nocopy"}`;
           const dir = resolve(OUT, theme, "fade", tag);
-          const { meta, frames } = await record(page, ids, seq.id, seq.run, box, dir, { copy });
-          const f = analyseFade(seq, meta, frames, meta[0].w, meta[0].h);
+          const { meta, frames, win } = await record(page, ids, seq.id, seq.run, box, dir, { copy });
+          const f = analyseFade(seq, meta, frames, meta[0]?.w, meta[0]?.h, win);
           f.dir = copy ? dir : null;
           f.copy = copy;
           f.rep = rep + 1;
@@ -1464,18 +1843,31 @@ async function main() {
         /* THE INJECTED STALL (T.FADE_STALL_MS): one fade per direction with a FADE_STALL_MS main-thread
            block on the first frame the overlay leaves 1. Copy off (the opacity trace is the evidence).
            Judged by the same per-frame bar, as its own item; not part of the 24 above. */
-        for (const seq of FADE_SEQUENCES) {
+        for (const seq of ONLY_HANDOVER ? [] : FADE_SEQUENCES) {
           await awaitSettled(page);
           const tag = `${seq.id}-stalled`;
           const dir = resolve(OUT, theme, "fade", tag);
-          const { meta, frames, stalledAt } = await record(page, ids, seq.id, seq.run, box, dir, { copy: false, stallMs: T.FADE_STALL_MS });
-          const f = analyseFade(seq, meta, frames, meta[0].w, meta[0].h);
+          const { meta, frames, stalledAt, win } = await record(page, ids, seq.id, seq.run, box, dir, { copy: false, stallMs: T.FADE_STALL_MS });
+          const f = analyseFade(seq, meta, frames, meta[0]?.w, meta[0]?.h, win);
           f.copy = false;
           f.tag = tag;
           f.stalledAtFrame = stalledAt;
           f.stallDtMs = stalledAt !== null && stalledAt + 1 < meta.length ? r2(meta[stalledAt + 1].ts - meta[stalledAt].ts) : null;
           leg.stalledFades = [...(leg.stalledFades ?? []), f];
           console.log(`  ${tag}: stall injected after frame ${stalledAt} (next frame ${f.stallDtMs} ms); ${f.established ? `fade ${f.fadeMs} ms over ${f.framesInFade} frames, max opacity step ${f.maxOpacityStep} @${f.maxOpacityStepFrame} (${f.maxOpacityStepDtMs} ms frame)` : "NOT ESTABLISHED: " + f.why}`);
+        }
+        /* THE HANDOVER (T.HIDE_MS and after): a tier change mid-hold, mid-fade, and on the first frame
+           back from a hidden tab. Copy off: the in-page leave measure is the pixel evidence. */
+        for (const seq of HANDOVER_SEQUENCES) {
+          await awaitSettled(page);
+          const { meta, win, trig } = await record(page, ids, seq.id, seq.run, box, resolve(OUT, theme, "handover", seq.id), { copy: false, trigger: seq.trigger });
+          const hv = analyseHandover(seq, meta, win, trig);
+          leg.handovers = [...(leg.handovers ?? []), hv];
+          console.log(
+            `  ${seq.id}: trigger at frame ${trig?.firedAt} (opacity ${r2(trig?.firedOpacity)})${trig?.hideMs ? `, hidden ${trig.hideMs} ms, back at frame ${trig.returnedAt}` : ""}, tier change at frame ${trig?.appliedAt} -> ${hv.outcome}; ` +
+              `leaves ${JSON.stringify(hv.events.map((e) => `${e.kind}@${e.frame} from ${e.fromOpacity}: ${e.judged ? `share ${e.share} over ${e.maskedPx} px` : `${e.how} (${e.why ?? `${e.maskedPx} px`})`}`))}, ` +
+              `largest one-overlay step ${hv.maxSameOverlayStep} @${hv.maxSameOverlayStepFrame}${hv.returnStep ? `, first frame back ${hv.returnStep.dtMs} ms moved ${hv.returnStep.step}` : ""}${hv.established ? "" : hv.notApplicable ? "; NOT APPLICABLE: " + hv.why : "; NOT ESTABLISHED: " + hv.why}`,
+          );
         }
       }
       leg.pageErrors = errors.slice(0, 5);
@@ -1533,12 +1925,19 @@ async function main() {
   let maxStepSeen = 0;
   const compositeJudgedTags = [];
   const compositeNotJudged = new Map();
+  const fadeNotEst = [];
   for (const l of legs) {
     for (const f of l.fades) {
-      if (!f.established) continue;
+      /* fadeEvidence: a fade whose recording lost frames is not established (UNPROVEN), and a failure
+         it did record still counts (C5-R2-3). */
+      const ev = fadeEvidence(`${l.theme}/${f.tag}`, f);
+      for (const m of ev.fails) fadeFails.push(m);
+      if (!ev.established) {
+        fadeNotEst.push(`${l.theme}/${f.tag}: ${ev.why}`);
+        continue;
+      }
       fadesEstablished++;
       maxStepSeen = Math.max(maxStepSeen, f.maxOpacityStepRaw);
-      for (const m of fadeFailures(`${l.theme}/${f.tag}`, f)) fadeFails.push(m);
       if (f.compositeJudged) compositeJudgedTags.push(`${l.theme}/${f.tag}`);
       else {
         const why = f.copy ? `${l.theme}: ${f.compositeWhy}` : "copy-off control (no pixels by design)";
@@ -1546,23 +1945,29 @@ async function main() {
       }
     }
   }
-  const fadeNotEst = legs.flatMap((l) => l.fades.filter((f) => !f.established).map((f) => `${l.theme}/${f.tag}: ${f.why}`));
   const stallFails = [];
   let stallsEstablished = 0;
   const stallNotEst = [];
   for (const l of legs) {
     for (const f of l.stalledFades ?? []) {
-      /* Established only if the stall LANDED (a long frame followed it), then held to every fade rule,
-         the catch-up duration rule included (stalledFadeVerdict). */
-      const v = stalledFadeVerdict(`${l.theme}/${f.tag}`, f);
+      /* Established only if the recording lost no frames and the stall LANDED (a long frame followed
+         it), then held to every fade rule, the catch-up duration rule included (stalledFadeVerdict). */
+      const v = fadeEvidence(`${l.theme}/${f.tag}`, f, { stalled: true });
+      for (const m of v.fails) stallFails.push(`${m} (stall injected after frame ${f.stalledAtFrame}, next frame ${f.stallDtMs} ms)`);
       if (!v.established) {
         stallNotEst.push(`${l.theme}/${f.tag}: ${v.why}`);
         continue;
       }
       stallsEstablished++;
-      for (const m of v.fails) stallFails.push(`${m} (stall injected after frame ${f.stalledAtFrame}, next frame ${f.stallDtMs} ms)`);
     }
   }
+  /* THE HANDOVER (T.HIDE_MS and after): see handoverItem. */
+  const handover = handoverItem(
+    legs,
+    THEMES,
+    HANDOVER_SEQUENCES.map((h) => h.id),
+    legProblems,
+  );
   const stallExtended = legs.flatMap((l) =>
     l.fades.filter((f) => f.established && f.stallExtended).map((f) => `${l.theme}/${f.tag} ${f.fadeMs} ms (host frames ${f.hostStallFrames.map((s) => s.dtMs).join("/")} ms)`),
   );
@@ -1577,6 +1982,11 @@ async function main() {
     "LOD / effect / label popping": verdict(popFails, popStill >= 100 && notDense.length === 0 && legProblems.length === 0, `${popStill} still frame pairs + every motion frame + per-frame label visibility judged`),
     "AO drop and restore at camera stop (high tier)": verdict(aoFails, aoRestores >= 4 && aoUnjudged.length === 0 && notDense.length === 0 && legProblems.length === 0, `${aoRestores} restores observed at the high tier${aoUnjudged.length ? "; not judged: " + aoUnjudged.join("; ") : ""}`),
     [`${TIER_FADE_MS} ms quality-tier cross-fade (under ${C6_BAR_MS} ms on ordinary host frames, a stalled one catching up at the cap; at most ${T.FADE_MAX_STEP} opacity per frame)`]: verdict(fadeFails, fadesEstablished === THEMES.length * 2 * 2 * FADE_REPEATS && fadeNotEst.length === 0 && legProblems.length === 0, `${fadesEstablished} of ${THEMES.length * 2 * 2 * FADE_REPEATS} fades (2 themes x 2 directions x ${FADE_REPEATS} repeats x copy on/off) established, per-frame opacity step measured on every one (largest ${r2(maxStepSeen)}); duration under ${C6_BAR_MS} ms on ${fadesEstablished - stallExtended.length}, stall-extended and judged on catch-up at the full cap: ${stallExtended.length}${stallExtended.length ? ` (${stallExtended.join("; ")})` : ""}; ${compositeSummary}${fadeNotEst.length ? "; " + fadeNotEst.join("; ") : ""}`),
+    [`a running tier cross-fade is handed over, never cut: a tier change mid-hold, mid-fade, and on the first frame back from a ${T.HIDE_MS} ms hidden tab (at most ${T.FADE_MAX_STEP} of a removal's change per frame)`]: verdict(
+      handover.fails,
+      handover.established,
+      handover.why,
+    ),
     [`tier cross-fade under an injected ${T.FADE_STALL_MS} ms stall (at most ${T.FADE_MAX_STEP} opacity per frame)`]: verdict(stallFails, stallsEstablished === THEMES.length * 2 && stallNotEst.length === 0 && legProblems.length === 0, `${stallsEstablished} of ${THEMES.length * 2} stalled fades (2 themes x 2 directions) established (each stall landed: next frame at least ${r2(T.FADE_STALL_MS - FRAME_60_MS)} ms), held to the step bar and the catch-up duration rule${stallNotEst.length ? "; " + stallNotEst.join("; ") : ""}`),
   };
 

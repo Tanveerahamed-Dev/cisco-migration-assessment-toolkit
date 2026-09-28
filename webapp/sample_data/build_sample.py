@@ -333,37 +333,55 @@ def build_collections() -> dict:
 # collected host owns, and the dist pair has no running-config: every trace stops after one hop.
 # The substrate turns the EXISTING dist1 Gi1/0/3 <-> core1 Gi1/0/40 cable into a routed /30 transit
 # (10.0.140.0/30, OSPF point-to-point), gives dist1/dist2 their routing tables, OSPF adjacencies and a
-# hardened running-config, and collects EIGRP/BGP on the dist pair as the EMPTY output of switches
-# that do not run them. It deliberately does NOT fabricate EIGRP/BGP adjacencies: a neighbor table
-# that was captured and is empty is itself the evidence that the family teaches no routes there.
-# core1 keeps its configured `router bgp 65001` as one Established upstream peer (RFC 5737) that has
-# sent no prefixes — its table holds no BGP route, and the two captures agree. The peer is eBGP
-# multihop to the upstream behind core1's existing default next hop (10.0.10.254), with the static
-# /32 that makes it reachable, so the session has a route under it.
+# hardened running-config, and collects EIGRP/BGP on the dist pair as the output of switches that do
+# not run them. It deliberately does NOT fabricate EIGRP/BGP adjacencies:
+#   * `show ip eigrp neighbors` with no EIGRP AS configured prints nothing — a neighbor table captured
+#     and empty (protocol_assessability -> captured_empty);
+#   * `show ip bgp summary` with no `router bgp` prints IOS's no-process banner, `% BGP not active`
+#     — NOT empty output (2026-09-27 refuter X3: the earlier empty capture was shaped to the consumer,
+#     not taken from what a device emits). The engine reads that exact banner as its own `not_running`
+#     assessability state (cisco_toolkit/analyze.py; cluster R1), positive evidence of no BGP process.
+# core1 keeps its configured `router bgp 65001` as one Established upstream peer that has sent no
+# prefixes — its table holds no BGP route, and the two captures agree. The peer is the upstream core1
+# already defaults to (10.0.10.254 on Vlan10): a directly connected single-hop eBGP session, so the
+# route under it is CONNECTED and survives the engine's route scoping (scope_routes keeps every
+# connected route). An earlier multihop peer behind a static /32 was reached, on the snapshot Atlas
+# Scope reads, only by the default route: scoping dropped the /32 (2026-09-27 verifier, E2R2-V2).
 #
 # The routes each table holds are the ones the configuration beside it would originate: core1 puts
-# only the Gi1/0/40 transit in area 0 and brings its user/voice/server VLANs into OSPF with its
-# existing `redistribute connected`, so dist1/dist2 hold them as `O E2`, and the dists' `O*E2`
-# default exists because core1 now carries `default-information originate` (it has a static default).
-# The new dist running-configs end with `end`, as a real IOS dump does, so the engine's capture-
-# integrity guard reads them as whole (core1's keeps the fixture's no-`end` convention).
+# the Gi1/0/40 transit and the inter-core transit SVI in area 0 and brings its user/voice/server VLANs
+# into OSPF with its existing `redistribute connected`, so dist1/dist2 hold them as `O E2`, and the
+# dists' `O*E2` default exists because core1 now carries `default-information originate` (it has a
+# static default). The new dist running-configs end with `end`, as a real IOS dump does, so the
+# engine's capture-integrity guard reads them as whole (core1's keeps the fixture's no-`end` convention).
 #
-# One contradiction is deliberately NOT resolved: core1's FULL/DR OSPF neighbour 10.0.99.2 on the L2
-# trunk Port-channel1, whose link core1's table does not hold. It is the fixture's B1 seed (Atlas
-# Scope's rib-partial-route.test.ts pins that core1's table stays incomplete because of it); giving
-# core1 OSPF routes from dist1 does not account for that session, and must not be read as if it did.
+# core1's FULL/DR OSPF neighbour core2 (router ID 10.0.99.2) used to sit on the L2 trunk
+# Port-channel1 — an adjacency that cannot form there, and whose link core1's table did not hold (the
+# fixture's B1 seed). Owner decision O2 gives that session a realistic L3 home: a transit SVI, VLAN 900
+# `CORE-TRANSIT` (10.0.199.0/30, core1 .1 / core2 .2), carried by the existing Po1 trunk on both sides
+# so the cores stay L2-adjacent for their HSRP groups (untouched). Both cores' tables hold the transit
+# as connected + local; core2 — which collects no neighbour table, so its OSPF stays not_collected —
+# holds what core1 originates into OSPF, learned over that SVI. core2's `show ip route` keeps the
+# fixture's own line convention (IOS-style code lines under the NX-OS header) so its existing entries
+# are unchanged. A two-router transit segment carries no FHRP group.
 #
 # Every CDP capture is left byte-identical, including the deliberately disputed core1 Gi1/0/40 that
 # both access16 and dist1 claim; so the cable map, move groups, wave sequencing and failure impact
-# are unchanged. Only deep copies are edited: tests/synthetic_fixtures.py (the golden's source) is not.
+# are unchanged (the cores were already one move group through VLAN 10/20). Only deep copies are
+# edited: tests/synthetic_fixtures.py (the golden's source) is not.
 # --------------------------------------------------------------------------- #
 _ROUTE_CODES = ("Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP\n"
                 "       D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area\n"
                 "       E1 - OSPF external type 1, E2 - OSPF external type 2\n")
 _OSPF_NEIGHBOR_HDR = "Neighbor ID     Pri   State           Dead Time   Address         Interface\n"
-# `show ip eigrp neighbors` / `show ip bgp summary` on a switch with no EIGRP AS / no BGP process
-# configured: the capture exists and holds nothing (protocol_assessability -> captured_empty).
-_NOT_RUNNING = ""
+# `show ip eigrp neighbors` on a switch with no EIGRP AS configured: the capture exists and holds
+# nothing (protocol_assessability -> captured_empty).
+_NO_EIGRP_AS = ""
+# `show ip bgp summary` on IOS/IOS-XE with no `router bgp`: the no-process banner.
+_NO_BGP_PROCESS = "% BGP not active\n"
+# The inter-core transit (owner decision O2).
+_TRANSIT_VLAN = 900
+_CORE1_TRANSIT, _CORE2_TRANSIT = "10.0.199.1", "10.0.199.2"
 
 
 def _replace_once(text: str, old: str, new: str) -> str:
@@ -416,7 +434,7 @@ def _add_forwarding_substrate(cols: dict) -> dict:
     c1["show ip route"] = _replace_once(
         c1["show ip route"],
         "      10.0.0.0/8 is variably subnetted, 8 subnets, 3 masks\n",
-        "      10.0.0.0/8 is variably subnetted, 12 subnets, 4 masks\n")
+        "      10.0.0.0/8 is variably subnetted, 14 subnets, 4 masks\n")
     c1["show ip route"] = _replace_once(
         c1["show ip route"],
         "L        10.0.30.1/32 is directly connected, Vlan30\n",
@@ -424,11 +442,14 @@ def _add_forwarding_substrate(cols: dict) -> dict:
         "O        10.0.40.0/24 [110/2] via 10.0.140.2, 00:12:04, GigabitEthernet1/0/40\n"
         "O        10.0.41.0/24 [110/2] via 10.0.140.2, 00:12:04, GigabitEthernet1/0/40\n"
         "C        10.0.140.0/30 is directly connected, GigabitEthernet1/0/40\n"
-        "L        10.0.140.1/32 is directly connected, GigabitEthernet1/0/40\n")
+        "L        10.0.140.1/32 is directly connected, GigabitEthernet1/0/40\n"
+        f"C        10.0.199.0/30 is directly connected, Vlan{_TRANSIT_VLAN}\n"
+        f"L        {_CORE1_TRANSIT}/32 is directly connected, Vlan{_TRANSIT_VLAN}\n")
     c1["show ip ospf neighbor"] += (
         "10.0.99.50        0   FULL/  -        00:00:38    10.0.140.2      GigabitEthernet1/0/40\n")
     c1["show ip interface brief"] += (
-        "GigabitEthernet1/0/40  10.0.140.1      YES NVRAM  up                    up\n")
+        "GigabitEthernet1/0/40  10.0.140.1      YES NVRAM  up                    up\n"
+        f"Vlan{_TRANSIT_VLAN}                {_CORE1_TRANSIT}      YES NVRAM  up                    up\n")
     # core1 has a static default, and the dists' O*E2 default says core1 originates it into OSPF.
     c1["show running-config"] = _replace_once(
         c1["show running-config"],
@@ -436,28 +457,72 @@ def _add_forwarding_substrate(cols: dict) -> dict:
         "router ospf 1\n redistribute bgp 65001 subnets\n redistribute connected\n default-information originate\n")
     # The configured `router bgp 65001` gets its one upstream peer: Established, no prefixes received
     # (core1 advertises the campus and keeps its static default), so the table rightly holds no B route.
-    # The peer sits behind core1's existing upstream next hop (10.0.10.254): eBGP multihop, reached by a
-    # static /32 — so the table holds a route under the session (not only the default).
+    # The peer is the upstream core1 already defaults to, on its connected Vlan10 subnet (single hop).
     c1["show running-config"] = _replace_once(
         c1["show running-config"],
         "router bgp 65001\n",
-        "router bgp 65001\n neighbor 203.0.113.1 remote-as 64500\n neighbor 203.0.113.1 ebgp-multihop 2\n")
-    c1["show running-config"] = _replace_once(
-        c1["show running-config"],
-        " redistribute ospf 1 route-map OSPF_TO_BGP\n!\n",
-        " redistribute ospf 1 route-map OSPF_TO_BGP\n!\nip route 203.0.113.1 255.255.255.255 10.0.10.254\n!\n")
-    c1["show ip route"] = _replace_once(
-        c1["show ip route"],
-        "S      192.168.99.0/24 [1/0] via 10.0.10.254\n",
-        "S      192.168.99.0/24 [1/0] via 10.0.10.254\n"
-        "      203.0.113.0/32 is subnetted, 1 subnets\n"
-        "S        203.0.113.1 [1/0] via 10.0.10.254\n")
+        "router bgp 65001\n neighbor 10.0.10.254 remote-as 64500\n")
     c1["show ip bgp summary"] = (
         "BGP router identifier 10.0.99.1, local AS number 65001\n"
         "BGP table version is 7, main routing table version 7\n\n"
         "Neighbor        V           AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
-        "203.0.113.1     4        64500     120     118        7    0    0 01:02:03        0\n")
-    c1["show ip eigrp neighbors"] = _NOT_RUNNING       # no `router eigrp` in core1's configuration
+        "10.0.10.254     4        64500     120     118        7    0    0 01:02:03        0\n")
+    c1["show ip eigrp neighbors"] = _NO_EIGRP_AS       # no `router eigrp` in core1's configuration
+
+    # ---- core1 <-> core2: the inter-core OSPF session moves off the L2 trunk Po1 onto a transit SVI
+    # that Po1 carries (owner decision O2). Same neighbour (router ID 10.0.99.2), same FULL/DR state.
+    c1["show ip ospf neighbor"] = _replace_once(
+        c1["show ip ospf neighbor"],
+        "10.0.99.2         1   FULL/DR         00:00:35    10.0.99.2       Port-channel1\n",
+        f"10.0.99.2         1   FULL/DR         00:00:35    {_CORE2_TRANSIT}      Vlan{_TRANSIT_VLAN}\n")
+    c1["show running-config | section ^interface"] += (
+        f"interface Vlan{_TRANSIT_VLAN}\n description CORE-TRANSIT\n"
+        f" ip address {_CORE1_TRANSIT} 255.255.255.252\n ip ospf 1 area 0\n")
+    c1["show interfaces trunk"] = _replace_once(
+        c1["show interfaces trunk"], "Po1         10,20,30\n", f"Po1         10,20,30,{_TRANSIT_VLAN}\n")
+    c1["show interfaces switchport"] = _replace_once(
+        c1["show interfaces switchport"],
+        "Name: Po1\nSwitchport: Enabled\nAdministrative Mode: trunk\nOperational Mode: trunk\n"
+        "Access Mode VLAN: 1 (default)\nTrunking Native Mode VLAN: 1 (default)\nTrunking VLANs Enabled: 10,20,30\n",
+        "Name: Po1\nSwitchport: Enabled\nAdministrative Mode: trunk\nOperational Mode: trunk\n"
+        "Access Mode VLAN: 1 (default)\nTrunking Native Mode VLAN: 1 (default)\n"
+        f"Trunking VLANs Enabled: 10,20,30,{_TRANSIT_VLAN}\n")
+    c1["show vlan brief"] = _replace_once(
+        c1["show vlan brief"],
+        "30   SERVERS                          active\n",
+        "30   SERVERS                          active\n"
+        f"{_TRANSIT_VLAN}  CORE-TRANSIT                     active\n")
+
+    c2 = cols["core2"][1]
+    c2["show running-config interface"] += (
+        f"interface Vlan{_TRANSIT_VLAN}\n  description CORE-TRANSIT\n"
+        f"  ip address {_CORE2_TRANSIT}/30\n  ip router ospf 1 area 0.0.0.0\n")
+    c2["show interface trunk"] = _replace_once(
+        c2["show interface trunk"], "Po1           10,20,30\n", f"Po1           10,20,30,{_TRANSIT_VLAN}\n")
+    c2["show interface switchport"] = _replace_once(
+        c2["show interface switchport"],
+        "  Trunking VLANs Allowed: 10,20,30\n", f"  Trunking VLANs Allowed: 10,20,30,{_TRANSIT_VLAN}\n")
+    c2["show vlan brief"] = _replace_once(
+        c2["show vlan brief"],
+        "20   VOICE                            active    Po1\n",
+        "20   VOICE                            active    Po1\n"
+        f"{_TRANSIT_VLAN}  CORE-TRANSIT                     active    Po1\n")
+    c2["show ip interface brief"] = _replace_once(
+        c2["show ip interface brief"],
+        "mgmt0                10.0.99.2       protocol-up/link-up/admin-up\n",
+        f"Vlan{_TRANSIT_VLAN}              {_CORE2_TRANSIT}      protocol-up/link-up/admin-up\n"
+        "mgmt0                10.0.99.2       protocol-up/link-up/admin-up\n")
+    # What core1 originates into OSPF, learned over the transit: its default and redistributed server
+    # VLAN (external type 2), the pod it learns from dist1 and the dist1 transit (intra-area). core2's
+    # own connected Vlan10/20 beat core1's redistributed copies (administrative distance).
+    c2["show ip route"] += (
+        f"O*E2 0.0.0.0/0 [110/1] via {_CORE1_TRANSIT}, 00:12:04, Vlan{_TRANSIT_VLAN}\n"
+        f"O E2 10.0.30.0/24 [110/20] via {_CORE1_TRANSIT}, 00:12:04, Vlan{_TRANSIT_VLAN}\n"
+        f"O    10.0.40.0/24 [110/3] via {_CORE1_TRANSIT}, 00:12:04, Vlan{_TRANSIT_VLAN}\n"
+        f"O    10.0.41.0/24 [110/3] via {_CORE1_TRANSIT}, 00:12:04, Vlan{_TRANSIT_VLAN}\n"
+        f"O    10.0.140.0/30 [110/2] via {_CORE1_TRANSIT}, 00:12:04, Vlan{_TRANSIT_VLAN}\n"
+        f"C    10.0.199.0/30 is directly connected, Vlan{_TRANSIT_VLAN}\n"
+        f"L    {_CORE2_TRANSIT}/32 is directly connected, Vlan{_TRANSIT_VLAN}\n")
 
     # ---- dist1: Gi1/0/3 goes from trunk to routed; OSPF to core1 (transit) and dist2 (Vlan40).
     d1 = cols["dist1"][1]
@@ -482,7 +547,7 @@ def _add_forwarding_substrate(cols: dict) -> dict:
         _ROUTE_CODES
         + "Gateway of last resort is 10.0.140.1 to network 0.0.0.0\n\n"
         "O*E2  0.0.0.0/0 [110/1] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
-        "      10.0.0.0/8 is variably subnetted, 9 subnets, 3 masks\n"
+        "      10.0.0.0/8 is variably subnetted, 10 subnets, 3 masks\n"
         "O E2     10.0.10.0/24 [110/20] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
         "O E2     10.0.20.0/24 [110/20] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
         "O E2     10.0.30.0/24 [110/20] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
@@ -491,13 +556,14 @@ def _add_forwarding_substrate(cols: dict) -> dict:
         "C        10.0.41.0/24 is directly connected, Vlan41\n"
         "L        10.0.41.2/32 is directly connected, Vlan41\n"
         "C        10.0.140.0/30 is directly connected, GigabitEthernet1/0/3\n"
-        "L        10.0.140.2/32 is directly connected, GigabitEthernet1/0/3\n")
+        "L        10.0.140.2/32 is directly connected, GigabitEthernet1/0/3\n"
+        "O        10.0.199.0/30 [110/2] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n")
     d1["show ip ospf neighbor"] = (
         _OSPF_NEIGHBOR_HDR
         + "10.0.99.1         0   FULL/  -        00:00:38    10.0.140.1      GigabitEthernet1/0/3\n"
         "10.0.99.51        1   FULL/BDR        00:00:35    10.0.40.3       Vlan40\n")
-    d1["show ip eigrp neighbors"] = _NOT_RUNNING
-    d1["show ip bgp summary"] = _NOT_RUNNING
+    d1["show ip eigrp neighbors"] = _NO_EIGRP_AS
+    d1["show ip bgp summary"] = _NO_BGP_PROCESS
     d1["show running-config"] = _dist_running_config(
         "dist1", "10.0.99.50", ("10.0.40.0 0.0.1.255", "10.0.140.0 0.0.0.3"), passive=("Vlan41",))
 
@@ -508,7 +574,7 @@ def _add_forwarding_substrate(cols: dict) -> dict:
         _ROUTE_CODES
         + "Gateway of last resort is 10.0.40.2 to network 0.0.0.0\n\n"
         "O*E2  0.0.0.0/0 [110/1] via 10.0.40.2, 00:12:04, Vlan40\n"
-        "      10.0.0.0/8 is variably subnetted, 8 subnets, 3 masks\n"
+        "      10.0.0.0/8 is variably subnetted, 9 subnets, 3 masks\n"
         "O E2     10.0.10.0/24 [110/20] via 10.0.40.2, 00:12:04, Vlan40\n"
         "O E2     10.0.20.0/24 [110/20] via 10.0.40.2, 00:12:04, Vlan40\n"
         "O E2     10.0.30.0/24 [110/20] via 10.0.40.2, 00:12:04, Vlan40\n"
@@ -516,12 +582,13 @@ def _add_forwarding_substrate(cols: dict) -> dict:
         "L        10.0.40.3/32 is directly connected, Vlan40\n"
         "C        10.0.41.0/24 is directly connected, Vlan41\n"
         "L        10.0.41.3/32 is directly connected, Vlan41\n"
-        "O        10.0.140.0/30 [110/2] via 10.0.40.2, 00:12:04, Vlan40\n")
+        "O        10.0.140.0/30 [110/2] via 10.0.40.2, 00:12:04, Vlan40\n"
+        "O        10.0.199.0/30 [110/3] via 10.0.40.2, 00:12:04, Vlan40\n")
     d2["show ip ospf neighbor"] = (
         _OSPF_NEIGHBOR_HDR
         + "10.0.99.50        1   FULL/DR         00:00:35    10.0.40.2       Vlan40\n")
-    d2["show ip eigrp neighbors"] = _NOT_RUNNING
-    d2["show ip bgp summary"] = _NOT_RUNNING
+    d2["show ip eigrp neighbors"] = _NO_EIGRP_AS
+    d2["show ip bgp summary"] = _NO_BGP_PROCESS
     d2["show running-config"] = _dist_running_config(
         "dist2", "10.0.99.51", ("10.0.40.0 0.0.1.255",), passive=("Vlan41",))
     return cols

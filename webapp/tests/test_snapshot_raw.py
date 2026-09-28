@@ -138,3 +138,34 @@ def test_raw_in_token_mode_requires_the_session_cookie(db_path, monkeypatch):
         ok = c.get(f"/api/snapshots/{sid}/raw")
         assert ok.status_code == 200
         assert ok.headers["x-snapshot-sha256"] == hashlib.sha256(ok.content).hexdigest()
+
+
+def test_a_scope_page_reads_raw_with_the_session_but_cannot_write_with_it(db_path, monkeypatch):
+    """Same-origin write containment, token mode. The session cookie a /scope page carries is the
+    same authority the AssessHub UI writes with, and the cross-site/CSRF guards pass a same-origin
+    request. A /scope page's requests carry a same-origin Referer (Referrer-Policy: same-origin on
+    every /scope response), and the /api guard refuses any non-GET request referred from /scope/ —
+    before authentication, so neither the cookie nor the Bearer token itself unlocks a write.
+    Defence in depth: the viewer has no write code; a hostile script could rewrite its Referer."""
+    monkeypatch.setenv("ASSESSHUB_TOKEN", "raw-secret")
+    scope_page = {"referer": "http://localhost/scope/snapshots/1/", "origin": "http://localhost",
+                  "sec-fetch-site": "same-origin"}
+    app = create_app(db_path=db_path, scope_dist_dir=None)
+    with TestClient(app, base_url="http://localhost") as c:
+        assert c.post("/api/demo/seed",
+                      headers={"Authorization": "Bearer raw-secret"}).status_code == 200
+        assert c.post("/api/session",
+                      headers={"Authorization": "Bearer raw-secret"}).status_code == 204
+        read = c.get("/api/snapshots/1/raw", headers=scope_page)
+        assert read.status_code == 200
+        assert read.headers["x-snapshot-sha256"] == hashlib.sha256(read.content).hexdigest()
+        for extra in ({}, {"Authorization": "Bearer raw-secret"}):
+            r = c.post("/api/campaigns", json={"name": "from scope"}, headers={**scope_page, **extra})
+            assert r.status_code == 403, (extra, r.status_code, r.text[:200])
+            assert "Atlas Scope" in r.json()["detail"]
+            assert c.delete("/api/snapshots/1", headers={**scope_page, **extra}).status_code == 403
+        assert c.get("/api/snapshots/1/raw").status_code == 200  # still there
+        # control: the same session writes when the request is not referred from /scope/
+        ui_page = {**scope_page, "referer": "http://localhost/campaigns"}
+        created = c.post("/api/campaigns", json={"name": "from the UI"}, headers=ui_page)
+        assert created.status_code == 201, created.text[:200]

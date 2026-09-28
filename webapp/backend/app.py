@@ -18,6 +18,7 @@ from html.parser import HTMLParser
 import json
 import mimetypes
 import os
+import posixpath
 import re
 import sqlite3
 import stat
@@ -105,14 +106,105 @@ _SCOPE_UNAVAILABLE_DETAIL = {
                      "not a /scope runtime-snapshot build (every asset must load from /scope/assets/ "
                      f"and index.html must declare <meta name=\"{_SCOPE_RUNTIME_SOURCE_META}\" "
                      f"content=\"{_SCOPE_RUNTIME_SOURCE_VALUE}\">), so it is not served.",
+    "refused_compiled_evidence": "Atlas Scope is withheld: its static build carries snapshot "
+                                 "evidence (a compiled snapshot model — a compiled source binding "
+                                 "or a compiled record's snapshot citation — or an engine snapshot "
+                                 "itself), so it would show that evidence instead of the snapshot "
+                                 "it is opened for. AssessHub serves only a build that carries no "
+                                 "compiled dataset at all and reads every snapshot at run time "
+                                 "from /api.",
+    "refused_uninspectable": "Atlas Scope is withheld: its static build carries content this "
+                             "server cannot inspect for snapshot evidence (a content encoding it "
+                             "does not decode, such as Brotli; a compressed stream that does not "
+                             "decode completely within the per-file bound; or a payload nested "
+                             "beyond the scan bound), so it cannot establish that the build "
+                             "carries no compiled dataset. Rebuild Atlas Scope without "
+                             "precompressed copies.",
     "refused_embeds_stored_snapshot": "Atlas Scope is withheld: its static build embeds the digest of "
-                                      "a stored snapshot, and /scope static files are served without "
-                                      "the /api access guard. Rebuild Atlas Scope without compiling "
+                                      "a stored snapshot. Rebuild Atlas Scope without compiling "
                                       "client evidence into it; it must read snapshots at run time "
                                       "from /api.",
 }
-_SCOPE_READY_DETAIL = ("Atlas Scope is built for this installation and reads the snapshot at run "
-                       "time from the guarded /api.")
+# What 'ready' establishes, and no more: the build DECLARES the runtime snapshot source and no file
+# in it carries a form of snapshot evidence this server recognises (_scope_file_carries_compiled_model).
+_SCOPE_READY_DETAIL = ("Atlas Scope is built for this installation: the build declares that it reads "
+                       "the snapshot at run time from the guarded /api, and no file in it carries a "
+                       "recognised compiled snapshot model or engine snapshot.")
+# PRIVACY BY CONSTRUCTION. /scope files are served outside the /api guard, so a servable build
+# carries NO compiled dataset: it reads every snapshot at run time from /api. The Atlas Scope
+# compiler (atlas-scope/tools/lib/compile-model.mjs, whose exported BINDING_KEYS lists every key a
+# source binding carries) writes the binding into the `meta` of EVERY file it emits, and these two
+# keys always carry literal values there — the digest form's name and the Git blob id. A file in
+# which BOTH are bound to string literals is a compiled model, whatever snapshot it came from and
+# whichever digest form it uses (the bundled sample included). The keys' mere NAMES are not the
+# signature: a runtime build bundles the compiler, which names every key, and labels its own
+# binding with a literal `sourceDigestForm`; only a compiled record binds `sourceGitBlob` to a
+# literal. webapp/tests/test_scope_mount.py pins the pair to BINDING_KEYS and to the compiler's
+# real output, so a rename there fails the suite instead of silently reopening the gap.
+_SCOPE_COMPILED_MODEL_SIGNATURE_KEYS = ("sourceDigestForm", "sourceGitBlob")
+# A key bound to a string literal in any form a build ships it: JSON ("k": "v"), a JSON document
+# escaped inside a JS string or a sourcemap (\"k\":\"v\"), or a bundler's object literal (k:`v`).
+_SCOPE_COMPILED_MODEL_SIGNATURE = tuple(
+    re.compile(rb"(?<![A-Za-z0-9_$])" + re.escape(key.encode("ascii"))
+               + rb"(?![A-Za-z0-9_$])\\*[\"'`]?\s*:\s*\\*[\"'`]")
+    for key in _SCOPE_COMPILED_MODEL_SIGNATURE_KEYS)
+# The binding lives only in each compiled file's `meta` ENVELOPE, which a bundler drops: Vite's JSON
+# plugin turns every top-level member into a named export, so `import { devices } from
+# "./fabric.json"` ships the device records with no `meta` at all (measured: a real Vite 8 build
+# carried compiled records and neither signature key). The compiler's per-RECORD contract survives
+# that: "Every record carries `cite`: a dotted path back into the snapshot" (compile-model.mjs), and
+# a citation is rooted at one of the snapshot sections the compiler reads (its exported
+# SECTIONS_READ). A compiled record is therefore recognised by a snapshot citation bound as DATA —
+# the value of a `cite`-named key (`cite`, `centralityCite`, ...) or an object key (the cite-keyed
+# maps) — as a complete string literal. The compiler's own code builds citations from template
+# literals (`interfaces.${host}.${port}`), which never match. Pinned to SECTIONS_READ and to the
+# compiler's real output, member by member, by webapp/tests/test_scope_mount.py.
+_SCOPE_SNAPSHOT_SECTIONS = (
+    "acl_line_reachability", "acls", "cable_map", "cross_layer", "devices", "endpoint_identity",
+    "failure_impact", "health_scores", "interfaces", "l3_forwarding", "link_centrality",
+    "object_groups", "overlay", "physical_health", "protocol_assessability", "protocol_health",
+    "punchlist", "routes", "routing_neighbors",
+)
+# An engine snapshot itself (the very file a client uploads) is evidence too: it binds `schema` to
+# the engine's snapshot schema family (the compiler's exported SUPPORTED_SCHEMAS, versions dropped).
+_SCOPE_SNAPSHOT_SCHEMA_FAMILIES = ("collect_parse_snapshot/",)
+# One string literal in any quoting a build ships (JSON "..", an escaped JSON document inside a JS
+# string \"..\", a bundler's `..` or '..'), whose body has no template substitution.
+_JS_QUOTE = rb"""\\*["'`]"""
+_JS_LITERAL_BODY = rb"""(?:[^"'`\\\r\n$]|\$(?!\{))+"""
+_SNAPSHOT_CITATION = (
+    _JS_QUOTE + rb"(?:" + b"|".join(re.escape(s.encode("ascii")) for s in _SCOPE_SNAPSHOT_SECTIONS)
+    + rb")[.\[]" + _JS_LITERAL_BODY + _JS_QUOTE)
+_SCOPE_RECORD_CITATION_SIGNATURE = (
+    # a citation bound to a `cite`-named key
+    re.compile(rb"(?<![A-Za-z0-9_$])(?:[A-Za-z_$][A-Za-z0-9_$]*)?[Cc]ite" + _JS_QUOTE
+               + rb"?\s*:\s*" + _SNAPSHOT_CITATION),
+    # a citation used as an object key (a map keyed by citation)
+    re.compile(rb"[{,]\s*" + _SNAPSHOT_CITATION + rb"\s*:"),
+)
+_SCOPE_RAW_SNAPSHOT_SIGNATURE = re.compile(
+    rb"(?<![A-Za-z0-9_$])schema" + _JS_QUOTE + rb"?\s*:\s*" + _JS_QUOTE + rb"(?:"
+    + b"|".join(re.escape(f.encode("ascii")) for f in _SCOPE_SNAPSHOT_SCHEMA_FAMILIES)
+    + rb")[0-9]+" + _JS_QUOTE)
+# A base64 `data:` URI: how a bundler inlines a small asset or an inline sourcemap (whose
+# sourcesContent carries the compiled JSON verbatim). Its payload is inspected like a file, and so
+# is the decompressed content of every stream a standard-library codec decodes (gzip, bzip2, xz) —
+# a precompressed copy a compression plugin emits, or a compressed payload inside a data: URI —
+# recognised by its magic whatever the file is called.
+_BASE64_DATA_URI_RE = re.compile(rb"data:[A-Za-z0-9.+/-]*(?:;[A-Za-z0-9.+/=-]*)*;base64,"
+                                 rb"([A-Za-z0-9+/_-]{16,}={0,2})")
+_GZIP_MAGIC = b"\x1f\x8b\x08"
+_BZIP2_MAGIC_RE = re.compile(rb"BZh[1-9]1AY&SY")
+_XZ_MAGIC = b"\xfd7zXZ\x00"
+_SCOPE_DATA_URI_DEPTH = 3
+# The census-keyed startup index of recently seen scope builds (see _scope_file_index).
+_SCOPE_INDEX_CACHE: "dict[tuple[str, tuple], tuple[str, dict, frozenset[str]]]" = {}
+_SCOPE_INDEX_CACHE_MAX = 4
+_SCOPE_INDEX_CACHE_LOCK = threading.Lock()
+# Same-origin write containment for the first-party read-only viewer (see _referred_from_scope).
+_SCOPE_WRITE_REFUSED_DETAIL = ("State-changing request refused: it was referred from an Atlas "
+                               "Scope page (/scope/), and Atlas Scope is a read-only viewer that "
+                               "never writes.")
 _FRONTEND_MAX_FILES = 4_096
 _FRONTEND_MAX_ENTRIES = 8_192
 _FRONTEND_MAX_FILE_BYTES = 64 * 1024 * 1024
@@ -1461,32 +1553,259 @@ def _scope_shell_valid(indexed: dict[str, _FrontendFile]) -> bool:
     return module_entries >= 1
 
 
-def _scope_file_index(
-        dist_root: Path | None) -> tuple[str, dict[str, _FrontendFile]]:
-    """(status, files) for the Atlas Scope build: ``ready`` with its startup-indexed bytes,
-    ``not_built`` when there is no build directory, ``invalid_build`` when one exists but is not a
-    servable /scope runtime build. Never raises: a broken scope build must not stop AssessHub."""
-    if dist_root is None:
-        return "not_built", {}
+class _ScopeUninspectable(Exception):
+    """A build file, or a payload inside it, that the privacy scan cannot read completely. What was
+    not read is not clean: the build is refused (``refused_uninspectable``), never served."""
+
+
+def _scope_stream_kind(content: bytes) -> str | None:
+    """The standard-library codec whose stream ``content`` is (by magic, whatever its name)."""
+    if content.startswith(_GZIP_MAGIC):
+        return "gzip"
+    if _BZIP2_MAGIC_RE.match(content):
+        return "bzip2"
+    if content.startswith(_XZ_MAGIC):
+        return "xz"
+    return None
+
+
+def _scope_declared_encoding(relative: str) -> str | None:
+    """The content encoding a member's NAME declares, read from the standard library's own registry
+    (mimetypes.suffix_map aliases such as .svgz, then mimetypes.encodings_map: gzip, compress,
+    bzip2, xz, br), case-insensitively — so the set of recognised encodings is the stdlib's, not a
+    hand list here."""
+    import mimetypes
+
+    aliases = {k.casefold(): v for k, v in mimetypes.suffix_map.items()}
+    encodings = {k.casefold(): v for k, v in mimetypes.encodings_map.items()}
+    suffix = PurePosixPath(relative).suffix.casefold()
+    for _hop in range(4):
+        if suffix not in aliases:
+            break
+        suffix = PurePosixPath(aliases[suffix]).suffix.casefold()
+    return encodings.get(suffix)
+
+
+def _scope_inflate_bounded(content: bytes, kind: str) -> tuple[bytes, bytes]:
+    """(decompressed bytes of every concatenated ``kind`` member, trailing bytes after them).
+    Raises _ScopeUninspectable when the stream does not decode COMPLETELY within the per-file
+    ceiling, or this interpreter lacks the codec: the cap is a bound on work, never a pass for the
+    unread remainder."""
     try:
-        if not Path(dist_root).is_dir():
-            return "not_built", {}
-    except (OSError, ValueError):
-        return "not_built", {}
-    index = _indexed_dist_tree(Path(dist_root), _scope_shell_valid)
+        if kind == "gzip":
+            import zlib
+
+            def make():
+                return zlib.decompressobj(16 + zlib.MAX_WBITS)
+            errors: tuple[type[BaseException], ...] = (zlib.error,)
+        elif kind == "bzip2":
+            import bz2
+            make = bz2.BZ2Decompressor
+            errors = (OSError, ValueError, EOFError)
+        else:
+            import lzma
+            make = lzma.LZMADecompressor
+            errors = (lzma.LZMAError, EOFError)
+    except ImportError as exc:
+        raise _ScopeUninspectable(f"this interpreter has no {kind} decoder") from exc
+    out = bytearray()
+    data = content
+    try:
+        while data and _scope_stream_kind(data) == kind:
+            decoder = make()
+            out += decoder.decompress(data, _FRONTEND_MAX_FILE_BYTES - len(out) + 1)
+            if len(out) > _FRONTEND_MAX_FILE_BYTES:
+                raise _ScopeUninspectable(f"a {kind} stream inflates beyond the per-file bound")
+            if not decoder.eof:
+                raise _ScopeUninspectable(f"a {kind} stream that does not decode completely")
+            data = decoder.unused_data
+    except errors as exc:
+        raise _ScopeUninspectable(f"a {kind} stream that does not decode") from exc
+    return bytes(out), data
+
+
+def _scope_scan_views(content: bytes, depth: int = _SCOPE_DATA_URI_DEPTH):
+    """The bytes a privacy scan must read for one build file: the file itself, then (bounded) the
+    decompressed content of every standard-library stream and the decoded payload of every base64
+    ``data:`` URI in it — a precompressed copy, an inlined asset or an inline sourcemap, whose
+    sourcesContent carries a compiled document verbatim. Raises _ScopeUninspectable for anything
+    it meets but cannot read completely, including a payload still encoded at the depth bound."""
+    yield content
+    kind = _scope_stream_kind(content)
+    uris = _BASE64_DATA_URI_RE.finditer(content)
+    if depth <= 0:
+        if kind is not None or next(uris, None) is not None:
+            raise _ScopeUninspectable("a payload nested beyond the scan bound")
+        return
+    if kind is not None:
+        inflated, trailing = _scope_inflate_bounded(content, kind)
+        yield from _scope_scan_views(inflated, depth - 1)
+        if trailing.strip(b"\0"):
+            yield from _scope_scan_views(trailing, depth - 1)
+    budget = _FRONTEND_MAX_FILE_BYTES
+    for match in uris:
+        encoded = match.group(1)
+        if len(encoded) > budget:
+            raise _ScopeUninspectable("data: URI payloads beyond the per-file bound")
+        budget -= len(encoded)
+        padded = encoded + b"=" * (-len(encoded.rstrip(b"=")) % 4)
+        try:
+            decoded = base64.b64decode(padded.replace(b"-", b"+").replace(b"_", b"/"))
+        except (binascii.Error, ValueError):
+            continue  # not a payload a browser decodes either
+        yield from _scope_scan_views(decoded, depth - 1)
+
+
+def _scope_view_carries_snapshot_evidence(view: bytes) -> bool:
+    return (all(pattern.search(view) for pattern in _SCOPE_COMPILED_MODEL_SIGNATURE)
+            or any(pattern.search(view) for pattern in _SCOPE_RECORD_CITATION_SIGNATURE)
+            or _SCOPE_RAW_SNAPSHOT_SIGNATURE.search(view) is not None)
+
+
+def _scope_file_verdict(relative: str,
+                        content: bytes) -> Literal["clean", "evidence", "uninspectable"]:
+    """What the privacy scan establishes for one build file: ``evidence`` when it (or a stream or
+    data: URI payload inside it) carries a recognised form of snapshot evidence (see
+    _scope_file_carries_compiled_model); ``uninspectable`` when its name declares a content
+    encoding its bytes are not a decodable stream of, or anything in it cannot be read completely;
+    ``clean`` only when every byte the scan had to read was read and none of it was evidence."""
+    if _scope_declared_encoding(relative) is not None and _scope_stream_kind(content) is None:
+        return "uninspectable"
+    try:
+        for view in _scope_scan_views(content):
+            if _scope_view_carries_snapshot_evidence(view):
+                return "evidence"
+    except _ScopeUninspectable:
+        return "uninspectable"
+    return "clean"
+
+
+def _scope_file_carries_compiled_model(content: bytes) -> bool:
+    """Whether one build file (or a stream / data: URI payload inside it) carries RECOGNISED
+    snapshot evidence: a compiled file's binding envelope (every _SCOPE_COMPILED_MODEL_SIGNATURE key
+    bound to a string literal), a compiled RECORD — which survives the bundler dropping that
+    envelope — recognised by its snapshot citation (_SCOPE_RECORD_CITATION_SIGNATURE), or an engine
+    snapshot itself (_SCOPE_RAW_SNAPSHOT_SIGNATURE). False is NOT "clean": content the scan cannot
+    read is a separate verdict (_scope_file_verdict), and the index refuses it too."""
+    return _scope_file_verdict("", content) == "evidence"
+
+
+def _scope_file_index(
+        dist_root: Path | None) -> tuple[str, dict[str, _FrontendFile], frozenset[str]]:
+    """(status, files, embedded 64-hex tokens) for the Atlas Scope build: ``ready`` with its
+    startup-indexed bytes, ``not_built`` when there is no build directory, ``invalid_build`` when
+    one exists but is not a servable /scope runtime build, ``refused_compiled_evidence`` when any
+    file in it carries recognised snapshot evidence, ``refused_uninspectable`` when the scan cannot
+    read some file in it completely (see _scope_file_verdict). Never raises: a broken scope build
+    must not stop AssessHub.
+
+    A build is indexed ONCE per content census: the result is cached under the build's canonical
+    path plus the census `_indexed_dist_tree` already takes (every member's path, type, size,
+    mtime/ctime, inode and link count), so a later app over an unchanged build does not re-read and
+    re-hash ~10 MB, while any change to any member (or a member added/removed) re-validates it. A
+    rewrite that restores the same size AND the same timestamps on a platform whose ctime is the
+    creation time is the stated limit of a stat census."""
+    if dist_root is None:
+        return "not_built", {}, frozenset()
+    root = Path(dist_root)
+    try:
+        if not root.is_dir():
+            return "not_built", {}, frozenset()
+        dist = root.resolve(strict=True)
+        if _is_filesystem_link(root):
+            return "invalid_build", {}, frozenset()
+    except (OSError, OverflowError, RuntimeError, ValueError):
+        return "not_built", {}, frozenset()
+    census = _frontend_tree_census(dist)
+    if census is None:
+        return "invalid_build", {}, frozenset()
+    key = (str(dist), census[0])
+    with _SCOPE_INDEX_CACHE_LOCK:
+        cached = _SCOPE_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+    result = _scope_file_index_uncached(root, dist, census[1])
+    # Cache only what was validated against THIS census: if the tree moved while it was read, the
+    # result stands for this start but is not remembered.
+    if _frontend_tree_census(dist) == census:
+        with _SCOPE_INDEX_CACHE_LOCK:
+            _SCOPE_INDEX_CACHE[key] = result
+            while len(_SCOPE_INDEX_CACHE) > _SCOPE_INDEX_CACHE_MAX:
+                del _SCOPE_INDEX_CACHE[next(iter(_SCOPE_INDEX_CACHE))]
+    return result
+
+
+def _scope_file_index_uncached(
+        root: Path, dist: Path, members: tuple[tuple[str, Path], ...],
+) -> tuple[str, dict[str, _FrontendFile], frozenset[str]]:
+    # Cheap refusal first: a build whose shell does not declare the runtime snapshot source (the
+    # standalone sample build, today's repository atlas-scope/dist) is refused after reading ONLY
+    # index.html, instead of reading and hashing every member.
+    shell = dict(members).get("index.html")
+    shell_bytes = _read_frontend_file(shell, dist) if shell is not None else None
+    if not shell_bytes:
+        return "invalid_build", {}, frozenset()
+    try:
+        parser = _ScopeShellParser()
+        parser.feed(shell_bytes.decode("utf-8", errors="strict"))
+        parser.close()
+    except (UnicodeDecodeError, ValueError):
+        return "invalid_build", {}, frozenset()
+    if parser.invalid or parser.runtime_sources != [_SCOPE_RUNTIME_SOURCE_VALUE]:
+        return "invalid_build", {}, frozenset()
+    index = _indexed_dist_tree(root, _scope_shell_valid)
     if index is None:
-        return "invalid_build", {}
-    return "ready", index[1]
+        return "invalid_build", {}, frozenset()
+    files = index[1]
+    uninspectable = False
+    for relative, entry in files.items():
+        verdict = _scope_file_verdict(relative, entry.content)
+        if verdict == "evidence":
+            return "refused_compiled_evidence", {}, frozenset()
+        uninspectable = uninspectable or verdict == "uninspectable"
+    if uninspectable:
+        return "refused_uninspectable", {}, frozenset()
+    return "ready", files, _embedded_sha256_tokens(files)
 
 
 def _embedded_sha256_tokens(indexed: dict[str, _FrontendFile]) -> frozenset[str]:
-    """Every 64-hex-digit token in the indexed files, lower-cased — the form a snapshot binding
-    digest takes when a compiler embeds it (with or without a ``sha256:`` prefix)."""
+    """Every 64-hex-digit token in the indexed files (and their base64 data: URI payloads),
+    lower-cased — the form a snapshot binding digest takes when a compiler embeds it (with or
+    without a ``sha256:`` prefix)."""
     tokens: set[str] = set()
     for entry in indexed.values():
-        tokens.update(match.decode("ascii").lower()
-                      for match in _SHA256_HEX_TOKEN_RE.findall(entry.content))
+        try:
+            for view in _scope_scan_views(entry.content):
+                tokens.update(match.decode("ascii").lower()
+                              for match in _SHA256_HEX_TOKEN_RE.findall(view))
+        except _ScopeUninspectable:
+            continue  # unreachable for a `ready` build: its every file was read completely
     return frozenset(tokens)
+
+
+def _is_scope_path(path: str) -> bool:
+    return path == _SCOPE_MOUNT.rstrip("/") or path.startswith(_SCOPE_MOUNT)
+
+
+def _referred_from_scope(request: Request) -> bool:
+    """Whether the request's Referer names a page under /scope/ (any origin). A page is under
+    /scope when EITHER reading of its path says so: the router's (percent-decoded, dot segments
+    NOT collapsed — ``/scope/..%2fx`` is served the Atlas Scope shell, and a browser keeps
+    ``..%2f`` verbatim in the page URL it sends as Referer) or the normalised one (dot segments,
+    repeated slashes and backslashes collapsed). Both are case-folded. This rule only ever refuses
+    writes, so the union is the safe reading; an unparsable Referer counts as one, since a browser
+    never sends one."""
+    referer = request.headers.get("referer")
+    if not referer:
+        return False
+    try:
+        path = urllib.parse.urlsplit(referer.strip()).path
+    except ValueError:
+        return True
+    decoded = urllib.parse.unquote(path)
+    routed = ("/" + decoded.lstrip("/")).casefold()
+    normalised = posixpath.normpath("/" + decoded.replace("\\", "/").lstrip("/")).casefold()
+    return _is_scope_path(routed) or _is_scope_path(normalised)
 
 
 def _scope_unavailable_response(status: str) -> Response:
@@ -1628,8 +1947,17 @@ def is_guarded_api_path(path: str, doc_paths) -> bool:
     on some future `/v2` / `/internal` prefix. Those are unguarded BY CONSTRUCTION, which is correct
     for static assets and would be a hole for anything that reads client data;
     `tests/test_expensive_get_hardening.py` enumerates every registered route against this predicate
-    so a new one outside the surface fails the suite instead of opening the gap silently."""
-    return path.startswith("/api/") or path in doc_paths
+    so a new one outside the surface fails the suite instead of opening the gap silently.
+
+    Atlas Scope (``/scope`` and everything under ``/scope/``) is ON the surface. Its files are
+    static, but whether a static build carries client evidence is decided by a content scan
+    (_scope_file_carries_compiled_model), and a scan recognises only the forms it knows — a bundler
+    can drop a compiled file's envelope, a member can carry no citation, bytes can be re-encoded.
+    Guarding the mount makes the exposure independent of that scan: whatever a build carries is
+    readable exactly by whoever may read the same snapshot through /api/snapshots/{id}/raw. The
+    viewer loses nothing: it is opened by same-origin navigation, and its own fetches carry the
+    session cookie (path "/")."""
+    return path.startswith("/api/") or path in doc_paths or _is_scope_path(path)
 
 
 def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = None,
@@ -1709,6 +2037,15 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         (DNS-rebinding guard, see _request_host_allowed). Health/liveness stays open."""
         path = request.url.path
         guarded = is_guarded_api_path(path, _doc_paths)
+        # Same-origin write containment for Atlas Scope (defence in depth). /scope is first-party,
+        # read-only code served same-origin, so the cross-site and CSRF refusals below pass its
+        # requests; a read-only viewer never writes. /scope responses set Referrer-Policy:
+        # same-origin (the rest of AssessHub sends no Referer), and any non-GET request referred
+        # from a /scope/ page is refused here — first, in token and no-token modes alike. A hostile
+        # script can suppress or rewrite its Referer, so this backs up, and never replaces, the
+        # viewer having no write code.
+        if guarded and request.method not in ("GET", "HEAD") and _referred_from_scope(request):
+            return JSONResponse({"detail": _SCOPE_WRITE_REFUSED_DETAIL}, status_code=403)
         if (request.method == "OPTIONS" or not guarded
                 or path == _API_LIVENESS_PATH):
             return await call_next(request)
@@ -1772,25 +2109,42 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'self'")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if _is_scope_path(request.url.path):
+            # Every /scope response (shell, asset, 404/405/503): the viewer's own requests carry a
+            # same-origin Referer, which the /api guard uses to refuse any write it makes.
+            response.headers["Referrer-Policy"] = "same-origin"
+        else:
+            response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response
 
     app.state.store = store
 
     # Atlas Scope build state, fixed at startup except for one transition: a build that embeds the
-    # digest of a stored snapshot is withdrawn. Its files are served outside the /api guard (static
-    # shell and bundles), so client evidence compiled into them would be readable by any page on
-    # any site; Atlas Scope must fetch evidence at run time from /api/snapshots/{id}/raw instead.
+    # digest of a stored snapshot is withdrawn. Atlas Scope must fetch evidence at run time from
+    # /api/snapshots/{id}/raw; a static build that carries it instead would show that evidence
+    # under whatever snapshot URL it is opened at. (The /scope mount sits behind the same access
+    # guard as /api — is_guarded_api_path — so its files are never readable cross-site, by a
+    # non-loopback peer without a token, or without the token in token mode.)
     # Checked for every snapshot already stored, and — via the store's one insert path — for every
     # snapshot stored later, BEFORE its commit. The scope routes then read only this in-memory state.
-    scope_status, scope_files = _scope_file_index(
+    #
+    # The PRIMARY control is privacy by construction: a build is `ready` only when it declares the
+    # runtime snapshot source AND no file in it carries snapshot evidence — a compiled snapshot
+    # model or an engine snapshot (_scope_file_index). The digest check below is defence in depth for a build that embeds a
+    # stored blob digest some other way. It runs at startup, before the commit of every insert
+    # through THIS Store (the observer), and — because another Store or process on the same
+    # database never reaches this Store's observer — again on every scope request and capability
+    # read, over the rows inserted since the last check (_current_scope_status). A withdrawal is
+    # permanent for the app's lifetime.
+    scope_status, scope_files, scope_digest_tokens = _scope_file_index(
         ATLAS_SCOPE_DIST if scope_dist_dir is _SCOPE_DIST_DEFAULT
         else (Path(scope_dist_dir) if scope_dist_dir is not None else None))
-    scope_digest_tokens = (_embedded_sha256_tokens(scope_files)
-                           if scope_status == "ready" else frozenset())
     app.state.scope_status = scope_status
-    if scope_digest_tokens:
-        if store.stored_snapshot_blob_digests() & scope_digest_tokens:
+    scope_recheck_lock = threading.Lock()
+    scope_digest_watermark = [0]
+    if scope_status == "ready" and scope_digest_tokens:
+        scope_digest_watermark[0], stored_digests = store.snapshot_blob_digests_after(0)
+        if stored_digests & scope_digest_tokens:
             app.state.scope_status = "refused_embeds_stored_snapshot"
 
         def _withdraw_scope_embedding(blob_digest: str) -> None:
@@ -1798,6 +2152,20 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                 app.state.scope_status = "refused_embeds_stored_snapshot"
 
         store.add_snapshot_digest_observer(_withdraw_scope_embedding)
+
+    def _current_scope_status() -> str:
+        """The scope status as of THIS request. A build with no 64-hex token cannot embed a
+        stored digest, so it needs (and makes) no store access at all; otherwise the only store
+        access is a digest-only read of rows newer than the last check (SQLite serialises writers
+        and AUTOINCREMENT never reuses an id, so a watermark over ids sees every committed insert)."""
+        if app.state.scope_status != "ready" or not scope_digest_tokens:
+            return app.state.scope_status
+        with scope_recheck_lock:
+            watermark, new_digests = store.snapshot_blob_digests_after(scope_digest_watermark[0])
+            scope_digest_watermark[0] = max(scope_digest_watermark[0], watermark)
+            if new_digests & scope_digest_tokens:
+                app.state.scope_status = "refused_embeds_stored_snapshot"
+        return app.state.scope_status
 
     # Bound concurrent heavy deliverable/explorer generations for this app (see _generation_slot).
     app.state.generation_semaphore = generation_semaphore
@@ -2156,7 +2524,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         has one owner and an absent, invalid or withdrawn scope build never yields a dead link."""
         if not store.get_snapshot_meta(snapshot_id):
             raise HTTPException(404, "Snapshot not found")
-        status = app.state.scope_status
+        status = _current_scope_status()
         available = status == "ready"
         return {
             "available": available,
@@ -3011,13 +3379,15 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     # -- Atlas Scope (/scope) ---------------------------------------------
     # Registered BEFORE the SPA catch-all below, and ALWAYS (built or not), so a /scope URL never
     # falls through to AssessHub's own shell. GET only: Atlas Scope is first-party read-only code
-    # served same-origin, which is exactly why it must never grow a write surface here. Like the
-    # SPA catch-all these read no store and touch no filesystem at request time: an exact key
-    # selects bytes captured at startup, so traversal/UNC-shaped input cannot name a file.
+    # served same-origin, which is exactly why it must never grow a write surface here. These sit
+    # on the guarded surface (is_guarded_api_path), so the access guard answers before them. They
+    # read no snapshot content and touch no filesystem at request time: an exact key selects bytes
+    # captured at startup, so traversal/UNC-shaped input cannot name a file.
     @app.get("/scope/assets/{asset_path:path}", include_in_schema=False)
     def scope_asset(request: Request, asset_path: str):
-        if app.state.scope_status != "ready":
-            return _scope_unavailable_response(app.state.scope_status)
+        status = _current_scope_status()
+        if status != "ready":
+            return _scope_unavailable_response(status)
         selected = scope_files.get("assets/" + asset_path)
         if selected is None:
             raise HTTPException(404, "Not found")
@@ -3026,8 +3396,9 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     @app.get("/scope", include_in_schema=False)
     @app.get("/scope/{rest:path}", include_in_schema=False)
     def scope_shell(request: Request, rest: str = ""):
-        if app.state.scope_status != "ready":
-            return _scope_unavailable_response(app.state.scope_status)
+        status = _current_scope_status()
+        if status != "ready":
+            return _scope_unavailable_response(status)
         return _frontend_response(scope_files["index.html"], request)
 
     # -- frontend (production) --------------------------------------------

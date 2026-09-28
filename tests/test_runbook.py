@@ -296,7 +296,11 @@ def test_runbook_renders_seven_family_runtime_protocol_receipt_before_advice(tmp
     assert "Runtime assessability: 1 of 7 device × protocol-family cells" in text
     assert "1 assessed, 0 partial, and 6 not assessable" in text
     assert all(protocol in text for protocol in families)
-    assert "EIGRP\n1\n0\n0\n1" in text
+    # Protocol family | Assessed | Partial | Not running | Not assessable | Health rows (R1V-2: not_running is
+    # its own column, read through analyze's conclusion class, never counted as "not assessable").
+    assert "Protocol family\nAssessed\nPartial\nNot running\nNot assessable\nHealth rows" in text
+    assert "EIGRP\n1\n0\n0\n0\n1" in text
+    assert "BGP\n0\n0\n0\n1\n0" in text
     assert "Missing rows are never interpreted as healthy" in text
     assert "Runtime protocol assessability receipt unavailable" not in text
     assert "Observed protocol health: 1 current-run row(s) across 1 observed family" in text

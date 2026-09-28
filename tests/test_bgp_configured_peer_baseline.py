@@ -425,9 +425,13 @@ def test_no_bgp_subject_with_complete_config_is_neutral_not_applicable(tmp_path)
 @pytest.mark.parametrize("runtime, runtime_capture, runtime_parser", [
     # A peerless switch whose summary capture came back empty (capture_integrity: 'empty').
     ("", "empty", "not_verified"),
-    # A peerless IOS switch that prints the no-process banner: the capture is usable, but no
-    # peer-table header is recognized, so the runtime parser reports 'review' with zero candidates.
-    ("% BGP not active\n", "ok", "review"),
+    # A peerless IOS switch that prints the vendor no-process banner (cmdio.PROTOCOL_NOT_RUNNING_BANNERS,
+    # the SAME owner protocol_assessability reads as "not_running"): BGP has no process, so the runtime
+    # parser reads a COMPLETE, EMPTY peer summary -- not an unrecognized header.
+    ("% BGP not active\n", "ok", "complete"),
+    # Text that is NOT exactly the registered banner keeps the unrecognized-header review (the coverage the
+    # banner case provided before the banner became positive evidence).
+    ("BGP not active\n", "ok", "review"),
 ])
 def test_complete_peerless_config_is_not_applicable_and_validates_whatever_the_runtime_capture(
         tmp_path, runtime, runtime_capture, runtime_parser):
@@ -446,6 +450,37 @@ def test_complete_peerless_config_is_not_applicable_and_validates_whatever_the_r
     assert baseline["verdict"] == "NOT_APPLICABLE" and baseline["assessed"] is False
     view = validate_bgp_configured_peer_baseline(baseline)
     assert (view["valid"], view["reason"]) == (True, "ok")
+
+
+def test_no_process_banner_publishes_no_header_finding_and_matches_the_receipt(tmp_path):
+    """Producer consistency with protocol_assessability's not_running: the banner host carries no
+    'runtime_header_missing' / 'runtime_scope_unproven' review and no global finding."""
+    config = "version 17.9\nhostname edge1\nend\n"
+    baseline, *_ = _run(tmp_path, config=config, runtime="% BGP not active\r\n")
+    cell = baseline["coverage"][0]
+    assert cell["finding_codes"] == [] and baseline["findings"] == []
+    assert (cell["runtime_candidate_count"], cell["runtime_local_as"]) == (0, "")
+    assert validate_bgp_configured_peer_baseline(baseline)["valid"] is True
+
+
+def test_configured_peer_on_a_banner_switch_is_a_degraded_blocker_never_established(tmp_path):
+    """A running-config that configures a literal peer while the device says BGP has no process: the
+    peer is 'not observed in the complete summary' -- a BLOCKER, and the validator re-derives it."""
+    baseline, *_ = _run(tmp_path, config=IOS_CONFIG, runtime="% BGP not active\n")
+    (row,) = baseline["rows"]
+    assert (row["peer"], row["status"], row["runtime_observed"]) == ("192.0.2.2", "degraded", False)
+    assert [f["code"] for f in row["findings"]] == ["configured_peer_not_observed"]
+    assert baseline["verdict"] == "BLOCKED" and baseline["coverage"][0]["status"] == "degraded"
+    assert validate_bgp_configured_peer_baseline(baseline)["valid"] is True
+
+
+def test_banner_under_a_command_it_was_never_evidenced_for_stays_an_unrecognized_summary(tmp_path):
+    config = "version 17.9\nhostname edge1\nend\n"
+    baseline, *_ = _run(tmp_path, config=config, runtime="% BGP not active\n",
+                        runtime_command="show bgp ipv4 unicast summary")
+    cell = baseline["coverage"][0]
+    assert cell["runtime_parser_status"] == "review"
+    assert "runtime_header_missing" in cell["finding_codes"]
 
 
 @pytest.mark.parametrize("forged", ["review", "not_verified", "assessed"])

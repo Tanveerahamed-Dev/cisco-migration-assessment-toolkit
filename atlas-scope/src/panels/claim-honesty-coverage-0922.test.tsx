@@ -64,7 +64,7 @@ describe("a cable's Findings tab splits a mixed collection scope (B1)", () => {
   it("every mixed cable names its never-collected end and never tallies 'across 2 hosts'", () => {
     expect(mixed.length, "precondition: some cable has exactly one collected end").toBeGreaterThan(0);
     for (const link of mixed) {
-      act(() => useInvestigation.getState().selectLink(link.id));
+      act(() => { useInvestigation.getState().selectLink(link.id); });
       const c = mount(<DevicePane />);
       openTab(c, /^Findings/);
       const text = c.textContent ?? "";
@@ -82,7 +82,7 @@ describe("an observed negative is not rendered as not observed (B1)", () => {
       .flatMap(([host, list]) => list.map((i) => ({ host, i })))
       .find(({ host, i }) => i.runConfigObserved === true && !i.portChannel && deviceById.get(host)?.collected);
     expect(hit, "precondition").toBeDefined();
-    act(() => useInvestigation.getState().selectDevice(hit!.host));
+    act(() => { useInvestigation.getState().selectDevice(hit!.host); });
     const c = mount(<DevicePane />);
     openTab(c, /^Ports/);
     const text = c.textContent ?? "";

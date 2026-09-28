@@ -33,7 +33,7 @@ function mount(ui: ReactNode): HTMLElement {
 
 beforeEach(() => {
   localStorage.clear();
-  act(() => useInvestigation.getState().reset());
+  act(() => { useInvestigation.getState().reset(); });
 });
 afterEach(() => {
   for (const m of mounted.splice(0)) {

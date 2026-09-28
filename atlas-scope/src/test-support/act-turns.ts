@@ -30,9 +30,23 @@
  *
  * WHAT IT CANNOT DO, stated rather than implied. An abandoned body that is parked in an await this
  * module does not see (a bare timer, a fetch) is not waited for; it is stopped at its NEXT call
- * here, which is why `src/core/source-hygiene.test.ts` requires every async act() in `src/` to go
- * through this module, and why the canary exists for whatever still gets past both. A scope whose
- * callback never resolves cannot be settled; the after-each hook then times out and says so.
+ * here, which is why `src/core/source-hygiene.test.ts` requires every act() in `src/` whose scope
+ * can be asynchronous to go through this module. It decides that with the TypeScript checker, not
+ * with syntax: React's act() is allowed raw only as a direct call with one inline, non-async callback
+ * every value of which is PROVED not to be a thenable (React's act() takes its asynchronous path
+ * exactly when the callback returns one) — a primitive by its syntax, a non-void primitive by its
+ * type, or a `void` from a function whose own body is proved the same way or from a member a library
+ * declares with `void` WRITTEN as its return type (not a type parameter it passes a callee's return
+ * through, as `fn.call(…)`, `Reflect.apply` and `Object.freeze` do). A `void` type alone proves nothing: TypeScript lets a Promise-returning function stand
+ * wherever `() => void` is expected, so `act(() => fn())` through such a value is reported and the fix
+ * is a block, `act(() => { fn(); })`. Also reported: an async, Promise-returning, `any`/`unknown`-
+ * returning or passed-by-name callback; React's act used as a value (stored, re-exported, `.call`ed)
+ * or reached without its name (a computed key on, or an escape of, a value that carries it); and a
+ * Promise-returning look-alike of a library member. An act the checker cannot resolve counts as
+ * React's. What that scan does not see — a thenable wearing a non-void primitive type through `any`
+ * or an assertion written elsewhere, or a library's implementation replaced where no type describes
+ * it (a `vi.mock` factory, `Object.assign`) — is the canary's to catch. A scope whose callback never
+ * resolves cannot be settled; the after-each hook then times out and says so.
  *
  * The containment and the canary are proved by a planted child Vitest run in
  * `src/core/scripts-typecheck.test.ts` (one abandoned case costs one red; the same planted file with

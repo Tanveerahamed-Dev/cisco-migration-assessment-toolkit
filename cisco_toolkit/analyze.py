@@ -9,6 +9,7 @@ The `compute_*` functions themselves follow in later steps (they entangle with t
 fill-colour maps (`_READY_FILL`/`_STATUS_FILL`) and sheet-name constants stay
 behind too - they belong to the excel layer, not the data analysis."""
 import ipaddress
+import json
 import re
 from functools import lru_cache
 from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a common loop var elsewhere (avoids F402 shadowing)
@@ -26,7 +27,10 @@ from cisco_toolkit.ipv6_routing import (
     embedded_ipv6_routing_adjacency_baseline,
     validate_ipv6_routing_adjacency_baseline,
 )
-from cisco_toolkit.cmdio import TRUNK_TABLE_CMD_VARIANTS, _load_cmd_output, cmd_capture_state
+from cisco_toolkit.cmdio import (
+    PROTOCOL_NOT_RUNNING_BANNERS, TRUNK_TABLE_CMD_VARIANTS, _load_cmd_output, cmd_capture_state,
+    cmd_not_running_banner,
+)
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     _parse_fhrp, _is_physical_port, parse_spanning_tree_blockedports,
@@ -689,6 +693,7 @@ def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Lis
     access_vlans: Dict[int, set] = {}
     svi_hosts: Dict[int, set] = {}
     svi_fhrp: Dict[int, List[str]] = {}
+    svi_addresses: Dict[int, List[str]] = {}
     for host, ifaces in all_interfaces.items():
         for port, d in ifaces.items():
             if (d.switchport_mode or "") == "Access" and d.vlan.isdigit():
@@ -698,6 +703,7 @@ def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Lis
                 vid = int(m.group(1))
                 svi_hosts.setdefault(vid, set()).add(host)
                 svi_fhrp.setdefault(vid, []).append(d.hsrp_behavior or "")
+                svi_addresses.setdefault(vid, []).append(getattr(d, "svi_ip", "") or "")
 
     # (1) Access VLAN with no SVI anywhere in scan = no L3 gateway found.
     for vid, hosts in sorted(access_vlans.items()):
@@ -708,9 +714,12 @@ def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Lis
                 f"Access ports on {len(hosts)} switch(es) but no SVI in scan "
                 f"(L2-only, or its gateway is off-scan)."))
 
-    # (2) VLAN with SVIs on >=2 switches but no FHRP = gateway redundancy gap.
+    # (2) VLAN with SVIs on >=2 switches but no FHRP = gateway redundancy gap -- unless the SVIs fill every
+    #     usable address of their one subnet (a /30 or /31 router-to-router transit): no host can use a
+    #     gateway there, so neither FHRP nor a split gateway applies.
     for vid, hosts in sorted(svi_hosts.items()):
-        if len(hosts) >= 2 and not any((f or "").strip() for f in svi_fhrp.get(vid, [])):
+        if (len(hosts) >= 2 and not any((f or "").strip() for f in svi_fhrp.get(vid, []))
+                and not svi_subnet_leaves_no_host_address(svi_addresses.get(vid, []))):
             findings.append(("High", "Gateway redundancy", f"VLAN {vid}",
                 f"SVIs on {len(hosts)} switches but no FHRP (HSRP/VRRP/GLBP) detected "
                 f"- duplicate-IP / split-gateway risk."))
@@ -1617,6 +1626,11 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
         elif len(gwl) == 1:
             # positively-observed sole gateway -- compute_migration_readiness's wording
             fhrp = f"sole gateway on {gwl[0][0]} (no FHRP)"
+        elif gwl and svi_subnet_leaves_no_host_address(
+                [getattr(d, "svi_ip", "") or "" for _host, d in gwl]):
+            # every usable address of the one subnet is a collected gateway address: a router transit
+            fhrp = (f"{len(gwl)} gateways fill every usable address of their subnet (transit) — "
+                    "no host address, so FHRP does not apply")
         elif gwl:
             # >=2 observed gateways, none running FHRP -- compute_fhrp_consistency's wording
             fhrp = f"{len(gwl)} gateways but no FHRP — no first-hop redundancy"
@@ -4268,15 +4282,81 @@ def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
 # not extra pseudo-health rows.  Several consumers use the presence of a health
 # row as a parsed-evidence witness; inserting NOT ASSESSED rows into that list
 # would silently turn missing evidence into "collected" in readiness/scoring.
-PROTOCOL_ASSESSABILITY_STATES = (
-    "assessed",
-    "partial",
-    "captured_no_record",
-    "captured_empty",
-    "capture_error",
-    "not_collected",
-    "analysis_unavailable",
-)
+#
+# ONE owner of the state vocabulary AND of what each state means to a consumer. Every consumer set/map
+# (the receipt-gated feature owners below, excel's colour map, the published engine contract) is DERIVED
+# from this table, never hand-listed, so a new state cannot ship half-threaded
+# (tests/test_protocol_assessability.py fails when a consumer does not cover every state).
+#   health_row -- "emitted": the state requires an emitted health row; "none": the state requires that
+#                 no health row was emitted; "either": either (partial / analysis_unavailable).
+#   conclusion -- "assessed" | "partial" authorize a bounded receipt-gated conclusion; "abstained" (usable
+#                 or empty capture, nothing parsed), "not_running" (the capture IS a vendor no-process
+#                 banner: positive evidence that the protocol contributes nothing on this host -- neither
+#                 assessed nor healthy) and "blind" (no usable evidence) never do.
+#   added_after_v1 -- "yes" for a state added to protocol_assessability/1 after receipts were already
+#                 published: an older receipt may omit its by_state counter (valid only while no row
+#                 carries the state), so stored/compared snapshots keep validating.
+_PROTOCOL_ASSESSABILITY_STATE_TRAITS: Dict[str, Dict[str, str]] = {
+    "assessed": {"health_row": "emitted", "conclusion": "assessed"},
+    "partial": {"health_row": "either", "conclusion": "partial"},
+    "captured_no_record": {"health_row": "none", "conclusion": "abstained"},
+    "captured_empty": {"health_row": "none", "conclusion": "abstained"},
+    "not_running": {"health_row": "none", "conclusion": "not_running", "added_after_v1": "yes"},
+    "capture_error": {"health_row": "none", "conclusion": "blind"},
+    "not_collected": {"health_row": "none", "conclusion": "blind"},
+    "analysis_unavailable": {"health_row": "either", "conclusion": "blind"},
+}
+PROTOCOL_ASSESSABILITY_STATES = tuple(_PROTOCOL_ASSESSABILITY_STATE_TRAITS)
+PROTOCOL_ASSESSABILITY_CONCLUSIONS = ("assessed", "partial", "abstained", "not_running", "blind")
+#: States that authorize a bounded receipt-gated conclusion (the feature owners' "assessed/partial").
+PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES = frozenset(
+    state for state, traits in _PROTOCOL_ASSESSABILITY_STATE_TRAITS.items()
+    if traits["conclusion"] in ("assessed", "partial"))
+#: States whose producer rule requires that NO health row was emitted -- a projection that nevertheless
+#: carries observed records for such a cell contradicts the receipt.
+PROTOCOL_ASSESSABILITY_NO_HEALTH_ROW_STATES = frozenset(
+    state for state, traits in _PROTOCOL_ASSESSABILITY_STATE_TRAITS.items()
+    if traits["health_row"] == "none")
+
+
+def svi_subnet_leaves_no_host_address(svi_addresses) -> bool:
+    """True when the collected SVI addresses of ONE VLAN occupy every usable address of their one shared
+    subnet (a /30's two hosts, a /31's two addresses): no host address is left free, so no host can use a
+    gateway there -- a structural transit segment, for which a missing FHRP is not a finding.
+
+    Derived only from the subnet size and the collected addresses (never from a VLAN name or number). Any
+    address that does not parse, addresses on different subnets, or fewer collected addresses than the
+    subnet's usable ones all answer False: an unproven transit keeps the ordinary FHRP judgement."""
+    import ipaddress
+
+    interfaces = []
+    for raw in svi_addresses:
+        text = str(raw or "").strip()
+        if not text:
+            return False
+        parts = text.split()
+        spelled = f"{parts[0]}/{parts[1]}" if len(parts) == 2 else text
+        try:
+            interfaces.append(ipaddress.ip_interface(spelled))
+        except ValueError:
+            return False
+    if len(interfaces) < 2:
+        return False
+    networks = {iface.network for iface in interfaces}
+    if len(networks) != 1:
+        return False
+    (network,) = networks
+    usable = ({network.network_address, network.broadcast_address} if network.num_addresses == 2
+              else set(network.hosts()) if network.num_addresses <= 256 else None)
+    if not usable:
+        return False
+    return usable <= {iface.ip for iface in interfaces}
+
+
+def _protocol_assessability_conclusion(state: str) -> str:
+    """The conclusion class (PROTOCOL_ASSESSABILITY_CONCLUSIONS) of a receipt state; KeyError for a state
+    outside the vocabulary -- a consumer deriving its map from this must fail loudly, never default."""
+    return _PROTOCOL_ASSESSABILITY_STATE_TRAITS[state]["conclusion"]
 
 PROTOCOL_ASSESSABILITY_FAMILIES = (
     {
@@ -4438,6 +4518,19 @@ def compute_protocol_assessability(inventory_hosts: List[str],
             health_row_emitted = (host, protocol) in emitted
             incomplete = [name for name, value in required_input_states.items()
                           if value != "usable"]
+            # A vendor no-process banner (cmdio.PROTOCOL_NOT_RUNNING_BANNERS) as the WHOLE resolved capture
+            # of EVERY required input is positive evidence that the protocol has no process here. Any
+            # input that is not exactly a registered banner leaves the cell in its ordinary state.
+            banner_evidence: List[dict] = []
+            if not incomplete and not health_row_emitted:
+                for item in family["inputs"]:
+                    if not item["required"]:
+                        continue
+                    command, banner = cmd_not_running_banner(c2f, *item["commands"])
+                    if not banner:
+                        banner_evidence = []
+                        break
+                    banner_evidence.append({"input": item["id"], "command": command, "banner": banner})
 
             if not analysis_available:
                 state = "analysis_unavailable"
@@ -4460,6 +4553,13 @@ def compute_protocol_assessability(inventory_hosts: List[str],
                           f"{', '.join(incomplete)} evidence was not usable (missing, empty, or errored) "
                           "and no health row "
                           "was emitted. No complete protocol verdict is asserted.")
+            elif capture_state == "usable" and banner_evidence:
+                state = "not_running"
+                cited = "; ".join(f"`{item['command']}` printed exactly '{item['banner']}'"
+                                  for item in banner_evidence)
+                reason = (f"{cited} -- the vendor no-process banner: {protocol} is not running on this "
+                          f"host, so it contributes no {protocol} state here. This is neither an assessment "
+                          "nor a health verdict.")
             elif capture_state == "usable":
                 state = "captured_no_record"
                 reason = ("Usable command output was captured, but no assessable protocol state was parsed. "
@@ -4478,7 +4578,7 @@ def compute_protocol_assessability(inventory_hosts: List[str],
                           "health conclusion.")
 
             by_state[state] += 1
-            rows.append({
+            cell = {
                 "switch": host,
                 "protocol": protocol,
                 "input_states": input_states,
@@ -4486,7 +4586,12 @@ def compute_protocol_assessability(inventory_hosts: List[str],
                 "health_row_emitted": health_row_emitted,
                 "state": state,
                 "reason": reason,
-            })
+            }
+            if state == "not_running":
+                # The vendor constant from the banner registry (never device text beyond it), so the
+                # receipt still publishes no raw body or path.
+                cell["banner_evidence"] = banner_evidence
+            rows.append(cell)
 
     complete_devices = sum(
         1 for host in hosts
@@ -4621,6 +4726,31 @@ def _validate_protocol_assessability_receipt(value: Any) -> dict:
         if capture_state != expected_capture:
             return invalid("protocol assessability capture state does not reconcile to its inputs",
                            safely_claimed)
+        # not_running must cite, for EVERY required input and nothing else, a registered vendor banner of
+        # one of that input's own commands; no other state may carry banner evidence.
+        banner_evidence = row.get("banner_evidence", None)
+        banner_cited = False
+        if "banner_evidence" in row:
+            family_commands = {
+                item["id"]: item["commands"]
+                for family in PROTOCOL_ASSESSABILITY_FAMILIES if family["protocol"] == protocol
+                for item in family["inputs"]
+            }
+            banner_cited = (
+                state == "not_running"
+                and isinstance(banner_evidence, list)
+                and len(banner_evidence) == len(required_inputs[protocol])
+                and [item.get("input") if isinstance(item, dict) else None for item in banner_evidence]
+                == list(required_inputs[protocol])
+                and all(
+                    isinstance(item, dict) and set(item) == {"input", "command", "banner"}
+                    and item["command"] in family_commands.get(item["input"], ())
+                    and item["banner"] in PROTOCOL_NOT_RUNNING_BANNERS.get(item["command"], ())
+                    for item in banner_evidence)
+            )
+            if not banner_cited:
+                return invalid("protocol assessability banner evidence is malformed or on a state that "
+                               "cannot carry it", safely_claimed)
         state_consistent = (
             state == "analysis_unavailable"
             or (state == "assessed" and emitted and not incomplete)
@@ -4628,6 +4758,8 @@ def _validate_protocol_assessability_receipt(value: Any) -> dict:
             or (state == "captured_no_record" and not emitted and not incomplete
                 and capture_state == "usable")
             or (state == "captured_empty" and not emitted and capture_state == "empty")
+            or (state == "not_running" and not emitted and not incomplete
+                and capture_state == "usable" and banner_cited)
             or (state == "capture_error" and not emitted and capture_state == "error")
             or (state == "not_collected" and not emitted and capture_state == "missing")
         )
@@ -4648,16 +4780,21 @@ def _validate_protocol_assessability_receipt(value: Any) -> dict:
                for protocol in family_names)
     )
     by_state = summary.get("by_state")
+    # A receipt written before an ADDITIVE state existed (same protocol_assessability/1 schema) has no
+    # counter for it; that is exact only while no row carries the state, so the omitted counter is 0.
+    omissible = {state for state, traits in _PROTOCOL_ASSESSABILITY_STATE_TRAITS.items()
+                 if traits.get("added_after_v1") == "yes" and actual_by_state[state] == 0}
     by_state_valid = (
         isinstance(by_state, dict)
-        and set(by_state) == set(PROTOCOL_ASSESSABILITY_STATES)
+        and set(PROTOCOL_ASSESSABILITY_STATES) - omissible <= set(by_state) <= set(PROTOCOL_ASSESSABILITY_STATES)
         and all(isinstance(count, int) and not isinstance(count, bool) and count >= 0
                 for count in by_state.values())
     )
     if (len(hosts) != n_devices or len(index) != len(rows)
             or summary["n_health_rows"] != sum(row["health_row_emitted"] for row in rows)
             or summary["n_complete_devices"] != complete_devices
-            or not by_state_valid or by_state != actual_by_state):
+            or not by_state_valid
+            or {**{state: 0 for state in omissible}, **by_state} != actual_by_state):
         return invalid("protocol assessability rows do not reconcile to the summary", safely_claimed)
     return {
         "present": True, "valid": True, "reason": "", "index": index,
@@ -4831,19 +4968,18 @@ def summarize_stp_consistency_baseline(
             if receipt_state == "partial" and not claim_prerequisites_usable:
                 finding("review", "claim_prerequisite_partial",
                         "Usable current-run state and inconsistent-port captures are both required for this claim.")
-            elif receipt_state in {
-                    "captured_no_record", "captured_empty", "capture_error",
-                    "not_collected", "analysis_unavailable"}:
+            elif (receipt_state in PROTOCOL_ASSESSABILITY_STATES
+                  and receipt_state not in PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES):
                 finding("not_verified", "receipt_not_assessed",
                         "The current-run receipt does not authorize an STP consistency conclusion.")
-            elif receipt_state not in {"assessed", "partial"}:
+            elif receipt_state not in PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES:
                 finding("review", "receipt_state_unusable",
                         "The STP receipt state is outside the bounded consistency-owner contract.")
 
         health_severity = valid_health[0]["severity"] if len(candidates) == 1 and len(valid_health) == 1 else ""
         if (receipt_row is not None and emitted is True and len(candidates) == 1
                 and len(valid_health) == 1 and claim_prerequisites_usable
-                and receipt_state in {"assessed", "partial"} and health_severity == "High"):
+                and receipt_state in PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES and health_severity == "High"):
             finding("degraded", "inconsistent_ports_observed",
                     "The reconciled STP health row reports a High inconsistent-port condition.")
 
@@ -4855,7 +4991,7 @@ def summarize_stp_consistency_baseline(
             status = "degraded"
         elif (receipt_row is not None and emitted is True and len(candidates) == 1
               and len(valid_health) == 1 and claim_prerequisites_usable
-              and receipt_state in {"assessed", "partial"} and health_severity == "Info"):
+              and receipt_state in PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES and health_severity == "Info"):
             status = "assessed"
         else:
             status = "not_verified"
@@ -5300,8 +5436,7 @@ def summarize_etherchannel_baseline(projection: Any,
                 finding("review", "projection_receipt_contradiction",
                         "Structured projection capture state does not reconcile to the receipt membership input.")
             if receipt_state != "assessed":
-                if groups and receipt_state in {
-                        "captured_no_record", "captured_empty", "capture_error", "not_collected"}:
+                if groups and receipt_state in PROTOCOL_ASSESSABILITY_NO_HEALTH_ROW_STATES:
                     finding("review", "projection_receipt_contradiction",
                             "Observed group rows exist even though the receipt says no EtherChannel health row was emitted.")
                 else:
@@ -5710,8 +5845,7 @@ def summarize_routing_baseline(routing_neighbors: Any,
             True if (host, protocol) in receipt["claimed_subjects"] else None
         )
         if receipt_row is not None and receipt_state != "assessed":
-            if pair["records"] and receipt_state in {
-                    "captured_no_record", "captured_empty", "capture_error", "not_collected"}:
+            if pair["records"] and receipt_state in PROTOCOL_ASSESSABILITY_NO_HEALTH_ROW_STATES:
                 finding("review", "projection_receipt_contradiction",
                         "Routing peers are present even though the receipt says no assessable peer record was emitted.")
             else:
@@ -7753,6 +7887,49 @@ _EVIDENCE_ROLE_ORDER = {r: i for i, r in enumerate(PUNCH_EVIDENCE_ROLES)}
 _EVIDENCE_KIND_ORDER = {k: i for i, k in enumerate(PUNCH_EVIDENCE_REF_KINDS)}
 _EVIDENCE_CITE_MAX = 160
 _JSON_SAFE_INT = 2 ** 53 - 1
+# The row-level rules compute_migration_punchlist's one row constructor (`add`) enforces, published in the
+# engine contract so a consumer validates against the producer's rules instead of re-deriving them:
+#   total_only_when_capped         -- `evidence_refs_total` is written only when the list was capped;
+#   absence_forbids_record_kinds   -- an `absence` row never carries a record-kind ref;
+#   record_requires_record_kind    -- `record` iff >=1 ref is a record kind (_evidence_basis_for);
+#   row_requires_ref               -- a `row` row carries >=1 ref naming what it was derived from: its row
+#                                     (every real-producer fold emits one) or, when no row is addressable,
+#                                     the published section it was folded from (_PUNCH_CATEGORY_SECTION),
+#                                     cited as a section -- enforced by construction in `add`;
+#   host_must_be_row_device_or_null -- a ref about a device the row does not name is dropped.
+PUNCH_EVIDENCE_RULES: Dict[str, bool] = {
+    "total_only_when_capped": True,
+    "absence_forbids_record_kinds": True,
+    "record_requires_record_kind": True,
+    "row_requires_ref": True,
+    "host_must_be_row_device_or_null": True,
+}
+ENGINE_CONTRACT_SCHEMA = "atlas-engine-contract/1"
+ENGINE_CONTRACT_PATH = "atlas-scope/contracts/engine-contract.v1.json"   # repo-relative projection
+
+
+def engine_contract_projection() -> dict:
+    """The engine-owned vocabularies a consumer (the Atlas Scope compiler) validates against, projected
+    from THIS module's constants -- the owner stays here; the JSON file is a generated projection
+    (tests/test_engine_contract_projection.py fails when the committed file drifts)."""
+    return {
+        "schema": ENGINE_CONTRACT_SCHEMA,
+        "owner": "cisco_toolkit/analyze.py",
+        "punch_evidence": {
+            "kinds": sorted(PUNCH_EVIDENCE_REF_KINDS),
+            "record_kinds": sorted(PUNCH_EVIDENCE_RECORD_KINDS),
+            "roles": sorted(PUNCH_EVIDENCE_ROLES),
+            "bases": sorted(PUNCH_EVIDENCE_BASES),
+            "cap": PUNCH_EVIDENCE_REFS_CAP,
+            **PUNCH_EVIDENCE_RULES,
+        },
+        "protocol_assessability_states": sorted(PROTOCOL_ASSESSABILITY_STATES),
+    }
+
+
+def render_engine_contract() -> str:
+    """The exact bytes of the projection file: 2-space indent, LF, trailing newline."""
+    return json.dumps(engine_contract_projection(), indent=2, ensure_ascii=False) + "\n"
 
 # The ONE engine-owned map of which evidence bases each punch-list category may legitimately carry.
 # tests/test_punchlist_evidence_refs.py derives the set of categories the producer CAN emit from the
@@ -7783,6 +7960,38 @@ _PUNCH_EVIDENCE_POLICY: Dict[str, frozenset] = {
     "Software exposure": frozenset({"record", "row"}),
     "Platform capacity": frozenset({"row"}),
     "Compound risk": frozenset({"row"}),
+}
+
+# The PUBLISHED snapshot section each category's fold reads its input rows from (top-level snapshot key).
+# It backs the `row_requires_ref` rule BY CONSTRUCTION: when a non-absence row ends with no addressable ref
+# (its input row's host / port is not a name -- direct-call or poisoned input; every real-producer fold
+# emits a row ref), the one row constructor points at this SECTION with role derived_from and a cite that
+# says it is a section, not the row. tests/test_engine_contract_projection.py pins coverage against
+# _PUNCH_EVIDENCE_POLICY and publication against a real pipeline snapshot.
+_PUNCH_CATEGORY_SECTION: Dict[str, str] = {
+    "Cross-layer": "cross_layer",
+    "Security": "security",
+    "Config hygiene": "config_hygiene",
+    "L3": "l3_forwarding",
+    "L1": "physical_health",
+    "Protocol": "protocol_health",
+    "VTP": "vtp_safety_baseline",
+    "IPv6 Routing": "ipv6_routing_adjacency_baseline",
+    "STP": "stp_roots",
+    "Health": "health_scores",
+    "Addressing": "addressing_conflicts",
+    "FHRP": "fhrp",
+    "Trunk": "trunk_native",
+    "Link L1": "link_phy",
+    "Inventory": "devices",
+    "False-health": "operational_drift",
+    "Timing/PTP": "service_map",
+    "Multicast/Media": "multicast_intelligence",
+    "Operational logs": "syslog_intelligence",
+    "QoS": "qos_audit",
+    "Software exposure": "software_risk",
+    "Platform capacity": "platform_health",
+    "Compound risk": "device_dossiers",
 }
 
 # parse_security check ids whose FAIL means a hardening line is MISSING (parse.py: "Absence-of-a-control
@@ -8096,6 +8305,16 @@ def compute_migration_punchlist(cross_layer: List[dict],
             kept = [r for r in kept if r.get("kind") not in PUNCH_EVIDENCE_RECORD_KINDS]
         capped, total = _normalize_evidence_refs(kept)
         total += hidden_refs if isinstance(hidden_refs, int) and hidden_refs > 0 else 0
+        if not capped and ev_basis != "absence" and category in _PUNCH_CATEGORY_SECTION:
+            # row_requires_ref, by construction: nothing addressable survived, so name the SECTION the fold
+            # read -- honestly cited as a section, never passed off as the row itself.
+            section = _PUNCH_CATEGORY_SECTION[category]
+            fallback = _evidence_ref(
+                "analysis_row", None, (section,), "derived_from",
+                f"{section} section this finding was folded from (its input row has no addressable "
+                "host/port, so no row pointer is claimed)")
+            if fallback is not None:
+                capped, total = [fallback], total + 1
         it["evidence_basis"] = _evidence_basis_for(capped, ev_basis)
         it["evidence_refs"] = capped
         if total > len(capped):
@@ -8160,11 +8379,17 @@ def compute_migration_punchlist(cross_layer: List[dict],
                 f"Undefined {u.get('kind', '')} '{u.get('name', '')}'",
                 f"Referenced ({u.get('context', '')}) but never defined -- it silently does nothing.",
                 "Define the referenced structure, or remove the dangling reference.",
+                # parse_config_hygiene's `context` is the ENCLOSING column-0 stanza header (cut to 60
+                # characters) of the line that holds the reference -- the referencing line itself only when
+                # that line is at column 0. The cite says exactly that, and the role is derived_from: it is
+                # the stanza the reference sits in, not a copy of the referencing line.
                 refs=_refs(
                     _row_ref("config_hygiene", host, "undefined", i, host=host,
                              cite=f"{host} config-hygiene undefined reference #{i}"),
                     _evidence_ref("config_text", host, ("config_hygiene", host, "undefined", i, "context"),
-                                  "subject", f"{host} referencing configuration line")
+                                  "derived_from",
+                                  f"{host} enclosing column-0 stanza header (first 60 chars; the "
+                                  "referencing line only if at column 0)")
                     if isinstance(ctx, str) and ctx.strip() else None))
 
     L3SEV = {"single-gateway": "High", "tracked-object-down": "High", "no-FHRP": "Medium"}
@@ -8586,7 +8811,9 @@ def compute_migration_punchlist(cross_layer: List[dict],
             g["refs"].extend(_refs(_row_ref(section, list_key, i, host=rhost,
                                             cite=f"{host or 'fleet'} {category} finding row ({k})")))
             ev = f.get("evidence")
-            if isinstance(ev, str) and ev.strip() and rhost:
+            # Only a VERBATIM configuration line is a config_text record (the producer says which through
+            # `evidence_verbatim`); a synthesized evidence description stays on the row ref above.
+            if isinstance(ev, str) and ev.strip() and rhost and f.get("evidence_verbatim") is True:
                 g["refs"].extend(_refs(_evidence_ref("config_text", rhost, (section, list_key, i, "evidence"),
                                                      "subject", f"{rhost} configuration line ({k})")))
             if fleet:
@@ -11085,7 +11312,10 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
     findings: List[dict] = []
 
     def _surface_status(text: str) -> Dict[str, tuple]:
-        """kind -> (status, evidence). status: exposed / closed / verify."""
+        """kind -> (status, evidence). status: exposed / closed / verify. `evidence` is the VERBATIM
+        matched configuration line exactly when it is a `has()` return; every other evidence value is a
+        synthesized description (a redacted community, an explanation) -- the caller publishes which one it is as
+        `evidence_verbatim` (true iff the evidence is one of the device's own stripped config lines)."""
         lines = [ln.strip() for ln in text.splitlines()]
         def has(pat):
             rx = re.compile(pat, re.I)
@@ -11122,10 +11352,12 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
         tl = has(r"^transport input .*\b(?:telnet|all)\b")
         if tl:
             out["telnet-vty"] = ("exposed", tl)
-        if has(r"^ip ssh version 1$"):
-            out["ssh-v1"] = ("exposed", "ip ssh version 1")
-        if has(r"^crypto isakmp policy"):
-            out["ikev1"] = ("exposed", "crypto isakmp policy ...")
+        ssh1 = has(r"^ip ssh version 1$")
+        if ssh1:
+            out["ssh-v1"] = ("exposed", ssh1)
+        ike = has(r"^crypto isakmp policy")
+        if ike:
+            out["ikev1"] = ("exposed", ike)
         sm = has(r"^service finger$") or has(r"^ip rcmd") or has(r"^service (tcp|udp)-small-servers$")
         if sm:
             out["small-services"] = ("exposed", sm)
@@ -11140,6 +11372,10 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
         surfaces: Dict[str, str] = {}
         if text:
             st = _surface_status(text)
+            # A published `evidence` is a configuration LINE only when it is literally one of the device's
+            # own (stripped) config lines; otherwise it is a synthesized description and says so through
+            # `evidence_verbatim: False` (the punch-list types only verbatim evidence as config_text).
+            config_lines = {ln.strip() for ln in text.splitlines()}
             for kind, (status, evidence) in sorted(st.items()):
                 surfaces[kind] = status
                 if status != "exposed":
@@ -11152,6 +11388,7 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
                     # fold, any future findings surface) need no per-axis adapter.
                     "label": label, "detail": why,
                     "evidence": evidence,
+                    "evidence_verbatim": evidence in config_lines,
                     "advisories": [{"id": a, "cve": c, "note": n} for a, c, n in advs],
                     "why": why, "recommendation": fix})
         per_device.append({
@@ -11342,7 +11579,7 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
     window). Pure read; deterministic; tolerant of empty input. Returns {per_device, summary, risks, asof,
     note}."""
     from collections import Counter
-    from datetime import date, datetime
+    from datetime import date, datetime, timezone
     from cisco_toolkit import eoldb
 
     def _to_date(x):
@@ -11361,6 +11598,58 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
             return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
         except (ValueError, TypeError):
             return None
+
+    # R1V-1: the retained EoX registry's authority is judged at the EVIDENCE date, never at the day this runs.
+    # eoldb.lifecycle_for() answers "is the registry verified AND fresh NOW" (registry_integrity.source_freshness
+    # defaults to the wall clock), which made a re-analysis of the same evidence -- and the golden's
+    # device_dossiers -- flip every matched band to Unknown once the registry aged past SOURCE_MAX_AGE_DAYS,
+    # although nothing about the evidence changed. The band is a claim AS OF `today` (the evidence date), so the
+    # question the freshness policy guards is "was the registry too old to vouch for that date?":
+    #   * stale  -- the evidence date is more than SOURCE_MAX_AGE_DAYS after the registry's retrieval: WITHHELD
+    #               (fail closed; bulletins issued in between may be missing), whatever the wall clock says;
+    #   * a registry retrieved AFTER the evidence date is newer than the evidence, never too old for it;
+    #   * integrity is time-independent and never bypassed. eoldb reports ONE state ("primary-url-unverified")
+    #     for "failed integrity" and "too old right now"; only the second is the evidence date's to excuse. So
+    #     a row eoldb could not verify is re-verified byte/semantically at the registry's own retrieval instant
+    #     (where age is zero) ONLY when the registry is not fresh at the wall clock -- i.e. only when age can
+    #     be the cause. While the registry is fresh now, eoldb's refusal can only be integrity and stands. The
+    #     band therefore never depends on the wall clock: an intact chain bands either way (eoldb verifies it
+    #     now, or the re-verification does), and a tampered/missing fixture is withheld either way.
+    from cisco_toolkit import registry_integrity
+    _retrieved_at = eoldb._EOL_FIXTURE_RETRIEVED_AT
+    _evidence_instant = datetime(today.year, today.month, today.day, 23, 59, 59, tzinfo=timezone.utc)
+    _stale_at_evidence = bool(
+        registry_integrity.source_freshness(_retrieved_at, now=_evidence_instant)["source_stale"])
+    _chain_verified: Dict[str, bool] = {}
+
+    def _registry_fresh_at_wall_clock() -> bool:
+        # Diagnostic only (see above): it decides whether eoldb's refusal COULD be age, never the band.
+        return bool(registry_integrity.source_freshness(_retrieved_at)["source_fresh"])
+
+    def _integrity_verified_at_retrieval() -> bool:
+        if "ok" not in _chain_verified:
+            try:
+                eoldb.verify_retained_eol_source_chain(
+                    now=datetime.fromisoformat(_retrieved_at.replace("Z", "+00:00")))
+                _chain_verified["ok"] = True
+            except (registry_integrity.PackIntegrityError, OSError, ValueError):
+                _chain_verified["ok"] = False
+        return _chain_verified["ok"]
+
+    def _authority_at_evidence_date(rec: dict) -> Tuple[bool, str]:
+        """(authoritative as of the evidence date, published citation_status)."""
+        citation = rec.get("citation_status")
+        if rec.get("source_authoritative") is True:
+            chain_ok = True                                  # eoldb verified bytes + binding just now
+        elif citation == "primary-url-unverified" and not _registry_fresh_at_wall_clock():
+            chain_ok = _integrity_verified_at_retrieval()    # failed NOW, and age can be why: re-verify bytes
+        else:
+            chain_ok = False                                 # unresolved citation / explicitly withheld
+        if chain_ok and not _stale_at_evidence:
+            return True, "retained-primary-fixture"
+        if _stale_at_evidence and citation in ("retained-primary-fixture", "primary-url-unverified"):
+            return False, "primary-url-unverified"
+        return False, str(citation or "")
 
     per_device: List[dict] = []
     for host in sorted(devices or {}):
@@ -11383,7 +11672,17 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
         # deliberately returns the inline record with source_authoritative=False when the fixture is
         # missing, stale, or fails integrity, but those unverified dates must not drive a band. This also
         # prevents a future malformed/legacy row from turning a missing date into "no EoL announced".
-        if rec.get("source_authoritative") is not True:
+        authoritative, citation_status = _authority_at_evidence_date(rec)
+        if not authoritative and _stale_at_evidence and citation_status == "primary-url-unverified":
+            band = "Unknown"
+            status = (
+                f"The retained Cisco EoX registry (retrieved {_retrieved_at[:10]}) is more than "
+                f"{registry_integrity.SOURCE_MAX_AGE_DAYS} days older than the evidence date "
+                f"{today.isoformat()}; lifecycle band withheld - refresh the retained EoX evidence and "
+                "verify the exact PID on Cisco's EoX portal"
+            )
+            yrs = None
+        elif not authoritative:
             band = "Unknown"
             status = (
                 "Retained primary-source proof was not verified for the matched Cisco EoX row; "
@@ -11426,7 +11725,7 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
                            "eos": published_eos, "ldos": published_ldos, "band": band, "years_to_ldos": yrs,
                            "status": status, "source": rec["source"], "conf": rec["conf"],
                            "matched_pattern": rec["matched_pattern"], "match_kind": rec["match_kind"],
-                           "reviewed_at": rec["reviewed_at"], "citation_status": rec["citation_status"]})
+                           "reviewed_at": rec["reviewed_at"], "citation_status": citation_status})
 
     by_band = Counter(d["band"] for d in per_device)
     pcount: "Counter" = Counter(); pband: Dict[str, str] = {}; pldos: Dict[str, str] = {}

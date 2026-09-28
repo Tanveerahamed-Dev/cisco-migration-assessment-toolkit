@@ -833,10 +833,15 @@ button.ui-chip__body:hover {
   transform: translateX(-100%);
 }
 
+/* A dialog's paint order is its place on the dialog stack (primitives.tsx), never its DOM order:
+   the stack sets `--dialog-layer` on the scrim and panel of every OPEN dialog, 0 for the first one
+   opened, and each layer takes two steps above the one under it — its scrim, then its panel. So the
+   dialog opened last covers every other open one, however they were mounted or parked (D1; WCAG
+   2.4.11). A closed pre-warm frame has no layer and falls back to 0; it is invisible and inert. */
 .ui-dialog__scrim {
   position: fixed;
   inset: 0;
-  z-index: var(--z-dialog);
+  z-index: calc(var(--z-dialog) + var(--dialog-layer, 0) * 2);
   background: var(--scrim);
 }
 
@@ -845,7 +850,7 @@ button.ui-chip__body:hover {
   top: 12vh;
   left: 50%;
   transform: translateX(-50%);
-  z-index: var(--z-dialog);
+  z-index: calc(var(--z-dialog) + var(--dialog-layer, 0) * 2 + 1);
   display: flex;
   flex-direction: column;
   width: min(34rem, 92vw);

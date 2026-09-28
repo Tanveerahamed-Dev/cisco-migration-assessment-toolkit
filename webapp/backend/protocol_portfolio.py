@@ -14,6 +14,8 @@ import re
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 
 from cisco_toolkit.analyze import (
+    PROTOCOL_ASSESSABILITY_STATES,
+    _protocol_assessability_conclusion,
     summarize_routing_baseline,
     summarize_stp_consistency_baseline,
 )
@@ -55,19 +57,24 @@ _CLI_EMITTED_BINDING_FIELDS = frozenset({
 })
 
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
-_UNAVAILABLE_STATES = {
-    "analysis_unavailable",
-    "capture_error",
-    "captured_empty",
-    "captured_no_record",
+# The runtime-receipt part of both sets is DERIVED from analyze's one vocabulary through each state's
+# conclusion class, never hand-listed: a receipt state the engine adds later (not_running, R1V-5) would
+# otherwise fall outside both sets and count as "observed". A receipt state that authorizes no bounded
+# conclusion (abstained, not_running, blind) is unavailable evidence here; a partial one is review.
+_UNAVAILABLE_STATES = frozenset(
+    state for state in PROTOCOL_ASSESSABILITY_STATES
+    if _protocol_assessability_conclusion(state) not in ("assessed", "partial")
+) | frozenset({
+    # this module's own non-receipt status words
     "invalid",
     "missing",
-    "not_collected",
     "not_verified",
     "unavailable",
     "unknown",
-}
-_REVIEW_STATES = {"partial", "review"}
+})
+_REVIEW_STATES = frozenset(
+    state for state in PROTOCOL_ASSESSABILITY_STATES if _protocol_assessability_conclusion(state) == "partial"
+) | frozenset({"review"})
 _DETAIL_FIELDS = (
     "switch",
     "protocol",

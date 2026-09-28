@@ -5,7 +5,8 @@
  * Every `tools/compile-*.mjs` reaches this module through `tools/lib/compile-io.mjs`; no other file
  * under tools/ imports `node:crypto` or calls createHash. `src/core/provenance.test.ts` enforces both
  * halves structurally (it walks each compiler's import graph and scans every tools module), and every
- * compiler must write byte-identical output from a CRLF and from an LF copy of the source.
+ * compiler must write the same model from a CRLF and from an LF copy of the source — identical apart from
+ * the byte-dependent binding key sourceExactSha256, which names the bytes each compile read.
  *
  * WHAT A BINDING IS — the rule itself lives in tools/lib/compile-model.mjs (`bindSourceWith`), which is
  * pure so a browser applies the SAME rule with WebCrypto; this module only supplies node:crypto:
@@ -18,9 +19,10 @@
  *     clone.) Form "assesshub-store-blob" instead binds an AssessHub stored blob exactly.
  *   sourceExactSha256 — the ENGINE's binding form, `"sha256:" + sha256(<exact bytes>)`
  *     (cisco_toolkit/protocol_assurance.py `bind_snapshot_json_bytes`), so a compiled model joins an
- *     engine receipt by value. For a repository file the exact bytes are the ones Git stores (the
- *     blob), never the CRLF rendering a Windows checkout makes of them — see compile-model.mjs
- *     `bindingPreimages` for why that is the only definition that is both true and reproducible.
+ *     engine receipt by value. The exact bytes are the bytes AS READ, for every origin (a CRLF checkout
+ *     of a repository file gives the CRLF digest): it is the one byte-dependent binding key, and a
+ *     CRLF/LF compile-identity check compares the model with it excluded and checks it separately — see
+ *     compile-model.mjs `bindingPreimages` and src/core/types.ts SOURCE_BINDING_BYTE_KEYS.
  *   sourceGitBlob — the Git blob id of the LF-normalised bytes (`git hash-object`; for an unmodified
  *     tracked source, `git rev-parse HEAD:<source>`), so "compiled from the tracked engine output" is a
  *     claim Git itself can check.

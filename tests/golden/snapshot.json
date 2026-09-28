@@ -1327,6 +1327,7 @@
     "partial": 5,
     "captured_no_record": 0,
     "captured_empty": 0,
+    "not_running": 0,
     "capture_error": 0,
     "not_collected": 13,
     "analysis_unavailable": 0
@@ -1977,10 +1978,9 @@
     "virtual_ip": "10.0.10.1",
     "members": [
      {
-      "source_group_key": "HSRP:Vlan10:10",
-      "interface": "Vlan10",
-      "projection_custody": "embedded_unverified",
       "svi_ip": "10.0.10.2/24",
+      "protocol": "HSRP",
+      "local_status": "not_verified",
       "participation": "positive",
       "findings": [
        {
@@ -1989,18 +1989,18 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "role": "ACTIVE",
       "group": "10",
+      "projection_custody": "embedded_unverified",
+      "role": "ACTIVE",
+      "source_group_key": "HSRP:Vlan10:10",
       "switch": "core1",
       "virtual_ip": "10.0.10.1",
-      "local_status": "not_verified",
-      "protocol": "HSRP"
+      "interface": "Vlan10"
      },
      {
-      "source_group_key": "HSRP:Vlan10:10",
-      "interface": "Vlan10",
-      "projection_custody": "embedded_unverified",
       "svi_ip": "10.0.10.3/24",
+      "protocol": "HSRP",
+      "local_status": "not_verified",
       "participation": "positive",
       "findings": [
        {
@@ -2009,12 +2009,13 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "role": "STANDBY",
       "group": "10",
+      "projection_custody": "embedded_unverified",
+      "role": "STANDBY",
+      "source_group_key": "HSRP:Vlan10:10",
       "switch": "core2",
       "virtual_ip": "10.0.10.1",
-      "local_status": "not_verified",
-      "protocol": "HSRP"
+      "interface": "Vlan10"
      }
     ],
     "findings": [
@@ -2042,10 +2043,9 @@
     "virtual_ip": "10.0.20.1",
     "members": [
      {
-      "source_group_key": "HSRP:Vlan20:20",
-      "interface": "Vlan20",
-      "projection_custody": "embedded_unverified",
       "svi_ip": "10.0.20.2/24",
+      "protocol": "HSRP",
+      "local_status": "not_verified",
       "participation": "positive",
       "findings": [
        {
@@ -2054,18 +2054,18 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "role": "STANDBY",
       "group": "20",
+      "projection_custody": "embedded_unverified",
+      "role": "STANDBY",
+      "source_group_key": "HSRP:Vlan20:20",
       "switch": "core1",
       "virtual_ip": "10.0.20.1",
-      "local_status": "not_verified",
-      "protocol": "HSRP"
+      "interface": "Vlan20"
      },
      {
-      "source_group_key": "HSRP:Vlan20:20",
-      "interface": "Vlan20",
-      "projection_custody": "embedded_unverified",
       "svi_ip": "10.0.20.3/24",
+      "protocol": "HSRP",
+      "local_status": "not_verified",
       "participation": "positive",
       "findings": [
        {
@@ -2074,12 +2074,13 @@
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
       ],
-      "role": "ACTIVE",
       "group": "20",
+      "projection_custody": "embedded_unverified",
+      "role": "ACTIVE",
+      "source_group_key": "HSRP:Vlan20:20",
       "switch": "core2",
       "virtual_ip": "10.0.20.1",
-      "local_status": "not_verified",
-      "protocol": "HSRP"
+      "interface": "Vlan20"
      }
     ],
     "findings": [
@@ -6304,6 +6305,7 @@
     "label": "Device web UI (ip http server / secure-server)",
     "detail": "The IOS XE web UI was mass-exploited in 2023-24 (tens of thousands of devices implanted); any HTTP(S) server on a network device is standing attack surface.",
     "evidence": "ip http server",
+    "evidence_verbatim": true,
     "advisories": [
      {
       "id": "cisco-sa-iosxe-webui-privesc-j22SaA4z",
@@ -6322,6 +6324,7 @@
     "label": "SNMP v1/v2c read-only community",
     "detail": "Cleartext community strings leak topology and credentials material, and v1/v2c packets still reach the (historically exploited) SNMP stack.",
     "evidence": "snmp-server community <redacted>",
+    "evidence_verbatim": false,
     "advisories": [
      {
       "id": "cisco-sa-snmp-x4LPhte",
@@ -6340,6 +6343,7 @@
     "label": "Telnet enabled on vty lines",
     "detail": "Telnet sends credentials and session content in cleartext -- one capture on any transit segment is a full management compromise.",
     "evidence": "transport input telnet ssh",
+    "evidence_verbatim": true,
     "advisories": [],
     "why": "Telnet sends credentials and session content in cleartext -- one capture on any transit segment is a full management compromise.",
     "recommendation": "Set 'transport input ssh' on all vty lines (and verify SSHv2-only)."
@@ -10606,8 +10610,8 @@
      "kind": "config_text",
      "host": "core1",
      "ref": "/config_hygiene/core1/undefined/0/context",
-     "role": "subject",
-     "cite": "core1 referencing configuration line"
+     "role": "derived_from",
+     "cite": "core1 enclosing column-0 stanza header (first 60 chars; the referencing line only if at column 0)"
     },
     {
      "kind": "analysis_row",
@@ -10637,8 +10641,8 @@
      "kind": "config_text",
      "host": "core1",
      "ref": "/config_hygiene/core1/undefined/1/context",
-     "role": "subject",
-     "cite": "core1 referencing configuration line"
+     "role": "derived_from",
+     "cite": "core1 enclosing column-0 stanza header (first 60 chars; the referencing line only if at column 0)"
     },
     {
      "kind": "analysis_row",
@@ -15446,6 +15450,309 @@
    "source_fresh": true,
    "freshness_status": "fresh"
   }
+ },
+ "device_dossiers": {
+  "per_device": [
+   {
+    "host": "core1",
+    "model": "WS-C3850-24T",
+    "platform": "Catalyst 3850",
+    "sw_version": "16.12.4",
+    "role": "distribution",
+    "wave": "",
+    "health_score": 3,
+    "health_band": "Critical",
+    "eol_band": "Past-LDoS",
+    "train_band": "Verify EoL",
+    "platform_band": "Elevated",
+    "vpc_role": "",
+    "stp_root_vlans": 1,
+    "impact_score": 10,
+    "impact_severity": "High",
+    "stranded": 3,
+    "vlans_impacted": 2,
+    "exposure_score": 10,
+    "exposures": [
+     {
+      "axis": "Health",
+      "state": "risk",
+      "label": "health Critical (3/100)"
+     },
+     {
+      "axis": "Hardware EoL",
+      "state": "risk",
+      "label": "hardware Past LDoS"
+     },
+     {
+      "axis": "Software risk",
+      "state": "risk",
+      "label": "open advisory surface"
+     },
+     {
+      "axis": "Control plane",
+      "state": "watch",
+      "label": "control plane Elevated (CPU 63% \u00b7 memory 75.7% free)"
+     },
+     {
+      "axis": "Operational logs",
+      "state": "risk",
+      "label": "high-severity operational events in the device's own logs"
+     },
+     {
+      "axis": "Security posture",
+      "state": "risk",
+      "label": "6 CIS check(s) failing (incl. high)"
+     },
+     {
+      "axis": "Config hygiene",
+      "state": "watch",
+      "label": "2 undefined reference(s)"
+     },
+     {
+      "axis": "Golden drift",
+      "state": "na",
+      "label": "no config baseline derived (need 3+ comparable configs)"
+     },
+     {
+      "axis": "QoS posture",
+      "state": "ok",
+      "label": "QoS posture consistent"
+     },
+     {
+      "axis": "Physical",
+      "state": "risk",
+      "label": "1 port(s) err-disabled / high error rate"
+     },
+     {
+      "axis": "Protocol",
+      "state": "risk",
+      "label": "high-severity protocol-health finding"
+     }
+    ],
+    "n_risk": 7,
+    "n_watch": 2,
+    "n_na": 1,
+    "compound": [
+     {
+      "code": "CR-01",
+      "title": "End-of-support keystone",
+      "severity": "Critical",
+      "basis": "Hardware is past last-day-of-support AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 an unsupportable box the network cannot lose."
+     },
+     {
+      "code": "CR-02",
+      "title": "Failing hardware past support",
+      "severity": "High",
+      "basis": "Critical health score on hardware that is past last-day-of-support \u2014 no standard TAC escalation path when it degrades further."
+     },
+     {
+      "code": "CR-03",
+      "title": "Root bridge on degraded hardware",
+      "severity": "High",
+      "basis": "STP root for 1 VLAN(s) on a device with Critical health \u2014 a root failure reconverges every VLAN it anchors."
+     },
+     {
+      "code": "CR-04",
+      "title": "Open advisory surface on a high-impact asset",
+      "severity": "High",
+      "basis": "Config-evidenced advisory surface is open AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 validate with the Cisco PSIRT Software Checker before the window."
+     },
+     {
+      "code": "CR-06",
+      "title": "Layered config debt on a critical asset",
+      "severity": "Medium",
+      "basis": "2 config-truth axes are off-baseline AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 drift on the box you can least afford to misjudge."
+     }
+    ],
+    "risk_index": 100,
+    "risk_band": "Severe",
+    "verdict": "Stabilize or replace before migration \u2014 health Critical (3/100); hardware Past LDoS; open advisory surface; removal strands 3 endpoint(s) across 2 VLAN(s)."
+   },
+   {
+    "host": "access1",
+    "model": "WS-C2960X-48FPD-L",
+    "platform": "Catalyst 2960-X",
+    "sw_version": "15.2(7)E3",
+    "role": "access",
+    "wave": "",
+    "health_score": 60,
+    "health_band": "Fair",
+    "eol_band": "Past-EoS",
+    "train_band": "Verify EoL",
+    "platform_band": "Unknown",
+    "vpc_role": "",
+    "stp_root_vlans": 1,
+    "impact_score": 2,
+    "impact_severity": "Info",
+    "stranded": 0,
+    "vlans_impacted": 0,
+    "exposure_score": 5,
+    "exposures": [
+     {
+      "axis": "Health",
+      "state": "ok",
+      "label": "health Fair (60/100)"
+     },
+     {
+      "axis": "Hardware EoL",
+      "state": "watch",
+      "label": "hardware past end-of-sale"
+     },
+     {
+      "axis": "Software risk",
+      "state": "watch",
+      "label": "advisory surface to validate (PSIRT checker)"
+     },
+     {
+      "axis": "Control plane",
+      "state": "na",
+      "label": "capacity output not collected"
+     },
+     {
+      "axis": "Operational logs",
+      "state": "watch",
+      "label": "operational events to review in the logs"
+     },
+     {
+      "axis": "Security posture",
+      "state": "watch",
+      "label": "6 CIS check(s) failing"
+     },
+     {
+      "axis": "Config hygiene",
+      "state": "na",
+      "label": "no captured running-config"
+     },
+     {
+      "axis": "Golden drift",
+      "state": "na",
+      "label": "no config baseline derived (need 3+ comparable configs)"
+     },
+     {
+      "axis": "QoS posture",
+      "state": "ok",
+      "label": "QoS posture consistent"
+     },
+     {
+      "axis": "Physical",
+      "state": "watch",
+      "label": "1 port(s) with L1 findings"
+     },
+     {
+      "axis": "Protocol",
+      "state": "ok",
+      "label": "protocol health clean"
+     }
+    ],
+    "n_risk": 0,
+    "n_watch": 5,
+    "n_na": 3,
+    "compound": [],
+    "risk_index": 10,
+    "risk_band": "Guarded",
+    "verdict": "Watch items only \u2014 hardware past end-of-sale; advisory surface to validate (PSIRT checker); operational events to review in the logs."
+   },
+   {
+    "host": "core2",
+    "model": "N9K-C93180YC-EX",
+    "platform": "",
+    "sw_version": "(not captured)",
+    "role": "distribution",
+    "wave": "",
+    "health_score": 100,
+    "health_band": "Excellent",
+    "eol_band": "Unknown",
+    "train_band": "Unknown",
+    "platform_band": "OK",
+    "vpc_role": "",
+    "stp_root_vlans": 0,
+    "impact_score": 4,
+    "impact_severity": "Low",
+    "stranded": 0,
+    "vlans_impacted": 1,
+    "exposure_score": 0,
+    "exposures": [
+     {
+      "axis": "Health",
+      "state": "ok",
+      "label": "health Excellent (100/100)"
+     },
+     {
+      "axis": "Hardware EoL",
+      "state": "na",
+      "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
+     },
+     {
+      "axis": "Software risk",
+      "state": "na",
+      "label": "not assessable \u2014 no config or version evidence"
+     },
+     {
+      "axis": "Control plane",
+      "state": "ok",
+      "label": "control-plane capacity OK"
+     },
+     {
+      "axis": "Operational logs",
+      "state": "na",
+      "label": "log evidence not collected"
+     },
+     {
+      "axis": "Security posture",
+      "state": "na",
+      "label": "no captured running-config"
+     },
+     {
+      "axis": "Config hygiene",
+      "state": "na",
+      "label": "no captured running-config"
+     },
+     {
+      "axis": "Golden drift",
+      "state": "na",
+      "label": "not in the drift baseline"
+     },
+     {
+      "axis": "QoS posture",
+      "state": "na",
+      "label": "not assessable \u2014 full running-config not captured"
+     },
+     {
+      "axis": "Physical",
+      "state": "ok",
+      "label": "no L1 findings"
+     },
+     {
+      "axis": "Protocol",
+      "state": "ok",
+      "label": "protocol health clean"
+     }
+    ],
+    "n_risk": 0,
+    "n_watch": 0,
+    "n_na": 7,
+    "compound": [],
+    "risk_index": 0,
+    "risk_band": "Low",
+    "verdict": "No stacked risk \u2014 routine migration handling."
+   }
+  ],
+  "summary": {
+   "n_devices": 3,
+   "bands": {
+    "Severe": 1,
+    "Elevated": 0,
+    "Guarded": 1,
+    "Low": 1,
+    "Unassessed": 0
+   },
+   "n_compound": 5,
+   "worst": [
+    "core1"
+   ],
+   "avg_risk_index": 37
+  },
+  "note": "Risk index = topology impact (1-10) x stacked exposure (0-10) per asset, mirroring asset-risk practice (likelihood x impact). Synthesis of already-computed axes only; an axis without evidence is 'not assessed', never red."
  },
  "architecture_review": {
   "domains": [

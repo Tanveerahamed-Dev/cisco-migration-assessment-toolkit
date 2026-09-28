@@ -226,7 +226,7 @@ beforeEach(() => {
   } catch {
     /* preferences are not evidence */
   }
-  act(() => useInvestigation.getState().reset());
+  act(() => { useInvestigation.getState().reset(); });
 });
 
 afterEach(() => {
@@ -252,11 +252,11 @@ async function sweep(g: Geometry, host: string, from: string | null): Promise<{ 
   const failures: string[] = [];
   let checked = 0;
   let maxShift = 0;
-  act(() => pickDevice(from));
+  act(() => { pickDevice(from); });
   await flush();
   const band0 = bandNow(portTop, g);
   for (const o of offsets(g, band0)) {
-    act(() => pickDevice(from));
+    act(() => { pickDevice(from); });
     await flush();
     const n = soleNamingRowAt(o, idx, g, bandNow(portTop, g));
     if (n === null) throw new Error(`precondition: no row naming ${host} is the only one visible at offset ${o}`);
@@ -269,7 +269,7 @@ async function sweep(g: Geometry, host: string, from: string | null): Promise<{ 
     }
     const top0 = portTop();
 
-    act(() => pickDevice(host));
+    act(() => { pickDevice(host); });
     await flush();
 
     expect(useInvestigation.getState().deviceId).toBe(host);
@@ -318,7 +318,7 @@ describe("A4: the whole band — a naming row visible when the reader acted keep
     const start = scrollFor(n, bandNow(portTop, g) - 13 - g.row, g);
     readerScrollsTo(grid, start);
     expect(namingIndices(c, "access13").filter((i) => inView(rows[i]!, portTop, g)), "F099 is the only naming row visible").toEqual([n]);
-    act(() => pickDevice("access13"));
+    act(() => { pickDevice("access13"); });
     await flush();
     expect(grid.scrollTop, `scrollTop ${start} -> ${grid.scrollTop}`).not.toBe(0);
     expect(Math.abs(grid.scrollTop - start)).toBeLessThanOrEqual(38);
@@ -334,7 +334,7 @@ describe("A4: the whole band — a naming row visible when the reader acted keep
     expect(n, "precondition: some naming row is alone mid-port").not.toBeNull();
     const start = scrollFor(n!, o, g);
     readerScrollsTo(grid, start);
-    act(() => pickDevice("access13"));
+    act(() => { pickDevice("access13"); });
     await flush();
     expect(grid.scrollTop).toBe(start);
   });
@@ -348,7 +348,7 @@ describe("A4: the whole band — a naming row visible when the reader acted keep
     const start = scrollFor(30, 0, g);
     readerScrollsTo(grid, start);
     expect(idx.every((i) => !inView(dataRows(c)[i]!, portTop, g)), "precondition: no naming row visible").toBe(true);
-    act(() => pickDevice("access13"));
+    act(() => { pickDevice("access13"); });
     await flush();
     expect(inView(dataRows(c)[idx[0]!]!, portTop, g), "the first naming row is revealed").toBe(true);
   });
@@ -379,11 +379,11 @@ describe("A4: browser Back onto a device selection keeps the reader's place", ()
     );
     const { grid, portTop } = installLayout(c, g);
     const idx = namingIndices(c, "access13");
-    act(() => pickDevice("access13"));
+    act(() => { pickDevice("access13"); });
     await flush();
     const withDevice = window.location.search;
     expect(withDevice).toContain("d=access13");
-    act(() => pickDevice(null));
+    act(() => { pickDevice(null); });
     await flush();
     expect(window.location.search).not.toContain("d=access13");
     const o = bandNow(portTop, g) - 2 - g.row;

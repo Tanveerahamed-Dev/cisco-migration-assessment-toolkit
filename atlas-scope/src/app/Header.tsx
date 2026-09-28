@@ -40,7 +40,7 @@ import {
   orNotObserved,
 } from "../ui/primitives";
 import { setHelpOpen } from "./keyboard";
-import { recordReturn, returnFocus, type ReturnRecord } from "./focus-return";
+import { recordReturn, returnFocus, useReleaseFocusOnLayoutChange, type ReturnRecord } from "./focus-return";
 import { useLadder } from "./surfaces";
 import { ThemeToggle, useThemeShortcut } from "./ThemeToggle";
 import "./chrome.css";
@@ -263,6 +263,14 @@ export interface HeaderProps {
 
 export function Header({ onSubmitQuery }: HeaderProps): ReactElement {
   const compact = useCompact();
+  /* THE SWAP NEVER DROPS FOCUS (acceptance D3, class D3-R2-1). Crossing 1024 px unmounts one form of
+     these controls and mounts the other: MEASURED on a release build, '900 focus More -> 900->1100
+     (More unmounted) BODY', 'inside More popover (thm__opt) -> 900->1100 BODY' and '1100 focus "Copy
+     the link…" -> 1100->900 BODY'. The header decides the swap, so it declares it to the owner
+     (focus-return.ts, fourth door): a control inside the popover goes to its inline TWIN (same role,
+     same name); a control with no twin in the new layout goes to the header's stated successor —
+     More where the controls are folded behind it, the surface toolbar where they are inline. */
+  useReleaseFocusOnLayoutChange(compact);
   const query = useInvestigation((s) => s.query);
   const surface = useInvestigation((s) => s.surface);
   const trace = useInvestigation((s) => s.trace);
@@ -408,7 +416,12 @@ export function Header({ onSubmitQuery }: HeaderProps): ReactElement {
   );
 
   return (
-    <header id="app-header" className="app__header hdr" data-compact={compact || undefined}>
+    <header
+      id="app-header"
+      className="app__header hdr"
+      data-compact={compact || undefined}
+      data-focus-successor=".hdr-more, .hdr-surfaces"
+    >
       <p className="hdr-brand">
         <span className="hdr-brand__mark">
           <Mark />

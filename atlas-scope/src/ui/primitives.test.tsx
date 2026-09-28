@@ -10,9 +10,12 @@
  * No testing-library: this project does not depend on one. React's own `act` plus a real
  * `createRoot` over jsdom is enough, and it keeps the dependency surface honest.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   Band,
   Button,
@@ -30,6 +33,7 @@ import {
   Tabs,
   Toolbar,
   Tooltip,
+  inertOutside,
   isObserved,
   orNotObserved,
 } from "./primitives";
@@ -490,6 +494,386 @@ describe("Dialog", () => {
   });
 });
 
+/* ══ Dialog stack — the most recently OPENED dialog is the top layer (D1) ═══
+   MEASURED (verifier round 2, E2/E3, 2026-09-27, release build, 1280x800): the command palette is
+   parked in <body> long before its first open, so with the keyboard reference open a first Ctrl+K
+   drew the palette UNDER the reference — both dialogs sat at z-index --z-dialog, and the reference
+   came later in the DOM. Focus was in the palette's search box, which nobody could see (WCAG 2.4.11),
+   and the reference was inert, so it could not be used either. Paint order had been an accident of
+   DOM order. The class is "two open dialogs", not the palette: whatever order the dialogs were
+   mounted, parked or pre-warmed in, the one opened LAST is on top, holds focus, owns the keyboard,
+   and every open dialog under it is inert. Swept here over every mount order, opening order and
+   pre-warm mode a Dialog has; the app's own dialogs are swept pairwise in CommandPalette.test.tsx.
+   This file pins attributes, not pixels: what a browser was observed to paint, and where a durable
+   rendered check belongs, is stated in that file's header. */
+
+type Warm = false | "raster" | "parked";
+type Which = "alpha" | "beta";
+const WARMS: readonly Warm[] = [false, "raster", "parked"];
+const PAIRS: readonly (readonly [Which, Which])[] = [
+  ["alpha", "beta"],
+  ["beta", "alpha"],
+];
+
+function StackHarness({
+  open,
+  warm,
+  order,
+  onClose,
+}: {
+  open: Record<Which, boolean>;
+  warm: Record<Which, Warm>;
+  order: readonly Which[];
+  onClose: Record<Which, () => void>;
+}): ReactNode {
+  return (
+    <>
+      <button type="button" id="page-control">
+        Page control
+      </button>
+      {order.map((w) => (
+        <Dialog key={w} open={open[w]} prewarm={warm[w]} onClose={onClose[w]} title={`Dialog ${w}`} className={`stack-${w}`} footer={<Button>{`${w} last`}</Button>}>
+          <Button>{`${w} first`}</Button>
+          {/* A live region inside the dialog, as the palette has one: the page-wide inert descends into a
+              subtree that holds one, which is how a dialog's insides could be left inert. */}
+          <p aria-live="polite">{`${w} status`}</p>
+        </Dialog>
+      ))}
+    </>
+  );
+}
+
+const stackPanel = (w: Which): HTMLElement | null => document.querySelector<HTMLElement>(`.ui-dialog.stack-${w}`);
+/** A dialog's scrim is the portal sibling rendered immediately before its panel. */
+const stackScrim = (w: Which): HTMLElement | null => {
+  const s = stackPanel(w)?.previousElementSibling;
+  return s instanceof HTMLElement && s.classList.contains("ui-dialog__scrim") ? s : null;
+};
+/** Inert itself or through an ancestor: `inertOutside` marks the highest subtree it can. */
+const isInert = (el: Element): boolean => el.closest("[inert]") !== null;
+const layerOf = (el: HTMLElement | null): number | null => {
+  const a = el?.getAttribute("data-dialog-layer");
+  return a === null || a === undefined ? null : Number(a);
+};
+/** Paint order in the root stacking context, as primitives.css declares it (pinned below). */
+const paintKey = (el: HTMLElement): number => 2 * (layerOf(el) ?? -1) + (el.classList.contains("ui-dialog") ? 1 : 0);
+
+/** The CSS rule every dialog layer's z-index comes from (read from primitives.css, comments stripped). */
+function zIndexRule(selector: string): string | null {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "primitives.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const block = new RegExp(`(?:^|\\})\\s*${esc}\\s*\\{([^}]*)\\}`, "m").exec(css);
+  const z = block === null ? null : /z-index:\s*([^;]+);/.exec(block[1]!);
+  return z === null ? null : z[1]!.replace(/\s+/g, " ").trim();
+}
+
+describe("Dialog stack: the most recently opened dialog is the top layer", () => {
+  const saved = { raf: window.requestAnimationFrame, caf: window.cancelAnimationFrame };
+  let frames = new Map<number, FrameRequestCallback>();
+  let nextFrame = 1;
+
+  beforeEach(() => {
+    frames = new Map();
+    window.requestAnimationFrame = (cb) => {
+      const id = nextFrame++;
+      frames.set(id, cb);
+      return id;
+    };
+    window.cancelAnimationFrame = (id) => void frames.delete(id);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    window.requestAnimationFrame = saved.raf;
+    window.cancelAnimationFrame = saved.caf;
+  });
+
+  /** Present a frame and let every deferred timer run: the page-wide inert of every open dialog lands. */
+  const settle = (): void => {
+    for (let i = 0; i < 3; i++) {
+      const due = [...frames.values()];
+      frames.clear();
+      act(() => {
+        for (const cb of due) cb(0);
+        vi.advanceTimersByTime(150);
+      });
+    }
+  };
+
+  /** `top` is the top layer: exposed, live, painted over every node of `under`, holding focus; `under` is inert. */
+  const expectOnTop = (top: Which, under: Which, where: string): void => {
+    const tp = stackPanel(top)!;
+    const ts = stackScrim(top)!;
+    const up = stackPanel(under)!;
+    const us = stackScrim(under)!;
+    expect(tp.getAttribute("role"), `${where}: ${top} is an open dialog`).toBe("dialog");
+    expect(up.getAttribute("role"), `${where}: ${under} is still an open dialog`).toBe("dialog");
+    expect(ts, `${where}: ${top} has its scrim`).not.toBeNull();
+    for (const el of [tp, ts]) {
+      expect(el.hasAttribute("inert"), `${where}: the top dialog ${top} is inert`).toBe(false);
+      expect(el.hasAttribute("aria-hidden"), `${where}: the top dialog ${top} is hidden from AT`).toBe(false);
+    }
+    for (const el of [up, us]) expect(el.hasAttribute("inert"), `${where}: ${under}, underneath, is live`).toBe(true);
+    for (const el of [tp, ts, up, us]) {
+      expect(layerOf(el), `${where}: a node of an open dialog carries no layer`).not.toBeNull();
+      expect(el.style.getPropertyValue("--dialog-layer"), `${where}: the CSS reads the same layer the stack assigned`).toBe(String(layerOf(el)));
+    }
+    expect(layerOf(tp), `${where}: ${top}'s scrim and panel are one layer`).toBe(layerOf(ts));
+    expect(paintKey(ts), `${where}: ${top}'s scrim paints over ${under}'s panel`).toBeGreaterThan(paintKey(up));
+    expect(paintKey(tp), `${where}: ${top}'s panel paints over its own scrim`).toBeGreaterThan(paintKey(ts));
+    expect(tp.contains(document.activeElement), `${where}: focus is in ${top} (WCAG 2.4.11: the focused control is the visible one)`).toBe(true);
+    expect([...tp.querySelectorAll("[inert]")].map((el) => el.outerHTML.slice(0, 80)), `${where}: a node INSIDE the top dialog ${top} is inert`).toEqual([]);
+  };
+
+  it("the z-index of a dialog's scrim and panel comes from its stack layer (the rule paintKey reads)", () => {
+    expect(zIndexRule(".ui-dialog__scrim")).toBe("calc(var(--z-dialog) + var(--dialog-layer, 0) * 2)");
+    expect(zIndexRule(".ui-dialog")).toBe("calc(var(--z-dialog) + var(--dialog-layer, 0) * 2 + 1)");
+  });
+
+  for (const order of PAIRS)
+    for (const [first, second] of PAIRS)
+      for (const warmFirst of WARMS)
+        for (const warmSecond of WARMS)
+          for (const settleBetween of [true, false])
+            it(`mounted ${order.join(",")}; ${first} (${warmFirst || "not pre-warmed"}) opened, then ${second} (${warmSecond || "not pre-warmed"})${settleBetween ? "" : " before the first's deferred inert landed"}`, () => {
+              const closes = { alpha: vi.fn(), beta: vi.fn() };
+              const open: Record<Which, boolean> = { alpha: false, beta: false };
+              const warm = { [first]: warmFirst, [second]: warmSecond } as Record<Which, Warm>;
+              const ui = (): ReactNode => <StackHarness open={{ ...open }} warm={warm} order={order} onClose={closes} />;
+              const { render } = mount(ui());
+              const page = document.getElementById("page-control")!;
+              act(() => page.focus());
+
+              open[first] = true;
+              render(ui());
+              if (settleBetween) settle();
+              expect(stackPanel(first)!.contains(document.activeElement), "the first dialog took focus").toBe(true);
+              expect(layerOf(stackPanel(first)), "the one open dialog is the bottom layer").toBe(0);
+
+              open[second] = true;
+              render(ui());
+              expectOnTop(second, first, "as it opens");
+              settle();
+              expectOnTop(second, first, "after both dialogs' deferred page-wide inert");
+              expect(isInert(page), "the page behind both is inert").toBe(true);
+
+              /* Only the top dialog owns the keyboard: its Tab trap wraps inside it, and one Escape closes it alone. */
+              const buttons = [...stackPanel(second)!.querySelectorAll<HTMLElement>("button")];
+              act(() => buttons[buttons.length - 1]!.focus());
+              key(buttons[buttons.length - 1]!, "Tab");
+              expect(document.activeElement, "Tab wrapped inside the top dialog").toBe(buttons[0]);
+              key(buttons[0]!, "Tab", { shiftKey: true });
+              expect(document.activeElement, "Shift+Tab wrapped inside the top dialog").toBe(buttons[buttons.length - 1]);
+              key(document.activeElement!, "Escape");
+              expect(closes[second], "Escape closed the top dialog").toHaveBeenCalledTimes(1);
+              expect(closes[first], "the same Escape did not also close the one underneath").not.toHaveBeenCalled();
+
+              open[second] = false;
+              render(ui());
+              settle();
+              const back = stackPanel(first)!;
+              expect(back.getAttribute("role"), "the first dialog is still open").toBe("dialog");
+              expect(back.hasAttribute("inert") || stackScrim(first)!.hasAttribute("inert"), "the first dialog is live again").toBe(false);
+              expect(back.contains(document.activeElement), "focus came back into the first dialog").toBe(true);
+              expect([...back.querySelectorAll("[inert]")].map((el) => el.outerHTML.slice(0, 80)), "nothing inside the first dialog, on top again, is inert").toEqual([]);
+              expect(isInert(page), "the page stays inert under the first dialog").toBe(true);
+
+              open[first] = false;
+              render(ui());
+              settle();
+              expect(isInert(page), "nothing is left inert").toBe(false);
+              expect(document.querySelectorAll("[inert]").length, "no node is left inert by either dialog").toBe(
+                document.querySelectorAll("[data-dialog-prewarm][inert]").length,
+              );
+              expect(document.activeElement, "focus is back where it started").toBe(page);
+            });
+
+  it("a dialog UNDER another that closes leaves the top one on top, focused, and the page inert", () => {
+    const closes = { alpha: vi.fn(), beta: vi.fn() };
+    const open: Record<Which, boolean> = { alpha: false, beta: false };
+    const ui = (): ReactNode => <StackHarness open={{ ...open }} warm={{ alpha: false, beta: false }} order={["alpha", "beta"]} onClose={closes} />;
+    const { render } = mount(ui());
+    const page = document.getElementById("page-control")!;
+    act(() => page.focus());
+    open.alpha = true;
+    render(ui());
+    settle();
+    open.beta = true;
+    render(ui());
+    settle();
+    const focused = document.activeElement;
+    open.alpha = false;
+    render(ui());
+    settle();
+    const top = stackPanel("beta")!;
+    expect(top.getAttribute("role")).toBe("dialog");
+    expect(top.hasAttribute("inert")).toBe(false);
+    expect(layerOf(top), "the one open dialog is the bottom layer again").toBe(0);
+    expect(document.activeElement, "the dialog underneath did not pull focus out of the top one as it closed").toBe(focused);
+    expect(isInert(page), "the page stays inert under the dialog still open").toBe(true);
+    open.beta = false;
+    render(ui());
+    settle();
+    expect(isInert(page)).toBe(false);
+  });
+
+  it("a dialog closing from UNDER another does not pull focus out of it, even to a control that is still live", () => {
+    /* A live region is exempt from the page-wide inert (inertOutside), so a control inside one stays
+       focusable behind every dialog: the one case where a lower dialog's focus return would succeed,
+       and take focus out of the dialog the user is in. */
+    const live = document.createElement("div");
+    live.setAttribute("aria-live", "polite");
+    const liveButton = document.createElement("button");
+    liveButton.textContent = "in a live region";
+    live.appendChild(liveButton);
+    document.body.appendChild(live);
+    const closes = { alpha: vi.fn(), beta: vi.fn() };
+    const open: Record<Which, boolean> = { alpha: false, beta: false };
+    const ui = (): ReactNode => <StackHarness open={{ ...open }} warm={{ alpha: false, beta: false }} order={["alpha", "beta"]} onClose={closes} />;
+    const { render } = mount(ui());
+    act(() => liveButton.focus());
+    open.alpha = true;
+    render(ui());
+    settle();
+    open.beta = true;
+    render(ui());
+    settle();
+    const focused = document.activeElement;
+    expect(stackPanel("beta")!.contains(focused), "precondition: focus is in the top dialog").toBe(true);
+    expect(isInert(liveButton), "precondition: the live region's control is still live").toBe(false);
+    open.alpha = false;
+    render(ui());
+    settle();
+    expect(document.activeElement, "focus stayed in the dialog on top").toBe(focused);
+    open.beta = false;
+    render(ui());
+    settle();
+  });
+
+  /* Verifier (R6 round 1, V3, 2026-09-27): each dialog's page-wide inert is deferred to its own frame,
+     so the two can land in EITHER order. When the upper one landed first it covered the page, and the
+     lower one's, landing second, found everything already inert and held nothing; when the upper one
+     then closed it released the page, and the dialog still open sat over a live page. The class is
+     every order the deferred inerts can land in (lower first, upper first, only one, none) x which
+     dialog closes first, over every mount order and with the pair cold or parked: once the page has
+     been covered, no close uncovers it while a dialog is still open, and a dialog still open always
+     ends up over an inert page. */
+  type Landing = "first,second" | "second,first" | "first" | "second" | "none";
+  const LANDINGS: readonly Landing[] = ["first,second", "second,first", "first", "second", "none"];
+  for (const order of PAIRS)
+    for (const [first, second] of PAIRS)
+      for (const warmBoth of [false, "parked"] as const)
+        for (const landing of LANDINGS)
+          for (const closing of ["top", "under"] as const)
+            it(`mounted ${order.join(",")}; ${first} then ${second} opened (${warmBoth || "cold"}); deferred inert lands ${landing}; the ${closing} dialog closes first: the page stays covered`, () => {
+              const closes = { alpha: vi.fn(), beta: vi.fn() };
+              const open: Record<Which, boolean> = { alpha: false, beta: false };
+              const warm = { alpha: warmBoth, beta: warmBoth } as Record<Which, Warm>;
+              const ui = (): ReactNode => <StackHarness open={{ ...open }} warm={warm} order={order} onClose={closes} />;
+              const { render } = mount(ui());
+              settle();
+              const page = document.getElementById("page-control")!;
+              act(() => page.focus());
+              /* The frames each open registers are that dialog's deferred inert; run them, and the timer each schedules, one dialog at a time. */
+              const framesOf: Record<Which, number[]> = { alpha: [], beta: [] };
+              const openOne = (w: Which): void => {
+                const before = new Set(frames.keys());
+                open[w] = true;
+                render(ui());
+                framesOf[w] = [...frames.keys()].filter((k) => !before.has(k));
+              };
+              const land = (w: Which): void => {
+                const due = framesOf[w].map((k) => frames.get(k)).filter((cb): cb is FrameRequestCallback => cb !== undefined);
+                for (const k of framesOf[w]) frames.delete(k);
+                act(() => {
+                  for (const cb of due) cb(0);
+                  vi.advanceTimersByTime(1);
+                });
+              };
+              openOne(first);
+              openOne(second);
+              expect(framesOf[first].length + framesOf[second].length, "precondition: each open deferred its page-wide inert to a frame").toBeGreaterThanOrEqual(2);
+              const landed = landing === "none" ? [] : (landing.split(",") as ("first" | "second")[]).map((k) => (k === "first" ? first : second));
+              for (const w of landed) land(w);
+              if (landed.length > 0) expect(isInert(page), `precondition: with ${landed.join(" then ")} landed, the page is inert`).toBe(true);
+              else expect(isInert(page), "precondition: nothing has landed yet, so the open stays off the page (E3)").toBe(false);
+
+              const leaving = closing === "top" ? second : first;
+              const staying = closing === "top" ? first : second;
+              open[leaving] = false;
+              render(ui());
+              expect(stackPanel(staying)!.getAttribute("role"), `${staying} is still open`).toBe("dialog");
+              /* A close never uncovers the page while a dialog is still open: not even for a frame. */
+              if (landed.length > 0) expect(isInert(page), `the page behind ${staying} is still inert the moment ${leaving} closes`).toBe(true);
+              settle();
+              expect(isInert(page), `the page behind ${staying}, still open, is inert`).toBe(true);
+              expect(isInert(stackPanel(staying)!) || isInert(stackScrim(staying)!), `${staying} itself is live`).toBe(false);
+              expect([...stackPanel(staying)!.querySelectorAll("[inert]")].map((el) => el.outerHTML.slice(0, 80)), `nothing inside ${staying} is inert`).toEqual([]);
+              expect(stackPanel(staying)!.contains(document.activeElement), `focus is in ${staying}`).toBe(true);
+
+              open[staying] = false;
+              render(ui());
+              settle();
+              expect(isInert(page), "nothing is left inert").toBe(false);
+              expect(document.querySelectorAll("[inert]").length, "no node is left inert by either dialog").toBe(
+                document.querySelectorAll("[data-dialog-prewarm][inert]").length,
+              );
+            });
+});
+
+describe("inertOutside and a subtree that is already inert", () => {
+  it("does not descend into a dialog's pre-warm frame for its live region, and releases only what it made", () => {
+    /* A pre-warm frame is inert as a whole, and its inert is the dialog's own, lifted when it opens.
+       Descending into it for a live region marked its children one by one; they then stayed inert inside
+       the open dialog (verifier R6 round 1, V3). */
+    const kept = document.createElement("div");
+    const covered = document.createElement("div");
+    covered.innerHTML = '<p aria-live="polite">status</p><button type="button">control</button>';
+    covered.setAttribute("inert", "");
+    covered.setAttribute("data-dialog-prewarm", "parked");
+    const page = document.createElement("div");
+    page.innerHTML = '<p aria-live="polite">page status</p><button type="button">page control</button>';
+    document.body.append(kept, covered, page);
+    try {
+      const undo = inertOutside([kept]);
+      expect([...covered.querySelectorAll("[inert]")], "nothing inside the already-inert subtree was marked").toEqual([]);
+      expect(page.querySelector("button")!.hasAttribute("inert"), "precondition: the rest of the page is covered, past its live region").toBe(true);
+      expect(page.querySelector("[aria-live]")!.closest("[inert]"), "the page's live region still speaks").toBeNull();
+      undo();
+      expect(covered.hasAttribute("inert"), "an inert it did not make survives its undo").toBe(true);
+      expect(document.querySelectorAll("[inert]").length, "its undo releases exactly what it made").toBe(1);
+    } finally {
+      kept.remove();
+      covered.remove();
+      page.remove();
+    }
+  });
+
+  it("covers the CHILDREN of anyone else's inert subtree, so lifting that inert under an open modal exposes nothing (VR2-1)", () => {
+    /* The hidden evidence rail is inert (useReleaseFocusOnHide) and holds a live region. Skipping it left it
+       wholly out of the cover: shown while a modal was open, the whole rail was live behind the modal. */
+    const kept = document.createElement("div");
+    const rail = document.createElement("div");
+    rail.innerHTML = '<p aria-live="polite">rail status</p><div><button type="button">rail control</button></div>';
+    rail.setAttribute("inert", "");
+    document.body.append(kept, rail);
+    try {
+      const undo = inertOutside([kept]);
+      rail.removeAttribute("inert"); // the rail is shown while the modal is still open
+      expect(rail.querySelector("button")!.closest("[inert]"), "a control in the shown rail is live behind the modal").not.toBeNull();
+      expect(rail.querySelector("[aria-live]")!.closest("[inert]"), "the rail's live region still speaks").toBeNull();
+      rail.setAttribute("inert", ""); // hidden again before the modal closes
+      undo();
+      expect(rail.hasAttribute("inert"), "the rail's own inert is not the cover's to release").toBe(true);
+      expect([...rail.querySelectorAll("[inert]")], "the cover released every child it marked").toEqual([]);
+    } finally {
+      kept.remove();
+      rail.remove();
+    }
+  });
+});
+
 /* ══ Popover — the panel stays inside the viewport ═════════════════════════
    MEASURED 2026-09-25 (390 and 768 px, light and dark, headless Chromium): the priority queue's
    "What the collection gap means" popover opens start-aligned under a trigger at the right edge,
@@ -587,6 +971,70 @@ describe("Popover stays inside the viewport", () => {
     const panel = openBelow({ top: 100, height: 16 }, { top: 120, height: 160 }, 800);
     expect(panel.style.top).toBe("");
     expect(panel.style.maxHeight).toBe("");
+  });
+});
+
+/* ══ Popover — the panel follows its trigger across a viewport resize ═══════
+   MEASURED (D3 rung crossing, 768 -> 390): the panel kept the coordinates it had when it opened, so
+   "More"'s panel sat wholly off screen with focus inside it. A resize re-measures the trigger. */
+
+describe("Popover follows its trigger across a resize", () => {
+  const saved = { raf: window.requestAnimationFrame, caf: window.cancelAnimationFrame };
+  let frames = new Map<number, FrameRequestCallback>();
+  let nextFrame = 1;
+  beforeEach(() => {
+    frames = new Map();
+    window.requestAnimationFrame = (cb) => {
+      const id = nextFrame++;
+      frames.set(id, cb);
+      return id;
+    };
+    window.cancelAnimationFrame = (id) => void frames.delete(id);
+  });
+  afterEach(() => {
+    window.requestAnimationFrame = saved.raf;
+    window.cancelAnimationFrame = saved.caf;
+  });
+
+  it("re-reads the trigger's position on resize, once per frame, and stops listening when closed", () => {
+    let triggerLeft = 600;
+    const realRect = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement): DOMRect {
+      if (this.id !== "pop-resize-trigger") return realRect.call(this);
+      return { left: triggerLeft, right: triggerLeft + 24, width: 24, top: 40, bottom: 56, height: 16, x: triggerLeft, y: 40, toJSON: () => ({}) } as DOMRect;
+    };
+    try {
+      const ui = (open: boolean): ReactNode => (
+        <Popover label="Probe" open={open} trigger={<button type="button" id="pop-resize-trigger">t</button>}>
+          <p>body</p>
+        </Popover>
+      );
+      const { render } = mount(ui(true));
+      const panel = (): HTMLElement => [...document.querySelectorAll<HTMLElement>(".ui-popover")].at(-1)!;
+      expect(panel().style.getPropertyValue("--pop-left")).toBe("600px");
+
+      triggerLeft = 120;
+      act(() => {
+        window.dispatchEvent(new Event("resize"));
+        window.dispatchEvent(new Event("resize"));
+      });
+      expect(frames.size, "a burst of resize events is coalesced into one frame").toBe(1);
+      act(() => {
+        const due = [...frames.values()];
+        frames.clear();
+        for (const cb of due) cb(0);
+      });
+      expect(panel().style.getPropertyValue("--pop-left"), "the panel still sits where the trigger was at open").toBe("120px");
+
+      render(ui(false));
+      triggerLeft = 300;
+      act(() => {
+        window.dispatchEvent(new Event("resize"));
+      });
+      expect(frames.size, "a closed popover no longer re-measures").toBe(0);
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = realRect;
+    }
   });
 });
 

@@ -159,7 +159,7 @@ describe("a focused tab panel keeps its focus ring inside the scroller that hold
 
   it("the device pane's panels sit in a clipping scroller (the premise of the defect)", () => {
     const device = fabric.devices.find((d) => d.collected) ?? fabric.devices[0]!;
-    act(() => useInvestigation.getState().selectDevice(device.host));
+    act(() => { useInvestigation.getState().selectDevice(device.host); });
     const c = mount(<DevicePane />);
     const panels = [...c.querySelectorAll<HTMLElement>('[role="tabpanel"]')];
     expect(panels.length).toBeGreaterThan(1);
@@ -173,7 +173,7 @@ describe("a focused tab panel keeps its focus ring inside the scroller that hold
 
   it("every rendered panel's winning focus outline is drawn wholly inside its own box", () => {
     const device = fabric.devices.find((d) => d.collected) ?? fabric.devices[0]!;
-    act(() => useInvestigation.getState().selectDevice(device.host));
+    act(() => { useInvestigation.getState().selectDevice(device.host); });
     const c = mount(<DevicePane />);
     const panels = [...c.querySelectorAll<HTMLElement>('[role="tabpanel"]')];
     expect(panels.length).toBeGreaterThan(1);

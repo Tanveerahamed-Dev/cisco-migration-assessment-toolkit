@@ -9,10 +9,12 @@
  * OSPF could never have a complete table, however carefully it was collected.
  *
  * The rule now reads the engine's own receipt (`cisco_toolkit/analyze.py`
- * compute_protocol_assessability): a family contributes no learned routes on a host ONLY when its
- * state is `captured_empty` — "a recognized command capture was empty", the neighbor table was
- * collected and holds nothing. Every other non-assessed state stays a reason the table is not known
- * to be complete, and names the assessability row that says so:
+ * compute_protocol_assessability): a family contributes no learned routes on a host ONLY on positive
+ * evidence — `captured_empty` (the neighbor table was collected and holds nothing) or `not_running`
+ * (the capture is the platform's no-process banner, e.g. IOS `% BGP not active`), each honoured only
+ * while the engine's generated contract (`contracts/engine-contract.v1.json`) declares it. Every
+ * other state the engine declares — read from that contract, not listed here — stays a reason the
+ * table is not known to be complete, and names the assessability row that says so:
  *   - `captured_no_record` — output was captured but nothing parsed (possibly a parser gap), NOT empty;
  *   - `partial`, `capture_error`, `not_collected`, `analysis_unavailable`, a missing row, and any
  *     state this code has never seen.
@@ -27,9 +29,18 @@
  * route-source vocabulary, which sub-types a family as `<family>-<subtype>` (`ospf-ext2`,
  * `eigrp-external`), so an O E2 route is an OSPF route.
  *
+ * A route learned by a protocol with NO receipt at all (IS-IS, RIP, LISP, NHRP, mobile, ODR, or any
+ * code the parser passes through unmapped) makes the table incomplete; the sources the engine's route
+ * parser can emit are read from its own source text (cisco_toolkit/parse.py), so a new route code is
+ * exercised here the day it is added (2026-09-27 verifier, E2R2-V1). A BGP peer the table reaches only
+ * by its default route is not reached (E2R2-V2), and the real-data sweep recomputes, for every
+ * uncited session, that its link IS held (E2R2-V6).
+ *
  * The routing-completeness record is mocked with synthetic hosts ADDED to the real compiled file
  * (same source binding), so the real module is exercised through its public API.
  */
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it, vi } from "vitest";
 
 import realEvidence from "./rib-evidence.json";
@@ -184,7 +195,10 @@ const fx = vi.hoisted(() => {
     // Only sub-typed OSPF routes (beside the link): still OSPF routes for the adjacency rule.
     "t-interarea": [route("t-interarea", "connected", 0), route("t-interarea", "ospf-interarea", 1)],
     "t-contradict": [route("t-contradict", "connected", 0), route("t-contradict", "eigrp-external", 1)],
-    "t-bgp-eigrp": [route("t-bgp-eigrp", "connected", 0), route("t-bgp-eigrp", "static", 1, { prefix: "0.0.0.0/0", outIntf: null })],
+    // The 0-prefix peer 203.0.113.2 is reached by a route the table holds, so this host pins only what
+    // "exchanging" means. (It used to be reached by a static DEFAULT, which the link rule no longer
+    // accepts as evidence of a path -- that case is t-bgp-default-only.)
+    "t-bgp-eigrp": [route("t-bgp-eigrp", "connected", 0), route("t-bgp-eigrp", "static", 1, { prefix: "203.0.113.0/24", outIntf: null })],
     "t-full-no-route": [route("t-full-no-route", "connected", 0), route("t-full-no-route", "static", 1)],
     "t-link-missing": [
       route("t-link-missing", "connected", 0),
@@ -209,16 +223,100 @@ const fx = vi.hoisted(() => {
     ],
     overlay: [],
   };
-  return { hosts, routes };
+  // The dist-switch shape on the substrate fleet: OSPF runs, EIGRP's neighbor table is captured empty, and
+  // BGP's capture is IOS's no-process banner, which the engine reads as its own `not_running` state.
+  hosts["t-not-running"] = {
+    protocols: [row("OSPF", "assessed", 60), row("BGP", "not_running", 61), row("EIGRP", "captured_empty", 62)],
+    adjacencies: [adj("ospf", "10.9.0.1", "FULL/  -", "t-not-running", 0)],
+    overlay: [],
+  };
+  routes["t-not-running"] = [route("t-not-running", "connected", 0), route("t-not-running", "ospf-ext2", 1)];
+  // "No BGP process" beside a BGP route in the table: the captures disagree.
+  hosts["t-not-running-contradict"] = {
+    protocols: [row("OSPF", "captured_empty", 63), row("BGP", "not_running", 64), row("EIGRP", "captured_empty", 65)],
+    adjacencies: [],
+    overlay: [],
+  };
+  routes["t-not-running-contradict"] = [route("t-not-running-contradict", "connected", 0), route("t-not-running-contradict", "bgp", 1)];
+  // Every other state the engine names stays unknown -- never positive evidence of absence.
+  hosts["t-unknown-states"] = {
+    protocols: [row("OSPF", "not_collected", 66), row("BGP", "captured_no_record", 67), row("EIGRP", "capture_error", 68)],
+    adjacencies: [],
+    overlay: [],
+  };
+  routes["t-unknown-states"] = [route("t-unknown-states", "connected", 0)];
+  // An Established BGP peer (no interface recorded) that only the DEFAULT route covers: the default covers
+  // every address, so it is no evidence of a path to this peer (2026-09-27 verifier, E2R2-V2).
+  hosts["t-bgp-default-only"] = {
+    protocols: [row("OSPF", "captured_empty", 69), row("BGP", "assessed", 70), row("EIGRP", "captured_empty", 71)],
+    adjacencies: [adj("bgp", "203.0.113.9", "0", "t-bgp-default-only", 0, { address: null, interface: null })],
+    overlay: [],
+  };
+  routes["t-bgp-default-only"] = [
+    route("t-bgp-default-only", "connected", 0),
+    route("t-bgp-default-only", "static", 1, { prefix: "0.0.0.0/0", outIntf: null }),
+  ];
+
+  /** Every route source the engine's route-code parser can emit, read from its own source text
+   *  (cisco_toolkit/parse.py): the IOS/IOS-XE `code_map` values and the NX-OS `_nxos_route_source`
+   *  names. Both parsers ALSO pass an unmapped code through as-is (`primary.lower()`, `return t`), so
+   *  the emitted vocabulary is open -- which is why the rule reads the complement, never this list. */
+  const engineRouteSources = (parseSrc: string): string[] => {
+    const codeMap = /code_map = \{([\s\S]*?)\}/.exec(parseSrc)?.[1] ?? "";
+    const iosValues = [...codeMap.matchAll(/'[^']+'\s*:\s*'([^']+)'/g)].map((m) => m[1]!);
+    const nxos = /def _nxos_route_source[\s\S]*?for name in \(([^)]*)\)/.exec(parseSrc)?.[1] ?? "";
+    const nxosValues = [...nxos.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+    return [...new Set([...iosValues, ...nxosValues, "connected"])].sort();
+  };
+  /** One synthetic host per source the parser can emit, plus two it passes through unmapped: `o` (ODR,
+   *  which the parser's own comment names) and a token no parser version has ever produced. Every
+   *  receipted family on these hosts is accounted for, so the route itself is the only thing asked. */
+  const oovHosts = (sources: string[]) => {
+    const h: Record<string, unknown> = {};
+    const r: Record<string, unknown[]> = {};
+    for (const source of [...sources, "o", "zz-future"]) {
+      const name = `t-src-${source}`;
+      h[name] = {
+        protocols: [row("OSPF", "captured_empty", 80), row("BGP", "captured_empty", 81), row("EIGRP", "captured_empty", 82)],
+        adjacencies: [],
+        overlay: [],
+      };
+      r[name] = [route(name, "connected", 0), route(name, source, 1, { prefix: "10.50.0.0/16" })];
+    }
+    return { h, r };
+  };
+  /** One synthetic host per state the ENGINE declares (read from the generated contract): BGP in that
+   *  state, OSPF/EIGRP captured empty, a connected-only table -- so the state itself is all that is asked. */
+  const engineStateHosts = (states: unknown) => {
+    const h: Record<string, unknown> = {};
+    for (const s of Array.isArray(states) ? states : []) {
+      if (typeof s !== "string") continue;
+      h[`t-engine-state-${s}`] = {
+        protocols: [row("OSPF", "captured_empty", 91), row("BGP", s, 90), row("EIGRP", "captured_empty", 92)],
+        adjacencies: [],
+        overlay: [],
+      };
+    }
+    return h;
+  };
+  const PARSE_PY = `${import.meta.dirname}/../../../cisco_toolkit/parse.py`;
+  return { hosts, routes, engineRouteSources, oovHosts, engineStateHosts, PARSE_PY };
 });
 
 vi.mock("./rib-evidence.json", async (importOriginal) => {
   const real = (await importOriginal()) as { default: { meta: unknown; hosts: Record<string, unknown> } };
-  return { default: { ...real.default, hosts: { ...real.default.hosts, ...fx.hosts } } };
+  const { readFileSync } = await import("node:fs");
+  const oov = fx.oovHosts(fx.engineRouteSources(readFileSync(fx.PARSE_PY, "utf8")));
+  const contract = (await import("../../contracts/engine-contract.v1.json")).default as { protocol_assessability_states?: unknown };
+  const states = fx.engineStateHosts(contract.protocol_assessability_states);
+  return { default: { ...real.default, hosts: { ...real.default.hosts, ...fx.hosts, ...oov.h, ...states } } };
 });
 vi.mock("../core/data", async (importOriginal) => {
   const real = await importOriginal<typeof import("../core/data")>();
-  return { ...real, routesOf: (h: string) => (fx.routes[h] as ReturnType<typeof real.routesOf> | undefined) ?? real.routesOf(h) };
+  const { readFileSync } = await import("node:fs");
+  const oov = fx.oovHosts(fx.engineRouteSources(readFileSync(fx.PARSE_PY, "utf8")));
+  const all: Record<string, unknown[]> = { ...fx.routes, ...oov.r };
+  return { ...real, routesOf: (h: string) => (all[h] as ReturnType<typeof real.routesOf> | undefined) ?? real.routesOf(h) };
 });
 
 const mod = await import("./rib-completeness");
@@ -352,10 +450,123 @@ describe("every session a host holds implies the link it runs over — checked p
     expect(ribIncompleteness("t-bgp-reached")).toEqual([]);
   });
 
+  it("a BGP peer that only the DEFAULT route covers is not reached: the default covers every address (E2R2-V2)", () => {
+    expect(cites("t-bgp-default-only")).toEqual(["routing_neighbors.t-bgp-default-only.bgp[0]"]);
+    expect(labels("t-bgp-default-only")).toBe(
+      "a BGP adjacency with 203.0.113.9 is Established (0 prefixes received), yet no route in the table other than the default (routes.t-bgp-default-only[1]) covers 203.0.113.9 — a default covers every address, so it is no evidence of a path to this peer",
+    );
+    // The same 0-prefix peer covered by a non-default route is reached (t-bgp-eigrp's 203.0.113.2).
+    expect(cites("t-bgp-eigrp")).not.toContain("routing_neighbors.t-bgp-eigrp.bgp[1]");
+  });
+
   it("an adjacency record compiled without its link fields leaves the table's completeness UNKNOWN, never complete", () => {
     expect(cites("t-no-link-fields")).toEqual(["routing_neighbors.t-no-link-fields.ospf[0]"]);
     expect(labels("t-no-link-fields")).toMatch(/does not carry the neighbour's address and interface/);
     expect(mod.ribCompletenessBasis("t-no-link-fields").map((b) => b.protocol)).toEqual(["BGP", "EIGRP"]);
+  });
+});
+
+describe("positive evidence of absence is ONLY what the engine says it is: a captured-empty neighbor table, or no process running", () => {
+  it("the absence states are exactly captured_empty and not_running, and both are states the ENGINE declares", () => {
+    expect([...mod.RIB_ABSENCE_STATES].sort()).toEqual(["captured_empty", "not_running"]);
+    for (const s of mod.RIB_ABSENCE_STATES) expect(mod.ENGINE_ASSESSABILITY_STATES.has(s), s).toBe(true);
+    // The vocabulary is the engine's, read from the generated contract -- and it is the real one.
+    expect(mod.ENGINE_ASSESSABILITY_STATES.has("assessed")).toBe(true);
+    expect(mod.ENGINE_ASSESSABILITY_STATES.size).toBeGreaterThanOrEqual(8);
+  });
+
+  it("an engine state the contract stops declaring stops vouching (fail closed), and a malformed contract declares nothing", () => {
+    expect(mod.engineAssessabilityStates({ protocol_assessability_states: ["assessed", "captured_empty"] })).toEqual(
+      new Set(["assessed", "captured_empty"]),
+    );
+    expect(mod.engineAssessabilityStates({ protocol_assessability_states: "captured_empty" }).size).toBe(0);
+    expect(mod.engineAssessabilityStates(null).size).toBe(0);
+  });
+
+  it("EVERY state the engine declares, other than assessed and the two absence states, is a reason citing its row", () => {
+    const others = [...mod.ENGINE_ASSESSABILITY_STATES].filter((s) => s !== "assessed" && !mod.RIB_ABSENCE_STATES.has(s));
+    expect(others.length).toBeGreaterThanOrEqual(5);
+    for (const s of others) {
+      const host = `t-engine-state-${s}`;
+      expect(cites(host), s).toEqual(["protocol_assessability.rows[9090]"]);
+      expect(mod.ribCompletenessBasis(host).map((b) => b.protocol), s).toEqual(["EIGRP", "OSPF"]);
+    }
+  });
+
+  it("a host whose BGP capture is the no-process banner (not_running) is not shown incomplete by BGP", () => {
+    expect(ribIncompleteness("t-not-running")).toEqual([]);
+    const basis = mod.ribCompletenessBasis("t-not-running");
+    expect(basis.map((b) => [b.protocol, b.cite])).toEqual([
+      ["BGP", "protocol_assessability.rows[9061]"],
+      ["EIGRP", "protocol_assessability.rows[9062]"],
+      ["OSPF", "protocol_assessability.rows[9060]"],
+    ]);
+    expect(basis[0]!.label).toMatch(/no BGP process is running on t-not-running/);
+    expect(basis[0]!.label).toMatch(/no BGP-learned route is missing from the table/);
+  });
+
+  it("'no process' beside a route of that family is a contradiction, named with the row and the route", () => {
+    const r = ribIncompleteness("t-not-running-contradict");
+    expect(r.map((x) => x.cite)).toEqual(["protocol_assessability.rows[9064]"]);
+    expect(r[0]!.label).toMatch(
+      /no BGP process is running on t-not-running-contradict \(its capture is the platform's no-process banner\), yet the table holds a BGP route \(routes\.t-not-running-contradict\[1\]\)/,
+    );
+    expect(mod.ribCompletenessBasis("t-not-running-contradict").map((b) => b.protocol)).toEqual(["EIGRP", "OSPF"]);
+  });
+
+  it("not_collected, captured_no_record and capture_error stay unknown: reasons citing their rows, never a basis", () => {
+    expect(cites("t-unknown-states")).toEqual([
+      "protocol_assessability.rows[9067]",
+      "protocol_assessability.rows[9068]",
+      "protocol_assessability.rows[9066]",
+    ]);
+    expect(mod.ribCompletenessBasis("t-unknown-states")).toEqual([]);
+  });
+});
+
+describe("a table holding routes of a protocol with no collection receipt is never complete (E2R2-V1, the whole class)", () => {
+  const sources = fx.engineRouteSources(readFileSync(fx.PARSE_PY, "utf8"));
+  const vocab = (realEvidence as unknown as { meta: { routingProtocols: string[] } }).meta.routingProtocols;
+  const family = (s: string) => s.split("-")[0]!;
+
+  it("precondition: the parser's vocabulary was read, and it emits protocols outside the receipted families", () => {
+    for (const s of ["isis", "rip", "lisp", "nhrp", "mobile", "connected", "local", "static", "ospf-ext2", "eigrp-external"]) {
+      expect(sources).toContain(s);
+    }
+    expect(vocab.length).toBeGreaterThan(0);
+  });
+
+  it("every route source the engine can emit outside the receipted families (and the unmapped pass-through) makes the table incomplete, naming the source", () => {
+    let unreceipted = 0;
+    for (const source of [...sources, "o", "zz-future"]) {
+      const host = `t-src-${source}`;
+      const r = ribIncompleteness(host);
+      if (["connected", "local", "static"].includes(source) || vocab.includes(family(source))) continue;
+      unreceipted += 1;
+      expect(r.map((x) => x.cite), source).toEqual([`routes.${host}[1]`]);
+      expect(r[0]!.label, source).toContain(`"${source}"`);
+      expect(r[0]!.label, source).toMatch(/no collection receipt/);
+    }
+    // isis, rip, lisp, nhrp, mobile, candidate-default, o, zz-future at the time of writing.
+    expect(unreceipted).toBeGreaterThanOrEqual(8);
+  });
+
+  it("the basis still vouches only for the receipted families -- the unreceipted protocol is never listed as accounted for", () => {
+    const basis = mod.ribCompletenessBasis("t-src-isis");
+    expect(basis.map((b) => b.protocol)).toEqual(["BGP", "EIGRP", "OSPF"]);
+    expect(ribIncompleteness("t-src-isis").length).toBe(1);
+  });
+
+  it("connected, local and static routes need no protocol receipt: they are the table's own evidence", () => {
+    for (const s of ["connected", "local", "static"]) expect(ribIncompleteness(`t-src-${s}`), s).toEqual([]);
+  });
+
+  it("a receipted family's sub-types are that family, not an unknown protocol", () => {
+    // ospf-ext2 on a host whose OSPF neighbor table is captured empty: the captures disagree (OSPF's own
+    // rule), never "no receipt".
+    const r = ribIncompleteness("t-src-ospf-ext2");
+    expect(r.map((x) => x.cite)).toEqual(["protocol_assessability.rows[9080]"]);
+    expect(r[0]!.label).not.toMatch(/no collection receipt/);
   });
 });
 
@@ -368,12 +579,12 @@ describe("over every host in the compiled record (the committed snapshot's plus 
     for (const h of fabric.coverage.routableHosts) expect(hosts).toContain(h);
   });
 
-  it("every non-assessed, non-empty protocol row on a routable host is a reason carrying that row's cite", () => {
+  it("every protocol row that is neither assessed nor an absence state is a reason carrying that row's cite", () => {
     let rows = 0;
     for (const h of hosts) {
       const got = new Set(cites(h));
       for (const p of ev.hosts[h]?.protocols ?? []) {
-        if (p.state === "assessed" || p.state === "captured_empty") continue;
+        if (p.state === "assessed" || (p.state !== null && mod.RIB_ABSENCE_STATES.has(p.state))) continue;
         rows += 1;
         expect(got.has(p.cite), `${h} ${p.protocol} ${p.state}`).toBe(true);
       }
@@ -383,30 +594,55 @@ describe("over every host in the compiled record (the committed snapshot's plus 
 
   it("every adjacency in a session state is cited as a reason unless the table holds its link (the whole class, every host)", () => {
     const adjEv = realEvidence as unknown as {
-      hosts: Record<string, { adjacencies: { state: string | null; cite: string; address?: string | null; interface?: string | null }[] }>;
+      hosts: Record<string, { adjacencies: { neighbor: string | null; state: string | null; cite: string; address?: string | null; interface?: string | null }[] }>;
     };
     const UP = /^(full|2way|established|up)\b|^\d+$/i;
+    /** An independent restatement of "the table holds the link" (2026-09-27 verifier, E2R2-V6: the sweep
+     *  asserted only that an uncited session CARRIES link fields, never that its link is HELD). */
+    const toInt = (ip: string) => ip.split(".").reduce((n, o) => n * 256 + Number(o), 0);
+    const inPrefix = (prefix: string, ip: string) => {
+      const [net, len] = prefix.split("/");
+      const bits = Number(len);
+      if (bits === 0) return true;
+      const size = 2 ** (32 - bits);
+      return Math.floor(toInt(ip) / size) === Math.floor(toInt(net!) / size);
+    };
+    const intfKey = (s: string) => {
+      const m = /^([a-z-]+)\s*(\S+)$/i.exec(s.trim());
+      return m === null ? s.toLowerCase() : `${m[1]!.slice(0, 2).toLowerCase()}${m[2]!.toLowerCase()}`;
+    };
     let sessions = 0;
+    let uncited = 0;
     for (const h of hosts) {
-      if (routesOf(h).length === 0) continue;
+      const rs = routesOf(h);
+      if (rs.length === 0) continue;
       const got = new Set(cites(h));
       for (const a of adjEv.hosts[h]?.adjacencies ?? []) {
         if (a.state === null || !UP.test(a.state.trim())) continue;
         sessions += 1;
         if (got.has(a.cite)) continue;
-        // Not cited: then the record must carry the link fields and the table must hold that link.
+        uncited += 1;
+        // Not cited: then the record must carry the link fields AND the table must hold that link.
         expect("address" in a && "interface" in a, `${a.cite} is uncited but carries no link fields`).toBe(true);
+        const addr = a.address ?? a.neighbor;
+        expect(addr, `${a.cite} names no address`).not.toBeNull();
+        const held =
+          a.interface !== null && a.interface !== undefined
+            ? rs.some((r) => r.source === "connected" && r.outIntf !== null && intfKey(r.outIntf) === intfKey(a.interface!) && inPrefix(r.prefix, addr!))
+            : rs.some((r) => !r.prefix.endsWith("/0") && inPrefix(r.prefix, addr!));
+        expect(held, `${a.cite}: uncited, yet ${h}'s table does not hold its link`).toBe(true);
       }
     }
     expect(sessions, "the record must exercise at least one session").toBeGreaterThan(0);
+    expect(uncited, "the sweep must reach at least one uncited session (the held-link branch)").toBeGreaterThan(0);
   });
 
-  it("a captured_empty row is cited as a reason exactly when the table holds routes of its family", () => {
+  it("an absence-state row (captured_empty / not_running) is cited as a reason exactly when the table holds routes of its family", () => {
     let rows = 0;
     for (const h of hosts) {
       const got = new Set(cites(h));
       for (const p of ev.hosts[h]?.protocols ?? []) {
-        if (p.state !== "captured_empty") continue;
+        if (p.state === null || !mod.RIB_ABSENCE_STATES.has(p.state)) continue;
         rows += 1;
         const fam = p.protocol.toLowerCase();
         const hasFamilyRoute = routesOf(h).some((r) => r.source === fam || (r.source ?? "").startsWith(`${fam}-`));

@@ -78,12 +78,13 @@ import {
   SELECT_EASE,
   createEaseChannel,
   createEmphasisState,
-  createTierFadeDriver,
+  createTierFadeSlot,
+  tierFadeCopy,
   stepEaseChannel,
   isConverged,
   markEmphasisDirty,
   stepEmphasis,
-  type TierFadeDriver,
+  type TierFadeCopy,
   type EmphasisState,
   type RecedeMirror,
 } from "./emphasis";
@@ -1482,6 +1483,16 @@ export interface FabricSceneEx extends FabricScene {
    * Idempotent with the `setSelection` the deferred commit makes later.
    */
   acknowledgeSelection(deviceId: string | null, linkId: string | null): void;
+  /**
+   * The reader's motion preference changed (C5-R2-1, 2026-09-27). Through this setter the scene keeps
+   * running: the camera and the flow overlay take the new preference, the emphasis eases apply it from
+   * their next step (under reduced motion they land on their targets, §4.8), and a tier cross-fade
+   * already running finishes at FADE_MAX_STEP per frame (./emphasis `createTierFadeDriver`); one still
+   * held at 1 is swapped when the new tier presents (§4.8). A host that disposes and recreates the
+   * scene on a toggle instead takes the overlay down with the canvas, camera pose included. Which of
+   * the two Fabric3D.tsx does is read from its source by scene.test.ts.
+   */
+  setReducedMotion(reduced: boolean): void;
 }
 
 const createSceneImpl = (
@@ -2499,13 +2510,35 @@ const createSceneImpl = (
    * stop a stall that has not happened yet. So the overlay's opacity is now written once per frame by
    * `frame()`, through `createTierFadeDriver` (./emphasis, the ease owner). That is the same 280 ms
    * ease-in-out, on the frame's REAL duration, but never more than FADE_MAX_STEP (0.2) per frame.
-   * After a stall it moves 0.2 and catches up with the curve. At 60 Hz the cap never binds, so the look
-   * is unchanged. A stall of about 33 ms or more can engage it, and a stall can then push the end past
-   * 300 ms: a delay, not a cut. The measured and modelled envelope is at TIER_FADE_MS in ./emphasis.
-   * The overlay leaves on the frame the value reaches exactly 0 — not on a `TIER_FADE_MS + 50` timer,
-   * which (armed when the fade was asked to start, not when it did) could remove an overlay still
-   * at 0.32 opacity after a 160 ms late start: a cut by removal. It owes no WebGL render: the overlay
-   * is DOM, and `frame()` runs on every animation frame whether or not it renders.
+   * After a stall it moves 0.2 and catches up with the curve. At 60 Hz the cap never binds on this
+   * ease, so the look is unchanged. A stall of about 33 ms or more can engage it, and a stall can then
+   * push the end past 300 ms: a delay, not a cut. The measured and modelled envelope is at TIER_FADE_MS
+   * in ./emphasis. The overlay leaves on the frame the value reaches exactly 0 — not on a
+   * `TIER_FADE_MS + 50` timer, which (armed when the fade was asked to start, not when it did) could
+   * remove an overlay still at 0.32 opacity after a 160 ms late start: a cut by removal. It owes no
+   * WebGL render: the overlay is DOM, and `frame()` runs on every animation frame whether or not it
+   * renders.
+   *
+   * HANDED OVER, NEVER CUT (C5-R2-1, 2026-09-27). A tier change that lands while an overlay is up — a
+   * `setQuality` mid-fade, an automatic step-down, the step-up a tab switch queues for the first frame
+   * back — used to run `clearTierFade()` first: the half-faded overlay vanished in one frame and a copy
+   * of the canvas UNDER it took its place (verifier round 2: a 0.4-1.0 cut of the pop the fade hides).
+   * `snapshotForTierFade` now hands over (`handOverTierFade`, ./emphasis): the new overlay is the frame
+   * the canvas shows with the running overlay drawn in at its CURRENT opacity, so at 1 it is the
+   * picture the reader saw, and it fades from there (the compose is ./emphasis `tierFadeCopy`). A tier
+   * change asked for while a fade runs through a warm-up (a theme change, new data) cannot be copied
+   * yet, and is DEFERRED until the warm-up has presented (`deferredQuality`, landed by `frame()`): landed
+   * at once, the new tier's first frame came up under the fade's partial value, (1 - that value) of its
+   * pop uncovered (R4-VR1-5). Held at 1, an overlay just waits for the new tier's first frame again.
+   * Only a copy that FAILS outright (no 2-D context, a draw that throws) leaves a fading overlay to run
+   * on from its value: the host on which, with nothing up, a tier change has no cross-fade at all. The
+   * driver has no watchdog either (./emphasis `createTierFadeDriver`). The overlay's whole life —
+   * mount, hand-over, hold, fade, removal — is ./emphasis `createTierFadeSlot`, executed there; this
+   * file lends it the page (mount, unmount, write). Every site in this file that touches the DOM —
+   * found by TYPE, not by name — is enumerated by scene.test.ts and held to a stated reason;
+   * emphasis.test.ts executes the class through the slot on a model of the screen, and
+   * review/capture-motion.mjs measures it in a browser (a tier change mid-hold, mid-fade and on the
+   * first frame back from a hidden tab).
    *
    * STARTED ONE FRAME LATE (C5 critic, 2026-09-22: "a hard cut in a single frame"; the fade was 300 ms then).
    * Measured in-page with a per-rAF opacity trace on a real GPU: the overlay held for 289 ms, then
@@ -2518,33 +2551,41 @@ const createSceneImpl = (
    * The duration and its reasoning (280 ms, not 300: acceptance C6) live with the ease in
    * ./emphasis (`TIER_FADE_MS`, `TIER_FADE_EASE`), held by `src/core/motion-inventory.test.ts`
    * against its §4.8 row. */
-  let tierFade: {
-    el: HTMLCanvasElement;
-    fading: boolean;
-    /** The hold's start backstop (see `releaseTierFade`). */
-    timer: ReturnType<typeof setTimeout> | null;
-    /** The running fade (null while the hold waits). `frame()` drives it once per frame; it writes the
-     *  overlay's opacity and removes it at exactly 0, and owns the no-frames watchdog (./emphasis). */
-    driver: TierFadeDriver | null;
-  } | null = null;
+  /* The overlay itself: ./emphasis `createTierFadeSlot` owns its life (mount, hand-over, hold, fade,
+     removal) and is executed in emphasis.test.ts. This is the page it is lent, and all of it. */
+  const tierFade = createTierFadeSlot<HTMLCanvasElement>({
+    mount: (el) => {
+      canvas.parentElement?.appendChild(el);
+    },
+    unmount: (el) => {
+      el.remove();
+    },
+    write: (el, opacity) => {
+      el.style.opacity = String(opacity);
+    },
+  });
+  /** The hold's start backstop (see `releaseTierFade`); a stale one is harmless (its hold is no longer live). */
+  let tierFadeBackstop: ReturnType<typeof setTimeout> | null = null;
+  /** A tier change asked for while a fade ran through a warm-up: landed by `frame()` once the warm-up has
+   *  presented, so it is handed over from the fade's value (R4-VR1-5). The last one asked for wins. */
+  let deferredQuality: QualityDecision | null = null;
 
-  function clearTierFade(): void {
-    if (tierFade === null) return;
-    if (tierFade.timer !== null) clearTimeout(tierFade.timer);
-    tierFade.driver?.dispose();
-    tierFade.el.remove();
-    tierFade = null;
+  /** A tier change: hand the overlay over to a copy of the frame on screen (`handOverTierFade`,
+   *  ./emphasis). Must run before the old chain or graph is disposed. False when the change must wait
+   *  for the warm-up in progress (`deferred`). */
+  function snapshotForTierFade(): boolean {
+    return tierFade.tierChange(copyFrameForTierFade, !compiled).kind !== "deferred";
   }
 
-  /** Copy the frame the OLD tier draws. Must run before the old chain or graph is disposed. */
-  function snapshotForTierFade(): void {
-    clearTierFade();
+  /** Copy the frame the OLD tier draws into a new overlay element (not yet on the page), or null when
+   *  there is nothing to copy. The handover draws a running overlay over it. */
+  function copyFrameForTierFade(): TierFadeCopy<HTMLCanvasElement> | null {
     const parent = canvas.parentElement;
     /* Nothing to cross-fade from while the canvas has never shown a complete frame. */
-    if (parent === null || typeof document === "undefined" || !compiled || !firstRendered) return;
+    if (parent === null || typeof document === "undefined" || !compiled || !firstRendered) return null;
     const w = canvas.width;
     const h = canvas.height;
-    if (w === 0 || h === 0) return;
+    if (w === 0 || h === 0) return null;
     let ctx: CanvasRenderingContext2D | null = null;
     const el = document.createElement("canvas");
     try {
@@ -2554,7 +2595,7 @@ const createSceneImpl = (
     } catch {
       ctx = null;
     }
-    if (ctx === null) return;
+    if (ctx === null) return null;
     /* The default framebuffer is not preserved between frames, so the frame on screen cannot be read
        back later. Re-presenting it through the old chain in this same task makes the drawing buffer
        hold it for the copy below. One frame at the old tier, paid only on a tier change. */
@@ -2569,48 +2610,32 @@ const createSceneImpl = (
       post.render(0);
       ctx.drawImage(canvas, 0, 0);
     } catch {
-      return;
+      return null;
     }
     el.className = "fabric3d__tier-fade";
     el.setAttribute("aria-hidden", "true");
     el.dataset.testid = "fabric3d-tier-fade";
     el.style.cssText =
       "position:absolute;inset:0;inline-size:100%;block-size:100%;pointer-events:none;opacity:1;";
-    parent.appendChild(el);
-    tierFade = { el, fading: false, timer: null, driver: null };
+    /* The handover draws a running overlay over this copy at its current opacity, stretched to the
+       whole copy as CSS stretches it (inset: 0): the ease owner's compose, executed in
+       emphasis.test.ts against a compositing 2-D context (R4-V1-2). */
+    return tierFadeCopy<HTMLCanvasElement>(el, ctx, w, h);
   }
 
   /** Called after a composed frame lands on the canvas (at `now`): release the old tier's picture. */
   function releaseTierFade(now: number): void {
-    if (tierFade === null || tierFade.fading) return;
-    if (reducedMotion) {
-      clearTierFade();
-      return;
-    }
-    const fade = tierFade;
-    fade.fading = true;
-    const start = (): void => {
-      if (tierFade !== fade || fade.driver !== null) return;
-      if (fade.timer !== null) clearTimeout(fade.timer);
-      fade.timer = null;
-      /* From the next animation frame on, `frame()` drives this. The driver steps the fade on the
-         frame's raw duration (capped at FADE_MAX_STEP per frame), writes the overlay's opacity, and
-         removes the overlay on the frame the fade reaches exactly 0. Its watchdog is a NO-FRAMES
-         backstop, not a duration timer: two consecutive windows with no frame (rAF suspended), where
-         nothing is presented and removing it is not a visible cut. All of it is executed with fake
-         timers in emphasis.test.ts. */
-      fade.driver = createTierFadeDriver({
-        write: (opacity) => {
-          fade.el.style.opacity = String(opacity);
-        },
-        finish: () => {
-          if (tierFade === fade) clearTierFade();
-        },
-        watchdogMs: TIER_FADE_HOLD_DEFAULTS.maxHoldMs,
-        setTimer: (fn, ms) => setTimeout(fn, ms),
-        clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-      });
-    };
+    /* Only a HELD overlay (at exactly 1) is released. Under reduced motion the slot swaps it away on
+       this frame (§4.8: a swap, not an animation — the same as having had no overlay); otherwise it
+       hands back its hold, and this decides when the fade starts. From then on `frame()` drives it:
+       the driver steps it on the frame's raw duration (capped at FADE_MAX_STEP per frame), writes the
+       overlay's opacity, and removes it on the frame it reaches exactly 0. It holds no timer: a hidden
+       tab pauses it, and the first frame back moves it by the cap (C5-R2-1). Executed in
+       emphasis.test.ts. */
+    const handle = tierFade.presented(reducedMotion);
+    if (handle === null) return;
+    if (tierFadeBackstop !== null) clearTimeout(tierFadeBackstop);
+    tierFadeBackstop = null;
     /* One frame late: the heavy first composed frame of the new chain is being presented now, and a
        transition begun in it would spend itself inside that frame. A setTimeout backstop covers a
        context where rAF is suspended (the fade then starts at once rather than never). */
@@ -2629,7 +2654,7 @@ const createSceneImpl = (
       const once = (): void => {
         if (started) return;
         started = true;
-        start();
+        handle.start();
       };
       const hold = createTierFadeHold(now);
       const heldContent = contentVersion;
@@ -2638,19 +2663,27 @@ const createSceneImpl = (
          this in each animation frame (it was queued first). It only decides WHEN the overlay's
          fade begins, and the frame underneath is the new tier's frame either way. */
       const watch = (): void => {
-        if (started || tierFade !== fade) return;
+        if (started || !handle.live) return;
         if (hold.frame(lastNow, lastFrameMs, lastCameraMotionAt > now || contentVersion !== heldContent)) once();
         else requestAnimationFrame(watch);
       };
       requestAnimationFrame(watch);
-      fade.timer = setTimeout(once, TIER_FADE_HOLD_DEFAULTS.maxHoldMs);
+      tierFadeBackstop = setTimeout(once, TIER_FADE_HOLD_DEFAULTS.maxHoldMs);
     } else {
-      start();
+      handle.start();
     }
   }
 
   function applyQuality(next: QualityDecision): void {
-    snapshotForTierFade();
+    /* A tier change always goes through the handover first. One asked for while a fade runs through a
+       warm-up waits for that warm-up to present (`deferredQuality`, landed by `frame()`), so it is
+       handed over from the fade's value instead of landing under it (R4-VR1-5). */
+    if (!snapshotForTierFade()) {
+      deferredQuality = next;
+      judgeQueue.length = 0;
+      return;
+    }
+    deferredQuality = null;
     decision = next;
     const builtFrom = profile;
     profile = profileFor(next.tier);
@@ -3215,6 +3248,8 @@ const createSceneImpl = (
       heldStepDown = null;
       return false;
     }
+    /* A deferred tier change (see applyQuality) lands first: no frame is judged while it is owed. */
+    if (deferredQuality !== null) return false;
     /* NEVER while the camera moves — a tween, a drag, a damped orbit's tail (C5 (b), 2026-09-23).
        A tier change re-warms the new chain, and the canvas presents nothing until that warm-up ends:
        landed mid-orbit on the contended host it froze the view for ~600 ms-1 s while the camera kept
@@ -3356,8 +3391,13 @@ const createSceneImpl = (
     /* The tier cross-fade (see "tier cross-fade" above): driven on `raw`, the frame's real duration.
        The ease is the wall clock's, and FADE_MAX_STEP inside the driver is the per-frame bound that the
        64 ms `dt` clamp is not. It runs every frame, ahead of every early exit below, UNCONDITIONALLY
-       (the driver is null while the hold waits and after the overlay is gone), and owes no render. */
-    tierFade?.driver?.frame(raw, reducedMotion);
+       (the driver is null while the hold waits and after the overlay is gone), and owes no render.
+       While a warm-up runs (`compiled` false: a tier change, a theme change or new data re-links the
+       programs) the canvas presents nothing new, and the driver HOLDS the fade: a fade that runs into
+       a warm-up must still be up when the next presented frame lands, or that frame is the whole pop
+       the fade exists to hide (R4-V1-4), and a tier change deferred through it (`deferredQuality`) is
+       handed over from that value. */
+    tierFade.frame(raw, reducedMotion, compiled);
     const flowMoved = flow.update(now, cameraRig.camera);
 
     if (emphasisMoved || fadesMoved || flowMoved) markDirty();
@@ -3371,6 +3411,13 @@ const createSceneImpl = (
     if (motionReducedRender && now - lastCameraMotionAt >= MOTION_HOLD_MS) markDirty();
     /* A held step-down lands on the first quiet frame, rendered or idle. */
     if (landHeldStepDown(now)) return;
+    /* A tier change deferred through a warm-up (see applyQuality) lands on the first frame after that
+       warm-up ended, when the copy it hands the running fade over to can be taken. */
+    if (deferredQuality !== null && compiled) {
+      applyQuality(deferredQuality);
+      emitStats(now);
+      return;
+    }
     // See applyQuality: the first frame of a new post chain is atypical, so it is never the last
     // one rendered. Costs at most two frames, and only after an explicit tier change. The frame is
     // OWED, not new content (`requestFrame`): the tier cross-fade's hold reads a content change as
@@ -3400,7 +3447,7 @@ const createSceneImpl = (
          Intel iGPU, DSF 2) about 11 s after two orbit gestures, with no input, the tier stepped
          back up to balanced, visibly changing ~3 % of the frame and stalling it for 550-730 ms.
          Bounded by `createStepUpPolicy`'s strike count, and announced like the step-down. */
-      if (pendingStepUp !== null && decision.auto && heldStepDown === null) {
+      if (pendingStepUp !== null && decision.auto && heldStepDown === null && deferredQuality === null) {
         const up = pendingStepUp;
         pendingStepUp = null;
         tierLog = [
@@ -3562,7 +3609,9 @@ const createSceneImpl = (
       /* Judged ATTRIBUTION_LAG_MS late, and only on frames the page's own long work did not
          produce — see `createForeignWorkLedger`. A frame the ledger excuses is still in `raw`,
          `fpsEma` and `worstFrameMs` above; it is only not blamed on the renderer. */
-      if (!suspended) judgeQueue.push({ from: now - raw, to: now, raw, tier: decision.tier });
+      /* ...and not while a deferred tier change is owed (see applyQuality): those frames are the tier it
+         is leaving, and a verdict on them would land on the tier it arrives at. */
+      if (!suspended && deferredQuality === null) judgeQueue.push({ from: now - raw, to: now, raw, tier: decision.tier });
       let verdict: ReturnType<typeof stepDown.push> | null = null;
       while (judgeQueue.length > 0 && (judgeQueue[0]?.to ?? now) <= now - ATTRIBUTION_LAG_MS) {
         const f = judgeQueue.shift();
@@ -3851,9 +3900,19 @@ const createSceneImpl = (
       applyTheme(next);
     },
 
+    setReducedMotion(reduced: boolean): void {
+      if (reduced === reducedMotion) return;
+      reducedMotion = reduced;
+      cameraRig.setReducedMotion(reduced);
+      flow.setReducedMotion(reduced);
+      markDirty();
+    },
+
     setQuality(q: QualityTier): void {
       /* A caller's tier is a PIN, including the tier already in force (quality.ts `pinQuality`):
          a pinned tier is outside the adaptive step-down, and `stats().qualityAuto` reads false. */
+      /* The caller's latest tier wins over one still deferred through a warm-up (see applyQuality). */
+      deferredQuality = null;
       const pin = pinQuality(decision, q);
       if (pin.decision === decision) return; /* already pinned at q */
       tierLog = [];
@@ -3948,7 +4007,10 @@ const createSceneImpl = (
       if (disposed) return;
       disposed = true;
       cancelAnimationFrame(raf);
-      clearTierFade();
+      tierFade.dispose();
+      if (tierFadeBackstop !== null) clearTimeout(tierFadeBackstop);
+      tierFadeBackstop = null;
+      deferredQuality = null;
       longTaskObserver?.disconnect();
       if (gestureTarget !== null) {
         const o = { capture: true } as const;

@@ -12,15 +12,27 @@ The contract pinned here (webapp/backend/app.py, ``create_app(scope_dist_dir=...
   build was made FOR this mount (every asset reference is under /scope/assets/) and declares that it
   reads its snapshot at run time from /api (the ``atlas-scope-snapshot-source`` meta contract) —
   a sample-fleet build must not be linked from a client snapshot page as if it showed that snapshot.
-* Static output carries no client data: the scope routes are unguarded by construction (a static
-  shell and bundles), so a scope build that embeds the digest of any stored snapshot is REFUSED —
-  at startup for snapshots already stored, and at the moment a matching snapshot is stored.
+* Static output carries no client data: a build is served only when no file in it carries snapshot
+  evidence (the compiler's binding envelope, a compiled record's snapshot citation, or a raw engine
+  snapshot — see "privacy by construction" below) and every file the scan must read was read
+  completely (a Brotli copy, a truncated or over-bound stream, or a payload nested beyond the scan
+  bound is refused as uninspectable, never served as clean), and a scope build that embeds the
+  digest of any stored snapshot is REFUSED — at startup for snapshots already stored, and at the moment a matching
+  snapshot is stored. Because a content scan can only ever recognise the forms it knows, the /scope
+  routes ALSO sit behind the same access guard as /api (cross-site read refusal, loopback + Host,
+  token): whatever a build carries is readable exactly by whoever may read /api/snapshots/{id}/raw.
 * Every scope route is GET-only (Atlas Scope is first-party, read-only code served same-origin).
 * ``GET /api/snapshots/{id}/scope-view`` (guarded) reports whether the view is available and owns
   the link target, so the SPA never renders a dead link.
 """
+import base64
+import contextlib
 import hashlib
 import json
+import os
+import re
+import shutil
+import subprocess
 import sys
 import urllib.parse
 from pathlib import Path
@@ -152,7 +164,9 @@ def test_scope_shell_and_assets_are_served_before_the_spa_catch_all(tmp_path):
 
 
 def test_scope_routes_answer_without_any_store_access(tmp_path):
-    """Unguarded by construction means they must not read client data: trip every Store method."""
+    """Static routes must not read client data: trip every Store method. (The access guard in front
+    of them reads no store either; a cross-site request is refused before routing — see
+    test_every_scope_route_sits_behind_the_api_access_guard.)"""
     write_scope_dist(tmp_path / "scope-dist")
     with _client(tmp_path, tmp_path / "scope-dist") as c:
         store = c.app.state.store
@@ -170,46 +184,133 @@ def test_scope_routes_answer_without_any_store_access(tmp_path):
         try:
             assert "get_snapshot_blob" in tripped and "get_snapshot_meta" in tripped
             for path in ("/scope/snapshots/7/", "/scope/assets/index-abc123.js"):
-                r = c.get(path, headers={"sec-fetch-site": "cross-site"})
+                r = c.get(path, headers={"sec-fetch-site": "same-origin"})
                 assert r.status_code == 200, (path, r.status_code)
+                refused = c.get(path, headers={"sec-fetch-site": "cross-site"})
+                assert refused.status_code == 403, (path, refused.status_code)
             assert touched == []
         finally:
             for name in tripped:  # the instance attributes shadow the class methods; drop them
                 delattr(store, name)
 
 
-@pytest.mark.parametrize("path", [
-    "/scope/..%2f..%2fpyproject.toml",
-    "/scope/%2e%2e/%2e%2e/secret.txt",
-    "/scope/..\\..\\secret.txt",
-    "/scope//server/share/secret.txt",
-    "/scope/\\\\server\\share\\secret.txt",
-    "/scope/%5c%5cserver%5cshare%5csecret.txt",
-    "/scope/C:/secret.txt",
-    "/scope/snapshots/1/../../../secret.txt",
-])
-def test_scope_traversal_and_unc_input_falls_back_to_the_shell(tmp_path, path):
-    files = write_scope_dist(tmp_path / "scope-dist")
-    (tmp_path / "secret.txt").write_bytes(b"TOP-SECRET-OUTSIDE-DIST")
-    with _client(tmp_path, tmp_path / "scope-dist") as c:
-        status, body = _raw_get(c.app, path)
-        assert b"TOP-SECRET-OUTSIDE-DIST" not in body
+#: Which inputs a NAIVE filesystem-serving shell (``Path(scope_dist) / rest``) would resolve to a
+#: file inside this test's own tmp directory on EVERY platform — there the secret is planted exactly
+#: where that shell would read it. The others resolve to a drive root or a UNC share (or, on POSIX, a
+#: backslash-named file inside the build), where nothing can be planted; for every input the
+#: request-time filesystem trap below is what a naive shell cannot pass.
+_SHELL_TRAVERSALS = [
+    ("/scope/..%2f..%2fpyproject.toml", True),
+    ("/scope/%2e%2e/%2e%2e/secret.txt", True),
+    ("/scope/..\\..\\secret.txt", False),
+    ("/scope//server/share/secret.txt", False),
+    ("/scope/\\\\server\\share\\secret.txt", False),
+    ("/scope/%5c%5cserver%5cshare%5csecret.txt", False),
+    ("/scope/C:/secret.txt", False),
+    ("/scope/snapshots/1/../../../secret.txt", True),
+]
+_ASSET_TRAVERSALS = [
+    ("/scope/assets/..%2findex.html", False),   # resolves INSIDE the build: the trap catches it
+    ("/scope/assets/%2e%2e/%2e%2e/secret.txt", True),
+    ("/scope/assets/..\\..\\secret.txt", False),
+    ("/scope/assets//server/share/secret.txt", False),
+    ("/scope/assets/%2e%2e/%2e%2e/%2e%2e/%2e%2e/secret.txt", True),
+]
+
+
+def _nested_scope_dist(tmp_path: Path) -> Path:
+    """The build sits three levels below tmp_path so every ``..`` input above still lands INSIDE the
+    test's own directory, where a secret can be planted at the exact spot a naive shell would read."""
+    return tmp_path / "d1" / "d2" / "scope-dist"
+
+
+def _plant_where_a_naive_shell_would_read(tmp_path: Path, dist: Path, raw_target: str,
+                                          prefix: str, base: Path | None = None) -> bytes | None:
+    """Plant a unique secret at ``normpath(base / rest)`` (``base`` defaults to the build root) —
+    pure string arithmetic, never a filesystem resolve (which would touch a UNC share) — when that
+    lands outside the build ``dist`` and inside tmp_path. Returns the secret, or None when the target
+    cannot be planted."""
+    rest = urllib.parse.unquote(raw_target)[len(prefix):]
+    target = Path(os.path.normpath(str((base or dist) / rest)))
+    try:
+        inside_tmp = target.is_relative_to(tmp_path)
+        inside_dist = target.is_relative_to(dist)
+    except ValueError:
+        return None
+    if not inside_tmp or inside_dist:
+        return None
+    secret = b"TOP-SECRET-" + hashlib.sha256(raw_target.encode()).hexdigest()[:16].encode()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(secret)
+    return secret
+
+
+@contextlib.contextmanager
+def _filesystem_trap(monkeypatch):
+    """Record every filesystem entry point a request could use to NAME a file (stat, open, list).
+    The scope routes select startup-captured bytes by exact key, so a request must record nothing; a
+    shell that serves ``dist / rest`` from disk has to call at least one of these."""
+    import builtins
+    import io
+
+    seen: list[tuple[str, str]] = []
+    # The interpreter's own bookkeeping (linecache/inspect re-stat an imported module's source file)
+    # is not the route naming a file; everything else is recorded.
+    module_sources = {os.path.normcase(os.path.abspath(f)) for f in
+                      (getattr(mod, "__file__", None) for mod in list(sys.modules.values()))
+                      if isinstance(f, str)}
+
+    def wrap(owner, name):
+        original = getattr(owner, name)
+
+        def recorder(*args, **kwargs):
+            target = args[0] if args else ""
+            if not (isinstance(target, (str, os.PathLike))
+                    and os.path.normcase(os.path.abspath(os.fspath(target))) in module_sources):
+                seen.append((name, str(target)))
+            return original(*args, **kwargs)
+        return recorder
+
+    with monkeypatch.context() as m:
+        for owner, name in ((os, "stat"), (os, "lstat"), (os, "open"), (os, "scandir"),
+                            (os, "listdir"), (builtins, "open"), (io, "open")):
+            m.setattr(owner, name, wrap(owner, name))
+        yield seen
+
+
+@pytest.mark.parametrize("path,plantable", _SHELL_TRAVERSALS)
+def test_scope_traversal_and_unc_input_falls_back_to_the_shell(tmp_path, monkeypatch, path,
+                                                               plantable):
+    dist = _nested_scope_dist(tmp_path)
+    files = write_scope_dist(dist)
+    secret = _plant_where_a_naive_shell_would_read(tmp_path, dist, path, "/scope/")
+    # NON-VACUITY: the inputs that climb out of the build really do have a secret waiting exactly
+    # where `dist / rest` points, so serving from disk would hand it out.
+    assert secret is not None or not plantable, f"{path}: nothing planted where it resolves"
+    with _client(tmp_path, dist) as c:
+        with _filesystem_trap(monkeypatch) as touched:
+            status, body = _raw_get(c.app, path)
+        assert touched == [], f"{path}: the scope shell touched the filesystem at request time"
+        if secret is not None:
+            assert secret not in body
         assert status == 200, (path, status)
         assert body == files["index.html"], path
 
 
-@pytest.mark.parametrize("path", [
-    "/scope/assets/..%2findex.html",
-    "/scope/assets/%2e%2e/%2e%2e/secret.txt",
-    "/scope/assets/..\\..\\secret.txt",
-    "/scope/assets//server/share/secret.txt",
-])
-def test_scope_asset_traversal_is_404_never_a_file_outside_assets(tmp_path, path):
-    write_scope_dist(tmp_path / "scope-dist")
-    (tmp_path / "secret.txt").write_bytes(b"TOP-SECRET-OUTSIDE-DIST")
-    with _client(tmp_path, tmp_path / "scope-dist") as c:
-        status, body = _raw_get(c.app, path)
-        assert b"TOP-SECRET-OUTSIDE-DIST" not in body
+@pytest.mark.parametrize("path,plantable", _ASSET_TRAVERSALS)
+def test_scope_asset_traversal_is_404_never_a_file_outside_assets(tmp_path, monkeypatch, path,
+                                                                  plantable):
+    dist = _nested_scope_dist(tmp_path)
+    write_scope_dist(dist)
+    secret = _plant_where_a_naive_shell_would_read(tmp_path, dist, path, "/scope/assets/",
+                                                   base=dist / "assets")
+    assert secret is not None or not plantable, f"{path}: nothing planted where it resolves"
+    with _client(tmp_path, dist) as c:
+        with _filesystem_trap(monkeypatch) as touched:
+            status, body = _raw_get(c.app, path)
+        assert touched == [], f"{path}: the scope asset route touched the filesystem"
+        if secret is not None:
+            assert secret not in body
         assert status == 404, (path, status)
         assert SCOPE_MARKER.encode() not in body
 
@@ -390,3 +491,826 @@ def test_no_scope_route_accepts_a_non_get_method(tmp_path, built):
                 r = c.request(method, path)
                 assert r.status_code == 405, (method, path, r.status_code)
                 assert SPA_MARKER not in r.text and SCOPE_MARKER not in r.text
+
+
+# ── privacy by construction: a served build carries NO compiled dataset ─────────────────────────
+# The digest check above catches only one digest form (the store blob). The class it stands for is
+# "client evidence compiled into a static file", and the Atlas Scope compiler marks every file it
+# emits: it writes the source binding into each compiled file's `meta`. A build is therefore refused
+# when ANY file in it carries that compiled-model signature — whatever digest form, whatever
+# snapshot, the bundled sample included (/scope must never show the sample in place of the user's
+# snapshot). The signature keys are pinned to the compiler's own exported BINDING_KEYS and to its
+# real output below, so a rename there turns these tests red instead of silently opening the gap.
+_REPO = Path(__file__).resolve().parents[2]
+_ATLAS_SCOPE = _REPO / "atlas-scope"
+_COMPILE_MODEL = _ATLAS_SCOPE / "tools" / "lib" / "compile-model.mjs"
+_SAMPLE = _REPO / "webapp" / "sample_data" / "sample_fleet.snapshot.json"
+_NODE = shutil.which("node")
+_REFUSED_COMPILED = "refused_compiled_evidence"
+
+
+def _compiler_export(name: str) -> str:
+    """The body of ``export const <name> = Object.freeze([...]);`` read from the compiler itself."""
+    text = _COMPILE_MODEL.read_text(encoding="utf-8")
+    match = re.search(r"export const " + name + r"\s*=\s*Object\.freeze\(\[(.*?)\]\);", text, re.S)
+    assert match, f"compile-model.mjs no longer exports {name} as a frozen array"
+    return match.group(1)
+
+
+def _compiler_binding_keys() -> list[str]:
+    return re.findall(r'"([A-Za-z0-9_$]+)"', _compiler_export("BINDING_KEYS"))
+
+
+def _tracked_compiled_files() -> dict[str, bytes]:
+    """The compiled files the compiler tracks for the sample build (its OUTPUTS[].trackedPath): real
+    producer output that exists in every checkout, with no hand-made fixture standing in for it."""
+    paths = re.findall(r'trackedPath:\s*"([^"]+)"', _compiler_export("OUTPUTS"))
+    assert len(paths) >= 4, paths
+    return {path: (_ATLAS_SCOPE / path).read_bytes() for path in paths}
+
+
+def _js_literal(value) -> str:
+    """A JSON value as the JS literal rolldown emits for a JSON import (see a Vite build's mount
+    chunk): identifier keys bare, strings in template-literal backticks."""
+    if isinstance(value, dict):
+        return "{" + ",".join(
+            (key if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", key) else json.dumps(key))
+            + ":" + _js_literal(item) for key, item in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(_js_literal(item) for item in value) + "]"
+    if isinstance(value, str):
+        return "`" + value.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${") + "`"
+    return json.dumps(value)
+
+
+_FORMS = ("json-asset", "json-parse-module", "rolldown-object-literal", "sourcemap",
+          "inline-base64-sourcemap")
+
+
+def _embeddings(name: str, content: bytes) -> dict[str, bytes]:
+    """Every way a bundler ships a compiled JSON document inside a static build."""
+    text = content.decode("utf-8")
+    sourcemap = json.dumps({"version": 3, "sources": [f"../../{name}"], "sourcesContent": [text],
+                            "names": [], "mappings": ""}).encode("utf-8")
+    forms = {
+        "json-asset": content,
+        "json-parse-module": ("export default JSON.parse(" + json.dumps(text) + ");").encode(),
+        "rolldown-object-literal": ("var e=" + _js_literal(json.loads(text))
+                                    + ";export{e as t};").encode("utf-8"),
+        "sourcemap": sourcemap,
+        "inline-base64-sourcemap": (b"export const clean = 1;\n//# sourceMappingURL=data:"
+                                    b"application/json;base64," + base64.b64encode(sourcemap)),
+    }
+    assert set(forms) == set(_FORMS)
+    return forms
+
+
+def test_the_signature_is_the_compilers_own_binding_keys():
+    keys = _compiler_binding_keys()
+    assert len(keys) >= 2, keys
+    signature = app_mod._SCOPE_COMPILED_MODEL_SIGNATURE_KEYS
+    assert len(signature) >= 2
+    assert set(signature) <= set(keys), (
+        f"the /scope refusal signature {signature} is no longer part of the compiler's BINDING_KEYS "
+        f"{keys}: re-derive it from atlas-scope/tools/lib/compile-model.mjs")
+
+
+def test_every_tracked_compiled_file_carries_the_signature_in_every_embedding():
+    tracked = _tracked_compiled_files()
+    for name, content in tracked.items():
+        meta = json.loads(content)["meta"]
+        for key in app_mod._SCOPE_COMPILED_MODEL_SIGNATURE_KEYS:
+            assert isinstance(meta.get(key), str) and meta[key], (name, key)
+        for form, embedded in _embeddings(name, content).items():
+            assert app_mod._scope_file_carries_compiled_model(embedded), (name, form)
+
+
+#: Set to 1 where the real-compiler / real-bundler pins MUST run (a CI leg that installs node and
+#: atlas-scope's dependencies): a missing prerequisite then FAILS instead of skipping, so a leg that
+#: lost node or `npm ci` cannot report green on pins it never executed.
+_REQUIRE_REAL_TOOLCHAIN_ENV = "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN"
+
+
+def _prerequisite_absent(reason: str):
+    if os.environ.get(_REQUIRE_REAL_TOOLCHAIN_ENV) == "1":
+        pytest.fail(f"{_REQUIRE_REAL_TOOLCHAIN_ENV}=1 but {reason}", pytrace=False)
+    pytest.skip(reason)
+
+
+def test_a_required_real_toolchain_that_is_absent_fails_instead_of_skipping(monkeypatch):
+    monkeypatch.delenv(_REQUIRE_REAL_TOOLCHAIN_ENV, raising=False)
+    with pytest.raises(pytest.skip.Exception):
+        _prerequisite_absent("absent")
+    monkeypatch.setenv(_REQUIRE_REAL_TOOLCHAIN_ENV, "1")
+    with pytest.raises(pytest.fail.Exception, match=_REQUIRE_REAL_TOOLCHAIN_ENV):
+        _prerequisite_absent("absent")
+
+
+@pytest.fixture(scope="module")
+def compiled_sample(tmp_path_factory):
+    """The files the REAL compiler (tools/compile-all.mjs) emits for the sample snapshot — the same
+    file the end-to-end test uploads — written outside the repository."""
+    if not _NODE:
+        _prerequisite_absent("node is not installed: the fresh-compile pins are skipped here; the "
+                             "tracked compiled-output pins above still run")
+    out = tmp_path_factory.mktemp("compiled-sample")
+    proc = subprocess.run([_NODE, "tools/compile-all.mjs", "--source", str(_SAMPLE), "--out",
+                           str(out)], cwd=_ATLAS_SCOPE, capture_output=True, text=True,
+                          timeout=600)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    exports = subprocess.run(
+        [_NODE, "--input-type=module", "-e",
+         "const m = await import(process.argv[1]); console.log(JSON.stringify({"
+         "BINDING_KEYS: m.BINDING_KEYS, SECTIONS_READ: m.SECTIONS_READ,"
+         " SUPPORTED_SCHEMAS: m.SUPPORTED_SCHEMAS}));",
+         _COMPILE_MODEL.as_uri()], capture_output=True, text=True, timeout=120)
+    assert exports.returncode == 0, exports.stderr
+    files = {path.name: path.read_bytes() for path in sorted(out.iterdir()) if path.is_file()}
+    assert len(files) >= 4, sorted(files)
+    return files, json.loads(exports.stdout)
+
+
+def test_the_real_compiler_writes_the_signature_into_every_file_it_emits(compiled_sample):
+    files, exports = compiled_sample
+    binding_keys = exports["BINDING_KEYS"]
+    # the authoritative export, imported by node, agrees with the source-text read above
+    assert binding_keys == _compiler_binding_keys()
+    assert set(app_mod._SCOPE_COMPILED_MODEL_SIGNATURE_KEYS) <= set(binding_keys)
+    for name, content in files.items():
+        assert set(app_mod._SCOPE_COMPILED_MODEL_SIGNATURE_KEYS) <= set(json.loads(content)["meta"])
+        assert app_mod._scope_file_carries_compiled_model(content), name
+
+
+@pytest.mark.parametrize("form", _FORMS)
+def test_a_scope_build_carrying_a_compiled_dataset_is_refused_in_every_embedding(tmp_path, form):
+    name, content = min(_tracked_compiled_files().items(), key=lambda item: len(item[1]))
+    dist = tmp_path / "scope-dist"
+    write_scope_dist(dist, extra_asset=("mount-x.js", _embeddings(name, content)[form]))
+    with _client(tmp_path, dist) as c:
+        assert c.app.state.scope_status == _REFUSED_COMPILED
+        for path in ("/scope/", "/scope/snapshots/1/", "/scope/assets/mount-x.js",
+                     "/scope/assets/index-abc123.js"):
+            r = c.get(path, headers={"sec-fetch-site": "same-origin"})
+            assert r.status_code == 503, (form, path, r.status_code)
+            assert SCOPE_MARKER not in r.text and "compiled" in r.text
+            assert b"sourceGitBlob" not in r.content
+            assert c.get(path, headers={"sec-fetch-site": "cross-site"}).status_code == 403
+        sid = c.post("/api/demo/seed").json()["snapshot"]["id"]
+        view = c.get(f"/api/snapshots/{sid}/scope-view").json()
+        assert view["available"] is False and view["href"] is None
+        assert view["status"] == _REFUSED_COMPILED
+
+
+def test_an_uploaded_snapshot_compiled_into_a_scope_build_is_refused_end_to_end(tmp_path,
+                                                                                compiled_sample):
+    """The refuter's X1 path, with the REAL producer: a client file is uploaded, the same file is
+    compiled by the real compiler into a /scope runtime-declared build. The compiler binds the
+    LF-normalised FILE bytes; the store holds a re-serialised, provenance-stamped blob — so no digest
+    the build embeds is a stored digest, and the digest defence alone would have served it."""
+    files, _exports = compiled_sample
+    with _client(tmp_path, None, db_name="e2e.db") as c:
+        cid = c.post("/api/campaigns", json={"name": "client"}).json()["id"]
+        up = c.post(f"/api/campaigns/{cid}/snapshots",
+                    files={"file": ("fleet.snapshot.json", _SAMPLE.read_bytes(),
+                                    "application/json")},
+                    data={"label": "uploaded"})
+        assert up.status_code == 201, up.text[:300]
+        sid = up.json()["id"]
+        stored = c.get(f"/api/snapshots/{sid}/raw").headers["x-snapshot-sha256"]
+    dist = tmp_path / "scope-dist"
+    write_scope_dist(dist)
+    for name, content in files.items():
+        (dist / "assets" / name).write_bytes(content)
+    embedded = set(re.findall(rb"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", b"".join(files.values())))
+    assert embedded and stored.encode() not in embedded  # the digest defence cannot see this build
+    with _client(tmp_path, dist, db_name="e2e.db") as c:
+        for name in files:
+            r = c.get(f"/scope/assets/{name}", headers={"sec-fetch-site": "same-origin"})
+            assert r.status_code == 503, (name, r.status_code)
+            assert r.content != files[name] and b"sourceGitBlob" not in r.content
+            refused = c.get(f"/scope/assets/{name}", headers={"sec-fetch-site": "cross-site"})
+            assert refused.status_code == 403 and b"sourceGitBlob" not in refused.content
+        view = c.get(f"/api/snapshots/{sid}/scope-view").json()
+        assert view["status"] == _REFUSED_COMPILED and view["href"] is None
+
+
+def test_a_runtime_build_that_bundles_the_compiler_is_not_mistaken_for_a_compiled_dataset(tmp_path):
+    """The phase-3 runtime build compiles in the browser, so it bundles the compiler (which NAMES
+    every binding key) and builds a binding label from literals. Neither is a compiled dataset: the
+    signature is the keys BOUND to compiled values, never their mere names."""
+    runtime = (_COMPILE_MODEL.read_bytes()
+               + b"\nconst label={source:`assesshub:snapshot/1`,sourceOrigin:`assesshub-store`,"
+                 b"sourceDigestForm:`assesshub-store-blob`};\n")
+    for key in app_mod._SCOPE_COMPILED_MODEL_SIGNATURE_KEYS:
+        assert key.encode() in runtime
+    assert not app_mod._scope_file_carries_compiled_model(runtime)
+    dist = tmp_path / "scope-dist"
+    write_scope_dist(dist, extra_asset=("compile-model-x.js", runtime))
+    with _client(tmp_path, dist) as c:
+        assert c.app.state.scope_status == "ready"
+        r = c.get("/scope/assets/compile-model-x.js")
+        assert r.status_code == 200 and r.content == runtime
+
+
+# ── the envelope is removable: compiled RECORDS are recognised on their own ─────────────────────
+# A bundler drops a compiled file's `meta` envelope: Vite turns every top-level JSON member into a
+# named export, so `import { devices } from "./fabric.json"` ships the device records with neither
+# signature key. The compiler's per-record contract — every record carries `cite`, a path into the
+# snapshot rooted at a section it reads (SECTIONS_READ) — is what survives, and what is recognised.
+#: Members that carry NO citation rooted in a snapshot section, so shipped without their envelope
+#: they are not recognised: bare host-name lists / host-keyed maps (`tiers`, `deviceAbsent`), and the
+#: coverage summary, whose one `cite` is a constant ("collection_completeness / coverage_matrix") that
+#: the compiler's own code also binds — recognising it would refuse every runtime build that bundles
+#: the compiler. A STATED residual (the compiler owns the fix: a section-rooted citation on every
+#: member), whose exposure the access guard in front of /scope bounds. The member census below fails
+#: if this set GROWS (a new unrecognisable member would be a new silent gap).
+_UNCITED_MEMBERS = frozenset({("fabric.json", "tiers"), ("fabric.json", "coverage"),
+                              ("producer-emission.json", "deviceAbsent")})
+
+
+def _compiler_strings(name: str) -> list[str]:
+    return re.findall(r'"([^"]+)"', _compiler_export(name))
+
+
+def _member_forms(value) -> dict[str, bytes]:
+    """One compiled member with its file's envelope gone, as a bundler ships a named JSON export:
+    the value alone, JSON.parse of a template literal (rolldown's form for a large member), of a
+    string literal, and a plain object literal (its form for a small one)."""
+    text = json.dumps(value, separators=(",", ":"))
+    template = text.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+    return {
+        "json-value": json.dumps(value, indent=1).encode("utf-8"),
+        "json-parse-template": ("var e=JSON.parse(`" + template + "`);export{e as t};").encode(),
+        "json-parse-string": ("var e=JSON.parse(" + json.dumps(text) + ");export{e as t};").encode(),
+        "object-literal": ("var e=" + _js_literal(value) + ";export{e as t};").encode("utf-8"),
+    }
+
+
+def _member_census(files: dict[str, bytes]) -> tuple[set, set]:
+    caught, uncaught = set(), set()
+    for name, content in files.items():
+        members = {key: value for key, value in json.loads(content).items() if key != "meta"}
+        assert members, name
+        for member, value in members.items():
+            forms = _member_forms(value)
+            for form, shipped in forms.items():
+                # the envelope really is gone from what is scanned
+                for key in app_mod._SCOPE_COMPILED_MODEL_SIGNATURE_KEYS:
+                    assert key.encode() not in shipped, (name, member, form, key)
+            verdicts = {form: app_mod._scope_file_carries_compiled_model(shipped)
+                        for form, shipped in forms.items()}
+            assert len(set(verdicts.values())) == 1, (name, member, verdicts)  # forms agree
+            (caught if all(verdicts.values()) else uncaught).add((name, member))
+    return caught, uncaught
+
+
+def _assert_the_uncited_residual_is_exactly(uncaught: set) -> None:
+    """The residual is recorded (docs/open-issues) as exactly these members, so it is pinned EXACTLY:
+    a new uncited member is a new silent gap, and a member the compiler has since given a citation
+    must leave _UNCITED_MEMBERS (and the record) rather than linger as a stale, over-broad excuse."""
+    assert not uncaught - _UNCITED_MEMBERS, f"new uncited compiled member(s): {uncaught - _UNCITED_MEMBERS}"
+    assert not _UNCITED_MEMBERS - uncaught, (
+        f"now recognised, so no longer a residual: {_UNCITED_MEMBERS - uncaught} — remove them from "
+        f"_UNCITED_MEMBERS and from the recorded /scope residual")
+
+
+def test_the_citation_signature_is_the_compilers_own_snapshot_sections():
+    sections = _compiler_strings("SECTIONS_READ")
+    assert len(sections) >= 10, sections
+    assert set(app_mod._SCOPE_SNAPSHOT_SECTIONS) == set(sections), (
+        "the /scope record-citation signature must be rooted at exactly the sections the compiler "
+        "reads (compile-model.mjs SECTIONS_READ); re-derive app._SCOPE_SNAPSHOT_SECTIONS")
+    families = {schema.rsplit("/", 1)[0] + "/" for schema in _compiler_strings("SUPPORTED_SCHEMAS")}
+    assert families and families == set(app_mod._SCOPE_SNAPSHOT_SCHEMA_FAMILIES)
+    # the engine's real sample snapshot is recognised by that family
+    assert json.loads(_SAMPLE.read_bytes())["schema"].startswith(tuple(families))
+
+
+def test_every_compiled_member_shipped_without_its_envelope_is_recognised():
+    """Member by member over the compiler's real tracked output (no hand-made records): every member
+    that carries a citation is recognised in every form a bundler ships it; the rest is exactly the
+    stated residual and may not grow."""
+    tracked = {Path(path).name: content for path, content in _tracked_compiled_files().items()}
+    caught, uncaught = _member_census(tracked)
+    _assert_the_uncited_residual_is_exactly(uncaught)
+    assert len(caught) >= 15 and {name for name, _member in caught} == set(tracked), caught
+
+
+def test_every_member_the_real_compiler_emits_is_recognised_without_its_envelope(compiled_sample):
+    files, exports = compiled_sample
+    assert set(exports["SECTIONS_READ"]) == set(app_mod._SCOPE_SNAPSHOT_SECTIONS)
+    assert {s.rsplit("/", 1)[0] + "/" for s in exports["SUPPORTED_SCHEMAS"]} == set(
+        app_mod._SCOPE_SNAPSHOT_SCHEMA_FAMILIES)
+    caught, uncaught = _member_census(files)
+    _assert_the_uncited_residual_is_exactly(uncaught)
+    assert len(caught) >= 15 and {name for name, _member in caught} == set(files), caught
+
+
+_VITE = _ATLAS_SCOPE / "node_modules" / "vite" / "dist" / "node" / "index.js"
+_VITE_BUILD = (
+    "import { pathToFileURL } from 'node:url';"
+    "const vite = await import(pathToFileURL(process.argv[1]).href);"
+    "await vite.build({ root: process.cwd(), base: '/scope/', configFile: false, logLevel: 'error',"
+    " build: { outDir: 'dist', emptyOutDir: true, sourcemap: false } });")
+
+
+def _vite_build(root: Path, main_js: str) -> Path:
+    """A real Vite build (Atlas Scope's own pinned Vite) of a /scope runtime-declared page."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "index.html").write_text(
+        '<!doctype html><html lang="en"><head><meta charset="UTF-8">'
+        '<meta name="atlas-scope-snapshot-source" content="assesshub-api-runtime">'
+        '<title>Atlas Scope</title><script type="module" src="/main.js"></script></head>'
+        '<body><div id="root"></div></body></html>', encoding="utf-8")
+    (root / "main.js").write_text(main_js, encoding="utf-8")
+    proc = subprocess.run([_NODE, "--input-type=module", "-e", _VITE_BUILD, str(_VITE)], cwd=root,
+                          capture_output=True, text=True, timeout=600)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    return root / "dist"
+
+
+@pytest.fixture(scope="module")
+def vite_builds(tmp_path_factory):
+    if not _NODE or not _VITE.is_file():
+        _prerequisite_absent("node or atlas-scope's installed Vite is absent: the real-bundler pins "
+                             "are skipped; the member census above still runs on the compiler's real "
+                             "output")
+    base = tmp_path_factory.mktemp("vite")
+    data = base / "named-imports"
+    data.mkdir()
+    for path, content in _tracked_compiled_files().items():
+        (data / Path(path).name).write_bytes(content)
+    named = _vite_build(data, (
+        'import { devices, links } from "./fabric.json";\n'
+        'import { hosts } from "./acl-bindings.json";\n'
+        'import { hosts as ribHosts } from "./rib-evidence.json";\n'
+        'import { aclLineAbsent } from "./producer-emission.json";\n'
+        'document.getElementById("root").textContent = JSON.stringify('
+        '[devices, links, hosts, ribHosts, aclLineAbsent]);\n'))
+    runtime = _vite_build(base / "runtime", (
+        f"import {{ compileAll, BINDING_KEYS }} from {json.dumps(_COMPILE_MODEL.as_posix())};\n"
+        'const label = { source: "assesshub:snapshot/1", sourceOrigin: "assesshub-store",'
+        ' sourceDigestForm: "assesshub-store-blob" };\n'
+        "window.atlasScope = [compileAll, BINDING_KEYS, label];\n"))
+    return named, runtime
+
+
+def _shipped(dist: Path) -> bytes:
+    return b"".join(path.read_bytes() for path in sorted(dist.rglob("*")) if path.is_file())
+
+
+def test_a_real_vite_build_importing_compiled_members_by_name_is_refused(tmp_path, vite_builds):
+    """R8-V1: the project's own bundler, default settings, named JSON imports — the envelope is
+    tree-shaken away and compiled client records ship on their own. Refused on those records."""
+    named, _runtime = vite_builds
+    shipped = _shipped(named)
+    for key in app_mod._SCOPE_COMPILED_MODEL_SIGNATURE_KEYS:  # NON-VACUITY: the envelope is gone
+        assert key.encode() not in shipped, key
+    fabric = json.loads(_tracked_compiled_files()["src/data/fabric.json"])
+    assert fabric["devices"][0]["cite"].encode() in shipped  # ...and the records really shipped
+    assert app_mod._scope_file_index(named)[0] == _REFUSED_COMPILED
+    with _client(tmp_path, named) as c:
+        assert c.app.state.scope_status == _REFUSED_COMPILED
+        for asset in sorted((named / "assets").iterdir()):
+            r = c.get(f"/scope/assets/{asset.name}", headers={"sec-fetch-site": "same-origin"})
+            assert r.status_code == 503 and r.content != asset.read_bytes(), asset.name
+            assert c.get(f"/scope/assets/{asset.name}",
+                         headers={"sec-fetch-site": "cross-site"}).status_code == 403
+
+
+def test_a_real_vite_runtime_build_that_bundles_the_compiler_is_ready(tmp_path, vite_builds):
+    """The negative control, built for real: the phase-3 shape bundles the compiler (which names
+    both binding keys and builds citations from templates) and labels its binding with literals."""
+    _named, runtime = vite_builds
+    shipped = _shipped(runtime)
+    for key in app_mod._SCOPE_COMPILED_MODEL_SIGNATURE_KEYS:  # NON-VACUITY: the names ARE there
+        assert key.encode() in shipped, key
+    assert app_mod._scope_file_index(runtime)[0] == "ready"
+
+
+def test_no_module_a_runtime_build_can_bundle_reads_as_snapshot_evidence():
+    """Every non-test module under atlas-scope/src and the compiler library — what a runtime build
+    can import — scanned as a build file, derived from the tree. None may read as snapshot evidence,
+    or the phase-3 runtime build would be refused for its own code. The compiled datasets (the
+    compiler's own OUTPUTS[].trackedPath) are exactly what is excluded."""
+    compiled = {(_ATLAS_SCOPE / path).resolve() for path in _tracked_compiled_files()}
+    scanned = []
+    for root in (_ATLAS_SCOPE / "src", _ATLAS_SCOPE / "tools" / "lib", _ATLAS_SCOPE / "contracts"):
+        for path in sorted(root.rglob("*")):
+            if (not path.is_file() or path.resolve() in compiled or ".test." in path.name
+                    or path.suffix not in {".ts", ".tsx", ".mts", ".mjs", ".js", ".json", ".css"}):
+                continue
+            scanned.append(path)
+            assert not app_mod._scope_file_carries_compiled_model(path.read_bytes()), path
+    assert len(scanned) >= 50, len(scanned)
+    assert len(compiled) >= 4
+
+
+_EVIDENCE_FORMS = ("raw-engine-snapshot", "gzip-compiled-file", "gzip-raw-engine-snapshot",
+                   "base64-gzip-compiled-file")
+
+
+def _evidence_asset(form: str) -> bytes:
+    import gzip
+
+    _name, compiled = min(_tracked_compiled_files().items(), key=lambda item: len(item[1]))
+    raw = _SAMPLE.read_bytes()
+    return {
+        "raw-engine-snapshot": raw,
+        "gzip-compiled-file": gzip.compress(compiled, mtime=0),
+        "gzip-raw-engine-snapshot": gzip.compress(raw, mtime=0),
+        "base64-gzip-compiled-file": (b"export const d='data:application/gzip;base64,"
+                                      + base64.b64encode(gzip.compress(compiled, mtime=0)) + b"';"),
+    }[form]
+
+
+@pytest.mark.parametrize("form", _EVIDENCE_FORMS)
+def test_a_build_carrying_a_raw_snapshot_or_a_precompressed_compiled_file_is_refused(tmp_path, form):
+    """R8-V3: the uploaded file itself, and a compression plugin's .gz copy of a compiled file."""
+    dist = tmp_path / "scope-dist"
+    write_scope_dist(dist, extra_asset=("evidence.bin", _evidence_asset(form)))
+    with _client(tmp_path, dist) as c:
+        assert c.app.state.scope_status == _REFUSED_COMPILED, form
+        r = c.get("/scope/assets/evidence.bin", headers={"sec-fetch-site": "same-origin"})
+        assert r.status_code == 503
+
+
+# ── what the scan cannot read is never read as clean (R8-VR4) ───────────────────────────────────
+# A content scan that meets bytes it cannot decode has NOT established that they carry no snapshot
+# evidence. A Brotli (.br) copy — the other common compression-plugin output, which the standard
+# library cannot decode — or a stream that does not decode completely within the per-file bound
+# is therefore refused as uninspectable, never served as `ready`. Which names declare a content
+# encoding is the standard library's own registry (mimetypes.encodings_map / suffix_map), not a
+# hand list; which streams are decoded is recognised by content (magic), whatever the name.
+_REFUSED_UNINSPECTABLE = "refused_uninspectable"
+_CLEAN_RUNTIME_ASSET = b"export const runtime = 'reads /api/snapshots/{id}/raw at run time';\n" * 64
+
+
+def _stdlib_compressors() -> dict[str, "callable"]:
+    import bz2
+    import gzip
+    import lzma
+
+    return {"gzip": lambda data: gzip.compress(data, mtime=0), "bzip2": bz2.compress,
+            "xz": lzma.compress}
+
+
+def _declared_encoding_names() -> list[str]:
+    """Every member name the standard library reads as content-encoded, in both cases: each
+    encodings_map suffix and each suffix_map alias whose expansion ends in one (.svgz, .tgz ...)."""
+    import mimetypes
+
+    encodings = {suffix.casefold() for suffix in mimetypes.encodings_map}
+    suffixes = set(mimetypes.encodings_map)
+    suffixes |= {alias for alias, expansion in mimetypes.suffix_map.items()
+                 if Path(expansion).suffix.casefold() in encodings}
+    names = set()
+    for suffix in suffixes:
+        names |= {f"extra.js{suffix}", f"extra.js{suffix.upper()}", f"extra{suffix.lower()}"}
+    return sorted(names)
+
+
+def test_every_content_encoding_the_stdlib_names_is_decoded_or_refused(tmp_path):
+    names = _declared_encoding_names()
+    assert any(name.endswith(".br") for name in names) and len(names) >= 12, names  # NON-VACUITY
+    opaque = b"\x8b\x05\x80opaque bytes no stdlib decoder reads as a stream" * 4
+    for index, name in enumerate(names):
+        dist = tmp_path / f"scope-dist-{index}"
+        write_scope_dist(dist, extra_asset=(name, opaque))
+        assert app_mod._scope_file_index(dist)[0] == _REFUSED_UNINSPECTABLE, name
+    # the same bytes under a name that declares no encoding are ordinary content (control)
+    dist = tmp_path / "scope-dist-plain"
+    write_scope_dist(dist, extra_asset=("extra.bin", opaque))
+    assert app_mod._scope_file_index(dist)[0] == "ready"
+
+
+@pytest.mark.parametrize("encoding", ("gzip", "bzip2", "xz"))
+def test_every_stdlib_stream_is_decoded_and_scanned_whatever_its_name(tmp_path, encoding):
+    """A compiled file compressed with each standard-library codec is recognised — named with its
+    suffix, or named as nothing in particular — and a clean asset compressed the same way stays
+    ready (the stream really is decoded, not refused merely for being compressed)."""
+    compress = _stdlib_compressors()[encoding]
+    _name, compiled = min(_tracked_compiled_files().items(), key=lambda item: len(item[1]))
+    suffix = {"gzip": ".gz", "bzip2": ".bz2", "xz": ".xz"}[encoding]
+    cases = {
+        ("fabric.json" + suffix, compress(compiled)): _REFUSED_COMPILED,
+        ("evidence.bin", compress(compiled)): _REFUSED_COMPILED,
+        ("inline.js", b"export const d='data:application/octet-stream;base64,"
+                      + base64.b64encode(compress(compiled)) + b"';"): _REFUSED_COMPILED,
+        ("runtime.js" + suffix, compress(_CLEAN_RUNTIME_ASSET)): "ready",
+    }
+    for index, ((name, content), expected) in enumerate(cases.items()):
+        dist = tmp_path / f"scope-dist-{index}"
+        write_scope_dist(dist, extra_asset=(name, content))
+        assert app_mod._scope_file_index(dist)[0] == expected, (encoding, name)
+
+
+@pytest.mark.parametrize("encoding", ("gzip", "bzip2", "xz"))
+def test_a_stream_that_does_not_decode_completely_is_refused_as_uninspectable(tmp_path, monkeypatch,
+                                                                            encoding):
+    compress = _stdlib_compressors()[encoding]
+    whole = compress(_CLEAN_RUNTIME_ASSET)
+    truncated = whole[: len(whole) // 2]
+    dist = tmp_path / "scope-dist-truncated"
+    write_scope_dist(dist, extra_asset=("runtime.bin", truncated))
+    assert app_mod._scope_file_index(dist)[0] == _REFUSED_UNINSPECTABLE, encoding
+    # a stream that inflates beyond the per-file ceiling is not scanned up to the cap and passed:
+    # what lies beyond the bound was never read
+    bomb = compress(b"\0" * 300_000)
+    assert len(bomb) < 64 * 1024
+    monkeypatch.setattr(app_mod, "_FRONTEND_MAX_FILE_BYTES", 128 * 1024)
+    dist = tmp_path / "scope-dist-over-bound"
+    write_scope_dist(dist, extra_asset=("runtime.bin", bomb))
+    assert app_mod._scope_file_index(dist)[0] == _REFUSED_UNINSPECTABLE, encoding
+
+
+def test_a_payload_nested_beyond_the_scan_bound_is_refused_as_uninspectable(tmp_path):
+    payload = _CLEAN_RUNTIME_ASSET
+    for _level in range(app_mod._SCOPE_DATA_URI_DEPTH + 1):
+        payload = (b"export const d='data:application/octet-stream;base64,"
+                   + base64.b64encode(payload) + b"';")
+    dist = tmp_path / "scope-dist-deep"
+    write_scope_dist(dist, extra_asset=("deep.js", payload))
+    assert app_mod._scope_file_index(dist)[0] == _REFUSED_UNINSPECTABLE
+    with _client(tmp_path, dist) as c:
+        r = c.get("/scope/assets/deep.js", headers={"sec-fetch-site": "same-origin"})
+        assert r.status_code == 503 and r.content != payload
+        assert "inspect" in r.text
+        sid = c.post("/api/demo/seed").json()["snapshot"]["id"]
+        view = c.get(f"/api/snapshots/{sid}/scope-view").json()
+        assert view["status"] == _REFUSED_UNINSPECTABLE and view["href"] is None
+
+
+# ── the mount sits behind the /api access guard ─────────────────────────────────────────────────
+def _scope_urls(app) -> list[str]:
+    urls = []
+    for route in _scope_routes(app):
+        urls.append(route.path.replace("{rest:path}", "snapshots/1/")
+                    .replace("{asset_path:path}", "index-abc123.js"))
+    assert {"/scope", "/scope/snapshots/1/", "/scope/assets/index-abc123.js"} <= set(urls), urls
+    return urls
+
+
+def test_every_scope_route_sits_behind_the_api_access_guard(tmp_path):
+    """Whatever a build carries — in a form the scan knows or not — is readable exactly by whoever may
+    read /api: refused cross-site, from a non-loopback peer without a token, and under a foreign Host;
+    served to AssessHub's own same-origin navigation. Routes derived from the route table."""
+    dist = tmp_path / "scope-dist"
+    files = write_scope_dist(dist)
+    with _client(tmp_path, dist) as c:
+        assert app_mod.is_guarded_api_path("/scope/snapshots/1/", c.app.state.api_doc_paths)
+        for url in _scope_urls(c.app):
+            ok = c.get(url, headers={"sec-fetch-site": "same-origin"})
+            assert ok.status_code == 200 and ok.content in files.values(), url
+            for headers in ({"sec-fetch-site": "cross-site"}, {"host": "evil.example"}):
+                refused = c.get(url, headers=headers)
+                assert refused.status_code == 403, (url, headers, refused.status_code)
+                assert SCOPE_MARKER not in refused.text and b"export const" not in refused.content
+    remote = TestClient(create_app(db_path=str(tmp_path / "remote.db"), dist_dir=tmp_path / "no-spa",
+                                   scope_dist_dir=dist),
+                        base_url="http://localhost", client=("10.0.0.5", 50000))
+    with remote as c:
+        for url in _scope_urls(c.app):
+            r = c.get(url)
+            assert r.status_code == 403 and SCOPE_MARKER not in r.text, (url, r.status_code)
+
+
+def test_in_token_mode_the_scope_mount_needs_the_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASSESSHUB_TOKEN", "t0k3n-for-scope")
+    dist = tmp_path / "scope-dist"
+    files = write_scope_dist(dist)
+    with _client(tmp_path, dist) as c:
+        for url in _scope_urls(c.app):
+            r = c.get(url)
+            assert r.status_code == 401 and SCOPE_MARKER not in r.text, (url, r.status_code)
+        assert c.post("/api/session", headers={"authorization": "Bearer t0k3n-for-scope",
+                                               "origin": "http://localhost",
+                                               "sec-fetch-site": "same-origin"}).status_code < 300
+        for url in _scope_urls(c.app):
+            r = c.get(url, headers={"sec-fetch-site": "same-origin"})
+            assert r.status_code == 200 and r.content in files.values(), (url, r.status_code)
+
+
+# ── the startup index is cached by the build's own census ───────────────────────────────────────
+def _count_reads(monkeypatch) -> list[str]:
+    reads: list[str] = []
+    real = app_mod._read_frontend_file
+
+    def counting(path, dist):
+        reads.append(Path(path).name)
+        return real(path, dist)
+    monkeypatch.setattr(app_mod, "_read_frontend_file", counting)
+    return reads
+
+
+def _scope_app(tmp_path, dist, db):
+    return create_app(db_path=str(tmp_path / db), dist_dir=tmp_path / "no-spa",
+                      scope_dist_dir=dist)
+
+
+def test_an_unchanged_scope_build_is_indexed_once_and_a_changed_one_is_revalidated(tmp_path,
+                                                                                  monkeypatch):
+    dist = tmp_path / "scope-dist"
+    files = write_scope_dist(dist)
+    reads = _count_reads(monkeypatch)
+    assert _scope_app(tmp_path, dist, "a.db").state.scope_status == "ready"
+    assert sorted(set(reads)) == sorted({Path(rel).name for rel in files})
+    reads.clear()
+    assert _scope_app(tmp_path, dist, "b.db").state.scope_status == "ready"
+    assert reads == [], "an unchanged build was re-read instead of served from the cache"
+
+    # the build changes on disk: one asset now carries a compiled dataset -> re-validated, refused
+    _name, content = min(_tracked_compiled_files().items(), key=lambda item: len(item[1]))
+    (dist / "assets" / "react-def456.js").write_bytes(content)
+    assert _scope_app(tmp_path, dist, "c.db").state.scope_status == _REFUSED_COMPILED
+    assert reads, "a changed build was not re-read"
+    reads.clear()
+    # ...and cleaned again -> re-validated, served with its NEW bytes
+    (dist / "assets" / "react-def456.js").write_bytes(b"export const react = 'rebuilt';")
+    app = _scope_app(tmp_path, dist, "d.db")
+    assert app.state.scope_status == "ready" and reads
+    with TestClient(app, base_url="http://localhost") as c:
+        assert c.get("/scope/assets/react-def456.js").content == b"export const react = 'rebuilt';"
+
+
+def test_a_build_without_the_runtime_declaration_is_refused_after_reading_only_its_shell(
+        tmp_path, monkeypatch):
+    """The real repository build today (the standalone sample build) is ~10 MB and declares no
+    runtime source: refusing it must not cost a full read and hash of every file on every start."""
+    dist = tmp_path / "scope-dist"
+    write_scope_dist(dist, runtime_source=None, extra_asset=("big.js.map", b"x" * 2_000_000))
+    reads = _count_reads(monkeypatch)
+    assert _scope_app(tmp_path, dist, "a.db").state.scope_status == "invalid_build"
+    assert reads == ["index.html"]
+
+
+# ── the withdrawal is re-checked at request time ────────────────────────────────────────────────
+def _store_sample_through_another_store(db_path: Path) -> str:
+    from backend.storage import Store
+
+    snap = json.loads(app_mod.SAMPLE_SNAPSHOT.read_text(encoding="utf-8"))
+    other = Store(str(db_path))
+    try:
+        campaign = other.create_campaign("another process")
+        meta = other.add_snapshot(campaign["id"], "stored elsewhere", snap,
+                                  app_mod.summary.summarize(snap))
+        return str(meta["id"])
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize("first", ["asset", "scope-view"])
+def test_a_snapshot_stored_through_another_store_withdraws_a_running_build(tmp_path, first):
+    """A second process (portable/qualify_atlas.py opens its own Store) or a second Store in this
+    process inserts a snapshot whose digest the running build embeds. This app's insert observer
+    never sees it; the next scope request or capability read must, not the next restart."""
+    digest = _demo_blob_sha256()
+    dist = tmp_path / "scope-dist"
+    write_scope_dist(dist, extra_asset=("mount-x.js", f'export const s="{digest}";'.encode()))
+    with _client(tmp_path, dist, db_name="shared.db") as c:
+        assert c.get("/scope/assets/mount-x.js").status_code == 200  # nothing stored yet
+        sid = _store_sample_through_another_store(tmp_path / "shared.db")
+        if first == "scope-view":
+            view = c.get(f"/api/snapshots/{sid}/scope-view").json()
+            assert view["status"] == "refused_embeds_stored_snapshot" and view["href"] is None
+        r = c.get("/scope/assets/mount-x.js")
+        assert r.status_code == 503 and digest not in r.text and "stored snapshot" in r.text
+        assert c.get("/scope/snapshots/1/").status_code == 503
+
+
+def test_with_hex_tokens_the_scope_routes_only_run_the_digest_recheck(tmp_path):
+    """When a build embeds 64-hex tokens the request-time re-check needs the store — and it is the
+    ONLY store access, returning digests (never snapshot content). Without tokens there is none at
+    all (test_scope_routes_answer_without_any_store_access)."""
+    dist = tmp_path / "scope-dist"
+    write_scope_dist(dist, extra_asset=("mount-x.js", b'export const s="' + b"ab" * 32 + b'";'))
+    allowed = "snapshot_blob_digests_after"
+    with _client(tmp_path, dist) as c:
+        store = c.app.state.store
+        touched, results, tripped = [], [], []
+        real_recheck = getattr(store, allowed)
+        for name in dir(store):
+            if name.startswith("__") or not callable(getattr(type(store), name, None)):
+                continue
+            if name == allowed:
+                def _record(*a, **k):
+                    touched.append(allowed)
+                    results.append(real_recheck(*a, **k))
+                    return results[-1]
+                setattr(store, name, _record)
+            else:
+                def _trip(*_a, _n=name, **_k):
+                    touched.append(_n)
+                    raise AssertionError(f"scope route touched Store.{_n}")
+                setattr(store, name, _trip)
+            tripped.append(name)
+        try:
+            assert allowed in tripped
+            for path in ("/scope/snapshots/7/", "/scope/assets/mount-x.js"):
+                r = c.get(path, headers={"sec-fetch-site": "same-origin"})
+                assert r.status_code == 200, (path, r.status_code)
+            assert touched and set(touched) == {allowed}
+            for watermark, digests in results:
+                assert isinstance(watermark, int)
+                assert all(re.fullmatch(r"[0-9a-f]{64}", d) for d in digests)
+        finally:
+            for name in tripped:
+                delattr(store, name)
+
+
+# ── same-origin write containment (defence in depth) ────────────────────────────────────────────
+# Atlas Scope is first-party, read-only code served same-origin, so the /api guard's cross-site and
+# CSRF checks pass its requests. A read-only viewer never writes: /scope pages send a same-origin
+# Referer (Referrer-Policy: same-origin, while the rest of AssessHub sends none), and the /api
+# guard refuses every non-GET request whose Referer path is under /scope/. A hostile script can
+# suppress or rewrite its Referer, so this is a second wall behind "no write code in the viewer",
+# not a sandbox.
+_SCOPE_REFERERS = [
+    "http://localhost/scope/snapshots/1/",
+    "http://localhost/scope",
+    "http://localhost/scope/assets/index-abc123.js",
+    "http://localhost/%73cope/snapshots/1/",
+    "http://localhost/SCOPE/snapshots/1/",
+    "http://localhost/elsewhere/../scope/snapshots/1/",
+    "http://localhost//scope/snapshots/1/",
+    # served AS the scope shell by the router (percent-decoded, dot segments kept), and kept
+    # verbatim by a browser in the page URL it sends as Referer (%2f is not a WHATWG separator)
+    "http://localhost/scope/..%2f..%2fcampaigns",
+    "http://localhost/scope/%2e%2e%2fx",
+    "http://localhost/scope/..%2fx",
+]
+_OTHER_REFERERS = [None, "http://localhost/campaigns", "http://localhost/scopes/1/",
+                   "http://localhost/snapshots/scope/"]
+
+
+def test_every_scope_response_carries_referrer_policy_same_origin(tmp_path):
+    dist = tmp_path / "scope-dist"
+    write_scope_dist(dist)
+    with _client(tmp_path, dist) as c:
+        for method, path, expected in (("GET", "/scope", 200), ("GET", "/scope/snapshots/1/", 200),
+                                       ("GET", "/scope/assets/index-abc123.js", 200),
+                                       ("GET", "/scope/assets/nope.js", 404),
+                                       ("POST", "/scope/", 405), ("HEAD", "/scope/", 405)):
+            r = c.request(method, path)
+            assert r.status_code == expected, (method, path, r.status_code)
+            assert r.headers["referrer-policy"] == "same-origin", (method, path)
+        # the rest of AssessHub still sends no Referer at all
+        for path in ("/api/health", "/campaigns", "/assets/app.js"):
+            assert c.get(path).headers["referrer-policy"] == "no-referrer", path
+    with _client(tmp_path, None, db_name="absent.db") as c:
+        r = c.get("/scope/snapshots/1/")
+        assert r.status_code == 503 and r.headers["referrer-policy"] == "same-origin"
+
+
+def test_every_api_write_refuses_a_request_referred_from_a_scope_page(tmp_path):
+    from fastapi.routing import APIRoute
+
+    dist = tmp_path / "scope-dist"
+    write_scope_dist(dist)
+    with _client(tmp_path, dist) as c:
+        same_origin = {"origin": "http://localhost", "sec-fetch-site": "same-origin"}
+        before = c.get("/api/campaigns").json()
+        writes = sorted({(method, re.sub(r"\{[^}]+\}", "1", route.path))
+                         for route in c.app.routes
+                         if isinstance(route, APIRoute) and route.path.startswith("/api/")
+                         for method in set(route.methods) - {"GET", "HEAD"}})
+        assert len(writes) >= 10, writes  # NON-VACUITY: derived from the route table
+        for method, url in writes + [("OPTIONS", "/api/campaigns")]:
+            r = c.request(method, url, headers={**same_origin, "referer": _SCOPE_REFERERS[0]})
+            assert r.status_code == 403, (method, url, r.status_code, r.text[:200])
+            assert "Atlas Scope" in r.json()["detail"]
+        for referer in _SCOPE_REFERERS:
+            r = c.post("/api/campaigns", json={"name": "from scope"},
+                       headers={**same_origin, "referer": referer})
+            assert r.status_code == 403, (referer, r.status_code)
+        assert c.get("/api/campaigns").json() == before  # nothing was written
+        # controls: the same write without a /scope Referer is served, so the 403 is this rule
+        for referer in _OTHER_REFERERS:
+            headers = dict(same_origin, **({"referer": referer} if referer else {}))
+            r = c.post("/api/campaigns", json={"name": f"ok {referer}"}, headers=headers)
+            assert r.status_code == 201, (referer, r.status_code, r.text[:200])
+        # a scope page still READS the API it exists to read
+        assert c.get("/api/campaigns",
+                     headers={**same_origin, "referer": _SCOPE_REFERERS[0]}).status_code == 200
+
+
+def test_a_write_referred_from_any_url_the_router_serves_as_the_scope_shell_is_refused(tmp_path):
+    """R8-V2, derived from the router rather than from a list of spellings: every request target
+    the app ANSWERS with the Atlas Scope shell is a page Atlas Scope can run at, so a write whose
+    Referer names it is refused."""
+    dist = tmp_path / "scope-dist"
+    files = write_scope_dist(dist)
+    targets = sorted({path for path, _plantable in _SHELL_TRAVERSALS}
+                     | {"/scope", "/scope/", "/scope/snapshots/1/", "/scope/..%2f..%2fcampaigns",
+                        "/scope/%2e%2e%2fx", "/scope/..%2fx", "/scope/a/..%2f..%2f..%2fx"})
+    with _client(tmp_path, dist) as c:
+        served_as_scope = [t for t in targets if _raw_get(c.app, t) == (200, files["index.html"])]
+        # NON-VACUITY: the router really serves dot-segment-bearing targets as the scope shell
+        assert len(served_as_scope) >= 10 and "/scope/..%2f..%2fcampaigns" in served_as_scope
+        before = c.get("/api/campaigns").json()
+        for target in served_as_scope:
+            r = c.post("/api/campaigns", json={"name": "from scope"},
+                       headers={"origin": "http://localhost", "sec-fetch-site": "same-origin",
+                                "referer": "http://localhost" + target})
+            assert r.status_code == 403, (target, r.status_code)
+        assert c.get("/api/campaigns").json() == before

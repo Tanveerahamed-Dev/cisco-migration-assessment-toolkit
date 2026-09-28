@@ -93,7 +93,7 @@ const flush = async (): Promise<void> => {
 };
 
 beforeEach(() => {
-  act(() => useInvestigation.getState().reset());
+  act(() => { useInvestigation.getState().reset(); });
 });
 
 afterEach(() => {
@@ -221,7 +221,7 @@ describe("the path surface is reachable before a flow exists", () => {
       await flush();
       expect(container.querySelector("#rail-path")).toBeNull();
 
-      act(() => useInvestigation.getState().setSurface("path"));
+      act(() => { useInvestigation.getState().setSurface("path"); });
       await flush();
 
       const panel = container.querySelector("#rail-path");

@@ -80,8 +80,11 @@
  *                                                        # 768, 1000, 1440, 1920 and every rung those
  *                                                        # miss (LADDER_REM), every composite widget's
  *                                                        # tab stops, the whole tab order hit-tested at
- *                                                        # nine points, More -> Path, and the evidence
- *                                                        # drawer pass (its open/close/resize cases)
+ *                                                        # nine points, More -> Path, the evidence
+ *                                                        # drawer pass (its open/close/resize cases),
+ *                                                        # and the RUNG-CROSSING pass: every focusable
+ *                                                        # element at every rung, crossed to each
+ *                                                        # neighbouring rung (see that section)
  *
  *   node review/audit-d3-focus.mjs --vp=390              # any mode, narrowed to the listed widths —
  *                                                        # diagnostic only, never the acceptance run
@@ -105,9 +108,10 @@
  * BODY or did not run, a focus stop was not visible, or a required kind was never driven or never
  * checked for visibility. Exit 2: nothing was driven at all.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { chromium } from "@playwright/test";
 import ts from "typescript";
+import { checkPaletteOverDialog } from "./palette-warm.mjs";
 
 const APP = process.env["ATLAS_URL"] ?? "http://localhost:4181";
 const SETTLE_MS = 1000;
@@ -1590,16 +1594,49 @@ async function drawerLoad(page) {
 }
 
 /** Run the palette's evidence toggle. Returns false when the palette did not offer it on top. */
+/* Waits on the palette's STATE, not on fixed 300 ms sleeps: MEASURED (R5 repair, default run on a busy
+   host, twice, at 1024 and at 1270 reduced-motion) the case went NOT DRIVEN while the concurrent --sweep
+   of the same build drove it — typed before the combobox held focus, or read before the ranking had
+   re-rendered. The palette still has to rank the evidence toggle first, within 5 s, or the case is NOT
+   DRIVEN exactly as before. */
+let paletteLastTop = "";
 async function paletteToggle(page) {
+  /* The previous palette (open by palette -> close by palette) must be gone first: MEASURED (R5 repair,
+     default run) mod+k pressed while it was still closing read an empty top row ("it read \"\""). */
+  await page
+    .waitForFunction(() => ![...document.querySelectorAll('[aria-modal="true"]')].some((d) => d.getClientRects().length > 0), null, { timeout: 5000 })
+    .catch(() => {});
   await page.keyboard.press("Control+k");
-  await page.waitForTimeout(300);
+  await page
+    .waitForFunction(() => document.activeElement?.getAttribute("role") === "combobox" && document.activeElement.closest('[role="dialog"]') !== null, null, { timeout: 5000 })
+    .catch(() => {});
   await page.keyboard.type(PALETTE_TOGGLE);
+  const readTop = () =>
+    page.evaluate(() => {
+      const input = document.querySelector('[role="dialog"] [role="combobox"]');
+      const id = input?.getAttribute("aria-activedescendant");
+      return (id ? document.getElementById(id)?.textContent : "") ?? "";
+    });
+  await page
+    .waitForFunction(
+      (want) => {
+        const input = document.querySelector('[role="dialog"] [role="combobox"]');
+        const id = input?.getAttribute("aria-activedescendant");
+        return ((id ? document.getElementById(id)?.textContent : "") ?? "").includes(want);
+      },
+      PALETTE_TOGGLE,
+      { timeout: 5000 },
+    )
+    .catch(() => {});
+  /* A reader's cadence before Enter, as this helper always had. MEASURED (R5 repair): with Enter pressed
+     the instant the active row read as the toggle, the narrowed drawer pass (--sweep --vp=1024,1270
+     --state=drawer) failed 4 and 2 of 50 cases in two runs — the palette stayed open ("the drawer did
+     not close (focus INPUT …)") or focus went to #stage instead of the drawer's opener — where this
+     cadence failed 0 of 50 twice. That is the palette acting on a render that has not settled; it is
+     routed to the palette's owner (open-issues), not absorbed here by a longer sleep. */
   await page.waitForTimeout(300);
-  const top = await page.evaluate(() => {
-    const input = document.querySelector('[role="dialog"] [role="combobox"]');
-    const id = input?.getAttribute("aria-activedescendant");
-    return (id ? document.getElementById(id)?.textContent : "") ?? "";
-  });
+  const top = await readTop();
+  paletteLastTop = top;
   if (!top.includes(PALETTE_TOGGLE)) {
     await page.keyboard.press("Escape");
     return false;
@@ -1614,7 +1651,7 @@ async function drawerOpen(page, opener) {
   else if (opener === "g e") {
     await page.keyboard.press("g");
     await page.keyboard.press("e");
-  } else if (!(await paletteToggle(page))) return "the palette's top row was not the evidence toggle";
+  } else if (!(await paletteToggle(page))) return `the palette's top row was not the evidence toggle (it read "${paletteLastTop.slice(0, 60)}")`;
   await page.waitForTimeout(500);
   /* And eight animation frames: `v` moves focus a frame (up to six under reduced motion) after the
      open commits. MEASURED (this cluster, 2026-09-26, reduced motion at 1152 px, 8 runs): that frame
@@ -1656,7 +1693,7 @@ async function drawerCase(page, w, opener, close, motion = "") {
   await drawerVisible(page, "drawer control", where, scenario);
   if (close === "e") await page.keyboard.press("e");
   else if (close === "palette") {
-    if (!(await paletteToggle(page))) return drawerResult(where, scenario, false, "NOT DRIVEN: the palette's top row was not the evidence toggle");
+    if (!(await paletteToggle(page))) return drawerResult(where, scenario, false, `NOT DRIVEN: the palette's top row was not the evidence toggle (it read "${paletteLastTop.slice(0, 60)}")`);
   } else {
     /* Escape: an inner layer (the configuration overlay) closes first; the drawer on a later press. */
     for (let k = 0; k < 3; k += 1) {
@@ -1805,6 +1842,591 @@ async function runDrawer(browser, only) {
   return plan.length > 0;
 }
 
+/* ── the rung crossing (part of --sweep, and so of the default run) ───────────
+ * MEASURED (independent verifier, D3-R2-1, release build): the drawer was ONE instance of a class.
+ * Across 7 rung crossings, 11 of 74 tab stops were lost to <body> — the pane switch App.tsx mounts only
+ * below 1024 px ('900->1100 BUTTON.paneswitch__btn "Queue"'), the header's More button, popover and
+ * inline toolbar ('inside More popover (thm__opt) -> 900->1100', '1100 "Copy the link…" -> 1100->900'),
+ * the queue's View disclosure ('1100->1440 BUTTON.ui-btn "View"') and the fabric's controls when the
+ * stage collapses ('768->390 BUTTON.fabric3d__btn "Legend"'). This file's resize cases were drawer-only,
+ * so it could not see any of them. A list of those five would be the named-subset shape again.
+ *
+ * So the pass is the CLASS: one width per rung, derived from LADDER_REM (the sweep's width in that rung),
+ * and every crossing to a NEIGHBOURING rung, both ways. At the start width, in every state below, EVERY
+ * focusable element is a case:
+ *   - every rendered tab stop (tabindex >= 0, not disabled, not inert, not aria-hidden) — the stops a
+ *     keyboard reader holds; a roving group's other items are reached through its one stop;
+ *   - every rendered tab stop INSIDE every popover a visible `[aria-haspopup]` trigger opens (Enter on
+ *     the trigger; the panel is the trigger's `aria-controls`), because a popover's content exists
+ *     only while it is open — the verifier's `thm__opt` inside More is one;
+ *   - every PROGRAMMATIC LANDING: a rendered element focusable by script but not by Tab (an explicit
+ *     `tabindex="-1"` that is not a roving item of a composite widget — `#stage` — and every named
+ *     landmark, or the heading that labels it, which focus-return.ts makes focusable for exactly as
+ *     long as it holds focus). Those are where the owner itself hands focus, so a crossing that took
+ *     focus from one of them is the class too (independent verifier R5-V3: the pass drove none).
+ * THE STATES (crossStates) are the three page states (idle, a finding selected, a traced flow), whose
+ * cases are the whole page, and the SURFACE states a command opens — the Inspector (`i`), the device
+ * view of the evidence rail, the fabric's off-view finding pointer (drawn by panning the camera until
+ * a selected finding's host leaves the view), and every MODAL DIALOG a command opens (the palette's mod+k, the keyboard
+ * reference's `?`) — whose cases are the elements inside that surface (the rest of the page was driven
+ * in the page states). The modal denominator is the source's own: every `<Dialog` a non-test source
+ * file renders must have been opened in some crossing, or the pass fails NEVER EXERCISED. A surface
+ * state that does not exist at a start width (the Inspector inside the display:none stage at 390 px)
+ * is reported as such; a state no crossing could drive at all fails the run.
+ * Each case: focus the element (and confirm focus got there, or it is NOT DRIVEN), resize to the
+ * neighbouring rung's width, let the page process it (two frames) and CROSS_SETTLE_MS more (longer
+ * than the drawer's 240 ms visibility step), then FAIL when focus is on <body>, or on an element that
+ * is not rendered (`checkVisibility`, inert), or on one with no part on screen, or one another layer
+ * paints over (the nine-point hit test every other stop in this file must pass). Then resize back.
+ * A page whose tab-stop signature drifted (a case changed the state) is reloaded before the next case.
+ * The denominators — cases per crossing, and popovers opened — are printed; a crossing in scope that
+ * drove no case fails the run (SWEEP NEVER EXERCISED: rung crossings).
+ * `--vp=` narrows it: a crossing runs when its start or end width is listed. `--state=` narrows the
+ * states like the rest of the sweep.
+ */
+const CROSS_SETTLE_MS = 500;
+const crossCount = { cases: 0, crossings: 0, popovers: 0, landings: 0, lost: 0, recovered: 0 };
+/** Surface states that did not exist at a crossing's start width, by state name (reported, not failed). */
+const crossAbsent = new Map();
+/** The modal dialogs (by accessible name) a surface state opened, over the whole pass. */
+const crossDialogsOpened = new Set();
+
+/** The modal dialogs the SOURCE renders: every non-test .tsx under src/ that renders `<Dialog`. */
+const SOURCE_DIALOGS = (() => {
+  const root = new URL("../src/", import.meta.url);
+  const out = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = new URL(e.name + (e.isDirectory() ? "/" : ""), dir);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".tsx") && !/\.test\.tsx$/.test(e.name) && /<Dialog[\s>]/.test(readFileSync(p, "utf8"))) out.push(e.name);
+    }
+  };
+  walk(root);
+  return out.sort();
+})();
+/* How many directed crossings run at once. Each holds a page with a WebGL fabric; MEASURED, eight at
+   once crashed a renderer on this shared host. `ATLAS_CROSS_PARALLEL` overrides it (>= 1). */
+const CROSS_PARALLEL = Math.max(1, Number(process.env["ATLAS_CROSS_PARALLEL"] ?? 3) || 3);
+const crossPerCrossing = new Map();
+
+/** One width per rung: the sweep's own width in that rung (coverRungs guarantees there is one). */
+const RUNG_WIDTHS = RUNGS.map((r) => SWEEP_VIEWPORTS.find(([w]) => rungOf(Number(w)) === r.name)).filter((v) => v !== undefined);
+
+/** Open a modal dialog by its command's chord; true when a modal dialog is on screen afterwards. */
+const openModalBy = (chord) => async (page) => {
+  await page.keyboard.press(chord);
+  await page.waitForTimeout(500);
+  const name = await page.evaluate(() => {
+    const d = [...document.querySelectorAll('[aria-modal="true"]')].find((el) => el.getClientRects().length > 0);
+    if (d === undefined) return null;
+    /* Its accessible NAME, never the id it is labelled by (a React useId, different on every load). */
+    const by = (d.getAttribute("aria-labelledby") ?? "").split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
+    return (d.getAttribute("aria-label") ?? by).replace(/\s+/g, " ").trim() || "(an unnamed modal dialog)";
+  });
+  if (name !== null) crossDialogsOpened.add(name);
+  return name !== null;
+};
+
+/**
+ * [name, query, prep, scope]. `prep` (after the load) brings the state about and returns true, or
+ * "n/a"/false when the state does not exist at this width; `scope` is the selector of the surface
+ * whose elements are this state's cases (null: the whole page).
+ */
+const crossStates = () => {
+  const fabricJson = JSON.parse(readFileSync(new URL("../src/data/fabric.json", import.meta.url), "utf8"));
+  const flow = encodeURIComponent("10.0.10.50>10.0.30.10>tcp>3389");
+  const finding = `f=${encodeURIComponent(fabricJson.findings[0].id)}&s=findings`;
+  return [
+    ["idle", "", null, null],
+    ["a finding selected", finding, null, null],
+    ["a traced flow", `s=path&flow=${flow}`, null, null],
+    ["the Inspector open", finding, ensureInspector, "#inspector"],
+    ["the device view", finding, ensureDeviceView, "#rail-evidence"],
+    /* The off-view finding pointer (FabricLabels.tsx), hidden from script when a re-projection brings
+       its device into view: the imperative member of the class (independent verifier R5-V2). */
+    ["an off-view pointer drawn", "f=F094", panUntilOffViewPointer, '[data-testid="fabric3d-pointers"]'],
+    ["the command palette open (mod+k)", "", openModalBy("Control+k"), '[aria-modal="true"]'],
+    ["the keyboard reference open (?)", "", openModalBy("?"), '[aria-modal="true"]'],
+  ];
+};
+
+/** In-page: the structural path of the first RENDERED match of `selector` (null when none is). */
+const crossScopePath = (selector) => {
+  const el = [...document.querySelectorAll(selector)].find(
+    (e) => e.getClientRects().length > 0 && getComputedStyle(e).visibility === "visible" && e.closest("[inert]") === null,
+  );
+  if (el === undefined) return null;
+  const parts = [];
+  for (let n = el; n !== null && n !== document.body; n = n.parentElement) parts.push(`${n.tagName}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
+  return parts.reverse().join("/");
+};
+
+/**
+ * In-page: every PROGRAMMATIC LANDING under `rootPath` (or the document): a rendered element with an
+ * explicit tabindex="-1" that is not a roving item of a composite widget, and every named landmark —
+ * as the heading that labels it when there is one inside it, which is where focus-return.ts lands.
+ * The root itself counts when it is one. Tab stops are family 1's, and are left out here.
+ */
+const crossLandings = (rootPath) => {
+  let root = document.body;
+  if (rootPath !== null) {
+    for (const part of rootPath.split("/")) {
+      const [tag, i] = part.split(":");
+      const c = root?.children[Number(i)];
+      if (!c || c.tagName !== tag) return [];
+      root = c;
+    }
+  }
+  const rendered = (el) =>
+    el.isConnected &&
+    (typeof el.checkVisibility === "function" ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0) &&
+    el.closest("[inert], [aria-hidden='true']") === null;
+  const ROVING = "[role=radio],[role=tab],[role=option],[role=gridcell],[role=row],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],[role=treeitem],[role=cell],[role=columnheader],[role=rowheader],[role=switch]";
+  const COMPOSITE = "[role=grid],[role=treegrid],[role=listbox],[role=tree],[role=tablist],[role=radiogroup],[role=menu],[role=menubar],[role=toolbar]";
+  const REGION = "[role='region'],[role='search'],[role='dialog'],[role='complementary'],[role='main'],[role='navigation'],[role='form'],section,form,aside,main,nav";
+  const named = (el) => (el.getAttribute("aria-label") ?? "").trim() !== "" || (el.getAttribute("aria-labelledby") ?? "").trim() !== "";
+  const pathOf = (el) => {
+    const parts = [];
+    for (let n = el; n !== null && n !== document.body; n = n.parentElement) parts.push(`${n.tagName}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
+    return parts.reverse().join("/");
+  };
+  const all = (sel) => [...(root.matches?.(sel) ? [root] : []), ...root.querySelectorAll(sel)];
+  const picked = new Set();
+  for (const el of all("[tabindex='-1']")) if (el.id !== "__sr-top" && rendered(el) && !el.matches(ROVING) && el.closest(COMPOSITE) === null) picked.add(el);
+  for (const mark of all(REGION)) {
+    if (!named(mark) || !rendered(mark)) continue;
+    const by = (mark.getAttribute("aria-labelledby") ?? "").split(/\s+/).find((x) => x !== "");
+    const heading = by === undefined ? null : document.getElementById(by);
+    const land = heading !== null && mark.contains(heading) && rendered(heading) ? heading : mark;
+    if (land.tabIndex >= 0) continue; /* already a tab stop: family 1 drives it */
+    picked.add(land);
+  }
+  return [...picked].map((el) => {
+    const name = (el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+    return { path: pathOf(el), label: `landing ${el.tagName}${el.id ? `#${el.id}` : ""}${el.getAttribute("role") ? `[${el.getAttribute("role")}]` : ""} "${name}"` };
+  });
+};
+
+/** In-page: mark a landing and make it programmatically focusable as focus-return.ts does (tabindex=-1
+ *  for exactly as long as it holds focus). */
+const crossMarkLanding = (path) => {
+  for (const el of document.querySelectorAll("[data-d3-cross]")) el.removeAttribute("data-d3-cross");
+  let n = document.body;
+  for (const part of path.split("/")) {
+    const [tag, i] = part.split(":");
+    const c = n?.children[Number(i)];
+    if (!c || c.tagName !== tag) return false;
+    n = c;
+  }
+  if (!n.hasAttribute("tabindex")) {
+    n.setAttribute("tabindex", "-1");
+    n.addEventListener("blur", () => n.removeAttribute("tabindex"), { once: true });
+  }
+  n.setAttribute("data-d3-cross", "");
+  return true;
+};
+
+/** In-page: every rendered tab stop under `rootPath` (or the document), as structural paths. */
+const crossStops = (rootPath) => {
+  const SEL = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable='true']";
+  const pathOf = (el) => {
+    const parts = [];
+    for (let n = el; n !== null && n !== document.body; n = n.parentElement) parts.push(`${n.tagName}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
+    return parts.reverse().join("/");
+  };
+  const byPath = (p) => {
+    let n = document.body;
+    for (const part of p.split("/")) {
+      const [tag, i] = part.split(":");
+      const c = n?.children[Number(i)];
+      if (!c || c.tagName !== tag) return null;
+      n = c;
+    }
+    return n;
+  };
+  const root = rootPath === null ? document.body : byPath(rootPath);
+  if (root === null) return [];
+  const rendered = (el) =>
+    el.isConnected &&
+    (typeof el.checkVisibility === "function" ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0) &&
+    el.closest("[inert], [aria-hidden='true']") === null;
+  const out = [];
+  for (const el of root.querySelectorAll(SEL)) {
+    if (el.id === "__sr-top" || el.tabIndex < 0 || el.disabled || !rendered(el)) continue;
+    const name = (el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+    const cls = typeof el.className === "string" ? el.className.split(" ")[0] : "";
+    out.push({ path: pathOf(el), label: `${el.tagName}${cls ? `.${cls}` : ""}${el.getAttribute("role") ? `[${el.getAttribute("role")}]` : ""} "${name}"` });
+  }
+  return out;
+};
+
+/** In-page: mark the element at a structural path (and return whether it is still the same kind). */
+const crossMark = (path) => {
+  for (const el of document.querySelectorAll("[data-d3-cross]")) el.removeAttribute("data-d3-cross");
+  let n = document.body;
+  for (const part of path.split("/")) {
+    const [tag, i] = part.split(":");
+    const c = n?.children[Number(i)];
+    if (!c || c.tagName !== tag) return false;
+    n = c;
+  }
+  n.setAttribute("data-d3-cross", "");
+  return true;
+};
+
+/** In-page: mark the `index`-th rendered tab stop inside the panel at `panelPath`, if its label is still
+ *  `label` (a popover's content is portalled, so its absolute path moves between openings). */
+const crossMarkNth = ([panelPath, index, label]) => {
+  for (const el of document.querySelectorAll("[data-d3-cross]")) el.removeAttribute("data-d3-cross");
+  let n = document.body;
+  for (const part of panelPath.split("/")) {
+    const [tag, i] = part.split(":");
+    const c = n?.children[Number(i)];
+    if (!c || c.tagName !== tag) return false;
+    n = c;
+  }
+  const SEL = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable='true']";
+  const rendered = (el) =>
+    el.isConnected &&
+    (typeof el.checkVisibility === "function" ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0) &&
+    el.closest("[inert], [aria-hidden='true']") === null;
+  const stops = [...n.querySelectorAll(SEL)].filter((el) => el.id !== "__sr-top" && el.tabIndex >= 0 && !el.disabled && rendered(el));
+  const el = stops[index];
+  if (!el) return false;
+  const name = (el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+  const cls = typeof el.className === "string" ? el.className.split(" ")[0] : "";
+  if (`${el.tagName}${cls ? `.${cls}` : ""}${el.getAttribute("role") ? `[${el.getAttribute("role")}]` : ""} "${name}"` !== label) return false;
+  el.setAttribute("data-d3-cross", "");
+  return true;
+};
+
+/** In-page: where focus is after the crossing, and whether that element is rendered. */
+const crossLanding = () => {
+  const a = document.activeElement;
+  if (a === null || a === document.body || a === document.documentElement) return { lost: true, desc: "BODY (nothing focused)" };
+  const name = (a.getAttribute("aria-label") ?? a.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+  const cls = typeof a.className === "string" ? a.className.split(" ")[0] : "";
+  const rendered =
+    a.isConnected &&
+    (typeof a.checkVisibility !== "function" || a.checkVisibility({ visibilityProperty: true })) &&
+    a.closest("[inert]") === null;
+  return { lost: false, rendered, connected: a.isConnected, desc: `${a.tagName}${a.id ? `#${a.id}` : ""}${cls ? `.${cls}` : ""} "${name}"` };
+};
+
+/** In-page: every visible popover trigger, as structural paths. */
+const crossTriggers = () => {
+  const pathOf = (el) => {
+    const parts = [];
+    for (let n = el; n !== null && n !== document.body; n = n.parentElement) parts.push(`${n.tagName}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
+    return parts.reverse().join("/");
+  };
+  return [...document.querySelectorAll("[aria-haspopup]:not([disabled])")]
+    .filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0 && getComputedStyle(el).visibility === "visible" && el.closest("[inert], [aria-hidden='true']") === null)
+    .map((el) => ({ path: pathOf(el), label: `${el.tagName} "${(el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40)}"` }));
+};
+
+/** In-page: the open panel a trigger controls, as a structural path (null when it did not open). */
+const crossPanelOf = (triggerPath) => {
+  let n = document.body;
+  for (const part of triggerPath.split("/")) {
+    const [tag, i] = part.split(":");
+    const c = n?.children[Number(i)];
+    if (!c || c.tagName !== tag) return null;
+    n = c;
+  }
+  if (n.getAttribute("aria-expanded") !== "true") return null;
+  const id = (n.getAttribute("aria-controls") ?? "").split(/\s+/).find((x) => x !== "");
+  const panel = id ? document.getElementById(id) : null;
+  if (panel === null || panel.getClientRects().length === 0) return null;
+  const parts = [];
+  for (let m = panel; m !== null && m !== document.body; m = m.parentElement) parts.push(`${m.tagName}:${m.parentElement ? [...m.parentElement.children].indexOf(m) : 0}`);
+  return parts.reverse().join("/");
+};
+
+/**
+ * Load a state and wait until it has SETTLED: the lazy fabric (and its canvas, a tab stop) mounts an
+ * idle period after the load, later still on a busy host. MEASURED (this pass, first run): a "clean"
+ * tab-stop signature taken before the canvas mounted made every later case reload the page, and the
+ * canvas's own cases then ran before it had mounted again — NOT DRIVEN. So the signature is read until
+ * it holds still across two reads, and the canvas is waited for wherever the stage is rendered.
+ */
+async function crossLoad(page, query) {
+  /* A load can take longer than Playwright's 30 s default on a saturated host (MEASURED: this pass's
+     first full run died on one); one retry, then the error reaches the case that asked for it. */
+  const url = `${APP}/${query === "" ? "" : `?${query}`}`;
+  try {
+    await page.goto(url, { waitUntil: "load", timeout: 90000 });
+  } catch {
+    await page.goto(url, { waitUntil: "load", timeout: 90000 });
+  }
+  await page.waitForSelector("#rail-queue .ag__row--data", { timeout: 30000 }).catch(() => {});
+  await page
+    .waitForFunction(
+      () => {
+        const stage = document.getElementById("stage");
+        const shown = stage !== null && stage.getClientRects().length > 0 && document.querySelector(".app")?.getAttribute("data-fabric3d") === "on";
+        return !shown || document.querySelector(".fabric3d__canvas") !== null || document.querySelector(".fabric3d__fallback") !== null;
+      },
+      null,
+      { timeout: 30000 },
+    )
+    .catch(() => {});
+  let last = "";
+  for (let i = 0; i < 30; i += 1) {
+    await page.waitForTimeout(700);
+    const sig = await page.evaluate(srSignature);
+    if (sig === last) break;
+    last = sig;
+  }
+}
+
+/** Resize, and wait until the page has processed it (framesSettled) and the slowest step has landed.
+ *  `settle` is shorter for the trip BACK, which is not judged (the next case restores and re-checks). */
+async function crossResize(page, width, height, settle = CROSS_SETTLE_MS) {
+  await page.setViewportSize({ width, height });
+  await framesSettled(page);
+  await page.waitForTimeout(settle);
+}
+
+/**
+ * One case: the marked element holds focus at `from`; cross to `to`; judge where focus is; cross back.
+ * Returns false when focus never reached the element (the caller retries once from a fresh load, then
+ * reports NOT DRIVEN). Focus is judged where it comes to REST: a failing read is taken again once
+ * every finite animation has finished (the skip link slides in; MEASURED, one read mid-slide in a long
+ * run reported it off screen while a direct probe of the same crossing had it on screen at +100 ms).
+ */
+async function crossCase(page, where, label, from, to, height) {
+  const scenario = `${label} focused at ${from}px (${rungOf(from)}) → resize to ${to}px (${rungOf(to)})`;
+  const loc = page.locator("[data-d3-cross]").first();
+  await loc.focus().catch(() => {});
+  const on = await loc.evaluate((el) => el === document.activeElement).catch(() => false);
+  if (!on) return false;
+  await page.keyboard.press("Shift");
+  crossCount.cases += 1;
+  crossPerCrossing.set(where, (crossPerCrossing.get(where) ?? 0) + 1);
+  await crossResize(page, to, height);
+  const judge = async () => {
+    const st = await page.evaluate(crossLanding);
+    if (st.lost) return { st, failed: "focus landed on BODY" };
+    if (!st.rendered) return { st, failed: `focus left on ${st.desc}, which is no longer rendered` };
+    const geo = await page.evaluate(focusGeometry);
+    if (geo === null) return { st, failed: "focus landed on BODY" };
+    if (!geo.visible) return { st, failed: `focus on ${st.desc}: no part of it is on screen (clipped by ${geo.clippers.join(" > ") || "the viewport"})` };
+    if (!geo.hitOk) return { st, failed: `focus on ${st.desc} is painted over: ${geo.hitDesc}` };
+    return { st, failed: null };
+  };
+  let { st, failed } = await judge();
+  if (failed !== null) {
+    await page.evaluate(settleAnimations);
+    ({ st, failed } = await judge());
+  }
+  if (failed !== null) {
+    crossCount.lost += 1;
+    sweepFail(where, `${scenario}: ${failed}`);
+  } else console.log(`PASS  ${where} :: ${scenario} -> ${st.desc}`);
+  await crossResize(page, from, height, 250);
+  return true;
+}
+
+/** Drive one case; if focus never reached its element, reload the state and try once more. */
+async function crossDrive(page, where, label, from, to, height, mark, reload) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt > 0) await reload();
+    if (!(await mark())) continue;
+    if (await crossCase(page, where, label, from, to, height)) return;
+  }
+  sweepFail(where, `${label} at ${from}px → ${to}px: NOT DRIVEN (focus never reached the element under test, twice, the second time from a fresh load)`);
+}
+
+/** Every case of one directed crossing, in every state. */
+async function crossPass(browser, from, to, height, onlyState) {
+  const where = `crossing ${from}px (${rungOf(from)}) -> ${to}px (${rungOf(to)})`;
+  const ctx = await browser.newContext({ viewport: { width: from, height } });
+  await ctx.addInitScript(() => {
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+    } catch {
+      /* storage blocked: nothing persists anyway */
+    }
+  });
+  /* A crashed renderer is replaced, not the end of the pass. MEASURED (this pass, the default run on a
+     host shared by ~10 agents): eight crossings in parallel, each with a WebGL fabric, crashed one
+     renderer ("page.evaluate: Target crashed"), and every later case of that crossing threw — ~200 NOT
+     DRIVEN, then the whole run died on an uncaught error. Now the case that met the crash is retried
+     once on a fresh page (a second failure is NOT DRIVEN, a failure like any other), and the rest of
+     the crossing carries on. `crossCount.recovered` counts it, so a run that recovered says so. */
+  let page = await ctx.newPage();
+  const renew = async () => {
+    crossCount.recovered += 1;
+    await page.close().catch(() => {});
+    page = await ctx.newPage();
+  };
+  const dead = (err) => /Target crashed|Target page, context or browser has been closed|Page crashed/.test(String(err));
+  try {
+    for (const [state, query, prep, scope] of crossStates().filter(([name]) => !onlyState || name.includes(onlyState))) {
+      const at = `${where} / ${state}`;
+      /* The state's load: the page, then (for a surface state) the command that opens the surface. */
+      let present = true;
+      const load = async () => {
+        await crossLoad(page, query);
+        if (prep !== null) present = (await prep(page)) === true;
+      };
+      let clean = null;
+      for (let attempt = 0; attempt < 2 && clean === null; attempt += 1) {
+        try {
+          if (attempt > 0) await renew();
+          await load();
+          clean = await page.evaluate(srSignature);
+        } catch (err) {
+          if (attempt === 0 && dead(err)) continue;
+          sweepFail(at, `the state could not be loaded: NOT DRIVEN (${String(err).split(String.fromCharCode(10))[0]})`);
+        }
+      }
+      if (clean === null) continue;
+      /* A surface state is cased on the elements INSIDE its surface (the page states drove the rest). */
+      const scopePath = scope === null ? null : await page.evaluate(crossScopePath, scope);
+      if (!present || (scope !== null && scopePath === null)) {
+        console.log(`INFO  ${at}: the state does not exist at ${from}px (its surface is not on screen there); no case`);
+        crossAbsent.set(state, [...(crossAbsent.get(state) ?? []), `${from}->${to}`]);
+        continue;
+      }
+      const fresh = async () => {
+        if ((page.viewportSize()?.width ?? 0) !== from) await crossResize(page, from, height);
+        if ((await page.evaluate(srSignature)) !== clean) await load();
+      };
+      /* Run one case; on a crashed renderer, renew the page, reload the state and run it once more. */
+      const guarded = async (label, run) => {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            if (attempt > 0) {
+              await renew();
+              await load();
+            }
+            await run();
+            return;
+          } catch (err) {
+            if (attempt === 0 && dead(err)) continue;
+            sweepFail(at, `${label}: NOT DRIVEN (${String(err).split(String.fromCharCode(10))[0]})`);
+            return;
+          }
+        }
+      };
+      /* Family 1: every rendered tab stop of the page (of the surface, in a surface state). */
+      const stops = await page.evaluate(crossStops, scopePath);
+      console.log(`INFO  ${at}: ${stops.length} tab stop(s) at ${from}px${scope === null ? "" : ` inside ${scope}`}`);
+      for (const s of stops) {
+        await guarded(s.label, async () => {
+          await fresh();
+          await crossDrive(page, at, s.label, from, to, height, () => page.evaluate(crossMark, s.path), load);
+        });
+      }
+      /* Family 3: every programmatic landing (tabindex=-1 non-roving, named landmarks / their headings). */
+      const landings = await page.evaluate(crossLandings, scopePath);
+      console.log(`INFO  ${at}: ${landings.length} programmatic landing(s) at ${from}px`);
+      crossCount.landings += landings.length;
+      for (const s of landings) {
+        await guarded(s.label, async () => {
+          await fresh();
+          await crossDrive(page, at, s.label, from, to, height, () => page.evaluate(crossMarkLanding, s.path), load);
+        });
+      }
+      /* Family 2: every tab stop inside every popover a visible trigger opens (inside the surface, in a
+         surface state — where Escape would close the surface itself, so a drifted page is reloaded). */
+      let triggers = [];
+      await guarded("the popover triggers", async () => {
+        await fresh();
+        triggers = (await page.evaluate(crossTriggers)).filter((t) => scopePath === null || t.path.startsWith(`${scopePath}/`));
+      });
+      const escape = async () => {
+        if (scope === null) for (let i = 0; i < 3; i += 1) await page.keyboard.press("Escape").catch(() => {});
+      };
+      for (const t of triggers) {
+        const open = async () => {
+          await fresh();
+          await escape();
+          if (!(await page.evaluate(crossMark, t.path))) return null;
+          await page.locator("[data-d3-cross]").first().focus().catch(() => {});
+          await page.keyboard.press("Enter");
+          await page.waitForTimeout(300);
+          return page.evaluate(crossPanelOf, t.path);
+        };
+        let panel = null;
+        let inner = [];
+        await guarded(`the popover of ${t.label}`, async () => {
+          panel = await open();
+          inner = panel === null ? [] : await page.evaluate(crossStops, panel);
+        });
+        if (panel === null) {
+          console.log(`INFO  ${at}: ${t.label} did not open a panel on Enter (not a popover here); not a case`);
+          continue;
+        }
+        crossCount.popovers += 1;
+        console.log(`INFO  ${at}: popover of ${t.label}: ${inner.length} tab stop(s) inside`);
+        for (const [k, s] of inner.entries()) {
+          await guarded(`inside the popover of ${t.label}: ${s.label}`, async () => {
+            const mark = async () => {
+              const p = await open();
+              return p !== null && (await page.evaluate(crossMarkNth, [p, k, s.label]));
+            };
+            await crossDrive(page, at, `inside the popover of ${t.label}: ${s.label}`, from, to, height, mark, load);
+          });
+        }
+        await escape();
+      }
+    }
+  } finally {
+    await ctx.close();
+  }
+}
+
+/** The rung-crossing pass. `only` is the --vp list (or undefined). Returns whether it was in scope. */
+async function runCrossings(browser, only, onlyState) {
+  const plan = [];
+  for (let i = 0; i + 1 < RUNG_WIDTHS.length; i += 1) {
+    const [a, ha] = RUNG_WIDTHS[i];
+    const [b, hb] = RUNG_WIDTHS[i + 1];
+    for (const [from, to, h] of [[a, b, ha], [b, a, hb]]) if (!only || only.includes(from) || only.includes(to)) plan.push([from, to, h]);
+  }
+  console.log(
+    `INFO  rung-crossing pass: one width per rung (${RUNG_WIDTHS.map(([w]) => `${w} ${rungOf(w)}`).join(", ")}; LADDER_REM), ` +
+      `${plan.length} directed crossing(s)${only ? " (narrowed by --vp)" : ""}: ${plan.map(([f, t]) => `${f}->${t}`).join(", ")}`,
+  );
+  crossCount.crossings = plan.length;
+  /* At most CROSS_PARALLEL at once: a small worker pool over the plan. */
+  const queue = [...plan];
+  const worker = async () => {
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) await crossPass(browser, next[0], next[1], next[2], onlyState);
+  };
+  await Promise.all(Array.from({ length: Math.min(CROSS_PARALLEL, plan.length) }, worker));
+  for (const [from, to] of plan) {
+    const where = `crossing ${from}px (${rungOf(from)}) -> ${to}px (${rungOf(to)})`;
+    const n = [...crossPerCrossing].filter(([k]) => k.startsWith(where)).reduce((s, [, c]) => s + c, 0);
+    console.log(`INFO  ${where}: ${n} case(s) driven`);
+    if (n === 0) sweepFail(where, "NEVER EXERCISED: no focusable element was driven across this crossing");
+  }
+  /* Per state: a state no crossing drove proved nothing about it (a surface absent at SOME widths is
+     reported; absent at every width in the plan, or present and caseless, is a failure). */
+  if (plan.length > 0) {
+    for (const [state] of crossStates().filter(([name]) => !onlyState || name.includes(onlyState))) {
+      const n = [...crossPerCrossing].filter(([k]) => k.endsWith(` / ${state}`)).reduce((s, [, c]) => s + c, 0);
+      const absent = crossAbsent.get(state) ?? [];
+      console.log(`INFO  rung crossing / ${state}: ${n} case(s) driven${absent.length > 0 ? `; not present at the start of ${absent.join(", ")}` : ""}`);
+      if (n === 0) sweepFail(`rung crossing / ${state}`, "NEVER EXERCISED: no crossing drove a case in this state");
+    }
+    /* The modal denominator is the source's: every file rendering `<Dialog` must have been opened. */
+    const dialogStates = crossStates().filter(([name, , , scope]) => scope === '[aria-modal="true"]' && (!onlyState || name.includes(onlyState)));
+    if (dialogStates.length > 0) {
+      console.log(`INFO  rung crossing: ${crossDialogsOpened.size} modal dialog(s) opened (${[...crossDialogsOpened].join("; ")}) of ${SOURCE_DIALOGS.length} rendered by the source (${SOURCE_DIALOGS.join(", ")})`);
+      if (!onlyState && crossDialogsOpened.size < SOURCE_DIALOGS.length) {
+        sweepFail("rung crossing / modal dialogs", `NEVER EXERCISED: the source renders ${SOURCE_DIALOGS.length} modal dialog(s) but the pass opened ${crossDialogsOpened.size}; give the missing one a state in crossStates`);
+      }
+    }
+  }
+  return plan.length > 0;
+}
+
 async function runSweep(browser) {
   /* `--vp=390,768` narrows a diagnostic run; a run so narrowed says so, and is not the acceptance run. */
   const only = process.argv.find((a) => a.startsWith("--vp="))?.slice(5).split(",").map(Number);
@@ -1833,6 +2455,15 @@ async function runSweep(browser) {
   const drawerInScope = drawerNamed ? await runDrawer(browser, only) : false;
   if (!drawerNamed) console.log(`INFO  drawer pass left out by --state="${onlyState}"`);
   console.log(`DRAWER: ${drawerCount.cases} case(s) driven.`);
+  /* The rung crossing: every focusable element at every rung, across every neighbouring rung. A
+     `--state` narrowing applies to its states too; one that names none of them leaves it out. */
+  const crossNamed = !onlyState || crossStates().some(([name]) => name.includes(onlyState));
+  const crossInScope = crossNamed ? await runCrossings(browser, only, onlyState) : false;
+  if (!crossNamed) console.log(`INFO  rung-crossing pass left out by --state="${onlyState}"`);
+  console.log(
+    `RUNG CROSSING: ${crossCount.cases} case(s) driven over ${crossCount.crossings} directed crossing(s) ` +
+      `(${crossCount.popovers} popover(s) opened for their contents, ${crossCount.landings} programmatic landing(s), ${crossStates().length} state(s), ${crossDialogsOpened.size} of ${SOURCE_DIALOGS.length} modal dialog(s) opened); ${crossCount.lost} landed on <body> or out of sight; ${crossCount.recovered} crashed renderer(s) replaced.`,
+  );
   console.log(
     `\nSWEEP: ${sweepCount.widgets} composite widget(s) counted, ${sweepCount.stops} tab stop(s) walked, ` +
       `${sweepCount.hitTests} nine-point hit test(s), ${sweepCount.journeys} More -> Path journey(s), ` +
@@ -1844,8 +2475,29 @@ async function runSweep(browser) {
   /* `operableRoleless` is a breakdown, not a denominator: zero of it is the fixed state. */
   const empty = Object.entries(sweepCount).filter(([k, n]) => n === 0 && k !== "operableRoleless").map(([k]) => k);
   if (drawerInScope && drawerCount.cases === 0) empty.push("drawer cases");
+  if (crossInScope && crossCount.cases === 0) empty.push("rung crossings");
   if (empty.length > 0) console.log(`SWEEP NEVER EXERCISED: ${empty.join(", ")}`);
   return sweepFails.length === 0 && empty.length === 0;
+}
+
+/* `--crossings`: ONLY the rung-crossing pass (diagnostic; the sweep and the default run include it). */
+if (process.argv.includes("--crossings")) {
+  const b = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
+  let inScope = false;
+  try {
+    const only = process.argv.find((a) => a.startsWith("--vp="))?.slice(5).split(",").map(Number);
+    const onlyState = process.argv.find((a) => a.startsWith("--state="))?.slice(8);
+    inScope = await runCrossings(b, only, onlyState);
+  } finally {
+    await b.close();
+  }
+  console.log(
+    `\nRUNG CROSSING: ${crossCount.cases} case(s) driven over ${crossCount.crossings} directed crossing(s) ` +
+      `(${crossCount.popovers} popover(s) opened for their contents, ${crossCount.landings} programmatic landing(s), ${crossStates().length} state(s), ${crossDialogsOpened.size} of ${SOURCE_DIALOGS.length} modal dialog(s) opened); ${crossCount.lost} landed on <body> or out of sight; ${crossCount.recovered} crashed renderer(s) replaced; ${sweepFails.length} failure(s).`,
+  );
+  for (const f of sweepFails) console.log(`  FAIL ${f.where} :: ${f.what}`);
+  if (!inScope || crossCount.cases === 0) console.log("SWEEP NEVER EXERCISED: rung crossings");
+  process.exit(inScope && crossCount.cases > 0 && sweepFails.length === 0 ? 0 : 1);
 }
 
 if (process.argv.includes("--sweep")) {
@@ -1862,6 +2514,8 @@ if (process.argv.includes("--sweep")) {
 /* ── run ───────────────────────────────────────────────────────────────────── */
 
 const browser = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
+/** The rendered D1 legs (dark, light) and what each read; part of this run's exit code. */
+const dialogStack = [];
 /* The sweep runs first, at all five widths: the composite-widget census and the whole tab order
    hit-tested at nine points. Its verdict is part of this run's exit code. */
 let sweepOk = false;
@@ -1896,9 +2550,31 @@ try {
     await auditToasts(page, vp);
     await ctx.close();
   }
+  /* D1, RENDERED: the dialog stack's paint order at 1280x800, dark and light, each on a fresh page after
+     the app has loaded (review/palette-warm.mjs owns the procedure; it waits out the parked pre-warm and
+     judges paint order, not elementFromPoint, which looks through inert dialogs in Chromium). */
+  for (const colorScheme of ["dark", "light"]) {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme });
+    const page = await ctx.newPage();
+    await load(page, `${APP}/`);
+    const { failures, states } = await checkPaletteOverDialog(page).catch((e) => ({
+      failures: [`the procedure threw: ${String(e).split("\n")[0]}`],
+      states: {},
+    }));
+    dialogStack.push({ leg: `1280x800 ${colorScheme}`, failures, states });
+    await ctx.close();
+  }
 } finally {
   await browser.close();
 }
+
+console.log("\nD1 dialog stack (palette over the keyboard reference), rendered:");
+for (const leg of dialogStack) {
+  console.log(`  ${leg.leg}: ${leg.failures.length === 0 ? "HELD" : "BROKEN — " + leg.failures.join("; ")}`);
+  console.log(`    states ${JSON.stringify(leg.states)}`);
+}
+const dialogStackFailed = dialogStack.length !== 2 || dialogStack.some((leg) => leg.failures.length > 0);
+if (dialogStackFailed) console.log("D1 DIALOG STACK FAILED (see above).");
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length} case(s), ${failed.length} failed.`);
@@ -1927,4 +2603,4 @@ if (results.length === 0) {
   process.exit(2);
 }
 if (!sweepOk) console.log("SWEEP FAILED: see the SWEEP block above (composite tab stops, painted-over focus, More -> Path).");
-process.exit(sweepOk && failed.length === 0 && missing.length === 0 && visFailed.length === 0 && visMissing.length === 0 ? 0 : 1);
+process.exit(sweepOk && !dialogStackFailed && failed.length === 0 && missing.length === 0 && visFailed.length === 0 && visMissing.length === 0 ? 0 : 1);

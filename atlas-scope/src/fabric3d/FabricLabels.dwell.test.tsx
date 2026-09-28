@@ -104,7 +104,7 @@ function mountLabels(sceneOverride?: (proj: Map<string, P>) => FabricScene): Har
     proj,
     visible: (id) => container.querySelector<HTMLElement>(`.fabric3d-label[data-device="${id}"]`)?.dataset.visible === "true",
     rerender: render,
-    hover: (deviceId) => act(() => hover.set({ deviceId, linkId: null })),
+    hover: (deviceId) => act(() => { hover.set({ deviceId, linkId: null }); }),
     unmount: () => {
       act(() => root.unmount());
       container.remove();

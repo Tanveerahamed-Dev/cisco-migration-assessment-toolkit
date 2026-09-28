@@ -151,7 +151,16 @@ export interface Meta {
 // Scope (served same-origin at /scope). The server owns `href`; it is null unless `available`.
 export interface ScopeView {
   available: boolean;
-  status: "ready" | "not_built" | "invalid_build" | "refused_embeds_stored_snapshot" | string;
+  // A faithful copy of app.py `_SCOPE_UNAVAILABLE_DETAIL`'s keys plus "ready"; `| string` keeps an older
+  // client total when the server adds a status.
+  status:
+    | "ready"
+    | "not_built"
+    | "invalid_build"
+    | "refused_compiled_evidence"
+    | "refused_uninspectable"
+    | "refused_embeds_stored_snapshot"
+    | string;
   href: string | null;
   detail: string;
 }

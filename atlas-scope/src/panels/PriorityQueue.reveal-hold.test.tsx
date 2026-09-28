@@ -110,7 +110,7 @@ beforeEach(() => {
   } catch {
     /* preferences are not evidence */
   }
-  act(() => useInvestigation.getState().reset());
+  act(() => { useInvestigation.getState().reset(); });
 });
 
 afterEach(() => {
@@ -131,7 +131,7 @@ function revealDeepFinding(c: HTMLElement, grid: HTMLElement): string {
   const id = deep.querySelector('[role="rowheader"]')?.textContent?.trim() ?? "";
   expect(id, "the last row must carry a finding id").toMatch(/^F\d+/);
   expect(inView(deep), "the row must start below the fold or this test proves nothing").toBe(false);
-  act(() => useInvestigation.getState().selectFinding(id));
+  act(() => { useInvestigation.getState().selectFinding(id); });
   expect(grid.scrollTop).toBeGreaterThan(0);
   expect(inView(activeRow(c))).toBe(true);
   return id;
@@ -191,13 +191,17 @@ describe("A4: a revealed row stays revealed across path-surface selections and r
       ["another device", () => useInvestigation.getState().selectDevice("access7")],
     ];
     for (const [where, pick] of picks) {
-      act(pick);
+      /* Inline and block-bodied: a `() => void` type also admits a Promise-returning function, so the
+         act() scope is proved synchronous here rather than inferred from the name (source-hygiene). */
+      act(() => {
+        pick();
+      });
       expect(useInvestigation.getState().findingId, `${where}: the finding must be unchanged`).toBe(id);
       expect(grid.scrollTop, `${where}: the reader's scroll position must survive`).toBe(47);
     }
 
     // The control: a FINDING change still re-aims (the first row sits partly under the header at 47).
-    act(() => useInvestigation.getState().selectFinding(firstId));
+    act(() => { useInvestigation.getState().selectFinding(firstId); });
     expect(grid.scrollTop, "a finding selection re-aims the queue").not.toBe(47);
     expect(inView(activeRow(c)), "a finding selection re-aims the queue").toBe(true);
   });

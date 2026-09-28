@@ -125,7 +125,7 @@ beforeEach(() => {
   } catch {
     /* preferences are not evidence */
   }
-  act(() => useInvestigation.getState().reset());
+  act(() => { useInvestigation.getState().reset(); });
 });
 
 afterEach(() => {
@@ -163,7 +163,7 @@ describe("A4: a device pick with no finding selected keeps the reader's place wh
       expect(inView(rows[later!]!), "precondition: a row naming the device is on screen").toBe(true);
       expect(inView(rows[first]!), "precondition: the FIRST naming row is not").toBe(false);
 
-      act(() => pickDevice(host));
+      act(() => { pickDevice(host); });
       await settle();
 
       expect(useInvestigation.getState().deviceId, "the pick must have landed").toBe(host);
@@ -188,7 +188,7 @@ describe("A4: a device pick with no finding selected keeps the reader's place wh
       }
       expect(start, `precondition: some scroll offset shows no row naming ${host}`).toBeGreaterThan(-1);
 
-      act(() => pickDevice(host));
+      act(() => { pickDevice(host); });
       await settle();
 
       expect(grid.scrollTop, "the queue must have re-aimed").not.toBe(start);
@@ -218,7 +218,7 @@ describe("A4: a device pick with no finding selected keeps the reader's place wh
     const palette = document.createElement("input");
     document.body.appendChild(palette);
     act(() => palette.focus());
-    act(() => pickDevice(host));
+    act(() => { pickDevice(host); });
     await settle();
     act(() => cell.focus({ preventScroll: true }));
     await settle();
@@ -247,7 +247,7 @@ describe("A4: a device pick with no finding selected keeps the reader's place wh
     const cell = dataRows(c)[later]!.querySelector<HTMLElement>('[role="rowheader"]')!;
     act(() => cell.focus({ preventScroll: true }));
 
-    act(() => pickDevice(host));
+    act(() => { pickDevice(host); });
     await settle();
 
     expect(grid.scrollTop, "the list must not move under the reader's focus").toBe(start);
@@ -261,10 +261,10 @@ describe("A4: a device pick with no finding selected keeps the reader's place wh
     const grid = installLayout(c);
     const rows = dataRows(c);
     const id = idOf(rows.at(-1)!);
-    act(() => useInvestigation.getState().selectFinding(id));
+    act(() => { useInvestigation.getState().selectFinding(id); });
     expect(inView(rows.at(-1)!)).toBe(true);
     readerScrollsTo(grid, 47);
-    act(() => pickDevice("access13"));
+    act(() => { pickDevice("access13"); });
     await settle();
     expect(grid.scrollTop).toBe(47);
   });
@@ -344,14 +344,14 @@ describe("A4: a finding listed under several groups keeps the copy the reader is
         [second, first],
         [first, second],
       ] as const) {
-        act(() => useInvestigation.getState().selectFinding(null));
+        act(() => { useInvestigation.getState().selectFinding(null); });
         await settle();
         const start = Math.max(0, shown * ROW_PX - 200);
         readerScrollsTo(grid, start);
         expect(inView(dataRows(c)[shown]!), "precondition: one copy is on screen").toBe(true);
         expect(inView(dataRows(c)[hidden]!), "precondition: the other is not").toBe(false);
 
-        act(() => useInvestigation.getState().selectFinding(id));
+        act(() => { useInvestigation.getState().selectFinding(id); });
         await settle();
 
         expect(grid.scrollTop, `copy at row ${shown} was on screen: the queue must not move`).toBe(start);

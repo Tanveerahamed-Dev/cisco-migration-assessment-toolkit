@@ -59,7 +59,19 @@ jobs:
       - name: Require the reviewed Graphify version, extractor bytes, and alias topology
         if: matrix.python-version == '3.12'
         run: python -I -B tools/graphify_guarded.py --probe
+      # The default suite includes webapp/tests, whose /scope pins run the REAL Atlas Scope compiler and
+      # bundler; ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN=1 makes a missing node/npm ci fail those pins, never skip.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: atlas-scope/package-lock.json
+      - name: Install Atlas Scope's locked toolchain
+        working-directory: atlas-scope
+        run: npm ci
       - name: Run the complete default suite
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
         run: python -m pytest
 
   typecheck:

@@ -19,6 +19,7 @@ import re
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from cisco_toolkit.cmdio import not_running_banner
 from cisco_toolkit.input_custody import read_text as read_custodied_text
 
 
@@ -481,6 +482,15 @@ def _runtime_scope_authorized(command: str, body: str, platform: str) -> bool:
 
 
 def _parse_runtime(body: str, command: str, platform: str) -> dict:
+    # The WHOLE capture is the vendor no-process banner (cmdio.PROTOCOL_NOT_RUNNING_BANNERS, the one owner
+    # protocol_assessability also classifies as "not_running"): BGP has no process, so the runtime peer
+    # denominator is positively EMPTY in every scope -- a complete zero-peer summary, not an unrecognized
+    # header. A configured-active peer is then "not observed in the complete summary" (degraded), and a
+    # complete peerless config stays not_applicable; nothing is read as Established.
+    if not_running_banner(command, body or ""):
+        return {"status": "complete", "rows": [], "findings": [],
+                "candidate_count": 0, "parsed_count": 0, "rejected_count": 0,
+                "local_as": "", "scope_authorized": True}
     lines = (body or "").splitlines()
     findings: List[dict] = []
     if len(lines) > _MAX_LINES:

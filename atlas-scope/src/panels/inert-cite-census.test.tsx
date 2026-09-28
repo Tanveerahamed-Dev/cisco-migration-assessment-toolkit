@@ -214,7 +214,7 @@ afterEach(() => {
   unmountAll();
   document.body.innerHTML = "";
   window.history.replaceState(null, "", "/");
-  act(() => useInvestigation.setState(useInvestigation.getInitialState(), true));
+  act(() => { useInvestigation.setState(useInvestigation.getInitialState(), true); });
 });
 
 /** What a reader can operate — the owner a citation needs, and what must not nest. */
@@ -483,13 +483,13 @@ async function session(width: number, body: (go: (state: string, query: string, 
       const load = async (fresh: boolean): Promise<void> => {
         if (fresh || !mountedOnce) {
           unmountAll();
-          act(() => useInvestigation.setState(useInvestigation.getInitialState(), true));
+          act(() => { useInvestigation.setState(useInvestigation.getInitialState(), true); });
           window.history.replaceState(null, "", query === "" ? "/" : `/?${query}`);
           mount(<App />);
           mountedOnce = true;
           await settle();
         } else {
-          act(() => useInvestigation.setState({ ...useInvestigation.getInitialState(), ...decodeInvestigation(query === "" ? "" : `?${query}`) }, true));
+          act(() => { useInvestigation.setState({ ...useInvestigation.getInitialState(), ...decodeInvestigation(query === "" ? "" : `?${query}`) }, true); });
           await settle();
         }
         if (then) await then();
@@ -539,7 +539,7 @@ describe("every citation the app prints is a working citation control", () => {
           await go("cross-layer corpus", "s=findings", clickFirst('[role="tab"]', /Cross-layer/));
           await go("fabric list", "", clickFirst("button", /^Fabric list$/));
           await go("palette open", "", async () => {
-            act(() => useInvestigation.getState().setPaletteOpen(true));
+            act(() => { useInvestigation.getState().setPaletteOpen(true); });
             await settle();
           });
         });
@@ -558,7 +558,7 @@ describe("every citation the app prints is a working citation control", () => {
           if (ce.found) await go(`${s.id} counterexample`, `s=path&flow=${flowParam(ce.flow)}`);
           /* The palette with the flow's source typed: the rows it offers restate this flow. */
           await go(`${s.id} palette rows`, "", async () => {
-            act(() => useInvestigation.getState().setPaletteOpen(true));
+            act(() => { useInvestigation.getState().setPaletteOpen(true); });
             await settle();
             const input = document.querySelector<HTMLInputElement>(".palette__input");
             if (input !== null) {

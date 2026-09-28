@@ -79,7 +79,7 @@ async function settleCommit(): Promise<void> {
 }
 
 const setQuery = (q: string): void => {
-  act(() => useInvestigation.getState().setQuery(q));
+  act(() => { useInvestigation.getState().setQuery(q); });
 };
 
 const dataRows = (c: HTMLElement): HTMLElement[] => [...c.querySelectorAll<HTMLElement>(".ag__row--data")];
@@ -337,7 +337,7 @@ describe("filter accounting", () => {
   });
 
   it("carries the store's scope into the same accounting, as removable chips", () => {
-    act(() => useInvestigation.getState().toggleSeverity("Critical"));
+    act(() => { useInvestigation.getState().toggleSeverity("Critical"); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     expect(dataRows(c)).toHaveLength(severityCounts(fabric.findings)["Critical"]!);
     const chipRemove = c.querySelector<HTMLElement>('[aria-label="Remove the Critical severity filter"]');
@@ -415,12 +415,12 @@ describe("filter accounting", () => {
 describe("selection", () => {
   it("writes the shared selection and leaves the fabric and the flow untouched", async () => {
     const device = fabric.devices[0]!;
-    act(() =>
+    act(() => {
       useInvestigation.setState({
         deviceId: device.id,
         flow: { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 3389, srcPort: null },
-      }),
-    );
+      });
+    });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const target = fabric.findings.find((f) => f.id === "F003")!;
     const row = dataRows(c).find((r) => textOf(r).includes(target.id))!;
@@ -586,7 +586,7 @@ describe("the cross-layer corpus", () => {
     expect(dataRows(c)).toHaveLength(fabric.crossLayer.length);
     const lone = fabric.findings.find((f) => !joinsCrossLayer(f.id));
     expect(lone, "precondition: some finding has no cross-layer row").toBeDefined();
-    act(() => useInvestigation.getState().selectFinding(lone!.id));
+    act(() => { useInvestigation.getState().selectFinding(lone!.id); });
     expect(radio(c, "Findings").getAttribute("aria-checked")).toBe("true");
     const active = dataRows(c).filter((r) => r.getAttribute("data-active") === "yes");
     expect(active).toHaveLength(1);
@@ -596,7 +596,7 @@ describe("the cross-layer corpus", () => {
   it("a deep link onto a persisted cross-layer choice lands on the punchlist row too", () => {
     localStorage.setItem("atlas-scope.queue.corpus", "cross-layer");
     const lone = fabric.findings.find((f) => !joinsCrossLayer(f.id))!;
-    act(() => useInvestigation.getState().selectFinding(lone.id));
+    act(() => { useInvestigation.getState().selectFinding(lone.id); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     expect(radio(c, "Findings").getAttribute("aria-checked")).toBe("true");
     expect(dataRows(c).some((r) => r.getAttribute("data-active") === "yes" && textOf(r).includes(lone.id))).toBe(true);
@@ -607,7 +607,7 @@ describe("the cross-layer corpus", () => {
     click(radio(c, "Cross-layer"));
     const joined = fabric.findings.find((f) => joinsCrossLayer(f.id));
     expect(joined, "precondition: some finding joins a cross-layer row").toBeDefined();
-    act(() => useInvestigation.getState().selectFinding(joined!.id));
+    act(() => { useInvestigation.getState().selectFinding(joined!.id); });
     expect(radio(c, "Cross-layer").getAttribute("aria-checked")).toBe("true");
     expect(dataRows(c).filter((r) => r.getAttribute("data-active") === "yes")).toHaveLength(1);
   });
@@ -615,7 +615,7 @@ describe("the cross-layer corpus", () => {
   it("switching to the cross-layer table AFTER a selection is not bounced back", () => {
     const c = mount(<PriorityQueue debounceMs={0} />);
     const lone = fabric.findings.find((f) => !joinsCrossLayer(f.id))!;
-    act(() => useInvestigation.getState().selectFinding(lone.id));
+    act(() => { useInvestigation.getState().selectFinding(lone.id); });
     click(radio(c, "Cross-layer"));
     expect(radio(c, "Cross-layer").getAttribute("aria-checked")).toBe("true");
   });
@@ -694,7 +694,7 @@ describe("a selection from another surface is revealed, not merely marked", () =
     expect(id, "the last row must carry a finding id to select").toMatch(/^F\d+/);
     expect(inView(deep), "the row must start below the fold or this test proves nothing").toBe(false);
 
-    act(() => useInvestigation.getState().selectFinding(id));
+    act(() => { useInvestigation.getState().selectFinding(id); });
 
     const revealed = dataRows(c).find((r) => r.getAttribute("data-active") === "yes")!;
     expect(revealed.getAttribute("data-active")).toBe("yes");
@@ -716,7 +716,7 @@ describe("a selection from another surface is revealed, not merely marked", () =
     installLayout(c);
     expect(textOf(c)).not.toContain("F120");
 
-    act(() => useInvestigation.getState().selectFinding("F120"));
+    act(() => { useInvestigation.getState().selectFinding("F120"); });
 
     const current = [...c.querySelectorAll<HTMLElement>('[role="grid"] [aria-current]')];
     expect(current.map((r) => r.querySelector('[role="rowheader"]')?.textContent?.trim())).toEqual(["F120"]);
@@ -737,7 +737,7 @@ describe("a selection from another surface is revealed, not merely marked", () =
     const id = first.querySelector('[role="rowheader"]')?.textContent?.trim() ?? "";
     expect(inView(first)).toBe(true);
 
-    act(() => useInvestigation.getState().selectFinding(id));
+    act(() => { useInvestigation.getState().selectFinding(id); });
     expect(grid.scrollTop).toBe(0);
   });
 
@@ -752,7 +752,7 @@ describe("a selection from another surface is revealed, not merely marked", () =
     const expected = fabric.findings.filter((f) => f.devices.includes(host)).length;
     expect(expected, "this test needs a host some finding names").toBeGreaterThan(0);
 
-    act(() => useInvestigation.getState().selectDevice(host));
+    act(() => { useInvestigation.getState().selectDevice(host); });
 
     const marked = [...c.querySelectorAll<HTMLElement>('[data-related="yes"]')];
     expect(marked).toHaveLength(expected);
@@ -775,7 +775,7 @@ describe("a selection from another surface is revealed, not merely marked", () =
     click(header.querySelector('[role="gridcell"]')!);
     expect(header.querySelector('[role="gridcell"]')?.getAttribute("aria-expanded")).toBe("false");
 
-    act(() => useInvestigation.getState().selectDevice(host));
+    act(() => { useInvestigation.getState().selectDevice(host); });
 
     const marked = c.querySelectorAll('[data-related="yes"]');
     expect(marked).toHaveLength(named.length - medium);
@@ -792,7 +792,7 @@ describe("a selection from another surface is revealed, not merely marked", () =
     // A precondition, not an early return: a return here would let this test pass with zero
     // assertions the day every device carries a finding.
     expect(quiet, "precondition: a device no finding names").toBeDefined();
-    act(() => useInvestigation.getState().selectDevice(quiet!.id));
+    act(() => { useInvestigation.getState().selectDevice(quiet!.id); });
     expect(c.querySelectorAll('[data-related="yes"]')).toHaveLength(0);
     expect(textOf(c)).toContain("not an assessment that");
   });

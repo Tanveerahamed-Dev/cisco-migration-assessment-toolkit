@@ -56,7 +56,7 @@ const finding = fabric.findings.find((f) => f.devices.length > 0 && fabric.devic
 describe("Rail B keeps focus when a chip sends the reader to the Device pane", () => {
   it("focus lands on the Device pane's heading, never on <body> or inside the hidden pane", () => {
     expect(finding, "the snapshot holds no finding naming a device; this test has nothing to drive").toBeDefined();
-    act(() => useInvestigation.getState().selectFinding(finding!.id));
+    act(() => { useInvestigation.getState().selectFinding(finding!.id); });
     const c = mount(<Harness />);
 
     const chip = c.querySelector<HTMLButtonElement>(".ev-devices .ev-devbtn");
@@ -75,13 +75,13 @@ describe("Rail B keeps focus when a chip sends the reader to the Device pane", (
   });
 
   it("does not move focus when the switch was made from outside the hidden pane", () => {
-    act(() => useInvestigation.getState().selectFinding(finding!.id));
+    act(() => { useInvestigation.getState().selectFinding(finding!.id); });
     const c = mount(<Harness />);
     const outside = document.createElement("button");
     document.body.appendChild(outside);
     act(() => outside.focus());
 
-    act(() => useInvestigation.getState().selectDevice(finding!.devices[0]!));
+    act(() => { useInvestigation.getState().selectDevice(finding!.devices[0]!); });
 
     expect(c.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("Device");
     expect(document.activeElement, "a selection made elsewhere must not pull focus into the rail").toBe(outside);

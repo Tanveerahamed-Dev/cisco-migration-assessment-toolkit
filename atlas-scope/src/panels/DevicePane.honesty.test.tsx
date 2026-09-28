@@ -48,7 +48,7 @@ describe("the Routing tab badge is the RIB size", () => {
     it(host, () => {
       const n = routesOf(host).length;
       expect(n, "precondition: a RIB was collected").toBeGreaterThan(0);
-      act(() => useInvestigation.getState().selectDevice(host));
+      act(() => { useInvestigation.getState().selectDevice(host); });
       const c = mount(<DevicePane />);
       const tab = [...c.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => /Routing/.test(t.textContent ?? ""));
       // The badge is the RIB size; a table the snapshot shows incomplete says so beside it (B7).
@@ -111,7 +111,7 @@ describe("a favourable health band names the scoring domains that were never ass
     for (const d of fabric.devices) {
       if (!d.collected || !d.band) continue;
       const gaps = unassessedScoringDomains(d.host);
-      act(() => useInvestigation.getState().selectDevice(d.host));
+      act(() => { useInvestigation.getState().selectDevice(d.host); });
       const band = c.querySelector<HTMLElement>(".ui-band");
       expect(band, d.host).toBeTruthy();
       const note = c.querySelector(".dp-score-gap");

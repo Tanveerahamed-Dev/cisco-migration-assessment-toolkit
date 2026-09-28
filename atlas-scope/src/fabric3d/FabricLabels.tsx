@@ -15,6 +15,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useSyncExternalStore, type CSSProperties, type RefObject } from "react";
 
 import { failureImpact } from "../analysis/blast";
+import { releaseFocusFrom } from "../app/focus-return";
 import { presentBand } from "../core/band-qualification";
 import { linksByHost } from "../core/data";
 import type { Device } from "../core/types";
@@ -162,11 +163,17 @@ export interface FabricLabelsProps {
   coordinateSpace?: "client" | "canvas";
   /**
    * Called when an off-view pointer that HOLDS keyboard focus leaves the stage (its host came into
-   * view — usually because the reader just activated it to frame the host). The pointer stops being
-   * focusable as it goes, and a focused element that vanishes drops focus to <body> (acceptance D3);
-   * the stage hands it somewhere that exists instead (Fabric3D: the canvas, now framing that host).
+   * view — because the reader just activated it to frame the host, or because the stage was resized
+   * or re-projected). The pointer stops being rendered as it goes, and a focused element that stops
+   * being rendered drops focus to <body> (acceptance D3). The callback DECIDES NOTHING: it returns the
+   * stage's stated successors, in order (Fabric3D: its canvas, now framing that host), and the layer
+   * hands them to focus-return.ts's third door (`releaseFocusFrom`) BEFORE the pointer is hidden, so a
+   * successor that refuses focus (an inert or unrendered canvas) falls through to the owner's own
+   * order (the landmark around the pointer, then the nearest real tab stop), never to <body>.
+   * MEASURED (independent verifier R5-V2): this was the one imperative hide in the product that
+   * bypassed the owner, answered by a bare `canvas.focus()` that never checked the canvas took focus.
    */
-  onPointerFocusLost?: () => void;
+  onPointerFocusLost?: () => readonly (HTMLElement | null | undefined)[] | void;
 }
 
 /** How far above the anchor a label sits, as a multiple of its own height. The blocked host's
@@ -486,10 +493,13 @@ export function FabricLabels({
     const hidePointer = (id: string, el: HTMLButtonElement): void => {
       if (pointerWritten.get(id) === "hidden") return;
       pointerWritten.set(id, "hidden");
-      const hadFocus = typeof document !== "undefined" && el.contains(document.activeElement);
+      /* Focus first, through the owner's third door, while the pointer is still rendered (the door
+         does nothing when focus is elsewhere); then the hide. See `onPointerFocusLost`. */
+      if (typeof document !== "undefined" && el.contains(document.activeElement)) {
+        releaseFocusFrom(el, null, focusLostRef.current?.() ?? []);
+      }
       el.dataset.visible = "false";
       el.hidden = true;
-      if (hadFocus) focusLostRef.current?.();
     };
     /** The centre nearest `want` whose box (hw, hh half-extents) is inside the stage and clear of every
      *  obstacle. Candidates: `want` itself, then flush against each side of each obstacle (and, once

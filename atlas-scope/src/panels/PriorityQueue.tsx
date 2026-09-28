@@ -62,7 +62,7 @@ import {
   type QueryToken,
   type SortSpec,
 } from "../core/query";
-import { handOffFocus, returnFocus, useReleaseFocusOnHide } from "../app/focus-return";
+import { handOffFocus, useReleaseFocusOnHide, useReleaseFocusOnLayoutChange } from "../app/focus-return";
 import { bandKey, bandKeyLabel } from "../core/band-qualification";
 import { useInvestigation } from "../core/store";
 import type { Cite, CrossLayerFinding, Finding } from "../core/types";
@@ -871,6 +871,14 @@ export function PriorityQueue({
   /* Whatever hides the Group/Order/Display block while focus is inside it (the fold below keeps it open
      for a resize, but not for every path), focus goes to the View disclosure that stands for it. */
   useReleaseFocusOnHide(controlsRef, !(viewFolded && !viewOpen), () => [viewButtonRef.current]);
+  /* And the reverse: UNFOLDING removes the View disclosure, which may hold focus. MEASURED on a
+     release build (independent verifier, D3-R2-1): 'LOST 1100->1440 stop 13: BUTTON.ui-btn "View" ->
+     BODY'. The hand-off used to be a microtask queued from the ResizeObserver callback, which ran
+     BEFORE React committed the unfold — focus was still on the button, so it did nothing, and the
+     commit then removed the button. The fold is this panel's layout decision, so it is declared to the
+     owner (focus-return.ts, fourth door), which runs in the commit that removes the button: focus goes
+     to the successor the button states — the Group/Order/Display controls it stood for. */
+  useReleaseFocusOnLayoutChange(viewFolded);
   useLayoutEffect(() => {
     const root = rootRef.current;
     if (root === null || typeof ResizeObserver === "undefined") return;
@@ -888,13 +896,8 @@ export function PriorityQueue({
            block open under its disclosure instead, so their focus never falls to <body>. */
         if (active instanceof Node && controls.contains(active)) setViewOpen(true);
       } else {
-        if (active !== null && active === viewButtonRef.current) {
-          /* The disclosure is about to go; the controls it stood for take its place and the focus. */
-          const first = controls.querySelector<HTMLElement>("select, button, input");
-          queueMicrotask(() => {
-            if (document.activeElement === null || document.activeElement === document.body) returnFocus(null, root, [first]);
-          });
-        }
+        /* The disclosure is about to go; the controls it stood for take its place and the focus
+           (useReleaseFocusOnLayoutChange above, in the commit that removes it). */
         setViewOpen(false);
       }
       setViewFolded(fold);
@@ -2071,6 +2074,7 @@ export function PriorityQueue({
             ref={viewButtonRef}
             size="sm"
             className="pq-viewbtn"
+            data-focus-successor={`[id="${viewId}"]`}
             aria-expanded={viewOpen}
             aria-controls={viewId}
             aria-describedby={`${viewId}-now`}

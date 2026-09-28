@@ -385,6 +385,30 @@ export function scriptMotionIn(
       for (const el of bindings.elements) if (ownerStarters.has((el.propertyName ?? el.name).text)) ownerLocal.add(el.name.text);
     }
   }
+  /* ...and every local VALUE obtained from one, to a fixed point (R4-VR1-4, 2026-09-27): the tier fade
+     is now run through an object the owner builds (`const tierFade = createTierFadeSlot(…)`, then
+     `const handle = tierFade.presented(…)`, then `handle.start()` in a timer's callback). Matched by
+     name only, the timer that starts it was lost; a value derived from an owner starter carries it. */
+  const derived: { name: string; init: ts.Node }[] = [];
+  const noteDerived = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer !== undefined) derived.push({ name: n.name.text, init: n.initializer });
+    ts.forEachChild(n, noteDerived);
+  };
+  noteDerived(sf);
+  const refersToOwner = (root: ts.Node): boolean => {
+    let hit = false;
+    const scan = (n: ts.Node): void => {
+      if (hit) return;
+      if (ts.isIdentifier(n) && ownerLocal.has(n.text)) hit = true;
+      else if (!ts.isArrowFunction(n) && !ts.isFunctionExpression(n)) ts.forEachChild(n, scan);
+    };
+    scan(root);
+    return hit;
+  };
+  for (let grew = ownerLocal.size > 0; grew; ) {
+    grew = false;
+    for (const d of derived) if (!ownerLocal.has(d.name) && refersToOwner(d.init)) (ownerLocal.add(d.name), (grew = true));
+  }
   const consts = new Map<string, number>();
   const found: ScriptMotion[] = [];
   const unresolved: string[] = [];
@@ -678,6 +702,13 @@ describe("the motion scan is live and its denominator is the real tree", () => {
         "  setTimeout(() => stepEaseChannel(ch, HOVER_EASE, 1, 16), 50);",
         "  setTimeout(() => { fade.ease = elsewhere(); }, 900);",
         "  setTimeout(() => stepEaseChannel(ch, SLIDE, 1, 16), 400);",
+        // R4-VR1-4: a fade run through a VALUE the owner built (a slot, then its hold's handle).
+        "  const slot = begin();",
+        "  const handle = slot.presented(false);",
+        "  const go = (): void => handle.start();",
+        "  setTimeout(go, 1200);",
+        "  const other = elsewhere();",
+        "  setTimeout(() => other.start(), 300);",
         "}",
       ].join("\n"),
       new Map(),
@@ -687,6 +718,7 @@ describe("the motion scan is live and its denominator is the real tree", () => {
       ["SLIDE_MS", "ease", 90],
       ["700", "delay", 700],
       ["50", "delay", 50],
+      ["1200", "delay", 1200],
     ]);
     expect(unresolved).toEqual([]);
   });
@@ -1261,18 +1293,29 @@ describe("§4.8 states, for every ease the owner exports, the settle time the ea
   const rowOf = (name: string): string | undefined =>
     s48.split("\n").find((l) => l.startsWith("|") && l.includes("`" + name + "`"));
 
-  /* A row that states its duration but no settle figure yet, named with its reason. This is a ratchet:
-     it may only shrink. TIER_FADE_MS: its §4.8 row predates the stepped fade and states "**280 ms**"
-     only, and the record step owns docs/design-brief.md. Until that row adds "settles in **283.4 ms**
-     at 60 fps", it is held to everything else: its duration, a measured settle under 300 ms and within
-     one frame of that duration, and reduced motion. Once the row states the figure, it is checked
-     exactly like the others, with no edit here. */
-  const SETTLE_FIGURE_PENDING = new Set(["TIER_FADE_MS"]);
+  /* A row that states its duration but no settle figure yet, named with its reason. This is a ratchet,
+     ENFORCED by the test below: it never holds a name outside its baseline ({TIER_FADE_MS}, 2026-09-26)
+     and an entry whose row states the figure fails until it is removed. TIER_FADE_MS left it on
+     2026-09-27 (C5-R2-4): the record step's §4.8 row now states "settles in **283.4 ms** at 60 fps",
+     so the exact check covers it like every other ease. Empty is the ratchet's floor. */
+  const SETTLE_FIGURE_PENDING = new Set<string>();
   /** What this block iterates: every ease the owner exports. */
   const SETTLE_CHECKED: readonly EaseSpec[] = OWNER_EASES;
 
   it("the owner exports the eases the fabric steps (the check is not vacuous)", () => {
     expect(EASES.map((e) => e.name).sort()).toEqual(["HOVER_MS", "RECEDE_MS", "SELECT_MS"]);
+  });
+
+  it("SETTLE_FIGURE_PENDING is an enforced ratchet: it never grows past its baseline, and an entry whose row now states the figure must go", () => {
+    /* C5-R2-4 (verifier round 2): the set was documented "it may only shrink", but nothing stopped it
+       growing, and nothing made a satisfied entry leave. The baseline is the set as it was introduced
+       (2026-09-26); an entry may only ever be removed. Once §4.8 states a pending ease's settle figure,
+       the entry is stale — the exact check above already covers it — and it fails here until removed. */
+    const BASELINE = new Set(["TIER_FADE_MS"]);
+    for (const n of SETTLE_FIGURE_PENDING) expect(BASELINE.has(n), `${n} was added to the ratchet; it may only shrink`).toBe(true);
+    expect(SETTLE_FIGURE_PENDING.size).toBeLessThanOrEqual(BASELINE.size);
+    const stale = [...SETTLE_FIGURE_PENDING].filter((n) => /settles in \*\*(\d+(?:\.\d+)?) ms\*\* at 60 fps/.test(rowOf(n) ?? ""));
+    expect(stale, "pending entries whose §4.8 row already states the settle figure: remove them").toEqual([]);
   });
 
   it("the settle check's denominator is EVERY EaseSpec the owner exports, not the EASES list", () => {
@@ -1299,7 +1342,9 @@ describe("§4.8 states, for every ease the owner exports, the settle time the ea
         expect(measured, `${spec.name} settles at ${measured.toFixed(2)} ms, later than §4.8 states`).toBeLessThanOrEqual(Number(stated));
         expect(Number(stated) - measured, `${spec.name}: §4.8 overstates the settle time`).toBeLessThan(1);
       }
-      // Every ease lands on the first 60 fps frame at or after its duration: the cap never binds there.
+      /* Every ease lands on the first 60 fps frame at or after its duration: the frame its uncapped
+         curve lands on. The cap binds on no landing frame (it does bind on the first four frames of
+         HOVER_MS, RECEDE_MS and SELECT_MS; emphasis.test.ts measures where). */
       expect(measured, `${spec.name}: settles later than one frame after its duration`).toBeLessThan(spec.durationMs + DT + 1e-6);
       // And the C6 bar itself: under 300 ms.
       expect(measured).toBeLessThan(300);

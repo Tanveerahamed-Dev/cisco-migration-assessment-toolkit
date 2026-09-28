@@ -58,7 +58,7 @@ afterEach(() => {
     m.container.remove();
   }
   document.body.innerHTML = "";
-  act(() => useInvestigation.getState().reset());
+  act(() => { useInvestigation.getState().reset(); });
 });
 
 /**
@@ -266,7 +266,7 @@ describe("PathTrace — a new result is scrolled into view", () => {
       const { container } = mount(<PathTrace />);
       const panel = container.querySelector<HTMLElement>(".pt-panel")!;
       expect(panel.scrollTop).toBe(0);
-      act(() => useInvestigation.getState().setFlow(DENIED));
+      act(() => { useInvestigation.getState().setFlow(DENIED); });
       const hop = container.querySelector('.hop[data-verdict="denied"]');
       expect(hop).not.toBeNull();
       /* A result that ARRIVED (here: a store write, as a restored link makes) lands after the next
@@ -466,7 +466,7 @@ describe("PathTrace — running a flow", () => {
 
   it("traces the flow the store carries, so a shared link reproduces the result", async () => {
     const { container } = mount(<PathTrace />);
-    act(() => useInvestigation.getState().setFlow(DENIED));
+    act(() => { useInvestigation.getState().setFlow(DENIED); });
     /* The panel answers from local state at once; the store write that re-aims the other surfaces
        lands after the next paint (acceptance E5 — a cold restore used to do it before the first). */
     expect(text(container)).toContain("PROTECT_SERVERS");
@@ -560,7 +560,7 @@ describe("PathTrace — the flow form under StrictMode", () => {
   it("survives one keystroke in every text field and keeps the character", () => {
     const container = strictMount();
     // The port field only exists for a ported protocol, which is the form's default (tcp).
-    act(() => useInvestigation.getState().setFlow(DENIED));
+    act(() => { useInvestigation.getState().setFlow(DENIED); });
     const inputs = fields(container);
     expect(inputs.length).toBe(3); // srcIp, dstIp, dstPort — a silent drop would weaken this test
 
@@ -577,7 +577,7 @@ describe("PathTrace — the flow form under StrictMode", () => {
 
   it("survives a protocol change", () => {
     const container = strictMount();
-    act(() => useInvestigation.getState().setFlow(DENIED));
+    act(() => { useInvestigation.getState().setFlow(DENIED); });
     const select = container.querySelector<HTMLSelectElement>("form.pt-form select")!;
     const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
     act(() => {
@@ -1241,12 +1241,12 @@ describe("PathTrace — selecting a hop re-aims the investigation", () => {
        Driven through the real component and the real engine: the assertion is on the STORE, which
        is what the device pane, the evidence rail and the fabric all read. */
     const { container } = mount(<PathTrace />);
-    act(() => useInvestigation.getState().setFlow(DENIED));
+    act(() => { useInvestigation.getState().setFlow(DENIED); });
     await settleCommit(); // the restored trace reaches the store after the next paint (E5)
 
     // Point every other surface somewhere else first, so "it followed the hop" is a real change
     // and not the state it already happened to hold.
-    act(() => useInvestigation.getState().selectDevice("access13"));
+    act(() => { useInvestigation.getState().selectDevice("access13"); });
     expect(useInvestigation.getState().deviceId).toBe("access13");
 
     const trace = useInvestigation.getState().trace;

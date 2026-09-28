@@ -154,7 +154,7 @@ describe("the URL keeps tracking the investigation even when no frame is painted
     replace.mockClear();
     push.mockClear();
 
-    act(() => useInvestigation.getState().setQuery("severity:Critical"));
+    act(() => { useInvestigation.getState().setQuery("severity:Critical"); });
     await settle();
 
     const urls = [...replace.mock.calls, ...push.mock.calls].map((c) => String(c[2]));
@@ -170,12 +170,12 @@ describe("the URL keeps tracking the investigation even when no frame is painted
     replace.mockClear();
     push.mockClear();
 
-    act(() => useInvestigation.getState().setQuery("core"));
+    act(() => { useInvestigation.getState().setQuery("core"); });
     await settle();
     const pushesAfterTyping = push.mock.calls.length;
     const replacesAfterTyping = replace.mock.calls.length;
 
-    act(() => useInvestigation.getState().selectDevice("core1"));
+    act(() => { useInvestigation.getState().selectDevice("core1"); });
     await settle();
 
     expect(pushesAfterTyping).toBe(0);

@@ -69,7 +69,9 @@ afterEach(() => {
     act(() => m.root.unmount());
     m.container.remove();
   }
-  act(() => useInvestigation.getState().reset());
+  act(() => {
+    useInvestigation.getState().reset();
+  });
 });
 
 /** Every gap must be NAMED where the band is stated in words. */
@@ -88,7 +90,9 @@ const SURFACES: Surface[] = [
     check(devices) {
       const c = mount(<DevicePane />);
       for (const d of devices) {
-        act(() => useInvestigation.getState().selectDevice(d.host));
+        act(() => {
+          useInvestigation.getState().selectDevice(d.host);
+        });
         const band = c.querySelector<HTMLElement>(".ui-band");
         expect(band?.className, d.host).toContain("dp-band--partial");
         expectNamesEveryGap(c.querySelector(".dp-score-gap")?.textContent ?? "", d, "Device pane");
@@ -172,7 +176,9 @@ const SURFACES: Surface[] = [
     name: "command palette device row",
     check(devices) {
       mount(<CommandPalette />);
-      act(() => useInvestigation.getState().setPaletteOpen(true));
+      act(() => {
+        useInvestigation.getState().setPaletteOpen(true);
+      });
       const input = document.querySelector<HTMLInputElement>(".palette__input");
       expect(input).not.toBeNull();
       for (const d of devices) {
@@ -190,7 +196,9 @@ const SURFACES: Surface[] = [
         expect(pill.textContent, d.host).toContain("partial");
         expectNamesEveryGap(pill.getAttribute("title") ?? "", d, "palette band pill title");
       }
-      act(() => useInvestigation.getState().setPaletteOpen(false));
+      act(() => {
+        useInvestigation.getState().setPaletteOpen(false);
+      });
     },
   },
   {

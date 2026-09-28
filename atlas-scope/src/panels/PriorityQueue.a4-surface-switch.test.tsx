@@ -230,7 +230,7 @@ beforeEach(() => {
   } catch {
     /* preferences are not evidence */
   }
-  act(() => useInvestigation.getState().reset());
+  act(() => { useInvestigation.getState().reset(); });
 });
 
 afterEach(() => {
@@ -302,7 +302,7 @@ describe("A4 wave 8: a shrinking port re-reveals the selected row, however the s
         const grid = installLayout(c);
         const { id } = await clickVisibleFinding(c, grid, g);
         const host = fabric.findings.find((f) => f.id === id)?.devices[0];
-        act(() => trigger(host));
+        act(() => { trigger(host); });
         await settle();
         expect(useInvestigation.getState().findingId, "the finding selection survives every trigger").toBe(id);
         const row = activeRow(c)!;

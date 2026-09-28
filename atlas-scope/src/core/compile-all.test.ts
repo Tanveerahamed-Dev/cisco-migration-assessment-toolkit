@@ -23,7 +23,8 @@
  *     itself, and all four outputs share one binding (R6);
  *   - (verifier S1-V2/V4) --out is refused wherever it would land in a tracked or bundled location —
  *     src/ under every spelling that reaches it ("src/..data", "src./data", another case), and, for a
- *     non-sample source, ANY directory of the repository Git does not ignore — before anything is written;
+ *     non-sample source, ANY in-repository directory but .local-data/ — Git-ignored ones included (dist/,
+ *     node_modules/, review/…: R3 / refuter X2 / S1-R2V-2) — before anything is written;
  *   - (S1-V3) a per-file command refuses to leave its file bound to a different snapshot from the
  *     compiled files beside it;
  *   - (S1-V5) a rollback that cannot complete keeps the previous files and names where they are;
@@ -35,11 +36,11 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { compileToDisk } from "../../tools/lib/compile-io.mjs";
 import { CompileError, OUTPUTS } from "../../tools/lib/compile-model.mjs";
@@ -73,13 +74,26 @@ const baseBytes = (): Buffer => {
 };
 const sha256 = (b: Uint8Array): string => createHash("sha256").update(b).digest("hex");
 
+/* Sandboxes are removed by the test that made them (afterEach), not all at once at the end: removing every
+   sandbox of this file in one afterAll took over 180 s under host contention (measured 2026-09-27, the hook
+   timed out while each test had passed). A sandbox made outside any test (R6's, shared by its tests) is
+   removed in afterAll. */
 const sandboxes: string[] = [];
+const perTest: string[] = [];
+let inTest = false;
+beforeEach(() => {
+  inTest = true;
+});
+afterEach(() => {
+  inTest = false;
+  for (const d of perTest.splice(0)) rmSync(d, { recursive: true, force: true });
+}, 120_000); // one to three sandbox trees; a hook, so the per-test limit does not cover it
 afterAll(() => {
   for (const d of sandboxes) rmSync(d, { recursive: true, force: true });
 });
 const tmp = (prefix: string): string => {
   const d = mkdtempSync(join(tmpdir(), prefix));
-  sandboxes.push(d);
+  (inTest ? perTest : sandboxes).push(d);
   return d;
 };
 
@@ -88,6 +102,8 @@ function sandbox(opts: { withShipped?: boolean } = {}): { root: string; pkg: str
   const root = tmp("atlas-compile-all-");
   const pkg = join(root, "atlas-scope");
   cpSync(TOOLS, join(pkg, "tools"), { recursive: true });
+  // The engine contract the compiler imports (tools/lib/compile-model.mjs reads its vocabularies from it).
+  cpSync(resolve(PKG, "contracts"), join(pkg, "contracts"), { recursive: true });
   const mirror = (from: string, to: string): void => {
     mkdirSync(to, { recursive: true });
     for (const n of readdirSync(from)) if (statSync(join(from, n)).isDirectory()) mirror(join(from, n), join(to, n));
@@ -186,24 +202,34 @@ describe("either the whole set lands or none of it does", () => {
     expect(written).toEqual(["aclBindings"]);
   });
 
-  it("a per-file command refuses to leave its file bound to a different snapshot from its siblings (S1-V3)", () => {
-    /* Measured by the verifier: after the sample changed, `node tools/compile-snapshot.mjs` exited 0 and
-       left the three sidecars on the OLD digest — which sameSourceBinding then refuses silently, turning
-       every ACL binding, RIB answer and emission flag into "unknown". */
-    const { root, pkg, tools } = sandbox({ withShipped: true });
-    const src = join(root, SAMPLE_REL);
+  /* S1-V3, split one command per test (vitest.config.ts: a large unit of work is split, not given a bigger limit;
+     as one test of six compiles it timed out at 30 s under host contention, 2026-09-27). Every assertion is kept. */
+  const mixedSetSandbox = () => {
+    const sb = sandbox({ withShipped: true });
+    const src = join(sb.root, SAMPLE_REL);
     const s = JSON.parse(readFileSync(src, "utf8")) as { script_version: string };
     s.script_version = "V0.0.0-mixed-set";
     writeFileSync(src, JSON.stringify(s));
-    const before = snapshotOf(pkg);
-    for (const name of ["compile-snapshot.mjs", "compile-acl-bindings.mjs", "compile-rib-evidence.mjs", "compile-producer-emission.mjs"]) {
+    return sb;
+  };
+  it.each([["compile-snapshot.mjs"], ["compile-acl-bindings.mjs"], ["compile-rib-evidence.mjs"], ["compile-producer-emission.mjs"]])(
+    "a per-file command (%s) refuses to leave its file bound to a different snapshot from its siblings (S1-V3)",
+    (name) => {
+      /* Measured by the verifier: after the sample changed, `node tools/compile-snapshot.mjs` exited 0 and
+         left the three sidecars on the OLD digest — which sameSourceBinding then refuses silently, turning
+         every ACL binding, RIB answer and emission flag into "unknown". */
+      const { pkg, tools } = mixedSetSandbox();
+      const before = snapshotOf(pkg);
       const r = spawnSync(process.execPath, [join(tools, name)], { encoding: "utf8" });
       expect(r.status, `${name}: ${r.stderr}`).toBe(2);
       expect(r.stderr, name).toMatch(/E_MIXED_SET/);
       expect(r.stderr, name).toMatch(/compile:data/);
       expect(snapshotOf(pkg), `${name} changed a file`).toEqual(before);
-    }
-    // The set command rebuilds all four; after it a per-file command is consistent again (exit 0).
+    },
+  );
+
+  it("after the set command rebuilds all four, a per-file command is consistent again (S1-V3 control)", () => {
+    const { tools } = mixedSetSandbox();
     expect(cli(tools, []).status).toBe(0);
     const r = spawnSync(process.execPath, [join(tools, "compile-snapshot.mjs")], { encoding: "utf8" });
     expect(r.status, r.stderr).toBe(0);
@@ -344,8 +370,8 @@ describe("client data never reaches the tracked files", () => {
   it.each([["public"], ["."], ["review/out"], ["../docs/compiled"]])(
     "refuses --out %s (a repository directory Git does not ignore) for a non-sample source (S1-V4)",
     (out) => {
-      /* The class is "a location Git would track or Vite would bundle", not the one directory src/. In a
-         tree Git does not own (this sandbox) only .local-data/ is known to be ignored. */
+      /* The class is "anywhere in the repository but .local-data/", not the one directory src/. This sandbox
+         is not a Git work tree; the Git-owned cases (where ignored directories exist) are in the block above. */
       const { pkg, tools } = sandbox({ withShipped: true });
       const before = snapshotOf(pkg);
       const { file } = external();
@@ -356,6 +382,297 @@ describe("client data never reaches the tracked files", () => {
       expect(snapshotOf(pkg)).toEqual(before);
     },
   );
+
+  describe("in a tree Git OWNS, the only in-repository destination for a client compile is .local-data/ (R3 / X2 / S1-R2V-2)", () => {
+    /* The sandbox above is not a Git work tree, so there only .local-data/ was ever "known ignored" and the
+       Git-ignored branch of the old rule never ran. Here the sandbox IS a repository with the package's own
+       .gitignore, so dist/, node_modules/, review/shots/ and review/_* really are ignored — the class the old
+       rule accepted — and every one of them must still be refused. */
+    const gitSandbox = (): { root: string; pkg: string; tools: string } => {
+      const s = sandbox({ withShipped: true });
+      cpSync(resolve(PKG, ".gitignore"), join(s.pkg, ".gitignore"));
+      execFileSync("git", ["init", "-q"], { cwd: s.root, stdio: "pipe" });
+      return s;
+    };
+
+    it.each([
+      ["dist"], // Vite's outDir: AssessHub serves it unguarded at /scope, and the portable build bundles it
+      ["dist/assets"],
+      ["node_modules/x"],
+      ["review"],
+      ["review/shots"],
+      ["review/_scratch/site-a"],
+      ["public/data"],
+      ["src/data"],
+      ["."],
+    ])("refuses --out %s for a non-sample source, writing nothing", (out) => {
+      const { pkg, tools } = gitSandbox();
+      const before = snapshotOf(pkg);
+      const listing = (): string[] | null => (existsSync(join(pkg, out)) ? readdirSync(join(pkg, out)).sort() : null);
+      const dirBefore = listing();
+      const { file } = external();
+      const r = cli(tools, ["--source", file, "--out", join(pkg, out)]);
+      expect(r.status, r.stderr).toBe(2);
+      expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+      expect(listing(), "nothing was created at the refused destination").toEqual(dirBefore);
+      expect(snapshotOf(pkg)).toEqual(before);
+    });
+
+    it("the ignored cases above really are Git-ignored here (the refusal is not vacuous)", () => {
+      const { root } = gitSandbox();
+      for (const d of ["atlas-scope/dist/", "atlas-scope/node_modules/x/", "atlas-scope/review/shots/", "atlas-scope/review/_scratch/"]) {
+        expect(spawnSync("git", ["check-ignore", "-q", "--", d], { cwd: root }).status, `${d} is ignored in the sandbox`).toBe(0);
+      }
+    });
+
+    it("accepts .local-data/ and a directory outside the repository (positive controls)", () => {
+      const { pkg, tools } = gitSandbox();
+      const { file } = external();
+      const a = cli(tools, ["--source", file, "--out", join(pkg, ".local-data", "site-a")]);
+      expect(a.status, a.stderr).toBe(0);
+      expect(existsSync(join(pkg, ".local-data", "site-a", "fabric.json"))).toBe(true);
+      const outside = tmp("atlas-outside-git-");
+      const b = cli(tools, ["--source", file, "--out", outside]);
+      expect(b.status, b.stderr).toBe(0);
+      expect(existsSync(join(outside, "fabric.json"))).toBe(true);
+    });
+
+    it("refuses .local-data/ itself when Git does NOT ignore it (the default destination is checked, not assumed)", () => {
+      const { pkg, tools } = gitSandbox();
+      writeFileSync(join(pkg, ".gitignore"), readFileSync(resolve(PKG, ".gitignore"), "utf8").split("\n").filter((l) => l.trim() !== ".local-data/").join("\n"));
+      const { file } = external();
+      const r = cli(tools, ["--source", file]);
+      expect(r.status, r.stderr).toBe(2);
+      expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+      expect(existsSync(join(pkg, ".local-data", "fabric.json"))).toBe(false);
+    });
+
+    it("the SAMPLE keeps its freedom outside src/ in a Git-owned tree (it is public)", () => {
+      const { pkg, tools } = gitSandbox();
+      const r = cli(tools, ["--out", join(pkg, "review", "sample-out")]);
+      expect(r.status, r.stderr).toBe(0);
+    });
+
+    /* R3-V1 — a SECOND NAME for an in-repository directory. Measured by the verifier: `--out
+       \\localhost\c$\…\atlas-scope\src\data` (and …\dist\x) exited 0 and overwrote the tracked fabric.json
+       with a client model, because realpath keeps a UNC root and a path-text rule then calls the directory
+       "outside the repository". Containment is now decided by file identity (volume + file index). These run
+       where the admin-share loopback is reachable — every spelling below is checked to BE the same directory
+       before it is used, so a pass cannot come from a spelling that names nothing. */
+    // Each case spawns Git and a compile; under host contention that exceeds the 30 s hang detector (measured 79 s).
+    describe("containment is decided by file identity, not by spelling (R3-V1)", { timeout: 180_000 }, () => {
+      const BS = "\\";
+      const spellings: Record<string, (p: string) => string> = {
+        "\\\\localhost\\<drive>$": (p) => `${BS}${BS}localhost${BS}${p[0]!.toLowerCase()}$${p.slice(2)}`,
+        "\\\\127.0.0.1\\<drive>$": (p) => `${BS}${BS}127.0.0.1${BS}${p[0]!.toLowerCase()}$${p.slice(2)}`,
+        "\\\\?\\UNC\\localhost\\<drive>$": (p) => `${BS}${BS}?${BS}UNC${BS}localhost${BS}${p[0]!.toLowerCase()}$${p.slice(2)}`,
+      };
+      const sameDir = (a: string, b: string): boolean => {
+        try {
+          const x = statSync(a, { bigint: true });
+          const y = statSync(b, { bigint: true });
+          return x.dev === y.dev && x.ino === y.ino && x.ino !== 0n;
+        } catch {
+          return false;
+        }
+      };
+      const reachable = process.platform === "win32" && Object.values(spellings).every((f) => sameDir(PKG, f(PKG)));
+
+      it.runIf(reachable).each(Object.keys(spellings).flatMap((name) => [
+        [name, "src/data", false],
+        [name, "src/data", true], // the sample too: the src/ rule holds for every source
+        [name, "dist", false],
+        [name, "dist/unc2", false],
+        [name, "review/_scratch/site-a", false],
+        [name, ".", false],
+      ] as [string, string, boolean][]))("refuses --out %s spelling of %s (sample=%s), writing nothing", (name, out, sample) => {
+        const { pkg, tools } = gitSandbox();
+        const spelled = spellings[name]!(join(pkg, out));
+        const listing = (): string[] | null => (existsSync(join(pkg, out)) ? readdirSync(join(pkg, out)).sort() : null);
+        const before = snapshotOf(pkg);
+        const dirBefore = listing();
+        const { file } = external();
+        const r = cli(tools, [...(sample ? [] : ["--source", file]), "--out", spelled]);
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+        expect(listing(), "nothing was created at the refused destination").toEqual(dirBefore);
+        expect(snapshotOf(pkg), "the tracked files are untouched").toEqual(before);
+      });
+
+      // Positive controls, one compile per test (vitest.config.ts: a large unit of work is split, not given a bigger limit).
+      it.runIf(reachable).each(Object.keys(spellings).flatMap((name) => [[name, ".local-data/site-a"], [name, "a directory outside the repository"]] as [string, string][]))(
+        "accepts the %s spelling of %s (positive control)",
+        (name, where) => {
+          const { pkg, tools } = gitSandbox();
+          const { file } = external();
+          const dest = where === ".local-data/site-a" ? join(pkg, ".local-data", "site-a") : tmp("atlas-outside-unc-");
+          const r = cli(tools, ["--source", file, "--out", spellings[name]!(dest)]);
+          expect(r.status, `${name}: ${r.stderr}`).toBe(0);
+          expect(existsSync(join(dest, "fabric.json")), name).toBe(true);
+        },
+      );
+
+      it("the spellings above are exercised on this host (win32 with the admin-share loopback reachable), or say why not", () => {
+        /* A block that always skips pins nothing. Where it cannot run, this names the reason instead of passing silently. */
+        if (process.platform !== "win32") return void expect(reachable).toBe(false);
+        if (!reachable) console.warn("R3-V1 identity cases SKIPPED: \\\\localhost\\<drive>$ is not reachable from this process (admin shares off, or a sandbox).");
+        expect(typeof reachable).toBe("boolean");
+      });
+    });
+
+    /* R3-V2 — every work tree of the repository is "the repository". Measured by the verifier: from a LINKED
+       worktree, `--out <main checkout>/atlas-scope/dist/assets` (the directory AssessHub serves at /scope from
+       the main checkout) and `<main>/webapp/frontend/dist` exited 0 for a client snapshot. */
+    describe("from a linked worktree, every other work tree of the repository is the repository too (R3-V2)", { timeout: 180_000 }, () => {
+      const gitIn = (cwd: string, args: string[]): void =>
+        void execFileSync("git", ["-c", "user.name=atlas-test", "-c", "user.email=atlas-test@example.invalid", ...args], { cwd, stdio: "pipe" });
+      /** A Git-owned main checkout, a linked worktree NESTED in it (like .claude/worktrees/<name>) with its own copy of the package, and a linked worktree OUTSIDE it. */
+      const worktrees = () => {
+        const main = gitSandbox();
+        gitIn(main.root, ["commit", "-q", "--allow-empty", "-m", "sandbox"]);
+        const nested = join(main.root, ".claude", "worktrees", "wt");
+        gitIn(main.root, ["worktree", "add", "-q", "--detach", nested]);
+        const sibling = join(tmp("atlas-wt-sibling-"), "wt2");
+        gitIn(main.root, ["worktree", "add", "-q", "--detach", sibling]);
+        const nestedPkg = join(nested, "atlas-scope");
+        cpSync(TOOLS, join(nestedPkg, "tools"), { recursive: true });
+        cpSync(resolve(PKG, "contracts"), join(nestedPkg, "contracts"), { recursive: true });
+        cpSync(resolve(PKG, ".gitignore"), join(nestedPkg, ".gitignore"));
+        mkdirSync(join(nestedPkg, "src", "data"), { recursive: true });
+        mkdirSync(join(nested, "webapp", "sample_data"), { recursive: true });
+        writeFileSync(join(nested, SAMPLE_REL), readFileSync(resolve(REPO, SAMPLE_REL)));
+        mkdirSync(join(sibling, "atlas-scope", "src", "data"), { recursive: true });
+        return { main, nested, nestedPkg, nestedTools: join(nestedPkg, "tools"), sibling };
+      };
+
+      it("git really lists all three as work trees of one repository (the cases below are not vacuous)", () => {
+        const w = worktrees();
+        const listed = execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: w.nested, encoding: "utf8" });
+        expect(listed.split(/\r?\n/).filter((l) => l.startsWith("worktree ")).length).toBe(3);
+      });
+
+      it.each([
+        ["the main checkout's atlas-scope/dist/assets", (w: ReturnType<typeof worktrees>) => join(w.main.pkg, "dist", "assets")],
+        ["the main checkout's webapp/frontend/dist", (w: ReturnType<typeof worktrees>) => join(w.main.root, "webapp", "frontend", "dist")],
+        ["the main checkout's .local-data/ (another checkout's, not this package's)", (w: ReturnType<typeof worktrees>) => join(w.main.pkg, ".local-data", "x")],
+        ["a sibling worktree outside the main checkout", (w: ReturnType<typeof worktrees>) => join(w.sibling, "atlas-scope", "dist")],
+        ["the repository's common Git directory", (w: ReturnType<typeof worktrees>) => join(w.main.root, ".git", "atlas-out")],
+      ])("a client compile run from the nested worktree refuses --out into %s", (_why, where) => {
+        const w = worktrees();
+        const out = where(w);
+        const existedBefore = existsSync(out);
+        const { file } = external();
+        const r = cli(w.nestedTools, ["--source", file, "--out", out]);
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+        expect(existsSync(join(out, "fabric.json"))).toBe(false);
+        if (!existedBefore) expect(existsSync(out), "nothing was created at the refused destination").toBe(false);
+      });
+
+      it("the sample from the nested worktree may not write another work tree's src/ (the src/ rule spans work trees)", () => {
+        const w = worktrees();
+        const r = cli(w.nestedTools, ["--out", join(w.sibling, "atlas-scope", "src", "data")]);
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+        expect(readdirSync(join(w.sibling, "atlas-scope", "src", "data"))).toEqual([]);
+      });
+
+      it("a worktree git no longer LISTS where it is (moved by hand) is still the repository: Git run inside it names our common directory", () => {
+        /* `git worktree list` keeps the OLD path of a worktree moved without `git worktree move`, yet Git still
+           works inside the moved directory. The listed roots miss it; asking Git from inside the destination does not. */
+        const w = worktrees();
+        const moved = join(dirname(w.sibling), "wt2-moved");
+        renameSync(w.sibling, moved);
+        const listed = execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: w.main.root, encoding: "utf8" });
+        expect(listed.includes("wt2-moved"), "precondition: git does not list the moved worktree").toBe(false);
+        expect(spawnSync("git", ["rev-parse", "--git-common-dir"], { cwd: moved }).status, "precondition: Git still works inside it").toBe(0);
+        const { file } = external();
+        const r = cli(w.nestedTools, ["--source", file, "--out", join(moved, "atlas-scope", "dist")]);
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+        expect(existsSync(join(moved, "atlas-scope", "dist"))).toBe(false);
+      });
+
+      it("a separate Git repository NESTED inside another work tree of ours (a vendored clone) is still inside that work tree", () => {
+        /* Git run inside it names ITS OWN common directory, so the common-directory question alone would call it
+           outside; the listed work-tree roots, placed by identity, do not. */
+        const w = worktrees();
+        const vendored = join(w.main.root, "vendor", "clone");
+        mkdirSync(vendored, { recursive: true });
+        execFileSync("git", ["init", "-q"], { cwd: vendored, stdio: "pipe" });
+        const { file } = external();
+        const r = cli(w.nestedTools, ["--source", file, "--out", join(vendored, "out")]);
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+        expect(existsSync(join(vendored, "out"))).toBe(false);
+      });
+
+      it("a client compile run from the MAIN checkout refuses --out into a linked worktree outside it", () => {
+        const w = worktrees();
+        const { file } = external();
+        const r = cli(w.main.tools, ["--source", file, "--out", join(w.sibling, "review")]);
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+      });
+
+      it("positive controls: the nested worktree's OWN .local-data/, and a directory outside every work tree, are accepted", () => {
+        const w = worktrees();
+        const { file } = external();
+        const a = cli(w.nestedTools, ["--source", file, "--out", join(w.nestedPkg, ".local-data", "site-a")]);
+        expect(a.status, a.stderr).toBe(0);
+        expect(existsSync(join(w.nestedPkg, ".local-data", "site-a", "fabric.json"))).toBe(true);
+        const outside = tmp("atlas-outside-wt-");
+        const b = cli(w.nestedTools, ["--source", file, "--out", outside]);
+        expect(b.status, b.stderr).toBe(0);
+        expect(existsSync(join(outside, "fabric.json"))).toBe(true);
+      });
+    });
+  });
+
+  describe("the TRACKED set is compiled only from the committed (LF) form of the sample (R3-V4)", { timeout: 180_000 }, () => {
+    /* sourceExactSha256 is the sha256 of the bytes AS READ (owner decision R3). On a core.autocrlf=true checkout
+       the default run would therefore write this checkout's CRLF digest into all four COMMITTED files, and the
+       tracked set would differ per clone (provenance's "tracked model == compile of the committed bytes" goes
+       red). The default run refuses such bytes; the same bytes compile elsewhere with --out. */
+    const crlfSample = (root: string): Buffer => {
+      const lf = readFileSync(join(root, SAMPLE_REL));
+      const crlf = Buffer.from(lf.toString("latin1").split("\r\n").join("\n").split("\n").join("\r\n"), "latin1");
+      writeFileSync(join(root, SAMPLE_REL), crlf);
+      return crlf;
+    };
+
+    it.each([["compile-all.mjs"], ["compile-snapshot.mjs"], ["compile-acl-bindings.mjs"], ["compile-rib-evidence.mjs"], ["compile-producer-emission.mjs"]])(
+      "%s refuses a CRLF sample for the tracked files (E_TRACKED_SOURCE_FORM), writing nothing",
+      (name) => {
+        const { root, pkg, tools } = sandbox({ withShipped: true });
+        crlfSample(root);
+        const before = snapshotOf(pkg);
+        const r = spawnSync(process.execPath, [join(tools, name)], { encoding: "utf8" });
+        expect(r.status, r.stderr).toBe(1);
+        expect(r.stderr).toMatch(/E_TRACKED_SOURCE_FORM/);
+        expect(snapshotOf(pkg)).toEqual(before);
+      },
+    );
+
+    it("the same CRLF bytes compile to a directory outside src/ with --out, recording their own exact digest (control)", () => {
+      const { root, pkg, tools } = sandbox();
+      const crlf = crlfSample(root);
+      const out = join(pkg, "review", "crlf-out");
+      const r = cli(tools, ["--out", out]);
+      expect(r.status, r.stderr).toBe(0);
+      const m = (JSON.parse(readFileSync(join(out, "fabric.json"), "utf8")) as { meta: Record<string, unknown> }).meta;
+      expect(m.sourceExactSha256).toBe(`sha256:${sha256(crlf)}`);
+      expect(m.sourceExactSha256).not.toBe(`sha256:${String(m.sourceSha256)}`);
+    });
+
+    it("an LF sample still writes the tracked files (control: the refusal is about the form, not the source)", () => {
+      const { pkg, tools } = sandbox();
+      const r = cli(tools, []);
+      expect(r.status, r.stderr).toBe(0);
+      const m = (JSON.parse(readFileSync(join(pkg, "src", "data", "fabric.json"), "utf8")) as { meta: Record<string, unknown> }).meta;
+      expect(m.sourceExactSha256).toBe(`sha256:${String(m.sourceSha256)}`);
+    });
+  });
 
   it("accepts --out inside .local-data/ and outside the repository (positive controls)", () => {
     const { pkg, tools } = sandbox();
@@ -369,25 +686,21 @@ describe("client data never reaches the tracked files", () => {
     expect(existsSync(join(outside, "fabric.json"))).toBe(true);
   });
 
-  it("in the real repository, a Git-ignored directory is accepted and a tracked one refused (S1-V4)", () => {
+  it("in the real repository, a Git-IGNORED directory is refused as firmly as a tracked one (R3 / refuter X2)", () => {
+    /* Before (S1-V4's rule): any directory Git ignores was accepted, so review/_scratch/ — and dist/, which
+       AssessHub serves without its API guard at /scope — took a client compile with exit 0. Ignored is a
+       statement about COMMITTING, not about PUBLISHING. Owner rule: .local-data/ or outside the repository. */
     const { file } = external();
-    const ignored = join(PKG, "review", "_scratch", `s1-compile-probe-${process.pid}`);
-    try {
-      const ok = cli(TOOLS, ["--source", file, "--out", ignored]);
-      expect(ok.status, ok.stderr).toBe(0);
-      expect(existsSync(join(ignored, "fabric.json"))).toBe(true);
-    } finally {
-      rmSync(ignored, { recursive: true, force: true });
-    }
-    const tracked = join(PKG, "docs", `s1-compile-probe-${process.pid}`);
-    try {
-      const no = cli(TOOLS, ["--source", file, "--out", tracked]);
-      expect(no.status, no.stderr).toBe(2);
-      expect(no.stderr).toMatch(/E_OUT_REFUSED/);
-      expect(existsSync(tracked)).toBe(false);
-    } finally {
-      // A regression (or a mutation check) that DOES write there must not leave client-shaped data in docs/.
-      rmSync(tracked, { recursive: true, force: true });
+    for (const where of [join(PKG, "review", "_scratch", `r3-compile-out-${process.pid}`), join(PKG, "docs", `r3-compile-out-${process.pid}`)]) {
+      try {
+        const no = cli(TOOLS, ["--source", file, "--out", where]);
+        expect(no.status, no.stderr).toBe(2);
+        expect(no.stderr).toMatch(/E_OUT_REFUSED/);
+        expect(existsSync(where)).toBe(false);
+      } finally {
+        // A regression (or a mutation check) that DOES write there must not leave client-shaped data behind.
+        rmSync(where, { recursive: true, force: true });
+      }
     }
   });
 

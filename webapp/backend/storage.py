@@ -1402,15 +1402,28 @@ class Store:
         self._snapshot_digest_observers.append(observer)
 
     def stored_snapshot_blob_digests(self) -> frozenset[str]:
-        """The sha256 hex of every persisted snapshot blob (one full read per row). For a one-off
-        startup reconciliation only — never call it on a request path."""
+        """The sha256 hex of every persisted snapshot blob (one full read per row)."""
+        return self.snapshot_blob_digests_after(0)[1]
+
+    def snapshot_blob_digests_after(self, after_id: int) -> tuple[int, frozenset[str]]:
+        """``(highest id seen, sha256 hex of every persisted blob with id > after_id)`` — digests
+        only, never snapshot content.
+
+        This is how a reader sees inserts committed by ANOTHER Store or process on the same database,
+        which never reach this Store's ``add_snapshot_digest_observer``: keep the returned id as the
+        next ``after_id``. ``snapshots.id`` is AUTOINCREMENT (never reused) and SQLite serialises
+        writers, so no committed row can appear below a watermark already returned. With nothing
+        new it is one primary-key range probe, cheap enough for a request path."""
+        highest = int(after_id)
         digests = set()
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT CAST(snapshot_json AS BLOB) AS snapshot_blob FROM snapshots")
+                """SELECT id, CAST(snapshot_json AS BLOB) AS snapshot_blob FROM snapshots
+                   WHERE id > ? ORDER BY id""", (highest,))
             for row in cursor:
+                highest = max(highest, int(row["id"]))
                 digests.add(hashlib.sha256(_snapshot_blob_bytes(row["snapshot_blob"])).hexdigest())
-        return frozenset(digests)
+        return highest, frozenset(digests)
 
     def _bound_snapshot_row(self, snapshot_id: int) -> Optional[sqlite3.Row]:
         with self._lock:

@@ -21,9 +21,18 @@
  *
  * FAILURES ARE CODED. Everything this module refuses is a `CompileError` with a stable `code`
  * (E_UNKNOWN_PRODUCER_FIELD, E_NON_PRIMITIVE, E_PRODUCER_FIELD_TYPE, E_EVIDENCE_CONTRACT,
- * E_EVIDENCE_REF_MALFORMED, E_EVIDENCE_REF_UNRESOLVED, E_EMPTY_FABRIC, E_SOURCE_LABEL) and the
- * snapshot path it concerns, so a loader can say in plain language what is wrong and where.
+ * E_EVIDENCE_REF_MALFORMED, E_EVIDENCE_REF_UNRESOLVED, E_PROTOCOL_STATE, E_EMPTY_FABRIC, E_SOURCE_LABEL,
+ * E_ENGINE_CONTRACT) and the snapshot path it concerns, so a loader can say in plain language what is
+ * wrong and where.
+ *
+ * ONE CONTRACT (cluster R3, refuter X6). The evidence vocabularies and rules this module enforces are not
+ * written here: they are READ from atlas-scope/contracts/engine-contract.v1.json, which the engine
+ * generates from its own constants (cisco_toolkit/analyze.py `engine_contract_projection`, guarded there by
+ * tests/test_engine_contract_projection.py). The copy that used to live here was hand-kept, so an engine-side
+ * change to a kind, a role or a rule could not reach it. The import is a JSON module (data, no code): it is
+ * the one edge the purity test (src/core/compile-model.test.ts) allows outside this directory.
  */
+import ENGINE_CONTRACT_JSON from "../../contracts/engine-contract.v1.json" with { type: "json" };
 
 /* ── errors ─────────────────────────────────────────────────────────────────────────────────── */
 
@@ -44,6 +53,80 @@ export class CompileError extends Error {
     this.issues = issues;
   }
 }
+
+/* ── the engine contract ────────────────────────────────────────────────────────────────────── */
+
+/** The `schema` tag of the engine contract this compiler reads. */
+export const ENGINE_CONTRACT_SCHEMA = "atlas-engine-contract/1";
+/** The row-level evidence rules the contract may state, each a boolean switch the compiler enforces. */
+const EVIDENCE_RULE_KEYS = Object.freeze([
+  "total_only_when_capped",
+  "absence_forbids_record_kinds",
+  "record_requires_record_kind",
+  "row_requires_ref",
+  "host_must_be_row_device_or_null",
+]);
+
+/**
+ * Validate the engine contract's shape, once, and freeze it. Nothing is defaulted: a missing, malformed or
+ * UNKNOWN piece is a refusal (E_ENGINE_CONTRACT) — an unknown rule key would be an engine rule this compiler
+ * silently does not enforce, which is the drift the contract exists to prevent.
+ * @param {unknown} c
+ */
+export function readEngineContract(c) {
+  /** @param {string} why @returns {never} */
+  const bad = (why) => {
+    throw new CompileError(
+      "E_ENGINE_CONTRACT",
+      `the engine contract (atlas-scope/contracts/engine-contract.v1.json) ${why}. It is generated from the engine ` +
+        `(cisco_toolkit/analyze.py engine_contract_projection); regenerate it rather than editing it.`,
+    );
+  };
+  /** @param {unknown} v @returns {v is Record<string, unknown>} */
+  const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  if (!isObj(c)) bad("is not a JSON object");
+  const top = /** @type {Record<string, unknown>} */ (c);
+  const topKeys = ["schema", "owner", "punch_evidence", "protocol_assessability_states"];
+  const extraTop = Object.keys(top).filter((k) => !topKeys.includes(k));
+  if (extraTop.length > 0) bad(`carries key(s) this compiler does not know: ${extraTop.join(", ")}`);
+  if (top.schema !== ENGINE_CONTRACT_SCHEMA) bad(`has schema ${JSON.stringify(top.schema)}, not ${ENGINE_CONTRACT_SCHEMA}`);
+  if (typeof top.owner !== "string" || top.owner === "") bad("names no owner");
+  if (!isObj(top.punch_evidence)) bad("has no punch_evidence object");
+  const pe = /** @type {Record<string, unknown>} */ (top.punch_evidence);
+  const peKeys = ["kinds", "record_kinds", "roles", "bases", "cap", ...EVIDENCE_RULE_KEYS];
+  const extraPe = Object.keys(pe).filter((k) => !peKeys.includes(k));
+  if (extraPe.length > 0) bad(`states punch_evidence rule(s) this compiler does not enforce: ${extraPe.join(", ")}`);
+  /** @param {unknown} v @param {string} name @returns {readonly string[]} */
+  const names = (v, name) => {
+    if (!Array.isArray(v) || v.length === 0 || !v.every((s) => typeof s === "string" && s !== "") || new Set(v).size !== v.length) {
+      bad(`${name} is not a non-empty list of distinct names`);
+    }
+    return Object.freeze([.../** @type {string[]} */ (v)]);
+  };
+  const kinds = names(pe.kinds, "punch_evidence.kinds");
+  const recordKinds = names(pe.record_kinds, "punch_evidence.record_kinds");
+  if (!recordKinds.every((k) => kinds.includes(k))) bad("punch_evidence.record_kinds names a kind that is not in punch_evidence.kinds");
+  const roles = names(pe.roles, "punch_evidence.roles");
+  const bases = names(pe.bases, "punch_evidence.bases");
+  for (const b of ["record", "row", "absence"]) if (!bases.includes(b)) bad(`punch_evidence.bases lacks ${JSON.stringify(b)}, which its rules name`);
+  if (typeof pe.cap !== "number" || !Number.isSafeInteger(pe.cap) || pe.cap < 1) bad(`punch_evidence.cap is ${JSON.stringify(pe.cap)}, not a positive whole number`);
+  /** @type {Record<string, boolean>} */
+  const rules = {};
+  for (const k of EVIDENCE_RULE_KEYS) {
+    if (typeof pe[k] !== "boolean") bad(`punch_evidence.${k} is ${JSON.stringify(pe[k])}, not true or false`);
+    rules[k] = /** @type {boolean} */ (pe[k]);
+  }
+  const states = names(top.protocol_assessability_states, "protocol_assessability_states");
+  return Object.freeze({
+    schema: ENGINE_CONTRACT_SCHEMA,
+    owner: /** @type {string} */ (top.owner),
+    punchEvidence: Object.freeze({ kinds, recordKinds, roles, bases, cap: /** @type {number} */ (pe.cap), rules: Object.freeze(rules) }),
+    protocolAssessabilityStates: states,
+  });
+}
+
+/** The engine contract, validated at load. Every vocabulary and rule below is read from it. */
+export const ENGINE_CONTRACT = readEngineContract(ENGINE_CONTRACT_JSON);
 
 /* ── the snapshot contract this compiler supports ───────────────────────────────────────────── */
 
@@ -159,6 +242,15 @@ function checkLabel(label) {
   };
   if (!SOURCE_ORIGINS.includes(sourceOrigin)) refuse(`the origin ${JSON.stringify(sourceOrigin)} is not one of ${SOURCE_ORIGINS.join(", ")}`);
   if (!DIGEST_FORMS.includes(form)) refuse(`the digest form ${JSON.stringify(form)} is not one of ${DIGEST_FORMS.join(", ")}`);
+  /* The form is TIED to the origin (verifier S1-R2V-3): the store-blob form binds an AssessHub stored blob,
+     and only an AssessHub record is one. A repository or external file in that form would take its digest
+     over raw CRLF bytes; an AssessHub record in the LF form would show a digest that is not its store's. */
+  if ((form === "assesshub-store-blob") !== (sourceOrigin === "assesshub-store")) {
+    refuse(
+      `the digest form ${JSON.stringify(form)} contradicts the origin ${JSON.stringify(sourceOrigin)}: "assesshub-store-blob" is the form of ` +
+        `an "assesshub-store" record and of nothing else, and every other origin is bound in the "lf-normalised" form`,
+    );
+  }
   if (typeof source !== "string" || source.trim() === "" || source !== source.trim()) refuse("a source must have a non-empty name without surrounding spaces");
   if (/[\u0000-\u001f]/.test(source)) refuse("it contains a control character");
   if (source.includes("\\")) refuse("it contains a backslash (a Windows path)");
@@ -177,12 +269,13 @@ function checkLabel(label) {
  *   digested — `sourceSha256`/`sourceBytes`: the LF-normalised bytes (form "lf-normalised"), or the
  *              stored blob exactly (form "assesshub-store-blob", whose writer emits no CR).
  *   exact    — `sourceExactSha256`, in the ENGINE's form (`"sha256:" + sha256(<exact bytes>)`,
- *              cisco_toolkit/protocol_assurance.py `bind_snapshot_json_bytes`). "Exact" means the
- *              bytes as the source's STORE holds them: an external file's own bytes; an AssessHub
- *              blob as stored; and for a repository file, the bytes Git stores — the blob, which is
- *              the LF form. A CRLF working tree is a checkout rendering of that blob (autocrlf), not
- *              the bytes the engine wrote (the engine's writers never emit a CR), and binding it would
- *              make the tracked compiled files differ between a Windows and a Linux clone (O15).
+ *              cisco_toolkit/protocol_assurance.py `bind_snapshot_json_bytes`): the bytes AS READ, for
+ *              every origin — exactly what the name says (owner decision, verifier S1-R2V-4; it used to
+ *              be the LF form for a repository file, which on a CRLF checkout was the digest of no file
+ *              on that disk and only restated sourceSha256). It is the one byte-dependent key
+ *              (src/core/types.ts SOURCE_BINDING_BYTE_KEYS): a CRLF and an LF checkout of one file differ
+ *              in it and agree on every other key, so a compile-identity check across checkouts compares
+ *              the model with it excluded and checks it separately against the bytes each compile read.
  *   gitBlob  — `sourceGitBlob`: Git's blob preimage of the LF-normalised bytes.
  * @param {Uint8Array} bytes  the bytes as read
  * @param {{ sourceOrigin: string; sourceDigestForm?: string }} label
@@ -194,8 +287,7 @@ export function bindingPreimages(bytes, label) {
      caller mutating (or a Node Buffer pool reusing) the bytes while an async digest is in flight. */
   const asRead = new Uint8Array(bytes);
   const digested = form === "lf-normalised" ? normalised : asRead;
-  const exact = label.sourceOrigin === "repository-file" ? normalised : asRead;
-  return { digested, exact, gitBlob: gitBlobPreimage(normalised) };
+  return { digested, exact: asRead, gitBlob: gitBlobPreimage(normalised) };
 }
 
 /**
@@ -417,21 +509,20 @@ export const PUNCHLIST_FIELDS = Object.freeze({
   evidence_refs_total: "evidenceRefsTotal",
 });
 
-/** What kind of record an evidence ref points at. Mirrors EVIDENCE_REF_KINDS in src/core/types.ts. */
-export const EVIDENCE_REF_KINDS = Object.freeze([
-  "interface",
-  "acl_line",
-  "route",
-  "config_text",
-  "device_fact",
-  "analysis_row",
-  "adjacency",
-  "absence_witness",
-]);
-/** How the pointed-at record relates to the finding. Mirrors EVIDENCE_REF_ROLES in src/core/types.ts. */
-export const EVIDENCE_REF_ROLES = Object.freeze(["derived_from", "subject", "witness"]);
-/** What a finding's evidence rests on. Mirrors EVIDENCE_BASES in src/core/types.ts. */
-export const EVIDENCE_BASES = Object.freeze(["record", "row", "absence"]);
+/* The evidence vocabularies — READ from the engine contract, never restated (src/core/types.ts declares
+   the same sets as TypeScript unions; src/core/compile-evidence.test.ts requires all three to agree). */
+/** What kind of record an evidence ref points at. */
+export const EVIDENCE_REF_KINDS = ENGINE_CONTRACT.punchEvidence.kinds;
+/** The kinds that are configuration/device RECORDS (what basis "record" rests on, and "absence" never carries). */
+export const EVIDENCE_RECORD_KINDS = ENGINE_CONTRACT.punchEvidence.recordKinds;
+/** How the pointed-at record relates to the finding. */
+export const EVIDENCE_REF_ROLES = ENGINE_CONTRACT.punchEvidence.roles;
+/** What a finding's evidence rests on. */
+export const EVIDENCE_BASES = ENGINE_CONTRACT.punchEvidence.bases;
+/** The most refs a row publishes; a longer list is capped and its uncapped count stated as evidence_refs_total. */
+export const EVIDENCE_REFS_CAP = ENGINE_CONTRACT.punchEvidence.cap;
+/** Every state a protocol_assessability row may carry. */
+export const PROTOCOL_ASSESSABILITY_STATES = ENGINE_CONTRACT.protocolAssessabilityStates;
 /** The keys an evidence ref carries — all required (a null host is STATED, never implied). */
 const EVIDENCE_REF_FIELDS = Object.freeze(["kind", "host", "ref", "role", "cite"]);
 
@@ -522,6 +613,42 @@ function compileEvidence(p, i, snap) {
       contract(`${at}.evidence_refs_total`, `is ${JSON.stringify(t)}; it must be a whole number no smaller than the ${/** @type {any[]} */ (refs).length} ref(s) carried.`);
     }
     total = /** @type {number} */ (t);
+  }
+
+  /* THE ROW-LEVEL RULES — every one the engine contract states, enforced here so a model can never make a
+     claim its evidence does not support (verifier S1-R2V-6: a "record" basis no record ref backs, a ref about
+     a device the finding does not name, a total that says a complete list was cut). */
+  const { cap, recordKinds, rules } = ENGINE_CONTRACT.punchEvidence;
+  // The contract is written whole or not at all: a basis with no refs, or refs with no basis, is half of it.
+  if (basis === null && refs !== null) contract(`${at}.evidence_basis`, "is missing although the row carries evidence_refs; the contract states the basis with every ref list.");
+  if (basis !== null && refs === null) contract(`${at}.evidence_refs`, `is missing although the row states evidence_basis ${JSON.stringify(basis)}; the contract publishes the ref list (possibly empty) with every basis.`);
+  if (refs !== null) {
+    if (refs.length > cap) contract(`${at}.evidence_refs`, `carries ${refs.length} refs; the contract caps a row at ${cap} (the rest are counted in evidence_refs_total).`);
+    if (rules.total_only_when_capped && total !== null && !(refs.length === cap && total > refs.length)) {
+      contract(
+        `${at}.evidence_refs_total`,
+        `is ${total} with ${refs.length} ref(s) carried; the contract writes a total only when the list was CAPPED (exactly ${cap} refs and a larger total) — ` +
+          `a total on an uncapped list would say evidence was cut that was not.`,
+      );
+    }
+    if (rules.host_must_be_row_device_or_null) {
+      const devices = new Set(arr(p.devices).filter((d) => typeof d === "string"));
+      refs.forEach((r, k) => {
+        if (r.host !== null && !devices.has(r.host)) {
+          contract(`${at}.evidence_refs[${k}]`, `is about host ${JSON.stringify(r.host)}, which this finding does not name (devices: ${[...devices].join(", ") || "none"}); a ref is null-hosted or about one of the finding's own devices.`);
+        }
+      });
+    }
+    const recordRefs = refs.filter((r) => recordKinds.includes(r.kind));
+    if (rules.record_requires_record_kind && basis === "record" && recordRefs.length === 0) {
+      contract(`${at}.evidence_basis`, `is "record" but no ref is a record (${recordKinds.join(", ")}); a record basis no record ref backs is a claim its evidence does not support.`);
+    }
+    if (rules.absence_forbids_record_kinds && basis === "absence" && recordRefs.length > 0) {
+      contract(`${at}.evidence_basis`, `is "absence" but the row carries record ref(s) of kind ${[...new Set(recordRefs.map((r) => r.kind))].join(", ")}; a finding about something MISSING cites witnesses, never a record of the missing thing.`);
+    }
+    if (rules.row_requires_ref && basis === "row" && refs.length === 0) {
+      contract(`${at}.evidence_refs`, 'is empty although the basis is "row"; a row-based finding names the row it was derived from.');
+    }
   }
   return { basis, refs, total };
 }
@@ -1032,6 +1159,21 @@ export function compileRibEvidence(snap, binding) {
   /** @param {string} h @returns {HostEvidence} */
   const at = (h) => (hosts[h] ??= { protocols: [], adjacencies: [], overlay: [] });
 
+  /* Every protocol_assessability row's state is one the engine contract names (the engine grows this set —
+     e.g. "not_running" — and a state this compiler has never heard of must not pass as a string it renders
+     without knowing its meaning). Checked on EVERY row, not only the routing rows compiled below. Absent or
+     null stays null: "not stated", never a state. */
+  arr(obj(snap.protocol_assessability).rows).forEach((r, i) => {
+    const s = obj(r).state;
+    if (s !== undefined && s !== null && (typeof s !== "string" || !PROTOCOL_ASSESSABILITY_STATES.includes(s))) {
+      throw new CompileError(
+        "E_PROTOCOL_STATE",
+        `protocol_assessability.rows[${i}].state is ${JSON.stringify(s)}, which the engine contract does not name ` +
+          `(it names ${PROTOCOL_ASSESSABILITY_STATES.join(", ")}). Regenerate the contract from the engine, or fix the producer.`,
+        `protocol_assessability.rows[${i}].state`,
+      );
+    }
+  });
   arr(obj(snap.protocol_assessability).rows).forEach((r, i) => {
     const host = str(obj(r).switch);
     const protocol = str(obj(r).protocol);

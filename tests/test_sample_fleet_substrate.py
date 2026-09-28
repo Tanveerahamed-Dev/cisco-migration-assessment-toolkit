@@ -8,13 +8,17 @@ What this pins, all through the engine's REAL parsers and producers (no hand-bui
   core1's table carries the OSPF routes back to the pod;
 * dist1 and dist2 carry a `show running-config` with an ACL definition, so the `acls` axis keeps them;
 * the OSPF adjacencies core1 <-> dist1 <-> dist2 parse FULL on the interfaces the tables route over;
-* EIGRP and BGP on dist1/dist2 are COLLECTED and EMPTY (the switches do not run them), which the
-  protocol-assessability producer classifies `captured_empty` -- positive evidence the family
-  contributes no learned routes, NOT a fabricated adjacency;
+* EIGRP on core1/dist1/dist2 is COLLECTED and EMPTY, and BGP on dist1/dist2 is the IOS no-process
+  banner ('% BGP not active') -- the realistic output of switches that do not run them, never a
+  fabricated adjacency;
+* core1's inter-core OSPF session with core2 (router ID 10.0.99.2) runs over a transit SVI (VLAN 900,
+  10.0.199.0/30) carried by the Po1 trunk, which both cores' tables hold -- an OSPF adjacency cannot
+  form on an L2 trunk port-channel (owner decision O2), and core2 holds the routes core1 advertises;
 * core1 Gi1/0/40 (the port dist1 already cables to) is a routed stanza, while every CDP capture,
   including the deliberately disputed core1 Gi1/0/40 claim by access16 and dist1, is byte-identical;
 * the substrate edits only deep copies (tests/synthetic_fixtures.py stays byte-for-byte what it was);
-* the snapshot writer emits LF on every platform and `--out` redirects it away from the tracked path;
+* the snapshot writer emits LF on every platform -- pinned through main(), not only the helper --
+  and `--out` redirects it away from the tracked path;
 * every IPv4 literal the substrate adds is RFC 1918 / RFC 5737 (or a mask), and every hostname it
   names is an existing fleet host (client-privacy marker hygiene).
 """
@@ -24,6 +28,7 @@ import copy
 import ipaddress
 import os
 import re
+import sys
 
 import pytest
 
@@ -35,6 +40,8 @@ from cisco_toolkit.build import build_acls, build_routing_neighbors
 from cisco_toolkit.parse import parse_ip_routes, parse_run_config_interfaces
 
 ROUTED = ("core1", "dist1", "dist2")
+# Every host the substrate edits: the three routed hosts plus core2, the far end of core1's transit SVI.
+EDITED = ("core1", "core2", "dist1", "dist2")
 
 
 @pytest.fixture(scope="module")
@@ -98,7 +105,8 @@ def test_core1_ospf_config_originates_exactly_what_the_dist_tables_hold(cols):
     ifaces = cols["core1"][1]["show running-config | section ^interface"]
     stanzas = re.findall(r"^interface (\S+)\n((?: .*\n)*)", ifaces, re.M)
     in_area = [name for name, body in stanzas if re.search(r"^ ip ospf \d+ area ", body, re.M)]
-    assert in_area == ["GigabitEthernet1/0/40"], in_area
+    # The dist1 transit, and the inter-core transit SVI (owner decision O2) -- never a user VLAN.
+    assert in_area == ["GigabitEthernet1/0/40", "Vlan900"], in_area
 
 
 def test_dist1_routes_to_the_core_over_the_routed_transit(cols):
@@ -112,6 +120,9 @@ def test_dist1_routes_to_the_core_over_the_routed_transit(cols):
     assert _only(rib["10.0.140.2/32"])["source"] == "local"
     for pod in ("10.0.40.0/24", "10.0.41.0/24"):
         assert _only(rib[pod])["source"] == "connected"
+    # core1 puts the inter-core transit SVI in area 0, so the dists hold it intra-area.
+    e = _only(rib["10.0.199.0/30"])
+    assert (e["source"], e["next_hop"], e["out_intf"]) == ("ospf", "10.0.140.1", "Gi1/0/3"), e
 
 
 def test_dist2_routes_to_the_core_via_dist1_on_vlan40(cols):
@@ -124,6 +135,8 @@ def test_dist2_routes_to_the_core_via_dist1_on_vlan40(cols):
     assert (e["source"], e["next_hop"], e["out_intf"]) == ("ospf", "10.0.40.2", "Vlan40"), e
     e = _only(rib["0.0.0.0/0"])
     assert (e["source"], e["next_hop"], e["out_intf"]) == ("ospf-ext2", "10.0.40.2", "Vlan40"), e
+    e = _only(rib["10.0.199.0/30"])
+    assert (e["source"], e["next_hop"], e["out_intf"]) == ("ospf", "10.0.40.2", "Vlan40"), e
 
 
 def test_core1_routes_the_pod_back_to_dist1_and_owns_the_transit(cols):
@@ -136,6 +149,84 @@ def test_core1_routes_the_pod_back_to_dist1_and_owns_the_transit(cols):
     assert _only(_routes(cols, "dist1")["10.0.140.2/32"])["out_intf"] == "Gi1/0/3"
 
 
+# --------------------------------------------------------------------------- the inter-core transit (O2)
+# An OSPF adjacency cannot form on an L2 trunk port-channel: core1's FULL/DR session with core2
+# (router ID 10.0.99.2) needs an L3 home. The owner's decision O2 gives it a transit SVI, VLAN 900
+# (10.0.199.0/30), carried by the existing Po1 trunk -- the cores stay L2-adjacent for their HSRP groups.
+_TRANSIT_VLAN = "900"
+_CORE1_TRANSIT, _CORE2_TRANSIT = "10.0.199.1", "10.0.199.2"
+
+
+def test_core1_inter_core_ospf_session_runs_over_the_transit_svi(cols, c2f):
+    ospf = build_routing_neighbors(c2f["core1"])["ospf"]
+    core2 = [n for n in ospf if n["neighbor"] == "10.0.99.2"]  # the router ID is kept
+    assert [(n["address"], n["interface"], n["state"]) for n in core2] == [(_CORE2_TRANSIT, "Vlan900", "FULL/DR")]
+    stanzas = dict(re.findall(r"^interface (\S+)\n((?: .*\n)*)",
+                              cols["core1"][1]["show running-config | section ^interface"], re.M))
+    svi = stanzas["Vlan900"]
+    assert f" ip address {_CORE1_TRANSIT} 255.255.255.252\n" in svi and " ip ospf 1 area 0\n" in svi
+    assert "standby" not in svi  # a two-router transit segment carries no FHRP group
+    rib = _routes(cols, "core1")
+    e = _only(rib["10.0.199.0/30"])
+    assert (e["source"], e["out_intf"]) == ("connected", "Vlan900"), e
+    assert _only(rib[f"{_CORE1_TRANSIT}/32"])["source"] == "local"
+
+
+@pytest.mark.parametrize("host, trunk_cmd, switchport_cmd, vlan_cmd", [
+    ("core1", "show interfaces trunk", "show interfaces switchport", "show vlan brief"),
+    ("core2", "show interface trunk", "show interface switchport", "show vlan brief"),
+])
+def test_both_ends_of_po1_carry_the_transit_vlan(cols, host, trunk_cmd, switchport_cmd, vlan_cmd):
+    outs = cols[host][1]
+    assert re.search(r"^Po1\s+10,20,30,900$", outs[trunk_cmd], re.M), outs[trunk_cmd]
+    po1 = re.search(r"^Name: (?:Po1|port-channel1)\n((?:.+\n)*)", outs[switchport_cmd], re.M).group(1)
+    assert re.search(r"Trunking VLANs (?:Enabled|Allowed): 10,20,30,900$", po1, re.M), po1
+    assert re.search(rf"^{_TRANSIT_VLAN}\s+CORE-TRANSIT\s+active\b", outs[vlan_cmd], re.M)
+    brief = outs["show ip interface brief"]
+    assert re.search(rf"^Vlan900\s+{_CORE1_TRANSIT if host == 'core1' else _CORE2_TRANSIT}\s", brief, re.M)
+
+
+def test_core2_owns_the_far_end_of_the_transit_and_holds_what_core1_advertises(cols):
+    stanzas = dict(re.findall(r"^interface (\S+)\n((?:  .*\n)*)",
+                              cols["core2"][1]["show running-config interface"], re.M))
+    svi = stanzas["Vlan900"]
+    assert f"  ip address {_CORE2_TRANSIT}/30\n" in svi and "  ip router ospf 1 area 0.0.0.0\n" in svi
+    rib = _routes(cols, "core2")
+    e = _only(rib["10.0.199.0/30"])
+    assert (e["source"], e["out_intf"]) == ("connected", "Vlan900"), e
+    assert _only(rib[f"{_CORE2_TRANSIT}/32"])["source"] == "local"
+    # What core1 originates into OSPF reaches core2 over the transit: its default (default-information
+    # originate), its redistributed server VLAN, the pod and the dist1 transit. core2's own connected
+    # Vlan10/20 win over core1's redistributed copies, as a real RIB's administrative distance decides.
+    learned = {p: _only(es) for p, es in rib.items() if _only(es)["source"].startswith("ospf")}
+    assert sorted(learned) == ["0.0.0.0/0", "10.0.140.0/30", "10.0.30.0/24", "10.0.40.0/24", "10.0.41.0/24"]
+    assert {(e["next_hop"], e["out_intf"]) for e in learned.values()} == {(_CORE1_TRANSIT, "Vlan900")}
+    assert learned["0.0.0.0/0"]["source"] == learned["10.0.30.0/24"]["source"] == "ospf-ext2"
+    for own in ("10.0.10.0/24", "10.0.20.0/24"):
+        assert _only(rib[own])["source"] == "connected"
+
+
+def test_the_core_fhrp_groups_and_every_other_core_capture_line_survive(cols, base_cols):
+    for host, cmds in (("core1", ("show standby brief", "show standby all")), ("core2", ("show hsrp brief",))):
+        for cmd in cmds:
+            assert cols[host][1][cmd] == base_cols[host][1][cmd], (host, cmd)
+    # Every line core1/core2 held before is still there, except the one neighbour row that moved to the
+    # transit SVI, the Po1 trunk allow-lists that gained VLAN 900 (core1's Gi1/0/24 keeps its own
+    # 'Trunking VLANs Enabled: 10,20,30' line), and core1's routing-table subnet-count header.
+    moved = {
+        ("core1", "10.0.99.2         1   FULL/DR         00:00:35    10.0.99.2       Port-channel1"),
+        ("core1", "Po1         10,20,30"),
+        ("core1", "      10.0.0.0/8 is variably subnetted, 8 subnets, 3 masks"),
+        ("core2", "Po1           10,20,30"), ("core2", "  Trunking VLANs Allowed: 10,20,30"),
+    }
+    lost = set()
+    for host in ("core1", "core2"):
+        for cmd, before in base_cols[host][1].items():
+            now = set(cols[host][1][cmd].splitlines())
+            lost |= {(host, line) for line in before.splitlines() if line not in now}
+    assert lost == moved, sorted(lost ^ moved)
+
+
 def _up(state: str) -> bool:
     s = state.strip()
     return bool(re.fullmatch(r"\d+", s)) or bool(re.match(r"(?i)(full|2way|established|up)\b", s))
@@ -144,45 +235,59 @@ def _up(state: str) -> bool:
 def test_every_session_on_a_routed_host_runs_over_a_link_its_table_holds(cols, c2f):
     """The per-adjacency form of 'one control plane' (the rule Atlas Scope's rib-completeness.ts
     applies): an up session with a recorded interface needs a connected route there covering the
-    neighbour's address; a BGP peer (no interface) needs some route covering it. The ONLY exception on
-    the routed hosts is the fixture's own deliberate B1 seed -- core1's FULL/DR neighbour 10.0.99.2 on
-    the L2 trunk Po1 -- which the substrate must not paper over."""
-    unlinked = []
+    neighbour's address; a BGP peer (no interface) needs a route OTHER THAN THE DEFAULT covering it (the
+    default covers every address, so it evidences no path to this one). No exception remains: the
+    fixture's B1 seed -- core1's FULL/DR neighbour 10.0.99.2 on the L2 trunk Po1 -- now runs over the
+    transit SVI both tables hold (owner decision O2)."""
+    unlinked, sessions = [], 0
     for host in ROUTED:
         rib = _routes(cols, host)
         for proto, rows in build_routing_neighbors(c2f[host]).items():
             for n in rows:
                 if not _up(n.get("state") or ""):
                     continue
+                sessions += 1
                 addr = ipaddress.ip_address(n.get("address") or n["neighbor"])
                 intf = n.get("interface")
                 held = any(
                     addr in ipaddress.ip_network(prefix)
-                    and (intf is None or (e["source"] == "connected" and e["out_intf"] == intf))
+                    and (e["source"] == "connected" and e["out_intf"] == intf if intf
+                         else ipaddress.ip_network(prefix).prefixlen > 0)
                     for prefix, es in rib.items() for e in es)
                 if not held:
                     unlinked.append((host, proto, str(addr), intf))
-    assert unlinked == [("core1", "ospf", "10.0.99.2", "Po1")], unlinked
+    assert unlinked == [], unlinked
+    assert sessions >= 6  # core1: dist1, core2, BGP peer; dist1: core1, dist2; dist2: dist1
 
 
-def test_core1_bgp_peer_is_reached_by_a_route_other_than_the_default(cols):
+def test_core1_bgp_peer_is_reached_by_a_route_the_scoped_snapshot_keeps(cols, c2f):
+    """core1's one eBGP peer is the upstream it already defaults to (10.0.10.254 on Vlan10): a
+    directly connected single-hop session. The route that reaches it is CONNECTED, and the engine's
+    route scoping keeps every connected route -- so the claim holds on the snapshot Atlas Scope reads,
+    not only on the collected text (2026-09-27 verifier, E2R2-V2: the old multihop peer was reached by
+    a static /32 that scope_routes dropped, leaving only the default under it)."""
+    from cisco_toolkit.build import build_routes, scope_routes
     run = cols["core1"][1]["show running-config"]
-    assert re.search(r"^ neighbor 203\.0\.113\.1 ebgp-multihop 2$", run, re.M)
-    assert re.search(r"^ip route 203\.0\.113\.1 255\.255\.255\.255 10\.0\.10\.254$", run, re.M)
-    e = _only(_routes(cols, "core1")["203.0.113.1/32"])
-    assert (e["source"], e["next_hop"]) == ("static", "10.0.10.254"), e
+    assert re.search(r"^router bgp 65001\n(?: .*\n)* neighbor 10\.0\.10\.254 remote-as 64500$", run, re.M)
+    assert "ebgp-multihop" not in run
+    peer = ipaddress.ip_address("10.0.10.254")
+    # An empty in-scope set is the strictest projection: only connected/local/default routes survive.
+    scoped = scope_routes(build_routes(c2f["core1"]), set())
+    covering = [r for r in scoped if peer in ipaddress.ip_network(r["prefix"])
+                and ipaddress.ip_network(r["prefix"]).prefixlen > 0]
+    assert ("10.0.10.0/24", "connected", "Vlan10") in [(r["prefix"], r["source"], r["out_intf"]) for r in covering]
 
 
 def test_substrate_captures_pass_the_engine_capture_integrity_guard(cols, base_cols):
     """Every capture the substrate authors or edits inspects 'ok' under the engine's own guard
-    (cisco_toolkit/capture_integrity.inspect_capture), except (a) the five neighbour tables
-    deliberately captured EMPTY (the owner's decision: the realistic output of a switch that does not
-    run the protocol; the guard's 'empty' is the same whitespace-only observation assessability calls
-    captured_empty, not a separate truncation/error tripwire) and (b) a capture whose pre-substrate
-    form already carried the same non-ok status (core1's running-config keeps the fixture convention of
-    no terminating 'end')."""
+    (cisco_toolkit/capture_integrity.inspect_capture), except (a) the three EIGRP neighbour tables
+    captured EMPTY (a switch with no EIGRP AS configured prints nothing; the guard's 'empty' is the same
+    whitespace-only observation assessability calls captured_empty, not a separate truncation/error
+    tripwire) and (b) a capture whose pre-substrate form already carried the same non-ok status (core1's
+    running-config keeps the fixture convention of no terminating 'end'). The dists' BGP summaries are
+    the IOS no-process banner, which is text, not an empty capture."""
     empties, bad = [], []
-    for host in ROUTED:
+    for host in EDITED:
         for cmd, text in cols[host][1].items():
             if base_cols[host][1].get(cmd) == text:
                 continue
@@ -194,12 +299,11 @@ def test_substrate_captures_pass_the_engine_capture_integrity_guard(cols, base_c
                 bad.append((host, cmd, status))
     assert bad == []
     assert sorted(empties) == sorted([("core1", "show ip eigrp neighbors"),
-                                      ("dist1", "show ip bgp summary"), ("dist1", "show ip eigrp neighbors"),
-                                      ("dist2", "show ip bgp summary"), ("dist2", "show ip eigrp neighbors")])
+                                      ("dist1", "show ip eigrp neighbors"), ("dist2", "show ip eigrp neighbors")])
 
 
 def test_the_bgp_configured_peer_baseline_validates_over_the_substrate_collection(cols, c2f):
-    """The dist pair's complete, BGP-free running-configs beside their empty `show ip bgp summary` are a
+    """The dist pair's complete, BGP-free running-configs beside their '% BGP not active' summaries are a
     realistic, peerless-switch input; the engine's own BGP configured-peer baseline must validate over it."""
     from cisco_toolkit.bgp_intent import compute_bgp_configured_peer_baseline, validate_bgp_configured_peer_baseline
     from cisco_toolkit.capture_integrity import compute_capture_integrity
@@ -221,6 +325,15 @@ def test_every_learned_route_has_its_protocol_adjacency(cols, c2f):
         assert learned <= set(neigh), (host, learned)
         for proto in learned:
             assert neigh.get(proto), f"{host} holds {proto} routes but no {proto} adjacency"
+    # core2 collects no neighbour table (its OSPF stays not_collected, so Atlas Scope keeps its table
+    # unknown); every route it learned names, as next hop, core1's transit address -- and core1 records
+    # that very session FULL on the transit SVI.
+    nexthops = {e["next_hop"] for es in _routes(cols, "core2").values() for e in es
+                if e["source"] not in ("connected", "local")}
+    assert nexthops == {_CORE1_TRANSIT}
+    assert "show ip ospf neighbor" not in cols["core2"][1]
+    assert any(n["address"] == _CORE2_TRANSIT and n["state"].startswith("FULL")
+               for n in build_routing_neighbors(c2f["core1"])["ospf"])
 
 
 # --------------------------------------------------------------------------- ACL definitions
@@ -237,7 +350,7 @@ def test_dist_running_config_is_hardened_with_a_login_banner(cols, host):
     assert re.search(r"^banner login\b", run, re.M)
     assert re.search(r"^line vty 0 4\n access-class VTY_ACCESS in\n", run, re.M)
     assert re.search(r"^ transport input ssh$", run, re.M)
-    # Not running EIGRP or BGP: the configuration and the empty neighbor captures agree.
+    # Not running EIGRP or BGP: the configuration and the neighbor captures agree.
     assert not re.search(r"^router (eigrp|bgp)\b", run, re.M)
 
 
@@ -256,14 +369,25 @@ def test_ospf_adjacencies_core1_dist1_dist2(c2f):
 
 
 @pytest.mark.parametrize("host", ["dist1", "dist2"])
-@pytest.mark.parametrize("protocol, command", [("EIGRP", "show ip eigrp neighbors"),
-                                               ("BGP", "show ip bgp summary")])
-def test_dist_eigrp_and_bgp_are_captured_empty_not_fabricated(cols, c2f, assessability, host, protocol, command):
+def test_dist_eigrp_is_captured_empty_not_fabricated(cols, c2f, assessability, host):
+    command = "show ip eigrp neighbors"
     assert command in cols[host][1], f"{host} never collected {command!r}"
     assert cols[host][1][command].strip() == ""
-    assert build_routing_neighbors(c2f[host])[protocol.lower()] == []
-    row = assessability[(host, protocol)]
+    assert build_routing_neighbors(c2f[host])["eigrp"] == []
+    row = assessability[(host, "EIGRP")]
     assert (row["state"], row["capture_state"], row["health_row_emitted"]) == ("captured_empty", "empty", False)
+
+
+@pytest.mark.parametrize("host", ["dist1", "dist2"])
+def test_dist_bgp_summary_is_the_real_no_process_banner(cols, c2f, assessability, host):
+    """IOS/IOS-XE with no `router bgp` answers `show ip bgp summary` with the '% BGP not active' banner,
+    not with empty output (2026-09-27 refuter X3: an empty capture no real device emits was shaped to
+    the consumer). The engine reads the banner as its own positive 'no BGP process' state, never as a
+    parsed peer and never as an empty table."""
+    assert cols[host][1]["show ip bgp summary"] == "% BGP not active\n"
+    assert build_routing_neighbors(c2f[host])["bgp"] == []
+    row = assessability[(host, "BGP")]
+    assert (row["state"], row["health_row_emitted"]) == ("not_running", False), row
 
 
 @pytest.mark.parametrize("host", ROUTED)
@@ -272,10 +396,10 @@ def test_ospf_is_assessed_on_every_routed_host(assessability, host):
 
 
 def test_core1_keeps_its_configured_bgp_as_one_established_peer_and_runs_no_eigrp(cols, c2f, assessability):
-    assert re.search(r"^router bgp 65001\n(?: .*\n)* neighbor 203\.0\.113\.1 remote-as 64500$",
+    assert re.search(r"^router bgp 65001\n(?: .*\n)* neighbor 10\.0\.10\.254 remote-as 64500$",
                      cols["core1"][1]["show running-config"], re.M)
     peers = build_routing_neighbors(c2f["core1"])["bgp"]
-    assert [(p["neighbor"], p["state"]) for p in peers] == [("203.0.113.1", "0")]  # Established, 0 received
+    assert [(p["neighbor"], p["state"]) for p in peers] == [("10.0.10.254", "0")]  # Established, 0 received
     assert assessability[("core1", "BGP")]["state"] == "assessed"
     assert not re.search(r"^router eigrp\b", cols["core1"][1]["show running-config"], re.M)
     assert assessability[("core1", "EIGRP")]["state"] == "captured_empty"
@@ -305,14 +429,14 @@ def test_every_cdp_capture_is_unchanged_including_the_disputed_core1_gi1_0_40(co
     assert sorted(claims) == ["access16", "dist1"]
 
 
-def test_only_the_three_routed_hosts_change_and_only_deep_copies_are_edited(cols, base_cols):
+def test_only_the_substrate_hosts_change_and_only_deep_copies_are_edited(cols, base_cols):
     before = {name: copy.deepcopy(getattr(fx, name)) for name in dir(fx)
               if name.startswith("_") and not name.startswith("__") and isinstance(getattr(fx, name), dict)}
     assert {"_CORE1", "_CORE2", "_ACCESS1"} <= set(before)
     bs.build_collections()
     after = {name: getattr(fx, name) for name in before}
     assert before == after, "build_collections() mutated tests/synthetic_fixtures.py templates"
-    assert sorted(h for h in cols if cols[h] != base_cols[h]) == sorted(ROUTED)
+    assert sorted(h for h in cols if cols[h] != base_cols[h]) == sorted(EDITED)
     probe = copy.deepcopy(base_cols)
     frozen = copy.deepcopy(probe)
     bs._add_forwarding_substrate(probe)
@@ -326,6 +450,27 @@ def test_snapshot_writer_emits_lf_only(tmp_path):
     raw = out.read_bytes()
     assert b"\r" not in raw
     assert raw.count(b"\n") >= 5  # indent=2 pretty form, not a one-line blob
+
+
+def test_main_writes_the_snapshot_through_the_lf_writer(tmp_path, monkeypatch):
+    """LF pinned through main() itself (2026-09-27 verifier, E2R2-V5: only the helper was exercised,
+    so reverting main()'s write to a text-mode open() would have left the suite green). The pipeline is
+    replaced by a stub that writes a compact snapshot where the real engine would; everything main()
+    does after it is real."""
+    out = tmp_path / "fleet.json"
+
+    def fake_pipeline():
+        argv = sys.argv
+        xlsx = argv[argv.index("--output") + 1]
+        with open(os.path.splitext(xlsx)[0] + ".snapshot.json", "w", encoding="utf-8", newline="\n") as f:
+            f.write('{"devices": {"a": {}}, "notes": ["multi\\nline"], "punchlist": []}')
+
+    monkeypatch.setattr(bs.cp, "main", fake_pipeline)
+    monkeypatch.setattr(bs, "build_collections", lambda: {"x": ("ios", {"show version": "v\n"})})
+    bs.main(["--out", str(out)])
+    raw = out.read_bytes()
+    assert b"\r" not in raw
+    assert raw.count(b"\n") >= 5  # re-dumped pretty (indent=2), not a copy of the compact blob
 
 
 def test_out_option_defaults_to_the_tracked_path(tmp_path):
@@ -346,7 +491,7 @@ _ALLOWED_NETS = [ipaddress.ip_network(n) for n in (
 
 
 def _added_text(cols, base_cols):
-    for host in ROUTED:
+    for host in EDITED:
         for cmd, text in cols[host][1].items():
             old = set(base_cols[host][1].get(cmd, "").splitlines())
             for line in text.splitlines():

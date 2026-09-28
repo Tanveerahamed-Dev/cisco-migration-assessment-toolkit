@@ -22,6 +22,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ComponentPropsWithRef,
@@ -51,7 +52,7 @@ import {
 } from "./icons";
 /* The one owner of focus return (acceptance D3). A dependency-free DOM leaf, so importing it from
    the primitives layer creates no cycle. */
-import { handOffFocus, returnFocus, useReleaseFocusOnHide, type Successor } from "../app/focus-return";
+import { handOffFocus, releaseFocusFrom, returnFocus, useReleaseFocusOnHide, type Successor } from "../app/focus-return";
 import "./primitives.css";
 
 const cx = (...parts: (string | false | null | undefined)[]): string =>
@@ -1200,13 +1201,24 @@ export function Popover({
       if (owns(e.target)) return;
       setOpen(false);
     };
+    /* The panel is placed from the trigger's rect, which a viewport resize moves. MEASURED (D3 rung
+       crossing, 768 -> 390): kept at its open-time coordinates, "More"'s panel sat wholly off screen with
+       focus inside it. Re-measure once per frame while it is open. */
+    let frame = 0;
+    const onResize = (): void => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => setRect(rectOf(anchorRef.current?.firstElementChild as HTMLElement | null)));
+    };
     document.addEventListener("keydown", onKey, true);
     document.addEventListener("mousedown", onDown);
     document.addEventListener("focusin", onFocusIn);
+    window.addEventListener("resize", onResize);
     return () => {
+      cancelAnimationFrame(frame);
       document.removeEventListener("keydown", onKey, true);
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("focusin", onFocusIn);
+      window.removeEventListener("resize", onResize);
     };
   }, [open, setOpen]);
 
@@ -1442,6 +1454,8 @@ export function DialogFrame({
 }
 
 const LIVE_REGION = "[aria-live], [role=\"status\"], [role=\"alert\"], [role=\"log\"]";
+/** A dialog frame drawn or parked before its first open (`prewarmAttrs`): its inert is the dialog's own. */
+const DIALOG_PREWARM = "[data-dialog-prewarm]";
 
 /**
  * Make everything outside `keep` inert, EXCEPT live regions. Returns the undo. `aria-modal` alone
@@ -1461,13 +1475,29 @@ export function inertOutside(keep: readonly Element[]): () => void {
       return;
     }
     if (el.matches(LIVE_REGION)) return;
+    if (el.hasAttribute("inert")) {
+      /* A dialog's own pre-warm frame: its inert is the dialog's, lifted when it opens. Never descended
+         into -- marking its children one by one left them inert inside the open dialog. (A dialog layer
+         underneath another is an open dialog's node, so it is kept above and never reaches here.) */
+      if (el.matches(DIALOG_PREWARM)) return;
+      /* Anyone else's inert (a hidden rail, made inert by useReleaseFocusOnHide) can be LIFTED while this
+         cover is held: the rail shown with a modal still open. Its own attribute is not ours to hold or
+         release, so its children are covered instead -- a live region among them still speaks -- and
+         showing it exposes nothing behind the modal (verifier R6 VR2-1). */
+      for (const c of Array.from(el.children)) visit(c);
+      return;
+    }
     if (el.querySelector(LIVE_REGION) !== null) {
       for (const c of Array.from(el.children)) visit(c);
       return;
     }
     // The ATTRIBUTE, not the `inert` property: the property reflects it in browsers, but an
     // environment without the property (jsdom) would take an expando and prove nothing.
-    if (el instanceof HTMLElement && !el.hasAttribute("inert") && el.tagName !== "SCRIPT") {
+    if (el instanceof HTMLElement && el.tagName !== "SCRIPT") {
+      /* An inert ancestor drops the focus it holds to <body> with no code of ours running (this can land
+         while focus is still here: a dialog that has not taken focus yet). Release it first, into the
+         dialog on top (the last kept node is its panel); a no-op when focus is elsewhere. */
+      releaseFocusFrom(el, null, keep.filter((k): k is HTMLElement => k instanceof HTMLElement).reverse());
       el.setAttribute("inert", "");
       made.push(el);
     }
@@ -1476,6 +1506,131 @@ export function inertOutside(keep: readonly Element[]): () => void {
   return () => {
     for (const el of made) el.removeAttribute("inert");
   };
+}
+
+/* ══ the dialog stack (acceptance D1/D3, WCAG 2.4.11) ════════════════════════
+   More than one modal can be open: the palette's mod+k is deliberately live behind a modal
+   (keyboard.ts `eligible`), so Ctrl+K from the keyboard reference opens the palette OVER it. Which
+   one the user sees used to be an accident. Both dialogs sat at `--z-dialog`, so paint order was
+   DOM order — and the palette's frame is parked in <body> before its first open (DialogFrame), so it
+   came EARLIER than a keyboard reference opened later and was drawn beneath it, focus inside it, out
+   of sight (verifier round 2, E2/E3, 2026-09-27: probe screenshots, bodyIndex 2 vs 4). Each dialog
+   also held its own document key listener, so one Escape could reach both, and a dialog's page-wide
+   `inert`, deferred to after the first paint, could land AFTER a later dialog opened and cover it.
+
+   One owner decides all of it, from the order dialogs were OPENED — never from the order they were
+   mounted, parked or pre-warmed in:
+     - the top layer is the dialog opened most recently; its scrim and panel carry `--dialog-layer`
+       (and `data-dialog-layer`) = its depth, and primitives.css derives both z-indexes from it;
+     - every open dialog under it is `inert` (made so here, released here when it is on top again);
+     - one capture-phase key listener hands keys to the top layer ONLY (Escape, the Tab trap);
+     - the page-wide inert keeps every open dialog, whichever dialog's deferred inert lands first, and
+       a close passes it to the dialog still open (it is released only with the last one); a dialog
+       closing from under another does not pull focus out of it. */
+
+interface DialogLayer {
+  /** The scrim and panel, captured at open (a pre-warmed frame's nodes ARE the ones that open). */
+  readonly nodes: readonly HTMLElement[];
+  /** The dialog's key handling (Escape, the Tab trap). Only the top layer's is called. */
+  onKey: (e: KeyboardEvent) => void;
+  /** The nodes the stack made inert while this layer was underneath another; null when on top. */
+  underneath: HTMLElement[] | null;
+  /** Undo of this dialog's page-wide inert (`inertOutside`), once it has been applied. */
+  page: (() => void) | null;
+  /** Set as it leaves the stack: whether it was the top layer then. */
+  leftAsTop: boolean;
+}
+
+const dialogStack: DialogLayer[] = [];
+const LAYER_PROP = "--dialog-layer";
+const LAYER_ATTR = "data-dialog-layer";
+
+function onTopLayerKey(e: KeyboardEvent): void {
+  dialogStack[dialogStack.length - 1]?.onKey(e);
+}
+
+/** The nodes of every open dialog: what the page-wide inert never touches. A layer underneath is made
+    inert by `restack`, as a whole; the page-wide inert must not also hold its descendants, or it could
+    not pass to the new top without leaving that dialog's insides inert (verifier R6 round 1, V3). */
+function stackNodes(): HTMLElement[] {
+  return dialogStack.flatMap((l) => [...l.nodes]);
+}
+
+/** Give every layer its depth, make everything under the top inert, and the top live. */
+function restack(): void {
+  const top = dialogStack.length - 1;
+  dialogStack.forEach((layer, i) => {
+    for (const el of layer.nodes) {
+      el.style.setProperty(LAYER_PROP, String(i));
+      el.setAttribute(LAYER_ATTR, String(i));
+    }
+    if (i < top) {
+      if (layer.underneath === null) {
+        layer.underneath = layer.nodes.filter((el) => !el.hasAttribute("inert"));
+        /* Ctrl+K from inside the keyboard reference: focus can still be in the layer going under. Hand it
+           to the new top's panel before the layer turns inert (a no-op when focus is elsewhere). */
+        const topNodes = [...(dialogStack[top]?.nodes ?? [])].reverse();
+        for (const el of layer.underneath) {
+          releaseFocusFrom(el, null, topNodes);
+          el.setAttribute("inert", "");
+        }
+      }
+    } else if (layer.underneath !== null) {
+      for (const el of layer.underneath) el.removeAttribute("inert");
+      layer.underneath = null;
+    }
+  });
+}
+
+function releasePage(layer: DialogLayer): void {
+  const undo = layer.page;
+  layer.page = null;
+  undo?.();
+}
+
+function pushLayer(layer: DialogLayer): void {
+  if (dialogStack.length === 0 && typeof document !== "undefined") document.addEventListener("keydown", onTopLayerKey, true);
+  dialogStack.push(layer);
+  restack();
+}
+
+function removeLayer(layer: DialogLayer): void {
+  const at = dialogStack.indexOf(layer);
+  if (at < 0) return;
+  layer.leftAsTop = at === dialogStack.length - 1;
+  dialogStack.splice(at, 1);
+  if (layer.underneath !== null) for (const el of layer.underneath) el.removeAttribute("inert");
+  layer.underneath = null;
+  for (const el of layer.nodes) {
+    el.style.removeProperty(LAYER_PROP);
+    el.removeAttribute(LAYER_ATTR);
+  }
+  /* The page-wide inert is the STACK's while any dialog is open, whichever layer's deferred inert
+     happened to land first (verifier R6 round 1, V3: the upper one's could land before the lower
+     one's, which then found the page already inert and held nothing, so closing the upper one left
+     the dialog still open over a live page). A departing layer's cover therefore passes to the new
+     top — the same elements, never released and re-applied, so a close costs no page-wide restyle —
+     and is released only when the last dialog leaves, here, before any focus is restored (an inert
+     element refuses focus). The cover never holds a dialog's nodes or anything inside them: it keeps
+     every open dialog (stackNodes) and never descends into a subtree that is already inert (a layer
+     underneath, a pre-warm frame), so passing it on leaves the new top wholly live and a pre-warm
+     frame's own inert alone. */
+  const top = dialogStack[dialogStack.length - 1];
+  const cover = layer.page;
+  layer.page = null;
+  if (top === undefined || cover === null) cover?.();
+  else {
+    const held = top.page;
+    top.page =
+      held === null
+        ? cover
+        : () => {
+            held();
+            cover();
+          };
+  }
+  restack();
+  if (dialogStack.length === 0 && typeof document !== "undefined") document.removeEventListener("keydown", onTopLayerKey, true);
 }
 
 /**
@@ -1500,10 +1655,31 @@ export function Dialog({
   const panelRef = useRef<HTMLDivElement>(null);
   const returnTo = useRef<HTMLElement | null>(null);
   const scrimRef = useRef<HTMLDivElement>(null);
+  const layerRef = useRef<DialogLayer | null>(null);
+
+  /* On the dialog stack from the commit that opens it, before it is painted: its layer, and the
+     inert of every dialog under it, are in place in the same frame as the dialog itself. */
+  useLayoutEffect(() => {
+    if (!open) return;
+    const layer: DialogLayer = {
+      nodes: [scrimRef.current, panelRef.current].filter((el): el is HTMLDivElement => el !== null),
+      onKey: () => {},
+      underneath: null,
+      page: null,
+      leftAsTop: false,
+    };
+    layerRef.current = layer;
+    /* The opener is read HERE, before the stack moves anything: pushing this layer makes the dialog under
+       it inert, and releases focus out of it first (into this dialog), so a later read would record this
+       dialog's own panel as the place to return to. */
+    returnTo.current = document.activeElement as HTMLElement | null;
+    pushLayer(layer);
+    return () => removeLayer(layer);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    returnTo.current = document.activeElement as HTMLElement | null;
+    const layer = layerRef.current;
     const target = initialFocus?.current ?? focusablesIn(panelRef.current)[0] ?? panelRef.current;
     target?.focus();
     /* INERT AFTER THE FIRST PAINT (perf audit E3, J5 "open the palette", 2026-09-22; design brief
@@ -1523,10 +1699,11 @@ export function Dialog({
        is no paint to wait for and the page is made inert at once; and because rAF does not run in a
        window that is not presenting (measured: a minimised or occluded window), a 100 ms fallback
        timer bounds the gap whether or not a frame is ever drawn. */
-    const panel = panelRef.current;
-    let release: (() => void) | null = null;
+    /* The page-wide inert leaves every open dialog to the stack: deferred, it can land after a later
+       dialog opened over this one, or before the one under it (see the dialog stack). */
     const applyInert = (): void => {
-      if (release === null) release = inertOutside(panel ? [panel, ...(scrimRef.current ? [scrimRef.current] : [])] : []);
+      if (layer === null || layer.page !== null || !dialogStack.includes(layer)) return;
+      layer.page = inertOutside(stackNodes());
     };
     let raf: number | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1551,17 +1728,22 @@ export function Dialog({
       if (raf !== null && typeof cancelAnimationFrame === "function") cancelAnimationFrame(raf);
       if (timer !== null) clearTimeout(timer);
       if (fallback !== null) clearTimeout(fallback);
-      /* Release BEFORE restoring focus: an inert element refuses focus. */
-      release?.();
-      release = null;
+      /* Release BEFORE restoring focus: an inert element refuses focus. (On a close the stack has
+         already released it, in the layout phase; this covers a re-run while still open.) */
+      if (layer !== null) releasePage(layer);
       /* Restore on close AND on unmount: a dialog whose parent is removed while it is open would
-         otherwise leave focus on <body>, which silently resets keyboard navigation to the top. */
-      returnFocus(returnTo.current, null);
+         otherwise leave focus on <body>, which silently resets keyboard navigation to the top.
+         Not when it closed from UNDER another dialog: focus is in the one still open, on top. */
+      const onTop = layer === null || (dialogStack.includes(layer) ? dialogStack[dialogStack.length - 1] === layer : layer.leftAsTop);
+      if (onTop) returnFocus(returnTo.current, null);
     };
   }, [open, initialFocus]);
 
   useEffect(() => {
-    if (!open) return;
+    const layer = layerRef.current;
+    if (!open || layer === null) return;
+    /* Handed keys by the dialog stack's one listener, and only while this dialog is the top layer:
+       one Escape closes one dialog, and Tab never wraps into a dialog underneath. */
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") {
         e.stopPropagation();
@@ -1587,8 +1769,10 @@ export function Dialog({
         first.focus();
       }
     };
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
+    layer.onKey = onKey;
+    return () => {
+      if (layer.onKey === onKey) layer.onKey = () => {};
+    };
   }, [open, onClose]);
 
   if (!open && !prewarm) return null;

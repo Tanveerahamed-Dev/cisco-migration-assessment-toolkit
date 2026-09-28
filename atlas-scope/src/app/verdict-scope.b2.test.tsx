@@ -197,7 +197,7 @@ describe("the command palette states a suggested flow's verdict with its bounds"
 
   it("the rendered rows for a typed source address (the report's own reproduction)", () => {
     mount(<CommandPalette />);
-    act(() => useInvestigation.getState().setPaletteOpen(true));
+    act(() => { useInvestigation.getState().setPaletteOpen(true); });
     const input = document.querySelector<HTMLInputElement>(".palette__input");
     expect(input).not.toBeNull();
     let checked = 0;

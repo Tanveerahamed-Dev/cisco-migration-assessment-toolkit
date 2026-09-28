@@ -103,7 +103,52 @@ const RELEASE_URL = "http://localhost:4181"; // `npm run build && npm run previe
 const APP = process.env.ATLAS_URL || RELEASE_URL;
 const HEADED = process.env.ATLAS_HEADLESS !== "1";
 const LANE = HEADED ? "evidence" : "floor";
-const REPS = Number(process.env.ATLAS_REPS || 25);
+/* ── THE DECLARED SAMPLE (verifier round 2, D3, 2026-09-27) ────────────────────────────────────────
+ * Every figure this harness can print as a verdict is over a sample it DECLARES here. The knobs below
+ * may change a run's sample — a subset is a useful lab probe — but a run whose sample falls short of
+ * the declared one is a SUBSET run: its verdicts are spelled SUBSET-…, it is never ACCEPTANCE
+ * EVIDENCE, its exit code is non-zero, and it never counts toward the across-runs E3 verdict. MEASURED
+ * before this rule: `ATLAS_FIRST_PALETTE_LEGS=1920x1080:dark,1920x1080:light
+ * ATLAS_FIRST_PALETTE_TRIALS=10` printed "PASS E3-PASS J5-first-open-palette … over 20/20 trials" and
+ * "ACCEPTANCE EVIDENCE" with no 1280 leg and half E2's repetitions. Every sample knob is read through
+ * `knob` (never `process.env.X` directly), and every ATLAS_* knob the file reads is classified here or
+ * in NON_SAMPLE_ENV (src/core/journey-scope.test.ts discovers them from this source). */
+/** E2: "p95 … over >= 20 repetitions". */
+export const E2_MIN_REPETITIONS = 20;
+export const DECLARED_SAMPLE = Object.freeze({
+  /** Repetitions per journey loop. */
+  reps: 25,
+  /** Repetitions that must yield an Event Timing entry (and their effect) for a journey to be measured. */
+  minSampledReps: E2_MIN_REPETITIONS,
+  /** FIRST_SELECTION: fresh-browser trials per aimed device. */
+  firstTargets: "core2:15,core1:3,dist1:3",
+  /** FIRST_PALETTE: every viewport x colour scheme the cold first open is measured on. */
+  paletteLegs: "1280x800:dark,1280x800:light,1920x1080:dark,1920x1080:light",
+  /** FIRST_PALETTE: fresh-browser trials per leg. */
+  paletteTrials: E2_MIN_REPETITIONS,
+  /** Quiet runs of one build before E3 is called stable. */
+  e3MinRuns: 3,
+});
+/** The environment knob behind each sample field. */
+export const SAMPLE_ENV = Object.freeze({
+  reps: "ATLAS_REPS",
+  minSampledReps: "ATLAS_MIN_SAMPLED_REPS",
+  firstTargets: "ATLAS_FIRST_TARGETS",
+  paletteLegs: "ATLAS_FIRST_PALETTE_LEGS",
+  paletteTrials: "ATLAS_FIRST_PALETTE_TRIALS",
+  e3MinRuns: "ATLAS_E3_MIN_RUNS",
+});
+/** Every other knob this file reads, with the reason it shapes no sample. */
+export const NON_SAMPLE_ENV = Object.freeze({
+  ATLAS_URL: "which server is measured; a dev bundle or a stale build is caught by devServer and build freshness, which withhold acceptance evidence",
+  ATLAS_HEADLESS: "the lane: headless is the FLOOR lane, whose verdicts are spelled FLOOR-PASS/FLOOR-FAIL and are never acceptance evidence",
+  ATLAS_ONLY: "which journeys run, not how many repetitions each gets: every selected journey keeps its declared sample, and the E3 roll-up names the selection; a selection that matches no journey measures nothing, so the run is refused as NOT MEASURED and exits non-zero (journeySelectionOf, runExitCodeOf)",
+  ATLAS_TEST_MINIMIZE: "a test hook that minimises the window to prove the presentation check: a window that stops presenting is refused (ensurePresenting, the cadence gate)",
+  ATLAS_TEST_MINIMIZE_LATE: "the same test hook, minimising late in a loop: refused by the same presentation checks",
+});
+/** A sample field's value in `env`, or the declared one. */
+const knob = (env, field) => env[SAMPLE_ENV[field]] || DECLARED_SAMPLE[field];
+const REPS = Number(knob(process.env, "reps"));
 /* PERF AUDIT 2026-09-21 (third pass). E2 says "over >= 20 repetitions". The harness used to mark a
    journey `measured` when ONE repetition produced an Event Timing entry, and then took its verdict
    from however many did. Observed on the release build, headed: `J1 ... samples=4` (4 of 25 reps,
@@ -111,7 +156,7 @@ const REPS = Number(process.env.ATLAS_REPS || 25);
    (repsWithASample 3 of 25) printed PASS at p95=168 ms — a p95 over three numbers. A rep that
    yields no entry is a rep whose interaction was NOT observed, not a fast one; when too few reps
    were observed the journey is NOT MEASURED, which exits non-zero. */
-const MIN_REPS_WITH_SAMPLE = Number(process.env.ATLAS_MIN_SAMPLED_REPS || 20);
+const MIN_REPS_WITH_SAMPLE = Number(knob(process.env, "minSampledReps"));
 /* Host busyness across the run, from the OS scheduler's cumulative per-core counters — the same
    method and bar as measure-fps.mjs. INP numbers taken while other processes held the CPU are about
    the machine; they are still printed, but acceptanceEvidence goes false. */
@@ -822,7 +867,7 @@ const parseTargets = (spec) =>
 export const FIRST_SELECTION = {
   id: "J2-first-select-device-3d",
   url: "/?s=fabric",
-  targets: parseTargets(process.env.ATLAS_FIRST_TARGETS || "core2:15,core1:3,dist1:3"),
+  targets: parseTargets(knob(process.env, "firstTargets")),
   /** Everything between navigation and the measured click. It reads and waits; it never actuates. */
   async beforeClick(page) {
     await page.waitForSelector("canvas", { timeout: 15000 });
@@ -930,11 +975,13 @@ export const parsePaletteLegs = (spec) =>
     })
     .filter((l) => Number.isFinite(l.width) && Number.isFinite(l.height) && l.width > 0 && l.height > 0);
 
+const paletteTrialsOf = (v) => Math.max(1, Math.floor(Number(v) || 1));
+
 export const FIRST_PALETTE = {
   id: "J5-first-open-palette",
   url: "/",
-  legs: parsePaletteLegs(process.env.ATLAS_FIRST_PALETTE_LEGS || "1280x800:dark,1280x800:light,1920x1080:dark,1920x1080:light"),
-  trials: Math.max(1, Math.floor(Number(process.env.ATLAS_FIRST_PALETTE_TRIALS || 20))),
+  legs: parsePaletteLegs(knob(process.env, "paletteLegs")),
+  trials: paletteTrialsOf(knob(process.env, "paletteTrials")),
   /** Installed before the app mounts: every focus that reaches a combobox inside a modal dialog. */
   recorder: `
     window.__paletteFocus = [];
@@ -947,12 +994,13 @@ export const FIRST_PALETTE = {
   /** Everything between navigation and the measured press. It reads and waits; it never actuates. */
   async beforePress(page) {
     await page.waitForSelector("canvas", { timeout: 15000 });
-    /* 60 s, not FIRST_SELECTION's 30. MEASURED 2026-09-26, fresh headed browsers at 1280x800 with this
-       harness's window arguments (forced device scale 1.261) on a host 68-100% busy: the scene often
-       converged only after its automatic step-down to "balanced", 8.4-42 s after load, and in several
-       loads not within 60 s. CONDITIONAL, not a general property: at the default device scale the
-       same build converged at tier "high" in 4.2-5.2 s (independent verifier, three loads). So the
-       wait is generous, and a trial that still never converges is NOT MEASURED and says so. */
+    /* 60 s, not FIRST_SELECTION's 30. HISTORY: before the temporal-AA drain treated sub-pixel float noise
+       as a still camera (postfx.ts HISTORY_AA.stillBelowPx), a forced non-integer device scale (this
+       harness's 1.261 for a 1280x800 viewport) kept `converged` false indefinitely — deterministic, on a
+       quiet host and a busy one alike (verifier round 2, D2, 2026-09-27). MEASURED after that fix,
+       2026-09-27, release build, 1280x800 dark and light at forced 1.261 on a host 84% busy: 4 of 4
+       fresh-browser trials converged and were measured. The wait stays generous, and a trial that still
+       never converges is NOT MEASURED and says so. */
     const settled = await page
       .waitForFunction(() => window.__atlasScene?.stats?.().converged === true, null, { timeout: 60000 })
       .then(() => true)
@@ -967,6 +1015,187 @@ export const FIRST_PALETTE = {
     await page.keyboard.press("Escape");
   },
 };
+
+/* ── THE SAMPLE RULE, AND THE ACCEPTANCE GATE THAT READS IT (D3/D4) ─────────────────────────────── */
+
+/** The sample a run with this environment measures: every field DECLARED_SAMPLE declares, parsed. Pure. */
+export function sampleOf(env) {
+  return {
+    reps: Number(knob(env, "reps")),
+    minSampledReps: Number(knob(env, "minSampledReps")),
+    firstTargets: parseTargets(String(knob(env, "firstTargets"))),
+    paletteLegs: parsePaletteLegs(String(knob(env, "paletteLegs"))),
+    paletteTrials: paletteTrialsOf(knob(env, "paletteTrials")),
+    e3MinRuns: Number(knob(env, "e3MinRuns")),
+  };
+}
+
+/* What each numeric sample field counts, for the deviation message. */
+const SAMPLE_FIELD_WORDS = Object.freeze({
+  reps: "repetitions per journey loop",
+  minSampledReps: "sampled repetitions before a journey is called measured",
+  paletteTrials: "fresh-browser trials per palette leg",
+  e3MinRuns: "quiet runs before E3 is called stable",
+});
+/* How each LIST-valued sample field names its items, and what count (if any) an item carries. */
+const SAMPLE_LIST_FIELDS = Object.freeze({
+  firstTargets: { noun: "aimed device", key: (t) => t.id, count: (t) => t.trials, spell: (t) => `${t.id}:${t.trials}` },
+  paletteLegs: { noun: "palette leg", key: (l) => `${l.width}x${l.height}:${l.colorScheme}`, count: () => null, spell: (l) => `${l.width}x${l.height}:${l.colorScheme}` },
+});
+/* The class is closed at load: every declared field has a rule below, so a field added to
+   DECLARED_SAMPLE without one fails loudly instead of being silently left out of the comparison. */
+for (const [field, v] of Object.entries(sampleOf({}))) {
+  const rule = typeof v === "number" ? SAMPLE_FIELD_WORDS[field] : Array.isArray(v) ? SAMPLE_LIST_FIELDS[field] : undefined;
+  if (!rule) throw new Error(`measure-inp: DECLARED_SAMPLE.${field} has no deviation rule (SAMPLE_FIELD_WORDS / SAMPLE_LIST_FIELDS)`);
+}
+
+/**
+ * How `sample` falls short of the DECLARED one — [] when it does not. Every field is compared with its
+ * declared value (verifier round 3, V-R6-1: the rule used to compare most fields with E2's floor of 20,
+ * so `ATLAS_REPS=20` against the declared 25, or `ATLAS_FIRST_TARGETS=core2:18,core1:1,dist1:1` cutting
+ * two devices from 3 trials to 1, passed as the declared sample). A numeric field below its declared
+ * value, a declared list item dropped, or a declared item's count lowered is a deviation. Raising a
+ * sample (more trials, an extra leg or device, more runs) is not. Pure.
+ */
+export function sampleDeviations(sample) {
+  const declared = sampleOf({});
+  const out = [];
+  for (const [field, want] of Object.entries(declared)) {
+    const got = sample[field];
+    if (typeof want === "number") {
+      if (!(Number.isFinite(got) && got >= want))
+        out.push(`${SAMPLE_ENV[field]}=${got}: ${SAMPLE_FIELD_WORDS[field]} below the declared ${want}`);
+      continue;
+    }
+    const L = SAMPLE_LIST_FIELDS[field];
+    const have = Array.isArray(got) ? got : [];
+    const dropped = [];
+    const lowered = [];
+    for (const d of want) {
+      const g = have.find((x) => L.key(x) === L.key(d));
+      if (g === undefined) dropped.push(L.key(d));
+      else if (L.count(d) !== null && !(Number.isFinite(L.count(g)) && L.count(g) >= L.count(d))) lowered.push(`${L.key(d)} ${L.count(g)} of the declared ${L.count(d)}`);
+    }
+    if (dropped.length || lowered.length)
+      out.push(
+        `${SAMPLE_ENV[field]}=${have.map(L.spell).join(",")}: ` +
+          [dropped.length ? `drops the declared ${L.noun}(s) ${dropped.join(", ")}` : null, lowered.length ? `lowers ${lowered.join(", ")}` : null].filter(Boolean).join("; "),
+      );
+  }
+  return out;
+}
+
+const SUBSET_SPELLING = Object.freeze({
+  PASS: "SUBSET-PASS",
+  FAIL: "SUBSET-FAIL",
+  "FLOOR-PASS": "FLOOR-SUBSET-PASS",
+  "FLOOR-FAIL": "FLOOR-SUBSET-FAIL",
+  "E3-PASS": "E3-SUBSET-PASS",
+  "E3-FAIL": "E3-SUBSET-FAIL",
+  /* The across-runs E3 verdicts (verifier R6 round 1, V1): ATLAS_E3_MIN_RUNS shapes nothing else. */
+  "STABLE PASS": "SUBSET-STABLE-PASS",
+  "STABLE FAIL": "SUBSET-STABLE-FAIL",
+});
+/** A verdict as a run over `deviations` may print it: unchanged over the declared sample, SUBSET-… otherwise. Pure. */
+export function sampleLabel(verdict, deviations) {
+  return deviations.length === 0 ? verdict : (SUBSET_SPELLING[verdict] ?? verdict);
+}
+
+/**
+ * Where a headed window stands: "fits" (the one state windowFitsOf accepts), "no-plan",
+ * "plan-does-not-fit", "not-checked" (no trial reached the check — D4: this used to be reported as a
+ * window outside the screen), "check-failed", or "outside". Pure.
+ */
+export function windowStatusOf(plan, check) {
+  if (plan === null || plan === undefined) return "no-plan";
+  if (plan.fits !== true) return "plan-does-not-fit";
+  if (check?.inside === true) return "fits";
+  if (check?.checked !== true) return "not-checked";
+  if (check.error) return "check-failed";
+  return "outside";
+}
+
+/* Power must be READ as mains (verifier round 3, V-R6-3): host-env's hostPower returns `{known:false}`
+   with no `throttled` field when its probe fails, and reading only `throttled` let a failed probe count
+   as "on mains". An unread power state is not a quiet host. */
+const hostQuietOf = (x) => x.hostBusy !== null && x.hostBusy <= x.maxHostBusy && x.powerKnown === true && !x.powerThrottled && !x.belowFullRate;
+
+/**
+ * Whether one E3-history record may count toward the across-runs verdict: a run over the declared
+ * sample, on a host that was quiet, on power READ as mains (a record without `hostPowerKnown` — one from
+ * before the field existed — cannot claim it), presenting at full rate. Pure.
+ */
+export function isQuietRunRecord(h, maxHostBusy) {
+  return (
+    h.sample === "declared" &&
+    typeof h.hostBusy === "number" &&
+    h.hostBusy <= maxHostBusy &&
+    h.hostPowerKnown === true &&
+    h.hostPowerThrottled === false &&
+    h.presentationBelowFullRate === false
+  );
+}
+const windowsFitOf = (x) => !x.headed || (x.windows.length > 0 && x.windows.every((w) => windowFitsOf(w.plan, w.check)));
+
+/**
+ * The acceptance gate: ALL of the release bundle, a headed hardware renderer that was read, a quiet
+ * host on mains presenting at full rate, a fresh build, every window inside the screen, AND the
+ * declared sample. Pure: main() passes what it observed.
+ */
+export function acceptanceEvidenceOf(x) {
+  return (
+    x.lane === "evidence" &&
+    x.devServer === false &&
+    x.rendererKnown &&
+    !x.softwareRasteriser &&
+    hostQuietOf(x) &&
+    x.fresh &&
+    windowsFitOf(x) &&
+    x.sampleDeviations.length === 0
+  );
+}
+
+/** Why a run is not acceptance evidence: every failed condition, each in its own words; "" when it is. Pure. */
+export function acceptanceWhyOf(x) {
+  if (acceptanceEvidenceOf(x)) return "";
+  const windows = x.windows.map((w) => ({ ...w, status: windowStatusOf(w.plan, w.check) }));
+  const legsIn = (status) => windows.filter((w) => w.status === status);
+  const names = (ws) => ws.map((w) => w.leg).join(", ");
+  const why = [
+    x.lane === "evidence" ? null : "FLOOR lane: run without ATLAS_HEADLESS=1 for evidence.",
+    x.devServer === false ? null : x.devServer === true ? "the server is the Vite DEV bundle, not the release build." : "whether the server is the release build is unknown.",
+    x.rendererKnown ? null : "no renderer could be read from the page, so it is not known to be a hardware one.",
+    x.softwareRasteriser ? `the renderer is a software rasteriser${x.rendererDetail ? ` (${x.rendererDetail})` : ""}.` : null,
+    x.fresh ? null : `build freshness: ${x.freshWhy ?? "not fresh"}.`,
+    x.sampleDeviations.length === 0
+      ? null
+      : `the sample was overridden, so this is a SUBSET run, not the declared E2 sample: ${x.sampleDeviations.join("; ")}.`,
+  ];
+  if (x.headed) {
+    if (windows.length === 0) why.push("no headed window was opened, so none has been shown to fit the screen.");
+    const notChecked = legsIn("not-checked");
+    if (notChecked.length) why.push(`window not checked for ${names(notChecked)} (no trial reached the window check), so it is not known to fit the screen's work area.`);
+    const failed = legsIn("check-failed");
+    if (failed.length) why.push(`the window check failed for ${names(failed)} (${failed.map((w) => w.check.error).join("; ")}).`);
+    const noPlan = [...legsIn("no-plan"), ...legsIn("plan-does-not-fit")];
+    if (noPlan.length) why.push(`no window plan fits the screen for ${names(noPlan)}.`);
+    const outside = legsIn("outside");
+    if (outside.length)
+      why.push(`a headed window is not inside the screen's work area (${JSON.stringify(outside.map((w) => ({ leg: w.leg, plan: w.plan, window: w.check })))}).`);
+  }
+  if (x.powerKnown !== true) why.push(`host power is not known (the power probe could not be read${x.powerDetail ? `: ${x.powerDetail}` : ""}), so the host is not known to be on mains with Energy Saver off.`);
+  if (x.powerThrottled) why.push(`host on battery or Energy Saver${x.powerDetail ? ` (${x.powerDetail})` : ""}; measured 2026-09-22: rAF at a 33.4 ms median and windows that stopped presenting under it.`);
+  if (x.belowFullRate) why.push(`the window presented below 50 Hz${x.cadenceDetail ? ` (${x.cadenceDetail})` : ""}; a capped cadence changes the E3 picture, not only the numbers.`);
+  if (!(x.hostBusy !== null && x.hostBusy <= x.maxHostBusy))
+    why.push(
+      `host was ${x.hostBusy === null ? "of unknown busyness" : Math.round(x.hostBusy * 100) + "% busy"} across the run excluding this harness (bar ${x.maxHostBusy * 100}%); these numbers are about the machine as much as the build.`,
+    );
+  return why.filter(Boolean).join(" ");
+}
+
+/** The sample THIS run measures, and how it falls short of the declared one. */
+const RUN_SAMPLE = sampleOf(process.env);
+const RUN_SAMPLE_DEVIATIONS = sampleDeviations(RUN_SAMPLE);
 
 /* ── WINDOW GEOMETRY (acceptance report item 15, 2026-09-23) ──────────────────────────────────────
  *
@@ -985,7 +1214,7 @@ export const VIEWPORT = { width: 1920, height: 1080 };
 
 /* planWindow / windowInside moved to ./host-env.mjs (the class: every headed instrument plans its
    window there, src/core/headed-window.test.ts). Re-exported for the known-answer tests. */
-export { planWindow, windowInside };
+export { planWindow, windowInside, windowFitsOf };
 
 /**
  * Long tasks over 50 ms that overlap an interaction, each with WHERE on the path it ran — the one
@@ -1184,17 +1413,81 @@ export async function discoverJ2Anchors(launch, { app, context, initScript, log 
  * (A run whose journey was under-sampled but DID observe an on-path violation is E3-FAIL, not NOT
  * MEASURED — see `rec.e3Verdict` — so it still counts against the journey.)
  *
+ * SAMPLE (verifier R6 round 1, V1, 2026-09-27): `minRuns` is a declared sample field
+ * (ATLAS_E3_MIN_RUNS), and a run that lowered it printed "STABLE PASS" over ONE run. The verdict is
+ * spelled through `sampleLabel` with the run's deviations, so a subset run's STABLE PASS reads
+ * SUBSET-STABLE-PASS; a caller that omits them (the known-answer tests) states a declared sample.
+ *
  * @param {{ journeys?: Record<string, { e3?: string }> }[]} runs
  * @param {string} id
  * @param {number} minRuns
+ * @param {readonly string[]} [deviations] how the run's sample falls short of the declared one
  */
-export function e3StableVerdict(runs, id, minRuns) {
+export function e3StableVerdict(runs, id, minRuns, deviations = []) {
   const seen = runs.map((h) => h.journeys?.[id]?.e3).filter(Boolean);
   const measured = seen.filter((v) => v === "E3-PASS" || v === "E3-FAIL");
   const clean = measured.filter((v) => v === "E3-PASS").length;
   const stable =
-    measured.length < minRuns ? "INSUFFICIENT RUNS" : clean === measured.length ? "STABLE PASS" : clean === 0 ? "STABLE FAIL" : "UNSTABLE";
+    measured.length < minRuns
+      ? "INSUFFICIENT RUNS"
+      : sampleLabel(clean === measured.length ? "STABLE PASS" : clean === 0 ? "STABLE FAIL" : "UNSTABLE", deviations);
   return { runs: seen.length, measured: measured.length, notMeasured: seen.length - measured.length, clean, stable };
+}
+
+/**
+ * The across-runs E3 verdict over every selected journey's `e3StableVerdict`: FAIL when any journey is
+ * stably failing or unstable, PASS only when there is at least one journey and every one is a stable
+ * pass (V2: an empty selection made a vacuous `.every` print PASS), INSUFFICIENT RUNS otherwise, and
+ * NOT MEASURED over no journey. Spelled through the sample rule (V1). Pure.
+ *
+ * @param {Record<string, { stable: string }>} perJourney
+ * @param {readonly string[]} deviations
+ */
+export function e3AcrossRunsVerdictOf(perJourney, deviations) {
+  const all = Object.values(perJourney);
+  if (all.length === 0) return "NOT MEASURED";
+  if (all.some((j) => j.stable === sampleLabel("STABLE FAIL", deviations) || j.stable === "UNSTABLE")) return sampleLabel("FAIL", deviations);
+  return all.every((j) => j.stable === sampleLabel("STABLE PASS", deviations)) ? sampleLabel("PASS", deviations) : "INSUFFICIENT RUNS";
+}
+
+/**
+ * This run's E3 roll-up: PASS only when every journey was measured clean — an under-sampled journey
+ * used to be silently absent from this roll-up, so "PASS" could mean "the journeys we saw were clean"
+ * — FAIL when any violated, SUBSET when the sample was overridden, NOT MEASURED otherwise (and over no
+ * journey). Pure.
+ *
+ * @param {{ e3Verdict: string }[]} results
+ * @param {readonly string[]} deviations
+ */
+export function e3RunVerdictOf(results, deviations) {
+  if (results.some((r) => r.e3Verdict === "E3-FAIL" || r.e3Verdict === "E3-SUBSET-FAIL")) return sampleLabel("FAIL", deviations);
+  if (results.some((r) => r.e3Verdict.includes("SUBSET"))) return "SUBSET";
+  return results.length > 0 && results.every((r) => r.e3Verdict === "E3-PASS") ? sampleLabel("PASS", deviations) : "NOT MEASURED";
+}
+
+/**
+ * The run's exit code, as a POSITIVE rule: 0 only when at least one journey was measured and every
+ * one passed on both axes (INP and E3) over the declared sample. A run that measured nothing — an
+ * ATLAS_ONLY that selected no journey (verifier R6 round 1, V2) — used to exit 0, because the old
+ * rule summed the failures and there were none. Pure.
+ *
+ * @param {{ verdict: string, e3Verdict: string }[]} results
+ */
+export function runExitCodeOf(results) {
+  if (results.length === 0) return 1;
+  return results.every((r) => (r.verdict === "PASS" || r.verdict === "FLOOR-PASS") && r.e3Verdict === "E3-PASS") ? 0 : 1;
+}
+
+/**
+ * The ids an ATLAS_ONLY selection runs, in run order: every journey, then the first selection, then the
+ * first palette open; `null` selects them all. An id is selected when it contains a selection item.
+ * Pure.
+ *
+ * @param {readonly string[] | null} only
+ */
+export function journeySelectionOf(only) {
+  const ids = [...JOURNEYS.map((j) => j.id), FIRST_SELECTION.id, FIRST_PALETTE.id];
+  return only === null ? ids : ids.filter((id) => only.some((o) => id.includes(o)));
 }
 
 /* ── the run ──────────────────────────────────────────────────────────────────────────────
@@ -1205,6 +1498,17 @@ export function e3StableVerdict(runs, id, minRuns) {
    docs/acceptance.md) — it is a module of pure journey definitions and helpers, so the rules the
    measurement depends on can be pinned by a test instead of trusted. */
 async function main() {
+  const ONLY = process.env.ATLAS_ONLY ? process.env.ATLAS_ONLY.split(",") : null;
+  const SELECTED = journeySelectionOf(ONLY);
+  /* A selection that matches nothing measures nothing (verifier R6 round 1, V2): it used to run, print
+     an across-runs "PASS" over an empty list and exit 0. Refused before anything is launched. */
+  if (SELECTED.length === 0) {
+    console.error(
+      `NOT MEASURED — ATLAS_ONLY=${ONLY?.join(",")} selects no journey, so nothing would be measured. ` +
+        `The journeys are: ${journeySelectionOf(null).join(", ")}.`,
+    );
+    process.exit(1);
+  }
   const { chromium } = await import("@playwright/test");
   const hostCpuAtStart = cpuTicks();
   const hostPowerAtStart = hostPower();
@@ -1288,8 +1592,9 @@ async function main() {
   const results = [];
   let environment = null;
 
-  const ONLY = process.env.ATLAS_ONLY ? process.env.ATLAS_ONLY.split(",") : null;
-  const selected = (id) => !ONLY || ONLY.some((o) => id.includes(o));
+  if (RUN_SAMPLE_DEVIATIONS.length > 0)
+    console.log(`SUBSET RUN — the sample was overridden (${RUN_SAMPLE_DEVIATIONS.join("; ")}): its verdicts are spelled SUBSET-…, it is never acceptance evidence, and it exits non-zero.`);
+  const selected = (id) => SELECTED.includes(id);
 
   /* J2's anchors, found ONCE, in a browser of their own that is closed before any measured page is
      opened: finding them clicks the canvas (see deviceAnchors), and a click on a measured page would
@@ -1625,18 +1930,21 @@ async function main() {
        * never be read as the INP verdict), and counted into the exit code. A journey can now pass
        * E2 and fail E3 in the same line, which is exactly what this build does. */
       const e3Clean = (rec.longTasksOver50OnPath ?? 0) === 0;
-      rec.verdict = !rec.measured
-        ? "NOT MEASURED"
-        : LANE === "evidence"
-          ? within
-            ? "PASS"
-            : "FAIL"
-          : within
-            ? "FLOOR-PASS"
-            : "FLOOR-FAIL";
+      rec.verdict = sampleLabel(
+        !rec.measured
+          ? "NOT MEASURED"
+          : LANE === "evidence"
+            ? within
+              ? "PASS"
+              : "FAIL"
+            : within
+              ? "FLOOR-PASS"
+              : "FLOOR-FAIL",
+        RUN_SAMPLE_DEVIATIONS,
+      );
       /* An on-path violation that WAS observed is E3 evidence even when too few reps were sampled for
          an E2 verdict; an absence of violations over an under-sampled journey is not a pass. */
-      rec.e3Verdict = !e3Clean ? "E3-FAIL" : !rec.measured ? "NOT MEASURED" : "E3-PASS";
+      rec.e3Verdict = sampleLabel(!e3Clean ? "E3-FAIL" : !rec.measured ? "NOT MEASURED" : "E3-PASS", RUN_SAMPLE_DEVIATIONS);
       rec.e3Why = e3Clean
         ? "no task over 50 ms overlapped an interaction in this journey"
         : `${rec.longTasksOver50OnPath} task(s) over 50 ms overlapped an interaction; worst ${rec.longTasks.maxMs} ms`;
@@ -1783,8 +2091,8 @@ async function main() {
     for (const x of onPath) if (x.phase) rec.onPathByPhase[x.phase] += 1;
     if (!rec.measured) rec.reason = `only ${good.length} of ${planned} fresh-browser trials both produced an Event Timing entry and selected the aimed device (need ${Math.min(MIN_REPS_WITH_SAMPLE, planned)})`;
     const within = (rec.worstPerRep.p95 ?? 1e9) <= 200;
-    rec.verdict = !rec.measured ? "NOT MEASURED" : LANE === "evidence" ? (within ? "PASS" : "FAIL") : within ? "FLOOR-PASS" : "FLOOR-FAIL";
-    rec.e3Verdict = onPath.length > 0 ? "E3-FAIL" : !rec.measured ? "NOT MEASURED" : "E3-PASS";
+    rec.verdict = sampleLabel(!rec.measured ? "NOT MEASURED" : LANE === "evidence" ? (within ? "PASS" : "FAIL") : within ? "FLOOR-PASS" : "FLOOR-FAIL", RUN_SAMPLE_DEVIATIONS);
+    rec.e3Verdict = sampleLabel(onPath.length > 0 ? "E3-FAIL" : !rec.measured ? "NOT MEASURED" : "E3-PASS", RUN_SAMPLE_DEVIATIONS);
     rec.e3Why =
       onPath.length === 0
         ? `no task over 50 ms overlapped the first selection in ${good.length} fresh-browser trial(s)`
@@ -1960,8 +2268,8 @@ async function main() {
     if (!rec.measured)
       rec.reason = `a leg had fewer than ${need} fresh-browser trials that both produced an Event Timing entry and opened the palette (${legs.map((l) => `${l.leg} ${perLeg[l.leg].measured}/${FIRST_PALETTE.trials}`).join(", ")})`;
     const within = legs.length > 0 && legs.every((l) => (perLeg[l.leg].p95 ?? 1e9) <= 200);
-    rec.verdict = !rec.measured ? "NOT MEASURED" : LANE === "evidence" ? (within ? "PASS" : "FAIL") : within ? "FLOOR-PASS" : "FLOOR-FAIL";
-    rec.e3Verdict = onPath.length > 0 ? "E3-FAIL" : !rec.measured ? "NOT MEASURED" : "E3-PASS";
+    rec.verdict = sampleLabel(!rec.measured ? "NOT MEASURED" : LANE === "evidence" ? (within ? "PASS" : "FAIL") : within ? "FLOOR-PASS" : "FLOOR-FAIL", RUN_SAMPLE_DEVIATIONS);
+    rec.e3Verdict = sampleLabel(onPath.length > 0 ? "E3-FAIL" : !rec.measured ? "NOT MEASURED" : "E3-PASS", RUN_SAMPLE_DEVIATIONS);
     rec.e3Why =
       onPath.length === 0
         ? `no task over 50 ms overlapped the first palette open in ${good.length} fresh-browser trial(s)`
@@ -1999,7 +2307,8 @@ async function main() {
   const presentationBelowFullRate = HEADED && (slowestCadenceMs === null || slowestCadenceMs > FULL_RATE_MAX_RAF_MS);
   const hostPowerAtEnd = hostPower();
   const hostPowerThrottled = Boolean(hostPowerAtStart.throttled || hostPowerAtEnd.throttled);
-  const hostQuiet = hostBusy !== null && hostBusy <= MAX_HOST_BUSY_FRACTION && !hostPowerThrottled && !presentationBelowFullRate;
+  /* Unread power is not mains power (V-R6-3): both probes must have been read. */
+  const hostPowerKnown = hostPowerAtStart.known === true && hostPowerAtEnd.known === true;
   /* A headed window that is not inside the screen is not a measurement environment (see planWindow). */
   /* Every window a measured page was opened in: the journeys' plan whenever a journey or the first
      selection was selected (checked or not — an unchecked window is not known to fit), and each
@@ -2008,8 +2317,28 @@ async function main() {
   const journeyWindowUsed = JOURNEYS.some((x) => selected(x.id)) || selected(FIRST_SELECTION.id);
   const windowsUsed = [...(journeyWindowUsed ? [{ leg: "journeys", plan: windowPlan, check: windowCheck }] : []), ...paletteWindows];
   const windowFits = !HEADED || (windowsUsed.length > 0 && windowsUsed.every((x) => windowFitsOf(x.plan, x.check)));
-  const acceptanceEvidence =
-    LANE === "evidence" && server.devServer === false && !softwareRasteriser && hostQuiet && freshness.fresh && windowFits;
+  const gate = {
+    lane: LANE,
+    devServer: server.devServer,
+    rendererKnown: environment !== null,
+    softwareRasteriser,
+    rendererDetail: environment === null ? null : `${environment.renderer ?? "unknown"}; the app drops to quality tier "${environment.quality ?? "unknown"}"`,
+    fresh: freshness.fresh,
+    freshWhy: freshness.why,
+    headed: HEADED,
+    windows: windowsUsed,
+    hostBusy,
+    maxHostBusy: MAX_HOST_BUSY_FRACTION,
+    powerKnown: hostPowerKnown,
+    powerThrottled: hostPowerThrottled,
+    powerDetail: `start ${JSON.stringify(hostPowerAtStart)}, end ${JSON.stringify(hostPowerAtEnd)}`,
+    belowFullRate: presentationBelowFullRate,
+    cadenceDetail: `slowest journey rAF median ${slowestCadenceMs ?? "unknown"} ms, bar <= ${FULL_RATE_MAX_RAF_MS} ms`,
+    sampleDeviations: RUN_SAMPLE_DEVIATIONS,
+  };
+  /* `windowFits` is the same rule over the same windows that acceptanceEvidenceOf applies; it is named
+     here as every headed harness names it (src/core/headed-window.test.ts). */
+  const acceptanceEvidence = windowFits && acceptanceEvidenceOf(gate);
 
   const out = {
     measurementClass: "LABORATORY — scripted actor, single machine, no CPU/network emulation (host power and cadence recorded in hostPower / presentation). NOT field INP.",
@@ -2021,28 +2350,10 @@ async function main() {
     /* The single field a reader should look at before quoting any number below. */
     acceptanceEvidence,
     acceptanceEvidenceWhy: acceptanceEvidence
-      ? "release bundle, headed browser, hardware renderer — these numbers are about the product."
-      : [
-          LANE === "evidence" ? null : "FLOOR lane: run without ATLAS_HEADLESS=1 for evidence.",
-          server.devServer ? `${APP} serves the Vite DEV bundle, not the release build.` : null,
-          softwareRasteriser
-            ? `renderer is a software rasteriser (${environment?.renderer ?? "unknown"}); the app drops to quality tier "${environment?.quality ?? "unknown"}".`
-            : null,
-          environment === null ? "no renderer could be read from the page." : null,
-          freshness.fresh ? null : `build freshness: ${freshness.why}.`,
-          windowFits ? null : `a headed window is not inside the screen's work area (${JSON.stringify(windowsUsed.map((x) => ({ leg: x.leg, plan: x.plan, window: x.check })))}).`,
-          hostPowerThrottled
-            ? `host on battery or Energy Saver (start ${JSON.stringify(hostPowerAtStart)}, end ${JSON.stringify(hostPowerAtEnd)}); measured 2026-09-22: rAF at a 33.4 ms median and windows that stopped presenting under it.`
-            : null,
-          presentationBelowFullRate
-            ? `the window presented below 50 Hz (slowest journey rAF median ${slowestCadenceMs ?? "unknown"} ms, bar <= ${FULL_RATE_MAX_RAF_MS} ms); a capped cadence changes the E3 picture, not only the numbers.`
-            : null,
-          hostBusy !== null && hostBusy <= MAX_HOST_BUSY_FRACTION
-            ? null
-            : `host was ${hostBusy === null ? "of unknown busyness" : Math.round(hostBusy * 100) + "% busy"} across the run excluding this harness (bar ${MAX_HOST_BUSY_FRACTION * 100}%); these numbers are about the machine as much as the build.`,
-        ]
-          .filter(Boolean)
-          .join(" "),
+      ? "release bundle, headed browser, hardware renderer, declared sample — these numbers are about the product."
+      : `${APP}: ${acceptanceWhyOf(gate)}`,
+    /* The sample this run measured, and how it fell short of the declared one ([] = the declared sample). */
+    sample: { declared: DECLARED_SAMPLE, measured: RUN_SAMPLE, deviations: RUN_SAMPLE_DEVIATIONS, journeysSelected: ONLY },
     /* The machine that produced the numbers. Recorded because the same five journeys measured
        1152 ms and 80 ms on this one machine depending only on these two settings. */
     environment: {
@@ -2060,7 +2371,7 @@ async function main() {
       platform: process.platform,
       capturedAt: new Date().toISOString(),
     },
-    hostPower: { atStart: hostPowerAtStart, atEnd: hostPowerAtEnd, throttled: hostPowerThrottled },
+    hostPower: { atStart: hostPowerAtStart, atEnd: hostPowerAtEnd, known: hostPowerKnown, throttled: hostPowerThrottled },
     window: { screen: screenProbe, plan: windowPlan, check: windowCheck, fits: windowFits, firstPaletteLegs: paletteWindows },
     hostQuiescence: {
       busyFractionOfRun: hostBusy,
@@ -2086,6 +2397,8 @@ async function main() {
       pass: results.filter((r) => r.verdict === "PASS" || r.verdict === "FLOOR-PASS").length,
       fail: results.filter((r) => r.verdict === "FAIL" || r.verdict === "FLOOR-FAIL").length,
       notMeasured: results.filter((r) => r.verdict === "NOT MEASURED").length,
+      /* Verdicts over an overridden sample (SUBSET-…): never a pass, and they keep the exit code non-zero. */
+      subset: results.filter((r) => r.verdict.includes("SUBSET") || r.e3Verdict.includes("SUBSET")).length,
       /* Journeys whose navigation the SERVER failed twice. Counted apart from notMeasured because
          "the app could not be exercised" and "the page was never served" are different findings. */
       transportFailures: results.filter((r) => r.verdict === "TRANSPORT").length,
@@ -2093,21 +2406,17 @@ async function main() {
          still put a 162 ms task on the interaction path, and for as long as this harness reported
          only the first of those, E3 could not go red. */
       e3Pass: results.filter((r) => r.e3Verdict === "E3-PASS").length,
-      e3Fail: results.filter((r) => r.e3Verdict === "E3-FAIL").length,
+      /* An on-path violation observed over a subset is still a violation (a clean subset is not clean). */
+      e3Fail: results.filter((r) => r.e3Verdict === "E3-FAIL" || r.e3Verdict === "E3-SUBSET-FAIL").length,
     },
     e3: {
       criterion: "E3 — no single task exceeds 50 ms on the interaction path.",
       basis:
         "longTasksOver50OnPath: long tasks over 50 ms whose [startTime, startTime+duration] window overlaps an Event Timing interaction in the same journey.",
-      /* PASS only when EVERY journey was measured clean: an under-sampled journey used to be
-         silently absent from this roll-up, so "PASS" could mean "the journeys we saw were clean". */
-      verdict: results.some((r) => r.e3Verdict === "E3-FAIL")
-        ? "FAIL"
-        : results.length > 0 && results.every((r) => r.e3Verdict === "E3-PASS")
-          ? "PASS"
-          : "NOT MEASURED",
+      /* PASS only when EVERY journey was measured clean (see e3RunVerdictOf). */
+      verdict: e3RunVerdictOf(results, RUN_SAMPLE_DEVIATIONS),
       offenders: results
-        .filter((r) => r.e3Verdict === "E3-FAIL")
+        .filter((r) => r.e3Verdict === "E3-FAIL" || r.e3Verdict === "E3-SUBSET-FAIL")
         /* worstMs is the worst ON-PATH task. It used to be the journey's worst task of any kind, so
            the printed "J1 ... worst 8153ms" was an off-path stall reported as the E3 offender. */
         .map((r) => ({
@@ -2148,7 +2457,7 @@ async function main() {
      SERVED build (sha256 of the served index.html, which names the content-hashed chunks), and E3 is
      reported STABLE only when at least E3_MIN_RUNS runs of this exact build were all clean — the
      same repeated-run rule the E4 and E5 sweeps already apply. */
-  const E3_MIN_RUNS = Number(process.env.ATLAS_E3_MIN_RUNS || 3);
+  const E3_MIN_RUNS = RUN_SAMPLE.e3MinRuns;
   let servedBuild = null;
   try {
     const res = await fetch(APP.replace(/\/$/, "") + "/");
@@ -2172,8 +2481,12 @@ async function main() {
       lane: LANE,
       hostBusy,
       hostBusyBasis: hostLoad.excess !== null ? "excess" : "gross",
+      hostPowerKnown,
       hostPowerThrottled,
       presentationBelowFullRate,
+      /* A subset run is recorded, but never counts toward the across-runs verdict (see isQuietRunRecord). */
+      sample: RUN_SAMPLE_DEVIATIONS.length === 0 ? "declared" : "subset",
+      sampleDeviations: RUN_SAMPLE_DEVIATIONS,
       journeys: Object.fromEntries(results.map((r) => [r.id, { e3: r.e3Verdict, onPath: r.longTasksOver50OnPath ?? null, byPhase: r.onPathByPhase ?? null }])),
     };
     const name = `${record.at.replace(/[:.]/g, "-")}-${process.pid}.json`;
@@ -2202,40 +2515,39 @@ async function main() {
      qualifier. Only runs on a quiet host (hostBusy <= MAX_HOST_BUSY_FRACTION) count toward the
      verdict now. Busy runs are still counted and printed, separately, so a reader can see the
      laboratory picture; they just cannot decide the evidence. */
-  const sameBuildAll = history.filter((h) => h.build === servedBuild && h.lane === LANE);
-  /* A quiet run is also one on mains power, presenting at full rate. A record from before the power and
-     cadence fields existed cannot claim either and does not count. */
-  const isQuietRun = (h) =>
-    typeof h.hostBusy === "number" &&
-    h.hostBusy <= MAX_HOST_BUSY_FRACTION &&
-    h.hostPowerThrottled === false &&
-    h.presentationBelowFullRate === false;
-  const sameBuild = sameBuildAll.filter(isQuietRun);
+  /* A SUBSET run (an overridden sample) is neither clean nor a violation of the declared journeys: it is
+     left out of both views below and counted apart. */
+  const subsetRuns = history.filter((h) => h.build === servedBuild && h.lane === LANE && h.sample === "subset").length;
+  const sameBuildAll = history.filter((h) => h.build === servedBuild && h.lane === LANE && h.sample !== "subset");
+  /* A quiet run is also one over the declared sample, on power READ as mains, presenting at full rate.
+     A record from before any of those fields existed cannot claim it and does not count
+     (isQuietRunRecord). */
+  const sameBuild = sameBuildAll.filter((h) => isQuietRunRecord(h, MAX_HOST_BUSY_FRACTION));
   const busyRuns = sameBuildAll.length - sameBuild.length;
   /* NOT MEASURED runs are counted apart, never as violations — see e3StableVerdict. */
-  const verdictOf = (runs, id) => e3StableVerdict(runs, id, E3_MIN_RUNS);
+  /* Over a SUBSET run the across-runs verdicts are spelled SUBSET-… too (V1): ATLAS_E3_MIN_RUNS lowers
+     exactly this threshold, and a run that overrode any part of the sample prints no PASS. */
+  const verdictOf = (runs, id) => e3StableVerdict(runs, id, E3_MIN_RUNS, RUN_SAMPLE_DEVIATIONS);
   out.e3.acrossRuns = {
     build: servedBuild,
     minRuns: E3_MIN_RUNS,
     runs: sameBuild.length,
     busyRunsExcluded: busyRuns,
+    subsetRunsExcluded: subsetRuns,
     maxHostBusyForEvidence: MAX_HOST_BUSY_FRACTION,
     perJourney: Object.fromEntries(results.map((r) => [r.id, verdictOf(sameBuild, r.id)])),
     /* Laboratory only: every run of this build, busy or quiet. Never the verdict. */
     allRunsLaboratory: Object.fromEntries(results.map((r) => [r.id, verdictOf(sameBuildAll, r.id)])),
   };
-  out.e3.stableVerdict = Object.values(out.e3.acrossRuns.perJourney).some((j) => j.stable === "STABLE FAIL" || j.stable === "UNSTABLE")
-    ? "FAIL"
-    : Object.values(out.e3.acrossRuns.perJourney).every((j) => j.stable === "STABLE PASS")
-      ? "PASS"
-      : "INSUFFICIENT RUNS";
+  out.e3.stableVerdict = e3AcrossRunsVerdictOf(out.e3.acrossRuns.perJourney, RUN_SAMPLE_DEVIATIONS);
   writeFileSync(resolve(HERE, "reports", "inp.json"), JSON.stringify(out, null, 1));
   console.log(
     `\n${out.summary.pass} pass, ${out.summary.fail} fail, ${out.summary.notMeasured} NOT MEASURED` +
+      `${out.summary.subset > 0 ? `, ${out.summary.subset} SUBSET (overridden sample: ${RUN_SAMPLE_DEVIATIONS.join("; ")})` : ""}` +
       `${out.summary.transportFailures > 0 ? `, ${out.summary.transportFailures} TRANSPORT (server, not app)` : ""}`,
   );
   console.log(
-    `E3 (no task over 50 ms on the interaction path): ${out.e3.verdict} — ` +
+    `E3 (no task over 50 ms on the interaction path): ${out.e3.verdict}${ONLY ? ` over the selected journeys only (ATLAS_ONLY=${ONLY.join(",")})` : ""} — ` +
       `${out.summary.e3Pass} clean, ${out.summary.e3Fail} violating` +
       `${out.e3.offenders.length ? ": " + out.e3.offenders.map((o) => `${o.id} ${o.onPath} on-path, worst ${o.worstMs}ms`).join("; ") : ""}`,
   );
@@ -2255,7 +2567,7 @@ async function main() {
   console.log(
     `E3 across runs of build ${out.e3.acrossRuns.build ?? "unknown"} (${out.e3.acrossRuns.runs} run(s), need ${E3_MIN_RUNS}): ${out.e3.stableVerdict} — ` +
       Object.entries(out.e3.acrossRuns.perJourney).map(([id, j]) => `${id} ${j.stable} (${j.clean}/${j.measured} measured runs clean${j.notMeasured ? `, ${j.notMeasured} NOT MEASURED` : ""})`).join("; ") +
-      `\n  Counted: quiet-host runs only (host <= ${MAX_HOST_BUSY_FRACTION * 100}% busy); ${busyRuns} busy run(s) of this build excluded; a NOT MEASURED run is neither clean nor a violation.` +
+      `\n  Counted: quiet-host runs only (host <= ${MAX_HOST_BUSY_FRACTION * 100}% busy, power read as mains, presenting at full rate); ${busyRuns} run(s) failing that and ${subsetRuns} SUBSET run(s) of this build excluded; a NOT MEASURED run is neither clean nor a violation.` +
       `\n  LABORATORY, NOT ACCEPTANCE EVIDENCE — all ${sameBuildAll.length} run(s) incl. busy: ` +
       Object.entries(out.e3.acrossRuns.allRunsLaboratory).map(([id, j]) => `${id} ${j.stable} (${j.clean}/${j.measured}${j.notMeasured ? `, ${j.notMeasured} NM` : ""})`).join("; ") +
       "\n  A single run's E3-PASS is a sample; only the across-runs verdict over quiet runs is E3 evidence.",
@@ -2272,15 +2584,15 @@ async function main() {
   console.log(`build: ${freshness.fresh ? "fresh" : "NOT FRESH"} — ${freshness.why}`);
   console.log(`host: ${hostBusy === null ? "unknown" : Math.round(hostBusy * 100) + "%"} busy across the run excluding this harness (gross ${hostLoad.gross === null ? "?" : Math.round(hostLoad.gross * 100) + "%"}, harness ${hostLoad.harness === null ? "?" : Math.round(hostLoad.harness * 100) + "%"} read from its ${hostLoad.method ?? "(unreadable)"}${hostLoad.jobError ? ` [job: ${hostLoad.jobError}]` : ""}, idle baseline before launch ${hostIdleBaseline === null ? "?" : Math.round(hostIdleBaseline * 100) + "%"}) over ${cpus().length} cores (acceptance bar ${MAX_HOST_BUSY_FRACTION * 100}%)`);
   console.log(`presentation: slowest journey rAF median ${slowestCadenceMs ?? "unknown"} ms${presentationBelowFullRate ? ` — BELOW 50 Hz: not acceptance evidence` : ""}`);
-  console.log(`power: ${describePower(hostPowerAtStart)}${hostPowerThrottled ? " — THROTTLED: not acceptance evidence" : ""}`);
+  console.log(
+    `power: ${describePower(hostPowerAtStart)}${hostPowerThrottled ? " — THROTTLED: not acceptance evidence" : hostPowerKnown ? "" : " — NOT KNOWN (the probe could not be read at the start or the end): not acceptance evidence"}`,
+  );
   console.log(`presentation cadence, median rAF ms at journey start/end: ${results.map((r) => `${r.id.split("-")[0]} ${r.presenting?.rafMedianMs ?? "-"}/${r.presentation?.rafIntervalMedianMs ?? "-"}`).join(", ")} (16.7 = 60 Hz, 33.3 = 30 Hz throttled)`);
   console.log(out.measurementClass);
   /* A journey we could not measure is not a pass, and a journey that violated E3 is not a pass
      either — the exit code carries BOTH axes now. It used to carry only the INP verdicts, which is
      what let a run print twelve on-path long tasks over 50 ms and exit 0. */
-  process.exit(
-    out.summary.fail + out.summary.notMeasured + out.summary.transportFailures + out.summary.e3Fail > 0 ? 1 : 0,
-  );
+  process.exit(runExitCodeOf(results));
 }
 
 if (IS_MAIN) await main();

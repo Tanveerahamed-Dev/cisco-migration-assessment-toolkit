@@ -7,7 +7,7 @@
  * class open — the next surface written with the same lines reintroduces it silently — and a grep
  * for `.blur()` both misses `el?.blur?.()` / `el["blur"]()` / `blur.call(el)` and cries wolf on
  * prose and strings. So every source file is compiled into ONE TypeScript program (the project's own
- * tsconfig, imports resolved, as `src/core/band-read.guard.test.ts` does) and four shapes are
+ * tsconfig, imports resolved, as `src/core/band-read.guard.test.ts` does) and six shapes are
  * rejected outside the owner:
  *
  *   1. `blur-call` — ANY call of a `blur` member. `blur()` never moves focus; it removes it, and the
@@ -42,6 +42,36 @@
  *      `visibility: hidden` in shell.css). That one is declared to the owner explicitly (RailB's
  *      `closed`), and is measured, not parsed: `src/app/drawer-focus-return.test.tsx` and the
  *      drawer pass of `review/audit-d3-focus.mjs --sweep`.
+ *   5. `ladder-render-without-layout-door` — a component (the outermost function around the site) that
+ *      RENDERS from the viewport ladder — a JSX expression, or a conditional/`&&`/`if` that yields JSX,
+ *      keyed on a value derived from the ladder owner's hooks (every exported `use*` function of
+ *      src/app/surfaces.tsx — `useLadder`, `useRungIndex` — resolved by symbol, directly or through a
+ *      hook declared in the same file, and through every variable initialised from one) —
+ *      and never calls the owner's FOURTH DOOR (`useReleaseFocusOnLayoutChange`) with an argument
+ *      derived from the ladder. Such a component mounts, unmounts or hides controls on a rung crossing,
+ *      and a control holding focus as it goes leaves focus on <body> with no code of ours running.
+ *      MEASURED (the independent verifier, D3-R2-1, release build): 11 of 74 tab stops lost to <body>
+ *      across 7 rung crossings — the pane switch App.tsx mounts only below 1024 px, the header's More
+ *      popover and inline toolbar (Header.tsx `useCompact`). Shape 4 could not see them: nothing
+ *      carried `hidden`. WHAT THIS SHAPE CANNOT SEE: a ladder value handed to ANOTHER component as a
+ *      prop (PaneSwitch's `showPanes`) is judged in the component that read the ladder, whose door
+ *      covers the whole commit; a layout decided by measurement rather than by the ladder (the queue's
+ *      View fold, a ResizeObserver) is declared to the door by its owner and measured, not parsed:
+ *      `src/app/rung-focus-crossing.test.tsx` and the rung-crossing pass of
+ *      `review/audit-d3-focus.mjs --sweep`, which focuses every tab stop at every rung and crosses to
+ *      each neighbouring rung.
+ *   6. `imperative-hide-without-release` — a hide written from SCRIPT rather than rendered: an
+ *      assignment of `hidden` or `inert` (any value but `false`), `setAttribute("hidden" | "inert", …)`,
+ *      `toggleAttribute("hidden" | "inert"[, force])` (any force but `false`), or a `display` /
+ *      `visibility` style written as `none` / `hidden` / `collapse` (or as a value not known here)
+ *      through `.style.x =` or `.style.setProperty` — on an element whose root symbol no third-door
+ *      call names (the same element binding as shape 4). MEASURED (independent verifier R5-V2):
+ *      FabricLabels.tsx hid a focused off-view pointer with `el.hidden = true` when a resize or a
+ *      re-projection brought its device into view, and handed focus on with a bare `canvas.focus()`
+ *      that never checked the canvas took it; shapes 4 and 5 parse only JSX attributes and
+ *      ladder-keyed renders, so it passed both. WHAT THIS SHAPE CANNOT SEE: a hide made by a class or
+ *      attribute a stylesheet keys on (`classList.add("is-hidden")`, `data-drawer`) — declared to the
+ *      owner and measured in the browser, as for shape 4.
  * Owner calls are resolved by symbol too (an aliased import still counts; a local function that
  * merely shares a name does not).
  *
@@ -64,6 +94,10 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const OWNER = "src/app/focus-return.ts";
+/** The viewport ladder's one owner (`useLadder`, LADDER_REM): shape 5's source of layout values. */
+const LADDER_OWNER = "src/app/surfaces.tsx";
+/** The owner's fourth door: a layout change that takes the focused element away. */
+const LAYOUT_DOOR = "useReleaseFocusOnLayoutChange";
 
 const toPosix = (p: string): string => p.split(sep).join("/");
 const relOf = (abs: string): string => toPosix(relative(ROOT, abs));
@@ -152,7 +186,13 @@ function makeProgram(rels: readonly string[], virtual: ReadonlyMap<string, strin
 export interface Violation {
   file: string;
   line: number;
-  kind: "blur-call" | "isConnected-fallback" | "captured-origin-focus" | "hidden-without-release";
+  kind:
+    | "blur-call"
+    | "isConnected-fallback"
+    | "captured-origin-focus"
+    | "hidden-without-release"
+    | "ladder-render-without-layout-door"
+    | "imperative-hide-without-release";
   /** Whitespace-normalised source of the offending call or condition. */
   text: string;
 }
@@ -212,18 +252,22 @@ export interface Analysis {
   parseError: string | null;
   /** Whether the file calls the owner anywhere (resolved by symbol). */
   ownerCalls: boolean;
+  /** How many ladder-keyed render sites shape 5 inspected (its non-vacuity, from the real tree). */
+  ladderSites: number;
+  /** How many imperative hides shape 6 inspected (its non-vacuity, from the real tree). */
+  imperativeHides: number;
 }
 
 export function analyseFile(program: ts.Program, rel: string): Analysis {
   const sf = program.getSourceFile(absOf(rel));
-  if (sf === undefined) return { violations: [], parseError: "not in the program", ownerCalls: false };
+  if (sf === undefined) return { violations: [], parseError: "not in the program", ownerCalls: false, ladderSites: 0, imperativeHides: 0 };
   const diags = program.getSyntacticDiagnostics(sf);
   if (diags.length > 0) {
     const first = diags[0]!;
     const { line } = sf.getLineAndCharacterOfPosition(first.start ?? 0);
-    return { violations: [], parseError: `line ${line + 1}: ${ts.flattenDiagnosticMessageText(first.messageText, " ")}`, ownerCalls: false };
+    return { violations: [], parseError: `line ${line + 1}: ${ts.flattenDiagnosticMessageText(first.messageText, " ")}`, ownerCalls: false, ladderSites: 0, imperativeHides: 0 };
   }
-  if (rel === OWNER) return { violations: [], parseError: null, ownerCalls: false };
+  if (rel === OWNER) return { violations: [], parseError: null, ownerCalls: false, ladderSites: 0, imperativeHides: 0 };
   const checker = program.getTypeChecker();
   const out: Violation[] = [];
   const lineOf = (n: ts.Node): number => sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
@@ -425,7 +469,185 @@ export function analyseFile(program: ts.Program, rel: string): Analysis {
     n.forEachChild(visit);
   };
   visit(sf);
-  return { violations: out, parseError: null, ownerCalls: contains(sf, callsOwner) };
+
+  /* ── shape 5: a render keyed on the ladder, in a component that never declares the layout door ── */
+  const isFunctionLike = (n: ts.Node): boolean =>
+    ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isMethodDeclaration(n);
+  const declaredAs = (s: ts.Symbol | undefined, file: string, name: string): boolean =>
+    (s?.declarations ?? []).some((d) => relOf(d.getSourceFile().fileName) === file && ts.isFunctionDeclaration(d) && d.name?.text === name);
+  /* The ladder's hooks: every hook the ladder's owner EXPORTS (`useLadder`, `useRungIndex`, and any
+     added later — its public surface, not a list kept here), and every function of this file whose
+     body calls one. */
+  const isOwnerLadderHook = (s: ts.Symbol | undefined): boolean =>
+    (s?.declarations ?? []).some(
+      (d) =>
+        relOf(d.getSourceFile().fileName) === LADDER_OWNER &&
+        ts.isFunctionDeclaration(d) &&
+        d.name !== undefined &&
+        /^use[A-Z]/.test(d.name.text) &&
+        (ts.getCombinedModifierFlags(d) & ts.ModifierFlags.Export) !== 0,
+    );
+  const ladderHooks = new Set<ts.Symbol>();
+  const callsLadderHook = (n: ts.Node): boolean => {
+    if (!ts.isCallExpression(n)) return false;
+    const s = resolved(calleeName(n));
+    return s !== undefined && (ladderHooks.has(s) || isOwnerLadderHook(s));
+  };
+  const localFunctions: { sym: ts.Symbol; body: ts.Node }[] = [];
+  const collectFns = (n: ts.Node): void => {
+    if (ts.isFunctionDeclaration(n) && n.name !== undefined && n.body !== undefined) {
+      const sym = checker.getSymbolAtLocation(n.name);
+      if (sym !== undefined) localFunctions.push({ sym, body: n.body });
+    } else if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer !== undefined) {
+      const init = strip(n.initializer);
+      const sym = checker.getSymbolAtLocation(n.name);
+      if (sym !== undefined && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) localFunctions.push({ sym, body: init.body });
+    }
+    n.forEachChild(collectFns);
+  };
+  collectFns(sf);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const f of localFunctions) {
+      if (!ladderHooks.has(f.sym) && contains(f.body, callsLadderHook)) {
+        ladderHooks.add(f.sym);
+        changed = true;
+      }
+    }
+  }
+  /* Ladder-derived values: every variable initialised from a ladder hook's call or from another. */
+  const ladderValues = new Set<ts.Symbol>();
+  const readsLadder = (n: ts.Node | undefined): boolean =>
+    contains(n, (m) => {
+      if (ts.isIdentifier(m)) {
+        const s = resolved(m);
+        if (s !== undefined && ladderValues.has(s)) return true;
+      }
+      return callsLadderHook(m);
+    });
+  const ladderDecls: ts.VariableDeclaration[] = [];
+  const collectDecls = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && n.initializer !== undefined) {
+      const init = strip(n.initializer);
+      if (!ts.isArrowFunction(init) && !ts.isFunctionExpression(init)) ladderDecls.push(n);
+    }
+    n.forEachChild(collectDecls);
+  };
+  collectDecls(sf);
+  const boundNames = (b: ts.BindingName): ts.Identifier[] =>
+    ts.isIdentifier(b) ? [b] : b.elements.flatMap((e) => (ts.isOmittedExpression(e) ? [] : boundNames(e.name)));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const d of ladderDecls) {
+      if (!readsLadder(d.initializer)) continue;
+      for (const id of boundNames(d.name)) {
+        const s = checker.getSymbolAtLocation(id);
+        if (s !== undefined && !ladderValues.has(s)) {
+          ladderValues.add(s);
+          changed = true;
+        }
+      }
+    }
+  }
+  const callsLayoutDoorOnLadder = (n: ts.Node): boolean =>
+    ts.isCallExpression(n) && declaredAs(resolved(calleeName(n)), OWNER, LAYOUT_DOOR) && readsLadder(n.arguments[0]);
+  const hasJsx = (n: ts.Node | undefined): boolean =>
+    contains(n, (m) => ts.isJsxElement(m) || ts.isJsxSelfClosingElement(m) || ts.isJsxFragment(m));
+  /** The component a site belongs to: the OUTERMOST function around it (a `.map` callback is not one). */
+  const componentOf = (n: ts.Node): ts.Node | null => {
+    let outer: ts.Node | null = null;
+    for (let p: ts.Node | undefined = n.parent; p !== undefined; p = p.parent) if (isFunctionLike(p)) outer = p;
+    return outer;
+  };
+  let ladderSites = 0;
+  const siteVisit = (n: ts.Node, inJsxExpression: boolean): void => {
+    const logical =
+      ts.isBinaryExpression(n) &&
+      (n.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || n.operatorToken.kind === ts.SyntaxKind.BarBarToken);
+    const site =
+      (ts.isJsxExpression(n) && n.expression !== undefined && readsLadder(n.expression)) ||
+      (!inJsxExpression && ts.isConditionalExpression(n) && readsLadder(n.condition) && hasJsx(n)) ||
+      (!inJsxExpression && logical && ts.isBinaryExpression(n) && readsLadder(n.left) && hasJsx(n.right)) ||
+      (ts.isIfStatement(n) && readsLadder(n.expression) && hasJsx(n));
+    if (site) {
+      ladderSites += 1;
+      const component = componentOf(n);
+      if (component !== null && !contains(component, callsLayoutDoorOnLadder)) {
+        out.push({ file: rel, line: lineOf(n), kind: "ladder-render-without-layout-door", text: norm(n.getText(sf)).slice(0, 160) });
+      }
+    }
+    n.forEachChild((c) => siteVisit(c, inJsxExpression || ts.isJsxExpression(n)));
+  };
+  siteVisit(sf, false);
+
+  /* ── shape 6: an IMPERATIVE hide on an element never handed to the third door ── */
+  const HIDING_STYLES: Readonly<Record<string, ReadonlySet<string>>> = {
+    display: new Set(["none"]),
+    visibility: new Set(["hidden", "collapse"]),
+  };
+  /** Can this value hide? `false` cannot; for a style, a string literal outside the hiding values cannot. */
+  const mayHide = (value: ts.Expression | undefined, style: string | null): boolean => {
+    if (value === undefined) return true;
+    return valueSources(value).some((v0) => {
+      const v = strip(v0);
+      if (style === null) return v.kind !== ts.SyntaxKind.FalseKeyword;
+      return !ts.isStringLiteralLike(v) || HIDING_STYLES[style]!.has(v.text.trim().toLowerCase());
+    });
+  };
+  const memberName = (e: ts.Expression): string | null => {
+    const x = strip(e);
+    if (ts.isPropertyAccessExpression(x)) return x.name.text;
+    if (ts.isElementAccessExpression(x) && ts.isStringLiteralLike(x.argumentExpression)) return x.argumentExpression.text;
+    return null;
+  };
+  const objectOf = (e: ts.Expression): ts.Expression | null => {
+    const x = strip(e);
+    return ts.isPropertyAccessExpression(x) || ts.isElementAccessExpression(x) ? x.expression : null;
+  };
+  /** `el.style` -> `el`: the element a style write hides. */
+  const elementOfStyle = (e: ts.Expression | null): ts.Expression | null =>
+    e !== null && memberName(e) === "style" ? objectOf(e) : null;
+  /** The name of the function a site sits in, for a key that does not drift with lines. */
+  const enclosingName = (n: ts.Node): string => {
+    for (let p: ts.Node | undefined = n.parent; p !== undefined; p = p.parent) {
+      if ((ts.isFunctionDeclaration(p) || ts.isMethodDeclaration(p)) && p.name !== undefined) return p.name.getText(sf);
+      if ((ts.isArrowFunction(p) || ts.isFunctionExpression(p)) && ts.isVariableDeclaration(p.parent) && ts.isIdentifier(p.parent.name)) return p.parent.name.text;
+    }
+    return "(module)";
+  };
+  let imperativeHides = 0;
+  const flagImperative = (site: ts.Node, receiver: ts.Expression | null): void => {
+    if (receiver === null) return;
+    imperativeHides += 1;
+    const s = rootSymbol(receiver);
+    if (s !== undefined && doorBound.has(s)) return;
+    out.push({ file: rel, line: lineOf(site), kind: "imperative-hide-without-release", text: `${enclosingName(site)}: ${norm(site.getText(sf))}` });
+  };
+  const imperativeVisit = (n: ts.Node): void => {
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      /* `el.hidden = …`, `el.inert = …`, `el.style.display = …`, `el.style.visibility = …` */
+      const name = memberName(n.left);
+      const obj = objectOf(n.left);
+      if ((name === "hidden" || name === "inert") && mayHide(n.right, null)) flagImperative(n, obj);
+      else if (name !== null && Object.hasOwn(HIDING_STYLES, name) && mayHide(n.right, name)) flagImperative(n, elementOfStyle(obj));
+    } else if (ts.isCallExpression(n)) {
+      /* `el.setAttribute("hidden" | "inert", …)`, `el.toggleAttribute("hidden" | "inert"[, force])`,
+         `el.style.setProperty("display" | "visibility", …)` */
+      const member = calledMember(n);
+      const first = n.arguments[0] === undefined ? null : strip(n.arguments[0]);
+      const attr = first !== null && ts.isStringLiteralLike(first) ? first.text.trim().toLowerCase() : null;
+      const obj = objectOf(n.expression);
+      if ((member === "setAttribute" || member === "toggleAttribute") && (attr === "hidden" || attr === "inert")) {
+        if (member === "setAttribute" || mayHide(n.arguments[1], null)) flagImperative(n, obj);
+      } else if (member === "setProperty" && attr !== null && Object.hasOwn(HIDING_STYLES, attr) && mayHide(n.arguments[1], attr)) {
+        flagImperative(n, elementOfStyle(obj));
+      }
+    }
+    n.forEachChild(imperativeVisit);
+  };
+  imperativeVisit(sf);
+
+  return { violations: out, parseError: null, ownerCalls: contains(sf, callsOwner), ladderSites, imperativeHides };
 }
 
 /* ── off-cluster debt, routed to its owners (ratchet: shrink only) ─────────── */
@@ -440,6 +662,8 @@ const PENDING_ROUTING: readonly { file: string; kind: Violation["kind"]; text: s
   /* Shapes 1-4: none — every off-cluster site routed through the owner (shapes 1-3: merged-tree gate,
      wave 2c; shape 4's three state-driven hides — the queue's Group/Order/Display block, TabPanel and
      Disclosure — engine gate, 2026-09-27). A new entry is debt, never an allowance. */
+  /* Shape 6: none — the dialog stack's two imperative `inert` writes (`inertOutside`'s `visit`, `restack`)
+     now release focus into the top dialog's panel before they land (engine gate, 2026-09-28). */
 ];
 
 const key = (v: { file: string; kind: string; text: string }): string => `${v.file}|${v.kind}|${v.text}`;
@@ -533,6 +757,27 @@ describe("no surface decides focus return on its own (acceptance D3)", () => {
       expect(/\bhidden=\{(?!\s*(?:true|false)\s*\})/.test(text), `${f} carries a state-driven hidden={…}`).toBe(true);
       expect(analysisOf(f).violations.filter((v) => v.kind === "hidden-without-release"), f).toEqual([]);
     }
+  });
+
+  it("shape 5 found what it guards: the ladder's readers render from it and declare the layout door", () => {
+    /* Non-vacuity from the real tree: App.tsx (the pane switch, the rails' hides, data-drawer) and
+       Header.tsx (the More popover / inline toolbar swap) render from the ladder — shape 5 counted
+       those sites — and each declares the fourth door keyed on it. */
+    for (const f of ["src/app/App.tsx", "src/app/Header.tsx"]) {
+      const a = analysisOf(f);
+      expect(a.ladderSites, `${f}: no ladder-keyed render site was found, so shape 5 inspected nothing there`).toBeGreaterThan(0);
+      expect(a.violations.filter((v) => v.kind === "ladder-render-without-layout-door"), f).toEqual([]);
+    }
+  });
+
+  it("shape 6 found what it guards: the fabric's off-view pointer hides imperatively and routes through the third door", () => {
+    /* Non-vacuity from the real tree: FabricLabels.tsx hides a focused pointer with `el.hidden = true`
+       (verifier R5-V2) — shape 6 counted it — and releases it through `releaseFocusFrom` first. */
+    const a = analysisOf("src/fabric3d/FabricLabels.tsx");
+    expect(a.imperativeHides, "shape 6 inspected no imperative hide in FabricLabels.tsx").toBeGreaterThan(0);
+    expect(a.violations.filter((v) => v.kind === "imperative-hide-without-release")).toEqual([]);
+    const total = SOURCES.reduce((n, f) => n + analysisOf(f).imperativeHides, 0);
+    expect(total, "the imperative hides shape 6 inspected across the scanned tree").toBeGreaterThanOrEqual(3);
   });
 
   it("built the scanned sources' program at most once for all of the cases above", () => {
@@ -674,6 +919,142 @@ describe("the guard is live (planted counterexamples, compiled with the real own
           return <aside hidden={!shown} />;
         }`,
       expect: ["hidden-without-release"],
+    },
+    ladderRenderWithoutTheDoor: {
+      /* The pane-switch shape before the fix: a control mounted only at some rungs, no fourth door. */
+      src: `import { useLadder } from "./surfaces";
+        export function Frame() {
+          const ladder = useLadder();
+          const narrow = ladder.singleColumn || ladder.stacked;
+          if (ladder.drawer) return <aside />;
+          return <div>{narrow ? <button>Queue</button> : null}{ladder.stacked && <button>Show</button>}</div>;
+        }`,
+      expect: ["ladder-render-without-layout-door", "ladder-render-without-layout-door", "ladder-render-without-layout-door"],
+    },
+    rungIndexWithoutTheDoor: {
+      /* Any hook the ladder's owner exports counts, not only useLadder by name. */
+      src: `import { useRungIndex } from "./surfaces";
+        export function Frame() {
+          const rung = useRungIndex();
+          return <div data-rung={rung} />;
+        }`,
+      expect: ["ladder-render-without-layout-door"],
+    },
+    ladderThroughALocalHook: {
+      /* The Header shape before the fix: the ladder read through a hook of the same file. */
+      src: `import { useLadder } from "./surfaces";
+        function useCompact(): boolean { const l = useLadder(); return l.stacked || l.singleColumn; }
+        export function Bar() {
+          const compact = useCompact();
+          return compact ? <button>More</button> : <nav><button>Findings</button></nav>;
+        }`,
+      expect: ["ladder-render-without-layout-door"],
+    },
+    ladderWithTheDoor: {
+      src: `import { useLadder } from "./surfaces";
+        import { useReleaseFocusOnLayoutChange } from "./focus-return";
+        function useCompact(): boolean { const l = useLadder(); return l.stacked || l.singleColumn; }
+        export function Bar() {
+          const compact = useCompact();
+          useReleaseFocusOnLayoutChange(compact);
+          return <div data-compact={compact || undefined}>{compact ? <button>More</button> : <nav>{["a"].map((k) => <button key={k}>{k}</button>)}</nav>}</div>;
+        }
+        export function Frame() {
+          const ladder = useLadder();
+          const rung = ladder.stacked ? "stacked" : "wide";
+          useReleaseFocusOnLayoutChange(\`\${rung}|x\`);
+          return ladder.drawer ? <aside /> : null;
+        }`,
+      expect: [],
+    },
+    ladderDoorKeyedOnSomethingElse: {
+      src: `import { useState } from "react";
+        import { useLadder } from "./surfaces";
+        import { useReleaseFocusOnLayoutChange } from "./focus-return";
+        export function Frame() {
+          const ladder = useLadder();
+          const [open] = useState(false);
+          useReleaseFocusOnLayoutChange(open);
+          return ladder.drawer ? <aside /> : null;
+        }`,
+      expect: ["ladder-render-without-layout-door"],
+    },
+    ladderWithANamesakeDoor: {
+      src: `import { useLadder } from "./surfaces";
+        function useReleaseFocusOnLayoutChange(_k: unknown): void {}
+        export function Frame() {
+          const ladder = useLadder();
+          useReleaseFocusOnLayoutChange(ladder.drawer);
+          return ladder.drawer ? <aside /> : null;
+        }`,
+      expect: ["ladder-render-without-layout-door"],
+    },
+    ladderReadButNotRendered: {
+      /* Reading the ladder for a command (App's evidence.toggle) renders nothing from it. */
+      src: `import { useEffect } from "react";
+        import { useLadder } from "./surfaces";
+        export function Frame() {
+          const ladder = useLadder();
+          useEffect(() => { if (ladder.drawer) document.title = "drawer"; }, [ladder.drawer]);
+          return <div />;
+        }`,
+      expect: [],
+    },
+    imperativeHideWithoutRelease: {
+      /* The FabricLabels pointer shape before the fix (verifier R5-V2), in every spelling that stops
+         an element being rendered from script: the property, the attribute, and the two styles. */
+      src: `declare const el: HTMLElement; declare const busy: boolean; declare const v: string;
+        el.hidden = true;
+        el.inert = busy;
+        el["hidden"] = busy;
+        el.setAttribute("hidden", "");
+        el.toggleAttribute("inert");
+        el.style.display = "none";
+        el.style.visibility = v;
+        el.style.setProperty("display", "none");`,
+      expect: [
+        "imperative-hide-without-release",
+        "imperative-hide-without-release",
+        "imperative-hide-without-release",
+        "imperative-hide-without-release",
+        "imperative-hide-without-release",
+        "imperative-hide-without-release",
+        "imperative-hide-without-release",
+        "imperative-hide-without-release",
+      ],
+    },
+    imperativeHideWithTheThirdDoor: {
+      src: `import { releaseFocusFrom } from "./focus-return";
+        export function hidePointer(el: HTMLElement): void {
+          releaseFocusFrom(el, null, []);
+          el.hidden = true;
+        }
+        export function underneath(nodes: HTMLElement[]): void {
+          for (const n of nodes) { releaseFocusFrom(n, null); n.setAttribute("inert", ""); }
+        }`,
+      expect: [],
+    },
+    imperativeShowsAreNotHides: {
+      /* Showing, un-hiding and a style that does not hide are not the class; aria-hidden moves no focus. */
+      src: `declare const el: HTMLElement;
+        el.hidden = false;
+        el.inert = false;
+        el.toggleAttribute("hidden", false);
+        el.removeAttribute("hidden");
+        el.setAttribute("aria-hidden", "true");
+        el.style.display = "block";
+        el.style.visibility = "visible";
+        el.style.setProperty("--pointer-deg", "12deg");`,
+      expect: [],
+    },
+    imperativeHideDoorOnAnotherElement: {
+      /* The door released some OTHER element: this hide is still unreleased (element-bound, as shape 4). */
+      src: `import { releaseFocusFrom } from "./focus-return";
+        export function f(a: HTMLElement, b: HTMLElement): void {
+          releaseFocusFrom(a, null);
+          b.hidden = true;
+        }`,
+      expect: ["imperative-hide-without-release"],
     },
     localNamesakeIsNotTheOwner: {
       src: `declare const el: HTMLElement;

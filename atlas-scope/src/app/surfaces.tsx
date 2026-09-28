@@ -168,6 +168,42 @@ export function useLadder(): Ladder {
   return { drawer: atDrawer && !atReference, singleColumn: atSingle && !atDrawer, stacked: !atSingle };
 }
 
+/** Every edge the owner declares, ascending. */
+const LADDER_EDGES: readonly number[] = Object.values(LADDER_REM).sort((a, b) => a - b);
+
+/**
+ * Which rung of the WHOLE ladder the viewport is on: how many of the owner's edges it has reached,
+ * chained like `useLadder` (0 = below the first edge). Derived from EVERY edge LADDER_REM declares —
+ * the stylesheet-only wide refinement included — so a layout change at any edge is a crossing for
+ * whoever keys on it (App's layout door and its keep-focus-in-view effect). `useLadder` names only the
+ * rungs JavaScript lays out differently; the stylesheet re-flows at every edge. MEASURED (review/
+ * audit-d3-focus.mjs rung-crossing pass, 2026-09-27): at 1920 -> 1440 px a focused "Show the
+ * configuration" in the evidence rail survived the re-flow outside its scroller ("no part of it is on
+ * screen"), because no rung `useLadder` names changes at 1600 px.
+ */
+export function useRungIndex(): number {
+  const subscribe = useCallback((cb: () => void) => {
+    const mqs = typeof window !== "undefined" && window.matchMedia ? LADDER_EDGES.map((e) => window.matchMedia(atLeast(e))) : [];
+    for (const mq of mqs) mq.addEventListener?.("change", cb);
+    /* `resize` as well, for the reason `useAtLeast` gives. */
+    window.addEventListener("resize", cb);
+    return () => {
+      for (const mq of mqs) mq.removeEventListener?.("change", cb);
+      window.removeEventListener("resize", cb);
+    };
+  }, []);
+  const get = useCallback((): number => {
+    if (typeof window === "undefined" || !window.matchMedia) return LADDER_EDGES.length;
+    let n = 0;
+    for (const e of LADDER_EDGES) {
+      if (!window.matchMedia(atLeast(e)).matches) break;
+      n += 1;
+    }
+    return n;
+  }, []);
+  return useSyncExternalStore(subscribe, get, () => LADDER_EDGES.length);
+}
+
 /* ── which single region owns the column below 1024px ──────────────────────── */
 
 export type PaneId = "queue" | "path" | "evidence";
@@ -181,6 +217,13 @@ const PANE_OF_SURFACE: Readonly<Record<SurfaceId, PaneId>> = {
 };
 
 export const paneForSurface = (s: SurfaceId): PaneId => PANE_OF_SURFACE[s];
+
+/** The region each pane of the single-column switch shows — the same regions at every other rung. */
+const PANE_REGION: Readonly<Record<PaneId, string>> = {
+  queue: "#rail-queue",
+  path: "#rail-path",
+  evidence: "#rail-evidence",
+};
 
 /* ── Rail A: the path panel over the queue, with a keyboard-operable splitter ── */
 
@@ -737,6 +780,11 @@ export function Stage({ fabricVisible }: StageProps): ReactElement {
       className={`app__stage${inspectorOpen ? " app__stage--with-inspector" : ""}`}
       tabIndex={-1}
       aria-label="Fabric"
+      /* THE STAGE'S STATED SUCCESSOR (focus-return.ts, fourth door). Below 768 px the stage stops
+         being rendered when the fabric is turned off, taking every fabric control with it — MEASURED
+         '768->390 BUTTON.fabric3d__btn "Legend" -> BODY' on a release build. The fabric is then
+         behind its toggle, so the toggle is where the reader's place in the fabric went. */
+      data-focus-successor=".paneswitch__fabric"
     >
       <ErrorBoundary surface="The 3-D fabric">
         {mounted.current ? (
@@ -852,6 +900,14 @@ export function PaneSwitch({
   const ids = panes.map((p) => p.id);
   const stop = rovingStop(ids, value);
   const groupRef = useRef<HTMLDivElement | null>(null);
+  /* THE SWITCH'S STATED SUCCESSORS (focus-return.ts, fourth door). The radios exist only in the
+     single-column rung: above it every region is side by side, below it every rail is stacked. A
+     crossing that takes a focused radio away leaves the reader where the radio pointed — the region
+     of the pane it chose (MEASURED before: '900->1100 BUTTON.paneswitch__btn "Queue" -> BODY') —
+     and, where that region is not open (the evidence drawer is a closed overlay at 1024-1279 px),
+     the stage. The fabric toggle exists only below 768 px; above it the fabric it stood for is on
+     screen, so the stage is its successor. */
+  const paneSuccessor = `${PANE_REGION[value]}, #stage`;
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>, from: PaneId): void => {
     const next = arrowTarget(ids, from, e.key);
@@ -866,7 +922,13 @@ export function PaneSwitch({
   return (
     <div className="paneswitch">
       {showPanes ? (
-        <div className="paneswitch__group" role="radiogroup" aria-label="Which panel to show" ref={groupRef}>
+        <div
+          className="paneswitch__group"
+          role="radiogroup"
+          aria-label="Which panel to show"
+          ref={groupRef}
+          data-focus-successor={paneSuccessor}
+        >
           {panes.map((p) => (
             <button
               key={p.id}
@@ -890,6 +952,7 @@ export function PaneSwitch({
           className="paneswitch__fabric"
           aria-pressed={fabricVisible}
           onClick={onToggleFabric}
+          data-focus-successor="#stage"
         >
           {fabricVisible ? "Hide the 3-D fabric" : "Show the 3-D fabric"}
         </button>

@@ -24,7 +24,7 @@ import { OPEN_CITE_EVENT } from "../panels/DevicePane";
 import { openInspector, setInspectorCite } from "../panels/Inspector";
 import { flowKey } from "../panels/PathTrace";
 import { Chip } from "../ui/primitives";
-import { handOffFocus, returnFocus } from "./focus-return";
+import { handOffFocus, returnFocus, useReleaseFocusOnLayoutChange } from "./focus-return";
 import { CommandPalette } from "./CommandPalette";
 import {
   announce,
@@ -43,7 +43,7 @@ import { useSceneStats } from "../fabric3d/telemetry";
 import { StatusBar } from "./StatusBar";
 import { setThemePreference } from "./ThemeToggle";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { PaneSwitch, RailA, RailB, Stage, paneForSurface, useLadder, type EvidenceView, type PaneId } from "./surfaces";
+import { PaneSwitch, RailA, RailB, Stage, paneForSurface, useLadder, useRungIndex, type EvidenceView, type PaneId } from "./surfaces";
 import { useUrlSync } from "./urlSync";
 import "./App.css";
 
@@ -403,13 +403,50 @@ export function App(): ReactElement {
      focus once the crossing is settled. Not on the first render: nothing has moved yet. CENTRED,
      not "nearest": measured with "nearest" at 390 px, the radio was scrolled to the bottom edge and
      the sticky status bar painted over it (0/9 hit-test points on it, review/audit-d3-focus.mjs). */
-  const rung = ladder.stacked ? "stacked" : ladder.singleColumn ? "single" : ladder.drawer ? "drawer" : "reference";
+  /* The rung of the WHOLE ladder (every LADDER_REM edge, the stylesheet-only wide one included): the
+     stylesheet re-flows every region at each of them, whether or not JavaScript lays out anything
+     differently there (surfaces.tsx, useRungIndex). */
+  const rung = useRungIndex();
+
+  /** Where focus goes when a rail stops being shown and neither its opener nor the place focus
+   *  came from can take it (focus-return.ts, third door, step c) — and the last resort of the
+   *  layout door below (fourth door, step c). */
+  const railFallbacks = useCallback(() => [document.getElementById("stage"), queryField()], []);
+
+  /* A LAYOUT CHANGE NEVER DROPS FOCUS (acceptance D3, the class the independent verifier named
+     D3-R2-1). A rung crossing mounts and unmounts whole controls — the pane switch exists only below
+     1024 px, its radios only from 768 px, its fabric toggle only below 768 px — and the stage stops
+     being rendered below 768 px when the fabric is off, taking every fabric control with it.
+     MEASURED on a release build: 11 of 74 tab stops lost to <body> across 7 crossings ('900->1100
+     BUTTON.paneswitch__btn "Queue" -> BODY', '768->390 BUTTON.fabric3d__btn "Legend" -> BODY').
+     The frame owns the layout, so the frame declares it to the owner: on every commit that changes
+     the rung or the fabric's visibility, focus the change took away goes to its documented successor
+     (its twin, else the `data-focus-successor` its surface states, else these fallbacks) — never
+     <body>. The owner runs it once the commit's layout effects are done (after the rails' own third
+     doors, which know more); focusing the successor scrolls it into view. The effect below centres
+     focus that SURVIVED the crossing. */
+  useReleaseFocusOnLayoutChange(`${rung}|${fabricVisible ? "fabric" : "no-fabric"}`, railFallbacks);
+
   const lastRung = useRef(rung);
   useLayoutEffect(() => {
     if (lastRung.current === rung) return;
     lastRung.current = rung;
     const a = document.activeElement;
-    if (a instanceof HTMLElement && a !== document.body) a.scrollIntoView?.({ block: "center", inline: "nearest" });
+    if (!(a instanceof HTMLElement) || a === document.body) return;
+    a.scrollIntoView?.({ block: "center", inline: "nearest" });
+    /* AND ONCE THE NEW LAYOUT HAS SETTLED. The crossing's commit is not its last re-flow: MEASURED
+       (review/audit-d3-focus.mjs rung-crossing pass, 390 -> 768 px with a trace open), a focused
+       citation in the path panel was centred in this commit, then the path panel's measured form
+       floor (a ResizeObserver, RailA) re-laid the rail and left it outside the rail's scroller — "no
+       part of it is on screen". So it is checked again two frames later and after the settle the
+       owner allows a slow step (the drawer's 240 ms), and brought back only if it drifted out of view
+       ("nearest": a control still in view does not move under the reader). */
+    const keep = (): void => {
+      if (document.activeElement === a && a.isConnected) a.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    };
+    const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (cb: FrameRequestCallback) => setTimeout(() => cb(0), 16);
+    raf(() => raf(keep));
+    setTimeout(keep, 400);
   }, [rung]);
 
   useEffect(() => {
@@ -505,10 +542,6 @@ export function App(): ReactElement {
       for (const r of release) r();
     };
   }, []);
-
-  /** Where focus goes when a rail stops being shown and neither its opener nor the place focus
-   *  came from can take it (focus-return.ts, third door, step c). */
-  const railFallbacks = useCallback(() => [document.getElementById("stage"), queryField()], []);
 
   const notice = urlProblem !== null && !noticeDismissed ? urlProblem : null;
 

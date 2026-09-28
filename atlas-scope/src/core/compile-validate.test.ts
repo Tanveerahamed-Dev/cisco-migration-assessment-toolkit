@@ -260,33 +260,57 @@ describe("warnings are shown and never block", () => {
 describe("the engine's on-disk form compiles to the same content", () => {
   /* The engine writes `<output>.snapshot.json` compact (separators=(",",":"), ensure_ascii=False) with
      sparsified interfaces (COLLECT_PARSE_V3_23_0.py `write_json_file(..., sparsify_interfaces(snap), compact=True)`).
-     The rule is restated here from cisco_toolkit/html.py `sparsify_interfaces`, and that source line is
-     PINNED below, so a change in the producer's rule fails this test instead of leaving it asserting a
-     rule the engine no longer applies. */
-  const HTML_PY = readFileSync(resolve(REPO, "cisco_toolkit", "html.py"), "utf8");
 
-  it("the producer's sparsify rule is still the one restated here", () => {
+     THE PAIR COMES FROM THE PRODUCER (verifier S1-R2V-1, fixture-must-come-from-real-producer). The first
+     version sparsified the golden with a rule restated here — and the golden (like the sample) carries not
+     one "" interface field and not one run_config_observed:false, so the transform removed NOTHING, its only
+     "it did something" check passed on compaction alone, and a compiler that rendered a sparsified-away field
+     differently from the dense form survived (measured). The fixture below holds the engine's DENSE
+     in-memory interface records (`dataclasses.asdict(InterfaceData.from_sparse(rec))`, exactly how
+     cisco_toolkit/html.py builds the snapshot) and the engine's OWN `sparsify_interfaces` output for them,
+     both produced by running the real Python functions (tools/fixtures/engine-sparse-interfaces.py). The
+     producer's rule is still pinned below, so a change to it fails here and says "regenerate the fixture". */
+  const HTML_PY = readFileSync(resolve(REPO, "cisco_toolkit", "html.py"), "utf8");
+  type Ports = Record<string, Record<string, Record<string, unknown>>>;
+  const FIXTURE = JSON.parse(readFileSync(resolve(PKG, "tools", "fixtures", "engine-sparse-interfaces.json"), "utf8")) as { dense: Ports; sparse: Ports };
+  const records = (d: Ports): [string, string, Record<string, unknown>][] =>
+    Object.entries(d).flatMap(([h, ports]) => Object.entries(ports).map(([p, r]) => [h, p, r] as [string, string, Record<string, unknown>]));
+
+  it("the producer's sparsify rule is still the one the fixture was generated under", () => {
     expect(HTML_PY).toContain('if v != "" and not (k == "run_config_observed" and v is False)}');
   });
 
-  it("a sparse, compact copy of the golden compiles to byte-identical content, apart from the binding", () => {
-    const dense = golden();
-    const sparse = {
-      ...dense,
-      interfaces: Object.fromEntries(
-        Object.entries(dense.interfaces as Record<string, Record<string, Record<string, unknown>>>).map(([h, ports]) => [
-          h,
-          Object.fromEntries(
-            Object.entries(ports).map(([p, rec]) => [p, Object.fromEntries(Object.entries(rec).filter(([k, v]) => v !== "" && !(k === "run_config_observed" && v === false)))]),
-          ),
-        ]),
-      ),
-    };
-    const compactBytes = enc(JSON.stringify(sparse));
-    expect(compactBytes.byteLength).toBeLessThan(GOLDEN_BYTES.byteLength); // the transform did something
+  it("the engine's encoder REALLY removed fields: \"\" values and run_config_observed:false, nothing else", () => {
+    const dense = records(FIXTURE.dense);
+    const sparse = new Map(records(FIXTURE.sparse).map(([h, p, r]) => [`${h}\u0000${p}`, r]));
+    expect(dense.length, "the fixture holds interface records").toBeGreaterThan(0);
+    expect(sparse.size, "the encoder kept every record").toBe(dense.length);
+    const removed: [string, unknown][] = [];
+    for (const [h, p, rec] of dense) {
+      const s = sparse.get(`${h}\u0000${p}`);
+      expect(s, `${h} ${p} is in the sparse form`).toBeDefined();
+      for (const [k, v] of Object.entries(s!)) expect(rec[k], `${h} ${p} ${k}: the sparse value is the dense one`).toEqual(v);
+      for (const [k, v] of Object.entries(rec)) if (!Object.hasOwn(s!, k)) removed.push([k, v]);
+    }
+    expect(removed.filter(([, v]) => v === "").length, 'fields equal to "" the encoder dropped').toBeGreaterThan(0);
+    expect(removed.filter(([k, v]) => k === "run_config_observed" && v === false).length, "run_config_observed:false the encoder dropped").toBeGreaterThan(0);
+    expect(removed.filter(([k, v]) => !(v === "" || (k === "run_config_observed" && v === false))), "anything else dropped").toEqual([]);
+    // Fields the compiler READS were among those dropped — so a reader that mishandles absence would show.
+    const readByCompiler = new Set(["description", "duplex", "speed", "port_type", "link_type", "port_channel", "port_channel_protocol", "status", "run_config_observed", "vlan", "switchport_mode", "acl_in", "acl_out", "forwarding_gate_candidates", "forwarding_gate_unmodeled"]);
+    expect(new Set(removed.map(([k]) => k).filter((k) => readByCompiler.has(k))).size).toBeGreaterThan(3);
+  });
+
+  it("the engine's sparse compact form compiles to content identical to its dense form, apart from the binding", () => {
+    const denseSnap = { ...golden(), interfaces: FIXTURE.dense };
+    const sparseSnap = { ...golden(), interfaces: FIXTURE.sparse };
+    const denseBytes = enc(JSON.stringify(denseSnap, null, 2));
+    const compactBytes = enc(JSON.stringify(sparseSnap));
     const label = { source: "case.json", sourceOrigin: "external-file" } as const;
-    const a = compileAll(assertValidSnapshot(GOLDEN_BYTES).snap, bindSource(GOLDEN_BYTES, label), {});
+    const a = compileAll(assertValidSnapshot(denseBytes).snap, bindSource(denseBytes, label), {});
     const b = compileAll(assertValidSnapshot(compactBytes).snap, bindSource(compactBytes, label), {});
+    // Not vacuous: the compiled model carries the fixture's interfaces, every host and every port.
+    expect(Object.keys(a.fabric.interfaces).sort()).toEqual(Object.keys(FIXTURE.dense).sort());
+    expect(Object.values(a.fabric.interfaces).flat().length).toBe(records(FIXTURE.dense).length);
     const strip = (text: string): unknown => {
       const doc = JSON.parse(text) as { meta: Record<string, unknown> };
       return { ...doc, meta: { ...doc.meta, sourceSha256: null, sourceBytes: null, sourceExactSha256: null, sourceGitBlob: null } };

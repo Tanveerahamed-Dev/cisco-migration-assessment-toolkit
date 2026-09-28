@@ -9,21 +9,41 @@
  *   - the tracked sample (source-binding.mjs SOURCE_REL), no --out: the four tracked files under src/;
  *   - --out <dir>: <dir>/fabric.json, acl-bindings.json, rib-evidence.json, producer-emission.json;
  *   - any other source, no --out: the git-ignored `atlas-scope/.local-data/`;
- *   - --out anywhere inside src/ is REFUSED (E_OUT_REFUSED), whatever the source: the tracked files
- *     are reached only by the default sample run;
- *   - for any source other than the sample, --out anywhere else inside the repository is REFUSED unless
- *     it is under .local-data/ or Git itself reports the directory ignored. The class is "a location Git
- *     would track or Vite would bundle" (public/, review/, docs/, the package root …), not one named
- *     directory; outside the repository the caller owns the location.
- * Containment is decided on the CANONICAL path — the real path of the nearest existing ancestor (case,
- * junctions, 8.3 names resolved) — by whole path segments ("src/..data" is inside src/), and a path
- * component ending in a dot or a space is refused outright: Win32 drops them, so "src./data" can name
- * src/data to one API and a new directory to another.
+ *   - --out anywhere inside src/ — this package's, or the package's src/ in any other work tree of the
+ *     repository — is REFUSED (E_OUT_REFUSED), whatever the source: the tracked files are reached only by
+ *     the default sample run;
+ *   - for any source other than the sample, --out may be ONLY atlas-scope/.local-data/ (or below it) or a
+ *     directory OUTSIDE the repository; every other in-repository location is REFUSED (E_OUT_REFUSED),
+ *     Git-ignored or not. The class is "anywhere in the repository a file can be committed, bundled or
+ *     served" — dist/ (Vite's outDir, which AssessHub serves without its API guard at /scope and the
+ *     portable build ships), public/, review/, node_modules/, src/, docs/, the package root — and it is
+ *     named by the one allowed place rather than by a list of forbidden ones: "Git ignores it" says a file
+ *     will not be COMMITTED, never that it will not be PUBLISHED (refuter X2, verifier S1-R2V-2). Where
+ *     Git owns the tree, .local-data/ must itself be Git-ignored, or a client compile there is refused too.
+ *     Outside the repository the caller owns the location.
+ * "THE REPOSITORY" is every work tree of this Git repository — the main checkout and every linked
+ *   worktree (`git worktree list`), plus its common Git directory — not only the checkout this command runs
+ *   from: from a linked worktree, another checkout's dist/ is served and bundled exactly like this one's
+ *   (verifier R3-V2). Where Git does not own the tree, it is the package's parent directory.
+ * CONTAINMENT is decided by FILE IDENTITY, not by spelling (verifier R3-V1): a destination is inside a
+ * directory when that directory's volume + file index (`stat` dev/ino) is the identity of the destination
+ * or of one of its existing ancestors. Text was not enough: `\\localhost\c$\…\src\data` (an admin share
+ * loopback), `\\127.0.0.1\…`, `\\?\UNC\…`, a `\\?\Volume{…}` path or a Linux bind mount is a SECOND NAME
+ * for the same directory that realpath does not collapse, so a path-text rule called src/data "outside the
+ * repository" and wrote client data over the tracked model. Every existing ancestor of the destination must
+ * have a readable identity, or the destination is refused (it cannot be placed). The whole-segment text
+ * rule is kept alongside ("src/..data" is inside src/) for the part of the path that does not exist yet,
+ * and a path component ending in a dot or a space is refused outright: Win32 drops them, so "src./data"
+ * can name src/data to one API and a new directory to another.
+ * THE TRACKED SET is compiled only from the committed form of the sample: when the default run would
+ * write the four tracked files, a sample whose bytes are not already LF-normalised (a CRLF checkout) is
+ * refused (E_TRACKED_SOURCE_FORM), because the byte-dependent sourceExactSha256 would then record the
+ * checkout's line endings in committed files and the tracked set would differ per clone (verifier R3-V4).
+ * Compiling that checkout elsewhere with --out is allowed.
  *
  * WHICH ORIGIN — "repository-file" is a file GIT TRACKS in this repository (named by its repository
- * path, its exact bytes being the blob Git stores); any other file — including an untracked or ignored
- * one inside the repository — is an "external-file", named by its file name and bound to the bytes as
- * read. Where Git does not own the tree at all (a copied package, a sandbox) there is no tracked/untracked
+ * path); any other file — including an untracked or ignored one inside the repository — is an
+ * "external-file", named by its file name. Either way sourceExactSha256 is taken over the bytes as read. Where Git does not own the tree at all (a copied package, a sandbox) there is no tracked/untracked
  * distinction to draw, and containment in the tree decides.
  *
  * ATOMICITY. The set is compiled in memory, written to a staging directory beside its destination
@@ -51,7 +71,7 @@ const USAGE = `usage: node tools/compile-all.mjs [--source <snapshot.json>] [--o
   --source <file>  the engine snapshot to compile (default: the tracked sample, ${SOURCE_REL})
   --out <dir>      where to write the four files (default: the tracked files for the sample,
                    atlas-scope/.local-data/ for anything else). Never inside src/; for anything but
-                   the sample, never a repository directory Git does not ignore
+                   the sample, only .local-data/ or a directory outside the repository
   --label <name>   the file name recorded as meta.source for a file Git does not track
   --allow-legacy   read a snapshot with no schema tag as collect_parse_snapshot/1, and say so in meta`;
 
@@ -126,22 +146,124 @@ function canonicalPath(p, what) {
 }
 
 /**
+ * A path's identity — its volume and file index as the OS reports them — or null when it cannot be read
+ * (absent, unreadable, or a file system that reports no file index). Two spellings of one directory
+ * (`C:\r\src`, `\\localhost\c$\r\src`, `\\?\Volume{…}\r\src`) have ONE identity.
+ * @param {string} p
+ */
+function identityOf(p) {
+  try {
+    const s = statSync(p, { bigint: true });
+    return s.ino === 0n ? null : `${s.dev}:${s.ino}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where a canonical destination is, as a predicate `inside(dir)`: true when `dir` is the destination or one
+ * of its ancestors — by identity for every existing ancestor, and by whole path segments for the part that
+ * does not exist yet. Refuses (E_OUT_REFUSED) a destination one of whose existing ancestors has no readable
+ * identity: such a destination cannot be placed, so it is not written.
+ * @param {string} canon  canonical destination (see canonicalPath)
+ * @param {string} given  the destination as the caller spelled it (named in a refusal)
+ * @returns {(dir: string) => boolean}
+ */
+function placeOf(canon, given) {
+  /* Every existing ancestor of the destination, by identity, with the path segments BELOW it that lead to the
+     destination (a destination that does not exist yet has a tail of segments still to be created). */
+  let cur = canon;
+  /** @type {string[]} */
+  let tail = [];
+  while (!existsSync(cur) && dirname(cur) !== cur) {
+    tail = [basename(cur), ...tail];
+    cur = dirname(cur);
+  }
+  /** @type {Map<string, string[]>} identity -> segments from that ancestor down to the destination */
+  const chain = new Map();
+  for (;;) {
+    const id = identityOf(cur);
+    if (id === null) {
+      throw new CompileError(
+        "E_OUT_REFUSED",
+        `--out ${given} cannot be placed: the file system does not report an identity for its ancestor ${basename(cur) || cur}, ` +
+          `so whether it is inside the repository cannot be decided. Compile to .local-data/ (the default) or to another directory.`,
+      );
+    }
+    if (!chain.has(id)) chain.set(id, tail);
+    const up = dirname(cur);
+    if (up === cur) break;
+    tail = [basename(cur), ...tail];
+    cur = up;
+  }
+  /* Segment comparison for the part that does not exist yet: case-insensitive on Windows, where "SRC" and
+     "src" would be created as one directory. */
+  const same = process.platform === "win32" ? (/** @type {string} */ a, /** @type {string} */ b) => a.toLowerCase() === b.toLowerCase() : (/** @type {string} */ a, /** @type {string} */ b) => a === b;
+  return (dir) => {
+    if (within(dir, canon)) return true;
+    /* `dir` itself may not exist yet (a fresh .local-data/): place its nearest existing ancestor by identity,
+       then require the destination's remaining segments to begin with dir's. */
+    let anchor = resolve(dir);
+    /** @type {string[]} */
+    let rest = [];
+    while (!existsSync(anchor) && dirname(anchor) !== anchor) {
+      rest = [basename(anchor), ...rest];
+      anchor = dirname(anchor);
+    }
+    const id = identityOf(anchor);
+    const below = id === null ? undefined : chain.get(id);
+    return below !== undefined && rest.length <= below.length && rest.every((s, i) => same(s, /** @type {string} */ (below[i])));
+  };
+}
+
+/**
  * What Git says about this repository — or null where Git does not own it (no Git, not a work tree, or a
  * work tree whose top level is not this repository, e.g. a sandbox copy under a directory that is one).
  * @param {string} repo  canonical repository root
  */
 function gitContext(repo) {
+  /** @param {string} cwd @param {string[]} args */
+  const gitIn = (cwd, args) => spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   /** @param {string[]} args */
-  const git = (args) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const git = (args) => gitIn(repo, args);
   const top = git(["rev-parse", "--show-toplevel"]);
   if (top.error || top.status !== 0) return null;
   const topDir = top.stdout.trim();
   if (topDir === "" || !existsSync(topDir) || relative(realpathSync.native(topDir), repo) !== "") return null;
+  /** The common Git directory of the repository `cwd` belongs to, absolute — or null outside any. @param {string} cwd */
+  const commonDirOf = (cwd) => {
+    const r = gitIn(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    const d = r.error || r.status !== 0 ? "" : r.stdout.trim();
+    return d === "" ? null : resolve(d);
+  };
+  const commonDir = commonDirOf(repo);
+  if (commonDir === null) return null;
+  const listed = git(["worktree", "list", "--porcelain"]);
+  if (listed.error || listed.status !== 0) {
+    throw new CompileError("E_OUT_REFUSED", `git could not list this repository's work trees (${listed.stderr.trim()}), so an --out cannot be placed.`);
+  }
+  const worktrees = listed.stdout
+    .split(/\r?\n/)
+    .filter((l) => l.startsWith("worktree "))
+    .map((l) => resolve(l.slice("worktree ".length)));
   return {
     /** Whether Git tracks the repository-relative POSIX path `rel`. @param {string} rel */
     tracked: (rel) => git(["ls-files", "--error-unmatch", "--", rel]).status === 0,
     /** Whether Git ignores the repository-relative directory `rel` (which need not exist). @param {string} rel */
     ignoredDir: (rel) => rel !== "" && git(["check-ignore", "-q", "--", `${rel}/`]).status === 0,
+    /** Every work tree of this repository (this one included) and its common Git directory. */
+    roots: [...new Set([repo, ...worktrees, commonDir])],
+    /**
+     * Whether the existing directory `dir` belongs to a work tree of THIS repository, whatever it is listed as:
+     * Git is asked from inside it, and its common Git directory is compared by identity with ours.
+     * @param {string} dir
+     */
+    sameRepository: (dir) => {
+      const theirs = commonDirOf(dir);
+      if (theirs === null) return false;
+      const a = identityOf(theirs);
+      return a !== null && a === identityOf(commonDir);
+    },
   };
 }
 
@@ -176,23 +298,50 @@ export function compileToDisk(o) {
   const localData = join(pkg, ".local-data");
   /** @type {string | undefined} */
   let outDir;
+  /** Whether the destination is inside `dir` (by identity; see the header). Only set with --out. */
+  let inside = (/** @type {string} */ _dir) => false;
   if (o.out !== undefined) {
     outDir = canonicalPath(o.out, "--out");
-    if (within(srcDir, outDir)) {
+    inside = placeOf(outDir, o.out);
+    /* Every work tree of the repository (see the header, "THE REPOSITORY"), and the package's src/ in each. */
+    const roots = git === null ? [repo] : git.roots;
+    const pkgRel = relative(repo, pkg);
+    const srcDirs = roots.map((r) => join(r, pkgRel, "src"));
+    if (srcDirs.some(inside)) {
       throw new CompileError(
         "E_OUT_REFUSED",
-        `--out ${o.out} is inside ${posix(relative(repo, srcDir))}/, whose compiled files are tracked in Git. The tracked files are ` +
-          `written only by the default sample run; compile anything else to a directory outside src/ (default: .local-data/).`,
+        `--out ${o.out} is inside ${posix(relative(repo, srcDir))}/ (of this or another work tree of the repository), whose compiled ` +
+          `files are tracked in Git. The tracked files are written only by the default sample run; compile anything else to a ` +
+          `directory outside src/ (default: .local-data/).`,
       );
     }
-    if (!isSample && within(repo, outDir) && !within(localData, outDir) && !(git !== null && git.ignoredDir(posix(relative(repo, outDir))))) {
+    /* The one in-repository place a client compile may go is THIS package's .local-data/. Anything else inside a
+       work tree of the repository — by identity, or because Git run from inside it names our common directory —
+       is refused. The nearest existing ancestor is what Git is asked about (the destination may not exist yet). */
+    let probe = outDir;
+    while (!existsSync(probe) && dirname(probe) !== probe) probe = dirname(probe);
+    const inRepository = roots.some(inside) || (git !== null && git.sameRepository(probe));
+    if (!isSample && inRepository && !inside(localData)) {
       throw new CompileError(
         "E_OUT_REFUSED",
-        `--out ${o.out} is inside the repository and Git does not ignore it${git === null ? " (Git does not own this tree, so only .local-data/ is known to be ignored)" : ""}: ` +
-          `a compiled assessment there is one \`git add\` — or one build of a bundled directory — away from publishing client data. ` +
-          `Compile it to ${posix(relative(repo, localData))}/ (the default), a Git-ignored directory, or a directory outside the repository.`,
+        `--out ${o.out} is inside the repository and is not ${posix(relative(repo, localData))}/: a compiled assessment anywhere else ` +
+          `in the repository is one \`git add\`, one build or one served directory away from publishing client data — dist/ ` +
+          `(served at /scope and bundled onto the portable stick), public/, review/, node_modules/ and src/ included, Git-ignored or ` +
+          `not (ignored says "not committed", never "not published"). Compile it to ${posix(relative(repo, localData))}/ (the default) ` +
+          `or to a directory outside the repository.`,
       );
     }
+  }
+  /* The one in-repository destination a client compile may use is itself CHECKED, not assumed: where Git owns
+     the tree, .local-data/ must be one Git ignores, or the default run would leave the model one `git add`
+     from the history. */
+  const landsInLocalData = !isSample && (outDir === undefined || inside(localData));
+  if (landsInLocalData && git !== null && !git.ignoredDir(posix(relative(repo, localData)))) {
+    throw new CompileError(
+      "E_OUT_REFUSED",
+      `${posix(relative(repo, localData))}/ is not ignored by Git in this repository, so a client compile there could be committed. ` +
+        `Restore its .gitignore entry, or compile to a directory outside the repository with --out.`,
+    );
   }
   /** Every output's destination, before `only` narrows what this run writes. */
   const allTargets = OUTPUTS.map((t) => ({
@@ -222,6 +371,19 @@ export function compileToDisk(o) {
   const bytes = readFileSync(sourcePath);
   const v = assertValidSnapshot(bytes, { allowLegacy: o.allowLegacy === true });
   const binding = bindSource(bytes, label);
+  /* The TRACKED set is compiled from the committed form only (see the header, THE TRACKED SET): the bytes as
+     read must already be LF-normalised, so the one byte-dependent key equals the committed form's digest. */
+  const writesTracked = isSample && outDir === undefined;
+  if (writesTracked && binding.sourceExactSha256 !== `sha256:${binding.sourceSha256}`) {
+    throw new CompileError(
+      "E_TRACKED_SOURCE_FORM",
+      `${repoRel} on disk is not in its committed (LF) form — this checkout renders it with CRLF line endings — so the ` +
+        `tracked compiled files would record this checkout's bytes (sourceExactSha256 ${binding.sourceExactSha256.slice(0, 19)}…, ` +
+        `committed form sha256:${binding.sourceSha256.slice(0, 12)}…) and differ from every other clone's. Check the sample out ` +
+        `with LF line endings (an eol=lf attribute for it, or core.autocrlf=false, then a fresh checkout of that one file), ` +
+        `or compile this checkout elsewhere with --out. Nothing was written.`,
+    );
+  }
   const set = compileAll(v.snap, binding, { schemaAssumed: v.schemaAssumed });
   const texts = serialiseCompiled(set);
 

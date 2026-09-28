@@ -593,7 +593,7 @@ describe("the panel is a dock, not a detour", () => {
   });
 
   it("falls back to the current selection when opened with no citation of its own", () => {
-    act(() => useInvestigation.getState().selectFinding(FIRST_FINDING.id));
+    act(() => { useInvestigation.getState().selectFinding(FIRST_FINDING.id); });
     const c = mount(<Inspector forceOpen />);
     expect(text(c.querySelector(".inspector__head"))).toContain(FIRST_FINDING.cite);
   });
@@ -651,7 +651,7 @@ describe("closing the Inspector never drops focus to <body> (D3)", () => {
     return b;
   };
   const setOpen = (v: boolean): void => {
-    act(() => useInvestigation.getState().setInspectorOpen(v));
+    act(() => { useInvestigation.getState().setInspectorOpen(v); });
   };
 
   it("returns to the element focused when it opened, even when opened without openInspector (the `i` path)", () => {

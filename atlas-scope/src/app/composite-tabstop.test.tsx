@@ -200,7 +200,7 @@ function unreachableItems(c: HTMLElement, reopen?: () => boolean): string[] {
   for (const [gi, [role, label]] of groups.entries()) {
     const last = gi === groups.length - 1;
     if (label === null) continue;
-    act(() => useInvestigation.getState().hydrate(initial));
+    act(() => { useInvestigation.getState().hydrate(initial); });
     const find = (): HTMLElement | null =>
       [...c.querySelectorAll<HTMLElement>(`[role="${role}"]`)].find((x) => x.getAttribute("aria-label") === label && rendered(x)) ?? null;
     /* A popover closes when focus leaves it (walking the previous group does that); its opener is
@@ -404,7 +404,7 @@ const STATES: readonly (readonly [string, string, (() => boolean)?])[] = [
   ["a device selected", "d=core1&s=fabric"],
   ["a finding selected", `f=${encodeURIComponent(firstFinding)}&s=findings`],
   ["a traced flow", `s=path&flow=${encodeURIComponent(FLOW)}`],
-  ["the command palette open", "", () => (act(() => useInvestigation.getState().setPaletteOpen(true)), true)],
+  ["the command palette open", "", () => (act(() => { useInvestigation.getState().setPaletteOpen(true); }), true)],
   ["the inspector open from a citation", `f=${encodeURIComponent(firstFinding)}&s=findings`, clickFirst("button.ui-cite")],
   ["the More popover open on Path", "s=path", clickFirst("button.hdr-more")],
   /* Every Device-evidence tab (W6 gate, 2026-09-25). The census used to visit the device pane on its

@@ -444,6 +444,10 @@ export function Fabric3D({
 
   const theme = useTheme();
   const reducedMotion = useReducedMotion();
+  /* The scene reads the preference once at construction through this ref; a later toggle reaches the
+     running scene through `setReducedMotion` (below), never by rebuilding it. */
+  const reducedMotionRef = useRef(reducedMotion);
+  reducedMotionRef.current = reducedMotion;
 
   const hover = useMemo<HoverChannel>(() => createHoverChannel(), []);
   const layout = useMemo(() => computeLayout({ devices, links, tiers }), [devices, links, tiers]);
@@ -562,9 +566,10 @@ export function Fabric3D({
    * failure is silent. One canvas per scene instance makes the double-invoke safe by construction,
    * and removing it on cleanup is what proves no context leaked.
    *
-   * `reducedMotion` is a dependency because the contract exposes no setter for it and a stale
-   * motion preference is an accessibility defect; the lost camera pose on that rare OS change is
-   * the cheaper of the two costs.
+   * `reducedMotion` is deliberately NOT a dependency: the scene is built with the preference current at
+   * construction (read through `reducedMotionRef`), and a later toggle reaches the running scene through
+   * its `setReducedMotion` (the effect after this one). Rebuilding the scene on a toggle would take a
+   * running tier cross-fade down with the canvas in one frame (C5-R2-1).
    */
   useEffect(() => {
     const slot = canvasSlotRef.current;
@@ -593,7 +598,7 @@ export function Fabric3D({
           links: o.links,
           layout: o.layout,
           theme: o.theme,
-          reducedMotion,
+          reducedMotion: reducedMotionRef.current,
           ...(o.quality ? { quality: o.quality } : {}),
         },
         { onEvent },
@@ -850,7 +855,12 @@ export function Fabric3D({
       scene.dispose();
       canvas.remove();
     };
-  }, [onEvent, hover, helpId, reducedMotion, mapsReady]);
+  }, [onEvent, hover, helpId, mapsReady]);
+
+  /* A reduced-motion toggle reaches the running scene by exactly one route: its setter. */
+  useEffect(() => {
+    sceneRef.current?.setReducedMotion(reducedMotion);
+  }, [reducedMotion]);
 
   /* ── data: replaced imperatively, never by rebuilding the scene ──────────── */
 
@@ -1205,9 +1215,10 @@ export function Fabric3D({
     sceneRef.current?.focusDevice(id);
   }, []);
 
-  const focusCanvas = useCallback(() => {
-    canvasRef.current?.focus({ preventScroll: true });
-  }, []);
+  /* The pointer layer's stated successor when a focused off-view pointer leaves the stage: the canvas,
+     now framing the device the pointer named. Stated, not focused here: FabricLabels hands it to
+     focus-return.ts's third door, which checks it really took focus and falls through otherwise. */
+  const pointerSuccessors = useCallback((): readonly (HTMLElement | null)[] => [canvasRef.current], []);
 
   const tierLabel = qualityTier ?? "probing";
   /* A reduced tier and a standing budget breach are both "this frame is not what the design
@@ -1260,7 +1271,7 @@ export function Fabric3D({
         coordinateSpace="canvas"
         /* An off-view pointer the reader activated leaves as its host comes into view; the focus it
            held goes to the canvas, which is now framing that host (acceptance D3: never to <body>). */
-        onPointerFocusLost={focusCanvas}
+        onPointerFocusLost={pointerSuccessors}
       />
 
       <div className="fabric3d__hud" data-label-keepout="">

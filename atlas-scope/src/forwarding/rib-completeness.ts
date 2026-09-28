@@ -10,14 +10,23 @@
  *  - `protocol_assessability.rows`: for each routing-protocol family (the producer's own routing
  *    vocabulary — the keys of its `routing_neighbors` records), what the engine's receipt
  *    (cisco_toolkit/analyze.py compute_protocol_assessability) says was collected on this host.
- *    `assessed` means a neighbor state parsed from usable current-run output. `captured_empty`
- *    means the neighbor table was captured and holds nothing — no adjacency, so the family teaches
- *    this host no routes; that is POSITIVE evidence of absence, and it is the only state read so
- *    (the producer always names ospf/eigrp/bgp, so demanding `assessed` for all three demanded that
- *    every router run all three protocols). Every other state — `captured_no_record` (output
- *    present but nothing parsed: a parser gap is as likely as an idle protocol), `partial`,
- *    `capture_error`, `not_collected`, `analysis_unavailable`, a missing row or a state this code
+ *    `assessed` means a neighbor state parsed from usable current-run output. A family teaches this
+ *    host no routes ONLY on POSITIVE evidence of absence: `captured_empty` (the neighbor table was
+ *    captured and holds nothing) or `not_running` (the capture is the platform's no-process banner,
+ *    e.g. IOS `% BGP not active`) — the owner's rule, honoured only while the engine's own state
+ *    vocabulary (`contracts/engine-contract.v1.json`, generated from cisco_toolkit) still declares
+ *    each state. The producer always names ospf/eigrp/bgp, so demanding `assessed` for all three
+ *    demanded that every router run all three protocols. Every other state — `captured_no_record`
+ *    (output present but nothing parsed: a parser gap is as likely as an idle protocol), `partial`,
+ *    `capture_error`, `not_collected`, `analysis_unavailable`, a missing row, or a state this code
  *    has never seen — leaves what the family installs unknown, and is a reason citing its row;
+ *  - the routes themselves: a route learned by a protocol OUTSIDE the receipted vocabulary (IS-IS,
+ *    RIP, LISP, NHRP, mobile, ODR, or any code the engine's route parser passes through unmapped) has
+ *    no collection receipt at all, so what that protocol installs is unknown — a reason naming the
+ *    source as the engine recorded it. The set is the COMPLEMENT of the receipted families and of the
+ *    sources the table itself evidences (connected, local, static), never a list of protocols: the
+ *    parser's vocabulary is open (2026-09-27 verifier, E2R2-V1: an IS-IS host whose three receipted
+ *    families were captured empty read complete);
  *  - control-plane evidence the table does not reflect: an established overlay peer reporting
  *    received prefixes, an adjacency exchanging routes (OSPF `FULL`, a listed EIGRP neighbor
  *    `up …`, a BGP peer whose State/PfxRcd is a positive count — a number IS the Established
@@ -27,7 +36,8 @@
  *    BGP peer in the Established state — any State/PfxRcd count, 0 included) exists only over a path
  *    to the neighbour: when the record names the interface it formed on, the table must hold a
  *    connected route on that interface covering the neighbour's link address; when it names none
- *    (BGP), some route in the table must at least cover the peer. A table that does not is missing
+ *    (BGP), some route OTHER THAN THE DEFAULT must cover the peer — a default covers every address,
+ *    so it is no evidence of a path to this one (2026-09-27 verifier, E2R2-V2). A table that does not is missing
  *    that link AND whatever the session teaches. A per-family test ("the table holds SOME OSPF
  *    route") let routes learned over one adjacency vouch for another: on the substrate fleet,
  *    core1's OSPF routes from dist1 cancelled its FULL/DR neighbour 10.0.99.2 on Po1, whose link
@@ -43,6 +53,7 @@
  * whole. (2026-09-21 critic, B1 blocker: core2's four-route table decided 60 "no counterexample"
  * drops while the snapshot recorded OSPF/BGP/EIGRP not_collected and a 240-prefix EVPN peer.)
  */
+import engineContract from "../../contracts/engine-contract.v1.json";
 import evidenceJson from "./rib-evidence.json";
 import { fabric, routesOf } from "../core/data";
 import { sameSourceBinding, type Cite, type SourceBinding } from "../core/types";
@@ -84,6 +95,30 @@ interface EvidenceFile {
 }
 
 const FILE = evidenceJson as unknown as EvidenceFile;
+
+/** The engine's own protocol-assessability state vocabulary, read from the contract generated from
+ *  cisco_toolkit (`contracts/engine-contract.v1.json`; `tests/test_engine_contract_projection.py` pins it to
+ *  `analyze.PROTOCOL_ASSESSABILITY_STATES`). A malformed contract yields no vocabulary. */
+export function engineAssessabilityStates(contract: unknown): ReadonlySet<string> {
+  const states = (contract as { protocol_assessability_states?: unknown } | null | undefined)?.protocol_assessability_states;
+  return new Set(Array.isArray(states) ? states.filter((x): x is string => typeof x === "string") : []);
+}
+export const ENGINE_ASSESSABILITY_STATES = engineAssessabilityStates(engineContract);
+
+/* What counts as POSITIVE evidence that a family has no adjacency on a host — and so installs no learned
+   route there — is the owner's rule (2026-09-27, R2 RULE): a neighbour table captured and empty, or the
+   platform's no-process banner. Nothing else: output that parsed to nothing, an error, an uncollected
+   command and any state this code has never seen all stay UNKNOWN. A state counts only while the ENGINE's
+   vocabulary still declares it, so a renamed or retired engine state stops vouching for anything (fail
+   closed) instead of silently matching nothing. */
+const POSITIVE_ABSENCE = ["captured_empty", "not_running"] as const;
+export const RIB_ABSENCE_STATES: ReadonlySet<string> = new Set(
+  POSITIVE_ABSENCE.filter((s) => ENGINE_ASSESSABILITY_STATES.has(s)),
+);
+
+/** Route sources whose presence the table itself evidences: an interface's own subnet and address, and
+ *  configured statics. Every OTHER source is learned from a peer and needs a collection receipt. */
+const SELF_EVIDENT_SOURCES = new Set(["connected", "local", "static"]);
 
 /** The sidecar is evidence only about the bytes it was compiled from: every binding field must
  *  agree — digest, its form, byte length and source (O15, `sameSourceBinding`). */
@@ -149,10 +184,20 @@ function sameInterface(a: string, b: string): boolean {
   return x.num === y.num && (x.name.startsWith(y.name) || y.name.startsWith(x.name));
 }
 
-/** The one assessability state that is positive evidence a family teaches this host no routes. */
-const NEIGHBOR_TABLE_EMPTY = "captured_empty";
+/** What an absence state says, for a family `P` on `host` ("the P neighbor table was captured on host
+ *  and is empty"). A state the contract names but this code has no phrasing for is quoted as-is. */
+function absenceClause(protocol: string, state: string, host: string): string {
+  switch (state) {
+    case "captured_empty":
+      return `the ${protocol} neighbor table was captured on ${host} and is empty`;
+    case "not_running":
+      return `no ${protocol} process is running on ${host} (its capture is the platform's no-process banner)`;
+    default:
+      return `the engine records ${protocol} as ${state.replace(/_/g, " ")} on ${host}`;
+  }
+}
 
-/** Why a protocol row that is not `assessed` / `captured_empty` leaves the table's completeness unknown. */
+/** Why a protocol row that is neither `assessed` nor an absence state leaves the table's completeness unknown. */
 function unknownStateLabel(protocol: string, state: string | null, host: string): string {
   switch (state) {
     case "captured_no_record":
@@ -203,7 +248,12 @@ function linkReason(a: Adjacency, host: string, routes: ReturnType<typeof routes
     if (held) return null;
     return `${head}, yet the table holds no connected route on ${intf} covering its address ${addrText} — the link that adjacency runs over, and whatever it teaches, are missing from the table`;
   }
-  if (routes.some((r) => covers(r.prefix))) return null;
+  const covering = routes.filter((r) => covers(r.prefix));
+  if (covering.some((r) => parsePrefix(r.prefix)?.bits !== 0)) return null;
+  const dflt = covering[0];
+  if (dflt !== undefined) {
+    return `${head}, yet no route in the table other than the default (${dflt.cite}) covers ${addrText} — a default covers every address, so it is no evidence of a path to this peer`;
+  }
   return `${head}, yet no route in the table covers ${addrText} — the session could not be up over the table as collected`;
 }
 
@@ -258,11 +308,11 @@ function computeReasons(host: string): Reason[] {
     const row = ev?.protocols.find((p) => p.protocol.toLowerCase() === proto);
     if (row === undefined) {
       out.push({ label: `no ${proto.toUpperCase()} collection receipt exists for ${host}`, cite: "protocol_assessability", family: proto });
-    } else if (row.state === NEIGHBOR_TABLE_EMPTY) {
+    } else if (row.state !== null && RIB_ABSENCE_STATES.has(row.state)) {
       const held = routeOf(proto);
       if (held !== undefined) {
         out.push({
-          label: `the ${row.protocol} neighbor table was captured on ${host} and is empty, yet the table holds ${article(row.protocol)} ${row.protocol} route (${held.cite}) — the two captures disagree, so what ${row.protocol} installs is unknown`,
+          label: `${absenceClause(row.protocol, row.state, host)}, yet the table holds ${article(row.protocol)} ${row.protocol} route (${held.cite}) — the two captures disagree, so what ${row.protocol} installs is unknown`,
           cite: row.cite,
           family: proto,
         });
@@ -270,6 +320,24 @@ function computeReasons(host: string): Reason[] {
     } else if (row.state !== "assessed") {
       out.push({ label: unknownStateLabel(row.protocol, row.state, host), cite: row.cite, family: proto });
     }
+  }
+  /* A route learned by a protocol with no receipt at all: the complement of the receipted families and the
+     self-evident sources, so an open parser vocabulary can never slip a protocol past this check. */
+  const unreceipted = new Map<string, (typeof routes)[number]>();
+  for (const r of routes) {
+    const source = (r.source ?? "").trim().toLowerCase();
+    if (SELF_EVIDENT_SOURCES.has(source)) continue;
+    const fam = source.split("-")[0] ?? "";
+    if (fam !== "" && vocab.includes(fam)) continue;
+    if (!unreceipted.has(fam)) unreceipted.set(fam, r);
+  }
+  for (const [fam, r] of unreceipted) {
+    const named = r.source === null || r.source.trim() === "" ? "an unrecorded source" : `"${r.source.trim()}"`;
+    out.push({
+      label: `the table holds a route whose source is ${named} (${r.cite}), a protocol with no collection receipt in the snapshot (its receipted routing families are ${vocab.join(", ")}), so what it installs on ${host} is unknown`,
+      cite: r.cite,
+      family: fam === "" ? null : fam,
+    });
   }
   /* One reason per session — the first contradiction found: a session exchanging routes while the
      table holds none of its family (the kept rule), then, per adjacency, a session whose link the
@@ -309,9 +377,10 @@ export interface RibCompletenessBasis {
 /**
  * For each family of the snapshot's routing vocabulary that does not make `host`'s table
  * incomplete, the evidence that it does not: `assessed` (a neighbor state parsed from usable
- * output), or `captured_empty` (the neighbor table was captured and is empty, and the table holds
- * no route of that family) — and no reason concerns the family (none of its sessions lacks its
- * routes or its link). Sorted by protocol. Empty when the record is untrusted or names no
+ * output), or an absence state the engine contract declares (`captured_empty`: the neighbor table
+ * was captured and is empty; `not_running`: no process) with no route of that family in the table —
+ * and no reason concerns the family (none of its sessions lacks its routes or its link). Sorted by
+ * protocol. A route of an unreceipted protocol never appears here: it has no row to vouch for it. Empty when the record is untrusted or names no
  * vocabulary — nothing then vouches for any family. This is what a surface quotes when it says a
  * table is NOT shown incomplete, so that "complete" is never an absence of reasons alone.
  */
@@ -335,10 +404,10 @@ export function ribCompletenessBasis(host: string): RibCompletenessBasis[] {
         label: `${row.protocol} is assessed on ${host}: a neighbor state was parsed from usable current-run output`,
         cite: row.cite,
       });
-    } else if (row.state === NEIGHBOR_TABLE_EMPTY) {
+    } else if (row.state !== null && RIB_ABSENCE_STATES.has(row.state)) {
       out.push({
         protocol: row.protocol,
-        label: `the ${row.protocol} neighbor table was captured on ${host} and is empty — no adjacency, so no ${row.protocol}-learned route is missing from the table`,
+        label: `${absenceClause(row.protocol, row.state, host)} — no adjacency, so no ${row.protocol}-learned route is missing from the table`,
         cite: row.cite,
       });
     }

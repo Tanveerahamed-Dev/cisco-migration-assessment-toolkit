@@ -40,9 +40,15 @@
  *     parked in an async `act()` scope that closed out of order with the next case's; React's
  *     process-global act depth stuck at 1 and nothing committed again, so 277 later cases failed
  *     blaming themselves. The class is any async act() scope that outlives its test, and it is closed
- *     for every test, not in that file: every async act() in `src/` goes through
- *     `src/test-support/act-turns.ts` (a checkpoint on the test's own signal on each side of the
- *     scope; a scanning tripwire in `source-hygiene.test.ts` enforces it), `src/test-setup.ts` settles
+ *     for every test, not in that file: every act() in `src/` whose scope can be asynchronous goes
+ *     through `src/test-support/act-turns.ts` (a checkpoint on the test's own signal on each side of
+ *     the scope). A tripwire in `source-hygiene.test.ts` enforces it with the TypeScript checker:
+ *     React's act() stays raw only as a direct call whose inline, non-async callback is proved, value
+ *     by value, to return no thenable — and a `void` type is not such a proof (a Promise-returning
+ *     function type-checks wherever `() => void` is expected), so `act(() => fn())` through a value is
+ *     reported and written `act(() => { fn(); })`; a Promise/`any`-returning or passed-by-name callback,
+ *     act used as a value or reached without its name, and a Promise-returning look-alike of a library
+ *     member are reported, and an unresolvable act counts as React's. `src/test-setup.ts` settles
  *     every such scope after each test, and its act-scope canary then fails a test that leaves
  *     React's act queue open, naming the cause. Proved by planted child runs in
  *     `scripts-typecheck.test.ts`. This makes a load timeout honest, not impossible: the limits
@@ -57,7 +63,15 @@
  *     limit. One BELOW the hang detector is a wall-clock assertion under another name: on both loaded
  *     F2 re-runs the only reds in the F2 files were `{ timeout: 15000 }`/`{ timeout: 20000 }` on
  *     whole-App mounts, so those were removed and `source-hygiene.test.ts` now fails any test or
- *     hook limit below `testTimeout`/`hookTimeout`, read from this file.
+ *     hook limit below `testTimeout`/`hookTimeout`, read from this file. The limit-taking functions
+ *     are derived from Vitest's own typings (it/test/describe/suite and their modifiers, every hook,
+ *     onTestFinished/onTestFailed, vi.setConfig, vi.waitFor/waitUntil, expect.poll) and every call is
+ *     resolved by the checker, through import aliases, namespace imports, local aliases and the test
+ *     context, in every source under `src/` including this file's `setupFiles`. Failing closed, it
+ *     also fails any limit it cannot evaluate (an imported `let`, a parameter, a call), an options
+ *     object that spreads or is used anywhere else before it is read, a waiting function left on
+ *     Vitest's own 1 s default, and any such function or Vitest object that escapes to where its
+ *     calls cannot be typed (`.call`, `Reflect.apply`, `any`, a computed key).
  *
  * It merges the app config rather than replacing it: vitest loads `vitest.config.ts` INSTEAD of
  * `vite.config.ts` when both exist, and the React plugin, the module resolution and the chunking

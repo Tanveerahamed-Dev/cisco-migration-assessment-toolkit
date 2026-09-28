@@ -6,8 +6,10 @@ the engine-only CI matrix. The thin FastMCP WIRING is guarded by importorskip('m
 suite stays green wherever the optional [mcp] extra is not installed.
 
 Content assertions use the rich sample (complete: scale, dossiers, findings, arch-coverage);
-the golden exercises the list_devices fallback (it predates device_dossiers) and `{}` proves
-coverage-honest degradation -- an absent section reads empty, never raises.
+the golden WITHOUT its device_dossiers section exercises the list_devices / search_devices fallback
+(the committed golden keeps device_dossiers since the engine-evidence-pointer wave, so the fallback
+input is derived from it explicitly rather than assumed) and `{}` proves coverage-honest
+degradation -- an absent section reads empty, never raises.
 """
 import json
 import os
@@ -32,6 +34,14 @@ def _load(p):
 @pytest.fixture(scope="module")
 def golden():
     return _load(GOLDEN)
+
+
+@pytest.fixture(scope="module")
+def golden_without_dossiers(golden):
+    """The fallback input: the golden with its device_dossiers section removed. The committed golden now
+    carries dossiers, so a fallback test reading it directly would exercise the dossier path instead."""
+    assert "device_dossiers" in golden, "the golden lost device_dossiers -- revisit these fallback fixtures"
+    return {k: v for k, v in golden.items() if k != "device_dossiers"}
 
 
 @pytest.fixture(scope="module")
@@ -64,11 +74,12 @@ def test_failure_impact_and_chokepoints_shape(rich):
     assert ":" in cp[0]["a"] and ":" in cp[0]["b"]      # "a_host:a_port" formatting
 
 
-def test_list_devices_prefers_dossier_then_falls_back(rich, golden):
+def test_list_devices_prefers_dossier_then_falls_back(rich, golden_without_dossiers):
     rich_dev = M.list_devices(rich)
     assert rich_dev and all("risk_band" in d for d in rich_dev)   # dossier path
-    gold_dev = M.list_devices(golden)                             # golden lacks dossiers -> fallback
+    gold_dev = M.list_devices(golden_without_dossiers)            # no dossiers -> fallback
     assert gold_dev and all(d.get("host") for d in gold_dev)      # host derived from health_scores
+    assert all("risk_band" not in d for d in gold_dev)            # the fallback path, not the dossier one
 
 
 def test_device_detail_hit_is_case_insensitive_and_miss_is_helpful(rich):
@@ -308,7 +319,8 @@ def test_search_devices_by_hostname_platform_and_ip(rich):
     assert "devices" in by_host["sources"] and "interfaces" in by_ip["sources"]
 
 
-def test_search_devices_golden_fallback_posture_is_honest(golden):
+def test_search_devices_golden_fallback_posture_is_honest(golden_without_dossiers):
+    golden = golden_without_dossiers
     host = list(golden["devices"].keys())[0]
     res = M.search_devices(golden, host)
     assert res["available"] is True and res["n_matches"] >= 1

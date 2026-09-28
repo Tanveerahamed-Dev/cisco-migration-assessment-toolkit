@@ -31,7 +31,7 @@ const mounted: Root[] = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
   document.body.replaceChildren();
-  act(() => useInvestigation.getState().reset());
+  act(() => { useInvestigation.getState().reset(); });
 });
 
 describe("C2: the landing's top edge falls in a gap, never through the control above", () => {
@@ -154,7 +154,7 @@ describe("C2: the answer landing puts the port's edge in the gap above what it a
       mounted.push(root);
       act(() => root.render(<PathTrace id="c2-land" />));
       const panel = host.querySelector<HTMLElement>(".pt-panel")!;
-      act(() => useInvestigation.getState().setFlow(DENIED));
+      act(() => { useInvestigation.getState().setFlow(DENIED); });
       hop = host.querySelector<HTMLElement>('.hop[data-verdict="denied"]');
       expect(hop, "the blocking hop card rendered").not.toBeNull();
       decided = hop!.querySelector<HTMLElement>("[data-decided]");

@@ -459,8 +459,18 @@ function ownPortShows(scroller: HTMLElement, head: HTMLElement | null, el: HTMLE
  * Can the grid show `el`'s row WHOLE by scrolling only itself? True when the part of the grid the
  * reader can see (below the sticky header, inside every clip, past every overlay — `visibleBand`
  * without its layout-box fallback) is at least as tall as the row, with a pixel to spare for the
- * device-pixel snap of scrollTop (see the "rounded AWAY" note in `revealBelowHeader`). An empty band
- * (an ancestor scrolled the grid wholly away) cannot hold anything: only an ancestor can bring it back.
+ * device-pixel snap of scrollTop (see the "rounded AWAY" note in `revealBelowHeader`).
+ *
+ * An EMPTY band does not reach this test. When an ancestor has scrolled the grid wholly out of view,
+ * `offsetFromView` measures against `visibleBand`'s layout-box fallback, so a row the grid's own port
+ * shows reads as 0 and `revealBelowHeader` returns first; one it does not show is scrolled into the
+ * grid's own port, and the ancestor walk again reads 0. Either way the carrier is left where it is —
+ * the A4 design (probe-a4-surface-switch.mjs: "QUEUE OFF SCREEN" is reported, not revealed, because a
+ * surface switch put another panel in the rail) — and the row waits in the grid's own port for the
+ * carrier to bring the grid back. Only a sub-pixel disagreement between `ownPortShows`' half-pixel
+ * slack and the fallback band's exact edge could arrive here with an empty band; it returns false, and
+ * the ancestor walk then moves the carrier by that sub-pixel remainder at most. Pinned by
+ * DataGrid.c2-chrome-slice.test.tsx ("a grid its carrier scrolled wholly out of view ...").
  */
 function bandHoldsRow(scroller: HTMLElement, head: HTMLElement | null, el: HTMLElement): boolean {
   const band = clippedBand(scroller, head && !head.contains(el) ? head : null);
@@ -630,28 +640,130 @@ function revealThroughAncestors(scroller: HTMLElement, head: HTMLElement | null,
 }
 
 /**
- * How many px of `el`'s height the reader can see: its box intersected with the viewport and every
- * clipping ancestor (the same clip rules as `visibleBand`). 0 in jsdom, which lays nothing out.
+ * How many px of `el`'s height the reader can see: what it can paint (`paintedBox`: its box inside the
+ * viewport and every clipping ancestor on its containing-block chain), then past everything PAINTED
+ * OVER it (`uncovered`). 0 in jsdom, which lays nothing out.
+ *
+ * Overlays count as a cut exactly as a clip does (C2 verifier m3): below 48rem the status bar is
+ * `position: sticky; bottom: 0` (85 px at 390x844, measured D3 wave 8), and a strip a reveal slid
+ * partly under it read as whole here while the reader saw it sliced — so `keepNavWhole` left it cut.
+ * This measure is also run in the real page by `review/capture.mjs` (text and app modes) against a
+ * per-pixel paint census of every navigation strip, so a misread in the product fails a capture.
  */
 function onScreenExtent(el: HTMLElement): number {
   const doc = el.ownerDocument;
   const view = doc.defaultView;
   const r = el.getBoundingClientRect();
   if (!view || r.height <= 0 || view.innerHeight <= 0) return 0;
-  let top = Math.max(r.top, 0);
-  let bottom = Math.min(r.bottom, view.innerHeight);
+  let { top, bottom } = paintedBox(el);
+  if (bottom <= top) return 0;
+  ({ top, bottom } = uncovered(el, doc, r, top, bottom));
+  return Math.max(0, bottom - top);
+}
+
+/**
+ * The vertical part of `el`'s box the browser can PAINT: its border box intersected with the viewport
+ * and with every ancestor whose overflow clips it (the root element's clip is the viewport, and a
+ * <body> whose overflow the root does not claim propagates to the viewport too, as in `clippedBand`).
+ * Only ancestors on its CONTAINING-BLOCK chain clip it: an absolutely positioned box escapes the clip
+ * of a static ancestor between it and its positioned container, and a fixed one every ancestor up to
+ * one that contains fixed descendants (a transform, filter, perspective or paint/layout containment).
+ * So a fixed bar inside a scrolling rail is not trimmed by the rail it floats over. May be empty
+ * (bottom <= top): the element paints nothing on screen. jsdom lays out nothing (0-height boxes are
+ * not clips there).
+ */
+function paintedBox(el: Element): { top: number; bottom: number } {
+  const doc = el.ownerDocument;
+  const view = doc.defaultView;
+  const r = el.getBoundingClientRect();
+  let top = r.top;
+  let bottom = r.bottom;
+  if (!view) return { top, bottom };
+  if (view.innerHeight > 0) {
+    top = Math.max(top, 0);
+    bottom = Math.min(bottom, view.innerHeight);
+  }
+  const holdsFixed = (cs: CSSStyleDeclaration): boolean =>
+    (cs.transform !== "" && cs.transform !== "none") ||
+    (cs.filter !== "" && cs.filter !== "none") ||
+    (cs.perspective !== "" && cs.perspective !== "none") ||
+    /\b(?:paint|layout|strict|content)\b/.test(cs.contain) ||
+    /\b(?:transform|perspective|filter)\b/.test(cs.willChange);
+  const escapeOf = (cs: CSSStyleDeclaration): "fixed" | "absolute" | "flow" =>
+    cs.position === "fixed" ? "fixed" : cs.position === "absolute" ? "absolute" : "flow";
   const rootOy = view.getComputedStyle(doc.documentElement).overflowY;
+  let escape = escapeOf(view.getComputedStyle(el));
   for (let a = el.parentElement; a !== null && bottom > top; a = a.parentElement) {
-    if (a === doc.documentElement) continue;
+    if (a === doc.documentElement) break;
+    const cs = view.getComputedStyle(a);
+    const contains =
+      escape === "flow" || holdsFixed(cs) || (escape === "absolute" && cs.position !== "" && cs.position !== "static");
+    if (!contains) continue;
+    escape = escapeOf(cs);
     if (a === doc.body && (rootOy === "visible" || rootOy === "")) continue;
-    const oy = view.getComputedStyle(a).overflowY;
-    if (oy === "visible" || oy === "") continue;
+    if (cs.overflowY === "visible" || cs.overflowY === "") continue;
     const c = a.getBoundingClientRect();
     if (c.height <= 0) continue;
     top = Math.max(top, c.top);
     bottom = Math.min(bottom, c.bottom);
   }
-  return Math.max(0, bottom - top);
+  return { top, bottom };
+}
+
+/**
+ * The part of `[top, bottom]` (already inside every clip) that nothing paints over at `el`'s
+ * horizontal centre: the browser's hit-test stack at each edge, down to `el` (or an element that
+ * holds it), is what covers it there. Unlike `trimOverlays` — whose band is a whole grid, which one
+ * box rarely covers — an element's extent is often SMALLER than the bar over it, so a cover that
+ * reaches past the far edge leaves nothing: the element is absent, not whole. Repeated a few times
+ * because the first hit can be a child of the overlay whose box starts inside the overlay's padding.
+ * Where hit testing is not available (jsdom), the extent is unchanged.
+ *
+ * A hit is a cover only where it PAINTS: its box inside its own clip chain (`paintedBox`), and only
+ * if that box holds the probe point. The stack alone is not evidence. MEASURED (R9 verifier V1,
+ * release build, state 06, 1440x900): half a pixel inside the bottom edge of the path panel's mode
+ * strip (84-117), Chrome's stack began with the content of the scrolled `.pt-panel` below it —
+ * `div.hop__fact 116.81-243.69`, then `div.hop__fact -159.19-116.81`, a box that panel scrolled away and
+ * clips. Taken by its layout box, the second "covered" the whole strip: a strip the reader saw whole
+ * read as 0 px, so `navStripsIn` marked it not whole and `keepNavWhole` stopped protecting it — at
+ * every width from 768. Probes sit a pixel inside the edge as well (as `trimOverlays`' do): on the
+ * measured shapes the misanswer covers less than the strip's last pixel row (up to 0.95 px inside on a
+ * capture.mjs selftest fixture of that shape), so the inset clears it today — but how deep it reaches
+ * is the hit test's business, so the inset is not what is relied on.
+ */
+function uncovered(el: HTMLElement, doc: Document, box: DOMRect, top: number, bottom: number): { top: number; bottom: number } {
+  const stack = typeof doc.elementsFromPoint === "function";
+  if (!stack && typeof doc.elementFromPoint !== "function") return { top, bottom };
+  const view = doc.defaultView;
+  const maxX = view && view.innerWidth > 0 ? view.innerWidth - 1 : box.right;
+  const x = Math.min(Math.max((Math.max(box.left, 0) + Math.min(box.right, maxX)) / 2, 0), maxX);
+  const coversAt = (y: number): { top: number; bottom: number }[] => {
+    const hits = stack ? doc.elementsFromPoint(x, y) : [doc.elementFromPoint(x, y)];
+    const out: { top: number; bottom: number }[] = [];
+    for (const hit of hits) {
+      if (hit === null || el.contains(hit) || hit.contains(el)) break;
+      const layout = hit.getBoundingClientRect();
+      if (y < layout.top || y > layout.bottom) continue; // a clip only shrinks it: it paints nothing here
+      const painted = paintedBox(hit);
+      if (painted.bottom > painted.top && y >= painted.top && y <= painted.bottom) out.push(painted);
+    }
+    return out;
+  };
+  /* A probe a pixel inside the edge (never past the middle of a sliver). */
+  const inset = (): number => Math.min(1, (bottom - top) / 2);
+  for (let i = 0; i < 4 && bottom > top; i += 1) {
+    let next = bottom;
+    for (const c of coversAt(bottom - inset())) if (c.top < next) next = Math.max(top, c.top);
+    if (next >= bottom) break;
+    bottom = next;
+  }
+  for (let i = 0; i < 4 && bottom > top; i += 1) {
+    let next = top;
+    for (const c of coversAt(top + inset())) if (c.bottom > next) next = Math.min(bottom, c.bottom);
+    if (next <= top) break;
+    top = next;
+  }
+  return { top, bottom: Math.max(top, bottom) };
 }
 
 /**

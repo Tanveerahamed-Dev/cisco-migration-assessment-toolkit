@@ -62,6 +62,7 @@ test-results/
 
 # A snapshot other than the tracked sample compiles here (tools/compile-all.mjs --source <file>). It is
 # the place a REAL assessment's compiled model lands — client hostnames, addresses, serials — so it is
-# ignored, and compile-all refuses to write such a compile anywhere under src/, whose four compiled
-# files are tracked.
+# ignored, and it is the ONLY place inside the repository compile-all will write such a compile: every
+# other in-repository --out (src/, dist/ — served at /scope and bundled — public/, review/, node_modules/,
+# Git-ignored or not) is refused, and so is this directory itself if this line is ever removed.
 .local-data/

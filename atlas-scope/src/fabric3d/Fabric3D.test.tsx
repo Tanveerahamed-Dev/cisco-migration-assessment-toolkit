@@ -143,6 +143,8 @@ vi.mock("./scene", () => ({
     /* The canvas-click acknowledgement (FabricSceneEx, scene.ts) — see "a canvas click acknowledges
        on the canvas first" below. */
     Object.assign(scene, { acknowledgeSelection: log("acknowledgeSelection") });
+    /* The live motion-preference setter (FabricSceneEx, scene.ts) — the one route a toggle takes. */
+    Object.assign(scene, { setReducedMotion: log("setReducedMotion") });
     rec.scene = scene;
     mock.scenes.push(rec);
     return scene;
@@ -205,7 +207,9 @@ const press = (el: Element, key: string): void => {
  */
 const settleCanvasCommit = async (): Promise<void> => {
   for (let i = 0; i < 4; i += 1) {
-    act(() => flushFrames(1));
+    act(() => {
+      flushFrames(1);
+    });
     await actAsync(async () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
@@ -290,6 +294,49 @@ describe("scene lifetime", () => {
     m.unmount();
     expect(mock.scenes.every((s) => s.disposed === 1)).toBe(true);
     expect(m.container.querySelectorAll("canvas")).toHaveLength(0);
+  });
+
+  it("C5-R2-1: a reduced-motion toggle reaches the running scene through setReducedMotion, never by rebuilding it", () => {
+    /* A controllable `(prefers-reduced-motion: reduce)` query: the OS setting flips mid-session. */
+    let matches = false;
+    const listeners = new Set<() => void>();
+    const mql = {
+      get matches(): boolean {
+        return matches;
+      },
+      media: "(prefers-reduced-motion: reduce)",
+      onchange: null,
+      addEventListener: (_type: string, cb: () => void): void => {
+        listeners.add(cb);
+      },
+      removeEventListener: (_type: string, cb: () => void): void => {
+        listeners.delete(cb);
+      },
+      addListener: (): void => {},
+      removeListener: (): void => {},
+      dispatchEvent: (): boolean => true,
+    };
+    vi.stubGlobal("matchMedia", () => mql);
+    const m = mount(<Fabric3D />);
+    const rec = lastScene();
+    expect(rec.opts.reducedMotion, "the scene is built with the preference current at mount").toBe(false);
+    expect(listeners.size, "the host listens for the OS change").toBeGreaterThan(0);
+
+    act(() => {
+      matches = true;
+      for (const cb of [...listeners]) cb();
+    });
+    expect(mock.scenes, "a toggle must not dispose and rebuild the scene (a running cross-fade would be cut)").toHaveLength(1);
+    expect(rec.disposed).toBe(0);
+    expect(callsOf(rec, "setReducedMotion").at(-1)).toEqual(["setReducedMotion", true]);
+
+    act(() => {
+      matches = false;
+      for (const cb of [...listeners]) cb();
+    });
+    expect(mock.scenes).toHaveLength(1);
+    expect(callsOf(rec, "setReducedMotion").at(-1)).toEqual(["setReducedMotion", false]);
+    m.unmount();
   });
 
   it("drives store changes through imperative calls instead of rebuilding the scene", () => {
@@ -837,7 +884,9 @@ describe("re-aiming", () => {
     };
     flushFrames(2); // a name appears once its box is clear on two consecutive passes (labelResolve `labelDwellVerdict`, C5)
     check("default");
-    act(() => useInvestigation.getState().selectDevice("core1"));
+    act(() => {
+      useInvestigation.getState().selectDevice("core1");
+    });
     flushFrames(3);
     const sel = m.container.querySelector<HTMLElement>('[data-device="core1"]')!;
     expect(sel.dataset["visible"], "the selected host is always labelled").toBe("true");
@@ -1042,7 +1091,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     const m = mount(<Fabric3D />);
     const rec = lastScene();
 
-    act(() => useInvestigation.getState().selectDevice(cutPoint!));
+    act(() => {
+      useInvestigation.getState().selectDevice(cutPoint!);
+    });
     flushFrames(2);
 
     const label = m.container.querySelector(`[data-device="${cutPoint!}"]`);
@@ -1068,7 +1119,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     projectAll();
     const m = mount(<Fabric3D />);
 
-    act(() => useInvestigation.getState().selectDevice(quiet!));
+    act(() => {
+      useInvestigation.getState().selectDevice(quiet!);
+    });
     flushFrames(2);
 
     expect(m.container.querySelectorAll('[data-cut="yes"]')).toHaveLength(0);
@@ -1215,12 +1268,18 @@ describe("the blast radius is wired to the scene contract and the label layer", 
       useInvestigation.getState().setTrace(traceAt(cutPoint!));
       useInvestigation.getState().selectDevice(cutPoint!, { origin: "hop" });
     });
-    act(() => flushFrames(3));
+    act(() => {
+      flushFrames(3);
+    });
     expect(m.container.querySelectorAll('[data-stranded="yes"]'), "the trace's own re-aim draws no hypothesis").toHaveLength(0);
 
     // The reader then chooses that same host (palette, click, list): an explicit new question.
-    act(() => useInvestigation.getState().selectDevice(cutPoint!));
-    act(() => flushFrames(3));
+    act(() => {
+      useInvestigation.getState().selectDevice(cutPoint!);
+    });
+    act(() => {
+      flushFrames(3);
+    });
     expect(m.container.querySelector(`[data-device="${cutPoint!}"]`)?.getAttribute("data-cut")).toBe("yes");
     for (const host of stranded) {
       const d = fabric.devices.find((x) => x.host === host)!;
@@ -1246,8 +1305,12 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     const off = stranded.slice(0, 3);
     for (const host of off) mock.projections.set(idOf(host), { x: 520, y: 1240, visible: false });
     const m = mount(<Fabric3D />);
-    act(() => useInvestigation.getState().selectDevice(cutPoint!));
-    act(() => flushFrames(4));
+    act(() => {
+      useInvestigation.getState().selectDevice(cutPoint!);
+    });
+    act(() => {
+      flushFrames(4);
+    });
 
     const note = m.container.querySelector<HTMLElement>("[data-stranded-total]");
     expect(note, "a stranded count must be on the fabric whenever a blast radius is drawn").not.toBeNull();
@@ -1266,16 +1329,26 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     for (const host of off) expect(m.container.querySelector(`[data-device="${idOf(host)}"]`)?.getAttribute("data-visible")).toBe("false");
 
     // ...and it is never left behind: clearing the selection clears the hidden labels' marks too.
-    act(() => useInvestigation.getState().selectDevice(null));
-    act(() => flushFrames(4));
+    act(() => {
+      useInvestigation.getState().selectDevice(null);
+    });
+    act(() => {
+      flushFrames(4);
+    });
     expect(m.container.querySelectorAll('[data-stranded="yes"]'), "no stale mark on a label out of view").toHaveLength(0);
     expect(m.container.querySelector("[data-stranded-total]")).toBeNull();
-    act(() => useInvestigation.getState().selectDevice(cutPoint!));
-    act(() => flushFrames(4));
+    act(() => {
+      useInvestigation.getState().selectDevice(cutPoint!);
+    });
+    act(() => {
+      flushFrames(4);
+    });
 
     // Brought back into view, it is marked and the out-of-view clause goes.
     for (const host of off) mock.projections.set(idOf(host), { x: 900, y: 700 - off.indexOf(host) * 60, visible: true });
-    act(() => flushFrames(4));
+    act(() => {
+      flushFrames(4);
+    });
     const back = m.container.querySelector<HTMLElement>("[data-stranded-total]");
     expect(Number(back!.dataset["strandedUnseen"])).toBe(0);
     expect(back!.textContent).not.toContain("out of view");
@@ -1295,7 +1368,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
       mock.projections.set(d.id, { x: 600, y: 400, visible: true });
     }
     const m = mount(<Fabric3D />);
-    act(() => useInvestigation.getState().selectDevice(cutPoint!));
+    act(() => {
+      useInvestigation.getState().selectDevice(cutPoint!);
+    });
     flushFrames(3);
     const transforms = new Set<string>();
     for (const host of stranded) {
@@ -1320,7 +1395,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     const before = el().getAttribute("data-finding");
     expect(before).not.toBe("yes");
 
-    act(() => useInvestigation.getState().selectFinding(finding.id));
+    act(() => {
+      useInvestigation.getState().selectFinding(finding.id);
+    });
     flushFrames(3);
     expect(el().getAttribute("data-finding")).toBe("yes");
     expect(el().getAttribute("data-visible")).toBe("true");
@@ -1344,7 +1421,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]')!;
     overlay.getBoundingClientRect = (): DOMRect =>
       ({ left: 340, top: 92, right: 1500, bottom: 1054, width: 1160, height: 962, x: 340, y: 92, toJSON: () => ({}) }) as DOMRect;
-    act(() => useInvestigation.getState().selectFinding(finding.id));
+    act(() => {
+      useInvestigation.getState().selectFinding(finding.id);
+    });
     flushFrames(3);
 
     const ptr = m.container.querySelector<HTMLElement>(`.fabric3d-pointer[data-pointer-for="${target.id}"]`);
@@ -1368,7 +1447,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     expect(ptr!.closest('[aria-hidden="true"]')).toBeNull();
     ptr!.focus();
     expect(document.activeElement).toBe(ptr);
-    act(() => ptr!.click());
+    act(() => {
+      ptr!.click();
+    });
     expect(callsOf(rec, "focusDevice").at(-1)).toEqual(["focusDevice", target.id]);
 
     // Once it projects on the canvas, the pointer goes away.
@@ -1407,7 +1488,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     const m = mount(<Fabric3D />);
     const rec = lastScene();
 
-    act(() => useInvestigation.getState().setTrace(denied));
+    act(() => {
+      useInvestigation.getState().setTrace(denied);
+    });
     flushFrames(2);
 
     expect(m.container.querySelector('[data-device="core1"]')?.getAttribute("data-alarm")).toBe("blocked");
@@ -1467,7 +1550,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
 
     const denied = mount(<Fabric3D />);
     const deniedScene = lastScene();
-    act(() => useInvestigation.getState().setTrace(traceOf("denied", "denied")));
+    act(() => {
+      useInvestigation.getState().setTrace(traceOf("denied", "denied"));
+    });
     flushFrames(2);
     const deniedWord = alarmWord(denied, "core1");
     const deniedHighlight = callsOf(deniedScene, "setHighlight").at(-1)?.[1] as {
@@ -1477,7 +1562,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
 
     const undecided = mount(<Fabric3D />);
     const undecidedScene = lastScene();
-    act(() => useInvestigation.getState().setTrace(traceOf("unmodeled", "indeterminate")));
+    act(() => {
+      useInvestigation.getState().setTrace(traceOf("unmodeled", "indeterminate"));
+    });
     flushFrames(2);
     const undecidedWord = alarmWord(undecided, "core1");
     const undecidedHighlight = callsOf(undecidedScene, "setHighlight").at(-1)?.[1] as {
@@ -1507,11 +1594,15 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     projectAll();
     const m = mount(<Fabric3D />);
 
-    act(() => useInvestigation.getState().selectDevice("core1"));
+    act(() => {
+      useInvestigation.getState().selectDevice("core1");
+    });
     flushFrames(2);
     const beforeAlarm = m.container.querySelector('[data-device="core1"]')?.getAttribute("data-alarm");
 
-    act(() => useInvestigation.getState().setTrace(traceOf("delivered", "delivered")));
+    act(() => {
+      useInvestigation.getState().setTrace(traceOf("delivered", "delivered"));
+    });
     flushFrames(2);
 
     expect(beforeAlarm, "no trace, no trace mark").toBe("");
@@ -1539,7 +1630,9 @@ describe("pointer picks during warm-up", () => {
   };
 
   it("an empty-ground click while warming leaves a URL-restored device selection alone", async () => {
-    act(() => useInvestigation.getState().selectDevice("access1"));
+    act(() => {
+      useInvestigation.getState().selectDevice("access1");
+    });
     setWarmup("linking");
     mock.pickResult = null;
     const m = mount(<Fabric3D />);
@@ -1550,7 +1643,9 @@ describe("pointer picks during warm-up", () => {
     expect(useInvestigation.getState().deviceId).toBe("access1");
 
     /* The scene's own pick event is the second pointer path; it is gated the same way. */
-    act(() => lastScene().cb.onEvent({ type: "pick", result: null, modifier: false }));
+    act(() => {
+      lastScene().cb.onEvent({ type: "pick", result: null, modifier: false });
+    });
     expect(useInvestigation.getState().deviceId).toBe("access1");
 
     /* Once drawn, clicking the ground is the explicit "nothing" it has always been. */
@@ -1565,14 +1660,18 @@ describe("pointer picks during warm-up", () => {
   /* A4 audit: a re-warm-up AFTER the first paint (an adaptive tier step, a theme change) leaves the
      previous frame on screen, and a click on a device in it used to be silently discarded. */
   it("a click during a RE-warm-up, after the fabric has been drawn, still selects", async () => {
-    act(() => useInvestigation.getState().selectDevice("access1"));
+    act(() => {
+      useInvestigation.getState().selectDevice("access1");
+    });
     setWarmup(null);
     const m = mount(<Fabric3D />);
     const canvas = m.canvas()!;
     const target = fabric.devices.find((d) => d.id !== "access1")!.id;
     mock.pickResult = { kind: "device", id: target, screen: { x: 10, y: 10 } };
     /* The scene reports itself drawn once, then restarts its warm-up with the frame still visible. */
-    act(() => lastScene().cb.onEvent({ type: "stats", stats: lastScene().scene!.stats() }));
+    act(() => {
+      lastScene().cb.onEvent({ type: "stats", stats: lastScene().scene!.stats() });
+    });
     setWarmup("linking");
     pointer(canvas, "pointerdown");
     pointer(canvas, "pointerup");
@@ -1582,11 +1681,15 @@ describe("pointer picks during warm-up", () => {
   });
 
   it("a topology rebuild re-arms the gate: the frame on screen is of the old graph", async () => {
-    act(() => useInvestigation.getState().selectDevice("access1"));
+    act(() => {
+      useInvestigation.getState().selectDevice("access1");
+    });
     setWarmup(null);
     const m = mount(<Fabric3D devices={fabric.devices} links={fabric.links} />);
     const canvas = m.canvas()!;
-    act(() => lastScene().cb.onEvent({ type: "stats", stats: lastScene().scene!.stats() }));
+    act(() => {
+      lastScene().cb.onEvent({ type: "stats", stats: lastScene().scene!.stats() });
+    });
     setWarmup("yield");
     mock.pickResult = null;
     /* New data: the scene rebuilds and its warm-up restarts. */
@@ -1602,7 +1705,9 @@ describe("pointer picks during warm-up", () => {
 
   it("a double-click while warming neither clears a link nor selects an unseen device", async () => {
     const link = fabric.links[0]!;
-    act(() => useInvestigation.getState().selectLink(link.id));
+    act(() => {
+      useInvestigation.getState().selectLink(link.id);
+    });
     setWarmup("environment");
     mock.pickResult = { kind: "device", id: fabric.devices[0]!.id, screen: { x: 10, y: 10 } };
     const m = mount(<Fabric3D />);
@@ -1632,12 +1737,18 @@ describe("a canvas click selects through exactly one path", () => {
   };
 
   it("the scene's pick event does not write the store, even once the fabric is drawn", async () => {
-    act(() => useInvestigation.getState().selectDevice(null));
+    act(() => {
+      useInvestigation.getState().selectDevice(null);
+    });
     (mock.stats as Record<string, unknown>).warmupStage = null;
     const m = mount(<Fabric3D />);
-    act(() => lastScene().cb.onEvent({ type: "stats", stats: lastScene().scene!.stats() }));
+    act(() => {
+      lastScene().cb.onEvent({ type: "stats", stats: lastScene().scene!.stats() });
+    });
     const target = fabric.devices[0]!.id;
-    act(() => lastScene().cb.onEvent({ type: "pick", result: { kind: "device", id: target, screen: { x: 10, y: 10 } }, modifier: false }));
+    act(() => {
+      lastScene().cb.onEvent({ type: "pick", result: { kind: "device", id: target, screen: { x: 10, y: 10 } }, modifier: false });
+    });
     await settleCanvasCommit();
     expect(useInvestigation.getState().deviceId).toBeNull();
 
@@ -1675,7 +1786,9 @@ describe("a canvas click acknowledges on the canvas first and re-aims the other 
   };
   const drawn = (): void => {
     (mock.stats as Record<string, unknown>).warmupStage = null;
-    act(() => lastScene().cb.onEvent({ type: "stats", stats: lastScene().scene!.stats() }));
+    act(() => {
+      lastScene().cb.onEvent({ type: "stats", stats: lastScene().scene!.stats() });
+    });
   };
   const click = (canvas: Element): void => {
     pointer(canvas, "pointerdown");
@@ -1705,7 +1818,9 @@ describe("a canvas click acknowledges on the canvas first and re-aims the other 
 
     /* Not in the frame that presents the acknowledgement either: a task queued from that frame's
        callback can start before the frame is on screen, i.e. still inside the interaction. */
-    act(() => flushFrames(1));
+    act(() => {
+      flushFrames(1);
+    });
     await tick();
     expect(useInvestigation.getState().deviceId, "the store write waited out the acknowledgement frame").toBeNull();
 
@@ -1716,7 +1831,9 @@ describe("a canvas click acknowledges on the canvas first and re-aims the other 
   });
 
   it("a ground click acknowledges 'nothing selected' at once and clears the investigation's selection after it", async () => {
-    act(() => useInvestigation.getState().selectDevice("core1"));
+    act(() => {
+      useInvestigation.getState().selectDevice("core1");
+    });
     const m = mount(<Fabric3D />);
     drawn();
     const canvas = m.canvas()!;
@@ -1752,7 +1869,9 @@ describe("a canvas click acknowledges on the canvas first and re-aims the other 
     mock.pickResult = { kind: "device", id: "core2", screen: { x: 10, y: 10 } };
     click(m.canvas()!);
     /* Another surface (a grid row, a keystroke, the palette) selects something else first. */
-    act(() => useInvestigation.getState().selectDevice("dist1"));
+    act(() => {
+      useInvestigation.getState().selectDevice("dist1");
+    });
     await settleCanvasCommit();
     expect(useInvestigation.getState().deviceId, "a stale canvas commit must never overwrite a newer choice").toBe("dist1");
     const lastSelectionCall = rec.calls.filter((c) => c[0] === "setSelection" || c[0] === "acknowledgeSelection").at(-1);

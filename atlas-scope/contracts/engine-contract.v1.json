@@ -1,0 +1,48 @@
+{
+  "schema": "atlas-engine-contract/1",
+  "owner": "cisco_toolkit/analyze.py",
+  "punch_evidence": {
+    "kinds": [
+      "absence_witness",
+      "acl_line",
+      "adjacency",
+      "analysis_row",
+      "config_text",
+      "device_fact",
+      "interface",
+      "route"
+    ],
+    "record_kinds": [
+      "acl_line",
+      "config_text",
+      "interface",
+      "route"
+    ],
+    "roles": [
+      "derived_from",
+      "subject",
+      "witness"
+    ],
+    "bases": [
+      "absence",
+      "record",
+      "row"
+    ],
+    "cap": 64,
+    "total_only_when_capped": true,
+    "absence_forbids_record_kinds": true,
+    "record_requires_record_kind": true,
+    "row_requires_ref": true,
+    "host_must_be_row_device_or_null": true
+  },
+  "protocol_assessability_states": [
+    "analysis_unavailable",
+    "assessed",
+    "capture_error",
+    "captured_empty",
+    "captured_no_record",
+    "not_collected",
+    "not_running",
+    "partial"
+  ]
+}

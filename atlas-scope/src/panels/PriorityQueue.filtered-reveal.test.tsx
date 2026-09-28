@@ -145,7 +145,7 @@ async function expectRevealedThenWidened(opts: {
   stillFiltered: () => boolean;
 }): Promise<void> {
   const { c, grid, selectId, rowLabel, hiding } = opts;
-  act(() => useInvestigation.getState().selectFinding(selectId));
+  act(() => { useInvestigation.getState().selectFinding(selectId); });
   await flush();
 
   /* 1. Discoverable in words, with the hiding filter named. */
@@ -225,7 +225,7 @@ describe("A4 under a filter: the refuter's case", () => {
     const f120 = fabric.findings.find((f) => f.id === "F120");
     expect(f120, "the refuter's finding must exist in this snapshot").toBeDefined();
     expect(String(f120!.severity)).not.toBe("Critical");
-    act(() => useInvestigation.getState().setQuery("severity:Critical"));
+    act(() => { useInvestigation.getState().setQuery("severity:Critical"); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     await expectRevealedThenWidened({
@@ -240,11 +240,11 @@ describe("A4 under a filter: the refuter's case", () => {
   });
 
   it("a finding the filter keeps is never pinned and nothing is said about it", async () => {
-    act(() => useInvestigation.getState().setQuery("severity:Critical"));
+    act(() => { useInvestigation.getState().setQuery("severity:Critical"); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     installLayout(c);
     const kept = fabric.findings.find((f) => String(f.severity) === "Critical")!;
-    act(() => useInvestigation.getState().selectFinding(kept.id));
+    act(() => { useInvestigation.getState().selectFinding(kept.id); });
     await flush();
     expect(c.querySelector(".pq-pinned")).toBeNull();
     expect(outsideGroup(c)).toBeUndefined();
@@ -252,12 +252,12 @@ describe("A4 under a filter: the refuter's case", () => {
   });
 
   it("a device selection under a filter pins nothing and never narrows the corpus", async () => {
-    act(() => useInvestigation.getState().setQuery("severity:Critical"));
+    act(() => { useInvestigation.getState().setQuery("severity:Critical"); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     installLayout(c);
     const before = c.querySelectorAll(".ag__row--data").length;
     const host = fabric.findings.find((f) => String(f.severity) !== "Critical" && f.devices.length > 0)!.devices[0]!;
-    act(() => useInvestigation.getState().selectDevice(host));
+    act(() => { useInvestigation.getState().selectDevice(host); });
     await flush();
     expect(c.querySelector(".pq-pinned")).toBeNull();
     expect(outsideGroup(c)).toBeUndefined();
@@ -268,10 +268,10 @@ describe("A4 under a filter: the refuter's case", () => {
 
 describe("A4 under a filter: the pinned group is a group like any other", () => {
   it("the reader may fold it; a NEW hidden selection opens it again; the filter never moves", async () => {
-    act(() => useInvestigation.getState().setQuery("severity:Critical"));
+    act(() => { useInvestigation.getState().setQuery("severity:Critical"); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     installLayout(c);
-    act(() => useInvestigation.getState().selectFinding("F120"));
+    act(() => { useInvestigation.getState().selectFinding("F120"); });
     await flush();
     const header = outsideGroup(c)!;
     expect(header).toBeDefined();
@@ -284,7 +284,7 @@ describe("A4 under a filter: the pinned group is a group like any other", () => 
     expect(textOf(c.querySelector(".pq-pinned")), "the statement stays while the row is folded").toContain("F120");
 
     const other = fabric.findings.find((f) => String(f.severity) !== "Critical" && f.id !== "F120")!;
-    act(() => useInvestigation.getState().selectFinding(other.id));
+    act(() => { useInvestigation.getState().selectFinding(other.id); });
     await flush();
     expect(currentRows(c).map(rowId), "a new selection is revealed again").toEqual([other.id]);
     expect(useInvestigation.getState().query).toBe("severity:Critical");
@@ -304,7 +304,7 @@ describe("A4 under a filter: every clause key the grammar registers, positive an
       const hit = hidingClause(key, negated);
       expect(hit, `no value of ${key} hides any finding — the case must be constructible`).not.toBeNull();
       const { clause, finding } = hit!;
-      act(() => useInvestigation.getState().setQuery(clause));
+      act(() => { useInvestigation.getState().setQuery(clause); });
       const c = mount(<PriorityQueue debounceMs={0} />);
       const grid = installLayout(c);
       await expectRevealedThenWidened({
@@ -327,7 +327,7 @@ describe("A4 under a filter: free text, excluded text, and a clause beside text 
     const term = "core1";
     const hidden = hiddenBy(term)!;
     expect(hidden, "free text core1 must hide something").not.toBeNull();
-    act(() => useInvestigation.getState().setQuery(term));
+    act(() => { useInvestigation.getState().setQuery(term); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     await expectRevealedThenWidened({
@@ -344,7 +344,7 @@ describe("A4 under a filter: free text, excluded text, and a clause beside text 
     const hidden = fabric.findings.find((f) => f.devices.includes("core1"))!;
     const term = "-core1";
     expect(hiddenBy(term), "-core1 must hide something").not.toBeNull();
-    act(() => useInvestigation.getState().setQuery(term));
+    act(() => { useInvestigation.getState().setQuery(term); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     await expectRevealedThenWidened({
@@ -362,7 +362,7 @@ describe("A4 under a filter: free text, excluded text, and a clause beside text 
     const keep = `severity:${String(f120.severity)}`;
     const hide = "-F120";
     expect(applyToFindings([f120], parseQuery(keep)).items).toHaveLength(1);
-    act(() => useInvestigation.getState().setQuery(`${keep} ${hide}`));
+    act(() => { useInvestigation.getState().setQuery(`${keep} ${hide}`); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     await expectRevealedThenWidened({
@@ -383,7 +383,7 @@ describe("A4 under a filter: the scope chips the store carries", () => {
 
   it("a severity chip: named, pinned, and the control removes the chip", async () => {
     const other = (["Critical", "High", "Medium", "Low", "Info"] as const).find((s) => s !== String(f120().severity))!;
-    act(() => useInvestigation.getState().toggleSeverity(other as Finding["severity"]));
+    act(() => { useInvestigation.getState().toggleSeverity(other as Finding["severity"]); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     await expectRevealedThenWidened({
@@ -407,7 +407,7 @@ describe("A4 under a filter: the scope chips the store carries", () => {
       }
     }
     expect(pick, "some role must hide some finding").not.toBeNull();
-    act(() => useInvestigation.getState().toggleRole(pick!.role));
+    act(() => { useInvestigation.getState().toggleRole(pick!.role); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     await expectRevealedThenWidened({
@@ -423,7 +423,7 @@ describe("A4 under a filter: the scope chips the store carries", () => {
   it("the never-collected chip: named, pinned, and the control removes the chip", async () => {
     const hidden = hiddenBy("is:uncollected");
     expect(hidden, "is:uncollected must hide some finding").not.toBeNull();
-    act(() => useInvestigation.getState().setOnlyUncollected(true));
+    act(() => { useInvestigation.getState().setOnlyUncollected(true); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     await expectRevealedThenWidened({
@@ -470,7 +470,7 @@ describe("A4 under a filter: the cross-layer table", () => {
       } catch {
         /* see beforeEach */
       }
-      act(() => useInvestigation.getState().setQuery(pick!.clause));
+      act(() => { useInvestigation.getState().setQuery(pick!.clause); });
       const c = mount(<PriorityQueue debounceMs={0} />);
       const grid = installLayout(c);
       await expectRevealedThenWidened({

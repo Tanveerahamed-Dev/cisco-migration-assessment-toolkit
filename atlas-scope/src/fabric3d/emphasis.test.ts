@@ -36,10 +36,16 @@ import {
   createEaseChannel,
   createTierFade,
   createTierFadeDriver,
+  createTierFadeSlot,
   easeFraction,
   stepEaseChannel,
   stepTierFade,
+  handOverTierFade,
+  tierFadeCopy,
   type EaseChannel,
+  type EaseSpec,
+  type TierFadeCopy,
+  type TierFadeHoldHandle,
   type TierFadeHost,
   RECEDE_DEPTH,
   RECEDE_NEIGHBOUR,
@@ -563,18 +569,67 @@ describe("C5: every fade the ease owner steps moves at most FADE_MAX_STEP of its
       .sort();
     expect(steppers).toEqual(drivers);
   });
+
+  it("where the cap binds at 60 Hz is what the owner's doctrine says: the first frames of HOVER_MS, RECEDE_MS and SELECT_MS, never TIER_FADE_MS, never a landing frame", () => {
+    /* C5-R2-4 (verifier round 2): the doctrine said the cap "does not bind on the last frames of any
+       ease here at 60 Hz", while HOVER_MS (80 ms linear: 16.7 / 80 = 0.208 of its span per frame) is
+       held to the cap on every 60 Hz frame but its landing one. The prose now states the measured
+       set; this computes it over EVERY EaseSpec the owner exports and holds the prose to it. */
+    const DT = 1000 / 60;
+    const specs = Object.values(owner).filter(
+      (v): v is EaseSpec => typeof v === "object" && v !== null && typeof (v as EaseSpec).durationMs === "number" && typeof (v as EaseSpec).curve === "string",
+    );
+    expect(specs.map((e) => e.name).sort()).toEqual(["HOVER_MS", "RECEDE_MS", "SELECT_MS", "TIER_FADE_MS"]);
+    const boundFrames = new Map<string, number[]>();
+    for (const spec of specs) {
+      const ch = createEaseChannel(0);
+      const bound: number[] = [];
+      let frames = 0;
+      while (frames < 100 && ch.value !== 1) {
+        stepEaseChannel(ch, spec, 1, DT);
+        frames += 1;
+        const onCurve = frames * DT >= spec.durationMs ? 1 : easeFraction(spec.curve, (frames * DT) / spec.durationMs);
+        if (ch.fraction < onCurve - 1e-12) bound.push(frames);
+      }
+      // Never on the landing frame: every ease lands on the first 60 Hz frame at or after its duration.
+      expect(frames, `${spec.name} lands on the frame its uncapped curve does`).toBe(Math.ceil(spec.durationMs / DT - 1e-9));
+      expect(bound, `${spec.name}: the cap bound on its landing frame`).not.toContain(frames);
+      boundFrames.set(spec.name, bound);
+    }
+    expect(Object.fromEntries(boundFrames)).toEqual({ HOVER_MS: [1, 2, 3, 4], RECEDE_MS: [1, 2, 3, 4], SELECT_MS: [1, 2, 3, 4], TIER_FADE_MS: [] });
+    // HOVER_MS is held to the cap on every frame but its landing one.
+    expect(boundFrames.get("HOVER_MS")!.length).toBe(Math.ceil(HOVER_EASE.durationMs / DT) - 1);
+    const doctrine = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "emphasis.ts"), "utf8").replace(/\s*\n\s*\*\s?/g, " ");
+    expect(doctrine, "the old claim is gone").not.toMatch(/does not bind on the last frames of any ease/);
+    expect(doctrine).toMatch(/HOVER_MS[^.]*on every 60 Hz frame but its last/);
+    for (const [name, frames] of boundFrames) {
+      if (frames.length > 0) expect(doctrine, `the doctrine names ${name} among the eases the cap binds at 60 Hz`).toMatch(new RegExp(`binds at 60 Hz on the first ${frames.length} frames of [^.]*${name}`));
+    }
+    expect(doctrine).toMatch(/never on TIER_FADE_MS/);
+  });
 });
 
-/* ── The driver the scene runs the overlay with (C5 verification, 2026-09-26) ──────────────────────
+/* ── The driver the scene runs the overlay with (C5 verification, 2026-09-26; C5-R2-1, 2026-09-27) ─
  *
  * The stepper above is the per-frame bound. The scene's part (step once per frame on the RAW frame
- * duration, write the overlay's opacity, remove the overlay on the frame the fade reaches exactly 0,
- * and a no-frames watchdog that needs TWO idle windows) used to be inline in scene.ts. There it was
- * pinned only by source-text regexes. A verifier's mutations stopped the fade from ever stepping
- * (the overlay then sat at opacity 1 until the watchdog cut it at 2.4 s) and made the watchdog
- * one-strike, and every unit test still passed. It is now `createTierFadeDriver`, executed here with
- * fake timers. scene.test.ts pins that `frame()` calls it unconditionally, on `raw`. */
-describe("C5: the tier-fade driver: step on raw, write, remove at exactly 0, and a two-window no-frames watchdog", () => {
+ * duration, write the overlay's opacity, remove the overlay on the frame the fade reaches exactly 0)
+ * used to be inline in scene.ts. There it was pinned only by source-text regexes. A verifier's
+ * mutations stopped the fade from ever stepping and every unit test still passed. It is now
+ * `createTierFadeDriver`, executed here. scene.test.ts pins that `frame()` calls it unconditionally,
+ * on `raw`.
+ *
+ * NO WATCHDOG (C5-R2-1, owner decision 2026-09-27: "no path — tier change mid-fade, the tab-switch
+ * step-up, a reduced-motion toggle … — may remove, replace or reset a fade overlay faster than the
+ * per-frame cap"). The driver used to own a no-frames watchdog that removed the overlay after two
+ * 1,200 ms windows without a frame (a hidden tab). Its tests below asserted that removal. It is the
+ * one path by which the driver removed an overlay above 0: hidden for 2.4 s or more, the reader came
+ * back to a picture that had lost a half-faded overlay between two presented frames — a cut of the
+ * overlay's whole remaining opacity. Nothing is lost without it: every presented frame is a `frame()`
+ * call, so the fade ends at most ceil(1 / FADE_MAX_STEP) frames after frames resume, and while none
+ * come nothing is presented. Those tests are therefore inverted here, not dropped: the same idle
+ * windows, and the removal they asserted is now asserted NOT to happen, with the first frame back
+ * held to the cap. */
+describe("C5: the tier-fade driver: step on raw, write, remove at exactly 0 — and nothing else removes it", () => {
   const WINDOW = 1200;
   afterEach(() => {
     vi.useRealTimers();
@@ -584,21 +639,18 @@ describe("C5: the tier-fade driver: step on raw, write, remove at exactly 0, and
     const writes: number[] = [];
     let finished = 0;
     const host: TierFadeHost = {
-      watchdogMs: WINDOW,
       write: (v) => writes.push(v),
       finish: () => {
         finished += 1;
       },
-      setTimer: (fn, ms) => setTimeout(fn, ms),
-      clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     };
     const d = createTierFadeDriver(host);
     return { d, writes, finished: () => finished };
   }
 
-  it("arms its watchdog when the fade starts, and a stalled frame moves the overlay by the cap, not by the wall clock", () => {
+  it("arms no timer: only a frame moves or removes the overlay, and a stalled frame moves it by the cap, not by the wall clock", () => {
     const { d, writes } = drive();
-    expect(vi.getTimerCount(), "the no-frames watchdog is armed").toBe(1);
+    expect(vi.getTimerCount(), "a timer of its own could remove the overlay between two presented frames").toBe(0);
     expect(d.frame(116.6, false)).toBe(true);
     // The wall-clock curve would be at 1 - E(116.6 / 280) = 0.64 (the graded cut); the 64 ms clamp at ~0.9.
     expect(writes).toEqual([1 - FADE_MAX_STEP]);
@@ -624,20 +676,28 @@ describe("C5: the tier-fade driver: step on raw, write, remove at exactly 0, and
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("ONE idle window (a main-thread stall longer than the window) does not remove a half-faded overlay", () => {
-    const { d, finished } = drive();
-    d.frame(1000 / 60, false);
-    d.frame(1000 / 60, false);
-    // The first window saw those frames; the second sees none (one strike).
-    vi.advanceTimersByTime(WINDOW);
-    vi.advanceTimersByTime(WINDOW);
-    expect(finished(), "one strike removed the overlay").toBe(0);
-    // The frame that was already due arrives, and the fade carries on to its end.
-    for (let i = 0; i < 100 && d.frame(1000 / 60, false); i += 1);
-    expect(finished()).toBe(1);
+  it("a hidden tab (no frames for 1, 2 or 10 of the old watchdog's windows) never removes a half-faded overlay; the first frame back moves it by the cap", () => {
+    for (const windows of [1, 2, 10]) {
+      const { d, writes, finished } = drive();
+      d.frame(1000 / 60, false);
+      d.frame(1000 / 60, false);
+      const before = d.value;
+      expect(before).toBeGreaterThan(0.5);
+      vi.advanceTimersByTime(windows * WINDOW);
+      expect(finished(), `${windows} idle window(s) removed the overlay`).toBe(0);
+      expect(writes.length, "nothing wrote the overlay while no frame came").toBe(2);
+      // The frame the browser runs on return carries the whole hidden span as its duration.
+      expect(d.frame(windows * WINDOW, false)).toBe(true);
+      expect(before - d.value, "the first frame back moved more than the cap").toBeLessThanOrEqual(FADE_MAX_STEP + EPS);
+      let frames = 1;
+      for (; frames < 100 && d.frame(1000 / 60, false); frames += 1);
+      expect(finished()).toBe(1);
+      expect(frames, "after the return the fade ends within ceil(1 / FADE_MAX_STEP) frames").toBeLessThanOrEqual(Math.ceil(1 / FADE_MAX_STEP));
+      vi.useRealTimers();
+    }
   });
 
-  it("frames arriving between windows reset the count: a slow but live host is never cut by the watchdog", () => {
+  it("frames arriving a window apart (a slow but live host) move it by the cap each and never cut it", () => {
     const { d, finished } = drive();
     for (let i = 0; i < 3; i += 1) {
       vi.advanceTimersByTime(WINDOW);
@@ -648,44 +708,566 @@ describe("C5: the tier-fade driver: step on raw, write, remove at exactly 0, and
     expect(d.value).toBeCloseTo(1 - 3 * FADE_MAX_STEP, 9);
   });
 
-  it("TWO consecutive idle windows (rAF suspended: a hidden tab) remove it, once", () => {
-    const { d, finished } = drive();
-    d.frame(1000 / 60, false);
-    // The window the frame fell in, then two without one.
-    vi.advanceTimersByTime(WINDOW);
+  it("a fade that gets no frame at all stays at 1 (nothing is presented), and fades by the cap from its first frame", () => {
+    const { d, writes, finished } = drive();
+    vi.advanceTimersByTime(10 * WINDOW);
     expect(finished()).toBe(0);
-    vi.advanceTimersByTime(WINDOW);
-    expect(finished(), "one strike removed the overlay").toBe(0);
-    vi.advanceTimersByTime(WINDOW);
-    expect(finished()).toBe(1);
-    expect(vi.getTimerCount()).toBe(0);
-    expect(d.frame(16.7, false)).toBe(false);
-    expect(finished()).toBe(1);
+    expect(d.value).toBe(1);
+    expect(d.frame(10 * WINDOW, false)).toBe(true);
+    expect(writes).toEqual([1 - FADE_MAX_STEP]);
   });
 
-  it("a fade that never gets a frame at all is removed after two windows", () => {
-    const { finished } = drive();
-    vi.advanceTimersByTime(WINDOW);
+  it("a frame that presents nothing new (the canvas warming up) holds the fade where it is; the next presented frame moves it by the cap at most", () => {
+    /* R4-V1-4 (verifier, 2026-09-27): a fade kept across a tier change that lands during a warm-up
+       went on stepping while nothing new was presented (the warm-up renders no frame), so it could
+       reach 0 and leave before the new tier's first frame — which then landed with no overlay at all,
+       the whole pop the fade exists to hide. While the canvas presents nothing new the fade holds. */
+    const { d, writes, finished } = drive();
+    d.frame(1000 / 60, false);
+    d.frame(1000 / 60, false);
+    const at = d.value;
+    expect(at).toBeGreaterThan(0.5);
+    expect(at).toBeLessThan(1);
+    for (const raw of [1000 / 60, 116.6, 3000]) {
+      for (const reduced of [false, true]) {
+        expect(d.frame(raw, reduced, false), "the overlay stays up while nothing new is presented").toBe(true);
+        expect(d.value, `a ${raw} ms frame that presented nothing moved the fade (reduced ${reduced})`).toBe(at);
+      }
+    }
     expect(finished()).toBe(0);
-    vi.advanceTimersByTime(WINDOW);
-    expect(finished()).toBe(1);
+    expect(writes.length, "nothing to write while it holds").toBe(2);
+    expect(d.frame(1000 / 60, false, true)).toBe(true);
+    expect(d.value).toBeLessThan(at);
+    expect(at - d.value).toBeLessThanOrEqual(FADE_MAX_STEP + EPS);
+    // A fade that has not taken its first step holds at 1 too: no reduced-motion swap on a frame that presents nothing.
+    const fresh = drive();
+    expect(fresh.d.frame(1000 / 60, true, false)).toBe(true);
+    expect(fresh.d.value).toBe(1);
+    expect(fresh.finished()).toBe(0);
   });
 
-  it("dispose (the scene removed the overlay itself) stops the watchdog: nothing is removed twice", () => {
-    const { d, finished } = drive();
+  it("dispose (the scene removed or replaced the overlay itself) is final: later frames neither write nor remove", () => {
+    const { d, writes, finished } = drive();
     d.frame(1000 / 60, false);
+    d.dispose();
     d.dispose();
     expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(10 * WINDOW);
     expect(finished()).toBe(0);
     expect(d.frame(16.7, false)).toBe(false);
+    expect(writes.length).toBe(1);
   });
 
-  it("reduced motion: the overlay is removed on the first frame (a swap, never an animation)", () => {
+  it("reduced motion from the fade's first frame: the overlay, still at exactly 1, is removed on that frame (a swap, never an animation)", () => {
     const { d, writes, finished } = drive();
     expect(d.frame(16.7, true)).toBe(false);
     expect(writes).toEqual([]);
     expect(finished()).toBe(1);
+  });
+
+  it("reduced motion switched on MID-FADE hands over from the current value: the rest leaves at the cap per frame, never in one frame", () => {
+    /* C5-R2-1: a reduced-motion toggle is one of the owner's named paths. The old driver swapped to 0
+       from wherever the fade was — measured here, 0.87 -> 0 in one frame. In the product this flag
+       reaches a running fade only through scene.ts `setReducedMotion`; which route a toggle takes in
+       the host is read from Fabric3D.tsx by scene.test.ts. */
+    const { d, writes, finished } = drive();
+    for (let i = 0; i < 6; i += 1) d.frame(1000 / 60, false);
+    const mid = d.value;
+    expect(mid).toBeGreaterThan(FADE_MAX_STEP);
+    expect(mid).toBeLessThan(1);
+    let prev = mid;
+    let frames = 0;
+    for (; frames < 20 && d.frame(16.7, true); frames += 1) {
+      expect(prev - d.value, `frame ${frames} after the toggle`).toBeLessThanOrEqual(FADE_MAX_STEP + EPS);
+      prev = d.value;
+    }
+    expect(prev - d.value, "the last step to 0").toBeLessThanOrEqual(FADE_MAX_STEP + EPS);
+    expect(finished()).toBe(1);
+    // ...and it does leave at the cap: no dawdling on the curve once motion is to be reduced.
+    expect(frames + 1).toBe(Math.ceil(mid / FADE_MAX_STEP - EPS));
+    expect(writes.every((v) => v > 0 && v < 1)).toBe(true);
+  });
+});
+
+/* ── Handing a running cross-fade over to the next one (C5-R2-1, 2026-09-27) ───────────────────────
+ *
+ * The defect (verifier round 2, C5-R2-1): a tier change that lands while a cross-fade runs — a
+ * `setQuality` mid-fade, or the step-up a tab switch queues for the first frame back — ran
+ * `snapshotForTierFade`, which called `clearTierFade()` first, whatever the overlay's opacity. The
+ * half-faded overlay vanished in one frame and a fresh copy of the canvas UNDER it took its place:
+ * the screen dropped by the overlay's whole remaining opacity (0.4-1.0 of the tier pop) at once.
+ *
+ * The rule now (`handOverTierFade`, the ease owner): the new overlay is a copy of the frame the canvas
+ * shows, with the RUNNING overlay drawn over it at its CURRENT opacity, so at opacity 1 it shows
+ * exactly the picture the reader saw; the old one leaves in the same task. While a warm-up runs no
+ * copy can be taken: a FADING overlay then defers the tier change until the warm-up has presented
+ * (R4-VR1-5), and a held one waits for the new tier's first frame again. Only a copy that fails
+ * outright (no 2-D context, a draw that throws) KEEPS a fading overlay running from its value. The
+ * compose itself (`tierFadeCopy`, what scene.ts hands the handover) is run
+ * against a compositing 2-D context below; `picCopy` is this file's shorthand for it. */
+type Pic = { pic: number };
+const picCopy = (canvasPic: number, draws?: [Pic, number][]) => (): TierFadeCopy<Pic> => {
+  const el: Pic = { pic: canvasPic };
+  return {
+    el,
+    drawOver(overlay, alpha) {
+      draws?.push([overlay, alpha]);
+      el.pic = alpha * overlay.pic + (1 - alpha) * el.pic;
+      return true;
+    },
+  };
+};
+
+describe("C5-R2-1: a new tier cross-fade hands over from the running one's CURRENT value", () => {
+  it("with nothing up, a tier change mounts a copy of the old tier's frame (or nothing, when none can be taken)", () => {
+    const h = handOverTierFade<Pic>(null, picCopy(0.3));
+    expect(h.kind).toBe("new");
+    expect(h.kind === "new" && h.mount.pic).toBe(0.3);
+    expect(handOverTierFade<Pic>(null, () => null)).toEqual({ kind: "none" });
+  });
+
+  it("a running overlay at 0.46 is composed into the copy at 0.46 and replaced by it: the new overlay shows what was on screen", () => {
+    const running: Pic = { pic: 0.9 };
+    const draws: [Pic, number][] = [];
+    const canvas = 0.2;
+    const h = handOverTierFade<Pic>({ el: running, opacity: 0.46, fading: true }, picCopy(canvas, draws));
+    expect(h.kind).toBe("composed");
+    if (h.kind !== "composed") return;
+    expect(draws).toEqual([[running, 0.46]]);
+    expect(h.from).toBe(0.46);
+    expect(h.remove).toBe(running);
+    const onScreenBefore = 0.46 * running.pic + (1 - 0.46) * canvas;
+    // At opacity 1 over the same canvas, the new overlay IS the picture the reader saw.
+    expect(h.mount.pic).toBeCloseTo(onScreenBefore, 12);
+  });
+
+  it("a held overlay (opacity 1) is composed at 1: the new overlay is the held picture itself", () => {
+    const held: Pic = { pic: 0.7 };
+    const h = handOverTierFade<Pic>({ el: held, opacity: 1, fading: false }, picCopy(0.1));
+    expect(h.kind === "composed" && h.mount.pic).toBe(0.7);
+  });
+
+  it("no copy possible: the running overlay is KEPT as it is — a fading one carries on, a held one waits for the new tier again", () => {
+    expect(handOverTierFade<Pic>({ el: { pic: 1 }, opacity: 0.4, fading: true }, () => null)).toEqual({ kind: "kept", from: 0.4, rehold: false });
+    expect(handOverTierFade<Pic>({ el: { pic: 1 }, opacity: 1, fading: false }, () => null)).toEqual({ kind: "kept", from: 1, rehold: true });
+    // A copy that cannot draw the running overlay is no copy: nothing is swapped for a partial picture.
+    const failing = (): TierFadeCopy<Pic> => ({ el: { pic: 0 }, drawOver: () => false });
+    expect(handOverTierFade<Pic>({ el: { pic: 1 }, opacity: 0.4, fading: true }, failing)).toEqual({ kind: "kept", from: 0.4, rehold: false });
+  });
+
+  it("a warm-up in progress: a FADING overlay defers the tier change (no copy is asked for); a held one waits again; nothing up is `none` (R4-VR1-5)", () => {
+    /* R4-VR1-5 (verifier, 2026-09-27): a tier change during a theme change's or new data's warm-up
+       while a fade ran was `kept`, and the new tier's first frame then landed under the fade's partial
+       value: (1 - that value) of the pop uncovered in one frame. It now waits until a copy can be
+       taken, and is handed over from the value the fade held meanwhile. */
+    let asked = 0;
+    const counting = (): TierFadeCopy<Pic> | null => {
+      asked += 1;
+      return null;
+    };
+    expect(handOverTierFade<Pic>({ el: { pic: 1 }, opacity: 0.4, fading: true }, counting, true)).toEqual({ kind: "deferred", from: 0.4 });
+    expect(handOverTierFade<Pic>({ el: { pic: 1 }, opacity: 1, fading: false }, counting, true)).toEqual({ kind: "kept", from: 1, rehold: true });
+    expect(handOverTierFade<Pic>(null, counting, true)).toEqual({ kind: "none" });
+    expect(asked, "no copy is attempted while the canvas warms up (it would re-present a half-built chain)").toBe(0);
+    // Not warming: the same fading overlay is composed as before.
+    expect(handOverTierFade<Pic>({ el: { pic: 1 }, opacity: 0.4, fading: true }, picCopy(0), false).kind).toBe("composed");
+  });
+
+  it("the scene's compose step (tierFadeCopy): the running overlay is painted over the WHOLE copy at its current opacity, and the painter is left at alpha 1", () => {
+    /* R4-V1-2 (verifier, 2026-09-27): the compose was inline in scene.ts (`drawOver`), reached by no
+       unit test — `globalAlpha = 1` in place of the overlay's opacity kept every test green while a
+       mid-fade handover at 0.54 moved the screen by 0.85 of a removal. scene.ts now returns
+       `tierFadeCopy(el, ctx, w, h)` (pinned in scene.test.ts), and it runs here against a scalar 2-D
+       context that composites the way a canvas does: source-over at the context's globalAlpha. */
+    const W = 640;
+    const H = 400;
+    for (const alpha of [0, 0.05, 0.46, 0.54, 1]) {
+      const canvasPic = 0.2;
+      const running: Pic = { pic: 0.9 };
+      const target: Pic = { pic: canvasPic };
+      const calls: unknown[][] = [];
+      const painter = {
+        globalAlpha: 1,
+        drawImage(img: Pic, dx: number, dy: number, dw: number, dh: number): void {
+          calls.push([img, painter.globalAlpha, dx, dy, dw, dh]);
+          const covered = dx <= 0 && dy <= 0 && dx + dw >= W && dy + dh >= H ? 1 : 0;
+          target.pic = covered * painter.globalAlpha * img.pic + (1 - covered * painter.globalAlpha) * target.pic;
+        },
+      };
+      const h = handOverTierFade<Pic>({ el: running, opacity: alpha, fading: alpha < 1 }, () => tierFadeCopy(target, painter, W, H));
+      expect(h.kind, `alpha ${alpha}`).toBe("composed");
+      expect(calls, `alpha ${alpha}: one draw of the running overlay, at its opacity, over the whole copy`).toEqual([[running, alpha, 0, 0, W, H]]);
+      expect(painter.globalAlpha, "the context is left at alpha 1").toBe(1);
+      const onScreen = alpha * running.pic + (1 - alpha) * canvasPic;
+      expect(h.kind === "composed" && h.mount.pic, `alpha ${alpha}: the new overlay at 1 is the picture on screen`).toBeCloseTo(onScreen, 12);
+    }
+    // A context that throws while drawing: no copy (the running overlay is kept), and its alpha is still restored.
+    const throwing = {
+      globalAlpha: 1,
+      drawImage(): void {
+        throw new Error("tainted");
+      },
+    };
+    const kept = handOverTierFade<Pic>({ el: { pic: 1 }, opacity: 0.4, fading: true }, () => tierFadeCopy<Pic>({ pic: 0 }, throwing, W, H));
+    expect(kept).toEqual({ kind: "kept", from: 0.4, rehold: false });
+    expect(throwing.globalAlpha).toBe(1);
+  });
+
+  it("an opacity outside [0, 1] or not a number is never passed on as one", () => {
+    for (const [given, want] of [[1.7, 1], [-0.2, 0], [Number.NaN, 1]] as const) {
+      const draws: [Pic, number][] = [];
+      handOverTierFade<Pic>({ el: { pic: 1 }, opacity: given, fading: true }, picCopy(0, draws));
+      expect(draws[0]![1]).toBe(want);
+    }
+  });
+});
+
+/* ── The overlay's whole life, executed: `createTierFadeSlot` (R4-VR1-4, 2026-09-27) ───────────────
+ *
+ * The verifier disposed the running driver on the `kept` path — the overlay then stayed on screen for
+ * ever — and every test stayed green, because the record's updates were inline in scene.ts and the
+ * class model below ran a copy of them. The slot now owns them, and runs here over a page that records
+ * what is mounted and at what opacity. */
+function page() {
+  const shown = new Map<Pic, number>();
+  const log: string[] = [];
+  return {
+    shown,
+    log,
+    host: {
+      mount(el: Pic): void {
+        shown.set(el, 1);
+        log.push(`mount ${el.pic}`);
+      },
+      unmount(el: Pic): void {
+        shown.delete(el);
+        log.push(`unmount ${el.pic}`);
+      },
+      write(el: Pic, opacity: number): void {
+        if (shown.has(el)) shown.set(el, opacity);
+      },
+    },
+  };
+}
+
+describe("R4-VR1-4: the tier-fade slot — mount, hand-over, hold, fade and removal, over a page it can see", () => {
+  const F = 1000 / 60;
+  /** Frames until the slot's overlay leaves (or `max`). */
+  const fadeOut = (slot: ReturnType<typeof createTierFadeSlot<Pic>>, max = 200): number => {
+    let n = 0;
+    while (slot.state !== "none" && n < max) {
+      slot.frame(F, false, true);
+      n += 1;
+    }
+    return n;
+  };
+
+  it("a tier change with nothing up mounts the copy, held at 1; the new tier's frame starts its hold; the fade removes it at exactly 0", () => {
+    const p = page();
+    const slot = createTierFadeSlot<Pic>(p.host);
+    expect(slot.tierChange(picCopy(0.3), false).kind).toBe("new");
+    expect([...p.shown.values()]).toEqual([1]);
+    expect(slot.state).toBe("held");
+    slot.frame(F, false, true); // a held overlay has no driver: nothing moves
+    expect(slot.opacity).toBe(1);
+    const hold = slot.presented(false)!;
+    expect(hold.live).toBe(true);
+    expect(slot.state).toBe("waiting");
+    expect(slot.presented(false), "a hold already waiting is not handed out twice").toBeNull();
+    hold.start();
+    expect(slot.state).toBe("fading");
+    expect(fadeOut(slot)).toBeLessThanOrEqual(18);
+    expect(p.shown.size, "removed on the frame the fade reached exactly 0").toBe(0);
+    expect(hold.live).toBe(false);
+  });
+
+  it("composed: the running overlay leaves in the same call the one showing its picture arrives, and its driver never writes again", () => {
+    const p = page();
+    const slot = createTierFadeSlot<Pic>(p.host);
+    slot.tierChange(picCopy(0.9), false);
+    slot.presented(false)!.start();
+    for (let i = 0; i < 6; i += 1) slot.frame(F, false, true);
+    const at = slot.opacity;
+    const old = [...p.shown.keys()][0]!;
+    const plan = slot.tierChange(picCopy(0.2), false);
+    expect(plan.kind).toBe("composed");
+    expect(p.log.slice(-2), "unmounted and mounted in one call").toEqual([`unmount 0.9`, `mount ${at * 0.9 + (1 - at) * 0.2}`]);
+    expect(p.shown.has(old)).toBe(false);
+    expect([...p.shown.values()]).toEqual([1]);
+    expect(slot.state).toBe("held");
+    slot.frame(F, false, true);
+    expect(p.shown.has(old), "the old driver wrote nothing back").toBe(false);
+  });
+
+  it("kept (a copy that FAILED with a fade running): the SAME overlay fades on to 0 and leaves — never stuck, never cut", () => {
+    const p = page();
+    const slot = createTierFadeSlot<Pic>(p.host);
+    slot.tierChange(picCopy(0.9), false);
+    slot.presented(false)!.start();
+    for (let i = 0; i < 5; i += 1) slot.frame(F, false, true);
+    const before = slot.opacity;
+    expect(slot.tierChange(() => null, false)).toEqual({ kind: "kept", from: before, rehold: false });
+    expect(slot.state).toBe("fading");
+    let prev = before;
+    let frames = 0;
+    while (slot.state !== "none" && frames < 60) {
+      slot.frame(F, false, true);
+      expect(prev - slot.opacity).toBeLessThanOrEqual(FADE_MAX_STEP + EPS);
+      prev = slot.opacity;
+      frames += 1;
+    }
+    expect(slot.state, "the kept fade ran to its end").toBe("none");
+    expect(p.shown.size).toBe(0);
+  });
+
+  it("deferred (a warm-up in progress with a fade running): nothing changes, the fade HOLDS while nothing new is presented, and the change is composed from that value once it can be copied", () => {
+    const p = page();
+    const slot = createTierFadeSlot<Pic>(p.host);
+    slot.tierChange(picCopy(0.9), false);
+    slot.presented(false)!.start();
+    for (let i = 0; i < 6; i += 1) slot.frame(F, false, true);
+    const v = slot.opacity;
+    const logged = p.log.length;
+    expect(slot.tierChange(picCopy(0), true)).toEqual({ kind: "deferred", from: v });
+    expect(p.log.length, "nothing mounted or removed").toBe(logged);
+    for (let i = 0; i < 5; i += 1) slot.frame(F, false, false);
+    expect(slot.opacity, "held through the warm-up").toBe(v);
+    const plan = slot.tierChange(picCopy(0.2), false);
+    expect(plan).toMatchObject({ kind: "composed", from: v });
+    expect([...p.shown.values()]).toEqual([1]);
+  });
+
+  it("kept + rehold (a HELD overlay during a warm-up): the same element waits for the new tier again, and the old hold is dead", () => {
+    const p = page();
+    const slot = createTierFadeSlot<Pic>(p.host);
+    slot.tierChange(picCopy(0.9), false);
+    const oldHold = slot.presented(false)!;
+    expect(slot.tierChange(picCopy(0), true)).toEqual({ kind: "kept", from: 1, rehold: true });
+    expect(oldHold.live).toBe(false);
+    oldHold.start();
+    expect(slot.state, "a dead hold starts nothing").toBe("held");
+    expect(p.shown.size).toBe(1);
+    const hold = slot.presented(false)!;
+    hold.start();
+    expect(fadeOut(slot)).toBeLessThanOrEqual(18);
+    expect(p.shown.size).toBe(0);
+  });
+
+  it("reduced motion: a HELD overlay (exactly 1) is swapped away on the new tier's frame; a fading one is never swapped by `presented`", () => {
+    const p = page();
+    const slot = createTierFadeSlot<Pic>(p.host);
+    slot.tierChange(picCopy(0.9), false);
+    expect(slot.presented(true)).toBeNull();
+    expect(p.shown.size).toBe(0);
+    slot.tierChange(picCopy(0.9), false);
+    slot.presented(false)!.start();
+    slot.frame(F, false, true);
+    expect(slot.presented(true)).toBeNull();
+    expect(slot.state).toBe("fading");
+  });
+
+  it("dispose removes whatever is up (teardown with the canvas), and is final", () => {
+    const p = page();
+    const slot = createTierFadeSlot<Pic>(p.host);
+    slot.tierChange(picCopy(0.9), false);
+    slot.dispose();
+    expect(p.shown.size).toBe(0);
+    expect(slot.state).toBe("none");
+    slot.dispose();
+  });
+});
+
+/* ── The class, executed: every path that touches a running overlay, through the slot, on a model of the screen ──
+ *
+ * One scalar per picture: the canvas shows `base` (the last composed frame), an overlay shows its own
+ * `pic` at opacity α, so the screen is α·pic + (1 - α)·base. The overlay is `createTierFadeSlot` itself
+ * (R4-VR1-4), over a page that records what is mounted; the scene's part — which jsdom cannot run (no
+ * WebGL) — is followed step for step and pinned in scene.test.ts: `applyQuality` asks the slot first
+ * and waits on `deferred` until the warm-up that deferred it has ended (`deferredQuality`), the new
+ * tier's composed frame calls `presented`, the hold starts the fade some frames later, and `frame()`
+ * drives the slot once per frame with `compiled` (false while a warm-up runs). It is driven through
+ * seeded sequences of every path the owner named: a tier change mid-hold and mid-fade, during a warm-up
+ * (a theme change, new data, another tier change) or with a copy that fails; a tab hidden for up to
+ * 4 s and the tier change a returning tab lands on its first frame; host stalls; and the driver's
+ * `reduced` flag turned on mid-fade (what scene.ts `setReducedMotion` passes it). The invariants:
+ *   1. on every presented frame, what the OVERLAY changes on screen — over the canvas the previous
+ *      frame showed — is at most FADE_MAX_STEP of the difference between its picture and that canvas
+ *      (a change of the canvas itself is not the overlay's doing and is factored out; so is the
+ *      reduced-motion swap of an overlay still at exactly 1, which is that contract);
+ *   2. a new tier's first frame lands under at least the overlay that was up when the change was applied
+ *      (asked for, or — deferred — when its deferral ended);
+ *   3. (R4-VR1-5) it never lands under a PARTLY faded overlay, showing part of its pop, unless its copy
+ *      failed outright — counted apart, the stated residual;
+ *   4. (R4-VR1-4) at most one overlay is ever mounted, and once the events stop every overlay leaves.
+ * The pre-fix wiring, the wiring that stepped a fade through the warm-up, and the wiring that did not
+ * defer are run through the same model and must FAIL, so the model is known to see each defect. */
+type ModelPolicy = "handover" | "pre-fix" | "step" | "no-defer";
+function runOverlayModel(seed: number, policy: ModelPolicy) {
+  let s = seed >>> 0;
+  const rnd = (): number => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 2 ** 32;
+  };
+  const p = page();
+  const slot = createTierFadeSlot<Pic>(p.host);
+  let base = rnd();
+  let reduced = false;
+  let warmup = 0;
+  let pendingBase: number | null = null;
+  /* The tier change a warm-up is for (null: a theme change or new data), and the one deferred. */
+  let tierWarm: { askAlpha: number; copyFailed: boolean } | null = null;
+  let deferred = false;
+  let hold: { handle: TierFadeHoldHandle; frames: number } | null = null;
+  const r = { worst: 0, frames: 0, handovers: 0, deferrals: 0, landings: 0, landingShortfall: 0, partialLandings: 0, residualLandings: 0, maxMounted: 0, leftOver: 0 };
+  const top = (): { pic: number; alpha: number } | null => {
+    let out: { pic: number; alpha: number } | null = null;
+    for (const [el, alpha] of p.shown) out = { pic: el.pic, alpha };
+    return out;
+  };
+  const tierChange = (askAlpha: number): void => {
+    const warming = warmup > 0;
+    const fails = !warming && rnd() < 0.15; // a copy that fails outright (the kept-fading path, and its residual)
+    const copy = warming || fails ? () => null : picCopy(base);
+    let kind: string;
+    if (policy === "pre-fix") {
+      // snapshotForTierFade as it was: clearTierFade() first, then a copy of the canvas UNDER the overlay.
+      slot.dispose();
+      kind = slot.tierChange(copy, false).kind;
+    } else kind = slot.tierChange(copy, policy === "no-defer" ? false : warming).kind;
+    if (kind === "deferred") {
+      r.deferrals += 1;
+      deferred = true;
+      return;
+    }
+    deferred = false;
+    if (kind === "composed") r.handovers += 1;
+    tierWarm = { askAlpha, copyFailed: kind === "kept" && fails && slot.state === "fading" };
+    warmup = 1 + Math.floor(rnd() * 4);
+    pendingBase = rnd();
+  };
+  /* The screen the previous frame presented (taken before this frame's events: a tier change between
+     two frames is part of what the next presented frame shows). */
+  let prev: { pic: number; alpha: number } | null = null;
+  let prevBase = base;
+  const step = (raw: number, events: boolean): void => {
+    if (events) {
+      const e = rnd();
+      if (e < 0.06) tierChange(slot.opacity);
+      else if (e < 0.12) {
+        // A theme change or new data: a warm-up of its own; the new picture lands when it ends.
+        warmup = Math.max(warmup, 1 + Math.floor(rnd() * 4));
+        pendingBase = rnd();
+      } else if (e < 0.14) raw = 200 + rnd() * 3800; // a hidden tab: no frame for up to 4 s, then this one
+      else if (e < 0.24) raw = 33 + rnd() * 220; // a host stall
+      else if (e < 0.255) reduced = true;
+      else if (e < 0.28) reduced = false;
+    }
+    // frame(): the slot first, with `compiled` (false while the warm-up runs; "step" is the wiring before R4-V1-4).
+    slot.frame(raw, reduced, policy === "step" || warmup === 0);
+    let swapped = false;
+    if (deferred && warmup === 0) {
+      /* The deferred tier change is applied on the first frame after the warm-up (and that frame
+         renders nothing). The old tier presented meanwhile, so it is judged from what is up NOW. */
+      tierChange(slot.opacity);
+    } else if (warmup > 0) {
+      warmup -= 1;
+      if (warmup === 0 && pendingBase !== null) {
+        // The warm-up ended: its first composed frame lands now, under whatever overlay is up.
+        if (tierWarm !== null) {
+          const alpha = slot.opacity;
+          r.landings += 1;
+          r.landingShortfall = Math.max(r.landingShortfall, tierWarm.askAlpha - alpha);
+          if (alpha > 0 && alpha < 1) {
+            if (tierWarm.copyFailed) r.residualLandings += 1;
+            else r.partialLandings += 1;
+          }
+          tierWarm = null;
+        }
+        base = pendingBase;
+        pendingBase = null;
+        const was = top();
+        const h = slot.presented(reduced);
+        if (h !== null) hold = { handle: h, frames: Math.floor(rnd() * 4) };
+        else if (was !== null && was.alpha === 1 && top() === null) swapped = true; // §4.8's swap at exactly 1
+      }
+    } else {
+      const h = slot.presented(reduced);
+      if (h !== null) hold = { handle: h, frames: Math.floor(rnd() * 4) };
+      if (hold !== null && hold.handle.live && hold.frames-- <= 0) {
+        hold.handle.start();
+        hold = null;
+      }
+    }
+    const now = top();
+    // The driver's own reduced-motion swap of an overlay still at exactly 1 is that contract too.
+    if (reduced && now === null && prev !== null && prev.alpha === 1) swapped = true;
+    if (prev !== null && !swapped) {
+      const moved = Math.abs((now === null ? prevBase : now.alpha * now.pic + (1 - now.alpha) * prevBase) - (prev.alpha * prev.pic + (1 - prev.alpha) * prevBase));
+      const span = Math.abs(prev.pic - prevBase);
+      if (span > 1e-9) r.worst = Math.max(r.worst, moved / span);
+    }
+    r.maxMounted = Math.max(r.maxMounted, p.shown.size);
+    r.frames += 1;
+    prev = now;
+    prevBase = base;
+  };
+  for (let i = 0; i < 400; i += 1) step(1000 / 60, true);
+  // The events stop: every overlay must leave (a stuck one is a defect the cap cannot see).
+  for (let i = 0; i < 150; i += 1) step(1000 / 60, false);
+  r.leftOver = p.shown.size;
+  return r;
+}
+
+describe("C5-R2-1 as a class: no path removes, replaces or resets a running overlay faster than the per-frame cap", () => {
+  const SEEDS = Array.from({ length: 40 }, (_, i) => 0xc5 + i * 7919);
+  const runs = SEEDS.map((seed) => ({ seed, r: runOverlayModel(seed, "handover") }));
+
+  it("the model sees the defect: the pre-fix wiring (clear first, then copy) cuts a half-faded overlay", () => {
+    const cut = SEEDS.map((seed) => runOverlayModel(seed, "pre-fix")).filter((r) => r.worst > FADE_MAX_STEP + EPS);
+    expect(cut.length, "the pre-fix wiring passed the invariant: the model cannot see the cut").toBeGreaterThan(0);
+  });
+
+  it("the slot never moves the screen by more than FADE_MAX_STEP of the overlay's contrast in one frame, on any seeded path", () => {
+    let handovers = 0;
+    for (const { seed, r } of runs) {
+      expect(r.worst, `seed ${seed}: one frame moved ${r.worst.toFixed(3)} of the overlay's contrast`).toBeLessThanOrEqual(FADE_MAX_STEP + EPS);
+      expect(r.frames).toBe(550);
+      handovers += r.handovers;
+    }
+    // Not vacuous: running overlays were actually handed over, many times.
+    expect(handovers).toBeGreaterThan(20);
+  });
+
+  it("a new tier's first frame always lands under at least the overlay that was on screen when the change was asked for (the fade holds while nothing new is presented)", () => {
+    /* R4-V1-4 (verifier, 2026-09-27): a fade that ran on through a warm-up could reach 0 and leave
+       first: the new tier's pop then landed with no overlay — up to the whole pop. */
+    let landings = 0;
+    for (const { seed, r } of runs) {
+      expect(r.landingShortfall, `seed ${seed}: a new tier landed under ${r.landingShortfall.toFixed(3)} less overlay than was up at the change`).toBeLessThanOrEqual(1e-12);
+      landings += r.landings;
+    }
+    expect(landings, "not vacuous: new tiers landed").toBeGreaterThan(40);
+    const short = SEEDS.map((seed) => runOverlayModel(seed, "step")).filter((r) => r.landingShortfall > 0.05);
+    expect(short.length, "the stepping wiring passed: the model cannot see a fade ending inside the warm-up").toBeGreaterThan(0);
+  });
+
+  it("R4-VR1-5: a new tier's first frame never lands under a PARTLY faded overlay — a tier change during a warm-up with a fade running is deferred and handed over — except where the copy failed outright", () => {
+    let deferrals = 0;
+    for (const { seed, r } of runs) {
+      expect(r.partialLandings, `seed ${seed}: ${r.partialLandings} new tier(s) landed under a partly faded overlay`).toBe(0);
+      deferrals += r.deferrals;
+    }
+    expect(deferrals, "not vacuous: tier changes were asked for during a warm-up with a fade running").toBeGreaterThan(5);
+    // ...and the model sees the defect: the wiring that did not defer lands tiers under a partial fade.
+    const partial = SEEDS.map((seed) => runOverlayModel(seed, "no-defer")).filter((r) => r.partialLandings > 0);
+    expect(partial.length, "the non-deferring wiring passed: the model cannot see a tier landing under a partial fade").toBeGreaterThan(0);
+  });
+
+  it("R4-VR1-4: at most one overlay is ever mounted, and once the events stop every overlay leaves (none is left stuck)", () => {
+    for (const { seed, r } of runs) {
+      expect(r.maxMounted, `seed ${seed}`).toBeLessThanOrEqual(1);
+      expect(r.leftOver, `seed ${seed}: an overlay is still up 150 quiet frames after the last event`).toBe(0);
+    }
   });
 });
 

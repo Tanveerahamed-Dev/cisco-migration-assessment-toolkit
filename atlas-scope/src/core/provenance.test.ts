@@ -38,6 +38,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import fabric from "../data/fabric.json";
+import { SOURCE_BINDING_BYTE_KEYS } from "./types";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG = resolve(HERE, "..", ".."); // atlas-scope/
@@ -68,6 +69,34 @@ const DIGEST_FORM = "lf-normalised";
 const lfNormalised = (buf: Buffer): Buffer => Buffer.from(buf.toString("latin1").split("\r\n").join("\n"), "latin1");
 const crlfOf = (buf: Buffer): Buffer => Buffer.from(lfNormalised(buf).toString("latin1").split("\n").join("\r\n"), "latin1");
 
+/* THE BYTE-DEPENDENT KEYS (owner decision R3, verifier S1-R2V-4). `sourceExactSha256` is sha256 of the bytes
+   AS READ, so a compile of a CRLF checkout and one of an LF checkout differ in exactly that value and in
+   nothing else. A compile-identity check across checkouts therefore compares the compiled bytes with the
+   value of each key in SOURCE_BINDING_BYTE_KEYS replaced by a placeholder — every other byte is still
+   compared exactly — and then checks each masked value separately against the bytes that compile read.
+   The masking must hit exactly one occurrence per key, so it can never be vacuous. */
+const MASK = "<byte-dependent>";
+function maskByteKeys(compiledFile: Buffer): { masked: Buffer; values: Record<string, string> } {
+  let text = compiledFile.toString("utf8");
+  const values: Record<string, string> = {};
+  for (const k of SOURCE_BINDING_BYTE_KEYS) {
+    const re = new RegExp(`("${k}":\\s*)"([^"]*)"`, "g");
+    const hits = [...text.matchAll(re)];
+    expect(hits.length, `${k} occurs exactly once in the compiled file`).toBe(1);
+    values[k] = hits[0]![2]!;
+    text = text.replace(re, `$1"${MASK}"`);
+  }
+  return { masked: Buffer.from(text, "utf8"), values };
+}
+/** The compiled file's content is the same, and each byte-dependent key names the bytes its compile read. */
+function sameContentAcrossCheckouts(a: { out: Buffer; read: Buffer }, b: { out: Buffer; read: Buffer }): boolean {
+  const ma = maskByteKeys(a.out);
+  const mb = maskByteKeys(b.out);
+  expect(ma.values.sourceExactSha256, "the first compile's exact digest is of ITS bytes").toBe(`sha256:${sha256(a.read)}`);
+  expect(mb.values.sourceExactSha256, "the second compile's exact digest is of ITS bytes").toBe(`sha256:${sha256(b.read)}`);
+  return sha256(ma.masked) === sha256(mb.masked);
+}
+
 const meta = fabric.meta as {
   source: string;
   sourceOrigin: string;
@@ -91,10 +120,16 @@ afterAll(() => {
  * comparison is factored out ONCE, the passing test calls it on the shipped bytes, and the failure
  * tests call the very same function on tampered bytes and assert that it REJECTS. */
 
-/** Run the real compiler in a sandbox against `sourceBytes` and return the model it writes. */
+/**
+ * Run the real compiler in a sandbox against `sourceBytes` and return the model it writes. `via` "tracked" is
+ * the default run, which writes the tracked path; "out" compiles with --out to a directory outside src/. The
+ * tracked path takes ONLY the committed (LF) form — a CRLF checkout is refused there (E_TRACKED_SOURCE_FORM,
+ * verifier R3-V4: the byte-dependent key would otherwise put this checkout's line endings into committed
+ * files) — so a compile of a CRLF checkout, for the O15 identity check, goes through --out.
+ */
 const compiled = new Map<string, Buffer>();
-function compileInSandbox(sourceBytes: Buffer): Buffer {
-  const key = sha256(sourceBytes);
+function compileInSandbox(sourceBytes: Buffer, via: "tracked" | "out" = "tracked"): Buffer {
+  const key = `${via}:${sha256(sourceBytes)}`;
   const hit = compiled.get(key);
   if (hit !== undefined) return hit;
   /* Same relative layout the compiler resolves against, so this can never overwrite the shipped
@@ -105,9 +140,11 @@ function compileInSandbox(sourceBytes: Buffer): Buffer {
   mkdirSync(dirname(join(root, meta.source)), { recursive: true });
   cpSync(COMPILER, join(root, "atlas-scope", "tools", "compile-snapshot.mjs"));
   for (const helper of HELPERS) cpSync(join(TOOLS, helper), join(root, "atlas-scope", "tools", helper), { recursive: true });
+  cpSync(CONTRACTS, join(root, "atlas-scope", "contracts"), { recursive: true }); // data the compiler imports
   writeFileSync(join(root, meta.source), sourceBytes);
-  execFileSync(process.execPath, [join(root, "atlas-scope", "tools", "compile-snapshot.mjs")], { stdio: "pipe" });
-  const out = readFileSync(join(root, "atlas-scope", "src", "data", "fabric.json"));
+  const outDir = join(root, "atlas-scope", "compiled-out");
+  execFileSync(process.execPath, [join(root, "atlas-scope", "tools", "compile-snapshot.mjs"), ...(via === "out" ? ["--out", outDir] : [])], { stdio: "pipe" });
+  const out = readFileSync(via === "out" ? join(outDir, "fabric.json") : join(root, "atlas-scope", "src", "data", "fabric.json"));
   compiled.set(key, out);
   return out;
 }
@@ -152,6 +189,9 @@ describe("the source binding the whole product displays", () => {
     expect(lfNormalised(raw).byteLength).toBe(meta.sourceBytes);
     expect(statSync(SOURCE).size).toBeGreaterThanOrEqual(meta.sourceBytes); // CRLF on disk can only be longer
     expect(sourceMatchesMeta(raw, meta)).toBe(true);
+    /* The TRACKED model is compiled from the committed bytes of the sample (the LF form Git stores), so
+       its byte-dependent exact digest is theirs — whatever line endings this checkout renders. */
+    expect((fabric.meta as { sourceExactSha256: string }).sourceExactSha256).toBe(`sha256:${sha256(lfNormalised(raw))}`);
   });
 
   it("binds the same digest whether the checkout has CRLF or LF line endings (O15)", () => {
@@ -163,15 +203,21 @@ describe("the source binding the whole product displays", () => {
     expect(sha256(crlf)).not.toBe(sha256(lf));
     expect(sourceMatchesMeta(lf, meta), "an LF checkout (a Linux/macOS clone, or the committed blob)").toBe(true);
     expect(sourceMatchesMeta(crlf, meta), "a CRLF checkout (Windows autocrlf)").toBe(true);
-    // And the COMPILER agrees: both checkouts compile to one byte-identical model.
-    expect(sha256(compileInSandbox(crlf))).toBe(sha256(compileInSandbox(lf)));
+    /* And the COMPILER agrees: both checkouts compile to one model, byte-identical apart from the
+       byte-dependent binding keys, each of which names the bytes its own compile read (see maskByteKeys). */
+    expect(sameContentAcrossCheckouts({ out: compileInSandbox(crlf, "out"), read: crlf }, { out: compileInSandbox(lf, "out"), read: lf })).toBe(true);
+    // The tracked model IS the compile of the committed (LF) bytes, on every byte — its exact digest included —
+    // and the --out compile of those bytes is the same file (the destination changes nothing in the content).
     expect(sha256(compileInSandbox(lf))).toBe(sha256(readFileSync(MODEL)));
+    expect(sha256(compileInSandbox(lf, "out"))).toBe(sha256(readFileSync(MODEL)));
   });
 
   it("ships a model that is byte-identical to what the compiler produces from that source", () => {
     /* THE ASSERTION THAT MAKES THE DIGEST MEAN SOMETHING. */
     const shipped = readFileSync(MODEL);
-    const verdict = modelIsCompilerOutput(shipped, readFileSync(SOURCE));
+    /* From the COMMITTED bytes (the LF form Git stores): that is what the tracked model is compiled from,
+       and on an LF checkout (this one) it is the file on disk byte for byte. */
+    const verdict = modelIsCompilerOutput(shipped, lfNormalised(readFileSync(SOURCE)));
     expect(
       verdict.ok,
       "src/data/fabric.json is NOT what tools/compile-snapshot.mjs produces from the snapshot it\n" +
@@ -264,6 +310,8 @@ describe("no authored code file pins the snapshot digest", () => {
 
 const TOOLS = resolve(PKG, "tools");
 const SRC_DIR = resolve(PKG, "src");
+/** The engine contract directory (atlas-scope/contracts/): generated by the engine, imported by the compiler. */
+const CONTRACTS = resolve(PKG, "contracts");
 
 function walk(dir: string, keep: (p: string) => boolean, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
@@ -276,8 +324,12 @@ function walk(dir: string, keep: (p: string) => boolean, out: string[] = []): st
 
 const posix = (p: string): string => p.split("\\").join("/");
 
-/** Run ONE compiler in a fresh sandbox; return every file it wrote under src/, keyed by src-relative path. */
-function runCompiler(name: string, sourceBytes: Buffer): Map<string, Buffer> {
+/**
+ * Run ONE compiler in a fresh sandbox; return every file it wrote under src/, keyed by src-relative path.
+ * With `via` "out" it compiles with --out to a directory outside src/ instead (the only way a CRLF checkout
+ * compiles: see compileInSandbox) and returns what it wrote there, keyed by file name.
+ */
+function runCompiler(name: string, sourceBytes: Buffer, via: "tracked" | "out" = "tracked"): Map<string, Buffer> {
   const root = mkdtempSync(join(tmpdir(), "atlas-provenance-all-"));
   sandboxes.push(root);
   const pkg = join(root, "atlas-scope");
@@ -298,9 +350,17 @@ function runCompiler(name: string, sourceBytes: Buffer): Map<string, Buffer> {
   // and its I/O live under lib/), never the OTHER compilers — each compiler's outputs are attributed
   // to it alone.
   for (const helper of HELPERS) cpSync(join(TOOLS, helper), join(pkg, "tools", helper), { recursive: true });
+  // The engine contract (R3): DATA the one compiler imports for its evidence vocabularies — not a compiler.
+  cpSync(CONTRACTS, join(pkg, "contracts"), { recursive: true });
   writeFileSync(join(root, meta.source), sourceBytes);
-  execFileSync(process.execPath, [join(pkg, "tools", name)], { stdio: "pipe" });
+  const outDir = join(pkg, "compiled-out");
+  execFileSync(process.execPath, [join(pkg, "tools", name), ...(via === "out" ? ["--out", outDir] : [])], { stdio: "pipe" });
   const written = new Map<string, Buffer>();
+  if (via === "out") {
+    for (const f of walk(outDir, () => true)) written.set(posix(relative(outDir, f)), readFileSync(f));
+    expect(walk(join(pkg, "src"), () => true), `${name} --out wrote under src/`).toEqual([]);
+    return written;
+  }
   for (const f of walk(join(pkg, "src"), () => true)) written.set(posix(relative(join(pkg, "src"), f)), readFileSync(f));
   return written;
 }
@@ -357,7 +417,7 @@ describe("every compiled data file is reproduced by its compiler from the named 
   });
 
   it.each(COMPILERS)("%s writes only files that are byte-identical to the shipped ones", (name) => {
-    const written = runCompiler(name, readFileSync(SOURCE));
+    const written = runCompiler(name, lfNormalised(readFileSync(SOURCE))); // the committed bytes (see above)
     expect(written.size, `${name} wrote nothing under src/`).toBeGreaterThan(0);
     for (const [rel, bytes] of written) {
       outputs.set(rel, name);
@@ -370,7 +430,7 @@ describe("every compiled data file is reproduced by its compiler from the named 
           `compiler changed and the file was not regenerated (run \`node tools/${name}\`).`,
       ).toBe(true);
     }
-  });
+  }, 120_000); // two real compiler runs in fresh sandboxes: under host contention they exceed the 30 s hang detector
 
   it.each(COMPILERS)("%s takes its binding from tools/source-binding.mjs and hashes nothing itself", (name) => {
     /* One rule, not N copies of it: a compiler that hashes the source on its own can drift back to
@@ -395,15 +455,27 @@ describe("every compiled data file is reproduced by its compiler from the named 
     expect(hashing).toEqual(["source-binding.mjs"]);
   });
 
-  it.each(COMPILERS)("%s writes the same bytes from a CRLF checkout as from an LF one (O15)", (name) => {
+  it.each(COMPILERS)("%s writes the same content from a CRLF checkout as from an LF one, apart from the byte-dependent keys (O15)", (name) => {
     const raw = readFileSync(SOURCE);
-    const fromCrlf = runCompiler(name, crlfOf(raw));
-    const fromLf = runCompiler(name, lfNormalised(raw));
+    const crlf = crlfOf(raw);
+    const lf = lfNormalised(raw);
+    /* Both through --out: the tracked path refuses a CRLF checkout (R3-V4, pinned in compile-all.test.ts), and
+       the LF run through --out is checked below to be the very file the tracked run writes. */
+    const fromCrlf = runCompiler(name, crlf, "out");
+    const fromLf = runCompiler(name, lf, "out");
+    expect(fromLf.size, `${name} wrote nothing`).toBeGreaterThan(0);
     expect([...fromCrlf.keys()].sort()).toEqual([...fromLf.keys()].sort());
-    for (const [rel, bytes] of fromLf) {
-      expect(fileIsCompilerOutput(fromCrlf.get(rel)!, bytes), `tools/${name} writes a different src/${rel} from a CRLF checkout`).toBe(true);
+    const tracked = runCompiler(name, lf);
+    for (const [file, bytes] of fromLf) {
+      expect(
+        sameContentAcrossCheckouts({ out: fromCrlf.get(file)!, read: crlf }, { out: bytes, read: lf }),
+        `tools/${name} writes different content in ${file} from a CRLF checkout`,
+      ).toBe(true);
+      const trackedTwin = [...tracked].find(([rel]) => rel.split("/").pop() === file);
+      expect(trackedTwin, `${name}: the tracked run writes ${file} too`).toBeDefined();
+      expect(sha256(trackedTwin![1]), `${name}: --out and the tracked run write the same ${file}`).toBe(sha256(bytes));
     }
-  });
+  }, 180_000); // two real compiler runs in fresh sandboxes: under host contention they exceed the 30 s hang detector
 
   it("leaves no sourced file outside every compiler", () => {
     // Runs after the per-compiler tests above (vitest runs a file's tests in order).

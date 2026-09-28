@@ -272,7 +272,7 @@ describe("the query bar is reachable and escapable from the keyboard", () => {
   it("an external write replaces the draft, and Clear writes through immediately", () => {
     const c = mount(<Header />);
     const input = c.querySelector<HTMLInputElement>(".hdr-query__input");
-    act(() => useInvestigation.getState().setQuery("host:core1"));
+    act(() => { useInvestigation.getState().setQuery("host:core1"); });
     expect(input!.value).toBe("host:core1");
     const clear = c.querySelector<HTMLButtonElement>('button[aria-label="Clear the query"]');
     expect(clear).not.toBeNull();

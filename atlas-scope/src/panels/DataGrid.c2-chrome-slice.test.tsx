@@ -331,6 +331,92 @@ describe("C2: navigation is whole or absent after any ancestor half of a reveal"
   });
 });
 
+describe("C2: the take-out never costs the row being revealed (keepNavWhole's row check)", () => {
+  /* The take-out step moves a scroller on past the reveal so a strip leaves whole. Everything in one
+     scroller moves together, so a row BELOW a strip it shares a column with can never be pushed out by
+     that extra move — which is why no layout above exercised the check. The check decides only when
+     the row does not sit below the strip in flow: a strip in a SIDE column of the same scroller, next
+     to a row that fills almost the whole port. Here the rail must move 4 px to show the 400 px row;
+     that cuts the 32 px strip to 28 px, and taking the strip out (28 px more) would push the row's top
+     28 px above the rail's top edge. The strip must stay whole instead (the rail goes back to 0), and
+     the row may not end LESS visible than the reveal found it. (C2 verifier m1: with the check removed
+     the rail stayed at 32 and the row fell from 396 to 372 px seen.) */
+  function sideColumn(): RailWorld {
+    return railWorld({
+      portTop: 84,
+      portH: 400,
+      railRange: 400,
+      stripAt: 0, // left column, 84-116 on screen
+      stripH: 32,
+      gridAt: 4, // right column, beside the strip
+      gridH: 400,
+      ownPort: false,
+      headH: 0,
+      rowAt: 0,
+      rowH: 400, // 88-488 on screen: 4 px below the rail's bottom edge (484)
+    });
+  }
+
+  it("a strip beside a row that fills the port: the scroll goes back to keep the strip whole and the row is not lost", () => {
+    const w = sideColumn();
+    const port = { top: 84, bottom: 484 };
+    expect(wholeOrAbsent(w.strip, port).seen, "precondition: the strip is whole").toBe(32);
+    const seenBefore = seenThrough(w.row, w.band());
+    expect(seenBefore, "precondition: 4 px of the row are below the rail's bottom edge").toBe(396);
+    revealBelowHeader(w.grid, null, w.row, "nearest");
+    const s = wholeOrAbsent(w.strip, port);
+    expect(s.ok, `the strip is whole or gone, not ${s.seen} of ${s.of} px`).toBe(true);
+    const seenAfter = seenThrough(w.row, w.band());
+    expect(seenAfter, `the reveal cost the row: ${seenBefore} -> ${seenAfter} px seen (rail at ${w.railTop()})`).toBeGreaterThanOrEqual(seenBefore - 0.5);
+    expect(w.railTop(), "kept whole: the rail went back to where the strip is whole").toBe(0);
+    expect(scrollY, "the document never moved").toBe(0);
+  });
+
+  it("control: the same side column with a row that fits takes the strip out (the check lets the take-out through)", () => {
+    // A 300 px row: the take-out's extra 28 px leaves its top 56 px below the rail's top edge.
+    const w = railWorld({ portTop: 84, portH: 400, railRange: 400, stripAt: 0, stripH: 32, gridAt: 104, gridH: 400, ownPort: false, headH: 0, rowAt: 0, rowH: 300 });
+    const port = { top: 84, bottom: 484 };
+    revealBelowHeader(w.grid, null, w.row, "nearest");
+    expect(wholeOrAbsent(w.strip, port)).toEqual({ ok: true, seen: 0, of: 32 });
+    expect(w.railTop(), "the strip was taken wholly out").toBe(32);
+    expect(inBand(w), "the row is whole").toBe(true);
+  });
+});
+
+describe("C2: a grid its carrier scrolled wholly out of view is left where the carrier put it", () => {
+  /* bandHoldsRow's EMPTY-band case. When nothing of the grid is on screen, `offsetFromView` falls back
+     to the grid's layout box (`visibleBand`), so a row that the grid's own port shows reads as 0 and
+     `revealBelowHeader` returns before the fits-first test: the carrier (a rail the surface switch
+     filled with another panel — probe-a4-surface-switch.mjs at 768, "QUEUE OFF SCREEN ... own-port
+     shows it") is NOT scrolled back to the queue. A row the grid's own port does NOT show is moved to
+     where the grid will show it, still without moving the carrier. Pinned so that making the empty
+     band reach the ancestor walk (C2 verifier m2's second option) is a visible A4 decision, not a
+     silent side effect of a reveal. */
+  function awayWorld(rowAt: number): RailWorld {
+    const w = railWorld({ ...AT_1440, gridAt: 1200, railRange: 2000, rowAt, rowH: 40 });
+    w.rail.scrollTop = 0; // the grid's box is at 1284-1584: wholly below the rail's port (84-874)
+    return w;
+  }
+
+  it("the grid's own port shows the row: nothing moves", () => {
+    const w = awayWorld(60);
+    expect(w.band().bottom - w.band().top <= 0, "precondition: nothing of the grid is on screen").toBe(true);
+    revealBelowHeader(w.grid, w.head, w.row, "nearest");
+    expect(w.railTop(), "the carrier is not scrolled back to the grid").toBe(0);
+    expect(w.gridTop(), "the grid already shows the row in its own port").toBe(0);
+    expect(scrollY).toBe(0);
+  });
+
+  it("the grid's own port does not show the row: the grid scrolls it into its own port, the carrier stays", () => {
+    const w = awayWorld(400); // below the grid's own 270 px port
+    revealBelowHeader(w.grid, w.head, w.row, "nearest");
+    expect(w.railTop(), "the carrier is not scrolled back to the grid").toBe(0);
+    const g = w.grid.getBoundingClientRect();
+    const r = w.row.getBoundingClientRect();
+    expect(r.top >= g.top + 30 - 0.5 && r.bottom <= g.bottom + 0.5, `the row sits in the grid's own port (${r.top}-${r.bottom} in ${g.top + 30}-${g.bottom})`).toBe(true);
+  });
+});
+
 /* The class, generated: every band height from 4 to 120 px against three row heights, both aligns,
    the strip at three positions in the rail, the three strip roles, and both rail shapes of the
    ladder (the grid as its own port, >= 48rem; the grid at full height inside the rail) — all inside a

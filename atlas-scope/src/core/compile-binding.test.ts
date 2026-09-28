@@ -30,7 +30,7 @@ import fabricJson from "../data/fabric.json";
 import aclJson from "../forwarding/acl-bindings.json";
 import ribJson from "../forwarding/rib-evidence.json";
 import emissionJson from "../panels/producer-emission.json";
-import { SOURCE_BINDING_KEYS, sameSourceBinding, type SourceBinding } from "./types";
+import { SOURCE_BINDING_BYTE_KEYS, SOURCE_BINDING_KEYS, sameSourceBinding, type SourceBinding } from "./types";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REPO = resolve(PKG, "..");
@@ -103,9 +103,10 @@ describe("the binding joins the model to Git and to the engine's receipt form", 
     }
   });
 
-  it("sourceExactSha256 is the engine's form (sha256: prefix) over the bytes the repository stores", () => {
+  it("sourceExactSha256 is the engine's form (sha256: prefix) over the bytes the TRACKED model was compiled from — the committed ones", () => {
     expect(fabricMeta.sourceExactSha256).toMatch(/^sha256:[0-9a-f]{64}$/);
-    // For a repository file the stored bytes are the blob (LF form); a CRLF working tree is a rendering.
+    /* sourceExactSha256 is sha256 of the bytes AS READ (S1-R2V-4). The tracked files are compiled from the
+       committed bytes — the blob, the LF form — so for them it is the digest of the blob, on any checkout. */
     expect(fabricMeta.sourceExactSha256).toBe(`sha256:${sha256(canonical)}`);
     /* Read the stored blob back when the object database HAS it: a source regenerated and recompiled but
        not yet committed has a blob id Git computes (above: hash-object) yet does not hold, and
@@ -138,11 +139,31 @@ describe("the binding rule on bytes of each origin", () => {
     expect(b.sourceGitBlob).toBe(git(["hash-object", "--no-filters", "--stdin"], lf(golden)));
   });
 
-  it("a repository file binds the same bytes from a CRLF and an LF checkout, on EVERY key (O15)", () => {
+  it("a repository file binds the same CONTENT from a CRLF and an LF checkout; only the byte-dependent keys differ (O15)", () => {
+    /* THE RULE (owner decision, R3 / verifier S1-R2V-4). sourceExactSha256 is exactly what its name says —
+       sha256 of the bytes AS READ — so it is the one key that depends on the checkout's line endings; every
+       other key (the LF digest, its length and form, the Git blob, the name) is the same from either
+       checkout. The byte-dependent set is DERIVED here from two real bindings and must equal the declared
+       SOURCE_BINDING_BYTE_KEYS, so neither can drift from the other. */
     const label = { source: "tests/golden/snapshot.json", sourceOrigin: "repository-file" } as const;
     const a = bindSource(crlf, label);
     const b = bindSource(lf(golden), label);
-    for (const k of SOURCE_BINDING_KEYS) expect(a[k], k).toEqual(b[k]);
+    const differing = SOURCE_BINDING_KEYS.filter((k) => a[k] !== b[k]);
+    expect(differing).toEqual([...SOURCE_BINDING_BYTE_KEYS]);
+    for (const k of SOURCE_BINDING_KEYS.filter((x) => !(SOURCE_BINDING_BYTE_KEYS as readonly string[]).includes(x))) expect(a[k], k).toEqual(b[k]);
+    // …and each byte-dependent key names the bytes that were read, not the other checkout's.
+    expect(a.sourceExactSha256).toBe(`sha256:${sha256(crlf)}`);
+    expect(b.sourceExactSha256).toBe(`sha256:${sha256(lf(golden))}`);
+  });
+
+  it("sourceExactSha256 is sha256 of the bytes AS READ for every origin — a CRLF repository file included (S1-R2V-4)", () => {
+    /* Before: a "repository-file" took its exact digest over the LF form, so on a CRLF checkout the value was
+       not the sha256 of the file on disk and only restated sourceSha256. */
+    for (const sourceOrigin of ["repository-file", "external-file"] as const) {
+      const b = bindSource(crlf, { source: sourceOrigin === "repository-file" ? "tests/golden/snapshot.json" : "client.snapshot.json", sourceOrigin });
+      expect(b.sourceExactSha256, sourceOrigin).toBe(`sha256:${sha256(crlf)}`);
+      expect(b.sourceExactSha256, `${sourceOrigin}: exact is not a restatement of the LF digest`).not.toBe(`sha256:${b.sourceSha256}`);
+    }
   });
 
   it("the AssessHub store-blob form binds the stored bytes exactly and says so", () => {
@@ -181,6 +202,32 @@ describe("the binding rule on bytes of each origin", () => {
     }
     expect(err).toBeInstanceOf(CompileError);
     expect((err as CompileError).code).toBe("E_SOURCE_LABEL");
+  });
+
+  it.each([
+    ["a repository file in the store-blob form", "webapp/x.json", "repository-file", "assesshub-store-blob"],
+    ["an external file in the store-blob form", "client.snapshot.json", "external-file", "assesshub-store-blob"],
+    ["an AssessHub record in the LF-normalised form", "assesshub:snapshot/7", "assesshub-store", "lf-normalised"],
+    ["an AssessHub record with no form (which defaults to LF-normalised)", "assesshub:snapshot/7", "assesshub-store", undefined],
+  ] as const)("refuses %s — the digest form is tied to the origin (S1-R2V-3)", (_why, source, sourceOrigin, sourceDigestForm) => {
+    /* Before: accepted. A repository file labelled "assesshub-store-blob" got sourceSha256 over the RAW CRLF
+       bytes; an AssessHub record in "lf-normalised" form showed a digest that is not the store's binding. */
+    let err: unknown;
+    try {
+      bindSource(Buffer.from('{\r\n "a": 1\r\n}\r\n'), sourceDigestForm === undefined ? { source, sourceOrigin } : { source, sourceOrigin, sourceDigestForm });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(CompileError);
+    expect((err as CompileError).code).toBe("E_SOURCE_LABEL");
+  });
+
+  it.each([
+    ["repository-file", "webapp/x.json", "lf-normalised"],
+    ["external-file", "client.snapshot.json", "lf-normalised"],
+    ["assesshub-store", "assesshub:snapshot/7", "assesshub-store-blob"],
+  ] as const)("accepts the consistent combination %s + %s (control)", (sourceOrigin, source, sourceDigestForm) => {
+    expect(bindSource(Buffer.from("{}"), { source, sourceOrigin, sourceDigestForm }).sourceDigestForm).toBe(sourceDigestForm);
   });
 });
 

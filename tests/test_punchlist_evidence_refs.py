@@ -201,6 +201,96 @@ _OWN_ROW_IDENTITY = (
 )
 
 
+def _interface_port_problem(ref, node):
+    """None when an INTERFACE ref's pointer, record and cite agree on one port, else why not.
+
+    Class-wide, for every interface ref of every fold: the pointer must be `/interfaces/<host>/<port>`
+    with the ref's own host, the resolved record must be THAT port's record (its own `port` field), and
+    the cite must name `<host> <port>`. This catches a pointer corrupted AFTER the fold built the ref
+    (repointed, re-sorted). It CANNOT catch a fold that selects the wrong port consistently -- every
+    `_iface_ref` call builds pointer and cite from the same (host, port) -- which is what
+    `_upstream_port_problems` checks, against the ports the row's own derived-from rows state."""
+    if ref.get("kind") != "interface":
+        return None
+    ptr, host, cite = ref.get("ref"), ref.get("host"), ref.get("cite") or ""
+    tokens = [_unescape(t) for t in ptr[1:].split("/")] if isinstance(ptr, str) and ptr.startswith("/") else []
+    if len(tokens) != 3 or tokens[0] != "interfaces" or tokens[1] != host:
+        return f"interface ref {ptr!r} is not /interfaces/<its host {host!r}>/<port>"
+    port = tokens[2]
+    # a record that states its own port must state THIS port ('' / absent = the record does not say)
+    if isinstance(node, dict) and isinstance(node.get("port"), str) and node["port"] and node["port"] != port:
+        return f"interface ref {ptr!r} resolves to the record of port {node.get('port')!r}, not {port!r}"
+    if not (cite == f"{host} {port}" or cite.startswith(f"{host} {port} ")):
+        return f"interface ref {ptr!r} names port {port!r} but its cite says {cite[:60]!r}"
+    return None
+
+
+# Structured fields through which an upstream row STATES a port (never free text).
+_PORT_FIELDS = ("port", "interface", "a_port", "b_port", "local_port", "remote_port")
+_UPSTREAM_REF_KEYS = ("evidence_refs", "deduction_refs")
+
+
+def _stated_ports(node, owner=None, out=None):
+    """{(host or None, port)} a published row states: its structured port fields (owned by the nearest
+    switch/host/hostname on the way down) and the interface pointers its OWN producer published in its
+    evidence keys (themselves resolution-checked by the upstream loop below)."""
+    out = set() if out is None else out
+    if isinstance(node, list):
+        for v in node:
+            _stated_ports(v, owner, out)
+        return out
+    if not isinstance(node, dict):
+        return out
+    for key in _OWNER_KEYS:
+        if isinstance(node.get(key), str) and node[key]:
+            owner = node[key]
+            break
+    for key, val in node.items():
+        if key in _PORT_FIELDS and isinstance(val, str) and val:
+            out.add((owner, val))
+        elif key in _UPSTREAM_REF_KEYS and isinstance(val, list):
+            for r in val:
+                ptr = r.get("ref") if isinstance(r, dict) else None
+                if r.get("kind") == "interface" and isinstance(ptr, str) and ptr.startswith("/"):
+                    toks = [_unescape(t) for t in ptr[1:].split("/")]
+                    if len(toks) == 3:
+                        out.add((toks[1], toks[2]))
+        elif isinstance(val, (dict, list)):
+            _stated_ports(val, owner, out)
+    return out
+
+
+def _upstream_port_problems(snap, row, label):
+    """R1V1-2: an interface ref must name a port the row's OWN derived-from rows state for that host.
+
+    The pointer/cite/record agreement above is built from one (host, port) pair, so a fold that picks the
+    wrong port on the right host passes it. Here the port is checked against an independent statement:
+    the structured port fields (and the producer's own interface pointers) of every row this punch row
+    says it was derived from. Where those rows state no port for the ref's host the ref is UNWITNESSED
+    (returned for accounting, never silently passed as proven)."""
+    stated = set()
+    for r in row.get("evidence_refs") or []:
+        if isinstance(r, dict) and r.get("role") == "derived_from" and r.get("kind") != "interface":
+            node = resolve_pointer(snap, r.get("ref"))
+            if node is not _MISSING:
+                _stated_ports(node, r.get("host"), stated)
+    problems, unwitnessed = [], []
+    for r in row.get("evidence_refs") or []:
+        if not (isinstance(r, dict) and r.get("kind") == "interface" and isinstance(r.get("ref"), str)):
+            continue
+        toks = [_unescape(t) for t in r["ref"][1:].split("/")]
+        if len(toks) != 3:
+            continue
+        host, port = toks[1], toks[2]
+        for_host = {p for h, p in stated if h in (host, None)}
+        if not for_host:
+            unwitnessed.append((row.get("category"), host, port))
+        elif port not in for_host:
+            problems.append(f"{label}: interface ref {r['ref']!r} names port {port!r} on {host!r}, but the rows "
+                            f"it was derived from state only {sorted(for_host)[:6]}")
+    return problems, unwitnessed
+
+
 def _identity_problems(snap, ref, node, row, label):
     """The resolved node is the record the ref CLAIMS, not merely some non-null node.
 
@@ -215,6 +305,9 @@ def _identity_problems(snap, ref, node, row, label):
         why = _host_witness_problem(tokens, owners, host)
         if why:
             out.append(f"{label}: ref {ptr!r} claims host {host!r} but {why}")
+    why = _interface_port_problem(ref, node)
+    if why:
+        out.append(f"{label}: {why}")
     if isinstance(node, dict):
         for shape, cats, same in _OWN_ROW_IDENTITY:
             if re.match(shape, ptr) and (cats is None or row.get("category") in cats) and not same(node, row):
@@ -252,6 +345,7 @@ def punchlist_evidence_problems(snap, form):
                     problems.append(f"{label}: ref {ref.get('ref')!r} does not resolve to a non-null node")
                 else:
                     problems += _identity_problems(snap, ref, node, row, label)
+        problems += _upstream_port_problems(snap, row, label)[0]
         kinds = {r.get("kind") for r in refs if isinstance(r, dict)}
         if basis == "absence" and kinds & PUNCH_EVIDENCE_RECORD_KINDS:
             problems.append(f"{label}: basis=absence but carries record kinds {sorted(kinds & PUNCH_EVIDENCE_RECORD_KINDS)}")
@@ -267,19 +361,42 @@ def punchlist_evidence_problems(snap, form):
         keys = [(r.get("kind"), r.get("host"), r.get("ref"), r.get("role")) for r in refs if isinstance(r, dict)]
         if len(keys) != len(set(keys)):
             problems.append(f"{label}: duplicate refs")
-    for section, key in (("cross_layer", "evidence_refs"), ("health_scores", "deduction_refs"),
-                         ("operational_drift", "evidence_refs")):
-        for n, up in enumerate(snap.get(section) or []):
+    # Every UPSTREAM section that publishes evidence keys (docs/ssot.md "Per-finding evidence pointers"),
+    # checked whether or not the punch-list folded that row: (pointer to the row list, refs key).
+    for path, key in UPSTREAM_EVIDENCE_REF_LISTS:
+        rows_up = resolve_pointer(snap, path)
+        for n, up in enumerate(rows_up if isinstance(rows_up, list) else []):
             for ref in (up.get(key) or []) if isinstance(up, dict) else []:
+                where = f"[{form}] {path}[{n}].{key}"
                 node = resolve_pointer(snap, ref.get("ref"))
                 if node is _MISSING or node is None:
-                    problems.append(f"[{form}] {section}[{n}].{key}: {ref.get('ref')!r} does not resolve")
-                elif ref.get("host") is not None:
+                    problems.append(f"{where}: {ref.get('ref')!r} does not resolve")
+                    continue
+                if ref.get("host") is not None:
                     why = _host_witness_problem(*_owners_along(snap, ref.get("ref")), ref["host"])
                     if why:
-                        problems.append(f"[{form}] {section}[{n}].{key}: {ref.get('ref')!r} claims host "
-                                        f"{ref['host']!r} but {why}")
+                        problems.append(f"{where}: {ref.get('ref')!r} claims host {ref['host']!r} but {why}")
+                why = _interface_port_problem(ref, node)
+                if why:
+                    problems.append(f"{where}: {why}")
+    for path in UPSTREAM_EVIDENCE_BASIS_LISTS:
+        rows_up = resolve_pointer(snap, path)
+        for n, up in enumerate(rows_up if isinstance(rows_up, list) else []):
+            if isinstance(up, dict) and "evidence_basis" in up and up["evidence_basis"] not in PUNCH_EVIDENCE_BASES:
+                problems.append(f"[{form}] {path}[{n}].evidence_basis {up['evidence_basis']!r} not in the enum")
     return problems
+
+
+# The upstream sections that publish evidence keys, as RFC 6901 pointers to their row lists (registered in
+# docs/ssot.md's "Per-finding evidence pointers" row; test_every_upstream_evidence_key_is_registered keeps the
+# two in step with what the producers actually publish).
+UPSTREAM_EVIDENCE_REF_LISTS = (
+    ("/cross_layer", "evidence_refs"),
+    ("/health_scores", "deduction_refs"),
+    ("/operational_drift", "evidence_refs"),
+    ("/multicast_intelligence/risks", "evidence_refs"),
+)
+UPSTREAM_EVIDENCE_BASIS_LISTS = ("/operational_drift", "/qos_audit/findings")
 
 
 def _run_inprocess(tmp_path, monkeypatch):
@@ -587,14 +704,35 @@ def test_security_absence_checks_carry_witnesses_and_presence_checks_their_row()
         ("device_fact", "/security/a1/findings/1", "derived_from")]
 
 
-def test_config_hygiene_points_at_the_literal_referencing_line():
-    hyg = {FQDN: {"undefined": [{"kind": "acl", "name": "7", "context": "ip nat inside source list 7"}]}}
-    (row,) = compute_migration_punchlist([], {}, hyg, [], [], [], {}, [], [])
+def test_config_hygiene_points_at_the_enclosing_stanza_header_and_says_so():
+    """parse_config_hygiene's `context` is the ENCLOSING column-0 stanza header (60 chars) -- for a nested
+    reference ('redistribute ... route-map X' under 'router bgp 65001') it is NOT the referencing line. The
+    ref must cite what the pointer really holds and be derived_from, never a 'referencing line' subject."""
+    from cisco_toolkit.parse import parse_config_hygiene
+    hyg0 = {FQDN: {"undefined": [{"kind": "acl", "name": "7", "context": "ip nat inside source list 7"}]}}
+    (row,) = compute_migration_punchlist([], {}, hyg0, [], [], [], {}, [], [])
     assert row["evidence_basis"] == "record"
     got = {(r["kind"], r["ref"]) for r in row["evidence_refs"]}
     assert ("config_text", f"/config_hygiene/{FQDN}/undefined/0/context") in got
-    assert resolve_pointer({"config_hygiene": hyg}, f"/config_hygiene/{FQDN}/undefined/0/context") \
+    assert resolve_pointer({"config_hygiene": hyg0}, f"/config_hygiene/{FQDN}/undefined/0/context") \
         == "ip nat inside source list 7"
+    cfg = ("hostname core1\nip nat inside source list 7 pool P overload\n"
+           "router bgp 65001\n redistribute ospf 1 route-map OSPF_TO_BGP\n")
+    hyg = {FQDN: parse_config_hygiene(cfg)}            # the REAL producer: a nested + a column-0 reference
+    rows = compute_migration_punchlist([], {}, hyg, [], [], [], {}, [], [])
+    nested = next(r for r in rows if "OSPF_TO_BGP" in r["title"])
+    top = next(r for r in rows if "'7'" in r["title"])
+    for row in (nested, top):
+        assert row["evidence_basis"] == "record"
+        (ct,) = [r for r in row["evidence_refs"] if r["kind"] == "config_text"]
+        assert ct["role"] == "derived_from"
+        assert "enclosing column-0 stanza header" in ct["cite"] and "referencing line only if" in ct["cite"]
+        assert "referencing configuration line" not in ct["cite"]
+        assert len(ct["cite"]) <= 160 and not ct["cite"].endswith("…")     # never truncated mid-claim
+    held = resolve_pointer({"config_hygiene": hyg},
+                           next(r["ref"] for r in nested["evidence_refs"] if r["kind"] == "config_text"))
+    assert held == "router bgp 65001"                  # the stanza header -- exactly what the cite says
+    assert "OSPF_TO_BGP" not in held
 
 
 def test_trunk_link_and_addressing_folds_point_at_both_ends():
@@ -648,12 +786,48 @@ def test_fleet_wide_absence_row_carries_per_device_witnesses_with_null_host():
 def test_software_risk_keeps_the_unfiltered_index_and_its_literal_evidence_line():
     sw = {"findings": [{"host": "c1", "kind": "telnet-vty", "label": "tv", "severity": "High"},
                        {"host": "c1", "kind": "http-server", "label": "Web UI", "severity": "High",
-                        "detail": "d", "evidence": "ip http server"}]}
+                        "detail": "d", "evidence": "ip http server", "evidence_verbatim": True}]}
     (row,) = compute_migration_punchlist([], {}, {}, [], [], [], {}, [], [], software_risk=sw)
     got = {(r["kind"], r["ref"]) for r in row["evidence_refs"]}
     assert got == {("analysis_row", "/software_risk/findings/1"),
                    ("config_text", "/software_risk/findings/1/evidence")}
     assert row["evidence_basis"] == "record"
+    # evidence the producer did NOT mark verbatim (or an older row with no marker) is not a config record
+    for verbatim in (False, None):
+        f = {k: v for k, v in sw["findings"][1].items() if k != "evidence_verbatim"}
+        if verbatim is not None:
+            f["evidence_verbatim"] = verbatim
+        (row,) = compute_migration_punchlist([], {}, {}, [], [], [], {}, [], [],
+                                             software_risk={"findings": [f]})
+        assert {r["kind"] for r in row["evidence_refs"]} == {"analysis_row"}
+        assert row["evidence_basis"] == "row"
+
+
+def test_software_risk_types_config_text_only_for_a_verbatim_line_of_the_real_producer():
+    """E1V2-1 (same class as config hygiene): a config_text pointer must hold a real configuration line.
+    Drive the REAL producer: every exposed finding's evidence is marked verbatim exactly when it is one of
+    the device's own config lines, and the punch-list types only those as config_text."""
+    from cisco_toolkit.analyze import compute_software_risk
+    cfg = ("hostname c1\nip http server\ncrypto isakmp policy 10\n encr aes\n"
+           "snmp-server community S3cr3t RW\nip ssh version 1\n")
+    sw = compute_software_risk({"c1": cfg}, {"c1": {"model": "C9300", "sw_version": "17.9.4"}},
+                               {"c1": {"platform": "IOS-XE"}})
+    by_kind = {f["kind"]: f for f in sw["findings"]}
+    lines = {ln.strip() for ln in cfg.splitlines()}
+    for f in sw["findings"]:
+        assert f["evidence_verbatim"] is (f["evidence"] in lines), f
+    assert by_kind["ikev1"]["evidence"] == "crypto isakmp policy 10" and by_kind["ikev1"]["evidence_verbatim"]
+    assert by_kind["snmp-v2c-rw"]["evidence_verbatim"] is False            # redacted synthesis, never a line
+    assert "S3cr3t" not in json.dumps(sw)
+    rows = compute_migration_punchlist([], {}, {}, [], [], [], {}, [], [], software_risk=sw)
+    snap = {"software_risk": sw}
+    n_config_text = 0
+    for row in rows:
+        for ref in row["evidence_refs"]:
+            if ref["kind"] == "config_text":
+                n_config_text += 1
+                assert resolve_pointer(snap, ref["ref"]) in lines, (row["title"], ref)
+    assert n_config_text >= 3                        # http-server, ikev1, ssh-v1 -- the check is not vacuous
 
 
 def _dep_for_graph_cut():
@@ -858,6 +1032,144 @@ def test_every_fold_driven_by_its_real_producer_points_into_the_published_sectio
     assert [r["evidence_basis"] for r in by_cat["Coverage"]] == ["absence"]
     assert [r["evidence_basis"] for r in by_cat["VTP"]] == ["row"]
     assert {x["ref"] for x in by_cat["Inventory"][0]["evidence_refs"]} == {"/devices/core1.site-a.example.net"}
+
+
+def _first_interface_ref(snap):
+    for n, row in enumerate(snap["punchlist"]):
+        for m, ref in enumerate(row["evidence_refs"]):
+            if ref["kind"] == "interface":
+                others = [p for p in snap["interfaces"][ref["host"]] if p != _unescape(ref["ref"].split("/")[-1])]
+                if others:
+                    return n, m, ref, others[0]
+    raise AssertionError("no interface ref on a multi-port host -- the check would be vacuous")
+
+
+def test_identity_check_verifies_the_port_not_only_the_host(pipeline_forms):
+    """E1V2-2: an interface ref repointed to ANOTHER port on the SAME host still resolves and still names
+    the right host -- the class-wide identity check must refuse it (pointer vs the fold's cite), and must
+    refuse a pointer whose record states a different port."""
+    import copy
+    _in_memory, on_disk = pipeline_forms
+    assert not punchlist_evidence_problems(on_disk, "baseline")
+    n, m, ref, other = _first_interface_ref(on_disk)
+    repointed = copy.deepcopy(on_disk)
+    repointed["punchlist"][n]["evidence_refs"][m]["ref"] = analyze._json_pointer("interfaces", ref["host"], other)
+    problems = punchlist_evidence_problems(repointed, "repointed")
+    assert any("but its cite says" in p for p in problems), problems
+    swapped = copy.deepcopy(on_disk)
+    port = _unescape(ref["ref"].split("/")[-1])
+    swapped["interfaces"][ref["host"]][port]["port"] = other
+    assert any("resolves to the record of port" in p for p in punchlist_evidence_problems(swapped, "swapped"))
+
+
+def _golden_file():
+    with open(os.path.join(ROOT, "tests", "golden", "snapshot.json"), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _consistent_repoint(snap, category, derived_prefix):
+    """Repoint the first interface ref of a `category` row that derives from `derived_prefix` to ANOTHER port
+    on the same host AND rewrite its cite the way the fold would -- pointer, record and cite then agree, so
+    only an upstream witness can tell (the R1V1-2 counterexample)."""
+    import copy
+    out = copy.deepcopy(snap)
+    for row in out["punchlist"]:
+        if row["category"] != category or not any(
+                r["role"] == "derived_from" and r["ref"].startswith(derived_prefix) for r in row["evidence_refs"]):
+            continue
+        for ref in row["evidence_refs"]:
+            if ref["kind"] != "interface":
+                continue
+            port = _unescape(ref["ref"].split("/")[-1])
+            other = next((p for p in sorted(out["interfaces"][ref["host"]]) if p != port), None)
+            if other is None:
+                continue
+            ref["ref"] = analyze._json_pointer("interfaces", ref["host"], other)
+            ref["cite"] = f"{ref['host']} {other} (rewritten by the fold)"
+            return out, (ref["host"], port, other)
+    raise AssertionError(f"no {category} row deriving from {derived_prefix} with a multi-port host -- vacuous")
+
+
+def test_a_fold_that_picks_the_wrong_port_consistently_is_refused_by_its_upstream_witness():
+    """R1V1-2: the verifier's exact counterexample -- the Cross-layer ref repointed to another access1 port with
+    a matching cite -- and the same through a STRUCTURED upstream field (an FHRP member row's `interface`)."""
+    golden = _golden_file()
+    assert not punchlist_evidence_problems(golden, "golden baseline")
+    for category, prefix in (("Cross-layer", "/cross_layer/"), ("FHRP", "/fhrp/")):
+        bad, (host, port, other) = _consistent_repoint(golden, category, prefix)
+        # the one-pair checks (pointer / record / cite) are satisfied by construction ...
+        moved = analyze._json_pointer("interfaces", host, other)
+        refs = [x for r in bad["punchlist"] for x in r["evidence_refs"] if x["ref"] == moved]
+        assert refs and all(_interface_port_problem(x, resolve_pointer(bad, x["ref"])) is None for x in refs)
+        # ... so only the upstream witness refuses it
+        problems = punchlist_evidence_problems(bad, f"consistent-repoint {category}")
+        assert any(f"names port {other!r} on {host!r}, but the rows it was derived from state only" in p
+                   for p in problems), (category, problems)
+
+
+def test_upstream_port_witness_is_live_on_the_golden_and_unwitnessed_refs_are_counted():
+    """Accounting, not a pass by omission: most interface refs in the golden ARE witnessed by the row they
+    derive from; the rest (folds whose upstream row names no port -- L1, L3 SVI, STP) are counted, and stay
+    pinned only by the pointer/record/cite agreement."""
+    golden = _golden_file()
+    n_iface = sum(1 for row in golden["punchlist"] for r in row["evidence_refs"] if r["kind"] == "interface")
+    unwitnessed = [u for row in golden["punchlist"] for u in _upstream_port_problems(golden, row, "")[1]]
+    assert n_iface and len(unwitnessed) < n_iface, (n_iface, unwitnessed)
+    assert n_iface - len(unwitnessed) >= 10, (n_iface, unwitnessed)
+
+
+def _published_evidence_key_lists(snap):
+    """Every (row-list pointer, key) in a published snapshot whose rows carry an evidence key, OUTSIDE the
+    punch list itself -- derived from the data, never from a list of section names."""
+    keys = ("evidence_refs", "deduction_refs", "evidence_basis")
+    found = set()
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, path + [str(k)])
+        elif isinstance(node, list):
+            for item in node:
+                if isinstance(item, dict):
+                    for key in keys:
+                        if key in item:
+                            found.add((analyze._json_pointer(*path) if path else "", key))
+                walk_items = item if isinstance(item, (dict, list)) else None
+                if walk_items is not None:
+                    walk(walk_items, path + ["*"])
+    walk(snap, [])
+    return {(p, k) for p, k in found if p is not None and not p.startswith("/punchlist")
+            and "*" not in p.split("/")}
+
+
+def test_every_upstream_evidence_key_is_checked_and_registered(pipeline_forms, tmp_path):
+    """E1V2-4: every upstream section that PUBLISHES an evidence key (found in the data of the real pipeline
+    run and the real-producer fleet) is resolution-checked here AND registered in docs/ssot.md's
+    'Per-finding evidence pointers' row -- multicast_intelligence.risks and qos_audit.findings included."""
+    _in_memory, on_disk = pipeline_forms
+    published = _published_evidence_key_lists(on_disk) | _published_evidence_key_lists(_real_producer_fleet(tmp_path))
+    checked = set(UPSTREAM_EVIDENCE_REF_LISTS) | {(p, "evidence_basis") for p in UPSTREAM_EVIDENCE_BASIS_LISTS}
+    assert {("/multicast_intelligence/risks", "evidence_refs"), ("/qos_audit/findings", "evidence_basis")} <= published
+    assert published <= checked, f"published but never checked: {sorted(published - checked)}"
+    with open(os.path.join(ROOT, "docs", "ssot.md"), encoding="utf-8") as fh:
+        row = next(line for line in fh if line.startswith("| **Per-finding evidence pointers**"))
+    for path, key in sorted(checked):
+        section, *rest = path.strip("/").split("/")
+        registered = f"snap['{section}']" + "".join(f"['{part}']" for part in rest) + f"[*].{key}"
+        assert registered in row, f"docs/ssot.md does not register {registered}"
+
+
+def test_upstream_checker_catches_a_dangling_multicast_ref_and_an_off_enum_qos_basis(tmp_path):
+    snap = _real_producer_fleet(tmp_path)
+    assert not punchlist_evidence_problems(snap, "fleet")
+    risks = snap["multicast_intelligence"]["risks"]
+    carried = next(r for r in risks if r.get("evidence_refs"))
+    carried["evidence_refs"][0]["ref"] = "/interfaces/nowhere/Gi9~19"
+    snap.setdefault("qos_audit", {}).setdefault("findings", []).append(
+        {"host": "(fleet)", "kind": "k", "evidence_basis": "maybe"})
+    problems = punchlist_evidence_problems(snap, "poisoned")
+    assert any("/multicast_intelligence/risks[" in p and "does not resolve" in p for p in problems), problems
+    assert any("/qos_audit/findings[" in p and "not in the enum" in p for p in problems), problems
 
 
 def test_vtp_refs_index_the_published_projection_even_when_the_receipt_is_rejected(tmp_path):

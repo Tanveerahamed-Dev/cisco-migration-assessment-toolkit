@@ -22,6 +22,28 @@ export declare class CompileError extends Error {
   issues: unknown[];
 }
 
+/** The engine contract (atlas-scope/contracts/engine-contract.v1.json), validated and frozen at load. */
+export interface EngineContract {
+  readonly schema: "atlas-engine-contract/1";
+  readonly owner: string;
+  readonly punchEvidence: {
+    readonly kinds: readonly EvidenceRefKind[];
+    readonly recordKinds: readonly EvidenceRefKind[];
+    readonly roles: readonly EvidenceRefRole[];
+    readonly bases: readonly EvidenceBasis[];
+    readonly cap: number;
+    readonly rules: Readonly<Record<string, boolean>>;
+  };
+  readonly protocolAssessabilityStates: readonly string[];
+}
+export declare const ENGINE_CONTRACT_SCHEMA: "atlas-engine-contract/1";
+/** Validate a parsed engine contract; a malformed, missing or unknown piece throws E_ENGINE_CONTRACT. */
+export declare function readEngineContract(c: unknown): EngineContract;
+export declare const ENGINE_CONTRACT: EngineContract;
+export declare const EVIDENCE_RECORD_KINDS: readonly EvidenceRefKind[];
+export declare const EVIDENCE_REFS_CAP: number;
+export declare const PROTOCOL_ASSESSABILITY_STATES: readonly string[];
+
 export declare const SUPPORTED_SCHEMAS: readonly string[];
 export declare const LEGACY_SCHEMA_ASSUMED: string;
 export declare const SECTIONS_READ: readonly string[];

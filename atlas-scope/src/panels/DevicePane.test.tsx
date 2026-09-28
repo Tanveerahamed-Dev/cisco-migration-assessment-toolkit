@@ -89,7 +89,7 @@ describe("a device we never reached", () => {
   const host = fabric.devices.find((d) => !d.collected)?.host ?? "";
 
   it("says so at the top of the pane, not in a footnote", () => {
-    act(() => useInvestigation.getState().selectDevice(host));
+    act(() => { useInvestigation.getState().selectDevice(host); });
     const c = mount(<DevicePane />);
     const banner = panel(c, "summary").querySelector(".dp-banner--uncollected");
     expect(banner).not.toBeNull();
@@ -99,7 +99,7 @@ describe("a device we never reached", () => {
   });
 
   it("renders every absent field as the words 'not observed', never blank and never zero", () => {
-    act(() => useInvestigation.getState().selectDevice(host));
+    act(() => { useInvestigation.getState().selectDevice(host); });
     const c = mount(<DevicePane />);
     const p = panel(c, "summary");
     const values = [...p.querySelectorAll<HTMLElement>(".dp-kv__v")];
@@ -109,7 +109,7 @@ describe("a device we never reached", () => {
   });
 
   it("does not render a missing health band as a passing grade", () => {
-    act(() => useInvestigation.getState().selectDevice(host));
+    act(() => { useInvestigation.getState().selectDevice(host); });
     const c = mount(<DevicePane />);
     const text = panel(c, "summary").textContent ?? "";
     expect(text).not.toMatch(/\b(Excellent|Good|Fair)\b/);
@@ -181,7 +181,7 @@ describe("health deductions", () => {
   it("states the residual between the itemised deductions and the published score", () => {
     const d = fabric.devices.find((x) => x.host === "core1");
     expect(d).toBeDefined();
-    act(() => useInvestigation.getState().selectDevice("core1"));
+    act(() => { useInvestigation.getState().selectDevice("core1"); });
     const c = mount(<DevicePane />);
     const arith = panel(c, "summary").querySelector(".dp-arith")?.textContent ?? "";
     const sum = (d?.deductions ?? []).reduce(
@@ -198,7 +198,7 @@ describe("health deductions", () => {
 
 describe("failure impact", () => {
   it("renders the snapshot's own number and ours without picking a winner", () => {
-    act(() => useInvestigation.getState().selectDevice("core1"));
+    act(() => { useInvestigation.getState().selectDevice("core1"); });
     const c = mount(<DevicePane />);
     const heads = [...panel(c, "summary").querySelectorAll(".dp-cmp__head")].map((h) => h.textContent);
     expect(heads).toHaveLength(2);
@@ -215,7 +215,7 @@ describe("failure impact", () => {
   });
   for (const d of fabric.devices) {
     it(`${d.host}: renders the impact comparison, with a disagreement block`, () => {
-      act(() => useInvestigation.getState().selectDevice(d.id));
+      act(() => { useInvestigation.getState().selectDevice(d.id); });
       const c = mount(<DevicePane />);
       const summary = panel(c, "summary");
       expect(summary.querySelectorAll(".dp-cmp__head").length, `${d.host}: every device renders the impact comparison`).toBeGreaterThan(0);
@@ -236,7 +236,7 @@ describe("evidence tabs", () => {
   it("keeps the ACL tab reachable on a host with no ACLs and puts the reason on the tab", () => {
     const host = fabric.devices.find((d) => d.collected && !fabric.acls[d.host])?.host ?? "";
     expect(host).not.toBe("");
-    act(() => useInvestigation.getState().selectDevice(host));
+    act(() => { useInvestigation.getState().selectDevice(host); });
     const c = mount(<DevicePane />);
     const tab = c.querySelector<HTMLButtonElement>("#dp-tab-acl");
     expect(tab).not.toBeNull();
@@ -453,7 +453,7 @@ describe("blocksFor", () => {
 
 describe("EvidencePane", () => {
   const withFinding = (id: string): HTMLElement => {
-    act(() => useInvestigation.getState().selectFinding(id));
+    act(() => { useInvestigation.getState().selectFinding(id); });
     return mount(<EvidencePane />);
   };
 
@@ -528,7 +528,7 @@ describe("EvidencePane", () => {
   });
 
   it("names a finding id from a stale link as missing rather than rendering a blank pane", () => {
-    act(() => useInvestigation.getState().selectFinding("F-does-not-exist"));
+    act(() => { useInvestigation.getState().selectFinding("F-does-not-exist"); });
     const c = mount(<EvidencePane />);
     expect(c.textContent ?? "").toContain("no such record exists in this snapshot");
   });

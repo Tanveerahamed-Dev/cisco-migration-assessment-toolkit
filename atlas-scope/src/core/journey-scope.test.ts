@@ -35,6 +35,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -211,6 +212,39 @@ interface InpModule {
   prewarmWindows?: (timeline: { state: string; t: number }[]) => { from: number; to: number | null; endedAs: string | null }[];
   overlapsPrewarm?: (windows: { from: number; to: number | null }[], start: number, duration: number, tailMs?: number) => boolean;
   PREWARM_TAIL_MS?: number;
+  DECLARED_SAMPLE?: Record<string, unknown>;
+  SAMPLE_ENV?: Record<string, string>;
+  NON_SAMPLE_ENV?: Record<string, string>;
+  sampleOf?: (env: Record<string, string | undefined>) => Record<string, unknown>;
+  sampleDeviations?: (sample: Record<string, unknown>) => string[];
+  sampleLabel?: (verdict: string, deviations: readonly string[]) => string;
+  acceptanceEvidenceOf?: (x: AcceptanceInputs) => boolean;
+  acceptanceWhyOf?: (x: AcceptanceInputs) => string;
+  windowStatusOf?: (plan: unknown, check: unknown) => string;
+  windowFitsOf?: (plan: unknown, check: unknown) => boolean;
+  isQuietRunRecord?: (h: Record<string, unknown>, maxHostBusy: number) => boolean;
+  e3StableVerdict?: (runs: { journeys?: Record<string, { e3?: string }> }[], id: string, minRuns: number, deviations?: readonly string[]) => { stable: string };
+  e3AcrossRunsVerdictOf?: (perJourney: Record<string, { stable: string }>, deviations: readonly string[]) => string;
+  e3RunVerdictOf?: (results: { e3Verdict: string }[], deviations: readonly string[]) => string;
+  runExitCodeOf?: (results: { verdict: string; e3Verdict: string }[]) => number;
+  journeySelectionOf?: (only: readonly string[] | null) => string[];
+  FIRST_PALETTE?: { id: string };
+}
+interface AcceptanceInputs {
+  lane: string;
+  devServer: boolean;
+  softwareRasteriser: boolean;
+  rendererKnown: boolean;
+  fresh: boolean;
+  freshWhy?: string;
+  windows: { leg: string; plan: unknown; check: unknown }[];
+  headed: boolean;
+  hostBusy: number | null;
+  maxHostBusy: number;
+  powerKnown: boolean;
+  powerThrottled: boolean;
+  belowFullRate: boolean;
+  sampleDeviations: readonly string[];
 }
 
 /** A measured trial measure-inp defines OUTSIDE `JOURNEYS` — a first-after-load case run in fresh browsers. */
@@ -575,5 +609,420 @@ describe("design-brief §8.1/§8.2 say what measure-inp times, like acceptance.m
     expect(item(5)).toMatch(/Ctrl\+K/);
     expect(item(5)).toMatch(/Escape/);
     expect(row(5)).toMatch(/Escape|close/i);
+  });
+});
+
+/* ── 4. an overridden sample is never the verdict (verifier round 2, D3/D4, 2026-09-27) ─────────
+ *
+ * D3. `ATLAS_FIRST_PALETTE_LEGS=1920x1080:dark,1920x1080:light ATLAS_FIRST_PALETTE_TRIALS=10` on a
+ * quiet host exited 0 and printed "PASS E3-PASS J5-first-open-palette … over 20/20 trials" and
+ * "ACCEPTANCE EVIDENCE" — no 1280 leg, half E2's ">= 20 repetitions", because the measured threshold
+ * (`need = Math.min(MIN_REPS_WITH_SAMPLE, trials)`) fell with the override and the acceptance gate
+ * never looked at the sample. The class is EVERY environment knob that shapes a sample, not the two
+ * the verifier used: ATLAS_MIN_SAMPLED_REPS, ATLAS_FIRST_TARGETS and ATLAS_E3_MIN_RUNS lower a bar
+ * the same way. A knob may still run (a subset is a useful lab probe); it may never print PASS or
+ * ACCEPTANCE EVIDENCE. The knobs are DISCOVERED from the harness source and each must be classified.
+ *
+ * D4. A FIRST_PALETTE leg whose every trial threw before the window check keeps `{checked:false}`,
+ * and the receipt said "a headed window is not inside the screen's work area" — it was never checked.
+ */
+describe("an overridden sample may run, but is never PASS or ACCEPTANCE EVIDENCE (D3)", () => {
+  const E2_MIN = 20;
+  const ENV_READ = /process\.env\.(ATLAS_[A-Z0-9_]+)/g;
+
+  it("the harness exports its declared sample and the rule over it", async () => {
+    const inp = await loadInp();
+    for (const k of ["sampleOf", "sampleDeviations", "sampleLabel", "acceptanceEvidenceOf", "acceptanceWhyOf"] as const)
+      expect(typeof inp[k], `measure-inp exports ${k}, so the rule can be pinned`).toBe("function");
+    expect(inp.DECLARED_SAMPLE, "measure-inp declares its sample").toBeDefined();
+  });
+
+  it("every ATLAS_* knob the harness reads is classified: it shapes a sample, or it states why it does not", async () => {
+    const inp = await loadInp();
+    const src = readFileSync(INP, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    const sampleKnobs = Object.values(inp.SAMPLE_ENV ?? {});
+    const other = Object.keys(inp.NON_SAMPLE_ENV ?? {});
+    expect(sampleKnobs.length, "precondition: the harness declares its sample knobs").toBeGreaterThanOrEqual(5);
+    expect(Object.keys(inp.SAMPLE_ENV ?? {}).sort(), "every declared sample field has its knob, and every knob a declared field").toEqual(Object.keys(inp.DECLARED_SAMPLE ?? {}).sort());
+    /* Every way the source can reach the environment: a direct `process.env.X` read may only be a
+       knob that shapes no sample (a sample knob read directly would bypass the sample rule), and
+       `process.env` as a whole may only be handed to the one reader the rule is built on. */
+    const direct = [...new Set([...src.matchAll(ENV_READ)].map((m) => m[1]!))].sort();
+    expect(direct.filter((k) => !other.includes(k)), "an ATLAS_* knob read directly that is not declared as shaping no sample").toEqual([]);
+    const whole = [...src.matchAll(/process\.env(?!\.ATLAS_)/g)].map((m) => src.slice(Math.max(0, m.index! - 12), m.index! + 12));
+    expect(whole.length, "precondition: the sample is read from the environment").toBeGreaterThan(0);
+    expect(whole.filter((ctx) => !/(?:knob|sampleOf)\($/.test(ctx.slice(0, 12))), "process.env handed to something other than the sample reader").toEqual([]);
+    const literals = [...new Set([...src.matchAll(/["'`](ATLAS_[A-Z0-9_]+)["'`=]/g)].map((m) => m[1]!))];
+    expect(literals.filter((k) => !sampleKnobs.includes(k) && !other.includes(k)), "a knob named in the source that is in neither class").toEqual([]);
+    expect(sampleKnobs.filter((k) => other.includes(k)), "a knob in both classes").toEqual([]);
+    for (const [k, why] of Object.entries(inp.NON_SAMPLE_ENV ?? {})) expect(why.length, `${k} states why it shapes no sample`).toBeGreaterThan(20);
+  });
+
+  it("with no knob set the run IS the declared sample: 4 palette legs, >= 20 repetitions everywhere", async () => {
+    const inp = await loadInp();
+    const s = inp.sampleOf!({});
+    expect(inp.sampleDeviations!(s)).toEqual([]);
+    const legs = (s.paletteLegs as { width: number; height: number; colorScheme: string }[]).map((l) => `${l.width}x${l.height}:${l.colorScheme}`).sort();
+    expect(legs).toEqual(["1280x800:dark", "1280x800:light", "1920x1080:dark", "1920x1080:light"]);
+    expect(s.paletteTrials as number).toBeGreaterThanOrEqual(E2_MIN);
+    expect(s.minSampledReps as number).toBeGreaterThanOrEqual(E2_MIN);
+    expect(s.reps as number).toBeGreaterThanOrEqual(E2_MIN);
+    expect((s.firstTargets as { trials: number }[]).reduce((a, t) => a + t.trials, 0)).toBeGreaterThanOrEqual(E2_MIN);
+  });
+
+  it("the verifier's run (1920 legs only, 10 trials) is a subset, and its PASS is not printed as PASS", async () => {
+    const inp = await loadInp();
+    const d = inp.sampleDeviations!(inp.sampleOf!({ ATLAS_FIRST_PALETTE_LEGS: "1920x1080:dark,1920x1080:light", ATLAS_FIRST_PALETTE_TRIALS: "10" }));
+    expect(d.length, "both the dropped legs and the halved trials are named").toBe(2);
+    expect(d.join(" ")).toMatch(/1280x800:dark/);
+    expect(d.join(" ")).toMatch(/1280x800:light/);
+    expect(d.join(" ")).toMatch(/ATLAS_FIRST_PALETTE_TRIALS=10/);
+    for (const v of ["PASS", "FLOOR-PASS", "E3-PASS"]) expect(inp.sampleLabel!(v, d), `${v} over a subset`).not.toMatch(/^(FLOOR-)?PASS$|^E3-PASS$/);
+    for (const v of ["PASS", "FAIL", "E3-PASS", "E3-FAIL", "NOT MEASURED", "TRANSPORT", "FLOOR-FAIL"]) expect(inp.sampleLabel!(v, []), "a declared sample keeps its verdict").toBe(v);
+  });
+
+  it("every knob that LOWERS a sample is a deviation; raising one is not", async () => {
+    const inp = await loadInp();
+    const dev = (env: Record<string, string>): string[] => inp.sampleDeviations!(inp.sampleOf!(env));
+    const lowering: Record<string, string>[] = [
+      { ATLAS_FIRST_PALETTE_LEGS: "1280x800:dark" },
+      { ATLAS_FIRST_PALETTE_TRIALS: "19" },
+      { ATLAS_MIN_SAMPLED_REPS: "3" },
+      { ATLAS_REPS: "10" },
+      { ATLAS_FIRST_TARGETS: "core2:3" },
+      { ATLAS_E3_MIN_RUNS: "1" },
+    ];
+    for (const env of lowering) expect(dev(env).length, JSON.stringify(env)).toBeGreaterThan(0);
+    /* The class, not the list above: every sample knob has a lowering value that is caught. */
+    const covered = new Set(lowering.flatMap((e) => Object.keys(e)));
+    expect(Object.values(inp.SAMPLE_ENV ?? {}).filter((k) => !covered.has(k)), "a sample knob with no lowering case here").toEqual([]);
+    const raising: Record<string, string>[] = [
+      { ATLAS_FIRST_PALETTE_TRIALS: "30" },
+      { ATLAS_FIRST_PALETTE_LEGS: "1280x800:dark,1280x800:light,1920x1080:dark,1920x1080:light,390x844:dark" },
+      { ATLAS_REPS: "40" },
+      { ATLAS_E3_MIN_RUNS: "5" },
+    ];
+    for (const env of raising) expect(dev(env), JSON.stringify(env)).toEqual([]);
+  });
+
+  /* Verifier round 3 (V-R6-1, 2026-09-27): the rule measured most fields against E2's FLOOR of 20, not
+     the DECLARED sample, so `ATLAS_FIRST_TARGETS=core2:18,core1:1,dist1:1` (core1 and dist1 cut from 3
+     trials to 1) and `ATLAS_REPS=20` (declared 25) were each reported as the declared sample. The cases
+     below are DERIVED from DECLARED_SAMPLE, one step below every declared number and every declared
+     list item, so a field added to the declaration is covered without editing this test. */
+  it("a sample below the DECLARED one — not merely below E2's floor — is a subset: every field, one step down", async () => {
+    const inp = await loadInp();
+    const dev = (env: Record<string, string>): string[] => inp.sampleDeviations!(inp.sampleOf!(env));
+    expect(dev({ ATLAS_FIRST_TARGETS: "core2:18,core1:1,dist1:1" }), "the verifier's per-device lowering").not.toEqual([]);
+    expect(dev({ ATLAS_REPS: "20" }), "the verifier's reps lowering (declared 25, E2 floor 20)").not.toEqual([]);
+    const declared = inp.sampleOf!({});
+    type Item = { id?: string; trials?: number; width?: number; height?: number; colorScheme?: string };
+    const itemSpec = (field: string, i: Item): string => {
+      if (typeof i.id === "string" && typeof i.trials === "number") return `${i.id}:${i.trials}`;
+      if (typeof i.width === "number" && typeof i.height === "number" && typeof i.colorScheme === "string") return `${i.width}x${i.height}:${i.colorScheme}`;
+      throw new Error(`${field}: a declared list item this test cannot write back as a knob value: ${JSON.stringify(i)}`);
+    };
+    const cases: { what: string; env: Record<string, string> }[] = [];
+    for (const [field, value] of Object.entries(declared)) {
+      const knobName = inp.SAMPLE_ENV![field];
+      expect(knobName, `${field} has a knob`).toBeDefined();
+      if (typeof value === "number") {
+        expect(value, `${field}: a declared number that cannot be lowered`).toBeGreaterThan(1);
+        cases.push({ what: `${field} ${value} -> ${value - 1}`, env: { [knobName!]: String(value - 1) } });
+        continue;
+      }
+      expect(Array.isArray(value), `${field} is neither a number nor a list, so no lowering can be derived for it`).toBe(true);
+      const items = value as Item[];
+      items.forEach((it, k) => {
+        if (items.length > 1)
+          cases.push({ what: `${field} drops ${itemSpec(field, it)}`, env: { [knobName!]: items.filter((_, j) => j !== k).map((x) => itemSpec(field, x)).join(",") } });
+        if (typeof it.trials === "number" && it.trials > 1)
+          cases.push({
+            what: `${field} ${itemSpec(field, it)} -> ${it.trials - 1}`,
+            env: { [knobName!]: items.map((x, j) => itemSpec(field, j === k ? { ...x, trials: x.trials! - 1 } : x)).join(",") },
+          });
+      });
+    }
+    expect(new Set(cases.map((c) => Object.keys(c.env)[0])).size, "precondition: every declared field produced a lowering").toBe(Object.keys(declared).length);
+    const missed = cases.filter((c) => dev(c.env).length === 0).map((c) => `${c.what}  ${JSON.stringify(c.env)}`);
+    expect(missed, "a sample below the declared one reported as the declared sample").toEqual([]);
+    /* ...and the declared sample written back through the knobs is still the declared sample. */
+    const same = Object.fromEntries(
+      Object.entries(declared).map(([f, v]) => [inp.SAMPLE_ENV![f]!, typeof v === "number" ? String(v) : (v as Item[]).map((x) => itemSpec(f, x)).join(",")]),
+    );
+    expect(dev(same)).toEqual([]);
+  });
+
+  it("the acceptance gate reads the sample: a subset is never ACCEPTANCE EVIDENCE, and says why", async () => {
+    const inp = await loadInp();
+    const plan = { fits: true };
+    const quiet: AcceptanceInputs = {
+      lane: "evidence",
+      devServer: false,
+      softwareRasteriser: false,
+      rendererKnown: true,
+      fresh: true,
+      windows: [{ leg: "1920x1080 dark", plan, check: { checked: true, inside: true } }],
+      headed: true,
+      hostBusy: 0.1,
+      maxHostBusy: 0.25,
+      powerKnown: true,
+      powerThrottled: false,
+      belowFullRate: false,
+      sampleDeviations: [],
+    };
+    expect(inp.acceptanceEvidenceOf!(quiet), "precondition: a quiet, declared, release run is evidence").toBe(true);
+    expect(inp.acceptanceWhyOf!(quiet)).toBe("");
+    const subset = { ...quiet, sampleDeviations: ["ATLAS_FIRST_PALETTE_TRIALS=10 is below E2's 20 repetitions"] };
+    expect(inp.acceptanceEvidenceOf!(subset)).toBe(false);
+    expect(inp.acceptanceWhyOf!(subset)).toMatch(/sample/i);
+    expect(inp.acceptanceWhyOf!(subset)).toContain("ATLAS_FIRST_PALETTE_TRIALS=10");
+  });
+
+  /* Verifier round 3 (V-R6-3, 2026-09-27): host-env's hostPower returns `{known:false}` with no
+     `throttled` field when its probe fails, and the gate read only `throttled` — so a power probe that
+     returned nothing counted as "on mains". Observed in a real run: "power: unknown (probe returned
+     \"\")" with no qualifier. Unknown power is not a quiet host, in the gate and in the E3 history. */
+  it("unknown host power is not a quiet host: it withholds ACCEPTANCE EVIDENCE and says so", async () => {
+    const inp = await loadInp();
+    const quiet: AcceptanceInputs = {
+      lane: "evidence",
+      devServer: false,
+      softwareRasteriser: false,
+      rendererKnown: true,
+      fresh: true,
+      windows: [{ leg: "1920x1080 dark", plan: { fits: true }, check: { checked: true, inside: true } }],
+      headed: true,
+      hostBusy: 0.1,
+      maxHostBusy: 0.25,
+      powerKnown: true,
+      powerThrottled: false,
+      belowFullRate: false,
+      sampleDeviations: [],
+    };
+    expect(inp.acceptanceEvidenceOf!(quiet), "precondition: known mains power, otherwise quiet, is evidence").toBe(true);
+    const unknown = { ...quiet, powerKnown: false };
+    expect(inp.acceptanceEvidenceOf!(unknown), "a failed power probe is not 'on mains'").toBe(false);
+    expect(inp.acceptanceWhyOf!(unknown)).toMatch(/power .*not known|power could not be read/i);
+    const { powerKnown: _omitted, ...absent } = quiet;
+    expect(inp.acceptanceEvidenceOf!(absent as AcceptanceInputs), "an absent power reading is not health either").toBe(false);
+  });
+
+  it("the E3 history counts a run as quiet only when its power was READ as mains", async () => {
+    const inp = await loadInp();
+    expect(typeof inp.isQuietRunRecord, "measure-inp exports the quiet-run rule, so it can be pinned").toBe("function");
+    const rec = { sample: "declared", hostBusy: 0.1, hostPowerKnown: true, hostPowerThrottled: false, presentationBelowFullRate: false };
+    expect(inp.isQuietRunRecord!(rec, 0.25), "precondition: a quiet declared run on known mains counts").toBe(true);
+    expect(inp.isQuietRunRecord!({ ...rec, hostPowerKnown: false }, 0.25), "unknown power").toBe(false);
+    const { hostPowerKnown: _omitted, ...legacy } = rec;
+    expect(inp.isQuietRunRecord!(legacy, 0.25), "a record from before the power-known field cannot claim it").toBe(false);
+    expect(inp.isQuietRunRecord!({ ...rec, sample: "subset" }, 0.25)).toBe(false);
+    expect(inp.isQuietRunRecord!({ ...rec, hostBusy: 0.3 }, 0.25)).toBe(false);
+    expect(inp.isQuietRunRecord!({ ...rec, hostPowerThrottled: true }, 0.25)).toBe(false);
+    expect(inp.isQuietRunRecord!({ ...rec, presentationBelowFullRate: true }, 0.25)).toBe(false);
+    /* Every field the rule reads is one the run's history record writes (a rule over a field no record
+       carries would exclude every run, silently). */
+    const src = readFileSync(INP, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    const rule = /export function isQuietRunRecord\(([a-z]+)[^)]*\)\s*\{([\s\S]*?)\n\}/.exec(src);
+    expect(rule, "precondition: the rule's source is found").not.toBeNull();
+    const reads = [...new Set([...rule![2]!.matchAll(new RegExp(`\\b${rule![1]}\\.(\\w+)`, "g"))].map((m) => m[1]!))];
+    expect(reads.length, "precondition: the rule reads record fields").toBeGreaterThanOrEqual(4);
+    const record = /const record = \{([\s\S]*?)\n\s*\};/.exec(src);
+    expect(record, "precondition: the history record's source is found").not.toBeNull();
+    expect(reads.filter((f) => !new RegExp(`\\b${f}\\b`).test(record![1]!)), "a field the quiet-run rule reads that no record writes").toEqual([]);
+  });
+
+  it("every verdict the run assigns goes through the sample rule (the class: every assignment in the source)", () => {
+    /* Each record's verdicts are printed the moment they are assigned, so the rule is applied AT the
+       assignment — a relabel after the loops would come after the per-journey PASS lines. Only the two
+       verdicts that are never a pass may be assigned bare. */
+    const src = readFileSync(INP, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    const sites = [...src.matchAll(/\b\w+\.(verdict|e3Verdict)\s*=(?!=)\s*/g)].map((m) => ({
+      field: m[1]!,
+      rhs: src.slice(m.index! + m[0].length, m.index! + m[0].length + 40),
+    }));
+    expect(sites.length, "precondition: the harness assigns verdicts (none found pins nothing)").toBeGreaterThanOrEqual(6);
+    const bare = sites.filter((x) => !x.rhs.startsWith("sampleLabel(") && !/^"(NOT MEASURED|TRANSPORT)"/.test(x.rhs));
+    expect(bare.map((x) => `${x.field} = ${x.rhs}`), "a verdict that can be PASS is assigned without the sample rule").toEqual([]);
+    expect(sites.filter((x) => x.rhs.startsWith("sampleLabel(")).length, "the computed verdicts (journeys, first selection, first palette) are all labelled").toBeGreaterThanOrEqual(6);
+  });
+});
+
+describe("a window that was never checked is reported as not checked, not as outside the screen (D4)", () => {
+  it("names each of the states a window can be in, in agreement with the one fit rule", async () => {
+    const inp = await loadInp();
+    expect(typeof inp.windowStatusOf).toBe("function");
+    const fits = { fits: true };
+    const cases: [unknown, unknown, string][] = [
+      [fits, { checked: true, inside: true }, "fits"],
+      [fits, { checked: false }, "not-checked"],
+      [fits, undefined, "not-checked"],
+      [fits, { checked: true, inside: false }, "outside"],
+      [{ fits: false }, { checked: true, inside: true }, "plan-does-not-fit"],
+      [null, { checked: true, inside: true }, "no-plan"],
+    ];
+    for (const [plan, check, want] of cases) {
+      expect(inp.windowStatusOf!(plan, check), JSON.stringify({ plan, check })).toBe(want);
+      expect(inp.windowFitsOf!(plan, check), "only a window that fits is a measurement environment").toBe(want === "fits");
+    }
+  });
+
+  it("the receipt for an unchecked window says 'not checked', never 'not inside the screen'", async () => {
+    const inp = await loadInp();
+    const base: AcceptanceInputs = {
+      lane: "evidence",
+      devServer: false,
+      softwareRasteriser: false,
+      rendererKnown: true,
+      fresh: true,
+      windows: [
+        { leg: "1280x800 dark", plan: { fits: true }, check: { checked: false } },
+        { leg: "1920x1080 dark", plan: { fits: true }, check: { checked: true, inside: true } },
+      ],
+      headed: true,
+      hostBusy: 0.1,
+      maxHostBusy: 0.25,
+      powerKnown: true,
+      powerThrottled: false,
+      belowFullRate: false,
+      sampleDeviations: [],
+    };
+    expect(inp.acceptanceEvidenceOf!(base), "an unchecked window is not known to fit").toBe(false);
+    const why = inp.acceptanceWhyOf!(base);
+    expect(why).toMatch(/not checked/i);
+    expect(why).toContain("1280x800 dark");
+    expect(why, "the leg that was checked and fits is not blamed").not.toContain("1920x1080 dark");
+    expect(why).not.toMatch(/not inside the screen/i);
+    const outside = { ...base, windows: [{ leg: "1920x1080 dark", plan: { fits: true }, check: { checked: true, inside: false } }] };
+    expect(inp.acceptanceWhyOf!(outside)).toMatch(/not inside the screen/i);
+  });
+});
+
+/* ── 5. every verdict the run prints is over the declared sample, or says it is not (verifier R6 round 1, V1/V2, 2026-09-27) ──
+ *
+ * V1. `ATLAS_E3_MIN_RUNS=1` is a declared sample knob whose only effect is the ACROSS-RUNS E3 verdict,
+ * and that verdict never went through the sample rule: over one quiet declared record the run printed
+ * "E3 across runs … (1 run(s), need 1): PASS — J5-first-open-palette STABLE PASS" after announcing
+ * itself a SUBSET run; under the declared 3-run rule it is INSUFFICIENT RUNS. The source scan above
+ * matched `.verdict =` and `.e3Verdict =` only — two property names standing in for "every verdict
+ * the run prints". The class here is every PASS the harness SPELLS: every string literal that is a
+ * PASS verdict and is not being compared with must be produced through `sampleLabel`, and every
+ * function that labels through a parameter must be handed the deviations at every call.
+ *
+ * V2. `ATLAS_ONLY=zzz-nomatch` selected nothing, exited 0, and printed the across-runs verdict "PASS —"
+ * over an empty list (a vacuous `.every`): absence rendered as health.
+ */
+describe("every verdict the run prints goes through the sample rule, and nothing measured is never a pass (V1, V2)", () => {
+  const PASS_SPELLING = /^(?:[A-Z0-9]+[ -])*PASS(?:[ -][A-Z0-9]+)*$/;
+  const COMPARE = new Set([ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken]);
+
+  it("the verifier's run (ATLAS_E3_MIN_RUNS=1 over one quiet record) does not print an across-runs PASS", async () => {
+    const inp = await loadInp();
+    for (const k of ["e3StableVerdict", "e3AcrossRunsVerdictOf", "e3RunVerdictOf", "runExitCodeOf", "journeySelectionOf"] as const)
+      expect(typeof inp[k], `measure-inp exports ${k}, so the rule can be pinned`).toBe("function");
+    const d = inp.sampleDeviations!(inp.sampleOf!({ ATLAS_E3_MIN_RUNS: "1" }));
+    expect(d.length, "precondition: lowering the across-runs threshold is a subset").toBeGreaterThan(0);
+    const oneQuietRun = [{ journeys: { "J5-first-open-palette": { e3: "E3-PASS" } } }];
+    const subset = { "J5-first-open-palette": inp.e3StableVerdict!(oneQuietRun, "J5-first-open-palette", 1, d) };
+    expect(subset["J5-first-open-palette"].stable, "a per-journey STABLE PASS under a lowered threshold").not.toMatch(/^STABLE PASS$/);
+    expect(inp.e3AcrossRunsVerdictOf!(subset, d), "the across-runs roll-up of a subset run").not.toBe("PASS");
+    expect(inp.e3AcrossRunsVerdictOf!(subset, d)).toMatch(/SUBSET/);
+    /* ...and over the declared sample the rule is unchanged: one run is not enough, three clean runs are. */
+    const declared = { "J5-first-open-palette": inp.e3StableVerdict!(oneQuietRun, "J5-first-open-palette", 3, []) };
+    expect(inp.e3AcrossRunsVerdictOf!(declared, [])).toBe("INSUFFICIENT RUNS");
+    const three = [...oneQuietRun, ...oneQuietRun, ...oneQuietRun];
+    expect(inp.e3AcrossRunsVerdictOf!({ J: inp.e3StableVerdict!(three, "J5-first-open-palette", 3, []) }, [])).toBe("PASS");
+    const fail = [...oneQuietRun, ...oneQuietRun, { journeys: { "J5-first-open-palette": { e3: "E3-FAIL" } } }];
+    expect(inp.e3AcrossRunsVerdictOf!({ J: inp.e3StableVerdict!(fail, "J5-first-open-palette", 3, []) }, [])).toBe("FAIL");
+    expect(inp.e3AcrossRunsVerdictOf!({ J: inp.e3StableVerdict!(fail, "J5-first-open-palette", 3, d) }, d), "a violation seen in a subset run is still a violation").toMatch(/FAIL/);
+    /* The per-run E3 roll-up too. */
+    expect(inp.e3RunVerdictOf!([{ e3Verdict: "E3-PASS" }], [])).toBe("PASS");
+    expect(inp.e3RunVerdictOf!([{ e3Verdict: inp.sampleLabel!("E3-PASS", d) }], d)).not.toBe("PASS");
+  });
+
+  it("the class: every PASS the harness spells is produced through sampleLabel, handed the deviations at every call", () => {
+    const text = readFileSync(INP, "utf8");
+    const sf = ts.createSourceFile(INP, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const spelled: ts.StringLiteralLike[] = [];
+    const calls: ts.CallExpression[] = [];
+    const visit = (n: ts.Node): void => {
+      if ((ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && PASS_SPELLING.test(n.text) && !n.text.includes("SUBSET")) spelled.push(n);
+      if (ts.isCallExpression(n)) calls.push(n);
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+    const where = (n: ts.Node): string => `${n.getText(sf)} at line ${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`;
+    /** The sampleLabel call whose VERDICT argument this literal is (through parentheses and ternary branches), or null. */
+    const labelCallOf = (lit: ts.Node): ts.CallExpression | null => {
+      let n: ts.Node = lit;
+      for (;;) {
+        const p = n.parent;
+        if (ts.isParenthesizedExpression(p)) n = p;
+        else if (ts.isConditionalExpression(p) && (p.whenTrue === n || p.whenFalse === n)) n = p;
+        else if (ts.isCallExpression(p) && ts.isIdentifier(p.expression) && p.expression.text === "sampleLabel" && p.arguments[0] === n) return p;
+        else return null;
+      }
+    };
+    const produced = spelled.filter((lit) => {
+      const p = lit.parent;
+      if (ts.isBinaryExpression(p) && COMPARE.has(p.operatorToken.kind)) return false; // compared with, not printed
+      if (ts.isPropertyAssignment(p) && p.name === lit) return false; // an object key (the SUBSET spelling table)
+      return true;
+    });
+    expect(produced.length, "precondition: the harness spells PASS verdicts (none found pins nothing)").toBeGreaterThanOrEqual(6);
+    expect(produced.filter((lit) => labelCallOf(lit) === null).map(where), "a PASS the harness spells without the sample rule").toEqual([]);
+    /* The deviations each label is handed: the run's own, or a parameter of the function it is in — and
+       then every call of that function, anywhere in the harness, must hand it on. */
+    const labellers = new Map<string, number>();
+    for (const lit of produced) {
+      const call = labelCallOf(lit)!;
+      const dev = call.arguments[1];
+      expect(dev !== undefined && ts.isIdentifier(dev), `${where(call)}: sampleLabel is handed its deviations by name`).toBe(true);
+      if (dev!.getText(sf) === "RUN_SAMPLE_DEVIATIONS") continue;
+      /* The function whose parameter it is: the nearest enclosing one that declares it (a callback in
+         between closes over it). */
+      let fn: ts.Node | undefined = call.parent;
+      const declares = (n: ts.Node): boolean => ts.isFunctionLike(n) && n.parameters.some((prm) => prm.name.getText(sf) === dev!.getText(sf));
+      while (fn !== undefined && !declares(fn)) fn = fn.parent;
+      const decl = fn as ts.FunctionLikeDeclaration | undefined;
+      const at = decl?.parameters.findIndex((prm) => prm.name.getText(sf) === dev!.getText(sf)) ?? -1;
+      expect(at, `${where(call)}: its deviations are neither the run's nor a parameter`).toBeGreaterThanOrEqual(0);
+      const name =
+        decl !== undefined && ts.isFunctionDeclaration(decl) && decl.name ? decl.name.text : decl !== undefined && ts.isVariableDeclaration(decl.parent) ? decl.parent.name.getText(sf) : null;
+      expect(name, `${where(call)}: a labelling function the harness cannot name`).not.toBeNull();
+      labellers.set(name!, at);
+    }
+    expect(labellers.size, "precondition: the across-runs rule labels through a parameter").toBeGreaterThan(0);
+    const shortCalls = calls.filter((c) => ts.isIdentifier(c.expression) && labellers.has(c.expression.text) && c.arguments.length <= labellers.get(c.expression.text)!);
+    expect(shortCalls.map(where), "a labelling function called without the deviations").toEqual([]);
+  });
+
+  it("a selection that matches no journey measures nothing: NOT MEASURED, never a pass, and a non-zero exit", async () => {
+    const inp = await loadInp();
+    const all = inp.journeySelectionOf!(null);
+    expect(all, "no selection is every journey, the first selection and the first palette open").toEqual([...inp.JOURNEYS.map((j) => j.id), inp.FIRST_SELECTION.id, inp.FIRST_PALETTE!.id]);
+    expect(inp.journeySelectionOf!(["J5-first"])).toEqual([inp.FIRST_PALETTE!.id]);
+    expect(inp.journeySelectionOf!(["zzz-nomatch"]), "the verifier's selection").toEqual([]);
+    expect(inp.e3AcrossRunsVerdictOf!({}, []), "an across-runs roll-up over no journey").toBe("NOT MEASURED");
+    expect(inp.e3RunVerdictOf!([], []), "a per-run roll-up over no journey").toBe("NOT MEASURED");
+    expect(inp.runExitCodeOf!([]), "a run that measured nothing").not.toBe(0);
+    /* The exit code is a positive rule: every journey passed on both axes, over the declared sample. */
+    expect(inp.runExitCodeOf!([{ verdict: "PASS", e3Verdict: "E3-PASS" }])).toBe(0);
+    expect(inp.runExitCodeOf!([{ verdict: "FLOOR-PASS", e3Verdict: "E3-PASS" }])).toBe(0);
+    for (const bad of [
+      { verdict: "PASS", e3Verdict: "E3-FAIL" },
+      { verdict: "FAIL", e3Verdict: "E3-PASS" },
+      { verdict: "NOT MEASURED", e3Verdict: "NOT MEASURED" },
+      { verdict: "TRANSPORT", e3Verdict: "NOT MEASURED" },
+      { verdict: "SUBSET-PASS", e3Verdict: "E3-SUBSET-PASS" },
+    ])
+      expect(inp.runExitCodeOf!([{ verdict: "PASS", e3Verdict: "E3-PASS" }, bad]), JSON.stringify(bad)).not.toBe(0);
+    /* ...and it is the run's exit code: main exits through the rule, and takes its selection from the pure one. */
+    const src = readFileSync(INP, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    const exits = [...src.matchAll(/process\.exit\(((?:[^()]|\([^()]*\))*)\)/g)].map((m) => m[1]!.trim());
+    expect(exits.length, "precondition: the harness exits explicitly").toBeGreaterThan(0);
+    expect(exits.filter((a) => !/^\d+$/.test(a)), "a computed exit code that is not the rule").toEqual(["runExitCodeOf(results)"]);
+    expect(src, "main takes its selection from the pure rule").toMatch(/journeySelectionOf\(ONLY\)/);
+    expect(inp.NON_SAMPLE_ENV!.ATLAS_ONLY, "the classification says what an empty selection does").toMatch(/no journey/i);
   });
 });

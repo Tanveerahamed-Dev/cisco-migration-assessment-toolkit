@@ -18,7 +18,7 @@ Completeness axis's domain and are not counted here."""
 import logging
 import os
 import threading
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from .input_custody import read_text as read_custodied_text
 
@@ -39,6 +39,60 @@ _CISCO_ERRORS = (
     # NX-OS RBAC '% Permission denied for the role'; IOS exec '% Authorization failed.'; IOS/NX-OS per-command.
     "% permission denied for the role", "% authorization failed", "command authorization failed",
 )
+
+# --- vendor "protocol not running" banners ----------------------------------------
+# The EXACT whole-capture text a platform prints for a routing `show` command when that protocol has NO
+# process on the device.  It is POSITIVE evidence ("this protocol contributes nothing on this host"), unlike
+# an error banner (the command itself failed) and unlike empty output (ambiguous: no process, or a process
+# with nothing to list).  It stays a USABLE capture for _load_cmd_output / cmd_capture_state (it is not an
+# error), and only cmd_not_running_banner() names it -- so no existing consumer changes meaning.
+#
+# One owner, keyed by the exact command whose output was captured. An entry is admitted ONLY with a citable
+# source; a platform or command whose no-process output could not be evidenced is deliberately absent (never
+# guessed), so its capture keeps its ordinary state (captured_no_record / captured_empty).
+#
+#   "% BGP not active" -- Cisco IOS, the no-`router bgp` output of the BGP exec commands. Sources:
+#     * ansible-network/cisco_ios, parser_templates/cli/show_ip_bgp_summary.yaml (network_os: ios) and its
+#       fixture tests/parser_templates/cli/show_ip_bgp_summary/bgp_not_active.txt -- the whole
+#       `show ip bgp summary` output is "% BGP not active" (process_state 'not active');
+#     * hpreston/netdevops_demos (Cisco DevNet), source-of-truth/genie/mocks/demo/sw1/sw1.yaml -- a recorded
+#       pyATS/Genie mock of a Cisco IOS vios_l2 device whose `show ip protocols` lists no routing protocol:
+#       `show ip bgp summary`, `show bgp summary` and `show bgp all summary` all return '% BGP not active';
+#     * napalm-automation/napalm, napalm/ios/ios.py get_bgp_neighbors (treats "BGP not active" in
+#       `show bgp all summary` as BGP not running) with fixture
+#       test/ios/mocked_data/test_get_bgp_neighbors/bgp_inactive/show_bgp_all_summary.txt.
+#     The registry is keyed by COMMAND, not platform: the match is by exact whole-capture text on ANY
+#     platform, and only the Cisco IOS output above is evidenced.
+#     IOS-XE: no independent capture was found (the Cisco IOS/IOS-XE BGP troubleshooting note does not print
+#     it); an IOS-XE capture is classified only if its whole text is exactly this banner.
+#     NX-OS: no NX-OS banner is registered -- without `feature bgp` the BGP show commands are rejected as
+#     "% Invalid command at '^' marker." (already an error capture via _CISCO_ERRORS), and the output with the
+#     feature enabled but no `router bgp` could not be evidenced. An NX-OS capture whose whole text were
+#     exactly "% BGP not active" WOULD match (the text-keyed registry does not exclude a platform); no NX-OS
+#     text is guessed or added for it.
+#   OSPF / EIGRP: NOT registered. The same recorded IOS mock returns EMPTY output ('') for
+#     `show ip ospf neighbor` / `show ip ospf` with no OSPF process (no banner exists to match; an empty
+#     capture stays captured_empty, which cannot tell "no process" from "no neighbours"). No source for the
+#     no-process output of `show ip eigrp neighbors` was found.
+PROTOCOL_NOT_RUNNING_BANNERS: Dict[str, tuple] = {
+    "show ip bgp summary": ("% BGP not active",),
+    "show bgp summary": ("% BGP not active",),
+    "show bgp all summary": ("% BGP not active",),
+}
+
+
+def not_running_banner(cmd: str, content: str) -> str:
+    """The registered no-process banner `content` IS for `cmd` (the whole capture, whitespace/CRLF
+    normalized), or ''.  A banner embedded in longer output is NOT a match: a capture that carries anything
+    else is ordinary output and keeps its ordinary state."""
+    if not isinstance(cmd, str) or not isinstance(content, str):
+        return ""
+    body = "\n".join(line.strip() for line in content.strip().splitlines() if line.strip())
+    for banner in PROTOCOL_NOT_RUNNING_BANNERS.get(cmd, ()):
+        if body == banner:
+            return banner
+    return ""
+
 
 # --- zero-parse yield ledger ------------------------------------------------------
 MIN_CONTENT_LINES = 3      # a 1-2 line banner / prompt echo is not "content" ...
@@ -401,10 +455,16 @@ def cmd_capture_state(cmd_to_file: Dict[str, str], *cmd_variants: str) -> str:
     for coverage-honesty: a captured-but-EMPTY output is an answer (e.g. a zero-trunk device),
     while a missing or errored capture is a blind spot ('not observed' must never read as healthy).
     Precedence across variants: usable > empty > error > missing."""
+    return _resolve_capture(cmd_to_file, cmd_variants)[0]
+
+
+def _resolve_capture(cmd_to_file: Dict[str, str], cmd_variants) -> tuple:
+    """(state, command, content) of the capture cmd_capture_state resolves: the FIRST usable variant
+    (the one _load_cmd_output would hand a parser), else the best non-usable state with no body."""
     best = "missing"
     rank = {"missing": 0, "error": 1, "empty": 2, "usable": 3}
     for cmd in cmd_variants:
-        p = cmd_to_file.get(cmd)
+        p = cmd_to_file.get(cmd) if isinstance(cmd_to_file, dict) else None
         if not p:
             continue
         try:
@@ -418,12 +478,20 @@ def cmd_capture_state(cmd_to_file: Dict[str, str], *cmd_variants: str) -> str:
         elif any(pat in stripped[:200].lower() for pat in _CISCO_ERRORS):
             state = "error"
         else:
-            state = "usable"
+            return "usable", cmd, content
         if rank[state] > rank[best]:
             best = state
-        if best == "usable":
-            break
-    return best
+    return best, "", ""
+
+
+def cmd_not_running_banner(cmd_to_file: Dict[str, str], *cmd_variants: str) -> Tuple[str, str]:
+    """(command, banner) when the capture cmd_capture_state resolves as 'usable' is EXACTLY a registered
+    vendor no-process banner for that command (PROTOCOL_NOT_RUNNING_BANNERS), else ('', '').  Same
+    resolution as cmd_capture_state / _load_cmd_output (first usable variant wins), so the three never
+    disagree about which capture was read."""
+    state, cmd, content = _resolve_capture(cmd_to_file, cmd_variants)
+    banner = not_running_banner(cmd, content) if state == "usable" else ""
+    return (cmd, banner) if banner else ("", "")
 
 
 def _safe_parse(fn, *args, _default=None):

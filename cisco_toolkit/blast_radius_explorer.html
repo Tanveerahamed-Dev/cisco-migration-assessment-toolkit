@@ -1574,8 +1574,17 @@ function compareModels(A,B){
    from a local file. */
 const _PAD_RECEIPT_FAMILIES=["STP","EtherChannel","VTP","OSPF","BGP","EIGRP","FHRP"];
 const _PAD_ADJACENCY_FAMILIES=["OSPF","BGP","EIGRP"];
-const _PAD_RECEIPT_STATES=new Set(["assessed","partial","captured_no_record","captured_empty",
-  "capture_error","not_collected","analysis_unavailable"]);
+/* The engine's ONE protocol_assessability vocabulary, state -> conclusion class. analyze.py owns it; the
+   renderer (html._render_engine_vocabulary) replaces the marker below with analyze's map, so this page never
+   carries a hand copy that a new engine state (not_running) would silently fall outside. An unrendered
+   template carries no vocabulary: every receipt then reads as not verifiable (fail closed), never healthy. */
+const ENGINE_PA_CONCLUSIONS=Object.freeze(/*@@ENGINE_PA_CONCLUSIONS@@*/{});
+const _PAD_RECEIPT_STATES=new Set(Object.keys(ENGINE_PA_CONCLUSIONS));
+function _paConclusion(state){
+  return Object.prototype.hasOwnProperty.call(ENGINE_PA_CONCLUSIONS,state)?ENGINE_PA_CONCLUSIONS[state]:"blind";}
+function _paBanners(row){
+  const ev=row&&Array.isArray(row.banner_evidence)?row.banner_evidence:[];
+  return ev.filter(_padObj).map(item=>_padText(item.banner)).filter(Boolean).join("; ");}
 function _padObj(value){return value!==null&&typeof value==="object"&&!Array.isArray(value);}
 function _padText(value){return typeof value==="string"?value.trim():"";}
 function _padPairKey(host,protocol){return host+"\u0000"+protocol;}
@@ -1607,7 +1616,7 @@ function _padReceiptView(snap){
     if(!host||!_PAD_RECEIPT_FAMILIES.includes(protocol)||!_PAD_RECEIPT_STATES.has(state))
       return {present:true,valid:false,index:new Map(),
         reason:"protocol assessability contains an invalid switch, family, or state"};
-    if(state==="assessed"&&row.health_row_emitted!==true)
+    if(_paConclusion(state)==="assessed"&&row.health_row_emitted!==true)
       return {present:true,valid:false,index:new Map(),
         reason:"protocol assessability marks a cell assessed without an emitted health row"};
     const key=_padPairKey(host,protocol);
@@ -1710,15 +1719,22 @@ function computeProtocolAdjacencyDelta(oldSnap,newSnap,sourceBinding){
   const receiptState=(view,pair)=>{if(!view.valid)return view.present?"invalid":"legacy";
     const row=view.index.get(pair);return _padObj(row)?_padText(row.state):"missing_cell";};
   const receiptRow=(view,pair)=>{const row=view.valid?view.index.get(pair):null;return _padObj(row)?row:null;};
+  /* Mirrors html._not_comparable: a not_running cell is the protocol's cited absence on the host, named as
+     such -- never a parser gap and never comparable as assessed. */
+  const notComparable=(side,state,row)=>{
+    if(!_PAD_RECEIPT_STATES.has(state)||_paConclusion(state)!=="not_running")return side+" receipt state is "+state;
+    const banners=_paBanners(row);
+    return side+" receipt state is not_running: the protocol is not running on this host"+
+      (banners?" (cited banner: "+banners+")":"");};
   for(const [pair,info] of scopedPairs){
     const beforeState=receiptState(oldReceipt,pair),afterState=receiptState(newReceipt,pair),
       beforeRow=receiptRow(oldReceipt,pair),afterRow=receiptRow(newReceipt,pair),reasons=[];
     if(!oldReceipt.valid)reasons.push("before: "+oldReceipt.reason);
-    else if(beforeState!=="assessed")reasons.push("before receipt state is "+beforeState);
+    else if(_paConclusion(beforeState)!=="assessed")reasons.push(notComparable("before",beforeState,beforeRow));
     else if(beforeRow&&beforeRow.health_row_emitted===true&&!(oldRouting.pairs.get(pair)||new Map()).size)
       reasons.push("before receipt is assessed with an emitted health row but the routing-neighbor projection has zero peers");
     if(!newReceipt.valid)reasons.push("after: "+newReceipt.reason);
-    else if(afterState!=="assessed")reasons.push("after receipt state is "+afterState);
+    else if(_paConclusion(afterState)!=="assessed")reasons.push(notComparable("after",afterState,afterRow));
     else if(afterRow&&afterRow.health_row_emitted===true&&!(newRouting.pairs.get(pair)||new Map()).size)
       reasons.push("after receipt is assessed with an emitted health row but the routing-neighbor projection has zero peers");
     if(!oldRouting.available)reasons.push("before: "+oldRouting.reason);
@@ -10236,8 +10252,7 @@ function _phTok(s){return s==="High"?"crit":s==="Medium"?"risk":s==="Low"?"watch
 function protoHealthFor(host){return ((SNAP&&SNAP.protocol_health)||[]).filter(r=>r.switch===host);}
 function protocolAssessability(){
   const pa=SNAP&&SNAP.protocol_assessability;
-  const expected=["STP","EtherChannel","VTP","OSPF","BGP","EIGRP","FHRP"], allowed=new Set([
-    "assessed","partial","captured_no_record","captured_empty","capture_error","not_collected","analysis_unavailable"]);
+  const expected=["STP","EtherChannel","VTP","OSPF","BGP","EIGRP","FHRP"], allowed=_PAD_RECEIPT_STATES;
   if(!pa||pa.schema!=="protocol_assessability/1"||!Array.isArray(pa.rows)||!pa.rows.length||
      !pa.summary||pa.summary.n_families!==7||pa.summary.n_cells!==pa.rows.length)return null;
   const byHost=new Map();
@@ -10251,8 +10266,12 @@ function protocolAssessability(){
      [...byHost.values()].some(protocols=>protocols.length!==7||expected.some(p=>protocols.filter(v=>v===p).length!==1)))return null;
   return pa;}
 function protoAssessFor(host){const pa=protocolAssessability();return pa?pa.rows.filter(r=>r&&r.switch===host):[];}
-function _paTok(s){
-  return s==="assessed"?"ok":s==="capture_error"||s==="not_collected"||s==="analysis_unavailable"?"crit":"watch";}
+/* Tone by the engine's conclusion class, never by a hand-listed state: a not_running cell is neutral (its cited
+   banner is positive evidence the protocol contributes nothing here -- neither ok nor blind). */
+function _paTok(s){const c=_paConclusion(s);
+  return c==="assessed"?"ok":c==="blind"?"crit":c==="not_running"?"neutral":"watch";}
+/* A cell that is neither assessed nor cited-not-running: the receipt's coverage gaps. */
+function _paIsGap(r){const c=_paConclusion(r&&r.state);return c!=="assessed"&&c!=="not_running";}
 function _paLabel(s){return String(s||"unknown").replace(/_/g," ").toUpperCase();}
 /* One operator-visible issue per device × family. Most abnormal health rows also produce an
    intelligence advisory, while VTP HIGH-REVISION is deliberately Info in protocol_health and High
@@ -10277,11 +10296,13 @@ function protocolEffectiveIssues(){
 }
 function protoAssessRow(r){
   const states=Object.entries((r&&r.input_states)||{}).map(([k,v])=>`${esc(k)}=${esc(v)}`).join(" · ");
+  const banners=_paConclusion(r&&r.state)==="not_running"?_paBanners(r):"";
   const reason=String((r&&r.reason)||"");
   const label=`Open ${r.protocol||"protocol"} assessability for ${r.switch||"device"}`;
   return `<div class="ln click" data-jump="${esc(r.switch)}" role="button" tabindex="0" aria-label="${esc(label)}" style="cursor:pointer"><span class="pill pl-${_paTok(r.state)}">${esc(_paLabel(r.state))}</span> `+
     `<span class="pill pl-neutral">${esc(r.protocol)}</span> <span class="mono">${esc(shortName(r.switch))}</span>`+
-    `${states?` — ${states}`:""}${reason?` <span class="faint">(${esc(reason.slice(0,150))}${reason.length>150?"…":""})</span>`:""}</div>`;}
+    `${states?` — ${states}`:""}${banners?` — cited banner: <span class="mono">${esc(banners)}</span>`:""}`+
+    `${reason?` <span class="faint">(${esc(reason.slice(0,150))}${reason.length>150?"…":""})</span>`:""}</div>`;}
 function protoHealthRow(r){
   const label=`Open ${r.protocol||"protocol"} health for ${r.switch||"device"}`;
   return `<div class="ln click" data-jump="${esc(r.switch)}" role="button" tabindex="0" aria-label="${esc(label)}" style="cursor:pointer"><span class="pill pl-${_phTok(r.severity)}">${esc(r.severity)}</span> `+
@@ -10308,8 +10329,9 @@ function protoHealthSection(){
   const paRows=pa.rows.filter(r=>r&&typeof r==="object"), byState={};
   paRows.forEach(r=>{const s=r.state||"unknown";byState[s]=(byState[s]||0)+1;});
   const assessed=byState.assessed||0, partial=byState.partial||0;
-  const gaps=paRows.filter(r=>r.state!=="assessed");
-  const notAssessed=Math.max(0,paRows.length-assessed-partial);
+  const notRunning=paRows.filter(r=>_paConclusion(r.state)==="not_running").length;
+  const gaps=paRows.filter(_paIsGap);
+  const notAssessed=Math.max(0,paRows.length-assessed-partial-notRunning);
   const badge=issues.length?`<span class="badge b-${issueHigh?"crit":"risk"}">${issues.length} issue${issues.length===1?"":"s"}</span>`:
     gaps.length?`<span class="badge b-watch">coverage incomplete</span>`:
     `<span class="badge b-ok">observed scope clear</span>`;
@@ -10317,7 +10339,7 @@ function protoHealthSection(){
   const rows=combined.slice(0,CAP).map(item=>item.kind==="issue"?protoEffectiveIssueRow(item.issue):protoAssessRow(item.row)).join("");
   const more=combined.length>CAP?`<div class="ln faint" style="margin-top:6px">…and <b>${combined.length-CAP}</b> more issue / coverage row(s) — see <b>Protocol Health</b> and the <b>Protocol assessability</b> block on Collection Completeness.</div>`:"";
   return `<div class="sec"><h3>Protocol health ${badge}</h3>`+
-    `<div class="sub" style="margin-bottom:6px"><b>${assessed}</b> assessed · <b>${partial}</b> partial · <b>${notAssessed}</b> not assessable across <b>${paRows.length}</b> current-run device × family cells; <b>${issueHigh}</b> High · ${issueMedium} Medium across ${issues.length} unique switch × family issue${issues.length===1?"":"s"} from observed health or protocol intelligence. No supported issue in observed scope is not a fleet-wide protocol health certification.</div>`+
+    `<div class="sub" style="margin-bottom:6px"><b>${assessed}</b> assessed · <b>${partial}</b> partial · ${notRunning?`<b>${notRunning}</b> not running (banner cited) · `:""}<b>${notAssessed}</b> not assessable across <b>${paRows.length}</b> current-run device × family cells; <b>${issueHigh}</b> High · ${issueMedium} Medium across ${issues.length} unique switch × family issue${issues.length===1?"":"s"} from observed health or protocol intelligence. No supported issue in observed scope is not a fleet-wide protocol health certification.</div>`+
     (rows||`<div class="ln faint">Every current-run cell emitted a bounded health row and neither observed health nor protocol intelligence emitted a High/Medium issue. Family boundaries and expected-neighbor intent still apply.</div>`)+more+`</div>`;
 }
 function protoAssessDetailSection(host){
@@ -10325,7 +10347,7 @@ function protoAssessDetailSection(host){
   if(!pa)return `<div class="sec"><h3>Protocol assessability <span class="badge b-watch">unavailable</span></h3><p class="faint">Runtime assessability receipt unavailable. Sparse health rows do not prove coverage for this device.</p></div>`;
   const rows=protoAssessFor(host);
   if(!rows.length)return `<div class="sec"><h3>Protocol assessability <span class="badge b-crit">not in receipt</span></h3><p class="faint">This device has no current-run family denominator; no protocol health conclusion is asserted.</p></div>`;
-  const assessed=rows.filter(r=>r.state==="assessed").length, gaps=rows.length-assessed;
+  const assessed=rows.filter(r=>_paConclusion(r.state)==="assessed").length, gaps=rows.filter(_paIsGap).length;
   return `<div class="sec"><h3>Protocol assessability <span class="badge ${gaps?"b-watch":"b-ok"}">${assessed}/${rows.length} assessed</span></h3>`+
     `<div class="sub" style="margin-bottom:6px">One current-run cell for each supported family. Missing or partial evidence is not healthy and does not prove protocol absence.</div>`+
     rows.map(protoAssessRow).join("")+`</div>`;}
@@ -10495,7 +10517,7 @@ function drawProtocols(){
   const adj=allAdjacencies(), stuck=adj.filter(a=>!a.ok);
   const protoIssueRows=protocolEffectiveIssues(), protoIssues=protoIssueRows.length;
   const protoIssueTok=protoIssueRows.some(item=>item.row.severity==="High")?"crit":"risk";
-  const protoGaps=pa?paRows.filter(r=>r&&r.state!=="assessed").length:null;
+  const protoGaps=pa?paRows.filter(r=>r&&_paIsGap(r)).length:null;
   const fpRows=withProto.map(h=>`<tr class="click" data-jump="${esc(h)}"><td class="mono">${esc(shortName(h))}</td><td>${[...protoSet(h)].sort().map(protoPill).join(" ")}${isRedistPoint(h)?' <span class="pill pl-watch">boundary</span>':""}</td></tr>`).join("");
   const redRows=redistPts.length?redistPts.map(h=>{const edges=redistFor(h),mut=mutualRedist(h);
     const items=edges.length?edges.map(e=>`<div class="ln"><span class="mono">${_protoLabel(e.from_proto)} → ${_protoLabel(e.into_proto)}</span>${e.route_map?` <span class="faint">· route-map ${esc(e.route_map)}</span>`:""}</div>`).join("")

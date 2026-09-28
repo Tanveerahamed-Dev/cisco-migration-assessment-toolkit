@@ -105,7 +105,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => setHelpOpen(false));
-  act(() => useInvestigation.getState().setPaletteOpen(false));
+  act(() => { useInvestigation.getState().setPaletteOpen(false); });
   for (const m of mounted.splice(0)) {
     act(() => m.root.unmount());
     m.container.remove();

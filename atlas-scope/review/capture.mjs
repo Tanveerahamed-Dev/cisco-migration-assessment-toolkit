@@ -794,10 +794,17 @@ const READ_FORM_REACH = `(${readFormReach.toString()})()`;
  *
  * Per rendered control (a tab, button, link, field, summary, `[role=button|combobox]`) and per
  * navigation strip (`[role=tablist|toolbar|menubar]`): its box is intersected with the viewport and
- * with EVERY ancestor that clips on y, scroll containers included. A control wholly outside that
- * window is absent, not sliced. What remains of a cut control must be PAINTED: a row under a sticky
- * header inside the same scroller is covered, not sliced, so the remaining strip is hit-tested near
- * both of its ends and a control is skipped only when every probe lands on something else. Then:
+ * with EVERY ancestor that clips on y, scroll containers included, and then trimmed past every box
+ * PAINTED OVER its edges (a sticky or fixed bar, a sticky header): an overlay cuts exactly as a clip
+ * does, at every rung of the layout ladder (C2 verifier m3 — below 48rem the sticky status bar can
+ * cover half a toolbar that no clip cuts). A cover is a hit's box inside its OWN clip chain, and only
+ * where that holds the probe point (R9 verifier V2: a scrolled neighbour's clipped-away content is no
+ * cover). A control wholly outside that window, or wholly covered, is absent, not sliced — and a
+ * "wholly covered" reading the hit test contradicts (the control is still found painted) is itself a
+ * `check-failed`, so a misread cannot silently blind this check. What remains of a cut control must be PAINTED: the remaining strip is
+ * hit-tested near both of its ends and a control is skipped only when every probe lands on something
+ * else. A top cut by a cover counts as a MOVED port's when any scroller around the control (or the
+ * document) is scrolled — a control slides under a sticky or fixed cover only by scrolling. Then:
  *   chrome-sliced          — ANY cut, top or bottom, of navigation (the strip or a control inside
  *                            it): navigation is whole or absent. Fails the state.
  *   moved-port-top-slice   — a TOP cut of any control by a port that has been scrolled (an element's
@@ -854,15 +861,136 @@ function readScrollEdge() {
         botBy = sel(a);
       }
     }
-    const visible = Math.min(b.bottom, B) - Math.max(b.top, T);
-    if (visible <= SLACK) continue; // wholly scrolled away: not on screen, not sliced
-    const cutTop = b.top < T - SLACK;
-    const cutBot = b.bottom > B + SLACK;
-    if (!cutTop && !cutBot) continue;
-    /* What is left must be PAINTED on top to be a slice: probe near both ends of the visible strip. */
-    const lo = Math.max(b.top, T);
-    const hi = Math.min(b.bottom, B);
+    let lo = Math.max(b.top, T);
+    let hi = Math.min(b.bottom, B);
+    if (hi - lo <= SLACK) continue; // wholly scrolled away: not on screen, not sliced
     const x = Math.min(Math.max((Math.max(b.left, 0) + Math.min(b.right, vw)) / 2, 0), vw - 1);
+    /* An OVERLAY cuts exactly as a clip does (C2 verifier m3): what the clips leave is trimmed past
+       every box painted over its edges — the hit-test stack at each edge, down to the control (or an
+       element holding it). Below 48rem the status bar is `position: sticky; bottom: 0` (85 px at
+       390x844) and a strip half under it was neither clipped nor skipped. A cover reaching past the
+       far edge leaves nothing: the control is covered, absent — never whole. */
+    /* A hit is a cover only where it PAINTS: its box inside its own clip chain, and only when that
+       box holds the probe point (R9 verifier V2). MEASURED (release build, state 06, 768x1024): half a
+       pixel inside the bottom edge of the path panel's mode strip, Chrome's stack began with the
+       content of the scrolled `.pt-panel` under it — one `div.hop__fact` whose box that panel had
+       scrolled away and clips (542.22-630.45 against a strip at 597.03-630.03). Taken by its layout
+       box it "covered" the whole strip, which then read as absent: a strip-level slice would have
+       gone unreported. The clip chain follows the containing block — a fixed or absolutely
+       positioned box escapes the clip of an ancestor that does not contain it. */
+    const paintedBox = (el) => {
+      const r = el.getBoundingClientRect();
+      let top = Math.max(r.top, 0);
+      let bottom = Math.min(r.bottom, vh);
+      const holdsFixed = (cs) =>
+        (cs.transform !== "" && cs.transform !== "none") ||
+        (cs.filter !== "" && cs.filter !== "none") ||
+        (cs.perspective !== "" && cs.perspective !== "none") ||
+        /\b(?:paint|layout|strict|content)\b/.test(cs.contain) ||
+        /\b(?:transform|perspective|filter)\b/.test(cs.willChange);
+      const escapeOf = (cs) => (cs.position === "fixed" ? "fixed" : cs.position === "absolute" ? "absolute" : "flow");
+      const rootOy = getComputedStyle(document.documentElement).overflowY;
+      let escape = escapeOf(getComputedStyle(el));
+      for (let a = el.parentElement; a && a !== document.documentElement && bottom > top; a = a.parentElement) {
+        const cs = getComputedStyle(a);
+        if (!(escape === "flow" || holdsFixed(cs) || (escape === "absolute" && cs.position !== "static"))) continue;
+        escape = escapeOf(cs);
+        if (a === document.body && rootOy === "visible") continue;
+        if (cs.overflowY === "visible") continue;
+        const ab = a.getBoundingClientRect();
+        top = Math.max(top, ab.top + a.clientTop);
+        bottom = Math.min(bottom, ab.top + a.clientTop + a.clientHeight);
+      }
+      return { top, bottom };
+    };
+    const coversAt = (y) => {
+      const over = [];
+      for (const hit of document.elementsFromPoint(x, y)) {
+        if (c.contains(hit) || hit.contains(c)) break;
+        const layout = hit.getBoundingClientRect();
+        if (y < layout.top || y > layout.bottom) continue;
+        const p = paintedBox(hit);
+        if (p.bottom > p.top && y >= p.top && y <= p.bottom) over.push({ hit, top: p.top, bottom: p.bottom });
+      }
+      return over;
+    };
+    /* Probes a pixel inside each edge (never past the middle of a sliver): the hit test snaps a
+       fractional point, and the paint check above, not the inset, is what keeps a neighbour out. */
+    const inset = () => Math.min(1, (hi - lo) / 2);
+    const lo0 = lo;
+    const hi0 = hi;
+    let topCover = null;
+    let botCover = null;
+    for (let i = 0; i < 4 && hi > lo; i++) {
+      let next = hi;
+      let by = null;
+      for (const h of coversAt(hi - inset())) {
+        if (h.top < next) {
+          next = Math.max(lo, h.top);
+          by = h.hit;
+        }
+      }
+      if (next >= hi) break;
+      hi = next;
+      botCover = by;
+    }
+    for (let i = 0; i < 4 && hi > lo; i++) {
+      let next = lo;
+      let by = null;
+      for (const h of coversAt(lo + inset())) {
+        if (h.bottom > next) {
+          next = Math.min(hi, h.bottom);
+          by = h.hit;
+        }
+      }
+      if (next <= lo) break;
+      lo = next;
+      topCover = by;
+    }
+    const visible = hi - lo;
+    if (visible <= SLACK) {
+      /* Wholly covered is absent, not sliced — but only if the browser agrees nothing of it is
+         painted. A control the hit test still finds inside what the clips leave was NOT covered: the
+         cover reading is wrong, and a detector that silently calls it absent is blind exactly where a
+         slice would be (the V2 misread). That contradiction fails the state as a check failure. */
+      if (hi0 - lo0 > SLACK && visible < hi0 - lo0) {
+        const probe = [lo0 + Math.min(2, (hi0 - lo0) / 2), (lo0 + hi0) / 2, hi0 - Math.min(2, (hi0 - lo0) / 2)];
+        const at = probe.find((y) => {
+          const hit = document.elementFromPoint(x, y);
+          return hit !== null && c.contains(hit);
+        });
+        if (at !== undefined) {
+          const by = botCover ?? topCover;
+          out.push({
+            kind: "check-failed",
+            detail: `${sel(c)} "${name(c)}" y${b.top.toFixed(1)}-${b.bottom.toFixed(1)} read as wholly covered by ${by ? sel(by) : "an overlay"}, but the hit test finds it painted at y${at.toFixed(1)}`,
+          });
+        }
+      }
+      continue; // wholly scrolled away or wholly covered: absent, not sliced
+    }
+    const cutTop = b.top < lo - SLACK;
+    const cutBot = b.bottom > hi + SLACK;
+    if (!cutTop && !cutBot) continue;
+    const coverOnTop = cutTop && topCover !== null && lo > T + SLACK;
+    const coverOnBot = cutBot && botCover !== null && hi < B - SLACK;
+    if (coverOnTop) {
+      /* A control slides under a cover only when a port carrying it has scrolled: the innermost
+         scrolled scroller around it (or the document). */
+      topBy = `${sel(topCover)} (painted over it)`;
+      topMoved = docMoved;
+      for (let a = c.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+        const cs = getComputedStyle(a);
+        if ((cs.overflowY === "auto" || cs.overflowY === "scroll") && a.scrollTop > 0) {
+          topMoved = a.scrollTop;
+          break;
+        }
+      }
+    }
+    if (coverOnBot) botBy = `${sel(botCover)} (painted over it)`;
+    const T2 = lo;
+    const B2 = hi;
+    /* What is left must be PAINTED on top to be a slice: probe near both ends of the visible strip. */
     const painted = [lo + Math.min(1, (hi - lo) / 2), (lo + hi) / 2, hi - Math.min(1, (hi - lo) / 2)].some((y) => {
       const hit = document.elementFromPoint(x, y);
       return hit !== null && (c.contains(hit) || hit.contains(c));
@@ -874,14 +1002,92 @@ function readScrollEdge() {
       control: `${sel(c)} "${name(c)}"`,
       box: `y${b.top.toFixed(1)}-${b.bottom.toFixed(1)}`,
       cut: cutTop
-        ? `top by ${topBy} at y${T.toFixed(1)}${topMoved !== false ? ` (scrolled ${topMoved})` : ""}`
-        : `bottom by ${botBy} at y${B.toFixed(1)}`,
+        ? `top by ${topBy} at y${T2.toFixed(1)}${topMoved !== false ? ` (scrolled ${topMoved})` : ""}`
+        : `bottom by ${botBy} at y${B2.toFixed(1)}`,
       visibleFrac: +(visible / b.height).toFixed(3),
     });
   }
   return out;
 }
 const READ_SCROLL_EDGE = `(${readScrollEdge.toString()})()`;
+
+/**
+ * C2 (R9 verifier V1): the navigation GUARD's own measure agrees with what the browser paints.
+ *
+ * `keepNavWhole` protects only the strips `onScreenExtent` (src/panels/DataGrid.tsx) reads as whole
+ * before a reveal, so a strip it misreads as absent is silently unguarded. MEASURED (release build,
+ * state 06, 768/1024/1440/1920): the path panel's mode strip, wholly visible, read 0 px — the hit test
+ * just inside its bottom edge answered with the scrolled `.pt-panel`'s clipped-away content — and the
+ * jsdom suites, whose covers had exact boxes and no clipping, agreed with the bug. So the guard's
+ * source is run HERE, in the real page: the named functions are cut from DataGrid.tsx, stripped of
+ * types, and compared per navigation strip against a paint census (one hit test per pixel row at the
+ * guard's own x, counting rows where the strip or a descendant is what the browser paints). A
+ * disagreement beyond 2 px (the fractional edge rows) fails the state. A function that cannot be cut
+ * out is a failure too, never a skipped check.
+ */
+const GUARD_EXTENT_FUNCTIONS = ["onScreenExtent", "paintedBox", "uncovered"];
+let guardExtentJs = null;
+async function readNavExtentScript() {
+  if (guardExtentJs === null) {
+    const src = readFileSync(resolve(HERE, "..", "src", "panels", "DataGrid.tsx"), "utf8").replace(/\r\n/g, "\n");
+    const parts = GUARD_EXTENT_FUNCTIONS.map((fn) => {
+      const start = src.indexOf(`\nfunction ${fn}(`);
+      const end = start < 0 ? -1 : src.indexOf("\n}\n", start);
+      if (start < 0 || end < 0) throw new Error(`nav-extent: function ${fn} not found in src/panels/DataGrid.tsx`);
+      return src.slice(start, end + 3);
+    });
+    const { default: ts } = await import("typescript");
+    guardExtentJs = ts.transpileModule(parts.join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
+  }
+  return `(() => {
+    ${guardExtentJs}
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    const shown = (el) => {
+      for (let n = el; n; n = n.parentElement) {
+        const cs = getComputedStyle(n);
+        if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) === 0) return false;
+      }
+      return true;
+    };
+    const out = [];
+    for (const strip of document.querySelectorAll('[role="tablist"],[role="toolbar"],[role="menubar"]')) {
+      const b = strip.getBoundingClientRect();
+      if (b.height <= 1 || b.width <= 1 || !shown(strip)) continue;
+      const guard = onScreenExtent(strip);
+      const maxX = vw - 1;
+      const x = Math.min(Math.max((Math.max(b.left, 0) + Math.min(b.right, maxX)) / 2, 0), maxX);
+      let truth = 0;
+      for (let y = Math.max(Math.floor(b.top), 0); y < Math.min(Math.ceil(b.bottom), vh); y++) {
+        const py = y + 0.5;
+        if (py < b.top || py > b.bottom) continue;
+        const hit = document.elementFromPoint(x, py);
+        if (hit !== null && strip.contains(hit)) truth++;
+      }
+      const label = (strip.getAttribute("aria-label") || strip.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 40);
+      out.push({ label, box: "y" + b.top.toFixed(1) + "-" + b.bottom.toFixed(1), guard: +guard.toFixed(1), truth });
+    }
+    return out;
+  })()`;
+}
+/** Problem lines: every strip the guard reads differently from the paint census. */
+function describeNavExtent(rows) {
+  return rows
+    .filter((r) => r.kind === "check-failed" || Math.abs(r.guard - r.truth) > 2)
+    .map((r) =>
+      r.kind === "check-failed"
+        ? `nav-extent check failed: ${r.detail}`
+        : `nav-extent the guard reads "${r.label}" ${r.box} as ${r.guard} px on screen; the browser paints ${r.truth} px of it`,
+    );
+}
+async function readNavExtent(page) {
+  try {
+    return await page.evaluate(await readNavExtentScript());
+  } catch (e) {
+    return [{ kind: "check-failed", detail: String(e).slice(0, 200) }];
+  }
+}
+
 /** The findings that fail a state, as problem lines. `continuation` is informational only. */
 function describeScrollEdge(findings) {
   return findings
@@ -1386,6 +1592,7 @@ async function captureApp(outRoot = resolve(SHOTS, "app")) {
         if (prepareError === null && !(await awaitScrollQuiet(page).catch(() => false))) problems.push("scroll ports never went quiet: a port was still moving when the frame was checked");
         const scrollEdge = await page.evaluate(READ_SCROLL_EDGE).catch((e) => [{ kind: "check-failed", detail: String(e).slice(0, 160) }]);
         problems.push(...describeScrollEdge(scrollEdge));
+        problems.push(...describeNavExtent(await readNavExtent(page)));
         if (prepareError !== null) problems.push(`could not prepare the page in 3 attempts: ${prepareError}`);
         if (attempts > 0) problems.push(`the page reloaded under the harness; captured on attempt ${attempts + 1}`);
         if (consoleErrors.length) problems.push(`console: ${consoleErrors.slice(0, 3).join(" | ")}`);
@@ -1776,6 +1983,7 @@ async function checkText() {
         let tabOverflow = [];
         let formReach = [];
         let scrollEdge = [];
+        let navExtent = [];
         let quiet = true;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
@@ -1807,6 +2015,7 @@ async function checkText() {
             tabOverflow = await page.evaluate(READ_TAB_OVERFLOW);
             formReach = await page.evaluate(READ_FORM_REACH);
             scrollEdge = await page.evaluate(READ_SCROLL_EDGE);
+            navExtent = await readNavExtent(page);
             if (st.contrastOf) {
               contrast = await page.evaluate(`(${readContrast.toString()})(${JSON.stringify(st.contrastOf)})`);
             }
@@ -1822,6 +2031,7 @@ async function checkText() {
           ...tabOverflow,
           ...formReach,
           ...describeScrollEdge(scrollEdge),
+          ...describeNavExtent(navExtent),
           ...(quiet ? [] : ["scroll ports never went quiet: a port was still moving when the state was checked"]),
         ];
         for (const c of contrast) {
@@ -2014,6 +2224,8 @@ const SELFTEST_FORM_CASES = [
    a strip scrolled wholly away, a strip whole inside a scrolled port, and a row under a sticky header
    (covered, not sliced). */
 const EDGE_TABS = `<div role="tablist" aria-label="Mode" style="display:flex;height:32px;flex:none"><button role="tab" style="height:32px">Trace a flow</button><button role="tab" style="height:32px">Verify an intent</button></div>`;
+const EDGE_TABS_RULED = EDGE_TABS.replace("flex:none", "flex:none;border-bottom:1px solid #888");
+const EDGE_FACTS = '<div style="height:100.81px;border-top:1px solid #ccc">fact</div>'.repeat(40);
 const scrolledTo = (id, y) => `<script>document.getElementById("${id}").scrollTop=${y}</script>`;
 const SELFTEST_SCROLL_EDGE_CASES = [
   {
@@ -2044,16 +2256,73 @@ const SELFTEST_SCROLL_EDGE_CASES = [
   { name: "a list running past the bottom of its port is continuation, not a finding", html: `<div style="height:100px;overflow-y:auto">${"<button style='display:block;height:24px'>row</button>".repeat(20)}</div>`, want: null },
   { name: "a tab strip scrolled wholly out of view is absent, not sliced", html: `<div id="p" style="height:100px;overflow-y:auto">${EDGE_TABS}<div style="height:600px"></div></div>${scrolledTo("p", 200)}`, want: null },
   { name: "a tab strip wholly inside a scrolled port is not sliced", html: `<div id="p" style="height:200px;overflow-y:auto"><div style="height:40px"></div>${EDGE_TABS}<div style="height:600px"></div></div>${scrolledTo("p", 8)}`, want: null },
+  /* A row under a grid's sticky header. At scrollTop 48 the first row is cut by the port's top edge
+     and all that is left of it lies under the header: covered, absent — the state-08 case the C2
+     discovery measured. (The fixture this replaces scrolled to 12, where NO row is cut by a clip, so it
+     never reached the covered path it was named for: with the paint check deleted the old selftest
+     still passed 33 of 33, R9 2026-09-27.) At scrollTop 12 the first row instead straddles the
+     header's bottom edge — 12 of its 24 px under the header in a port the app scrolled — and under
+     "an overlay cuts as a clip does" that is the moved-port-top-slice the clip version above is. */
   {
-    name: "a row under a sticky header in a scrolled grid is covered, not sliced",
-    html: `<div id="g" style="height:120px;overflow-y:auto"><div style="position:sticky;top:0;height:30px;background:#fff;z-index:1">head</div>${"<button style='display:block;height:24px'>row</button>".repeat(20)}</div>${scrolledTo("g", 12)}`,
+    name: "a row cut by a scrolled grid's top edge, the rest of it under the sticky header, is covered, not sliced",
+    html: `<div id="g" style="height:120px;overflow-y:auto"><div style="position:sticky;top:0;height:30px;background:#fff;z-index:1">head</div>${"<button style='display:block;height:24px'>row</button>".repeat(20)}</div>${scrolledTo("g", 48)}`,
     want: null,
+  },
+  {
+    name: "a row straddling a scrolled grid's sticky header is sliced, as a clip at the same edge would slice it",
+    html: `<div id="g" style="height:120px;overflow-y:auto"><div style="position:sticky;top:0;height:30px;background:#fff;z-index:1">head</div>${"<button style='display:block;height:24px'>row</button>".repeat(20)}</div>${scrolledTo("g", 12)}`,
+    want: /^moved-port-top-slice .*"row".*top by div \(painted over it\).*\(scrolled 12\)/,
+  },
+  /* Overlays cut as clips do (C2 verifier m3): the < 48rem status bar is `position: sticky; bottom: 0`,
+     and a sticky or fixed bar over the top is the same class. Covered wholly is absent. */
+  {
+    name: "a toolbar half under a sticky footer is sliced (the < 48rem status bar)",
+    html: `<div style="height:480px"></div><div role="toolbar" aria-label="Tools" style="height:40px"><button style="height:40px">Zoom</button></div><div style="height:1200px"></div><footer style="position:sticky;bottom:0;height:85px;background:#fff">status</footer><script>scrollTo(0, 0)</script>`,
+    want: /^chrome-sliced .*"Tools".*bottom by footer \(painted over it\)/,
+  },
+  {
+    name: "a tab strip half under a fixed top bar is sliced, though no clip cuts it",
+    html: `<header style="position:fixed;top:0;left:0;right:0;height:50px;background:#fff;z-index:2">bar</header><div style="height:30px"></div>${EDGE_TABS}<div style="height:900px"></div><script>scrollTo(0, 0)</script>`,
+    want: /^chrome-sliced .*"Mode".*top by header \(painted over it\)/,
+  },
+  {
+    name: "a control top-sliced by a sticky bar in a document the app scrolled",
+    html: `<header style="position:sticky;top:0;height:50px;background:#fff;z-index:1">bar</header>${"<button style='display:block;height:24px;margin:0'>row</button>".repeat(80)}<script>scrollTo(0, 40)</script>`,
+    want: /^moved-port-top-slice .*"row".*top by header \(painted over it\).*\(scrolled 40\)/,
+  },
+  {
+    name: "a toolbar wholly under a sticky footer is covered, not sliced",
+    html: `<div style="height:522px"></div><div role="toolbar" aria-label="Tools" style="height:40px"><button style="height:40px">Zoom</button></div><div style="height:1200px"></div><footer style="position:sticky;bottom:0;height:85px;background:#fff">status</footer><script>scrollTo(0, 0)</script>`,
+    want: null,
+  },
+  /* A cover is what a hit PAINTS at the probe point (R9 verifier V2). State 06 again: the mode strip
+     (32 px of tabs and a 1 px border) sits right above the answer panel, its own port, scrolled so a
+     fact straddles the port's top edge by a fraction. Chrome's hit test just inside the strip's
+     bottom edge answers with that fact (measured on this fixture: y40.5 -> a div at -51.83..49.97),
+     whose layout box spans the whole strip. At rest the strip is whole and uncovered — and a cover
+     reading that disagrees with what the browser paints is itself a failure (check-failed), so this
+     negative is live against the misread. Moved, the strip itself must be reported, not only its
+     tabs: the misread lost that strip-level entry. */
+  {
+    name: "a mode strip above a scrolled answer panel is whole at rest (its clipped-away content is no cover)",
+    html: `<nav id="r" style="height:300px;overflow-y:scroll"><section style="display:flex;flex-direction:column;height:260px">${EDGE_TABS_RULED}<div id="p" style="flex:1;overflow-y:auto">${EDGE_FACTS}</div></section><div style="height:400px">queue</div></nav>${scrolledTo("p", 1009)}`,
+    want: null,
+  },
+  {
+    name: "that mode strip, its rail scrolled 16 px, is reported sliced as a strip",
+    html: `<nav id="r" style="height:300px;overflow-y:scroll"><section style="display:flex;flex-direction:column;height:260px">${EDGE_TABS_RULED}<div id="p" style="flex:1;overflow-y:auto">${EDGE_FACTS}</div></section><div style="height:400px">queue</div></nav>${scrolledTo("p", 1009)}${scrolledTo("r", 16)}`,
+    want: /^chrome-sliced div "Mode" .*top by nav#r .*\(scrolled 16\)/,
   },
   {
     name: "a sticky tab strip inside a scrolled port stays whole",
     html: `<div id="p" style="height:200px;overflow-y:auto"><div style="position:sticky;top:0;background:#fff;z-index:1">${EDGE_TABS}</div><div style="height:900px"></div></div>${scrolledTo("p", 19)}`,
     want: null,
   },
+];
+
+const SELFTEST_NAV_EXTENT_CASES = [
+  { name: "the guard reads the state-06 mode strip whole at rest", html: SELFTEST_SCROLL_EDGE_CASES.find((c) => /whole at rest \(its clipped-away/.test(c.name)).html, px: 33 },
+  { name: "the guard reads that strip as cut when its rail scrolled 16 px", html: SELFTEST_SCROLL_EDGE_CASES.find((c) => /scrolled 16 px, is reported sliced/.test(c.name)).html, px: 17 },
 ];
 
 /* Stylesheets and modules with a known set of licences. Each BAD marker is a line the scan must
@@ -2128,6 +2397,19 @@ async function selfTest() {
     if (c.want === null ? findings.length > 0 : !findings.some((f) => c.want.test(f))) {
       problems.push(`${c.name}: expected ${c.want === null ? "no scroll-edge finding" : c.want}, got ${said}`);
     }
+  }
+  /* The navigation guard's own measure (DataGrid.tsx onScreenExtent, cut out and run in the page) on
+     the state-06 miniature above: it must read the mode strip as the browser paints it — whole at
+     rest, 17 of 33 px with the rail scrolled 16 — and agree with the paint census. The misread this
+     pins read 0 px at rest, so `keepNavWhole` never guarded the strip (R9 verifier V1). */
+  for (const c of SELFTEST_NAV_EXTENT_CASES) {
+    await page.setContent(shell(c.html));
+    const rows = await readNavExtent(page);
+    ran++;
+    const mode = rows.find((r) => r.label === "Mode");
+    const said = rows.map((r) => (r.kind === "check-failed" ? r.detail : `"${r.label}" guard ${r.guard} / painted ${r.truth}`)).join(" | ") || "nothing";
+    const disagree = describeNavExtent(rows);
+    if (disagree.length || !mode || Math.abs(mode.guard - c.px) > 1) problems.push(`${c.name}: expected the guard to read "Mode" as ${c.px} px, agreeing with paint; got ${said}`);
   }
   await browser.close();
 

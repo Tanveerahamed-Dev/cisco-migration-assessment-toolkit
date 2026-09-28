@@ -329,9 +329,14 @@ export interface PhysicalHealth {
   inputErrors: number | null;
   crcErrors: number | null;
   outputErrors: number | null;
+  /* Compiled since the port-health compiler was written but never declared here — found by
+     compile-types.test.ts, which checks the compiler's real output against these types (S1-R2V-5). */
+  lateCollisions: number | null;
   outputDrops: number | null;
   poe: string | null;
   risk: string | null;
+  /** The engine's own "[NOT OBSERVED] …" explanation for a port with no counters, kept verbatim. */
+  riskUnobserved: string | null;
   severity: string | null;
   cite: Cite;
 }
@@ -394,12 +399,15 @@ export type SourceOrigin = "repository-file" | "external-file" | "assesshub-stor
  *   CR LF read as LF, nothing else changed) — the form Git stores, so it equals
  *   `git cat-file blob HEAD:<source> | sha256sum` and is the same from a CRLF or an LF checkout (O15);
  *   or, form "assesshub-store-blob", over an AssessHub stored blob exactly. A digest without its form
- *   does not say which bytes it binds.
- * - `sourceExactSha256`: `"sha256:" + hex` over the exact bytes as the source's store holds them — the
- *   ENGINE's own binding form (cisco_toolkit/protocol_assurance.py), so a model joins an engine receipt.
- *   The store is Git for a "repository-file" (the blob, i.e. the LF form, never a CRLF checkout's
- *   rendering of it — O15), the file itself for an "external-file" (its bytes as read), and the stored
- *   blob for "assesshub-store". So for a repository file it equals `"sha256:" + sourceSha256`.
+ *   does not say which bytes it binds. The form is TIED to the origin: "assesshub-store-blob" if and only
+ *   if the origin is "assesshub-store"; any other combination is refused (E_SOURCE_LABEL).
+ * - `sourceExactSha256`: `"sha256:" + hex` over the bytes AS READ — exactly what its name says, for every
+ *   origin, in the ENGINE's own binding form (cisco_toolkit/protocol_assurance.py), so a model joins an
+ *   engine receipt by value. It is therefore the one BYTE-DEPENDENT key (SOURCE_BINDING_BYTE_KEYS): a CRLF
+ *   and an LF checkout of the same repository file give different values, and every other key the same.
+ *   A test that compares compiles of the two checkouts compares the model with these keys excluded, and
+ *   separately checks that each one is the digest of the bytes that compile read. The TRACKED compiled
+ *   files are compiled from the committed (LF) bytes, so for them it equals `"sha256:" + sourceSha256`.
  * - `sourceGitBlob`: the Git blob id of the LF-normalised bytes (`git hash-object`; for an unmodified
  *   tracked source, `git rev-parse HEAD:<source>`).
  */
@@ -427,6 +435,12 @@ export const SOURCE_BINDING_KEYS = [
   "sourceExactSha256",
   "sourceGitBlob",
 ] as const satisfies readonly (keyof SourceBinding)[];
+/**
+ * The binding keys whose value depends on the exact bytes read (line endings included), rather than on
+ * the content every checkout shares. `src/core/compile-binding.test.ts` derives this set from two real
+ * bindings of a CRLF and an LF copy and requires it to equal this list.
+ */
+export const SOURCE_BINDING_BYTE_KEYS = ["sourceExactSha256"] as const satisfies readonly (keyof SourceBinding)[];
 type AssertNever<T extends never> = T;
 /** Compile-time proof that SOURCE_BINDING_KEYS covers SourceBinding. */
 export type SourceBindingKeysCoverTheType = AssertNever<Exclude<keyof SourceBinding, (typeof SOURCE_BINDING_KEYS)[number]>>;

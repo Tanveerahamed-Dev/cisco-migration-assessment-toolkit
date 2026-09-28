@@ -50,14 +50,14 @@ function mount(ui: ReactNode): HTMLElement {
   return container;
 }
 beforeEach(() => {
-  act(() => useInvestigation.getState().reset());
+  act(() => { useInvestigation.getState().reset(); });
 });
 afterEach(() => {
   for (const m of mounted.splice(0)) {
     act(() => m.root.unmount());
     m.container.remove();
   }
-  act(() => useInvestigation.getState().reset());
+  act(() => { useInvestigation.getState().reset(); });
 });
 
 /** One animation frame and a task: the run commit a click would schedule has had its chance. */
@@ -120,7 +120,7 @@ const PLACES: readonly (readonly [string, string])[] = [
 ];
 
 async function mountPresets(search: string, onOpenCite: (c: Cite) => void): Promise<HTMLElement[]> {
-  act(() => useInvestigation.getState().hydrate(decodeInvestigation(search)));
+  act(() => { useInvestigation.getState().hydrate(decodeInvestigation(search)); });
   const c = mount(<PathTrace onOpenCite={onOpenCite} />);
   await settleCommit();
   const cards = [...c.querySelectorAll<HTMLElement>(".pt-presets .pt-preset")];

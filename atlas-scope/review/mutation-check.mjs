@@ -409,8 +409,55 @@ const MUTATIONS = [
         replace: "ownPortShows(scroller, head, el) && !((false as boolean) && bandHoldsRow(scroller, head, el))) {",
       },
     ],
+    tests: ["src/panels/DataGrid.c2-chrome-slice.test.tsx", "src/panels/PriorityQueue.c2-rail-reveal.test.tsx"],
+    killedBy: /the shared rail did not move \(the grid could show the row itself\)|the shared rail did not move: the grid's own band could hold the row/,
+  },
+  {
+    id: "c2-takeout-loses-row",
+    engine: "src/panels/DataGrid.tsx",
+    record: "acceptance C2 (a reveal never costs the row: the take-out keeps the row it moves for)",
+    what: "a reveal that clips nothing returns before checking the row it moved is still in view",
+    edits: [
+      {
+        file: "src/panels/DataGrid.tsx",
+        find: "  if (cut === null && Math.abs(rowOff()) <= offBefore + 0.5) return;",
+        replace: "  if (cut === null) return;",
+      },
+    ],
     tests: ["src/panels/DataGrid.c2-chrome-slice.test.tsx"],
-    killedBy: /the shared rail did not move \(the grid could show the row itself\)/,
+    killedBy: /the reveal cost the row: \d/,
+  },
+  {
+    id: "c2-overlay-not-a-cut",
+    engine: "src/panels/DataGrid.tsx",
+    record: "acceptance C2 (an overlay covering a control is a clip)",
+    what: "the band ignores an overlay that covers part of the control",
+    edits: [
+      {
+        file: "src/panels/DataGrid.tsx",
+        find: "  ({ top, bottom } = uncovered(el, doc, r, top, bottom));",
+        replace: "  if ((false as boolean)) ({ top, bottom } = uncovered(el, doc, r, top, bottom));",
+      },
+    ],
+    tests: ["src/panels/DataGrid.c2-overlay-slice.test.tsx"],
+    killedBy: /is whole or gone, not \d+(?:\.\d+)? of \d+ px seen past/,
+  },
+  {
+    id: "c2-empty-band-moves-carrier",
+    engine: "src/panels/DataGrid.tsx",
+    record: "acceptance C2 (an empty band scrolls the carrier back to the grid)",
+    what: "a reveal with no visible band moves the carrier to the row instead of back to the grid",
+    edits: [
+      {
+        file: "src/panels/DataGrid.tsx",
+        find: "  let off = offsetFromView(scroller, head, el);\n  if (off === 0) return;",
+        replace:
+          "  let off = offsetFromView(scroller, head, el);\n" +
+          "  if (off === 0) { const cb = clippedBand(scroller, head); if (cb.bottom <= cb.top && ownPortShows(scroller, head, el)) { const a = scroller.parentElement!; const r = (el.closest<HTMLElement>('[role=\"row\"]') ?? el).getBoundingClientRect(); const pr = a.getBoundingClientRect(); a.scrollTop += r.bottom > pr.bottom ? r.bottom - pr.bottom : r.top - pr.top; } return; }",
+      },
+    ],
+    tests: ["src/panels/DataGrid.c2-chrome-slice.test.tsx"],
+    killedBy: /the carrier is not scrolled back to the grid/,
   },
   {
     id: "c2-reveal-cuts-nav-strip",
@@ -577,7 +624,9 @@ if (!existsSync(SNAPSHOT)) {
 const root = mkdtempSync(join(tmpdir(), "atlas-mutation-"));
 const scratch = join(root, "atlas-scope");
 mkdirSync(scratch, { recursive: true });
-for (const dir of ["src", "tools"]) cpSync(join(PKG, dir), join(scratch, dir), { recursive: true });
+// contracts/ holds the engine-contract projection that tools/lib/compile-model.mjs imports; a scratch copy
+// without it fails every compiler rebuild.
+for (const dir of ["src", "tools", "contracts"]) cpSync(join(PKG, dir), join(scratch, dir), { recursive: true });
 for (const f of ["package.json", "vite.config.ts", "vitest.config.ts", "tsconfig.json", "tsconfig.scripts.json", "index.html"]) {
   if (existsSync(join(PKG, f))) cpSync(join(PKG, f), join(scratch, f));
 }

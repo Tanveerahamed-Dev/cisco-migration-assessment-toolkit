@@ -16,8 +16,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from cisco_toolkit import __version__
-from cisco_toolkit.analyze import (compute_current_baseline_gate,
-                                   normalize_routing_adjacency_state)
+from cisco_toolkit.analyze import (PROTOCOL_ASSESSABILITY_STATES, _protocol_assessability_conclusion,
+                                   compute_current_baseline_gate, normalize_routing_adjacency_state)
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.brand_tokens import WORKBOOK_NAVY_HEX
 from cisco_toolkit.protocol_receipt_surfaces import protocol_assurance_surface_payload
@@ -279,10 +279,24 @@ def _devices_cell(devices, width: int = _DEVICES_CELL_WIDTH) -> str:
 
 _PROTOCOL_RECEIPT_FAMILIES = ("STP", "EtherChannel", "VTP", "OSPF", "BGP", "EIGRP", "FHRP")
 _PROTOCOL_ADJACENCY_FAMILIES = ("OSPF", "BGP", "EIGRP")
-_PROTOCOL_RECEIPT_STATES = {
-    "assessed", "partial", "captured_no_record", "captured_empty",
-    "capture_error", "not_collected", "analysis_unavailable",
-}
+# The engine's ONE state vocabulary (analyze owns it); a hand copy here rejected every receipt carrying a
+# state added after it was written (not_running, R1V-5) as invalid for the whole fleet.
+_PROTOCOL_RECEIPT_STATES = frozenset(PROTOCOL_ASSESSABILITY_STATES)
+
+#: The explorer template's one vocabulary slot. The template ships an EMPTY map there (an unrendered page then
+#: reads every receipt as not verifiable -- fail closed); the renderer fills it from analyze, the owner.
+ENGINE_PA_CONCLUSIONS_MARKER = "/*@@ENGINE_PA_CONCLUSIONS@@*/{}"
+
+
+def _render_engine_vocabulary(template_html: str) -> Optional[str]:
+    """Fill the explorer's protocol_assessability vocabulary slot with analyze's state -> conclusion-class map.
+
+    Returns None when the template does not carry exactly one slot (a changed template must not ship a page
+    whose receipt consumers silently lack the vocabulary)."""
+    if template_html.count(ENGINE_PA_CONCLUSIONS_MARKER) != 1:
+        return None
+    conclusions = {state: _protocol_assessability_conclusion(state) for state in PROTOCOL_ASSESSABILITY_STATES}
+    return template_html.replace(ENGINE_PA_CONCLUSIONS_MARKER, _script_safe_json(conclusions), 1)
 
 
 def _protocol_text(value: Any) -> str:
@@ -356,7 +370,8 @@ def _protocol_receipt_view(snap: dict) -> dict:
         if not host or protocol not in _PROTOCOL_RECEIPT_FAMILIES or state not in _PROTOCOL_RECEIPT_STATES:
             return {"present": True, "valid": False, "index": {},
                     "reason": "protocol assessability contains an invalid switch, family, or state"}
-        if state == "assessed" and row.get("health_row_emitted") is not True:
+        if (_protocol_assessability_conclusion(state) == "assessed"
+                and row.get("health_row_emitted") is not True):
             return {"present": True, "valid": False, "index": {},
                     "reason": "protocol assessability marks a cell assessed without an emitted health row"}
         key = (host, protocol)
@@ -492,6 +507,21 @@ def compute_protocol_adjacency_delta(old: dict, new: dict, *,
         row = view["index"].get(pair) if view["valid"] else None
         return row if isinstance(row, dict) else None
 
+    def _not_comparable(side: str, state: str, row: Optional[dict]) -> str:
+        """Why a valid receipt cell cannot anchor a comparison, read through the engine's conclusion class.
+        A not_running cell is positive evidence that the protocol has no process on the host (its cited
+        vendor banner), so the baseline's peers cannot be compared -- named as such, never as a parser gap."""
+        if state not in _PROTOCOL_RECEIPT_STATES:
+            return f"{side} receipt state is {state}"
+        if _protocol_assessability_conclusion(state) == "not_running":
+            evidence = (row or {}).get("banner_evidence")
+            banners = "; ".join(
+                _protocol_text(item.get("banner")) for item in (evidence if isinstance(evidence, list) else [])
+                if isinstance(item, dict) and _protocol_text(item.get("banner")))
+            return (f"{side} receipt state is not_running: the protocol is not running on this host"
+                    + (f" (cited banner: {banners})" if banners else ""))
+        return f"{side} receipt state is {state}"
+
     for pair in scoped_pairs:
         host, protocol = pair
         before_state, after_state = _receipt_state(old_receipt, pair), _receipt_state(new_receipt, pair)
@@ -499,8 +529,9 @@ def compute_protocol_adjacency_delta(old: dict, new: dict, *,
         reasons: List[str] = []
         if not old_receipt["valid"]:
             reasons.append(f"before: {old_receipt['reason']}")
-        elif before_state != "assessed":
-            reasons.append(f"before receipt state is {before_state}")
+        elif (before_state not in _PROTOCOL_RECEIPT_STATES
+              or _protocol_assessability_conclusion(before_state) != "assessed"):
+            reasons.append(_not_comparable("before", before_state, before_row))
         elif (before_row is not None and before_row.get("health_row_emitted") is True
               and not old_pairs.get(pair)):
             reasons.append(
@@ -509,8 +540,9 @@ def compute_protocol_adjacency_delta(old: dict, new: dict, *,
             )
         if not new_receipt["valid"]:
             reasons.append(f"after: {new_receipt['reason']}")
-        elif after_state != "assessed":
-            reasons.append(f"after receipt state is {after_state}")
+        elif (after_state not in _PROTOCOL_RECEIPT_STATES
+              or _protocol_assessability_conclusion(after_state) != "assessed"):
+            reasons.append(_not_comparable("after", after_state, after_row))
         elif (after_row is not None and after_row.get("health_row_emitted") is True
               and not new_pairs.get(pair)):
             reasons.append(
@@ -3458,6 +3490,13 @@ def write_html_explorer(
 
     with open(template, encoding="utf-8") as f:
         html = f.read()
+
+    rendered = _render_engine_vocabulary(html)
+    if rendered is None:
+        logger.warning("  HTML Explorer skipped: the engine protocol-assessability vocabulary slot was not "
+                       "found exactly once in the template (template may have changed).")
+        return
+    html = rendered
 
     bootstrap = 'load(demoSnapshot(),"DEMO TOPOLOGY",false);'
     if bootstrap not in html:

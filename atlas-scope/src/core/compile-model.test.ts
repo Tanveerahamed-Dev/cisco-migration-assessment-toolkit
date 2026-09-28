@@ -20,7 +20,7 @@
  *     files byte-for-byte: the same path a browser will take.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -79,16 +79,27 @@ function impurities(fileName: string, text: string): { specifiers: string[]; glo
   return { specifiers, globals };
 }
 
-/** Walk the relative import graph from the pure roots; every edge must stay inside tools/lib. */
-function pureGraph(): { files: string[]; bad: string[] } {
+/**
+ * The one directory OUTSIDE tools/lib a pure module may import from: the engine contract (R3). Only a JSON
+ * module, imported with `with { type: "json" }`, may come from there — data with no code and no imports of its
+ * own, which Node, Vite and a browser all load the same way. Anything else outside tools/lib is refused.
+ */
+const CONTRACTS = resolve(PKG, "contracts");
+const JSON_IMPORT = /\bimport\s+[A-Za-z_$][\w$]*\s+from\s+["']([^"']+\.json)["']\s+with\s*\{\s*type:\s*["']json["']\s*\}/g;
+
+/** Walk the relative import graph from the pure roots; every edge must stay inside tools/lib (or be the contract JSON). */
+function pureGraph(): { files: string[]; data: string[]; bad: string[] } {
   const seen = new Set<string>();
+  const data = new Set<string>();
   const bad: string[] = [];
   const queue = [...PURE];
   while (queue.length > 0) {
     const file = queue.pop()!;
     if (seen.has(file)) continue;
     seen.add(file);
-    const { specifiers, globals } = impurities(file, readFileSync(file, "utf8"));
+    const text = readFileSync(file, "utf8");
+    const { specifiers, globals } = impurities(file, text);
+    const jsonImports = new Set([...text.matchAll(JSON_IMPORT)].map((m) => m[1]!));
     for (const g of globals) bad.push(`${posix(file)} names the Node global ${g}`);
     for (const s of specifiers) {
       if (!s.startsWith("./") && !s.startsWith("../")) {
@@ -96,18 +107,42 @@ function pureGraph(): { files: string[]; bad: string[] } {
         continue;
       }
       const target = resolve(dirname(file), s);
+      if (s.endsWith(".json")) {
+        if (!target.startsWith(CONTRACTS + sep)) bad.push(`${posix(file)} imports the JSON ${s}, which is not an engine contract under contracts/`);
+        else if (!jsonImports.has(s)) bad.push(`${posix(file)} imports ${s} without \`with { type: "json" }\` (a browser and Node load JSON only that way)`);
+        else {
+          JSON.parse(readFileSync(target, "utf8")); // data, and only data
+          data.add(posix(target));
+        }
+        continue;
+      }
       if (!target.startsWith(LIB)) bad.push(`${posix(file)} imports ${s}, outside tools/lib`);
       else queue.push(target);
     }
   }
-  return { files: [...seen].map(posix).sort(), bad };
+  return { files: [...seen].map(posix).sort(), data: [...data].sort(), bad };
 }
 
 describe("the compiler is pure and browser-safe", () => {
   it("its import graph names no node: builtin, no package and no Node global", () => {
-    const { files, bad } = pureGraph();
+    const { files, data, bad } = pureGraph();
     expect(files, "both pure roots are in the graph").toEqual(expect.arrayContaining(["tools/lib/compile-model.mjs", "tools/lib/validate-snapshot.mjs"]));
+    expect(data, "the compiler reads the engine contract (R3), as data").toEqual(["contracts/engine-contract.v1.json"]);
     expect(bad).toEqual([]);
+  });
+
+  it("the JSON exception is narrow: a JSON outside contracts/, or one imported without the JSON attribute, is flagged", () => {
+    const planted = (text: string): string[] => {
+      const specifiers = impurities("planted.mjs", text).specifiers;
+      const jsonImports = new Set([...text.matchAll(JSON_IMPORT)].map((m) => m[1]!));
+      return specifiers.filter((s) => s.endsWith(".json")).map((s) => {
+        const target = resolve(LIB, s);
+        return !target.startsWith(CONTRACTS + sep) ? "outside" : jsonImports.has(s) ? "ok" : "no-attribute";
+      });
+    };
+    expect(planted('import c from "../../contracts/engine-contract.v1.json" with { type: "json" };')).toEqual(["ok"]);
+    expect(planted('import c from "../../contracts/engine-contract.v1.json";')).toEqual(["no-attribute"]);
+    expect(planted('import c from "../../src/data/fabric.json" with { type: "json" };')).toEqual(["outside"]);
   });
 
   it("the checker is live: it flags a planted builtin import, a bare package and a Node global", () => {
