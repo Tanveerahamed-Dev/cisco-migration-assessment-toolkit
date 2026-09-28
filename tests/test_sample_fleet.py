@@ -14,7 +14,11 @@ from copy import deepcopy
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-def test_sample_freshness_filter_ignores_only_derived_source_age_without_mutation():
+def test_sample_freshness_filter_compares_the_pinned_registry_age_without_mutation():
+    """Since 2026-09-28 build_sample judges registry health at the demo's evidence date (the golden
+    harness's seam and rule), so source_age_days is a pure function of the pin: it is COMPARED, and a
+    drift in it is staleness, not noise. (It used to be stripped because it advanced with the wall
+    clock.) Neither input is mutated."""
     from webapp.sample_data.build_sample import _strip_volatile
 
     left = {
@@ -31,14 +35,10 @@ def test_sample_freshness_filter_ignores_only_derived_source_age_without_mutatio
     right["data_authorities"]["eol"]["source_age_days"] = 7.6
     before_left, before_right = deepcopy(left), deepcopy(right)
 
-    assert _strip_volatile(left) == _strip_volatile(right)
+    assert _strip_volatile(left) != _strip_volatile(right)
     assert left == before_left
     assert right == before_right
-    assert _strip_volatile(left)["data_authorities"]["eol"] == {
-        "source_retrieved_at": "2026-07-30T13:48:46Z",
-        "source_fresh": True,
-        "authoritative": True,
-    }
+    assert _strip_volatile(left)["data_authorities"]["eol"] == left["data_authorities"]["eol"]
 
 
 def test_sample_freshness_keeps_lifecycle_and_design_sections_and_detects_wording_drift(tmp_path):

@@ -1978,44 +1978,44 @@
     "virtual_ip": "10.0.10.1",
     "members": [
      {
+      "switch": "core1",
+      "interface": "Vlan10",
       "svi_ip": "10.0.10.2/24",
-      "protocol": "HSRP",
-      "local_status": "not_verified",
       "participation": "positive",
+      "protocol": "HSRP",
+      "group": "10",
+      "virtual_ip": "10.0.10.1",
+      "role": "ACTIVE",
+      "local_status": "not_verified",
+      "source_group_key": "HSRP:Vlan10:10",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ],
-      "group": "10",
-      "projection_custody": "embedded_unverified",
-      "role": "ACTIVE",
-      "source_group_key": "HSRP:Vlan10:10",
-      "switch": "core1",
-      "virtual_ip": "10.0.10.1",
-      "interface": "Vlan10"
+      ]
      },
      {
+      "switch": "core2",
+      "interface": "Vlan10",
       "svi_ip": "10.0.10.3/24",
-      "protocol": "HSRP",
-      "local_status": "not_verified",
       "participation": "positive",
+      "protocol": "HSRP",
+      "group": "10",
+      "virtual_ip": "10.0.10.1",
+      "role": "STANDBY",
+      "local_status": "not_verified",
+      "source_group_key": "HSRP:Vlan10:10",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ],
-      "group": "10",
-      "projection_custody": "embedded_unverified",
-      "role": "STANDBY",
-      "source_group_key": "HSRP:Vlan10:10",
-      "switch": "core2",
-      "virtual_ip": "10.0.10.1",
-      "interface": "Vlan10"
+      ]
      }
     ],
     "findings": [
@@ -2043,44 +2043,44 @@
     "virtual_ip": "10.0.20.1",
     "members": [
      {
+      "switch": "core1",
+      "interface": "Vlan20",
       "svi_ip": "10.0.20.2/24",
-      "protocol": "HSRP",
-      "local_status": "not_verified",
       "participation": "positive",
+      "protocol": "HSRP",
+      "group": "20",
+      "virtual_ip": "10.0.20.1",
+      "role": "STANDBY",
+      "local_status": "not_verified",
+      "source_group_key": "HSRP:Vlan20:20",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ],
-      "group": "20",
-      "projection_custody": "embedded_unverified",
-      "role": "STANDBY",
-      "source_group_key": "HSRP:Vlan20:20",
-      "switch": "core1",
-      "virtual_ip": "10.0.20.1",
-      "interface": "Vlan20"
+      ]
      },
      {
+      "switch": "core2",
+      "interface": "Vlan20",
       "svi_ip": "10.0.20.3/24",
-      "protocol": "HSRP",
-      "local_status": "not_verified",
       "participation": "positive",
+      "protocol": "HSRP",
+      "group": "20",
+      "virtual_ip": "10.0.20.1",
+      "role": "ACTIVE",
+      "local_status": "not_verified",
+      "source_group_key": "HSRP:Vlan20:20",
+      "projection_custody": "embedded_unverified",
       "findings": [
        {
         "kind": "not_verified",
         "code": "local_group_not_verified",
         "issue": "A local configured/runtime FHRP group could not be verified."
        }
-      ],
-      "group": "20",
-      "projection_custody": "embedded_unverified",
-      "role": "ACTIVE",
-      "source_group_key": "HSRP:Vlan20:20",
-      "switch": "core2",
-      "virtual_ip": "10.0.20.1",
-      "interface": "Vlan20"
+      ]
      }
     ],
     "findings": [
@@ -15374,6 +15374,7 @@
    "retained_source_bytes_verified": true,
    "official_sources_available": true,
    "source_retrieved_at": "2026-07-30T12:47:53Z",
+   "source_age_days": 7.466748,
    "source_max_age_days": 180,
    "source_max_future_skew_seconds": 300,
    "source_future_dated": false,
@@ -15410,6 +15411,7 @@
    "retained_source_bytes_verified": true,
    "official_sources_available": true,
    "source_retrieved_at": "2026-07-30T12:47:53Z",
+   "source_age_days": 7.466748,
    "source_max_age_days": 180,
    "source_max_future_skew_seconds": 300,
    "source_future_dated": false,
@@ -15443,6 +15445,7 @@
    "active_unresolved_rows": 0,
    "error": "",
    "source_retrieved_at": "2026-07-30T13:48:46Z",
+   "source_age_days": 7.424468,
    "source_max_age_days": 180,
    "source_max_future_skew_seconds": 300,
    "source_future_dated": false,

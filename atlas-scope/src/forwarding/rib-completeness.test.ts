@@ -256,6 +256,18 @@ const fx = vi.hoisted(() => {
     route("t-bgp-default-only", "connected", 0),
     route("t-bgp-default-only", "static", 1, { prefix: "0.0.0.0/0", outIntf: null }),
   ];
+  // A learned route whose source the engine recorded as NOTHING: compiled as null, or as the empty string
+  // the NX-OS source mapper returns for an empty via token (cisco_toolkit/parse.py _nxos_route_source
+  // passes its normalised token through, and `str(None or "").strip().lower()` is ""). Every receipted
+  // family is accounted for, so the unrecorded source is the only thing asked (2026-09-28 verifier, R2V-2).
+  for (const [name, source] of [["t-src-unrecorded-null", null], ["t-src-unrecorded-empty", ""]] as const) {
+    hosts[name] = {
+      protocols: [row("OSPF", "captured_empty", 93), row("BGP", "captured_empty", 94), row("EIGRP", "captured_empty", 95)],
+      adjacencies: [],
+      overlay: [],
+    };
+    routes[name] = [route(name, "connected", 0), { ...route(name, "ospf", 1, { prefix: "10.60.0.0/16" }), source }];
+  }
 
   /** Every route source the engine's route-code parser can emit, read from its own source text
    *  (cisco_toolkit/parse.py): the IOS/IOS-XE `code_map` values and the NX-OS `_nxos_route_source`
@@ -570,6 +582,59 @@ describe("a table holding routes of a protocol with no collection receipt is nev
   });
 });
 
+describe("a learned route whose source the engine recorded as nothing is an unknown protocol, never a known one (R2V-2)", () => {
+  it("precondition: the engine's NX-OS source mapper can emit the empty source (it passes its normalised token through)", () => {
+    const src = readFileSync(fx.PARSE_PY, "utf8");
+    const body = /def _nxos_route_source\(token: str\) -> str:\n([\s\S]*?)\n\n\n/.exec(src)?.[1] ?? "";
+    expect(body).toMatch(/^ {4}t = str\(token or ""\)\.strip\(\)\.lower\(\)$/m);
+    expect(body).toMatch(/\n {4}return t$/);
+  });
+
+  it("a null or empty source is a reason citing the route, naming it as an unrecorded source", () => {
+    for (const host of ["t-src-unrecorded-null", "t-src-unrecorded-empty"]) {
+      const r = ribIncompleteness(host);
+      expect(r.map((x) => x.cite), host).toEqual([`routes.${host}[1]`]);
+      expect(r[0]!.label, host).toMatch(/the table holds a route whose source is an unrecorded source \(routes\.t-src-unrecorded-\w+\[1\]\), a protocol with no collection receipt/);
+    }
+  });
+
+  it("an unrecorded source could be ANY family, so the basis vouches for none", () => {
+    for (const host of ["t-src-unrecorded-null", "t-src-unrecorded-empty"]) {
+      expect(mod.ribCompletenessBasis(host), host).toEqual([]);
+    }
+  });
+});
+
+describe("the contract filter is live: an absence state the engine retires or renames stops vouching, through RIB_ABSENCE_STATES itself (R2V-1)", () => {
+  const CONTRACT = "../../contracts/engine-contract.v1.json";
+  // Each absence state, and a synthetic host whose completeness rests on it.
+  for (const [state, host, cite] of [
+    ["not_running", "t-not-running", "protocol_assessability.rows[9061]"],
+    ["captured_empty", "t-ospf-only", "protocol_assessability.rows[9001]"],
+  ] as const) {
+    it(`with ${state} renamed in the engine contract, the module no longer counts it, and ${host} is shown incomplete citing that row`, async () => {
+      const real = (await import("../../contracts/engine-contract.v1.json")).default as { protocol_assessability_states: string[] };
+      const renamed = real.protocol_assessability_states.map((s) => (s === state ? `${state}_renamed` : s));
+      expect(renamed).not.toContain(state);
+      // Before: the host's completeness rests on that state.
+      expect(ribIncompleteness(host)).toEqual([]);
+      vi.resetModules();
+      vi.doMock(CONTRACT, () => ({ default: { ...real, protocol_assessability_states: renamed } }));
+      try {
+        const retired = await import("./rib-completeness");
+        expect(retired.ENGINE_ASSESSABILITY_STATES.has(state)).toBe(false);
+        expect(retired.RIB_ABSENCE_STATES.has(state)).toBe(false);
+        expect([...retired.RIB_ABSENCE_STATES]).toEqual([...mod.RIB_ABSENCE_STATES].filter((s) => s !== state));
+        expect(retired.ribIncompleteness(host).map((r) => r.cite)).toContain(cite);
+        expect(retired.ribCompletenessBasis(host).map((b) => b.cite)).not.toContain(cite);
+      } finally {
+        vi.doUnmock(CONTRACT);
+        vi.resetModules();
+      }
+    });
+  }
+});
+
 describe("over every host in the compiled record (the committed snapshot's plus the synthetic ones)", () => {
   const ev = realEvidence as unknown as { hosts: Record<string, { protocols: { protocol: string; state: string | null; cite: string }[] }> };
   const hosts = Object.keys(ev.hosts);
@@ -635,6 +700,77 @@ describe("over every host in the compiled record (the committed snapshot's plus 
     }
     expect(sessions, "the record must exercise at least one session").toBeGreaterThan(0);
     expect(uncited, "the sweep must reach at least one uncited session (the held-link branch)").toBeGreaterThan(0);
+  });
+
+  it("the held-link sweep reaches REAL hosts' sessions, read from the compiled file on disk -- no synthetic host counts (R2V-3)", () => {
+    /* The sweep above iterates the MOCKED record, whose synthetic hosts alone satisfied its `uncited > 0`
+       precondition (2026-09-28 verifier, R2V-3). This one reads the compiled record from disk, so only hosts
+       the engine's snapshot names are asked, and each session is judged against the real compiled table. */
+    const disk = JSON.parse(readFileSync(`${import.meta.dirname}/rib-evidence.json`, "utf8")) as {
+      hosts: Record<string, { adjacencies: { neighbor: string | null; state: string | null; cite: string; address?: string | null; interface?: string | null }[] }>;
+    };
+    const real = Object.keys(disk.hosts);
+    expect(real.some((h) => h.startsWith("t-"))).toBe(false);
+    const UP = /^(full|2way|established|up)\b|^\d+$/i;
+    const toInt = (ip: string) => ip.split(".").reduce((n, o) => n * 256 + Number(o), 0);
+    const inPrefix = (prefix: string, ip: string) => {
+      const [net, len] = prefix.split("/");
+      const size = 2 ** (32 - Number(len));
+      return Math.floor(toInt(ip) / size) === Math.floor(toInt(net!) / size);
+    };
+    const intfKey = (s: string) => {
+      const m = /^([a-z-]+)\s*(\S+)$/i.exec(s.trim());
+      return m === null ? s.toLowerCase() : `${m[1]!.slice(0, 2).toLowerCase()}${m[2]!.toLowerCase()}`;
+    };
+    const up: { host: string; cite: string; held: boolean; viaInterface: boolean }[] = [];
+    for (const h of real) {
+      const rs = routesOf(h);
+      if (rs.length === 0) continue;
+      for (const a of disk.hosts[h]!.adjacencies) {
+        if (a.state === null || !UP.test(a.state.trim())) continue;
+        const addr = a.address ?? a.neighbor;
+        const viaInterface = a.interface !== null && a.interface !== undefined;
+        const held =
+          addr !== null &&
+          (viaInterface
+            ? rs.some((r) => r.source === "connected" && r.outIntf !== null && intfKey(r.outIntf) === intfKey(a.interface!) && inPrefix(r.prefix, addr))
+            : rs.some((r) => !r.prefix.endsWith("/0") && inPrefix(r.prefix, addr)));
+        up.push({ host: h, cite: a.cite, held, viaInterface });
+      }
+    }
+    expect(up.length, "the compiled snapshot must hold at least one real up session").toBeGreaterThan(0);
+    const uncited = up.filter((s) => !cites(s.host).includes(s.cite));
+    // Whatever the fleet: an uncited real session is one whose link its table holds (never the reverse).
+    for (const s of uncited) expect(s.held, `${s.cite}: uncited, yet its link is not held`).toBe(true);
+    /* RATCHET. The tracked fleet these files were compiled from predates the forwarding substrate: its one
+       real up session -- core1's FULL/DR neighbour on the L2 trunk Po1 -- runs over a link core1's table does
+       not hold, so it is cited and NO real session reaches the held-link branch there. The exemption is
+       bound to the ABSENCE of the whole substrate and to that exact reason, never to a typed digest (a
+       literal copy of the snapshot digest is a cache nothing invalidates: src/core/provenance.test.ts).
+       "Predates the substrate" is read from the engine's own demo builder: every host its substrate gives a
+       whole routing table (`<var>["show ip route"] = (` on a `<var> = cols["<host>"][1]`) must be a real
+       host of the compiled fleet holding NO routes. A fleet carrying any part of the substrate (the
+       regenerated one carries the inter-core session on Vlan10, the dist1 transit and the dist pair's OSPF)
+       must bring real sessions into the held-link branch, both with and without a recorded interface.
+       Phase 3 (fleet regeneration) deletes this exemption. */
+    const build = readFileSync(`${import.meta.dirname}/../../../webapp/sample_data/build_sample.py`, "utf8");
+    const substrate = /\ndef _add_forwarding_substrate\(cols: dict\) -> dict:\n([\s\S]*?)\n\n\n/.exec(build)?.[1] ?? "";
+    const hostOf = new Map([...substrate.matchAll(/^ {4}(\w+) = cols\["([^"]+)"\]\[1\]$/gm)].map((m) => [m[1]!, m[2]!]));
+    const tabled = [...substrate.matchAll(/^ {4}(\w+)\["show ip route"\] = \($/gm)].map((m) => hostOf.get(m[1]!));
+    expect(tabled.length, "the builder's substrate gives at least one host a whole routing table").toBeGreaterThan(0);
+    for (const h of tabled) {
+      expect(h, "every substrate-tabled variable resolves to a builder host").toBeDefined();
+      expect(real, `${h}: a substrate-tabled host is a real host of the compiled fleet`).toContain(h);
+    }
+    const predatesSubstrate = tabled.every((h) => routesOf(h!).length === 0);
+    if (predatesSubstrate) {
+      expect(uncited).toEqual([]);
+      // ...and the exemption's reason, recomputed: not one real up session's link is held there.
+      for (const s of up) expect(s.held, s.cite).toBe(false);
+    } else {
+      expect(uncited.filter((s) => s.viaInterface).length, "a real session over a recorded interface in the held-link branch").toBeGreaterThan(0);
+      expect(uncited.filter((s) => !s.viaInterface).length, "a real session with no recorded interface in the held-link branch").toBeGreaterThan(0);
+    }
   });
 
   it("an absence-state row (captured_empty / not_running) is cited as a reason exactly when the table holds routes of its family", () => {

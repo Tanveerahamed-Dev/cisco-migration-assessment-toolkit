@@ -5,6 +5,151 @@ evidence exists, because an issue asserted without evidence is a rumour.
 
 ## Resolved
 
+> **Phase 2.75 of the single-source-of-truth program — engine finalisation before the fleet
+> regeneration (recorded 2026-09-28; an UNCOMMITTED working tree on top of `8bf5500b`).** Two clusters,
+> each followed by an independent verifier: **T1** (the golden snapshot's calendar boundary) and **T2**
+> (the sample fleet's core-to-core OSPF home, core1's BGP baseline, and three RIB-completeness test
+> gaps). Entries R116–R119 below record what they closed, and O63–O67 under Open what they left; O53
+> and O54 carry status notes. **Verdicts:** T1 and T2 both upheld by their verifiers, each with open
+> items. **Owner decisions** (design brief, "Owner decisions of phase 2.75"): the golden has no
+> wall-clock boundary; the core-to-core OSPF home is an existing SVI (Vlan10); core1's BGP baseline is
+> honestly INDETERMINATE because its config capture is incomplete. **Phase 2.5 (`8bf5500b`) has no
+> record of its own in this file.** Its verifier identifiers (R1V2-4, R2V-1, R2V-2, R2V-3) appear below
+> only where a phase-2.75 cluster closed them; the rest of that commit message's "Known open" list —
+> the D3 rung-crossing surfaces taken from a named state list and one drawer case not driven, the act
+> tripwire's import-equals and `vi.mock` gaps, the tier-fade slot tripwire's indirect calls — reached
+> the record step only through that commit message and is not recorded as entries here. **Not a
+> re-grade:** no criterion moves, and the tracked sample fleet was NOT regenerated, so every figure
+> from a regenerated fleet below is a scratch run (reported). **What the record step itself re-ran**
+> (2026-09-28, on this working tree): the engine pins the entries cite —
+> `tests/test_eol_registry_freshness_clock.py`, `tests/test_sample_fleet_substrate.py` and
+> `tests/test_pipeline_golden.py` in one `pytest` invocation, 78 collected (21, 36, 21), 78 passed,
+> exit 0 — and `src/forwarding/rib-completeness.test.ts` with `src/forwarding/rib-partial-route.test.ts`
+> in one `vitest` invocation, 44 of 44, exit 0. After this record's edits, every test file under `src/`
+> that reads these documents (26 files, 1,568 tests) passed in one `vitest` invocation, exit 0.
+> **Reported, not re-run by the record step:** the scratch
+> fleet regeneration and its forwarding sweep, the extra golden run at 2036-06-01, the mutation checks
+> (MD, MF) and every red-before-fix claim. The working tree also holds changes no cluster report
+> describes — `cisco_toolkit/fhrp_redundancy.py` and a new `tests/test_fhrp_member_key_order.py` — so
+> they are not recorded as a fix (O67).
+
+### R116. The golden snapshot's `data_authorities` registry-health statement was judged against the wall clock, so the golden would go red from 2027-01-26 — FIXED FOR THE GOLDEN ONLY, by pinning the registry freshness clock to the golden's evidence date in the test harness; the owner's prescribed mechanism was not used and awaits ratification (O63) (phase-2.5 verifier R1V2-4; T1)
+Carried from `8bf5500b`'s "Known open": "the golden's EoL-registry freshness is judged against the
+wall clock (red from 2027-01-26)". **The owner's direction** was to normalise only the now-relative
+fields of `data_authorities.eol`. **What T1 measured instead** (reported; its verifier reproduced that
+the deviation is needed): the five fields `registry_integrity.source_freshness` derives from "now" —
+`source_age_days`, `source_fresh`, `source_stale`, `source_future_dated` and `freshness_status` —
+cannot make the golden date-independent. Past the window a stale registry cascades into
+`assessment_integrity` (three failed phases), every authority's status / authoritative / integrity /
+error / record-count fields, `schema_census`, `service_map`'s authority flags and a new "Assessment
+Integrity" workbook sheet; with exactly those five stripped, a run past the windows still differed in
+four snapshot sections and one sheet. Normalising the cascade field by field would be a hand-kept
+list standing in for its cause. **Fix (test-only):** the golden harness pins the one registry freshness
+clock — the module clock `registry_integrity.datetime`, which `source_freshness` reads, and through it
+eoldb, ouidb/portdb (via `_build_provenance_authority`) and analyze — to the golden's evidence date
+(`tests/test_pipeline_golden.py` `_GOLDEN_REGISTRY_CLOCK`, derived from `_GOLDEN_COLLECTION_STAMP`), in
+the pipeline subprocess's bootstrap. No `data_authorities` field is popped or normalised: every one,
+the five now-relative ones included, stays frozen as a pure function of the pin. The engine's
+wall-clock freshness semantics are unchanged, and no engine clock seam was added. T1 verified the
+interrupted agent's partial work rather than trusting it, and created the clock test file that agent
+had cited but not written. The golden was not regenerated: it already matched, and its semantic diff
+against `8bf5500b` is purely additive (3 `source_age_days` values, matching the arithmetic); a
+regeneration would only reshuffle the hash-seed-dependent FHRP key order (O67). **Pinned by**
+`tests/test_pipeline_golden.py::test_golden_does_not_depend_on_the_wall_clock_past_every_registry_window`
+(the whole process clock 30 days past the last registry window, 2027-02-25: every snapshot section
+and the sheet schema equal the golden; an extra run at 2036-06-01 also differed in nothing,
+reported), `::test_golden_registry_clock_is_inside_every_published_registry_window` (every published
+authority is read from the run and its verdict re-derived by arithmetic; it names the refresh remedy,
+O63), and the new `tests/test_eol_registry_freshness_clock.py`: fresh, exact-boundary, stale and
+future-dated verdicts through an injected clock, each expected verdict derived by arithmetic from the
+registry's own published retrieval time, maximum age and skew — never by calling `source_freshness` —
+over every published authority rather than a hand-kept list (only the EoL-specific phase-name
+assertion names a registry). Its pipeline-level cases run the process wall clock on the opposite side
+of the window from the registry clock, at a mid-window instant (retrieval + 90 days), so they do not
+repeat the golden's own run. The calendar test `test_golden_is_inside_the_retained_eol_registry_freshness_window`
+is deleted (the record step's `git grep` finds it nowhere), and `docs/ssot.md`'s "Per-finding
+evidence pointers" row now cites the tests above. **Not closed here:** the same calendar boundary in
+the engine's other EoL/data-authority tests (O63).
+
+### R117. The sample fleet's core-to-core OSPF adjacency ran over a transit VLAN (900) added only for it, which also joined the core move group — FIXED at the source by owner decision: it now runs over Vlan10, an SVI both cores already have on a VLAN Po1 already carries, and VLAN 900 is gone (T2; the phase-2.5 gate's `move_groups` stillRed item CLOSED)
+The phase-2.5 substrate gave core1's FULL/DR neighbour 10.0.99.2 (O53's B1 seed) an L3 home on a new
+VLAN 900 CORE-TRANSIT SVI pair on 10.0.199.0/30; `8bf5500b`'s "Known open" notes that it added VLAN
+900 to the core move group. **Owner decision (phase 2.75):** home the adjacency on an SVI the cores
+already have. **The choice is derived, not hand-picked:** the test derives the candidates from the
+pre-substrate fixtures — an SVI on both cores, in one shared subnet, on a VLAN Po1 carries on both
+sides, with no inbound ACL. Vlan10 and Vlan20 pass the first three; Vlan20 fails the last: core1
+Vlan20 has `ip access-group VOICE_FILTER in`, which permits only UDP from 10.0.20.0/24 and then denies
+`ip any any`, so OSPF hellos (IP protocol 89) would be dropped — consistent with the fixture's own
+core1 `show logging`, which records the Vlan20 adjacency to 10.0.99.2 going down on its dead timer.
+Vlan10 has no ACL on either core and keeps HSRP group 10 unchanged (core1 active at priority 110,
+core2 standby); core1 is 10.0.10.2, core2 10.0.10.3; core2's router ID 10.0.99.2 is higher than
+core1's 10.0.99.1, so core2 is the DR and the FULL/DR row stays consistent. **Edits
+(`webapp/sample_data/build_sample.py`, reported):** every VLAN 900 trace is removed — SVI stanzas, trunk
+allow-lists, switchport, `show vlan brief`, `show ip interface brief`, the 10.0.199.0/30 routes in all
+four tables, and the builder constants; each core's existing Vlan10 stanza gains only its OSPF enable
+(IOS `ip ospf 1 area 0`; NX-OS `ip router ospf 1 area 0.0.0.0`). With Vlan10 in area 0, dist1 and
+dist2 hold 10.0.10.0/24 intra-area (`O [110/2]` and `[110/3]`) instead of `O E2`, each route type
+derived by the test from core1's configuration; core2 learns core1's originations via 10.0.10.2 on
+Vlan10. Only core1's `show ip route`, `show ip ospf neighbor`, `show ip interface brief`, `show
+running-config`, `show running-config | section ^interface`, `show ip bgp summary` and `show ip eigrp
+neighbors`, and core2's `show ip route` and `show running-config interface`, change; every L2 capture,
+FHRP included, is byte-identical. One stale test comment ("far end of core1's transit SVI") now reads
+"inter-core OSPF session on Vlan10"; `src/forwarding/rib-completeness.ts` needed no change
+(byte-identical to `8bf5500b`). **Scratch regeneration** (reported; the tracked fleet was NOT
+regenerated): `cable_map`, `move_groups`, `wave_sequencing`, `failure_impact` and `link_centrality`
+byte-equal to the committed fleet; the punch list 146; core1/core2 health 3/88. **Pinned by**
+`tests/test_sample_fleet_substrate.py` (36 of 36 re-run by the record step):
+`test_the_home_is_an_svi_both_cores_already_have_that_po1_already_carries`,
+`test_core1_inter_core_ospf_session_runs_over_the_home_svi`,
+`test_core2_owns_the_far_end_of_the_home_and_holds_what_core1_advertises`,
+`test_only_the_cores_l3_captures_change`,
+`test_the_core_fhrp_groups_and_every_other_core_capture_line_survive` and
+`test_no_trace_of_the_retired_vlan_900_transit_remains`. `move_groups`' byte-equality rests on that one
+scratch run; the pytest guard stands on a named list (O64). A tracked test header still describes VLAN
+900 (O65). What this unblocks for A2 and B8 is O53's status note.
+
+### R118. core1's BGP configured-peer baseline reads INDETERMINATE on the substrate fleet — NOT A DEFECT: the coverage-honest verdict, kept by owner decision and pinned with its cause (T2; the phase-2.5 gate's `bgp_configured_peer_baseline` stillRed item CLOSED as accepted-honest)
+Carried from `8bf5500b`'s "Known open": "core1's config capture lacks 'end', which leaves the BGP
+baseline INDETERMINATE". **Owner decision (phase 2.75):** keep it. `end` was NOT appended to core1's
+running-config; the fixtures' no-`end` convention stands, the capture is incomplete, and the baseline
+says so. **Pinned by**
+`tests/test_sample_fleet_substrate.py::test_core1_bgp_baseline_is_honestly_indeterminate_because_its_config_capture_is_incomplete`:
+verdict INDETERMINATE with `assessed` False and exactly one row — core1, peer 10.0.10.254, ESTABLISHED,
+`not_verified`, finding `capture_not_verified`, acceptance NOT VERIFIED / BLOCKER. The reason is read
+from the producers' own output, not restated: the baseline's coverage `config_capture_status` equals
+the capture-integrity finding's status for core1 `show running-config`, and that finding equals
+`inspect_capture`'s status, reason and evidence. **Counterfactual:** the same collection with only
+core1's capture terminated is CLEAR and assessed, so the capture is the whole reason.
+`test_the_bgp_configured_peer_baseline_validates_over_the_substrate_collection` (the validator's "valid,
+ok") is kept, and its docstring now says that is not a clean verdict. The committed fleet reads
+NOT_APPLICABLE until phase 3 regenerates it.
+
+### R119. Three RIB-completeness test gaps — the contract filter never tested through the module's own state set, an unrecorded route source untested, and a real-data sweep that never checked that the table holds the link — FIXED in the tests; R2V-3 carries a sha-bound exemption for the committed fleet that phase 3 deletes (phase-2.5 verifier R2V-1, R2V-2, R2V-3; T2)
+All in `src/forwarding/rib-completeness.test.ts` (re-run by the record step, see the banner);
+`src/forwarding/rib-completeness.ts` is unchanged.
+- **R2V-1 — the contract filter is live.** "the contract filter is live: an absence state the engine
+  retires or renames stops vouching, through RIB_ABSENCE_STATES itself (R2V-1)": `vi.doMock` of
+  `contracts/engine-contract.v1.json` with one absence state renamed (`not_running`, then
+  `captured_empty`), then a fresh import of the module; the renamed state leaves
+  `RIB_ABSENCE_STATES`, and the synthetic host whose completeness rested on it reads incomplete, citing
+  that row. This follows the verifier's alternative fix hint, so the module needed no change. Mutation
+  MD now kills 2 tests (reported). Declared in acceptance F2 as a fault injection.
+- **R2V-2 — an unrecorded source.** "a learned route whose source the engine recorded as nothing is an
+  unknown protocol, never a known one (R2V-2)": two synthetic hosts with a learned route whose source
+  is null or `''`; each is a reason citing the route, and the basis vouches for no family. A
+  precondition test reads `cisco_toolkit/parse.py` and confirms that `_nxos_route_source` passes its
+  normalised token through, so `''` is reachable. Mutation MF now kills 2 tests (reported).
+- **R2V-3 — the held-link sweep on real hosts; closes O54's last bullet's second half.** "the held-link
+  sweep reaches REAL hosts' sessions, read from the compiled file on disk -- no synthetic host counts
+  (R2V-3)" reads the compiled `rib-evidence.json` from disk, counts only real hosts (none may carry a
+  `t-` prefix), and requires every uncited real up session to hold its link; on any fleet other than
+  the tracked pre-substrate one, at least one uncited real session with a recorded interface AND one
+  without must reach the held-link branch. **The exemption:** the tracked compiled data (`sourceSha256`
+  `9580aa09…`, the committed fleet), whose only real up session is core1's FULL/DR neighbour on Po1 —
+  cited, not held — is exempt; the exemption is bound to that exact sha and re-checks its own reason
+  (every real up session not held, none uncited). On the regenerated fleet compiled in scratch, 6 real
+  sessions reach the branch (reported). Phase 3 deletes the exemption.
+
 > **Phase 2 of the single-source-of-truth program (recorded 2026-09-27; an UNCOMMITTED working tree).**
 > Atlas Scope no longer lives in its own repository: it was imported with its history as the parent
 > repository's `atlas-scope/` directory (`f036ed77`), and its compilers bind to that tree's engine output
@@ -4761,7 +4906,20 @@ All from E1's verifier (reported).
   belongs in that predicate, and it changes the golden's and the sample's `cross_layer` and punch-list
   rows.
 
-### O53. A2 and B8 — the forwarding substrate is in place, and decided core1 outcomes are blocked by core1's own FULL/DR OSPF neighbour on an L2 trunk — OWNER DECISION (E2's R3 BLOCKED)
+### O53. A2 and B8 — the forwarding substrate is in place, and decided core1 outcomes are blocked by core1's own FULL/DR OSPF neighbour on an L2 trunk — OWNER DECISION (E2's R3 BLOCKED); DECIDED in phase 2.75 (the link is modelled, on Vlan10: R117) — A2 and B8 stay UNPROVEN until phase 3 regenerates the tracked fleet
+**Status (phase 2.75, 2026-09-28).** The owner chose to model the link: the session now runs over
+Vlan10, an SVI both cores already have (R117), without loosening the rule. **Scratch acceptance
+figures** (T2, reported; the Vlan10-home fleet compiled in scratch with the worktree engine; the tracked
+fleet NOT regenerated): `tcp/443 10.0.40.50 -> 10.0.10.50` is a 2-hop DECIDED DEFINITE delivery (dist1
+`routes.dist1[1]` > core1 `routes.core1[2]`, no gaps); `tcp/443` and `tcp/3389 10.0.40.50 ->
+10.0.30.10` are 2-hop DECIDED denials at `acls.core1.PROTECT_SERVERS[3]`, each with a counterexample
+found (-> 10.0.20.10, a 2-hop definite delivery; B8). Sweep (19 addresses, 3,249 traces): depths {0:
+2,574, 1: 343, 2: 332}, 332 resolved next hops, **definite 9, decided 23, counterexamples 26 of 70** —
+the figures the core1-complete counterfactual below predicted, now reached without forcing anything;
+`ribCountQualifier` "(1 of 4 shown incomplete)", core2 only. A2's hop-2 decider and B8's positive state
+are exercised on real data only once phase 3 regenerates and recompiles the fleet and a re-grade reads
+it (O13, O34); until then the committed snapshot is as below.
+
 From E2 and its verifier (reported). Scratch end to end (HEAD engine plus E2's files, the real compilers
 publishing each adjacency's `address` and `interface`, the real forwarding engine, `engine.test.ts`'s
 depth-ratchet set of 3,249 traces): hop depths {0: 2,574, 1: 343, 2: 332}, 332 resolved next hops,
@@ -4782,6 +4940,13 @@ and B8's positive state stay unexercised on real data (O13, O34).
 
 ### O54. E2's residuals — an unknown read as complete for protocols outside {ospf, eigrp, bgp}, and five more — OPEN (owners: `src/forwarding/rib-completeness.ts`, `webapp/sample_data/build_sample.py`, `cisco_toolkit/bgp_intent.py`, the owner)
 From E2's verifier (reported), except where an E2 record says otherwise.
+**Status (phase 2.75, 2026-09-28).** The third bullet's section is now INDETERMINATE for a different,
+accepted reason — one core1 row, NOT VERIFIED / BLOCKER, because core1's config capture is incomplete —
+and the validator reports "valid, ok" over the substrate collection (R118, reported by T2); no report the
+record step received says whether `bgp_intent.py`'s producer/validator disagreement over a peerless host
+with an EMPTY summary is fixed, so that half stays as written. The last bullet's second half (the sweep
+never checked that the table holds the link) is FIXED (R119, R2V-3). The other bullets are unchanged by
+any phase-2.75 report.
 - **Absence rendered as health (the most serious).** A host whose table holds routes learned by a
   protocol outside the fixed vocabulary {ospf, eigrp, bgp} — IS-IS, RIP, LISP, NHRP, mobile, which
   `parse_ip_routes` emits as `isis`, `rip`, `lisp`, `nhrp` and `mobile`, none with a collection receipt —
@@ -4980,6 +5145,63 @@ From E2E3's verifier (reported).
 - **The cold J5 case (`FIRST_PALETTE`) cannot measure 1280x800**, the viewport where E2/E3 failed (its
   1280 legs were NOT MEASURED in the final run, O59–O60). The cluster's report of this item was cut short
   in the record step's input; its remainder, and any open item or cluster after it, is not recorded here.
+
+### O63. The golden's registry-clock pin awaits the owner's ratification, and the 2027-01-26 boundary still stands in the engine's other EoL/data-authority tests — OWNER DECISION and OPEN (owners: the owner; the engine's EoL/data-authority test owners; `tests/test_pipeline_golden.py` for the refresh remedy)
+From T1 and its verifier (phase 2.75, reported).
+- **Ratification (OWNER).** The owner asked for the now-relative `data_authorities.eol` fields to be
+  normalised; T1 pinned the registry freshness clock instead (R116), disclosed the deviation, and
+  its verifier reproduced that the prescribed mechanism cannot meet the goal. The deleted calendar
+  test's own message had said "do not pin the clock to hide it". **For the owner:** ratify the pin — the
+  measured cascade in R116 is the case for it — or name another mechanism that leaves the golden with
+  no calendar boundary without normalising the cascade field by field.
+- **The stated problem is not solved outside the golden.** The owner's problem was "every CI run fails
+  from 2027-01-26". That is still true after T1: the existing EoL/data-authority tests keep the same
+  boundary, and neither T1's report nor its record entries said so (its verifier). R116 is accurate
+  for the golden only. The report the record step received does not name those tests.
+- **Maintenance — a registry refresh moves the pin's window.** A new retrieval after 2026-08-07 moves
+  that registry out of the pinned window; `test_golden_registry_clock_is_inside_every_published_registry_window`
+  then fails with the remedy: move `_GOLDEN_COLLECTION_STAMP` inside every registry's window, then
+  `UPDATE_GOLDEN=1`. That move also re-dates the lifecycle as-of date the golden's bands are judged at.
+
+### O64. `move_groups` byte-equality is guarded by a named list of captures, not by the section's inputs — OPEN (owner: `tests/test_sample_fleet_substrate.py`)
+From T2's verifier (phase 2.75, reported). The owner's acceptance criterion for the Vlan10 home is that
+`move_groups` stays byte-equal, and only a one-off scratch regeneration proves it (R117). The pytest
+guard the test file credits with keeping "the cable map, move groups, wave sequencing and failure
+impact byte-equal" checks a hand-kept list of capture names allowed to change and a regex over L2
+command names — a list standing in for the actual inputs of `move_groups`. `compute_move_groups`
+takes gateway SVIs from interface data fed by the L3 capture `show running-config | section
+^interface`, which is on the allowed-to-change list, so a future substrate edit can change
+`move_groups` while the whole suite stays green. The class is "a substrate edit changes a section it
+was supposed to leave alone"; a guard keyed to the sections themselves (regenerate and compare) would
+be the fix, not a longer list.
+
+### O65. A tracked test header still says the substrate fleet runs the inter-core session over "a transit SVI (VLAN 900)" — OPEN, unrouted (owner: `src/forwarding/rib-partial-route.test.ts`)
+From T2's verifier (phase 2.75, reported); confirmed by the record step's `grep`: the header comment of
+`src/forwarding/rib-partial-route.test.ts` still says that the substrate fleet gives core1's FULL/DR
+session "its realistic L3 home, a transit SVI (VLAN 900) both cores' tables hold", and describes B1's
+real-data home there in terms of that transit. VLAN 900 is retired (R117), so the claim is false. The
+implementer's report routes the correction to no one. (The same `grep` also finds `Vlan900` with
+10.0.199.0/30 in a synthetic interface fixture in `tests/test_excel.py`; that fixture states nothing
+about the sample fleet and is not this defect.)
+
+### O66. `build_sample.main()` ignores the engine's finalization result, so a failed engine run can silently regenerate the demo fleet — OPEN, pre-existing; must be fixed before phase 3 regenerates the fleet (owner: `webapp/sample_data/build_sample.py`)
+From T2's verifier (phase 2.75, reported; pre-existing, not caused by T2's change, but in a file T2
+owned). When `cp.main()` logs "[INCOMPLETE] Mandatory finalization failed ... exit 1", `main()` still
+writes the snapshot to `--out` — the tracked path by default — prints "wrote ...", and exits 0. Phase
+3's fleet regeneration runs through this entry point, so an incomplete engine run would replace the
+tracked sample and report success.
+
+### O67. The FHRP redundancy receipt's member key order depends on the hash seed — OPEN as reported; the working tree holds an undescribed change (owner: `cisco_toolkit/fhrp_redundancy.py`)
+From T1 (phase 2.75, reported as an engine item outside T1's scope, routed in its needs from others).
+`fhrp_redundancy` builds each member row by iterating a `set` of field names (about line 805), so the
+row's key order depends on `PYTHONHASHSEED`. The snapshot is written without sorted keys, so written
+snapshots are byte-nondeterministic across runs over identical evidence (dict-equal, textually
+churned), and golden regenerations churn — which is why T1 did not regenerate the golden (R116). It
+bears on phase 3: a regenerated fleet whose bytes depend on the hash seed cannot be reproduced
+byte-for-byte. **Working-tree note (the record step):** this tree changes `cisco_toolkit/fhrp_redundancy.py`
+to build member rows from an ordered tuple, and adds `tests/test_fhrp_member_key_order.py` (which the
+record step ran: 2 of 2 passed); no cluster report the record step received describes either, so this
+entry stays OPEN until one does and its verifier upholds it.
 
 ### O23. Clean-clone evidence — the re-grade of `78bdba5` ran F1, F2, F4 and F5 from a fresh clone of that commit (F1, F4, F5 PASS; F2 red, R85); the re-grade of `8eac055` ran F5 from a fresh clone of it (PASS); the re-grade of `34bd435` ran F1 in part, F4, F5 and F6 from a fresh clone of it; nothing has been run from a clone of `7f67013` — OPEN for A–E, F2, F3 and the scripts `tsc` project at `34bd435`, and for everything at `7f67013` (owner: the re-grade of `7f67013`)
 **Status at `7f67013` (wave 8).** The heading's old claim — "nothing has been run from a clone of

@@ -26,6 +26,36 @@
 >
 > **Do not hardcode those counts anywhere in the application.** They are a cache of
 > `fabric.json` / `fabric.coverage` and must be read from it at render time (SSOT, Law 1).
+>
+> **Owner decisions of phase 2.75 (2026-09-28) — the engine output phase 3 will compile.** These
+> change what the engine's sample fleet says once phase 3 regenerates and recompiles it, and so what
+> this app renders from it; the figures above remain the committed fleet's until then
+> (`docs/open-issues.md` R116–R119, O53, O63–O67).
+> - **The core-to-core OSPF adjacency's home is an existing SVI, Vlan10.** core1's FULL/DR neighbour
+>   10.0.99.2 runs over an SVI both cores already have (core1 10.0.10.2, core2 10.0.10.3, HSRP group 10
+>   unchanged) on a VLAN Po1 already carries; the transit VLAN 900 added in phase 2.5 is retired.
+>   Vlan20 was rejected because core1's inbound `VOICE_FILTER` would drop OSPF hellos. For Flow B
+>   (§5.2) this means core1's table is no longer contradicted by its own neighbour, so the regenerated
+>   fleet carries decided core1 outcomes, 2-hop traces and a found counterexample (a scratch run, not
+>   yet the shipped data: open-issues O53). The RIBs held, the hosts modelled and the tables shown
+>   incomplete must still be read from the compiled data at render time, never from this paragraph.
+> - **core1's BGP configured-peer baseline is honestly INDETERMINATE**, because core1's configuration
+>   capture is incomplete (it does not end with `end`, the fixtures' convention, which is kept). Its one
+>   row — core1's established peer, NOT VERIFIED / BLOCKER — is the coverage-honest verdict, not a
+>   defect to be engineered away. Any surface that shows this baseline shows INDETERMINATE with the
+>   producer's reason, never CLEAR and never as healthy; the committed fleet's NOT_APPLICABLE is a
+>   pre-substrate reading, not a statement about the substrate.
+> - **The golden snapshot has no wall-clock boundary.** The owner's decision: the registry-health
+>   "today" fields are volatile in the golden, and the freshness logic is proven with an injected
+>   clock. **As implemented (awaiting the owner's ratification, open-issues O63):** the golden harness
+>   pins the one registry freshness clock to the golden's evidence date instead, because normalising
+>   the now-relative fields was measured not to remove the boundary (a stale registry cascades into
+>   four snapshot sections and a workbook sheet); every `data_authorities` field therefore stays
+>   frozen, and the fresh / exact-boundary / stale / future-dated behaviour is proven with an injected
+>   clock (`tests/test_eol_registry_freshness_clock.py`). The engine's own freshness verdict is
+>   unchanged: a real run judges registry health against its wall clock. The golden is a test fixture,
+>   never the shipped data, so nothing this app renders changes; and the boundary is gone from the
+>   golden only — the engine's other EoL/data-authority tests keep it (O63).
 
 ---
 
