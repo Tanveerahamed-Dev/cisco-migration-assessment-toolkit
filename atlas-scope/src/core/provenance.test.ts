@@ -290,7 +290,24 @@ describe("no authored code file pins the snapshot digest", () => {
         }
       }
     }
-    expect(pins, "derive the tag from fabric.meta.sourceSha256 (or snapshotTag()) instead").toEqual([]);
+    /* THE ONE SANCTIONED PIN (2026-09-28, phase 3). src/test-support/golden-sample.ts declares GOLDEN_SHA, the
+       digest the golden test tier was derived from. It is not "a cache that nothing invalidates": importing that
+       module THROWS when the tracked sample's compiled digest differs from it, so a regenerated sample fails every
+       golden test loudly instead of passing on stale expectations. It is allowed exactly there, exactly once, in
+       its GOLDEN_SHA declaration, and only while that self-invalidation is present; every other file stays under
+       the rule above. */
+    const OWNER = "src/test-support/golden-sample.ts";
+    const ownerPins = pins.filter((p) => p.startsWith(`${OWNER}:`));
+    const ownerText = readFileSync(resolve(PKG, OWNER), "utf8");
+    expect(ownerPins, "the golden tier's GOLDEN_SHA is the one sanctioned pin").toHaveLength(1);
+    expect(ownerText).toMatch(/export const GOLDEN_SHA = "[0-9a-f]{64}";/);
+    expect(ownerText, "the sanctioned pin must invalidate itself").toMatch(
+      /fabric\.meta\.sourceSha256 !== GOLDEN_SHA\) \{\s*throw new Error/,
+    );
+    expect(
+      pins.filter((p) => !p.startsWith(`${OWNER}:`)),
+      "derive the tag from fabric.meta.sourceSha256 (or snapshotTag()) instead",
+    ).toEqual([]);
   });
 });
 

@@ -3,10 +3,10 @@
   "source": "webapp/sample_data/sample_fleet.snapshot.json",
   "sourceOrigin": "repository-file",
   "sourceDigestForm": "lf-normalised",
-  "sourceSha256": "9580aa092d490a13ba420b2cc670ddee026f6dbf93ecc5aeac2fc94cd7f13089",
-  "sourceBytes": 3072771,
-  "sourceExactSha256": "sha256:9580aa092d490a13ba420b2cc670ddee026f6dbf93ecc5aeac2fc94cd7f13089",
-  "sourceGitBlob": "6478a1616e3ced5f1937c32c85856e94d3c0d9fe",
+  "sourceSha256": "4d1805c6e1ba4b5b23f6615f47838fde76baa6b395fd7e7076ca11bfcbf869ed",
+  "sourceBytes": 3306849,
+  "sourceExactSha256": "sha256:4d1805c6e1ba4b5b23f6615f47838fde76baa6b395fd7e7076ca11bfcbf869ed",
+  "sourceGitBlob": "337c8c4be4fdeb3f5e089588e9cf04b47f874aec",
   "routingProtocols": [
    "bgp",
    "eigrp",
@@ -433,14 +433,14 @@
     },
     {
      "protocol": "BGP",
-     "state": "not_collected",
-     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "state": "assessed",
+     "reason": "A bounded health row was emitted from usable current-run evidence. The family boundary still applies; this is not protocol-completeness proof.",
      "cite": "protocol_assessability.rows[123]"
     },
     {
      "protocol": "EIGRP",
-     "state": "not_collected",
-     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "state": "captured_empty",
+     "reason": "A recognized command capture was empty. No protocol state was observed and no health conclusion is made.",
      "cite": "protocol_assessability.rows[124]"
     }
    ],
@@ -450,8 +450,8 @@
      "neighbor": "10.0.99.2",
      "state": "FULL/DR",
      "cite": "routing_neighbors.core1.ospf[0]",
-     "address": "10.0.99.2",
-     "interface": "Po1"
+     "address": "10.0.10.3",
+     "interface": "Vlan10"
     },
     {
      "protocol": "ospf",
@@ -460,6 +460,22 @@
      "cite": "routing_neighbors.core1.ospf[1]",
      "address": "10.0.40.9",
      "interface": "Vlan40"
+    },
+    {
+     "protocol": "ospf",
+     "neighbor": "10.0.99.50",
+     "state": "FULL/-",
+     "cite": "routing_neighbors.core1.ospf[2]",
+     "address": "10.0.140.2",
+     "interface": "Gi1/0/40"
+    },
+    {
+     "protocol": "bgp",
+     "neighbor": "10.0.10.254",
+     "state": "0",
+     "cite": "routing_neighbors.core1.bgp[0]",
+     "address": null,
+     "interface": null
     }
    ],
    "overlay": []
@@ -507,48 +523,74 @@
    "protocols": [
     {
      "protocol": "OSPF",
-     "state": "not_collected",
-     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "state": "assessed",
+     "reason": "A bounded health row was emitted from usable current-run evidence. The family boundary still applies; this is not protocol-completeness proof.",
      "cite": "protocol_assessability.rows[136]"
     },
     {
      "protocol": "BGP",
-     "state": "not_collected",
-     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "state": "not_running",
+     "reason": "`show ip bgp summary` printed exactly '% BGP not active' -- the vendor no-process banner: BGP is not running on this host, so it contributes no BGP state here. This is neither an assessment nor a health verdict.",
      "cite": "protocol_assessability.rows[137]"
     },
     {
      "protocol": "EIGRP",
-     "state": "not_collected",
-     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "state": "captured_empty",
+     "reason": "A recognized command capture was empty. No protocol state was observed and no health conclusion is made.",
      "cite": "protocol_assessability.rows[138]"
     }
    ],
-   "adjacencies": [],
+   "adjacencies": [
+    {
+     "protocol": "ospf",
+     "neighbor": "10.0.99.1",
+     "state": "FULL/-",
+     "cite": "routing_neighbors.dist1.ospf[0]",
+     "address": "10.0.140.1",
+     "interface": "Gi1/0/3"
+    },
+    {
+     "protocol": "ospf",
+     "neighbor": "10.0.99.51",
+     "state": "FULL/BDR",
+     "cite": "routing_neighbors.dist1.ospf[1]",
+     "address": "10.0.40.3",
+     "interface": "Vlan40"
+    }
+   ],
    "overlay": []
   },
   "dist2": {
    "protocols": [
     {
      "protocol": "OSPF",
-     "state": "not_collected",
-     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "state": "assessed",
+     "reason": "A bounded health row was emitted from usable current-run evidence. The family boundary still applies; this is not protocol-completeness proof.",
      "cite": "protocol_assessability.rows[143]"
     },
     {
      "protocol": "BGP",
-     "state": "not_collected",
-     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "state": "not_running",
+     "reason": "`show ip bgp summary` printed exactly '% BGP not active' -- the vendor no-process banner: BGP is not running on this host, so it contributes no BGP state here. This is neither an assessment nor a health verdict.",
      "cite": "protocol_assessability.rows[144]"
     },
     {
      "protocol": "EIGRP",
-     "state": "not_collected",
-     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "state": "captured_empty",
+     "reason": "A recognized command capture was empty. No protocol state was observed and no health conclusion is made.",
      "cite": "protocol_assessability.rows[145]"
     }
    ],
-   "adjacencies": [],
+   "adjacencies": [
+    {
+     "protocol": "ospf",
+     "neighbor": "10.0.99.50",
+     "state": "FULL/DR",
+     "cite": "routing_neighbors.dist2.ospf[0]",
+     "address": "10.0.40.2",
+     "interface": "Vlan40"
+    }
+   ],
    "overlay": []
   },
   "podacc1": {

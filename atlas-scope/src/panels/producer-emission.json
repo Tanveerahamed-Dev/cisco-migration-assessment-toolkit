@@ -3,10 +3,10 @@
   "source": "webapp/sample_data/sample_fleet.snapshot.json",
   "sourceOrigin": "repository-file",
   "sourceDigestForm": "lf-normalised",
-  "sourceSha256": "9580aa092d490a13ba420b2cc670ddee026f6dbf93ecc5aeac2fc94cd7f13089",
-  "sourceBytes": 3072771,
-  "sourceExactSha256": "sha256:9580aa092d490a13ba420b2cc670ddee026f6dbf93ecc5aeac2fc94cd7f13089",
-  "sourceGitBlob": "6478a1616e3ced5f1937c32c85856e94d3c0d9fe",
+  "sourceSha256": "4d1805c6e1ba4b5b23f6615f47838fde76baa6b395fd7e7076ca11bfcbf869ed",
+  "sourceBytes": 3306849,
+  "sourceExactSha256": "sha256:4d1805c6e1ba4b5b23f6615f47838fde76baa6b395fd7e7076ca11bfcbf869ed",
+  "sourceGitBlob": "337c8c4be4fdeb3f5e089588e9cf04b47f874aec",
   "aclLineFields": {
    "unevaluable": "unevaluable",
    "unmodeledQualifiers": "unmodeled_qualifiers",
@@ -70,6 +70,26 @@
    "unmodeledQualifiers"
   ],
   "acls.core1.VOICE_FILTER[2]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.dist1.VTY_ACCESS[0]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.dist1.VTY_ACCESS[1]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.dist2.VTY_ACCESS[0]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.dist2.VTY_ACCESS[1]": [
    "established",
    "unevaluable",
    "unmodeledQualifiers"
