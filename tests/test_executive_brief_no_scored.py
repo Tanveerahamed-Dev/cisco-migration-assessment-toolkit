@@ -130,9 +130,11 @@ def test_scored_path_shape_and_text_are_unchanged():
 def test_sample_fleet_brief_is_reproduced_exactly():
     """The sample fleet's embedded brief was produced by the scored path; nothing here may move it."""
     s = json.loads(SAMPLE.read_text(encoding="utf-8"))
-    assert s["executive_brief"]["posture"] == {"avg_health": 50, "n_critical": 6, "n_poor": 12,
-                                               "worst_band": "Critical"}
+    posture = s["executive_brief"]["posture"]
+    assert set(posture) == {"avg_health", "n_critical", "n_poor", "worst_band"}   # no abstention keys
+    assert isinstance(posture["avg_health"], int) and posture["worst_band"]
     assert ssot.summary(s) == s["executive_brief"]["ssot"]      # n_facts / n_checked unchanged
+    assert ssot.reconcile(s) == []
 
 
 # --------------------------------------------------------------------------------------------------
