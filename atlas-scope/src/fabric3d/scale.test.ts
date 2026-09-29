@@ -27,7 +27,9 @@
  *                             side grows as the square root of the node count (tiers wrap into square
  *                             blocks, layout.ts TARGET_TIER_ASPECT).
  *     Measured (counted calls): 300 fleet 15 109 824 against 33.2 M; 1 000 fleet 100 237 503 against
- *     273.6 M. The pre-index layout.ts counts 157 395 323 on the 300 fleet — 4.7× over — so the budget
+ *     273.6 M — and since the relevance bound on a curve's chords (2026-09-29, R2) 6 326 884 at 300,
+ *     with the route stage's cost per chassis measured pinned on its own below (115 and 101 counted
+ *     calls a unit against 281 and 285 before). The pre-index layout.ts counts 157 395 323 on the 300 fleet — 4.7× over — so the budget
  *     is not decorative: with that file in place this test goes red (and, through the runaway guard,
  *     goes red quickly instead of counting to the end).
  *   - EXACTNESS AT SCALE. The index may only ever skip a chassis that could not change an answer.
@@ -35,22 +37,34 @@
  *     fleet is re-measured by brute force, with this file's own arithmetic, against every chassis.
  *   - THE UI. Fabric3D lays a large fabric out in slices of counted work (LAYOUT_SLICE_WORK) and builds
  *     no scene until the layout exists; the reference sample still finishes inside the first,
- *     synchronous slice. Both are asserted below, against the real component.
+ *     synchronous slice. Both are asserted below, against the real component. A slice that THROWS — any
+ *     slice — reaches the fabric's error boundary, which says the layout failed (verifier V2-1: a throw
+ *     after the first slice used to be an unhandled rejection behind an endless "Building" state).
  *   - THE FABRIC LIST. FabricA11yTree opens tiers only while they fit TREE_OPEN_DEVICE_BUDGET, states
  *     the collapsed counts, and type-ahead still reaches a device inside a collapsed tier.
  *
- * LABORATORY FIGURES (this 14-core host, shared with other agents, Node 24; NOT asserted here —
- * `node review/synth-fleet.mjs --devices N --measure --budget-ms X` re-measures them and turns one into
- * an exit code). At 50-85 % host load: computeLayout 26 devices ~10-15 ms; 300 nodes ~120-170 ms (was
+ * LABORATORY FIGURES (this 14-core host, shared with other agents; NOT asserted here). The owner's
+ * budgets are gated IN A REAL BROWSER by `node review/measure-scale.mjs` (release build, host-env.mjs
+ * quiescence/power/window gates, receipt in review/reports/scale.json), which reads the LAYOUT_MEASURE
+ * entry the stage leaves per layout run — its contract is pinned below. `node review/synth-fleet.mjs
+ * --devices N --measure --budget-ms X` is the Node-side figure for computeLayout alone (Node 24). At 50-85 % host load: computeLayout 26 devices ~10-15 ms; 300 nodes ~120-170 ms (was
  * 3 498 ms before the fix); 1 000 nodes ~0.55-1.2 s (was 37 404 ms). At 100 % load (2026-09-28): 300
  * nodes median 610 ms (min 256), 1 000 nodes median 4 155 ms (min 2 586) — both OVER the budgets.
  * Stated budgets for a QUIET host of this class, for the CAMPUS-shaped synthetic fleets: ≤ 300 ms at
- * 300 and ≤ 2 s at 1 000 for the whole layout. They are UNCONFIRMED: no quiet-host run exists yet. A
+ * 300 and ≤ 2 s at 1 000 for the whole layout. They are UNCONFIRMED: no quiet-host run exists yet.
+ * Browser receipts on the SAME loaded, battery-throttled host (~76-77 % busy net of the harness), release
+ * build, 5 runs a size: before the chord relevance bound, 300 median computeMs 362.1 (FAIL) and 1 000
+ * 1 972.3; after it (receipt sha256 87bd5b6f…), 300 median 207.6 and 1 000 median 737.4 — both PASS,
+ * acceptanceEvidence=false because of the host, not the figures. Node CPU time on this host: 281 → 125 ms
+ * at 300, 2 110 → 671 ms at 1 000, with the layout bit-identical. A
  * flatter fleet costs more (a verifier's one-tier clone of the sample's access layer: 448 745 units at
  * 1 000 against the campus fleet's 387 193). The stage never waits on the whole: it slices the layout.
  *
  * IN A REAL BROWSER (Chromium, Intel iGPU via ANGLE/D3D11, the 300 fleet opened through the app's own
- * "Open a snapshot file" control, host at 100 % load, same-session sample-vs-300 comparisons):
+ * "Open a snapshot file" control, host at 100 % load, same-session sample-vs-300 comparisons). NOT LIKE
+ * FOR LIKE on render area (verifier V2-4): at the 1920x1080 viewport the opened 300 fleet's canvas measured
+ * 420x508 CSS px against the sample's 1160x962 — about 5.2x fewer pixels — so every frame-time figure
+ * below understates what the 300 fleet costs at the sample's canvas size:
  *   - Draw calls: 77 against the 88 budget at the high tier when idle (the sample: 71), 45-47 during an
  *     orbit drag; 1.77 M triangles, 50 programs, 15 of 300 labels shown.
  *   - Orbit, BEFORE the hover fix below (dev build): 107-108 frames in 6 s, p95 367-417 ms, max
@@ -80,7 +94,15 @@ import type { Fabric } from "../core/types";
 import { useInvestigation } from "../core/store";
 import { flushTurns } from "../test-support/act-turns";
 import type { FabricScene, SceneEvent, SceneOptions } from "./contract";
-import { Fabric3D, LAYOUT_SLICE_WORK, type Fabric3DProps } from "./Fabric3D";
+import {
+  Fabric3D,
+  LAYOUT_MEASURE,
+  LAYOUT_SLICE_MEASURE,
+  LAYOUT_SLICE_WORK,
+  type Fabric3DProps,
+  type LayoutMeasureDetail,
+  type LayoutSliceDetail,
+} from "./Fabric3D";
 import { FabricA11yTree, TREE_OPEN_DEVICE_BUDGET } from "./FabricA11yTree";
 import { ALL_CHASSIS_KINDS, prepareChassis } from "./geometry/chassis";
 import {
@@ -140,6 +162,35 @@ vi.mock("./scene", () => ({
     } as unknown as FabricScene;
   },
 }));
+
+/* A planted fault in the layout the STAGE runs, for the failure-path tests below. Off (0) everywhere else:
+   `layoutJob` is then the real one, returned untouched, and `computeLayout` is never wrapped. When on, the
+   stage's job throws from its `plant.atCall`-th `step()` — whichever slice that is, the synchronous first
+   one included — WITHOUT the real job knowing, so what is pinned is the stage catching whatever a slice
+   throws, not the job's own latch (layout.test.ts pins that). */
+const plant = vi.hoisted((): { atCall: number } => ({ atCall: 0 }));
+vi.mock("./layout", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./layout")>();
+  return {
+    ...real,
+    layoutJob: (opts: Parameters<typeof real.layoutJob>[0]) => {
+      const job = real.layoutJob(opts);
+      if (plant.atCall === 0) return job;
+      const at = plant.atCall;
+      let calls = 0;
+      return new Proxy(job, {
+        get(target, key) {
+          if (key !== "step") return Reflect.get(target, key);
+          return (budget: number) => {
+            calls += 1;
+            if (calls === at) throw new Error(`planted fault in layout slice ${calls}`);
+            return target.step(budget);
+          };
+        },
+      });
+    },
+  };
+});
 
 /* A fleet-sized unit of work is one test, not a split: laying out 1 000 nodes twice (sliced and whole)
    took 174 s on a saturated run of this host, against the 30 s hang detector. Each such test RAISES its
@@ -316,6 +367,48 @@ describe("the layout's work is near-linear in the fleet, counted", () => {
     expect(offenders).toEqual([]);
   });
 
+  for (const [n, f] of [
+    [300, F300],
+    [1000, F1000],
+  ] as const) {
+    it(`${n}: a chassis measured against a route costs only the chords that can change an answer`, { timeout: 600_000 }, () => {
+      /* R2 (Q-D, phase 3.5). The route stage is paced by chassis measured (a unit each); what a unit
+         COSTS is what this pins. A chassis's distance is read for two things only — is it under
+         ROUTE_CLEARANCE, is it under the nearest found — so a chord whose box is no nearer than both
+         cannot change an answer and is not measured, and a group of chords is rejected by one box test.
+         Measured (counted calls per unit over the whole route stage, straight routes included): 115 on
+         the 300 fleet, against 281 when every chassis was measured along every chord whose box was
+         nearer than its own running minimum — which is the bulk of them, since that minimum starts at
+         infinity. The bound sits between the two, so either regression is red: back to per-chord
+         measuring, or the bound forgotten. The layout itself is pinned unchanged, bit for bit, by
+         layout.test.ts's digests and by the brute-force re-derivation below. */
+      const ROUTE_OPS_PER_UNIT = 170;
+      const N = f.devices.length;
+      const E = f.links.length;
+      const steps: [units: number, ops: number][] = [];
+      primitiveOps((count) => {
+        const job = layoutJob(optsOf(f));
+        for (let r: FabricLayout | null = null; r === null; ) {
+          const w0 = job.work;
+          const c0 = count();
+          r = job.step(1);
+          steps.push([job.work - w0, count() - c0]);
+        }
+      });
+      /* The setup, DEFAULT_SWEEPS ordering passes and the embedding each report N+E; every later step is
+         the route stage (one cable, or the post-condition that ends it). */
+      const head = DEFAULT_SWEEPS + 2;
+      expect(steps.slice(0, head).map((s) => s[0]), "precondition: the ordering and embedding steps come first").toEqual(
+        Array.from({ length: head }, () => N + E),
+      );
+      const route = steps.slice(head);
+      const units = route.reduce((s, x) => s + x[0], 0);
+      const ops = route.reduce((s, x) => s + x[1], 0);
+      expect(units, "precondition: the route stage measured chassis").toBeGreaterThan(10 * E);
+      expect(ops / units, `${ops} counted calls for ${units} units of route work`).toBeLessThanOrEqual(ROUTE_OPS_PER_UNIT);
+    });
+  }
+
   it("known answer: the exhaustive route scan the index replaced is over this budget on the 300 fleet", { timeout: 600_000 }, () => {
     /* The pre-index route stage, reproduced in this file's own arithmetic, counted the same way: each
        hint's FIRST detour candidate alone is measured against every chassis along every chord. Even
@@ -480,6 +573,67 @@ describe("the stage lays a large fleet out in slices and never on one long task"
     built.cb.length = 0;
     built.disposed = 0;
     built.setData.length = 0;
+    plant.atCall = 0;
+  });
+
+  it("300: a layout that throws in ANY slice reaches the fabric's error boundary, which says the layout failed — never endless progress", { timeout: 600_000 }, async () => {
+    /* THE DEFECT (verifier V2-1, 2026-09-28). The slices after the first ran in a fire-and-forget async
+       loop with no catch: a throw there — the layout's own post-condition ("non-finite coordinates")
+       exists to stop a NaN fabric failing silently — became an unhandled rejection, the stage kept its
+       "Building the 3-D fabric" state for good, and the error boundary never heard of it. Before slicing,
+       a layout throw happened in render and reached that boundary. So: the class is EVERY slice — the
+       synchronous first one, the second, one in the middle and the one that would have finished — each
+       must end in the boundary's alert naming the layout, with no canvas, no scene and no rejection. */
+    const { ErrorBoundary } = await import("../app/ErrorBoundary");
+    const probe = layoutJob(optsOf(F300));
+    let calls = 1;
+    while (probe.step(LAYOUT_SLICE_WORK) === null) calls += 1;
+    expect(calls, "precondition: the 300 fleet takes many slices").toBeGreaterThan(3);
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on("unhandledRejection", onRejection);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (const at of [1, 2, Math.ceil(calls / 2), calls]) {
+        useInvestigation.getState().reset();
+        plant.atCall = at;
+        built.opts.length = 0;
+        host = document.createElement("div");
+        document.body.appendChild(host);
+        root = createRoot(host);
+        act(() => {
+          root!.render(
+            createElement(ErrorBoundary, {
+              surface: "The 3-D fabric",
+              children: createElement<Fabric3DProps>(Fabric3D, { devices: F300.devices, links: F300.links, tiers: F300.tiers }),
+            }),
+          );
+        });
+        const alert = (): Element | null => host!.querySelector('[role="alert"]');
+        for (let i = 0; i < 400 && alert() === null; i += 1) await flushTurns(0);
+        // Let a lost rejection surface before it is counted.
+        await flushTurns(0);
+        const text = alert()?.textContent ?? "";
+        expect(alert(), `slice ${at} of ${calls}: the stage never reported the failure (it shows ${JSON.stringify(host.textContent?.slice(0, 120))})`).not.toBeNull();
+        expect(text, `slice ${at}: the boundary names the surface`).toContain("The 3-D fabric stopped rendering");
+        expect(text, `slice ${at}: the message does not say it was the LAYOUT that failed`).toMatch(/layout of the 3-D fabric failed/i);
+        expect(text, `slice ${at}: the cause is not carried verbatim`).toContain(`planted fault in layout slice ${at}`);
+        expect(host.querySelector("canvas"), `slice ${at}: a canvas survived a failed layout`).toBeNull();
+        expect(built.opts, `slice ${at}: a scene was built from a failed layout`).toHaveLength(0);
+        expect(rejections.map(String), `slice ${at}: the failure escaped as an unhandled rejection`).toEqual([]);
+        act(() => {
+          root!.unmount();
+        });
+        host.remove();
+        root = null;
+        host = null;
+      }
+    } finally {
+      process.off("unhandledRejection", onRejection);
+      consoleError.mockRestore();
+    }
   });
 
   it("the reference sample is laid out inside the first, synchronous slice (unchanged behaviour)", async () => {
@@ -532,6 +686,42 @@ describe("the stage lays a large fleet out in slices and never on one long task"
     expect(built.opts).toHaveLength(1);
     const opts = built.opts[0] as SceneOptions;
     expect(opts.layout).toEqual(computeLayout(optsOf(F300)));
+  });
+
+  it("300: the stage says when its layout is pending, and leaves the one measure review/measure-scale.mjs times it by", { timeout: 600_000 }, async () => {
+    /* review/measure-scale.mjs times the layout in a real browser from the LAYOUT_MEASURE entry this run
+       leaves on the performance timeline, and waits on `data-layout`. Pinned here so that harness cannot
+       time nothing: a renamed measure or a missing field fails this test, not a quiet-host run. */
+    useInvestigation.getState().reset();
+    const measure = vi.spyOn(performance, "measure");
+    try {
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      root = createRoot(host);
+      act(() => {
+        root!.render(createElement<Fabric3DProps>(Fabric3D, { devices: F300.devices, links: F300.links, tiers: F300.tiers }));
+      });
+      const stage = (): Element | null => host!.querySelector(".fabric3d");
+      expect(stage()?.getAttribute("data-layout"), "a fleet still being laid out is not announced as pending").toBe("pending");
+      for (let i = 0; i < 400 && built.opts.length === 0; i += 1) await flushTurns(0);
+      expect(stage()?.getAttribute("data-layout")).toBe("ready");
+      const ours = measure.mock.calls.filter(([name]) => name === LAYOUT_MEASURE);
+      expect(ours, "the layout left no measure (or more than one) on the timeline").toHaveLength(1);
+      const detail = (ours[0]![1] as { detail: LayoutMeasureDetail }).detail;
+      const whole = layoutJob(optsOf(F300));
+      let slices = 1;
+      while (whole.step(LAYOUT_SLICE_WORK) === null) slices += 1;
+      expect(detail).toMatchObject({ devices: F300.devices.length, links: F300.links.length, outcome: "done", work: whole.work, slices });
+      // One slice measure per slice, each naming this run, numbered in order: the harness sums their
+      // durations into the layout's own compute time, and refuses a run whose count does not match.
+      const sliceDetails = measure.mock.calls
+        .filter(([name]) => name === LAYOUT_SLICE_MEASURE)
+        .map(([, o]) => (o as { detail: LayoutSliceDetail }).detail)
+        .filter((d) => d.run === detail.run);
+      expect(sliceDetails.map((d) => d.slice)).toEqual(Array.from({ length: slices }, (_, k) => k + 1));
+    } finally {
+      measure.mockRestore();
+    }
   });
 
   it("an orbit drag is not a hover: the scene's hover events during a press commit nothing", async () => {

@@ -760,7 +760,9 @@ describeGolden("regression: reachability from a host whose own cabling was never
   });
 });
 
-describeGolden("regression: projection prose quotes the quantity that actually moved", () => {
+/* An invariant (it sweeps every device and link of whatever fabric is loaded); it was filed under the golden tier in
+   phase 3 and is moved back out (P3C-V2-3). */
+describe("regression: projection prose quotes the quantity that actually moved", () => {
   /* `differs` is true when EITHER the stranded set or the component count changed, but the sentence
      interpolated only the stranded count — so a component-only difference printed "0 host(s)
      stranded instead of 0", and the endpoint caveat printed "3 endpoint(s) instead of 3". */
@@ -792,17 +794,20 @@ describeGolden("regression: projection prose quotes the quantity that actually m
   });
 });
 
-describeGolden("regression: the shared graph is evidence a renderer cannot edit", () => {
+/* An invariant over any fabric: the host whose adjacency is checked is CUT (resolved by property above), not a typed
+   name (P3C-V2-3). */
+describe("regression: the shared graph is evidence a renderer cannot edit", () => {
   it("freezes what this module builds, mutators included", () => {
     const g = buildAdjacency();
     expect(Object.isFrozen(g)).toBe(true);
     expect(Object.isFrozen(g.edges[0])).toBe(true);
-    expect(Object.isFrozen(g.excluded[0])).toBe(true);
-    expect(Object.isFrozen(g.attachedNonTransit[0])).toBe(true);
+    if (g.excluded.length > 0) expect(Object.isFrozen(g.excluded[0])).toBe(true);
+    if (g.attachedNonTransit.length > 0) expect(Object.isFrozen(g.attachedNonTransit[0])).toBe(true);
     expect(Object.isFrozen(g.assumptions[0])).toBe(true);
     expect(Object.isFrozen(g.options)).toBe(true);
-    expect(Object.isFrozen(g.adjacency.get("core1"))).toBe(true);
-    expect(Object.isFrozen((g.adjacency.get("core1") ?? [])[0])).toBe(true);
+    expect(g.adjacency.get(CUT)?.length ?? 0, "precondition: CUT has adjacency to freeze").toBeGreaterThan(0);
+    expect(Object.isFrozen(g.adjacency.get(CUT))).toBe(true);
+    expect(Object.isFrozen((g.adjacency.get(CUT) ?? [])[0])).toBe(true);
   });
 
   it("has no way to inject a host into the memoised singleton", () => {
@@ -814,7 +819,7 @@ describeGolden("regression: the shared graph is evidence a renderer cannot edit"
   });
 });
 
-describeGolden("regression: the path-enumeration ceiling is a ceiling", () => {
+describe("regression: the path-enumeration ceiling is a ceiling", () => {
   /* Math.max(1, Math.min(Math.trunc(NaN), 64)) is NaN, so `paths.length >= cap` was never true and
      enumeration ran unbounded while `truncated` reported false. The snapshot's largest minimum-hop
      path count between any pair is 17, so the ceiling itself is unreachable through pathsBetween —
@@ -829,10 +834,21 @@ describeGolden("regression: the path-enumeration ceiling is a ceiling", () => {
   });
 
   it("reports the limit it actually applied, and says so when the request was unusable", () => {
-    const r = pathsBetween("core1", "AP-floor1", Number.NaN, ALL_NODES());
+    // Any pair (PAIR is joined by a carrying cable, so a path exists on any fabric that has one).
+    const r = pathsBetween(PAIR[0], PAIR[1], Number.NaN, ALL_NODES());
     expect(r.pathLimit).toEqual({ requested: null, applied: 64, ceiling: 64, usable: false });
     expect(r.paths.length).toBeLessThanOrEqual(64);
     expect(r.caveats.join(" ")).toMatch(/limit/i);
+    const ok = pathsBetween(PAIR[0], PAIR[1], 3, ALL_NODES());
+    expect(ok.pathLimit).toEqual({ requested: 3, applied: 3, ceiling: 64, usable: true });
+    expect(ok.paths.length).toBeLessThanOrEqual(3);
+  });
+});
+
+describeGolden("regression: the path-enumeration ceiling on the reference sample", () => {
+  it("core1 to AP-floor1 has more than three minimum-hop paths, so a limit of 3 truncates and says so", () => {
+    const r = pathsBetween("core1", "AP-floor1", Number.NaN, ALL_NODES());
+    expect(r.pathLimit).toEqual({ requested: null, applied: 64, ceiling: 64, usable: false });
     const ok = pathsBetween("core1", "AP-floor1", 3, ALL_NODES());
     expect(ok.pathLimit).toEqual({ requested: 3, applied: 3, ceiling: 64, usable: true });
     expect(ok.truncated).toBe(true);
@@ -856,14 +872,21 @@ describeGolden("regression: the path-enumeration ceiling is a ceiling", () => {
  * Asserted over the whole class, not over L0: for every link the projection excludes as
  * non-transit, every host the message names as never-collected must actually be uncollected.
  */
-describeGolden("the non-transit refusal names only the ends that were never collected", () => {
-  const graph = buildAdjacency();
+/* Hoisted (QC-R1-4) so the golden block at the foot of this file can state that the sample has such links. */
+const nonTransitGraph = buildAdjacency();
+const nonTransit = nonTransitGraph.excluded.filter((x) => x.reason === "non-transit-endpoint");
+describe("the non-transit refusal names only the ends that were never collected", () => {
+  const graph = nonTransitGraph;
   const collectedOf = new Map(graph.source.devices.map((d) => [d.id, d.collected]));
-  const nonTransit = graph.excluded.filter((x) => x.reason === "non-transit-endpoint");
 
-  it("has such links to speak about", () => {
-    expect(nonTransit.length, "this snapshot excludes no link as non-transit").toBeGreaterThan(0);
-  });
+  /* The class sweep runs on any fabric; that the sample HAS such links (so the sweep is not empty there) is pinned
+     in the golden block at the foot of this file, and a fabric with none says so by name. */
+  it.runIf(nonTransit.length > 0)(
+    nonTransit.length > 0 ? "has such links to speak about" : "has such links to speak about [skipped: the loaded dataset excludes no link as non-transit]",
+    () => {
+      expect(nonTransit.length).toBeGreaterThan(0);
+    },
+  );
 
   it.each(nonTransit.map((x) => x.linkId))(
     "%s does not call a collected device uncollected",
@@ -941,10 +964,163 @@ describe("blast invariants on the loaded fabric", () => {
   });
 });
 
+/* ── the golden regressions above, as PROPERTIES of any fabric (P3C-V2-3, phase 3.5) ──
+ * The regression blocks pin each defect on the sample's own cables (L26 and L27 down, the five pod cables, ...),
+ * so they run only there. What each stood for holds on any fabric, and is checked here on perturbations CHOSEN BY
+ * PROPERTY: every pair of the cables incident to the widest cut vertex (CUT) downed together — which, wherever CUT
+ * has two or more cables, leaves the fabric already in pieces, the brownfield shape every one of those defects
+ * needed. The oracles are the independent walks above. */
+/* The preconditions below are hoisted to module scope (QC-R1-4) so the golden block can state that each holds on
+   the reference sample; otherwise a sample change that falsified one would turn its test into a silent named skip. */
+const cutCables = fabric.links
+  .filter((l) => l.a === CUT || l.b === CUT)
+  .map((l) => l.id)
+  .sort(cmpStr);
+const PERTURBED = cutCables.flatMap((x, i) =>
+  cutCables.slice(i + 1).map((y) => ({ label: `${x}+${y}`, g: buildAdjacencyFrom(withDown(x, y), fabric.devices) })),
+);
+/** Whether some perturbation leaves a component other than the largest with two or more nodes: the shape the
+ *  own-component defect needed (a single-cable sweep never produces one). */
+const piecesOf = (g: Graph): string[][] => {
+  const done = new Set<string>();
+  const out: string[][] = [];
+  for (const n of g.nodes) {
+    if (done.has(n)) continue;
+    const piece = [...walk(g, n)];
+    for (const m of piece) done.add(m);
+    out.push(piece);
+  }
+  return out.sort((x, y) => y.length - x.length);
+};
+const REACHES = PERTURBED.some(({ g }) => piecesOf(g).slice(1).some((p) => p.length >= 2));
+const needs = (ok: boolean, title: string, why: string): [boolean, string] => [ok, ok ? title : `${title} [skipped: ${why}]`];
+
+const [ownOk, ownTitle] = needs(
+  REACHES,
+  "a blast radius is measured inside the failed element's own component, on every two-cable cut around the widest cut vertex",
+  "no two-cable cut around the widest cut vertex leaves a second multi-node piece",
+);
+const [storyOk, storyTitle] = needs(PERTURBED.length > 0, "failureImpact and articulationPoints tell one story on every such graph, and a cut vertex separates only what its removal separates", "the widest cut vertex has fewer than two cables");
+/** Hosts every one of whose cables is outside the default projection (unknown status): the sample's AP-floor3-01
+ *  and wan-edge-rtr1.lab. */
+const uncertainIds = new Set(G0.uncertainLinkIds);
+const UNOBSERVED_CABLING = fabric.devices
+  .map((d) => d.host)
+  .filter((h) => {
+    const own = fabric.links.filter((l) => l.a === h || l.b === h);
+    return own.length > 0 && own.every((l) => uncertainIds.has(l.id));
+  });
+const [unobsOk, unobsTitle] = needs(UNOBSERVED_CABLING.length > 0, "reachability from a host whose own cabling was never observed refuses to answer, as pathsBetween does", "no host's cabling is entirely unobserved");
+describe("blast regressions as properties of the loaded fabric", () => {
+  it.runIf(ownOk)(ownTitle, () => {
+    const mismatches: string[] = [];
+    let comparedLinks = 0;
+    for (const { label, g } of PERTURBED) {
+      for (const host of g.nodes) {
+        const got = failureImpact(host, g).newlyStranded;
+        const want = oracleHost(g, host);
+        if (got.join(",") !== want.join(",")) mismatches.push(`${label} host ${host}: ${got} vs ${want}`);
+      }
+      const disputed = new Set(findPortDisputes(g.source.links).flatMap((d) => d.claims.map((c) => c.linkId)));
+      for (const e of g.edges) {
+        const r = linkFailureImpact(e.linkId, g);
+        if (disputed.has(e.linkId)) {
+          if (r.certainty !== "not-determinable" || r.newlyStranded.length > 0) mismatches.push(`${label} link ${e.linkId}: disputed but not withheld`);
+          continue;
+        }
+        comparedLinks += 1;
+        const want = oracleLink(g, e.linkId);
+        if (r.newlyStranded.join(",") !== want.join(",")) mismatches.push(`${label} link ${e.linkId}: ${r.newlyStranded} vs ${want}`);
+      }
+    }
+    expect(comparedLinks).toBeGreaterThan(0);
+    expect(mismatches.slice(0, 5)).toEqual([]);
+  }, 600_000);
+
+  it.runIf(storyOk)(storyTitle, () => {
+    for (const { label, g } of PERTURBED) {
+      const aps = articulationPoints(g).points;
+      const names = aps.map((p) => p.host);
+      expect(g.nodes.filter((h) => (failureImpact(h, g).newlyStranded.length > 0) !== names.includes(h)), label).toEqual([]);
+      for (const p of aps) {
+        expect(p.separatedHosts, `${label} ${p.host}`).toEqual(failureImpact(p.host, g).newlyStranded);
+        for (const iso of g.isolatedNodes) expect(p.separatedHosts, `${label}: ${p.host} separates ${iso}`).not.toContain(iso);
+      }
+    }
+  });
+
+  it("an endpoint count behind a cut is a floor it measured, or a stated refusal — never a 0 nobody measured", () => {
+    const graphs = [{ label: "as collected", g: G0 }, ...PERTURBED];
+    let judged = 0;
+    for (const { label, g } of graphs) {
+      const results = [
+        // A failed host's own endpoints go down with it, so its count covers the host itself as well as what it strands.
+        ...g.nodes.map((h) => ({ at: `${label} host ${h}`, r: failureImpact(h, g), self: [h] })),
+        ...g.edges.map((e) => ({ at: `${label} link ${e.linkId}`, r: linkFailureImpact(e.linkId, g), self: [] as string[] })),
+      ];
+      for (const { at, r, self } of results) {
+        if (r.newlyStranded.length === 0) continue;
+        judged += 1;
+        expect(r.claim, at).not.toMatch(/at least 0\b/);
+        const without = r.strandedEndpoints.hostsWithoutEndpointRecords;
+        expect(without.filter((h) => !r.newlyStranded.includes(h) && !self.includes(h)), `${at}: an unrecorded host that is not behind the cut`).toEqual([]);
+        if (r.strandedEndpoints.floorTotal === null) expect(r.claim, at).toMatch(/unknown number of endpoints/i);
+        else expect(r.claim, at).toContain(`at least ${r.strandedEndpoints.floorTotal}`);
+        if (r.strandedEndpoints.total === 0 && without.length > 0) expect(r.strandedEndpoints.floorTotal, at).toBeNull();
+      }
+    }
+    expect(judged, "some cut strands a host, so the rule is exercised").toBeGreaterThan(0);
+  });
+
+  it.runIf(unobsOk)(unobsTitle, () => {
+    for (const host of UNOBSERVED_CABLING) {
+      const r = reachableSet(host);
+      expect(r.certainty, host).toBe("not-determinable");
+      expect(r.unreachable, host).toEqual([]);
+      expect(r.hosts, host).toEqual([]);
+      const own = fabric.links.filter((l) => l.a === host || l.b === host);
+      for (const l of own) expect(r.caveats.join(" "), host).toContain(l.id);
+      const far = own[0]!.a === host ? own[0]!.b : own[0]!.a;
+      expect(pathsBetween(far, host).certainty, `${far} -> ${host}`).toBe("not-determinable");
+    }
+  });
+
+  it("a host whose own cables were observed DOWN reaches nobody, and that answer is observed", () => {
+    /* A down cable is evidence; an unobserved one is not. The line the refusal above must not blur. */
+    const own = fabric.links.filter((l) => l.a === LEAF || l.b === LEAF).map((l) => l.id);
+    expect(own.length, "precondition: LEAF has cables to down").toBeGreaterThan(0);
+    const r = reachableSet(LEAF, buildAdjacencyFrom(withDown(...own), fabric.devices));
+    expect(r.hosts).toEqual([LEAF]);
+    expect(r.certainty).toBe("observed");
+  });
+});
+
 describeGolden("blast on the reference sample: the resolved subjects and the population", () => {
   it("the property-resolved subjects are the ones the golden blocks name", () => {
     expect(CUT).toBe("core1");
     expect(fabric.links).toHaveLength(44);
     expect(G0.uncertainLinkIds).toEqual(["L34", "L35"]);
+  });
+
+  it("every named-skip precondition above holds here, so none of those tests is skipped on the reference sample (QC-R1-4)", () => {
+    expect(nonTransit.length).toBeGreaterThan(0);
+    expect(REACHES).toBe(true);
+    expect(ownOk).toBe(true);
+    expect(storyOk).toBe(true);
+    expect(unobsOk).toBe(true);
+    expect([...UNOBSERVED_CABLING].sort()).toEqual(["AP-floor3-01", "wan-edge-rtr1.lab"]);
+  });
+
+  it("the property counterparts reach the audited shapes here: core1's cables, the two unobserved-cabling hosts, non-transit links", () => {
+    expect(fabric.links.filter((l) => l.a === "core1" || l.b === "core1").length).toBeGreaterThanOrEqual(2);
+    const uncertain = new Set(G0.uncertainLinkIds);
+    const unobserved = fabric.devices
+      .map((d) => d.host)
+      .filter((h) => {
+        const own = fabric.links.filter((l) => l.a === h || l.b === h);
+        return own.length > 0 && own.every((l) => uncertain.has(l.id));
+      });
+    expect(unobserved.sort()).toEqual(["AP-floor3-01", "wan-edge-rtr1.lab"]);
+    expect(buildAdjacency().excluded.filter((x) => x.reason === "non-transit-endpoint").length).toBeGreaterThan(0);
   });
 });

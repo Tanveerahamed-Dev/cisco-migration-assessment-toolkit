@@ -581,7 +581,8 @@ const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
  * its WHOLE length stated in `cut` (a scalar record's own cut under the key ""). Members past the per-record
  * caps are not carried and are counted by `fieldsTotal`. So every cut is stated, and nothing is paraphrased.
  *
- * THE TOTAL bounds everything written, the WITHHELD records included. A record past the budget is written as
+ * THE TOTAL bounds everything written — the array as the model writes it, brackets and separators and the
+ * WITHHELD records included. A record past the budget is written as
  * a pointer-only stub (it is never dropped: a finding carries that pointer), and every stub's size is reserved
  * from the total before any record is carried; so the whole projection stays within `totalChars` whenever the
  * stubs alone fit. When they do not, every record is withheld and `writtenChars` > `totalChars` states the
@@ -664,8 +665,11 @@ export function compileEvidenceRecords(findings, snap, caps = EVIDENCE_PROJECTIO
     return { pointer, rec, stub, recChars: JSON.stringify(rec).length, stubChars: JSON.stringify(stub).length, omitted: fieldsTotal - carried, cuts: cut.length };
   });
   /* Everything starts withheld (every stub reserved); records are then carried in priority order while the
-     whole — carried records plus the remaining stubs — stays within the total. */
-  let writtenChars = built.reduce((a, b) => a + b.stubChars, 0);
+     whole — carried records plus the remaining stubs, and the array's own "[", "]" and separating commas as the
+     model writes it — stays within the total. (The frame was outside the budget until verifier P3A1-V2-4: a
+     planted run wrote 524 881 characters against 524 288.) */
+  const frameChars = built.length === 0 ? 2 : built.length + 1;
+  let writtenChars = frameChars + built.reduce((a, b) => a + b.stubChars, 0);
   /** @type {Set<string>} */
   const carriedSet = new Set();
   for (const b of [...built].sort((x, y) => /** @type {number} */ (rank.get(x.pointer)) - /** @type {number} */ (rank.get(y.pointer)))) {
@@ -700,7 +704,7 @@ export function compileEvidenceRecords(findings, snap, caps = EVIDENCE_PROJECTIO
       fieldsOmitted,
       textsCut,
       withheldChars,
-      writtenChars: projectedChars + withheldChars,
+      writtenChars: projectedChars + withheldChars + frameChars,
     },
   };
 }

@@ -19,13 +19,18 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function exampleOn(set: CompiledDataset | null): Promise<{ example: string; rows: number; findings: number }> {
+async function exampleOn(set: CompiledDataset | null): Promise<{ example: string; rows: number; deviceRows: number; findings: number }> {
   if (set !== null) (await import("./dataset/slot")).installDataset(asOpenedFile(set));
   const { exampleQuery } = await import("../app/Header");
-  const { applyToFindings, parseQuery } = await import("./query");
+  const { applyToDevices, applyToFindings, parseQuery } = await import("./query");
   const { fabric } = await import("./data");
   const example = exampleQuery();
-  return { example, rows: applyToFindings(fabric.findings, parseQuery(example)).items.length, findings: fabric.findings.length };
+  return {
+    example,
+    rows: applyToFindings(fabric.findings, parseQuery(example)).items.length,
+    deviceRows: applyToDevices(fabric.devices, parseQuery(example)).items.length,
+    findings: fabric.findings.length,
+  };
 }
 
 /** The same fleet with every finding at one severity dropped from one host — still a real, compiled fabric. */
@@ -46,6 +51,25 @@ describe("the header's example query returns rows on the loaded dataset", () => 
     const r = await exampleOn(compileGolden());
     expect(r.findings).toBeGreaterThan(0);
     expect(r.rows, `"${r.example}" returns no findings`).toBeGreaterThan(0);
+  });
+
+  /* With no finding at all no query returns findings, so the example falls back to a DEVICE clause — and that
+     clause must itself return rows (phase 3.5, P3E-V4): "is:uncollected" alone matched nothing on a fleet
+     whose every device was collected. Run through the same device filter the grammar applies. */
+  it("when the dataset has no finding and every device was collected, the device example still returns rows", async () => {
+    const c = structuredClone(compileGolden());
+    c.fabric.findings = [];
+    for (const d of c.fabric.devices) d.collected = true;
+    const r = await exampleOn(c);
+    expect(r.findings, "precondition: no finding").toBe(0);
+    expect(r.deviceRows, `"${r.example}" returns no devices`).toBeGreaterThan(0);
+  });
+
+  it("when the dataset has no finding and some device was not collected, the example still returns device rows", async () => {
+    const c = structuredClone(compileGolden());
+    c.fabric.findings = [];
+    const r = await exampleOn(c);
+    expect(r.deviceRows, `"${r.example}" returns no devices`).toBeGreaterThan(0);
   });
 
   it("when the first routable host carries no finding at all", async () => {

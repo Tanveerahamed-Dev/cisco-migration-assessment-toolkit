@@ -13,6 +13,7 @@ import fabricJson from "../data/fabric.json";
 import type { Device, Link } from "../core/types";
 import { computeLayout } from "./layout";
 import { createCameraRig, safeFrameFor, setStageOcclusion } from "./camera";
+import { isGoldenSample } from "../test-support/golden-sample";
 
 const devices = fabricJson.devices as Device[];
 const links = fabricJson.links as Link[];
@@ -77,7 +78,14 @@ describe("an open overlay panel is subtracted from the framing", () => {
       rig.home({ immediate: true });
       rig.update(16);
       const open = extent(rig.camera, w, h);
-      expect(open.minX).toBeLessThan(listPx);
+      /* RE-EXPRESSED 2026-09-29 (P3C-V2-3): "the band is given back" used to be read as "some chassis now sits
+         under where the list was" (open.minX < listPx), which is a fact about how WIDE one fabric frames — a
+         narrow fabric (the engine's 7-device golden) framed on the whole stage still clears 320 px. What closing
+         the list gives back on ANY fabric is the band itself: the framing moves into it (its leftmost chassis is
+         left of where the occluded framing put it) and spreads wider. The sample's reading is pinned below. */
+      expect(open.minX, "the framing moves into the band the list gave back").toBeLessThan(e.minX - 1);
+      expect(open.maxX - open.minX, "and uses the width it gained").toBeGreaterThanOrEqual(e.maxX - e.minX - 1);
+      if (isGoldenSample()) expect(open.minX, "on the reference sample a chassis sits where the list was").toBeLessThan(listPx);
       rig.dispose();
       canvas.remove();
     });

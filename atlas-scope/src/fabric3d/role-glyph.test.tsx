@@ -16,6 +16,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { readdirSync, readFileSync } from "node:fs";
+import ts from "typescript";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -125,31 +126,133 @@ describe("the 'other' glyph is the legend's Other-role mark and is not the 'unob
   });
 });
 
+/* ── the class, found by SYNTAX TREE (P3C-V2-5, verifier of phase 3) ──
+ * The first scan was a regular expression (`role ===`, `.role.toLowerCase`, `roles.has(x.role)`), which a reversed
+ * operand (`"core" === d.role`), a loose `==` or a `switch (d.role)` walked past: a hand-written pattern standing in
+ * for the class. The class is "a module in the 3-D subsystem deciding what a role IS", and it is read off the
+ * TypeScript syntax tree: any equality comparison with a role-valued operand on EITHER side, any `switch` on one, any
+ * method called on one (case-folding, trimming, ...), and any call that is handed one — except a call to the owner's
+ * own functions imported from core/roles.ts, the only legal spelling. A role-valued expression is a property named
+ * `role` (`d.role`, `d?.role`, `d["role"]`) or a variable or parameter named `role`. */
+function roleSites(fileName: string, text: string): string[] {
+  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  /* The owner's functions, as this file imports them (any alias). */
+  const owner = new Set<string>();
+  for (const st of sf.statements) {
+    if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier) || !/(^|\/)core\/roles$/.test(st.moduleSpecifier.text)) continue;
+    const b = st.importClause?.namedBindings;
+    if (b !== undefined && ts.isNamedImports(b)) for (const el of b.elements) owner.add(el.name.text);
+  }
+  const bare = (e: ts.Expression): ts.Expression => {
+    let x = e;
+    while (ts.isParenthesizedExpression(x) || ts.isNonNullExpression(x) || ts.isAsExpression(x) || ts.isTypeAssertionExpression(x)) x = x.expression;
+    return x;
+  };
+  const isRole = (e: ts.Expression): boolean => {
+    const x = bare(e);
+    if (ts.isPropertyAccessExpression(x)) return x.name.text === "role";
+    if (ts.isElementAccessExpression(x)) return ts.isStringLiteralLike(x.argumentExpression) && x.argumentExpression.text === "role";
+    if (!ts.isIdentifier(x) || x.text !== "role") return false;
+    /* An identifier only in VALUE position: not the name a declaration, a property, a JSX attribute (`role="tree"`)
+       or an import gives. */
+    const p = x.parent;
+    const names = (q: ts.Node & { name?: ts.Node }): boolean => q.name === x;
+    if (ts.isJsxAttribute(p) || ts.isImportSpecifier(p) || ts.isExportSpecifier(p) || ts.isPropertyAccessExpression(p)) return names(p) ? false : !ts.isJsxAttribute(p);
+    if ((ts.isPropertyAssignment(p) || ts.isPropertyDeclaration(p) || ts.isPropertySignature(p) || ts.isMethodDeclaration(p) || ts.isVariableDeclaration(p) || ts.isParameter(p) || ts.isBindingElement(p)) && names(p)) return false;
+    if (ts.isBindingElement(p) && p.propertyName === x) return false;
+    return true;
+  };
+  /* A role handed on inside a larger expression (`d.role ?? ""`, a template) is still handed on; a role handed to
+     the owner inside it is the owner's. */
+  const carriesRole = (e: ts.Node): boolean => {
+    /* A callback handed to a call is not the role handed on: what it does with a role is judged where it does it. */
+    if (ts.isFunctionLike(e)) return false;
+    if (ts.isExpression(e) && isRole(e)) return true;
+    if (ts.isCallExpression(e)) {
+      const c = bare(e.expression);
+      if (ts.isIdentifier(c) && owner.has(c.text)) return false;
+    }
+    let hit = false;
+    ts.forEachChild(e, (k) => {
+      if (!hit && carriesRole(k)) hit = true;
+    });
+    return hit;
+  };
+  const EQ = new Set([ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken]);
+  const out: string[] = [];
+  const say = (n: ts.Node): void => {
+    out.push(n.getText(sf).replace(/\s+/g, " "));
+  };
+  const visit = (n: ts.Node): void => {
+    if (ts.isBinaryExpression(n) && EQ.has(n.operatorToken.kind) && (isRole(n.left) || isRole(n.right))) say(n);
+    if (ts.isSwitchStatement(n) && isRole(n.expression)) say(n.expression.parent);
+    if (ts.isCallExpression(n)) {
+      const callee = bare(n.expression);
+      const ownerCall = ts.isIdentifier(callee) && owner.has(callee.text);
+      if ((ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) && isRole(callee.expression)) say(n);
+      else if (!ownerCall && n.arguments.some(carriesRole)) say(n);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+
 describe("the class: no role classification outside the owner in fabric3d", () => {
-  /* A guard on scene.ts and FabricLegend.tsx alone would be a named subset. The class is "a module in the 3-D
-     subsystem deciding what a role IS" — comparing a role to a literal or to null, or case-folding it — and the
-     only legal spelling is a call to roles.ts. Every non-test source in src/fabric3d is scanned. */
+  /* A guard on scene.ts and FabricLegend.tsx alone would be a named subset. Every non-test source in src/fabric3d
+     is scanned, through the syntax tree (roleSites above). */
   const DIR = dirname(fileURLToPath(import.meta.url));
   const sources = (dir: string): string[] =>
     readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
       e.isDirectory() ? sources(join(dir, e.name)) : /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [join(dir, e.name)] : [],
     );
-  const CLASSIFY = /\brole\s*[!=]==|\.role\s*\??\.\s*(toLowerCase|toUpperCase|trim)\b|roles\.has\(\s*\w+\.role\s*\)/g;
   /* Sites in files this cluster does not own, routed to their owner (P3D: layout.ts, Fabric3D.tsx). Each entry
      must STILL match, so the day it is fixed this list goes red until the entry is removed. */
   const PENDING: Record<string, string[]> = {
     "layout.ts": ["role !==", ".role.toLowerCase"],
     "Fabric3D.tsx": ["role !==", "roles.has(d.role)"],
   };
-  const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
   const found = new Map<string, string[]>();
   for (const f of sources(DIR)) {
-    const hits = [...strip(readFileSync(f, "utf8")).matchAll(CLASSIFY)].map((m) => m[0].replace(/\s+/g, " "));
+    const hits = roleSites(f, readFileSync(f, "utf8"));
     if (hits.length > 0) found.set(f.slice(DIR.length + 1).replace(/\\/g, "/"), hits);
   }
 
   it("scanned the subsystem (the file set is not empty)", () => {
     expect(sources(DIR).length).toBeGreaterThan(20);
+  });
+
+  it("the scan sees every spelling of the class, and not the owner's own calls (known answers)", () => {
+    const planted = [
+      'import { roleGlyphClass as glyph, normalizeRole } from "../core/roles";',
+      "declare const d: { role: string | null };",
+      "declare const role: string | null;",
+      'const a1 = d.role === "core";', // 3
+      'const a2 = "core" === d.role;', // 4: reversed operand
+      'const a3 = d.role == "core";', // 5: loose
+      'const a4 = d["role"] !== null;', // 6: element access
+      "switch (d.role) { default: }", // 7: switch
+      "const a5 = d.role?.toLowerCase();", // 8: a method on it
+      "const a6 = new Set([\"x\"]).has(d.role ?? \"\");", // 9: handed on inside an expression
+      "const a7 = new Set([\"x\"]).has(d.role!);", // 10: handed to a call
+      "const a8 = role === null;", // 11: a parameter/variable named role
+      "const ok1 = glyph(d.role);", // 12: the owner, aliased
+      "const ok2 = normalizeRole(role);", // 13: the owner
+      "const ok3 = d.role;", // 14: a read, not a decision
+      "export { a1, a2, a3, a4, a5, a6, a7, a8, ok1, ok2, ok3 };",
+    ].join("\n");
+    const hits = roleSites("planted.ts", planted);
+    expect(hits).toEqual([
+      'd.role === "core"',
+      '"core" === d.role',
+      'd.role == "core"',
+      'd["role"] !== null',
+      "switch (d.role) { default: }",
+      "d.role?.toLowerCase()",
+      "new Set([\"x\"]).has(d.role ?? \"\")",
+      "new Set([\"x\"]).has(d.role!)",
+      "role === null",
+    ]);
   });
 
   it("no unlisted classification site", () => {

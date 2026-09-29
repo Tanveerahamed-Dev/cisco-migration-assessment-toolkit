@@ -186,9 +186,12 @@ export async function checkPaletteOverDialog(page) {
  * invisible to it, so the set was "modules that spell <Dialog", not "dialogs the app can open".
  *
  * THE RULE, read from the syntax tree of every non-test .ts/.tsx under the root:
- *   1. A MODAL ELEMENT is an intrinsic JSX element (lower-case tag) that is given `role` "dialog" and an
- *      `aria-modal` that is not literally false — as a JSX attribute, or as a property of an object
- *      spread into it (DialogFrame spreads `{ role: "dialog", "aria-modal": "true" }`).
+ *   1. A MODAL ELEMENT is an intrinsic JSX element (lower-case tag) that is given `role` "dialog" or
+ *      "alertdialog" and an `aria-modal` that is not literally false — as a JSX attribute, or as a property of
+ *      an object spread into it (DialogFrame spreads `{ role: "dialog", "aria-modal": "true" }`) — or a native
+ *      `<dialog>`, which is modal when shown with showModal() and carries no aria-modal at all: it counts
+ *      unless its module never calls showModal() AND renders it `open` or calls show() (independent verifier
+ *      QH-V1-6: both kinds were outside the census).
  *   2. A component (a function declaration, or a const bound to an arrow/function) that renders a modal
  *      element, or a DIALOG PRIMITIVE, is a dialog component. A tag or `createElement` argument is resolved
  *      through the module's own declarations and const aliases, named/default/aliased imports, and
@@ -349,7 +352,23 @@ export async function modalDialogsIn(files) {
         if (n === "aria-modal") modal = literal(a.initializer);
       } else if (ts.isJsxSpreadAttribute(a)) visitSpread(a.expression);
     }
-    return role === "dialog" && modal !== false && modal !== "false" && modal !== null;
+    /* `alertdialog` is a dialog by the same contract (independent verifier QH-V1-6). */
+    return (role === "dialog" || role === "alertdialog") && modal !== false && modal !== "false" && modal !== null;
+  };
+  /** Whether a module calls a member named `name` anywhere (`ref.current?.showModal()`, `d.show()`). */
+  const callsMember = (sf, name) => {
+    const find = (n) =>
+      (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === name) ||
+      (ts.forEachChild(n, find) ?? false);
+    return find(sf);
+  };
+  /** A NATIVE <dialog> (QH-V1-6): modal when shown with showModal() — no aria-modal attribute at all. It is non-modal
+   *  only on evidence: its module never calls showModal(), and it is rendered `open` or its module calls show(). */
+  const nativeModal = (file, attrs) => {
+    const sf = mods.get(file).sf;
+    if (callsMember(sf, "showModal")) return true;
+    const open = attrs.properties.some((a) => ts.isJsxAttribute(a) && a.name.getText() === "open" && literal(a.initializer) !== false);
+    return !(open || callsMember(sf, "show"));
   };
   /** Per component: whether it renders a modal element, which components it renders, whether it takes a title. */
   const facts = new Map();
@@ -362,7 +381,7 @@ export async function modalDialogsIn(files) {
           const open = ts.isJsxElement(n) ? n.openingElement : n;
           const tag = open.tagName;
           if (ts.isIdentifier(tag) && /^[a-z]/.test(tag.text)) {
-            if (modalOf(open.attributes)) modal = true;
+            if (modalOf(open.attributes) || (tag.text === "dialog" && nativeModal(file, open.attributes))) modal = true;
           } else {
             const k = resolveExpr(file, tag);
             if (k !== null) renders.add(k);

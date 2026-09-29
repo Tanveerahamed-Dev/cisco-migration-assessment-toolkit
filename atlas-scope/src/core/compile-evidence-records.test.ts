@@ -57,6 +57,8 @@ function budgetOrder(findings: readonly { priority?: number | null; evidenceRefs
   return rank;
 }
 const written = (recs: readonly EvidenceRecord[]): number => recs.reduce((a, r) => a + JSON.stringify(r).length, 0);
+/** The projection AS WRITTEN into the model: the array, its brackets and separators included (verifier P3A1-V2-4). */
+const asWritten = (recs: readonly EvidenceRecord[]): number => JSON.stringify(recs).length;
 
 const typeOf = (v: unknown): string => (v === null ? "null" : Array.isArray(v) ? "array" : typeof v);
 const cap = EVIDENCE_PROJECTION_CAPS;
@@ -157,7 +159,7 @@ describe("the projection of the tracked sample (invariants over every pointer)",
     /* The total bounds EVERYTHING the projection writes, the withheld records' pointer-only stubs included
        (verifier P3A1-V1-4: stubs were outside every budget, so the output grew past the cap with the
        pointer count). */
-    expect(p.writtenChars, "every record as written, stubs included").toBe(written(records));
+    expect(p.writtenChars, "the whole array as written, stubs, brackets and separators included").toBe(asWritten(records));
     expect(p.withheldChars).toBe(written(records.filter((r) => r.withheld)));
     expect(p.writtenChars).toBeLessThanOrEqual(p.totalChars);
   });
@@ -293,7 +295,7 @@ describe("the caps, on planted records built from the real sample", () => {
     const pointers = new Set(set.fabric.findings.flatMap((f) => (f.evidenceRefs ?? []).map((r) => r.ref)));
     expect(recs.length).toBe(pointers.size);
     // …and what is written, stubs included, stays inside the total.
-    expect(p.writtenChars).toBe(written(recs));
+    expect(p.writtenChars).toBe(asWritten(recs));
     expect(p.writtenChars, "the total bounds the whole projection").toBeLessThanOrEqual(p.totalChars);
     /* The budget is spent in the engine's priority order: every planted record carried comes before every
        planted record withheld (they are all the same size, so the order alone decides). */
@@ -314,8 +316,9 @@ describe("the caps, on planted records built from the real sample", () => {
     expect(records.map((r) => r.withheld)).toEqual([true, true, true]);
     expect(projection.projectedChars).toBe(0);
     expect(projection.totalChars).toBe(10);
-    expect(projection.writtenChars).toBe(written(records));
-    expect(projection.withheldChars).toBe(projection.writtenChars);
+    expect(projection.writtenChars).toBe(asWritten(records));
+    expect(projection.withheldChars).toBe(written(records));
+    expect(projection.writtenChars, "the stubs, and the array's brackets and separators").toBe(projection.withheldChars + records.length + 1);
     expect(projection.writtenChars).toBeGreaterThan(projection.totalChars);
     /* With room for exactly one full record plus the other's stub, the ENGINE's first pointer is the one
        carried — though it sorts after the other. */
@@ -323,11 +326,16 @@ describe("the caps, on planted records built from the real sample", () => {
     const roomy = compileEvidenceRecords(two, SAMPLE, { ...EVIDENCE_PROJECTION_CAPS, totalChars: 1e9 });
     const bare = compileEvidenceRecords(two, SAMPLE, { ...EVIDENCE_PROJECTION_CAPS, totalChars: 0 });
     const size = (set: { records: EvidenceRecord[] }, p: string): number => JSON.stringify(set.records.find((r) => r.pointer === p)).length;
-    const tight = compileEvidenceRecords(two, SAMPLE, { ...EVIDENCE_PROJECTION_CAPS, totalChars: size(roomy, "/punchlist/2") + size(bare, "/punchlist/0") });
+    // Two records as written: "[", one ",", "]".
+    const tight = compileEvidenceRecords(two, SAMPLE, { ...EVIDENCE_PROJECTION_CAPS, totalChars: size(roomy, "/punchlist/2") + size(bare, "/punchlist/0") + 3 });
     expect(tight.records.map((r) => r.pointer), "the output stays sorted by pointer").toEqual(["/punchlist/0", "/punchlist/2"]);
     expect(tight.records.find((r) => r.pointer === "/punchlist/2")?.withheld, "the engine's first pointer is carried").toBe(false);
     expect(tight.records.find((r) => r.pointer === "/punchlist/0")?.withheld).toBe(true);
     expect(tight.projection.writtenChars).toBe(tight.projection.totalChars);
+    expect(tight.projection.writtenChars).toBe(asWritten(tight.records));
+    // One character less and the engine's first pointer no longer fits: the frame is inside the budget.
+    const under = compileEvidenceRecords(two, SAMPLE, { ...EVIDENCE_PROJECTION_CAPS, totalChars: tight.projection.totalChars - 1 });
+    expect(under.records.every((r) => r.withheld)).toBe(true);
   });
 
   it("a model with no evidence pointer carries an empty projection, stated as such", () => {

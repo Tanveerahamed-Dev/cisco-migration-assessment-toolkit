@@ -15,6 +15,7 @@
  * that the surrounding block was not preserved.
  */
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -63,7 +64,7 @@ import {
   SeverityBadge,
   orNotObserved,
 } from "../ui/primitives";
-import { CitedText } from "./cited-text";
+import { CitedText, withoutCitations } from "./cited-text";
 import { AclLines, Kv, Section, useOpenCite, type KvRow } from "./DevicePane";
 import "./EvidencePane.css";
 import { RouteFieldValue } from "./HopList";
@@ -489,9 +490,181 @@ const ENGINE_REF_CAP = 8;
 /** With at most this many records to disclose, their members are open from the start. */
 const OPEN_FIELDS_AT_MOST = 3;
 
+/**
+ * What the reader has done to step 3 for ONE finding: the list unfolded, the members they opened or closed, and
+ * the record they last asked the header for. Held by the pane, keyed to the finding (a selection change starts
+ * clean without an effect), because the header's controls and the list's own controls act on the same state.
+ */
+interface EngineView {
+  findingId: string;
+  showAll: boolean;
+  /** Members opened (true) or closed (false) by the reader; a pointer not here follows OPEN_FIELDS_AT_MOST. */
+  fields: ReadonlyMap<string, boolean>;
+  /** The pointer the header's control last asked for (it stays listed past the fold), and a count of the asks. */
+  revealed: string | null;
+  asks: number;
+}
+
+/**
+ * The name each of the engine's records goes by in the header's controls: its label, without a trailing
+ * parenthetical (the list in step 3 carries the whole label) and without any citation (a citation inside a
+ * control that does something else is inert — acceptance B6). Names are told apart: two records that would
+ * share a short name keep their whole labels, and two whole labels that still collide are numbered by the
+ * engine's order.
+ */
+export function engineRecordNames(refs: readonly EngineRef[]): string[] {
+  const whole = refs.map((r) => withoutCitations(r.ref.label).replace(/\s+/g, " ").trim());
+  const fallback = (i: number): string => whole[i] || `${KIND_WORDS[refs[i]!.ref.kind]} ${i + 1}`;
+  const short = refs.map((_, i) => {
+    const s = fallback(i).replace(/\s*\([^()]*\)$/, "").trim();
+    return s === "" ? fallback(i) : s;
+  });
+  const count = (xs: string[]): Map<string, number> => xs.reduce((m, x) => m.set(x, (m.get(x) ?? 0) + 1), new Map<string, number>());
+  const shortCounts = count(short);
+  const named = short.map((s, i) => ((shortCounts.get(s) ?? 0) > 1 ? fallback(i) : s));
+  const namedCounts = count(named);
+  return named.map((s, i) => ((namedCounts.get(s) ?? 0) > 1 ? `${s} · ${i + 1}` : s));
+}
+
+/** A run of the header's controls that share the ending of their names, said once before the run. */
+export interface EngineNameRun {
+  start: number;
+  end: number;
+  /** The shared ending, with its leading space. */
+  suffix: string;
+}
+
+/** Runs shorter than this keep their names whole: a caption for two controls costs more than it saves. */
+const NAME_RUN_AT_LEAST = 3;
+
+/**
+ * Where consecutive records of one kind share the ending of their names (the 20 per-device witnesses of a
+ * fleet-wide absence are each "<host> assessed -- none found"), the ending is said ONCE, before the run, and
+ * each control shows what tells it apart; its accessible name stays the whole name. Measured on F142 at
+ * 1920×1080: 21 whole names made the header 651 px tall and left 258 px of the chain on screen.
+ */
+export function engineNameRuns(refs: readonly EngineRef[], names: readonly string[]): EngineNameRun[] {
+  const runs: EngineNameRun[] = [];
+  for (let start = 0; start < refs.length; ) {
+    let end = start + 1;
+    while (end < refs.length && refs[end]!.ref.kind === refs[start]!.ref.kind) end += 1;
+    const members = names.slice(start, end);
+    if (members.length >= NAME_RUN_AT_LEAST) {
+      /* The longest ending every member has, cut back to a word boundary (it starts with a space), that leaves
+         every member something of its own. */
+      let suffix = members[0]!;
+      for (const m of members) while (!m.endsWith(suffix)) suffix = suffix.slice(1);
+      const at = suffix.indexOf(" ");
+      suffix = at < 0 ? "" : suffix.slice(at);
+      if (suffix.trim().length >= 4 && members.every((m) => m.length > suffix.length && m.slice(0, -suffix.length).trim() !== "")) runs.push({ start, end, suffix });
+    }
+    start = end;
+  }
+  return runs;
+}
+
+/** The basis in a few words, for the header beside the controls (step 3 states it in full). */
+const BASIS_SHORT: Readonly<Record<EvidenceBasis, string>> = {
+  record: "Basis: record.",
+  row: "Basis: analysis rows the engine derived it from — not configuration.",
+  absence: "Basis: absence — witnessed by per-device records, not configuration.",
+};
+
+/**
+ * The header's route to the engine's evidence: ONE control per record the engine names, never folded, in the
+ * header — which does not scroll, so every one is on screen as soon as the finding is selected. Activating one
+ * reaches that record in step 3 (opens it, shows its members, or brings its verbatim text into view) and moves
+ * focus there; the app scrolls, the reader does not.
+ *
+ * Acceptance A1 counts a click, a key chord or one committed typed query as one interaction and scrolling as a
+ * failure; a row not in view is selected through the palette (Ctrl+K, then the id with Enter: two). The route
+ * this replaced opened only the FIRST named record, or moved to step 3 where records past the fold needed "Show
+ * all" and a disclosure: four or five by that counting for 30 findings (verifier P3A1-V2-1). With a control per
+ * record here, every record the engine names is the third interaction.
+ *
+ * The controls are one toolbar — one tab stop, walked with the arrow keys, Home and End — so a finding the
+ * engine backs with 27 records does not put 27 tab stops ahead of the chain.
+ */
+function EngineIndex({
+  finding,
+  engine,
+  onReveal,
+}: {
+  finding: Finding;
+  engine: EngineRef[];
+  onReveal: (r: EngineRef, trigger: HTMLButtonElement) => void;
+}): ReactElement | null {
+  const [stop, setStop] = useState(0);
+  const names = useMemo(() => engineRecordNames(engine), [engine]);
+  const runs = useMemo(() => engineNameRuns(engine, names), [engine, names]);
+  if (engine.length === 0) return null;
+  const basis = finding.evidenceBasis ?? null;
+  const total = finding.evidenceRefsTotal ?? null;
+  const current = Math.min(stop, engine.length - 1);
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    const d =
+      e.key === "ArrowRight" || e.key === "ArrowDown"
+        ? current + 1
+        : e.key === "ArrowLeft" || e.key === "ArrowUp"
+          ? current - 1
+          : e.key === "Home"
+            ? 0
+            : e.key === "End"
+              ? engine.length - 1
+              : null;
+    if (d === null) return;
+    e.preventDefault();
+    const next = (d + engine.length) % engine.length;
+    setStop(next);
+    e.currentTarget.querySelectorAll<HTMLButtonElement>("button[data-engine-chip]")[next]?.focus();
+  };
+  return (
+    <div className="ev__jump ev__eindex" data-evidence-route="engine" data-engine-index="">
+      <p className="ev__jump-note ev__eindex-note">
+        {`${basis === null ? "The engine stated no basis." : BASIS_SHORT[basis]} The engine points at ${plural(engine.length, "record")}${
+          total === null ? "" : ` (${total} in all; it capped its list)`
+        } for this finding; each opens in step 3, beside the pointer that names it.`}
+      </p>
+      <div role="toolbar" aria-label={`The records the engine points at for ${finding.id}`} className="ev-echips" onKeyDown={onKeyDown}>
+        {engine.map((r, i) => {
+          const run = runs.find((x) => i >= x.start && i < x.end) ?? null;
+          const name = names[i]!;
+          const shown = run === null ? name : name.slice(0, name.length - run.suffix.length).trim();
+          return (
+            <Fragment key={`${i}:${r.ref.ref}`}>
+              {run !== null && run.start === i ? (
+                /* Said once for the run; each control's accessible name carries it whole, so this is not read twice. */
+                <span className="ev-echips__run" aria-hidden="true">
+                  {`${plural(run.end - run.start, KIND_WORDS[r.ref.kind])}, each “${run.suffix.trim()}”:`}
+                </span>
+              ) : null}
+              <Button
+                variant={r.open !== null || r.ref.kind === "config_text" ? "primary" : "secondary"}
+                size="sm"
+                className="ev-echip"
+                data-engine-chip={r.ref.ref}
+                data-evidence-kind={r.ref.kind}
+                aria-label={shown === name ? undefined : name}
+                tabIndex={i === current ? 0 : -1}
+                onFocus={() => setStop(i)}
+                onClick={(e) => onReveal(r, e.currentTarget)}
+              >
+                {shown}
+              </Button>
+            </Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function EngineEvidence({
   finding,
   refs,
+  view,
+  onShowAll,
+  onSetFields,
   onOpenCite,
   onOpenRecord,
   expandedFor,
@@ -500,6 +673,10 @@ function EngineEvidence({
 }: {
   finding: Finding;
   refs: EngineRef[];
+  /** The reader's state of this list for this finding (null: untouched). */
+  view: EngineView | null;
+  onShowAll: () => void;
+  onSetFields: (pointer: string, open: boolean) => void;
   onOpenCite: (c: Cite) => void;
   onOpenRecord: (t: ConfigEvidence, trigger: HTMLButtonElement) => void;
   /** Whether a record opened in this pane is the one showing (aria-expanded), or undefined when a wider surface owns it. */
@@ -512,23 +689,23 @@ function EngineEvidence({
   openedCite?: string | null;
   excerpt?: ReactNode;
 }): ReactElement {
-  const [allFor, setAllFor] = useState<string | null>(null);
-  const [openFields, setOpenFields] = useState<{ findingId: string; pointers: ReadonlySet<string> } | null>(null);
-  const showAll = allFor === finding.id;
+  const showAll = view?.showAll ?? false;
+  const revealed = view?.revealed ?? null;
   const disclosable = refs.filter((r) => r.open === null && r.ref.kind !== "config_text");
   const openByDefault = disclosable.length <= OPEN_FIELDS_AT_MOST;
-  const opened = openFields !== null && openFields.findingId === finding.id ? openFields.pointers : new Set<string>();
-  const fieldsOpen = (p: string): boolean => (openByDefault ? !opened.has(p) : opened.has(p));
-  const toggle = (p: string): void => {
-    const next = new Set(opened);
-    if (next.has(p)) next.delete(p);
-    else next.add(p);
-    setOpenFields({ findingId: finding.id, pointers: next });
-  };
-  /* The ref whose record is open stays listed even when it is past the fold (the header can open the first
-     named record wherever it sits), so the excerpt always has its pointer beside it. */
-  const holder = openedCite === null ? -1 : refs.findIndex((r) => r.open?.cite === openedCite);
-  const shown = showAll ? refs : refs.filter((r, i) => i < ENGINE_REF_CAP || r.ref.kind === "config_text" || i === holder);
+  const fieldsOpen = (p: string): boolean => view?.fields.get(p) ?? openByDefault;
+  const toggle = (p: string): void => onSetFields(p, !fieldsOpen(p));
+  /* The ref whose record is open, and the one the header last asked for, stay listed even when past the fold, so
+     the excerpt always has its pointer beside it and the header's control always lands on a listed record. When
+     two pointers name one compiled record, the one the header asked for holds the excerpt. */
+  const revealedAt = revealed === null ? -1 : refs.findIndex((r) => r.ref.ref === revealed);
+  const holder =
+    openedCite === null
+      ? -1
+      : revealedAt >= 0 && refs[revealedAt]!.open?.cite === openedCite
+        ? revealedAt
+        : refs.findIndex((r) => r.open?.cite === openedCite);
+  const shown = showAll ? refs : refs.filter((r, i) => i < ENGINE_REF_CAP || r.ref.kind === "config_text" || i === holder || i === revealedAt);
   /* Each section is COUNTED over every ref the engine names for it, and says how many the fold leaves on
      screen: a heading counting only the unfolded ones printed "witnessed by 7 records" for an absence 20
      devices witness (verifier P3A1-V1-1). */
@@ -551,7 +728,7 @@ function EngineEvidence({
     const disclose = r.open === null && r.ref.kind !== "config_text" && rec !== null && !rec.withheld;
     const isOpen = disclose && fieldsOpen(p);
     return (
-      <li key={`${i}:${p}`} className="ev-eref" data-evidence-ref={p} data-evidence-kind={r.ref.kind}>
+      <li key={`${i}:${p}`} className="ev-eref" data-evidence-ref={p} data-evidence-kind={r.ref.kind} tabIndex={-1}>
         <p className="ev-eref__head">
           <span className="ev-eref__kind">{KIND_WORDS[r.ref.kind]}</span>
           {r.ref.host === null ? null : <span className="ev-mono ev-eref__host">{r.ref.host}</span>}
@@ -653,7 +830,7 @@ function EngineEvidence({
       {shown.length < refs.length ? (
         <p className="ev-step__text ev-engine__cap">
           {`Showing ${shown.length} of the ${plural(refs.length, "record")} the engine points at; configuration text is never folded. `}
-          <Button variant="ghost" size="sm" data-engine-show-all="" onClick={() => setAllFor(finding.id)}>
+          <Button variant="ghost" size="sm" data-engine-show-all="" onClick={onShowAll}>
             {`Show all ${refs.length}`}
           </Button>
         </p>
@@ -1091,45 +1268,6 @@ function FindingSource({ finding }: { finding: Finding }): ReactElement {
   );
 }
 
-/**
- * The header's route to the engine's evidence: the first record the engine names that the model compiles
- * (one interaction opens it), or — when the engine names rows, facts or witnesses rather than a
- * configuration record — a move to step 3, where they are rendered. It replaces the word-matched landing for
- * every finding that carries pointers: the engine said what it rests on, so nothing is guessed.
- */
-function EngineJump({
-  engine,
-  onShow,
-  onGo,
-}: {
-  engine: EngineRef[];
-  onShow: (t: ConfigEvidence, trigger: HTMLButtonElement) => void;
-  onGo: () => void;
-}): ReactElement | null {
-  const first = engine.find((r) => r.open !== null)?.open ?? null;
-  if (engine.length === 0) return null;
-  return (
-    <div className="ev__jump" data-evidence-route="engine">
-      {first !== null ? (
-        <Button variant="primary" size="sm" onClick={(e) => onShow(first, e.currentTarget)}>
-          {`Show the record the engine names: ${first.label}`}
-        </Button>
-      ) : (
-        <Button variant="primary" size="sm" onClick={onGo}>
-          {`Go to the ${plural(engine.length, "record")} the engine points at`}
-        </Button>
-      )}
-      <span className="ev__jump-note">
-        {first !== null
-          ? engine.length === 1
-            ? "The engine's own pointer for this finding."
-            : `The first of the ${plural(engine.length, "record")} the engine points at; step 3 lists every one.`
-          : "The engine points at analysis rows, device facts or absence witnesses, not a configuration record; step 3 shows them as what they are."}
-      </span>
-    </div>
-  );
-}
-
 /** The producer's own words about a finding's severity and evidence, as header rows, where it wrote them. */
 function producerWords(f: Finding): KvRow[] {
   const said = (s: string): ReactNode =>
@@ -1198,7 +1336,20 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
 
   /* The ENGINE's pointers for this finding — its own evidence route (null: the snapshot published none). */
   const engine = useMemo(() => (finding ? engineEvidenceFor(finding) : null), [finding]);
-  const engineStepRef = useRef<HTMLHeadingElement>(null);
+  /* Step 3's state for the selected finding (see EngineView), keyed to it like the open excerpt. */
+  const [engineView, setEngineView] = useState<EngineView | null>(null);
+  const viewCurrent = engineView !== null && engineView.findingId === findingId ? engineView : null;
+  const patchView = useCallback(
+    (fn: (v: EngineView) => EngineView) =>
+      setEngineView((prev) => {
+        if (findingId === null) return prev;
+        const base: EngineView =
+          prev !== null && prev.findingId === findingId ? prev : { findingId, showAll: false, fields: new Map(), revealed: null, asks: 0 };
+        return fn(base);
+      }),
+    [findingId],
+  );
+  const paneRef = useRef<HTMLElement>(null);
   const named = useMemo(() => (finding ? configEvidenceFor(finding) : []), [finding]);
   const nearest = useMemo(() => (finding && named.length === 0 ? nearestConfigFor(finding) : []), [finding, named.length]);
   const targets = named.length > 0 ? named : nearest;
@@ -1222,6 +1373,36 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
     [onShowConfig, setOpenTarget],
   );
   const showEngine = useCallback((t: ConfigEvidence, trigger: HTMLButtonElement) => show(t, trigger, "engine"), [show]);
+
+  /* The header's control for one of the engine's records: it lists that record in step 3 even past the fold,
+     opens it (its compiled record, or its members), and — once rendered — the effect below brings it into view
+     and moves focus into it. One activation, whatever the record's place in the list. */
+  const revealEngine = useCallback(
+    (r: EngineRef, trigger: HTMLButtonElement) => {
+      patchView((v) => {
+        const fields = new Map(v.fields);
+        if (r.open === null && r.ref.kind !== "config_text") fields.set(r.ref.ref, true);
+        return { ...v, fields, revealed: r.ref.ref, asks: v.asks + 1 };
+      });
+      if (r.open !== null) showEngine(r.open, trigger);
+    },
+    [patchView, showEngine],
+  );
+  const revealAsks = viewCurrent?.asks ?? 0;
+  const revealedPointer = viewCurrent?.revealed ?? null;
+  useEffect(() => {
+    if (revealAsks === 0 || revealedPointer === null) return;
+    const el = [...(paneRef.current?.querySelectorAll<HTMLElement>("[data-evidence-ref]") ?? [])].find(
+      (x) => x.getAttribute("data-evidence-ref") === revealedPointer,
+    );
+    if (el === undefined) return;
+    /* The APP scrolls, never the reader (A1 counts a reader's scroll as a failure): the record's own item is
+       brought to the top of the pane's body, then focus goes to the opened excerpt's heading when the pane owns
+       one, else to the item itself. */
+    el.scrollIntoView?.({ block: "start" });
+    const heading = el.querySelector<HTMLElement>(".ev-cfg__title");
+    (heading ?? el).focus({ preventScroll: true });
+  }, [revealAsks, revealedPointer]);
 
   const closeConfig = useCallback(() => {
     setOpenTarget(null);
@@ -1308,7 +1489,7 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
   const families = FAMILY_BY_CATEGORY[finding.category ?? ""] ?? (["impact"] as const);
 
   return (
-    <section className={cx("ev", className)} aria-label="Evidence chain">
+    <section className={cx("ev", className)} aria-label="Evidence chain" ref={paneRef}>
       <header className="ev__head">
         <div className="ev__idline">
           <SeverityBadge severity={finding.severity} />
@@ -1334,15 +1515,7 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
         />
         <FindingSource finding={finding} />
         {engine !== null ? (
-          <EngineJump
-            engine={engine}
-            onShow={showEngine}
-            onGo={() => {
-              const el = engineStepRef.current;
-              el?.scrollIntoView?.({ block: "start" });
-              el?.focus();
-            }}
-          />
+          <EngineIndex key={finding.id} finding={finding} engine={engine} onReveal={revealEngine} />
         ) : first === null ? null : (
           <div className="ev__jump" data-evidence-route={named.length > 0 ? "named" : isMatchedNearest(first) ? "ranked" : "context"}>
             {/* A record reached only by collection order is CONTEXT, not the configuration evidence
@@ -1512,7 +1685,7 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
               )}
             </ChainStep>
 
-            <ChainStep n={3} title="What the engine points at" headingRef={engineStepRef}>
+            <ChainStep n={3} title="What the engine points at">
               {engine === null ? (
                 <NotObserved
                   what="engine evidence pointers"
@@ -1524,6 +1697,9 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
                 <EngineEvidence
                   finding={finding}
                   refs={engine}
+                  view={viewCurrent}
+                  onShowAll={() => patchView((v) => ({ ...v, showAll: true }))}
+                  onSetFields={(p, open) => patchView((v) => ({ ...v, fields: new Map(v.fields).set(p, open) }))}
                   onOpenCite={openCite}
                   onOpenRecord={showEngine}
                   expandedFor={(t) => (onShowConfig ? undefined : openedEngine?.cite === t.cite)}

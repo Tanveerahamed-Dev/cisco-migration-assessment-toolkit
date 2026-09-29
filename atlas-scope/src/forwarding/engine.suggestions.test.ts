@@ -17,6 +17,7 @@ import { aclsOf, fabric, resolveCite, routesOf } from "../core/data";
 import type { Flow, Trace } from "../core/types";
 import { describeGolden } from "../test-support/golden-sample";
 import { GOLDEN_FORWARDING as G } from "./golden-expectations";
+import { need } from "./test-subjects";
 import { formatIpv4, hostAddressIn, parseInterfaceAddress, parseIpv4, parsePrefix, prefixContains } from "./ip";
 import {
   blockingHop,
@@ -133,13 +134,10 @@ function sweep(): Flow[] {
 }
 
 describe("the multi-hop presets are what they pose (invariant: any loaded fabric)", () => {
-  it("a 'multi-hop-delivery' preset is a DECIDED delivery over two or more hops, each next hop owned by the next device", () => {
-    const s = preset("multi-hop-delivery");
-    if (s === undefined) {
-      /* Absence is legal only when the data holds no such trace — the completeness test below proves that. */
-      expect(presets.map((p) => p.id)).not.toContain("multi-hop-delivery");
-      return;
-    }
+  it("a 'multi-hop-delivery' preset is a DECIDED delivery over two or more hops, each next hop owned by the next device", (ctx) => {
+    /* Absence is legal only when the data holds no such trace — the completeness test below proves that; the
+       test then reports itself NOT APPLICABLE by name (test-subjects.ts), never a pass that checked nothing. */
+    const s = need(ctx, preset("multi-hop-delivery"), "decided multi-hop delivery preset");
     const t = traceFlow(s.flow);
     expect(s.expectedOutcome).toBe("delivered");
     expect(t.outcome).toBe("delivered");
@@ -152,12 +150,8 @@ describe("the multi-hop presets are what they pose (invariant: any loaded fabric
     expect(t.hops.every((h) => h.decidedBy !== null)).toBe(true);
   });
 
-  it("a 'multi-hop-denial' preset is a DECIDED denial over two or more hops naming host, ACL, line and literal text", () => {
-    const s = preset("multi-hop-denial");
-    if (s === undefined) {
-      expect(presets.map((p) => p.id)).not.toContain("multi-hop-denial");
-      return;
-    }
+  it("a 'multi-hop-denial' preset is a DECIDED denial over two or more hops naming host, ACL, line and literal text", (ctx) => {
+    const s = need(ctx, preset("multi-hop-denial"), "decided multi-hop denial preset");
     const t = traceFlow(s.flow);
     expect(s.expectedOutcome).toBe("denied");
     expect(t.outcome).toBe("denied");
@@ -182,12 +176,8 @@ describe("the multi-hop presets are what they pose (invariant: any loaded fabric
     expect(t.claim).toContain(`"${line!.raw}"`);
   });
 
-  it("the denial's counterexample search FINDS one (B8), and what it offers is itself a decided delivery on its path", () => {
-    const s = preset("multi-hop-denial");
-    if (s === undefined) {
-      expect(presets.map((p) => p.id)).not.toContain("multi-hop-denial");
-      return;
-    }
+  it("the denial's counterexample search FINDS one (B8), and what it offers is itself a decided delivery on its path", (ctx) => {
+    const s = need(ctx, preset("multi-hop-denial"), "decided multi-hop denial preset");
     const t = traceFlow(s.flow);
     const cx = counterexample(s.flow, t);
     expect(cx.found).toBe(true);
@@ -265,11 +255,14 @@ describe("isDecidedRefusal is the claims owner's refusal rule, restated where cl
 });
 
 describe("the no-route preset rests on its own trace (invariant; disc-app-sample-assumptions #2)", () => {
-  it("is offered only as a FIRST-hop no-route at the gateway it names, and its premise is that hop's decidedBy", () => {
+  it("is offered only as a FIRST-hop no-route at the gateway it names, and its premise is that hop's decidedBy", (ctx) => {
     const s = preset("no-route");
     if (s === undefined) {
-      /* engine.no-route.counterfactual.test.ts runs the offered branch on a table with no default route. */
+      /* Absent on the reference sample too (every gateway there holds a default route), so this is not
+         need()'s golden-required subject: engine.no-route.counterfactual.test.ts runs the offered branch on a
+         table with no default route. Here the absence is checked, then reported NOT APPLICABLE by name. */
       expect(presets.map((p) => p.id)).not.toContain("no-route");
+      ctx.skip("not applicable to this fabric: it offers no no-route preset (engine.no-route.counterfactual.test.ts runs that branch)");
       return;
     }
     const t = traceFlow(s.flow);

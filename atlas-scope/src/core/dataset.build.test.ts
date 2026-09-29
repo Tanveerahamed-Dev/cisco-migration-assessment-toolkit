@@ -145,6 +145,16 @@ describe("the AssessHub build (`vite build --mode hub`)", () => {
     expect(compilerIn.length + workerAssets.length, "the compile worker is in the build").toBeGreaterThan(0);
     const entry = built.hub.chunks.filter((c) => c.isEntry);
     for (const e of entry) expect(e.moduleIds.some((m) => m.endsWith("tools/lib/compile-model.mjs")), `${e.fileName} carries the compiler`).toBe(false);
+    /* CONTENT, not a file name (phase 3.5, P3E-V2): an asset merely NAMED compile.worker* satisfied the
+       count above. The worker must carry the compiler itself — every refusal code the compiler's source
+       throws (read from tools/lib/compile-model.mjs, never typed here) — and the entry must carry none. */
+    const compilerSource = readFileSync(resolve(PKG, "tools/lib/compile-model.mjs"), "utf8");
+    const codes = [...new Set([...compilerSource.matchAll(/CompileError\(\s*"(E_[A-Z0-9_]+)"/g)].map((m) => m[1]!))].sort();
+    expect(codes.length, "the compiler's own refusal codes were read").toBeGreaterThan(5);
+    const workerTexts = [...workerAssets.map((a) => a.source), ...compilerIn.map((c) => c.code)];
+    const missing = codes.filter((code) => !workerTexts.some((t) => t.includes(`"${code}"`) || t.includes(`'${code}'`) || t.includes(`\`${code}\``)));
+    expect(missing, "refusal codes of the compiler absent from the compile worker").toEqual([]);
+    for (const e of entry) expect(codes.filter((code) => e.code.includes(code)), `${e.fileName} carries compiler code`).toEqual([]);
   });
 });
 

@@ -27,9 +27,23 @@ export interface TierRecord {
   id: string;
   host: string;
   tier: number | null;
+  /** The compiled draw order. It decides which of two records sharing a host vouches for that host (QC-R1-1). */
+  order: number;
 }
 
-export function reconcileTierGroups(devices: readonly TierRecord[], tiers: readonly (readonly string[])[]): TierGroupReading[] {
+/**
+ * The devices in the order the layout reads them: `order`, then id (layout.ts step 1). Everything here that is
+ * first-wins — which record vouches for a host, which group a host takes its tier from — is resolved in THIS order,
+ * never the caller's array order: `fabric.devices` is not in it (the compiled `order` restarts per tier), and when two
+ * records share a host, walking the array let the other record vouch, changing the group's reading and announcing
+ * "tier not observed" for devices the layout places at an observed tier (QC-R1-1).
+ */
+export function inLayoutOrder<T extends TierRecord>(devices: readonly T[]): T[] {
+  return [...devices].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+}
+
+export function reconcileTierGroups(unordered: readonly TierRecord[], tiers: readonly (readonly string[])[]): TierGroupReading[] {
+  const devices = inLayoutOrder(unordered);
   const recordTierOfHost = new Map<string, number | null>();
   for (const d of devices) {
     recordTierOfHost.set(d.id, d.tier);
@@ -52,4 +66,25 @@ export function reconcileTierGroups(devices: readonly TierRecord[], tiers: reado
       ? { index, members, tier: top[0], basis: "device-majority", memberTiers }
       : { index, members, tier: null, basis: "no-consensus", memberTiers };
   });
+}
+
+/**
+ * The tier the layout places each device at: its OWN record tier, else the reconciled tier of the first cable-map
+ * group that lists it (by host, then by id) and vouches for a number, else null — "tier not observed", the layout's
+ * synthetic plane. This is layout.ts's `observedTierOf` rule (`d.tier ?? fromCable`), stated once here so the
+ * loading skeleton can draw each device where the layout will: a group's reading is not its members' tier (a
+ * dissenter keeps its own record, a member of a tie group keeps its own, a device no group lists keeps its own),
+ * and labelling every member by the group's reading announced "tier not observed" for devices whose tier WAS
+ * observed (P3C-V2-1). Which record vouches for a host two records share is resolved in the layout's own device
+ * order (`inLayoutOrder`), never the caller's array order (QC-R1-1). surfaces.stage-pending.test.tsx holds this equal
+ * to `computeLayout(...).nodes[].observedTier`, on hand-built cases and on 300 seeded fleets with shared hosts.
+ */
+export function placedTiers(devices: readonly TierRecord[], tiers: readonly (readonly string[])[]): Map<string, number | null> {
+  const readings = reconcileTierGroups(devices, tiers);
+  const cableTier = new Map<string, number>();
+  readings.forEach((g) => {
+    if (g.tier === null) return;
+    for (const h of tiers[g.index] ?? []) if (!cableTier.has(h)) cableTier.set(h, g.tier);
+  });
+  return new Map(devices.map((d) => [d.id, d.tier ?? cableTier.get(d.host) ?? cableTier.get(d.id) ?? null]));
 }

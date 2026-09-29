@@ -22,6 +22,7 @@ import type { Fabric } from "./types";
 import { compileBytes, PKG, SAMPLE_SNAPSHOT } from "./dataset/testing";
 
 interface RenameModule {
+  planOutputs(argv: string[]): { source: string; out: string; compile: boolean; compiled: string } | { usage: string };
   hostsOf(snap: Record<string, unknown>): string[];
   renameSnapshot(snap: Record<string, unknown>): { snapshot: Record<string, unknown>; mapping: Record<string, string> };
   serialiseRenamed(snap: Record<string, unknown>): string;
@@ -71,6 +72,43 @@ describe("the rename is deterministic and one-to-one", () => {
     const clash = structuredClone(original);
     (clash as { note?: string }).note = `see rn-${String(hosts.length).padStart(String(hosts.length).length, "0")}`;
     expect(() => mod.renameSnapshot(clash)).toThrow(/already occurs/);
+  });
+});
+
+/* Where --compile writes (phase 3.5, P3E-V5): it used to compile into the fixed .local-data/rename-compiled
+   whatever --source / --out said, so renaming another snapshot silently overwrote the rename leg's compiled
+   dataset under the rename leg's name. The compiled directory now follows the renamed file it compiles. */
+describe("--compile writes next to the file it compiled, never over the rename leg's dataset", () => {
+  const rel = (p: string): string => p.split("\\").join("/").replace(`${PKG.split("\\").join("/")}/`, "");
+  const plan = (argv: string[]): { source: string; out: string; compile: boolean; compiled: string } => {
+    const p = mod.planOutputs(argv);
+    if ("usage" in p) throw new Error(p.usage);
+    return p;
+  };
+
+  it("the defaults are the rename leg: the sample, renamed and compiled into .local-data/rename-compiled", () => {
+    const p = plan(["--compile"]);
+    expect(p.compile).toBe(true);
+    expect(rel(p.source)).toBe(rel(SAMPLE_SNAPSHOT));
+    expect(rel(p.out)).toBe(".local-data/rename/sample_fleet.renamed.snapshot.json");
+    expect(rel(p.compiled)).toBe(".local-data/rename-compiled");
+  });
+
+  it("another --out compiles beside that file, not into the rename leg's directory", () => {
+    const p = plan(["--out", resolve(PKG, ".local-data", "x", "golden.renamed.snapshot.json"), "--compile"]);
+    expect(rel(p.compiled)).toBe(".local-data/x/golden.renamed.snapshot-compiled");
+  });
+
+  it("another --source without --out gets its own renamed file and compiled directory", () => {
+    const p = plan(["--source", resolve(PKG, "..", "tests", "golden", "snapshot.json"), "--compile"]);
+    expect(rel(p.out)).toBe(".local-data/rename/snapshot.renamed.snapshot.json");
+    expect(rel(p.out)).not.toBe(".local-data/rename/sample_fleet.renamed.snapshot.json");
+    expect(rel(p.compiled)).not.toBe(".local-data/rename-compiled");
+  });
+
+  it("--compiled-out names the directory explicitly, and an unknown flag is a usage error", () => {
+    expect(rel(plan(["--compile", "--compiled-out", resolve(PKG, ".local-data", "c")]).compiled)).toBe(".local-data/c");
+    expect("usage" in mod.planOutputs(["--nope"])).toBe(true);
   });
 });
 

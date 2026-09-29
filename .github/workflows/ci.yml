@@ -69,9 +69,14 @@ jobs:
       - name: Install Atlas Scope's locked toolchain
         working-directory: atlas-scope
         run: npm ci
+      # The /scope markup oracle (webapp/tests/test_scope_mount.py, "the browser is the oracle") needs a
+      # real Chromium this matrix does not install. It is required on the legs that install one: webapp-ci's
+      # backend leg (webapp/** changes) and atlas-scope-ci (atlas-scope/** changes). Here it is declined
+      # EXPLICITLY, so it skips visibly; with the real-toolchain switch alone a missing browser fails.
       - name: Run the complete default suite
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+          ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
         run: python -m pytest
 
   typecheck:

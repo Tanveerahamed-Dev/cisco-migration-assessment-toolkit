@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 /* The compiler's own list of the documents it writes: the dataset door below is derived from it, never
    from a hand-kept list of file names. */
-import { OUTPUTS } from "./tools/lib/compile-model.mjs";
+import { OUTPUTS, SECTIONS_READ, SUPPORTED_SCHEMAS } from "./tools/lib/compile-model.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -61,6 +62,98 @@ function compilerId(): string {
  * compiler's BINDING_KEYS). `sourceGitBlob` bound to a literal is the half no code ever writes.
  */
 const bindsLiteral = (key: string): RegExp => new RegExp(`(?<![A-Za-z0-9_$])${key}(?![A-Za-z0-9_$])\\\\*["'\`]?\\s*:\\s*\\\\*["'\`]`);
+
+/** The tracked sample's digests: no hub file may carry one. */
+function trackedDigests(): Set<string> {
+  const digests = new Set<string>();
+  for (const d of COMPILED_DOCUMENTS) {
+    const meta = (JSON.parse(readFileSync(d.path, "utf8")) as { meta?: Record<string, unknown> }).meta ?? {};
+    for (const k of ["sourceSha256", "sourceGitBlob", "sourceExactSha256"]) {
+      const v = meta[k];
+      if (typeof v === "string" && v !== "") digests.add(v.replace(/^sha256:/, ""));
+    }
+  }
+  return digests;
+}
+
+/* ── AssessHub's compiled-model signatures, ported (phase 3.5, P3E-V6) ─────────────────────────────
+ * webapp/backend/app.py `_scope_file_carries_compiled_model` refuses a /scope file that carries: the binding
+ * envelope, a compiled RECORD recognised by a snapshot citation bound as data (a bundler drops the envelope:
+ * Vite's JSON plugin turns a document's members into named exports), or an engine snapshot itself — in
+ * plain text, inside a base64 data: URI, or inside a compressed stream. This build-time scan used to know the
+ * envelope and the tracked digests only, so the other forms passed the build and were stopped only when
+ * AssessHub indexed the output. The same shapes are recognised here, rooted in the compiler's own exports
+ * (SECTIONS_READ for a dotted citation's root, SUPPORTED_SCHEMAS for the snapshot schema family), never a
+ * list typed here. A stream the scan cannot open (bzip2, xz: Node has no codec for them) is refused. */
+/* Whitespace between JSON tokens, literal or escaped (\n \r \t, once or more deeply escaped). */
+const JS_WS = "(?:\\s|\\\\+[nrt])*";
+/* One string delimiter in any quoting a build ships ("…", an escaped \"…\", `…`, '…'). */
+const JS_QUOTE = "\\\\*[\"'`]";
+/* A literal's body with no template substitution. */
+const JS_LITERAL_BODY = "(?:[^\"'`\\\\\\r\\n$]|\\$(?!\\{))+";
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+const SNAPSHOT_CITATION =
+  JS_QUOTE + String.raw`(?:(?:` + SECTIONS_READ.map(escapeRe).join("|") + String.raw`)[.\[]|/[a-z][a-z0-9_]*/)` + JS_LITERAL_BODY + JS_QUOTE;
+const RECORD_CITATION_SIGNATURES: readonly RegExp[] = [
+  /* a citation bound to a `cite`-named key (`cite`, `centralityCite`, …) */
+  new RegExp(String.raw`(?<![A-Za-z0-9_$])(?:[A-Za-z_$][A-Za-z0-9_$]*)?[Cc]ite` + JS_QUOTE + "?" + JS_WS + ":" + JS_WS + SNAPSHOT_CITATION),
+  /* a citation used as an object key (a citation-keyed map) */
+  new RegExp(String.raw`[{,]` + JS_WS + SNAPSHOT_CITATION + JS_WS + ":"),
+];
+const SCHEMA_FAMILIES = [...new Set(SUPPORTED_SCHEMAS.map((s) => s.replace(/[0-9]+$/, "")))];
+const RAW_SNAPSHOT_SIGNATURE = new RegExp(
+  String.raw`(?<![A-Za-z0-9_$])schema` + JS_QUOTE + "?" + JS_WS + ":" + JS_WS + JS_QUOTE + `(?:${SCHEMA_FAMILIES.map(escapeRe).join("|")})[0-9]+` + JS_QUOTE,
+);
+const BASE64_DATA_URI = /data:[A-Za-z0-9.+/-]*(?:;[A-Za-z0-9.+/=-]*)*;base64,([A-Za-z0-9+/_-]{16,}={0,2})/g;
+const GZIP_MAGIC = Buffer.from([0x1f, 0x8b, 0x08]);
+const BZIP2_MAGIC = /BZh[1-9]1AY&SY/;
+const XZ_MAGIC = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
+const DATA_URI_DEPTH = 3;
+
+/** What in these bytes is snapshot evidence, including inside data: URIs and gzip streams (depth-bounded). */
+function evidenceIn(bytes: Buffer, depth: number): string[] {
+  const text = bytes.toString("latin1");
+  const found: string[] = [];
+  if (bindsLiteral("sourceGitBlob").test(text)) found.push("binds sourceGitBlob to a literal (a compiled document's envelope)");
+  if (RECORD_CITATION_SIGNATURES.some((re) => re.test(text))) found.push("carries a compiled record (a snapshot citation bound as data)");
+  if (RAW_SNAPSHOT_SIGNATURE.test(text)) found.push("carries an engine snapshot (its schema bound to the engine's snapshot schema family)");
+  if (BZIP2_MAGIC.test(text) || bytes.includes(XZ_MAGIC)) found.push("carries a compressed stream (bzip2/xz) this scan cannot open");
+  if (depth >= DATA_URI_DEPTH) return found;
+  for (let at = bytes.indexOf(GZIP_MAGIC); at !== -1; at = bytes.indexOf(GZIP_MAGIC, at + 1)) {
+    let inner: Buffer | null = null;
+    try {
+      inner = gunzipSync(bytes.subarray(at));
+    } catch {
+      inner = null;
+    }
+    if (inner !== null) found.push(...evidenceIn(inner, depth + 1).map((f) => `inside a gzip stream: ${f}`));
+  }
+  for (const m of text.matchAll(BASE64_DATA_URI)) {
+    const inner = Buffer.from(m[1]!.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+    found.push(...evidenceIn(inner, depth + 1).map((f) => `inside a data: URI: ${f}`));
+  }
+  return found;
+}
+
+/**
+ * The hub build's pre-write privacy scan, over every output file (exported so it is tested on planted
+ * text as well as on the real build: src/core/dataset.hub-guard.test.ts).
+ */
+export function hubBundleProblems(
+  files: readonly { name: string; bytes: Uint8Array; moduleIds: readonly string[] }[],
+  digests: ReadonlySet<string>,
+): string[] {
+  const problems: string[] = [];
+  for (const { name, bytes, moduleIds } of files) {
+    if (name.endsWith(".map")) problems.push(`${name}: a sourcemap (its sourcesContent carries every source verbatim)`);
+    const buf = Buffer.from(bytes);
+    const text = buf.toString("latin1");
+    for (const m of moduleIds) if (documentAt(m) !== undefined) problems.push(`${name}: bundles ${posix(relative(ROOT, stripQuery(m)))}`);
+    for (const f of new Set(evidenceIn(buf, 0))) problems.push(`${name}: ${f}`);
+    for (const d of digests) if (text.includes(d)) problems.push(`${name}: carries the tracked sample's digest ${d.slice(0, 12)}…`);
+  }
+  return problems;
+}
 
 /**
  * THE DATASET DOOR, at build level.
@@ -122,24 +215,14 @@ function atlasDataset(): Plugin {
     },
     generateBundle(_opts, bundle) {
       if (mode !== HUB_MODE) return;
-      const digests = new Set<string>();
-      for (const d of COMPILED_DOCUMENTS) {
-        const meta = (JSON.parse(readFileSync(d.path, "utf8")) as { meta?: Record<string, unknown> }).meta ?? {};
-        for (const k of ["sourceSha256", "sourceGitBlob", "sourceExactSha256"]) {
-          const v = meta[k];
-          if (typeof v === "string" && v !== "") digests.add(v.replace(/^sha256:/, ""));
-        }
-      }
-      const problems: string[] = [];
-      for (const [name, out] of Object.entries(bundle)) {
-        if (name.endsWith(".map")) problems.push(`${name}: a sourcemap (its sourcesContent carries every source verbatim)`);
-        const text = out.type === "chunk" ? out.code : typeof out.source === "string" ? out.source : Buffer.from(out.source).toString("latin1");
-        if (out.type === "chunk") {
-          for (const m of out.moduleIds) if (documentAt(m) !== undefined) problems.push(`${name}: bundles ${posix(relative(ROOT, stripQuery(m)))}`);
-        }
-        if (bindsLiteral("sourceGitBlob").test(text)) problems.push(`${name}: binds sourceGitBlob to a literal (a compiled document's envelope)`);
-        for (const d of digests) if (text.includes(d)) problems.push(`${name}: carries the tracked sample's digest ${d.slice(0, 12)}…`);
-      }
+      const problems = hubBundleProblems(
+        Object.entries(bundle).map(([name, out]) => ({
+          name,
+          bytes: out.type === "chunk" ? Buffer.from(out.code, "utf8") : typeof out.source === "string" ? Buffer.from(out.source, "utf8") : Buffer.from(out.source),
+          moduleIds: out.type === "chunk" ? out.moduleIds : [],
+        })),
+        trackedDigests(),
+      );
       if (problems.length > 0) {
         this.error(`the AssessHub build must carry no compiled dataset, and this one does:\n  ${problems.join("\n  ")}`);
       }

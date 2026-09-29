@@ -821,6 +821,9 @@ button.ui-chip__body:hover {
   max-width: min(28rem, 92vw);
   max-height: min(70vh, var(--pop-maxh, 70vh));
   overflow: auto;
+  /* The sticky coverage line (below) covers the bottom of this scrollport: a control scrolled "into view" must
+     land above it. `--pop-cov-h` is the line's measured height (Popover, src/ui/primitives.tsx). */
+  scroll-padding-block-end: var(--pop-cov-h, 0px);
   margin-top: var(--sp-1);
   padding: var(--sp-2);
   border: 1px solid var(--border-strong);

@@ -22,15 +22,19 @@
  * refuses (exit 1) when a new name already occurs in the snapshot, since the rename would then merge two
  * things into one.
  *
- * Usage: node review/rename-snapshot.mjs [--source <snapshot.json>] [--out <file>] [--compile]
- *   --source   default: the tracked engine sample (webapp/sample_data/sample_fleet.snapshot.json)
- *   --out      default: .local-data/rename/sample_fleet.renamed.snapshot.json (Git-ignored)
- *   --compile  also compile it with the one compiler into .local-data/rename-compiled/
+ * Usage: node review/rename-snapshot.mjs [--source <snapshot.json>] [--out <file>] [--compile] [--compiled-out <dir>]
+ *   --source        default: the tracked engine sample (webapp/sample_data/sample_fleet.snapshot.json)
+ *   --out           default: .local-data/rename/<source stem>.renamed.snapshot.json (Git-ignored); for the
+ *                   sample, .local-data/rename/sample_fleet.renamed.snapshot.json
+ *   --compile       also compile it with the one compiler: for the default renamed sample into
+ *                   .local-data/rename-compiled/ (the rename leg), otherwise into `<renamed file>-compiled/`
+ *                   beside the renamed file — never over the rename leg's directory
+ *   --compiled-out  compile into this directory instead
  * Output is compact JSON with a trailing LF; the same input always gives the same bytes.
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -104,21 +108,50 @@ export const serialiseRenamed = (snap) => `${JSON.stringify(snap)}\n`;
 /** A path as printed: package-relative, so a log never carries the home directory (a privacy marker). */
 const shown = (/** @type {string} */ p) => relative(PKG, p).split("\\").join("/") || ".";
 
-/** @param {string[]} argv */
-function main(argv) {
+const USAGE = "usage: node review/rename-snapshot.mjs [--source <snapshot.json>] [--out <file>] [--compile] [--compiled-out <dir>]";
+
+/** A snapshot file name without its `.snapshot.json` / `.json` suffix. @param {string} p */
+const stemOf = (p) => basename(p).replace(/(\.snapshot)?\.json$/i, "");
+
+/**
+ * Where a run reads and writes — pure, so the choice is tested (src/core/dataset.rename.test.ts). Every
+ * output follows its INPUT (phase 3.5, P3E-V5): `--compile` used to write the fixed
+ * .local-data/rename-compiled whatever --source / --out said, so renaming another snapshot overwrote the
+ * rename leg's compiled dataset under the rename leg's name.
+ *   - the renamed file: --out, else .local-data/rename/<source stem>.renamed.snapshot.json (for the tracked
+ *     sample that is the documented sample_fleet.renamed.snapshot.json);
+ *   - the compiled directory: --compiled-out, else .local-data/rename-compiled for the default renamed
+ *     file (the documented rename leg), else `<renamed file without .json>-compiled` beside it.
+ * @param {string[]} argv
+ * @returns {{ source: string; out: string; compile: boolean; compiled: string } | { usage: string }}
+ */
+export function planOutputs(argv) {
   let source = DEFAULT_SOURCE;
-  let out = DEFAULT_OUT;
+  /** @type {string | null} */ let out = null;
+  /** @type {string | null} */ let compiled = null;
   let compile = false;
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--source") source = resolve(argv[++i] ?? "");
     else if (a === "--out") out = resolve(argv[++i] ?? "");
+    else if (a === "--compiled-out") compiled = resolve(argv[++i] ?? "");
     else if (a === "--compile") compile = true;
-    else {
-      process.stderr.write("usage: node review/rename-snapshot.mjs [--source <snapshot.json>] [--out <file>] [--compile]\n");
-      return 2;
-    }
+    else return { usage: USAGE };
   }
+  const renamedFile = out ?? resolve(PKG, ".local-data", "rename", `${stemOf(source)}.renamed.snapshot.json`);
+  const compiledDir =
+    compiled ?? (renamedFile === DEFAULT_OUT ? DEFAULT_COMPILED : resolve(dirname(renamedFile), `${basename(renamedFile).replace(/\.json$/i, "")}-compiled`));
+  return { source, out: renamedFile, compile, compiled: compiledDir };
+}
+
+/** @param {string[]} argv */
+function main(argv) {
+  const plan = planOutputs(argv);
+  if ("usage" in plan) {
+    process.stderr.write(`${plan.usage}\n`);
+    return 2;
+  }
+  const { source, out, compile, compiled } = plan;
   let snap;
   try {
     snap = JSON.parse(readFileSync(source, "utf8"));
@@ -137,12 +170,12 @@ function main(argv) {
   writeFileSync(out, serialiseRenamed(renamed.snapshot));
   process.stdout.write(`renamed ${Object.keys(renamed.mapping).length} hosts -> ${shown(out)}\n`);
   if (!compile) return 0;
-  const r = spawnSync(process.execPath, [resolve(PKG, "tools", "compile-all.mjs"), "--source", out, "--out", DEFAULT_COMPILED], { stdio: "inherit" });
+  const r = spawnSync(process.execPath, [resolve(PKG, "tools", "compile-all.mjs"), "--source", out, "--out", compiled], { stdio: "inherit" });
   if (r.status !== 0) {
     process.stderr.write(`rename-snapshot: compiling the renamed snapshot failed (exit ${r.status}).\n`);
     return 1;
   }
-  process.stdout.write(`compiled -> ${shown(DEFAULT_COMPILED)}\nnext: ATLAS_DATASET_DIR=.local-data/rename-compiled npx vitest run\n`);
+  process.stdout.write(`compiled -> ${shown(compiled)}\nnext: ATLAS_DATASET_DIR=${shown(compiled)} npx vitest run\n`);
   return 0;
 }
 

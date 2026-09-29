@@ -64,6 +64,21 @@ export function verificationWords(origin: DatasetOrigin): string | null {
     : "server-attested, not re-verified: this page is not a secure context, so it could not recompute the sha256";
 }
 
+/**
+ * Where a displayed digest came from, as a clause every digest statement carries (phase 3.5, P3E-V3).
+ * Outside a secure context the page computes no sha256: both digests of the binding ARE AssessHub's
+ * X-Snapshot-Sha256, passed through (core/dataset/hashes.ts `attestedHashes`). A title or label reading
+ * "over the bytes as read" there claimed a computation that did not happen.
+ */
+export function digestSourceClause(origin: DatasetOrigin): string {
+  return origin.kind === "assesshub" && origin.verification === "server-attested" ? ", as AssessHub stated it (not recomputed here)" : "";
+}
+
+/** The exact-bytes digest, described by where its value came from. */
+export function exactDigestWords(origin: DatasetOrigin): string {
+  return digestSourceClause(origin) === "" ? "the engine's binding form, over the bytes as read" : `the engine's binding form${digestSourceClause(origin)}`;
+}
+
 const short = (d: string): string => `${d.replace(/^sha256:/, "").slice(0, 12)}…`;
 
 const bannerStyle = {
@@ -96,14 +111,14 @@ export function DatasetBanner(): ReactElement | null {
           <span title={`${describeOrigin(datasetOrigin)}.`}>{`— ${originShort(datasetOrigin)}`}</span>
           <span>
             {"sha256 "}
-            <code title={`sha256 over ${digestFormWords(m.sourceDigestForm)}: ${m.sourceSha256}`} data-digest="sourceSha256">
+            <code title={`sha256 over ${digestFormWords(m.sourceDigestForm)}${digestSourceClause(datasetOrigin)}: ${m.sourceSha256}`} data-digest="sourceSha256">
               {short(m.sourceSha256)}
             </code>
             {` (${m.sourceDigestForm}, ${m.sourceBytes} bytes)`}
           </span>
           <span>
             {"exact "}
-            <code title={`the engine's binding form, over the bytes as read: ${m.sourceExactSha256}`} data-digest="sourceExactSha256">
+            <code title={`${exactDigestWords(datasetOrigin)}: ${m.sourceExactSha256}`} data-digest="sourceExactSha256">
               {`sha256:${short(m.sourceExactSha256)}`}
             </code>
           </span>

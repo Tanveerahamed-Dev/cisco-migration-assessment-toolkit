@@ -28,7 +28,7 @@ import { outcomeUndecidingGaps } from "../core/claims";
 import { fabric } from "../core/data";
 import { decodeInvestigation, useInvestigation } from "../core/store";
 import type { Cite, Trace } from "../core/types";
-import { refusalOf, suggestedFlows, traceFlow } from "../forwarding/engine";
+import { refusalOf, scopeClauseOf, suggestedFlows, traceFlow } from "../forwarding/engine";
 import { verdictStatement } from "./ClaimCard";
 import { resolveCitation } from "./Inspector";
 import { PathTrace } from "./PathTrace";
@@ -272,7 +272,13 @@ describe("B6 wave 7: the preset cards' citations", () => {
             .join(" ");
           const heard = `${run.textContent ?? ""} ${described}`;
           expect(heard, cases[i]!.s.id).toContain(cases[i]!.verdict.word);
-          expect(heard, cases[i]!.s.id).toContain(cases[i]!.t.claim.slice(0, cases[i]!.t.claim.indexOf(",")));
+          /* The WHOLE scope clause, read from its engine owner — never the claim's text up to its first
+             comma: the clause's host list is a comma list ("core1, core2, dist1 and dist2"), so that slice
+             stopped inside it and checked the vacuous prefix "Under the collected RIBs of core1"
+             (phase 3.5, V2-m3). */
+          const scope = scopeClauseOf(cases[i]!.t);
+          expect(scope, `${cases[i]!.s.id}: the claim opens with the engine's scope clause`).not.toBeNull();
+          expect(heard, cases[i]!.s.id).toContain(scope!);
         });
         const target = cases[cases.length - 1]!;
         act(() => cards[cards.length - 1]!.querySelector<HTMLElement>(".pt-preset__btn")!.click());

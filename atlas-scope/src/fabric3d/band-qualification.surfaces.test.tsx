@@ -21,6 +21,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Color } from "three";
 import { afterEach, describe, expect, it } from "vitest";
+import { describeGolden } from "../test-support/golden-sample";
 
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
@@ -257,9 +258,9 @@ const SURFACES: Surface[] = [
 ];
 
 describe("a favourable band on a host with unassessed scoring domains is qualified on EVERY surface (B1)", () => {
-  it("the snapshot holds such hosts, and podacc1 — the audited one — is among them", () => {
+  it("the snapshot holds such hosts", () => {
+    // Which ones is the sample's fact (podacc1, the audited host, among them): pinned in the golden block below.
     expect(QUALIFIED.length).toBeGreaterThan(0);
-    expect(QUALIFIED.map((d) => d.host)).toContain("podacc1");
   });
 
   for (const surface of SURFACES) {
@@ -272,4 +273,10 @@ describe("a favourable band on a host with unassessed scoring domains is qualifi
       60_000,
     );
   }
+});
+
+describeGolden("band qualification on the reference sample", () => {
+  it("podacc1 — the audited host — is among the qualified ones", () => {
+    expect(QUALIFIED.map((d) => d.host)).toContain("podacc1");
+  });
 });

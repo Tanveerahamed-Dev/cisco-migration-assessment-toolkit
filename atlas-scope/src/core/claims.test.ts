@@ -81,11 +81,12 @@ describe("badge strength is bounded by what the evidence supports", () => {
     expect(claimBadge(t)).toBe("INDETERMINATE");
   });
 
-  it("every real trace that did touch a host with no RIB is INDETERMINATE (the invariant over the engine)", () => {
-    const flows = [DENIED, DELIVERED, NO_RIB, OFF_MODEL, ...suggestedFlows().map((s) => s.flow)];
-    const touched = flows.map((f) => traceFlow(f)).filter((t) => t.unmodelledHosts.length > 0);
-    expect(touched.filter((t) => claimBadge(t) !== "INDETERMINATE").map((t) => t.flow)).toEqual([]);
-  });
+  /* MOVED (QC-R1-3, verifier of phase 3.5): "every real trace that did touch a host with no RIB is INDETERMINATE" swept
+     the engine's traces here, but no trace reaches a host without a RIB on the reference sample, the rename leg or
+     the engine-golden leg (pinned in the golden block below), so it was a named skip on every leg: a gate whose
+     success path never ran. It now lives in src/core/claims.no-rib.counterfactual.test.ts, which withdraws one
+     gateway's RIB (chosen by property) so the real engine produces such traces and the invariant executes. The rule
+     itself stays pinned here on the hand-built trace above, whose control proves it reaches the check. */
 
   it("marks a flow we cannot even enter as OUT OF SCOPE, not as a failure", () => {
     const t = traceFlow(OFF_MODEL);
@@ -382,17 +383,56 @@ describe("REFUTED: an unrecognised verdict bands as UNDETERMINED, never as nothi
  * said REFUTED. The badge now asks the hops, through `bandOfHop`, whether they support the outcome.
  *
  * Hand-built traces, for the reason the C1 block above states: the function is exported and applied
- * to whatever Trace a caller holds. The source is 10.0.30.1 — an address core1 owns, with no FHRP
- * alternate and no physical ingress port — so no ingress gap is computed and the ONLY thing that
- * differs between the control and the case is the hop verdict. The control proves the fixture really
- * reaches the SCOPED branch; without it, "not SCOPED" could pass for an unrelated reason.
+ * to whatever Trace a caller holds. The source is an address the hop's host owns on an SVI with no FHRP
+ * alternate (so no physical ingress port and no ingress gap is computed), and the destination is in
+ * another of that host's SVI subnets, so the ONLY thing that differs between the control and the case is
+ * the hop verdict. The control proves the fixture really reaches the SCOPED branch; without it, "not
+ * SCOPED" could pass for an unrelated reason.
+ *
+ * RE-EXPRESSED 2026-09-29 (P3C-V2-3): the fixture used to be typed (core1, 10.0.30.1 -> 10.0.10.10 out
+ * Vlan10), which exists only in the sample; on the rename leg "core1" named no device, every badge fell
+ * to PARTIAL and the control failed. It is now CHOSEN from the loaded fabric by that property — the first
+ * (host, SVI without FHRP, other SVI subnet) whose delivered single hop reaches SCOPED — and the golden
+ * block pins that on the sample it is the audited one.
  */
+const C2_FIXTURE = ((): { host: string; src: string; dst: string; outIntf: string } | undefined => {
+  const addr = (sviIp: string | null | undefined): string => (sviIp ?? "").split(" ")[0] ?? "";
+  const inSubnet = (cidr: string | null | undefined): string | null => {
+    const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/.exec(cidr ?? "");
+    if (m === null || Number(m[5]) > 27) return null;
+    return `${m[1]}.${m[2]}.${m[3]}.${Number(m[4]) + 10}`;
+  };
+  for (const s of fabric.l3) {
+    const src = addr(s.sviIp);
+    // No FHRP virtual address on the SVI: no alternate gateway, so no ingress gap (the producer writes "none", not null).
+    if (src === "" || s.host === null || (s.vip !== null && s.vip !== "")) continue;
+    const host = s.host;
+    for (const d of fabric.l3) {
+      const dst = inSubnet(d.primarySubnet);
+      if (d.host !== s.host || d.vlan === s.vlan || dst === null) continue;
+      const cand = { host, src, dst, outIntf: `Vlan${d.vlan}` };
+      const t: Trace = {
+        flow: { srcIp: src, dstIp: dst, protocol: "tcp", dstPort: 443, srcPort: null },
+        outcome: "delivered",
+        hops: [{ index: 0, host: cand.host, outIntf: cand.outIntf, nextHop: null, nextHost: null, verdict: "delivered", decidedBy: null, evidence: [], alternatives: [] }],
+        claim: "",
+        caveats: [],
+        unmodelledHosts: [],
+        elapsedMs: 0,
+      };
+      if (claimBadge(t) === "SCOPED") return cand;
+    }
+  }
+  return undefined;
+})();
+
 describe("REFUTED (C2): no outcome earns a stronger badge than its hops support", () => {
-  const flow: Flow = { srcIp: "10.0.30.1", dstIp: "10.0.10.10", protocol: "tcp", dstPort: 443, srcPort: null };
+  const fx = C2_FIXTURE ?? { host: "no-fixture", src: "0.0.0.0", dst: "0.0.0.0", outIntf: "none" };
+  const flow: Flow = { srcIp: fx.src, dstIp: fx.dst, protocol: "tcp", dstPort: 443, srcPort: null };
   const hop = (verdict: Trace["hops"][number]["verdict"], index = 0): Trace["hops"][number] => ({
     index,
-    host: "core1",
-    outIntf: "Vlan10",
+    host: fx.host,
+    outIntf: fx.outIntf,
     nextHop: null,
     nextHost: null,
     verdict,
@@ -411,6 +451,7 @@ describe("REFUTED (C2): no outcome earns a stronger badge than its hops support"
   });
 
   it("control: a delivered trace whose terminal hop is 'delivered' reaches SCOPED on this fixture", () => {
+    expect(C2_FIXTURE, "the loaded fabric holds a host, SVI and subnet on which a delivered hop reaches SCOPED").toBeDefined();
     expect(claimBadge(trace("delivered", [hop("delivered")]))).toBe("SCOPED");
     expect(bandOfTrace(trace("delivered", [hop("delivered")]))).toBe("RESOLVED");
   });
@@ -561,6 +602,15 @@ describe("routeFieldReading — the one owner of how a route field reads (B1)", 
 
 /* ── the golden tier: facts true only of the tracked reference sample (src/test-support/golden-sample.ts) ── */
 describeGolden("claims over the reference sample", () => {
+  it("the C2 fixture chosen by property is the audited one: core1, 10.0.30.1 -> 10.0.10.10 out Vlan10", () => {
+    expect(C2_FIXTURE).toEqual({ host: "core1", src: "10.0.30.1", dst: "10.0.10.10", outIntf: "Vlan10" });
+  });
+
+  it("the engine sweep touches no host without a RIB here, which is why its invariant runs on a counterfactual (claims.no-rib.counterfactual.test.ts)", () => {
+    const flows = [DENIED, DELIVERED, NO_RIB, OFF_MODEL, ...suggestedFlows().map((s) => s.flow)];
+    expect(flows.map((f) => traceFlow(f)).filter((t) => t.unmodelledHosts.length > 0)).toEqual([]);
+  });
+
   it("DENIED is refused at core1's PROTECT_SERVERS final line, cited to the record", () => {
     const t = traceFlow(DENIED);
     expect(t.outcome).toBe("denied");

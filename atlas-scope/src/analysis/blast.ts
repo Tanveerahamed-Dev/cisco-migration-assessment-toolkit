@@ -32,6 +32,7 @@
  */
 import { deviceById, endpointsByHost, fabric, linkById } from "../core/data";
 import type { Cite, Device, FailureImpact, Link, OpStatus } from "../core/types";
+import { listPhrase } from "../core/phrases";
 import { cableCountPhrase, disputeSentence, findPortDisputes, hostCableAccount, type PortDispute } from "./port-claims";
 
 /* ── graph contract ─────────────────────────────────────────────────────────── */
@@ -406,7 +407,7 @@ function graphAssumptions(
     statement:
       "This is cable-map adjacency. A path here says two hosts are physically/L2 adjacent, never that " +
       `traffic is forwarded along it; RIBs were collected for ${fabric.coverage.routableHosts.length} host(s) only ` +
-      `(${fabric.coverage.routableHosts.join(", ") || "none"}).`,
+      `(${listPhrase(fabric.coverage.routableHosts)}).`,
     cites: [fabric.coverage.cite],
   });
 
@@ -743,7 +744,7 @@ export function articulationPoints(graph?: TopologyGraph): ArticulationResult {
   if (differs) {
     caveats.push(
       `Unknown-status cables move this answer: with them ${g.options.unknownStatus === "exclude" ? "included" : "excluded"} ` +
-        `the cut vertices are ${alt.length > 0 ? alt.join(", ") : "none"}.`,
+        `the cut vertices are ${listPhrase(alt, "none")}.`,
     );
   }
   if (before > 1) {
@@ -933,7 +934,7 @@ export interface ProjectionDelta {
   note: string;
 }
 
-const listOrNone = (xs: readonly string[]): string => (xs.length === 0 ? "none" : xs.join(", "));
+const listOrNone = (xs: readonly string[]): string => listPhrase(xs, "none");
 
 const floorWords = (n: number | null): string => (n === null ? "an unknown number of" : String(n));
 
@@ -1510,7 +1511,7 @@ export function linkFailureImpact(linkId: string, graph?: TopologyGraph): LinkFa
     const why = `${linkId} shares a port with another cable in the cable map, so whether ${linkId} exists at all is disputed and its failure impact is not determinable`;
     const conditional =
       `Were ${linkId} the real cable, this projection would have it ${ourBridge ? "partition the graph" : "not partition the graph"}, stranding ` +
-      `${outcome.newlyStranded.length === 0 ? "no host" : outcome.newlyStranded.join(", ")} — stated as a conditional, not as the result.`;
+      `${listPhrase(outcome.newlyStranded)} — stated as a conditional, not as the result.`;
     return {
       kind: "link",
       linkId,
@@ -1715,6 +1716,10 @@ const hostCount = (n: number): string => `${n} host${n === 1 ? "" : "s"}`;
  * hosts hang off it" — true only of a fleet whose maximum coreness is 2. A graph whose maximum coreness is 1 is a
  * forest (degeneracy 1 means no cycle), so no host has a second, independent path and there is no redundant core
  * to name; one whose maximum is 0 has no carrying link at all.
+ *
+ * Coreness is peeled over carrying LINKS — the adjacency holds one entry per link, parallel cables each counted — so
+ * the sentence says "carrying links", never "neighbours": two hosts on two parallel cables form a 2-shell while each
+ * has one neighbour (P3C-V2-4, blast.kcore-claim.test.ts).
  */
 function kCoreClaim(maxCore: number, shells: readonly { k: number; hosts: readonly string[] }[]): string {
   const scope = "Structural redundancy only — it says nothing about capacity, control-plane state or configuration.";
@@ -1731,7 +1736,7 @@ function kCoreClaim(maxCore: number, shells: readonly { k: number; hosts: readon
   const lower = shells.filter((s) => s.k < maxCore).map((s) => `k = ${s.k} (${hostCount(s.hosts.length)})`);
   return (
     `Coreness over observed adjacency: the ${hostCount(top?.hosts.length ?? 0)} in the highest shell (k = ${maxCore}) each keep at least ` +
-    `${maxCore} neighbours inside it — the most mutually redundant part of the graph` +
+    `${maxCore} carrying links inside it — the most mutually redundant part of the graph` +
     (lower.length > 0 ? `; the lower shells hang off it: ${lower.join(", ")}. ` : "; there is no lower shell. ") +
     scope
   );

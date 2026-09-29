@@ -455,6 +455,9 @@ function pointToSegment(p: Vec3, a: Vec3, b: Vec3): { distance: number; t: numbe
 const GRID_CELL = Math.max(NODE_PITCH_X, NODE_PITCH_Z);
 /** Query growth beyond the asked radius, far above float error and far below any clearance. */
 const GRID_SLACK = 1e-6;
+/** Chords per group box in a curve's clearance measure: a chassis far from a whole run of chords is
+    rejected by one box test instead of one per chord. Any positive size gives the same numbers. */
+const CHORD_GROUP = 6;
 
 interface ChassisIndex {
   readonly count: number;
@@ -467,11 +470,12 @@ interface ChassisIndex {
   /** Every chassis index, ascending. */
   all(): number[];
   /**
-   * Indices (ascending, deduplicated) of every centre within the grown boxes of the chords of
-   * `pts`, which is a superset of the centres within `r` of that polyline. Sorted ascending so a
-   * caller iterating them visits chassis in the same order the exhaustive scan did.
+   * Indices (deduplicated) of every centre within the grown boxes of the chords of `pts`, which is a
+   * superset of the centres within `r` of that polyline. Sorted ascending when `ordered` is true, so
+   * a caller whose result depends on visiting order (a float sum) visits chassis in the same order the
+   * exhaustive scan did; a caller that only takes minima and sorted lists passes false and skips the sort.
    */
-  near(pts: readonly Vec3[], r: number): number[];
+  near(pts: readonly Vec3[], r: number, ordered: boolean): number[];
 }
 
 function buildChassisIndex(centres: readonly Vec3[]): ChassisIndex {
@@ -521,13 +525,15 @@ function buildChassisIndex(centres: readonly Vec3[]): ChassisIndex {
   let generation = 0;
   /* Grown by GRID_SLACK beyond `r`: the pieces a chord is cut into are interpolated, so their union
      can miss the chord by a rounding error, and the superset guarantee must not hang on the last bit. */
-  const collect = (lo3: Vec3, hi3: Vec3, r: number, out: number[]): void => {
-    const x0 = Math.max(0, cellOf(lo3[0] - r - GRID_SLACK, 0));
-    const x1 = Math.min(nx - 1, cellOf(hi3[0] + r + GRID_SLACK, 0));
-    const y0 = Math.max(0, cellOf(lo3[1] - r - GRID_SLACK, 1));
-    const y1 = Math.min(ny - 1, cellOf(hi3[1] + r + GRID_SLACK, 1));
-    const z0 = Math.max(0, cellOf(lo3[2] - r - GRID_SLACK, 2));
-    const z1 = Math.min(nz - 1, cellOf(hi3[2] + r + GRID_SLACK, 2));
+  const collect = (
+    lx: number, ly: number, lz: number, hx: number, hy: number, hz: number, r: number, out: number[],
+  ): void => {
+    const x0 = Math.max(0, cellOf(lx - r - GRID_SLACK, 0));
+    const x1 = Math.min(nx - 1, cellOf(hx + r + GRID_SLACK, 0));
+    const y0 = Math.max(0, cellOf(ly - r - GRID_SLACK, 1));
+    const y1 = Math.min(ny - 1, cellOf(hy + r + GRID_SLACK, 1));
+    const z0 = Math.max(0, cellOf(lz - r - GRID_SLACK, 2));
+    const z1 = Math.min(nz - 1, cellOf(hz + r + GRID_SLACK, 2));
     for (let x = x0; x <= x1; x += 1) {
       for (let y = y0; y <= y1; y += 1) {
         const row = (x * ny + y) * nz;
@@ -544,41 +550,62 @@ function buildChassisIndex(centres: readonly Vec3[]): ChassisIndex {
     count,
     reach: Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) + cell,
     all: () => Array.from({ length: count }, (_, i) => i),
-    near(pts, r) {
+    near(pts, r, ordered) {
       generation += 1;
       const out: number[] = [];
       /* The polyline is walked as one stream of points — a chord longer than a cell cut into pieces
          no longer than one, so its boxes hug it instead of spanning a block diagonal to it — and
          consecutive points are gathered into one box while that box stays within a cell. Each box
          holds both ends of every chord gathered into it and a box is convex, so it holds those chords
-         whole: the union of the boxes covers the polyline. */
-      const box = { lo: [0, 0, 0] as Vec3, hi: [0, 0, 0] as Vec3 };
-      let prev = must(pts[0], "polyline start");
-      box.lo = [prev[0], prev[1], prev[2]];
-      box.hi = [prev[0], prev[1], prev[2]];
+         whole: the union of the boxes covers the polyline. Held as scalars (box l*..h*, previous
+         point q*): the walk runs once per candidate curve, and an array per point was GC churn. */
+      const first = must(pts[0], "polyline start");
+      let [qx, qy, qz] = first;
+      let lx = qx;
+      let ly = qy;
+      let lz = qz;
+      let hx = qx;
+      let hy = qy;
+      let hz = qz;
       for (let s = 1; s < pts.length; s += 1) {
         const a = must(pts[s - 1], "chord start");
         const b = must(pts[s], "chord end");
         const pieces = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) / cell));
         for (let q = 1; q <= pieces; q += 1) {
           const t = q / pieces;
-          const p: Vec3 = q === pieces ? b : [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-          const nlo: Vec3 = [Math.min(box.lo[0], p[0]), Math.min(box.lo[1], p[1]), Math.min(box.lo[2], p[2])];
-          const nhi: Vec3 = [Math.max(box.hi[0], p[0]), Math.max(box.hi[1], p[1]), Math.max(box.hi[2], p[2])];
-          if (nhi[0] - nlo[0] <= cell && nhi[1] - nlo[1] <= cell && nhi[2] - nlo[2] <= cell) {
-            box.lo = nlo;
-            box.hi = nhi;
+          const px = q === pieces ? b[0] : a[0] + (b[0] - a[0]) * t;
+          const py = q === pieces ? b[1] : a[1] + (b[1] - a[1]) * t;
+          const pz = q === pieces ? b[2] : a[2] + (b[2] - a[2]) * t;
+          const nlx = Math.min(lx, px);
+          const nly = Math.min(ly, py);
+          const nlz = Math.min(lz, pz);
+          const nhx = Math.max(hx, px);
+          const nhy = Math.max(hy, py);
+          const nhz = Math.max(hz, pz);
+          if (nhx - nlx <= cell && nhy - nly <= cell && nhz - nlz <= cell) {
+            lx = nlx;
+            ly = nly;
+            lz = nlz;
+            hx = nhx;
+            hy = nhy;
+            hz = nhz;
           } else {
             // Flush, and start the next box at the previous point so the chord ending here is covered.
-            collect(box.lo, box.hi, r, out);
-            box.lo = [Math.min(prev[0], p[0]), Math.min(prev[1], p[1]), Math.min(prev[2], p[2])];
-            box.hi = [Math.max(prev[0], p[0]), Math.max(prev[1], p[1]), Math.max(prev[2], p[2])];
+            collect(lx, ly, lz, hx, hy, hz, r, out);
+            lx = Math.min(qx, px);
+            ly = Math.min(qy, py);
+            lz = Math.min(qz, pz);
+            hx = Math.max(qx, px);
+            hy = Math.max(qy, py);
+            hz = Math.max(qz, pz);
           }
-          prev = p;
+          qx = px;
+          qy = py;
+          qz = pz;
         }
       }
-      collect(box.lo, box.hi, r, out);
-      return out.sort((p, q) => p - q);
+      collect(lx, ly, lz, hx, hy, hz, r, out);
+      return ordered ? out.sort((p, q) => p - q) : out;
     },
   };
 }
@@ -599,7 +626,22 @@ interface Obstacles {
   centres: readonly Vec3[];
   /** Node indices of the route's endpoints; never obstacles to their own cable. */
   skip: readonly [number, number];
+  /** Per-layout scratch for one clearance measure: which chassis it has measured (stamped with the
+      measure's generation, so nothing is cleared or allocated per call) and the distance of each. */
+  scratch: MeasureScratch;
 }
+
+interface MeasureScratch {
+  readonly seen: Uint32Array;
+  readonly dist: Float64Array;
+  generation: number;
+}
+
+const measureScratch = (count: number): MeasureScratch => ({
+  seen: new Uint32Array(count),
+  dist: new Float64Array(count),
+  generation: 0,
+});
 
 /**
  * Clearance of a suggested curve, measured the same way the straight route is: nearest chassis
@@ -624,47 +666,81 @@ function curveClearance(
   for (let i = 0; i <= ROUTE_CURVE_SAMPLES; i += 1) {
     pts.push(quadraticAt(a, control, b, ROUTE_T_MARGIN + ((1 - 2 * ROUTE_T_MARGIN) * i) / ROUTE_CURVE_SAMPLES));
   }
-  const { index, ids, centres, skip } = obstacles;
+  const { index, ids, centres, skip, scratch } = obstacles;
   const total = index.count - (skip[0] === skip[1] ? 1 : 2);
-  /* Each chord's box. A chord whose box is already no nearer than the best chord found cannot lower
-     the minimum, so it is not measured; the minimum is the same number either way. */
-  const boxLo = new Float64Array(3 * ROUTE_CURVE_SAMPLES);
-  const boxHi = new Float64Array(3 * ROUTE_CURVE_SAMPLES);
+  /* Each chord's box, and each run of CHORD_GROUP chords' box (which holds theirs). A chord whose box
+     is no nearer than the bound below cannot change an answer, so it is not measured; a group whose box
+     is no nearer skips all of its chords at once, since each chord's box is at least as far. */
+  const chords = pts.length - 1;
+  const groups = Math.ceil(chords / CHORD_GROUP);
+  const boxLo = new Float64Array(3 * chords);
+  const boxHi = new Float64Array(3 * chords);
+  const groupLo = new Float64Array(3 * groups).fill(Infinity);
+  const groupHi = new Float64Array(3 * groups).fill(-Infinity);
   for (let i = 1; i < pts.length; i += 1) {
     const s = must(pts[i - 1], "curve sample");
     const e = must(pts[i], "curve sample");
+    const g = 3 * Math.floor((i - 1) / CHORD_GROUP);
     for (let k = 0; k < 3; k += 1) {
-      boxLo[3 * (i - 1) + k] = Math.min(must(s[k], "coord"), must(e[k], "coord"));
-      boxHi[3 * (i - 1) + k] = Math.max(must(s[k], "coord"), must(e[k], "coord"));
+      const lo = Math.min(s[k]!, e[k]!);
+      const hi = Math.max(s[k]!, e[k]!);
+      boxLo[3 * (i - 1) + k] = lo;
+      boxHi[3 * (i - 1) + k] = hi;
+      groupLo[g + k] = Math.min(groupLo[g + k]!, lo);
+      groupHi[g + k] = Math.max(groupHi[g + k]!, hi);
     }
   }
-  const measured = new Map<number, number>();
+  /* The chassis measured so far, in the order measured, with each one's distance in scratch.dist. */
+  const measured: number[] = [];
+  const { seen, dist } = scratch;
+  scratch.generation += 1;
+  const stamp = scratch.generation;
   let nearest: number | null = null;
   for (let r = ROUTE_CLEARANCE; ; r *= 2) {
     /* `!(r <= reach)` rather than `r > reach`: a NaN reach must end the widening, not extend it. */
-    for (const o of !(r <= index.reach) ? index.all() : index.near(pts, r)) {
-      if (o === skip[0] || o === skip[1] || measured.has(o)) continue;
+    for (const o of !(r <= index.reach) ? index.all() : index.near(pts, r, false)) {
+      if (o === skip[0] || o === skip[1] || seen[o] === stamp) continue;
       const p = must(centres[o], "chassis centre");
-      const [px, py, pz] = p;
+      const px = p[0];
+      const py = p[1];
+      const pz = p[2];
+      /* SCALE (2026-09-29). Only two things are read from a chassis's distance: whether it is under
+         ROUTE_CLEARANCE (blockedBy) and whether it is under the nearest found so far (nearest). A
+         distance at or past BOTH changes neither, so the chords that could only produce such a distance
+         are not measured: `bound` is the larger of the two. Whenever the chassis's true distance is
+         under `bound`, the chord that attains it has a box nearer than that distance and so is always
+         measured — the stored distance is then the same minimum, bit for bit, that measuring every
+         chord gives; otherwise it is some value at or past `bound`, which no reader can tell apart. */
+      const bound = nearest === null ? Infinity : Math.max(ROUTE_CLEARANCE, nearest);
       let d = Infinity;
-      for (let i = 1; i < pts.length; i += 1) {
-        /* Hot loop (chassis × chords × candidates): bare typed-array reads, no helper calls. */
-        const j = 3 * (i - 1);
-        const gx = Math.max(boxLo[j]! - px, px - boxHi[j]!, 0);
-        const gy = Math.max(boxLo[j + 1]! - py, py - boxHi[j + 1]!, 0);
-        const gz = Math.max(boxLo[j + 2]! - pz, pz - boxHi[j + 2]!, 0);
-        const reach = d + GRID_SLACK;
-        if (gx * gx + gy * gy + gz * gz >= reach * reach) continue;
-        d = Math.min(d, pointToSegment(p, must(pts[i - 1], "curve sample"), must(pts[i], "curve sample")).distance);
+      for (let g = 0; g < groups; g += 1) {
+        const q = 3 * g;
+        const ux = Math.max(groupLo[q]! - px, px - groupHi[q]!, 0);
+        const uy = Math.max(groupLo[q + 1]! - py, py - groupHi[q + 1]!, 0);
+        const uz = Math.max(groupLo[q + 2]! - pz, pz - groupHi[q + 2]!, 0);
+        const groupReach = Math.min(d, bound) + GRID_SLACK;
+        if (ux * ux + uy * uy + uz * uz >= groupReach * groupReach) continue;
+        for (let i = g * CHORD_GROUP + 1, end = Math.min(chords, (g + 1) * CHORD_GROUP); i <= end; i += 1) {
+          /* Hot loop (chassis × chords × candidates): bare typed-array reads, no helper calls. */
+          const j = 3 * (i - 1);
+          const gx = Math.max(boxLo[j]! - px, px - boxHi[j]!, 0);
+          const gy = Math.max(boxLo[j + 1]! - py, py - boxHi[j + 1]!, 0);
+          const gz = Math.max(boxLo[j + 2]! - pz, pz - boxHi[j + 2]!, 0);
+          const reach = Math.min(d, bound) + GRID_SLACK;
+          if (gx * gx + gy * gy + gz * gz >= reach * reach) continue;
+          d = Math.min(d, pointToSegment(p, must(pts[i - 1], "curve sample"), must(pts[i], "curve sample")).distance);
+        }
       }
       work.measured += 1;
-      measured.set(o, d);
+      seen[o] = stamp;
+      dist[o] = d;
+      measured.push(o);
       if (nearest === null || d < nearest) nearest = d;
     }
-    if (measured.size >= total || (nearest !== null && nearest <= r)) break;
+    if (measured.length >= total || (nearest !== null && nearest <= r)) break;
   }
   const blockedBy: string[] = [];
-  for (const [o, d] of measured) if (d < ROUTE_CLEARANCE) blockedBy.push(must(ids[o], "chassis id"));
+  for (const o of measured) if (dist[o]! < ROUTE_CLEARANCE) blockedBy.push(must(ids[o], "chassis id"));
   return { nearest, blockedBy: blockedBy.sort() };
 }
 
@@ -781,16 +857,28 @@ export interface LayoutJob {
   /** The most work any single indivisible step has reported: the most a slice can overrun its budget.
    *  An ordering pass or the embedding (N+E each) on a large fleet, else one cable's detour ladder. */
   readonly largestStep: number;
+  /**
+   * The error a step threw, latched: null while the job is healthy. A generator that throws is closed,
+   * and a closed generator answers the next `next()` with `{ done: true, value: undefined }` — so
+   * without this latch the step AFTER a failure "finished" the layout with `undefined`, and a failure
+   * read back as a finished layout. Once set, every `step` rethrows this same error, `done` stays false
+   * and `result` stays null.
+   */
+  readonly failure: { readonly error: unknown } | null;
 }
 
 export function layoutJob(opts: LayoutOptions): LayoutJob {
   const steps = layoutSteps(opts);
   let result: FabricLayout | null = null;
+  let failure: { readonly error: unknown } | null = null;
   let work = 0;
   let largestStep = 0;
   return {
     get done() {
       return result !== null;
+    },
+    get failure() {
+      return failure;
     },
     get result() {
       return result;
@@ -802,10 +890,17 @@ export function layoutJob(opts: LayoutOptions): LayoutJob {
       return largestStep;
     },
     step(budget) {
+      if (failure !== null) throw failure.error;
       if (result !== null) return result;
       let spent = 0;
       for (;;) {
-        const r = steps.next();
+        let r: IteratorResult<number, FabricLayout>;
+        try {
+          r = steps.next();
+        } catch (error) {
+          failure = { error };
+          throw error;
+        }
         if (r.done === true) {
           result = r.value;
           return result;
@@ -1387,6 +1482,7 @@ function* layoutSteps(opts: LayoutOptions): Generator<number, FabricLayout, void
   const nodeIds = nodes.map((n) => n.id);
   const indexOfNode = new Map(nodes.map((n, i) => [n.id, i]));
   const chassis = buildChassisIndex(centres);
+  const scratch = measureScratch(centres.length);
   /* Stages 7-9 and the chassis index visit every node and link a few times — about what one ordering
      pass does — so they are charged like one. Charged 1, as they once were, they made the slice that
      ran them as long as they are whatever LAYOUT_SLICE_WORK said (scale.test.ts pins every step's
@@ -1412,7 +1508,7 @@ function* layoutSteps(opts: LayoutOptions): Generator<number, FabricLayout, void
     let nearest: number | null = null;
     const blockedBy: string[] = [];
     let blockerZ = 0;
-    for (const o of chassis.near([pa, pb], ROUTE_CLEARANCE)) {
+    for (const o of chassis.near([pa, pb], ROUTE_CLEARANCE, true)) {
       if (o === skip[0] || o === skip[1]) continue;
       const other = must(nodes[o], `node ${o}`);
       const { distance, t } = pointToSegment(must(centres[o], "chassis centre"), pa, pb);
@@ -1429,7 +1525,7 @@ function* layoutSteps(opts: LayoutOptions): Generator<number, FabricLayout, void
     if (blockedBy.length === 0) continue;
     const mid: Vec3 = [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2, (pa[2] + pb[2]) / 2];
     const blocked = [...blockedBy].sort();
-    const obstacles: Obstacles = { index: chassis, ids: nodeIds, centres, skip };
+    const obstacles: Obstacles = { index: chassis, ids: nodeIds, centres, skip, scratch };
 
     /* A detour is a DIRECTION and a wanted apex displacement, never a control point: the control
        point is derived from the apex so the constants below describe the cable the renderer draws.

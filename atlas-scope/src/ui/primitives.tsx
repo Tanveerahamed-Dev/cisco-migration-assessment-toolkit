@@ -1251,6 +1251,21 @@ export function Popover({
   useEffect(() => {
     const panel = panelRef.current;
     if (!open || panel === null) return;
+    place(panel);
+    /* THE COVERAGE LINE NEVER COVERS THE FOCUSED CONTROL. MEASURED (phase 3.5 repair, D3 rung crossing, release
+       build, 1920x800): with the queue's "Display" panel open, "Narrow the Category column" focused sat at y
+       763-787 under the sticky coverage line (y 744-787) — focus scrolls a control into the panel's scrollport,
+       and the line covers that scrollport's bottom. The panel states the line's height (`--pop-cov-h`, read by
+       `.ui-popover`'s bottom scroll padding in primitives.css, which focus scrolling and scrollIntoView honour),
+       and every re-placement brings the focused control clear of it. */
+    const cov = panel.querySelector<HTMLElement>(".ui-overlay-cov");
+    panel.style.setProperty("--pop-cov-h", `${cov?.offsetHeight ?? 0}px`);
+    const a = document.activeElement;
+    if (a instanceof HTMLElement && a !== panel && panel.contains(a)) a.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [open, rect]);
+
+  /** Place the panel inside the viewport (the effect above runs it on open and on every re-measure). */
+  function place(panel: HTMLDivElement): void {
     panel.style.marginLeft = "";
     panel.style.top = "";
     panel.style.maxHeight = "";
@@ -1263,20 +1278,31 @@ export function Popover({
     if (shift !== 0) panel.style.marginLeft = `${shift > 0 ? Math.ceil(shift) : Math.floor(shift)}px`;
 
     const viewportH = document.documentElement.clientHeight || window.innerHeight;
-    if (box.bottom <= viewportH - GUTTER) return;
     const marginTop = Number.parseFloat(getComputedStyle(panel).marginTop) || 0;
-    const below = Math.floor(viewportH - GUTTER - box.top);
-    const above = Math.floor(rect.top - GUTTER - marginTop * 2);
+    /* A TRIGGER OUTSIDE THE VIEWPORT (MEASURED, phase 3.5, the D3 rung crossing: the queue's "Display" panel
+       open at 390x900, resized to 768 — the page's scroll reset and the trigger re-measured at y 1037, below a
+       900 px viewport; the panel "opened above" it with a 1020 px cap, ran to y 1032, and the focused control
+       had no part on screen). The panel is anchored at the viewport edge the trigger left by: brought down to
+       the gutter when the trigger is above the viewport, measured from the bottom gutter when it is below. */
+    let panelTop = box.top;
+    if (panelTop < GUTTER) {
+      panel.style.top = `${GUTTER - marginTop}px`;
+      panelTop = GUTTER;
+    }
+    if (panelTop + box.height <= viewportH - GUTTER) return;
+    const below = Math.floor(viewportH - GUTTER - panelTop);
+    const anchorTop = Math.min(rect.top, viewportH - GUTTER);
+    const above = Math.floor(anchorTop - GUTTER - marginTop * 2);
     if (above > below) {
       /* The height it WANTS, not the height the floor-capped layout gave it. */
       const natural = Math.max(box.height, panel.scrollHeight + (box.height - panel.clientHeight));
       const h = Math.min(natural, above);
       panel.style.maxHeight = `${above}px`;
-      panel.style.top = `${Math.max(GUTTER - marginTop, Math.floor(rect.top - marginTop * 2 - h))}px`;
+      panel.style.top = `${Math.max(GUTTER - marginTop, Math.floor(anchorTop - marginTop * 2 - h))}px`;
     } else {
       panel.style.maxHeight = `${Math.max(0, below)}px`;
     }
-  }, [open, rect]);
+  }
 
   const p = trigger.props;
   const triggerEl = cloneElement(trigger, {

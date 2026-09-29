@@ -2403,6 +2403,13 @@ const SELFTEST_NAV_EXTENT_CASES = [
   { name: "the guard trims a toolbar half under a sticky footer", html: edgeFixture(/toolbar half under a sticky footer/), label: "Tools", px: 27 },
   { name: "the guard trims a tab strip half under a fixed top bar", html: edgeFixture(/half under a fixed top bar/), label: "Mode", px: 20 },
   { name: "the guard reads a toolbar wholly under a sticky footer as absent (0 px)", html: edgeFixture(/toolbar wholly under a sticky footer/), label: "Tools", px: 0 },
+  /* R9 verifier m3 (owner requirement: pointer-events:none overlays COUNTED BY THE GUARD). The product guard
+     (src/panels/DataGrid.tsx `uncovered`) reads covers with elementsFromPoint, which a `pointer-events: none`
+     cover never answers, so today it reads this strip as 32 px where the browser paints 12. The census reads
+     what is PAINTED and sees the cover. The expectation is the requirement — the guard at 12 px, agreeing with
+     paint — and it stays RED until the guard is fixed (routed to the DataGrid owner). Phase 3.5 once relaxed it
+     to "the disagreement is reported", which passed with the guard still blind (independent verifier QH-V1-3);
+     a check that is green whether or not the requirement holds pins nothing, so it was put back. */
   { name: "the guard trims a tab strip under a pointer-events:none bar (a hit-test-invisible cover)", html: edgeFixture(/pointer-events:none translucent fixed bar/), label: "Mode", px: 12 },
 ];
 
@@ -2509,7 +2516,15 @@ async function selfTest() {
     const mode = rows.find((r) => r.label === c.label);
     const said = rows.map((r) => (r.kind === "check-failed" ? r.detail : `"${r.label}" guard ${r.guard} / painted ${r.truth}`)).join(" | ") || "nothing";
     const disagree = describeNavExtent(rows);
-    if (disagree.length || !mode || Math.abs(mode.guard - c.px) > 1 || Math.abs(mode.truth - c.px) > 1) problems.push(`${c.name}: expected the guard to read "${c.label}" as ${c.px} px, agreeing with paint; got ${said}`);
+    const guardAt = mode !== undefined && Math.abs(mode.guard - c.px) <= 1;
+    const truthAt = mode !== undefined && Math.abs(mode.truth - c.px) <= 1;
+    /* The paint census and the guard are judged SEPARATELY, so a red case says which of them is wrong (one problem
+       per case: the verdict counts cases). */
+    const wrong = [
+      ...(truthAt ? [] : [`the paint census did not read "${c.label}" as ${c.px} px`]),
+      ...(disagree.length || !guardAt ? [`the guard did not read "${c.label}" as ${c.px} px, agreeing with paint${disagree.length ? ` (reported: ${disagree.join("; ")})` : ""}`] : []),
+    ];
+    if (wrong.length > 0) problems.push(`${c.name}: ${wrong.join("; and ")}; got ${said}`);
   }
   await browser.close();
 

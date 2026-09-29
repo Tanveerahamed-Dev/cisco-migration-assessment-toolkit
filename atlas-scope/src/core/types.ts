@@ -267,7 +267,10 @@ export interface EvidenceProjection {
   textsCut: number;
   /** Characters the withheld records' pointer-only stubs take together. */
   withheldChars: number;
-  /** Characters every record takes as written (= projectedChars + withheldChars) — the figure `totalChars` bounds. */
+  /**
+   * Characters the whole `evidenceRecords` array takes as written (compact JSON): projectedChars + withheldChars plus
+   * its brackets and separating commas — the figure `totalChars` bounds.
+   */
   writtenChars: number;
 }
 

@@ -12,7 +12,7 @@
  * PAGE — the page had dozens — so a claim with none of its own passed (acceptance report, B6).
  *
  * So every check here is per claim: (a)–(c) on the refuter's own flows, per element that shows the
- * claim; (d) over every `suggestedFlows()` trace and a source × destination grid, per CLAUSE of every
+ * claim; (d) over every flow of the subject universe (./trace-universe.ts), per CLAUSE of every
  * claim, caveat and policy-gap sentence the engine writes, and per rendered prose element of the claim
  * card and hop list. Nothing is a fixture: the flows, the expected citations and the resolver are the
  * shipped ones.
@@ -28,8 +28,7 @@ import { counterexample, suggestedFlows, traceFlow, unobservedPolicyInputs } fro
 import { hopUndecided } from "../core/claims";
 import { describeGolden } from "../test-support/golden-sample";
 import { controlsIn, renderedOffenders, uncitedClauses, withoutScope } from "./claim-cites-support";
-import { need, nonEmpty, pathSearch, universeTraces } from "./trace-universe";
-import { formatIpv4, parseInterfaceAddress, parseIpv4 } from "../forwarding/ip";
+import { need, nonEmpty, pathSearch, universeFlows, universeTraces } from "./trace-universe";
 import { ribHostsShownIncomplete, ribIncompleteness } from "../forwarding/rib-completeness";
 import { ClaimCard, IntentClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
@@ -156,7 +155,9 @@ describe("B6 (a)/(b): every reason a table is shown incomplete is displayed with
       const c = await mountPath(pathSearch(s.flow));
       for (const g of unobservedPolicyInputs(t)) {
         if (!(g.kind === "rib-partial" || /incomplete/.test(g.label))) continue;
-        if (showing(c, g.label).length === 0) continue;
+        /* NOT `if (not shown) continue` (phase 3.5, P3B-R2-m4): the claim card lists EVERY policy gap the
+           engine returns under "Filtering", so a sentence the engine writes for this trace that the page
+           stopped displaying is a failure here, on any dataset — expectEveryDisplayCited requires it shown. */
         quoted += 1;
         expectEveryDisplayCited(c, g.label, [g.cite]);
       }
@@ -221,37 +222,16 @@ describeGolden("B6 (a)–(c): the refuter's records on the reference sample", ()
    moved unchanged to claim-cites-support.ts on 2026-09-28 (phase 3), so the no-route counterfactual holds a
    dropped trace to exactly this rule. */
 
-/** Every flow the suggestions pose, and a grid over the addresses the snapshot actually holds. */
-function sweep(): Flow[] {
-  const addrs = new Set<string>(["198.51.100.7", "8.8.8.8"]);
-  for (const s of suggestedFlows()) {
-    addrs.add(s.flow.srcIp);
-    addrs.add(s.flow.dstIp);
-  }
-  for (const r of fabric.l3) {
-    const a = r.sviIp === null ? null : parseInterfaceAddress(r.sviIp);
-    if (a === null) continue;
-    addrs.add(formatIpv4(a.ip));
-    addrs.add(formatIpv4((a.prefix.base + 50) >>> 0));
-    if (r.vip !== null && parseIpv4(r.vip) !== null) addrs.add(r.vip);
-  }
-  const services: [Flow["protocol"], number | null][] = [
-    ["tcp", 443],
-    ["tcp", 3389],
-    ["udp", 53],
-    ["icmp", null],
-  ];
-  const out: Flow[] = suggestedFlows().map((s) => s.flow);
-  for (const src of addrs)
-    for (const dst of addrs)
-      for (const [protocol, dstPort] of services) if (src !== dst) out.push({ srcIp: src, dstIp: dst, protocol, dstPort, srcPort: null });
-  return out;
-}
+/** The flows the class is checked over: the subject universe itself (./trace-universe.ts) — every suggested
+ *  flow, every ordered pair of the snapshot's SVI, FHRP and SVI-host addresses and two outside addresses,
+ *  and every ROUTED destination — never a list of its own (phase 3.5, P3B-R2-m1). */
+const sweep = (): Flow[] => universeFlows();
 
 /** Every trace of the sweep, and one per distinct SHAPE (addresses and ports masked) for the rendered
  *  sweep, which mounts each shape once: the texts differ only in the addresses a clause quotes. */
 function sweepTraces(): { all: Trace[]; shapes: Trace[] } {
-  const all = sweep().map(traceFlow);
+  /* The universe's own traces, in its order (traced once per file by the real engine). */
+  const all = universeTraces();
   const seen = new Map<string, Trace>();
   const mask = (s: string): string => s.replace(/\d+(?:\.\d+){3}(?:\/\d+)?/g, "IP").replace(/(tcp|udp)\/\d+/g, "$1/N").replace(/^(an?) \w+/, "");
   for (const t of all) {
@@ -270,6 +250,17 @@ describe("B6 (d): the class — every displayed claim and caveat carries a citat
      claim-honesty.no-route.counterfactual.test.tsx. The invariant is that the sweep covers every outcome
      the snapshot produces at all — the whole universe of flows — and the reference sample's exact set,
      with "dropped" absent, is pinned in the golden block so a sample that drops again is noticed. */
+  /* ONE DENOMINATOR (phase 3.5, P3B-R2-m1). This sweep used to build its own address list (SVI addresses,
+     SVI+50, two outside addresses and the suggested flows) — a hand-kept stand-in for the class the
+     subject universe (./trace-universe.ts) owns, so it never rendered a flow to a ROUTED off-SVI
+     destination and its outcome-only coverage check could not see the gap. The per-clause rule is only
+     as wide as the flows it is checked over, so the sweep must hold every flow of the universe. */
+  it("the sweep holds every flow of the subject universe, routed destinations included", () => {
+    const swept = new Set(sweep().map((f) => JSON.stringify(f)));
+    const missing = universeFlows().filter((f) => !swept.has(JSON.stringify(f)));
+    expect(missing.map((f) => `${f.protocol} ${f.srcIp} -> ${f.dstIp}:${f.dstPort ?? "*"}`).slice(0, 12), `${missing.length} universe flows the sweep never checks`).toEqual([]);
+  });
+
   it("the sweep covers every outcome the engine produces on this snapshot", () => {
     expect(traces.length).toBeGreaterThan(200);
     expect(shapes.length).toBeGreaterThan(20);

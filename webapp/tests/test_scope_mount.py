@@ -393,7 +393,31 @@ _REFERRER_DECLARATIONS = {
     # A nested document the page itself declares (iframe srcdoc) is a page under /scope too.
     "iframe-srcdoc-meta": ('<iframe srcdoc="&lt;meta name=&quot;referrer&quot; '
                            'content=&quot;no-referrer&quot;&gt;"></iframe>'),
+    # P3F-V2-1: parser differentials. Python's stdlib HTMLParser read each of these differently from
+    # a browser's WHATWG tokenizer and hid a meta that Chromium APPLIES (measured: no Referer on a
+    # same-origin POST). The /scope reader no longer judges with a tokenizer that differs from the
+    # browser's (app._scope_html_reading); the generated Chromium family further below proves it
+    # over the whole comment / markup-declaration / raw-text / nesting class, not these six.
+    "abrupt-empty-comment": '<!--><meta name="referrer" content="no-referrer"><!-- -->',
+    "abrupt-dash-comment": '<!---><meta name="referrer" content="no-referrer"><!-- -->',
+    # QF-R1-2: the same two abrupt openings closed by a plain `-->`, so that no OTHER comment rule
+    # (a `<!--` inside the comment data) refuses them: only the abrupt-opening rule itself can.
+    "abrupt-empty-comment-closed": '<!--><meta name="referrer" content="no-referrer">-->',
+    "abrupt-dash-comment-closed": '<!---><meta name="referrer" content="no-referrer">-->',
+    "bang-closed-comment-closed": '<!--x--!><meta name="referrer" content="no-referrer">-->',
+    "bang-closed-comment": '<!--x--!><meta name="referrer" content="no-referrer"><!-- -->',
+    "script-end-tag-with-attribute": ('<script>/**/</script x><meta name="referrer" '
+                                      'content="no-referrer"><script>/**/</script>'),
+    "script-end-tag-self-closing": ('<script>/**/</script/><meta name="referrer" '
+                                    'content="no-referrer"><script>/**/</script>'),
+    "style-end-tag-with-attribute": ('<style>/**/</style x><meta name="referrer" '
+                                     'content="no-referrer"><style>/**/</style>'),
 }
+_PARSER_DIFFERENTIAL_FORMS = ("abrupt-empty-comment", "abrupt-dash-comment",
+                              "abrupt-empty-comment-closed", "abrupt-dash-comment-closed",
+                              "bang-closed-comment", "bang-closed-comment-closed",
+                              "script-end-tag-with-attribute", "script-end-tag-self-closing",
+                              "style-end-tag-with-attribute")
 
 
 @pytest.mark.parametrize("declaration", sorted(_REFERRER_DECLARATIONS))
@@ -429,6 +453,34 @@ def test_any_html_document_the_scope_mount_serves_may_not_declare_a_referrer_pol
         assert c.get("/scope/assets/x.html").status_code == 200
 
 
+_REPEATED_SHELL_ATTRIBUTES = {
+    "script-src": (b'src="/scope/assets/index-abc123.js"',
+                   b'src="https://example.invalid/x.js" src="/scope/assets/index-abc123.js"'),
+    "link-href": (b'href="/scope/assets/react-def456.js"',
+                  b'href="https://example.invalid/x.js" href="/scope/assets/react-def456.js"'),
+    "runtime-source-content": (b'content="assesshub-api-runtime"',
+                               b'content="sample-fleet" content="assesshub-api-runtime"'),
+}
+
+
+@pytest.mark.parametrize("variant", sorted(_REPEATED_SHELL_ATTRIBUTES))
+def test_a_scope_shell_repeating_an_attribute_is_refused_because_a_browser_keeps_the_first(
+        tmp_path, variant):
+    """QF-R1-2 (per-clause): a browser keeps the FIRST of a repeated attribute and drops the rest,
+    so a shell repeating a checked attribute would load or declare what the FIRST says while any
+    last-wins reading approves what the second says. The reader refuses every repeat."""
+    dist = tmp_path / "scope-dist"
+    files = write_scope_dist(dist)
+    plain, repeated = _REPEATED_SHELL_ATTRIBUTES[variant]
+    assert files["index.html"].count(plain) == 1
+    (dist / "index.html").write_bytes(files["index.html"].replace(plain, repeated))
+    with _client(tmp_path, dist) as c:
+        assert c.app.state.scope_status == "invalid_build", variant
+    (dist / "index.html").write_bytes(files["index.html"])
+    with _client(tmp_path, dist, db_name="control.db") as c:
+        assert c.app.state.scope_status == "ready"
+
+
 @pytest.mark.parametrize("declaration", sorted(_REFERRER_DECLARATIONS))
 def test_an_html_asset_declaring_a_referrer_policy_in_any_form_is_refused(tmp_path, declaration):
     """Every declaration form the shell is refused for is refused in an HTML ASSET too. An asset's
@@ -447,6 +499,63 @@ def test_an_html_asset_declaring_a_referrer_policy_in_any_form_is_refused(tmp_pa
         "x.html", b"<!doctype html><html><head><title>x</title></head><body>x</body></html>"))
     with _client(tmp_path, dist, db_name="control.db") as c:
         assert c.app.state.scope_status == "ready"
+
+
+_SVG_NS = 'xmlns="http://www.w3.org/2000/svg"'
+_XHTML_NS = 'xmlns="http://www.w3.org/1999/xhtml"'
+#: P3F-V2-3. A browser renders every XML document (SVG, XHTML, text/xml, any */xml or *+xml type) as
+#: markup, HTML elements included, so the referrer rule covers them too — and XHTML is read by an XML
+#: parser, never an HTML one. What an XML reader cannot read the way every browser reads it (a DTD
+#: internal subset, whose entities and attribute defaults are DTD processing; a processing
+#: instruction such as an XSLT stylesheet, which a
+#: browser runs; malformed markup, which a browser renders up to the error; a non-UTF-8 declaration
+#: the served charset overrides) is refused, never passed.
+_XML_DECLARATIONS = {
+    "svg-foreignobject-xhtml-meta": ("x.svg", f"<svg {_SVG_NS}><foreignObject><meta {_XHTML_NS} "
+                                              'name="referrer" content="no-referrer"/></foreignObject></svg>'),
+    "svg-a-referrerpolicy": ("x.svg", f'<svg {_SVG_NS}><a referrerpolicy="no-referrer" href="#x">'
+                                      "<text>x</text></a></svg>"),
+    "svg-a-rel-noreferrer": ("x.svg", f'<svg {_SVG_NS}><a rel="noreferrer" href="#x"><text>x</text>'
+                                      "</a></svg>"),
+    "xhtml-meta": ("x.xhtml", f'<html {_XHTML_NS}><head><meta name="referrer" content="no-referrer"/>'
+                              "</head><body/></html>"),
+    "xml-prefixed-xhtml-meta": ("x.xml", '<r xmlns:h="http://www.w3.org/1999/xhtml"><h:meta '
+                                         'name="referrer" content="no-referrer"/></r>'),
+    "svg-internal-entity": ("x.svg", f'<!DOCTYPE svg [<!ENTITY m "x">]><svg {_SVG_NS}>&m;</svg>'),
+    "svg-internal-subset": ("x.svg", '<!DOCTYPE svg [<!ATTLIST svg data-x CDATA "1">]>'
+                                     f"<svg {_SVG_NS}/>"),
+    "svg-stylesheet-pi": ("x.svg", '<?xml-stylesheet type="text/xsl" href="t.xsl"?>'
+                                   f"<svg {_SVG_NS}/>"),
+    "svg-not-well-formed": ("x.svg", f"<svg {_SVG_NS}><g></svg>"),
+    "svg-declared-latin1": ("x.svg", f'<?xml version="1.0" encoding="ISO-8859-1"?><svg {_SVG_NS}/>'),
+}
+#: The same documents with nothing a browser applies: comments, CDATA and text carrying the words.
+_XML_CONTROLS = {
+    "x.svg": ('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" '
+              '"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">'
+              f'<svg {_SVG_NS}><!-- <meta name="referrer"/> -->'
+              '<text><![CDATA[<meta name="referrer" content="no-referrer"/>]]></text></svg>'),
+    "x.xhtml": (f'<html {_XHTML_NS}><head><meta name="description" content="x"/></head>'
+                "<body><p>referrer</p></body></html>"),
+    "x.xml": '<r xmlns:h="http://www.w3.org/1999/xhtml"><h:meta name="description" content="x"/></r>',
+}
+
+
+@pytest.mark.parametrize("declaration", sorted(_XML_DECLARATIONS))
+def test_an_xml_document_declaring_or_hiding_a_referrer_policy_is_refused(tmp_path, declaration):
+    name, page = _XML_DECLARATIONS[declaration]
+    served = app_mod._frontend_media_type(name).split(";")[0]
+    assert served.endswith(("/xml", "+xml")), (name, served)  # the member IS an XML document
+    dist = tmp_path / "scope-dist"
+    write_scope_dist(dist, extra_asset=(name, page.encode("utf-8")))
+    with _client(tmp_path, dist) as c:
+        assert c.app.state.scope_status == "invalid_build", declaration
+        assert c.get(f"/scope/assets/{name}").status_code == 503
+    # the control: the same kind of document with nothing a browser applies is served
+    write_scope_dist(dist, extra_asset=(name, _XML_CONTROLS[name].encode("utf-8")))
+    with _client(tmp_path, dist, db_name="control.db") as c:
+        assert c.app.state.scope_status == "ready", declaration
+        assert c.get(f"/scope/assets/{name}").status_code == 200
 
 
 def test_default_scope_dist_is_the_repository_build_when_present(tmp_path, monkeypatch):
@@ -732,6 +841,42 @@ def _prerequisite_absent(reason: str):
     if os.environ.get(_REQUIRE_REAL_TOOLCHAIN_ENV) == "1":
         pytest.fail(f"{_REQUIRE_REAL_TOOLCHAIN_ENV}=1 but {reason}", pytrace=False)
     pytest.skip(reason)
+
+
+#: The markup oracle (real Chromium, "the browser is the oracle" below) has its OWN switch, because
+#: a leg can hold node + atlas-scope's `npm ci` (the real-toolchain pins) without a browser. `1`: the
+#: oracle MUST run (a missing browser fails). `0`: this leg opts out EXPLICITLY (it skips, visibly).
+#: Unset: it follows the real-toolchain switch — so a leg that sets
+#: ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN=1 and installs no Chromium fails until it decides either way
+#: (QF-R1-1; the workflows are held to that below, test_every_ci_leg_running_these_pins_...).
+_REQUIRE_MARKUP_ORACLE_ENV = "ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE"
+
+
+def _oracle_prerequisite_absent(reason: str):
+    switch = os.environ.get(_REQUIRE_MARKUP_ORACLE_ENV)
+    if switch not in (None, "", "0", "1"):
+        pytest.fail(f"{_REQUIRE_MARKUP_ORACLE_ENV}={switch!r} is neither 0 nor 1", pytrace=False)
+    if switch == "1":
+        pytest.fail(f"{_REQUIRE_MARKUP_ORACLE_ENV}=1 but {reason}", pytrace=False)
+    if switch == "0":
+        pytest.skip(f"{reason} (this leg opts out: {_REQUIRE_MARKUP_ORACLE_ENV}=0)")
+    _prerequisite_absent(f"{reason}; a leg without the oracle's browser sets "
+                         f"{_REQUIRE_MARKUP_ORACLE_ENV}=0 explicitly")
+
+
+def test_the_markup_oracle_has_its_own_switch_and_absence_never_passes_silently(monkeypatch):
+    cases = [(None, None, "skip"), (None, "1", "fail"), ("0", "1", "skip"), ("0", None, "skip"),
+             ("1", None, "fail"), ("1", "0", "fail"), ("yes", None, "fail"), ("", "1", "fail")]
+    for oracle, toolchain, expected in cases:
+        for name, value in ((_REQUIRE_MARKUP_ORACLE_ENV, oracle),
+                            (_REQUIRE_REAL_TOOLCHAIN_ENV, toolchain)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        outcome = pytest.skip.Exception if expected == "skip" else pytest.fail.Exception
+        with pytest.raises(outcome):
+            _oracle_prerequisite_absent("absent")
 
 
 def test_a_required_real_toolchain_that_is_absent_fails_instead_of_skipping(monkeypatch):
@@ -1180,10 +1325,545 @@ def test_a_required_hub_build_that_is_absent_fails_instead_of_skipping(tmp_path,
     assert backend.index("run: npm run build:hub") < backend.index("python -m pytest webapp/tests")
 
 
+def test_the_source_shell_the_hub_build_is_made_from_is_markup_the_reader_reads():
+    """Runs without a build, on every leg: atlas-scope/index.html (the shell Vite turns into the hub
+    shell by adding its asset tags) stays inside the markup the /scope reader accepts, so an edit
+    there that a browser would read differently from AssessHub fails here, not only once built."""
+    source = (_ATLAS_SCOPE_ROOT / "index.html").read_bytes()
+    reading = app_mod._scope_document_reading(source, app_mod._frontend_media_type("index.html"))
+    assert reading is not None
+    assert not app_mod._scope_reading_declares_referrer_policy(reading)
+    assert {"html", "head", "body", "script", "meta"} <= {element.name for element in reading}
+
+
+_SCOPE_PINS = "webapp/tests/test_scope_mount.py"
+#: pytest options whose value is the NEXT token (so it is not read as a collected path)
+_PYTEST_VALUE_OPTIONS = frozenset({"-p", "-k", "-m", "-o", "-c", "-W", "-n", "--ignore", "--deselect",
+                                   "--rootdir", "--basetemp", "--confcutdir", "--junitxml",
+                                   "--maxfail", "--durations", "--tb", "--ignore-glob"})
+
+
+def _default_testpaths() -> list[str]:
+    """What a bare `pytest` collects here: pytest.ini's testpaths (or, without one, the root)."""
+    import configparser
+
+    config = configparser.ConfigParser()
+    config.read(_REPO / "pytest.ini", encoding="utf-8")
+    return config.get("pytest", "testpaths", fallback=".").split()
+
+
+def _pytest_invocations(run: str, working_directory: str) -> list[list[str]]:
+    """Every pytest invocation in one step's script, as the repository paths it collects."""
+    invocations = []
+    for match in re.finditer(r"(?:-m\s+pytest|(?:^|[\s;&|(])pytest)(?=[\s'\"]|$)([^\n;&|'\"]*)",
+                             run, re.MULTILINE):
+        paths, value_next = [], False
+        for token in match.group(1).split():
+            if value_next:
+                value_next = False
+            elif token in _PYTEST_VALUE_OPTIONS:
+                value_next = True
+            elif not token.startswith("-"):
+                paths.append(token.split("::", 1)[0])
+        invocations.append([os.path.normpath(os.path.join(working_directory, path)).replace("\\", "/")
+                            for path in (paths or _default_testpaths())])
+    return invocations
+
+
+def _collects_the_scope_pins(paths: list[str]) -> bool:
+    return any(path == "." or _SCOPE_PINS == path.rstrip("/")
+               or _SCOPE_PINS.startswith(path.rstrip("/") + "/") for path in paths)
+
+
+def _workflow_legs_running_the_scope_pins() -> list[dict]:
+    """Every CI step, in every workflow, whose pytest collects these pins -- read from the workflows
+    (PyYAML ships with netmiko, a base dependency), with its effective env and what ran before it."""
+    import yaml
+
+    legs = []
+    for workflow in sorted((_REPO / ".github" / "workflows").glob("*.yml")):
+        document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        for job_id, job in (document.get("jobs") or {}).items():
+            default_wd = (((job.get("defaults") or {}).get("run") or {}).get("working-directory")
+                          or ".")
+            earlier = []
+            for step in job.get("steps") or []:
+                run = str(step.get("run") or "")
+                wd = os.path.normpath(step.get("working-directory") or default_wd).replace("\\", "/")
+                if any(_collects_the_scope_pins(paths) for paths in _pytest_invocations(run, wd)):
+                    env = {name: str(value) for scope in (document, job, step)
+                           for name, value in (scope.get("env") or {}).items()}
+                    legs.append({"leg": f"{workflow.name}:{job_id}", "env": env,
+                                 "earlier": list(earlier)})
+                earlier.append((wd, run))
+    return legs
+
+
+def _ran_in_atlas_scope(earlier: list, pattern: str) -> bool:
+    return any(re.search(pattern, run) and (wd == "atlas-scope" or re.search(
+        r"(?:\bcd|Set-Location)\s+['\"]?atlas-scope\b", run)) for wd, run in earlier)
+
+
+def test_every_ci_leg_running_these_pins_installs_or_explicitly_declines_what_they_require():
+    """QF-R1-1 / P3F-V2-2, derived from the workflows: every CI step whose pytest collects these pins
+    -- `pytest webapp/tests/...` or a bare `pytest` over pytest.ini's testpaths -- is held to what it
+    claims. A leg that requires the real toolchain must `npm ci` in atlas-scope first AND decide the
+    markup oracle explicitly (it needs a browser the toolchain does not bring); a leg that requires
+    the oracle must install atlas-scope's Playwright Chromium first; a leg that builds the hub build
+    must build it first and require it."""
+    legs = _workflow_legs_running_the_scope_pins()
+    problems = []
+    for leg in legs:
+        env, earlier, name = leg["env"], leg["earlier"], leg["leg"]
+        if env.get(_REQUIRE_REAL_TOOLCHAIN_ENV) == "1":
+            if not _ran_in_atlas_scope(earlier, r"\bnpm ci\b"):
+                problems.append((name, "requires the real toolchain but runs no npm ci in atlas-scope"))
+            if env.get(_REQUIRE_MARKUP_ORACLE_ENV) not in ("0", "1"):
+                problems.append((name, f"requires the real toolchain but does not set "
+                                       f"{_REQUIRE_MARKUP_ORACLE_ENV} to 0 or 1"))
+        if env.get(_REQUIRE_MARKUP_ORACLE_ENV) == "1" and not _ran_in_atlas_scope(
+                earlier, r"\bplaywright install\b[^\n]*\bchromium\b"):
+            problems.append((name, "requires the markup oracle but installs no atlas-scope Chromium"))
+        builds_hub = _ran_in_atlas_scope(earlier, r"\bnpm run build:hub\b")
+        if builds_hub and env.get(_REQUIRE_HUB_BUILD_ENV) != "1":
+            problems.append((name, "builds the hub build but does not require it"))
+        if env.get(_REQUIRE_HUB_BUILD_ENV) == "1" and not builds_hub:
+            problems.append((name, "requires the hub build but does not build it first"))
+    assert not problems, problems
+    # non-vacuity: a bare `pytest`, `pytest webapp/tests` and the file itself are all recognised, and
+    # the two legs that own the oracle really require it
+    by_leg = {leg["leg"]: leg["env"] for leg in legs}
+    assert by_leg.get("ci.yml:test", {}).get(_REQUIRE_REAL_TOOLCHAIN_ENV) == "1", sorted(by_leg)
+    for owner in ("webapp-ci.yml:backend", "atlas-scope-ci.yml:atlas-scope"):
+        assert by_leg.get(owner, {}).get(_REQUIRE_MARKUP_ORACLE_ENV) == "1", (owner, sorted(by_leg))
+        assert by_leg[owner].get(_REQUIRE_HUB_BUILD_ENV) == "1", owner
+    assert any(not env.get(_REQUIRE_REAL_TOOLCHAIN_ENV) for env in by_leg.values()), sorted(by_leg)
+
+
+def test_the_ci_leg_reader_recognises_every_way_a_step_collects_these_pins():
+    for run, wd, expected in [
+            ("python -m pytest", ".", True), ("python -m pytest -q -p no:cacheprovider", ".", True),
+            ("python -m pytest webapp/tests -q", ".", True),
+            ("python -m pytest webapp/tests/test_scope_mount.py -q", ".", True),
+            ("python -m pytest webapp/tests/test_scope_mount.py::test_x", ".", True),
+            ("python -m pytest -k scope webapp", ".", True),
+            ('& "$env:RUNNER_TEMP\\ci-venv\\Scripts\\python.exe" -m pytest', ".", True),
+            ("pytest -q", ".", True), ("python -m pytest tests/test_scope_mount.py", "webapp", True),
+            ("python -m pytest master-reference/tests -q", ".", False),
+            ("python -m pytest tests -p webapp", ".", False),
+            ("python -m pip install pytest-xdist", ".", False)]:
+        found = any(_collects_the_scope_pins(p) for p in _pytest_invocations(run, wd))
+        assert found is expected, (run, wd)
+
+
 _SCOPE_DIST_DEFAULT_SENTINEL = app_mod._SCOPE_DIST_DEFAULT
 #: Set to 1 on a leg that runs atlas-scope `npm run build:hub` before this suite (the hub build is
 #: untracked build output, so only such a leg can hold this pin to account).
 _REQUIRE_HUB_BUILD_ENV = "ATLAS_SCOPE_REQUIRE_HUB_BUILD"
+
+
+# -- the browser is the oracle (P3F-V2-1 / V2-3) ------------------------------------------------------
+# A /scope document is judged by the reading a BROWSER makes of it, never by a tokenizer that differs
+# from the browser's. The proof is differential and real: every document of a GENERATED family —
+# abrupt and bang-closed comments, markup declarations, CDATA, raw-text end tags in every spelling for
+# every element parse5 knows (the WHATWG tokenizer-switching ones in full), script escapes, foreign
+# content and nesting, attribute spellings, and XML documents — is judged by AssessHub's own index
+# (`_scope_file_index`), then loaded in real Chromium with the exact headers AssessHub serves it with.
+# A document served 'ready' must carry NO referrer-policy declaration in the DOM Chromium built, must
+# send its full /scope Referer on a same-origin POST, and every element attribute Chromium holds must
+# be one the reader read. Needs node + atlas-scope's Playwright + its Chromium: where
+# ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE=1 (webapp-ci's backend leg, atlas-scope-ci) their absence FAILS,
+# never skips; a leg without a browser declines it explicitly with =0 (_oracle_prerequisite_absent).
+# Every refusal clause of the reader has a member of this family (or a unit pin above) that goes red
+# without it, or is recorded as safety-equivalent: removing it changes no reading a browser makes.
+
+_ORACLE_ORIGIN = "http://localhost:8765"
+_ORACLE_HARNESS = r"""
+const { createRequire } = require('node:module');
+const fs = require('node:fs');
+const path = require('node:path');
+const [, , atlasScopeRoot, mode, inPath, outPath] = process.argv;
+const load = createRequire(path.join(atlasScopeRoot, 'package.json'));
+(async () => {
+  if (mode === 'tags') {
+    const { html } = load('parse5');
+    fs.writeFileSync(outPath, JSON.stringify(Object.values(html.TAG_NAMES)));
+    return;
+  }
+  const { chromium } = load('playwright');
+  let browser;
+  try { browser = await chromium.launch(); }
+  catch (error) { console.log('ORACLE-NO-BROWSER ' + String(error).split('\n')[0]); process.exit(3); }
+  try {
+    const cases = JSON.parse(fs.readFileSync(inPath, 'utf8'));
+    const results = {};
+    // Independent contexts (own route, own current document) read the family in parallel.
+    const worker = async (slice) => {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      let current = null;
+      let referer;
+      await context.route('**/*', (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (url.pathname === '/api/referrer-probe') {
+          referer = request.headers()['referer'] ?? null;
+          return route.fulfill({ status: 204 });
+        }
+        if (current && url.pathname === current.path && request.isNavigationRequest()
+            && request.frame() === page.mainFrame()) {
+          return route.fulfill({ status: 200, headers: current.headers,
+                                 body: Buffer.from(current.body, 'base64') });
+        }
+        return route.fulfill({ status: 404, headers: { 'content-type': 'text/plain' }, body: '' });
+      });
+      for (const c of slice) {
+        current = c;
+        referer = undefined;
+        let rendered = true;
+        let dom = null;
+        const started = Date.now();
+        try { await page.goto(%ORIGIN% + c.path, { waitUntil: 'domcontentloaded', timeout: 10000 }); }
+        catch (error) { rendered = false; }
+        if (rendered) {
+          try {
+            dom = await page.evaluate(() => Array.from(document.querySelectorAll('*'), (e) => [
+              e.localName, Array.from(e.attributes, (a) => [a.name, a.localName, a.value, a.namespaceURI])]));
+            await page.evaluate(() => fetch('/api/referrer-probe', { method: 'POST', body: 'x' })
+              .then(() => 0, () => 0));
+          } catch (error) { rendered = false; }
+        }
+        results[c.id] = { rendered, dom, referer: referer === undefined ? '<not requested>' : referer,
+                          ms: Date.now() - started };
+      }
+      await context.close();
+    };
+    const lanes = 6;
+    await Promise.all(Array.from({ length: lanes }, (_, lane) =>
+      worker(cases.filter((_c, index) => index % lanes === lane))));
+    fs.writeFileSync(outPath, JSON.stringify(results));
+  } finally {
+    await browser.close();
+  }
+})().catch((error) => { console.error(error); process.exit(1); });
+""".replace("%ORIGIN%", json.dumps(_ORACLE_ORIGIN))
+
+_XMLNS_NS = "http://www.w3.org/2000/xmlns/"
+_MEDIA_PROBE = "atlas-scope-markup-probe"
+_ORACLE_META = '<meta name="referrer" content="no-referrer">'
+#: What each wrapper hides or exposes: a policy meta, the noreferrer link type, a referrerpolicy —
+#: and a benign element, so every wrapper also yields documents the reader ACCEPTS, whose reading
+#: the containment test then holds to Chromium's.
+_ORACLE_PAYLOADS = {"meta": _ORACLE_META, "a-rel": '<a rel="noreferrer">x</a>',
+                    "i-referrerpolicy": '<i referrerpolicy="no-referrer">x</i>',
+                    "benign": '<b title="referrer">x</b>',
+                    # unquoted, so no quote of the payload's own can close a wrapper's quoted value
+                    "meta-unquoted": "<meta name=referrer content=no-referrer>"}
+#: The elements whose content the WHATWG tree builder switches the tokenizer out of the data state
+#: for; the family runs them with every raw-text end-tag spelling, and runs EVERY element name parse5
+#: knows with the core spellings (so a tokenizer-switching element missing here is still exercised).
+_RAW_TEXT_ELEMENTS = ("script", "style", "title", "textarea", "xmp", "iframe", "noembed", "noframes",
+                      "noscript", "plaintext")
+_COMMENT_WRAPPERS = [
+    ("<!-->", "<!-- -->"), ("<!--->", "<!-- -->"), ("<!-->", "-->"), ("<!--->", "-->"),
+    ("<!---->", ""), ("<!--x--!>", "<!-- -->"), ("<!--x--!>", "-->"),
+    ("<!--x--!", "-->"), ("<!--x-- >", "-->"), ("<!--x--\n>", "-->"), ("<!-- a <!-- b -->", ""),
+    ("<!--x<!-->", "-->"), ("<!--x<!--->", "-->"), ("<!--", "-->"), ("<!-- x --", "->"),
+    ("<!-- x -", "-->"), ("<!-- </p> ", "-->"), ("<!-- <p> ", "-->"), ("<!--x-", "->"),
+    ("<!-- x --!", "-->"), ("<!--", "--!>"), ("<!--", "<!-->"),
+]
+_DECLARATION_WRAPPERS = [
+    ("<!x>", ""), ("<!>", ""), ("<?x>", ""), ("<?x ", "?>"), ("</ x>", ""), ("</>", ""), ("</1>", ""),
+    ("<![CDATA[", "]]>"), ("<![CDATA[x]]>", ""), ("<!DOCTYPE x>", ""), ("<!doctype html>", ""),
+    ("<!ELEMENT x>", ""), ("<! -- ", " -- >"), ("<!-", ">"), ("a < b ", ""), ("<1 ", ""), ("<", ""),
+    ("&lt;", ""), ("<p title='", "'>"), ('<p title="', '">'), ("<p title=", ">"),
+]
+_RAW_TEXT_WRAPPERS = [
+    ("<{t}>", "</{t}>"), ("<{t}></{t} x>", ""), ("<{t}></{t}/>", ""), ("<{t}></{t}\t>", ""),
+    ("<{t}></{t}\n>", ""), ("<{t}></{t} >", ""), ("<{t}><!--</{t}>", "-->"),
+    ('<{t}><a title="</{t}>', '">'), ("<{t}><a title='</{t}>", "'>"), ("<{t}>x</{t}\f>", ""),
+    ("<{t}><!--", "--></{t}>"),
+    ("<{t}>", ""), ("<{T}></{t} x>", ""), ("<{t}></{T} x>", ""), ("<{t}></{t}\r>", ""),
+]
+_EVERY_ELEMENT_WRAPPERS = [("<{t}>", "</{t}>"), ("<{t}></{t} x>", ""), ("<{t}><!--</{t}>", "-->"),
+                           ("<{t}><a title='</{t}>", "'>")]
+_SCRIPT_WRAPPERS = [
+    ("<script><!--<script>", "</script></script>"), ("<script><!--<script></script>", "</script>"),
+    ("<script><!--", "--></script>"), ("<script><!--</script>", "-->"), ("<script>/*", "*/</script>"),
+    ("<script><!--<script>-->", "</script>"), ("<script><!--<script>--></script>", ""),
+]
+_NESTING_WRAPPERS = [
+    ("<svg>", "</svg>"), ("<svg><style>", "</style></svg>"), ("<svg><![CDATA[", "]]></svg>"),
+    ("<svg><title>", "</title></svg>"), ("<svg><desc>", "</desc></svg>"),
+    ("<svg><foreignObject>", "</foreignObject></svg>"), ("<svg><script>", "</script></svg>"),
+    ("<math>", "</math>"), ("<math><mi>", "</mi></math>"),
+    ('<math><annotation-xml encoding="text/html">', "</annotation-xml></math>"),
+    ("<math><![CDATA[", "]]></math>"), ("<template>", "</template>"),
+    ('<template shadowrootmode="open">', "</template>"), ("<noscript>", "</noscript>"),
+    ("<select>", "</select>"), ("<table>", "</table>"), ("<object>", "</object>"),
+    ("<div><p>", "</p></div>"), ("<a><a>", ""), ("<frameset>", ""), ("<head>", ""), ("<body>", ""),
+    ("<html>", ""), ("<svg><foreignObject><svg><style>", "</style></svg></foreignObject></svg>"),
+    ("<textarea>", "</textarea>"), ("<title>", "</title>"), ("<plaintext>", ""),
+]
+#: The declaration itself, spelled every way the tokenizer reads (or does not read) as one.
+_ATTRIBUTE_SPELLINGS = [
+    '<meta name=referrer content=no-referrer>', "<meta name='referrer' content='no-referrer'>",
+    '<META NAME="REFERRER" CONTENT="NO-REFERRER">', '<meta\nname="referrer"\ncontent="no-referrer">',
+    '<meta\fname="referrer" content="no-referrer">', '<meta\rname="referrer" content="no-referrer">',
+    '<meta/name="referrer"/content="no-referrer">', '<meta name="referrer"content="no-referrer">',
+    '<meta name="&#114;eferrer" content="no-referrer">', '<meta name="refer&#x72;er" content="no-referrer">',
+    '<meta name="referrer" name="x" content="no-referrer">',
+    '<meta name="x" name="referrer" content="no-referrer">',
+    '<meta name="referrer" content="no&#45;referrer">', '<meta name="referrer" content="no-referrer"/>',
+    '<meta name = "referrer" content = "no-referrer">', '<meta\x0bname="referrer" content="no-referrer">',
+    '<me\x00ta name="referrer" content="no-referrer">', '<meta name="referrer\x00" content="no-referrer">',
+    '<meta name="referrer" content="no-referrer" x=">', '<meta name="ref&NewLine;errer" content="x">',
+    '<meta name=" referrer " content="no-referrer">', '<meta name="referrer" content=no-referrer/>',
+    '<meta name="referrer" content="no-referrer"<p>', '<a rel=noreferrer>x</a>',
+    '<a rel="noopener&#32;noreferrer">x</a>', '<i REFERRERPOLICY="origin">x</i>',
+    '<iframe srcdoc="x"></iframe>', '<meta name="description" content="referrer no-referrer">',
+    '<p>referrer noreferrer referrerpolicy</p>', '<!-- <meta name="referrer" content="no-referrer"> -->',
+    # QF-R1-2 per-clause: a declaration directly after another attribute (no whitespace between
+    # them), a noreferrer token split on TAB or LF, and a `<` inside another attribute's value
+    '<meta content="no-referrer"name="referrer">', '<a title="x"rel="noreferrer">x</a>',
+    '<a rel="noopener\tnoreferrer">x</a>', '<a rel="noopener\nnoreferrer">x</a>',
+    '<meta name="referrer" content="no-referrer" title="a<b">',
+    # CR in a value: a browser normalises it to LF before tokenizing, and so must the reader's value
+    '<b title="a\r\nb">x</b>', '<b title="a\rb">x</b>',
+]
+
+
+def _oracle_fragments(element_names: list[str]) -> dict[str, tuple[str, bool]]:
+    """id -> (fragment, whether the SHELL is exercised too). Every family runs as an HTML asset; the
+    per-element family (the largest) runs as an asset only — the shell reads markup with the same
+    reader and only adds refusals of its own."""
+    fragments: dict[str, tuple[str, bool]] = {}
+    for name in _PARSER_DIFFERENTIAL_FORMS:
+        fragments[f"named:{name}"] = (_REFERRER_DECLARATIONS[name], True)
+    families = {"comment": _COMMENT_WRAPPERS, "declaration": _DECLARATION_WRAPPERS,
+                "script": _SCRIPT_WRAPPERS, "nesting": _NESTING_WRAPPERS,
+                **{f"raw-text-{t}": [(p.format(t=t, T=t.upper()), s.format(t=t, T=t.upper()))
+                                     for p, s in _RAW_TEXT_WRAPPERS] for t in _RAW_TEXT_ELEMENTS}}
+    for family, wrappers in families.items():
+        for index, (prefix, suffix) in enumerate(wrappers):
+            for payload_name, payload in _ORACLE_PAYLOADS.items():
+                fragments[f"{family}:{index}:{payload_name}"] = (prefix + payload + suffix, True)
+    for element in element_names:
+        for index, (prefix, suffix) in enumerate(_EVERY_ELEMENT_WRAPPERS):
+            fragments[f"element-{element}:{index}"] = (
+                prefix.format(t=element) + _ORACLE_META + suffix.format(t=element), False)
+    for index, spelling in enumerate(_ATTRIBUTE_SPELLINGS):
+        fragments[f"spelling:{index}"] = (spelling, True)
+    return fragments
+
+
+def _oracle_run(node_tmp: Path, mode: str, cases=None):
+    harness = node_tmp / "scope-oracle.cjs"
+    harness.write_text(_ORACLE_HARNESS, encoding="utf-8")
+    source, out = node_tmp / f"{mode}-in.json", node_tmp / f"{mode}-out.json"
+    source.write_text(json.dumps(cases or []), encoding="utf-8")
+    proc = subprocess.run([_NODE, str(harness), str(_ATLAS_SCOPE), mode, str(source), str(out)],
+                          capture_output=True, text=True, timeout=1800)
+    if proc.returncode == 3 and "ORACLE-NO-BROWSER" in proc.stdout:
+        _oracle_prerequisite_absent("atlas-scope's Playwright Chromium is not installed "
+                                    f"(npx playwright install chromium): {proc.stdout.strip()[:300]}")
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def _oracle_headers(name: str, served: dict) -> dict[str, str]:
+    """The headers AssessHub serves member ``name`` with: the security headers measured on a real
+    /scope response, and the Content-Type the real response machinery derives for its media type."""
+    from starlette.responses import Response
+    content_type = Response(b"", media_type=app_mod._frontend_media_type(name)).headers["content-type"]
+    return {**served, "content-type": content_type}
+
+
+@pytest.fixture(scope="module")
+def scope_markup_oracle(tmp_path_factory):
+    if not _NODE or not (_ATLAS_SCOPE / "node_modules" / "playwright" / "package.json").is_file():
+        _oracle_prerequisite_absent("node or atlas-scope's Playwright is not installed "
+                                    "(npm ci in atlas-scope)")
+    tmp = tmp_path_factory.mktemp("scope-markup-oracle")
+    element_names = sorted({name.lower() for name in _oracle_run(tmp, "tags")} | set(_RAW_TEXT_ELEMENTS))
+    assert len(element_names) >= 100 and set(_RAW_TEXT_ELEMENTS) <= set(element_names), element_names
+
+    # the headers a real AssessHub serves /scope documents with (measured, not restated)
+    control = tmp / "control"
+    write_scope_dist(control, extra_asset=("x.html", b"<!doctype html><title>x</title>"))
+    app = create_app(db_path=str(tmp / "control.db"), dist_dir=tmp / "no-spa", scope_dist_dir=control)
+    with TestClient(app, base_url="http://localhost") as c:
+        assert app.state.scope_status == "ready"
+        responses = {"shell": c.get("/scope/snapshots/1/"), "asset": c.get("/scope/assets/x.html")}
+    served = {}
+    for response in responses.values():
+        assert response.status_code == 200
+        for header in ("x-content-type-options", "referrer-policy", "content-security-policy",
+                       "x-frame-options"):
+            served[header] = response.headers[header]
+    assert responses["shell"].headers["content-type"] == _oracle_headers("index.html", {})["content-type"]
+    assert responses["asset"].headers["content-type"] == _oracle_headers("x.html", {})["content-type"]
+
+    cases = []
+    shell_template = write_scope_dist(tmp / "shell-template")
+    through_index = []
+
+    def judge(case_id: str, kind: str, name: str, document: bytes, *, shell: bool = False):
+        """The index's own markup verdict (app._scope_markup_refused) over the members the build
+        would have; a sample of cases is ALSO built on disk and judged by the whole index below."""
+        files = dict(shell_template)
+        if shell:
+            files["index.html"] = document
+        else:
+            files[f"assets/{name}"] = document
+        members = {relative: app_mod._FrontendFile(content, app_mod._frontend_media_type(relative), "")
+                   for relative, content in files.items()}
+        status = "invalid_build" if app_mod._scope_markup_refused(members) else "ready"
+        if case_id.split("|", 1)[1].startswith(("named:", "spelling:")) or len(cases) % 23 == 0:
+            through_index.append((case_id, files, status))
+        path = "/scope/snapshots/1/" if shell else f"/scope/assets/{name}"
+        cases.append({"id": case_id, "kind": kind, "path": path, "status": status,
+                      "media_type": app_mod._frontend_media_type("index.html" if shell else name),
+                      "headers": _oracle_headers("index.html" if shell else name, served),
+                      "body": base64.b64encode(document).decode("ascii")})
+
+    for fragment_id, (fragment, with_shell) in _oracle_fragments(element_names).items():
+        page = ("<!doctype html><html><head><title>x</title>" + fragment
+                + "</head><body>x</body></html>").encode("utf-8")
+        judge(f"asset|{fragment_id}", "html", "x.html", page)
+        if with_shell:
+            shell = shell_template["index.html"].replace(
+                b"<title>", fragment.encode("utf-8") + b"<title>", 1)
+            judge(f"shell|{fragment_id}", "html", "index.html", shell, shell=True)
+    for declaration, (name, page) in _XML_DECLARATIONS.items():
+        judge(f"xml|{declaration}", "xml", name, page.encode("utf-8"))
+    for name, page in _XML_CONTROLS.items():
+        judge(f"xml-control|{name}", "xml", name, page.encode("utf-8"))
+    # the in-memory verdict IS the index's: a sample (every named form and spelling, and a stride of
+    # the rest) is written out as a real build and judged by the whole _scope_file_index
+    for number, (case_id, files, status) in enumerate(through_index):
+        dist = tmp / f"built-{number}"
+        for relative, content in files.items():
+            (dist / relative).parent.mkdir(parents=True, exist_ok=True)
+            (dist / relative).write_bytes(content)
+        assert app_mod._scope_file_index(dist)[0] == status, case_id
+    assert len(through_index) >= 60, len(through_index)
+    hub = app_mod._REPO_ATLAS_SCOPE_DIST
+    if (hub / "index.html").is_file():  # the real hub shell, when built, is one more member
+        cases.append({"id": "shell|repository-hub-build", "kind": "html", "path": "/scope/snapshots/1/",
+                      "status": app_mod._scope_file_index(hub)[0],
+                      "media_type": app_mod._frontend_media_type("index.html"),
+                      "headers": _oracle_headers("index.html", served),
+                      "body": base64.b64encode((hub / "index.html").read_bytes()).decode("ascii")})
+
+    # every media type the served registry can assign, each carrying well-formed markup whose meta a
+    # browser shows only if it renders the type AS markup (V2-3: the markup class is not a type list)
+    probe = (f'<html {_XHTML_NS}><head><meta name="description" content="{_MEDIA_PROBE}"/></head>'
+             "<body/></html>")
+    by_type: dict[str, str] = {}
+    import mimetypes
+    mimetypes.init()
+    for suffix in sorted(set(mimetypes.types_map) | set(app_mod._FRONTEND_PINNED_MEDIA_TYPES)):
+        by_type.setdefault(app_mod._frontend_media_type("x" + suffix), "x" + suffix)
+    media_cases = [{"id": f"media|{media_type}", "path": f"/scope/assets/{name}",
+                    "media_type": media_type, "headers": _oracle_headers(name, served),
+                    "body": base64.b64encode(probe.encode("utf-8")).decode("ascii")}
+                   for media_type, name in sorted(by_type.items())]
+    results = _oracle_run(tmp, "render", cases + media_cases)
+    return cases, media_cases, results
+
+
+def _oracle_declarations(dom) -> list:
+    """Every referrer-policy declaration in the DOM Chromium built (over-approximated: any spelling
+    of the value, any element carrying the attribute)."""
+    found = []
+    for element, attributes in dom or []:
+        for name, local, value, namespace in attributes:
+            attribute = (local or name).lower()
+            if (attribute in ("referrerpolicy", "srcdoc")
+                    or (attribute == "rel" and "noreferrer" in value.lower().split())
+                    or (element.lower() == "meta" and attribute == "name"
+                        and value.strip().lower() == "referrer")):
+                found.append((element, name, value))
+    return found
+
+
+def test_no_scope_document_served_ready_carries_a_referrer_policy_chromium_applies(
+        scope_markup_oracle):
+    cases, _media, results = scope_markup_oracle
+    violations = []
+    for case in cases:
+        if case["status"] != "ready":
+            continue
+        seen = results[case["id"]]
+        live = _oracle_declarations(seen["dom"])
+        if not seen["rendered"] or live or seen["referer"] != _ORACLE_ORIGIN + case["path"]:
+            violations.append((case["id"], live, seen["referer"],
+                               base64.b64decode(case["body"])[:300]))
+    assert not violations, f"{len(violations)} served-ready document(s) Chromium reads differently: " \
+                           f"{violations[:8]}"
+    # non-vacuity: the family is not all refused, and it really carries live declarations Chromium
+    # applies — including each form the stdlib HTMLParser used to hide
+    ready = [case for case in cases if case["status"] == "ready"]
+    applied = {case["id"] for case in cases if results[case["id"]]["referer"] is None}
+    assert len(ready) >= 150, len(ready)
+    assert {case["id"].split("|", 1)[1].split(":", 1)[0] for case in ready} >= {
+        "comment", "script", "nesting", "spelling", *(f"raw-text-{t}" for t in _RAW_TEXT_ELEMENTS)}
+    assert len(applied) >= 300, len(applied)
+    for name in _PARSER_DIFFERENTIAL_FORMS:
+        for doc in ("asset", "shell"):
+            assert f"{doc}|named:{name}" in applied, (doc, name)
+    assert "xml|svg-foreignobject-xhtml-meta" in applied and "xml|xhtml-meta" in applied
+    assert any(case["id"] == "shell|repository-hub-build" and case["status"] == "ready"
+               for case in cases) or not (app_mod._REPO_ATLAS_SCOPE_DIST / "index.html").is_file()
+
+
+def test_every_scope_document_the_reader_accepts_is_read_as_chromium_reads_it(scope_markup_oracle):
+    """Containment, element by element: every attribute Chromium put on any element of a document
+    the reader accepted is one the reader read, with the same value — the reader's reading is the
+    browser's, not an approximation that happens to agree on the refused cases."""
+    cases, _media, results = scope_markup_oracle
+    checked = 0
+    for case in cases:
+        reading = app_mod._scope_document_reading(base64.b64decode(case["body"]), case["media_type"])
+        if case["status"] == "ready":
+            assert reading is not None, case["id"]
+        if reading is None:
+            continue
+        seen = results[case["id"]]
+        assert seen["rendered"], case["id"]
+        ours = {(element.name, attribute, value)
+                for element in reading for attribute, value in element.attributes}
+        theirs = set()
+        for element, attributes in seen["dom"]:
+            element = {"image": "img"}.get(element.lower(), element.lower())
+            for name, local, value, namespace in attributes:
+                if namespace == _XMLNS_NS:
+                    continue  # a namespace declaration, not an attribute of the element
+                attribute = (local if case["kind"] == "xml" else name).lower()
+                theirs.add((element, attribute, value))
+        ours |= {("img", attribute, value) for name, attribute, value in ours if name == "image"}
+        assert theirs <= ours, (case["id"], sorted(theirs - ours)[:6])
+        checked += 1
+    assert checked >= 150, checked
+
+
+def test_every_media_type_chromium_renders_as_markup_is_read_as_markup(scope_markup_oracle):
+    """P3F-V2-3 as a class: over every media type the served registry can assign a /scope member,
+    Chromium's own rendering decides what is markup, and the reader must hold each such type to
+    the referrer rule — the markup set is measured, not a hand-kept pair of types."""
+    _cases, media_cases, results = scope_markup_oracle
+    # the probe's OWN meta, by its marker value (a browser's JSON, text and media viewers build
+    # documents with metas of their own)
+    rendered_as_markup = sorted(
+        case["media_type"] for case in media_cases
+        if any(value == _MEDIA_PROBE for _element, attributes in results[case["id"]]["dom"] or []
+               for _name, _local, value, _namespace in attributes))
+    missed = [t for t in rendered_as_markup if app_mod._scope_markup_kind(t) is None]
+    assert not missed, missed
+    for expected in ("text/html", "image/svg+xml", "application/xhtml+xml"):
+        assert expected in rendered_as_markup, (expected, rendered_as_markup)
+    assert len(media_cases) >= 20, len(media_cases)
 
 
 def test_no_module_a_runtime_build_can_bundle_reads_as_snapshot_evidence():

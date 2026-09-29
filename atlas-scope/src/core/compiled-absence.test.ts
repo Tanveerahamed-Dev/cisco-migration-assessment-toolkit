@@ -21,11 +21,13 @@
  * they pin the property that matters — "what the snapshot did not say, the model does not say
  * either" — rather than the implementation of a helper.
  */
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { fabric } from "./data";
+import { describeGolden } from "../test-support/golden-sample";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -50,10 +52,45 @@ interface SourceSnapshot {
 }
 
 /* The real producer's output, not a fixture shaped like it: a hand-written fixture in the shape
-   the compiler expects agrees with the compiler's bugs. It is the dataset UNDER TEST — the file the
-   compiled model names (`meta.source`, repository-relative) — not a path typed here and not one
-   relative to whatever directory the runner happened to start in (R7). */
-const SNAPSHOT = resolve(PKG, "..", fabric.meta.source);
+   the compiler expects agrees with the compiler's bugs. */
+/* The dataset UNDER TEST is the file the compiled model names — found by the DIGEST the model binds, never by a
+   typed path (R7). The model names a repository file by its repository path, and a file outside the repository
+   (the rename leg's renamed snapshot, `sourceOrigin: "external-file"`) by its file name only; that one is looked
+   for where the phase legs write it (`.local-data/`, Git-ignored) or at ATLAS_DATASET_SOURCE. Every candidate must
+   carry the bound bytes (sourceExactSha256, or the LF-normalised sourceSha256 for a checkout that rewrote line
+   endings). None found fails the file loudly: a join against the wrong bytes, or no join, is never a pass
+   (P3C-V2-3: the rename leg failed here on the file-name-only path). */
+function sourceSnapshotPath(): string {
+  const sha = (b: Buffer): string => createHash("sha256").update(b).digest("hex");
+  const exact = fabric.meta.sourceExactSha256.replace(/^sha256:/, "");
+  const carries = (p: string): boolean => {
+    if (!existsSync(p) || !statSync(p).isFile()) return false;
+    const b = readFileSync(p);
+    return sha(b) === exact || sha(Buffer.from(b.toString("utf8").replace(/\r\n/g, "\n"), "utf8")) === fabric.meta.sourceSha256;
+  };
+  const named = basename(fabric.meta.source);
+  const underLocal = (dir: string, depth: number): string[] => {
+    if (depth < 0 || !existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? underLocal(join(dir, e.name), depth - 1) : e.name === named ? [join(dir, e.name)] : [],
+    );
+  };
+  const candidates = [
+    resolve(PKG, "..", fabric.meta.source),
+    resolve(PKG, fabric.meta.source),
+    ...(process.env.ATLAS_DATASET_SOURCE ? [resolve(process.env.ATLAS_DATASET_SOURCE)] : []),
+    ...underLocal(resolve(PKG, ".local-data"), 3),
+  ];
+  const hit = candidates.find(carries);
+  if (hit === undefined) {
+    throw new Error(
+      `the snapshot the loaded model was compiled from (${fabric.meta.source}, sha256 ${fabric.meta.sourceSha256}) was not found ` +
+        `at ${candidates.join(", ")}; set ATLAS_DATASET_SOURCE to it.`,
+    );
+  }
+  return hit;
+}
+const SNAPSHOT = sourceSnapshotPath();
 const source = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as SourceSnapshot;
 
 /** Every way the engine writes "I did not collect this". */
@@ -66,7 +103,8 @@ type Phys = (typeof fabric.physical)[number] & { lateCollisions?: number | null;
 
 describe("an uncollected counter is never compiled into a zero", () => {
   it("has both sides to compare — an empty join is not a pass", () => {
-    expect(source.physical_health?.length ?? 0).toBeGreaterThan(100);
+    // Non-empty on any dataset; the sample's population (over 100 ports) is pinned in the golden block below.
+    expect(source.physical_health?.length ?? 0).toBeGreaterThan(0);
     expect(fabric.physical.length).toBe(source.physical_health!.length);
   });
 
@@ -169,5 +207,11 @@ describe("a missing bridge flag is not a safety claim", () => {
     const compilerSource = readFileSync(resolve(PKG, "tools", "lib", "compile-model.mjs"), "utf8");
     expect(compilerSource).not.toMatch(/isBridge:\s*cen\s*\?\s*Boolean\(/);
     expect(compilerSource).toMatch(/isBridge:\s*cen\s*&&\s*typeof cen\.is_bridge === "boolean"/);
+  });
+});
+
+describeGolden("compiled absence on the reference sample", () => {
+  it("the join is over more than 100 ports", () => {
+    expect(source.physical_health?.length ?? 0).toBeGreaterThan(100);
   });
 });

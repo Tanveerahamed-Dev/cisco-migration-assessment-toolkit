@@ -17,6 +17,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it } from "vitest";
+import { describeGolden } from "../test-support/golden-sample";
 
 import { fabric } from "../core/data";
 import { FabricA11yTree, linkCutMeta } from "./FabricA11yTree";
@@ -38,21 +39,28 @@ function drawnWords(v: ReturnType<typeof classifyLink>): string[] {
   return out;
 }
 
+/** Links whose operational state was never observed (the sample's L34 and L35, pinned below). */
+const UNOBSERVED = [...fabric.links].filter((l) => l.opStatus === "unknown").sort((x, y) => (x.id < y.id ? -1 : 1));
+
 describe("a link's Fabric list row states what its cable draws (D6)", () => {
-  it("L34 and L35 — the audited pair — are drawn state-unknown and the row says so", () => {
-    for (const id of ["L34", "L35"]) {
-      const l = fabric.links.find((x) => x.id === id);
-      if (!l) throw new Error(`the shipped snapshot has no ${id}; this test pins the audited case`);
-      expect(l.opStatus, `${id} precondition`).toBe("unknown");
-      expect(l.isBridge, `${id} precondition`).toBeNull();
-      expect(classifyLink(l).dash, id).toBe("dotted");
-      const meta = linkCutMeta(l);
-      expect(meta.text, id).toContain("state not observed");
-      // Both are true, so neither is dropped: the centrality gap is still named.
-      expect(meta.text, id).toContain("centrality not computed");
-      expect(meta.unobserved, id).toBe(true);
-    }
-  });
+  /* RE-EXPRESSED 2026-09-29 (P3C-V2-3): the audited pair used to be the only subjects (typed L34, L35), which exist
+     only in the sample. Every link with no observed state and no centrality is the class; the audited pair is
+     pinned by name in the golden block below. */
+  it.runIf(UNOBSERVED.length > 0)(
+    UNOBSERVED.length > 0
+      ? "every link with no observed state is drawn state-unknown and its row says so, naming the centrality gap too"
+      : "every link with no observed state is drawn state-unknown and its row says so [skipped: the loaded dataset has no such link]",
+    () => {
+      for (const l of UNOBSERVED) {
+        expect(classifyLink(l).dash, l.id).toBe("dotted");
+        const meta = linkCutMeta(l);
+        expect(meta.text, l.id).toContain("state not observed");
+        // Both are true, so neither is dropped: the centrality gap is still named.
+        if (l.isBridge === null) expect(meta.text, l.id).toContain("centrality not computed");
+        expect(meta.unobserved, l.id).toBe(true);
+      }
+    },
+  );
 
   it("every link's row carries every claim its drawn pattern makes", () => {
     let withClaims = 0;
@@ -65,7 +73,11 @@ describe("a link's Fabric list row states what its cable draws (D6)", () => {
     expect(withClaims, "the sweep checked no drawn claim at all").toBeGreaterThan(0);
   });
 
-  it("the rendered tree row for L34 is the same text (no second wording in the DOM)", () => {
+  it("the rendered tree row for a link is the same text (no second wording in the DOM)", () => {
+    // A link with no observed state if there is one (the sample's L34), else any link; reached under its first
+    // endpoint's device row.
+    const link = UNOBSERVED[0] ?? [...fabric.links].sort((x, y) => (x.id < y.id ? -1 : 1))[0];
+    if (link === undefined) throw new Error("the loaded fabric has no link");
     const host = document.createElement("div");
     document.body.appendChild(host);
     const root = createRoot(host);
@@ -81,16 +93,32 @@ describe("a link's Fabric list row states what its cable draws (D6)", () => {
         />,
       ),
     );
-    // Link rows sit under their device rows; expand core2 to reach L34.
-    const core2 = host.querySelector<HTMLElement>('[data-testid="fabric3d-tree-device"][data-target="core2"]');
-    expect(core2).not.toBeNull();
-    act(() => core2!.focus());
-    act(() => core2!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
-    const rows = [...host.querySelectorAll<HTMLElement>('[data-testid="fabric3d-tree-link"][data-target="L34"]')];
+    // Link rows sit under their device rows; expand the link's first endpoint to reach it.
+    const device = host.querySelector<HTMLElement>(`[data-testid="fabric3d-tree-device"][data-target="${link.a}"]`);
+    expect(device).not.toBeNull();
+    act(() => device!.focus());
+    act(() => device!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+    const rows = [...host.querySelectorAll<HTMLElement>(`[data-testid="fabric3d-tree-link"][data-target="${link.id}"]`)];
     expect(rows.length).toBeGreaterThan(0);
-    const l34 = fabric.links.find((x) => x.id === "L34")!;
-    for (const r of rows) expect(r.querySelector(".fabric3d__tree-meta")?.textContent).toBe(linkCutMeta(l34).text);
+    for (const r of rows) expect(r.querySelector(".fabric3d__tree-meta")?.textContent).toBe(linkCutMeta(link).text);
     act(() => root.unmount());
     host.remove();
+  });
+});
+
+describeGolden("link encoding on the reference sample", () => {
+  it("L34 and L35 — the audited pair (core2 to AP-floor3-01 and to wan-edge-rtr1.lab) — are drawn state-unknown and the row says so", () => {
+    for (const id of ["L34", "L35"]) {
+      const l = fabric.links.find((x) => x.id === id);
+      if (!l) throw new Error(`the reference sample has no ${id}; this test pins the audited case`);
+      expect(l.opStatus, `${id} precondition`).toBe("unknown");
+      expect(l.isBridge, `${id} precondition`).toBeNull();
+      expect(UNOBSERVED.map((x) => x.id)).toContain(id);
+      expect(classifyLink(l).dash, id).toBe("dotted");
+      expect(linkCutMeta(l).text, id).toContain("state not observed");
+      expect(linkCutMeta(l).text, id).toContain("centrality not computed");
+    }
+    expect(UNOBSERVED[0]?.id).toBe("L34");
+    expect(UNOBSERVED[0]?.a).toBe("core2");
   });
 });

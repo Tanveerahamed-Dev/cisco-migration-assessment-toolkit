@@ -11,6 +11,7 @@ import { parseIpv4 } from "../forwarding/ip";
 import { FLEET_CONSTANTS } from "../panels/DevicePane";
 import { claimBadge, isInvalidInput, T1_verdict, type ClaimBadge } from "./claims";
 import { fabric, linksByHost } from "./data";
+import { describeGolden } from "../test-support/golden-sample";
 import type { Flow, TraceOutcome } from "./types";
 
 const flow = (srcIp: string, dstIp: string, protocol: Flow["protocol"], dstPort: number | null): Flow => ({
@@ -21,29 +22,65 @@ const flow = (srcIp: string, dstIp: string, protocol: Flow["protocol"], dstPort:
   dstPort,
 });
 
+/* The named-skip preconditions of this file, at module scope so the golden block at its foot can state that each holds
+   on the reference sample (QC-R1-4): a sample change that falsified one must turn red, not into a silent skip. */
+const DISPUTED_HOSTS = [...new Set(PORT_DISPUTES.map((d) => d.host))].sort();
+/** Hosts whose cable records outnumber what can be real (the sample's AP-floor1: 17 records, at most 1 real). */
+const OVERCOUNTED = fabric.devices
+  .map((d) => d.host)
+  .filter((h) => {
+    const acct = hostCableAccount(h, linksByHost.get(h) ?? []);
+    return acct.maxReal < acct.records;
+  });
+/** Every ACL line that names an object-group the snapshot resolved (the sample's core1 MGMT_IN[0], MGMT_HOSTS). */
+const GROUP_LINES = Object.entries(fabric.acls).flatMap(([host, acls]) =>
+  Object.entries(acls).flatMap(([name, lines]) =>
+    lines.flatMap((line) => {
+      const group = line.src?.group ?? line.dst?.group ?? null;
+      const def = group === null ? undefined : fabric.objectGroups[host]?.[group];
+      return def === undefined || group === null ? [] : [{ host, name, lines, line, group, def }];
+    }),
+  ),
+);
+
 describe("B1 — a device's cable count goes through the port-dispute detector", () => {
-  it("every host whose own port is disputed states a ceiling below its record count", () => {
-    const hosts = new Set(PORT_DISPUTES.map((d) => d.host));
-    expect(hosts.size).toBeGreaterThan(0);
+  /* RE-EXPRESSED 2026-09-29 (P3C-V2-3): these blocks named the sample's audited hosts (AP-floor1, core1, MGMT_IN on
+     core1); each is now the CLASS it stood for, over whatever the loaded fabric holds, skipped by name where the
+     fabric has none of it, and the audited instances are pinned in the golden block at the foot of this file. */
+  it.runIf(DISPUTED_HOSTS.length > 0)(
+    DISPUTED_HOSTS.length > 0
+      ? "every host whose own port is disputed states a ceiling below its record count"
+      : "every host whose own port is disputed states a ceiling below its record count [skipped: the loaded dataset has no disputed port]",
+    () => {
+    const hosts = DISPUTED_HOSTS;
+    expect(hosts.length).toBeGreaterThan(0);
     for (const host of hosts) {
       const acct = hostCableAccount(host, linksByHost.get(host) ?? []);
       expect(acct.maxReal).toBeLessThan(acct.records);
       expect(cableCountPhrase(acct)).toMatch(new RegExp(`at most ${acct.maxReal} can be real`));
     }
-  });
+    },
+  );
 
-  it("AP-floor1: 17 records, at most 1 real — on the pane phrase, the blast caveat and the announcement", () => {
-    const acct = hostCableAccount("AP-floor1", linksByHost.get("AP-floor1") ?? []);
-    expect(acct.records).toBe(17);
-    expect(acct.maxReal).toBe(1);
-    const said = describeDevice("AP-floor1");
-    expect(said).not.toMatch(/\b17 links\b/);
-    expect(said).toMatch(/at most 1 can be real/);
-    const caveats = failureImpact("AP-floor1").caveats.join(" ");
-    expect(caveats).not.toMatch(/17 cable\(s\) terminate on it/);
-    expect(caveats).toMatch(/at most 1 can be real/);
-    expect(caveats).not.toMatch(/Its cables are real/);
-  });
+  it.runIf(OVERCOUNTED.length > 0)(
+    OVERCOUNTED.length > 0
+      ? "a host with more cable records than can be real says the ceiling — on the pane phrase, the blast caveat and the announcement"
+      : "a host with more cable records than can be real says the ceiling [skipped: the loaded dataset has no such host]",
+    () => {
+      for (const host of OVERCOUNTED) {
+        const acct = hostCableAccount(host, linksByHost.get(host) ?? []);
+        const said = describeDevice(host);
+        expect(said, host).not.toMatch(new RegExp(`\\b${acct.records} links\\b`));
+        expect(said, host).toMatch(new RegExp(`at most ${acct.maxReal} can be real`));
+        const caveats = failureImpact(host).caveats.join(" ");
+        expect(caveats, host).not.toMatch(new RegExp(`${acct.records} cable\\(s\\) terminate on it`));
+        // A never-collected host states the ceiling over its whole record count; a collected one names each port
+        // that more cables claim than it can terminate ("at most one is real"). Either way the ceiling is said.
+        expect(caveats, host).toMatch(new RegExp(`at most (${acct.maxReal} can be real|one is real)`));
+        expect(caveats, host).not.toMatch(/Its cables are real/);
+      }
+    },
+  );
 
   it("a host with no disputed cable keeps the plain count", () => {
     const clean = fabric.devices.find((d) => (linksByHost.get(d.host) ?? []).length > 0 && hostCableAccount(d.host, linksByHost.get(d.host) ?? []).disputedLinkIds.length === 0);
@@ -68,15 +105,21 @@ describe("B1 — the fleet-constant detector runs over every numeric producer fi
 });
 
 describe("B1 — the blast qualifier carries certainty and the differing projection", () => {
-  it("core1's uncertain radius names the all-nodes answer", () => {
-    const r = failureImpact("core1");
-    const q = blastQualifier(r.certainty, r.newlyStranded.length, r.alternateProjections);
-    if (r.certainty === "observed") expect(q).toBe("");
-    else {
-      expect(q).toMatch(/^uncertain/);
-      for (const a of r.alternateProjections.filter((x) => x.differs && x.newlyStrandedCount !== r.newlyStranded.length))
-        expect(q).toContain(`${a.newlyStrandedCount} under the`);
+  it("every device's qualifier names its certainty and every differing projection", () => {
+    let qualified = 0;
+    for (const d of fabric.devices) {
+      const r = failureImpact(d.host);
+      const q = blastQualifier(r.certainty, r.newlyStranded.length, r.alternateProjections);
+      if (r.certainty === "observed") {
+        expect(q, d.host).toBe("");
+        continue;
+      }
+      qualified += 1;
+      expect(q.startsWith(r.certainty), `${d.host}: ${q}`).toBe(true);
+      for (const x of r.alternateProjections.filter((y) => y.differs && y.newlyStrandedCount !== r.newlyStranded.length))
+        expect(q, d.host).toContain(`${x.newlyStrandedCount} under the`);
     }
+    expect(qualified, "some device's radius is not observed, so the qualifier is exercised").toBeGreaterThan(0);
   });
 });
 
@@ -125,6 +168,55 @@ describe("B4 — invalid input is its own result, not out of scope", () => {
 });
 
 describe("B5 — the not-applied caveat agrees with lineEvaluability about object-groups", () => {
+  it.runIf(GROUP_LINES.length > 0)(
+    GROUP_LINES.length > 0
+      ? "a resolved object-group is never called unresolvable"
+      : "a resolved object-group is never called unresolvable [skipped: the loaded dataset has no ACL line naming a resolved group]",
+    () => {
+      let judged = 0;
+      for (const { host, name, lines, line, group, def } of GROUP_LINES) {
+        /* A flow the line itself speaks about: a member of its group on the group's side, the line's own address
+           (or the host's first SVI address, for `any`) on the other, and the line's own port. */
+        const member = def.members[0]?.ip ?? null;
+        const svi = (fabric.l3.find((r) => r.host === host)?.sviIp ?? "").split(" ")[0] || "192.0.2.1";
+        const other = (spec: typeof line.src): string => (spec !== null && spec.ip !== null && spec.ip !== "0.0.0.0" ? spec.ip : svi);
+        const src = line.src?.group === group ? member : other(line.src);
+        const dst = line.dst?.group === group ? member : other(line.dst);
+        if (src === null || dst === null) continue;
+        judged += 1;
+        const proto = line.proto === "udp" ? "udp" : "tcp";
+        const port = line.dport?.op === "eq" ? Number(line.dport.val) : 443;
+        expect(lineEvaluability(line).evaluable, line.cite).toBe(true);
+        const r = evaluateAcls(host, flow(src, dst, proto, port), parseIpv4(src)!, parseIpv4(dst)!, { [name]: lines });
+        const text = r.caveats.join(" ");
+        expect(text, line.cite).not.toMatch(/could not be resolved in this snapshot/);
+        expect(text, line.cite).toMatch(new RegExp(`object-group ${group}, which resolved`));
+      }
+      expect(judged, "some group line had a member address to build a flow from").toBeGreaterThan(0);
+    },
+  );
+});
+
+describeGolden("claim honesty on the reference sample (the audited instances)", () => {
+  it("every named-skip precondition of this file holds here, so none of its class sweeps is skipped on the sample", () => {
+    expect(DISPUTED_HOSTS.length).toBeGreaterThan(0);
+    expect(OVERCOUNTED).toContain("AP-floor1");
+    expect(GROUP_LINES.some((x) => x.host === "core1" && x.name === "MGMT_IN" && x.group === "MGMT_HOSTS")).toBe(true);
+  });
+
+  it("AP-floor1: 17 records, at most 1 real — on the pane phrase, the blast caveat and the announcement", () => {
+    const acct = hostCableAccount("AP-floor1", linksByHost.get("AP-floor1") ?? []);
+    expect(acct.records).toBe(17);
+    expect(acct.maxReal).toBe(1);
+    expect(describeDevice("AP-floor1")).toMatch(/at most 1 can be real/);
+    expect(failureImpact("AP-floor1").caveats.join(" ")).toMatch(/at most 1 can be real/);
+  });
+
+  it("core1's uncertain radius names the all-nodes answer", () => {
+    const r = failureImpact("core1");
+    expect(blastQualifier(r.certainty, r.newlyStranded.length, r.alternateProjections)).toMatch(/^uncertain/);
+  });
+
   it("MGMT_IN's resolved MGMT_HOSTS group is not called unresolvable", () => {
     const lines = fabric.acls.core1?.MGMT_IN ?? [];
     expect(lines.length).toBeGreaterThan(0);

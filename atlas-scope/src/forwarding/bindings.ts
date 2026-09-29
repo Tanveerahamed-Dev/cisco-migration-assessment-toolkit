@@ -20,7 +20,11 @@
  *                 (`candidate_projection_incomplete`), the interface itself could not be resolved,
  *                 or the sidecar was compiled from other bytes. Unknown is never read as `none`.
  */
-import bindingsJson from "./acl-bindings.json";
+/* The ACL-binding sidecar of the ONE dataset this page shows (core/dataset.ts): the bundled sample, an
+   AssessHub snapshot or an opened file. A static import of ./acl-bindings.json here kept the SAMPLE's
+   bindings beside an installed fabric, and the digest guard below then turned every answer "unknown"
+   with no error anywhere (src/core/dataset.test.ts, the one-door census). */
+import { aclBindings as bindingsJson } from "../core/dataset";
 import { aclsOf, fabric, linksByHost, resolveCite, routesOf } from "../core/data";
 import { sameSourceBinding, type Cite, type Hop, type HopEvidence, type SourceBinding } from "../core/types";
 import { formatIpv4, parseInterfaceAddress, parseIpv4, prefixContains, rankPrefixMatches, type Ipv4 } from "./ip";

@@ -36,9 +36,14 @@ import { LABEL_MIN_DWELL_PASSES, resolveLabels, type LabelResolverState } from "
 
 type P = { x: number; y: number; visible: boolean };
 
-/* Three devices; FabricLabels places the busiest first, then by host. The settled test relies on the
-   same ordering: A outranks B, so when B lands on A it is B that must yield. */
-const [A, B, C] = fabric.devices.slice(0, 3) as [Device, Device, Device];
+/* Three devices, in the order FabricLabels places them (busiest — most links — first, then by host): A outranks B,
+   so when B lands on A it is B that must yield. They are chosen BY THAT PROPERTY from the loaded fabric (P3C-V2-3):
+   the first three device RECORDS used to stand in, which held only while the sample's record order happened to be
+   the placement order — on the rename leg B outranked A and every test here inverted. The three least-linked
+   devices are taken, so none is a cut point whose marks could force another label on screen. */
+const linkCount = (d: Device): number => fabric.links.filter((l) => l.a === d.host || l.b === d.host || l.a === d.id || l.b === d.id).length;
+const PLACED = [...fabric.devices].sort((a, b) => linkCount(b) - linkCount(a) || a.host.localeCompare(b.host));
+const [A, B, C] = PLACED.slice(-3) as [Device, Device, Device];
 const DEVICES: Device[] = [A, B, C];
 
 /* Every label is 100 x 16 with its name centred, so a label's box is [x - 50, x + 50]. */

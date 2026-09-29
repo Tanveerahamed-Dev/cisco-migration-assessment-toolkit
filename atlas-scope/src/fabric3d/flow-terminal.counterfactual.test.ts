@@ -34,7 +34,7 @@ import { bandOfTrace } from "../core/claims";
 import { fabric } from "../core/data";
 import { traceFlow } from "../forwarding/engine";
 import { formatIpv4, hostAddressIn, parseInterfaceAddress } from "../forwarding/ip";
-import { lazy, need } from "../forwarding/test-subjects";
+import { lazy, need, needSome } from "../forwarding/test-subjects";
 import { createFlowOverlay, type TraceSegmentSource } from "./flow";
 import { readTokens } from "./materials";
 
@@ -218,22 +218,46 @@ describe("the terminal mark follows the TRACE band (C5 critic), over decided and
        address list, so the rule is checked on whatever snapshot is loaded. Each flow is traced once (shared
        with the subjects above) and drawn on ONE overlay re-used across the sweep, so the cost is the drawing,
        not a scene built and disposed per flow — the whole sweep ran past the 30 s budget on the rename leg. */
+    /* ISOLATION (phase 3.5, V2-m2): one reused overlay could hide a mark that BLEEDS from one trace into
+       the next — a fresh overlay per flow (terminalOf) cannot see that either. So each trace is drawn
+       directly OVER the previous one, as the app redraws when the reader switches flows: a mark left
+       standing by the previous trace is then reported against the flow it wrongly decorates. The
+       band-changing transitions that exercise that are counted and required below, and clearing is proven
+       to hide every terminal mark, both mid-sweep and at the end. */
     const overlay = createFlowOverlay(readTokens("dark"));
+    const by = (name: string) => overlay.emissiveObjects().find((o) => o.name === name) ?? overlay.group.children.find((o) => o.name === name);
+    const expectCleared = (where: string): void => {
+      for (const mark of ["trace-stop", "trace-undecided", "trace-blocked"]) expect(by(mark)?.visible === true, `${where}: ${mark} after clearing`).toBe(false);
+    };
+    const leftBy = new Map<Band, number>();
     try {
+      let prev: { band: Band; where: string } | null = null;
+      let drawn = 0;
       for (const { f: flow, t: trace } of traced().filter(({ f }) => f.protocol === "tcp")) {
         // A trace with no hops draws nothing at all, so it has no terminal mark to check.
         if (trace.hops.length === 0) continue;
         const band = bandOfTrace(trace);
         overlay.setTrace(trace, 0, segmentSource());
-        const by = (name: string) => overlay.emissiveObjects().find((o) => o.name === name);
-        const where = `${flow.srcIp}->${flow.dstIp}:${flow.dstPort}`;
+        const where = `${flow.srcIp}->${flow.dstIp}:${flow.dstPort}${prev === null ? "" : ` (drawn over ${prev.where}, ${prev.band})`}`;
         expect(by("trace-stop")?.visible === true, where).toBe(band === "REFUTED");
         expect(by("trace-undecided")?.visible === true, where).toBe(band === "UNDETERMINED");
-        overlay.setTrace(null, null, segmentSource());
+        // The critical terminal segment is drawn only for a refused trace, whichever trace preceded it.
+        if (by("trace-blocked")?.visible === true) expect(band, `${where}: trace-blocked`).toBe("REFUTED");
+        if (prev !== null && prev.band !== band) leftBy.set(prev.band, (leftBy.get(prev.band) ?? 0) + 1);
+        prev = { band, where: `${flow.srcIp}->${flow.dstIp}:${flow.dstPort}` };
+        drawn += 1;
+        // Now and then, clear mid-sweep and prove the overlay is blank before the next draw.
+        if (drawn % 97 === 0) {
+          overlay.setTrace(null, null, segmentSource());
+          expectCleared(`cleared after ${where}`);
+          prev = null;
+        }
         if (band === "REFUTED") refuted += 1;
         else if (band === "UNDETERMINED") undetermined += 1;
         else resolved += 1;
       }
+      overlay.setTrace(null, null, segmentSource());
+      expectCleared("cleared at the end of the sweep");
     } finally {
       overlay.dispose();
     }
@@ -242,5 +266,8 @@ describe("the terminal mark follows the TRACE band (C5 critic), over decided and
     need(ctx, undetermined > 0 ? undetermined : undefined, BAND_NAME.UNDETERMINED);
     need(ctx, refuted > 0 ? refuted : undefined, BAND_NAME.REFUTED);
     need(ctx, resolved > 0 ? resolved : undefined, BAND_NAME.RESOLVED);
+    // A bleed of either mark can only show when a trace of that band is followed by one of another band.
+    needSome(ctx, leftBy.get("UNDETERMINED") ?? 0, "UNDETERMINED trace redrawn by a trace of another band");
+    needSome(ctx, leftBy.get("REFUTED") ?? 0, "REFUTED trace redrawn by a trace of another band");
   });
 });

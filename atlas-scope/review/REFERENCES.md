@@ -10,8 +10,12 @@ Owners:
 - `review/capture-refs-clean.mjs` — the C1 reference set and its self-check
   (`node review/capture-refs-clean.mjs --fetch` to capture, `node review/capture-refs-clean.mjs`
   to re-check what is on disk, offline).
-- `review/blind-pair.mjs` — the sheets, the KEY, the pre-registered rule and the verdict validator
-  (`node review/blind-pair.mjs`; `--validate` re-reads `blind/verdicts.jsonl`).
+- `review/blind-pair.mjs` — the sheets, the KEY, the task vocabulary, the pre-registered rule and
+  the verdict validator (`node review/blind-pair.mjs`; `--validate` re-reads `blind/verdicts.jsonl`).
+  Our frames come from a private capture root, `blind/_ours/`, written by
+  `ATLAS_URL=http://localhost:<port> node review/blind-pair.mjs --capture-ours` against a served build:
+  it runs `capture.mjs app` there (with all of that harness's render checks) and measures our identity
+  geometry from the same server. The shared `shots/app/` is not used: other review runs rewrite it.
 - `review/capture-deep.mjs` — live design-research captures (tours advanced, banners dismissed).
   Not used for pairing.
 
@@ -83,10 +87,18 @@ It fails closed on each of these; a missing reference set is UNPROVEN, never "cl
    Forward's path-search result screen with a different recorded path, because both of our states
    are our path surface too. Composition is judged on the whole screen, network visualisation on the
    drawing.
-7. **Every raster frame declares its identity slots** (logo glyph, user avatar) as geometry measured
-   on that frame, or an empty list with a reason. A raster frame has no DOM to measure a logo slot
-   from, and OCR cannot read a glyph.
-8. A live undismissed Grafana control frame is captured too. It must be flagged **when the banner
+7. **Every frame whose identity marks were not measured in its DOM declares its identity slots**
+   (logo glyph, workspace chip, user menu) as geometry measured on that frame, or an empty list with a
+   reason. That is every raster frame, and every DOM frame captured before `--fetch` recorded
+   `identityRects` (the DOM census then measured logo slots only). OCR reads words, not the chip
+   around them, and cannot read a glyph, so it never stands for "covered". A later `--fetch` records
+   each frame's identity marks structurally, with the same census that measures ours. Declared
+   slots (and a declared "no slots" note) name the frame they were measured on by its sha256 prefix
+   (`identitySlotsCheckedOn`); a frame with other bytes is refused until they are re-measured on it.
+8. **Every reference names its task kind** from the one vocabulary (`blind-pair.mjs :: TASK_KINDS`),
+   and every pairing's reference declares the pairing's kind; a control pairing whose reference shows
+   another task must be flagged.
+9. A live undismissed Grafana control frame is captured too. It must be flagged **when the banner
    was actually served** to that session (its "Close alert" control is in the DOM); when the banner
    was not served, the self-check says so instead of counting the control as passed, and real-banner
    detection rests on the synthetic control.
@@ -95,21 +107,39 @@ It fails closed on each of these; a missing reference set is UNPROVEN, never "cl
 
 - **One pairing per C1 dimension**, matched by task:
 
-  | Dimension | Ours | Reference |
-  |---|---|---|
-  | composition | `06-path-blocked` | `forward-path-dropped` |
-  | information density | `03-finding-drill` | `forward-vulnerability-table` |
-  | typographic craft | `07-evidence-raw` | `ipfabric-path-detail` |
-  | colour discipline | `04-finding-evidence` | `grafana-explore` |
-  | network visualisation | `08-path-indeterminate` | `forward-topology-path` |
+  | Dimension | Task kind | Ours | Reference |
+  |---|---|---|---|
+  | composition | `path-blocked` | `06-path-blocked` | `forward-path-dropped` |
+  | information density | `finding-list` | `03-finding-drill` | `forward-vulnerability-table` |
+  | typographic craft | `path-hop-decision` | `06b-path-hop-evidence` (light; derived) | `ipfabric-path-detail` |
+  | colour discipline | `result-data-inspection` | `07-evidence-raw` (dark) | `grafana-explore` |
+  | network visualisation | `path-drawn` | `08-path-indeterminate` | `forward-topology-path` |
 
-  **Matched by task on both sides.** A reference proves its task by its expected text (above); our
-  state proves its task by `oursRequires` in `blind-pair.mjs`: the captured URL (the investigation
-  state), text that must be legible in our frame, and, for the traced-path pairing, a hop count of at
-  least 2 on the header's Path badge. A state that does not show the task is BLOCKED, not judged. This
-  replaced `05-path-trace` (the path surface before any flow is run) with `08-path-indeterminate` (a
-  drawn multi-hop trace). `06-path-blocked` is single-hop and draws no path geometry, so it is refused
-  for that pairing too.
+  **Matched by task on both sides, through one definition.** Each pairing names a kind from
+  `blind-pair.mjs :: TASK_KINDS`. The reference TARGET must declare that kind (and proves it shows it
+  by its expected text, above); our frame must meet the kind's `ours` specification: the captured URL
+  (the investigation state), text legible in our frame, and, for `path-drawn`, a hop count of at
+  least 2 on the header's Path badge; for `path-hop-decision`, the hop's evidence list recorded OPEN
+  with a row on screen. Every one of these is checked **inside the crop the critic sees**, not on the
+  whole frame. A pairing cannot carry a requirement of its own, and a kind's specification must name
+  what only the task's visible surface shows (URL parameters alone can name a tab that is not the one
+  showing). A state that
+  does not show the task is BLOCKED, not judged. Two mismatches this closed: `05-path-trace` (the path
+  surface before any flow is run) against a traced-path reference (now `08-path-indeterminate`, a
+  drawn multi-hop trace), and `07-evidence-raw` — ONE DEVICE's compiled record — against IP Fabric's
+  per-hop decision table. Repair round (verifier V1, V4): `04-finding-evidence` against Grafana
+  Explore showed the FINDING tab (its URL's `tab=raw` belongs to the Device tab, which was not
+  visible), so colour discipline now uses `07-evidence-raw`, whose visible surface is the raw
+  compiled record; and the typographic state showed the hop's evidence list only as a collapsed label,
+  so it now uses a DERIVED capture.
+- **Derived states of ours** (`blind-pair.mjs :: DERIVED_STATES`). A state no URL encodes (an opened
+  disclosure) is captured by `--capture-ours` FROM a clean capture.mjs frame: same URL, theme,
+  viewport and DPR; the same settle, tier, convergence and palette pre-warm gates; then the
+  interaction (`06b-path-hop-evidence` = `06-path-blocked` with "Evidence consulted at this hop"
+  opened and its first row scrolled into view). Its record (`blind/_ours/derived/index.json`) carries
+  the DOM facts the task kinds check and the sha of its base frame; a derived frame whose base has been
+  re-captured since is refused. capture.mjs's text-fidelity and overflow audits ran on the base frame,
+  not again on the derived one.
 
   The C1 criterion names "the 3-D render"; no reference product has one. That dimension is judged
   as **network visualisation** against Forward's 2-D topology, stated in the pairing, pending the
@@ -118,17 +148,29 @@ It fails closed on each of these; a missing reference set is UNPROVEN, never "cl
   at the same device pixel ratio (the lower of the two captures'), so they match in pixel size and
   text scale; the build refuses a sheet whose two panels differ in size. Our theme follows the
   reference's measured theme.
-- **Masks on both panels.** Every product, vendor, wordmark, user and workspace string found in
-  either panel's pixels, plus the reference's logo slots (DOM-measured, or declared for a raster
-  frame), becomes a neutral grey rectangle; the union of the rectangles is painted at the same place
-  on both panels. Our identity strings are the product name and every field our header's snapshot
-  row renders (file, schema, sha8), read from the compiled data the header reads, so our dataset row
-  is masked as Forward's workspace chip is. A match inside a chip (a run of at most four closely
-  spaced words, such as "Demo Network (default)") masks the whole chip; inside prose it masks only
-  the phrase. Identity is read at the higher of the two captures' DPRs, because text a critic can
-  still read on a 1x sheet may be too small for OCR at 1x. The masked panels are read
-  again, and a sheet on which any identity string is still legible is not emitted — its pairing is
-  reported BLOCKED and stays UNPROVEN.
+- **Masks on both panels, by geometry first.** The union of these rectangles is painted, neutral
+  grey, at the same place on both panels:
+  - **our identity marks, measured in our DOM** (`identityCensus`): every visible element whose text
+    holds one of our identity strings — the product name (index.html `<title>`) and every field the
+    header's snapshot row renders (file, schema, sha8, read from the compiled data the header reads) —
+    widened to the compact block it sits in (the brand with its glyph; the whole two-line snapshot
+    button, collection date included), or only the phrase's own box inside prose. Measured once per
+    frame by `--capture-ours` (cached by frame sha256 in `blind/_ours/identity-geometry.json`) and
+    checked against the pixels: an identity string OCR reads on our frame outside every measured
+    rectangle BLOCKS the pairing (the geometry does not describe that frame). An unmeasured geometry
+    BLOCKS too. Why: on the 1x IP Fabric sheet OCR read neither `collect_parse_snapshot/1` nor the
+    sha8, so the earlier string-only masks left our dataset row legible and the leak re-check (the same
+    OCR) passed it;
+  - the reference's identity marks: DOM logo slots, DOM identity marks where a fetch recorded them,
+    and the slots its TARGET declares (Forward's glyph, workspace chip with its caret, user menu with
+    its avatar; Grafana's "Powered by" footer);
+  - as a second net, every product, vendor, wordmark, user and workspace string OCR finds in either
+    panel (a match inside a chip of at most four closely spaced words masks the whole chip; inside
+    prose only the phrase), read at the higher of the two captures' DPRs.
+
+  The masked panels are read again, and a sheet on which any identity string is still legible is not
+  emitted — its pairing is reported BLOCKED and stays UNPROVEN. That re-read is a net, not the proof:
+  the proof of coverage is the measured geometry.
 - **Our frame must have rendered properly.** A pairing whose capture of our state recorded a
   rendering problem (or has no capture record) is BLOCKED rather than judged.
 - **The side is drawn per critic.** Each pairing has both side variants; each critic slot in the
@@ -153,16 +195,29 @@ It fails closed on each of these; a missing reference set is UNPROVEN, never "cl
 
 ### The pre-registered rule (verbatim in `blind-pair.mjs :: RULE`; its sha is in every KEY)
 
-Rule v2. **One verdict per critic per pairing:** the first line from a critic on one of the
+Rule v4. **A critic is its criticId with Unicode form, invisible characters, case and spacing
+normalised** ("k1", " K1 " and "k1" plus a zero-width space are one critic), and must then be plain
+ASCII; an id that is not (a homoglyph such as Cyrillic "к1") makes the line **unattributable**: never
+counted, and its loss still blocks. **A pick is normalised the same way** ("b" and " B " are B); an
+answer that is not A, B or tie is **unreadable** and is treated as a possible loss, never as a win.
+**One verdict per critic per pairing and dimension:** the first line from a critic on one of the
 pairing's current sheets is that critic's verdict, whatever its outcome (counted, recognised or
-invalid). So a critic who recognised a product, or gave an unreasoned loss, cannot be asked again.
-A verdict counts only if it is complete, bound to the current frames and commit, from a critic who
-did **not** recognise either product, and reasoned. A pairing is **PASS** iff at least two distinct
-critics' counted verdicts exist and no unrecognising verdict, counted or invalid, picks the
-reference; otherwise **UNPROVEN**. A loss keeps the pairing UNPROVEN for that build and its reasons
-become work items; faults about content cut at a panel edge are crop artefacts, not work items. An
-unparseable verdict line keeps C1 UNPROVEN. C1 is PASS iff every pairing is PASS. Verdicts from
-recognising critics are reported separately, never counted.
+invalid); a later line never counts. **Recognition is decided by the first line too:** a critic whose
+first line recognised a product is excluded wholesale; a critic who discloses recognition only later
+is excluded from counting (its win is dropped) but a loss already on its record stands — a later
+disclosure never erases a loss (v3 excluded such a critic wholesale, so a loss could be re-asked
+away). A verdict counts only if it is complete, bound to the current frames and commit, attributable,
+from a critic not excluded, and reasoned. **A loss is never ignored:** any line that picks the
+reference or whose pick is unreadable — counted, invalid (an unreasoned loss is not a win),
+unattributable (recognising or not), a later re-ask, or the verdict of a critic who disclosed
+recognition later — keeps the pairing UNPROVEN; only a critic whose first line recognised a product
+is set aside entirely. A pairing is **PASS** iff at
+least two distinct critics' counted verdicts exist and there is no loss; otherwise **UNPROVEN**. A
+loss keeps the pairing UNPROVEN for that build and its reasons become work items; faults about
+content cut at a panel edge are crop artefacts, not work items. An unparseable verdict line keeps C1
+UNPROVEN. C1 is PASS iff every pairing is PASS. Verdicts from recognising critics are reported
+separately, never counted. Each of these is a row of `blind-pair.mjs :: VALIDATOR_CASES`, which the
+self-test runs.
 
 Critics must be independent: a fresh context with no repository access and no design brief. A
 human network engineer or a model from a different family is preferable; critics from the

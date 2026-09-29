@@ -54,7 +54,10 @@
  * drops while the snapshot recorded OSPF/BGP/EIGRP not_collected and a 240-prefix EVPN peer.)
  */
 import engineContract from "../../contracts/engine-contract.v1.json";
-import evidenceJson from "./rib-evidence.json";
+/* The RIB-evidence sidecar of the ONE dataset this page shows (core/dataset.ts), never a static import of
+   ./rib-evidence.json: that kept the SAMPLE's evidence beside an installed fabric (the one-door census,
+   src/core/dataset.test.ts). */
+import { ribEvidence as evidenceJson } from "../core/dataset";
 import { fabric, routesOf } from "../core/data";
 import { listPhrase } from "../core/phrases";
 import { sameSourceBinding, type Cite, type SourceBinding } from "../core/types";

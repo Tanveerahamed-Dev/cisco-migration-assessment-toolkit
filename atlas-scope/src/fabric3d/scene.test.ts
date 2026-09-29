@@ -36,6 +36,7 @@ import { checkAuthoringBands, readTokens, RECEDE_ATTRIBUTE } from "./materials";
 import { chooseQuality, profileFor, type GpuCapabilities } from "./quality";
 import { Vector3 } from "three";
 import ts from "typescript";
+import { describeGolden } from "../test-support/golden-sample";
 
 const devices = fabricJson.devices as Device[];
 const links = fabricJson.links as Link[];
@@ -282,6 +283,60 @@ describe("link encoding honesty, against the real snapshot", () => {
   });
 });
 
+/** Cables that run across an endpoint's own lid, and how many links join two chassis that overlap in X/Z (stacked). */
+function lidCrossings(graph: ReturnType<typeof buildDark>): { crossings: string[]; stackedSeen: number } {
+  const crossings: string[] = [];
+  let stackedSeen = 0;
+  for (const link of links) {
+    const poly = graph.cables.polylines.get(link.id);
+    if (poly === undefined) continue;
+    const a = graph.slots.get(link.a);
+    const b = graph.slots.get(link.b);
+    if (a === undefined || b === undefined) continue;
+    if (Math.abs(a.centre[0] - b.centre[0]) < a.half[0] + b.half[0] && Math.abs(a.centre[2] - b.centre[2]) < a.half[2] + b.half[2]) {
+      stackedSeen += 1;
+    }
+    for (const s of [a, b]) {
+      for (let i = 0; i < poly.length / 3; i += 1) {
+        const x = poly[i * 3] ?? 0;
+        const y = poly[i * 3 + 1] ?? 0;
+        const z = poly[i * 3 + 2] ?? 0;
+        if (Math.abs(x - s.centre[0]) < s.half[0] && Math.abs(z - s.centre[2]) < s.half[2] && y > s.centre[1] - s.half[1]) {
+          crossings.push(`${link.id} over ${s.id}`);
+          break;
+        }
+      }
+    }
+  }
+  disposeScene(graph.scene);
+  return { crossings, stackedSeen };
+}
+/** [mover, onto]: every vertical link (endpoints on different planes), in link order, whose endpoints no earlier pair
+ *  has used — so each mover is moved once and no anchor moves. */
+function verticalPairs(): [string, string][] {
+  const used = new Set<string>();
+  const out: [string, string][] = [];
+  for (const l of [...links].sort((x, y) => (x.id < y.id ? -1 : 1))) {
+    const a = layout.byId.get(l.a);
+    const b = layout.byId.get(l.b);
+    if (a === undefined || b === undefined || a.y === b.y || used.has(l.a) || used.has(l.b)) continue;
+    used.add(l.a);
+    used.add(l.b);
+    out.push(a.y > b.y ? [l.b, l.a] : [l.a, l.b]);
+  }
+  return out;
+}
+/** The shipped layout with each mover moved onto its partner's X/Z, keeping its own Y plane. */
+function stackedLayout(pairs: readonly (readonly [string, string])[]): typeof layout {
+  const onto = new Map(pairs);
+  const nodes = layout.nodes.map((n) => {
+    const t = onto.get(n.id);
+    const at = t === undefined ? undefined : layout.byId.get(t);
+    return at === undefined ? n : { ...n, x: at.x, z: at.z };
+  });
+  return { ...layout, nodes, byId: new Map(nodes.map((n) => [n.id, n])) };
+}
+
 describe("cable routing", () => {
   it("anchors a cable on the chassis surface, never at its centre", () => {
     const out = new Vector3();
@@ -291,54 +346,24 @@ describe("cable routing", () => {
   });
 
   it("never runs a cable across its own endpoint's lid — including a vertically stacked pair", () => {
-    /* Render audit #8. dist1/podacc1 and dist2/podacc2 are stacked (XZ offsets under half a unit),
+    /* Render audit #8. dist1/podacc1 and dist2/podacc2 were stacked (XZ offsets under half a unit),
        so the per-end face choice took OPPOSITE faces and L39/L43 crossed podacc1/podacc2's whole
        footprint while climbing: 13 and 12 of 29 samples over the lid. Asserted on the REAL graph's
        sampled polylines, so it is the producer's output under test, not a re-derivation.
 
-       The shipped layout no longer stacks those pairs (each layer now steps toward the camera in Z),
-       so the stacked case is reconstructed exactly: podacc1/podacc2 are moved onto dist1/dist2's
-       X/Z, keeping their own Y plane. Both the shipped graph and the stacked one are asserted. */
-    const at = (id: string) => layout.byId.get(id)!;
-    const stackedNodes = layout.nodes.map((n) =>
-      n.id === "podacc1" ? { ...n, x: at("dist1").x, z: at("dist1").z }
-      : n.id === "podacc2" ? { ...n, x: at("dist2").x, z: at("dist2").z }
-      : n,
-    );
-    const stackedLayout = { ...layout, nodes: stackedNodes, byId: new Map(stackedNodes.map((n) => [n.id, n])) };
-    for (const [graph, mustStack] of [
-      [buildDark(), false],
-      [buildFabricGraph({ devices, links, layout: stackedLayout, theme: "dark", profile }), true],
-    ] as const) {
-    const crossings: string[] = [];
-    let stackedSeen = 0;
-    for (const link of links) {
-      const poly = graph.cables.polylines.get(link.id);
-      if (poly === undefined) continue;
-      const a = graph.slots.get(link.a);
-      const b = graph.slots.get(link.b);
-      if (a === undefined || b === undefined) continue;
-      if (Math.abs(a.centre[0] - b.centre[0]) < a.half[0] + b.half[0] && Math.abs(a.centre[2] - b.centre[2]) < a.half[2] + b.half[2]) {
-        stackedSeen += 1;
-      }
-      for (const s of [a, b]) {
-        for (let i = 0; i < poly.length / 3; i += 1) {
-          const x = poly[i * 3] ?? 0;
-          const y = poly[i * 3 + 1] ?? 0;
-          const z = poly[i * 3 + 2] ?? 0;
-          if (Math.abs(x - s.centre[0]) < s.half[0] && Math.abs(z - s.centre[2]) < s.half[2] && y > s.centre[1] - s.half[1]) {
-            crossings.push(`${link.id} over ${s.id}`);
-            break;
-          }
-        }
-      }
-    }
-    if (mustStack) {
-      expect(stackedSeen, "the stacked case this guards must exist in the data, or the test is inert").toBeGreaterThan(0);
-    }
-    expect(crossings).toEqual([]);
-    disposeScene(graph.scene);
-    }
+       The shipped layout no longer stacks linked pairs (each layer now steps toward the camera in Z),
+       so the stacked case is reconstructed. RE-EXPRESSED 2026-09-29 (P3C-V2-3): the pairs used to be
+       typed (podacc1 onto dist1, podacc2 onto dist2), which exist only in the sample — on the rename leg
+       the stacked graph stacked nothing and the guard failed as inert. Every VERTICAL link (endpoints on
+       different planes) whose endpoints no earlier such link has moved is now stacked, its second
+       endpoint moved onto its first's X/Z on its own Y plane; the audited sample pairs are asserted by
+       name in the golden block below. Both the shipped graph and the stacked one are asserted. */
+    expect(lidCrossings(buildDark()).crossings).toEqual([]);
+    const pairs = verticalPairs();
+    expect(pairs.length, "the fabric holds a link between two planes to stack").toBeGreaterThan(0);
+    const stacked = lidCrossings(buildFabricGraph({ devices, links, layout: stackedLayout(pairs), theme: "dark", profile }));
+    expect(stacked.stackedSeen, "the stacked case this guards must exist in the data, or the test is inert").toBeGreaterThanOrEqual(pairs.length);
+    expect(stacked.crossings).toEqual([]);
   });
 
   it("is deterministic: two runs produce identical samples", () => {
@@ -968,6 +993,9 @@ function domSites(checker: ts.TypeChecker, sf: ts.SourceFile): { key: string; li
       else if ((dom(n.right) && !dom(n.left)) || launders(typeOf(n.right), typeOf(n.left))) add("launder", n);
     }
     if (ts.isDeleteExpression(n) && onDomReceiver(n.expression)) add("write", n);
+    /* A spread copies a source's members out of it (P3C-V2-2: `{ ...tierFade }` took the slot's methods into a
+       plain object whose calls no rule saw). A DOM value spread into an object literal is a `member` below. */
+    if ((ts.isSpreadAssignment(n) && !dom(n.expression) && carries(n.expression)) || (ts.isSpreadElement(n) && holdsDom(n.expression))) add("extract", n);
     if (
       (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
       (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken) &&
@@ -1077,6 +1105,12 @@ describe("R4-V1-1: the DOM-site enumerator sees every way to touch an element, b
       /* 48 */ "(slot.dispose)();",
       /* 49 */ 'const probe = typeof slot.dispose === "function";',
       /* 50 */ "export { drop, drop2, byKey, rm, drop3, count, probe };",
+      // P3C-V2-2: the slot SPREAD into a plain object carries its methods out with it; the later call through the
+      // copy has no DOM-carrying receiver. The spread is the site (emphasis.ts also makes such a copy inert).
+      /* 51 */ "const copy = { ...slot };",
+      /* 52 */ "copy.dispose();",
+      /* 53 */ "const listed = [...[slot]];",
+      /* 54 */ "export { copy, listed };",
     ].join("\n");
     const planted = resolve(process.cwd(), "src/fabric3d/__planted_dom_sites__.ts");
     const opts: ts.CompilerOptions = { target: ts.ScriptTarget.ES2022, lib: ["lib.es2022.d.ts", "lib.dom.d.ts"], types: [], strict: true, noEmit: true };
@@ -1100,7 +1134,9 @@ describe("R4-V1-1: the DOM-site enumerator sees every way to touch an element, b
        is not (the site is where the method left its receiver), a data read off the slot (47) is not, and a
        parenthesised call made in place (48) is the ordinary `call` site, and a `typeof` probe (49) cannot
        hand the method on and is not a site. */
-    expect(lines).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 22, 25, 26, 28, 29, 32, 33, 37, 39, 41, 42, 43, 44, 45, 46, 48]);
+    /* P3C-V2-2: a spread of the slot into an object literal (51) or of a list holding it (53) is a site; the call
+       through the copy (52) is not (the site is where the methods left the slot). */
+    expect(lines).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 22, 25, 26, 28, 29, 32, 33, 37, 39, 41, 42, 43, 44, 45, 46, 48, 51, 53]);
   }, 60_000);
 });
 
@@ -1219,6 +1255,11 @@ describe("C5: the render loop feeds the history and tier-fade rules their real i
     const program = ts.createProgram([file], { ...parsed.options, noEmit: true });
     const sf = program.getSourceFile(file)!;
     const checker = program.getTypeChecker();
+    /* The enumeration reasons by TYPE, so it is sound only over a file that type-checks: an error there (a method
+       called on a spread copy of the slot, whose type has none — P3C-V2-2) is a value whose type the checker
+       could not follow. */
+    const diagnostics = [...program.getSyntacticDiagnostics(sf), ...program.getSemanticDiagnostics(sf)].map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
+    expect(diagnostics, "scene.ts type-checks, so every value's type is the one the enumeration reads").toEqual([]);
     const found = domSites(checker, sf).map((s) => s.key);
     const NOT_OVERLAY = "not the overlay: ";
     const STATED: Record<string, string> = {
@@ -1431,5 +1472,17 @@ describe("C5: the render loop feeds the history and tier-fade rules their real i
     expect(rest, "the camera-rest check").toBeGreaterThan(-1);
     expect(gate, "the gesture gate").toBeGreaterThan(rest);
     expect(land.slice(0, rest)).not.toMatch(/applyQuality\(/);
+  });
+});
+
+describeGolden("cable routing on the reference sample", () => {
+  it("the audited stacked pairs (podacc1 onto dist1, podacc2 onto dist2 — render audit #8) run no cable over a lid", () => {
+    const pairs: [string, string][] = [
+      ["podacc1", "dist1"],
+      ["podacc2", "dist2"],
+    ];
+    const r = lidCrossings(buildFabricGraph({ devices, links, layout: stackedLayout(pairs), theme: "dark", profile }));
+    expect(r.stackedSeen).toBeGreaterThanOrEqual(2);
+    expect(r.crossings).toEqual([]);
   });
 });

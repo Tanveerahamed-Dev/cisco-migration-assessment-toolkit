@@ -189,6 +189,32 @@ describe("a decided multi-hop denial of the real snapshot", () => {
     expectEveryHopCitationWorks(need(ctx, decidedDenial(), "a decided denial over two or more hops with a counterexample"));
   });
 
+  /* The denial through the real Path surface too, as the delivery above (phase 3.5, P3B-R2-m3): the hop
+     surface drew it, but <PathTrace/> hydrated from the URL had only ever mounted the delivery. */
+  it("the Path surface itself draws every hop of it: the forwarding hops RESOLVED, the denying hop and the card REFUTED", async (ctx) => {
+    const t = need(ctx, decidedDenial(), "a decided denial over two or more hops with a counterexample");
+    act(() => {
+      useInvestigation.getState().hydrate(decodeInvestigation(pathSearch(t.flow)));
+    });
+    const c = mount(<PathTrace />);
+    await actAsync(async () => {
+      await new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+      await new Promise<void>((r) => setTimeout(r, 0));
+    });
+    const hops = [...c.querySelectorAll<HTMLElement>(".pt-result .hop")];
+    expect(hops.length).toBe(t.hops.length);
+    for (const h of hops.slice(0, -1)) {
+      expect(h.dataset["verdict"]).toBe("forwarded");
+      expect(h.dataset["band"]).toBe("RESOLVED");
+    }
+    expect(hops[hops.length - 1]!.dataset["verdict"]).toBe("denied");
+    expect(hops[hops.length - 1]!.dataset["band"]).toBe("REFUTED");
+    expect(c.querySelector<HTMLElement>(".pt-result .claim")!.dataset["band"]).toBe("REFUTED");
+    const cites = citeControls(c.querySelector(".pt-result")!).map((b) => citeOf(b)!);
+    expect(cites, "the denying record is a citation on the Path surface").toContain(t.hops[t.hops.length - 1]!.decidedBy!.cite);
+    for (const cite of cites) expect(resolveCitation(cite).kind, cite).not.toBe("unresolved");
+  });
+
   it("its counterexample is decided, headed as one, and BOTH lines of the pair carry the record that decided them", (ctx) => {
     const t = need(ctx, decidedDenial(), "a decided denial over two or more hops with a counterexample");
     const ce = counterexample(t.flow, t);
@@ -200,13 +226,18 @@ describe("a decided multi-hop denial of the real snapshot", () => {
     const dds = [...c.querySelectorAll(".claim__pair dd")];
     expect(dds.length, "the Intended / Not established pair is drawn").toBe(2);
     const denying = t.hops[t.hops.length - 1]!.decidedBy!.cite;
-    const counterDecider = ce.trace.hops[ce.trace.hops.length - 1]?.decidedBy?.cite;
-    expect(counterDecider, "the counterexample's own trace names what decided it").toBeDefined();
+    expect(ce.trace.hops.length, "the counterexample's own trace has hops").toBeGreaterThan(0);
+    /* EVERY hop's deciding record, not only the last (phase 3.5, P3B-R2-m3): a multi-hop counterexample's
+       outcome rests on the forwarding hops' routes as well as on the record that decided its last hop. */
+    const counterDeciders = ce.trace.hops.map((h, i) => {
+      expect(h.decidedBy, `counterexample hop ${i + 1} (${h.host}) names what decided it`).not.toBeNull();
+      return h.decidedBy!.cite;
+    });
     expect(citeControls(dds[0]!).map(citeOf), "Intended").toContain(denying);
-    /* The "Not established" line states the counterexample's outcome, which rests on a different record
-       than the denial: that record is its citation, working like every other. */
+    /* The "Not established" line states the counterexample's outcome, which rests on different records
+       than the denial: those records are its citations, working like every other. */
     const notEstablished = citeControls(dds[1]!);
-    expect(notEstablished.map(citeOf), "Not established").toContain(counterDecider!);
+    for (const cite of counterDeciders) expect(notEstablished.map(citeOf), `Not established cites ${cite}`).toContain(cite);
     for (const b of notEstablished) {
       expect(resolveCitation(citeOf(b)!).kind).not.toBe("unresolved");
       opened.length = 0;

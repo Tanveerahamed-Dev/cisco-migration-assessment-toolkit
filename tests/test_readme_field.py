@@ -324,10 +324,35 @@ def test_the_guide_does_not_promise_total_redaction_verification():
 # -- the Atlas Scope view (/scope) -- every fact the guide states is read from its owner ----------
 
 def _scope_section() -> str:
+    # The section ends at the next heading, whatever its spelling: any line underlined by a rule of
+    # its own length (P3F-V2-5 — an all-capitals heading pattern ran on into "LOSS OF STICK (...)").
     text = GUIDE.read_text(encoding="ascii")
-    match = re.search(r"^ATLAS SCOPE[^\n]*\n-+\n(.*?)(?=^[A-Z][A-Z /()-]+\n-+\n|\Z)", text, re.M | re.S)
+    match = re.search(r"^ATLAS SCOPE[^\n]*\n-+\n(.*?)(?=^([^\n]+)\n(?:-{3,}|={3,})\n|\Z)",
+                      text, re.M | re.S)
     assert match, "field guide lost its 'ATLAS SCOPE' section (the 3-D view of a snapshot)"
     return " ".join(match.group(1).split())
+
+
+def _guide_headings() -> list[str]:
+    """Every heading of the guide, read structurally: a line underlined by a rule of `-` or `=` of
+    the SAME length (so a heading with lower-case words, digits or punctuation is one too)."""
+    lines = GUIDE.read_text(encoding="ascii").splitlines()
+    return [line for line, rule in zip(lines, lines[1:])
+            if line.strip() and re.fullmatch(r"-{3,}|={3,}", rule) and len(rule) == len(line)]
+
+
+def test_the_scope_section_is_exactly_its_own_section():
+    """P3F-V2-5: every scope-section assertion reads ONLY the ATLAS SCOPE section. A window that
+    runs on into the next section lets that section's text satisfy them (a fixed-window grep)."""
+    headings = _guide_headings()
+    assert sum(h.startswith("ATLAS SCOPE") for h in headings) == 1, headings
+    assert len(headings) >= 8, headings  # the structural read sees the whole guide
+    section = _scope_section()
+    for heading in headings:
+        assert " ".join(heading.split()) not in section, f"the scope section swallowed {heading!r}"
+    # every section the scope section sends the engineer to exists
+    for target in re.findall(r"\(see ([A-Z][A-Z -]+)\)", section):
+        assert any(h.startswith(target.strip()) for h in headings), target
 
 
 def test_the_scope_section_names_the_link_the_cockpit_really_renders():

@@ -180,12 +180,47 @@ describe("documentsByFile", () => {
  * against the file system, exactly as Vite expands it), or a `new URL("…", import.meta.url)` asset
  * reference. Exactly one module may: dataset/bundled.ts.
  */
+/** The resolved path of every compiled document, keyed case-insensitively (Windows paths). */
+const TRACKED = new Map(OUTPUTS.map((o) => [posix(resolve(PKG, o.trackedPath)).toLowerCase(), o.trackedPath]));
+const literalsOf = (n: ts.Node): string[] =>
+  ts.isStringLiteralLike(n) ? [n.text] : ts.isArrayLiteralExpression(n) ? n.elements.flatMap(literalsOf) : [];
+
+/**
+ * THE CENSUS'S ONE SCAN: every compiled document one module's source text reaches, and by which form. It is
+ * a function of (path, text) so the planted positive control below runs THIS scan — not a copy of it — over
+ * a text holding every form (phase 3.5, P3E-V1: the control used to re-implement the visitor, so a
+ * regression in the census's own glob or URL detection could not turn it red).
+ */
+function reachedDocuments(absPath: string, text: string): { doc: string; via: string }[] {
+  const out: { doc: string; via: string }[] = [];
+  const here = join(absPath, "..");
+  const hit = (target: string, via: string): void => {
+    const doc = TRACKED.get(posix(target).toLowerCase());
+    if (doc !== undefined) out.push({ doc, via });
+  };
+  for (const f of ts.preProcessFile(text, true, true).importedFiles) {
+    if (f.fileName.startsWith(".")) hit(resolve(here, f.fileName.replace(/[?#].*$/, "")), "import");
+  }
+  const sf = ts.createSourceFile(absPath, text, ts.ScriptTarget.ES2023, true, absPath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const visit = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.getText(sf).replace(/\s/g, "") === "import.meta.glob") {
+      for (const pattern of n.arguments[0] ? literalsOf(n.arguments[0]) : []) {
+        if (pattern.startsWith("!")) continue;
+        for (const m of globSync(pattern, { cwd: here })) hit(resolve(here, m), "import.meta.glob");
+      }
+    }
+    if (ts.isNewExpression(n) && n.expression.getText(sf) === "URL" && n.arguments?.[0] && ts.isStringLiteralLike(n.arguments[0])) {
+      hit(resolve(here, n.arguments[0].text), "new URL");
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+
 describe("one door: no application module but dataset/bundled.ts reaches a compiled document", () => {
-  const tracked = new Map(OUTPUTS.map((o) => [posix(resolve(PKG, o.trackedPath)).toLowerCase(), o.trackedPath]));
   const importers: { file: string; doc: string; via: string }[] = [];
   let scanned = 0;
-  const literal = (n: ts.Node): string[] =>
-    ts.isStringLiteralLike(n) ? [n.text] : ts.isArrayLiteralExpression(n) ? n.elements.flatMap(literal) : [];
   const walk = (dir: string): void => {
     for (const name of readdirSync(dir)) {
       if (name.startsWith("_") || name === "node_modules") continue;
@@ -196,29 +231,7 @@ describe("one door: no application module but dataset/bundled.ts reaches a compi
       }
       if (!/\.(ts|tsx)$/.test(name) || /\.test\.tsx?$/.test(name) || name.endsWith(".d.ts")) continue;
       scanned += 1;
-      const text = readFileSync(p, "utf8");
-      const here = join(p, "..");
-      const hit = (target: string, via: string): void => {
-        const doc = tracked.get(posix(target).toLowerCase());
-        if (doc !== undefined) importers.push({ file: posix(relative(PKG, p)), doc, via });
-      };
-      for (const f of ts.preProcessFile(text, true, true).importedFiles) {
-        if (f.fileName.startsWith(".")) hit(resolve(here, f.fileName.replace(/[?#].*$/, "")), "import");
-      }
-      const sf = ts.createSourceFile(p, text, ts.ScriptTarget.ES2023, true, name.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
-      const visit = (n: ts.Node): void => {
-        if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.getText(sf).replace(/\s/g, "") === "import.meta.glob") {
-          for (const pattern of n.arguments[0] ? literal(n.arguments[0]) : []) {
-            if (pattern.startsWith("!")) continue;
-            for (const m of globSync(pattern, { cwd: here })) hit(resolve(here, m), "import.meta.glob");
-          }
-        }
-        if (ts.isNewExpression(n) && n.expression.getText(sf) === "URL" && n.arguments?.[0] && ts.isStringLiteralLike(n.arguments[0])) {
-          hit(resolve(here, n.arguments[0].text), "new URL");
-        }
-        ts.forEachChild(n, visit);
-      };
-      visit(sf);
+      for (const r of reachedDocuments(p, readFileSync(p, "utf8"))) importers.push({ file: posix(relative(PKG, p)), ...r });
     }
   };
   walk(SRC);
@@ -231,22 +244,28 @@ describe("one door: no application module but dataset/bundled.ts reaches a compi
     }
   });
 
-  it("the glob and URL forms are recognised (planted, not assumed)", () => {
+  it("every form is recognised by the census's own scan (planted, not assumed)", () => {
     const planted = [
+      'import fabric from "../data/fabric.json";',
       'const a = import.meta.glob("../forwarding/*.json", { eager: true });',
-      'const b = import.meta.glob(["../data/fabric.json"]);',
-      'const c = new URL("../panels/producer-emission.json", import.meta.url);',
+      'const b = import . meta . glob(["!../forwarding/*.json", "../panels/producer-emission.json"]);',
+      'const c = new URL("../data/fabric.json", import.meta.url);',
+      'const d = () => import("../forwarding/rib-evidence.json?raw");',
     ].join("\n");
-    const sf = ts.createSourceFile("x.ts", planted, ts.ScriptTarget.ES2023, true);
-    const found: string[] = [];
-    const visit = (n: ts.Node): void => {
-      if (ts.isCallExpression(n) && n.expression.getText(sf) === "import.meta.glob") found.push(...(n.arguments[0] ? literal(n.arguments[0]) : []));
-      if (ts.isNewExpression(n) && n.expression.getText(sf) === "URL") found.push("url");
-      ts.forEachChild(n, visit);
-    };
-    visit(sf);
-    expect(found).toEqual(["../forwarding/*.json", "../data/fabric.json", "url"]);
-    expect(globSync("../forwarding/*.json", { cwd: join(SRC, "core") }).length).toBeGreaterThanOrEqual(2);
+    const found = reachedDocuments(join(SRC, "core", "planted.ts"), planted);
+    const key = (r: { doc: string; via: string }): string => `${r.via} ${r.doc}`;
+    expect(found.map(key).sort()).toEqual(
+      [
+        "import src/data/fabric.json",
+        "import src/forwarding/rib-evidence.json",
+        "import.meta.glob src/forwarding/acl-bindings.json",
+        "import.meta.glob src/forwarding/rib-evidence.json",
+        "import.meta.glob src/panels/producer-emission.json",
+        "new URL src/data/fabric.json",
+      ].sort(),
+    );
+    /* And a text that reaches nothing reports nothing (the scan is not merely permissive). */
+    expect(reachedDocuments(join(SRC, "core", "planted.ts"), 'import x from "./types";\nconst u = new URL("./other.json", import.meta.url);')).toEqual([]);
   });
 
   it("no other module imports one", () => {

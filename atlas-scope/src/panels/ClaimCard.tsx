@@ -401,8 +401,12 @@ function CounterBlock({
      outcome ("… is delivered"), and it rests on a different line of evidence than the denial — so it
      carries that record's citation, as the "Intended" line carries the denial's. It was drawn with none:
      no decided counterexample existed in the shipped data until the phase 3 regeneration, so the branch
-     that rendered it had never run on real evidence (PathTrace.decided-multihop.test.tsx). */
-  const counterDecider = result.found ? (result.trace.hops[result.trace.hops.length - 1]?.decidedBy ?? null) : null;
+     that rendered it had never run on real evidence (PathTrace.decided-multihop.test.tsx).
+     EVERY hop's deciding record, in hop order and once each (phase 3.5, P3B-R2-m3): a multi-hop
+     counterexample's outcome rests on the forwarding hops' routes too, not only on its last hop's record. */
+  const counterDeciders: Cite[] = result.found
+    ? [...new Set(result.trace.hops.flatMap((h) => (h.decidedBy === null ? [] : [h.decidedBy.cite])))]
+    : [];
   return (
     <>
       <Section
@@ -461,7 +465,9 @@ function CounterBlock({
               {`that ${diffs.length === 0 ? "a neighbouring flow" : `a flow differing in ${diffs.join(" and ")}`} is treated the same way — ${flowText(
                 result.flow,
               )} is ${outcomeWordOf(result.trace)}. The two statements rest on different lines of evidence and neither one closes the other.`}
-              {counterDecider !== null ? <CiteLink cite={counterDecider.cite} onOpen={onOpenCite} /> : null}
+              {counterDeciders.map((c) => (
+                <CiteLink key={c} cite={c} onOpen={onOpenCite} />
+              ))}
             </dd>
           </dl>
         </Section>

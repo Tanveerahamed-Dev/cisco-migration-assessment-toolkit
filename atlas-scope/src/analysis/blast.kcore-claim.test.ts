@@ -65,11 +65,31 @@ describe("kCore claim is branched on the graph's own maximum coreness", () => {
       [3, 4],
       [1, 2],
     ]);
-    expect(r.claim).toContain("the 4 hosts in the highest shell (k = 3) each keep at least 3 neighbours inside it");
+    expect(r.claim).toContain("the 4 hosts in the highest shell (k = 3) each keep at least 3 carrying links inside it");
     expect(r.claim).toContain("the lower shells hang off it: k = 1 (2 hosts)");
     // The old literal named shells this graph does not have.
     expect(r.claim).not.toMatch(/shell 1 and 0/);
     expect(r.claim).not.toMatch(/k = 2|k = 0/);
+  });
+
+  /* P3C-V2-4 (verifier, phase 3): coreness is peeled over LINKS — the adjacency holds one entry per carrying link,
+     parallel links included — so two hosts joined by two parallel cables reach k = 2 while each has ONE neighbour.
+     The claim said "at least k neighbours", which the computation does not measure. It now says what it counts. */
+  it("counts carrying links, not neighbours: two hosts on two parallel cables are a 2-shell of one neighbour each", () => {
+    const r = kCore(
+      graphOf([
+        ["pa", "pb"],
+        ["pa", "pb"],
+        ["pb", "pc"],
+      ]),
+    );
+    expect(r.maxCore).toBe(2);
+    expect(r.shells.map((x) => [x.k, [...x.hosts].sort()])).toEqual([
+      [2, ["pa", "pb"]],
+      [1, ["pc"]],
+    ]);
+    expect(r.claim).toContain("the 2 hosts in the highest shell (k = 2) each keep at least 2 carrying links inside it");
+    expect(r.claim).not.toMatch(/neighbour/);
   });
 
   it("a graph with no carrying link at all (maxCore 0) names no core", () => {

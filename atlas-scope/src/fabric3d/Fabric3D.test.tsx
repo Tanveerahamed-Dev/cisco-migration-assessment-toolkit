@@ -26,6 +26,78 @@ import { prepareProceduralMaps } from "./materials";
 import { ALL_CHASSIS_KINDS, prepareChassis } from "./geometry/chassis";
 import { SCENE_DETAIL } from "./quality";
 import { CANVAS_KEYS, KEY_ORBIT_STEP, KEY_PAN_STEP } from "./canvasKeys";
+import { bandOfHopIn, bandOfTrace } from "../core/claims";
+import { describeGolden } from "../test-support/golden-sample";
+
+/* ── The subjects, chosen by PROPERTY from the loaded fabric (P3C-V2-3, phase 3.5) ───────────────────────────────
+ * These tests drive the label layer, the keyboard and the pointer over MOCKED projections, so most need of a device
+ * only that it is real and collected. They used to type the sample's names (core1, core2, dist1, access1, AP-floor1),
+ * which do not exist on the rename leg or in any other snapshot: there the tests either failed, or passed vacuously on
+ * a selection of a device that does not exist. Each subject is now the loaded fabric's own, chosen by what the test
+ * needs of it; the golden block at the foot of this file names which sample devices they are. */
+const byId = (a: { id: string }, b: { id: string }): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+/** The analysis the Inspector reads, so a subject cannot drift from the product. */
+const strandedBy = (host: string): string[] => failureImpact(host).newlyStranded;
+/** The anchors A, B, C: collected devices whose failure strands nothing first (selecting one marks no other label),
+ *  then any other collected device, then any device. B must not strand A: "drops a colliding label but never the
+ *  selected one" selects B over A, and a label B strands is kept on screen whatever the declutter says. */
+const POOL = [
+  ...[...fabric.devices].sort(byId).filter((d) => d.collected && strandedBy(d.host).length === 0),
+  ...[...fabric.devices].sort(byId).filter((d) => d.collected && strandedBy(d.host).length > 0),
+  ...[...fabric.devices].sort(byId).filter((d) => !d.collected),
+];
+const subject = (v: string | undefined, what: string): string => {
+  if (v === undefined) throw new Error(`the loaded fabric has no ${what}`);
+  return v;
+};
+const A = subject(POOL[0]?.id, "device");
+const B = subject(POOL.find((d) => d.id !== A && !strandedBy(d.host).includes(POOL[0]!.host))?.id, "second device that does not strand the first");
+const C = subject(POOL.find((d) => d.id !== A && d.id !== B)?.id, "third device");
+/** A device the collector never reached (the sample's AP-floor1). */
+const DARK_DEVICE = [...fabric.devices].sort(byId).find((d) => !d.collected);
+
+/**
+ * The hand-built traces below stand for DECIDED hop verdicts: they test the label layer's wiring,
+ * not the claim layer. The trace mark follows the hop's band IN its trace (`bandOfHopIn`,
+ * 2026-09-21 critic B1), and a source inside an observed subnet carries real ingress gaps
+ * (FHRP alternate, unobserved ingress port) that correctly undecide the mark. So the fixtures take
+ * a source outside every observed subnet, from which no ingress gap can be derived — the verdict
+ * under test is then the only thing deciding the mark. The real-trace behaviour is pinned in
+ * src/panels/claim-honesty-b1.test.tsx.
+ */
+const DECIDED_SRC = "198.51.100.7";
+const singleHop = (host: string, verdict: Trace["hops"][number]["verdict"], outcome: Trace["outcome"]): Trace => ({
+  flow: { srcIp: DECIDED_SRC, dstIp: "10.0.30.10", protocol: "tcp", dstPort: 443, srcPort: null },
+  outcome,
+  hops: [{ index: 0, host, outIntf: null, nextHost: null, nextHop: null, verdict, decidedBy: null, evidence: [], alternatives: [] }],
+  claim: "test",
+  caveats: ["test"],
+  unmodelledHosts: [],
+  elapsedMs: 1,
+});
+/** On `host`, does a single delivered hop read RESOLVED and a single denied one REFUTED, in its trace? Then the hop's
+ *  own verdict decides its mark there, which is what the three-endings tests need of a host. */
+const decidesBothWays = (host: string): boolean => {
+  const ok = singleHop(host, "delivered", "delivered");
+  const no = singleHop(host, "denied", "dropped");
+  return bandOfHopIn(ok.hops[0]!, ok) === "RESOLVED" && bandOfHopIn(no.hops[0]!, no) === "REFUTED" && bandOfTrace(no) === "REFUTED";
+};
+/** Cut points, widest blast radius first (ties by name). */
+const CUT_POINTS = fabric.devices
+  .map((d) => d.host)
+  .filter((h) => strandedBy(h).length > 0)
+  .sort((a, b) => strandedBy(b).length - strandedBy(a).length || (a < b ? -1 : a > b ? 1 : 0));
+/** The articulation point the blast-radius tests select: the widest radius on which the hop verdict decides the mark
+ *  (the sample's core1), chosen FROM THE DATA, not typed here. */
+const cutPoint = CUT_POINTS.find(decidesBothWays);
+/* A6's two cases need a radius wide enough to hide three hosts, and to pile two: the sample's widest has 9. At module
+   scope so the golden tier states both hold on the reference sample (QC-R1-4), instead of a silent named skip. */
+const wide = cutPoint !== undefined && strandedBy(cutPoint).length > 3;
+const piles = cutPoint !== undefined && strandedBy(cutPoint).length >= 2;
+/** The host the three-endings tests put a hop on (the sample's core1). */
+const HOP = subject(cutPoint ?? fabric.devices.map((d) => d.host).find(decidesBothWays), "host on which a hop verdict decides its mark");
+/** A device whose failure partitions nothing — the control. */
+const quiet = fabric.devices.map((d) => d.host).find((h) => strandedBy(h).length === 0);
 
 /* The stage builds its scene only once the procedural map bytes exist (they are generated in
    yielding slices so the cold load never blocks on them). Generate them once, for real, so every
@@ -345,14 +417,14 @@ describe("scene lifetime", () => {
     const before = mock.scenes.length;
 
     act(() => {
-      useInvestigation.getState().selectDevice("core1");
+      useInvestigation.getState().selectDevice(A);
     });
     act(() => {
       useInvestigation.getState().setQuery("band:Poor");
     });
 
     expect(mock.scenes).toHaveLength(before);
-    expect(callsOf(rec, "setSelection").at(-1)).toEqual(["setSelection", "core1", null]);
+    expect(callsOf(rec, "setSelection").at(-1)).toEqual(["setSelection", A, null]);
     expect(callsOf(rec, "setHighlight").length).toBeGreaterThan(0);
     // setData is the replace-the-topology verb; an unchanged fabric must never pay for it.
     expect(callsOf(rec, "setData")).toHaveLength(0);
@@ -376,9 +448,9 @@ describe("scene lifetime", () => {
       hops: [
         {
           index: 0,
-          host: "core1",
+          host: A,
           outIntf: null,
-          nextHost: "core2",
+          nextHost: B,
           nextHop: null,
           verdict: "unmodeled",
           decidedBy: null,
@@ -388,7 +460,7 @@ describe("scene lifetime", () => {
       ],
       claim: "test",
       caveats: ["test"],
-      unmodelledHosts: ["core2"],
+      unmodelledHosts: [B],
       elapsedMs: 1,
     };
 
@@ -413,9 +485,9 @@ describe("scene lifetime", () => {
 
 describe("keyboard operation", () => {
   const layout = () => {
-    mock.projections.set("core1", { x: 100, y: 100, visible: true });
-    mock.projections.set("core2", { x: 200, y: 100, visible: true });
-    mock.projections.set("dist1", { x: 100, y: 200, visible: true });
+    mock.projections.set(A, { x: 100, y: 100, visible: true });
+    mock.projections.set(B, { x: 200, y: 100, visible: true });
+    mock.projections.set(C, { x: 100, y: 200, visible: true });
   };
 
   it("moves the selection to the nearest neighbour in the pressed direction", () => {
@@ -425,17 +497,17 @@ describe("keyboard operation", () => {
     expect(canvas).not.toBeNull();
 
     act(() => {
-      useInvestigation.getState().selectDevice("core1");
+      useInvestigation.getState().selectDevice(A);
     });
 
     press(canvas!, "ArrowRight");
-    expect(useInvestigation.getState().deviceId).toBe("core2");
+    expect(useInvestigation.getState().deviceId).toBe(B);
 
     act(() => {
-      useInvestigation.getState().selectDevice("core1");
+      useInvestigation.getState().selectDevice(A);
     });
     press(canvas!, "ArrowDown");
-    expect(useInvestigation.getState().deviceId).toBe("dist1");
+    expect(useInvestigation.getState().deviceId).toBe(C);
 
     m.unmount();
   });
@@ -444,7 +516,7 @@ describe("keyboard operation", () => {
     layout();
     const m = mount(<Fabric3D />);
     press(m.canvas()!, "ArrowRight");
-    expect(useInvestigation.getState().deviceId).toBe("core1");
+    expect(useInvestigation.getState().deviceId).toBe(A);
     m.unmount();
   });
 
@@ -454,10 +526,10 @@ describe("keyboard operation", () => {
     const rec = lastScene();
 
     act(() => {
-      useInvestigation.getState().selectDevice("core2");
+      useInvestigation.getState().selectDevice(B);
     });
     press(m.canvas()!, "Enter");
-    expect(callsOf(rec, "focusDevice").at(-1)).toEqual(["focusDevice", "core2"]);
+    expect(callsOf(rec, "focusDevice").at(-1)).toEqual(["focusDevice", B]);
 
     press(m.canvas()!, "Escape");
     expect(useInvestigation.getState().deviceId).toBeNull();
@@ -480,7 +552,7 @@ describe("keyboard operation", () => {
     const canvas = m.canvas()!;
     Object.defineProperty(canvas, "clientHeight", { configurable: true, get: () => 900 });
     act(() => {
-      useInvestigation.getState().selectDevice("core1");
+      useInvestigation.getState().selectDevice(A);
     });
     const orbit = 900 * KEY_ORBIT_STEP;
     const pan = 900 * KEY_PAN_STEP;
@@ -501,12 +573,12 @@ describe("keyboard operation", () => {
       });
       expect(callsOf(rec, verb).at(-1), JSON.stringify(init)).toEqual([verb, ...args]);
       expect(e.defaultPrevented, `${JSON.stringify(init)} must not also reach the browser (Alt+Left is Back)`).toBe(true);
-      expect(useInvestigation.getState().deviceId, "a view key must not move the selection").toBe("core1");
+      expect(useInvestigation.getState().deviceId, "a view key must not move the selection").toBe(A);
     }
     // The unmodified arrow still traverses, and does not orbit.
     const orbits = callsOf(rec, "orbitBy").length;
     press(canvas, "ArrowRight");
-    expect(useInvestigation.getState().deviceId).toBe("core2");
+    expect(useInvestigation.getState().deviceId).toBe(B);
     expect(callsOf(rec, "orbitBy").length).toBe(orbits);
     m.unmount();
   });
@@ -522,17 +594,22 @@ describe("keyboard operation", () => {
     m.unmount();
   });
 
-  it("announces the selection, naming unobserved fields as unobserved", () => {
+  it.runIf(DARK_DEVICE !== undefined)(
+    DARK_DEVICE !== undefined
+      ? "announces the selection, naming unobserved fields as unobserved"
+      : "announces the selection, naming unobserved fields as unobserved [skipped: the loaded dataset has no uncollected device]",
+    () => {
     const m = mount(<Fabric3D />);
     act(() => {
-      useInvestigation.getState().selectDevice("AP-floor1");
+      useInvestigation.getState().selectDevice(DARK_DEVICE!.id);
     });
     const status = m.container.querySelector('[role="status"]');
-    expect(status?.textContent).toContain("AP-floor1");
+    expect(status?.textContent).toContain(DARK_DEVICE!.host);
     expect(status?.textContent).toContain("never collected");
     expect(status?.textContent).toContain("not observed");
     m.unmount();
-  });
+    },
+  );
 });
 
 /* ── the non-canvas equivalent ─────────────────────────────────────────────── */
@@ -549,12 +626,12 @@ describe("fabric tree", () => {
 
   it("selects the same store state the canvas does", () => {
     const m = mount(<Fabric3D />);
-    const row = m.container.querySelector('[data-target="core1"]');
+    const row = m.container.querySelector(`[data-target="${A}"]`);
     expect(row).not.toBeNull();
     act(() => {
       (row as HTMLElement).click();
     });
-    expect(useInvestigation.getState().deviceId).toBe("core1");
+    expect(useInvestigation.getState().deviceId).toBe(A);
     m.unmount();
   });
 
@@ -591,13 +668,13 @@ describe("fabric tree", () => {
 
 describe("labels", () => {
   it("does not render a label for an occluded anchor", () => {
-    mock.projections.set("core1", { x: 40, y: 40, visible: true });
-    mock.projections.set("core2", { x: 300, y: 300, visible: false });
+    mock.projections.set(A, { x: 40, y: 40, visible: true });
+    mock.projections.set(B, { x: 300, y: 300, visible: false });
     const m = mount(<Fabric3D />);
     flushFrames(2); // a name appears once its box is clear on two consecutive passes (labelResolve `labelDwellVerdict`, C5)
 
-    const visible = m.container.querySelector('[data-device="core1"]');
-    const occluded = m.container.querySelector('[data-device="core2"]');
+    const visible = m.container.querySelector(`[data-device="${A}"]`);
+    const occluded = m.container.querySelector(`[data-device="${B}"]`);
     expect(visible?.getAttribute("data-visible")).toBe("true");
     expect(occluded?.getAttribute("data-visible")).toBe("false");
 
@@ -607,22 +684,22 @@ describe("labels", () => {
   it("drops a colliding label but never the selected one", () => {
     // Two anchors on the same point: exactly one may survive the declutter, and it must be the
     // node the user selected.
-    mock.projections.set("core1", { x: 120, y: 120, visible: true });
-    mock.projections.set("core2", { x: 120, y: 120, visible: true });
+    mock.projections.set(A, { x: 120, y: 120, visible: true });
+    mock.projections.set(B, { x: 120, y: 120, visible: true });
     const m = mount(<Fabric3D />);
 
     act(() => {
-      useInvestigation.getState().selectDevice("core2");
+      useInvestigation.getState().selectDevice(B);
     });
     /* Two frames: selecting core2 marks the hosts it strands, and a tick that WRITES marks defers
        its measuring to the next tick so it never reads a layout it just dirtied (FabricLabels,
        pass 1). The declutter verdict is taken on the second. */
     flushFrames(2);
 
-    expect(m.container.querySelector('[data-device="core2"]')?.getAttribute("data-visible")).toBe(
+    expect(m.container.querySelector(`[data-device="${B}"]`)?.getAttribute("data-visible")).toBe(
       "true",
     );
-    expect(m.container.querySelector('[data-device="core1"]')?.getAttribute("data-visible")).toBe(
+    expect(m.container.querySelector(`[data-device="${A}"]`)?.getAttribute("data-visible")).toBe(
       "false",
     );
 
@@ -630,7 +707,7 @@ describe("labels", () => {
   });
 
   it("stops its frame loop when the stage unmounts", () => {
-    mock.projections.set("core1", { x: 40, y: 40, visible: true });
+    mock.projections.set(A, { x: 40, y: 40, visible: true });
     const m = mount(<Fabric3D />);
     flushFrames();
     m.unmount();
@@ -656,7 +733,7 @@ describe("re-aiming", () => {
        out past the left rail.
        The stubbed rect below is the real measured canvas box, so this test fails by exactly that
        displacement if the double subtraction ever returns. */
-    mock.projections.set("core1", { x: 500, y: 400, visible: true });
+    mock.projections.set(A, { x: 500, y: 400, visible: true });
     const m = mount(<Fabric3D />);
     const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]');
     if (overlay === null) throw new Error("the label overlay did not render");
@@ -668,7 +745,7 @@ describe("re-aiming", () => {
       }) as DOMRect;
     flushFrames(2); // a name appears once its box is clear on two consecutive passes (labelResolve `labelDwellVerdict`, C5)
 
-    const el = m.container.querySelector<HTMLElement>('[data-device="core1"]');
+    const el = m.container.querySelector<HTMLElement>(`[data-device="${A}"]`);
     expect(el?.dataset["visible"]).toBe("true");
     // The NAME is centred on the anchor (jsdom lays out nothing, so the name's centre offset is 0).
     expect(el?.style.transform).toBe("translate3d(500px, 400px, 0) translate(0, -160%)");
@@ -685,13 +762,13 @@ describe("re-aiming", () => {
       Object.defineProperty(el, "offsetHeight", { configurable: true, get: () => 16 });
       Object.defineProperty(el, "offsetLeft", { configurable: true, get: () => left });
     };
-    mock.projections.set("core1", { x: 1140, y: 400, visible: true });
+    mock.projections.set(A, { x: 1140, y: 400, visible: true });
     const m = mount(<Fabric3D />);
     const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]');
     if (overlay === null) throw new Error("the label overlay did not render");
     overlay.getBoundingClientRect = (): DOMRect =>
       ({ left: 340, top: 92, right: 1500, bottom: 1054, width: 1160, height: 962, x: 340, y: 92, toJSON: () => ({}) }) as DOMRect;
-    const el = m.container.querySelector<HTMLElement>('[data-device="core1"]');
+    const el = m.container.querySelector<HTMLElement>(`[data-device="${A}"]`);
     const name = el?.querySelector<HTMLElement>(".fabric3d-label__name");
     if (!el || !name) throw new Error("no label");
     box(el, 0, 200);
@@ -704,7 +781,7 @@ describe("re-aiming", () => {
     expect(el.style.getPropertyValue("--leader-x")).toBe("184px");
 
     // Back in the middle of the stage the name sits on its anchor and the leader goes.
-    mock.projections.set("core1", { x: 500, y: 400, visible: true });
+    mock.projections.set(A, { x: 500, y: 400, visible: true });
     flushFrames();
     expect(el.style.transform).toBe("translate3d(441px, 400px, 0) translate(0, -160%)");
     expect(el.dataset["leader"]).toBe("");
@@ -721,17 +798,17 @@ describe("re-aiming", () => {
       Object.defineProperty(el, "offsetHeight", { configurable: true, get: () => 16 });
       Object.defineProperty(el, "offsetLeft", { configurable: true, get: () => left });
     };
-    mock.projections.set("core1", { x: 500, y: 400, visible: true });
-    mock.projections.set("core2", { x: 900, y: 700, visible: true });
+    mock.projections.set(A, { x: 500, y: 400, visible: true });
+    mock.projections.set(B, { x: 900, y: 700, visible: true });
     // core1's name at home spans y 374.4..390.4 and x 445..555 or so; core2's body covers it.
-    mock.chassisBoxes.set("core1", { x0: 440, y0: 398, x1: 560, y1: 440 });
-    mock.chassisBoxes.set("core2", { x0: 420, y0: 360, x1: 600, y1: 395 });
+    mock.chassisBoxes.set(A, { x0: 440, y0: 398, x1: 560, y1: 440 });
+    mock.chassisBoxes.set(B, { x0: 420, y0: 360, x1: 600, y1: 395 });
     const m = mount(<Fabric3D />);
     const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]');
     if (overlay === null) throw new Error("the label overlay did not render");
     overlay.getBoundingClientRect = (): DOMRect =>
       ({ left: 340, top: 92, right: 1500, bottom: 1054, width: 1160, height: 962, x: 340, y: 92, toJSON: () => ({}) }) as DOMRect;
-    for (const id of ["core1", "core2"]) {
+    for (const id of [A, B]) {
       const el = m.container.querySelector<HTMLElement>(`[data-device="${id}"]`);
       const name = el?.querySelector<HTMLElement>(".fabric3d-label__name");
       if (!el || !name) throw new Error(`no label for ${id}`);
@@ -744,7 +821,7 @@ describe("re-aiming", () => {
        dwell gate it always ended withheld, so its displaced branch never ran and nothing pinned
        which outcome the geometry forces. Each outcome now has its own geometry, and is pinned. */
     flushFrames(3);
-    const el = m.container.querySelector<HTMLElement>('[data-device="core1"]');
+    const el = m.container.querySelector<HTMLElement>(`[data-device="${A}"]`);
     /* Here the only escapes are one row up (onto core2's body, 363..392 inset) and one row down
        (onto core1's own, 401..437 inset): an ordinary name has no honest slot and is WITHHELD —
        never left at home across core2, never pushed down onto its own hardware. */
@@ -758,17 +835,17 @@ describe("re-aiming", () => {
       Object.defineProperty(el, "offsetHeight", { configurable: true, get: () => 16 });
       Object.defineProperty(el, "offsetLeft", { configurable: true, get: () => left });
     };
-    mock.projections.set("core1", { x: 500, y: 400, visible: true });
-    mock.projections.set("core2", { x: 900, y: 700, visible: true });
-    mock.chassisBoxes.set("core1", { x0: 440, y0: 398, x1: 560, y1: 440 });
+    mock.projections.set(A, { x: 500, y: 400, visible: true });
+    mock.projections.set(B, { x: 900, y: 700, visible: true });
+    mock.chassisBoxes.set(A, { x0: 440, y0: 398, x1: 560, y1: 440 });
     // core2's body where its anchor is: nowhere near core1's name.
-    mock.chassisBoxes.set("core2", { x0: 840, y0: 698, x1: 960, y1: 740 });
+    mock.chassisBoxes.set(B, { x0: 840, y0: 698, x1: 960, y1: 740 });
     const m = mount(<Fabric3D />);
     const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]');
     if (overlay === null) throw new Error("the label overlay did not render");
     overlay.getBoundingClientRect = (): DOMRect =>
       ({ left: 340, top: 92, right: 1500, bottom: 1054, width: 1160, height: 962, x: 340, y: 92, toJSON: () => ({}) }) as DOMRect;
-    for (const id of ["core1", "core2"]) {
+    for (const id of [A, B]) {
       const el = m.container.querySelector<HTMLElement>(`[data-device="${id}"]`);
       const name = el?.querySelector<HTMLElement>(".fabric3d-label__name");
       if (!el || !name) throw new Error(`no label for ${id}`);
@@ -776,7 +853,7 @@ describe("re-aiming", () => {
       box(name, 0, 110);
     }
     flushFrames(3);
-    const el = m.container.querySelector<HTMLElement>('[data-device="core1"]');
+    const el = m.container.querySelector<HTMLElement>(`[data-device="${A}"]`);
     expect(el?.dataset["visible"]).toBe("true");
     expect(el?.style.transform).toBe("translate3d(445px, 400px, 0) translate(0, -160%)");
     m.unmount();
@@ -792,16 +869,16 @@ describe("re-aiming", () => {
       Object.defineProperty(el, "offsetHeight", { configurable: true, get: () => 16 });
       Object.defineProperty(el, "offsetLeft", { configurable: true, get: () => left });
     };
-    mock.projections.set("core1", { x: 500, y: 400, visible: true });
-    mock.projections.set("core2", { x: 900, y: 700, visible: true });
-    mock.chassisBoxes.set("core1", { x0: 440, y0: 398, x1: 560, y1: 440 });
-    mock.chassisBoxes.set("core2", { x0: 300, y0: 370, x1: 460, y1: 420 });
+    mock.projections.set(A, { x: 500, y: 400, visible: true });
+    mock.projections.set(B, { x: 900, y: 700, visible: true });
+    mock.chassisBoxes.set(A, { x0: 440, y0: 398, x1: 560, y1: 440 });
+    mock.chassisBoxes.set(B, { x0: 300, y0: 370, x1: 460, y1: 420 });
     const m = mount(<Fabric3D />);
     const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]');
     if (overlay === null) throw new Error("the label overlay did not render");
     overlay.getBoundingClientRect = (): DOMRect =>
       ({ left: 340, top: 92, right: 1500, bottom: 1054, width: 1160, height: 962, x: 340, y: 92, toJSON: () => ({}) }) as DOMRect;
-    for (const id of ["core1", "core2"]) {
+    for (const id of [A, B]) {
       const el = m.container.querySelector<HTMLElement>(`[data-device="${id}"]`);
       const name = el?.querySelector<HTMLElement>(".fabric3d-label__name");
       if (!el || !name) throw new Error(`no label for ${id}`);
@@ -809,7 +886,7 @@ describe("re-aiming", () => {
       box(name, 0, 110);
     }
     flushFrames(3);
-    const el = m.container.querySelector<HTMLElement>('[data-device="core1"]');
+    const el = m.container.querySelector<HTMLElement>(`[data-device="${A}"]`);
     const t = el?.style.transform ?? "";
     expect(el?.dataset["visible"], t).toBe("true");
     const y = Number(/translate3d\([-\d.]+px, ([-\d.]+)px/.exec(t)?.[1] ?? "NaN");
@@ -841,16 +918,16 @@ describe("re-aiming", () => {
       Object.defineProperty(el, "offsetHeight", { configurable: true, get: () => 16 });
       Object.defineProperty(el, "offsetLeft", { configurable: true, get: () => left });
     };
-    mock.projections.set("core1", { x: 500, y: 400, visible: true });
-    mock.projections.set("core2", { x: 500, y: 350, visible: true });
-    mock.chassisBoxes.set("core1", { x0: 440, y0: 398, x1: 560, y1: 440 });
-    mock.chassisBoxes.set("core2", { x0: 440, y0: 350, x1: 560, y1: 395 });
+    mock.projections.set(A, { x: 500, y: 400, visible: true });
+    mock.projections.set(B, { x: 500, y: 350, visible: true });
+    mock.chassisBoxes.set(A, { x0: 440, y0: 398, x1: 560, y1: 440 });
+    mock.chassisBoxes.set(B, { x0: 440, y0: 350, x1: 560, y1: 395 });
     const m = mount(<Fabric3D />);
     const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]');
     if (overlay === null) throw new Error("the label overlay did not render");
     overlay.getBoundingClientRect = (): DOMRect =>
       ({ left: 340, top: 92, right: 1500, bottom: 1054, width: 1160, height: 962, x: 340, y: 92, toJSON: () => ({}) }) as DOMRect;
-    for (const id of ["core1", "core2"]) {
+    for (const id of [A, B]) {
       const el = m.container.querySelector<HTMLElement>(`[data-device="${id}"]`);
       const name = el?.querySelector<HTMLElement>(".fabric3d-label__name");
       if (!el || !name) throw new Error(`no label for ${id}`);
@@ -876,7 +953,7 @@ describe("re-aiming", () => {
       return best;
     };
     const check = (when: string): void => {
-      for (const id of ["core1", "core2"]) {
+      for (const id of [A, B]) {
         const el = m.container.querySelector<HTMLElement>(`[data-device="${id}"]`)!;
         if (el.dataset["visible"] !== "true") continue;
         expect(readAs(id), `${when}: ${id}'s shown name must read as its own (${el.style.transform})`).toBe(id);
@@ -885,10 +962,10 @@ describe("re-aiming", () => {
     flushFrames(2); // a name appears once its box is clear on two consecutive passes (labelResolve `labelDwellVerdict`, C5)
     check("default");
     act(() => {
-      useInvestigation.getState().selectDevice("core1");
+      useInvestigation.getState().selectDevice(A);
     });
     flushFrames(3);
-    const sel = m.container.querySelector<HTMLElement>('[data-device="core1"]')!;
+    const sel = m.container.querySelector<HTMLElement>(`[data-device="${A}"]`)!;
     expect(sel.dataset["visible"], "the selected host is always labelled").toBe("true");
     check("core1 selected");
     m.unmount();
@@ -1058,24 +1135,8 @@ describe("a standing draw-call breach is visible in the product", () => {
  * `quality: "high"`: nothing here may be cited as evidence about either. */
 
 describe("the blast radius is wired to the scene contract and the label layer", () => {
-  /** The same analysis the Inspector reads, so the test cannot drift from the product. */
-  const strandedBy = (host: string): string[] => failureImpact(host).newlyStranded;
 
-  /**
-   * The hand-built traces below stand for DECIDED hop verdicts: they test the label layer's wiring,
-   * not the claim layer. The trace mark now follows the hop's band IN its trace (`bandOfHopIn`,
-   * 2026-09-21 critic B1), and a source inside an observed subnet carries real ingress gaps
-   * (FHRP alternate, unobserved ingress port) that correctly undecide the mark. So the fixtures take
-   * a source outside every observed subnet, from which no ingress gap can be derived — the verdict
-   * under test is then the only thing deciding the mark. The real-trace behaviour is pinned in
-   * src/panels/claim-honesty-b1.test.tsx.
-   */
-  const DECIDED_SRC = "198.51.100.7";
 
-  /** An articulation point with a non-empty blast radius, chosen FROM THE DATA, not typed here. */
-  const cutPoint = fabric.devices.map((d) => d.host).find((h) => strandedBy(h).length > 0);
-  /** A device whose failure partitions nothing — the control. */
-  const quiet = fabric.devices.map((d) => d.host).find((h) => strandedBy(h).length === 0);
 
   const projectAll = (): void => {
     // Spread out, so the declutter drops nothing and the marks can be counted.
@@ -1292,7 +1353,11 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     m.unmount();
   });
 
-  it("accounts for EVERY stranded host on the fabric: marked, or counted and named as out of view (A6)", () => {
+  it.runIf(wide)(
+    wide
+      ? "accounts for EVERY stranded host on the fabric: marked, or counted and named as out of view (A6)"
+      : "accounts for EVERY stranded host on the fabric: marked, or counted and named as out of view (A6) [skipped: no cut point here strands more than 3 hosts]",
+    () => {
     /* MEASURED (acceptance report at 70bea72, A6): with the camera framed on a trace, selecting core2
        marked 5 of its 8 stranded hosts; access3, access5 and access17 projected off the canvas
        (`visible: false`) and nothing on the fabric gave a count or said marks were out of view. The
@@ -1354,9 +1419,14 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     expect(back!.textContent).not.toContain("out of view");
     expect(back!.textContent).toContain(`all ${stranded.length} marked`);
     m.unmount();
-  });
+    },
+  );
 
-  it("keeps EVERY stranded label on screen even when their boxes collide (A6)", () => {
+  it.runIf(piles)(
+    piles
+      ? "keeps EVERY stranded label on screen even when their boxes collide (A6)"
+      : "keeps EVERY stranded label on screen even when their boxes collide (A6) [skipped: no cut point here strands two hosts]",
+    () => {
     /* Measured: selecting core1 strands nine hosts and only six carried the mark — access2, access8
        and access16 were decluttered away by each other's marks. Here every stranded host projects
        to the SAME point, the worst case: each must still be visible, and no two may share a box. */
@@ -1381,7 +1451,8 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     }
     expect(transforms.size, "colliding marked labels are stacked, not piled on one box").toBeGreaterThan(1);
     m.unmount();
-  });
+    },
+  );
 
   it("marks the hosts a selected finding names, distinct from the device selection (A4)", () => {
     const finding = fabric.findings.find((f) => f.devices.length > 0)!;
@@ -1469,7 +1540,7 @@ describe("the blast radius is wired to the scene contract and the label layer", 
       hops: [
         {
           index: 0,
-          host: "core1",
+          host: HOP,
           outIntf: null,
           nextHost: null,
           nextHop: null,
@@ -1493,9 +1564,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     });
     flushFrames(2);
 
-    expect(m.container.querySelector('[data-device="core1"]')?.getAttribute("data-alarm")).toBe("blocked");
+    expect(m.container.querySelector(`[data-device="${HOP}"]`)?.getAttribute("data-alarm")).toBe("blocked");
     const highlight = callsOf(rec, "setHighlight").at(-1)?.[1] as { blockedHost: string | null };
-    expect(highlight.blockedHost, "the halo channel stays the trace's").toBe("core1");
+    expect(highlight.blockedHost, "the halo channel stays the trace's").toBe(HOP);
 
     m.unmount();
   });
@@ -1529,7 +1600,7 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     hops: [
       {
         index: 0,
-        host: "core1",
+        host: HOP,
         outIntf: null,
         nextHost: null,
         nextHop: null,
@@ -1541,7 +1612,7 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     ],
     claim: "test",
     caveats: ["test"],
-    unmodelledHosts: verdict === "unmodeled" ? ["core1"] : [],
+    unmodelledHosts: verdict === "unmodeled" ? [HOP] : [],
     elapsedMs: 1,
   });
 
@@ -1554,7 +1625,7 @@ describe("the blast radius is wired to the scene contract and the label layer", 
       useInvestigation.getState().setTrace(traceOf("denied", "denied"));
     });
     flushFrames(2);
-    const deniedWord = alarmWord(denied, "core1");
+    const deniedWord = alarmWord(denied, HOP);
     const deniedHighlight = callsOf(deniedScene, "setHighlight").at(-1)?.[1] as {
       blockedHost: string | null;
     } | null;
@@ -1566,7 +1637,7 @@ describe("the blast radius is wired to the scene contract and the label layer", 
       useInvestigation.getState().setTrace(traceOf("unmodeled", "indeterminate"));
     });
     flushFrames(2);
-    const undecidedWord = alarmWord(undecided, "core1");
+    const undecidedWord = alarmWord(undecided, HOP);
     const undecidedHighlight = callsOf(undecidedScene, "setHighlight").at(-1)?.[1] as {
       blockedHost: string | null;
     } | null;
@@ -1582,7 +1653,7 @@ describe("the blast radius is wired to the scene contract and the label layer", 
        alarm outline is an assertion that this host stopped the packet, so only the REFUTED hop
        gets it. A test that pinned the word alone would pass on a fabric that still painted the two
        states with the same pixels. */
-    expect(deniedHighlight?.blockedHost).toBe("core1");
+    expect(deniedHighlight?.blockedHost).toBe(HOP);
     expect(undecidedHighlight === null || undecidedHighlight.blockedHost === null).toBe(true);
   });
 
@@ -1595,10 +1666,10 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     const m = mount(<Fabric3D />);
 
     act(() => {
-      useInvestigation.getState().selectDevice("core1");
+      useInvestigation.getState().selectDevice(HOP);
     });
     flushFrames(2);
-    const beforeAlarm = m.container.querySelector('[data-device="core1"]')?.getAttribute("data-alarm");
+    const beforeAlarm = m.container.querySelector(`[data-device="${HOP}"]`)?.getAttribute("data-alarm");
 
     act(() => {
       useInvestigation.getState().setTrace(traceOf("delivered", "delivered"));
@@ -1606,7 +1677,7 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     flushFrames(2);
 
     expect(beforeAlarm, "no trace, no trace mark").toBe("");
-    expect(alarmWord(m, "core1"), "a resolved hop carries a mark of its own").toBe("✓ delivered here");
+    expect(alarmWord(m, HOP), "a resolved hop carries a mark of its own").toBe("✓ delivered here");
     expect(m.container.querySelectorAll('[data-alarm="blocked"]')).toHaveLength(0);
 
     m.unmount();
@@ -1631,7 +1702,7 @@ describe("pointer picks during warm-up", () => {
 
   it("an empty-ground click while warming leaves a URL-restored device selection alone", async () => {
     act(() => {
-      useInvestigation.getState().selectDevice("access1");
+      useInvestigation.getState().selectDevice(A);
     });
     setWarmup("linking");
     mock.pickResult = null;
@@ -1640,13 +1711,13 @@ describe("pointer picks during warm-up", () => {
     pointer(canvas, "pointerdown");
     pointer(canvas, "pointerup");
     await settleCanvasCommit();
-    expect(useInvestigation.getState().deviceId).toBe("access1");
+    expect(useInvestigation.getState().deviceId).toBe(A);
 
     /* The scene's own pick event is the second pointer path; it is gated the same way. */
     act(() => {
       lastScene().cb.onEvent({ type: "pick", result: null, modifier: false });
     });
-    expect(useInvestigation.getState().deviceId).toBe("access1");
+    expect(useInvestigation.getState().deviceId).toBe(A);
 
     /* Once drawn, clicking the ground is the explicit "nothing" it has always been. */
     setWarmup(null);
@@ -1661,12 +1732,12 @@ describe("pointer picks during warm-up", () => {
      previous frame on screen, and a click on a device in it used to be silently discarded. */
   it("a click during a RE-warm-up, after the fabric has been drawn, still selects", async () => {
     act(() => {
-      useInvestigation.getState().selectDevice("access1");
+      useInvestigation.getState().selectDevice(A);
     });
     setWarmup(null);
     const m = mount(<Fabric3D />);
     const canvas = m.canvas()!;
-    const target = fabric.devices.find((d) => d.id !== "access1")!.id;
+    const target = fabric.devices.find((d) => d.id !== A)!.id;
     mock.pickResult = { kind: "device", id: target, screen: { x: 10, y: 10 } };
     /* The scene reports itself drawn once, then restarts its warm-up with the frame still visible. */
     act(() => {
@@ -1682,7 +1753,7 @@ describe("pointer picks during warm-up", () => {
 
   it("a topology rebuild re-arms the gate: the frame on screen is of the old graph", async () => {
     act(() => {
-      useInvestigation.getState().selectDevice("access1");
+      useInvestigation.getState().selectDevice(A);
     });
     setWarmup(null);
     const m = mount(<Fabric3D devices={fabric.devices} links={fabric.links} />);
@@ -1699,7 +1770,7 @@ describe("pointer picks during warm-up", () => {
     pointer(canvas, "pointerdown");
     pointer(canvas, "pointerup");
     await settleCanvasCommit();
-    expect(useInvestigation.getState().deviceId).toBe("access1");
+    expect(useInvestigation.getState().deviceId).toBe(A);
     m.unmount();
   });
 
@@ -1805,11 +1876,11 @@ describe("a canvas click acknowledges on the canvas first and re-aims the other 
     const canvas = m.canvas()!;
     const rec = lastScene();
     const acksBefore = callsOf(rec, "acknowledgeSelection").length;
-    mock.pickResult = { kind: "device", id: "core2", screen: { x: 10, y: 10 } };
+    mock.pickResult = { kind: "device", id: B, screen: { x: 10, y: 10 } };
 
     click(canvas);
     expect(callsOf(rec, "acknowledgeSelection").slice(acksBefore), "the canvas acknowledges the click inside its own input task").toEqual([
-      ["acknowledgeSelection", "core2", null],
+      ["acknowledgeSelection", B, null],
     ]);
     expect(
       useInvestigation.getState().deviceId,
@@ -1825,14 +1896,14 @@ describe("a canvas click acknowledges on the canvas first and re-aims the other 
     expect(useInvestigation.getState().deviceId, "the store write waited out the acknowledgement frame").toBeNull();
 
     await settleCanvasCommit();
-    expect(useInvestigation.getState().deviceId, "the selection reaches every surface once the acknowledgement is presented").toBe("core2");
+    expect(useInvestigation.getState().deviceId, "the selection reaches every surface once the acknowledgement is presented").toBe(B);
     expect(useInvestigation.getState().surface).toBe("fabric");
     m.unmount();
   });
 
   it("a ground click acknowledges 'nothing selected' at once and clears the investigation's selection after it", async () => {
     act(() => {
-      useInvestigation.getState().selectDevice("core1");
+      useInvestigation.getState().selectDevice(A);
     });
     const m = mount(<Fabric3D />);
     drawn();
@@ -1842,7 +1913,7 @@ describe("a canvas click acknowledges on the canvas first and re-aims the other 
 
     click(canvas);
     expect(callsOf(rec, "acknowledgeSelection").at(-1)).toEqual(["acknowledgeSelection", null, null]);
-    expect(useInvestigation.getState().deviceId).toBe("core1");
+    expect(useInvestigation.getState().deviceId).toBe(A);
     await settleCanvasCommit();
     expect(useInvestigation.getState().deviceId).toBeNull();
     expect(useInvestigation.getState().linkId).toBeNull();
@@ -1866,16 +1937,16 @@ describe("a canvas click acknowledges on the canvas first and re-aims the other 
     const m = mount(<Fabric3D />);
     drawn();
     const rec = lastScene();
-    mock.pickResult = { kind: "device", id: "core2", screen: { x: 10, y: 10 } };
+    mock.pickResult = { kind: "device", id: B, screen: { x: 10, y: 10 } };
     click(m.canvas()!);
     /* Another surface (a grid row, a keystroke, the palette) selects something else first. */
     act(() => {
-      useInvestigation.getState().selectDevice("dist1");
+      useInvestigation.getState().selectDevice(C);
     });
     await settleCanvasCommit();
-    expect(useInvestigation.getState().deviceId, "a stale canvas commit must never overwrite a newer choice").toBe("dist1");
+    expect(useInvestigation.getState().deviceId, "a stale canvas commit must never overwrite a newer choice").toBe(C);
     const lastSelectionCall = rec.calls.filter((c) => c[0] === "setSelection" || c[0] === "acknowledgeSelection").at(-1);
-    expect(lastSelectionCall?.slice(1), "the canvas shows the choice that won").toEqual(["dist1", null]);
+    expect(lastSelectionCall?.slice(1), "the canvas shows the choice that won").toEqual([C, null]);
     m.unmount();
   });
 
@@ -1883,19 +1954,19 @@ describe("a canvas click acknowledges on the canvas first and re-aims the other 
     const m = mount(<Fabric3D />);
     drawn();
     const canvas = m.canvas()!;
-    mock.pickResult = { kind: "device", id: "core2", screen: { x: 10, y: 10 } };
+    mock.pickResult = { kind: "device", id: B, screen: { x: 10, y: 10 } };
     click(canvas);
-    mock.pickResult = { kind: "device", id: "core1", screen: { x: 10, y: 10 } };
+    mock.pickResult = { kind: "device", id: A, screen: { x: 10, y: 10 } };
     click(canvas);
     await settleCanvasCommit();
-    expect(useInvestigation.getState().deviceId).toBe("core1");
+    expect(useInvestigation.getState().deviceId).toBe(A);
     m.unmount();
   });
 
   it("unmounting the stage cancels a commit that has not landed", async () => {
     const m = mount(<Fabric3D />);
     drawn();
-    mock.pickResult = { kind: "device", id: "core2", screen: { x: 10, y: 10 } };
+    mock.pickResult = { kind: "device", id: B, screen: { x: 10, y: 10 } };
     click(m.canvas()!);
     m.unmount();
     await settleCanvasCommit();
@@ -1986,7 +2057,7 @@ describe("measure-inp: no journey spends its first interaction before the measur
   it("every journey's pre-loop hooks perform none of the input its measured act performs", async () => {
     const { JOURNEYS, firstInteractionConsumedBeforeLoop, J2_HITS } = await load();
     /* Stand in for the run's anchor discovery, so J2's act has somewhere to click. */
-    if (J2_HITS !== undefined && J2_HITS.length === 0) for (const id of ["core2", "core1", "dist1"]) J2_HITS.push({ id, x: 10, y: 10 });
+    if (J2_HITS !== undefined && J2_HITS.length === 0) for (const id of [B, A, C]) J2_HITS.push({ id, x: 10, y: 10 });
     for (const j of JOURNEYS) {
       const before: string[] = [];
       const page = recordingPage(before);
@@ -2379,5 +2450,24 @@ describe("deferPastPresentation: the commit waits for the browser to report the 
       await tick();
     }
     expect(ran).toBe(0);
+  });
+});
+
+/* ── The golden tier: which sample devices the property-chosen subjects are ─────────────────────────────────────── */
+
+describeGolden("Fabric3D subjects on the reference sample", () => {
+  it("the subjects the invariant tier picks by property are the sample's audited ones", () => {
+    // The widest blast radius on the sample is core1's (nine stranded hosts), and a hop verdict decides its mark there.
+    expect(cutPoint).toBe("core1");
+    expect(HOP).toBe("core1");
+    expect(strandedBy("core1")).toHaveLength(9);
+    // So neither A6 case is skipped here.
+    expect(wide).toBe(true);
+    expect(piles).toBe(true);
+    expect(strandedBy("core2")).toHaveLength(8);
+    expect(DARK_DEVICE?.host).toBe("AP-floor1");
+    // Three collected devices that strand nothing stand in for the old core1/core2/dist1 mock anchors.
+    expect([A, B, C].every((id) => fabric.devices.find((d) => d.id === id)?.collected === true && strandedBy(id).length === 0)).toBe(true);
+    expect(new Set([A, B, C]).size).toBe(3);
   });
 });

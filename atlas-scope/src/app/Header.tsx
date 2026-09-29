@@ -27,7 +27,7 @@ import {
 } from "react";
 import { fabric, findingsByHost, severityCounts } from "../core/data";
 import { datasetOrigin } from "../core/dataset";
-import { applyToFindings, parseQuery } from "../core/query";
+import { applyToDevices, applyToFindings, parseQuery } from "../core/query";
 import { encodeInvestigation, useInvestigation } from "../core/store";
 import { SEVERITY_ORDER, type SurfaceId } from "../core/types";
 import { IconClose, IconCommand, IconCopy, IconSearch } from "../ui/icons";
@@ -42,7 +42,7 @@ import {
   orNotObserved,
 } from "../ui/primitives";
 import { setHelpOpen } from "./keyboard";
-import { describeOrigin, digestFormLabel, OpenSnapshotControl, ReturnToSample, verificationWords } from "./OpenSnapshot";
+import { describeOrigin, digestFormLabel, digestSourceClause, OpenSnapshotControl, ReturnToSample, verificationWords } from "./OpenSnapshot";
 import { recordReturn, returnFocus, useReleaseFocusOnLayoutChange, type ReturnRecord } from "./focus-return";
 import { useLadder } from "./surfaces";
 import { ThemeToggle, useThemeShortcut } from "./ThemeToggle";
@@ -134,7 +134,9 @@ const isTypingTarget = (el: EventTarget | null): boolean => {
  * routing table we hold first, then the inventory order) — and each is run through the query engine the
  * findings surface uses (`applyToFindings`), so the example is one the engine is known to answer with
  * rows, whatever the dataset. A severity alone is the next candidate; with no finding at all nothing can
- * return findings, and the example falls back to the device filter the grammar also teaches.
+ * return findings, and the example falls back to a device clause the grammar also teaches — one the device
+ * filter confirms returns devices (with no device at all, nothing can return rows; the compiler refuses
+ * such a fabric, E_EMPTY_FABRIC).
  */
 export function exampleQuery(): string {
   const counts = severityCounts(fabric.findings);
@@ -153,7 +155,12 @@ export function exampleQuery(): string {
     }
     if (returnsRows(`severity:${sev}`)) return `severity:${sev}`;
   }
-  return "is:uncollected";
+  /* No finding at all: a DEVICE clause, checked the same way through the device filter (phase 3.5,
+     P3E-V4) — "is:uncollected" alone matched nothing on a fleet whose every device was collected. The
+     candidates are the predicates the grammar teaches, then a host clause on a device the data holds. */
+  const returnsDevices = (q: string): boolean => applyToDevices(fabric.devices, parseQuery(q)).items.length > 0;
+  const deviceCandidates = ["is:uncollected", "is:collected", ...hostOrder.slice(0, 1).map((h) => `host:${h}`)];
+  return deviceCandidates.find(returnsDevices) ?? "is:uncollected";
 }
 
 /* ── the brand mark ────────────────────────────────────────────────────────── */
@@ -180,13 +187,15 @@ function SnapshotIdentity({ compact }: { compact: boolean }): ReactElement {
   const file = datasetOrigin.kind === "assesshub" ? `AssessHub snapshot ${datasetOrigin.snapshotId}` : (m.source.split("/").pop() ?? m.source);
   const sha8 = m.sourceSha256.slice(0, 8);
   const verification = verificationWords(datasetOrigin);
+  /* Empty unless the digests are AssessHub's statement rather than a computation here. */
+  const attested = digestSourceClause(datasetOrigin);
 
   return (
     <Popover
       label="Snapshot provenance"
       align="start"
       trigger={
-        <button type="button" className="hdr-snap" title={`${m.source} — sha256 (${m.sourceDigestForm}) ${m.sourceSha256}`}>
+        <button type="button" className="hdr-snap" title={`${m.source} — sha256 (${m.sourceDigestForm}${attested}) ${m.sourceSha256}`}>
           <span className="hdr-snap__line1">
             <span className="hdr-snap__file">{compact ? sha8 : file}</span>
           </span>
@@ -238,7 +247,7 @@ function SnapshotIdentity({ compact }: { compact: boolean }): ReactElement {
           <div className="snapdetail__row">
             <dt>sha256</dt>
             <dd>
-              <Copyable value={m.sourceSha256} label="the snapshot sha256" digest />
+              <Copyable value={m.sourceSha256} label={`the snapshot sha256${attested}`} digest />
             </dd>
           </div>
           <div className="snapdetail__row">
@@ -248,7 +257,8 @@ function SnapshotIdentity({ compact }: { compact: boolean }): ReactElement {
           <div className="snapdetail__row">
             <dt>Exact bytes</dt>
             <dd>
-              <Copyable value={m.sourceExactSha256} label="the sha256 of the exact bytes read" digest />
+              {/* "read" only where this page read and hashed them (phase 3.5, P3E-V3). */}
+              <Copyable value={m.sourceExactSha256} label={attested === "" ? "the sha256 of the exact bytes read" : `the sha256 of the exact bytes${attested}`} digest />
             </dd>
           </div>
           <div className="snapdetail__row">

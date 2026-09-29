@@ -972,6 +972,72 @@ describe("Popover stays inside the viewport", () => {
     expect(panel.style.top).toBe("");
     expect(panel.style.maxHeight).toBe("");
   });
+
+  /* A TRIGGER OUTSIDE THE VIEWPORT. MEASURED (phase 3.5, the D3 rung crossing, release build): the queue's
+     "Display" popover open at 390x900 on a traced flow, focus inside it, resized to 768 — the page's scroll
+     reset and the trigger re-measured at y 1037-1061, BELOW a 900 px viewport. The panel opened "above" a
+     trigger that was off screen: max-height 1020 px, top 501, bottom 1032, and the focused "Narrow the
+     Category column" had no part on screen. However far the trigger has gone, the panel ends inside the
+     viewport: anchored at the edge the trigger left by. */
+  it("keeps the panel inside the viewport when its trigger is BELOW it (the trigger scrolled away)", () => {
+    const vh = 900;
+    const panel = openBelow({ top: 1037, height: 24 }, { top: 1065, height: 529 }, vh);
+    const margin = px(getComputedStyle(panel).marginTop || "0");
+    expect(panel.style.top, "the panel was left below the viewport").not.toBe("");
+    const top = px(panel.style.top) + margin;
+    const cap = px(panel.style.maxHeight || "1e9");
+    expect(top, "the panel's top is inside the viewport").toBeGreaterThanOrEqual(8);
+    expect(cap, "its height cap is no taller than the viewport").toBeLessThanOrEqual(vh - 16);
+    expect(top + Math.min(529, cap), "the panel ends inside the viewport").toBeLessThanOrEqual(vh - 8);
+  });
+
+  it("keeps the panel inside the viewport when its trigger is ABOVE it", () => {
+    const panel = openBelow({ top: -64, height: 24 }, { top: -36, height: 200 }, 800);
+    const margin = px(getComputedStyle(panel).marginTop || "0");
+    expect(panel.style.top, "the panel was left above the viewport").not.toBe("");
+    expect(px(panel.style.top) + margin).toBeGreaterThanOrEqual(8);
+    expect(px(panel.style.top) + margin + Math.min(200, px(panel.style.maxHeight || "1e9"))).toBeLessThanOrEqual(800 - 8);
+  });
+
+  /* THE COVERAGE LINE NEVER COVERS THE FOCUSED CONTROL. MEASURED (phase 3.5 repair, D3 rung crossing at an 800 px
+     viewport, release build): with the queue's "Display" popover open at 1920x800, "Narrow the Category column"
+     focused sat at y 763-787 UNDER the popover's sticky coverage line (y 744-787) — five of five hit-test points
+     on `.ui-overlay-cov`, before and after a resize to 1440. Focusing scrolls a control "into view" of the
+     popover's scrollport, and the sticky line covers the bottom of that scrollport; so the popover states the
+     line's height as its bottom scroll padding (which focus scrolling and scrollIntoView honour), and brings the
+     focused control clear of it whenever it re-places itself. */
+  it("keeps the focused control clear of its sticky coverage line", () => {
+    const realOffset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+    const realScroll = HTMLElement.prototype.scrollIntoView;
+    const scrolled: { el: string; opts: unknown }[] = [];
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains("ui-overlay-cov") ? 43 : 0;
+      },
+    });
+    HTMLElement.prototype.scrollIntoView = function (this: HTMLElement, opts?: boolean | ScrollIntoViewOptions): void {
+      scrolled.push({ el: this.id, opts });
+    };
+    try {
+      mount(
+        <Popover label="Probe" open trigger={<button type="button" id="pop-trigger">t</button>}>
+          <button type="button" id="inside-1">one</button>
+        </Popover>,
+      );
+      const panel = [...document.querySelectorAll<HTMLElement>(".ui-popover")].pop()!;
+      expect(document.activeElement?.id, "precondition: focus moved into the panel").toBe("inside-1");
+      expect(panel.style.getPropertyValue("--pop-cov-h"), "the panel does not state its coverage line's height").toBe("43px");
+      expect(scrolled.some((s) => s.el === "inside-1" && (s.opts as ScrollIntoViewOptions | undefined)?.block === "nearest"), "the focused control was not brought clear").toBe(true);
+    } finally {
+      if (realOffset) Object.defineProperty(HTMLElement.prototype, "offsetHeight", realOffset);
+      HTMLElement.prototype.scrollIntoView = realScroll;
+    }
+    /* And the stylesheet turns that height into the scrollport's bottom padding. */
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "primitives.css"), "utf8");
+    const rule = /\.ui-popover\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
+    expect(rule, ".ui-popover declares no bottom scroll padding from --pop-cov-h").toMatch(/scroll-padding-(?:block-end|bottom)\s*:\s*var\(--pop-cov-h/);
+  });
 });
 
 /* ══ Popover — the panel follows its trigger across a viewport resize ═══════

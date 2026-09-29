@@ -339,6 +339,10 @@ export function easeOwnerStarters(text: string): Set<string> {
       }
     } else if (ts.isFunctionDeclaration(st) && st.name !== undefined && st.body !== undefined) {
       decls.push({ name: st.name.text, body: st.body, isExported: exported(st) });
+    } else if (ts.isClassDeclaration(st) && st.name !== undefined) {
+      /* A class is a declaration whose methods start motion like a function's body (P3C-V2-2: the tier-fade slot
+         is a class, so its methods run only on the instance). Left out, a starter built on one reached nothing. */
+      decls.push({ name: st.name.text, body: st, isExported: exported(st) });
     }
   }
   const names = (root: ts.Node): boolean => {
@@ -738,9 +742,14 @@ describe("the motion scan is live and its denominator is the real tree", () => {
         "function helper() { return WIPE; }",
         "export function startWipe() { return helper(); }",
         "export function unrelated() { return 3; }",
+        // A fade run through a class's method (the tier-fade slot's shape, P3C-V2-2), reached through its factory.
+        "class Wiper { go() { return WIPE; } }",
+        "export function createWiper() { return new Wiper(); }",
+        "export class Idle { n() { return 1; } }",
       ].join("\n"),
     );
-    expect([...planted].sort()).toEqual(["WIPE", "startWipe"]);
+    expect([...planted].sort()).toEqual(["WIPE", "createWiper", "startWipe"]);
+    expect(OWNER_STARTERS.has("createTierFadeSlot"), "the slot's factory starts the tier fade").toBe(true);
   });
 
   it("walks the real stylesheets and scripts, and finds the motion they carry", () => {

@@ -57,7 +57,7 @@ import { Inspector } from "../panels/Inspector";
 import { PathTrace } from "../panels/PathTrace";
 import { PriorityQueue } from "../panels/PriorityQueue";
 import { useSceneStats } from "../fabric3d/telemetry";
-import { reconcileTierGroups } from "../fabric3d/tier-groups";
+import { placedTiers } from "../fabric3d/tier-groups";
 import type { SceneStatsEx } from "../fabric3d/scene";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { releaseFocusFrom, useReleaseFocusOnHide } from "./focus-return";
@@ -676,53 +676,46 @@ export function RailB({ hidden = false, closed = false, onOpenCite, view, onView
 export const WARMUP_MEASURED_ON = "9cc348bd";
 
 export interface StageSkeletonGroup {
-  /** Index into `fabric.tiers`, or null for the group of devices no tier group lists. */
-  index: number | null;
-  /** "tier 3 · 4" — the RECONCILED tier (fabric3d/tier-groups.ts), or "tier not observed · 2". */
+  /** The tier the layout places these devices at, or null for its synthetic "tier not observed" plane. */
+  tier: number | null;
+  /** "tier 3 · 4", or "tier not observed · 2". */
   label: string;
   ids: string[];
 }
 
 /**
- * The skeleton's groups, in the fabric's own tier numbering.
+ * The skeleton's groups: one per tier the LAYOUT will place devices at, ascending, the "tier not observed" plane last.
  *
- * Labelled by each group's RECONCILED tier (what its members are recorded at — the reading the layout publishes as
- * `diagnostics.cableMapGroups`), not by its array index, which is an artifact of serialisation: the index labelled
- * the AP the fabric announces as "Tier 0" as "tier 1". A cable-map host with no device record is not drawn (the
- * layout does not place it), and a device no tier group lists IS drawn, in a trailing "tier not observed" group,
- * because the layout places it too. `placed` is therefore every device record.
+ * Each device is drawn at the tier the layout places it at (fabric3d/tier-groups.ts `placedTiers`, the layout's own
+ * rule: the device's record tier, else its cable-map group's reconciled tier, else not observed). Not a cable-map
+ * group's array index, which is an artifact of serialisation (the index labelled the AP the fabric announces as
+ * "Tier 0" as "tier 1"), and not a group's reading applied to all its members: that announced "tier not observed"
+ * for a device of a tie group, or one no group lists, whose own record carries a tier the layout places it at
+ * (P3C-V2-1). Only a device with neither reads "tier not observed". A cable-map host with no device record is not
+ * drawn (the layout does not place it). `placed` is every device record; `observedTiers` the distinct tiers placed.
  */
 export function stageSkeleton(
-  devices: readonly Pick<Device, "id" | "host" | "tier">[],
+  devices: readonly Pick<Device, "id" | "host" | "tier" | "order">[],
   tiers: readonly (readonly string[])[],
-): { groups: StageSkeletonGroup[]; placed: number } {
-  const byName = new Map<string, string>();
+): { groups: StageSkeletonGroup[]; placed: number; observedTiers: number } {
+  const placedAt = placedTiers(devices, tiers);
+  const byTier = new Map<number | null, string[]>();
   for (const d of devices) {
-    byName.set(d.id, d.id);
-    if (!byName.has(d.host)) byName.set(d.host, d.id);
+    const t = placedAt.get(d.id) ?? null;
+    const ids = byTier.get(t);
+    if (ids === undefined) byTier.set(t, [d.id]);
+    else ids.push(d.id);
   }
-  const readings = reconcileTierGroups(devices, tiers);
-  const listed = new Set<string>();
-  const groups: StageSkeletonGroup[] = [];
-  tiers.forEach((names, index) => {
-    const ids = names.map((n) => byName.get(n)).filter((id): id is string => id !== undefined && !listed.has(id));
-    for (const id of ids) listed.add(id);
-    if (ids.length === 0) return;
-    const tier = readings[index]?.tier ?? null;
-    groups.push({ index, label: `${tier === null ? "tier not observed" : `tier ${tier}`} · ${ids.length}`, ids });
+  const order = [...byTier.keys()].sort((a, b) => (a === null ? 1 : b === null ? -1 : a - b));
+  const groups = order.map((tier): StageSkeletonGroup => {
+    const ids = byTier.get(tier) ?? [];
+    return { tier, label: `${tier === null ? "tier not observed" : `tier ${tier}`} · ${ids.length}`, ids };
   });
-  const unlisted = devices.filter((d) => !listed.has(d.id)).map((d) => d.id);
-  if (unlisted.length > 0) groups.push({ index: null, label: `tier not observed · ${unlisted.length}`, ids: unlisted });
-  return { groups, placed: devices.length };
+  return { groups, placed: devices.length, observedTiers: order.filter((t) => t !== null).length };
 }
 
 function StagePending(): ReactElement {
-  const { groups, placed } = stageSkeleton(fabric.devices, fabric.tiers);
-  const observedTiers = new Set(
-    reconcileTierGroups(fabric.devices, fabric.tiers)
-      .map((g) => g.tier)
-      .filter((t): t is number => t !== null),
-  ).size;
+  const { groups, placed, observedTiers } = stageSkeleton(fabric.devices, fabric.tiers);
   const sha8 = fabric.meta.sourceSha256.slice(0, 8);
   const measured = fabric.meta.sourceSha256.startsWith(WARMUP_MEASURED_ON)
     ? `measured over cold loads of the reference sample ${WARMUP_MEASURED_ON}, which is this snapshot`
@@ -734,7 +727,7 @@ function StagePending(): ReactElement {
           would be noise. The sentence below is the accessible content. */}
       <div className="stage-skeleton" aria-hidden="true">
         {groups.map((g) => (
-          <div className="stage-skeleton__tier" key={g.index === null ? "tier-unlisted" : `tier-${g.index}`}>
+          <div className="stage-skeleton__tier" key={g.tier === null ? "tier-unobserved" : `tier-${g.tier}`}>
             <span className="stage-skeleton__label">{g.label}</span>
             <div className="stage-skeleton__row">
               {g.ids.map((id) => (

@@ -58,6 +58,16 @@ import {
 } from "./emphasis";
 
 const devices = fabricJson.devices as Device[];
+/* The emphasis subjects, chosen BY PROPERTY (P3C-V2-3): FOCUS is the collected device with the most distinct
+   neighbours (a hub, so a focus recedes a real neighbourhood), SECOND its best-connected collected neighbour (the
+   interrupted-ease case moves the focus between two adjacent devices). They used to be typed ("core1", "dist1"): on
+   any other dataset those named no device, every node receded to depth, and the tests ran a weaker case than they
+   claim while staying green. */
+const neighboursOf = (id: string): Set<string> =>
+  new Set((fabricJson.links as Link[]).flatMap((l) => (l.a === id ? [l.b] : l.b === id ? [l.a] : [])));
+const byReach = (a: Device, b: Device): number => neighboursOf(b.id).size - neighboursOf(a.id).size || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+const FOCUS: string = [...devices].filter((d) => d.collected).sort(byReach)[0]?.id ?? devices[0]!.id;
+const SECOND: string = [...devices].filter((d) => d.collected && d.id !== FOCUS && neighboursOf(FOCUS).has(d.id)).sort(byReach)[0]?.id ?? devices[1]!.id;
 const links = fabricJson.links as Link[];
 const layout = computeLayout({ devices, links, tiers: fabricJson.tiers });
 const profile = profileFor("high");
@@ -95,7 +105,7 @@ function uploaded(graph: ReturnType<typeof buildFabricGraph>): number[] {
  * Run one emphasis animation to rest under a given frame-time sequence and report what the GPU
  * would hold. `dts` is cycled, so an irregular sequence stays irregular for the whole run.
  */
-function settle(dts: readonly number[], deviceId = "core1"): { values: number[]; frames: number } {
+function settle(dts: readonly number[], deviceId = FOCUS): { values: number[]; frames: number } {
   const graph = buildFabricGraph({ devices, links, layout, theme: "dark", profile });
   try {
     const state = focusOn(graph, deviceId);
@@ -151,7 +161,7 @@ describe("emphasis easing — the settled value is a function of the target, not
        could also be two runs stopping at the same wrong place. */
     const graph = buildFabricGraph({ devices, links, layout, theme: "dark", profile });
     try {
-      const state = focusOn(graph, "core1");
+      const state = focusOn(graph, FOCUS);
       for (let i = 0; i < 5000 && stepEmphasis(graph, state, JITTERY[i % JITTERY.length] as number); i += 1);
 
       const wrong: string[] = [];
@@ -209,7 +219,7 @@ describe("emphasis easing — the settled value is a function of the target, not
     // `converged()` become true. A step that returns false must have nothing left to upload.
     const graph = buildFabricGraph({ devices, links, layout, theme: "dark", profile });
     try {
-      const state = focusOn(graph, "core1");
+      const state = focusOn(graph, FOCUS);
       let frames = 0;
       while (frames < 5000 && stepEmphasis(graph, state, 16.7)) frames += 1;
       const atRest = uploaded(graph);
@@ -228,9 +238,9 @@ describe("emphasis easing — the settled value is a function of the target, not
     const interrupted = (() => {
       const graph = buildFabricGraph({ devices, links, layout, theme: "dark", profile });
       try {
-        const first = focusOn(graph, "dist1");
+        const first = focusOn(graph, SECOND);
         for (let i = 0; i < 4; i += 1) stepEmphasis(graph, first, 16.7);
-        const second = focusOn(graph, "core1");
+        const second = focusOn(graph, FOCUS);
         second.current.set(first.current); // the interrupted ease carries its position forward
         let frames = 0;
         while (frames < 5000 && stepEmphasis(graph, second, 11.3)) frames += 1;
@@ -239,7 +249,7 @@ describe("emphasis easing — the settled value is a function of the target, not
         graph.dispose();
       }
     })();
-    expect(interrupted).toEqual(settle(STEADY, "core1").values);
+    expect(interrupted).toEqual(settle(STEADY, FOCUS).values);
   });
 });
 
@@ -275,7 +285,7 @@ describe("C6: stepEmphasis settles within the §4.8 row for RECEDE_MS, and snaps
   function framesToTarget(reduced: boolean): { frames: number; reportedRestAt: number } {
     const graph = buildFabricGraph({ devices, links, layout, theme: "dark", profile });
     try {
-      const state = focusOn(graph, "core1");
+      const state = focusOn(graph, FOCUS);
       const target = (): number[] => {
         const out: number[] = [];
         for (const s of graph.order) out.push(state.target[s.index] as number);
@@ -470,7 +480,7 @@ describe("C5: every fade the ease owner steps moves at most FADE_MAX_STEP of its
     it(`the recession (stepEmphasis, every device and cable segment) under ${name}: every step <= FADE_MAX_STEP of its span`, () => {
       const graph = buildFabricGraph({ devices, links, layout, theme: "dark", profile });
       try {
-        const state = focusOn(graph, "core1");
+        const state = focusOn(graph, FOCUS);
         const start = uploaded(graph);
         const want = [
           ...graph.order.map((s) => state.target[s.index] as number),
@@ -1149,6 +1159,78 @@ describe("R4-VR1-4: the tier-fade slot — mount, hand-over, hold, fade and remo
   });
 });
 
+/* ── A slot method acts only ON the slot (P3C-V2-2, verifier of phase 3) ──────────────────────────────────────────
+ *
+ * scene.test.ts finds every call on the slot by its TYPE. The verifier went round it by copying the methods off it:
+ * `const copy = { ...tierFade }; copy.dispose();` disposed a running half-faded overlay in one frame, because the
+ * slot's methods closed over its state and `copy` neither holds nor carries DOM. A longer list of copy shapes (spread,
+ * Object.assign, entries, getOwnPropertyDescriptors, for-in, ...) is the same defect. The slot is therefore built so
+ * that NO copy of a method can act: its state is private to the instance and every method reads it through `this`,
+ * so a method runs only with the slot itself as its receiver, and a method value taken off it, spread off it or
+ * called on anything else throws before it touches the page. The only way to run one is then with the slot as the
+ * receiver or as the `this` handed to call/apply/bind/Reflect, which is a call on, or an argument of, a value of the
+ * slot's type: the sites scene.test.ts finds by type. Enumerated from the object itself, never from a list. */
+describe("P3C-V2-2: a tier-fade slot method acts only on the slot itself", () => {
+  /** A slot with a fade running at mid-value, and the page it is lent. */
+  const running = () => {
+    const p = page();
+    const slot = createTierFadeSlot<Pic>(p.host);
+    slot.tierChange(picCopy(0.9), false);
+    slot.presented(false)!.start();
+    for (let i = 0; i < 6; i += 1) slot.frame(1000 / 60, false, true);
+    const at = slot.opacity;
+    expect(at, "precondition: a fade is running, half-faded").toBeGreaterThan(0.05);
+    expect(at).toBeLessThan(1);
+    return { p, slot, at, before: [...p.log] };
+  };
+
+  it("carries no function-valued property of its own: a spread or copy of it takes no method with it", () => {
+    const { slot } = running();
+    const own = Object.getOwnPropertyNames(slot).filter((k) => typeof Object.getOwnPropertyDescriptor(slot, k)?.value === "function");
+    expect(own, "an own function-valued member is copied by a spread and closes over the slot").toEqual([]);
+    const copy: Record<string, unknown> = { ...slot };
+    expect(Object.entries(copy).filter(([, v]) => typeof v === "function")).toEqual([]);
+    expect(Object.entries(Object.assign({}, slot)).filter(([, v]) => typeof v === "function")).toEqual([]);
+  });
+
+  it("every method and accessor it has, taken off it and run on anything else, throws before touching the page", () => {
+    const { p, slot, at, before } = running();
+    const proto = Object.getPrototypeOf(slot) as object;
+    const members = Object.getOwnPropertyNames(proto).filter((k) => k !== "constructor");
+    const fns: [string, (...a: unknown[]) => unknown][] = [];
+    for (const k of members) {
+      const d = Object.getOwnPropertyDescriptor(proto, k)!;
+      if (typeof d.value === "function") fns.push([k, d.value as (...a: unknown[]) => unknown]);
+      if (d.get !== undefined) fns.push([`get ${k}`, d.get as () => unknown]);
+    }
+    // Not vacuous: the four operations scene.ts calls, and both readings, are among them.
+    expect(fns.map(([k]) => k)).toEqual(expect.arrayContaining(["tierChange", "presented", "frame", "dispose", "get state", "get opacity"]));
+    const others: [string, unknown][] = [
+      ["undefined", undefined],
+      ["a spread copy", { ...slot }],
+      ["an object on its prototype", Object.create(proto) as unknown],
+      ["a copy of its own properties", Object.defineProperties({}, Object.getOwnPropertyDescriptors(slot))],
+    ];
+    const args = [picCopy(0.1), false];
+    for (const [k, fn] of fns) {
+      for (const [what, self] of others) {
+        expect(() => fn.apply(self, args), `${k} on ${what}`).toThrow(TypeError);
+      }
+    }
+    expect(p.log, "nothing mounted, unmounted or re-mounted by any of those calls").toEqual(before);
+    expect(slot.opacity, "the running fade was not moved").toBe(at);
+    expect(slot.state).toBe("fading");
+  });
+
+  it("control: the same methods, run on the slot itself, do act", () => {
+    const { p, slot } = running();
+    const dispose = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(slot) as object, "dispose")!.value as () => void;
+    dispose.call(slot);
+    expect(p.shown.size).toBe(0);
+    expect(slot.state).toBe("none");
+  });
+});
+
 /* ── The class, executed: every path that touches a running overlay, through the slot, on a model of the screen ──
  *
  * One scalar per picture: the canvas shows `base` (the last composed frame), an overlay shows its own
@@ -1419,5 +1501,13 @@ describe("C5: when the per-frame cap delays the tier fade (the envelope TIER_FAD
   it("the wall-clock fade itself (the old CSS one) already reaches 300 ms on one 50 ms frame among its last", () => {
     const worst = Math.max(...Array.from({ length: 18 }, (_, k) => measure(k, 50, false)[0]));
     expect(worst).toBeGreaterThanOrEqual(300 - 0.5);
+  });
+});
+
+describe("the emphasis subjects are the loaded fabric's own (P3C-V2-3)", () => {
+  it("FOCUS is a real hub and SECOND one of its neighbours, so a focus recedes a real neighbourhood", () => {
+    expect(devices.some((d) => d.id === FOCUS)).toBe(true);
+    expect(neighboursOf(FOCUS).size).toBeGreaterThan(1);
+    expect(neighboursOf(FOCUS).has(SECOND)).toBe(true);
   });
 });

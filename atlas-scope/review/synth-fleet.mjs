@@ -40,8 +40,11 @@
  * `--measure` validates and compiles the snapshot with the app's own compiler, then times
  * `computeLayout` (src/fabric3d/layout.ts) on it and prints the figures labelled LABORATORY. Wall-clock
  * figures depend on the host and on what else it is doing; they are reported, and `--budget-ms` turns
- * one into an exit code for a quiet-host acceptance run. The unit suite asserts COUNTED work instead
- * (src/fabric3d/scale.test.ts), per vitest.config.ts's rule that a unit test asserts no wall-clock time.
+ * one into an exit code for a Node-side check. The owner's LABORATORY budgets (≤ 300 ms at 300 devices,
+ * ≤ 2 s at 1 000) are gated in a REAL BROWSER by review/measure-scale.mjs, which opens these same fleets
+ * through the app's own open-a-snapshot control under host-env.mjs's gates. The unit suite asserts COUNTED
+ * work instead (src/fabric3d/scale.test.ts), per vitest.config.ts's rule that a unit test asserts no
+ * wall-clock time.
  *
  * Exports `synthFleet({ devices, seed })` (the snapshot object) and `synthFleetBytes(...)` (its UTF-8
  * JSON), which scale.test.ts imports so the test and this command generate the same bytes.

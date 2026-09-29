@@ -125,6 +125,23 @@ describe("which dataset the page shows is always said", () => {
       expect([...panel.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Open a snapshot file…");
       expect(panel.textContent).not.toContain("LF-normalised");
       expect(panel.textContent).toContain("AssessHub snapshot 12");
+      /* EVERY statement of a digest — the banner's titles and the provenance panel's copy controls — says
+         where the value came from (phase 3.5, P3E-V3). Outside a secure context nothing was computed:
+         both digests are AssessHub's X-Snapshot-Sha256 passed through (dataset/hashes.ts attestedHashes),
+         so "over the bytes as read" / "the exact bytes read" was a computation claim with no computation. */
+      const statements = [
+        ...[...banner.querySelectorAll<HTMLElement>("[data-digest]")].map((d) => `banner ${d.dataset.digest}: ${d.getAttribute("title") ?? ""}`),
+        ...[...panel.querySelectorAll<HTMLElement>(".ui-copyable--digest button")].map((b) => `panel: ${b.getAttribute("aria-label") ?? ""}`),
+      ];
+      expect(statements.length, "both digests are stated on the banner and in the panel").toBe(4);
+      for (const st of statements) {
+        if (verification === "server-attested") {
+          expect(st, st).toContain("as AssessHub stated it (not recomputed here)");
+          expect(st, st).not.toMatch(/\bas read\b|\bbytes read\b|\bover the bytes\b/);
+        } else {
+          expect(st, st).not.toContain("not recomputed");
+        }
+      }
     });
   }
 

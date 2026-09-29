@@ -113,10 +113,17 @@ jobs:
       - name: Build Atlas Scope's hub build (the /scope artifact)
         working-directory: atlas-scope
         run: npm run build:hub
+      # test_scope_mount's markup oracle loads every generated /scope document in real Chromium
+      # (atlas-scope's own Playwright) and requires AssessHub's verdict to hold in the browser; with
+      # ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE=1 a missing browser fails the leg instead of skipping.
+      - name: Install Atlas Scope's Playwright Chromium (the /scope markup oracle)
+        working-directory: atlas-scope
+        run: npx playwright install --with-deps chromium
       - name: Backend tests
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
           ATLAS_SCOPE_REQUIRE_HUB_BUILD: "1"
+          ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "1"
         run: python -m pytest webapp/tests -q
 
   frontend:

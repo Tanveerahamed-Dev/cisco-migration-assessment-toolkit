@@ -12,8 +12,9 @@
  * was not stated by the source. The fix, when it fires, is to emit `null` and render "not graded".
  * Found by the 2026-09-21 auditor (B1).
  */
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { fabric } from "./data";
@@ -28,8 +29,44 @@ interface SourceSnapshot {
   cross_layer?: Graded[];
 }
 
-/* The dataset under test: the file the compiled model names (`meta.source`), not a typed path (R7). */
-const SNAPSHOT = resolve(PKG, "..", fabric.meta.source);
+/* The dataset UNDER TEST is the file the compiled model names — found by the DIGEST the model binds, never by a
+   typed path (R7). The model names a repository file by its repository path, and a file outside the repository
+   (the rename leg's renamed snapshot, `sourceOrigin: "external-file"`) by its file name only; that one is looked
+   for where the phase legs write it (`.local-data/`, Git-ignored) or at ATLAS_DATASET_SOURCE. Every candidate must
+   carry the bound bytes (sourceExactSha256, or the LF-normalised sourceSha256 for a checkout that rewrote line
+   endings). None found fails the file loudly: a join against the wrong bytes, or no join, is never a pass
+   (P3C-V2-3: the rename leg failed here on the file-name-only path). */
+function sourceSnapshotPath(): string {
+  const sha = (b: Buffer): string => createHash("sha256").update(b).digest("hex");
+  const exact = fabric.meta.sourceExactSha256.replace(/^sha256:/, "");
+  const carries = (p: string): boolean => {
+    if (!existsSync(p) || !statSync(p).isFile()) return false;
+    const b = readFileSync(p);
+    return sha(b) === exact || sha(Buffer.from(b.toString("utf8").replace(/\r\n/g, "\n"), "utf8")) === fabric.meta.sourceSha256;
+  };
+  const named = basename(fabric.meta.source);
+  const underLocal = (dir: string, depth: number): string[] => {
+    if (depth < 0 || !existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? underLocal(join(dir, e.name), depth - 1) : e.name === named ? [join(dir, e.name)] : [],
+    );
+  };
+  const candidates = [
+    resolve(PKG, "..", fabric.meta.source),
+    resolve(PKG, fabric.meta.source),
+    ...(process.env.ATLAS_DATASET_SOURCE ? [resolve(process.env.ATLAS_DATASET_SOURCE)] : []),
+    ...underLocal(resolve(PKG, ".local-data"), 3),
+  ];
+  const hit = candidates.find(carries);
+  if (hit === undefined) {
+    throw new Error(
+      `the snapshot the loaded model was compiled from (${fabric.meta.source}, sha256 ${fabric.meta.sourceSha256}) was not found ` +
+        `at ${candidates.join(", ")}; set ATLAS_DATASET_SOURCE to it.`,
+    );
+  }
+  return hit;
+}
+const SNAPSHOT = sourceSnapshotPath();
 const source = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as SourceSnapshot;
 
 const stated = (v: unknown): boolean => typeof v === "string" && v.trim() !== "" && !/^\s*(N\/A|unknown|\[NOT OBSERVED\]|-)\s*$/i.test(v);

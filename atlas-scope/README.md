@@ -89,7 +89,11 @@ time). AssessHub serves that directory at `/scope` by default (`webapp/backend/a
 every AssessHub access guard — and compiles them in the browser. AssessHub refuses to serve a /scope
 build that is not a runtime build or that carries any snapshot evidence, and says why instead of
 linking it (`webapp/backend/app.py` `_scope_file_index`; its self-test prints the verdict on its
-`atlas-scope-dist` line). The portable Atlas bundle ships the same hub build as its own member
+`atlas-scope-dist` line). It also reads `index.html` — and any other HTML or XML page a build ships —
+only the way a browser reads it, so the shell must stay plain markup: every `<` opens a tag, an end
+tag `</name>` or a well-formed comment (never `a < b` in an inline script, `</script x>`, `<!-->` or
+`<![CDATA[`), no comment contains `</`, and no page declares its own referrer policy
+(`_scope_html_reading`; anything else is refused as `invalid_build`, never guessed at). The portable Atlas bundle ships the same hub build as its own member
 (`portable/atlas_bundle.py` `SCOPE_DIST_SOURCE`), and its build refuses to proceed without it.
 
 **Digest forms.** A digest is shown with its form, because the same snapshot has several: the

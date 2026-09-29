@@ -1620,6 +1620,29 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
     expect(census.primitives.map((p) => `${p.file}#${p.component}`)).toEqual(["f/Wrapper.tsx#Sheet", "ui/primitives.tsx#Dialog", "ui/primitives.tsx#DialogFrame"]);
   });
 
+  it("an alert dialog and a native <dialog> shown modally are modal dialogs too (independent verifier QH-V1-6)", async () => {
+    /* The rule read `role="dialog"` only: an `alertdialog` (modal by the same contract) and a native <dialog> opened
+       with showModal() — modal in every browser, with no aria-modal attribute at all — were outside the census. A
+       native <dialog> is NON-modal only on evidence: rendered `open` (or shown with show()) in a module that never
+       calls showModal(). */
+    const files: Record<string, string> = {
+      "i/Alert.tsx": 'export function I() { return <div role="alertdialog" aria-modal="true" aria-label="I" />; }',
+      "j/Native.tsx": [
+        'import { useEffect, useRef } from "react";',
+        "export function J() {",
+        "  const r = useRef<HTMLDialogElement>(null);",
+        "  useEffect(() => { r.current?.showModal(); }, []);",
+        '  return <dialog ref={r} aria-label="J" />;',
+        "}",
+      ].join("\n"),
+      "k/NativeOpen.tsx": 'export function K() { return <dialog open aria-label="K" />; }',
+      "l/AlertNotModal.tsx": 'export function L() { return <div role="alertdialog" aria-modal="false" aria-label="L" />; }',
+      "m/NativeUnknown.tsx": 'export function M() { return <dialog aria-label="M" />; }',
+    };
+    const census = await (await dialogDiscovery()).modalDialogsIn(files);
+    expect(census.owners.map((o) => `${o.file}#${o.component}`)).toEqual(["i/Alert.tsx#I", "j/Native.tsx#J", "m/NativeUnknown.tsx#M"]);
+  });
+
   const scrimOf = (panel: HTMLElement): HTMLElement | null => {
     const s = panel.previousElementSibling;
     return s instanceof HTMLElement && s.classList.contains("ui-dialog__scrim") ? s : null;

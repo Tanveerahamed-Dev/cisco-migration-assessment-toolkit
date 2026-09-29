@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { hopUndecided } from "../core/claims";
 import type { Flow, Trace } from "../core/types";
 import { describeGolden } from "../test-support/golden-sample";
-import { suggestedFlows, traceFlow } from "../forwarding/engine";
+import { traceFlow } from "../forwarding/engine";
 import { HopList } from "./HopList";
 import { flowLabel, need, nonEmpty, universeTraces } from "./trace-universe";
 
@@ -51,6 +51,10 @@ function render(f: Flow): HTMLElement {
   act(() => root.render(<HopList trace={traceFlow(f)} activeIndex={null} onSelect={() => {}} />));
   return host;
 }
+
+/** How a trace's hops are decided — what the hop header and the decider block are drawn from. */
+const deciderShape = (t: Trace): string =>
+  `${t.outcome}|${t.hops.map((h) => `${h.host}:${h.verdict}:${h.decidedBy?.cite ?? "-"}:${hopUndecided(h, t) ?? "-"}`).join(">")}`;
 
 const header = (hop: Element): string => hop.querySelector(".hop__head .verdict__word")?.textContent ?? "";
 const decidedFacts = (hop: Element): Element[] => [...hop.querySelectorAll(".hop__fact[data-decided]")];
@@ -133,16 +137,21 @@ describe("A2: the hop header and the decider block agree about what decided the 
     });
   });
 
-  /* One test per flow over the same denominator — every suggested flow plus the source × destination
-     × port grid — so the runner's timeout guards one rendered trace, not fifty (the EvidencePane
+  /* One test per flow over the same denominator — one flow per decider shape of the subject universe —
+     so the runner's timeout guards one rendered trace, not fifty (the EvidencePane
      per-finding policy, vitest.config.ts). The two "some hop was decided by…" preconditions are
      over the whole census, so each case tallies what it saw and the closing case asserts them,
      together with "every per-flow case ran": run this file whole, not one case of it. */
-  describe("across every hop of every suggested flow and a source × destination grid, a header never names a different agent than its decider", () => {
-    const flows: Flow[] = suggestedFlows().map((s) => s.flow);
-    for (const srcIp of ["10.0.10.50", "10.0.20.10", "10.0.30.5"])
-      for (const dstIp of ["10.0.10.10", "10.0.20.10", "10.0.30.10", "10.0.40.5", "10.0.99.10"])
-        for (const dstPort of [22, 443, 3389]) flows.push({ srcIp, dstIp, protocol: "tcp", dstPort, srcPort: null });
+  describe("across every hop of every decider shape of the subject universe, a header never names a different agent than its decider", () => {
+    /* UPDATED phase 3.5 (P3B-R2-m2): was every suggested flow plus a literal 3 × 5 × 3 grid of the sample's
+       addresses. Now the first flow of each distinct decider shape of the universe (./trace-universe.ts:
+       suggested flows first, then every SVI / FHRP / SVI-host / outside / routed pair), so the census is
+       the class on whatever snapshot is loaded. */
+    const flows: Flow[] = (() => {
+      const byShape = new Map<string, Flow>();
+      for (const t of universeTraces()) if (!byShape.has(deciderShape(t))) byShape.set(deciderShape(t), t.flow);
+      return [...byShape.values()];
+    })();
     const tally = { flows: 0, aclDecided: 0, routeDecided: 0 };
 
     it.each(flows.map((flow, i) => [`#${i} ${flow.protocol} ${flow.srcIp} → ${flow.dstIp}:${flow.dstPort ?? "*"}`, flow] as const))("%s", (_name, flow) => {
@@ -166,11 +175,21 @@ describe("A2: the hop header and the decider block agree about what decided the 
       expect(bad).toEqual([]);
     });
 
-    it("every per-flow case ran, and the census met both kinds of decider", () => {
-      expect(flows.length, "precondition: the census has flows").toBeGreaterThan(45);
+    /* ONE DENOMINATOR (phase 3.5, P3B-R2-m2): the census is the subject universe's decider shapes, not a
+       literal source × destination grid of the sample's addresses. Every distinct way the universe's hops
+       are decided (host, verdict, deciding record, undecided reason, per hop) is rendered once. */
+    it("the census renders every decider shape of the subject universe", () => {
+      const rendered = new Set(flows.map((f) => deciderShape(traceFlow(f))));
+      const missing = [...new Set(universeTraces().map(deciderShape))].filter((k) => !rendered.has(k));
+      expect(missing.slice(0, 8), `${missing.length} decider shapes the census never renders`).toEqual([]);
+    });
+
+    it("every per-flow case ran, and the census met both kinds of decider", (ctx) => {
+      expect(flows.length, "precondition: the census has flows").toBeGreaterThan(0);
       expect(tally.flows, "every per-flow case above ran (run this file whole)").toBe(flows.length);
-      expect(tally.aclDecided, "precondition: some hop was decided by an ACL").toBeGreaterThan(0);
-      expect(tally.routeDecided, "precondition: some hop was decided by a route").toBeGreaterThan(0);
+      /* Required on the reference sample; on another snapshot a decider kind it never produces is named. */
+      need(ctx, tally.routeDecided > 0 ? tally.routeDecided : undefined, "hop decided by a route");
+      need(ctx, tally.aclDecided > 0 ? tally.aclDecided : undefined, "hop decided by an ACL line");
     });
   });
 });

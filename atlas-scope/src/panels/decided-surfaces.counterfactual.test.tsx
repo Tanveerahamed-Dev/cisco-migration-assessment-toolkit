@@ -212,32 +212,64 @@ describe("the 3-D trace mark never claims more than the trace band", () => {
 
 describe("runIntentSearch — decided verdicts from a host source", () => {
   const catalog = intentCatalog();
+  /* The host-source intents, found by PROPERTY (phase 3.5, P3B-R2-m2). They were two catalog intents
+     looked up by literal id ("no-reach-10_0_20_0_24-10_0_30_0_24", "no-reach-10_0_10_0_24-10_0_30_0_24"),
+     flipped to run from the host — so on a snapshot without those two subnets the whole test skipped,
+     catalog-wide part included. Now every none-reach catalog intent is flipped the same way (the host as
+     source, the intent's source subnet as destination) and each role is the first flipped intent with the
+     property the tests below need:
+      - refuted: a none-reach claim the search refutes with a DELIVERED counterexample;
+      - held:    an all-reach claim the search finds no counterexample to, with nothing undecided;
+      - mixed:   an all-reach claim with satisfying flows beside undecided ones. */
+  type Flipped = { intent: Intent; verdict: ReturnType<typeof runIntentSearch> };
+  let flippedMemo: Flipped[] | null = null;
+  const flipped = (h: NonNullable<ReturnType<typeof singleGatewayHost>>): Flipped[] => {
+    if (flippedMemo !== null) return flippedMemo;
+    const src = { ip: h.ip, provenance: "derived" as const, cite: h.cite, note: `a host address inside ${h.host}'s Vlan${h.vlan ?? "?"} subnet` };
+    const out: Flipped[] = [];
+    for (const base of catalog.filter((i) => i.kind === "none-reach")) {
+      const target = base.sourceSpace.prefix;
+      for (const kind of ["none-reach", "all-reach"] as const) {
+        const intent: Intent = {
+          ...base,
+          id: `host-${kind}-${base.id}`,
+          kind,
+          claim: kind === "none-reach" ? `No flow from ${h.ip} reaches ${target}.` : `Every flow from ${h.ip} reaches ${target}.`,
+          sources: [src],
+          destinations: base.sources,
+          sourceSpace: base.destSpace,
+          destSpace: base.sourceSpace,
+        };
+        out.push({ intent, verdict: runIntentSearch(intent) });
+      }
+    }
+    flippedMemo = out;
+    return out;
+  };
   const hostIntents = (ctx: TestContext): { refuted: Intent; held: Intent; mixed: Intent } => {
     const h = need(ctx, singleGatewayHost(), "host address in a subnet with exactly one gateway");
-    const HOST = h.ip;
-    const src = { ip: HOST, provenance: "derived" as const, cite: h.cite, note: `a host address inside ${h.host}'s Vlan${h.vlan ?? "?"} subnet` };
-    const v20 = need(ctx, catalog.find((i) => i.id === "no-reach-10_0_20_0_24-10_0_30_0_24"), "catalog intent 10.0.20.0/24 -> 10.0.30.0/24");
-    const v10 = need(ctx, catalog.find((i) => i.id === "no-reach-10_0_10_0_24-10_0_30_0_24"), "catalog intent 10.0.10.0/24 -> 10.0.30.0/24");
-    const from = (base: Intent, kind: Intent["kind"], id: string, claim: string): Intent => ({
-      ...base,
-      id,
-      kind,
-      claim,
-      sources: [src],
-      destinations: base.sources,
-      sourceSpace: base.destSpace,
-      destSpace: base.sourceSpace,
-    });
-    return {
-      refuted: from(v20, "none-reach", "host-none-reach-vlan20", `No flow from ${HOST} reaches 10.0.20.0/24.`),
-      held: from(v20, "all-reach", "host-all-reach-vlan20", `Every flow from ${HOST} reaches 10.0.20.0/24.`),
-      mixed: from(v10, "all-reach", "host-all-reach-vlan10", `Every flow from ${HOST} reaches 10.0.10.0/24.`),
-    };
+    const all = flipped(h);
+    const refuted = need(
+      ctx,
+      all.find((f) => f.intent.kind === "none-reach" && f.verdict.counterexamples.some((c) => c.trace.outcome === "delivered")),
+      "none-reach intent from a host source refuted by a delivered counterexample",
+    ).intent;
+    const held = need(
+      ctx,
+      all.find((f) => f.intent.kind === "all-reach" && f.verdict.outcome === "no-counterexample-found" && f.verdict.undecided === 0),
+      "all-reach intent from a host source that holds with nothing undecided",
+    ).intent;
+    const mixed = need(
+      ctx,
+      all.find((f) => f.intent.kind === "all-reach" && f.verdict.satisfying > 0 && f.verdict.undecided > 0),
+      "all-reach intent from a host source with satisfying flows beside undecided ones",
+    ).intent;
+    return { refuted, held, mixed };
   };
 
   it("never offers a counterexample the engine itself says it cannot decide", (ctx) => {
     const counted = { all: 0, delivered: 0 };
-    for (const i of [...catalog, hostIntents(ctx).refuted]) {
+    const check = (i: Intent): void => {
       const v = runIntentSearch(i);
       for (const c of v.counterexamples) {
         counted.all += 1;
@@ -247,15 +279,17 @@ describe("runIntentSearch — decided verdicts from a host source", () => {
           expect(isDefiniteDelivery(c.trace)).toBe(true);
         }
       }
-    }
+    };
+    /* The catalog-wide part first: it needs no host subject, so a snapshot without one still runs it. */
+    for (const i of catalog) check(i);
+    check(hostIntents(ctx).refuted);
     expect(counted.all, "no counterexample was examined").toBeGreaterThan(0);
     expect(counted.delivered, "no delivered counterexample was examined").toBeGreaterThan(0);
   });
 
   it("never counts an undecided flow as consistent with the intent", (ctx) => {
-    const h = hostIntents(ctx);
     const ran = { clean: 0, passesBesideUndecided: 0 };
-    for (const i of [...catalog, h.held, h.mixed]) {
+    const check = (i: Intent): void => {
       const v = runIntentSearch(i);
       expect(v.satisfying + v.counterexamples.length + v.undecided).toBe(v.searched);
       if (v.outcome === "no-counterexample-found") {
@@ -266,7 +300,12 @@ describe("runIntentSearch — decided verdicts from a host source", () => {
         ran.passesBesideUndecided += 1;
         expect(v.outcome, i.id).not.toBe("no-counterexample-found");
       }
-    }
+    };
+    /* The catalog-wide part first, as above. */
+    for (const i of catalog) check(i);
+    const h = hostIntents(ctx);
+    check(h.held);
+    check(h.mixed);
     expect(ran.clean).toBeGreaterThan(0);
     expect(ran.passesBesideUndecided).toBeGreaterThan(0);
   });

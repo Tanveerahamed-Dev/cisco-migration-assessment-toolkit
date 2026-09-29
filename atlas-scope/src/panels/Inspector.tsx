@@ -401,16 +401,25 @@ export function isEvidenceRecord(v: unknown): v is EvidenceRecord {
  * citation — `/interfaces/core1/Gi1~10~19` cut to `/interfaces/core1/Gi1~10~1` names a DIFFERENT port — so the
  * trailing fragment after the last delimiter is not shown (and so never becomes a control for the wrong
  * record); the sentence beside it states exactly how many characters are shown of how many.
+ *
+ * The delimiter is searched for in the WHOLE text. It used to be searched for in the last 40 characters only,
+ * and a text with none there was shown whole — so a cut token longer than 40 characters, or a text with no
+ * delimiter at all, printed its truncated pointer as a working control for the wrong record (verifier
+ * P3A1-V2-2). With no delimiter anywhere, the carried text is one unbroken token the cut fell inside, and none
+ * of it is shown; the sentence says so.
  */
 function CutText({ text, whole, onOpenCite }: { text: string; whole: number | undefined; onOpenCite: (c: Cite) => void }): ReactElement {
   if (whole === undefined || whole <= text.length) return <CitedText text={text} onOpenCite={onOpenCite} />;
-  const tail = text.slice(-40);
-  const d = Math.max(tail.lastIndexOf(" "), tail.lastIndexOf(","), tail.lastIndexOf('"'), tail.lastIndexOf(";"));
-  const shown = d < 0 ? text : text.slice(0, text.length - tail.length + d + 1);
+  const d = Math.max(text.lastIndexOf(" "), text.lastIndexOf(","), text.lastIndexOf('"'), text.lastIndexOf(";"));
+  const shown = text.slice(0, d + 1);
   return (
     <>
       <CitedText text={shown} onOpenCite={onOpenCite} />
-      <span className="ev-rec__cut">{` … (the first ${shown.length} of ${whole} characters)`}</span>
+      <span className="ev-rec__cut">
+        {d < 0
+          ? ` … (the first 0 of ${whole} characters: the cut fell inside one unbroken token, so none of the ${text.length} carried is shown — the whole text is in the source snapshot)`
+          : ` … (the first ${shown.length} of ${whole} characters)`}
+      </span>
     </>
   );
 }

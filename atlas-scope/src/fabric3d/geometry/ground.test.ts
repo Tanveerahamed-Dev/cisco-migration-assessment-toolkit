@@ -23,6 +23,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { fabric } from "../../core/data";
+import { describeGolden } from "../../test-support/golden-sample";
 import { CONTACT_PLATEAU } from "../materials";
 import { computeLayout } from "../layout";
 import {
@@ -100,9 +101,17 @@ describe("the surface under every laid-out node", () => {
   });
 
   it("finds the nodes the tier deck alone leaves floating — the guard is not inert here", () => {
+    /* RE-EXPRESSED 2026-09-29 (P3C-V2-3): the floating node used to be typed (wan-edge-rtr1.lab), which exists only
+       in the sample. The reading must DISCRIMINATE on any fabric: it measures every node, some node reads as
+       supported by the deck, and every node it reads as floating is one the pads then carry (asserted for all
+       nodes below). That the sample has a floating node at all — so the pads are not inert there — is pinned by
+       name in the golden block. */
     const deckOnly = deckSupport(layout.tierBounds, layout.nodes);
-    expect(deckOnly.get("wan-edge-rtr1.lab")).toBeLessThan(MIN_SURFACE_UNDER_NODE);
+    expect(deckOnly.size).toBe(layout.nodes.length);
     expect([...deckOnly.values()].some((a) => a >= MIN_SURFACE_UNDER_NODE)).toBe(true);
+    const floating = [...deckOnly].filter(([, a]) => a < MIN_SURFACE_UNDER_NODE).map(([id]) => id);
+    const surface = surfaceUnderNodes(layout.tierBounds, layout.nodes);
+    for (const id of floating) expect(surface.get(id) ?? 0, `${id} floats on the deck and must get a pad`).toBeGreaterThanOrEqual(MIN_SURFACE_UNDER_NODE);
   });
 
   it("puts a surface under every node once pads are laid", () => {
@@ -110,5 +119,12 @@ describe("the surface under every laid-out node", () => {
     expect(surface.size).toBe(layout.nodes.length);
     const floating = [...surface].filter(([, a]) => a < MIN_SURFACE_UNDER_NODE).map(([id]) => id);
     expect(floating).toEqual([]);
+  });
+});
+
+describeGolden("the surface under the reference sample's nodes", () => {
+  it("wan-edge-rtr1.lab floats on the tier deck alone, so the pads are not inert on the sample", () => {
+    const layout = computeLayout({ devices: fabric.devices, links: fabric.links, tiers: fabric.tiers });
+    expect(deckSupport(layout.tierBounds, layout.nodes).get("wan-edge-rtr1.lab")).toBeLessThan(MIN_SURFACE_UNDER_NODE);
   });
 });

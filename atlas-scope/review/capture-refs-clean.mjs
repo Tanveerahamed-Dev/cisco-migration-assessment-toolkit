@@ -49,7 +49,7 @@
  *      declares it with its reason (`similarScreenWith`) — byte identity is only the narrow case.
  *   7. Every pairing's reference is in the set.
  *   8. Control frames ARE flagged (a detector that passes its control is broken).
- *   9. Every raster frame (no DOM census) declares its identity slots — logo glyph, avatar — as
+ *   9. Every frame whose identity marks were not measured in its DOM (identityRects) declares its identity slots — logo glyph, workspace chip, user menu — as
  *      geometry measured on that frame, or an empty list with a reason; blind-pair.mjs masks them.
  *
  * Output lives under review/shots/refs-clean/, which .gitignore excludes (review/shots/): vendor
@@ -230,14 +230,27 @@ export function ocrImages(files) {
 }
 
 /* ── The targets ──────────────────────────────────────────────────────────────────────────────
-   `task` names the working task the frame shows, so pairings are matched by task. `identity` is
+   `taskKind` names the working task the frame shows from the ONE task vocabulary
+   (blind-pair.mjs :: TASK_KINDS), which also specifies what OUR state must show for that task, so a
+   pairing is matched by task on both sides through one definition (the self-check refuses a pairing
+   whose reference declares another kind); `task` describes this frame's instance of it. `identity` is
    the text that names the product, vendor, user or workspace in that frame: blind-pair.mjs masks
    it on BOTH panels and then re-reads the pixels to prove it is gone. `expect` is text the working
    surface must show, so a blank or wrong page cannot pass as a reference. */
 const FORWARD_IDENTITY = ["Forward", "Forward AI", "Forward Networks", "Forward Enterprise", "Forward Documentation", "demoguy", "Demo Network", "fwd.app"];
+/* The recorded Forward header of demo jdhoywyw5voi is the same on every page (measured on all four
+   rendered pages, 2026-09-29): the wordmark is a DOM logo slot (census.logoRects), but the workspace
+   chip and the user menu are text in boxes that OCR masks word by word, leaving the chip's box and
+   caret. Their geometry is declared here, measured on the frames, in CSS px (phase 3.5, owner: masks
+   cover every identity mark). A later --fetch also records identity marks structurally (identityRects). */
+const FORWARD_RECORDED_HEADER_SLOTS = [
+  { x: 206, y: 5, w: 214, h: 38, why: "workspace chip 'Demo Network (default)' with its caret (measured on the frame)" },
+  { x: 1770, y: 8, w: 102, h: 32, why: "user menu 'demoguy' with its avatar glyph (measured on the frame)" },
+];
 export const TARGETS = [
   {
     id: "forward-path-dropped",
+    taskKind: "path-blocked",
     product: "Forward Enterprise",
     kind: "storylane-page",
     demo: "jdhoywyw5voi",
@@ -245,9 +258,12 @@ export const TARGETS = [
     task: "path search result: a flow dropped by an ACL on a firewall, with hop list, topology and MTU check",
     expect: ["dropped", "path mtu"],
     identity: FORWARD_IDENTITY,
+    identitySlots: FORWARD_RECORDED_HEADER_SLOTS,
+    identitySlotsCheckedOn: "82e931784f0dee8b",
   },
   {
     id: "forward-topology-home",
+    taskKind: "network-at-rest",
     product: "Forward Enterprise",
     kind: "storylane-page",
     demo: "jdhoywyw5voi",
@@ -255,9 +271,12 @@ export const TARGETS = [
     task: "search home: the site map at rest with the quick path search panel",
     expect: ["quick path search"],
     identity: FORWARD_IDENTITY,
+    identitySlots: FORWARD_RECORDED_HEADER_SLOTS,
+    identitySlotsCheckedOn: "093cadcfc970a162",
   },
   {
     id: "forward-topology-path",
+    taskKind: "path-drawn",
     product: "Forward Enterprise",
     kind: "storylane-page",
     demo: "jdhoywyw5voi",
@@ -265,9 +284,12 @@ export const TARGETS = [
     task: "a data-centre physical topology drawn with a traced path highlighted on it",
     expect: ["physical topology"],
     identity: FORWARD_IDENTITY,
+    identitySlots: FORWARD_RECORDED_HEADER_SLOTS,
+    identitySlotsCheckedOn: "c1391863cbc6104a",
   },
   {
     id: "forward-path-device-details",
+    taskKind: "path-result-device",
     product: "Forward Enterprise",
     kind: "storylane-page",
     demo: "jdhoywyw5voi",
@@ -275,9 +297,12 @@ export const TARGETS = [
     task: "path search results with one device's details pane open",
     expect: ["paths"],
     identity: FORWARD_IDENTITY,
+    identitySlots: FORWARD_RECORDED_HEADER_SLOTS,
+    identitySlotsCheckedOn: "df303b258f1ce9f1",
   },
   {
     id: "forward-vulnerability-table",
+    taskKind: "finding-list",
     product: "Forward Enterprise",
     kind: "storylane-image",
     demo: "ts9nkc4osn4z",
@@ -292,10 +317,16 @@ export const TARGETS = [
     /* A raster frame has no DOM to measure its logo slot from, so its identity slots are DECLARED —
        geometry measured on this frame, in its CSS px — and the self-check requires every raster frame
        to declare them (an empty list must say why). OCR cannot read a logo glyph (verifier round 1, D3). */
-    identitySlots: [{ x: 10, y: 5, w: 52, h: 36, why: "Forward logo glyph (measured on the stored screenshot)" }],
+    identitySlots: [
+      { x: 10, y: 5, w: 52, h: 36, why: "Forward logo glyph (measured on the stored screenshot)" },
+      { x: 79, y: 7, w: 208, h: 34, why: "workspace chip 'Demo Network (default)' with its caret (measured on the stored screenshot)" },
+      { x: 1770, y: 10, w: 100, h: 32, why: "user menu 'demoguy' with its avatar glyph (measured on the stored screenshot)" },
+    ],
+    identitySlotsCheckedOn: "2da15affda65c9a8",
   },
   {
     id: "ipfabric-path-detail",
+    taskKind: "path-hop-decision",
     product: "IP Fabric",
     kind: "docs-image",
     url: "https://docs.ipfabric.io/latest/images/diagrams/diagrams_pathlookup-path-detail.webp",
@@ -305,9 +336,11 @@ export const TARGETS = [
     identity: ["IP Fabric", "IPFabric", "ipfabric"],
     identitySlots: [],
     identitySlotsNote: "No logo, product name or user area in this frame: it opens at the Network Viewer rail, below the application header (checked on the frame).",
+    identitySlotsCheckedOn: "19aab68e7ad71283",
   },
   {
     id: "ipfabric-path-lookup-app",
+    taskKind: "path-query-form",
     product: "IP Fabric",
     kind: "docs-image",
     url: "https://docs.ipfabric.io/latest/images/diagrams/diagrams_pathlookup-src-dst-aim-suggestions.webp",
@@ -319,25 +352,34 @@ export const TARGETS = [
       { x: 12, y: 10, w: 26, h: 28, why: "IP Fabric logo glyph (measured on the frame)" },
       { x: 1484, y: 10, w: 32, h: 30, why: "user avatar (measured on the frame)" },
     ],
+    identitySlotsCheckedOn: "e16ba01d18d28ded",
   },
   {
     id: "grafana-explore",
+    taskKind: "result-data-inspection",
     product: "Grafana",
     kind: "live",
     url: "https://play.grafana.org/explore",
     task: "inspecting query results and the underlying data (Explore)",
     expect: ["query inspector", "query history"],
     identity: ["Grafana", "Powered by Grafana", "Grafana Labs", "Grafana Cloud", "play.grafana.org", "Sign in"],
+    identitySlots: [],
+    identitySlotsNote:
+      "The logo is a DOM logo slot (census.logoRects); signed out, so there is no workspace or user chip ('Sign in' and the '-- Grafana --' data source name are text, masked by OCR) (checked on the frame).",
     control: true,
+    identitySlotsCheckedOn: "e58f13456db913e6",
   },
   {
     id: "grafana-node-graph-kiosk",
+    taskKind: "network-at-rest",
     product: "Grafana",
     kind: "live",
     url: "https://play.grafana.org/d/bdodfbi3d57uoe/node-graph-panel?kiosk",
     task: "a network-relevant dashboard (node graph) in kiosk mode",
     expect: ["node graph panel"],
     identity: ["Grafana", "Powered by Grafana", "Grafana Labs", "Grafana Cloud", "play.grafana.org", "Sign in"],
+    identitySlots: [{ x: 1745, y: 1050, w: 165, h: 28, why: "'Powered by Grafana' footer with its logo glyph (measured on the frame)" }],
+    identitySlotsCheckedOn: "fbbbfc19645849bf",
   },
 ];
 export const UNOBTAINABLE = [
@@ -391,6 +433,13 @@ function domCensus({ overlayRoles, tourClass, identity }) {
     logoRects: logos,
     luminance: null,
   };
+}
+/** Identity marks measured in the page's DOM with the same census that measures OUR identity
+    (blind-pair.mjs :: identityCensus): every visible element holding an identity string, widened to its
+    compact block (a chip, a user menu), so a mask covers the mark rather than the words OCR read. */
+async function identityRectsIn(page, identity) {
+  const { identityCensus, IDENTITY_BLOCK_MAX } = await import("./blind-pair.mjs");
+  return page.evaluate(identityCensus, { identity, maxH: IDENTITY_BLOCK_MAX.h, maxWFrac: IDENTITY_BLOCK_MAX.wFrac });
 }
 const CENSUS = (identity) => `(${domCensus.toString()})(${JSON.stringify({ overlayRoles: OVERLAY_ROLES, tourClass: TOUR_LAYER_CLASS.source, identity })})`;
 
@@ -481,6 +530,7 @@ async function captureStorylanePage(browser, t) {
   const cpage = await cctx.newPage();
   await cpage.setContent(`<!DOCTYPE html>${serialise(json[1])}`, { waitUntil: "load", timeout: 90000 });
   const census = await cpage.evaluate(CENSUS(t.identity));
+  census.identityRects = await identityRectsIn(cpage, t.identity);
   await cctx.close();
   await ctx.close();
   return {
@@ -549,6 +599,7 @@ async function captureLive(browser, t, { seed = true } = {}) {
   await page.mouse.move(1919, 1079);
   await page.waitForTimeout(800);
   const census = await page.evaluate(CENSUS(t.identity));
+  census.identityRects = await identityRectsIn(page, t.identity);
   const buf = await page.screenshot({ animations: "disabled", scale: "device" });
   await ctx.close();
   return {
@@ -730,10 +781,29 @@ async function thumbnails(page, files) {
   return out;
 }
 
-/** Raster frames (no DOM census) must DECLARE their identity slots — an empty list with a reason. */
+/** Declared identity slots (and a declared "no slots" note) are geometry measured on ONE frame, so each
+    TARGET names that frame by its sha256 prefix (identitySlotsCheckedOn, at least 12 hex). A frame
+    that relies on them (no DOM-measured identityRects) whose bytes are not that frame — a re-fetch, a
+    changed recording — is refused until they are re-measured on it (verifier V8). */
+export function staleIdentitySlots(frames, targets) {
+  const out = [];
+  for (const f of frames) {
+    if (Array.isArray(f.census?.identityRects)) continue;
+    const t = targets.find((x) => x.id === f.id);
+    if (!t || !Array.isArray(t.identitySlots)) continue;
+    const on = typeof t.identitySlotsCheckedOn === "string" && /^[0-9a-f]{12,64}$/.test(t.identitySlotsCheckedOn) ? t.identitySlotsCheckedOn : null;
+    if (!on) out.push(`${f.id}: declares identity slots without the frame they were measured on`);
+    else if (!String(f.sha256 ?? "").startsWith(on)) out.push(`${f.id}: slots measured on ${on}, frame is ${String(f.sha256 ?? "?").slice(0, 16)}`);
+  }
+  return out;
+}
+
+/** Every frame whose identity marks were not MEASURED in its DOM (a raster frame, or a DOM census from
+    before identityRects existed, which located only logo slots) must DECLARE its identity slots — an
+    empty list with a reason. OCR alone never stands for "covered". */
 export function undeclaredIdentitySlots(frames, targets) {
   return frames
-    .filter((f) => !f.census)
+    .filter((f) => !Array.isArray(f.census?.identityRects))
     .map((f) => ({ f, t: targets.find((t) => t.id === f.id) }))
     .filter(({ t }) => !t || !Array.isArray(t.identitySlots) || (t.identitySlots.length === 0 && !String(t.identitySlotsNote ?? "").trim()))
     .map(({ f }) => f.id);
@@ -776,7 +846,14 @@ async function positiveControls() {
     "similar-screen check: a declared similar screen, with a reason, passes",
     similarScreenViolations([{ ...simPairs[0], similarScreenWith: { b: "judged on different dimensions" } }, simPairs[1], simPairs[2]], (id) => th[id]).length === 0,
   );
-  ok("identity-slot check: a raster frame without declared slots is flagged", undeclaredIdentitySlots([{ id: "r", census: null }, { id: "d", census: {} }], [{ id: "r" }, { id: "d" }]).join() === "r");
+  ok("identity-slot check: a raster frame without declared slots is flagged", undeclaredIdentitySlots([{ id: "r", census: null }, { id: "d", census: { identityRects: [] } }], [{ id: "r" }, { id: "d" }]).join() === "r");
+  /* phase 3.5: a DOM census that measured only logo slots does not locate a workspace chip or a user
+     menu, so a DOM frame without measured identity marks must declare them too. */
+  ok("identity-slot check: a DOM frame with no measured identity marks and no declared slots is flagged", undeclaredIdentitySlots([{ id: "d", census: { logoRects: [{ x: 1, y: 1, w: 9, h: 9 }] } }], [{ id: "d" }]).join() === "d");
+  ok("identity-slot binding: slots measured on another frame, or on no named frame, are flagged; on this frame they pass", (() => {
+    const tg = [{ id: "r", identitySlots: [{ x: 1, y: 1, w: 9, h: 9 }], identitySlotsCheckedOn: "aaaaaaaaaaaa" }];
+    return staleIdentitySlots([{ id: "r", sha256: "aaaaaaaaaaaa77" }], tg).length === 0 && staleIdentitySlots([{ id: "r", sha256: "bbbbbbbbbbbb77" }], tg).length === 1 && staleIdentitySlots([{ id: "r", sha256: "aaaaaaaaaaaa77" }], [{ id: "r", identitySlots: [] }]).length === 1 && staleIdentitySlots([{ id: "r", sha256: "x", census: { identityRects: [] } }], [{ id: "r", identitySlots: [] }]).length === 0;
+  })());
   // 3. the DOM layer flags an overlay role and the tour layer's classes
   const browser = await chromium.launch();
   try {
@@ -812,6 +889,8 @@ async function positiveControls() {
     );
     const census = await page.evaluate(CENSUS([]));
     const dm = domMarkers(census);
+    const idr = await identityRectsIn(page, ["Storylane"]);
+    ok("DOM layer: measures an identity mark's geometry at capture (identityRects)", idr.length === 1 && idr[0].x > 900 && idr[0].y > 700 && idr[0].w < 400, JSON.stringify(idr));
     ok("DOM layer: flags an overlay dialog and the tour-layer classes", dm.some((m) => m.startsWith("overlay")) && dm.some((m) => m.startsWith("tour-layer")), dm.join("; "));
     mkdirSync(WORK, { recursive: true });
     const f = resolve(WORK, "control-synthetic-tour.png");
@@ -887,8 +966,18 @@ export async function selfCheck({ pairings } = {}) {
   for (const d of duplicateFrames(frames)) line(false, d);
   if (!duplicateFrames(frames).length) line(true, `no two reference frames are byte-identical (${frames.length} frames, ${new Set(frames.map((f) => f.sha256)).size} distinct)`);
 
+  const bp = await import("./blind-pair.mjs");
   let ps = pairings;
-  if (!ps) ps = (await import("./blind-pair.mjs")).PAIRINGS;
+  if (!ps) ps = bp.PAIRINGS;
+  /* Task matching (phase 3.5): every TARGET names a kind from the one vocabulary, and every pairing's
+     reference declares the pairing's kind. A detector that passes its known-bad input is broken. */
+  const badKinds = TARGETS.filter((t) => !Object.hasOwn(bp.TASK_KINDS, t.taskKind)).map((t) => `${t.id} (${JSON.stringify(t.taskKind)})`);
+  line(badKinds.length === 0, `every reference target names a task kind from the vocabulary${badKinds.length ? ` — not: ${badKinds.join(", ")}` : ` (${TARGETS.length})`}`);
+  const control = bp.taskKindProblems([{ id: "control", task: "path-hop-decision", ref: "forward-vulnerability-table" }], TARGETS);
+  line(control.length === 1, `task-match check: flags a pairing whose reference shows another task (control) — ${control.join("; ") || "NOT flagged"}`);
+  const mismatched = bp.taskKindProblems(ps, TARGETS);
+  for (const m of mismatched) line(false, `pairing not matched by task: ${m}`);
+  if (!mismatched.length) line(true, `every pairing's reference shows the pairing's task kind (${ps.map((p) => `${p.id}: ${p.task}`).join(", ")})`);
   const shaOf = (id) => frames.find((f) => f.id === id)?.sha256;
   const unknown = ps.filter((p) => !shaOf(p.ref)).map((p) => `${p.id} -> ${p.ref}`);
   line(unknown.length === 0, `every pairing's reference is in the set${unknown.length ? ` — missing: ${unknown.join(", ")}` : ` (${ps.length} pairings)`}`);
@@ -922,7 +1011,9 @@ export async function selfCheck({ pairings } = {}) {
 
   /* Raster frames carry no DOM logo slot: their identity slots must be declared (D3). */
   const undeclared = undeclaredIdentitySlots(frames, TARGETS);
-  line(undeclared.length === 0, `every raster frame declares its identity slots${undeclared.length ? ` — undeclared: ${undeclared.join(", ")}` : ""}`);
+  line(undeclared.length === 0, `every frame without measured identity marks declares its identity slots${undeclared.length ? ` — undeclared: ${undeclared.join(", ")}` : ""}`);
+  const stale = staleIdentitySlots(frames, TARGETS);
+  line(stale.length === 0, `every declared identity slot was measured on the frame on disk${stale.length ? ` — stale: ${stale.join("; ")}` : ` (${frames.filter((f) => !Array.isArray(f.census?.identityRects)).length} frame(s))`}`);
   return failed;
 }
 

@@ -12,7 +12,7 @@
  *   2. store subscriptions are per-slice, so an evidence-pane change cannot re-render the stage,
  *   3. the keyboard contract is a first-class input path, not a fallback for the mouse.
  */
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 
 import { DEFAULT_GRAPH_OPTIONS, failureImpact, linkFailureImpact, type Certainty, type ProjectionDelta } from "../analysis/blast";
 import { cableCountPhrase, hostCableAccount } from "../analysis/port-claims";
@@ -54,8 +54,11 @@ const SCENE_DETAIL_CHASSIS: ChassisBuildOptions = {
  * stage. After its route stage became index-driven it costs, LABORATORY figures on this 14-core host
  * under load from other agents (review/synth-fleet.mjs --measure): ~15 ms for the 26-device reference
  * sample, ~120-170 ms for a 300-node synthetic fleet and ~0.6-1.2 s for 1 000 (at 100 % load: 610 ms
- * and 4.2 s median; the ≤ 300 ms / ≤ 2 s quiet-host budgets are unconfirmed) — the last two a stall
- * no keystroke could get through. MEASURED in Node at ~1.3-1.9 µs a unit, 4 000 units is a slice of
+ * and 4.2 s median) — the last two a stall no keystroke could get through. The owner's LABORATORY
+ * budgets (≤ 300 ms at 300 devices, ≤ 2 s at 1 000) are measured IN A REAL BROWSER by
+ * review/measure-scale.mjs, from the LAYOUT_MEASURE entry each run leaves below, and gated there on a
+ * quiet host (host-env.mjs); the unit suite pins counted work only (vitest.config.ts: no wall clock).
+ * MEASURED in Node at ~1.3-1.9 µs a unit, 4 000 units is a slice of
  * ~5-8 ms; in Chromium on the DEV build, under a CPU profiler, with the host at 100 % load, the 300
  * fleet ran as 16 slices of 16-28 ms, none of them a long task (before: one 6.8 s and one 3.5 s task —
  * the dev build's StrictMode lays out twice). Every indivisible step reports the work it did (pinned
@@ -84,34 +87,193 @@ const yieldToEventLoop = (): Promise<void> => {
 };
 
 /**
+ * The user-timing measure every layout run the stage completes (or fails) leaves on the page's
+ * performance timeline: from the run's creation to its last slice, with a `LayoutMeasureDetail`.
+ * `review/measure-scale.mjs` reads it to time the layout in a real browser. Pinned in scale.test.ts, so
+ * the harness cannot silently time nothing.
+ */
+export const LAYOUT_MEASURE = "atlas:layout";
+/**
+ * One measure per SLICE of a run, each with a `LayoutSliceDetail` naming its run: their durations summed
+ * are the main-thread time the layout itself took (its compute, without the yields between slices), and
+ * the longest is the longest the layout held the main thread at once.
+ */
+export const LAYOUT_SLICE_MEASURE = "atlas:layout-slice";
+
+/** What one layout run reports on the performance timeline (see LAYOUT_MEASURE). */
+export interface LayoutMeasureDetail {
+  /** This run's number, which its LAYOUT_SLICE_MEASURE entries carry too. */
+  run: number;
+  devices: number;
+  links: number;
+  /** "done" — the layout finished; "failed" — a slice threw (the stage then shows its error boundary). */
+  outcome: "done" | "failed";
+  /** Counted units of work (layout.ts :: LayoutJob.work) and the slices they ran in. */
+  work: number;
+  slices: number;
+  largestStep: number;
+}
+
+/** What one slice reports (see LAYOUT_SLICE_MEASURE). */
+export interface LayoutSliceDetail {
+  run: number;
+  /** 1-based, in the order the slices ran. */
+  slice: number;
+}
+
+/**
+ * THE TIMING IS THE BROWSER'S, NOT THIS FILE'S. Every figure is taken by `performance.mark` and
+ * `performance.measure` between named marks, so no clock value is ever read here, and nothing the stage
+ * computes or draws can depend on one: the layout is paced by counted WORK (LAYOUT_SLICE_WORK). A UA
+ * without user timing (or one that refuses a call) gets no entries, never a failed layout.
+ */
+const userTiming = (): Performance | null =>
+  typeof performance !== "undefined" && typeof performance.mark === "function" && typeof performance.measure === "function"
+    ? performance
+    : null;
+const timelineMark = (name: string): void => {
+  try {
+    userTiming()?.mark(name);
+  } catch {
+    /* no entry, no failure */
+  }
+};
+const timelineMeasure = (name: string, start: string, end: string, detail: LayoutMeasureDetail | LayoutSliceDetail): void => {
+  try {
+    userTiming()?.measure(name, { start, end, detail });
+  } catch {
+    /* no entry, no failure */
+  }
+};
+const clearTimelineMarks = (...names: string[]): void => {
+  try {
+    const t = userTiming();
+    if (t !== null && typeof t.clearMarks === "function") for (const n of names) t.clearMarks(n);
+  } catch {
+    /* no entry, no failure */
+  }
+};
+
+/**
+ * THE LAYOUT FAILED — the error the stage throws in render so its error boundary ("The 3-D fabric")
+ * reports it. The message says it was the LAYOUT, carries the cause verbatim and says how far the run
+ * got, because the boundary prints the message as its detail. `cause` is the original error.
+ */
+function layoutFailedError(run: LayoutRun): Error {
+  const error = run.failure?.error;
+  const cause = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `The layout of the 3-D fabric failed in slice ${run.slices} (${run.job.work} units of work done), so no fabric can be drawn from it: ${cause}`,
+    { cause: error },
+  );
+}
+
+/** Numbers each layout run for its timeline entries. A count, not a clock. */
+let layoutRuns = 0;
+
+/** One layout run as the stage drives it: the job, how far it got, and the error any slice threw. */
+interface LayoutRun {
+  readonly id: number;
+  readonly job: LayoutJob;
+  readonly devices: number;
+  readonly links: number;
+  /** Set by the FIRST slice that throws, whatever threw; the run is over from then on. */
+  failure: { readonly error: unknown } | null;
+  slices: number;
+  ended: boolean;
+  reported: boolean;
+}
+
+const runMark = (run: LayoutRun, what: "start" | "end" | "slice"): string => `${LAYOUT_MEASURE}:${what}#${run.id}`;
+
+function startRun(job: LayoutJob, devices: number, links: number): LayoutRun {
+  layoutRuns += 1;
+  const run: LayoutRun = { id: layoutRuns, job, devices, links, failure: null, slices: 0, ended: false, reported: false };
+  timelineMark(runMark(run, "start"));
+  return run;
+}
+
+/**
+ * One slice of `run`, catching ANY throw: a slice that throws ends the run with `failure` set and
+ * returns null. The class is every slice — the synchronous first one in render and each later one in the
+ * async loop — because both come through here (verifier V2-1: an uncaught throw in a later slice was an
+ * unhandled rejection that left the stage "building" for good).
+ */
+function runSlice(run: LayoutRun): FabricLayout | null {
+  if (run.failure !== null) return null;
+  const sliceMark = runMark(run, "slice");
+  timelineMark(sliceMark);
+  try {
+    return run.job.step(LAYOUT_SLICE_WORK);
+  } catch (error) {
+    run.failure = { error };
+    return null;
+  } finally {
+    run.slices += 1;
+    timelineMark(`${sliceMark}:end`);
+    timelineMeasure(LAYOUT_SLICE_MEASURE, sliceMark, `${sliceMark}:end`, { run: run.id, slice: run.slices });
+    clearTimelineMarks(sliceMark, `${sliceMark}:end`);
+    if (run.failure !== null || run.job.done) {
+      run.ended = true;
+      timelineMark(runMark(run, "end"));
+    }
+  }
+}
+
+/** Leave the run's measure on the performance timeline, once. Never allowed to fail the stage. */
+function reportRun(run: LayoutRun): void {
+  if (run.reported || !run.ended) return;
+  run.reported = true;
+  timelineMeasure(LAYOUT_MEASURE, runMark(run, "start"), runMark(run, "end"), {
+    run: run.id,
+    devices: run.devices,
+    links: run.links,
+    outcome: run.failure === null ? "done" : "failed",
+    work: run.job.work,
+    slices: run.slices,
+    largestStep: run.job.largestStep,
+  });
+  clearTimelineMarks(runMark(run, "start"), runMark(run, "end"));
+}
+
+/**
  * The layout for these inputs: the finished layout, or null while it is still being computed in
- * slices. A new set of inputs starts a new job; the old one is abandoned where it stands. Exported so
- * scale.test.ts can drive it without the rest of the stage.
+ * slices. A new set of inputs starts a new job; the old one is abandoned where it stands. A slice that
+ * THROWS — any slice, the first synchronous one or a later one — is rethrown here, in render, wrapped
+ * by `layoutFailedError`, so the stage's error boundary replaces the "Building the 3-D fabric" state
+ * with a statement that the layout failed; progress is never shown for a layout that has stopped.
+ * Exported so scale.test.ts can drive it without the rest of the stage.
  */
 export function useSlicedLayout(
   devices: readonly Device[],
   links: readonly Link[],
   tiers: readonly (readonly string[])[],
 ): FabricLayout | null {
-  const job = useMemo((): LayoutJob => {
-    const j = layoutJob({ devices, links, tiers });
-    j.step(LAYOUT_SLICE_WORK);
-    return j;
+  const run = useMemo((): LayoutRun => {
+    const r = startRun(layoutJob({ devices, links, tiers }), devices.length, links.length);
+    runSlice(r);
+    return r;
   }, [devices, links, tiers]);
   /* Only a re-render trigger: the layout itself is read from the job, never duplicated in state. */
-  const [, setFinished] = useState<LayoutJob | null>(null);
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
-    if (job.done) return;
+    if (run.job.done || run.failure !== null) {
+      reportRun(run);
+      return;
+    }
     let live = true;
     void (async () => {
-      while (live && job.step(LAYOUT_SLICE_WORK) === null) await yieldToEventLoop();
-      if (live) setFinished(job);
+      while (live && runSlice(run) === null && run.failure === null) await yieldToEventLoop();
+      if (!live) return;
+      reportRun(run);
+      rerender();
     })();
     return () => {
       live = false;
     };
-  }, [job]);
-  return job.result;
+  }, [run]);
+  if (run.failure !== null) throw layoutFailedError(run);
+  return run.job.result;
 }
 
 /** Pointer travel (CSS px) above which a press is an orbit drag, not a click on a node. */
@@ -1339,7 +1501,15 @@ export function Fabric3D({
     /* `data-fabric-surface` marks what counts as input ON the fabric (canvas, labels, HUD): input
        anywhere else lets the scene hold an owed render until the burst pauses — see
        ./panelInput. */
-    <div className={className === undefined ? "fabric3d" : `fabric3d ${className}`} ref={hostRef} data-fabric-surface="">
+    <div
+      className={className === undefined ? "fabric3d" : `fabric3d ${className}`}
+      ref={hostRef}
+      data-fabric-surface=""
+      /* "pending" while a fabric too large for one slice is still being laid out (no scene exists
+         then), "ready" once its layout does. The stage's warm-up wording can say "laying out" rather
+         than "starting the renderer" from this (verifier V2-3), and review/measure-scale.mjs waits on it. */
+      data-layout={layoutReady ? "ready" : "pending"}
+    >
 
       {/* React never puts children in this slot, so the imperatively-owned canvas cannot collide
           with reconciliation. */}

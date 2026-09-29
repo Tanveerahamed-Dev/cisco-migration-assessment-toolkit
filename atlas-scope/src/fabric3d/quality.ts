@@ -10,6 +10,7 @@
  */
 import { SMAAPreset } from "postprocessing";
 import type { WebGLRenderer } from "three";
+import { listPhrase } from "../core/phrases";
 import type { QualityTier } from "./contract";
 
 export interface GpuCapabilities {
@@ -190,8 +191,7 @@ export function tierConsequence(tier: QualityTier): string {
   const p = PROFILES[tier];
   const off = TIER_FEATURES.filter(([k]) => hi[k] === true && p[k] === false).map(([, name]) => name);
   if (off.length === 0) return "every effect kept; cheaper sampling and environment only";
-  const list = off.length === 1 ? off[0] : `${off.slice(0, -1).join(", ")} and ${off[off.length - 1]}`;
-  return `${list} disabled`;
+  return `${listPhrase(off)} disabled`;
 }
 
 /**

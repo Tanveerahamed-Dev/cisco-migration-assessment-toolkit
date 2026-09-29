@@ -567,6 +567,29 @@ describe("computeLayout — a sliced run is the same layout", () => {
       expect(out, name).toEqual(whole);
     }
   });
+
+  it("a job whose step threw stays failed: every later step rethrows the same error, and it never reads as done", () => {
+    /* A generator that throws is closed, and a closed generator's next() answers { done: true, value:
+       undefined }. Without a latch, the step AFTER a failure therefore "finished" the layout with
+       `undefined`: `done` true, `result` undefined — a failure read back as a finished layout. The stage
+       re-reads a job it has already stepped (StrictMode, a retry), so the latch is on the job itself. */
+    const job = layoutJob({ ...OPTS, seed: Number.NaN });
+    const caught = (): unknown => {
+      try {
+        job.step(1);
+      } catch (e) {
+        return e;
+      }
+      return "no throw";
+    };
+    const first = caught();
+    expect(first, "precondition: a non-finite seed is refused").toBeInstanceOf(Error);
+    expect(caught(), "the second step did not rethrow the job's failure").toBe(first);
+    expect(caught()).toBe(first);
+    expect(job.done, "a failed layout reads as done").toBe(false);
+    expect(job.result, "a failed layout has a result").toBeNull();
+    expect(job.failure).toEqual({ error: first });
+  });
 });
 
 /* ── crossing reduction ────────────────────────────────────────────────────── */

@@ -395,24 +395,13 @@ export interface TierFadeHoldHandle {
   start(): void;
 }
 
-export interface TierFadeSlot<E> {
-  /** A tier change is asked for: apply `handOverTierFade`'s plan and return it. On `deferred` the caller
-   *  must not land the change yet (see `TierFadeHandover`). */
-  tierChange(copy: () => TierFadeCopy<E> | null, warming: boolean): TierFadeHandover<E>;
-  /** A composed frame of the new tier has landed. Under reduced motion a HELD overlay that has been up under
-   *  reduced motion throughout is swapped away (§4.8: at exactly 1, a swap, not an animation); one that was on
-   *  screen under full motion when reduced motion turned on starts its fade now, at the cap per frame (R4-VR2-4);
-   *  either way null is returned. Otherwise a held overlay's hold handle is returned (null when none is held):
-   *  the caller decides WHEN it starts. */
-  presented(reduced: boolean): TierFadeHoldHandle | null;
-  /** One animation frame (the running fade's driver, `createTierFadeDriver`). */
-  frame(rawMs: number, reduced: boolean, presenting: boolean): void;
-  /** Teardown: the WebGL canvas the overlay covers goes with it. */
-  dispose(): void;
-  /** "none", "held" (at 1, waiting for the new tier), "waiting" (its hold running) or "fading". */
-  readonly state: "none" | "held" | "waiting" | "fading";
-  /** The overlay's opacity on screen (0 when none is up). */
-  readonly opacity: number;
+/** One overlay on the page, as the slot keeps it. */
+interface TierFadeRec<E> {
+  readonly el: E;
+  driver: TierFadeDriver | null;
+  waiting: boolean;
+  /** Up under reduced motion since it was mounted: only then is §4.8's swap at exactly 1 its exit. */
+  reducedThroughout: boolean;
 }
 
 /**
@@ -430,90 +419,132 @@ export interface TierFadeSlot<E> {
  * fade's remnant — is finished at the cap like a mid-fade one (R4-VR2-4). The slot learns the preference from
  * the `reduced` its caller passes every frame (and to `presented`); before the first such call it assumes full
  * motion, which can only ever make a swap a capped fade, never the reverse.
+ *
+ * A METHOD ACTS ONLY ON THE SLOT ITSELF (P3C-V2-2, verifier of phase 3). The slot used to be an object literal
+ * whose methods closed over its state, so a copy of a method acted like the slot: `const copy = { ...tierFade };
+ * copy.dispose()` took a running half-faded overlay down in one frame, and `copy` is not a value of the slot's type,
+ * so scene.test.ts, which finds every call on the slot BY TYPE, did not see it. The state is now private to the
+ * instance (`#`) and every method reads it through `this`: a spread or copy of the slot carries no method, and a
+ * method taken off it and run on anything but the slot throws (the private-field brand check) before it touches
+ * the page. So the only way to run one is with the slot itself as the receiver, or as the `this` handed to
+ * call/apply/bind/Reflect — a call on, or an argument of, a value of the slot's type, which is what scene.test.ts
+ * enumerates. That is a property of the class, not a list of copy shapes; emphasis.test.ts enumerates the methods
+ * off the prototype and proves it for each. Keep every member a prototype method or accessor: an own
+ * function-valued field (`dispose = () => …`) would be copied by a spread again, and that test fails on one.
+ * The class itself is not exported (only its type): the one way to build it is `createTierFadeSlot`, the owner
+ * starter motion-inventory.test.ts follows.
  */
-export function createTierFadeSlot<E>(host: TierFadeSlotHost<E>): TierFadeSlot<E> {
-  interface Rec {
-    readonly el: E;
-    driver: TierFadeDriver | null;
-    waiting: boolean;
-    /** Up under reduced motion since it was mounted: only then is §4.8's swap at exactly 1 its exit. */
-    reducedThroughout: boolean;
-  }
-  let cur: Rec | null = null;
+class TierFadeSlotImpl<E> {
+  readonly #host: TierFadeSlotHost<E>;
+  #cur: TierFadeRec<E> | null = null;
   /** The motion preference the caller last passed (full motion until told otherwise). */
-  let lastReduced = false;
-  const seeReduced = (reduced: boolean): void => {
-    lastReduced = reduced;
-    if (!reduced && cur !== null) cur.reducedThroughout = false;
-  };
-  const remove = (r: Rec): void => {
+  #lastReduced = false;
+
+  constructor(host: TierFadeSlotHost<E>) {
+    this.#host = host;
+  }
+
+  #seeReduced(reduced: boolean): void {
+    this.#lastReduced = reduced;
+    if (!reduced && this.#cur !== null) this.#cur.reducedThroughout = false;
+  }
+
+  #remove(r: TierFadeRec<E>): void {
     r.driver?.dispose();
-    if (cur === r) cur = null;
-    host.unmount(r.el);
-  };
-  return {
-    tierChange(copy, warming) {
-      const running = cur;
-      const plan = handOverTierFade<E>(
-        running === null ? null : { el: running.el, opacity: running.driver === null ? 1 : running.driver.value, fading: running.driver !== null },
-        copy,
-        warming,
-      );
-      if (plan.kind === "new" || plan.kind === "composed") {
-        /* The replacement already shows the picture on screen; it goes up in the same task. A composed one
-           carries the running overlay drawn in, so it is swap-exempt only if that one was (R4-VR2-4). */
-        if (running !== null) remove(running);
-        cur = { el: plan.mount, driver: null, waiting: false, reducedThroughout: lastReduced && (running === null || running.reducedThroughout) };
-        host.mount(plan.mount);
-      } else if (plan.kind === "kept" && plan.rehold && running !== null) {
-        /* The SAME element, still at 1, waits for the new tier's first composed frame again: a fresh
-           record, so the old hold's handle is no longer live. */
-        cur = { el: running.el, driver: null, waiting: false, reducedThroughout: running.reducedThroughout };
-      }
-      /* `none`, `deferred`, and `kept` with a fade running: nothing changes; the fade runs on. */
-      return plan;
-    },
-    presented(reduced) {
-      seeReduced(reduced);
-      const r = cur;
-      if (r === null || r.driver !== null || r.waiting) return null;
-      const start = (): void => {
-        if (cur !== r || r.driver !== null) return;
-        r.waiting = false;
-        r.driver = createTierFadeDriver({
-          write: (opacity) => host.write(r.el, opacity),
-          finish: () => {
-            if (cur === r) remove(r);
-          },
-        });
-      };
-      if (reduced) {
-        if (r.reducedThroughout) remove(r);
-        else start();
-        return null;
-      }
-      r.waiting = true;
-      return {
-        get live() {
-          return cur === r && r.driver === null;
+    if (this.#cur === r) this.#cur = null;
+    this.#host.unmount(r.el);
+  }
+
+  /** A tier change is asked for: apply `handOverTierFade`'s plan and return it. On `deferred` the caller
+   *  must not land the change yet (see `TierFadeHandover`). */
+  tierChange(copy: () => TierFadeCopy<E> | null, warming: boolean): TierFadeHandover<E> {
+    const running = this.#cur;
+    const plan = handOverTierFade<E>(
+      running === null ? null : { el: running.el, opacity: running.driver === null ? 1 : running.driver.value, fading: running.driver !== null },
+      copy,
+      warming,
+    );
+    if (plan.kind === "new" || plan.kind === "composed") {
+      /* The replacement already shows the picture on screen; it goes up in the same task. A composed one
+         carries the running overlay drawn in, so it is swap-exempt only if that one was (R4-VR2-4). */
+      if (running !== null) this.#remove(running);
+      this.#cur = { el: plan.mount, driver: null, waiting: false, reducedThroughout: this.#lastReduced && (running === null || running.reducedThroughout) };
+      this.#host.mount(plan.mount);
+    } else if (plan.kind === "kept" && plan.rehold && running !== null) {
+      /* The SAME element, still at 1, waits for the new tier's first composed frame again: a fresh
+         record, so the old hold's handle is no longer live. */
+      this.#cur = { el: running.el, driver: null, waiting: false, reducedThroughout: running.reducedThroughout };
+    }
+    /* `none`, `deferred`, and `kept` with a fade running: nothing changes; the fade runs on. */
+    return plan;
+  }
+
+  /** A composed frame of the new tier has landed. Under reduced motion a HELD overlay that has been up under
+   *  reduced motion throughout is swapped away (§4.8: at exactly 1, a swap, not an animation); one that was on
+   *  screen under full motion when reduced motion turned on starts its fade now, at the cap per frame (R4-VR2-4);
+   *  either way null is returned. Otherwise a held overlay's hold handle is returned (null when none is held):
+   *  the caller decides WHEN it starts. */
+  presented(reduced: boolean): TierFadeHoldHandle | null {
+    this.#seeReduced(reduced);
+    const r = this.#cur;
+    if (r === null || r.driver !== null || r.waiting) return null;
+    /* The hold's own handle. It may be called from anywhere, and it only ever STARTS this overlay's capped fade,
+       and only while this record is still the slot's (a no-op otherwise): starting a fade is not a cut. */
+    const start = (): void => {
+      if (this.#cur !== r || r.driver !== null) return;
+      r.waiting = false;
+      r.driver = createTierFadeDriver({
+        write: (opacity) => this.#host.write(r.el, opacity),
+        finish: () => {
+          if (this.#cur === r) this.#remove(r);
         },
-        start,
-      };
-    },
-    frame(rawMs, reduced, presenting) {
-      seeReduced(reduced);
-      cur?.driver?.frame(rawMs, reduced, presenting);
-    },
-    dispose() {
-      if (cur !== null) remove(cur);
-    },
-    get state() {
-      return cur === null ? "none" : cur.driver !== null ? "fading" : cur.waiting ? "waiting" : "held";
-    },
-    get opacity() {
-      return cur === null ? 0 : cur.driver === null ? 1 : cur.driver.value;
-    },
-  };
+      });
+    };
+    if (reduced) {
+      if (r.reducedThroughout) this.#remove(r);
+      else start();
+      return null;
+    }
+    r.waiting = true;
+    const live = (): boolean => this.#cur === r && r.driver === null;
+    return {
+      get live() {
+        return live();
+      },
+      start,
+    };
+  }
+
+  /** One animation frame (the running fade's driver, `createTierFadeDriver`). */
+  frame(rawMs: number, reduced: boolean, presenting: boolean): void {
+    this.#seeReduced(reduced);
+    this.#cur?.driver?.frame(rawMs, reduced, presenting);
+  }
+
+  /** Teardown: the WebGL canvas the overlay covers goes with it. */
+  dispose(): void {
+    if (this.#cur !== null) this.#remove(this.#cur);
+  }
+
+  /** "none", "held" (at 1, waiting for the new tier), "waiting" (its hold running) or "fading". */
+  get state(): "none" | "held" | "waiting" | "fading" {
+    const cur = this.#cur;
+    return cur === null ? "none" : cur.driver !== null ? "fading" : cur.waiting ? "waiting" : "held";
+  }
+
+  /** The overlay's opacity on screen (0 when none is up). */
+  get opacity(): number {
+    const cur = this.#cur;
+    return cur === null ? 0 : cur.driver === null ? 1 : cur.driver.value;
+  }
+}
+
+/** The tier-fade slot's type (the class itself is not exported: build one with `createTierFadeSlot`). */
+export type TierFadeSlot<E> = TierFadeSlotImpl<E>;
+
+/** The tier cross-fade's overlay, from mount to removal: see `TierFadeSlotImpl` above. */
+export function createTierFadeSlot<E>(host: TierFadeSlotHost<E>): TierFadeSlot<E> {
+  return new TierFadeSlotImpl<E>(host);
 }
 
 /** cubic-bezier(x1, y1, x2, y2) at time fraction `x`, solved by bisection (monotone in x). */

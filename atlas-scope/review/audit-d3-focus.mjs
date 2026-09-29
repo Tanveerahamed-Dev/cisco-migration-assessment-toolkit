@@ -90,6 +90,15 @@
  *                                                        # diagnostic only, never the acceptance run
  *   node review/audit-d3-focus.mjs --sweep --state=off-view   # the sweep narrowed to the states whose
  *                                                        # name contains the text — diagnostic only
+ *   node review/audit-d3-focus.mjs --crossings           # ONLY the rung-crossing pass (diagnostic)
+ *   node review/audit-d3-focus.mjs --render-check        # ONLY the proof that the geometry passes'
+ *                                                        # render mode changes no focus outcome (RENDER)
+ *   node review/audit-d3-focus.mjs --sweep --render=full # the geometry passes with every frame drawn
+ *                                                        # (the reference; hours on a software renderer)
+ *
+ * TRACTABLE BY CONSTRUCTION (phase 3.5): the geometry passes run with the fabric's WebGL draw calls
+ * suspended (RENDER, proved by --render-check), the rung crossing runs as (crossing x state) units
+ * ATLAS_CROSS_PARALLEL at a time, and every phase prints its wall time (TIME / WALL TIME lines).
  *
  * The sweep also runs the OPERABLE-ELEMENT CENSUS (operableCensus, 2026-09-25): every element that
  * is operated by the pointer — found by its handler or its cursor, never by role or tabindex — must
@@ -100,7 +109,7 @@
  * (1024-1279 px) was missing from all three lists, which is how the evidence drawer's focus loss went
  * unseen. The drawer itself has its own pass (see "the evidence drawer" below), part of the sweep.
  *
- * The default run is the sweep, then the surface passes below at all of those widths. The
+ * The default run is the sweep beside the surface passes below at all of those widths. The
  * visibility hit test samples NINE points of the focused element's visible part (focusGeometry);
  * until 2026-09-24 it sampled the centre only, and the surface passes never drove 768 or 390.
  *
@@ -109,12 +118,100 @@
  * checked for visibility. Exit 2: nothing was driven at all.
  */
 import { readFileSync } from "node:fs";
+import { freemem } from "node:os";
 import { chromium } from "@playwright/test";
 import ts from "typescript";
-import { appModalDialogs, checkPaletteOverDialog } from "./palette-warm.mjs";
+import { PALETTE_WARM_TERMINAL, appModalDialogs, checkPaletteOverDialog } from "./palette-warm.mjs";
 
 const APP = process.env["ATLAS_URL"] ?? "http://localhost:4181";
 const SETTLE_MS = 1000;
+
+/* ── the render mode of the passes judged by GEOMETRY (phase 3.5: the audit must be tractable) ─────────
+ * MEASURED (phase 3, this host): the full --sweep ran ~10 hours before it was stopped. The headless
+ * renderer rasterises the 3-D fabric in SOFTWARE (SwiftShader) for every frame it draws, and every
+ * rung-crossing case resizes twice: a probe of four pages at 1440 -> 1152 -> 1440 read 2.7-3.0 s per
+ * resize with every frame drawn, and 0.34-0.36 s with the WebGL draw calls suspended (probe-render.mjs,
+ * phase 3.5; the platform GPU read 0.43-0.48 s).
+ *
+ * So the passes whose verdicts are GEOMETRY — the rung crossing (focus, `checkVisibility`, the nine-point
+ * hit test) and the sweep's Tab walk (the hit test, the operable census) — run by default with the
+ * fabric's draw calls SUSPENDED: an init script turns the WebGL contexts' draw, clear and blit calls into
+ * no-ops before the app runs. Everything else is untouched: the scene graph, the camera, the labels'
+ * projection, the quality tier (the renderer string still names SwiftShader, so it is `low` in both
+ * modes), every DOM node, style, layout, frame callback and timer. The canvas is still in the page, still
+ * a tab stop and still hit-testable — it shows nothing. What a draw call changes is canvas PIXELS, and no
+ * verdict of these passes reads a pixel.
+ *
+ * The passes that DO read pixels — the ≥3:1 indicator-ring measurement (checkVisible: the surface passes,
+ * the drawer pass, the self-removing pass) and the rendered D1 dialog stack — always draw every frame.
+ *
+ * THE MODE IS PROVED, NOT ASSUMED: every geometry page reports whether the suspension was installed and how
+ * many draw calls it suppressed (a page without it, or a run that suppressed none at all, did not run in the
+ * mode, and fails the run), and `--render-check` drives a sample of
+ * rung-crossing cases — every family, three crossings, two page states — in BOTH modes on the same
+ * build and fails on any case whose focus outcome differs (renderCheck). `--render=full` runs the
+ * geometry passes with every frame drawn, as before (the reference, and the slow path).
+ */
+const RENDER = process.argv.find((a) => a.startsWith("--render="))?.slice(9) ?? "suspended";
+if (RENDER !== "suspended" && RENDER !== "full") throw new Error(`--render=${RENDER}: the render mode is "suspended" (default) or "full"`);
+/** In-page (an init script): the WebGL draw, clear and blit calls become no-ops, counted. */
+const suspendDraws = () => {
+  const DRAWS = ["drawArrays", "drawElements", "drawArraysInstanced", "drawElementsInstanced", "drawRangeElements", "clear", "blitFramebuffer"];
+  window.__d3DrawsSuspended = 0;
+  const skip = function () {
+    window.__d3DrawsSuspended += 1;
+  };
+  for (const C of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
+    if (C === undefined) continue;
+    for (const m of DRAWS) if (typeof C.prototype[m] === "function") Object.defineProperty(C.prototype, m, { value: skip, configurable: true, writable: true });
+  }
+  /* The multi-draw extension draws too: its calls are suspended on the object the extension hands out. */
+  for (const C of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
+    if (C === undefined) continue;
+    const getExtension = C.prototype.getExtension;
+    C.prototype.getExtension = function (name) {
+      const ext = getExtension.call(this, name);
+      if (ext !== null && typeof name === "string" && /multi_draw/i.test(name)) {
+        for (let p = ext; p !== null && p !== Object.prototype; p = Object.getPrototypeOf(p)) {
+          for (const k of Object.getOwnPropertyNames(p)) if (/^multiDraw/.test(k) && typeof ext[k] === "function") ext[k] = skip;
+        }
+      }
+      return ext;
+    };
+  }
+};
+/** Pages that ran with draws suspended, and the draw calls they suppressed: the mode's own denominator. A page on
+ *  which the suspension was NOT installed (`pagesNotSuspended`) means the mode did not take effect. (A page may
+ *  suppress nothing and be right: a fabric at the stacked rung, never shown, draws no frame.) */
+const renderCount = { pages: 0, suppressed: 0, pagesNotSuspended: 0 };
+/** A new context for a GEOMETRY pass, in this run's render mode (`mode` overrides it: renderCheck). */
+async function geometryContext(browser, options, mode = RENDER) {
+  const ctx = await browser.newContext(options);
+  if (mode === "suspended") await ctx.addInitScript(suspendDraws);
+  return ctx;
+}
+/** Read (and account for) the draws a suspended page suppressed, before it closes. A page on which the
+ *  suspension is not installed is counted, and fails the run. (A closed or crashed page cannot be read.) */
+async function accountRender(page, mode = RENDER) {
+  if (mode !== "suspended") return;
+  const n = await page.evaluate(() => (typeof window.__d3DrawsSuspended === "number" ? window.__d3DrawsSuspended : -1)).catch(() => null);
+  if (n === null) return;
+  renderCount.pages += 1;
+  if (n >= 0) renderCount.suppressed += n;
+  else renderCount.pagesNotSuspended += 1;
+}
+/** Wall time of each phase of this run, printed at the end (the tractability budget is measured, not assumed). */
+const phaseTimes = [];
+async function timed(name, fn) {
+  const t0 = Date.now();
+  try {
+    return await fn();
+  } finally {
+    phaseTimes.push([name, Date.now() - t0]);
+    console.log(`TIME  ${name}: ${((Date.now() - t0) / 60000).toFixed(1)} min`);
+  }
+}
+const RUN_T0 = Date.now();
 
 /* ── the viewport ladder, READ from its one owner ──────────────────────────────
  * MEASURED (acceptance report D3, overturned PASS -> FAIL, 2026-09-26): every width list in this file
@@ -193,7 +290,14 @@ const VIEWPORTS = coverRungs(
 const results = [];
 /** kind -> number of cases driven, across the whole run. */
 const driven = new Map();
-const seen = new Set();
+/** Per page (the surface passes run one page per width, several widths at once): the surfaces already
+ *  driven in the current state. */
+const seenByPage = new WeakMap();
+const seenOf = (page) => {
+  let s = seenByPage.get(page);
+  if (s === undefined) seenByPage.set(page, (s = new Set()));
+  return s;
+};
 
 const record = (kind, surface, scenario, active) => {
   const ok = active.tag !== "BODY" && active.tag !== "NONE";
@@ -649,8 +753,8 @@ async function eachSurface(page, kind, sel, where, enter, fn) {
   const items = await page.evaluate(listIn, sel);
   for (const item of items) {
     const id = `${kind}|${item.ident}|${item.occurrence}`;
-    if (seen.has(id)) continue;
-    seen.add(id);
+    if (seenOf(page).has(id)) continue;
+    seenOf(page).add(id);
     await fn(item, `${where} ${kind} "${item.name}"${item.occurrence > 0 ? ` #${item.occurrence + 1}` : ""}`, async () => {
       await reset(page);
       if ((await enter(page)) !== true) return null;
@@ -1599,16 +1703,19 @@ async function drawerLoad(page) {
    of the same build drove it — typed before the combobox held focus, or read before the ranking had
    re-rendered. The palette still has to rank the evidence toggle first, within 5 s, or the case is NOT
    DRIVEN exactly as before. */
-let paletteLastTop = "";
-/** What the palette's search box held as it took focus, when that was not empty (a reopened stale query). */
-let paletteStale = null;
-/** Why the last paletteToggle did not run the toggle: a PALETTE DEFECT (a failure) or the harness's NOT DRIVEN. */
-const paletteMiss = () =>
-  paletteStale !== null
-    ? `PALETTE DEFECT: the palette opened holding a query from an earlier opening ("${paletteStale.slice(0, 60)}"), so what a reader types is appended to it (independent verifier R5-V2-2)`
-    : `NOT DRIVEN: the palette's top row was not the evidence toggle (it read "${paletteLastTop.slice(0, 60)}")`;
+/** Per page (the drawer pass drives six pages at once — a module-wide record was read by one page after
+ *  another page's toggle had overwritten it): the palette's last top row, and what its search box held as
+ *  it took focus when that was not empty (a reopened stale query). */
+const paletteRead = new WeakMap();
+/** Why the page's last paletteToggle did not run the toggle: a PALETTE DEFECT (a failure) or the harness's NOT DRIVEN. */
+const paletteMiss = (page) => {
+  const { top = "", stale = null } = paletteRead.get(page) ?? {};
+  return stale !== null
+    ? `PALETTE DEFECT: the palette opened holding a query from an earlier opening ("${stale.slice(0, 60)}"), so what a reader types is appended to it (independent verifier R5-V2-2)`
+    : `NOT DRIVEN: the palette's top row was not the evidence toggle (it read "${top.slice(0, 60)}")`;
+};
 async function paletteToggle(page) {
-  paletteStale = null;
+  paletteRead.set(page, { top: "", stale: null });
   /* The previous palette (open by palette -> close by palette) must be gone first: MEASURED (R5 repair,
      default run) mod+k pressed while it was still closing read an empty top row ("it read \"\""). */
   await page
@@ -1626,7 +1733,7 @@ async function paletteToggle(page) {
     return a instanceof HTMLInputElement && a.getAttribute("role") === "combobox" ? a.value : "";
   });
   if (held !== "") {
-    paletteStale = held;
+    paletteRead.set(page, { top: "", stale: held });
     await page.keyboard.press("Escape");
     return false;
   }
@@ -1656,7 +1763,7 @@ async function paletteToggle(page) {
      routed to the palette's owner (open-issues), not absorbed here by a longer sleep. */
   await page.waitForTimeout(300);
   const top = await readTop();
-  paletteLastTop = top;
+  paletteRead.set(page, { top, stale: null });
   if (!top.includes(PALETTE_TOGGLE)) {
     await page.keyboard.press("Escape");
     return false;
@@ -1671,7 +1778,7 @@ async function drawerOpen(page, opener) {
   else if (opener === "g e") {
     await page.keyboard.press("g");
     await page.keyboard.press("e");
-  } else if (!(await paletteToggle(page))) return paletteMiss();
+  } else if (!(await paletteToggle(page))) return paletteMiss(page);
   await page.waitForTimeout(500);
   /* And eight animation frames: `v` moves focus a frame (up to six under reduced motion) after the
      open commits. MEASURED (this cluster, 2026-09-26, reduced motion at 1152 px, 8 runs): that frame
@@ -1713,7 +1820,7 @@ async function drawerCase(page, w, opener, close, motion = "") {
   await drawerVisible(page, "drawer control", where, scenario);
   if (close === "e") await page.keyboard.press("e");
   else if (close === "palette") {
-    if (!(await paletteToggle(page))) return drawerResult(where, scenario, false, paletteMiss());
+    if (!(await paletteToggle(page))) return drawerResult(where, scenario, false, paletteMiss(page));
   } else {
     /* Escape: an inner layer (the configuration overlay) closes first; the drawer on a later press. */
     for (let k = 0; k < 3; k += 1) {
@@ -1813,7 +1920,7 @@ async function drawerResize(page, w, t) {
 }
 
 /** The drawer pass. `only` is the --vp list (or undefined). Returns whether it was in scope at all. */
-async function runDrawer(browser, only) {
+async function runDrawer(browser, only, push = null) {
   const targets = SWEEP_VIEWPORTS.map(([w]) => Number(w)).filter((w) => rungOf(w) !== "drawer");
   const plan = [];
   for (const w of DRAWER_WIDTHS) {
@@ -1836,9 +1943,9 @@ async function runDrawer(browser, only) {
     `INFO  drawer pass: widths ${DRAWER_WIDTHS.join(", ")} px (LADDER_REM drawer rung ${DRAWER_RUNG.from}-${DRAWER_RUNG.to - 1} px), ` +
       `resize targets ${targets.join(", ")} px; ${plan.reduce((n, [, c]) => n + c.length, 0)} case(s) planned${only ? " (narrowed by --vp)" : ""}`,
   );
-  /* One page per width, in parallel: most of a case is waiting (a load, the settle). */
-  await Promise.all(
-    plan.map(async ([w, cases, reducedMotion]) => {
+  /* One page per width, in parallel: most of a case is waiting (a load, the settle). With `push` (runSweep's shared
+     pool) each page is a task of that pool, at its front. */
+  const lanes = plan.map(([w, cases, reducedMotion]) => async () => {
       const ctx = await browser.newContext({ viewport: { width: w, height: 800 }, reducedMotion });
       await ctx.addInitScript(() => {
         try {
@@ -1857,8 +1964,9 @@ async function runDrawer(browser, only) {
       } finally {
         await ctx.close();
       }
-    }),
-  );
+    });
+  if (push !== null) for (const lane of lanes) push(lane, true);
+  else await Promise.all(lanes.map((lane) => lane()));
   return plan.length > 0;
 }
 
@@ -1879,12 +1987,20 @@ async function runDrawer(browser, only) {
  *   - every rendered tab stop of every SURFACE a reader can open there, FOUND BY ITS EFFECT (independent
  *     verifier R5-V2-3: a hand-kept list of surface states, and popovers found only through
  *     `[aria-haspopup]`, left disclosures, the status bar's coverage panel and the evidence drawer at its
- *     own rung outside the denominator). An OPENER is every rendered control whose ARIA contract says its
- *     activation reveals something (a popup, a collapsed disclosure or `<summary>`, an unselected tab, an
- *     unchecked radio — crossOpeners) and every keyed command the app declares (read from the keyboard
- *     reference it renders — crossChords: the Inspector's `i`, the drawer's `e`, the palette's mod+k, the
- *     reference's `?`). Each is activated on a fresh page; the rendered tab stops that were NOT there
- *     before are the surface it revealed, and each is a case. The verifier's `thm__opt` inside More is one;
+ *     own rung outside the denominator). The CANDIDATES are every rendered, enabled control, whatever its
+ *     role (crossOpeners; phase 3.5 repair, independent verifier QH-V1-2: an ARIA-contract selector never
+ *     activated the `aria-pressed` "Show the 3-D fabric", which reveals seven stops at 390 px) — every
+ *     control that announces a state, one representative per collection (a grid's rows) and per kind of
+ *     stateless control (tag, class, role, name with its numbers folded) — every keyed command the app
+ *     declares (read from the keyboard reference it renders — crossChords: the Inspector's `i`, the drawer's
+ *     `e`, the palette's mod+k, the reference's `?`), and, ONE LEVEL DOWN, every candidate inside a surface
+ *     one of those revealed (activated with that surface open). Each is activated on a clean page; the
+ *     rendered tab stops that were NOT there before — and not stops of the clean page itself (a dialog's Close
+ *     makes the page under it live again) — are the surface it revealed. A surface opened by an announcing
+ *     control or a keyed command is cased stop by stop; one opened by any other control, or one level down, one
+ *     stop per kind (see scheduleSurfaces). Openers that leave the page in the same state are one surface. An
+ *     activation that changed the URL moved to another page state (the page states own those): counted, not
+ *     cased. The per-family denominators are printed. The verifier's `thm__opt` inside More is one;
  *   - every PROGRAMMATIC LANDING: a rendered element focusable by script but not by Tab (an explicit
  *     `tabindex="-1"` that is not a roving item of a composite widget — `#stage` — and every named
  *     landmark, or the heading that labels it, which focus-return.ts makes focusable for exactly as
@@ -1902,8 +2018,13 @@ async function runDrawer(browser, only) {
  * neighbouring rung's width, let the page process it (two frames) and CROSS_SETTLE_MS more (longer
  * than the drawer's 240 ms visibility step), then FAIL when focus is on <body>, or on an element that
  * is not rendered (`checkVisibility`, inert), or on one with no part on screen, or one another layer
- * paints over (the nine-point hit test every other stop in this file must pass). Then resize back.
- * A page whose tab-stop signature drifted (a case changed the state) is reloaded before the next case.
+ * paints over (the nine-point hit test every other stop in this file must pass). The page stays where the
+ * case left it: the next case starts from its own start width (every crossing at one viewport height,
+ * CROSS_HEIGHT), and a tab-stop job holds both directions of a rung pair and picks, case by case, one that can
+ * start where the page is clean without a load (crossStopsJob). A page whose signature (crossSignature — every
+ * control's state, React's mount-order ids folded) is not one its start width loads clean with is restored —
+ * the drifting opener undone, Escape, else a reload at that width — before the next case (crossSession's
+ * `fresh`), and every read of it waits out the palette's pre-warm (crossWarmSettled).
  * The denominators — cases per crossing and per state, openers activated, surfaces revealed per
  * crossing and state — are printed; a crossing in scope that drove no case fails the run (SWEEP NEVER
  * EXERCISED: rung crossings).
@@ -1911,7 +2032,26 @@ async function runDrawer(browser, only) {
  * states like the rest of the sweep.
  */
 const CROSS_SETTLE_MS = 500;
-const crossCount = { cases: 0, crossings: 0, openersTried: 0, surfaces: 0, unstable: 0, landings: 0, lost: 0, recovered: 0, unreadChords: [] };
+/** The settle of a return to a start width (crossSession's `ensure`): see there. */
+const RETURN_SETTLE_MS = 100;
+const crossCount = { cases: 0, crossings: 0, openersFound: 0, openersTried: 0, surfaces: 0, unstable: 0, landings: 0, lost: 0, recovered: 0, reloads: 0, undone: 0, reused: 0, sameSurface: 0, representedStops: 0, warmTimeouts: 0, unreadChords: [] };
+/** The candidate openers by family (crossOpeners: state / collection / stateless, the keyed commands, and the nested
+ *  ones a surface revealed): candidates activated, the members they stand for, how many revealed a surface, and how
+ *  many navigated to another page state instead. */
+const crossFamilies = {};
+/** Why pages were reloaded between cases (state, width, the first line of the signature that differed): printed. */
+const crossReloadWhy = new Map();
+/** The first line by which signature `now` differs from `clean` ("+" present only now, "-" gone), cut short. */
+const crossFirstDiff = (clean, now) => {
+  const a = clean.split("\n");
+  const b = now.split("\n");
+  const count = (xs) => xs.reduce((m, x) => m.set(x, (m.get(x) ?? 0) + 1), new Map());
+  const ca = count(a);
+  const cb = count(b);
+  for (const x of b) if ((cb.get(x) ?? 0) > (ca.get(x) ?? 0)) return `+ ${x.slice(0, 90)}`;
+  for (const x of a) if ((ca.get(x) ?? 0) > (cb.get(x) ?? 0)) return `- ${x.slice(0, 90)}`;
+  return "the same lines in another order";
+};
 /** Surfaces revealed, per crossing and state (`crossing … / state`): the denominator of family 2. */
 const crossSurfaces = new Map();
 /** Surface states that did not exist at a crossing's start width, by state name (reported, not failed). */
@@ -1924,13 +2064,27 @@ const crossDialogsOpened = new Set();
    imports and aliases — independent verifier R6 VR2-3), not by the spelling `<Dialog`: the modules that own
    a dialog the app opens. */
 const SOURCE_DIALOGS = [...new Set((await appModalDialogs(new URL("../src/", import.meta.url))).owners.map((o) => o.file))].sort();
-/* How many directed crossings run at once. Each holds a page with a WebGL fabric; MEASURED, eight at
-   once crashed a renderer on this shared host. `ATLAS_CROSS_PARALLEL` overrides it (>= 1). */
-const CROSS_PARALLEL = Math.max(1, Number(process.env["ATLAS_CROSS_PARALLEL"] ?? 3) || 3);
+/* How many units (a crossing in one state) run at once. Each holds a page with a WebGL fabric; MEASURED,
+   eight at once crashed a renderer on this shared host WITH every frame drawn in software. With the draws
+   suspended a page's frame work is a fraction of that (see RENDER), so the default is fourteen (MEASURED, phase 3.5
+   repair, a full --crossings on this 14-core, 15.4 GB host: 14 at once left 2.0 GB free and no renderer crashed; 16
+   at once left 0.7 GB); with every frame drawn it stays three. `ATLAS_CROSS_PARALLEL` overrides it (>= 1). */
+const CROSS_PARALLEL_DEFAULT = RENDER === "suspended" ? 14 : 3;
+const CROSS_PARALLEL = Math.max(1, Number(process.env["ATLAS_CROSS_PARALLEL"] ?? CROSS_PARALLEL_DEFAULT) || CROSS_PARALLEL_DEFAULT);
 const crossPerCrossing = new Map();
 
 /** One width per rung: the sweep's own width in that rung (coverRungs guarantees there is one). */
 const RUNG_WIDTHS = RUNGS.map((r) => SWEEP_VIEWPORTS.find(([w]) => rungOf(Number(w)) === r.name)).filter((v) => v !== undefined);
+/* ONE viewport height for every crossing: the SHORTEST of the rungs' own heights (SWEEP_VIEWPORTS). A crossing
+   changes the WIDTH, across a rung of LADDER_REM (a width ladder); each crossing held its height through the
+   resize, and one height for all of them lets the two directions of a rung pair start on the same viewport, so a
+   case's arrival (at `to`) can be the next, reverse case's start (at its `from`): one resize a case, not two.
+   WHY THE SHORTEST (independent verifier QH-V1-4): until phase 3 each crossing ran at its start rung's height
+   (390x844, 768x1024, 1152x800, 1440x900, 1920x1080); the first single height (900, the reference rung's) no longer
+   drove the 800 and 844 px viewports, where "no part on screen" is likeliest to fail. The shortest height is at
+   most every pair's shorter one, so every crossing is now driven on a viewport no taller than any it ran on
+   before. It is read from the width lists, not typed. */
+const CROSS_HEIGHT = Math.min(...RUNG_WIDTHS.map(([, h]) => Number(h)));
 
 /**
  * In-page, before an opener is activated: mark every element that could hold focus and is rendered now —
@@ -1971,9 +2125,10 @@ const crossUnseenStops = () => {
   return out;
 };
 
-/** In-page: the accessible names of the modal dialogs on screen now (never a React useId). */
+/** In-page: the accessible names of the modal dialogs on screen now (never a React useId): an aria-modal dialog or
+ *  alert dialog, or a native <dialog> shown with showModal() (`:modal`; it carries no aria-modal). */
 const crossModalNames = () =>
-  [...document.querySelectorAll('[aria-modal="true"]')]
+  [...document.querySelectorAll('[aria-modal="true"], dialog:modal')]
     .filter((el) => el.getClientRects().length > 0)
     .map((d) => {
       const by = (d.getAttribute("aria-labelledby") ?? "").split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
@@ -2010,13 +2165,27 @@ const crossStates = () => {
 };
 
 /**
- * In-page: every rendered control whose ARIA contract says its activation reveals something — a popup
- * (`aria-haspopup`), a collapsed disclosure (`aria-expanded="false"`, a `<summary>`), an unselected tab, an
- * unchecked radio (a view switch) — whether or not it is a tab stop (a roving item still activates). The
- * key each is activated with is the one its role takes. Whether it REALLY reveals focusables is measured
- * (crossPass), not assumed: this is where to look, the effect is the judge.
+ * In-page: THE CANDIDATE OPENERS — every rendered, enabled CONTROL on the page (`unseenOnly`: only those the last
+ * activation revealed), whatever its role, because what reveals a surface is decided by the EFFECT
+ * (crossDiscover activates each and keeps the ones that reveal new focusables), never by an ARIA contract.
+ * Independent verifier QH-V1-2: the phase-3 candidates were the controls whose contract announces a reveal
+ * (`aria-haspopup`, `aria-expanded="false"`, `<summary>`, an unselected tab, an unchecked radio), so an
+ * `aria-pressed` toggle that reveals seven tab stops at 390 px — "Show the 3-D fabric" — was never activated.
+ * Three families, each reported with its own count:
+ *   - STATE: a control that announces a state its activation changes (`aria-expanded`, `aria-pressed`,
+ *     `aria-haspopup`, `aria-controls`, `aria-checked`, a tab, a `<summary>`, a checkbox or radio, a `<select>`),
+ *     whatever that state's value: EVERY one is activated;
+ *   - COLLECTION: a member of a composite widget's collection (a grid's rows and cells, a tree's items, a
+ *     listbox's options, a menu's items): the members of one collection are one component repeated, so ONE per
+ *     collection, role, class and state set is activated, and the rest are counted as represented by it;
+ *   - STATELESS: every other control (a button, a link, a focusable element): one per KIND — tag, class, role and
+ *     accessible name with its numbers folded ("Open the source record for F#") — is activated, the rest counted.
+ * Text entry (a field typed into, not activated) is not a candidate unless it announces a popup (a combobox). The
+ * key each is activated with is the one its role takes: Space checks a radio, checkbox or switch; ArrowRight
+ * EXPANDS a tree item or grid row/cell that has an expanded state (Enter there selects); ArrowDown moves a
+ * <select>; everything else takes Enter.
  */
-const crossOpeners = (rootPath) => {
+const crossOpeners = ({ root: rootPath, unseenOnly }) => {
   let root = document.body;
   if (rootPath !== null) {
     for (const part of rootPath.split("/")) {
@@ -2026,7 +2195,12 @@ const crossOpeners = (rootPath) => {
       root = c;
     }
   }
-  const SEL = '[aria-haspopup]:not([disabled]), [aria-expanded="false"]:not([disabled]), summary, [role="tab"][aria-selected="false"], [role="radio"][aria-checked="false"]';
+  const CONTROL =
+    'a[href], button, input, select, textarea, summary, [tabindex], [contenteditable="true"], [aria-expanded], [aria-pressed], [aria-haspopup], ' +
+    "[role=button], [role=link], [role=tab], [role=radio], [role=checkbox], [role=switch], [role=option], [role=treeitem], [role=row], " +
+    "[role=gridcell], [role=rowheader], [role=columnheader], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox]";
+  const STATE_ATTRS = ["aria-expanded", "aria-pressed", "aria-haspopup", "aria-controls", "aria-checked"];
+  const COLLECTION = /^(?:row|gridcell|rowheader|columnheader|option|treeitem|menuitem|menuitemradio|menuitemcheckbox)$/;
   const rendered = (el) =>
     el.isConnected &&
     (typeof el.checkVisibility === "function" ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0) &&
@@ -2036,15 +2210,40 @@ const crossOpeners = (rootPath) => {
     for (let n = el; n !== null && n !== document.body; n = n.parentElement) parts.push(`${n.tagName}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
     return parts.reverse().join("/");
   };
-  return [...root.querySelectorAll(SEL)]
-    .filter((el) => rendered(el) && el.id !== "__sr-top")
-    .map((el) => ({
-      path: pathOf(el),
-      /* The key its role reveals with: a radio is checked with Space; a collapsed tree item or grid row/cell
-         EXPANDS with ArrowRight (Enter there selects, which is not a reveal); everything else takes Enter. */
-      key: el.getAttribute("role") === "radio" ? "Space" : /^(?:treeitem|row|gridcell)$/.test(el.getAttribute("role") ?? "") ? "ArrowRight" : "Enter",
-      label: `${el.tagName}${el.getAttribute("role") ? `[${el.getAttribute("role")}]` : ""} "${(el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40)}"`,
-    }));
+  const nameOf = (el) => (el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ");
+  const out = [];
+  const kinds = new Map();
+  for (const el of root.querySelectorAll(CONTROL)) {
+    if (!rendered(el) || el.disabled || el.id === "__sr-top" || el.getAttribute("aria-disabled") === "true") continue;
+    if (unseenOnly && el.hasAttribute("data-d3-seen")) continue;
+    const role = el.getAttribute("role") ?? "";
+    const checkable = (el instanceof HTMLInputElement && /^(?:checkbox|radio)$/.test(el.type)) || /^(?:radio|checkbox|switch)$/.test(role);
+    const textEntry =
+      (el instanceof HTMLInputElement && !/^(?:checkbox|radio|button|submit|reset|image|file|color|range)$/.test(el.type)) || el instanceof HTMLTextAreaElement || el.isContentEditable;
+    if (textEntry && !el.hasAttribute("aria-expanded") && !el.hasAttribute("aria-haspopup")) continue;
+    const states = STATE_ATTRS.filter((a) => el.hasAttribute(a));
+    const cls = typeof el.className === "string" ? el.className.split(" ")[0] : "";
+    let family;
+    let kind = null;
+    if (COLLECTION.test(role)) {
+      family = "collection";
+      const owner = el.closest("[role=grid], [role=treegrid], [role=listbox], [role=tree], [role=menu], [role=menubar]");
+      kind = `${role}|${cls}|${owner === null ? "" : pathOf(owner)}|${states.join(",")}`;
+    } else if (states.length > 0 || role === "tab" || el.tagName === "SUMMARY" || checkable || el instanceof HTMLSelectElement) family = "state";
+    else {
+      family = "stateless";
+      kind = `${el.tagName}|${cls}|${role}|${nameOf(el).replace(/\d+/g, "#").slice(0, 60)}`;
+    }
+    if (kind !== null && kinds.has(`${family}|${kind}`)) {
+      kinds.get(`${family}|${kind}`).members += 1;
+      continue;
+    }
+    const key = el instanceof HTMLSelectElement ? "ArrowDown" : checkable ? "Space" : /^(?:treeitem|row|gridcell)$/.test(role) && el.hasAttribute("aria-expanded") ? "ArrowRight" : "Enter";
+    const rec = { path: pathOf(el), key, family, members: 1, label: `${el.tagName}${role ? `[${role}]` : ""} "${nameOf(el).slice(0, 40)}"` };
+    out.push(rec);
+    if (kind !== null) kinds.set(`${family}|${kind}`, rec);
+  }
+  return out;
 };
 
 /* THE APP'S OWN COMMANDS, read from the keyboard reference it renders (ShortcutHelp: "this list is generated
@@ -2252,6 +2451,73 @@ const crossMark = (path) => {
 };
 
 
+/** In-page: mark the element at a structural path only if it is still the stop it was (the label
+ *  crossUnseenStops gave it), rendered and a tab stop. */
+const crossMarkIfLabel = ([path, label]) => {
+  for (const el of document.querySelectorAll("[data-d3-cross]")) el.removeAttribute("data-d3-cross");
+  let n = document.body;
+  for (const part of path.split("/")) {
+    const [tag, i] = part.split(":");
+    const c = n?.children[Number(i)];
+    if (!c || c.tagName !== tag) return false;
+    n = c;
+  }
+  const cls = typeof n.className === "string" ? n.className.split(" ")[0] : "";
+  const now = `${n.tagName}${cls ? `.${cls}` : ""}${n.getAttribute("role") ? `[${n.getAttribute("role")}]` : ""}`;
+  const rendered =
+    n.isConnected &&
+    (typeof n.checkVisibility === "function" ? n.checkVisibility({ visibilityProperty: true }) : n.getClientRects().length > 0) &&
+    n.closest("[inert], [aria-hidden='true']") === null;
+  if (now !== label || !rendered || n.tabIndex < 0 || n.disabled) return false;
+  n.setAttribute("data-d3-cross", "");
+  return true;
+};
+
+/** In-page: for a tab or radio at a structural path, the member of its group selected NOW (what activating it
+ *  replaces), as a path and the key that selects it again; null for anything else, or when it is itself selected. */
+const crossSelectedSibling = (path) => {
+  let n = document.body;
+  for (const part of path.split("/")) {
+    const [tag, i] = part.split(":");
+    const c = n?.children[Number(i)];
+    if (!c || c.tagName !== tag) return null;
+    n = c;
+  }
+  const role = n.getAttribute("role");
+  if (role !== "tab" && role !== "radio") return null;
+  const group = n.closest(role === "tab" ? '[role="tablist"]' : '[role="radiogroup"]');
+  if (group === null) return null;
+  const selected = [...group.querySelectorAll(`[role="${role}"]`)].find((x) => x.getAttribute(role === "tab" ? "aria-selected" : "aria-checked") === "true");
+  if (selected === undefined || selected === n) return null;
+  const parts = [];
+  for (let m = selected; m !== null && m !== document.body; m = m.parentElement) parts.push(`${m.tagName}:${m.parentElement ? [...m.parentElement.children].indexOf(m) : 0}`);
+  return { path: parts.reverse().join("/"), key: role === "radio" ? "Space" : "Enter" };
+};
+
+/** In-page: mark the element at a structural path when it is a TOGGLE whose activation undoes itself — a disclosure
+ *  left expanded, a toggle button (aria-pressed), a checkbox or switch, a <summary> — so pressing its key again
+ *  puts back what the activation changed. (A tab or radio is put back by selecting what it replaced.) */
+const crossMarkUndoable = (path) => {
+  for (const el of document.querySelectorAll("[data-d3-cross]")) el.removeAttribute("data-d3-cross");
+  let n = document.body;
+  for (const part of path.split("/")) {
+    const [tag, i] = part.split(":");
+    const c = n?.children[Number(i)];
+    if (!c || c.tagName !== tag) return false;
+    n = c;
+  }
+  const toggle =
+    n.getAttribute("aria-expanded") === "true" ||
+    n.hasAttribute("aria-pressed") ||
+    /^(?:checkbox|switch|menuitemcheckbox)$/.test(n.getAttribute("role") ?? "") ||
+    (n instanceof HTMLInputElement && n.type === "checkbox") ||
+    n.tagName === "SUMMARY" ||
+    n instanceof HTMLSelectElement;
+  if (!toggle) return false;
+  n.setAttribute("data-d3-cross", "");
+  return true;
+};
+
 /** In-page: where focus is after the crossing, and whether that element is rendered. */
 const crossLanding = () => {
   const a = document.activeElement;
@@ -2265,6 +2531,75 @@ const crossLanding = () => {
   return { lost: false, rendered, connected: a.isConnected, desc: `${a.tagName}${a.id ? `#${a.id}` : ""}${cls ? `.${cls}` : ""} "${name}"` };
 };
 
+
+/**
+ * In-page: THE CROSSING PASS'S SIGNATURE — what a reload of the state restores, which a page must match to count
+ * as clean. srSignature's (the URL, the open dialogs, the rendered tab stops) and the STATE of every control and
+ * the document: each element's aria-checked/-pressed/-selected/-expanded, every field's checked and value, and the
+ * root's theme. MEASURED (phase 3.5, --render-check): the queue's "Display" surface revealed 12 stops in one
+ * discovery and 9 in another of the same page state, because an earlier opener in the same session (a category
+ * radio, a theme radio) had changed state that no tab stop showed, the tab-stop signature still matched, and the
+ * page counted as clean. A selection, a toggle or a theme is what a reload resets; it is part of "clean".
+ * Live regions are left out (their text is an announcement, not state).
+ *
+ * React's useId values (`_r_2_`, `«r2»`, `:r2:`) are NORMALISED to one token: they number the components in the
+ * order they MOUNTED, which is history, not state. MEASURED (phase 3.5 repair, probe of every rung pair, idle and a
+ * traced flow): a page loaded at 768 and resized to 1152 carried `_r_2_-q` where a page loaded at 1152 carried
+ * `_r_3_-q` — 76 of 76 differing lines were ids — so no page was ever clean at a width it had not been LOADED at,
+ * and every case whose start was the other rung of its pair reloaded. The element's tag, class, every state
+ * attribute and value, and the document order are untouched: two pages still match only when every control is in
+ * the same state in the same place.
+ */
+const crossSignature = () => {
+  const noUseId = (s) => s.replace(/_r_[0-9a-z]+_/g, "_r_").replace(/«r[0-9a-z]+»/g, "«r»").replace(/:r[0-9a-z]+:/g, ":r:");
+  const sel = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable='true']";
+  /* The inert and live-region subtrees, found once: a per-element `closest()` over a selector list cost most of this
+     function's 69 ms on a traced flow (MEASURED, phase 3.5 repair), and it runs several times a case. */
+  const inerts = [...document.querySelectorAll("[inert]")];
+  const lives = [...document.querySelectorAll("[aria-live], [role=status], [role=alert], [role=log]")];
+  const within = (list, el) => list.length > 0 && list.some((x) => x.contains(el));
+  const stops = [...document.querySelectorAll(sel)]
+    .filter((el) => el.tabIndex >= 0 && !el.disabled && el.getClientRects().length > 0 && !within(inerts, el))
+    .map((el) => `${el.tagName}|${el.id}|${el.className}`);
+  const dialogs = [...document.querySelectorAll("[role=dialog], [role=menu], [role=listbox], [role=alertdialog], dialog[open]")].filter((el) => el.getClientRects().length > 0).length;
+  const state = [...document.querySelectorAll("[aria-checked], [aria-pressed], [aria-selected], [aria-expanded], input, select, textarea")]
+    .filter((el) => !within(lives, el))
+    .map(
+      (el) =>
+        `${el.tagName}|${el.id}|${["aria-checked", "aria-pressed", "aria-selected", "aria-expanded"].map((a) => el.getAttribute(a) ?? "").join(",")}|` +
+        `${el instanceof HTMLInputElement ? `${el.checked}|${el.value}` : el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement ? el.value : ""}`,
+    );
+  const root = document.documentElement;
+  return noUseId(`${location.search}\n${root.getAttribute("data-theme") ?? ""}|${root.className}\n${dialogs}\n${stops.join("\n")}\n--\n${state.join("\n")}`);
+};
+
+/**
+ * Wait (bounded) until the command palette's PRE-WARM has finished, wherever the fabric is on screen. After the scene
+ * converges, CommandPalette.tsx mounts its frame once and parks it — and the parked frame's input is a field, so it is
+ * part of the signature. MEASURED (phase 3.5 repair, probe of every rung, idle and a traced flow): at 768, 1152, 1440
+ * and 1920 a settled load read `data-palette-warm="waiting"`, and 4 s later the SAME untouched page read "done" with
+ * one more field (`INPUT.palette__input`). The clean signature was taken in that window, so every later read of the
+ * page differed from it, and the page was reloaded before every case — which then read clean again only because the
+ * pre-warm had restarted. Where no canvas is rendered (the stacked rung) the scene never converges and the pre-warm
+ * waits: there is nothing to wait for. A pre-warm that does not finish in time is left as it is: the signature then
+ * differs, and the pass's own rule (restore, else reload) applies — slower, never looser.
+ */
+const CROSS_WARM_WAIT_MS = 15000;
+async function crossWarmSettled(page) {
+  await page
+    .waitForFunction(
+      (terminal) => {
+        const canvas = document.querySelector(".fabric3d__canvas");
+        const shown = canvas !== null && (typeof canvas.checkVisibility !== "function" || canvas.checkVisibility({ visibilityProperty: true }));
+        return !shown || terminal.includes(document.documentElement.dataset.paletteWarm ?? "");
+      },
+      [...PALETTE_WARM_TERMINAL],
+      { timeout: CROSS_WARM_WAIT_MS },
+    )
+    .catch(() => {
+      crossCount.warmTimeouts += 1;
+    });
+}
 
 /**
  * Load a state and wait until it has SETTLED: the lazy fabric (and its canvas, a tab stop) mounts an
@@ -2283,6 +2618,28 @@ async function crossLoad(page, query) {
     await page.goto(url, { waitUntil: "load", timeout: 90000 });
   }
   await page.waitForSelector("#rail-queue .ag__row--data", { timeout: 30000 }).catch(() => {});
+  await crossFabricSettled(page);
+  /* Settled: the signature unchanged over a 700 ms window, sampled every 350 ms (it was read twice, 700 ms
+     apart, after a first 700 ms wait: the same quiet window, sampled more finely, from the first moment it can
+     hold — MEASURED, phase 3.5: a reload is the commonest step of this pass, and that wait was half of it). */
+  let last = await page.evaluate(crossSignature);
+  for (let i = 0, still = 0; i < 60 && still < 2; i += 1) {
+    await page.waitForTimeout(350);
+    const sig = await page.evaluate(crossSignature);
+    still = sig === last ? still + 1 : 0;
+    last = sig;
+  }
+}
+
+/**
+ * Wait (bounded) until a fabric the page shows has MOUNTED, reported its first frame and let the palette's pre-warm
+ * park: after a load, and after an activation (a chain's step, crossSession's `step`) — the fabric toggle at the
+ * stacked rung mounts the scene, whose status-bar control and canvas arrive later. MEASURED (phase 3.5 repair,
+ * full run of the nested discovery): "Show the 3-D fabric → a tier of the fabric tree" was credited with the
+ * status bar's scene control, which the TOGGLE had mounted a moment late; re-activated, the tree item revealed
+ * nothing of the kind, and the case was NOT DRIVEN.
+ */
+async function crossFabricSettled(page) {
   await page
     .waitForFunction(
       () => {
@@ -2294,17 +2651,19 @@ async function crossLoad(page, query) {
       { timeout: 30000 },
     )
     .catch(() => {});
-  let last = "";
-  for (let i = 0; i < 30; i += 1) {
-    await page.waitForTimeout(700);
-    const sig = await page.evaluate(srSignature);
-    if (sig === last) break;
-    last = sig;
-  }
+  /* And, where a canvas mounted, until the 3-D subsystem has reported its first frame: until then the status
+     bar says so ("not observed: the 3-D subsystem has not reported a frame yet", `data-tier="unknown"`), and
+     when the report lands a control replaces that line. MEASURED (phase 3.5, --crossings --vp=390, reload
+     reasons printed): the signature settled before the report, so the "clean" page lacked that control, every
+     later read had it, and 31 of 31 family-1 cases of one unit reloaded for it. */
+  await page
+    .waitForFunction(() => document.querySelector(".fabric3d__canvas") === null || document.querySelector('.sb__scene[data-tier="unknown"]') === null, null, { timeout: 15000 })
+    .catch(() => {});
+  /* And until the palette's pre-warm, which follows the scene's convergence, has parked its frame (crossWarmSettled). */
+  await crossWarmSettled(page);
 }
 
-/** Resize, and wait until the page has processed it (framesSettled) and the slowest step has landed.
- *  `settle` is shorter for the trip BACK, which is not judged (the next case restores and re-checks). */
+/** Resize, and wait until the page has processed it (framesSettled) and the slowest step has landed. */
 async function crossResize(page, width, height, settle = CROSS_SETTLE_MS) {
   await page.setViewportSize({ width, height });
   await framesSettled(page);
@@ -2312,21 +2671,27 @@ async function crossResize(page, width, height, settle = CROSS_SETTLE_MS) {
 }
 
 /**
- * One case: the marked element holds focus at `from`; cross to `to`; judge where focus is; cross back.
+ * One case: the marked element holds focus at `from`; cross to `to`; judge where focus is. The page is LEFT
+ * at `to`: the next case starts wherever its own `from` is (a session's `fresh`), and when that is `to` — the
+ * reverse crossing of the same rung pair — the arrival of this case is the start of the next, one resize each.
  * Returns false when focus never reached the element (the caller retries once from a fresh load, then
  * reports NOT DRIVEN). Focus is judged where it comes to REST: a failing read is taken again once
  * every finite animation has finished (the skip link slides in; MEASURED, one read mid-slide in a long
  * run reported it off screen while a direct probe of the same crossing had it on screen at +100 ms).
+ * With a `sink` (renderCheck) the outcome is recorded there, keyed by the case, instead of judged into
+ * this run's verdict.
  */
-async function crossCase(page, where, label, from, to, height) {
+async function crossCase(page, where, label, from, to, height, sink = null) {
   const scenario = `${label} focused at ${from}px (${rungOf(from)}) → resize to ${to}px (${rungOf(to)})`;
   const loc = page.locator("[data-d3-cross]").first();
   await loc.focus().catch(() => {});
   const on = await loc.evaluate((el) => el === document.activeElement).catch(() => false);
   if (!on) return false;
   await page.keyboard.press("Shift");
-  crossCount.cases += 1;
-  crossPerCrossing.set(where, (crossPerCrossing.get(where) ?? 0) + 1);
+  if (sink === null) {
+    crossCount.cases += 1;
+    crossPerCrossing.set(where, (crossPerCrossing.get(where) ?? 0) + 1);
+  }
   await crossResize(page, to, height);
   const judge = async () => {
     const st = await page.evaluate(crossLanding);
@@ -2343,28 +2708,59 @@ async function crossCase(page, where, label, from, to, height) {
     await page.evaluate(settleAnimations);
     ({ st, failed } = await judge());
   }
-  if (failed !== null) {
+  if (sink !== null) sink.set(`${where} :: ${label}`, `${failed === null ? "OK" : `FAIL ${failed}`} -> ${st.desc}`);
+  else if (failed !== null) {
     crossCount.lost += 1;
     sweepFail(where, `${scenario}: ${failed}`);
   } else console.log(`PASS  ${where} :: ${scenario} -> ${st.desc}`);
-  await crossResize(page, from, height, 250);
   return true;
 }
 
 /** Drive one case; if focus never reached its element, reload the state and try once more. */
-async function crossDrive(page, where, label, from, to, height, mark, reload) {
+async function crossDrive(page, where, label, from, to, height, mark, reload, sink = null) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (attempt > 0) await reload();
     if (!(await mark())) continue;
-    if (await crossCase(page, where, label, from, to, height)) return;
+    if (await crossCase(page, where, label, from, to, height, sink)) return;
   }
-  sweepFail(where, `${label} at ${from}px → ${to}px: NOT DRIVEN (focus never reached the element under test, twice, the second time from a fresh load)`);
+  if (sink !== null) sink.set(`${where} :: ${label}`, "NOT DRIVEN");
+  else sweepFail(where, `${label} at ${from}px → ${to}px: NOT DRIVEN (focus never reached the element under test, twice, the second time from a fresh load)`);
 }
 
-/** Every case of one directed crossing, in every state. */
-async function crossPass(browser, from, to, height, onlyState) {
-  const where = `crossing ${from}px (${rungOf(from)}) -> ${to}px (${rungOf(to)})`;
-  const ctx = await browser.newContext({ viewport: { width: from, height } });
+/** `list`, thinned to at most `cap` evenly spaced members (renderCheck's sample); whole when it fits. */
+const strideOf = (list, cap) => (list.length <= cap ? list : list.filter((_, i) => i % Math.ceil(list.length / cap) === 0));
+
+/** Elements are matched across pages and loads by what they are and their occurrence among their kind —
+ *  `BUTTON.ui-cite "…"#2` — never by an index alone. */
+const occurrenceKeys = (list) => {
+  const seen = new Map();
+  return list.map((s) => {
+    const n = (seen.get(s.label) ?? 0) + 1;
+    seen.set(s.label, n);
+    return `${s.label}#${n}`;
+  });
+};
+
+/* THE GRAIN OF THE WORK (phase 3.5: tractable). MEASURED (a full --sweep with (crossing x state) units, eight at
+   once, 2026-09-29): after 37 minutes 9 of 40 units had started — a traced flow's unit alone held ~450 cases
+   (its hop list, the Inspector's tabs, every surface's stops), so the pool's width was idle behind a few long
+   units. The work is now cut where it is independent: one ENUMERATION per start width and page state (the same
+   page for both crossings that leave that width), openers DISCOVERED in batches, and the cases in JOBS of at
+   most JOB_CASES — each job on its own page, loaded fresh, finding its elements again by what they are
+   (occurrenceKeys) or where the enumeration read them — so any job can run beside any other. A tab-stop job
+   holds BOTH directions of a rung pair, alternating, so each case's arrival is the next one's start. */
+const JOB_CASES = 24;
+const SURFACE_JOB_CASES = 12;
+const DISCOVERY_BATCH = 8;
+
+/**
+ * A SESSION: one page in one page state, at one viewport height, moving between the widths of its cases —
+ * its load, a clean signature per width (from a load AT that width), the return to it between cases
+ * (`fresh`), crash recovery (`guarded`) and opener activation. `where` names what a failure is reported against.
+ */
+async function crossSession(browser, width0, stateRow, { mode, sink, where, clean }) {
+  const [stateName, query, prep, scope] = stateRow;
+  const ctx = await geometryContext(browser, { viewport: { width: width0, height: CROSS_HEIGHT } }, mode);
   await ctx.addInitScript(() => {
     try {
       localStorage.clear();
@@ -2382,187 +2778,745 @@ async function crossPass(browser, from, to, height, onlyState) {
   let page = await ctx.newPage();
   const renew = async () => {
     crossCount.recovered += 1;
+    const w = page.viewportSize()?.width ?? width0;
+    await accountRender(page, mode);
     await page.close().catch(() => {});
     page = await ctx.newPage();
+    await page.setViewportSize({ width: w, height: CROSS_HEIGHT });
   };
   const dead = (err) => /Target crashed|Target page, context or browser has been closed|Page crashed/.test(String(err));
-  try {
-    for (const [state, query, prep, scope] of crossStates().filter(([name]) => !onlyState || name.includes(onlyState))) {
-      const at = `${where} / ${state}`;
-      /* The state's load: the page, then (for a surface state) the command that opens the surface. */
-      let present = true;
-      const load = async () => {
-        await crossLoad(page, query);
-        if (prep !== null) present = (await prep(page)) === true;
-      };
-      let clean = null;
-      for (let attempt = 0; attempt < 2 && clean === null; attempt += 1) {
-        try {
-          if (attempt > 0) await renew();
+  const fail = (what, at = where) => (sink !== null ? sink.set(`${at} :: ${what}`, "NOT DRIVEN") : sweepFail(at, what));
+  const close = async () => {
+    await accountRender(page, mode);
+    await ctx.close().catch(() => {});
+  };
+  /* The state's load, at the width the page is at: the page, then (for a view state) what brings it about. */
+  let present = true;
+  const load = async () => {
+    await crossLoad(page, query);
+    if (prep !== null) present = (await prep(page)) === true;
+  };
+  const width = () => page.viewportSize()?.width ?? 0;
+  /* The RETURN to a start width is not a case: nothing is judged there, only the signature, which is compared again
+     after the full settle when it does not match at once (`settledSig`). So it waits two frames and RETURN_SETTLE_MS,
+     not CROSS_SETTLE_MS (phase 3.5 repair: a surface case crossed twice, and half of its fixed wait was the return). */
+  const ensure = async (w) => {
+    if (width() === w) return false;
+    await crossResize(page, w, CROSS_HEIGHT, RETURN_SETTLE_MS);
+    return true;
+  };
+  /** The page's signature, read again after the rest of CROSS_SETTLE_MS when it is not `want` at once. */
+  const settledSig = async (want) => {
+    const now = await page.evaluate(crossSignature);
+    if (want(now)) return now;
+    await page.waitForTimeout(CROSS_SETTLE_MS - RETURN_SETTLE_MS);
+    await framesSettled(page);
+    return page.evaluate(crossSignature);
+  };
+  /** The CLEAN signatures of this state at each width: every one read from a settled page LOADED at that width (what
+   *  a reload restores there), by any session of this run's pass — shared (`clean`), so a page may be judged clean
+   *  at a width it was not loaded at (the other rung of its pair) without a load there first. A set, not one value:
+   *  every settled load IS clean by definition, so two loads that differ both count. */
+  const cleanSet = (w) => {
+    const k = `${w}|${stateName}`;
+    let s = clean.get(k);
+    if (s === undefined) clean.set(k, (s = new Set()));
+    return s;
+  };
+  const isClean = async (w) => cleanSet(w).has(await page.evaluate(crossSignature));
+  let firstLoad = false;
+  for (let attempt = 0; attempt < 2 && !firstLoad; attempt += 1) {
+    try {
+      if (attempt > 0) await renew();
+      await load();
+      cleanSet(width0).add(await page.evaluate(crossSignature));
+      firstLoad = true;
+    } catch (err) {
+      if (attempt === 0 && dead(err)) continue;
+      fail(`the state could not be loaded: NOT DRIVEN (${String(err).split(String.fromCharCode(10))[0]})`);
+    }
+  }
+  if (!firstLoad) return { ok: false, close, fail };
+  /* A view state is cased on the elements INSIDE its surface (the page states drive the rest). */
+  const scopePath0 = scope === null ? null : await page.evaluate(crossScopePath, scope);
+  if (!present || (scope !== null && scopePath0 === null)) return { ok: true, absent: true, close, fail };
+  /** Reload the state at `w` (a settled load is clean by definition: its signature joins the clean set). */
+  const reloadAt = async (w) => {
+    await ensure(w);
+    await load();
+    cleanSet(w).add(await page.evaluate(crossSignature));
+  };
+  /* Back to the state's clean page at `w` before a case. The criterion is the pass's own, unchanged: the page's
+     SIGNATURE (crossSignature: URL, tab stops, open dialogs and every control's state) equals the clean one at that
+     width. What changed is how a drifted page gets back there: first the opener that drifted it is undone
+     (the tab or radio it replaced selected again, the disclosure it expanded collapsed, the keyed command
+     pressed again), then Escape (a popover, a dialog, the coverage panel close on it; at most two presses),
+     each step followed by two frames and a signature check, and a RELOAD only when none restored it.
+     MEASURED (phase 3.5, --crossings --vp=390 --state=idle, 248 cases): 11.3 min reloading whenever the
+     signature drifted, 7.8 min with the Escape step (59 restored by it, 163 reloads). */
+  let undoOpener = null;
+  /** Back to a clean page at `w` WITHOUT a reload, when one of the steps below gets there; false when none does. */
+  const restore = async (w) => {
+    if (cleanSet(w).size === 0) return false;
+    const resized = await ensure(w);
+    await crossWarmSettled(page);
+    const back = async () => {
+      await framesSettled(page);
+      if (!(await isClean(w))) return false;
+      if (sink === null) crossCount.undone += 1;
+      return true;
+    };
+    const o = undoOpener;
+    undoOpener = null;
+    if (resized ? cleanSet(w).has(await settledSig((x) => cleanSet(w).has(x))) : await isClean(w)) return true;
+    /* The opener's own undo first (Escape on a tab would close the pane that holds it): the selection it
+       replaced selected again (a tab, a radio); a disclosure it left expanded collapsed (a tree item or row by
+       ArrowLeft, anything else by its own key again); a keyed command pressed again. Then Escape. */
+    if (o !== null && o.kind === "control" && o.restore !== null && (await page.evaluate(crossMark, o.restore.path))) {
+      await page.locator("[data-d3-cross]").first().focus().catch(() => {});
+      await page.keyboard.press(o.restore.key);
+      if (await back()) return true;
+    } else if (o !== null && o.kind === "control" && (await page.evaluate(crossMarkUndoable, o.pathNow))) {
+      await page.locator("[data-d3-cross]").first().focus().catch(() => {});
+      await page.keyboard.press(o.key === "ArrowRight" ? "ArrowLeft" : o.key === "ArrowDown" ? "ArrowUp" : o.key);
+      if (await back()) return true;
+    } else if (o !== null && o.kind === "command") {
+      await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
+      for (const k of o.presses) await page.keyboard.press(k);
+      if (await back()) return true;
+    }
+    for (let i = 0; i < 2; i += 1) {
+      await page.keyboard.press("Escape");
+      if (await back()) return true;
+    }
+    return false;
+  };
+  const fresh = async (w) => {
+    if (await restore(w)) return;
+    if (sink === null) {
+      crossCount.reloads += 1;
+      await noteReload(w);
+    }
+    await reloadAt(w);
+  };
+  /** Why a page is reloaded: the first line its signature differs from a clean one by (the tally is printed). */
+  const noteReload = async (w) => {
+    const clean0 = [...cleanSet(w)][0];
+    const why = clean0 === undefined || page.viewportSize()?.width !== w ? "no clean page of this width yet" : crossFirstDiff(clean0, await page.evaluate(crossSignature).catch(() => ""));
+    const k = `${stateName} @${w}px: ${why}`;
+    crossReloadWhy.set(k, (crossReloadWhy.get(k) ?? 0) + 1);
+  };
+  /* Run one case; on a crashed renderer, renew the page, reload the state and run it once more. */
+  const guarded = async (label, run, at = where) => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        if (attempt > 0) {
+          await renew();
           await load();
-          clean = await page.evaluate(srSignature);
-        } catch (err) {
-          if (attempt === 0 && dead(err)) continue;
-          sweepFail(at, `the state could not be loaded: NOT DRIVEN (${String(err).split(String.fromCharCode(10))[0]})`);
         }
-      }
-      if (clean === null) continue;
-      /* A surface state is cased on the elements INSIDE its surface (the page states drove the rest). */
-      const scopePath = scope === null ? null : await page.evaluate(crossScopePath, scope);
-      if (!present || (scope !== null && scopePath === null)) {
-        console.log(`INFO  ${at}: the state does not exist at ${from}px (its surface is not on screen there); no case`);
-        crossAbsent.set(state, [...(crossAbsent.get(state) ?? []), `${from}->${to}`]);
-        continue;
-      }
-      const fresh = async () => {
-        if ((page.viewportSize()?.width ?? 0) !== from) await crossResize(page, from, height);
-        if ((await page.evaluate(srSignature)) !== clean) await load();
-      };
-      /* Run one case; on a crashed renderer, renew the page, reload the state and run it once more. */
-      const guarded = async (label, run) => {
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          try {
-            if (attempt > 0) {
-              await renew();
-              await load();
-            }
-            await run();
-            return;
-          } catch (err) {
-            if (attempt === 0 && dead(err)) continue;
-            sweepFail(at, `${label}: NOT DRIVEN (${String(err).split(String.fromCharCode(10))[0]})`);
-            return;
-          }
-        }
-      };
-      /* Family 1: every rendered tab stop of the page (of the surface, in a surface state). */
-      const stops = await page.evaluate(crossStops, scopePath);
-      console.log(`INFO  ${at}: ${stops.length} tab stop(s) at ${from}px${scope === null ? "" : ` inside ${scope}`}`);
-      for (const s of stops) {
-        await guarded(s.label, async () => {
-          await fresh();
-          await crossDrive(page, at, s.label, from, to, height, () => page.evaluate(crossMark, s.path), load);
-        });
-      }
-      /* Family 3: every programmatic landing (tabindex=-1 non-roving, named landmarks / their headings). */
-      const landings = await page.evaluate(crossLandings, scopePath);
-      console.log(`INFO  ${at}: ${landings.length} programmatic landing(s) at ${from}px`);
-      crossCount.landings += landings.length;
-      for (const s of landings) {
-        await guarded(s.label, async () => {
-          await fresh();
-          await crossDrive(page, at, s.label, from, to, height, () => page.evaluate(crossMarkLanding, s.path), load);
-        });
-      }
-      /* Family 2: every SURFACE a reader can open here, found by its EFFECT (independent verifier R5-V2-3: the
-         hand-kept surface states and `[aria-haspopup]`-only popovers left disclosures, the coverage panel and
-         the drawer at its own rung outside the denominator). Only in the page states: a scoped state's
-         surface is already open. Each opener — every control whose ARIA contract says it reveals something
-         (crossOpeners) and every keyed command of the app (crossChords) — is activated on a fresh page; the
-         rendered tab stops that were NOT there before are the surface it revealed, and each is a case. An
-         opener that reveals nothing is counted, not cased. The dialogs a surface opens feed the modal
-         denominator. */
-      if (scope !== null) continue;
-      const openers = [];
-      await guarded("the openers", async () => {
-        await fresh();
-        const controls = await page.evaluate(crossOpeners, null);
-        const chords = await crossChords(page);
-        openers.push(...controls.map((c) => ({ kind: "control", ...c })), ...chords.map((c) => ({ kind: "command", ...c })));
-      });
-      /** Activate an opener on a fresh page, every element rendered before it marked; false when it could not be. */
-      const activate = async (o) => {
-        await fresh();
-        await page.evaluate(crossMarkSeen);
-        if (o.kind === "control") {
-          if (!(await page.evaluate(crossMark, o.path))) return false;
-          await page.locator("[data-d3-cross]").first().focus().catch(() => {});
-          await page.keyboard.press(o.key);
-        } else {
-          /* Pressed where a reader presses it: with focus on nothing in particular. */
-          await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
-          for (const k of o.presses) await page.keyboard.press(k);
-        }
-        await framesSettled(page);
-        await page.waitForTimeout(400);
-        return true;
-      };
-      const revealedNow = () => page.evaluate(crossUnseenStops);
-      for (const o of openers) {
-        let revealed = [];
-        await guarded(`the opener ${o.label}`, async () => {
-          crossCount.openersTried += 1;
-          if (!(await activate(o))) return;
-          revealed = await revealedNow();
-          for (const name of await page.evaluate(crossModalNames)) crossDialogsOpened.add(name);
-        });
-        if (revealed.length === 0) continue;
-        /* A stop is the OPENER's only if a second activation reveals it again: one that appeared the first time
-           and not the second came with something else (the status bar's scene button, mounted when the scene
-           settled — MEASURED, run 1: "revealed" by a disclosure, then never again, NOT DRIVEN twice). Such stops
-           are counted and named, not cased. Stops are matched by what they are and their occurrence, not by index. */
-        const occurrence = (list) => {
-          const seen = new Map();
-          return list.map((s) => {
-            const n = (seen.get(s.label) ?? 0) + 1;
-            seen.set(s.label, n);
-            return `${s.label}#${n}`;
-          });
-        };
-        let again = [];
-        await guarded(`the opener ${o.label}, again`, async () => {
-          if (await activate(o)) again = await revealedNow();
-        });
-        const againKeys = new Set(occurrence(again));
-        const keys = occurrence(revealed);
-        const stable = revealed.map((s, i) => ({ s, key: keys[i] })).filter((x) => againKeys.has(x.key));
-        const unstable = keys.filter((k) => !againKeys.has(k));
-        if (unstable.length > 0) {
-          crossCount.unstable += unstable.length;
-          console.log(`INFO  ${at}: ${o.label}: ${unstable.length} stop(s) appeared on one activation and not on the next (not the opener's; not cased): ${unstable.join(", ")}`);
-        }
-        if (stable.length === 0) continue;
-        crossCount.surfaces += 1;
-        crossSurfaces.set(at, (crossSurfaces.get(at) ?? 0) + 1);
-        console.log(`INFO  ${at}: ${o.label} revealed ${stable.length} tab stop(s)`);
-        for (const { s, key } of stable) {
-          const label = `revealed by ${o.label}: ${s.label}`;
-          await guarded(label, async () => {
-            const mark = async () => {
-              if (!(await activate(o))) return false;
-              const now = await revealedNow();
-              const i = occurrence(now).indexOf(key);
-              return i >= 0 && (await page.evaluate(crossMark, now[i].path));
-            };
-            await crossDrive(page, at, label, from, to, height, mark, load);
-          });
-        }
+        await run();
+        return;
+      } catch (err) {
+        if (attempt === 0 && dead(err)) continue;
+        fail(`${label}: NOT DRIVEN (${String(err).split(String.fromCharCode(10))[0]})`, at);
+        return;
       }
     }
+  };
+  /** Activate an opener on the clean page at `w`, every element rendered before it marked; false when it could not
+   *  be. A control is found at the structural path the enumeration read (as this pass always found it: a clean
+   *  page of the state has the same structure), else by what it is — its occurrence among this page's openers. */
+  /* One step: a control (found at its recorded path, else by what it is among the candidates the step before it
+     revealed — `unseenOnly` — or the page's) or a keyed command. */
+  const step = async (o, unseenOnly) => {
+    if (o.kind === "control") {
+      const find = async () => {
+        if (await page.evaluate(crossMark, o.path)) return o.path;
+        const list = await page.evaluate(crossOpeners, { root: null, unseenOnly });
+        const i = occurrenceKeys(list).indexOf(o.ident);
+        return i >= 0 && (await page.evaluate(crossMark, list[i].path)) ? list[i].path : null;
+      };
+      let pathNow = await find();
+      /* A control INSIDE a surface (a chain's later step) may mount after the surface does: the fabric's canvas
+         and the status bar's scene control arrive when the lazily mounted scene reports its first frame. MEASURED
+         (phase 3.5 repair, first full run of the nested discovery): "Show the 3-D fabric → the scene control" and
+         "→ the canvas" were NOT DRIVEN on every 390 px state, found by the discovery and absent 400 ms after the
+         re-activation. So such a step waits for its control (bounded) before it is judged missing. */
+      for (let t = 0; pathNow === null && unseenOnly && t < 24; t += 1) {
+        await page.waitForTimeout(250);
+        pathNow = await find();
+      }
+      if (pathNow === null) return false;
+      undoOpener = { ...o, pathNow, restore: await page.evaluate(crossSelectedSibling, pathNow) };
+      /* What this step reveals is what was not rendered just before it (its target is marked by crossMark,
+         which the seen-marking leaves alone). */
+      await page.evaluate(crossMarkSeen);
+      await page.locator("[data-d3-cross]").first().focus().catch(() => {});
+      await page.keyboard.press(o.key);
+    } else {
+      await page.evaluate(crossMarkSeen);
+      undoOpener = o;
+      /* Pressed where a reader presses it: with focus on nothing in particular. */
+      await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
+      for (const k of o.presses) await page.keyboard.press(k);
+    }
+    await framesSettled(page);
+    await page.waitForTimeout(400);
+    /* A step that shows the fabric mounts the scene, whose controls arrive later: what it revealed is judged once
+       they have (crossFabricSettled; immediate when no fabric is pending). */
+    await crossFabricSettled(page);
+    return true;
+  };
+  /** Activate an opener — or a CHAIN (a control inside the surface another opener revealed: the discovery's one
+   *  level of recursion) — on the clean page at `w`, every element rendered before its LAST step marked, so what
+   *  that step reveals is judged. Returns false when a step could not be found, else whether the activation
+   *  NAVIGATED (changed the URL: a move to another page state, which the page states own, not a surface). */
+  const activate = async (o, w) => {
+    const steps = o.kind === "chain" ? o.steps : [o];
+    const run = async () => {
+      const before = await page.evaluate(() => location.pathname + location.search);
+      await page.evaluate(crossMarkSeen);
+      for (let i = 0; i < steps.length; i += 1) if (!(await step(steps[i], i > 0))) return false;
+      const after = await page.evaluate(() => location.pathname + location.search).catch(() => null);
+      return { navigated: after !== before };
+    };
+    await fresh(w);
+    const r = await run();
+    if (r !== false) return r;
+    /* A step not found on a RESTORED page is tried once more on a LOADED one before it is judged missing: a restore
+       matches the signature, and a component can keep state no attribute shows. MEASURED (phase 3.5 repair, full
+       --sweep): the queue's filter combobox, after an undo and an Escape, read clean — and its next Enter no longer
+       offered the suggestions the discovery had found under it (NOT DRIVEN, 24 chains); on a fresh load it offers
+       them every time (probe, 3 of 3). */
+    if (sink === null) {
+      crossCount.reloads += 1;
+      await noteReload(w);
+    }
+    await reloadAt(w);
+    return run();
+  };
+  const revealedNow = () => page.evaluate(crossUnseenStops);
+  return { ok: true, absent: false, page: () => page, width, scopePath: async () => (scope === null ? null : page.evaluate(crossScopePath, scope)), ensure, settledSig, reloadAt, restore, fresh, noteReload, guarded, activate, revealedNow, close, fail };
+}
+
+/**
+ * The ENUMERATION of one width in one page state: its tab stops (family 1), its programmatic landings (family 3)
+ * and its openers (family 2's discovery, in batches). Its tab stops and landings go to the pair registry, per
+ * crossing leaving `from` (`tos`); the surfaces its discovery finds become jobs per crossing.
+ */
+async function crossEnumerate(browser, from, stateRow, tos, env) {
+  const { mode, sample, sink, push } = env;
+  const [state, , , scope] = stateRow;
+  const here = `${from}px / ${state}`;
+  const ats = tos.map((to) => [to, `crossing ${from}px (${rungOf(from)}) -> ${to}px (${rungOf(to)}) / ${state}`]);
+  const deposited = new Set();
+  const deposit = (to, items) => {
+    deposited.add(to);
+    pairDeposit(browser, env, stateRow, from, to, items);
+  };
+  const s = await crossSession(browser, from, stateRow, { mode, sink, where: ats[0][1], clean: env.clean });
+  try {
+    if (!s.ok) {
+      for (const [, at] of ats.slice(1)) s.fail("the state could not be loaded: NOT DRIVEN", at);
+      return;
+    }
+    if (s.absent) {
+      console.log(`INFO  ${here}: the state does not exist at ${from}px (its surface is not on screen there); no case`);
+      if (sink === null) for (const [to] of ats) crossAbsent.set(state, [...(crossAbsent.get(state) ?? []), `${from}->${to}`]);
+      return;
+    }
+    const page = s.page();
+    /* Family 1: every rendered tab stop of the page (of the surface, in a view state). */
+    const allStops = await page.evaluate(crossStops, await s.scopePath());
+    const stops = sample ? strideOf(allStops, 10) : allStops;
+    /* Family 3: every programmatic landing (tabindex=-1 non-roving, named landmarks / their headings). */
+    const allLandings = await page.evaluate(crossLandings, await s.scopePath());
+    const landings = sample ? strideOf(allLandings, 4) : allLandings;
+    console.log(
+      `INFO  ${here}: ${allStops.length} tab stop(s)${scope === null ? "" : ` inside ${scope}`} and ${allLandings.length} programmatic landing(s)` +
+        `${sample ? ` (render-check sample: ${stops.length} and ${landings.length})` : ""}, each crossed to ${tos.join(" and ")} px`,
+    );
+    if (sink === null) crossCount.landings += allLandings.length * tos.length;
+    const stopKeys = occurrenceKeys(allStops);
+    const landingKeys = occurrenceKeys(allLandings);
+    const items = [
+      ...stops.map((x) => ({ family: 1, key: stopKeys[allStops.indexOf(x)], label: x.label, path: x.path })),
+      ...landings.map((x) => ({ family: 3, key: landingKeys[allLandings.indexOf(x)], label: x.label, path: x.path })),
+    ];
+    for (const [to] of ats) deposit(to, items);
+    /* Family 2: every SURFACE a reader can open here, found by its EFFECT (independent verifier R5-V2-3: the
+       hand-kept surface states and `[aria-haspopup]`-only popovers left disclosures, the coverage panel and
+       the drawer at its own rung outside the denominator). Only in the page states: a view state's surface
+       is already open. Each opener — every control whose ARIA contract says it reveals something
+       (crossOpeners) and every keyed command of the app (crossChords) — is activated on a clean page; the
+       rendered tab stops that were NOT there before are the surface it revealed, and each is a case. An
+       opener that reveals nothing is counted, not cased. The dialogs a surface opens feed the modal
+       denominator. */
+    if (scope !== null) return;
+    /* The clean page's own stops, in the form a discovery reads what an activation revealed (crossUnseenStops, with no
+       element marked seen): a stop among them is not revealed by anything (crossDiscover). */
+    env.cleanStops.set(
+      `${from}|${state}`,
+      new Set(
+        (
+          await page.evaluate(() => {
+            for (const el of document.querySelectorAll("[data-d3-seen]")) el.removeAttribute("data-d3-seen");
+          }).then(() => page.evaluate(crossUnseenStops))
+        ).map((x) => `${x.path}|${x.label}`),
+      ),
+    );
+    const controls = await page.evaluate(crossOpeners, { root: null, unseenOnly: false });
+    const controlKeys = occurrenceKeys(controls);
+    const chords = await crossChords(page);
+    const openers = [
+      ...controls.map((c, i) => ({ kind: "control", ident: controlKeys[i], path: c.path, key: c.key, label: c.label, family: c.family, members: c.members })),
+      ...chords.map((c) => ({ kind: "command", ident: c.label, presses: c.presses, label: c.label, family: "command", members: 1 })),
+    ];
+    const tally = (list) => {
+      if (sink !== null) return;
+      crossCount.openersFound += list.length;
+      for (const o of list) {
+        const f = (crossFamilies[o.family] ??= { candidates: 0, members: 0, surfaces: 0, navigated: 0 });
+        f.candidates += 1;
+        f.members += o.members;
+      }
+    };
+    tally(openers);
+    /* Surfaces, in discovery order; the jobs are made when the last discovery batch (nested ones included) is in. */
+    const found = [];
+    const nestedSeen = new Set();
+    let remaining = 0;
+    const scheduleSurfaces = () => {
+      /* ONE PAGE STATE, ONE SURFACE. Openers that leave the page in the SAME state — the same signature (every
+         control's state, the URL, the open dialogs and the tab stops) and the same revealed stops — opened the same
+         surface: the evidence rail by `e`, by `g e`, by the palette's command and by each coverage figure that
+         opens it (MEASURED, 390 px idle: eight openers, one rail of nine stops). A case is its page state and its
+         element, so the surface is cased once, under the first opener, and the others are counted against it. */
+      const bySurface = new Map();
+      for (const f of found.sort((a, b) => a.seq - b.seq)) {
+        const k = [f.opened, "==", ...f.stable.map((x) => x.key)].join("\n");
+        const first = bySurface.get(k);
+        if (first === undefined) bySurface.set(k, f);
+        else if (sink === null) {
+          crossCount.sameSurface += 1;
+          console.log(`INFO  ${here}: ${f.o.label} opened the same surface as ${first.o.label} (same page state): cased once`);
+        }
+      }
+      /* WHAT IS CASED IN FULL. A surface opened by a control that ANNOUNCES what it reveals (the state family: the
+         phase-3 openers and every other ARIA state, `aria-pressed` included) or by a keyed command is cased stop by
+         stop, as before. A surface opened by any other control (a stateless kind, a collection's representative) or
+         one level down (a control inside another surface) is cased ONE STOP PER KIND — tag, class and role, the
+         revealed stops' own identity — and the kind's other stops are counted as represented by it. MEASURED (phase
+         3.5 repair, full --crossings at 14 at once, every surface cased stop by stop): 16,652 cases in 85.9 min, 4,508
+         of them the page's own stops re-read after a dialog's Close, and the rest over a third more than phase 3's
+         8,911 — past the 60-minute budget on this host. The phase-3 denominator is kept whole; what is new is added,
+         each kind of control it revealed crossed. */
+      const surfaces = [...bySurface.values()].map((f) => {
+        if (f.o.family === "state" || f.o.family === "command") return f;
+        const kinds = new Map();
+        for (const x of f.stable) if (!kinds.has(x.s.label)) kinds.set(x.s.label, x);
+        if (sink === null) crossCount.representedStops += f.stable.length - kinds.size;
+        return { ...f, stable: [...kinds.values()] };
+      });
+      for (const [to, at] of ats) {
+        for (const surface of surfaces) {
+          if (sink === null) crossSurfaces.set(at, (crossSurfaces.get(at) ?? 0) + 1);
+          const stable = sample ? surface.stable.slice(0, 1) : surface.stable;
+          /* A surface's cases are the costly ones (an activation each time the surface cannot be reused, a reload
+             each time the page cannot be restored), so they go to the FRONT of the pool, in jobs of half the size:
+             the cheap tab-stop jobs, which alternate directions with one resize a case, are what is left at the end.
+             MEASURED (phase 3.5 repair, full --sweep): with surface jobs queued last, the final ten minutes ran a few
+             device-view surface jobs at 768 px, each case a reload. */
+          for (let k = 0; k < stable.length; k += SURFACE_JOB_CASES) {
+            push(() => crossSurfaceJob(browser, from, to, stateRow, surface.o, stable.slice(k, k + SURFACE_JOB_CASES), env), true);
+          }
+        }
+      }
+    };
+    /* ONE LEVEL OF RECURSION (QH-V1-2: the 11 disclosures inside the drawer `e` opens were never candidates): the
+       controls a surface revealed are candidates too, each activated with that surface open (a chain). A control
+       two openers reveal (the drawer's, by `e` and by `g e`) is one candidate, under the first. */
+    let seq = 0;
+    const runBatch = (batch) => {
+      remaining += 1;
+      push(async () => {
+        try {
+          const r = await crossDiscover(browser, from, stateRow, batch, env, ats[0][1]);
+          for (const f of r.found) found.push({ ...f, seq: f.o.seq });
+          const nested = r.nested.filter((c) => !nestedSeen.has(c.dedupe) && nestedSeen.add(c.dedupe));
+          for (const c of nested) c.seq = (seq += 1);
+          tally(nested);
+          for (let k = 0; k < nested.length; k += DISCOVERY_BATCH) runBatch(nested.slice(k, k + DISCOVERY_BATCH));
+        } finally {
+          remaining -= 1;
+          if (remaining === 0) scheduleSurfaces();
+        }
+      }, true);
+    };
+    for (const o of openers) o.seq = (seq += 1);
+    for (let k = 0; k < openers.length; k += DISCOVERY_BATCH) runBatch(openers.slice(k, k + DISCOVERY_BATCH));
+    if (remaining === 0) scheduleSurfaces();
   } finally {
-    await ctx.close();
+    for (const [to] of ats) if (!deposited.has(to)) deposit(to, []);
+    await s.close();
   }
 }
 
-/** The rung-crossing pass. `only` is the --vp list (or undefined). Returns whether it was in scope. */
-async function runCrossings(browser, only, onlyState) {
+/**
+ * THE PAIR REGISTRY: a tab-stop job holds both directions of a rung pair in one state, alternating (A->B, B->A,
+ * A->B, …), so every case's arrival is the next case's start. Each enumeration deposits its items per crossing;
+ * when every direction of the pair that the plan holds has deposited, the jobs are made (a direction with no
+ * partner, or the longer side's rest, runs alone: its cases then return to their start width first).
+ */
+function pairDeposit(browser, env, stateRow, from, to, items) {
+  const [state] = stateRow;
+  const a = Math.min(from, to);
+  const b = Math.max(from, to);
+  const rec = env.pairs.get(`${a}|${b}|${state}`);
+  if (rec === undefined) throw new Error(`no pair ${a}|${b} in the plan for ${state}`);
+  rec.got.push({ from, to, items });
+  if (rec.got.length < rec.expect) return;
+  const sides = rec.got.map((g) => g.items.map((item) => ({ from: g.from, to: g.to, item })));
+  const cases = [];
+  for (let i = 0; i < Math.max(...sides.map((x) => x.length)); i += 1) for (const side of sides) if (i < side.length) cases.push(side[i]);
+  for (let k = 0; k < cases.length; k += JOB_CASES) {
+    const chunk = cases.slice(k, k + JOB_CASES);
+    env.push(() => crossStopsJob(browser, stateRow, chunk, env));
+  }
+}
+
+/** Family 2's DISCOVERY for a batch of openers at `from`: what each reveals, reliably (see below); and, for an opener
+ *  that is not itself nested, the candidate controls inside what it revealed (the one level of recursion). */
+async function crossDiscover(browser, from, stateRow, batch, env, where) {
+  const { mode, sink } = env;
+  const [state] = stateRow;
+  const s = await crossSession(browser, from, stateRow, { mode, sink, where, clean: env.clean });
+  const found = [];
+  const nested = [];
+  try {
+    if (!s.ok || s.absent) {
+      for (const o of batch) s.fail(`the opener ${o.label}: NOT DRIVEN (the state did not load for its discovery)`);
+      return { found, nested };
+    }
+    for (const o of batch) {
+      let revealed = [];
+      let activated = false;
+      await s.guarded(`the opener ${o.label}`, async () => {
+        activated = await s.activate(o, from);
+        if (!activated) return;
+        if (sink === null) crossCount.openersTried += 1;
+        revealed = await s.revealedNow();
+        if (sink === null) for (const name of await s.page().evaluate(crossModalNames)) crossDialogsOpened.add(name);
+      });
+      /* renderCheck compares what each opener revealed in each mode, not only the cases. */
+      const noteDiscovery = (what) => {
+        if (sink !== null) sink.set(`${from}px / ${state} :: discovery :: ${o.label}`, what);
+      };
+      if (!activated) {
+        s.fail(`the opener ${o.label}: NOT DRIVEN (not found again on a clean page of this state)`);
+        continue;
+      }
+      /* An activation that changed the URL moved to another PAGE STATE (a finding or a device selected, a record
+         opened): what it shows is that state's, which the page states own. Counted, not cased. */
+      /* An activation that changed the URL is counted, and judged like any other by what it revealed: the app keeps
+         its UI state in the URL (the device pane's tabs, the Inspector), so a URL change is not "another page".
+         MEASURED (phase 3.5 repair): excluding those dropped the device pane's tab surfaces phase 3 cased. */
+      if (activated.navigated && sink === null) crossFamilies[o.family].navigated += 1;
+      if (revealed.length === 0) {
+        noteDiscovery("revealed nothing");
+        continue;
+      }
+      /* A stop is the OPENER's only if a second activation reveals it again: one that appeared the first time
+         and not the second came with something else (the status bar's scene button, mounted when the scene
+         settled — MEASURED, run 1: "revealed" by a disclosure, then never again, NOT DRIVEN twice). Such stops
+         are counted and named, not cased. The candidates INSIDE the surface are read on this second activation
+         (every element rendered before its last step is marked, so they are exactly what it revealed). */
+      let again = [];
+      let inside = [];
+      let opened = "";
+      await s.guarded(`the opener ${o.label}, again`, async () => {
+        if (await s.activate(o, from)) {
+          again = await s.revealedNow();
+          /* The page state it opened (see scheduleSurfaces). */
+          opened = await s.page().evaluate(crossSignature);
+          /* The one level of recursion goes into a surface that did NOT change the URL: one that did moved to a
+             state a URL restores (a finding or device selected, a pane's tab), whose contents are a page state's —
+             MEASURED (phase 3.5 repair): recursing into those too kept the discovery alone running past 30 minutes. */
+          if (o.kind !== "chain" && !activated.navigated) inside = await s.page().evaluate(crossOpeners, { root: null, unseenOnly: true });
+        }
+      });
+      const againKeys = new Set(occurrenceKeys(again));
+      const keys = occurrenceKeys(revealed);
+      /* A stop the CLEAN page already has is family 1's, whatever made it re-appear: closing a modal dialog makes the
+         whole page under it live again (MEASURED, phase 3.5 repair: "the keyboard reference → Close dialog" and "the
+         palette → Close dialog" "revealed" the page's own stops, 4,508 duplicate cases in one full run). */
+      const onClean = env.cleanStops.get(`${from}|${state}`) ?? new Set();
+      const stable = revealed
+        .map((x, i) => ({ s: x, key: keys[i] }))
+        .filter((x) => againKeys.has(x.key) && !onClean.has(`${x.s.path}|${x.s.label}`));
+      const unstable = keys.filter((k) => !againKeys.has(k));
+      noteDiscovery(unstable.length > 0 ? `UNSTABLE (${stable.length} reliably, ${unstable.length} once)` : `revealed ${stable.length}: ${stable.map((x) => x.key).join(", ")}`);
+      if (unstable.length > 0) {
+        if (sink === null) crossCount.unstable += unstable.length;
+        console.log(`INFO  ${from}px / ${state}: ${o.label}: ${unstable.length} stop(s) appeared on one activation and not on the next (not the opener's; not cased): ${unstable.join(", ")}`);
+      }
+      if (stable.length === 0) continue;
+      if (sink === null) {
+        crossCount.surfaces += 1;
+        crossFamilies[o.family].surfaces += 1;
+      }
+      console.log(`INFO  ${from}px / ${state}: ${o.label} revealed ${stable.length} tab stop(s)${inside.length > 0 ? `; ${inside.length} candidate(s) inside it` : ""}`);
+      found.push({ o, stable, opened });
+      const insideKeys = occurrenceKeys(inside);
+      for (const [i, c] of inside.entries()) {
+        const child = { kind: "control", ident: insideKeys[i], path: c.path, key: c.key, label: c.label, family: c.family, members: c.members };
+        nested.push({
+          kind: "chain",
+          steps: [o, child],
+          ident: `${o.ident} → ${child.ident}`,
+          label: `${o.label} → ${c.label}`,
+          family: `nested ${c.family}`,
+          members: c.members,
+          /* One candidate however many openers reveal it: where it is, and what it is. */
+          dedupe: `${c.path}|${c.label}`,
+        });
+      }
+    }
+    return { found, nested };
+  } finally {
+    await s.close();
+  }
+}
+
+/** The name a crossing's cases are reported under. */
+const crossAt = (from, to, state) => `crossing ${from}px (${rungOf(from)}) -> ${to}px (${rungOf(to)}) / ${state}`;
+
+/**
+ * A TAB-STOP JOB: tab stops and landings (each found again on this page by its key, or its path), in both
+ * directions of a rung pair. The ORDER adapts to the page, the criterion does not: every case still starts on a
+ * page whose signature is a clean one of its start width. The next case is one that starts where the page is, when
+ * the page is clean there; else one that starts at the pair's other width, when the page is clean THERE after the
+ * resize (both through `restore`: the same undo / Escape / signature steps, never a reload); and only when neither
+ * holds, a reload, at the start width with the most cases left. MEASURED (phase 3.5 repair, the rung-pair probe): a
+ * crossing to the stacked rung leaves the fabric mounted (its tree, its buttons, the status bar's scene control),
+ * so a 390 px page is never clean again after one — and a strict alternation reloaded before every other case,
+ * where the 768 -> 390 cases can all run from the one clean 768 page and only the 390 -> 768 cases need a load.
+ */
+async function crossStopsJob(browser, stateRow, cases, env) {
+  const { mode, sink } = env;
+  const [state] = stateRow;
+  const s = await crossSession(browser, cases[0].from, stateRow, { mode, sink, where: crossAt(cases[0].from, cases[0].to, state), clean: env.clean });
+  try {
+    if (!s.ok || s.absent) {
+      for (const c of cases) s.fail(`${c.item.label} at ${c.from}px → ${c.to}px: NOT DRIVEN (the state ${s.ok ? "was not present" : "did not load"} on this job's page)`, crossAt(c.from, c.to, state));
+      return;
+    }
+    /* The cases by start width, each queue in the order the pair registry gave it. */
+    const queues = new Map();
+    for (const c of cases) queues.set(c.from, [...(queues.get(c.from) ?? []), c]);
+    const left = () => [...queues].filter(([, q]) => q.length > 0);
+    while (left().length > 0) {
+      /* Where to start the next case: here, else the pair's other width, each only when clean without a reload. */
+      let start = null;
+      const here = s.width();
+      const order = left()
+        .map(([w]) => w)
+        .sort((a, b) => (a === here ? -1 : b === here ? 1 : 0));
+      await s.guarded(`the start of the next case of ${crossAt(order[0], queues.get(order[0])[0].to, state)}`, async () => {
+        for (const w of order) {
+          if (await s.restore(w)) {
+            start = w;
+            return;
+          }
+        }
+        /* No clean start without a load: reload where the most cases are left. */
+        const [w] = left().sort((a, b) => b[1].length - a[1].length)[0];
+        if (sink === null) {
+          crossCount.reloads += 1;
+          await s.noteReload(s.width());
+        }
+        await s.reloadAt(w);
+        start = w;
+      });
+      if (start === null) start = left()[0][0]; /* the step itself failed (reported); the case reloads on its own */
+      const { from, to, item } = queues.get(start).shift();
+      const at = crossAt(from, to, state);
+      await s.guarded(
+        item.label,
+        async () => {
+          await s.fresh(from); /* clean already (above): one signature read — unless a crashed page was replaced */
+          const page = s.page();
+          const list = await page.evaluate(item.family === 1 ? crossStops : crossLandings, await s.scopePath());
+          /* Found again by what it is; where its name is live and no longer matches, by the structural path the
+             enumeration read (a path is what every earlier version of this pass marked by, reload after reload). */
+          const i = occurrenceKeys(list).indexOf(item.key);
+          const path = i >= 0 ? list[i].path : item.path;
+          const mark = async () => s.page().evaluate(item.family === 1 ? crossMark : crossMarkLanding, path);
+          await crossDrive(page, at, item.label, from, to, CROSS_HEIGHT, mark, () => s.reloadAt(from), sink);
+        },
+        at,
+      );
+    }
+  } finally {
+    await s.close();
+  }
+}
+
+/**
+ * A SURFACE JOB: one opener's revealed stops, across one crossing. The surface as the last activation left it —
+ * its signature and what it revealed — is reused for the next stop when the page, back at `from`, has exactly
+ * that signature (the case crossed and nothing drifted: the criterion `fresh` applies to the clean page) and the
+ * stop at the recorded path is still the one named; otherwise the opener is activated again.
+ */
+async function crossSurfaceJob(browser, from, to, stateRow, o, stable, env) {
+  const { mode, sink } = env;
+  const [state] = stateRow;
+  const at = crossAt(from, to, state);
+  const s = await crossSession(browser, from, stateRow, { mode, sink, where: at, clean: env.clean });
+  try {
+    if (!s.ok || s.absent) {
+      for (const { s: stop } of stable) s.fail(`revealed by ${o.label}: ${stop.label} at ${from}px → ${to}px: NOT DRIVEN (the state ${s.ok ? "was not present" : "did not load"} on this job's page)`);
+      return;
+    }
+    let opened = null;
+    for (const { s: stop, key } of stable) {
+      const label = `revealed by ${o.label}: ${stop.label}`;
+      await s.guarded(label, async () => {
+        const mark = async () => {
+          if (opened !== null) {
+            const resized = await s.ensure(from);
+            const page = s.page();
+            await crossWarmSettled(page);
+            if ((resized ? await s.settledSig((x) => x === opened.sig) : await page.evaluate(crossSignature)) === opened.sig) {
+              const i = occurrenceKeys(opened.list).indexOf(key);
+              if (i >= 0 && (await page.evaluate(crossMarkIfLabel, [opened.list[i].path, opened.list[i].label]))) {
+                if (sink === null) crossCount.reused += 1;
+                return true;
+              }
+            }
+          }
+          opened = null;
+          if (!(await s.activate(o, from))) return false;
+          /* A stop that mounts after its surface (the fabric's controls, once the lazily mounted scene has a frame) is
+             waited for, bounded, as a chain's later step is (activate). */
+          let now = await s.revealedNow();
+          for (let t = 0; !occurrenceKeys(now).includes(key) && t < 24; t += 1) {
+            await s.page().waitForTimeout(250);
+            now = await s.revealedNow();
+          }
+          opened = { sig: await s.page().evaluate(crossSignature), list: now };
+          const i = occurrenceKeys(now).indexOf(key);
+          return i >= 0 && (await s.page().evaluate(crossMark, now[i].path));
+        };
+        await crossDrive(s.page(), at, label, from, to, CROSS_HEIGHT, mark, () => s.reloadAt(from), sink);
+      });
+    }
+  } finally {
+    await s.close();
+  }
+}
+
+/**
+ * A pool of `n` workers over a queue that TASKS MAY GROW while it runs (an enumeration queues its jobs). The
+ * pool drains when the queue is empty and no task is running. A task's uncaught error is reported, never lost.
+ */
+const POOL_MIN_FREE_BYTES = 700 * 1024 * 1024;
+const POOL_MIN_ACTIVE = 4;
+function taskPool(n) {
+  const queue = [];
+  const waiters = [];
+  let active = 0;
+  const notify = () => {
+    while (waiters.length > 0) waiters.shift()();
+  };
+  /* `first`: a task that MAKES work (an enumeration, a discovery batch) goes to the front, so every job exists
+     early and the pool's width stays full to the end. MEASURED (phase 3.5 repair, full --crossings, 60.0 min): with
+     one FIFO queue the discovery batches waited behind the tab-stop jobs, their surfaces' jobs were made last, and
+     the final ~11 minutes ran two or three jobs at once on a host at 16% CPU. */
+  const push = (task, first = false) => {
+    if (first) queue.unshift(task);
+    else queue.push(task);
+    notify();
+  };
+  const drain = async () => {
+    const worker = async () => {
+      for (;;) {
+        /* MEMORY BACKPRESSURE: a new task opens a page; on a host that other work has pushed near its memory limit a
+           fourteenth page pages the whole machine out. MEASURED (phase 3.5 repair): a full --sweep that ran at ~290
+           cases a minute fell to ~25 once another process took 2.7 GB and free memory read 0.3 GB. So while free
+           memory is under POOL_MIN_FREE_BYTES and at least POOL_MIN_ACTIVE tasks run, no new task starts. */
+        while (queue.length > 0 && active >= POOL_MIN_ACTIVE && freemem() < POOL_MIN_FREE_BYTES) await new Promise((r) => setTimeout(r, 1000));
+        const task = queue.shift();
+        if (task !== undefined) {
+          active += 1;
+          try {
+            await task();
+          } catch (err) {
+            sweepFail("rung crossing", `a task threw: NOT DRIVEN (${String(err).split(String.fromCharCode(10))[0]})`);
+          } finally {
+            active -= 1;
+            notify();
+          }
+          continue;
+        }
+        if (active === 0) return;
+        await new Promise((r) => waiters.push(r));
+      }
+    };
+    await Promise.all(Array.from({ length: n }, worker));
+  };
+  return { push, drain };
+}
+
+/** Run `tasks` (thunks) at most `n` at a time. */
+async function pool(tasks, n) {
+  const p = taskPool(n);
+  for (const t of tasks) p.push(t);
+  await p.drain();
+}
+
+/** The directed crossings between neighbouring rungs, narrowed by `only` (the --vp list). */
+function crossPlan(only) {
   const plan = [];
   for (let i = 0; i + 1 < RUNG_WIDTHS.length; i += 1) {
-    const [a, ha] = RUNG_WIDTHS[i];
-    const [b, hb] = RUNG_WIDTHS[i + 1];
-    for (const [from, to, h] of [[a, b, ha], [b, a, hb]]) if (!only || only.includes(from) || only.includes(to)) plan.push([from, to, h]);
+    const [a] = RUNG_WIDTHS[i];
+    const [b] = RUNG_WIDTHS[i + 1];
+    for (const [from, to] of [[a, b], [b, a]]) if (!only || only.includes(from) || only.includes(to)) plan.push([from, to]);
   }
+  return plan;
+}
+
+/** Every crossing of `plan` in every state of `states`, on one pool of `parallel` workers. */
+async function runCrossTasks(browser, plan, states, { mode = RENDER, sample = false, sink = null, parallel = CROSS_PARALLEL, pool: shared = null } = {}) {
+  /* `pool`: a pool the caller shares with other passes (runSweep) — draining it waits for them too. */
+  const p = shared ?? taskPool(parallel);
+  const env = { mode, sample, sink, push: p.push, pairs: new Map(), clean: new Map(), cleanStops: new Map() };
+  for (const [state] of states) {
+    for (const [from, to] of plan) {
+      const k = `${Math.min(from, to)}|${Math.max(from, to)}|${state}`;
+      const rec = env.pairs.get(k) ?? { expect: 0, got: [] };
+      rec.expect += 1;
+      env.pairs.set(k, rec);
+    }
+  }
+  /* One enumeration per start width and state, serving every crossing that leaves that width. */
+  const byFrom = new Map();
+  for (const [from, to] of plan) byFrom.set(from, [...(byFrom.get(from) ?? []), to]);
+  for (const s of states) for (const [from, tos] of byFrom) p.push(() => crossEnumerate(browser, from, s, tos, env));
+  await p.drain();
+}
+
+/** The rung-crossing pass. `only` is the --vp list (or undefined). Returns whether it was in scope. */
+async function runCrossings(browser, only, onlyState, pool = null) {
+  const plan = crossPlan(only);
+  const states = crossStates().filter(([name]) => !onlyState || name.includes(onlyState));
   console.log(
     `INFO  rung-crossing pass: one width per rung (${RUNG_WIDTHS.map(([w]) => `${w} ${rungOf(w)}`).join(", ")}; LADDER_REM), ` +
-      `${plan.length} directed crossing(s)${only ? " (narrowed by --vp)" : ""}: ${plan.map(([f, t]) => `${f}->${t}`).join(", ")}`,
+      `${plan.length} directed crossing(s)${only ? " (narrowed by --vp)" : ""}: ${plan.map(([f, t]) => `${f}->${t}`).join(", ")}; ` +
+      `${states.length} state(s); viewport height ${CROSS_HEIGHT} px; jobs of at most ${JOB_CASES} cases, ${CROSS_PARALLEL} at once, render mode "${RENDER}"`,
   );
   crossCount.crossings = plan.length;
-  /* At most CROSS_PARALLEL at once: a small worker pool over the plan. */
-  const queue = [...plan];
-  const worker = async () => {
-    for (let next = queue.shift(); next !== undefined; next = queue.shift()) await crossPass(browser, next[0], next[1], next[2], onlyState);
-  };
-  await Promise.all(Array.from({ length: Math.min(CROSS_PARALLEL, plan.length) }, worker));
+  await runCrossTasks(browser, plan, states, { pool });
   for (const [from, to] of plan) {
     const where = `crossing ${from}px (${rungOf(from)}) -> ${to}px (${rungOf(to)})`;
     const n = [...crossPerCrossing].filter(([k]) => k.startsWith(where)).reduce((s, [, c]) => s + c, 0);
@@ -2572,17 +3526,30 @@ async function runCrossings(browser, only, onlyState) {
   /* Per state: a state no crossing drove proved nothing about it (a surface absent at SOME widths is
      reported; absent at every width in the plan, or present and caseless, is a failure). */
   if (plan.length > 0) {
-    /* Family 2's own denominator: the openers activated and the surfaces their activation revealed. A pass
-       that activated nothing, or whose openers revealed nothing anywhere, exercised no surface at all. */
-    console.log(`INFO  rung crossing: ${crossCount.openersTried} opener(s) activated (controls by their ARIA contract, and every keyed command), ${crossCount.surfaces} revealed a surface; ${crossCount.unstable} stop(s) appeared on one activation only (not cased)`);
-    for (const [k, n] of [...crossSurfaces].sort()) console.log(`INFO  ${k}: ${n} surface(s) revealed`);
+    /* Family 2's own denominator: the openers found and activated, and the surfaces their activation revealed.
+       A pass that activated nothing, or whose openers revealed nothing anywhere, exercised no surface at all. */
+    console.log(
+      `INFO  rung crossing: ${crossCount.openersFound} candidate opener(s) found (every control, judged by its effect; every keyed command; one level inside each surface), ` +
+        `${crossCount.openersTried} activated, ${crossCount.surfaces} revealed a surface; ${crossCount.unstable} stop(s) appeared on one activation only (not cased)`,
+    );
+    for (const [family, f] of Object.entries(crossFamilies).sort()) {
+      console.log(
+        `INFO  rung crossing / candidates, ${family}: ${f.candidates} activated (standing for ${f.members} control(s)), ${f.surfaces} revealed a surface, ${f.navigated} of them changed the URL`,
+      );
+    }
+    for (const [k, n] of [...crossSurfaces].sort()) console.log(`INFO  ${k}: ${n} surface(s) revealed and cased`);
+    /* Where the reloads went (the pass's largest cost after the cases themselves): the commonest reasons. */
+    for (const [k, n] of [...crossReloadWhy].sort((a, b) => b[1] - a[1]).slice(0, 20)) console.log(`INFO  rung crossing / reloaded ${n}x: ${k}`);
     if (!onlyState && (crossCount.openersTried === 0 || crossCount.surfaces === 0)) {
       sweepFail("rung crossing / surfaces", `NEVER EXERCISED: ${crossCount.openersTried} opener(s) activated, ${crossCount.surfaces} revealed a surface`);
+    }
+    if (crossCount.openersTried < crossCount.openersFound) {
+      sweepFail("rung crossing / surfaces", `NOT DRIVEN: ${crossCount.openersFound - crossCount.openersTried} of ${crossCount.openersFound} opener(s) found were never activated`);
     }
     if (crossCount.unreadChords.length > 0) {
       sweepFail("rung crossing / keyed commands", `NOT DRIVEN: the keyboard reference lists commands the pass could not press: ${[...new Set(crossCount.unreadChords)].join("; ")}`);
     }
-    for (const [state] of crossStates().filter(([name]) => !onlyState || name.includes(onlyState))) {
+    for (const [state] of states) {
       const n = [...crossPerCrossing].filter(([k]) => k.endsWith(` / ${state}`)).reduce((s, [, c]) => s + c, 0);
       const absent = crossAbsent.get(state) ?? [];
       console.log(`INFO  rung crossing / ${state}: ${n} case(s) driven${absent.length > 0 ? `; not present at the start of ${absent.join(", ")}` : ""}`);
@@ -2598,43 +3565,146 @@ async function runCrossings(browser, only, onlyState) {
   return plan.length > 0;
 }
 
-async function runSweep(browser) {
+/**
+ * THE RENDER MODE'S PROOF (`--render-check`): a sample of rung-crossing cases, driven in BOTH render modes on
+ * the same build, must come to the same focus outcome — where focus landed, and the verdict (on <body>, not
+ * rendered, not on screen, painted over, or OK). The sample takes every family: tab stops (up to ten, evenly
+ * spaced), programmatic landings (up to four), and the first stop of EVERY surface the discovered openers
+ * reveal — and what every opener revealed, compared as a record of its own; in the two page states "idle"
+ * and "a finding selected"; over three
+ * crossings that each change what is rendered — the stage collapsing (singleColumn -> stacked), the evidence
+ * rail becoming a drawer (reference -> drawer), and the drawer rung giving way to one column (drawer ->
+ * singleColumn). A record present in one mode only (the modes discovered different denominators) is a
+ * difference too, unless the discovery's own stability rule found that opener unstable in a mode (see
+ * below). Exit 0 only when at least RENDER_CHECK_MIN cases came out the same in both modes and none differs.
+ */
+const RENDER_CHECK_MIN = 60;
+async function renderCheck(browser) {
+  const w = (name) => RUNG_WIDTHS.find(([x]) => rungOf(x) === name)?.[0];
+  const pairs = [
+    ["singleColumn", "stacked"],
+    ["reference", "drawer"],
+    ["drawer", "singleColumn"],
+  ]
+    .map(([a, b]) => [w(a), w(b)])
+    .filter(([a, b]) => a !== undefined && b !== undefined);
+  const states = crossStates().filter(([name]) => name === "idle" || name === "a finding selected");
+  const outcomes = { full: new Map(), suspended: new Map() };
+  const half = Math.max(1, Math.floor(CROSS_PARALLEL / 2));
+  console.log(`INFO  render check: ${pairs.map(([f, t]) => `${f}->${t}`).join(", ")} in ${states.map(([n]) => `"${n}"`).join(", ")}, both render modes, ${half} at once each`);
+  await Promise.all(["full", "suspended"].map((mode) => runCrossTasks(browser, pairs, states, { mode, sample: true, sink: outcomes[mode], parallel: half })));
+  /* Two kinds of record: what each OPENER revealed (discovery), and each CASE's focus outcome. An opener
+     the discovery's own rule found UNSTABLE in a mode (a stop that appeared on one activation and not the
+     next) is not the render mode's doing — the same rule leaves such stops out of the sweep's denominator
+     in either mode — so a surface present in one mode only is excused exactly when its opener was unstable
+     in the other; every other difference fails. */
+  const keys = [...new Set([...outcomes.full.keys(), ...outcomes.suspended.keys()])].sort();
+  const discoveryKey = (k) => / :: discovery :: /.test(k);
+  const unstableIn = (mode, caseKey) => {
+    const m = / \/ ([^/]+?) :: revealed by (.+?): /.exec(caseKey);
+    const from = /^crossing (\d+)px/.exec(caseKey)?.[1];
+    if (m === null || from === undefined) return false;
+    return /^UNSTABLE/.test(outcomes[mode].get(`${from}px / ${m[1]} :: discovery :: ${m[2]}`) ?? "");
+  };
+  const differ = [];
+  const excused = [];
+  for (const k of keys) {
+    const a = outcomes.full.get(k);
+    const b = outcomes.suspended.get(k);
+    if (a === b) {
+      console.log(`SAME  ${k} -> ${a}`);
+      continue;
+    }
+    const line = `${k}\n      full:      ${a ?? "(no such record)"}\n      suspended: ${b ?? "(no such record)"}`;
+    const flaky = discoveryKey(k)
+      ? /^UNSTABLE/.test(a ?? "") || /^UNSTABLE/.test(b ?? "")
+      : (a === undefined && unstableIn("full", k)) || (b === undefined && unstableIn("suspended", k));
+    (flaky ? excused : differ).push(line);
+  }
+  for (const e of excused) console.log(`  EXCUSED (the opener was unstable in a mode, by the discovery's own rule) ${e}`);
+  const notDriven = keys.filter((k) => outcomes.full.get(k) === "NOT DRIVEN" || outcomes.suspended.get(k) === "NOT DRIVEN").length;
+  console.log(
+    `\nRENDER CHECK: ${[...outcomes.full.keys()].filter((k) => !discoveryKey(k)).length} case(s) with every frame drawn, ${[...outcomes.suspended.keys()].filter((k) => !discoveryKey(k)).length} with draws suspended, ` +
+      `${keys.filter(discoveryKey).length} opener discovery record(s); ${keys.length} compared, ${differ.length} differ, ${excused.length} excused (an opener unstable in a mode), ` +
+      `${notDriven} not driven in a mode; ${renderCount.pages} suspended page(s) suppressed ${renderCount.suppressed} draw call(s)` +
+      `${renderCount.pagesNotSuspended > 0 ? `, ${renderCount.pagesNotSuspended} WITHOUT the suspension installed` : ""}.`,
+  );
+  for (const d of differ) console.log(`  DIFFER ${d}`);
+  const sameCases = keys.filter((k) => !discoveryKey(k) && outcomes.full.get(k) !== undefined && outcomes.full.get(k) === outcomes.suspended.get(k)).length;
+  const tooFew = sameCases < RENDER_CHECK_MIN;
+  if (tooFew) console.log(`RENDER CHECK NEVER EXERCISED: ${sameCases} case(s) compared in both modes, fewer than ${RENDER_CHECK_MIN}`);
+  return differ.length === 0 && notDriven === 0 && !tooFew && renderCount.suppressed > 0 && renderCount.pagesNotSuspended === 0;
+}
+
+/** The render mode's own line, and whether it holds: a suspended run whose pages suppressed nothing, or none of
+ *  whose pages carried a fabric, did not run in the mode it names. */
+function renderSummary() {
+  if (RENDER !== "suspended") {
+    console.log(`RENDER: every frame drawn (--render=full) on the geometry passes, as on the pixel passes.`);
+    return true;
+  }
+  console.log(
+    `RENDER: geometry passes ran with the fabric's draw calls suspended: ${renderCount.pages} page(s), ` +
+      `${renderCount.suppressed} draw call(s) suppressed${renderCount.pagesNotSuspended > 0 ? `, ${renderCount.pagesNotSuspended} page(s) WITHOUT the suspension installed` : ""}; ` +
+      `the pixel passes drew every frame. The mode's equivalence is --render-check's.`,
+  );
+  const ok = renderCount.pages > 0 && renderCount.suppressed > 0 && renderCount.pagesNotSuspended === 0;
+  if (!ok) console.log("RENDER MODE NOT IN EFFECT: a geometry page ran without the suspension, or no draw was suppressed at all");
+  return ok;
+}
+
+async function runSweep(browser, extraLanes = []) {
   /* `--vp=390,768` narrows a diagnostic run; a run so narrowed says so, and is not the acceptance run. */
   const only = process.argv.find((a) => a.startsWith("--vp="))?.slice(5).split(",").map(Number);
   if (only) console.log(`INFO  sweep narrowed to ${only.join(", ")} px by --vp: NOT an acceptance run`);
   /* `--state=<text>` narrows to the states whose name contains it: diagnostic only, like --vp. */
   const onlyState = process.argv.find((a) => a.startsWith("--state="))?.slice(8);
   if (onlyState) console.log(`INFO  sweep narrowed to states matching "${onlyState}" by --state: NOT an acceptance run`);
-  for (const [w, h, vp] of SWEEP_VIEWPORTS.filter(([w]) => !only || only.includes(w))) {
-    const ctx = await browser.newContext({ viewport: { width: w, height: h } });
-    await ctx.addInitScript(() => {
-      try {
-        localStorage.clear();
-        sessionStorage.clear();
-      } catch {
-        /* storage blocked: nothing persists anyway */
-      }
-    });
-    const page = await ctx.newPage();
-    for (const [state, query, prep] of sweepStates().filter(([name]) => !onlyState || name.includes(onlyState))) await sweepState(page, `${vp} ${w}x${h}`, state, query, prep);
-    await sweepJourney(page, `${vp} ${w}x${h}`);
-    await ctx.close();
-  }
+  /* ONE POOL OF CROSS_PARALLEL PAGES for every pass of the sweep (phase 3.5 repair, tractability): the sweep's
+     widths, the drawer's pages and any lanes the caller adds (the default run's surface passes) go to its FRONT,
+     the rung crossing's enumerations after them, and the whole is drained once. MEASURED (full --sweep, the passes
+     one after another): sweep 2.0 min, drawer 6.6 min, then the crossing 49.2 — 57.8 min, the first 8.6 of them on
+     at most six pages of a fourteen-page budget. Each pass keeps its own pages, its own order within a page, and
+     its own verdict. */
+  const shared = taskPool(CROSS_PARALLEL);
+  for (const lane of extraLanes) shared.push(lane, true);
+  const sweepLanes = SWEEP_VIEWPORTS.filter(([w]) => !only || only.includes(w)).map(([w, h, vp]) => async () => {
+        const ctx = await geometryContext(browser, { viewport: { width: w, height: h } });
+        await ctx.addInitScript(() => {
+          try {
+            localStorage.clear();
+            sessionStorage.clear();
+          } catch {
+            /* storage blocked: nothing persists anyway */
+          }
+        });
+        const page = await ctx.newPage();
+        try {
+          for (const [state, query, prep] of sweepStates().filter(([name]) => !onlyState || name.includes(onlyState))) await sweepState(page, `${vp} ${w}x${h}`, state, query, prep);
+          await sweepJourney(page, `${vp} ${w}x${h}`);
+        } finally {
+          await accountRender(page);
+          await ctx.close();
+        }
+      });
+  for (const lane of sweepLanes) shared.push(lane, true);
   /* The evidence drawer: its own widths (derived from LADDER_REM) and its own resize targets. A
-     `--state` narrowing that does not name it leaves it out, and says so. */
+     `--state` narrowing that does not name it leaves it out, and says so. It measures indicator PIXELS
+     (checkVisible), so it draws every frame whatever the render mode. */
   const drawerNamed = !onlyState || "evidence drawer".includes(onlyState);
-  const drawerInScope = drawerNamed ? await runDrawer(browser, only) : false;
+  const drawerInScope = drawerNamed ? await runDrawer(browser, only, shared.push) : false;
   if (!drawerNamed) console.log(`INFO  drawer pass left out by --state="${onlyState}"`);
-  console.log(`DRAWER: ${drawerCount.cases} case(s) driven.`);
   /* The rung crossing: every focusable element at every rung, across every neighbouring rung. A
      `--state` narrowing applies to its states too; one that names none of them leaves it out. */
   const crossNamed = !onlyState || crossStates().some(([name]) => name.includes(onlyState));
-  const crossInScope = crossNamed ? await runCrossings(browser, only, onlyState) : false;
+  const crossInScope = await timed(`sweep, drawer${extraLanes.length > 0 ? ", surface passes" : ""} and rung crossing, ${CROSS_PARALLEL} pages at once`, async () => {
+    if (crossNamed) return runCrossings(browser, only, onlyState, shared);
+    await shared.drain();
+    return false;
+  });
   if (!crossNamed) console.log(`INFO  rung-crossing pass left out by --state="${onlyState}"`);
-  console.log(
-    `RUNG CROSSING: ${crossCount.cases} case(s) driven over ${crossCount.crossings} directed crossing(s) ` +
-      `(${crossCount.openersTried} opener(s) activated, ${crossCount.surfaces} surface(s) revealed and cased, ${crossCount.landings} programmatic landing(s), ${crossStates().length} page state(s), ${crossDialogsOpened.size} of ${SOURCE_DIALOGS.length} modal dialog owner(s) opened); ${crossCount.lost} landed on <body> or out of sight; ${crossCount.recovered} crashed renderer(s) replaced.`,
-  );
+  console.log(`DRAWER: ${drawerCount.cases} case(s) driven.`);
+  console.log(crossingLine());
   console.log(
     `\nSWEEP: ${sweepCount.widgets} composite widget(s) counted, ${sweepCount.stops} tab stop(s) walked, ` +
       `${sweepCount.hitTests} nine-point hit test(s), ${sweepCount.journeys} More -> Path journey(s), ` +
@@ -2642,13 +3712,46 @@ async function runSweep(browser) {
       `${sweepCount.offViewPointers} off-view pointer(s) drawn; ${sweepFails.length} failure(s).`,
   );
   for (const f of sweepFails) console.log(`  FAIL ${f.where} :: ${f.what}`);
+  const renderOk = renderSummary();
   /* Zero of a denominator is a sweep that proved nothing about it. */
   /* `operableRoleless` is a breakdown, not a denominator: zero of it is the fixed state. */
   const empty = Object.entries(sweepCount).filter(([k, n]) => n === 0 && k !== "operableRoleless").map(([k]) => k);
   if (drawerInScope && drawerCount.cases === 0) empty.push("drawer cases");
   if (crossInScope && crossCount.cases === 0) empty.push("rung crossings");
   if (empty.length > 0) console.log(`SWEEP NEVER EXERCISED: ${empty.join(", ")}`);
-  return sweepFails.length === 0 && empty.length === 0;
+  return sweepFails.length === 0 && empty.length === 0 && renderOk;
+}
+
+/** The rung-crossing pass's one-line account. */
+const crossingLine = () =>
+  `RUNG CROSSING: ${crossCount.cases} case(s) driven over ${crossCount.crossings} directed crossing(s) ` +
+  `(${crossCount.openersFound} candidate opener(s) found and ${crossCount.openersTried} activated — ` +
+  `${Object.entries(crossFamilies)
+    .sort()
+    .map(([k, f]) => `${k} ${f.candidates}/${f.members}`)
+    .join(", ")} (activated/controls) — ${crossCount.surfaces} opener(s) revealed a surface, ${crossCount.sameSurface} of them the same page state as an earlier one (cased once), ${crossCount.representedStops} stop(s) of the non-announcing and nested surfaces represented by another of their kind, ` +
+  `${[...crossSurfaces.values()].reduce((s, n) => s + n, 0)} surface case-set(s) driven, ${crossCount.landings} programmatic landing(s), ` +
+  `${crossStates().length} page state(s), ${crossDialogsOpened.size} of ${SOURCE_DIALOGS.length} modal dialog owner(s) opened); ` +
+  `${crossCount.lost} landed on <body> or out of sight; ${crossCount.recovered} crashed renderer(s) replaced; ` +
+  `between cases ${crossCount.undone} page(s) restored by an undo or Escape, ${crossCount.reloads} reloaded, ${crossCount.reused} surface stop(s) reached with the surface still open; ` +
+  `${crossCount.warmTimeouts} wait(s) for the palette pre-warm ran out (CROSS_WARM_WAIT_MS).`;
+
+/** The whole run's wall time, and each timed phase's. */
+function timeSummary() {
+  console.log(`\nWALL TIME: ${((Date.now() - RUN_T0) / 60000).toFixed(1)} min (${phaseTimes.map(([n, ms]) => `${n} ${(ms / 60000).toFixed(1)}`).join("; ")})`);
+}
+
+/* `--render-check`: ONLY the render mode's proof (renderCheck). */
+if (process.argv.includes("--render-check")) {
+  const b = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
+  let ok = false;
+  try {
+    ok = await timed("render check", () => renderCheck(b));
+  } finally {
+    await b.close();
+  }
+  timeSummary();
+  process.exit(ok ? 0 : 1);
 }
 
 /* `--crossings`: ONLY the rung-crossing pass (diagnostic; the sweep and the default run include it). */
@@ -2658,17 +3761,16 @@ if (process.argv.includes("--crossings")) {
   try {
     const only = process.argv.find((a) => a.startsWith("--vp="))?.slice(5).split(",").map(Number);
     const onlyState = process.argv.find((a) => a.startsWith("--state="))?.slice(8);
-    inScope = await runCrossings(b, only, onlyState);
+    inScope = await timed("rung crossing", () => runCrossings(b, only, onlyState));
   } finally {
     await b.close();
   }
-  console.log(
-    `\nRUNG CROSSING: ${crossCount.cases} case(s) driven over ${crossCount.crossings} directed crossing(s) ` +
-      `(${crossCount.openersTried} opener(s) activated, ${crossCount.surfaces} surface(s) revealed and cased, ${crossCount.landings} programmatic landing(s), ${crossStates().length} page state(s), ${crossDialogsOpened.size} of ${SOURCE_DIALOGS.length} modal dialog owner(s) opened); ${crossCount.lost} landed on <body> or out of sight; ${crossCount.recovered} crashed renderer(s) replaced; ${sweepFails.length} failure(s).`,
-  );
+  console.log(`\n${crossingLine().replace(/\.$/, `; ${sweepFails.length} failure(s).`)}`);
   for (const f of sweepFails) console.log(`  FAIL ${f.where} :: ${f.what}`);
+  const renderOk = renderSummary();
   if (!inScope || crossCount.cases === 0) console.log("SWEEP NEVER EXERCISED: rung crossings");
-  process.exit(inScope && crossCount.cases > 0 && sweepFails.length === 0 ? 0 : 1);
+  timeSummary();
+  process.exit(inScope && crossCount.cases > 0 && sweepFails.length === 0 && renderOk ? 0 : 1);
 }
 
 if (process.argv.includes("--sweep")) {
@@ -2679,6 +3781,7 @@ if (process.argv.includes("--sweep")) {
   } finally {
     await b.close();
   }
+  timeSummary();
   process.exit(ok ? 0 : 1);
 }
 
@@ -2687,20 +3790,20 @@ if (process.argv.includes("--sweep")) {
 const browser = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
 /** The rendered D1 legs (dark, light) and what each read; part of this run's exit code. */
 const dialogStack = [];
-/* The sweep runs first, at all five widths: the composite-widget census and the whole tab order
-   hit-tested at nine points. Its verdict is part of this run's exit code. */
+/* The sweep (the composite-widget census, the whole tab order hit-tested at nine points, the drawer pass and
+   the rung crossing) runs beside the surface passes. Its verdict is part of this run's exit code. */
 let sweepOk = false;
 try {
-  sweepOk = await runSweep(browser);
   const onlyVp = process.argv.find((a) => a.startsWith("--vp="))?.slice(5).split(",").map(Number);
-  for (const [w, h, vp] of VIEWPORTS.filter(([vw]) => !onlyVp || onlyVp.includes(Number(vw)))) {
+  /* The surface passes measure indicator PIXELS, so they draw every frame. One page per width, as before. */
+  const surfaceWidth = async ([w, h, vp]) => {
     const ctx = await browser.newContext({ viewport: { width: Number(w), height: Number(h) } });
     await ctx.grantPermissions(["clipboard-read", "clipboard-write"]).catch(() => {});
     const page = await ctx.newPage();
     await load(page, `${APP}/`);
     await auditDialogs(page, `${vp}/idle`);
     for (const [state, enter] of STATES) {
-      seen.clear();
+      seenOf(page).clear();
       await reset(page);
       const entered = await enter(page);
       if (entered === "n/a") {
@@ -2720,10 +3823,17 @@ try {
     }
     await auditToasts(page, vp);
     await ctx.close();
-  }
+  };
+  /* The surface passes and the sweep are independent (their own pages, their own verdicts), so they run
+     side by side: the default run is the sweep's time, not the sum (the tractability budget, phase 3.5). */
+  /* The surface passes are lanes of the sweep's one pool (runSweep), at its front: one page per width, each keeping
+     its own order; the pool's width is CROSS_PARALLEL. */
+  const surfaceLanes = VIEWPORTS.filter(([vw]) => !onlyVp || onlyVp.includes(Number(vw))).map((v) => () => surfaceWidth(v));
+  sweepOk = await runSweep(browser, surfaceLanes);
   /* D1, RENDERED: the dialog stack's paint order at 1280x800, dark and light, each on a fresh page after
      the app has loaded (review/palette-warm.mjs owns the procedure; it waits out the parked pre-warm and
      judges paint order, not elementFromPoint, which looks through inert dialogs in Chromium). */
+  await timed("D1 dialog stack", async () => {
   for (const colorScheme of ["dark", "light"]) {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme });
     const page = await ctx.newPage();
@@ -2735,6 +3845,7 @@ try {
     dialogStack.push({ leg: `1280x800 ${colorScheme}`, failures, states });
     await ctx.close();
   }
+  });
 } finally {
   await browser.close();
 }
@@ -2769,6 +3880,7 @@ const REQUIRED_VIS = ["popover initial focus", "tab panel", "tab", "returned"];
 const visMissing = REQUIRED_VIS.filter((k) => (visChecked.get(k) ?? 0) === 0);
 if (visMissing.length > 0) console.log(`NEVER CHECKED FOR VISIBILITY: ${visMissing.join(", ")}`);
 
+timeSummary();
 if (results.length === 0) {
   console.log("No surface was driven: the audit proved nothing.");
   process.exit(2);

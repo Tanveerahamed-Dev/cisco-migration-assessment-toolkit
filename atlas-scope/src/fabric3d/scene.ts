@@ -109,7 +109,6 @@ import {
   unitDiscDecal,
   type ChassisKind,
   type ChassisParts,
-  type RoleGlyph,
   type StateRingShape,
 } from "./geometry/chassis";
 import { buildCables, coverageGamma, createCableMaterial, MIN_STROKE_PX, setCoverageGamma, type CableSet } from "./geometry/cables";
@@ -664,10 +663,11 @@ export function sceneDataSignature(
   return `${d}|${l}|${n}`;
 }
 
-/* A role's glyph comes from the one owner (src/core/roles.ts): access / distribution, "other" for any other
-   OBSERVED role, and the outlined "unobserved" mark only for a role the snapshot never stated. Case and
-   whitespace are normalised there, so " Access" is access here exactly as it is in the legend. */
-const roleGlyphFor = (role: string | null): RoleGlyph => roleGlyphClass(role);
+/* A role's glyph comes from the one owner (src/core/roles.ts `roleGlyphClass`), called directly where the glyph is
+   chosen: access / distribution, "other" for any other OBSERVED role, and the outlined "unobserved" mark only for a
+   role the snapshot never stated. Case and whitespace are normalised there, so " Access" is access here exactly as
+   it is in the legend. (A local wrapper stood here; role-glyph.test.tsx reads every call a role is handed to, and
+   the owner's own function is the one legal callee.) */
 
 function ringShapeFor(status: string): StateRingShape {
   if (status === "up") return "solid";
@@ -1033,7 +1033,7 @@ export function buildFabricGraph(opts: BuildGraphOptions): FabricGraph {
      "other" role renders the same draw calls as before that glyph existed. */
   const roleGlyphs: InstancedMesh[] = [];
   for (const glyph of ROLE_GLYPHS) {
-    const members = order.filter((s) => roleGlyphFor(s.device.role) === glyph);
+    const members = order.filter((s) => roleGlyphClass(s.device.role) === glyph);
     const geometry = buildRoleGlyph(glyph);
     const mesh = new InstancedMesh(geometry, materials.rail, Math.max(1, members.length));
     mirrorRecede(mesh, members);

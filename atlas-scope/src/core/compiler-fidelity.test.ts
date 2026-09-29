@@ -22,9 +22,80 @@
  *                            MODEL gap as a COLLECTION gap: it told the user the members "were not
  *                            collected" when they are present in the source file.
  */
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { fabric } from "./data";
 import { describeGolden } from "../test-support/golden-sample";
+
+const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/* The dataset UNDER TEST is the file the compiled model names — found by the DIGEST the model binds, never by a
+   typed path (R7). The model names a repository file by its repository path, and a file outside the repository
+   (the rename leg's renamed snapshot, `sourceOrigin: "external-file"`) by its file name only; that one is looked
+   for where the phase legs write it (`.local-data/`, Git-ignored) or at ATLAS_DATASET_SOURCE. Every candidate must
+   carry the bound bytes (sourceExactSha256, or the LF-normalised sourceSha256 for a checkout that rewrote line
+   endings). None found fails the file loudly: a join against the wrong bytes, or no join, is never a pass
+   (P3C-V2-3: the rename leg failed here on the file-name-only path). */
+function sourceSnapshotPath(): string {
+  const sha = (b: Buffer): string => createHash("sha256").update(b).digest("hex");
+  const exact = fabric.meta.sourceExactSha256.replace(/^sha256:/, "");
+  const carries = (p: string): boolean => {
+    if (!existsSync(p) || !statSync(p).isFile()) return false;
+    const b = readFileSync(p);
+    return sha(b) === exact || sha(Buffer.from(b.toString("utf8").replace(/\r\n/g, "\n"), "utf8")) === fabric.meta.sourceSha256;
+  };
+  const named = basename(fabric.meta.source);
+  const underLocal = (dir: string, depth: number): string[] => {
+    if (depth < 0 || !existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? underLocal(join(dir, e.name), depth - 1) : e.name === named ? [join(dir, e.name)] : [],
+    );
+  };
+  const candidates = [
+    resolve(PKG, "..", fabric.meta.source),
+    resolve(PKG, fabric.meta.source),
+    ...(process.env.ATLAS_DATASET_SOURCE ? [resolve(process.env.ATLAS_DATASET_SOURCE)] : []),
+    ...underLocal(resolve(PKG, ".local-data"), 3),
+  ];
+  const hit = candidates.find(carries);
+  if (hit === undefined) {
+    throw new Error(
+      `the snapshot the loaded model was compiled from (${fabric.meta.source}, sha256 ${fabric.meta.sourceSha256}) was not found ` +
+        `at ${candidates.join(", ")}; set ATLAS_DATASET_SOURCE to it.`,
+    );
+  }
+  return hit;
+}
+const SNAPSHOT = sourceSnapshotPath();
+
+/** The producer's own ACL rules and object groups, as the source snapshot carries them. */
+interface SourceRule {
+  unevaluable?: unknown;
+  unmodeled_qualifiers?: unknown;
+  established?: unknown;
+  icmp_type?: unknown;
+  time_range?: unknown;
+  src?: { group?: unknown } | null;
+  dst?: { group?: unknown } | null;
+}
+interface SourceGroup {
+  kind?: unknown;
+  members?: { ip?: unknown }[];
+}
+const source = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as {
+  acls?: Record<string, Record<string, SourceRule[]>>;
+  object_groups?: Record<string, Record<string, SourceGroup>>;
+};
+/** Every source rule beside the line the compiler made of it (same host, ACL and position). */
+const JOINED = Object.entries(source.acls ?? {}).flatMap(([host, named]) =>
+  Object.entries(named).flatMap(([acl, rules]) =>
+    rules.map((rule, i) => ({ at: `${host}.${acl}[${i}]`, rule, line: fabric.acls[host]?.[acl]?.[i] })),
+  ),
+);
+const orNull = (v: unknown): unknown => (v === undefined ? null : v);
 
 const allLines = () =>
   Object.entries(fabric.acls).flatMap(([host, named]) =>
@@ -57,57 +128,74 @@ function portCensus(): { ports: number; nullPorts: number; violations: string[] 
   return { ports, nullPorts, violations };
 }
 
+/* The named-skip preconditions of this file, at module scope so the golden block below can state that each holds on
+   the reference sample (QC-R1-4): a sample change that falsified one must turn red, not into a silent skip. */
+const withField = (pick: (r: SourceRule) => boolean) => JOINED.filter((j) => pick(j.rule));
+const fieldCases: [string, (r: SourceRule) => boolean, (j: (typeof JOINED)[number]) => [unknown, unknown]][] = [
+  ["keeps the producer's `unevaluable` verdict instead of making the engine re-derive it", (r) => r.unevaluable === true, (j) => [j.line!.unevaluable, true]],
+  ["keeps which qualifier defeated the model, not just that one did", (r) => Array.isArray(r.unmodeled_qualifiers) && r.unmodeled_qualifiers.length > 0, (j) => [j.line!.unmodeledQualifiers, j.rule.unmodeled_qualifiers]],
+  ["keeps `established`, which a forward-only model cannot decide", (r) => r.established === true, (j) => [j.line!.established, true]],
+  ["keeps the ICMP type the matcher does not model", (r) => orNull(r.icmp_type) !== null, (j) => [j.line!.icmpType, j.rule.icmp_type]],
+  ["keeps `time_range`, without which a conditional rule reads as unconditional", (r) => orNull(r.time_range) !== null, (j) => [j.line!.timeRange, j.rule.time_range]],
+  ["keeps the object-group REFERENCE on the match field", (r) => orNull(r.src?.group) !== null || orNull(r.dst?.group) !== null, (j) => [[j.line!.src?.group ?? null, j.line!.dst?.group ?? null], [orNull(j.rule.src?.group), orNull(j.rule.dst?.group)]]],
+];
+const GROUPS = Object.entries(source.object_groups ?? {}).flatMap(([host, named]) => Object.entries(named).map(([name, g]) => ({ host, name, g })));
+
 describe("the compiled ACL model preserves the producer's own verdicts", () => {
   it("carries at least one line, so this suite cannot pass on an empty set", () => {
     expect(allLines().length).toBeGreaterThan(5);
   });
 
-  it("keeps the producer's `unevaluable` verdict instead of making the engine re-derive it", () => {
-    // core1.MGMT_IN[0] — "permit tcp object-group MGMT_HOSTS any eq 22"
-    const line = fabric.acls["core1"]?.["MGMT_IN"]?.[0];
-    expect(line, "core1.MGMT_IN[0] should exist in the compiled model").toBeDefined();
-    expect(line!.unevaluable, "the producer marked this line unevaluable").toBe(true);
+  /* RE-EXPRESSED 2026-09-29 (P3C-V2-3): these tests read five lines of the sample by address (core1.MGMT_IN[0],
+     core1.PROTECT_SERVERS[2], core1.INET_RETURN[0..1]) and failed on any other dataset. What they stood for is a
+     JOIN: every rule the producer wrote beside the line the compiler made of it, field by field, over whatever the
+     loaded snapshot holds (the source is read from the bound bytes above, independently of the compiler). Each
+     field's population is stated, and a dataset carrying none of a field skips that test BY NAME; the audited lines
+     are pinned in the golden block below. */
+  it("every producer rule has a compiled line, at its host, ACL and position", () => {
+    expect(JOINED.length, "the source snapshot carries ACL rules to join").toBeGreaterThan(0);
+    expect(JOINED.filter((j) => j.line === undefined).map((j) => j.at)).toEqual([]);
   });
 
-  it("keeps which qualifier defeated the model, not just that one did", () => {
-    // core1.PROTECT_SERVERS[2] — "permit icmp any 10.0.30.0 0.0.0.255 echo-reply"
-    const line = fabric.acls["core1"]?.["PROTECT_SERVERS"]?.[2];
-    expect(line).toBeDefined();
-    expect(line!.unmodeledQualifiers).toContain("icmp_type");
-    expect(line!.icmpType).toBe("echo-reply");
+  for (const [title, pick, pair] of fieldCases) {
+    const rows = withField(pick);
+    it.runIf(withField(pick).length > 0)(rows.length > 0 ? title : `${title} [skipped: no producer rule in the loaded dataset carries it]`, () => {
+      expect(rows.length).toBeGreaterThan(0);
+      for (const j of rows) {
+        expect(j.line, j.at).toBeDefined();
+        const [got, want] = pair(j);
+        expect(got, j.at).toEqual(want);
+      }
+    });
+  }
+
+  it("never invents a qualifier the producer did not write", () => {
+    for (const j of JOINED) {
+      if (j.line === undefined) continue;
+      expect(j.line.unevaluable, j.at).toBe(j.rule.unevaluable === true);
+      expect(j.line.established, j.at).toBe(j.rule.established === true);
+      expect(j.line.icmpType, j.at).toBe(orNull(j.rule.icmp_type));
+      expect(j.line.timeRange, j.at).toBe(orNull(j.rule.time_range));
+    }
   });
 
-  it("keeps `established`, which a forward-only model cannot decide", () => {
-    // core1.INET_RETURN[0] — "permit tcp any any established"
-    const line = fabric.acls["core1"]?.["INET_RETURN"]?.[0];
-    expect(line).toBeDefined();
-    expect(line!.established).toBe(true);
-  });
-
-  it("keeps `time_range`, without which a conditional rule reads as unconditional", () => {
-    // core1.INET_RETURN[1] — "... eq 443 time-range BUSINESS_HOURS"
-    const line = fabric.acls["core1"]?.["INET_RETURN"]?.[1];
-    expect(line).toBeDefined();
-    expect(line!.timeRange).toBe("BUSINESS_HOURS");
-  });
-
-  it("keeps the object-group REFERENCE on the match field", () => {
-    const line = fabric.acls["core1"]?.["MGMT_IN"]?.[0];
-    expect(line!.src?.group).toBe("MGMT_HOSTS");
-  });
-
-  it("keeps the object groups THEMSELVES, which the snapshot does carry", () => {
-    /* This is the one that produced a false statement to the user. With the groups dropped, the
-       engine could not resolve MGMT_HOSTS and reported "whose members were not collected" — while
-       the source file carries both members, one of which (10.0.40.0/24) is a real VLAN in this
-       very fabric. A model gap described as a collection gap is a lie about our own evidence. */
-    const g = fabric.objectGroups["core1"]?.["MGMT_HOSTS"];
-    expect(g, "core1/MGMT_HOSTS is present in the source snapshot").toBeDefined();
-    expect(g!.kind).toBe("network");
-    expect(g!.members.length).toBe(2);
-    expect(g!.members.map((m) => m.ip)).toContain("10.0.40.0");
-    expect(g!.cite).toBe("object_groups.core1.MGMT_HOSTS");
-  });
+  it.runIf(GROUPS.length > 0)(
+    GROUPS.length > 0
+      ? "keeps the object groups THEMSELVES, which the snapshot does carry"
+      : "keeps the object groups THEMSELVES, which the snapshot does carry [skipped: the loaded dataset carries no object group]",
+    () => {
+      /* This is the one that produced a false statement to the user. With the groups dropped, the engine could
+         not resolve a group and reported "whose members were not collected" — while the source file carries its
+         members. A model gap described as a collection gap is a lie about our own evidence. */
+      for (const { host, name, g } of GROUPS) {
+        const c = fabric.objectGroups[host]?.[name];
+        expect(c, `${host}/${name} is present in the source snapshot`).toBeDefined();
+        expect(c!.kind, `${host}/${name}`).toBe(g.kind);
+        expect(c!.members.map((m) => m.ip), `${host}/${name}`).toEqual((g.members ?? []).map((m) => m.ip));
+        expect(c!.cite).toBe(`object_groups.${host}.${name}`);
+      }
+    },
+  );
 
   it("every line that the producer marked unevaluable says WHY", () => {
     /* The loop below asserts only inside the `unevaluable` branch, so the branch's population is
@@ -147,6 +235,25 @@ describe("the compiled ACL model preserves the producer's own verdicts", () => {
 });
 
 describeGolden("the compiled ACL model of the reference sample", () => {
+  it("every field case and the object-group check have rows here, so none is skipped on the sample", () => {
+    expect(fieldCases.filter(([, pick]) => withField(pick).length === 0).map(([t]) => t)).toEqual([]);
+    expect(GROUPS.map(({ host, name }) => `${host}/${name}`)).toContain("core1/MGMT_HOSTS");
+  });
+
+  it("the audited lines keep what the producer wrote (core1's MGMT_IN, PROTECT_SERVERS and INET_RETURN)", () => {
+    const acl = (name: string, i: number) => fabric.acls["core1"]?.[name]?.[i];
+    expect(acl("MGMT_IN", 0)?.unevaluable).toBe(true);
+    expect(acl("MGMT_IN", 0)?.src?.group).toBe("MGMT_HOSTS");
+    expect(acl("PROTECT_SERVERS", 2)?.unmodeledQualifiers).toContain("icmp_type");
+    expect(acl("PROTECT_SERVERS", 2)?.icmpType).toBe("echo-reply");
+    expect(acl("INET_RETURN", 0)?.established).toBe(true);
+    expect(acl("INET_RETURN", 1)?.timeRange).toBe("BUSINESS_HOURS");
+    const g = fabric.objectGroups["core1"]?.["MGMT_HOSTS"];
+    expect(g?.kind).toBe("network");
+    expect(g?.members.map((m) => m.ip)).toEqual(["10.0.99.10", "10.0.40.0"]);
+  });
+
+
   it("carries eight port matches, none with a null value", () => {
     /* Known answer re-derived from the regenerated sample (GOLDEN_SHA). It was six on the sample before the
        phase-3 regeneration; the count is a fact about one snapshot, so it lives here. On THIS data the null

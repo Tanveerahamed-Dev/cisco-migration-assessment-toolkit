@@ -164,6 +164,145 @@ const ALL = ROOTS.flatMap((r) => walk(join(ROOT, r)));
 const CANDIDATES = ALL.filter((f) => EXTS.has(extname(f)) && !f.endsWith(".d.ts"));
 const SOURCES = CANDIDATES.filter((f) => !isTest(f));
 
+/* ── the stylesheets' RENDERING rules (shape 6: a hide made by a class or an attribute a stylesheet keys on) ──
+   Independent verifier QH-V1-5: shape 6 saw a hide written as a style, an attribute or a removal, and not one
+   written as a CLASS or a DATA ATTRIBUTE that a stylesheet keys a hide on (`classList.add`, `className =`,
+   `dataset.x =`). Deciding those is the stylesheet's business, so the stylesheets are READ: every rule of every
+   `.css` file under the scanned root whose declarations decide whether an element is rendered (`display`,
+   `visibility`, `content-visibility`, or a custom property that one of them reads) is a RENDERING rule, and a
+   write can hide through it when it changes an attribute that rule's selector keys on — a class, an id, or any
+   attribute (`[data-x="y"]`, `[aria-expanded]`, …). A rule that SHOWS (`display: inline-flex` on a `[data-x="y"]`
+   descendant) hides by being un-matched, so it counts too. Only a positive exact match is read for its value (a
+   `[data-visible="false"] { visibility: hidden }` cannot match a write of "true"); a negation, another operator or
+   a value not knowable here may hide. A selector whose subject is a pseudo-element (`::after`) styles no element
+   that can hold focus. */
+export interface RenderingRule {
+  file: string;
+  selector: string;
+  /** A declaration here can stop an element rendering / can make one render. */
+  hides: boolean;
+  shows: boolean;
+  /** Custom properties the rendering declarations read (`display: var(--x)`). */
+  vars: string[];
+  mentions: { kind: "class" | "id" | "attr"; name: string; op: string | null; value: string | null; negated: boolean }[];
+}
+const RENDERING_PROPS: Readonly<Record<string, ReadonlySet<string>>> = {
+  display: new Set(["none"]),
+  visibility: new Set(["hidden", "collapse"]),
+  "content-visibility": new Set(["hidden"]),
+};
+const PSEUDO_ELEMENT = /::?(?:before|after|marker|placeholder|selection|backdrop|first-line|first-letter|file-selector-button|cue|grammar-error|spelling-error|target-text)\b/i;
+/** Every rendering rule of a stylesheet's text (comments stripped; @media/@supports/@layer/@container bodies read; nested rules read). */
+export function renderingRules(file: string, text: string): RenderingRule[] {
+  const out: RenderingRule[] = [];
+  const src = text.replace(/\/\*[\s\S]*?\*\//g, "");
+  const topLevel = (body: string): string => {
+    let depth = 0;
+    let s = "";
+    for (const ch of body) {
+      if (ch === "{") depth += 1;
+      else if (ch === "}") depth -= 1;
+      else if (depth === 0) s += ch;
+    }
+    return s;
+  };
+  const splitTop = (s: string, sep: string): string[] => {
+    const parts: string[] = [];
+    let depth = 0;
+    let cur = "";
+    for (const ch of s) {
+      if (ch === "(" || ch === "[") depth += 1;
+      else if (ch === ")" || ch === "]") depth -= 1;
+      if (ch === sep && depth === 0) {
+        parts.push(cur);
+        cur = "";
+      } else cur += ch;
+    }
+    parts.push(cur);
+    return parts;
+  };
+  const mentionsOf = (sel: string): RenderingRule["mentions"] => {
+    const negatedRanges: [number, number][] = [];
+    for (const m of sel.matchAll(/:not\(/g)) {
+      let depth = 1;
+      let j = m.index + m[0].length;
+      while (j < sel.length && depth > 0) {
+        if (sel[j] === "(") depth += 1;
+        else if (sel[j] === ")") depth -= 1;
+        j += 1;
+      }
+      negatedRanges.push([m.index, j]);
+    }
+    const negated = (i: number): boolean => negatedRanges.some(([a, b]) => i >= a && i < b);
+    const ms: RenderingRule["mentions"] = [];
+    /* Attribute tests first; their text is blanked so a value such as ".pdf" is not read as a class. */
+    let rest = sel;
+    for (const m of sel.matchAll(/\[\s*([\w-]+)\s*(?:([~|^$*]?=)\s*(?:"([^"]*)"|'([^']*)'|([^\]\s]+)))?\s*(?:[is])?\s*\]/g)) {
+      ms.push({ kind: "attr", name: m[1]!.toLowerCase(), op: m[2] ?? null, value: m[3] ?? m[4] ?? m[5] ?? null, negated: negated(m.index) });
+      rest = rest.slice(0, m.index) + " ".repeat(m[0].length) + rest.slice(m.index + m[0].length);
+    }
+    for (const m of rest.matchAll(/\.(-?[_a-zA-Z][\w-]*)/g)) ms.push({ kind: "class", name: m[1]!, op: null, value: null, negated: negated(m.index) });
+    for (const m of rest.matchAll(/#(-?[_a-zA-Z][\w-]*)/g)) ms.push({ kind: "id", name: m[1]!, op: null, value: null, negated: negated(m.index) });
+    return ms;
+  };
+  const visit = (s: string): void => {
+    let i = 0;
+    while (i < s.length) {
+      const open = s.indexOf("{", i);
+      if (open < 0) return;
+      let prelude = s.slice(i, open);
+      const cut = Math.max(prelude.lastIndexOf(";"), prelude.lastIndexOf("}"));
+      if (cut >= 0) prelude = prelude.slice(cut + 1);
+      prelude = prelude.trim();
+      let depth = 1;
+      let j = open + 1;
+      while (j < s.length && depth > 0) {
+        if (s[j] === "{") depth += 1;
+        else if (s[j] === "}") depth -= 1;
+        j += 1;
+      }
+      const body = s.slice(open + 1, j - 1);
+      if (prelude.startsWith("@")) {
+        /* Conditional group rules hold rules; @keyframes, @font-face, @property, @page hold none that select. */
+        if (/^@(?:media|supports|layer|container|scope|document|starting-style)\b/i.test(prelude)) visit(body);
+      } else if (prelude !== "") {
+        let hides = false;
+        let shows = false;
+        const vars: string[] = [];
+        for (const decl of topLevel(body).split(";")) {
+          const k = decl.indexOf(":");
+          if (k < 0) continue;
+          const prop = decl.slice(0, k).trim().toLowerCase();
+          const value = decl.slice(k + 1).replace(/!important/i, "").trim().toLowerCase();
+          if (!Object.hasOwn(RENDERING_PROPS, prop)) continue;
+          const used = [...value.matchAll(/var\(\s*(--[\w-]+)/g)].map((m) => m[1]!);
+          if (used.length > 0) {
+            vars.push(...used);
+            hides = true;
+            shows = true;
+          } else if (RENDERING_PROPS[prop]!.has(value)) hides = true;
+          else shows = true;
+        }
+        if (hides || shows) {
+          for (const sel of splitTop(prelude, ",")) {
+            const selector = sel.trim();
+            if (selector === "" || PSEUDO_ELEMENT.test(selector)) continue;
+            out.push({ file, selector, hides, shows, vars, mentions: mentionsOf(selector) });
+          }
+        }
+        if (body.includes("{")) visit(body); /* CSS nesting: nested rules are rules too */
+      }
+      i = j;
+    }
+  };
+  visit(src);
+  return out;
+}
+const STYLESHEETS = ALL.filter((f) => extname(f) === ".css");
+let renderingCache: RenderingRule[] | null = null;
+/** The rendering rules of every stylesheet under the scanned root (read once). */
+const RENDERING = (): RenderingRule[] => (renderingCache ??= STYLESHEETS.flatMap((f) => renderingRules(f, readFileSync(absOf(f), "utf8"))));
+
 /* ── the program ───────────────────────────────────────────────────────────── */
 
 function compilerOptions(): ts.CompilerOptions {
@@ -269,7 +408,7 @@ export interface Analysis {
   imperativeHides: number;
 }
 
-export function analyseFile(program: ts.Program, rel: string): Analysis {
+export function analyseFile(program: ts.Program, rel: string, rules: readonly RenderingRule[] = RENDERING()): Analysis {
   const sf = program.getSourceFile(absOf(rel));
   if (sf === undefined) return { violations: [], parseError: "not in the program", ownerCalls: false, ladderSites: 0, imperativeHides: 0 };
   const diags = program.getSyntacticDiagnostics(sf);
@@ -763,34 +902,181 @@ export function analyseFile(program: ts.Program, rel: string): Analysis {
     return "(module)";
   };
   let imperativeHides = 0;
+  /** A write whose element cannot be named here (a style object of unknown origin, a stylesheet): it may hide any
+   *  element, no door can be bound to it, and it FAILS CLOSED. */
+  const UNKNOWN_ELEMENT: unique symbol = Symbol("an element this cannot name");
   /** `target` is the element the write leaves unrendered or detached (or whose contents it detaches). */
-  const flagImperative = (site: ts.Node, target: ts.Expression | null): void => {
-    if (target === null || !isElement(target)) return;
+  const flagImperative = (site: ts.Node, target: ts.Expression | typeof UNKNOWN_ELEMENT | null): void => {
+    if (target === null) return;
+    if (target !== UNKNOWN_ELEMENT && !isElement(target)) return;
     imperativeHides += 1;
-    if (released(target) || isTemporary(target, site)) return;
+    if (target !== UNKNOWN_ELEMENT && (released(target) || isTemporary(target, site))) return;
     out.push({ file: rel, line: lineOf(site), kind: "imperative-hide-without-release", text: `${enclosingName(site)}: ${norm(site.getText(sf))}` });
   };
+  /* THE STYLE OBJECT, followed to its element (independent verifier QH-V1-5: `const s = el.style; s.display =
+     "none"` went unseen). `el.style` -> `el`; a CONST bound to a style object -> that object's element; any other
+     value typed as a CSSStyleDeclaration (a parameter, a `let`, a computed style) -> an element this cannot name,
+     which fails closed. null: not a style object at all. */
+  const isStyleDeclaration = (e: ts.Expression): boolean => {
+    const t = checker.getNonNullableType(checker.getTypeAtLocation(e));
+    if ((t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
+    const parts = t.isUnion() ? t.types : [t];
+    return parts.some((p) => p.getProperty("cssText") !== undefined && p.getProperty("setProperty") !== undefined && p.getProperty("getPropertyValue") !== undefined);
+  };
+  const styleHost = (e: ts.Expression | null, seen: Set<ts.Node> = new Set()): ts.Expression | typeof UNKNOWN_ELEMENT | null => {
+    if (e === null) return null;
+    const x = strip(e);
+    const viaStyle = elementOfStyle(x);
+    if (viaStyle !== null) return viaStyle;
+    if (!isStyleDeclaration(x)) return null;
+    if (ts.isIdentifier(x)) {
+      const d = resolved(x)?.valueDeclaration;
+      if (d !== undefined && ts.isVariableDeclaration(d) && d.initializer !== undefined && !seen.has(d) && (ts.getCombinedNodeFlags(d) & ts.NodeFlags.Const) !== 0) {
+        seen.add(d);
+        return styleHost(d.initializer, seen);
+      }
+    }
+    return UNKNOWN_ELEMENT;
+  };
+  /* CLASS AND ATTRIBUTE WRITES, judged by the stylesheets' rendering rules (RenderingRule, above). */
+  /** Can ADDING (or removing, or either) these classes (null: not knowable) stop an element rendering through a rule?
+   *  A class added matches the rules that name it and un-matches the `:not()`s that do; a removal the reverse. */
+  const classWriteMayHide = (names: string[] | null, how: "add" | "remove" | "either" = "either"): boolean =>
+    rules.some((r) =>
+      r.mentions.some((m) => {
+        if (m.kind !== "class" || (names !== null && !names.includes(m.name))) return false;
+        const onAdd = (!m.negated && r.hides) || (m.negated && r.shows);
+        const onRemove = (!m.negated && r.shows) || (m.negated && r.hides);
+        return how === "add" ? onAdd : how === "remove" ? onRemove : onAdd || onRemove;
+      }),
+    );
+  /** `className =` on an element this very function just created (it had no class to lose): the classes are ADDED. */
+  const freshlyCreated = (target: ts.Expression): boolean => {
+    const x = strip(target);
+    if (!ts.isIdentifier(x)) return false;
+    const decl = resolved(x)?.valueDeclaration;
+    if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) return false;
+    const init = strip(decl.initializer);
+    if (!ts.isCallExpression(init) || (calledMember(init) !== "createElement" && calledMember(init) !== "createElementNS")) return false;
+    /* Created in the same function, and no OTHER class write to it there (one could have added a class this drops). */
+    const scope = scopeOf(target);
+    if (scopeOf(decl) !== scope) return false;
+    const sym = resolved(x);
+    const classWrites = (m: ts.Node): boolean => {
+      const onSym = (e: ts.Expression | null): boolean => e !== null && ts.isIdentifier(strip(e)) && resolved(strip(e)) === sym;
+      if (ts.isBinaryExpression(m) && m.operatorToken.kind === ts.SyntaxKind.EqualsToken) return memberName(m.left) === "className" && onSym(objectOf(m.left));
+      if (ts.isCallExpression(m)) {
+        const c = strip(m.expression);
+        const recv = ts.isPropertyAccessExpression(c) || ts.isElementAccessExpression(c) ? objectOf(c) : null;
+        return recv !== null && memberName(recv) === "classList" && onSym(objectOf(recv));
+      }
+      return false;
+    };
+    let count = 0;
+    const walkScope = (m: ts.Node): void => {
+      if (classWrites(m)) count += 1;
+      m.forEachChild(walkScope);
+    };
+    walkScope(scope);
+    return count <= 1;
+  };
+  const idWriteMayHide = (): boolean => rules.some((r) => r.mentions.some((m) => m.kind === "id"));
+  /** Can setting (values: the strings it can be, null when not knowable) or REMOVING attribute `attr` (null: some
+   *  `data-*` attribute this cannot name) stop an element rendering through a rendering rule? */
+  const attrWriteMayHide = (attr: string | null, values: string[] | null, removal: boolean): boolean =>
+    rules.some((r) =>
+      r.mentions.some((m) => {
+        if (m.kind !== "attr" || (attr === null ? !m.name.startsWith("data-") : m.name !== attr)) return false;
+        if (removal || attr === null) return (!m.negated && r.shows) || (m.negated && r.hides) || attr === null;
+        if (values === null || m.negated || (m.op !== null && m.op !== "=")) return true;
+        if (m.op === null) return r.hides; /* present now: a presence test matches — it hides only if the rule does */
+        return (values.includes(m.value ?? "") && r.hides) || (values.some((v) => v !== m.value) && r.shows);
+      }),
+    );
+  /** The strings a value can be, or null when not knowable. */
+  const valuesOf = (e: ts.Expression | undefined): string[] | null => {
+    if (e === undefined) return null;
+    const all: string[] = [];
+    for (const v of valueSources(e)) {
+      const t = literalTexts(v);
+      if (t === null) return null;
+      all.push(...t);
+    }
+    return all;
+  };
+  /** A generic attribute write: `name` known (lower-cased) — hidden/inert/style are judged by their own rules. */
+  const judgeAttribute = (site: ts.Node, el: ts.Expression, name: string, values: string[] | null, removal: boolean): void => {
+    if (name === "class") {
+      /* The whole list replaced (or removed): any class it had may go. */
+      if (classWriteMayHide(null, removal ? "remove" : "either")) flagImperative(site, el);
+    } else if (name === "id") {
+      if (idWriteMayHide()) flagImperative(site, el);
+    } else if (name === "open") {
+      /* A <details> or <dialog> that loses `open` hides its contents in every browser, whatever the stylesheets say. */
+      if (removal || values === null || values.includes("false")) flagImperative(site, el);
+    } else if (attrWriteMayHide(name, values, removal)) flagImperative(site, el);
+  };
+  /** `fooBar` (a dataset key) -> `data-foo-bar`. */
+  const dataAttr = (key: string): string => `data-${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
+  /** Is this a CSSStyleSheet (a write to it can hide any element)? */
+  const isStyleSheet = (e: ts.Expression): boolean => {
+    const t = checker.getNonNullableType(checker.getTypeAtLocation(e));
+    const parts = t.isUnion() ? t.types : [t];
+    return parts.some((p) => p.getProperty("insertRule") !== undefined && p.getProperty("cssRules") !== undefined);
+  };
+  /** A custom property a rendering rule reads (`display: var(--x)`): writing it can hide. */
+  const renderingVar = (name: string): boolean => rules.some((r) => r.vars.includes(name));
   const CONTENT_WRITES = new Set(["innerHTML", "outerHTML", "textContent", "innerText", "outerText"]);
   const HIDING_ATTRS = new Set(["hidden", "inert"]);
   const imperativeVisit = (n: ts.Node): void => {
     if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
       const name = memberName(n.left);
       const obj = objectOf(n.left);
-      const styleOf = elementOfStyle(obj);
+      const styleOf = obj === null ? null : styleHost(obj);
+      /* `el.dataset.x = v`, `el.classList.value = v`: the element is the object's object. */
+      const owner = obj === null ? null : objectOf(obj);
+      const via = obj === null ? null : memberName(obj);
       if (name !== null && obj !== null) {
-        if (name === "hidden" || name === "inert") {
+        if (via === "dataset" && owner !== null) {
+          if (name === "") {
+            if (attrWriteMayHide(null, null, false)) flagImperative(n, owner);
+          } else judgeAttribute(n, owner, dataAttr(name), valuesOf(n.right), false);
+        } else if (via === "classList" && owner !== null && name === "value") {
+          if (classWriteMayHide(null)) flagImperative(n, owner);
+        } else if (name === "hidden" || name === "inert") {
           if (mayHide(n.right, null)) flagImperative(n, obj);
         } else if (CONTENT_WRITES.has(name)) flagImperative(n, obj);
         else if (name === "style") {
           /* `el.style = "…"`: the whole style. */
           if (styleTextMayHide(n.right)) flagImperative(n, obj);
+        } else if (name === "className" && styleOf === null) {
+          /* The whole list replaced: any class it had may go — unless this function just created it (it had none). */
+          const names = valuesOf(n.right)?.flatMap((s) => s.split(/\s+/).filter((c) => c !== "")) ?? null;
+          if (freshlyCreated(obj) ? classWriteMayHide(names, "add") : classWriteMayHide(null)) flagImperative(n, obj);
+        } else if (name === "id" && styleOf === null) {
+          if (idWriteMayHide()) flagImperative(n, obj);
+        } else if (name === "open" && styleOf === null) {
+          /* A <details> or <dialog> that loses `open` hides its contents, whatever the stylesheets say. */
+          if (valueSources(n.right).some((v) => strip(v).kind !== ts.SyntaxKind.TrueKeyword)) flagImperative(n, obj);
+        } else if (name === "adoptedStyleSheets") {
+          flagImperative(n, UNKNOWN_ELEMENT);
         } else if (styleOf !== null) {
-          /* `el.style.x = v`, `el.style["x"] = v`, `el.style[k] = v` (a key not known here may hide). */
+          /* `el.style.x = v`, `el.style["x"] = v`, `el.style[k] = v` (a key not known here may hide) — or the same
+             through a style object bound elsewhere. */
           const prop = name === "" ? null : cssName(name);
           if (prop === "css-text") {
             if (styleTextMayHide(n.right)) flagImperative(n, styleOf);
           } else if (prop === null || (Object.hasOwn(HIDING_STYLES, prop) && mayHide(n.right, prop))) flagImperative(n, styleOf);
         }
+      }
+    } else if (ts.isDeleteExpression(n)) {
+      /* `delete el.dataset.x`: the attribute removed. */
+      const obj = objectOf(n.expression);
+      const name = memberName(n.expression);
+      if (obj !== null && memberName(obj) === "dataset" && objectOf(obj) !== null && name !== null) {
+        if (name === "") {
+          if (attrWriteMayHide(null, null, true)) flagImperative(n, objectOf(obj));
+        } else judgeAttribute(n, objectOf(obj)!, dataAttr(name), null, true);
       }
     } else if (ts.isCallExpression(n)) {
       const member = calledMember(n);
@@ -802,21 +1088,65 @@ export function analyseFile(program: ts.Program, rel: string): Analysis {
         return texts !== null && texts.length === 1 ? texts[0]!.trim().toLowerCase() : null;
       };
       const args = n.arguments;
-      if (obj !== null && (member === "setAttribute" || member === "toggleAttribute" || member === "setAttributeNS")) {
+      /** A local name without its namespace prefix (`xlink:href` -> `href`). */
+      const localName = (a: string): string => a.slice(a.indexOf(":") + 1);
+      const via = obj === null ? null : memberName(obj);
+      const owner = obj === null ? null : objectOf(obj);
+      if (via === "classList" && owner !== null && (member === "add" || member === "remove" || member === "toggle" || member === "replace")) {
+        /* A class added, removed, toggled or replaced: judged by the rendering rules that key on those classes
+           (a name not knowable here may be any of them). `toggle`'s second argument is its force, not a class. */
+        const named = member === "toggle" ? args.slice(0, 1) : args;
+        let names: string[] | null = [];
+        for (const a of named) {
+          const t = ts.isSpreadElement(a) ? null : literalTexts(a);
+          if (t === null) {
+            names = null;
+            break;
+          }
+          names.push(...t.flatMap((s) => s.split(/\s+/).filter((x) => x !== "")));
+        }
+        if (classWriteMayHide(names, member === "add" ? "add" : member === "remove" ? "remove" : "either")) flagImperative(n, owner);
+      } else if (obj !== null && (member === "setAttribute" || member === "toggleAttribute" || member === "setAttributeNS")) {
         const nameArg = member === "setAttributeNS" ? args[1] : args[0];
         const valueArg = member === "setAttributeNS" ? args[2] : args[1];
-        const attr = lit(nameArg);
+        const attr0 = lit(nameArg);
+        const attr = attr0 === null ? null : localName(attr0);
         if (attr === null) flagImperative(n, obj); /* an attribute this cannot read may be one of them */
         else if (HIDING_ATTRS.has(attr)) {
           if (member !== "toggleAttribute" || mayHide(valueArg, null)) flagImperative(n, obj);
-        } else if (attr === "style" && member !== "toggleAttribute" && styleTextMayHide(valueArg)) flagImperative(n, obj);
-      } else if (obj !== null && member === "setProperty") {
+        } else if (attr === "style") {
+          if (member === "toggleAttribute" || styleTextMayHide(valueArg)) flagImperative(n, obj);
+        } else if (member === "toggleAttribute") {
+          /* Forced on: present (""); forced off: removed; not forced: either. */
+          const force = valueArg === undefined ? undefined : strip(valueArg);
+          if (force === undefined || force.kind !== ts.SyntaxKind.FalseKeyword) judgeAttribute(n, obj, attr, [""], false);
+          if (force === undefined || force.kind !== ts.SyntaxKind.TrueKeyword) judgeAttribute(n, obj, attr, null, true);
+        } else if (attr !== "open") judgeAttribute(n, obj, attr, valuesOf(valueArg), false); /* setting `open` shows */
+      } else if (obj !== null && (member === "removeAttribute" || member === "removeAttributeNS")) {
+        const attr0 = lit(member === "removeAttributeNS" ? args[1] : args[0]);
+        const attr = attr0 === null ? null : localName(attr0);
+        if (attr === null) flagImperative(n, obj);
+        else if (attr === "style") flagImperative(n, obj); /* the inline style removed may have been what rendered it */
+        else if (!HIDING_ATTRS.has(attr)) judgeAttribute(n, obj, attr, null, true); /* removing hidden/inert shows */
+      } else if (obj !== null && (member === "setProperty" || member === "removeProperty")) {
+        /* One property of a style object, set or removed. Removing a rendering property may un-override a stylesheet's
+           hide (an inline `display: block` over a sheet's `none`); a custom property counts when a rendering rule reads it. */
         const prop = lit(args[0]);
-        const styleEl = elementOfStyle(obj);
-        if (styleEl !== null && (prop === null || (Object.hasOwn(HIDING_STYLES, prop) && mayHide(args[1], prop)))) flagImperative(n, styleEl);
-      } else if (member === "assign" && args.length >= 2 && elementOfStyle(strip(args[0]!)) !== null) {
+        const styleEl = styleHost(obj);
+        const may =
+          prop === null ||
+          (prop.startsWith("--") ? renderingVar(prop) : Object.hasOwn(HIDING_STYLES, prop) && (member === "removeProperty" || mayHide(args[1], prop)));
+        if (styleEl !== null && may) flagImperative(n, styleEl);
+      } else if (via === "attributeStyleMap" && owner !== null && (member === "set" || member === "append" || member === "delete" || member === "clear")) {
+        /* The typed OM: a CSSStyleValue is not read here, so a rendering property set or deleted may hide. */
+        const prop = member === "clear" ? null : lit(args[0]);
+        if (prop === null || (prop.startsWith("--") ? renderingVar(prop) : Object.hasOwn(HIDING_STYLES, prop))) flagImperative(n, owner);
+      } else if (obj !== null && /^(?:insertRule|deleteRule|addRule|removeRule|replace|replaceSync)$/.test(member ?? "") && isStyleSheet(obj)) {
+        /* A stylesheet rewritten: any element may stop rendering, and no door can name them all. */
+        flagImperative(n, UNKNOWN_ELEMENT);
+      } else if (member === "assign" && args.length >= 2 && styleHost(strip(args[0]!)) !== null) {
         /* Object.assign(el.style, { … }) */
-        if (args.slice(1).some((a) => styleObjectMayHide(a))) flagImperative(n, elementOfStyle(strip(args[0]!)));
+        if (args.slice(1).some((a) => styleObjectMayHide(a))) flagImperative(n, styleHost(strip(args[0]!)));
       } else if (obj !== null && (member === "remove" || member === "replaceWith") && args.length === (member === "remove" ? 0 : args.length)) {
         flagImperative(n, obj);
       } else if (obj !== null && member === "replaceChildren") {
@@ -859,21 +1189,26 @@ const PENDING_ROUTING: readonly { file: string; kind: Violation["kind"]; text: s
      removals and content replacements of an element that can hold focus — in files other clusters own.
      Each is fixed by calling the third door on the element (`releaseFocusFrom(<it>, null, <stated
      successors>)`) before the write, a no-op when focus is elsewhere; then its entry is deleted here. */
-  { file: "src/fabric3d/Fabric3D.tsx", kind: "imperative-hide-without-release", text: "Fabric3D: canvas.remove()" }, // P3D: the focusable canvas (tabIndex 0), removed on a failed scene and in the effect's cleanup
-  { file: "src/fabric3d/scene.ts", kind: "imperative-hide-without-release", text: "createSceneImpl: el.remove()" }, // P3C: the tier-fade overlay's unmount
-  { file: "src/main.tsx", kind: "imperative-hide-without-release", text: "datasetReady: boot.textContent = message" }, // P3E: the boot line's contents replaced
-  {
-    file: "src/main.tsx",
-    kind: "imperative-hide-without-release",
-    text: 'showRefusal: boot.textContent = `${refusal.title}. ${refusal.issues.map((i) => `${sentence(i.message)} [${i.code}]`).join(" ")}`',
-  }, // P3E
-  {
-    file: "src/main.tsx",
-    kind: "imperative-hide-without-release",
-    text: 'showRefusal: boot.textContent = "Atlas Scope could not load. Reload the page; if it fails again, the build is incomplete."',
-  }, // P3E
+  { file: "src/fabric3d/Fabric3D.tsx", kind: "imperative-hide-without-release", text: "Fabric3D: canvas.remove()" }, // Q-D: the focusable canvas (tabIndex 0), removed on a failed scene and in the effect's cleanup (two sites, one key)
+  { file: "src/fabric3d/scene.ts", kind: "imperative-hide-without-release", text: "createSceneImpl: el.remove()" }, // Q-C: the tier-fade overlay's unmount
+  { file: "src/main.tsx", kind: "imperative-hide-without-release", text: "datasetReady: boot.textContent = message" }, // Q-M: the boot line's contents replaced
+  { file: "src/core/dataset/refusal.ts", kind: "imperative-hide-without-release", text: "showDatasetRefusal: boot.textContent = text" }, // Q-M: the refusal replaces the boot line's contents (moved here from main.tsx's showRefusal)
   { file: "src/dev/preview.tsx", kind: "imperative-hide-without-release", text: "Preview: slot.replaceChildren(canvas)" }, // unowned dev preview (gate): replaces a focusable canvas
   { file: "src/dev/preview.tsx", kind: "imperative-hide-without-release", text: "Preview: slot.replaceChildren()" }, // unowned dev preview (gate)
+  /* Shape 6, read through the STYLESHEETS (independent verifier QH-V1-5, phase 3.5 repair): a data attribute a
+     rendering rule keys on. Fabric3D.css hides `.fabric3d-label[data-visible="false"]` (visibility: hidden) and
+     SHOWS each chip only while its label carries the matching `data-alarm` / `-cut` / `-stranded` / `-finding` /
+     `-disputed` value (display: inline-flex), so each write below can stop an element rendering. The labels sit in
+     an aria-hidden layer and hold no tab stop today, which the guard cannot know from the source: the owner (Q-C,
+     FabricLabels.tsx) either routes the write through the third door (`releaseFocusFrom(el, null)`, a no-op when
+     focus is elsewhere) or makes the label layer unable to hold focus in a way the guard can read; then the entry
+     goes. */
+  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: 'hide: el.dataset.visible = "false"' }, // Q-C
+  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: "tick: el.dataset.alarm = wantAlarm" }, // Q-C
+  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: "tick: el.dataset.cut = wantCut" }, // Q-C
+  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: "tick: el.dataset.stranded = wantStranded" }, // Q-C
+  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: "tick: el.dataset.finding = wantFinding" }, // Q-C
+  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: "tick: el.dataset.disputed = wantDisputed" }, // Q-C
 ];
 
 const key = (v: { file: string; kind: string; text: string }): string => `${v.file}|${v.kind}|${v.text}`;
@@ -985,9 +1320,28 @@ describe("no surface decides focus return on its own (acceptance D3)", () => {
        (verifier R5-V2) — shape 6 counted it — and releases it through `releaseFocusFrom` first. */
     const a = analysisOf("src/fabric3d/FabricLabels.tsx");
     expect(a.imperativeHides, "shape 6 inspected no imperative hide in FabricLabels.tsx").toBeGreaterThan(0);
-    expect(a.violations.filter((v) => v.kind === "imperative-hide-without-release")).toEqual([]);
+    /* The pointer's hide is door-bound; the file's other shape-6 sites (the label layer's data attributes, read
+       through the stylesheet since QH-V1-5) are routed debt, named one by one in PENDING_ROUTING — never absorbed. */
+    const shape6 = a.violations.filter((v) => v.kind === "imperative-hide-without-release");
+    expect(shape6.filter((v) => v.text.startsWith("hidePointer:")), "the off-view pointer's hide is not released").toEqual([]);
+    expect(shape6.filter((v) => !pending.has(key(v))).map((v) => `${v.line} ${v.text}`)).toEqual([]);
     const total = SOURCES.reduce((n, f) => n + analysisOf(f).imperativeHides, 0);
     expect(total, "the imperative hides shape 6 inspected across the scanned tree").toBeGreaterThanOrEqual(3);
+  });
+
+  it("shape 6 reads the stylesheets: every .css under the scanned root, and the drawer's stylesheet hide is a rendering rule", () => {
+    /* Non-vacuity of the class/attribute half (QH-V1-5): the stylesheets are the runner's root's own, each is
+       read, and the one stylesheet hide this guard's header names is among the rendering rules, keyed on its
+       attribute: at the drawer rung Rail B is `visibility: hidden` and SHOWN only while `.app[data-drawer="open"]`
+       matches (shell.css), so a write that un-matches it hides the rail — a rule that SHOWS, read as one. */
+    expect(STYLESHEETS.length, "no stylesheet under the scanned root").toBeGreaterThan(5);
+    const rules = RENDERING();
+    for (const f of STYLESHEETS) expect(readFileSync(absOf(f), "utf8").length, f).toBeGreaterThan(0);
+    expect(rules.length, "no rendering rule read from the stylesheets").toBeGreaterThan(10);
+    expect(
+      rules.some((r) => r.file === "src/app/shell.css" && r.shows && r.mentions.some((m) => m.kind === "attr" && m.name === "data-drawer" && m.value === "open" && !m.negated)),
+      "shell.css's data-drawer hide was not read as a rendering rule",
+    ).toBe(true);
   });
 
   it("built the scanned sources' program at most once for all of the cases above", () => {
@@ -998,7 +1352,7 @@ describe("no surface decides focus return on its own (acceptance D3)", () => {
 describe("the guard is live (planted counterexamples, compiled with the real owner)", () => {
   /* Every planted module is compiled into ONE program next to the real `focus-return.ts`, so an
      import of the owner resolves exactly as it does in the application. */
-  const PLANTED: Record<string, { src: string; expect: Violation["kind"][] }> = {
+  const PLANTED: Record<string, { src: string; css?: string; expect: Violation["kind"][] }> = {
     d3Regression: {
       src: `export function onEsc(e: { currentTarget: HTMLElement }, back: HTMLElement | null) {
         if (back && back.isConnected) back.focus();
@@ -1262,10 +1616,12 @@ describe("the guard is live (planted counterexamples, compiled with the real own
       expect: Array.from({ length: 18 }, () => "imperative-hide-without-release" as const),
     },
     imperativeEffectsThatHideNothing: {
-      /* Not the class: a style write that sets no hiding value, a class toggle (a stylesheet's hide,
-         measured in the browser), a database's close, a text node's text, a removed property, an
-         explicit show — and a TEMPORARY: an element this very function created and never focused cannot
-         be holding the reader's focus (the Inspector's download anchor). */
+      /* Not the class: a style write that sets no hiding value, a class toggle no stylesheet keys a rendering
+         rule on (this case declares no stylesheet; see imperativeHideByStylesheet), a database's close, a text
+         node's text, a removed property no rule renders by, an explicit show — and a TEMPORARY: an element this
+         very function created and never focused cannot be holding the reader's focus (the Inspector's download
+         anchor). (`el.style.removeProperty("display")` stood here until phase 3.5's repair: removing an inline
+         `display` can un-override a stylesheet's `none`, so it is in the class — imperativeHideByStylesheet.) */
       src: `declare const el: HTMLElement; declare const db: IDBDatabase; declare const t: Text;
         el.style.cssText = "position:absolute;opacity:1";
         el.setAttribute("style", "color: red");
@@ -1273,9 +1629,71 @@ describe("the guard is live (planted counterexamples, compiled with the real own
         el.classList.remove("shown");
         db.close();
         t.textContent = "x";
-        el.style.removeProperty("display");
+        el.style.removeProperty("color");
         el.togglePopover(true);
         export function download(): void { const a = document.createElement("a"); a.href = "x"; document.body.append(a); a.click(); a.remove(); }`,
+      expect: [],
+    },
+    imperativeHideByStylesheet: {
+      /* Independent verifier QH-V1-5: 14 of 20 planted hides flagged; not a class added (`classList.add`) or
+         replaced (`className =`), a `dataset` write, or a style reached through an alias (`const s = el.style`).
+         A class or attribute hides through the STYLESHEET, so the stylesheet is read (renderingRules): a rule
+         that decides rendering and keys on what the write changes. Here: a class a rule hides, the whole class
+         list replaced, a data attribute set to the value a rule hides, a value not knowable, a class a
+         `:not()` rule hides by its ABSENCE, a value that un-matches a rule that SHOWS a descendant, that
+         attribute removed, the class attribute removed, the style alias, a custom property a rendering rule
+         reads, an inline rendering property removed (it may have overridden a sheet's `none`), the typed OM,
+         a <details> closed, a class not knowable, a style object of unknown origin (fails closed: no door can
+         name its element) and a stylesheet rewritten (any element). */
+      css: `.is-hidden { display: none; }
+        .card[data-open="false"] { visibility: hidden; }
+        .panel[data-state="on"] .panel__body { display: block; }
+        .x:not(.shown) { display: none; }
+        .var-host { display: var(--vis); }
+        .deco::after { display: none; }`,
+      src: `declare const el: HTMLElement; declare const v: string; declare const d: HTMLDetailsElement; declare const sheet: CSSStyleSheet;
+        el.classList.add("is-hidden");
+        el.className = "card";
+        el.dataset.open = "false";
+        el.setAttribute("data-open", v);
+        el.classList.remove("shown");
+        el.dataset.state = "off";
+        delete el.dataset.state;
+        el.removeAttribute("class");
+        const s = el.style; s.display = "none";
+        el.style.setProperty("--vis", "none");
+        el.style.removeProperty("display");
+        el.attributeStyleMap.set("display", "none");
+        d.open = false;
+        el.classList.toggle(v);
+        export function f(st: CSSStyleDeclaration): void { st.display = "none"; }
+        sheet.insertRule(".a { display: none }");
+        export function mk(): HTMLElement { const c = document.createElement("canvas"); document.body.append(c); c.focus(); c.className = "is-hidden"; return c; }`,
+      expect: Array.from({ length: 17 }, () => "imperative-hide-without-release" as const),
+    },
+    stylesheetWritesThatHideNothing: {
+      /* The same stylesheet, and writes that cannot stop anything rendering through it: a value its one exact
+         hide cannot match, a class and a data attribute no rendering rule keys on, the value its SHOWING rule
+         matches, a custom property no rendering rule reads, an ARIA label, a colour through the style alias, a
+         class only a pseudo-element's rule keys on — and a class hide released through the third door first. */
+      css: `.is-hidden { display: none; }
+        .card[data-open="false"] { visibility: hidden; }
+        .panel[data-state="on"] .panel__body { display: block; }
+        .var-host { display: var(--vis); }
+        .deco::after { display: none; }
+        .shown-thing { display: block; }`,
+      src: `import { releaseFocusFrom } from "./focus-return";
+        declare const el: HTMLElement;
+        export function mk(): HTMLElement { const c = document.createElement("canvas"); document.body.append(c); c.focus(); c.className = "shown-thing"; return c; }
+        el.dataset.open = "true";
+        el.classList.add("unrelated");
+        el.dataset.state = "on";
+        el.dataset.unrelated = "x";
+        el.style.setProperty("--pointer-deg", "12deg");
+        el.setAttribute("aria-label", "x");
+        const t = el.style; t.color = "red";
+        el.classList.add("deco");
+        export function hide(box: HTMLElement): void { releaseFocusFrom(box, null); box.classList.add("is-hidden"); }`,
       expect: [],
     },
     imperativeDoorOnTheRightElement: {
@@ -1334,7 +1752,8 @@ describe("the guard is live (planted counterexamples, compiled with the real own
   let program: ts.Program | null = null;
   const planted = (name: string): Analysis => {
     program ??= makeProgram([OWNER], new Map(Object.entries(PLANTED).map(([n, p]) => [rel(n), p.src])));
-    return analyseFile(program, rel(name));
+    /* A planted case is judged against ITS OWN stylesheet (none unless it declares one), never the app's. */
+    return analyseFile(program, rel(name), renderingRules(`__planted_${name}.css`, PLANTED[name]!.css ?? ""));
   };
 
   for (const [name, p] of Object.entries(PLANTED)) {

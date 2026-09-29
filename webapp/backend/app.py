@@ -111,9 +111,10 @@ _SCOPE_UNAVAILABLE_DETAIL = {
     "invalid_build": "Atlas Scope is not built in this installation for AssessHub: the build found is "
                      "not a /scope runtime-snapshot build (every asset must load from /scope/assets/ "
                      f"and index.html must declare <meta name=\"{_SCOPE_RUNTIME_SOURCE_META}\" "
-                     f"content=\"{_SCOPE_RUNTIME_SOURCE_VALUE}\">, and no HTML document in it "
-                     "may declare its own referrer policy, which would override the same-origin "
-                     "policy AssessHub's write containment relies on), so it is not served.",
+                     f"content=\"{_SCOPE_RUNTIME_SOURCE_VALUE}\">; every HTML or XML document in "
+                     "it must be markup this server reads exactly as a browser does, and none may "
+                     "declare its own referrer policy, which would override the same-origin policy "
+                     "AssessHub's write containment relies on), so it is not served.",
     "refused_compiled_evidence": "Atlas Scope is withheld: its static build carries snapshot "
                                  "evidence (a compiled snapshot model — a compiled source binding "
                                  "or a compiled record's snapshot citation — or an engine snapshot "
@@ -1511,121 +1512,305 @@ def _frontend_file_index(dist_root: Path) -> tuple[Path, dict[str, _FrontendFile
     return _indexed_dist_tree(dist_root, _frontend_shell_valid)
 
 
-class _ScopeShellParser(HTMLParser):
-    """Collect every URL-bearing attribute and the runtime-source declaration of a scope shell.
+# -- /scope markup: read the way a browser reads it, by construction ---------------------------------
+# A /scope document is judged by the reading a BROWSER makes of it, never by a tokenizer that
+# differs from the browser's (P3F-V2-1): the standard library's HTMLParser closes comments, raw-text
+# elements and markup declarations differently from the WHATWG tokenizer (and differently again
+# across Python releases), so a `<!-->` or a `</script x>` hid a `<meta name="referrer">` that a
+# browser applies. Instead of modelling every error-recovery path of the WHATWG tokenizer, AssessHub
+# accepts only markup in a RESTRICTED language on which its tokenization is the browser's by
+# construction, and refuses everything else (`invalid_build`, never passed):
+#
+# * the text is UTF-8 with no NUL and no C0 control but TAB/LF/FF/CR (CR and CRLF become LF first,
+#   as the browser's input-stream preprocessing does);
+# * every `<` begins a complete token — `<!doctype html>`, a start tag, an end tag `</name>`, or a
+#   conforming comment — never text; attribute values contain no `<` and only the character
+#   references `&amp; &lt; &gt; &quot; &apos; &#39;`; comments contain no `</` and follow the HTML
+#   standard's comment syntax (no leading `>`/`->`, no `<!--`, `-->` or `--!>` inside, no trailing
+#   `<!-`); ASCII names; whitespace-separated attributes; no attribute twice (a browser keeps the
+#   first); no `<![CDATA[`, `<?`, bogus comment or other markup declaration.
+#
+# In that language every `</` is an end-tag token, so whatever element a browser reads as raw text
+# (script, style, title, textarea, xmp, iframe, noembed, noframes, noscript, plaintext, or any
+# other), its raw text ends exactly at one of the reader's end tags, or never: the browser can only
+# read LESS markup than this reader, never more. The reader therefore reads NO element as raw text,
+# which also makes foreign content (svg/math, where those names do not switch the tokenizer) read
+# the same. Every element and attribute a browser builds from such a document is one the reader
+# read — proven differentially in real Chromium over a generated family (webapp/tests/
+# test_scope_mount.py, "the browser is the oracle").
+#
+# Which refusals carry that argument was MEASURED clause by clause (QF-R1-2): removing any one of the
+# abrupt `<!-->` / `<!--->` openings, a `--!>` or `</` inside a comment, the control characters, a `<`
+# inside a quoted value, an unknown character reference, a missing space between attributes, a
+# repeated attribute, a non-ASCII-letter tag name or the CR normalisation lets a document through
+# that a unit pin or the Chromium family shows is read differently. The rest are conformance, kept
+# only to keep the language small — removing one changes no reading a browser makes: a comment that
+# contains `<!--` or ends in `<!-` still ends at the same `-->` (the WHATWG nested-comment states
+# reconsume into the comment-end state); every DOCTYPE and end-tag state ends at the first `>`
+# outside quotes, so a laxer doctype or end tag can only let the BROWSER hide more; an `&` in an
+# unquoted value still meets the character-reference rule; and in XML an entity declaration can only
+# sit in the (refused) internal subset, and a UTF-16 document is decoded by its BOM alike by expat
+# and a browser.
+#
+# XML documents (SVG, XHTML, any */xml or *+xml type) are read by the standard library's XML parser
+# (expat), a conforming XML 1.0 + Namespaces processor as a browser's is, restricted to what every
+# conforming processor reads identically: well-formed UTF-8, version 1.0, no DTD internal subset (its
+# entities and attribute defaults are DTD processing, where readers differ; an external subset is
+# loaded by neither), no processing instruction (a browser runs an XSLT stylesheet).
 
-    Atlas Scope's shell legitimately carries an inline classic script (its theme boot), so the
-    AssessHub shell grammar does not apply; what must hold instead is that every URL it loads is a
-    startup-indexed asset under /scope/assets/ (or an inline ``data:`` icon)."""
+@dataclass(frozen=True)
+class _ScopeMarkupElement:
+    """One element as a browser reads it: its lower-cased (local) name and its attributes, each a
+    lower-cased (local) name and its decoded value, in source order."""
+    name: str
+    attributes: tuple[tuple[str, str], ...]
 
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.references: list[tuple[str, str, str]] = []  # (tag, rel/type, url)
-        self.runtime_sources: list[str] = []
-        self.invalid = False
-        # The document declares its OWN referrer policy (R8-V2-1). Every /scope response carries
-        # `Referrer-Policy: same-origin`, which the /api guard's same-origin write containment
-        # (_referred_from_scope) relies on; a `<meta name="referrer">` overrides that header for the
-        # whole document, and one that strips the path on same-origin requests (no-referrer,
-        # origin, strict-origin) makes the viewer's writes arrive with no /scope Referer. The
-        # server's header is the one owner of the policy, so ANY declaration is refused — whatever
-        # its value — and so is a `referrerpolicy` attribute on any element, the `noreferrer` link
-        # type on any element (a form or followed link carrying it sends NO Referer), and any of these
-        # inside a nested document the page itself declares (an iframe `srcdoc`).
-        self.declares_referrer_policy = False
-        # An element with a duplicated attribute: a browser keeps the FIRST occurrence, so what the
-        # element declares cannot be read here the way a browser reads it. Refused, never passed.
-        self.ambiguous = False
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        names = [name.casefold() for name, _value in attrs]
-        if len(names) != len(set(names)):
-            self.ambiguous = True
-            self.invalid = True
-            return
-        attributes = {name.casefold(): (value or "") for name, value in attrs}
-        tag = tag.casefold()
-        if ("referrerpolicy" in attributes
-                or (tag == "meta" and attributes.get("name", "").strip().casefold() == "referrer")
-                or "noreferrer" in attributes.get("rel", "").casefold().split()
-                or ("srcdoc" in attributes
-                    and _scope_html_text_declares_referrer_policy(attributes["srcdoc"]))):
-            self.declares_referrer_policy = True
-            self.invalid = True
-            return
-        if tag == "base" or (tag == "meta" and "http-equiv" in attributes):
-            self.invalid = True
-            return
-        if tag == "meta" and attributes.get("name", "").casefold() == _SCOPE_RUNTIME_SOURCE_META:
-            self.runtime_sources.append(attributes.get("content", ""))
-        for attribute in ("src", "href", "srcset", "poster", "data", "action", "formaction"):
-            if attribute in attributes:
-                kind = (attributes.get("type") if tag == "script" else attributes.get("rel")) or ""
-                self.references.append((tag, kind.casefold(), attributes[attribute]))
+_SCOPE_HTML_FORBIDDEN_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0e-\x1f]")
+_SCOPE_HTML_DOCTYPE = re.compile(r"<!doctype[\t\n\f ]+html[\t\n\f ]*>", re.IGNORECASE)
+_SCOPE_HTML_END_TAG = re.compile(r"</([A-Za-z][A-Za-z0-9-]*)[\t\n\f ]*>")
+_SCOPE_HTML_ATTRIBUTE_RE = re.compile(
+    r"[\t\n\f ]+([A-Za-z_:][A-Za-z0-9_:.-]*)"
+    r"(?:[\t\n\f ]*=[\t\n\f ]*(?:\"([^\"<]*)\"|'([^'<]*)'|([^\t\n\f \"'=<>`&]+)))?")
+_SCOPE_HTML_START_TAG = re.compile(
+    r"<([A-Za-z][A-Za-z0-9-]*)"
+    r"((?:[\t\n\f ]+[A-Za-z_:][A-Za-z0-9_:.-]*"
+    r"(?:[\t\n\f ]*=[\t\n\f ]*(?:\"[^\"<]*\"|'[^'<]*'|[^\t\n\f \"'=<>`&]+))?)*)"
+    r"[\t\n\f ]*/?>")
+_SCOPE_HTML_REFERENCE = re.compile(r"&(?:(amp|lt|gt|quot|apos);|#39;)?")
+_SCOPE_HTML_REFERENCE_TEXT = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'"}
 
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.handle_starttag(tag, attrs)
+
+def _scope_html_attribute_value(raw: str) -> str | None:
+    """The value a browser decodes from ``raw``, or None when ``raw`` carries a character reference
+    outside the few this reader decodes exactly as the WHATWG tokenizer does."""
+    decoded, position = [], 0
+    for match in _SCOPE_HTML_REFERENCE.finditer(raw):
+        if match.group(0) == "&":
+            return None
+        decoded.append(raw[position:match.start()])
+        decoded.append(_SCOPE_HTML_REFERENCE_TEXT[match.group(1)] if match.group(1) else "'")
+        position = match.end()
+    decoded.append(raw[position:])
+    return "".join(decoded)
+
+
+def _scope_html_comment_end(text: str, start: int) -> int | None:
+    """The index after the conforming comment opening at ``start`` (``<!--``), or None."""
+    end = text.find("-->", start + 4)
+    if end < 0:
+        return None
+    data = text[start + 4:end]
+    if (data.startswith((">", "->")) or data.endswith("<!-")
+            or any(forbidden in data for forbidden in ("<!--", "--!>", "</"))):
+        return None
+    return end + 3
+
+
+def _scope_html_reading(text: str) -> tuple[_ScopeMarkupElement, ...] | None:
+    """Every element (start tag) of an HTML document in source order, read as a browser reads it —
+    or None when the document is not in the restricted language above, which is refused."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if _SCOPE_HTML_FORBIDDEN_CHARACTERS.search(text):
+        return None
+    elements: list[_ScopeMarkupElement] = []
+    position, length = 0, len(text)
+    while position < length:
+        opening = text.find("<", position)
+        if opening < 0:
+            break
+        if text.startswith("<!--", opening):
+            end = _scope_html_comment_end(text, opening)
+            if end is None:
+                return None
+            position = end
+            continue
+        token = _SCOPE_HTML_DOCTYPE.match(text, opening) or _SCOPE_HTML_END_TAG.match(text, opening)
+        if token is not None:
+            position = token.end()
+            continue
+        match = _SCOPE_HTML_START_TAG.match(text, opening)
+        if match is None:
+            return None
+        attributes = []
+        for attribute in _SCOPE_HTML_ATTRIBUTE_RE.finditer(match.group(2)):
+            raw = next((v for v in attribute.group(2, 3, 4) if v is not None), "")
+            value = _scope_html_attribute_value(raw)
+            if value is None:
+                return None
+            attributes.append((attribute.group(1).lower(), value))
+        if len({name for name, _value in attributes}) != len(attributes):
+            return None  # a browser keeps the FIRST of a repeated attribute
+        elements.append(_ScopeMarkupElement(match.group(1).lower(), tuple(attributes)))
+        position = match.end()
+    return tuple(elements)
+
+
+class _ScopeXmlRefused(Exception):
+    """An XML construct this reader does not read the way every conforming browser does."""
+
+
+def _scope_xml_reading(content: bytes) -> tuple[_ScopeMarkupElement, ...] | None:
+    """Every element of an XML document in source order (local names, lower-cased; namespace
+    declarations are not attributes), or None when it is not well-formed, not UTF-8, carries a DTD
+    internal subset or a processing instruction, or declares another version or encoding."""
+    import xml.parsers.expat
+
+    try:
+        content.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    elements: list[_ScopeMarkupElement] = []
+
+    def refuse(*_args):
+        raise _ScopeXmlRefused
+
+    def doctype(_name, _system_id, _public_id, has_internal_subset):
+        if has_internal_subset:
+            raise _ScopeXmlRefused
+
+    def declaration(version, encoding, _standalone):
+        if version != "1.0" or (encoding is not None and encoding.strip().lower() != "utf-8"):
+            raise _ScopeXmlRefused
+
+    def start(name, attributes):
+        elements.append(_ScopeMarkupElement(
+            name.rsplit(" ", 1)[-1].lower(),
+            tuple((key.rsplit(" ", 1)[-1].lower(), value) for key, value in attributes.items())))
+
+    parser = xml.parsers.expat.ParserCreate(namespace_separator=" ")
+    parser.XmlDeclHandler = declaration
+    parser.StartDoctypeDeclHandler = doctype
+    parser.EntityDeclHandler = refuse
+    parser.ProcessingInstructionHandler = refuse
+    parser.ExternalEntityRefHandler = refuse
+    parser.StartElementHandler = start
+    try:
+        parser.Parse(content, True)
+    except (_ScopeXmlRefused, xml.parsers.expat.ExpatError, ValueError, RecursionError):
+        return None
+    return tuple(elements)
+
+
+def _scope_markup_kind(media_type: str) -> Literal["html", "xml"] | None:
+    """How a browser renders a member served as ``media_type``: as HTML (text/html), as XML (the
+    MIME Sniffing standard's XML MIME types — any */xml or *+xml — plus text/xsl, which Blink also
+    renders as XML), or not as markup at all. Measured against Chromium over every media type the
+    served registry assigns (test_every_media_type_chromium_renders_as_markup_is_read_as_markup)."""
+    essence = media_type.split(";", 1)[0].strip().lower()
+    if essence == "text/html":
+        return "html"
+    subtype = essence.partition("/")[2]
+    if subtype == "xml" or subtype.endswith("+xml") or essence == "text/xsl":
+        return "xml"
+    return None
+
+
+def _scope_document_reading(content: bytes,
+                            media_type: str) -> tuple[_ScopeMarkupElement, ...] | None:
+    """A served member's elements as a browser reads them: ``()`` for a member a browser does not
+    render as markup, the elements of an HTML or XML document, or None when the document cannot be
+    read here the way a browser reads it — which is refused, never passed."""
+    kind = _scope_markup_kind(media_type)
+    if kind is None:
+        return ()
+    if kind == "xml":
+        return _scope_xml_reading(content)
+    try:
+        return _scope_html_reading(content.decode("utf-8", errors="strict"))
+    except UnicodeDecodeError:
+        return None
+
+
+def _scope_reading_declares_referrer_policy(elements: tuple[_ScopeMarkupElement, ...]) -> bool:
+    """Whether a document declares its OWN referrer policy (R8-V2-1). Every /scope response carries
+    `Referrer-Policy: same-origin`, which the /api guard's same-origin write containment
+    (_referred_from_scope) relies on; a document-level declaration overrides it. The server's header
+    is the one owner of the policy, so ANY declaration is refused, whatever its value: a
+    `<meta name="referrer">`, a `referrerpolicy` attribute on any element, the `noreferrer` link type
+    on any element (a form or followed link carrying it sends NO Referer), and a nested document the
+    page declares itself (`srcdoc`, whose own markup the server serves no header for)."""
+    for element in elements:
+        for name, value in element.attributes:
+            if (name in ("referrerpolicy", "srcdoc")
+                    or (name == "rel" and "noreferrer" in value.casefold().split())
+                    or (element.name == "meta" and name == "name"
+                        and value.strip(" \t\n\f\r").casefold() == "referrer")):
+                return True
+    return False
+
+
+def _scope_shell_reading(content: bytes) -> tuple[_ScopeMarkupElement, ...] | None:
+    """The shell's elements when it is readable, declares no referrer policy, no <base> and no
+    http-equiv pragma, and declares the runtime snapshot source exactly once; else None."""
+    try:
+        elements = _scope_html_reading(content.decode("utf-8", errors="strict"))
+    except UnicodeDecodeError:
+        return None
+    if elements is None or _scope_reading_declares_referrer_policy(elements):
+        return None
+    runtime_sources = []
+    for element in elements:
+        attributes = dict(element.attributes)
+        if element.name == "base" or (element.name == "meta" and "http-equiv" in attributes):
+            return None
+        if (element.name == "meta"
+                and attributes.get("name", "").casefold() == _SCOPE_RUNTIME_SOURCE_META):
+            runtime_sources.append(attributes.get("content", ""))
+    return elements if runtime_sources == [_SCOPE_RUNTIME_SOURCE_VALUE] else None
 
 
 def _scope_shell_valid(indexed: dict[str, _FrontendFile]) -> bool:
     """A scope shell is servable only when it was built FOR the /scope mount and declares the
     runtime-snapshot source contract. A Vite build with the default base loads ``/assets/...`` —
     AssessHub's own asset namespace — and would render as a broken page; a build without the
-    declaration may show compiled-in evidence under a snapshot URL it does not belong to."""
+    declaration may show compiled-in evidence under a snapshot URL it does not belong to. Atlas
+    Scope's shell legitimately carries an inline classic script (its theme boot), so the AssessHub
+    shell grammar does not apply; what must hold instead is that every URL it loads is a
+    startup-indexed asset under /scope/assets/ (or an inline ``data:`` icon)."""
     index_file = indexed.get("index.html")
     if index_file is None or not index_file.content:
         return False
-    try:
-        parser = _ScopeShellParser()
-        parser.feed(index_file.content.decode("utf-8", errors="strict"))
-        parser.close()
-    except (UnicodeDecodeError, ValueError):
-        return False
-    if parser.invalid or parser.runtime_sources != [_SCOPE_RUNTIME_SOURCE_VALUE]:
+    elements = _scope_shell_reading(index_file.content)
+    if elements is None:
         return False
     module_entries = 0
-    for tag, kind, reference in parser.references:
-        if tag == "link" and kind.split() == ["icon"] and reference.startswith("data:image/"):
-            continue
-        key = _frontend_reference_key(reference, _SCOPE_MOUNT)
-        if key is None or key not in indexed or not indexed[key].content.strip():
-            return False
-        if tag == "script":
-            if kind != "module" or indexed[key].media_type != "text/javascript":
+    for element in elements:
+        attributes = dict(element.attributes)
+        kind = (attributes.get("type") if element.name == "script" else attributes.get("rel")) or ""
+        for attribute in ("src", "href", "srcset", "poster", "data", "action", "formaction"):
+            if attribute not in attributes:
+                continue
+            reference = attributes[attribute]
+            if (element.name == "link" and kind.casefold().split() == ["icon"]
+                    and reference.startswith("data:image/")):
+                continue
+            key = _frontend_reference_key(reference, _SCOPE_MOUNT)
+            if key is None or key not in indexed or not indexed[key].content.strip():
                 return False
-            module_entries += 1
+            if element.name == "script":
+                if kind.casefold() != "module" or indexed[key].media_type != "text/javascript":
+                    return False
+                module_entries += 1
     return module_entries >= 1
 
 
-#: The media types a browser renders as an HTML document (read from the index's own media-type
-#: inference, so .htm/.xhtml/.shtml are covered by the same registry that serves them).
-_SCOPE_HTML_MEDIA_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+def _scope_member_declares_referrer_policy(entry: _FrontendFile) -> bool:
+    """Whether one served member is a document a browser renders as markup (_scope_markup_kind) that
+    declares its own referrer policy — or that cannot be read here the way a browser reads it, which
+    counts as declaring one: what was not read is refused, never passed."""
+    elements = _scope_document_reading(entry.content, entry.media_type)
+    return elements is None or _scope_reading_declares_referrer_policy(elements)
 
 
-def _scope_html_text_declares_referrer_policy(text: str) -> bool:
-    """Whether one HTML text declares its own referrer policy in any form _ScopeShellParser knows,
-    or cannot be read the way a browser reads it (a duplicated attribute, unparseable markup): what
-    was not read is refused, never passed."""
-    try:
-        parser = _ScopeShellParser()
-        parser.feed(text)
-        parser.close()
-    except (ValueError, RecursionError):
-        return True
-    return parser.declares_referrer_policy or parser.ambiguous
-
-
-def _scope_html_declares_referrer_policy(entry: _FrontendFile) -> bool:
-    """Whether one served HTML member declares its own referrer policy (see _ScopeShellParser). A
-    member whose bytes are not UTF-8 — or whose markup is ambiguous — cannot be read the way a
-    browser may read it, so it counts as declaring one: what was not read is refused, never passed."""
-    if entry.media_type.split(";", 1)[0].strip().casefold() not in _SCOPE_HTML_MEDIA_TYPES:
-        return False
-    try:
-        text = entry.content.decode("utf-8", errors="strict")
-    except UnicodeDecodeError:
-        return True
-    return _scope_html_text_declares_referrer_policy(text)
+def _scope_markup_refused(files: dict[str, _FrontendFile]) -> bool:
+    """The index's one markup verdict over a build's members: refused when the shell is not a valid
+    /scope shell (_scope_shell_valid), or when any other document the mount serves that a browser
+    renders as markup (HTML or XML) — a page under /scope too — cannot be read here the way a
+    browser reads it or declares its own referrer policy."""
+    return not _scope_shell_valid(files) or any(
+        _scope_member_declares_referrer_policy(entry)
+        for relative, entry in files.items() if relative != "index.html")
 
 
 class _ScopeUninspectable(Exception):
@@ -1820,23 +2005,15 @@ def _scope_file_index_uncached(
     shell_bytes = _read_frontend_file(shell, dist) if shell is not None else None
     if not shell_bytes:
         return "invalid_build", {}, frozenset()
-    try:
-        parser = _ScopeShellParser()
-        parser.feed(shell_bytes.decode("utf-8", errors="strict"))
-        parser.close()
-    except (UnicodeDecodeError, ValueError):
-        return "invalid_build", {}, frozenset()
-    if parser.invalid or parser.runtime_sources != [_SCOPE_RUNTIME_SOURCE_VALUE]:
+    if _scope_shell_reading(shell_bytes) is None:
         return "invalid_build", {}, frozenset()
     index = _indexed_dist_tree(root, _scope_shell_valid)
     if index is None:
         return "invalid_build", {}, frozenset()
     files = index[1]
-    # Every HTML document the mount serves is a page under /scope, not only the shell (which
-    # _scope_shell_valid already held to this): none may declare its own referrer policy.
-    if any(_scope_html_declares_referrer_policy(entry)
-           for relative, entry in files.items() if relative != "index.html"):
-        return "invalid_build", {}, frozenset()
+    # Precedence, most specific finding first: evidence, then content the scan cannot read, then
+    # markup a browser would read differently (a member whose name declares an encoding its bytes
+    # are not is uninspectable first; a browser, given no Content-Encoding, could not render it).
     uninspectable = False
     for relative, entry in files.items():
         verdict = _scope_file_verdict(relative, entry.content)
@@ -1845,6 +2022,8 @@ def _scope_file_index_uncached(
         uninspectable = uninspectable or verdict == "uninspectable"
     if uninspectable:
         return "refused_uninspectable", {}, frozenset()
+    if _scope_markup_refused(files):
+        return "invalid_build", {}, frozenset()
     return "ready", files, _embedded_sha256_tokens(files)
 
 
@@ -2046,8 +2225,9 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
     """``dist_dir`` overrides where the built SPA is served from (default: the checkout's
     webapp/frontend/dist) — the hook the Atlas entry module uses to point at the bundled copy
     inside a frozen build (webapp/backend/serve.py, ADR-0004 P1). ``scope_dist_dir`` is the Atlas
-    Scope build served at /scope (default: the repository's atlas-scope/dist when it exists, else
-    none; ``None`` disables it explicitly). ``boot_hardening`` threads the
+    Scope build served at /scope (default: the repository's hub build, atlas-scope/dist-hub from
+    atlas-scope's ``npm run build:hub``, when it exists, else none; ``None`` disables it
+    explicitly). ``boot_hardening`` threads the
     P3 unplug-safety boot (integrity check + backup — see storage.Store) and may raise
     StoreCorruptError; only the production entry turns it on. The returned ASGI object owns one
     Store for one application lifespan; create a new app object for a later independent run."""
