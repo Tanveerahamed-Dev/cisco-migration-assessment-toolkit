@@ -2761,7 +2761,9 @@ def _trend_point(snap: dict) -> dict:
     # (`sum(scores)/len(scores)` -> "integer division result too large for a float", aborting the whole
     # --trend workbook) and the bare `Infinity`/`NaN` json.loads accepts (which would render an average
     # of inf/nan into the campaign deck).
-    scores = [r.get("score") for r in hs if _renderable_num(r.get("score"))]
+    # ... and only genuinely-SCORED rows: an 'Insufficient Data' row keeps its deduction-free score (G15).
+    scores = [r.get("score") for r in hs
+              if _renderable_num(r.get("score")) and r.get("band") != "Insufficient Data"]
     bands: Dict[str, int] = {}
     for r in hs:
         bands[str(r.get("band", ""))] = bands.get(str(r.get("band", "")), 0) + 1
@@ -2785,7 +2787,12 @@ def _trend_point(snap: dict) -> dict:
     _scale = _d(_eb.get("scale"))
     _posture = _d(_eb.get("posture"))
     avg = _posture.get("avg_health")
-    if avg is None and scores:
+    # G15: decide on the KEY, not the value. A posture that carries `avg_health: None` is the engine's
+    # published abstention (0 devices health-scored); re-deriving a mean here averaged the unscored
+    # 'Insufficient Data' rows' deduction-free scores into a fabricated 100. The recompute is only for a
+    # legacy / failed brief with no posture value at all -- and even then over the scored rows only,
+    # the engine's own definition.
+    if avg is None and "avg_health" not in _posture and scores:
         avg = round(sum(scores) / len(scores), 1)
     # str() (not `or ""`): `generated_at` is a timestamp STRING by contract, but a truthy non-str survives
     # `or ""` and the ts[:10] slice below then raises (`5[:10]` -> TypeError) -- or, for a list, silently

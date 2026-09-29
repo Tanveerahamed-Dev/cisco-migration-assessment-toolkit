@@ -996,10 +996,21 @@ def _glance_rows(snap):
     else:
         scope = "[NOT OBSERVED]"
 
+    # G15: the engine publishes `posture.avg_health: None` (with `n_scored: 0`) when NO device was
+    # health-scored. "average health [NOT OBSERVED]/100 — 0 Critical, 0 Poor" set a real-looking band
+    # count beside the abstention; name the state instead of templating it into a score.
+    _posture = ssot._dotted(snap if isinstance(snap, dict) else {}, "executive_brief.posture")
+    if (f.get("avg_health") is None and isinstance(_posture, dict) and "avg_health" in _posture
+            and _posture.get("n_scored") == 0):
+        health = ("fleet health NOT ASSESSED — no device was health-scored [NOT OBSERVED]; "
+                  "not assessed, not clear"
+                  + (f" · {f.get('n_critical')} Critical-band switch(es) observed" if f.get("n_critical") else ""))
+    else:
+        health = (f"average health {v(f.get('avg_health'))}/100 — {v(f.get('n_critical'))} Critical, "
+                  f"{v(f.get('n_poor'))} Poor")
     rows = [
         ("What was assessed?", scope),
-        ("How healthy is the fleet?",
-         f"average health {v(f.get('avg_health'))}/100 — {v(f.get('n_critical'))} Critical, {v(f.get('n_poor'))} Poor"),
+        ("How healthy is the fleet?", health),
         # The unknown count rides WITH the headline, not in a footnote. `v()` maps only None to
         # [NOT OBSERVED], so a real 0 passed straight through and the first page of every
         # deliverable led with "0 device(s) past last-day-of-support" for a fleet whose platforms

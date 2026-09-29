@@ -280,11 +280,16 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
         _b = str(r.get("band", ""))   # str(): a list/dict band from a malformed upload is an unhashable key
         band_counts[_b] = band_counts.get(_b, 0) + 1
     avg = posture.get("avg_health", "—")
+    avg_label = "avg health / 100"
     health_unavailable = _phase_failed("health score") or not isinstance(snap.get("health_scores"), list)
     if health_unavailable:
         avg = "-"
+    elif avg is None:
+        # G15: the engine's published abstention (0 devices health-scored). `f"{None}"` rendered a literal
+        # "None" on the client-facing posture slide; say what it is instead.
+        avg, avg_label = "—", "avg health: NOT ASSESSED (0 scored)"
     # stat callouts across the full width (generous gaps, no side-by-side columns to overlap)
-    stat(s, 0.7, 1.95, f"{avg}", "avg health / 100", _NAVY, w=3.4)
+    stat(s, 0.7, 1.95, f"{avg}", avg_label, _NAVY, w=3.4)
     # false-health guard: if the brief is absent/failed, posture is {} — fall back to the band tally
     # computed above from health_scores, never a literal 0 that would claim '0 Critical' on a Critical fleet.
     stat(s, 5.0, 1.95, "-" if health_unavailable else posture.get(

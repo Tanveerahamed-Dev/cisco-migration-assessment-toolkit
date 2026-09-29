@@ -11049,10 +11049,18 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     # honesty: average over only genuinely-scored, evidence-bearing rows — an 'Insufficient Data' device
     # (absent evidence -> no deductions -> a near-perfect score) must not inflate the fleet health headline.
     _scored = [x for x in hs if isinstance(x.get("score"), (int, float)) and x.get("band") != "Insufficient Data"]
-    avg = round(sum(x["score"] for x in _scored) / len(_scored)) if _scored else 0
+    # G15: an EMPTY scored set is "not assessed", never an average of 0. The old `else 0` published
+    # `avg_health: 0` and a "0/100 avg" axis at severity Low for a fleet in which no device was scored --
+    # absence rendered as a measurement. None is the abstention (ssot.canonical_facts renders it
+    # [NOT OBSERVED]; ssot.reconcile verifies it in both directions). Every consumer that used to
+    # re-derive a fallback mean when the canonical value was not a number now decides on the KEY's
+    # presence, because that fallback averaged the unscored rows' deduction-free scores into a "100".
+    avg = round(sum(x["score"] for x in _scored) / len(_scored)) if _scored else None
     n_crit = bands.get("Critical", 0)
     n_poor = bands.get("Poor", 0)
     worst = next((b for b in ("Critical", "Poor", "Fair", "Good", "Excellent") if bands.get(b)), "")
+    if not _scored:
+        worst = worst or None        # "" was counted as a published fact; no observed band is no fact
     # SSOT: n_endpoints is the canonical evidenced-endpoint total == len(endpoint_identity) (what ssot.reconcile
     # verifies and CANONICAL_FACTS documents). Use it directly when available; fall back to the per-domain
     # endpoint_count sum only when endpoint_identity was not supplied (older callers). The per-domain sum drops
@@ -11070,7 +11078,11 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     lc_known = lc_tot - lc_unknown                                # only KNOWN-model devices are EoL-assessable
     lc_support = lc.get("n_past_ldos", 0) + lc.get("n_near", 0)   # recorded LDoS passed, or falls within one year
     lc_eos = lc.get("n_past_eos", 0)                              # separate date band: LDoS remains future
-    lc_pct = round(100 * lc_support / lc_known) if lc_known else 0 # % over ASSESSABLE devices, not diluted by unknowns (audit-3 #5)
+    # % over ASSESSABLE devices, not diluted by unknowns (audit-3 #5). G15: over ZERO (or, on a malformed
+    # rollup, negative) assessable devices there is no share at all -- "0% of 0 assessable" and a
+    # "(0% past/near)" flag beside a published Past-LDoS count were numbers the run never measured.
+    lc_pct = round(100 * lc_support / lc_known) if lc_known > 0 else None
+    _lc_share_na = f"share not computable — {max(lc_known, 0)} assessable"
     # COVERAGE, as a boolean, independent of what was found. `lc_unknown` counts devices whose
     # support state was never determined; `lc_coverage_risks` is the producer's own not-assessed
     # disclosure. Either one means this axis does not cover the whole fleet.
@@ -11086,9 +11098,18 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     # assessed beside an average that excludes them was a false coverage claim (audit-3 #6).
     _n_scored = len(_scored)
     _n_insuff = bands.get("Insufficient Data", 0)
-    ax("Fleet health", "Critical" if n_crit else "High" if n_poor else "Low",
-       f"{avg}/100 avg · {n_crit} Critical, {n_poor} Poor band",
-       f"{_n_scored} switch(es) assessed" + (f"; {_n_insuff} not collected (no evidence)." if _n_insuff else "."))
+    _fh_detail = f"{_n_scored} switch(es) assessed" + (f"; {_n_insuff} not collected (no evidence)." if _n_insuff else ".")
+    if _scored:
+        ax("Fleet health", "Critical" if n_crit else "High" if n_poor else "Low",
+           f"{avg}/100 avg · {n_crit} Critical, {n_poor} Poor band", _fh_detail)
+    else:
+        # G15: nothing scored -> Info (the sibling not-assessable rule), never the clean-fleet Low. An
+        # adverse band observed on a row that carried no usable score still leads (Critical / High).
+        ax("Fleet health", "Critical" if n_crit else "High" if n_poor else "Info",
+           (f"NOT ASSESSED — 0 of {n} switch(es) health-scored (no evidence)" if n
+            else "NOT ASSESSED — no health scores produced")
+           + (f" · {n_crit} Critical, {n_poor} Poor band" if (n_crit or n_poor) else ""),
+           _fh_detail)
     ax("Migration punch-list",
        "Critical" if sev_pl["Critical"] else "High" if sev_pl["High"] else "Medium" if pl else "Low",
        f"{len(pl)} item(s) · {sev_pl['Critical']} Critical, {sev_pl['High']} High",
@@ -11117,7 +11138,7 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
            else "Medium" if lc_eos
            else "Info" if (lc_incomplete or not lc_known) else "Low",
            f"{lc.get('n_past_ldos', 0)} past end-of-support, {lc.get('n_near', 0)} within 1yr "
-           f"({lc_pct}% of {lc_known} assessable)"
+           + (f"({lc_pct}% of {lc_known} assessable)" if lc_pct is not None else f"({_lc_share_na})")
            + (f" · {lc_eos} past end-of-sale (LDoS still future)" if lc_eos else "")
            + (f" · {lc_unknown} NOT ASSESSED (no authoritative lifecycle band)" if lc_unknown else ""),
            f"Date-bearing bands use only exact Cisco bulletin claims whose retained source chain verified; "
@@ -11235,9 +11256,13 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     if dd_s.get("n_devices"):
         dd_b = dd_s.get("bands") or {}
         n_sevr, n_elev = dd_b.get("Severe", 0), dd_b.get("Elevated", 0)
+        # G15: a register in which EVERY asset is Unassessed (no evidence collected for any of them)
+        # measured nothing -- "0 Severe, 0 Elevated" at the clean-fleet Low is absence as a finding.
+        _dd_all_unassessed = dd_b.get("Unassessed", 0) == dd_s.get("n_devices")
         ax("Asset risk register",
-           "Critical" if n_sevr else "High" if n_elev else "Low",
+           "Critical" if n_sevr else "High" if n_elev else "Info" if _dd_all_unassessed else "Low",
            f"{n_sevr} Severe, {n_elev} Elevated of {dd_s.get('n_devices', 0)} asset(s)"
+           + (f" · all {dd_s.get('n_devices')} asset(s) Unassessed (no evidence)" if _dd_all_unassessed else "")
            + (" · worst: " + ", ".join(dd_s.get("worst") or []) if dd_s.get("worst") else ""),
            f"{dd_s.get('n_compound', 0)} compound pattern(s) — independent risks stacked per asset "
            "× topology impact.")
@@ -11247,7 +11272,8 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
 
     flags: List[str] = []
     if lc.get("n_past_ldos") or lc.get("n_near"):
-        flags.append(f"hardware end-of-support is a primary driver ({lc_pct}% past/near)")
+        flags.append("hardware end-of-support is a primary driver "
+                     + (f"({lc_pct}% past/near)" if lc_pct is not None else f"({_lc_share_na})"))
     # Coverage rides with its own topic and is INDEPENDENT of the flag above: the two are
     # orthogonal facts. Without it, an 89%-unassessed fleet produced the fallback sentence "no
     # top-tier blockers flagged across the assessed axes - proceed with the standard wave plan",
@@ -11263,6 +11289,14 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
                      "not clear" if _n_undet else
                      f"hardware support state is UNDETERMINED — {len(lc_coverage_risks)} not-assessed "
                      "lifecycle disclosure(s) name no device count — not assessed, not clear")
+    # G15: a fleet in which NO device was health-scored is not a clean fleet. Without this flag the
+    # fallback sentence below ("no top-tier blockers ... proceed with the standard wave plan") was the
+    # posture headline of every deliverable for a fleet nothing had looked at. Placed after the two
+    # lifecycle flags (index <= 2), so the [:4] display cut can never drop it.
+    if not _scored:
+        flags.append(f"fleet health is NOT ASSESSED — 0 of {n} switch(es) health-scored; not assessed, "
+                     "not clear" if n else
+                     "fleet health is NOT ASSESSED — no health scores were produced; not assessed, not clear")
     if seg.get("flat"):
         flags.append("the L3 fabric is flat (no segmentation)")
     if mi.get("n_ptp_clocks") and mi.get("n_ptp_dormant") == mi.get("n_ptp_clocks"):
@@ -11286,8 +11320,15 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
                          else "Migration posture: no top-tier blockers flagged across the assessed axes — "
                               "proceed with the standard wave plan.")
 
+    posture = {"avg_health": avg, "n_critical": n_crit, "n_poor": n_poor, "worst_band": worst}
+    if avg is None:
+        # Present ONLY on the abstention, so the scored path's published shape stays byte-identical. The
+        # band counts stay integers: they are real counts of observed bands and ssot.reconcile checks them.
+        posture["n_scored"] = 0
+        posture["not_assessed"] = ("no_health_rows" if not n
+                                   else "all_insufficient_data" if _n_insuff == n else "no_scored_rows")
     return {"scale": {"n_devices": n, "n_domains": asum.get("n_domains", 0), "n_endpoints": n_endpoints},
-            "posture": {"avg_health": avg, "n_critical": n_crit, "n_poor": n_poor, "worst_band": worst},
+            "posture": posture,
             "axes": axes, "top_gating": top_gating, "posture_statement": posture_statement}
 
 

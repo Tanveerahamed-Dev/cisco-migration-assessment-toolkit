@@ -30,7 +30,7 @@ Read-only and side-effect free: this module derives, it never mutates the snapsh
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 from .textutils import is_finite_num   # shared finite-number filter (rejects Infinity/NaN AND the huge int)
 
 # Canonical facts: name -> (dotted snapshot path of the published value, one-line concept).
@@ -184,33 +184,239 @@ def _device_not_collected(snap: Dict[str, Any], device: str) -> bool:
     return False
 
 
-def abstention_reason(snap: Dict[str, Any], subject: str, device: str = None) -> str:
-    """Why is `subject` absent — the coverage-honest core made callable. `subject` is a top-level snapshot
-    section key (e.g. 'fhrp', 'vpc') or a dotted path (e.g. 'executive_brief.scale.n_vlans'); `device` optionally
-    scopes the question to one host. Returns exactly one of:
-      'published'           -- present and non-empty (a real result)
-      'collected_but_empty' -- present but empty/zero (collected; genuinely nothing of this kind found)
-      'not_collected'       -- the axis is absent, OR (device given) that device was never collected -- a BLIND
-                               SPOT, never a clean result. This is the 'not observed never becomes healthy' rule
-                               (the bare show-logging-on-NX-OS false-health class) made into a first-class token.
-    Pure presence/absence logic over the snapshot -- no model, no egress; total (safe on None / bad input)."""
-    snap = snap if isinstance(snap, dict) else {}
+# ---------------------------------------------------------------------------------------------
+# Failed analysis phases (G14). `COLLECT_PARSE_V3_23_0._run_phase` is fail-soft: a phase that raises
+# returns its `_default` -- `[]` / `{}` for most sections, BYTE-IDENTICAL on disk to "computed fine,
+# found nothing" -- and records its LABEL in `assessment_integrity.failed_phases`. Without reading that
+# record the abstention core classified a crashed section `collected_but_empty` ("collected, nothing of
+# this kind found (not a blind spot)"), and every consumer of the token inherited the lie: the census,
+# the state-assertion pack (a "no Critical punch-list item" assertion PASSED over a crashed punch-list)
+# and the Law-8 eval. The honest token is `analysis_unavailable`, the SAME value the engine already
+# publishes for a failed protocol analysis (analyze.PROTOCOL_ASSESSABILITY_STATES).
+#
+# Failure records carry human phase LABELS, not snapshot keys, so attribution needs one registry. It is
+# held complete against the engine source by tests/test_ssot_failed_phase_abstention.py (an AST ratchet
+# over `main()`): every direct `snap_dict[key] = <result of _run_phase(label)>` edge must be registered,
+# and every literal failure label must be classified. A label nobody classified -- a new phase, a
+# renamed one, a malformed record -- FAILS CLOSED: it cannot be attributed, so every section whose
+# value carries no evidence reads `analysis_unavailable` rather than `collected_but_empty`.
+# ---------------------------------------------------------------------------------------------
+
+ANALYSIS_UNAVAILABLE = "analysis_unavailable"
+
+# The complete abstention codomain, in the order the census reports it.
+ABSTENTION_STATES = ("published", "collected_but_empty", "not_collected", ANALYSIS_UNAVAILABLE)
+
+# `assessment_integrity` values that mean "this block's computation failed" -- the same predicate the
+# renderers' fleet-level integrity views use (html._analysis_integrity and its copies).
+INTEGRITY_FAILURE_TOKENS: FrozenSet[str] = frozenset({"failed", "compute_failed", "unavailable", "error"})
+# `assessment_integrity` keys that are metadata about failures, never a section name.
+_INTEGRITY_META_KEYS: FrozenSet[str] = frozenset({"failed_phases", "phase_errors", "n_violations", "violations"})
+
+# Phase label -> the snapshot sections its failure leaves as a fallback. Direct `_run_phase` edges from
+# `main()` (ratchet-verified), plus: compute phases whose only consumer is the embed phase that publishes
+# the section; single-input derivations whose producer is the failed phase (golden drift -> feature
+# compliance, protocol health -> protocol intelligence); and the labels main() records by hand around a
+# multi-section try block.
+PHASE_SECTIONS: Dict[str, Tuple[str, ...]] = {
+    "ACL line-reachability": ("acl_line_reachability",),
+    "Application intelligence": ("application_intelligence",),
+    "Architecture review": ("architecture_review",),
+    "BGP configured-peer baseline": ("bgp_configured_peer_baseline",),
+    "Cable map": ("cable_map",),
+    "Capture integrity": ("capture_integrity",),
+    "Causality Chains": ("causality",),
+    "Collection completeness": ("collection_completeness",),
+    "Cross-Layer correlations": ("cross_layer",),
+    "Data authority health": ("data_authorities",),
+    "Design blueprint": ("design_blueprint", "design_nrfu", "architecture_coverage", "coverage_matrix"),
+    "Detector schema": ("detector_schema",),
+    "Device risk register": ("device_dossiers",),
+    "Embed BGP configured-peer baseline": ("bgp_configured_peer_baseline",),
+    "Embed EtherChannel operational evidence": ("etherchannel_operational_evidence",),
+    "Embed FHRP configured-group baseline": ("fhrp_configured_group_baseline",),
+    "Embed FHRP redundancy-domain baseline": ("fhrp_redundancy_domain_baseline",),
+    "Embed IPv6 routing adjacency baseline": ("ipv6_routing_adjacency_baseline",),
+    "Embed VTP extended evidence": ("vtp_extended_evidence",),
+    "Embed VTP safety baseline": ("vtp_safety_baseline",),
+    "Endpoint dependencies": ("endpoint_dependencies",),
+    "Endpoint identity": ("endpoint_identity",),
+    "EtherChannel baseline": ("etherchannel_baseline",),
+    "EtherChannel operational evidence": ("etherchannel_operational_evidence",),
+    "EtherChannel projection": ("etherchannel_projection",),
+    "Executive brief": ("executive_brief",),
+    "FHRP configured-group baseline": ("fhrp_configured_group_baseline", "fhrp_redundancy_domain_baseline"),
+    "FHRP redundancy-domain baseline": ("fhrp_redundancy_domain_baseline",),
+    "Failure Impact": ("failure_impact",),
+    "Feature compliance": ("feature_compliance",),
+    "Framework coverage": ("framework_coverage",),
+    "Golden-config drift": ("golden_drift", "feature_compliance"),
+    "Health Scores": ("health_scores",),
+    "IPv6 routing adjacency baseline": ("ipv6_routing_adjacency_baseline",),
+    "L3 Forwarding Map": ("l3_forwarding",),
+    "Lifecycle risk": ("lifecycle_risk",),
+    "Migration Punch-List": ("punchlist",),
+    "Migration Readiness": ("migration_readiness",),
+    "Migration scenarios": ("migration_scenarios",),
+    "Multicast intelligence": ("multicast_intelligence",),
+    "NRFU commands": ("nrfu_commands",),
+    "Operational drift": ("operational_drift",),
+    "Physical Health": ("physical_health",),
+    "Platform health": ("platform_health",),
+    "Protocol Health": ("protocol_health", "protocol_intelligence"),
+    "Protocol assessability": ("protocol_assessability",),
+    "Protocol intelligence": ("protocol_intelligence",),
+    "QoS audit": ("qos_audit",),
+    "Remediation plan": ("remediation_plan",),
+    "STP topology baseline": ("stp_topology_baseline",),
+    "Schema census / fact lineage": ("schema_census", "fact_lineage"),
+    "Score Calibration": ("calibration",),
+    "Score Sensitivity": ("score_sensitivity",),
+    "Segmentation audit": ("segmentation",),
+    "Service map": ("service_map",),
+    "Software risk screening": ("software_risk",),
+    "State assertion pack": ("state_assertions",),
+    "Subnet intelligence": ("subnet_intelligence",),
+    "Syslog intelligence": ("syslog_intelligence",),
+    "Traffic assurance": ("traffic_assurance",),
+    "Traffic evidence custody": ("traffic_evidence_custody",),
+    "Unknown evidence": ("unknown_evidence",),
+    "VLAN cutover matrix": ("vlan_cutover",),
+    "VTP extended evidence": ("vtp_extended_evidence",),
+    "VTP safety baseline": ("vtp_safety_baseline",),
+    "Validation plan": ("validation_plan",),
+    "Zero-egress attestation": ("attestation",),
+    "move groups": ("move_groups", "wave_sequencing"),
+}
+
+# Intermediate computations that publish no section of their own but feed several: a failure cannot be
+# attributed to one section, so it fails closed exactly like an unknown label (named here only so the
+# ratchet can tell a CLASSIFIED intermediate from a label nobody looked at).
+INTERMEDIATE_PHASES: FrozenSet[str] = frozenset({
+    "Flow paths", "IPv6 routing subject scope", "PTP readiness", "Trunk-capture gaps",
+    "VTP safety subject scope", "data quality", "dependency map", "reconcile CDP split-node names",
+})
+
+# Failures that leave no analysis section as a fallback: workbook/document writers, redaction passes,
+# custody / manifest / receipt finalization, registry-authority health (reported faithfully inside
+# `data_authorities` itself) and post-assembly self-checks. Their integrity is disclosed through
+# `assessment_integrity` and the run custody, not through a section's abstention.
+NON_SECTION_PHASES: FrozenSet[str] = frozenset({
+    # redaction passes
+    "redact collected dataclasses", "redact workbook cells", "Raw capture redaction",
+    # artifact emission (_emit_artifact) and receipt refresh (_atomic_receipt_refresh)
+    "Topology diagrams", "Phase timings", "HTML Explorer", "Runbook DOCX", "Executive deck PPTX",
+    "CRD DOCX", "Engagement workflow DOCX", "Architecture review DOCX", "Operations handbook DOCX",
+    "Design document DOCX", "MOP DOCX", "Assessment snapshot", "Assessment workbook",
+    "Assessment workbook BOUND receipt", "HTML Explorer BOUND receipt", "Runbook DOCX BOUND receipt",
+    "MOP DOCX BOUND receipt",
+    # mandatory producer-boundary steps (_record_mandatory_failure)
+    "Input custody", "Raw evidence custody", "Post-redaction evidence custody",
+    "Raw capture redaction verification", "Shareable redaction verification", "Run manifest",
+    "Protocol Assurance source authority", "Protocol Assurance pre-manifest authority",
+    "Protocol Assurance complete export", "Incomplete marker", "Incomplete marker clearance",
+    # per-registry data authority (the data_authorities section records each one's health itself)
+    "OUI registry authority", "Port registry authority", "EoL knowledge-base authority",
+    # post-assembly self-checks
+    "SSOT self-check", "Gate closing summary",
+})
+_NON_SECTION_SUFFIXES = (" sheet",)                 # workbook sheet writers: their return value is unused
+_NON_SECTION_PREFIXES = ("interface rows (",)       # per-host workbook row writers (f-string labels)
+
+
+def phase_classification(label: Any) -> str:
+    """Classify one failure label: ``sections`` (attributed through :data:`PHASE_SECTIONS`),
+    ``intermediate`` (feeds several sections -> fails closed), ``non_section`` (leaves no section
+    fallback) or ``unknown`` (nobody classified it -> fails closed)."""
+    lab = str(label)
+    if lab in PHASE_SECTIONS:
+        return "sections"
+    if lab in INTERMEDIATE_PHASES:
+        return "intermediate"
+    if lab in NON_SECTION_PHASES or lab.endswith(_NON_SECTION_SUFFIXES) or lab.startswith(_NON_SECTION_PREFIXES):
+        return "non_section"
+    return "unknown"
+
+
+def failed_sections(snap: Any) -> Tuple[FrozenSet[str], bool]:
+    """Which snapshot sections are a failed phase's fallback -> ``(direct, unattributed)``.
+
+    ``direct`` is every top-level section attributable to a failure: a ``failed_phases`` label's
+    :data:`PHASE_SECTIONS` entry, an ``assessment_integrity[<section>]`` stamped with a failure token
+    (``executive_brief: compute_failed``), and a top-level ``{"_unavailable": true}`` sentinel.
+    ``unattributed`` is True when some failure cannot be pinned to sections -- an intermediate or
+    unknown label, or a ``failed_phases`` record that is not a list (the malformed-record rule the
+    webapp integrity summary applies). Total on bad input; derives only, never mutates.
+    """
+    s = snap if isinstance(snap, dict) else {}
+    direct: set = set()
+    unattributed = False
+    integrity = s.get("assessment_integrity")
+    if isinstance(integrity, dict):
+        raw = integrity.get("failed_phases")
+        if isinstance(raw, list):
+            for label in raw:
+                kind = phase_classification(label)
+                if kind == "sections":
+                    direct.update(PHASE_SECTIONS[str(label)])
+                elif kind != "non_section":
+                    unattributed = True
+        elif raw:
+            unattributed = True
+        for key, value in integrity.items():
+            if (isinstance(key, str) and key not in _INTEGRITY_META_KEYS
+                    and isinstance(value, str) and value.strip().lower() in INTEGRITY_FAILURE_TOKENS):
+                direct.add(key)
+    for key, value in s.items():
+        if isinstance(value, dict) and value.get("_unavailable"):
+            direct.add(key)
+    return frozenset(direct), unattributed
+
+
+def _abstention(snap: Dict[str, Any], subject: Any, device: Optional[str],
+                failures: Tuple[FrozenSet[str], bool]) -> str:
+    """:func:`abstention_reason` with the snapshot's :func:`failed_sections` computed once by the caller."""
     # A fact about an UN-collected device is a blind spot, regardless of the fleet-level value.
     if device and _device_not_collected(snap, device):
         return "not_collected"
+    direct, unattributed = failures
+    top = subject.split(".", 1)[0] if isinstance(subject, str) else subject
+    # The section IS a failed phase's fallback: whatever it holds ([] / {} / an error-state default /
+    # an _unavailable sentinel / nothing at all) is not evidence. Checked before presence, so an ABSENT
+    # section of a failed phase is not mislabelled a collection blind spot either.
+    if isinstance(top, str) and top in direct:
+        return ANALYSIS_UNAVAILABLE
     val = _dotted(snap, subject) if "." in subject else snap.get(subject, _MISSING)
     if val is _MISSING or val is None:
         return "not_collected"
     # DEEP-empty, not just shallow-falsy: a wrapper whose every payload is empty (a compute that always
-    # returns its keys but found nothing) is 'collected_but_empty', never the green 'published'.
-    if _is_deep_empty(val):          # present but carries no evidence -> collected, nothing found
-        return "collected_but_empty"
+    # returns its keys but found nothing) is 'collected_but_empty', never the green 'published' -- unless a
+    # failure that could not be attributed means this empty may itself be a crashed phase's fallback.
+    if _is_deep_empty(val):
+        return ANALYSIS_UNAVAILABLE if unattributed else "collected_but_empty"
     return "published"
+
+
+def abstention_reason(snap: Dict[str, Any], subject: str, device: str = None) -> str:
+    """Why is `subject` absent — the coverage-honest core made callable. `subject` is a top-level snapshot
+    section key (e.g. 'fhrp', 'vpc') or a dotted path (e.g. 'executive_brief.scale.n_vlans'); `device` optionally
+    scopes the question to one host. Returns exactly one of :data:`ABSTENTION_STATES`:
+      'published'            -- present and non-empty (a real result)
+      'collected_but_empty'  -- present but empty/zero (collected; genuinely nothing of this kind found)
+      'not_collected'        -- the axis is absent, OR (device given) that device was never collected -- a BLIND
+                                SPOT, never a clean result. This is the 'not observed never becomes healthy' rule
+                                (the bare show-logging-on-NX-OS false-health class) made into a first-class token.
+      'analysis_unavailable' -- the section's analysis phase FAILED this run (see :func:`failed_sections`), so
+                                whatever it holds is a fallback: neither a blind spot of collection nor a finding
+                                that nothing is there.
+    Pure presence/absence logic over the snapshot -- no model, no egress; total (safe on None / bad input)."""
+    snap = snap if isinstance(snap, dict) else {}
+    return _abstention(snap, subject, device, failed_sections(snap))
 
 
 # ---------------------------------------------------------------------------------------------
 # schema census (J3): a snapshot self-describes what it actually SAW -- the SuzieQ `describe`
-# analog. For EVERY top-level snapshot section, project the coverage-honest 3-state token onto a
+# analog. For EVERY top-level snapshot section, project the coverage-honest abstention token onto a
 # queryable coverage map, so an access-only collection (e.g. the Meridian reference fleet, where a whole
 # distribution/core tier is UN-collected) reports exactly what was seen vs what is a blind spot,
 # instead of a rendered "filler" output whose real cause is an uncollected tier, not a code bug.
@@ -218,11 +424,13 @@ def abstention_reason(snap: Dict[str, Any], subject: str, device: str = None) ->
 
 SCHEMA_CENSUS_SCHEMA = "schema_census/1"
 
-# The honest note per 3-state token. Never "ok"/"healthy": absence of evidence is never health.
+# The honest note per abstention token. Never "ok"/"healthy": absence of evidence is never health.
 _CENSUS_NOTE = {
     "published":           "seen — collected and non-empty",
     "collected_but_empty": "collected, nothing of this kind found (not a blind spot)",
     "not_collected":       "blind spot — not collected",
+    ANALYSIS_UNAVAILABLE:  "analysis failed this run — empty/absent is not evidence of absence "
+                           "(see assessment_integrity.failed_phases)",
 }
 
 
@@ -245,27 +453,35 @@ def compute_schema_census(snap: Dict[str, Any]) -> Dict[str, Any]:
 
         {key, state, count, kind, note}
 
-    where ``state`` is the coverage-honest 3-state token :func:`abstention_reason` returns
-    (``published`` / ``collected_but_empty`` / ``not_collected``), ``count`` is ``len()`` when the
-    section is a list or dict (else ``None`` -- a scalar/absent section has no cardinality),
-    ``kind`` is the section's structural shape, and ``note`` is a short honest phrase. A
-    present-but-empty section is ``collected_but_empty`` (collected, genuinely nothing found -- NOT
-    a blind spot); an absent section is ``not_collected`` (a real blind spot). Nothing is ever
-    labelled "ok"/"healthy": absence of evidence is never health (Law 3).
+    where ``state`` is the coverage-honest token :func:`abstention_reason` returns
+    (``published`` / ``collected_but_empty`` / ``not_collected`` / ``analysis_unavailable``),
+    ``count`` is ``len()`` when the section is a list or dict (else ``None`` -- a scalar/absent
+    section has no cardinality), ``kind`` is the section's structural shape, and ``note`` is a short
+    honest phrase. A present-but-empty section is ``collected_but_empty`` (collected, genuinely
+    nothing found -- NOT a blind spot); an absent section is ``not_collected`` (a real blind spot);
+    a failed phase's fallback is ``analysis_unavailable``. Nothing is ever labelled "ok"/"healthy":
+    absence of evidence is never health (Law 3).
+
+    ``summary.n_analysis_unavailable`` is emitted only when it is non-zero, so a clean run's summary
+    keeps exactly its four historical keys (the golden snapshot and ``schema_census/1`` stay stable);
+    the counters always partition ``n_sections``.
 
     Deterministic (presence/absence only -- no dates, no model) and total on bad input: a non-dict
     snapshot yields an empty-but-well-formed census rather than raising.
     """
     snap = snap if isinstance(snap, dict) else {}
+    failures = failed_sections(snap)
     sections: List[Dict[str, Any]] = []
-    n_pub = n_empty = n_absent = 0
+    n_pub = n_empty = n_absent = n_unavailable = 0
     for key in snap:                                   # iterate a snapshot copy's keys (see caller)
         val = snap.get(key)
-        state = abstention_reason(snap, key)
+        state = _abstention(snap, key, None, failures)
         if state == "published":
             n_pub += 1
         elif state == "collected_but_empty":
             n_empty += 1
+        elif state == ANALYSIS_UNAVAILABLE:
+            n_unavailable += 1
         else:
             n_absent += 1
         count = len(val) if isinstance(val, (list, dict)) else None
@@ -276,15 +492,18 @@ def compute_schema_census(snap: Dict[str, Any]) -> Dict[str, Any]:
             "kind": _census_kind(val),
             "note": _CENSUS_NOTE.get(state, _CENSUS_NOTE["not_collected"]),
         })
+    summary_block: Dict[str, int] = {
+        "n_published": n_pub,
+        "n_collected_but_empty": n_empty,
+        "n_not_collected": n_absent,
+    }
+    if n_unavailable:
+        summary_block["n_analysis_unavailable"] = n_unavailable
+    summary_block["n_sections"] = len(sections)
     return {
         "schema": SCHEMA_CENSUS_SCHEMA,
         "sections": sections,
-        "summary": {
-            "n_published": n_pub,
-            "n_collected_but_empty": n_empty,
-            "n_not_collected": n_absent,
-            "n_sections": len(sections),
-        },
+        "summary": summary_block,
     }
 
 
@@ -310,20 +529,22 @@ def compute_fact_lineage(snap: Dict[str, Any]) -> Dict[str, Any]:
     where ``path`` is the dotted canonical snapshot path, ``value`` is the authoritative value from
     :func:`canonical_facts` (read canonical-first; ``None`` when the block isn't published),
     ``state`` is :func:`abstention_reason` on that path (``published`` / ``collected_but_empty`` /
-    ``not_collected`` -- so an un-published block reads as a blind spot, never a silent 0), and
+    ``not_collected`` / ``analysis_unavailable`` -- so an un-published block reads as a blind spot,
+    and a block whose phase failed reads as unavailable, never a silent 0), and
     ``basis`` is the one-line concept/derivation named in ``CANONICAL_FACTS`` (the "== len(...)"
     hints), so a reader sees WHERE each headline number comes from. Reuses the SSOT contract rather
     than inventing a parallel provenance store. Total on bad input.
     """
     snap = snap if isinstance(snap, dict) else {}
     values = canonical_facts(snap)
+    failures = failed_sections(snap)
     facts: List[Dict[str, Any]] = []
     for name, (path, concept) in CANONICAL_FACTS.items():
         facts.append({
             "name": name,
             "value": values.get(name),
             "path": path,
-            "state": abstention_reason(snap, path),
+            "state": _abstention(snap, path, None, failures),
             "basis": concept,
         })
     return {"schema": FACT_LINEAGE_SCHEMA, "facts": facts}
@@ -532,27 +753,46 @@ def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[st
             poor = sum(1 for h in health if isinstance(h, dict) and h.get("band") == _HEALTH_BAND_POOR)
             check("executive_brief.posture.n_poor", posture.get("n_poor"), poor,
                   "count(health_scores.band==Poor)")
-        # avg_health and worst_band are DERIVED aggregates published in posture; both are counted as
-        # self-verified facts, so both must be reconciled too (mirroring compute_executive_brief
-        # exactly -> no tolerance, no false positives). The mean excludes "Insufficient Data" scores.
-        if "avg_health" in posture:
-            # is_finite_num, not `isinstance(...) and math.isfinite(...)`: that idiom rejects the JSON
-            # Infinity/NaN correctly but CRASHES on the other value json.loads accepts -- an integer
-            # literal of unbounded precision, on which math.isfinite() itself raises OverflowError
-            # before it can return False. reconcile() runs inside docmeta.add_excellence_front, so
-            # that aborted EVERY deliverable in the docx family over one health score.
-            scored = [h.get("score") for h in health
-                      if isinstance(h, dict) and is_finite_num(h.get("score"))
-                      and h.get("band") != _HEALTH_BAND_NOT_SCORED]
+    # avg_health and worst_band are DERIVED aggregates published in posture; both are counted as
+    # self-verified facts, so both must be reconciled too (mirroring compute_executive_brief
+    # exactly -> no tolerance, no false positives). The mean excludes "Insufficient Data" scores.
+    # G15: verified in BOTH directions. With zero scored rows the only honest value is the abstention
+    # (None): a published number there -- the pre-G15 producer's hard 0, carried by every snapshot it
+    # wrote -- is a measurement of nothing. With scored rows, a published None withholds a real mean.
+    # The raw basis is a health_scores LIST (an empty one included: zero rows is zero scored rows).
+    if isinstance(snap.get("health_scores"), list) and "avg_health" in posture:
+        # is_finite_num, not `isinstance(...) and math.isfinite(...)`: that idiom rejects the JSON
+        # Infinity/NaN correctly but CRASHES on the other value json.loads accepts -- an integer
+        # literal of unbounded precision, on which math.isfinite() itself raises OverflowError
+        # before it can return False. reconcile() runs inside docmeta.add_excellence_front, so
+        # that aborted EVERY deliverable in the docx family over one health score.
+        scored = [h.get("score") for h in health
+                  if isinstance(h, dict) and is_finite_num(h.get("score"))
+                  and h.get("band") != _HEALTH_BAND_NOT_SCORED]
+        published_avg = posture.get("avg_health")
+        if scored and published_avg is not None:
+            check("executive_brief.posture.avg_health", published_avg,
+                  round(sum(scored) / len(scored)), "round(mean(scored health_scores.score))")
+        else:
+            if _ran is not None:
+                _ran.append("executive_brief.posture.avg_health")
             if scored:
-                check("executive_brief.posture.avg_health", posture.get("avg_health"),
-                      round(sum(scored) / len(scored)), "round(mean(scored health_scores.score))")
-        if "worst_band" in posture and posture.get("worst_band"):
+                violations.append(
+                    f"executive_brief.posture.avg_health=None (not assessed) but {len(scored)} "
+                    f"health row(s) are scored")
+            elif published_avg is not None:
+                violations.append(
+                    f"executive_brief.posture.avg_health={published_avg!r} but 0 of {len(health)} "
+                    f"health row(s) are scored (a number published for nothing; expected None)")
+    if health:
+        if "worst_band" in posture:
             bands_present = {h.get("band") for h in health if isinstance(h, dict)}
             derived_worst = next((b for b in _HEALTH_BAND_ORDER if b in bands_present), "")
-            if derived_worst and posture.get("worst_band") != derived_worst:
+            published_worst = posture.get("worst_band")
+            if derived_worst and published_worst != derived_worst:
+                # a wrong band, OR (G15) a band withheld (None / "") while one is observed
                 violations.append(
-                    f"executive_brief.posture.worst_band={posture.get('worst_band')!r} but "
+                    f"executive_brief.posture.worst_band={published_worst!r} but "
                     f"most-severe band present={derived_worst!r}")
 
     # --- lifecycle bands (per_device is the raw basis) ---------------------------------------

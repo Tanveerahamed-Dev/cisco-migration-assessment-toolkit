@@ -6209,7 +6209,13 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         b = x.get("band", "")
         if b in bands:
             bands[b] += 1
-    avg = round(sum((x.get("score") or 0) for x in hs) / n) if n else 0
+    # Legacy fallback mean (no canonical posture value) over genuinely-SCORED rows only -- the engine's own
+    # definition. The old all-rows `score or 0` mean counted each 'Insufficient Data' row's deduction-free
+    # score, so a fleet with nothing scored rendered a fabricated "100 / 100" (G15); None abstains.
+    _scored = [x.get("score") for x in hs
+               if isinstance(x.get("score"), (int, float)) and not isinstance(x.get("score"), bool)
+               and x.get("band") != "Insufficient Data"]
+    avg = round(sum(_scored) / len(_scored)) if _scored else None
     # SSOT (QA F1/F2): read the canonical executive_brief block every narrative surface uses -- the local
     # arithmetic mean overstates vs posture.avg_health (criticality-weighted), and "assessed = 303" overstates
     # coverage by the 50 not-collected devices vs scale.n_collected. Fall back to the local recompute only if
@@ -6230,7 +6236,15 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         _kv("Average health score", "— (executive brief unavailable)")
     else:
         _kv("Switches collected / inventoried", f"{_ncoll if isinstance(_ncoll, int) else n} / {n}")
-        _kv("Average health score", f"{_avgc if isinstance(_avgc, (int, float)) else avg} / 100")
+        # G15: the canonical posture decides on the KEY. `avg_health: None` is the published abstention
+        # (0 devices health-scored) and must never be replaced by a recompute.
+        if isinstance(_avgc, (int, float)):
+            _kv("Average health score", f"{_avgc} / 100")
+        elif "avg_health" not in _ebp and avg is not None:
+            _kv("Average health score", f"{avg} / 100")
+        else:
+            _kv("Average health score",
+                f"NOT ASSESSED — 0 of {n} switch(es) health-scored (no evidence); not assessed, not clear")
     _kv("Critical band", "UNVERIFIED" if health_unavailable else bands["Critical"])
     _kv("Poor / Fair", "UNVERIFIED" if health_unavailable else bands["Poor"] + bands["Fair"])
     _kv("Good / Excellent", "UNVERIFIED" if health_unavailable else bands["Good"] + bands["Excellent"])

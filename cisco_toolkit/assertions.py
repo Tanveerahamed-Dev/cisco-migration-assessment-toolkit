@@ -7,9 +7,9 @@ and pre/post checks expressed as **data** instead of hard-coded ``compute_*`` pr
 
 Coverage-honesty is the whole point: an assertion whose subject was never collected (a blind spot)
 returns :data:`NOT_OBSERVED` and is **excluded from the pass/fail denominator** — "not observed"
-never silently becomes a pass (the ``show logging``-on-NX-OS false-health class). The 3-state
-distinction is delegated to :func:`cisco_toolkit.ssot.abstention_reason`, the engine's single source
-of truth for it.
+never silently becomes a pass (the ``show logging``-on-NX-OS false-health class); neither does a
+subject whose analysis phase FAILED this run (``analysis_unavailable``). The abstention distinction is
+delegated to :func:`cisco_toolkit.ssot.abstention_reason`, the engine's single source of truth for it.
 
 Pack shape (committed to the repo, air-gap-friendly)::
 
@@ -185,6 +185,14 @@ def evaluate_assertion(snap: Dict[str, Any], a: Dict[str, Any]) -> Dict[str, Any
         out["status"] = NOT_OBSERVED
         out["detail"] = "subject not collected — blind spot (not asserted, never assumed healthy)"
         return out
+    if abst == ssot.ANALYSIS_UNAVAILABLE:
+        # G14: the subject's analysis phase FAILED this run, so its value is a fallback ([] / {} / an
+        # error-state default). Evaluating rules against it PASSED a "no Critical item" check over a
+        # crashed punch-list. Abstain, excluded from the pass/fail denominator like a blind spot.
+        out["status"] = NOT_OBSERVED
+        out["detail"] = ("subject's analysis failed this run — its value is a fallback, not evidence "
+                         "(not asserted, never assumed healthy)")
+        return out
 
     raw = _dotted(snap, subject)
     text = _as_text(raw)
@@ -279,6 +287,11 @@ def _evaluate_object_assertion(snap: Dict[str, Any], spec: Dict[str, Any]) -> Di
     if rows is None:
         return dict(base, status=NOT_OBSERVED, abstention="not_collected",
                     detail="for_each collection missing or unusable", object_evaluation=None)
+    # G14: rows resolved from a FAILED phase's fallback are not evidence (see evaluate_assertion).
+    if isinstance(path, str) and path.split(".", 1)[0] in ssot.failed_sections(snap)[0]:
+        return dict(base, status=NOT_OBSERVED, abstention=ssot.ANALYSIS_UNAVAILABLE,
+                    detail="for_each collection's analysis failed this run — rows are a fallback, not evidence",
+                    object_evaluation=None)
     detail = evaluate_for_each(rows, spec)
     summary = detail["summary"]
     if not spec.get("field_rules") and not spec.get("unique_by"):

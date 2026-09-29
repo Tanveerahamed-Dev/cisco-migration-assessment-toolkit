@@ -3992,6 +3992,19 @@ function toggleLayerLens(force){
 }
 
 function healthList(){return SNAP&&SNAP.health_scores?SNAP.health_scores:[];}
+/* FLEET-AVG-HEALTH START */
+/* SSOT (G15): the ONE explorer reader of the fleet average. Decided on the KEY, not the value: a posture that
+   carries avg_health:null is the engine's published abstention (0 devices health-scored) and stays null. The old
+   nullish-coalescing fallback fell through on that null to a mean over EVERY row, and an Insufficient-Data row
+   keeps its deduction-free score, so an unscored fleet rendered a fabricated 100. Only a legacy / failed brief with
+   no posture value recomputes -- over genuinely-scored rows, the engine's own definition. null = NOT ASSESSED. */
+function fleetAvgHealth(hs){
+  const po=((SNAP||{}).executive_brief||{}).posture;
+  if(po&&typeof po==="object"&&Object.prototype.hasOwnProperty.call(po,"avg_health")){
+    const v=po.avg_health; return (typeof v==="number"&&isFinite(v))?v:null;}
+  const sc=(hs||[]).filter(r=>r&&typeof r.score==="number"&&isFinite(r.score)&&r.band!=="Insufficient Data");
+  return sc.length?Math.round(sc.reduce((s,r)=>s+r.score,0)/sc.length):null;}
+/* FLEET-AVG-HEALTH END */
 function healthBandToken(band){const b=(band||"").toLowerCase();
   if(b.includes("excellent"))return "ok"; if(b.includes("good"))return "ok";
   if(b.includes("fair"))return "watch"; if(b.includes("poor"))return "risk";
@@ -4208,7 +4221,8 @@ function modeSummary(m){
     if(m==="health"){const hs=healthList(); if(!hs.length)return "";
       // SSOT: same canonical posture.avg_health the drawer headline uses (excludes uncollected rows) -- the raw
       // recompute inflated the screen-reader announcement to 49 vs the SSOT 41 (audit-3 #9).
-      const avg=(((SNAP||{}).executive_brief||{}).posture||{}).avg_health??Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/hs.length);
+      const avg=fleetAvgHealth(hs);
+      if(avg==null)return ` ${hs.length} switches, fleet health not assessed: none produced a health score.`;
       let nc=0,np=0; hs.forEach(r=>{const t=r.band?healthBandToken(r.band):scoreToken(r.score);
         if(t==="crit")nc++; else if(t==="risk")np++;});
       return ` ${hs.length} switches scored, average ${avg}${nc?`, ${nc} critical`:""}${np?`, ${np} poor`:""}.`;}
@@ -11163,8 +11177,11 @@ function buildNarrative(model){
   // ---- fleet posture: worst switch + average, from health_scores ----
   const hs=(typeof healthList==="function")?healthList():[];
   if(hs.length){
-    const _po=((SNAP||{}).executive_brief||{}).posture||{};   // SSOT: prefer the engine's canonical posture.avg_health
-    const n=hs.length, avg=_po.avg_health??Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/Math.max(1,n));
+    const n=hs.length, avg=fleetAvgHealth(hs);   // SSOT: the canonical posture.avg_health (null = not assessed)
+    if(avg==null){
+      out.push({text:`Fleet health is <b>not assessed</b>: none of the ${esc(n)} switch${n===1?"":"es"} produced a `+
+        `health score (no evidence). This is a coverage gap, not a clean result.`,severity:"watch"});
+    }else{
     const worst=hs.slice().sort((a,b)=>(a.score||0)-(b.score||0))[0];
     const wtok=worst.band?healthBandToken(worst.band):scoreToken(worst.score);
     const sev=wtok==="crit"?"crit":wtok==="risk"?"risk":wtok==="watch"?"watch":"ok";
@@ -11172,6 +11189,7 @@ function buildNarrative(model){
       `weakest is ${wrapHost(worst.switch)} at <b>${esc(worst.score)}</b>${worst.band?` (${esc(worst.band)})`:""}. `+
       `Treat the score as a heat-map and fix the structural SPOFs above first.`,
       severity:sev});
+    }
   }
 
   // ---- nothing fired: a single positive line ----
@@ -11463,8 +11481,7 @@ function drawHealth(){
   // SSOT: prefer the engine's canonical posture.avg_health (which EXCLUDES uncollected 'Insufficient Data' rows);
   // the raw recompute over all rows inflated the headline (49 vs 41) by averaging score-90 uncollected devices as
   // ~healthy -- contradicting the SSOT value rendered just below in the same drawer (audit-3 #9).
-  const n=hs.length, _po=((SNAP||{}).executive_brief||{}).posture||{},
-        avg=_po.avg_health??Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/Math.max(1,n));
+  const n=hs.length, avg=fleetAvgHealth(hs);   // null = NOT ASSESSED (never a countUp target: it renders NaN)
   const bands={ok:0,watch:0,risk:0,crit:0};
   hs.forEach(r=>{const t=r.band?healthBandToken(r.band):scoreToken(r.score);if(bands[t]!=null)bands[t]++;});
   const sorted=hs.slice().sort((a,b)=>a.score-b.score);
@@ -11482,7 +11499,7 @@ function drawHealth(){
       ${checks}</div>`;});
   // is the scoring crying wolf?
   const allBad=(bands.crit+bands.risk)===n && n>2;
-  return `<div class="drawer-head"><div class="eyebrow">Fleet health</div><div class="title"><span class="num" data-to="${avg}">0</span><span class="sub" style="font-size:13px;font-weight:400"> / 100 avg</span></div></div>
+  return `<div class="drawer-head"><div class="eyebrow">Fleet health</div><div class="title">${avg==null?`<span>not assessed</span><span class="sub" style="font-size:13px;font-weight:400"> · 0 of ${esc(n)} switches health-scored (no evidence)</span>`:`<span class="num" data-to="${avg}">0</span><span class="sub" style="font-size:13px;font-weight:400"> / 100 avg</span>`}</div></div>
     ${narrativeCard()}
     <div class="sec"><div class="headline">
       <div class="stat ok"><div class="v"><span class="num" data-to="${bands.ok}">0</span></div><div class="k">good</div></div>
@@ -12948,7 +12965,9 @@ function abH_conflicts(){const ac=(SNAP||{}).addressing_conflicts||{};
 function abH_exec(){const eb=(SNAP||{}).executive_brief||{};const sc=eb.scale||{},po=eb.posture||{};
   let b=`<h4>Executive summary</h4>`;
   b+=abKv("Estate",`<b>${sc.n_devices??MODEL.hosts.length}</b> switches · <b>${sc.n_endpoints??MODEL.endpointTotal}</b> endpoints · <b>${sc.n_domains??"?"}</b> app domains`);
-  if(po.avg_health!=null)b+=abKv("Average health",abBarHtml(po.avg_health)+` · worst band ${abPill(po.worst_band)} · ${po.n_critical??0} critical / ${po.n_poor??0} poor`);
+  const _avg=fleetAvgHealth(healthList());
+  if(_avg!=null)b+=abKv("Average health",abBarHtml(_avg)+` · worst band ${abPill(po.worst_band)} · ${po.n_critical??0} critical / ${po.n_poor??0} poor`);
+  else b+=abKv("Average health",`<span class="pill pl-neutral">not assessed</span> · 0 of ${esc(sc.n_devices??MODEL.hosts.length)} switches health-scored (no evidence)`);
   if(eb.posture_statement)b+=`<div class="ab-note">${esc(eb.posture_statement)}</div>`;
   if(Array.isArray(eb.top_gating)&&eb.top_gating.length)
     b+=`<div class="ab-sec"><h4>Gating items</h4>`+abSteps(eb.top_gating.slice(0,5).map(g=>

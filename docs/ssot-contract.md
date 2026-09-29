@@ -34,10 +34,10 @@ The single authoritative location for each fact (see `cisco_toolkit/ssot.py :: C
 | `n_endpoints` | `executive_brief.scale.n_endpoints` | `len(endpoint_identity)` |
 | `n_vlans` | `executive_brief.scale.n_vlans` | `len(analyze.vlan_inventory(snap))` |
 | `n_domains` | `executive_brief.scale.n_domains` | — |
-| `avg_health` | `executive_brief.posture.avg_health` | mean of `health_scores[].score` |
+| `avg_health` | `executive_brief.posture.avg_health` | `round(mean(score))` over the health-**scored** rows (finite score, band ≠ `Insufficient Data`); `null` when none is scored |
 | `n_critical` | `executive_brief.posture.n_critical` | `count(health_scores[].band == "Critical")` |
 | `n_poor` | `executive_brief.posture.n_poor` | `count(health_scores[].band == "Poor")` |
-| `worst_band` | `executive_brief.posture.worst_band` | — |
+| `worst_band` | `executive_brief.posture.worst_band` | most-severe band present in `health_scores[].band`; `null` when nothing is scored and no band is observed |
 | `n_past_ldos` | `lifecycle_risk.summary.n_past_ldos` | `count(per_device[].band == "Past-LDoS")` |
 | `n_past_eos` | `lifecycle_risk.summary.n_past_eos` | `count(per_device[].band == "Past-EoS")` |
 | `n_near` | `lifecycle_risk.summary.n_near` | `count(per_device[].band == "Near-LDoS")` |
@@ -58,6 +58,32 @@ distinct from "zero"). A surface may keep a `len(...)` fallback for the pre-brie
 (the brief's scale is injected late), but the canonical value must take precedence when present —
 the established `_scale.get("n_devices") if ... is not None else len(...)` idiom (e.g.
 `cisco_toolkit/html.py`, `webapp/backend/nrfu_docx.py`).
+
+### A fleet with nothing health-scored (`avg_health: null`)
+
+When no device produced a health score (every row is `Insufficient Data`, or there are no rows), the
+engine publishes the **abstention**, not a number: `posture = {avg_health: null, worst_band: null,
+n_critical, n_poor, n_scored: 0, not_assessed: "no_health_rows" | "all_insufficient_data" |
+"no_scored_rows"}` (`n_scored` / `not_assessed` appear only on this path, so the scored posture keeps
+its four keys). The "Fleet health" axis reads `NOT ASSESSED` at severity `Info`, and the posture
+statement carries a "fleet health is NOT ASSESSED" flag, so it can never conclude "no top-tier
+blockers". A surface decides on the **key**, not the value: `avg_health` present and `null` is the
+published abstention and must never be replaced by a recompute (an `Insufficient Data` row keeps its
+deduction-free score, so an all-rows mean fabricates ~100). Only a legacy/failed brief with no
+posture value may recompute, over scored rows only. `ssot.reconcile` checks both directions: a number
+published for zero scored rows, and `null` published while rows are scored, are violations.
+
+### Abstention states
+
+`ssot.abstention_reason` (and the `schema_census` built on it) returns one of `ssot.ABSTENTION_STATES`:
+`published`, `collected_but_empty` (collected, genuinely nothing found), `not_collected` (a blind spot),
+or `analysis_unavailable` — the section's analysis phase failed this run (`assessment_integrity`
+`failed_phases` / a failure-token stamp / an `_unavailable` sentinel), so its value is a fallback and
+not evidence. Failure labels are attributed to sections through `ssot.PHASE_SECTIONS`, which an AST
+ratchet (`tests/test_ssot_failed_phase_abstention.py`) keeps complete against
+`COLLECT_PARSE_V3_23_0.main()`; a label that cannot be attributed fails closed (every evidence-free
+section reads `analysis_unavailable`). `schema_census.summary.n_analysis_unavailable` is emitted only
+when non-zero.
 
 ## Enforcement (mechanical — runs in CI)
 
