@@ -69,7 +69,7 @@ def test_live_work_board_is_the_shared_entry_point() -> None:
         "## The one product",
         "## Working rules",
         "## Active workstreams",
-        "## Owner decisions pending",
+        "## Owner decisions",
         "## Handoff log",
     ):
         assert heading in board, f"docs/NOW.md lost its '{heading}' section"

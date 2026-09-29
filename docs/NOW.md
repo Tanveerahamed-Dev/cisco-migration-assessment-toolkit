@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-09-29** (Claude Code). Reasoning behind the current direction:
+Last reconciled: **2026-09-30** (Claude Code). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -70,31 +70,41 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot`, **local-only: never pushed** | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | Phase-3 checkpoint committed; phase-3.5 edits uncommitted; a time-boxed focus audit was running (2026-09-29) | Finish 3.5 with the audit bounded, then commit. Run the rule-7 checks. Owner decision D11, then push and open a PR to `main`. |
-| W2 | One-application UI consolidation (AssessHub + Scope + explorer) | not started | unassigned | Direction recorded in the dated verdict; waiting on owner decisions (2026-09-29) | P0: owner decisions D0/D9/D10/D11; a disposable prototype (on a listed branch, or a scratch folder deleted after the test, never a new repository or app); a timed 2-D vs 2.5-D test on the reference laptop |
-| W3 | This board | `docs/one-app-board` | Claude Code | Pull request for owner review (2026-09-29) | Owner review and merge. Then delete this row (rule 8). |
+| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot`, **local-only until its D11 conditions hold** | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | Finishing phase 3.5 under a bounded audit (2026-09-30) | Commit 3.5. Run the rule-7 checks. Push, then open a PR to `main` listing the remaining FAILs as preview scope (D11 approved). |
+| W2 | One-application UI consolidation (AssessHub + Scope + explorer) | engine slices on short branches off `main`; UI slices after W1 merges | Claude Code | Decisions taken (ADR 0007); P0 prototype and P1 engine honesty in progress (2026-09-30) | P1: `executive_brief` publishes no fleet average when nothing was scored; `ssot.abstention_reason` honours failed engine phases. P0: prototype over the engine's sample fleet, with the 2-D vs 2.5-D task test. |
+| W3 | This board + ADR 0007 | `docs/one-app-board` | Claude Code | Pull request #573; merges after the dependency-audit fix (#574) (2026-09-30) | Merge. Then delete this row (rule 8). |
+| W4 | Required-check unblock: master-reference npm advisories | `deps/master-reference-audit-20260930` | Claude Code | Pull request #574 (2026-09-30) | Merge. Then delete this row (rule 8). |
 
-## Owner decisions pending
+## Owner decisions
 
-- **D0: Release 1.** `pyproject.toml` on `main` is an unreleased release candidate.
-  - Choose to ship it or freeze it before the UI program starts.
-  - Shipping is only possible after the external advisory/applicability review that `CLAUDE.md`
-    names as the remaining release blocker.
-  - Every UI change alters release bytes, because `webapp/frontend/dist` is tracked.
-- **D9: One engine owner per screen, and one projection owner.** Options: a new Python
-  `ui_projection` library that Scope renders, or Scope's compiler
-  (`atlas-scope/tools/lib/compile-model.mjs`) with the Python side deferring to it. Measure load
-  time on the real fleet before choosing.
-- **D10: Keep raw collection evidence after ingest?**
-  - Today `webapp/backend/ingest.py` deletes its working directory after a run.
-  - Keeping the evidence is required for "click through to the exact CLI line" and for engine
-    re-runs such as traffic assurance.
-  - Costs: privacy and disk on the stick.
-- **D11: Publish the Atlas Scope branch** to this public repository, after the rule-7 checks.
-- **Also open, owned by `CLAUDE.md` and not restated here:** the carried-forward review-tail items,
-  publishing the master-reference site, and the Claude Design pixel-baseline promotion.
+**Decided 2026-09-30** (full record and reasoning: `docs/decisions/0007-one-application-direction.md`):
+
+- **D0: Release 1 is frozen as a draft candidate.** The UI program proceeds on `main`. The next
+  release candidate is cut from `main` after the core-screens milestone (P3).
+- **D9: Facts in Python, geometry in the browser.**
+  - Every on-screen fact comes from the engine through a typed projection
+    (`cisco_toolkit/ui_projection.py`).
+  - Scope's compiler owns only 3-D geometry, layout and visual encoding.
+  - Browser-side and webapp verdict logic become renderers or are parity-pinned.
+- **D10: Raw evidence is retained, secret-scrubbed.**
+  - Retention happens only after the engine's raw-capture scrubber runs and the independent
+    verifier proves the capture clean.
+  - A retention indicator and a per-campaign purge are shown.
+  - Implementation waits for W1 to merge (`webapp/backend/ingest.py` is on its freeze list).
+- **D11: Publishing the Atlas Scope branch is approved.** The W1 holder pushes and opens the PR
+  after phase 3.5 is committed, the rule-7 checks pass, and the remaining FAIL items are listed as
+  preview scope.
+
+**Still open, owned by `CLAUDE.md` and not restated here:** the carried-forward review-tail items,
+publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-09-30, Claude Code:
+  - The owner delegated D0/D9/D10/D11 with full authority; recorded in ADR 0007.
+  - Opened #574 to clear new npm advisories, which were failing a required check for every pull
+    request.
+  - W2 started.
 
 - 2026-09-29, Claude Code:
   - Created this board and recorded the direction verdict (dated record linked above).
