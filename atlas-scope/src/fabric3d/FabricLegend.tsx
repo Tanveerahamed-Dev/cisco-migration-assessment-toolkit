@@ -22,6 +22,7 @@ import {
 
 import { bandToken, isFavourableBand, PARTIAL_MARK, presentBand, QUALIFIED_BAND_TOKEN } from "../core/band-qualification";
 import type { Device, Link } from "../core/types";
+import { roleGlyphClass } from "../core/roles";
 
 const STORAGE_KEY = "atlas-scope.fabric-legend.open";
 
@@ -217,12 +218,15 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
   const keyCount = (k: string) => legendKeys.filter((x) => x === k).length;
   const bandCount = (b: string) => keyCount(b);
   const bandUnobserved = keyCount("none");
-  const roleAccess = devices.filter((d) => d.role === "access").length;
-  const roleDist = devices.filter((d) => d.role === "distribution").length;
-  const roleOther = devices.filter(
-    (d) => d.role !== null && d.role !== "access" && d.role !== "distribution",
-  ).length;
-  const roleUnobserved = devices.filter((d) => d.role === null).length;
+  /* Every device is counted in exactly ONE role row, by the class the role owner (core/roles.ts) assigns —
+     the same function the scene draws its glyph from, so a row and the glyph it describes cannot disagree
+     about case, whitespace or a blank role. */
+  const roleClasses = devices.map((d) => roleGlyphClass(d.role));
+  const roleCount = (c: ReturnType<typeof roleGlyphClass>) => roleClasses.filter((x) => x === c).length;
+  const roleAccess = roleCount("access");
+  const roleDist = roleCount("distribution");
+  const roleOther = roleCount("other");
+  const roleUnobserved = roleCount("unobserved");
   const uncollected = devices.filter((d) => !d.collected).length;
   const stateUnknown = devices.filter((d) => d.opStatus === "unknown").length;
   const stateDown = devices.filter((d) => d.opStatus === "down").length;

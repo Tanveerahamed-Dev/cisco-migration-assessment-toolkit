@@ -10,6 +10,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { fabric } from "./data";
+import { unassessedScoringDomains } from "./band-qualification";
+import { describeGolden } from "../test-support/golden-sample";
 import type { Finding } from "./types";
 import type { SearchHit } from "./query";
 import {
@@ -283,7 +285,8 @@ describe("applyToDevices", () => {
     expect(applyToDevices(fabric.devices, parseQuery("is:uncollected")).items).toHaveLength(
       UNCOLLECTED_DEVICES,
     );
-    expect(applyToDevices(fabric.devices, parseQuery("tier:1")).items).toHaveLength(17);
+    // Derived by traversal (an invariant); the sample's 17 is pinned in the golden block at the foot of the file.
+    expect(applyToDevices(fabric.devices, parseQuery("tier:1")).items).toHaveLength(fabric.devices.filter((d) => d.tier === 1).length);
     expect(applyToDevices(fabric.devices, parseQuery("platform:ios")).items).toHaveLength(22);
   });
 
@@ -500,12 +503,26 @@ describe("grouping and ordering", () => {
     expect(groups[groups.length - 1]!.items).toHaveLength(UNCOLLECTED_DEVICES);
     const observed = groups.filter((g) => g.observed).map((g) => g.key);
     /* UPDATED 2026-09-22 (acceptance B1, second failure): the old expectation ["Excellent", "Good",
-       "Poor", "Critical"] filed core2/dist1/dist2/podacc1/podacc2 under the PLAIN favourable bands,
-       although every one of them is qualified (a scoring domain never assessed could not deduct) —
-       that expectation pinned the defect. Band order is kept: each favourable band's qualified key
-       sits directly after it, and this snapshot has no unqualified favourable band. */
-    expect(observed).toEqual(["Excellent-partial", "Good-partial", "Poor", "Critical"]);
-    expect(groups.find((g) => g.key === "Excellent-partial")?.label).toBe("Excellent (partial)");
+       "Poor", "Critical"] filed qualified hosts under the PLAIN favourable bands although a scoring
+       domain never assessed could not deduct — that expectation pinned the defect. Band order is kept:
+       each favourable band's qualified key sits directly after it.
+       RE-EXPRESSED 2026-09-28 (phase 3): the exact key list is a fact about one snapshot and moved to
+       the golden block below (the regenerated sample collected dist1's and dist2's evidence, so a
+       plain Good appeared). What holds on ANY fabric is stated here, derived independently of the
+       grouping code: each collected device's key is its band, suffixed "-partial" exactly when a
+       favourable band sits on a device with an unassessed scoring domain (the per-host coverage
+       owner), and the observed keys are those keys in band order. */
+    const FAV = new Set(["Excellent", "Good"]);
+    const keyOf = (d: (typeof fabric.devices)[number]): string | null =>
+      d.band === null ? null : FAV.has(d.band) && d.collected && unassessedScoringDomains(d.host).length > 0 ? `${d.band}-partial` : d.band;
+    const ORDER = ["Excellent", "Excellent-partial", "Good", "Good-partial", "Fair", "Fair-partial", "Poor", "Critical"];
+    const present = new Set(fabric.devices.map(keyOf).filter((k): k is string => k !== null));
+    expect([...present].filter((k) => !ORDER.includes(k)), "a band key this restatement does not order").toEqual([]);
+    expect(observed).toEqual(ORDER.filter((k) => present.has(k)));
+    for (const g of groups.filter((x) => x.observed))
+      expect(g.items.map((d) => keyOf(d)).filter((k) => k !== g.key), `group ${g.key}`).toEqual([]);
+    for (const g of groups.filter((x) => x.observed && x.key.endsWith("-partial")))
+      expect(g.label).toBe(`${g.key.replace(/-partial$/, "")} (partial)`);
   });
 
   it("sorts deterministically regardless of input order", () => {
@@ -673,7 +690,8 @@ describe("a never-collected device is an evidence gap, never an empty punchlist"
     expect(r.evidenceScope.kind).toBe("fleet-partial");
     expect(r.evidenceScope.uncollected.map((u) => u.host).sort()).toEqual([...RAW_UNCOLLECTED].sort());
     expect(r.evidenceScope.uncollected.every((u) => u.cite.length > 0)).toBe(true);
-    expect(r.evidenceScope.note).toMatch(/3 of 26/);
+    // The note's denominator is the fleet's own (an invariant); the sample's "3 of 26" is pinned in the golden block.
+    expect(r.evidenceScope.note).toContain(`${RAW_UNCOLLECTED.length} of ${fabric.devices.length}`);
 
     // The device surface needs no such caveat: each row states its own collection status.
     const d = applyToDevices(fabric.devices, parseQuery(""));
@@ -945,8 +963,8 @@ describe("a record is never swallowed by another that shares its id", () => {
     // The compiler emits a cross-layer RULE id per host that trips the rule: 43 records, 5 ids.
     // Keying one-hit-per-record on the id therefore deletes real evidence from search results.
     const ids = new Set(fabric.crossLayer.map((c) => c.id));
-    expect(fabric.crossLayer.length).toBe(43);
-    expect(ids.size).toBe(5);
+    // The property this guards needs a shared id to exist; the sample's 43 records over 5 ids are pinned in the golden block.
+    expect(ids.size, "precondition: some cross-layer rows share an id").toBeLessThan(fabric.crossLayer.length);
 
     const matches = fabric.crossLayer.filter((c) =>
       [c.id, ...c.hosts, c.layers, c.severity, c.title, c.detail, c.recommendation].some((v) =>
@@ -1014,5 +1032,23 @@ describe("free text on devices is tri-state: an unobserved field never decides a
     const admitted = r.items.filter((d) => !d.collected).map((d) => d.host);
     expect(admitted).toEqual([]);
     expect(r.undeterminedTotal).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describeGolden("query counts on the reference sample", () => {
+  it("tier:1 holds the 17 access switches; 3 of 26 devices were never collected; 43 cross-layer rows share 5 ids", () => {
+    expect(applyToDevices(fabric.devices, parseQuery("tier:1")).items).toHaveLength(17);
+    expect(applyToFindings(fabric.findings, parseQuery("")).evidenceScope.note).toMatch(/3 of 26/);
+    expect(fabric.crossLayer.length).toBe(43);
+    expect(new Set(fabric.crossLayer.map((c) => c.id)).size).toBe(5);
+  });
+});
+
+describeGolden("query grouping on the reference sample", () => {
+  it("band groups are Excellent-partial, Good, Good-partial, Poor, Critical, then the unobserved bucket", () => {
+    const groups = groupDevicesBy(fabric.devices, "band");
+    expect(groups.filter((g) => g.observed).map((g) => g.key)).toEqual(["Excellent-partial", "Good", "Good-partial", "Poor", "Critical"]);
+    expect(groups.find((g) => g.key === "Excellent-partial")?.label).toBe("Excellent (partial)");
+    expect(groups.find((g) => g.key === "Good")?.items.map((d) => d.host).sort()).toEqual(["dist1", "dist2"]);
   });
 });

@@ -17,7 +17,9 @@ import { aclUndecidability } from "../core/acl-coverage";
 import { bandOfTrace, isDecidedOutcome, outcomeUndecidingGaps } from "../core/claims";
 import { aclsOf, fabric } from "../core/data";
 import type { Trace } from "../core/types";
-import { counterexample, suggestedFlows, traceFlow, unobservedPolicyInputs } from "../forwarding/engine";
+import { counterexample, isDefiniteDelivery, suggestedFlows, traceFlow, unobservedPolicyInputs } from "../forwarding/engine";
+import { describeGolden } from "../test-support/golden-sample";
+import { flowLabel, universeTraces } from "./trace-universe";
 import { ribIncompleteness } from "../forwarding/rib-completeness";
 import { traceMarkOf } from "../fabric3d/Fabric3D";
 import { ClaimCard } from "./ClaimCard";
@@ -48,24 +50,21 @@ afterEach(() => {
 const traces: { id: string; trace: Trace }[] = suggestedFlows().map((s) => ({ id: s.id, trace: traceFlow(s.flow) }));
 
 describe("a drop on an incomplete routing table is not decided", () => {
-  it("the snapshot's own receipts make core2's table incomplete, with the reasons named", () => {
-    const labels = ribIncompleteness("core2").map((r) => r.label).join(" | ");
-    expect(labels).toMatch(/OSPF is not collected/);
-    expect(labels).toMatch(/BGP is not collected/);
-    expect(labels).toMatch(/240 received prefixes/);
+  /* core2's reasons are facts about the reference sample: golden tier (phase 3 rename leg). */
+  describeGolden("the reference sample's partial table", () => {
+    it("the snapshot's own receipts make core2's table incomplete, with the reasons named", () => {
+      const labels = ribIncompleteness("core2").map((r) => r.label).join(" | ");
+      expect(labels).toMatch(/OSPF is not collected/);
+      expect(labels).toMatch(/BGP is not collected/);
+      expect(labels).toMatch(/240 received prefixes/);
+    });
   });
 
-  it("every no-route suggested flow at a host with an incomplete table bands UNDETERMINED", () => {
-    const drops = traces.filter(({ trace }) => trace.outcome === "dropped");
-    expect(drops.length, "the snapshot must still offer a no-route flow").toBeGreaterThan(0);
-    for (const { id, trace } of drops) {
-      const at = trace.hops[trace.hops.length - 1]!.host;
-      if (ribIncompleteness(at).length === 0) continue;
-      expect(isDecidedOutcome(trace), id).toBe(false);
-      expect(bandOfTrace(trace), id).toBe("UNDETERMINED");
-      expect(unobservedPolicyInputs(trace).some((g) => g.kind === "rib-partial"), id).toBe(true);
-    }
-  });
+  /* "every no-route suggested flow at a host with an incomplete table bands UNDETERMINED" moved 2026-09-28
+     (phase 3) to claim-honesty.no-route.counterfactual.test.tsx, unchanged in what it asserts and widened
+     from the suggested flows to every no-route drop: the regenerated sample gave every collected table a
+     default route, so no trace of the real snapshot is dropped any more ("the snapshot must still offer a
+     no-route flow: expected 0 to be greater than 0"). */
 
   it("the same ingress-alternate gap undecides a drop exactly as it undecides a denial", () => {
     for (const { id, trace } of traces) {
@@ -99,9 +98,7 @@ describe("every surface that draws an outcome follows the trace's band", () => {
   it("the 3-D trace mark never claims more than the trace band (real traces)", () => {
     /* UPDATED 2026-09-22 (auditor, B1 + B2). The two flows once added to reach the delivered and
        blocked branches were sourced by core1's own SVI addresses — decided only because the engine
-       walked router-originated traffic as if it arrived inbound. On this snapshot no trace is decided,
-       so only the UNDETERMINED branch can run here, and that is asserted rather than skipped; the
-       delivered and blocked branches run on host sources in decided-surfaces.counterfactual.test.tsx. */
+       walked router-originated traffic as if it arrived inbound. They stay UNDETERMINED here. */
     const formerlyDecided = [
       traceFlow({ srcIp: "10.0.30.1", dstIp: "10.0.20.10", protocol: "tcp", dstPort: 22, srcPort: null }),
       traceFlow({ srcIp: "10.0.20.2", dstIp: "10.0.10.50", protocol: "tcp", dstPort: 22, srcPort: null }),
@@ -111,8 +108,18 @@ describe("every surface that draws an outcome follows the trace's band", () => {
       expect(traceMarkOf(t)?.kind ?? null).not.toBe("delivered");
       expect(traceMarkOf(t)?.kind ?? null).not.toBe("blocked");
     }
+    /* RE-EXPRESSED 2026-09-28 (phase 3). On the old sample no trace was decided, so only the
+       UNDETERMINED branch could run here, and the "permitted" preset was pinned as NOT offered. The
+       regenerated sample has decided multi-hop traces from HOST sources, so every branch now runs on real
+       evidence: the suggested flows plus the snapshot's first decided delivery and decided denial, found
+       by property. The critic's case — a "permitted" preset whose hop is undecided — is still held to its
+       band by the same loop wherever the engine offers it. */
+    const decided = [
+      universeTraces().find((t) => isDefiniteDelivery(t)),
+      universeTraces().find((t) => t.outcome === "denied" && isDecidedOutcome(t)),
+    ].flatMap((t, i) => (t === undefined ? [] : [{ id: i === 0 ? "decided delivery" : "decided denial", trace: t }]));
     const ran = { delivered: 0, blocked: 0, undetermined: 0 };
-    for (const { id, trace } of traces) {
+    for (const { id, trace } of [...traces, ...decided]) {
       const mark = traceMarkOf(trace);
       const band = bandOfTrace(trace);
       if (mark === null) continue;
@@ -122,11 +129,17 @@ describe("every surface that draws an outcome follows the trace's band", () => {
       if (band === "UNDETERMINED") expect(mark.kind, id).toBe("undetermined");
     }
     expect(ran.undetermined).toBeGreaterThan(0);
-    /* The critic's exact case was the "permitted" preset, whose core1 hop is undecided. A "permitted"
-       preset is offered only for a delivery definite on its modelled path, and on this snapshot every
-       such delivery rests on core1's incomplete table (auditor, B1, 2026-09-22) — so it is not offered
-       at all, rather than drawn as a delivery. */
-    expect(traces.find((t) => t.id === "permitted")).toBeUndefined();
+    const permitted = traces.find((t) => t.id === "permitted");
+    if (permitted !== undefined && bandOfTrace(permitted.trace) === "UNDETERMINED") expect(traceMarkOf(permitted.trace)?.kind).toBe("undetermined");
+  });
+
+  describeGolden("the reference sample's decided marks", () => {
+    it("its decided delivery and decided denial are drawn as a delivery and a block", () => {
+      const delivery = universeTraces().find((t) => isDefiniteDelivery(t));
+      const denial = universeTraces().find((t) => t.outcome === "denied" && isDecidedOutcome(t));
+      expect(traceMarkOf(delivery!)?.kind).toBe("delivered");
+      expect(traceMarkOf(denial!)?.kind).toBe("blocked");
+    });
   });
 
   it("state 06: the 3-D chip's ending and the path panel's verdict come from one owner and agree", () => {
@@ -159,25 +172,50 @@ describe("every surface that draws an outcome follows the trace's band", () => {
     });
   });
 
-  it("the undecided denial is offered no nearby flow at all, so its card shows no green outcome word", () => {
-    /* RENAMED 2026-09-22 (acceptance grading, F2: this test was mislabelled). It was titled "an
-       offered nearby flow wears its own band", but on this snapshot nothing is ever offered: the
-       suggested denial's nearby variations all rest on core1's incomplete table, so none is
-       definite (auditor, B1). The body therefore only ever proved the NOT-offered branch; the title
-       claimed the other one. The offered-flow band ("a decided counter outcome wearing its own
-       band") is pinned where a decided counterexample exists, on host sources:
-       decided-surfaces.counterfactual.test.tsx. This test now says what it proves, and asserts the
-       snapshot fact it rests on rather than silently taking whichever branch the data allows — if a
-       nearby flow ever becomes definite here, this fails first and the title gets revisited. */
-    const denied = traces.find((t) => t.id === "denied");
-    expect(denied).toBeDefined();
-    const ce = counterexample(denied!.trace.flow, denied!.trace);
-    expect(ce.found, "a nearby flow is now offered for the suggested denial: this test's premise changed").toBe(false);
-    if (ce.found) return; // unreachable after the assertion above; narrows the type
-    expect(ce.reason).toMatch(/nearby variations/);
-    const el = mount(<ClaimCard trace={denied!.trace} counterexample={ce} />);
-    expect(el.querySelector(".claim__counter-outcome")).toBeNull();
-    expect(el.textContent ?? "").not.toMatch(/\bDELIVERED\b/);
+  /* RE-EXPRESSED 2026-09-28 (phase 3). This asserted that the suggested undecided denial is offered NO
+     nearby flow, and said so: "if a nearby flow ever becomes definite here, this fails first and the
+     title gets revisited". The regenerated sample does offer one (the same source to port 22, delivered
+     on the modelled path) — so the test is revisited as it asked. What it guards is unchanged: a card over
+     an UNDECIDED denial never presents a nearby flow as a counterexample, never draws the intended /
+     not-established pair (which reads the baseline as settled), and never lets the nearby flow's outcome
+     wear a band stronger than that flow's own. Both branches — something offered, nothing offered — are
+     now found by property in the snapshot's flow universe and each is checked where it exists. */
+  it("an undecided denial's card never presents a nearby flow as a counterexample, offered or not", () => {
+    const undecidedDenials = universeTraces().filter((t) => t.outcome === "denied" && !isDecidedOutcome(t));
+    expect(undecidedDenials.length, "precondition: this snapshot has an undecided denial").toBeGreaterThan(0);
+    const offered = undecidedDenials.find((t) => counterexample(t.flow, t).found);
+    const none = undecidedDenials.find((t) => !counterexample(t.flow, t).found);
+    let checked = 0;
+    for (const t of [offered, none]) {
+      if (t === undefined) continue;
+      checked += 1;
+      const ce = counterexample(t.flow, t);
+      const el = mount(<ClaimCard trace={t} counterexample={ce} />);
+      const titles = [...el.querySelectorAll(".claim__section-title")].map((x) => x.textContent ?? "");
+      expect(titles.some((x) => /the nearest flow that behaves differently/.test(x)), flowLabel(t.flow)).toBe(false);
+      expect(titles.some((x) => /relative to an UNDECIDED result/.test(x)), flowLabel(t.flow)).toBe(true);
+      expect(el.querySelector(".claim__pair"), flowLabel(t.flow)).toBeNull();
+      const outcome = el.querySelector<HTMLElement>(".claim__counter-outcome");
+      if (ce.found) {
+        expect(outcome?.dataset["band"], "the nearby flow wears its OWN band").toBe(bandOfTrace(ce.trace));
+      } else {
+        expect(ce.reason).toMatch(/nearby variations/);
+        expect(outcome).toBeNull();
+        expect(el.textContent ?? "").not.toMatch(/\bDELIVERED\b/);
+      }
+      act(() => mounted.pop()!.unmount());
+    }
+    expect(checked, "at least one undecided-denial card was drawn").toBeGreaterThan(0);
+  });
+
+  describeGolden("the reference sample's undecided denials", () => {
+    it("the suggested denial is offered a nearby flow, and some undecided denial is offered none — both branches run", () => {
+      const denied = traces.find((t) => t.id === "denied");
+      expect(denied, "the suggested denial").toBeDefined();
+      expect(isDecidedOutcome(denied!.trace)).toBe(false);
+      expect(counterexample(denied!.trace.flow, denied!.trace).found).toBe(true);
+      expect(universeTraces().some((t) => t.outcome === "denied" && !isDecidedOutcome(t) && !counterexample(t.flow, t).found)).toBe(true);
+    });
   });
 });
 

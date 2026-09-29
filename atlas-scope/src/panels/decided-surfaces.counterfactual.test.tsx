@@ -16,10 +16,26 @@
  * treated as observed binding no list. Routes, ACL lines, bindings and FHRP records are unchanged, the
  * sources are ordinary host addresses in 10.0.30.0/24 (one gateway: core1 Vlan30, no FHRP alternate),
  * and vitest isolates modules per file, so the counterfactual never reaches another test or the product.
+ *
+ * RE-EXPRESSED 2026-09-28 (phase 3). The premise above — "the shipped snapshot has no decided trace" —
+ * is no longer true: the regenerated sample has decided multi-hop traces, drawn on the REAL data in
+ * PathTrace.decided-multihop.test.tsx. This file stays, because the counterfactual still reaches decided
+ * branches the real data does not (a decided delivery from a single-gateway subnet's host, SCOPED at its
+ * ceiling). But its subjects were named flows, and the regenerated routes changed their outcomes (the
+ * "denied" flow 10.0.30.5 -> 10.0.40.5:443 is now DELIVERED over core1 to dist1). So the subjects are now
+ * found by property under the counterfactual: the source is an ordinary host address in a subnet with
+ * exactly one gateway, the delivery is the first definite one from it, and the denial is the first
+ * decided one — from any host source — with a decided counterexample.
+ *
+ * Every subject is resolved INSIDE its test through `need` (trace-universe.ts): on a snapshot that is not
+ * the reference sample an absent subject is a skip that names what the snapshot lacks, and on the reference
+ * sample it is a failure. Nothing is resolved at collection, so no snapshot can crash the file there. The
+ * universe includes a host inside every routed off-SVI prefix, which is where the engine's golden fleet's
+ * only decided denial goes (10.0.30.x -> 10.0.0.0/16) — an SVI-only universe missed it (verifier V1).
  */
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type TestContext } from "vitest";
 
 vi.mock("../forwarding/rib-completeness", async (orig) => {
   const actual = await orig<typeof import("../forwarding/rib-completeness")>();
@@ -32,12 +48,13 @@ vi.mock("../forwarding/bindings", async (orig) => {
 
 import { bandOfTrace, isDecidedOutcome } from "../core/claims";
 import { fabric } from "../core/data";
-import type { Flow } from "../core/types";
+import type { Flow, Trace } from "../core/types";
 import { counterexample, isDefiniteDelivery, traceFlow } from "../forwarding/engine";
 import { traceMarkOf } from "../fabric3d/Fabric3D";
 import { ClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
 import { intentCatalog, runIntentSearch, type Intent } from "./PathTrace";
+import { deviceOwnedAddresses, need, subnetHostAddresses, universeTraces } from "./trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -59,29 +76,52 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-const flow = (srcIp: string, dstIp: string, protocol: Flow["protocol"], dstPort: number | null): Flow => ({ srcIp, dstIp, protocol, dstPort, srcPort: null });
 const text = (el: Element | null): string => (el?.textContent ?? "").replace(/\s+/g, " ");
 const click = (el: Element): void => {
   act(() => el.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 };
 
-/** A host in 10.0.30.0/24, not a device address: the source every decided case below uses. */
-const HOST = "10.0.30.5";
-const DELIVERED = flow(HOST, "10.0.10.50", "tcp", 443);
-const DENIED = flow(HOST, "10.0.40.5", "tcp", 443);
+/** An ordinary host address in a subnet exactly ONE gateway serves (no FHRP alternate), with its SVI record. */
+const singleGatewayHost = (): ReturnType<typeof subnetHostAddresses>[number] | undefined => {
+  const gateways = new Map<string, number>();
+  for (const r of fabric.l3) if (r.primarySubnet !== null) gateways.set(r.primarySubnet, (gateways.get(r.primarySubnet) ?? 0) + 1);
+  return subnetHostAddresses().find((h) => {
+    const rec = fabric.l3.find((r) => r.cite === h.cite);
+    return rec?.primarySubnet != null && gateways.get(rec.primarySubnet) === 1;
+  });
+};
+const hostSource = (ctx: TestContext): string => need(ctx, singleGatewayHost(), "host address in a subnet with exactly one gateway").ip;
+const deliveredFrom = (src: string): Trace | undefined => universeTraces().find((t) => t.flow.srcIp === src && isDefiniteDelivery(t));
+const decidedDenialWithCounter = (): Trace | undefined =>
+  universeTraces().find((t) => {
+    if (t.outcome !== "denied" || !isDecidedOutcome(t)) return false;
+    const ce = counterexample(t.flow, t);
+    return ce.found && isDecidedOutcome(ce.trace);
+  });
+const owned = (): Set<string> => deviceOwnedAddresses();
+/** The decided denial and its decided counterexample, resolved inside the test that needs them. */
+const denialSubject = (ctx: TestContext): { t: Trace; ce: Extract<ReturnType<typeof counterexample>, { found: true }> } => {
+  const t = need(ctx, decidedDenialWithCounter(), "decided denial with a decided counterexample");
+  const ce = counterexample(t.flow, t);
+  if (!ce.found) throw new Error("unreachable: decidedDenialWithCounter found a counterexample");
+  return { t, ce };
+};
 
 describe("the counterfactual really does produce decided traces from a HOST source", () => {
-  it("delivered is RESOLVED, denied is REFUTED, and neither source is a device's own address", () => {
-    const owned = new Set(fabric.l3.flatMap((r) => [r.sviIp?.split(/[ /]/)[0], r.vip]).filter((x): x is string => typeof x === "string"));
-    expect(owned.has(HOST), "precondition: the source is not a device address").toBe(false);
-    expect(bandOfTrace(traceFlow(DELIVERED))).toBe("RESOLVED");
-    expect(bandOfTrace(traceFlow(DENIED))).toBe("REFUTED");
+  it("delivered is RESOLVED, denied is REFUTED, and neither source is a device's own address", (ctx) => {
+    const src = hostSource(ctx);
+    expect(owned().has(src), "precondition: the source is not a device address").toBe(false);
+    const delivered = need(ctx, deliveredFrom(src), `definite delivery from ${src}`);
+    expect(bandOfTrace(delivered)).toBe("RESOLVED");
+    const { t: denied } = denialSubject(ctx);
+    expect(owned().has(denied.flow.srcIp), "precondition: the denial's source is not a device address").toBe(false);
+    expect(bandOfTrace(denied)).toBe("REFUTED");
   });
 });
 
 describe("ClaimCard + HopList — a definite delivery", () => {
-  it("is drawn RESOLVED on the card and on the hop, and its claim carries no undecided suffix", () => {
-    const t = traceFlow(DELIVERED);
+  it("is drawn RESOLVED on the card and on the hop, and its claim carries no undecided suffix", (ctx) => {
+    const t = need(ctx, deliveredFrom(hostSource(ctx)), "definite delivery from a single-gateway host");
     expect(isDefiniteDelivery(t)).toBe(true);
     expect(t.claim).not.toMatch(/not a decided pass/);
     const el = mount(
@@ -91,22 +131,22 @@ describe("ClaimCard + HopList — a definite delivery", () => {
       </>,
     );
     expect(el.querySelector<HTMLElement>(".claim")!.dataset["band"]).toBe("RESOLVED");
-    expect(el.querySelector<HTMLElement>(".hop .verdict")!.dataset["band"]).toBe("RESOLVED");
+    const verdicts = [...el.querySelectorAll<HTMLElement>(".hop .verdict")];
+    expect(verdicts.length, "every hop draws a verdict").toBe(t.hops.length);
+    for (const v of verdicts) expect(v.dataset["band"]).toBe("RESOLVED");
   });
 });
 
 describe("ClaimCard — a decided denial and its counterexample", () => {
-  const t = traceFlow(DENIED);
-  const ce = counterexample(t.flow, t);
-
-  it("the denial is decided and a counterexample is found", () => {
+  it("the denial is decided and a counterexample is found", (ctx) => {
+    const { t, ce } = denialSubject(ctx);
     expect(t.outcome).toBe("denied");
     expect(isDecidedOutcome(t)).toBe(true);
     expect(ce.found).toBe(true);
   });
 
-  it("is headed 'Counterexample' with a decided counter outcome wearing its own band", () => {
-    if (!ce.found) throw new Error("precondition failed: no counterexample");
+  it("is headed 'Counterexample' with a decided counter outcome wearing its own band", (ctx) => {
+    const { t, ce } = denialSubject(ctx);
     expect(isDecidedOutcome(ce.trace)).toBe(true);
     const el = mount(<ClaimCard trace={t} counterexample={ce} />);
     expect(text(el)).toMatch(/Counterexample — the nearest flow that behaves differently/);
@@ -116,16 +156,16 @@ describe("ClaimCard — a decided denial and its counterexample", () => {
     expect(outcome?.dataset.band).not.toBe("UNDETERMINED");
   });
 
-  it("names what the counterexample changed instead of claiming the same addresses", () => {
-    if (!ce.found) throw new Error("precondition failed: no counterexample");
+  it("names what the counterexample changed instead of claiming the same addresses", (ctx) => {
+    const { t, ce } = denialSubject(ctx);
     const el = mount(<ClaimCard trace={t} counterexample={ce} />);
     const pair = text(el.querySelector(".claim__pair"));
     expect(pair).toMatch(/its (source|destination|protocol|destination port) \(/);
     expect(pair).not.toMatch(/between the same addresses/);
   });
 
-  it("offers the counterexample and can run it, with the two-part 'Not established' contract", () => {
-    if (!ce.found) throw new Error("precondition failed: no counterexample");
+  it("offers the counterexample and can run it, with the two-part 'Not established' contract", (ctx) => {
+    const { t, ce } = denialSubject(ctx);
     const ran: Flow[] = [];
     const el = mount(<ClaimCard trace={t} counterexample={ce} onRunFlow={(f) => ran.push(f)} />);
     const btn = [...el.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes("Trace this flow instead"));
@@ -136,7 +176,8 @@ describe("ClaimCard — a decided denial and its counterexample", () => {
     expect(text(el)).toContain("Not established");
   });
 
-  it("keeps the counterexample affordance when there is nothing to offer, carrying the reason", () => {
+  it("keeps the counterexample affordance when there is nothing to offer, carrying the reason", (ctx) => {
+    const { t } = denialSubject(ctx);
     const el = mount(<ClaimCard trace={t} counterexample={{ found: false, reason: "None of the 3 nearby variations traced as delivered." }} />);
     expect(text(el)).toContain("None of the 3 nearby variations");
     expect(text(el)).toContain("Counterexample");
@@ -144,8 +185,14 @@ describe("ClaimCard — a decided denial and its counterexample", () => {
 });
 
 describe("the 3-D trace mark never claims more than the trace band", () => {
-  it("over decided and undecided real traces, each branch counted", () => {
-    const flows = [DELIVERED, DENIED, flow("10.0.10.50", "10.0.30.10", "icmp", null), flow("10.0.40.50", "10.0.30.10", "tcp", 443)];
+  it("over decided and undecided real traces, each branch counted", (ctx) => {
+    const delivered = need(ctx, deliveredFrom(hostSource(ctx)), "definite delivery from a single-gateway host");
+    const { t: denied } = denialSubject(ctx);
+    /* The undecided subjects are found by property too: every trace the counterfactual still leaves
+       UNDETERMINED is drawn, not two named flows whose band a regenerated snapshot is free to change. */
+    const undecided = universeTraces().filter((t) => bandOfTrace(t) === "UNDETERMINED");
+    need(ctx, undecided[0], "trace the counterfactual leaves undecided");
+    const flows = [delivered.flow, denied.flow, ...undecided.map((t) => t.flow)];
     const ran = { delivered: 0, blocked: 0, undetermined: 0 };
     for (const f of flows) {
       const t = traceFlow(f);
@@ -165,12 +212,12 @@ describe("the 3-D trace mark never claims more than the trace band", () => {
 
 describe("runIntentSearch — decided verdicts from a host source", () => {
   const catalog = intentCatalog();
-  const hostIntents = (): { refuted: Intent; held: Intent; mixed: Intent } => {
-    const l3 = fabric.l3.find((r) => r.host === "core1" && r.vlan === 30);
-    if (l3 === undefined) throw new Error("the snapshot no longer records core1's Vlan30 SVI");
-    const src = { ip: HOST, provenance: "derived" as const, cite: l3.cite, note: "a host address inside core1's Vlan30 subnet" };
-    const v20 = catalog.find((i) => i.id === "no-reach-10_0_20_0_24-10_0_30_0_24")!;
-    const v10 = catalog.find((i) => i.id === "no-reach-10_0_10_0_24-10_0_30_0_24")!;
+  const hostIntents = (ctx: TestContext): { refuted: Intent; held: Intent; mixed: Intent } => {
+    const h = need(ctx, singleGatewayHost(), "host address in a subnet with exactly one gateway");
+    const HOST = h.ip;
+    const src = { ip: HOST, provenance: "derived" as const, cite: h.cite, note: `a host address inside ${h.host}'s Vlan${h.vlan ?? "?"} subnet` };
+    const v20 = need(ctx, catalog.find((i) => i.id === "no-reach-10_0_20_0_24-10_0_30_0_24"), "catalog intent 10.0.20.0/24 -> 10.0.30.0/24");
+    const v10 = need(ctx, catalog.find((i) => i.id === "no-reach-10_0_10_0_24-10_0_30_0_24"), "catalog intent 10.0.10.0/24 -> 10.0.30.0/24");
     const from = (base: Intent, kind: Intent["kind"], id: string, claim: string): Intent => ({
       ...base,
       id,
@@ -182,15 +229,15 @@ describe("runIntentSearch — decided verdicts from a host source", () => {
       destSpace: base.sourceSpace,
     });
     return {
-      refuted: from(v20, "none-reach", "host-none-reach-vlan20", "No flow from 10.0.30.5 reaches 10.0.20.0/24."),
-      held: from(v20, "all-reach", "host-all-reach-vlan20", "Every flow from 10.0.30.5 reaches 10.0.20.0/24."),
-      mixed: from(v10, "all-reach", "host-all-reach-vlan10", "Every flow from 10.0.30.5 reaches 10.0.10.0/24."),
+      refuted: from(v20, "none-reach", "host-none-reach-vlan20", `No flow from ${HOST} reaches 10.0.20.0/24.`),
+      held: from(v20, "all-reach", "host-all-reach-vlan20", `Every flow from ${HOST} reaches 10.0.20.0/24.`),
+      mixed: from(v10, "all-reach", "host-all-reach-vlan10", `Every flow from ${HOST} reaches 10.0.10.0/24.`),
     };
   };
 
-  it("never offers a counterexample the engine itself says it cannot decide", () => {
+  it("never offers a counterexample the engine itself says it cannot decide", (ctx) => {
     const counted = { all: 0, delivered: 0 };
-    for (const i of [...catalog, hostIntents().refuted]) {
+    for (const i of [...catalog, hostIntents(ctx).refuted]) {
       const v = runIntentSearch(i);
       for (const c of v.counterexamples) {
         counted.all += 1;
@@ -205,8 +252,8 @@ describe("runIntentSearch — decided verdicts from a host source", () => {
     expect(counted.delivered, "no delivered counterexample was examined").toBeGreaterThan(0);
   });
 
-  it("never counts an undecided flow as consistent with the intent", () => {
-    const h = hostIntents();
+  it("never counts an undecided flow as consistent with the intent", (ctx) => {
+    const h = hostIntents(ctx);
     const ran = { clean: 0, passesBesideUndecided: 0 };
     for (const i of [...catalog, h.held, h.mixed]) {
       const v = runIntentSearch(i);

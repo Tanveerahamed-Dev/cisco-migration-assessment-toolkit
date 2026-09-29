@@ -74,6 +74,12 @@ function withRow(extra: Record<string, unknown>): Record<string, any> {
 }
 
 const IFACE = "/interfaces/core1/Gi1~10~11"; // interfaces.core1["Gi1/0/1"], RFC 6901-escaped
+/**
+ * A producer ref as the COMPILED finding carries it: every field kept, the producer's human `cite` under
+ * `label` (in the model `cite` means a snapshot path — src/core/compile-evidence-records.test.ts pins the
+ * class: no compiled `cite` holds free text).
+ */
+const compiled = (r: Record<string, unknown>) => ({ kind: r.kind, host: r.host, ref: r.ref, role: r.role, label: r.cite });
 const ref = (over: Record<string, unknown> = {}) => ({ kind: "interface", host: "core1", ref: IFACE, role: "subject", cite: "core1 Gi1/0/1", ...over });
 /** Exactly EVIDENCE_REFS_CAP distinct, resolvable, null-hosted row refs (every punch row, then every health score …). */
 const cappedRefs = (): Record<string, unknown>[] => {
@@ -132,7 +138,7 @@ describe("the evidence contract is compiled when it is honoured", () => {
     const set = compile(withRow({ evidence_basis: "record", evidence_refs: refs }));
     const f = set.fabric.findings[0] as Finding;
     expect(f.evidenceBasis).toBe("record");
-    expect(f.evidenceRefs).toEqual(refs);
+    expect(f.evidenceRefs).toEqual(refs.map(compiled));
     expect(f.evidenceRefsTotal).toBeNull();
   });
 
@@ -305,7 +311,7 @@ describe("the compile PATH accepts every kind the contract names — not only th
     const r = ref({ kind, host: "core1", role: kind === "absence_witness" ? "witness" : "subject" });
     const f = compile(withRow({ devices: ["core1"], evidence_basis: isRecord ? "record" : "row", evidence_refs: [r] })).fabric.findings[0] as Finding;
     expect(f.evidenceBasis).toBe(isRecord ? "record" : "row");
-    expect(f.evidenceRefs).toEqual([r]);
+    expect(f.evidenceRefs).toEqual([compiled(r)]);
   });
   it.each((contractFile().punch_evidence as { roles: string[] }).roles)("a ref of role %s compiles", (role) => {
     expect(codeOf(withRow({ devices: ["core1"], evidence_basis: "record", evidence_refs: [ref({ role })] }))).toBe("OK");

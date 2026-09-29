@@ -22,6 +22,16 @@
  * possible input — only for the inputs compiled here. The static route (annotating compile-model.mjs so
  * tsconfig.scripts.json checks its body) is blocked by `val()`, which returns non-string values unchanged;
  * that is recorded as an open item rather than hidden.
+ *
+ * WHY A REDUCED LITERAL (verifier R3-V2R-4). Type-checking the WHOLE compiled sample — a literal of about a
+ * megabyte — took 22.5 s on a quiet host and timed out at 120 s on a busy one: the cost was the literal's size,
+ * so the verdict depended on the host. TypeScript checks a literal member by member, so two members of one
+ * array with the same shape prove the same thing twice. `representative` keeps, of every array, only the
+ * elements that add a type FACT not already presented — an object's keys, a member's type, and every enum-like
+ * string VALUE (so a literal-union field like `severity` is checked for every value the compiler produced). `typeSpace` proves the reduction lossless for this purpose: the set of (path, type) facts — the
+ * keys of every object, the type of every member, every enum-like value — is IDENTICAL for the full sets and
+ * the reduced ones. The limits below are the ones this file already carried (none raised); the work under them
+ * is what shrank.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -50,6 +60,75 @@ function compileBytes(bytes: Uint8Array, source: string, sourceOrigin: "reposito
 }
 const compileSnap = (snap: Record<string, unknown>): CompiledSet => compileBytes(new TextEncoder().encode(JSON.stringify(snap)), "case.json", "external-file");
 
+/* ── the shape-preserving reduction ─────────────────────────────────────────────────────────── */
+
+/** A path with every array index folded, so every element of an array shares one path. */
+const fold = (path: string): string => path.replace(/\[\d+\]/g, "[]");
+/** A string member whose folded path carries at most this many distinct values is enum-like: its VALUE is its type. */
+const ENUM_MAX = 16;
+
+/** Per folded path, the distinct string values seen there (counting stops once past ENUM_MAX). */
+function stringValues(root: unknown): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  const walk = (v: unknown, path: string): void => {
+    if (typeof v === "string") {
+      const set = out.get(fold(path)) ?? new Set<string>();
+      if (set.size <= ENUM_MAX) set.add(v);
+      out.set(fold(path), set);
+    } else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${path}[${i}]`));
+    else if (v !== null && typeof v === "object") for (const [k, x] of Object.entries(v)) walk(x, `${path}.${k}`);
+  };
+  walk(root, "");
+  return out;
+}
+
+/**
+ * The type facts a literal presents to the checker: for every node, its folded path and its type — an object's
+ * sorted keys, an array (empty or not), a number, a boolean, null, or a string (its value, where the path is
+ * enum-like). `base` is the path of `root` inside the whole set, so enum-likeness is judged over the whole set.
+ */
+function typeSpace(root: unknown, enums: Map<string, Set<string>>, base = ""): Set<string> {
+  const out = new Set<string>();
+  const walk = (v: unknown, path: string): void => {
+    const f = fold(path);
+    if (typeof v === "string") out.add(`${f}|s:${(enums.get(f)?.size ?? 0) <= ENUM_MAX ? v : ""}`);
+    else if (Array.isArray(v)) {
+      out.add(`${f}|a${v.length === 0 ? ":empty" : ""}`);
+      v.forEach((x, i) => walk(x, `${path}[${i}]`));
+    } else if (v !== null && typeof v === "object") {
+      out.add(`${f}|o:${Object.keys(v).sort().join(",")}`);
+      for (const [k, x] of Object.entries(v)) walk(x, `${path}.${k}`);
+    } else out.add(`${f}|${v === null ? "null" : typeof v}`);
+  };
+  walk(root, base);
+  return out;
+}
+
+/**
+ * Of every array, only the elements that add a type fact the elements kept before them do not already present
+ * (a greedy cover, in the compiler's order); objects keep every key. Each kept element is reduced the same way,
+ * which keeps its own facts (by the same argument, one level down), so the reduced set presents every fact the
+ * full set does. `path` is where `root` sits in the set.
+ */
+function representative<T>(root: T, enums: Map<string, Set<string>>, path = ""): T {
+  const reduce = (v: unknown, at: string): unknown => {
+    if (Array.isArray(v)) {
+      const covered = new Set<string>();
+      const kept: unknown[] = [];
+      v.forEach((x, i) => {
+        const facts = typeSpace(x, enums, `${at}[${i}]`);
+        if ([...facts].every((f) => covered.has(f))) return;
+        for (const f of facts) covered.add(f);
+        kept.push(reduce(x, `${at}[${i}]`));
+      });
+      return kept;
+    }
+    if (v !== null && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, reduce(x, `${at}.${k}`)]));
+    return v;
+  };
+  return reduce(root, path) as T;
+}
+
 /** The compiled sets under test: every one a real compiler run. */
 function cases(): Record<string, CompiledSet> {
   const sample = compileBytes(lfNormalise(readFileSync(resolve(REPO, SAMPLE_REL))), SAMPLE_REL, "repository-file");
@@ -68,6 +147,14 @@ function cases(): Record<string, CompiledSet> {
   };
   rich.punchlist[0].devices = ["core1"];
   return { sample, goldenWithoutEvidence: compileSnap(base), goldenWithEveryFindingField: compileSnap(rich) };
+}
+
+/** The same sets, reduced to one element per distinct shape (see "WHY A REDUCED LITERAL"). */
+function reducedCases(): { full: Record<string, CompiledSet>; reduced: Record<string, CompiledSet>; enums: Record<string, Map<string, Set<string>>> } {
+  const full = cases();
+  const enums = Object.fromEntries(Object.entries(full).map(([k, v]) => [k, stringValues(v)]));
+  const reduced = Object.fromEntries(Object.entries(full).map(([k, v]) => [k, representative(v, enums[k]!)]));
+  return { full, reduced, enums };
 }
 
 /**
@@ -108,8 +195,21 @@ function typeCheck(sets: Record<string, unknown>): string[] {
 }
 
 describe("the compiler's real output is the shape its declaration states (S1-R2V-5)", () => {
+  it("the reduced literal presents EXACTLY the full sets' type facts, at a fraction of the size", () => {
+    const { full, reduced, enums } = reducedCases();
+    for (const name of Object.keys(full)) {
+      expect([...typeSpace(reduced[name], enums[name]!)].sort(), name).toEqual([...typeSpace(full[name], enums[name]!)].sort());
+    }
+    const size = (x: unknown): number => JSON.stringify(x).length;
+    /* Measured 2026-09-28 (host ~90 % busy): the full sets are ~770 000 characters, the reduced ~303 000, and
+       the type check itself fell from 3.2 s to 1.3 s. What remains is dominated by records keyed by DATA (an
+       evidence record's members, a host's interfaces), whose distinct key sets are kept as facts. */
+    expect(size(reduced), "the reduction removes the bulk of the literal").toBeLessThan(size(full) / 2);
+  });
+
   it("every compiled set is assignable to CompiledSet, with no excess or missing key", () => {
-    const sets = cases();
+    const sets = reducedCases().reduced;
+    expect(sets.sample!.fabric.evidenceRecords?.length, "the sample's projected evidence records are in the literal").toBeGreaterThan(0);
     // Not vacuous: the rich case really carries non-null evidence and producer prose.
     const f0 = sets.goldenWithEveryFindingField!.fabric.findings[0]!;
     expect(f0.evidenceRefs?.length).toBe(2);
@@ -118,7 +218,7 @@ describe("the compiler's real output is the shape its declaration states (S1-R2V
   }, 120_000);
 
   it("the check is live: a planted extra key, a missing key and a wrong-typed value are each reported", () => {
-    const sample = cases().goldenWithoutEvidence!;
+    const sample = reducedCases().reduced.goldenWithoutEvidence!;
     const extra = structuredClone(sample) as unknown as Record<string, any>;
     extra.fabric.devices[0].aNewUndeclaredField = 1;
     const missing = structuredClone(sample) as unknown as Record<string, any>;

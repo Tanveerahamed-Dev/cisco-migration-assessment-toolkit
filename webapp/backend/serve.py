@@ -133,6 +133,26 @@ def _resolve_dist(cli_dist) -> Path:
     return app_module.FRONTEND_DIST
 
 
+def _resolve_scope_dist() -> Path:
+    """Atlas Scope's /scope build: the bundled copy when frozen (portable/atlas_bundle.py
+    SCOPE_DIST_DEST, reconciled by tests/test_atlas_bundle.py), else the checkout's hub build
+    (app.ATLAS_SCOPE_DIST, atlas-scope ``npm run build:hub``). Passed to create_app explicitly: inside
+    a frozen bundle create_app's own checkout default would name a directory the bundle does not
+    have, and /scope would answer "not built" on a stick that carries the build."""
+    if _frozen():
+        return Path(getattr(sys, "_MEIPASS", str(_exe_dir()))) / "atlas_scope_dist"
+    from . import app as app_module  # lazy: pulls fastapi
+
+    return app_module.ATLAS_SCOPE_DIST
+
+
+def _scope_build_required() -> bool:
+    """A frozen bundle is built only with the hub build inside it (atlas.spec refuses a missing
+    source), so there its absence or refusal is a broken bundle. In a checkout the hub build is
+    optional build output: /scope then answers "not built" and AssessHub shows no link."""
+    return _frozen()
+
+
 def _resolve_db(cli_db):
     """DB path for create_app: --db > (None: create_app's default already honours $ASSESSHUB_DB) >
     frozen fallback `data\\assesshub.db` BESIDE the exe — the stick's only writable dir, never
@@ -299,11 +319,14 @@ def _explorer_template_path() -> Path:
     return primary if primary.is_file() else here.parent / "blast_radius_explorer.html"
 
 
-def run_selftest(dist_dir=None, db_path=None) -> int:
+def run_selftest(dist_dir=None, db_path=None, scope_dist_dir=None) -> int:
     """Assert every asset that otherwise degrades SILENTLY when missing (ADR-0004 P1).
 
-    Each check names the field symptom its failure would cause; returns 0 only when all pass."""
+    Each check names the field symptom its failure would cause; returns 0 only when all pass. A check
+    that does not apply to this install form is printed as ``[ -- ]`` with the reason and is counted
+    as neither passing nor failing — never as ``[ ok ]``."""
     checks = []
+    not_applicable = []
 
     def check(name: str, failure) -> None:
         checks.append((name, failure))
@@ -428,6 +451,23 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
              "be dead (API-only)",
     )
 
+    # Atlas Scope (/scope) — judged by the SAME index the app serves it from, so "[ ok ]" means the
+    # app would serve it: a runtime-snapshot build for the /scope mount, carrying no snapshot
+    # evidence, every file read completely.
+    scope_dist = Path(scope_dist_dir) if scope_dist_dir is not None else _resolve_scope_dist()
+    scope_status = app_module._scope_file_index(scope_dist)[0]
+    if scope_status == "ready":
+        check("atlas-scope-dist", None)
+    elif scope_status == "not_built" and not _scope_build_required():
+        not_applicable.append(
+            ("atlas-scope-dist", f"not built in this checkout ({scope_dist}); /scope answers "
+                                 "'not built' and AssessHub shows no Atlas Scope link. Build it with "
+                                 "atlas-scope `npm run build:hub`"))
+    else:
+        check("atlas-scope-dist",
+              f"{scope_status} at {scope_dist} — the Atlas Scope view (/scope) would not be served: "
+              f"{app_module._SCOPE_UNAVAILABLE_DETAIL[scope_status]}")
+
     if _frozen():
         check("engine-entry", None if _ilu.find_spec("COLLECT_PARSE_V3_23_0")
               else "engine module not bundled — ingest would respawn the app instead of "
@@ -463,8 +503,11 @@ def run_selftest(dist_dir=None, db_path=None) -> int:
     print(f"{APP_TITLE} — selftest · release {_release_version()}")
     for name, failure in checks:
         print(f"  [ ok ] {name}" if failure is None else f"  [FAIL] {name} — {failure}")
+    for name, reason in not_applicable:
+        print(f"  [ -- ] {name} — {reason}")
     verdict = "PASS" if n_ok == len(checks) else "FAIL"
-    print(f"SELFTEST: {verdict} ({n_ok}/{len(checks)} checks ok)")
+    skipped = f", {len(not_applicable)} not applicable" if not_applicable else ""
+    print(f"SELFTEST: {verdict} ({n_ok}/{len(checks)} checks ok{skipped})")
     return 0 if n_ok == len(checks) else 1
 
 
@@ -1025,7 +1068,8 @@ def _main_scoped(argv: list[str]) -> int:
     # ASCII separator on purpose: README-FIELD quotes this line and is ASCII-only (a cp437 field
     # console renders an em-dash as '?', so the guide could never match what the engineer sees).
     try:
-        app = create_app(db_path=_resolve_db(args.db), dist_dir=str(dist), boot_hardening=True)
+        app = create_app(db_path=_resolve_db(args.db), dist_dir=str(dist), boot_hardening=True,
+                         scope_dist_dir=str(_resolve_scope_dist()))
     except StoreCorruptError as e:
         print(f"{APP_TITLE}: refusing to start - {e}", file=sys.stderr)
         return 1

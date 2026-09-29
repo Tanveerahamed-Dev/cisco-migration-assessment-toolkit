@@ -5,6 +5,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
+import { describeGolden } from "../test-support/golden-sample";
+import { GOLDEN_FORWARDING as G } from "./golden-expectations";
 import {
   addressRoleIn,
   formatIpv4,
@@ -269,8 +271,9 @@ describe("every address string in the real fabric.json parses", () => {
   it("agrees with the engine's own primarySubnet wherever the engine stated one", () => {
     /* The comparison runs only where BOTH fields are present, so how many rows it ran on is pinned:
        an l3 table that stopped stating primarySubnet would otherwise pass having compared nothing.
-       Known answer for this snapshot (fabric.json is byte-pinned by provenance.test.ts): 9 l3 rows,
-       5 of them carrying both an SVI address and the engine's primarySubnet. */
+       UPDATED phase 3: the population is now tied to the data (every row carrying both fields is
+       compared, and at least one must be), and the known answer for the reference sample — 9 l3 rows,
+       all 9 carrying both on the regenerated sample (5 on the old one) — is the golden pin below. */
     let compared = 0;
     for (const r of fabric.l3) {
       if (r.sviIp === null || r.primarySubnet === null) continue;
@@ -279,9 +282,14 @@ describe("every address string in the real fabric.json parses", () => {
       expect(derived, r.cite).not.toBeNull();
       expect(formatPrefix(derived!.prefix), r.cite).toBe(formatPrefix(parsePrefix(r.primarySubnet)!));
     }
-    expect({ rows: fabric.l3.length, compared }, "l3 rows, and rows carrying both an SVI address and a primarySubnet").toEqual({
-      rows: 9,
-      compared: 5,
-    });
+    expect(compared, "rows carrying both an SVI address and a primarySubnet").toBe(fabric.l3.filter((r) => r.sviIp !== null && r.primarySubnet !== null).length);
+    expect(compared, "an l3 table stating no primarySubnet would compare nothing").toBeGreaterThan(0);
+  });
+});
+
+describeGolden("every address string in the real fabric.json parses — the reference sample's l3 table", () => {
+  it("9 l3 rows, every one carrying both an SVI address and the engine's primarySubnet", () => {
+    const compared = fabric.l3.filter((r) => r.sviIp !== null && r.primarySubnet !== null).length;
+    expect({ rows: fabric.l3.length, compared }, "l3 rows, and rows carrying both an SVI address and a primarySubnet").toEqual(G.l3PrimarySubnet);
   });
 });

@@ -434,32 +434,237 @@ function pointToSegment(p: Vec3, a: Vec3, b: Vec3): { distance: number; t: numbe
   return { distance: Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]), t };
 }
 
+/* ── the chassis index ─────────────────────────────────────────────────────
+   SCALE (2026-09-28). Every clearance question above is "which chassis centres lie near this
+   polyline?", and it used to be answered by measuring the polyline against EVERY chassis: the
+   straight-route scan was links × chassis, and each detour candidate was chassis × 48 chords, up to
+   2 × ROUTE_DETOUR_STEPS candidates per hint. Hints grow with the links, so the route stage was
+   cubic-ish in fleet size — profiled at 95 % of a 3.5 s layout on a 300-node synthetic fleet
+   (review/synth-fleet.mjs), and the brief measured 73.9 s at 1 000 on the main thread.
+
+   The index is a uniform grid over chassis centres. A query returns every chassis whose centre lies
+   in a grid cell touched by the polyline's chord boxes grown by `r`: a SUPERSET of the chassis
+   within `r` of the polyline (a centre outside every grown box differs from each chord's box by more
+   than `r` on some axis, so it is more than `r` from the chord). The candidates are then measured by
+   the SAME arithmetic, in the SAME node order, as the exhaustive scan was — so every published
+   number is bit-identical to what that scan computed, and the pruning can only ever skip a chassis
+   that could not have changed the answer. layout.test.ts pins the tracked sample's results to the
+   pre-index digests; scale.test.ts re-derives every clearance of a 300-node fleet by brute force. */
+
+/** Grid pitch: one node pitch, so a query box a chord long touches a handful of cells, not a tier. */
+const GRID_CELL = Math.max(NODE_PITCH_X, NODE_PITCH_Z);
+/** Query growth beyond the asked radius, far above float error and far below any clearance. */
+const GRID_SLACK = 1e-6;
+
+interface ChassisIndex {
+  readonly count: number;
+  /**
+   * A radius past which a query would return every chassis: the index's own diagonal. NaN when a
+   * coordinate is not finite, which callers must treat as "measure everything" — a widening search
+   * compared against NaN would otherwise never stop.
+   */
+  readonly reach: number;
+  /** Every chassis index, ascending. */
+  all(): number[];
+  /**
+   * Indices (ascending, deduplicated) of every centre within the grown boxes of the chords of
+   * `pts`, which is a superset of the centres within `r` of that polyline. Sorted ascending so a
+   * caller iterating them visits chassis in the same order the exhaustive scan did.
+   */
+  near(pts: readonly Vec3[], r: number): number[];
+}
+
+function buildChassisIndex(centres: readonly Vec3[]): ChassisIndex {
+  const count = centres.length;
+  const lo: Vec3 = [Infinity, Infinity, Infinity];
+  const hi: Vec3 = [-Infinity, -Infinity, -Infinity];
+  for (const p of centres) {
+    for (let k = 0; k < 3; k += 1) {
+      lo[k] = Math.min(must(lo[k], "lo"), must(p[k], "coord"));
+      hi[k] = Math.max(must(hi[k], "hi"), must(p[k], "coord"));
+    }
+  }
+  if (count === 0) {
+    lo.fill(0);
+    hi.fill(0);
+  }
+  /* One node pitch per cell, coarsened only if a sparse drawing (a huge tier pitch, say) would need
+     far more cells than chassis: the cell size changes how many candidates a query returns, never
+     which chassis are within reach, so the published numbers do not depend on it. */
+  let cell = GRID_CELL;
+  const dimsFor = (c: number): [number, number, number] => [
+    Math.floor((hi[0] - lo[0]) / c) + 1,
+    Math.floor((hi[1] - lo[1]) / c) + 1,
+    Math.floor((hi[2] - lo[2]) / c) + 1,
+  ];
+  let [nx, ny, nz] = dimsFor(cell);
+  while (nx * ny * nz > 64 * count + 65536) {
+    cell *= 2;
+    [nx, ny, nz] = dimsFor(cell);
+  }
+  const cellOf = (v: number, k: 0 | 1 | 2): number => Math.floor((v - lo[k]) / cell);
+  const keyOf = (p: Vec3): number => (cellOf(p[0], 0) * ny + cellOf(p[1], 1)) * nz + cellOf(p[2], 2);
+  /* Compressed rows: the chassis of cell c are items[start[c] .. start[c + 1]), in index order. */
+  const start = new Int32Array(nx * ny * nz + 1);
+  for (const p of centres) start[keyOf(p) + 1] = start[keyOf(p) + 1]! + 1;
+  for (let c = 0; c < nx * ny * nz; c += 1) start[c + 1] = start[c + 1]! + start[c]!;
+  const items = new Int32Array(count);
+  const fill = start.slice(0, nx * ny * nz);
+  centres.forEach((p, i) => {
+    const c = keyOf(p);
+    const at = fill[c]!;
+    items[at] = i;
+    fill[c] = at + 1;
+  });
+  /* A generation stamp per centre dedupes a query's candidates without allocating a set per call. */
+  const stamp = new Uint32Array(count);
+  let generation = 0;
+  /* Grown by GRID_SLACK beyond `r`: the pieces a chord is cut into are interpolated, so their union
+     can miss the chord by a rounding error, and the superset guarantee must not hang on the last bit. */
+  const collect = (lo3: Vec3, hi3: Vec3, r: number, out: number[]): void => {
+    const x0 = Math.max(0, cellOf(lo3[0] - r - GRID_SLACK, 0));
+    const x1 = Math.min(nx - 1, cellOf(hi3[0] + r + GRID_SLACK, 0));
+    const y0 = Math.max(0, cellOf(lo3[1] - r - GRID_SLACK, 1));
+    const y1 = Math.min(ny - 1, cellOf(hi3[1] + r + GRID_SLACK, 1));
+    const z0 = Math.max(0, cellOf(lo3[2] - r - GRID_SLACK, 2));
+    const z1 = Math.min(nz - 1, cellOf(hi3[2] + r + GRID_SLACK, 2));
+    for (let x = x0; x <= x1; x += 1) {
+      for (let y = y0; y <= y1; y += 1) {
+        const row = (x * ny + y) * nz;
+        for (let s = start[row + z0]!, e = start[row + z1 + 1]!; s < e; s += 1) {
+          const i = items[s]!;
+          if (stamp[i] === generation) continue;
+          stamp[i] = generation;
+          out.push(i);
+        }
+      }
+    }
+  };
+  return {
+    count,
+    reach: Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) + cell,
+    all: () => Array.from({ length: count }, (_, i) => i),
+    near(pts, r) {
+      generation += 1;
+      const out: number[] = [];
+      /* The polyline is walked as one stream of points — a chord longer than a cell cut into pieces
+         no longer than one, so its boxes hug it instead of spanning a block diagonal to it — and
+         consecutive points are gathered into one box while that box stays within a cell. Each box
+         holds both ends of every chord gathered into it and a box is convex, so it holds those chords
+         whole: the union of the boxes covers the polyline. */
+      const box = { lo: [0, 0, 0] as Vec3, hi: [0, 0, 0] as Vec3 };
+      let prev = must(pts[0], "polyline start");
+      box.lo = [prev[0], prev[1], prev[2]];
+      box.hi = [prev[0], prev[1], prev[2]];
+      for (let s = 1; s < pts.length; s += 1) {
+        const a = must(pts[s - 1], "chord start");
+        const b = must(pts[s], "chord end");
+        const pieces = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) / cell));
+        for (let q = 1; q <= pieces; q += 1) {
+          const t = q / pieces;
+          const p: Vec3 = q === pieces ? b : [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+          const nlo: Vec3 = [Math.min(box.lo[0], p[0]), Math.min(box.lo[1], p[1]), Math.min(box.lo[2], p[2])];
+          const nhi: Vec3 = [Math.max(box.hi[0], p[0]), Math.max(box.hi[1], p[1]), Math.max(box.hi[2], p[2])];
+          if (nhi[0] - nlo[0] <= cell && nhi[1] - nlo[1] <= cell && nhi[2] - nlo[2] <= cell) {
+            box.lo = nlo;
+            box.hi = nhi;
+          } else {
+            // Flush, and start the next box at the previous point so the chord ending here is covered.
+            collect(box.lo, box.hi, r, out);
+            box.lo = [Math.min(prev[0], p[0]), Math.min(prev[1], p[1]), Math.min(prev[2], p[2])];
+            box.hi = [Math.max(prev[0], p[0]), Math.max(prev[1], p[1]), Math.max(prev[2], p[2])];
+          }
+          prev = p;
+        }
+      }
+      collect(box.lo, box.hi, r, out);
+      return out.sort((p, q) => p - q);
+    },
+  };
+}
+
+/**
+ * Work done, COUNTED: one per chassis measured against a route (the straight chord, or one candidate
+ * detour's whole polyline). It is what the route stage costs and what a sliced run is paced by, so a
+ * slice is the same arithmetic on every host and the result cannot depend on where a slice ended.
+ */
+interface LayoutWork {
+  measured: number;
+}
+
+/** The chassis a route is measured against: every placed node but the route's own two ends. */
+interface Obstacles {
+  index: ChassisIndex;
+  ids: readonly string[];
+  centres: readonly Vec3[];
+  /** Node indices of the route's endpoints; never obstacles to their own cable. */
+  skip: readonly [number, number];
+}
+
 /**
  * Clearance of a suggested curve, measured the same way the straight route is: nearest chassis
  * centre away from the endpoints. Sampling as a polyline rather than as points means the measure
  * covers the whole curve and not just the samples, and it errs low — the chords cut the corner the
  * curve rounds — so "clear" is never claimed on the strength of a gap between samples.
+ *
+ * `nearest` is the minimum over EVERY chassis, not only the ones within ROUTE_CLEARANCE: a cleared
+ * hint publishes it as `routedClearance`. The search therefore widens the query radius until the
+ * nearest candidate found lies within it — at which point every chassis NOT yet measured is, by the
+ * index's superset guarantee, strictly further than the radius and so cannot be nearer — or until
+ * every chassis has been measured.
  */
 function curveClearance(
   a: Vec3,
   control: Vec3,
   b: Vec3,
-  obstacles: readonly { id: string; p: Vec3 }[],
+  obstacles: Obstacles,
+  work: LayoutWork,
 ): { nearest: number | null; blockedBy: string[] } {
   const pts: Vec3[] = [];
   for (let i = 0; i <= ROUTE_CURVE_SAMPLES; i += 1) {
     pts.push(quadraticAt(a, control, b, ROUTE_T_MARGIN + ((1 - 2 * ROUTE_T_MARGIN) * i) / ROUTE_CURVE_SAMPLES));
   }
-  let nearest: number | null = null;
-  const blockedBy: string[] = [];
-  for (const o of obstacles) {
-    let d = Infinity;
-    for (let i = 1; i < pts.length; i += 1) {
-      d = Math.min(d, pointToSegment(o.p, must(pts[i - 1], "curve sample"), must(pts[i], "curve sample")).distance);
+  const { index, ids, centres, skip } = obstacles;
+  const total = index.count - (skip[0] === skip[1] ? 1 : 2);
+  /* Each chord's box. A chord whose box is already no nearer than the best chord found cannot lower
+     the minimum, so it is not measured; the minimum is the same number either way. */
+  const boxLo = new Float64Array(3 * ROUTE_CURVE_SAMPLES);
+  const boxHi = new Float64Array(3 * ROUTE_CURVE_SAMPLES);
+  for (let i = 1; i < pts.length; i += 1) {
+    const s = must(pts[i - 1], "curve sample");
+    const e = must(pts[i], "curve sample");
+    for (let k = 0; k < 3; k += 1) {
+      boxLo[3 * (i - 1) + k] = Math.min(must(s[k], "coord"), must(e[k], "coord"));
+      boxHi[3 * (i - 1) + k] = Math.max(must(s[k], "coord"), must(e[k], "coord"));
     }
-    if (nearest === null || d < nearest) nearest = d;
-    if (d < ROUTE_CLEARANCE) blockedBy.push(o.id);
   }
+  const measured = new Map<number, number>();
+  let nearest: number | null = null;
+  for (let r = ROUTE_CLEARANCE; ; r *= 2) {
+    /* `!(r <= reach)` rather than `r > reach`: a NaN reach must end the widening, not extend it. */
+    for (const o of !(r <= index.reach) ? index.all() : index.near(pts, r)) {
+      if (o === skip[0] || o === skip[1] || measured.has(o)) continue;
+      const p = must(centres[o], "chassis centre");
+      const [px, py, pz] = p;
+      let d = Infinity;
+      for (let i = 1; i < pts.length; i += 1) {
+        /* Hot loop (chassis × chords × candidates): bare typed-array reads, no helper calls. */
+        const j = 3 * (i - 1);
+        const gx = Math.max(boxLo[j]! - px, px - boxHi[j]!, 0);
+        const gy = Math.max(boxLo[j + 1]! - py, py - boxHi[j + 1]!, 0);
+        const gz = Math.max(boxLo[j + 2]! - pz, pz - boxHi[j + 2]!, 0);
+        const reach = d + GRID_SLACK;
+        if (gx * gx + gy * gy + gz * gz >= reach * reach) continue;
+        d = Math.min(d, pointToSegment(p, must(pts[i - 1], "curve sample"), must(pts[i], "curve sample")).distance);
+      }
+      work.measured += 1;
+      measured.set(o, d);
+      if (nearest === null || d < nearest) nearest = d;
+    }
+    if (measured.size >= total || (nearest !== null && nearest <= r)) break;
+  }
+  const blockedBy: string[] = [];
+  for (const [o, d] of measured) if (d < ROUTE_CLEARANCE) blockedBy.push(must(ids[o], "chassis id"));
   return { nearest, blockedBy: blockedBy.sort() };
 }
 
@@ -479,14 +684,15 @@ function solveDetour(
   dirs: readonly Vec3[],
   baseApex: number,
   step: number,
-  obstacles: readonly { id: string; p: Vec3 }[],
+  obstacles: Obstacles,
+  work: LayoutWork,
 ): { control: Vec3; apexOffset: number; nearest: number | null; blockedBy: string[]; resolution: RouteResolution } {
   let best: { control: Vec3; apexOffset: number; nearest: number | null; blockedBy: string[] } | null = null;
   for (const dir of dirs) {
     for (let i = 0; i < ROUTE_DETOUR_STEPS; i += 1) {
       const apexOffset = baseApex + i * step;
       const control = controlFor(mid, dir, apexOffset);
-      const { nearest, blockedBy } = curveClearance(a, control, b, obstacles);
+      const { nearest, blockedBy } = curveClearance(a, control, b, obstacles, work);
       if (blockedBy.length === 0) return { control, apexOffset, nearest, blockedBy, resolution: "cleared" };
       // Keep the widest clearance seen, not the last tried: the ladder is not guaranteed monotone
       // once a detour starts sweeping past a different row of chassis.
@@ -543,7 +749,78 @@ function restoreOrder(layers: Layer[], snap: Group[][]): void {
 
 /* ── the engine ────────────────────────────────────────────────────────────── */
 
+/**
+ * The layout, run to completion. Pure and synchronous: the same result, bit for bit, as a sliced run
+ * of the same options (`layoutJob`), because both drain the one generator below.
+ */
 export function computeLayout(opts: LayoutOptions): FabricLayout {
+  const steps = layoutSteps(opts);
+  for (;;) {
+    const r = steps.next();
+    if (r.done === true) return r.value;
+  }
+}
+
+/**
+ * A layout that can be advanced in slices of counted work, so a caller on the UI thread can yield
+ * between them. `step(budget)` runs until at least `budget` units of work have been done since it was
+ * called, or the layout is finished, and returns the layout once it is. Nothing here reads a clock: a
+ * slice is a quantity of work. The units: N+E (devices plus placed links) for the setup, for each
+ * ordering pass and for the embedding; one per cable plus one per chassis measured on its behalf
+ * (LayoutWork); N for the post-condition. Every indivisible step reports the work it did — a step
+ * charged less than it costs would make a slice overrun its budget unseen (scale.test.ts pins the
+ * charge of every step against the work it counts).
+ */
+export interface LayoutJob {
+  step(budget: number): FabricLayout | null;
+  readonly done: boolean;
+  /** The finished layout, or null while work remains. Reading it does no work. */
+  readonly result: FabricLayout | null;
+  /** Units of work done so far, in the same count `step` is paced by. */
+  readonly work: number;
+  /** The most work any single indivisible step has reported: the most a slice can overrun its budget.
+   *  An ordering pass or the embedding (N+E each) on a large fleet, else one cable's detour ladder. */
+  readonly largestStep: number;
+}
+
+export function layoutJob(opts: LayoutOptions): LayoutJob {
+  const steps = layoutSteps(opts);
+  let result: FabricLayout | null = null;
+  let work = 0;
+  let largestStep = 0;
+  return {
+    get done() {
+      return result !== null;
+    },
+    get result() {
+      return result;
+    },
+    get work() {
+      return work;
+    },
+    get largestStep() {
+      return largestStep;
+    },
+    step(budget) {
+      if (result !== null) return result;
+      let spent = 0;
+      for (;;) {
+        const r = steps.next();
+        if (r.done === true) {
+          result = r.value;
+          return result;
+        }
+        spent += r.value;
+        work += r.value;
+        largestStep = Math.max(largestStep, r.value);
+        if (spent >= budget) return null;
+      }
+    },
+  };
+}
+
+/** The pipeline. Yields the work done since its previous yield; returns the finished layout. */
+function* layoutSteps(opts: LayoutOptions): Generator<number, FabricLayout, void> {
   const seed = finiteOption("seed", opts.seed, DEFAULT_SEED) >>> 0;
   const sweepCount = Math.max(0, Math.trunc(finiteOption("sweeps", opts.sweeps, DEFAULT_SWEEPS)));
   const fovDeg = rangedOption("fovDeg", finiteOption("fovDeg", opts.fovDeg, DEFAULT_FOV_DEG), 0, 180);
@@ -827,27 +1104,37 @@ export function computeLayout(opts: LayoutOptions): FabricLayout {
   const sizeOfLayer = (depth: number): number =>
     (layers[depth]?.groups ?? []).reduce((s, g) => s + g.ids.length, 0);
 
+  /* Two edges between the same pair of layers cross iff their endpoint ranks are STRICTLY inverted.
+     Counted as inversions rather than pair by pair (SCALE, 2026-09-28): the pairwise loop was
+     quadratic in the link count and ran once per sweep. Sorting a layer's edges by (upper rank,
+     lower rank) leaves exactly the crossing pairs as strict inversions of the lower rank — edges
+     sharing an upper rank are sorted by lower rank and so never counted, and equal lower ranks are
+     not strict — and a Fenwick tree over lower ranks counts those in E·log N. */
   const crossings = (): number => {
-    const edges: { layer: number; u: number; v: number }[] = [];
+    const byLayer = new Map<number, { u: number; v: number }[]>();
     for (const { a, b } of placedLinks) {
       const la = layerOf.get(a);
       const lb = layerOf.get(b);
       if (la === undefined || lb === undefined || Math.abs(la - lb) !== 1) continue;
       const upper = la < lb ? a : b;
       const lower = la < lb ? b : a;
-      edges.push({
-        layer: Math.min(la, lb),
-        u: must(rankOf.get(upper), `rank ${upper}`),
-        v: must(rankOf.get(lower), `rank ${lower}`),
-      });
+      const layer = Math.min(la, lb);
+      const edge = { u: must(rankOf.get(upper), `rank ${upper}`), v: must(rankOf.get(lower), `rank ${lower}`) };
+      const list = byLayer.get(layer);
+      if (list) list.push(edge);
+      else byLayer.set(layer, [edge]);
     }
     let n = 0;
-    for (let i = 0; i < edges.length; i += 1) {
-      for (let j = i + 1; j < edges.length; j += 1) {
-        const e = must(edges[i], "edge");
-        const f = must(edges[j], "edge");
-        if (e.layer !== f.layer) continue;
-        if ((e.u - f.u) * (e.v - f.v) < 0) n += 1;
+    for (const edges of byLayer.values()) {
+      edges.sort((e, f) => e.u - f.u || e.v - f.v);
+      const fenwick = new Int32Array(edges.reduce((m, e) => Math.max(m, e.v), 0) + 2);
+      let inserted = 0;
+      for (const e of edges) {
+        let atOrBelow = 0;
+        for (let i = e.v + 1; i > 0; i -= i & -i) atOrBelow += must(fenwick[i], "fenwick");
+        n += inserted - atOrBelow;
+        for (let i = e.v + 1; i < fenwick.length; i += i & -i) fenwick[i] = must(fenwick[i], "fenwick") + 1;
+        inserted += 1;
       }
     }
     return n;
@@ -907,6 +1194,8 @@ export function computeLayout(opts: LayoutOptions): FabricLayout {
 
   refreshRanks();
   const crossingsInitial = crossings();
+  /* A sliced run may stop here and between passes; each costs about one visit per node and link. */
+  yield devices.length + placedLinks.length;
   let best = snapshotOrder(layers);
   let bestCrossings = crossingsInitial;
   for (let s = 0; s < sweepCount; s += 1) {
@@ -922,6 +1211,7 @@ export function computeLayout(opts: LayoutOptions): FabricLayout {
       bestCrossings = c;
       best = snapshotOrder(layers);
     }
+    yield devices.length + placedLinks.length;
   }
   restoreOrder(layers, best);
   refreshRanks();
@@ -1093,18 +1383,40 @@ export function computeLayout(opts: LayoutOptions): FabricLayout {
   const routeHints: RouteHint[] = [];
   /** Provably always empty under hop layering — published so the invariant is checked, not assumed. */
   const linksSpanningNonAdjacentLayers: string[] = [];
+  const centres: Vec3[] = nodes.map((n) => [n.x, n.y, n.z]);
+  const nodeIds = nodes.map((n) => n.id);
+  const indexOfNode = new Map(nodes.map((n, i) => [n.id, i]));
+  const chassis = buildChassisIndex(centres);
+  /* Stages 7-9 and the chassis index visit every node and link a few times — about what one ordering
+     pass does — so they are charged like one. Charged 1, as they once were, they made the slice that
+     ran them as long as they are whatever LAYOUT_SLICE_WORK said (scale.test.ts pins every step's
+     charge against the work it counts). */
+  yield devices.length + placedLinks.length;
+  const work: LayoutWork = { measured: 0 };
+  let charged = 0;
   for (const { link, a, b } of placedLinks) {
+    /* A sliced run may stop between cables: the work since the last stop is charged here, one for
+       the cable itself plus every chassis measured on its behalf. The LAST cable's is charged after
+       the loop. */
+    yield 1 + work.measured - charged;
+    charged = work.measured;
     const na = byId.get(a);
     const nb = byId.get(b);
     if (na === undefined || nb === undefined || a === b) continue;
     const pa: Vec3 = [na.x, na.y, na.z];
     const pb: Vec3 = [nb.x, nb.y, nb.z];
+    const skip: [number, number] = [must(indexOfNode.get(a), `index of ${a}`), must(indexOfNode.get(b), `index of ${b}`)];
+    /* Only a chassis within ROUTE_CLEARANCE can block, and `nearest` is published only when one
+       does — so it is then the minimum over the blockers, all of which the index returns. Visited
+       in node order, as the exhaustive scan visited them, so `blockerZ` sums in the same order. */
     let nearest: number | null = null;
     const blockedBy: string[] = [];
     let blockerZ = 0;
-    for (const other of nodes) {
-      if (other.id === a || other.id === b) continue;
-      const { distance, t } = pointToSegment([other.x, other.y, other.z], pa, pb);
+    for (const o of chassis.near([pa, pb], ROUTE_CLEARANCE)) {
+      if (o === skip[0] || o === skip[1]) continue;
+      const other = must(nodes[o], `node ${o}`);
+      const { distance, t } = pointToSegment(must(centres[o], "chassis centre"), pa, pb);
+      work.measured += 1;
       if (t <= ROUTE_T_MARGIN || t >= 1 - ROUTE_T_MARGIN) continue;
       if (nearest === null || distance < nearest) nearest = distance;
       if (distance < ROUTE_CLEARANCE) {
@@ -1117,9 +1429,7 @@ export function computeLayout(opts: LayoutOptions): FabricLayout {
     if (blockedBy.length === 0) continue;
     const mid: Vec3 = [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2, (pa[2] + pb[2]) / 2];
     const blocked = [...blockedBy].sort();
-    const obstacles = nodes
-      .filter((o) => o.id !== a && o.id !== b)
-      .map((o) => ({ id: o.id, p: [o.x, o.y, o.z] as Vec3 }));
+    const obstacles: Obstacles = { index: chassis, ids: nodeIds, centres, skip };
 
     /* A detour is a DIRECTION and a wanted apex displacement, never a control point: the control
        point is derived from the apex so the constants below describe the cable the renderer draws.
@@ -1160,7 +1470,7 @@ export function computeLayout(opts: LayoutOptions): FabricLayout {
       baseApex = ROUTE_CLEARANCE + hz + NODE_GAP_Z / 2;
       reason = `straight route passes within ${ROUTE_CLEARANCE} of ${blocked.length} chassis`;
     }
-    const detour = solveDetour(pa, mid, pb, dirs, baseApex, ROUTE_CLEARANCE + hz, obstacles);
+    const detour = solveDetour(pa, mid, pb, dirs, baseApex, ROUTE_CLEARANCE + hz, obstacles, work);
     routeHints.push({
       linkId: link.id,
       kind,
@@ -1197,6 +1507,10 @@ export function computeLayout(opts: LayoutOptions): FabricLayout {
     throw new Error("layout: non-finite camera framing");
   }
 
+  /* The last cable's ladder and the post-condition above (one visit per node), charged before the
+     result is handed back: the step that finishes the layout reports the work it did, and returning
+     the result is then the only thing left, which counts nothing. */
+  yield 1 + work.measured - charged + nodes.length;
   return {
     nodes,
     byId,

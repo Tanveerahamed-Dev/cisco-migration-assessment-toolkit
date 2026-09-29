@@ -22,10 +22,16 @@
  * rule is held for the class of sentence, not the one parenthetical that was caught.
  */
 import { describe, expect, it } from "vitest";
+import { describeGolden } from "../test-support/golden-sample";
 import { fabric } from "../core/data";
 import type { AclLine, Flow } from "../core/types";
 import { FLOW_PROTOCOLS, formatIpv4, hostAddressIn, parseInterfaceAddress, parseIpv4, protocolCarriesPorts } from "./ip";
 import { evaluateAcls, matchTri, suggestedFlows, traceFlow, type Tri } from "./engine";
+import { GOLDEN_FORWARDING as G } from "./golden-expectations";
+import { lazy } from "./test-subjects";
+
+const C1 = G.core1Acls;
+const IR = C1.inetReturn;
 
 /** The line a citation names, or undefined when the citation does not resolve. */
 function lineAt(cite: string): AclLine | undefined {
@@ -130,9 +136,8 @@ function audit(flow: Flow, caveats: readonly string[]): { violations: Violation[
 }
 
 describe("the not-applied-ACL caveat never says a line matches a flow its protocol or port excludes", () => {
-  const flows = sweepFlows();
-
   it("over every suggested and synthesised flow, for every protocol the engine accepts (traces)", () => {
+    const flows = sweepFlows();
     const violations: Violation[] = [];
     let checked = 0;
     let protocolViolations = 0;
@@ -164,22 +169,6 @@ describe("the not-applied-ACL caveat never says a line matches a flow its protoc
     expect(violations.slice(0, 5), `${violations.length} violations over ${flows.length} traces`).toEqual([]);
   });
 
-  it("at the fallback seam too (core1 with no binding consulted), where every list is contested", () => {
-    const violations: Violation[] = [];
-    let checked = 0;
-    const perProtocol = new Map<string, number>();
-    for (const f of flows) {
-      const r = audit(f, evaluateAcls("core1", f, parseIpv4(f.srcIp)!, parseIpv4(f.dstIp)!).caveats);
-      violations.push(...r.violations);
-      checked += r.checked;
-      if (r.checked > 0) perProtocol.set(f.protocol, (perProtocol.get(f.protocol) ?? 0) + 1);
-    }
-    expect(checked).toBeGreaterThan(0);
-    // Every protocol reaches the seam, so a caveat that is right for tcp only cannot hide here.
-    expect([...perProtocol.keys()].sort()).toEqual([...FLOW_PROTOCOLS].sort());
-    expect(violations.slice(0, 5), `${violations.length} violations over ${flows.length} fallback evaluations`).toEqual([]);
-  });
-
   it("the suggested flows' rationales say a line could match only where the matcher does not exclude it", () => {
     const violations: Violation[] = [];
     let checked = 0;
@@ -193,35 +182,59 @@ describe("the not-applied-ACL caveat never says a line matches a flow its protoc
     expect(violations).toEqual([]);
   });
 
+});
+
+/* Golden (phase 3): these read the reference sample's hosts and lists by name. */
+describeGolden("the not-applied-ACL caveat — on core1's own lists", () => {
+  const flowsOf = lazy(sweepFlows);
+  it("at the fallback seam too (core1 with no binding consulted), where every list is contested", () => {
+    const flows = flowsOf();
+    const violations: Violation[] = [];
+    let checked = 0;
+    const perProtocol = new Map<string, number>();
+    for (const f of flows) {
+      const r = audit(f, evaluateAcls(C1.host, f, parseIpv4(f.srcIp)!, parseIpv4(f.dstIp)!).caveats);
+      violations.push(...r.violations);
+      checked += r.checked;
+      if (r.checked > 0) perProtocol.set(f.protocol, (perProtocol.get(f.protocol) ?? 0) + 1);
+    }
+    expect(checked).toBeGreaterThan(0);
+    // Every protocol reaches the seam, so a caveat that is right for tcp only cannot hide here.
+    expect([...perProtocol.keys()].sort()).toEqual([...FLOW_PROTOCOLS].sort());
+    expect(violations.slice(0, 5), `${violations.length} violations over ${flows.length} fallback evaluations`).toEqual([]);
+  });
+
   it("the headline udp case: INET_RETURN's tcp-only line is not cited to a udp flow", () => {
-    const f: Flow = { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "udp", dstPort: 53, srcPort: null };
-    const joined = evaluateAcls("core1", f, parseIpv4(f.srcIp)!, parseIpv4(f.dstIp)!).caveats.join(" ");
-    expect(joined).toMatch(/INET_RETURN \(/);
-    expect(joined).not.toMatch(/(matches|could match) this flow at acls\.core1\.INET_RETURN\[[01]\]/);
+    const f: Flow = G.headline.dns;
+    const joined = evaluateAcls(C1.host, f, parseIpv4(f.srcIp)!, parseIpv4(f.dstIp)!).caveats.join(" ");
+    expect(joined).toContain(`${IR.name} (`);
+    for (const cite of [IR.establishedCite, IR.timeRangedCite])
+      for (const verb of ["matches", "could match"]) expect(joined).not.toContain(`${verb} this flow at ${cite}`);
     // The tcp flow on the port that line names still gets the specific citation (engine.test.ts pins it too).
-    const t: Flow = { ...f, protocol: "tcp", dstPort: 443 };
-    expect(evaluateAcls("core1", t, parseIpv4(t.srcIp)!, parseIpv4(t.dstIp)!).caveats.join(" ")).toMatch(
-      /INET_RETURN \(matches this flow at acls\.core1\.INET_RETURN\[1\]/,
+    const t: Flow = G.headline.permit;
+    expect(evaluateAcls(C1.host, t, parseIpv4(t.srcIp)!, parseIpv4(t.dstIp)!).caveats.join(" ")).toContain(
+      `${IR.name} (matches this flow at ${IR.timeRangedCite}`,
     );
   });
 
   it("an ip flow (spanning protocols) is told a tcp-only line COULD match it, never that it matches", () => {
-    const f: Flow = { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "ip", dstPort: null, srcPort: null };
-    const joined = evaluateAcls("core1", f, parseIpv4(f.srcIp)!, parseIpv4(f.dstIp)!).caveats.join(" ");
-    expect(joined).toMatch(/INET_RETURN \(could match this flow at acls\.core1\.INET_RETURN\[1\]/);
+    const f: Flow = G.headline.ip;
+    const joined = evaluateAcls(C1.host, f, parseIpv4(f.srcIp)!, parseIpv4(f.dstIp)!).caveats.join(" ");
+    expect(joined).toContain(`${IR.name} (could match this flow at ${IR.timeRangedCite}`);
   });
 
   it("a discarded list none of whose lines can match is said to fall to its implicit deny, naming the exclusion", () => {
     /* No list in this snapshot lacks a trailing `deny ip any any`, so the branch is reached by
        handing the engine a real line on its own: INET_RETURN[1], verbatim, as the only line of the
        list. Nothing is fabricated; the list is shortened. */
-    const f: Flow = { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "udp", dstPort: 53, srcPort: null };
-    const core1 = fabric.acls["core1"]!;
-    const named = { PROTECT_SERVERS: core1["PROTECT_SERVERS"]!, INET_RETURN: [core1["INET_RETURN"]![1]!] };
-    const joined = evaluateAcls("core1", f, parseIpv4(f.srcIp)!, parseIpv4(f.dstIp)!, named).caveats.join(" ");
+    const f: Flow = G.headline.dns;
+    const lists = fabric.acls[C1.host]!;
+    const PS = C1.protectServers.name;
+    const named = { [PS]: lists[PS]!, [IR.name]: [lists[IR.name]![1]!] };
+    const joined = evaluateAcls(C1.host, f, parseIpv4(f.srcIp)!, parseIpv4(f.dstIp)!, named).caveats.join(" ");
     expect(joined).toContain(
-      "INET_RETURN (names this flow's addresses but no line of it can match this flow — at acls.core1.INET_RETURN[1] its protocol (tcp) cannot match a udp flow — so, were it applied, this flow would fall to the list's implicit deny)",
+      `${IR.name} (names this flow's addresses but no line of it can match this flow — at ${IR.timeRangedCite} its protocol (tcp) cannot match a udp flow — so, were it applied, this flow would fall to the list's implicit deny)`,
     );
-    expect(joined).not.toMatch(/(matches|could match) this flow at acls\.core1\.INET_RETURN/);
+    for (const verb of ["matches", "could match"]) expect(joined).not.toContain(`${verb} this flow at acls.${C1.host}.${IR.name}`);
   });
 });

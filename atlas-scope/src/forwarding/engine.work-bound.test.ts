@@ -166,21 +166,31 @@ describe("the engine's work is bounded by the data, not by the machine (F2 / O26
     await annotate(`${searched} searches (${found} found); slowest ${maxMs.toFixed(2)} ms (reported, not asserted)`);
   });
 
-  it("the headline flow's search traces no more candidates than it says it considered", () => {
-    const f: Flow = { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 3389, srcPort: null };
-    const t = traceFlow(f);
+  it("a search that finds nothing traces no more candidates than it says it considered", () => {
+    /* UPDATED phase 3: the subject was the typed headline flow (10.0.10.50 -> 10.0.30.10 tcp/3389), whose
+       search found nothing on the old sample; the regenerated sample FINDS its counterexample, so the
+       subject is resolved by the property the test is about — the first refusal in the sweep whose search
+       reports "None of the N nearby variations" (a search with a candidate count to be held to). */
+    const f = flows.find((x) => {
+      const tx = traceFlow(x);
+      if (tx.outcome !== "denied" && tx.outcome !== "dropped") return false;
+      const c = counterexample(x, tx);
+      return !c.found && reportedCandidates(c.reason) !== null;
+    });
+    expect(f, "precondition: some refusal's search finds nothing and reports its candidate count").toBeDefined();
+    const t = traceFlow(f!);
     const before = engineWork();
-    const cx = counterexample(f, t);
+    const cx = counterexample(f!, t);
     const w = delta(before, engineWork());
     expect(cx.found).toBe(false);
     const n = cx.found ? null : reportedCandidates(cx.reason);
     expect(n).not.toBeNull();
     expect(n!).toBeGreaterThan(0);
-    expect(w.traces).toBeLessThanOrEqual(n! * tracesPerRequest(f.srcIp));
+    expect(w.traces).toBeLessThanOrEqual(n! * tracesPerRequest(f!.srcIp));
     // Made again (every alternate memoised): every candidate but one identical to the flow itself is
     // traced exactly once — and nothing more.
     const again = engineWork();
-    counterexample(f, t);
+    counterexample(f!, t);
     const w2 = delta(again, engineWork());
     expect(w2.traces).toBeGreaterThanOrEqual(n! - 1);
     expect(w2.traces).toBeLessThanOrEqual(n!);

@@ -1,6 +1,8 @@
 import "./core/tokens.css";
 import "./app/shell.css";
 import { applyTheme, readThemePreference } from "./app/theme-preference";
+import { hasOpenedMarker } from "./core/dataset/marker";
+import { showDatasetRefusal } from "./core/dataset/refusal";
 
 /* ── The reader's theme, before ANYTHING can paint in the wrong one (acceptance C4) ─────────────
  *
@@ -18,8 +20,9 @@ import { applyTheme, readThemePreference } from "./app/theme-preference";
  */
 applyTheme(readThemePreference());
 
-const el = document.getElementById("root");
-if (!el) throw new Error("#root missing from index.html");
+const rootEl = document.getElementById("root");
+if (!rootEl) throw new Error("#root missing from index.html");
+const el: HTMLElement = rootEl;
 
 /* ── Paint the boot line BEFORE the application evaluates ──────────────────────────────────────
  *
@@ -96,16 +99,52 @@ function afterBootLinePainted(): Promise<void> {
   });
 }
 
-afterBootLinePainted()
+/* ── The dataset, installed BEFORE the application loads ───────────────────────────────────────
+ *
+ * The application reads its four compiled documents once, at import (core/dataset.ts is the one door;
+ * core/data.ts builds every index from it). So whichever dataset this page shows must be installed
+ * before `import("./mount")`:
+ *
+ *   - an AssessHub build (`vite build --mode hub`, served at /scope/) carries NO dataset. It reads the
+ *     snapshot id from /scope/snapshots/{id}/, fetches /api/snapshots/{id}/raw same-origin, verifies it
+ *     (WebCrypto, where the page is a secure context — otherwise it says "server-attested, not
+ *     re-verified"), compiles it with the one compiler in a worker, and installs it;
+ *   - a standalone build shows its bundled sample, unless the reader opened a snapshot file — then a
+ *     localStorage marker says so, and the compiled set is restored from IndexedDB and installed.
+ *
+ * The standalone sample path pays ONE localStorage read here and nothing else (no fetch, no database,
+ * no extra chunk: acceptance E5), and the dataset work runs alongside the boot line's paint rather than
+ * after it. A failure is a coded, plain-language refusal in place of the boot line — never the sample
+ * shown under a snapshot's URL, and never a spinner that does not resolve.
+ */
+const HUB = import.meta.env.MODE === "hub";
+
+function datasetReady(): Promise<void> {
+  if (!HUB && !hasOpenedMarker()) return Promise.resolve();
+  return import("./core/dataset/boot").then(({ prepareDataset }) =>
+    prepareDataset({
+      target: HUB ? "hub" : "standalone",
+      pathname: location.pathname,
+      base: import.meta.env.BASE_URL,
+      secure: window.isSecureContext,
+      fetch: window.fetch.bind(window),
+      compilerId: __ATLAS_COMPILER_ID__,
+      onProgress: (message) => {
+        const boot = el.querySelector(".boot");
+        if (boot) boot.textContent = message;
+      },
+    }),
+  );
+}
+
+Promise.all([afterBootLinePainted(), datasetReady()])
   .then(() => import("./mount"))
   .then(({ mount }) => mount(el))
   .catch((err: unknown) => {
-    /* The application chunk failed to load or to mount. The boot line must stop claiming work is in
-       progress — a busy status that never resolves is degradation reported as health. */
+    /* The dataset could not be installed, or the application chunk failed to load or to mount. The boot
+       line must stop claiming work is in progress — a busy status that never resolves is degradation
+       reported as health — and every failure is a coded refusal (core/dataset/refusal.ts). */
     const boot = el.querySelector(".boot");
-    if (boot) {
-      boot.setAttribute("aria-busy", "false");
-      boot.textContent = "Atlas Scope could not load. Reload the page; if it fails again, the build is incomplete.";
-    }
+    if (boot) showDatasetRefusal(boot, err);
     throw err;
   });

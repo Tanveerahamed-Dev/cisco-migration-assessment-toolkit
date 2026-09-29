@@ -60,18 +60,25 @@
  *      `src/app/rung-focus-crossing.test.tsx` and the rung-crossing pass of
  *      `review/audit-d3-focus.mjs --sweep`, which focuses every tab stop at every rung and crosses to
  *      each neighbouring rung.
- *   6. `imperative-hide-without-release` — a hide written from SCRIPT rather than rendered: an
- *      assignment of `hidden` or `inert` (any value but `false`), `setAttribute("hidden" | "inert", …)`,
- *      `toggleAttribute("hidden" | "inert"[, force])` (any force but `false`), or a `display` /
- *      `visibility` style written as `none` / `hidden` / `collapse` (or as a value not known here)
- *      through `.style.x =` or `.style.setProperty` — on an element whose root symbol no third-door
- *      call names (the same element binding as shape 4). MEASURED (independent verifier R5-V2):
+ *   6. `imperative-hide-without-release` — a write from SCRIPT whose DOM EFFECT leaves an element, or
+ *      what is inside it, unrendered or detached — judged by the effect, not by a list of spellings
+ *      (independent verifier R5-V2-4: the earlier list let seven of ten planted hides through): its
+ *      `hidden`/`inert` state (property, attribute, namespaced attribute, toggle); a style that can stop
+ *      rendering it (`display`, `visibility`, `content-visibility`) written as one property or as the whole
+ *      style (`cssText`, the `style` attribute, `Object.assign(el.style, …)`) whose text may hold one; a
+ *      popover hidden or a dialog closed; the element removed (`remove`, `replaceWith`, a parent's
+ *      `removeChild`/`replaceChild`) or its contents replaced (`replaceChildren`, `innerHTML`,
+ *      `textContent`, …). The receiver is an element by its TYPE; a value or name not knowable here may
+ *      hide; a temporary the function itself created and never focused is not the class. It is released
+ *      only by a third-door call on the element's own access path or an ANCESTOR of it (never a
+ *      descendant, never merely the same variable). MEASURED (independent verifier R5-V2):
  *      FabricLabels.tsx hid a focused off-view pointer with `el.hidden = true` when a resize or a
  *      re-projection brought its device into view, and handed focus on with a bare `canvas.focus()`
  *      that never checked the canvas took it; shapes 4 and 5 parse only JSX attributes and
  *      ladder-keyed renders, so it passed both. WHAT THIS SHAPE CANNOT SEE: a hide made by a class or
  *      attribute a stylesheet keys on (`classList.add("is-hidden")`, `data-drawer`) — declared to the
- *      owner and measured in the browser, as for shape 4.
+ *      owner and measured in the browser, as for shape 4 — and a removal React performs (an unmount),
+ *      which is the fourth door's.
  * Owner calls are resolved by symbol too (an aliased import still counts; a local function that
  * merely shares a name does not).
  *
@@ -89,8 +96,12 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, matchesGlob, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { act, createElement, useRef, type ReactElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { actAsync } from "../test-support/act-turns";
+import { useReleaseFocusOnHide, useReleaseFocusOnLayoutChange } from "./focus-return";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const OWNER = "src/app/focus-return.ts";
@@ -580,24 +591,79 @@ export function analyseFile(program: ts.Program, rel: string): Analysis {
   };
   siteVisit(sf, false);
 
-  /* ── shape 6: an IMPERATIVE hide on an element never handed to the third door ── */
+  /* ── shape 6: an IMPERATIVE hide on an element never handed to the third door ──
+     The class is the DOM EFFECT, not a spelling (independent verifier R5-V2-4: a list of spellings let
+     seven of ten planted hides through). A write from script is in the class when it can leave an
+     ELEMENT, or anything inside it, unrendered or detached:
+       - HIDE: its `hidden`/`inert` state (property, attribute — plain, namespaced or toggled); a style
+         that can stop rendering it (`display`, `visibility`, `content-visibility`), written as one
+         property (`.style.x =`, `.style[k] =`, `setProperty`) or as the WHOLE style (`cssText`, the `style`
+         attribute, `.style =`, `Object.assign(el.style, …)`) whose text may hold such a declaration; a
+         popover hidden (`hidePopover`, `togglePopover` not forced open) or a dialog closed;
+       - DETACH: the element removed (`remove`, `replaceWith`, a parent's `removeChild`/`replaceChild`), or
+         its contents replaced (`replaceChildren`, `innerHTML`/`outerHTML`/`textContent`/`innerText`).
+     A value this cannot read (a variable, a template with substitutions) may hide, so it is in the class.
+     The receiver must be an ELEMENT by its type (a `classList.remove`, an IndexedDB `close()` or a text
+     node's text is not), `any` counting as one. NOT in the class: a TEMPORARY — an element the enclosing
+     function itself created (`createElement`, `createElementNS`, `cloneNode`) and never focused, which
+     cannot be holding the reader's focus (a download anchor). THE DOOR is bound to the element's own
+     access path, or to an ANCESTOR of it (`el.parentElement`, `el.closest(…)`: releasing a container
+     releases everything inside it) — never to anything merely rooted at the same variable. */
   const HIDING_STYLES: Readonly<Record<string, ReadonlySet<string>>> = {
     display: new Set(["none"]),
     visibility: new Set(["hidden", "collapse"]),
+    "content-visibility": new Set(["hidden"]),
   };
-  /** Can this value hide? `false` cannot; for a style, a string literal outside the hiding values cannot. */
+  /** The strings an expression can be, by its TYPE (a literal, a const bound to one, a union of them); null when not knowable. */
+  const literalTexts = (e: ts.Expression): string[] | null => {
+    const x = strip(e);
+    if (ts.isStringLiteralLike(x)) return [x.text];
+    const ty = checker.getTypeAtLocation(x);
+    const parts = ty.isUnion() ? ty.types : [ty];
+    return parts.every((p) => p.isStringLiteral()) ? parts.map((p) => (p as ts.StringLiteralType).value) : null;
+  };
+  /** `contentVisibility` / `content-visibility` / `--x` -> the CSS property name. */
+  const cssName = (p: string): string => (p.startsWith("--") ? p : p.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`).toLowerCase());
+  /** Can a whole-style TEXT hide? A literal is read for a hiding declaration; anything else may. */
+  const styleTextMayHide = (e: ts.Expression | undefined): boolean => {
+    if (e === undefined) return true;
+    return valueSources(e).some((v0) => {
+      const texts = literalTexts(v0);
+      if (texts === null) return true;
+      return texts.join(";").split(";").some((decl) => {
+        const [p, ...rest] = decl.split(":");
+        const prop = (p ?? "").trim().toLowerCase();
+        return Object.hasOwn(HIDING_STYLES, prop) && HIDING_STYLES[prop]!.has(rest.join(":").replace(/!important/i, "").trim().toLowerCase());
+      });
+    });
+  };
+  /** Can a value written to ONE property hide? `false` cannot; for a style, a literal outside the hiding values cannot. */
   const mayHide = (value: ts.Expression | undefined, style: string | null): boolean => {
     if (value === undefined) return true;
     return valueSources(value).some((v0) => {
       const v = strip(v0);
       if (style === null) return v.kind !== ts.SyntaxKind.FalseKeyword;
-      return !ts.isStringLiteralLike(v) || HIDING_STYLES[style]!.has(v.text.trim().toLowerCase());
+      const texts = literalTexts(v);
+      return texts === null || texts.some((s) => HIDING_STYLES[style]!.has(s.replace(/!important/i, "").trim().toLowerCase()));
     });
   };
+  /** Can an OBJECT of styles hide (Object.assign(el.style, {...}))? Each known key is read; anything else may. */
+  const styleObjectMayHide = (e: ts.Expression | undefined): boolean => {
+    if (e === undefined) return true;
+    const o = strip(e);
+    if (!ts.isObjectLiteralExpression(o)) return true;
+    return o.properties.some((p) => {
+      if (!ts.isPropertyAssignment(p)) return true;
+      const key = ts.isIdentifier(p.name) || ts.isStringLiteralLike(p.name) ? cssName(p.name.text) : null;
+      if (key === null) return true;
+      return Object.hasOwn(HIDING_STYLES, key) && mayHide(p.initializer, key);
+    });
+  };
+  /** The property a member expression names: `a.b` -> "b", `a["b"]` -> "b"; a computed key -> "" (unknown). */
   const memberName = (e: ts.Expression): string | null => {
     const x = strip(e);
     if (ts.isPropertyAccessExpression(x)) return x.name.text;
-    if (ts.isElementAccessExpression(x) && ts.isStringLiteralLike(x.argumentExpression)) return x.argumentExpression.text;
+    if (ts.isElementAccessExpression(x)) return ts.isStringLiteralLike(x.argumentExpression) ? x.argumentExpression.text : "";
     return null;
   };
   const objectOf = (e: ts.Expression): ts.Expression | null => {
@@ -607,6 +673,87 @@ export function analyseFile(program: ts.Program, rel: string): Analysis {
   /** `el.style` -> `el`: the element a style write hides. */
   const elementOfStyle = (e: ts.Expression | null): ts.Expression | null =>
     e !== null && memberName(e) === "style" ? objectOf(e) : null;
+  /** Is this expression an ELEMENT by its type? (`any` / unknown: yes — fail closed.) */
+  const isElement = (e: ts.Expression): boolean => {
+    const t = checker.getNonNullableType(checker.getTypeAtLocation(e));
+    if ((t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+    const parts = t.isUnion() ? t.types : [t];
+    return parts.some((p) => p.getProperty("tagName") !== undefined && p.getProperty("setAttribute") !== undefined);
+  };
+  const isDialogElement = (e: ts.Expression): boolean => {
+    const t = checker.getNonNullableType(checker.getTypeAtLocation(e));
+    if ((t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+    const parts = t.isUnion() ? t.types : [t];
+    return parts.some((p) => p.getProperty("showModal") !== undefined && p.getProperty("returnValue") !== undefined);
+  };
+  /** An access path: the root symbol, then each step (`.name`, `[literal]`, `[<expr>]`, `()` for a call). */
+  const pathOf = (e0: ts.Expression): { root: ts.Symbol; steps: string[] } | null => {
+    const steps: string[] = [];
+    let x: ts.Expression = strip(e0);
+    for (;;) {
+      if (ts.isPropertyAccessExpression(x)) {
+        steps.unshift(`.${x.name.text}`);
+        x = strip(x.expression);
+      } else if (ts.isElementAccessExpression(x)) {
+        steps.unshift(`[${norm(x.argumentExpression.getText(sf))}]`);
+        x = strip(x.expression);
+      } else if (ts.isCallExpression(x) && (ts.isPropertyAccessExpression(strip(x.expression)) || ts.isElementAccessExpression(strip(x.expression)))) {
+        const callee = strip(x.expression);
+        steps.unshift(`.${memberName(callee) ?? ""}()`);
+        x = strip((callee as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression);
+      } else break;
+    }
+    if (!ts.isIdentifier(x)) return null;
+    const root = resolved(x);
+    return root === undefined ? null : { root, steps };
+  };
+  /** Steps that go UP the tree: a door on `el.parentElement` releases everything inside it, `el` included. */
+  const ANCESTOR_STEP = /^\.(parentElement|parentNode|offsetParent|closest\(\))$/;
+  const doorPaths: { root: ts.Symbol; steps: string[] }[] = [];
+  const collectDoorPaths = (n: ts.Node): void => {
+    if (callsThirdDoor(n) && ts.isCallExpression(n) && n.arguments[0] !== undefined) {
+      const p = pathOf(n.arguments[0]);
+      if (p !== null) doorPaths.push(p);
+    }
+    n.forEachChild(collectDoorPaths);
+  };
+  collectDoorPaths(sf);
+  /** Released: a door names this very path, or a path that climbs from it. */
+  const released = (target: ts.Expression): boolean => {
+    const p = pathOf(target);
+    if (p === null) return false;
+    return doorPaths.some(
+      (d) =>
+        d.root === p.root &&
+        d.steps.length >= p.steps.length &&
+        p.steps.every((s, i) => d.steps[i] === s) &&
+        d.steps.slice(p.steps.length).every((s) => ANCESTOR_STEP.test(s)),
+    );
+  };
+  /** The enclosing function of `n`, or the source file. */
+  const scopeOf = (n: ts.Node): ts.Node => {
+    for (let p: ts.Node | undefined = n.parent; p !== undefined; p = p.parent) if (isFunctionLike(p)) return p;
+    return sf;
+  };
+  const CREATES = new Set(["createElement", "createElementNS", "cloneNode"]);
+  /** A TEMPORARY: bound in this very function to a freshly created element, and never focused there. */
+  const isTemporary = (target: ts.Expression, site: ts.Node): boolean => {
+    const x = strip(target);
+    if (!ts.isIdentifier(x)) return false;
+    const s = resolved(x);
+    const decl = s?.valueDeclaration;
+    if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) return false;
+    const scope = scopeOf(site);
+    if (scopeOf(decl) !== scope) return false;
+    const init = strip(decl.initializer);
+    if (!ts.isCallExpression(init) || !CREATES.has(calledMember(init) ?? "")) return false;
+    return !contains(scope, (m) => {
+      if (!ts.isCallExpression(m) || calledMember(m) !== "focus") return false;
+      const callee = strip(m.expression);
+      const recv = ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee) ? strip(callee.expression) : null;
+      return recv !== null && ts.isIdentifier(recv) && resolved(recv) === s;
+    });
+  };
   /** The name of the function a site sits in, for a key that does not drift with lines. */
   const enclosingName = (n: ts.Node): string => {
     for (let p: ts.Node | undefined = n.parent; p !== undefined; p = p.parent) {
@@ -616,31 +763,75 @@ export function analyseFile(program: ts.Program, rel: string): Analysis {
     return "(module)";
   };
   let imperativeHides = 0;
-  const flagImperative = (site: ts.Node, receiver: ts.Expression | null): void => {
-    if (receiver === null) return;
+  /** `target` is the element the write leaves unrendered or detached (or whose contents it detaches). */
+  const flagImperative = (site: ts.Node, target: ts.Expression | null): void => {
+    if (target === null || !isElement(target)) return;
     imperativeHides += 1;
-    const s = rootSymbol(receiver);
-    if (s !== undefined && doorBound.has(s)) return;
+    if (released(target) || isTemporary(target, site)) return;
     out.push({ file: rel, line: lineOf(site), kind: "imperative-hide-without-release", text: `${enclosingName(site)}: ${norm(site.getText(sf))}` });
   };
+  const CONTENT_WRITES = new Set(["innerHTML", "outerHTML", "textContent", "innerText", "outerText"]);
+  const HIDING_ATTRS = new Set(["hidden", "inert"]);
   const imperativeVisit = (n: ts.Node): void => {
     if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-      /* `el.hidden = …`, `el.inert = …`, `el.style.display = …`, `el.style.visibility = …` */
       const name = memberName(n.left);
       const obj = objectOf(n.left);
-      if ((name === "hidden" || name === "inert") && mayHide(n.right, null)) flagImperative(n, obj);
-      else if (name !== null && Object.hasOwn(HIDING_STYLES, name) && mayHide(n.right, name)) flagImperative(n, elementOfStyle(obj));
+      const styleOf = elementOfStyle(obj);
+      if (name !== null && obj !== null) {
+        if (name === "hidden" || name === "inert") {
+          if (mayHide(n.right, null)) flagImperative(n, obj);
+        } else if (CONTENT_WRITES.has(name)) flagImperative(n, obj);
+        else if (name === "style") {
+          /* `el.style = "…"`: the whole style. */
+          if (styleTextMayHide(n.right)) flagImperative(n, obj);
+        } else if (styleOf !== null) {
+          /* `el.style.x = v`, `el.style["x"] = v`, `el.style[k] = v` (a key not known here may hide). */
+          const prop = name === "" ? null : cssName(name);
+          if (prop === "css-text") {
+            if (styleTextMayHide(n.right)) flagImperative(n, styleOf);
+          } else if (prop === null || (Object.hasOwn(HIDING_STYLES, prop) && mayHide(n.right, prop))) flagImperative(n, styleOf);
+        }
+      }
     } else if (ts.isCallExpression(n)) {
-      /* `el.setAttribute("hidden" | "inert", …)`, `el.toggleAttribute("hidden" | "inert"[, force])`,
-         `el.style.setProperty("display" | "visibility", …)` */
       const member = calledMember(n);
-      const first = n.arguments[0] === undefined ? null : strip(n.arguments[0]);
-      const attr = first !== null && ts.isStringLiteralLike(first) ? first.text.trim().toLowerCase() : null;
-      const obj = objectOf(n.expression);
-      if ((member === "setAttribute" || member === "toggleAttribute") && (attr === "hidden" || attr === "inert")) {
-        if (member === "setAttribute" || mayHide(n.arguments[1], null)) flagImperative(n, obj);
-      } else if (member === "setProperty" && attr !== null && Object.hasOwn(HIDING_STYLES, attr) && mayHide(n.arguments[1], attr)) {
-        flagImperative(n, elementOfStyle(obj));
+      const callee = strip(n.expression);
+      const obj = ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee) ? objectOf(callee) : null;
+      /** The one name an argument can be (by its type); null when it is not one knowable string. */
+      const lit = (a: ts.Expression | undefined): string | null => {
+        const texts = a === undefined ? null : literalTexts(a);
+        return texts !== null && texts.length === 1 ? texts[0]!.trim().toLowerCase() : null;
+      };
+      const args = n.arguments;
+      if (obj !== null && (member === "setAttribute" || member === "toggleAttribute" || member === "setAttributeNS")) {
+        const nameArg = member === "setAttributeNS" ? args[1] : args[0];
+        const valueArg = member === "setAttributeNS" ? args[2] : args[1];
+        const attr = lit(nameArg);
+        if (attr === null) flagImperative(n, obj); /* an attribute this cannot read may be one of them */
+        else if (HIDING_ATTRS.has(attr)) {
+          if (member !== "toggleAttribute" || mayHide(valueArg, null)) flagImperative(n, obj);
+        } else if (attr === "style" && member !== "toggleAttribute" && styleTextMayHide(valueArg)) flagImperative(n, obj);
+      } else if (obj !== null && member === "setProperty") {
+        const prop = lit(args[0]);
+        const styleEl = elementOfStyle(obj);
+        if (styleEl !== null && (prop === null || (Object.hasOwn(HIDING_STYLES, prop) && mayHide(args[1], prop)))) flagImperative(n, styleEl);
+      } else if (member === "assign" && args.length >= 2 && elementOfStyle(strip(args[0]!)) !== null) {
+        /* Object.assign(el.style, { … }) */
+        if (args.slice(1).some((a) => styleObjectMayHide(a))) flagImperative(n, elementOfStyle(strip(args[0]!)));
+      } else if (obj !== null && (member === "remove" || member === "replaceWith") && args.length === (member === "remove" ? 0 : args.length)) {
+        flagImperative(n, obj);
+      } else if (obj !== null && member === "replaceChildren") {
+        flagImperative(n, obj);
+      } else if (obj !== null && member === "removeChild") {
+        flagImperative(n, args[0] === undefined ? null : strip(args[0]));
+      } else if (obj !== null && member === "replaceChild") {
+        flagImperative(n, args[1] === undefined ? null : strip(args[1]));
+      } else if (obj !== null && member === "hidePopover") {
+        flagImperative(n, obj);
+      } else if (obj !== null && member === "togglePopover") {
+        const force = args[0] === undefined ? undefined : strip(args[0]);
+        if (force === undefined || force.kind !== ts.SyntaxKind.TrueKeyword) flagImperative(n, obj);
+      } else if (obj !== null && (member === "close" || member === "requestClose") && isDialogElement(obj)) {
+        flagImperative(n, obj);
       }
     }
     n.forEachChild(imperativeVisit);
@@ -662,8 +853,27 @@ const PENDING_ROUTING: readonly { file: string; kind: Violation["kind"]; text: s
   /* Shapes 1-4: none — every off-cluster site routed through the owner (shapes 1-3: merged-tree gate,
      wave 2c; shape 4's three state-driven hides — the queue's Group/Order/Display block, TabPanel and
      Disclosure — engine gate, 2026-09-27). A new entry is debt, never an allowance. */
-  /* Shape 6: none — the dialog stack's two imperative `inert` writes (`inertOutside`'s `visit`, `restack`)
-     now release focus into the top dialog's panel before they land (engine gate, 2026-09-28). */
+  /* Shape 6: the dialog stack's two imperative `inert` writes (`inertOutside`'s `visit`, `restack`) release
+     focus into the top dialog's panel before they land (engine gate, 2026-09-28). The entries below are the
+     members of the DOM-effect class (independent verifier R5-V2-4) that the spelling list could not see —
+     removals and content replacements of an element that can hold focus — in files other clusters own.
+     Each is fixed by calling the third door on the element (`releaseFocusFrom(<it>, null, <stated
+     successors>)`) before the write, a no-op when focus is elsewhere; then its entry is deleted here. */
+  { file: "src/fabric3d/Fabric3D.tsx", kind: "imperative-hide-without-release", text: "Fabric3D: canvas.remove()" }, // P3D: the focusable canvas (tabIndex 0), removed on a failed scene and in the effect's cleanup
+  { file: "src/fabric3d/scene.ts", kind: "imperative-hide-without-release", text: "createSceneImpl: el.remove()" }, // P3C: the tier-fade overlay's unmount
+  { file: "src/main.tsx", kind: "imperative-hide-without-release", text: "datasetReady: boot.textContent = message" }, // P3E: the boot line's contents replaced
+  {
+    file: "src/main.tsx",
+    kind: "imperative-hide-without-release",
+    text: 'showRefusal: boot.textContent = `${refusal.title}. ${refusal.issues.map((i) => `${sentence(i.message)} [${i.code}]`).join(" ")}`',
+  }, // P3E
+  {
+    file: "src/main.tsx",
+    kind: "imperative-hide-without-release",
+    text: 'showRefusal: boot.textContent = "Atlas Scope could not load. Reload the page; if it fails again, the build is incomplete."',
+  }, // P3E
+  { file: "src/dev/preview.tsx", kind: "imperative-hide-without-release", text: "Preview: slot.replaceChildren(canvas)" }, // unowned dev preview (gate): replaces a focusable canvas
+  { file: "src/dev/preview.tsx", kind: "imperative-hide-without-release", text: "Preview: slot.replaceChildren()" }, // unowned dev preview (gate)
 ];
 
 const key = (v: { file: string; kind: string; text: string }): string => `${v.file}|${v.kind}|${v.text}`;
@@ -1023,6 +1233,63 @@ describe("the guard is live (planted counterexamples, compiled with the real own
         "imperative-hide-without-release",
       ],
     },
+    imperativeHideByEffect: {
+      /* Independent verifier R5-V2-4: shape 6 matched a list of SPELLINGS, and ten planted hides went
+         through seven of them unflagged. The class is the DOM EFFECT — a write that leaves an element, or
+         what is inside it, unrendered or detached — however it is spelled: the whole style (cssText, the
+         style attribute, Object.assign), content-visibility, the namespaced attribute, the popover and
+         dialog APIs, and removal of an element or of its contents. */
+      src: `declare const el: HTMLElement; declare const pop: HTMLElement; declare const dlg: HTMLDialogElement;
+        declare const s: string; declare const parent: HTMLElement; declare const child: HTMLElement;
+        el.style.cssText = "display: none";
+        el.setAttribute("style", "display: none");
+        Object.assign(el.style, { display: "none" });
+        el.remove();
+        pop.hidePopover();
+        el.setAttributeNS(null, "hidden", "");
+        el.style.contentVisibility = "hidden";
+        el.style.cssText = s;
+        pop.togglePopover();
+        dlg.close();
+        parent.removeChild(child);
+        parent.replaceChildren();
+        el.replaceWith(document.createElement("i"));
+        el.innerHTML = "";
+        el.textContent = s;
+        parent.replaceChild(document.createElement("i"), child);
+        el.style.setProperty("content-visibility", "hidden");
+        export function t(): void { const b = document.createElement("button"); document.body.append(b); b.focus(); b.remove(); }`,
+      expect: Array.from({ length: 18 }, () => "imperative-hide-without-release" as const),
+    },
+    imperativeEffectsThatHideNothing: {
+      /* Not the class: a style write that sets no hiding value, a class toggle (a stylesheet's hide,
+         measured in the browser), a database's close, a text node's text, a removed property, an
+         explicit show — and a TEMPORARY: an element this very function created and never focused cannot
+         be holding the reader's focus (the Inspector's download anchor). */
+      src: `declare const el: HTMLElement; declare const db: IDBDatabase; declare const t: Text;
+        el.style.cssText = "position:absolute;opacity:1";
+        el.setAttribute("style", "color: red");
+        Object.assign(el.style, { opacity: "0.5" });
+        el.classList.remove("shown");
+        db.close();
+        t.textContent = "x";
+        el.style.removeProperty("display");
+        el.togglePopover(true);
+        export function download(): void { const a = document.createElement("a"); a.href = "x"; document.body.append(a); a.click(); a.remove(); }`,
+      expect: [],
+    },
+    imperativeDoorOnTheRightElement: {
+      /* The door is bound to the element's own access path, or an ANCESTOR of it (releasing a container
+         releases everything inside it) — never to anything merely rooted at the same variable: a door
+         on a DESCENDANT does not release the element (verifier R5-V2-4: el.parentElement and
+         el.firstElementChild both passed as "el"). */
+      src: `import { releaseFocusFrom } from "./focus-return";
+        export function f(el: HTMLElement): void { releaseFocusFrom(el.firstElementChild, null); el.hidden = true; }
+        export function g(el: HTMLElement): void { releaseFocusFrom(el.parentElement, null); el.hidden = true; }
+        export function h(el: HTMLElement): void { releaseFocusFrom(el, null); el.remove(); }
+        export function k(box: { current: HTMLElement | null }): void { releaseFocusFrom(box.current, null); box.current?.setAttribute("inert", ""); }`,
+      expect: ["imperative-hide-without-release"],
+    },
     imperativeHideWithTheThirdDoor: {
       src: `import { releaseFocusFrom } from "./focus-return";
         export function hidePointer(el: HTMLElement): void {
@@ -1083,4 +1350,94 @@ describe("the guard is live (planted counterexamples, compiled with the real own
     expect(r.parseError).toBeNull();
     expect(r.violations).toEqual([]);
   }, 60_000);
+});
+
+/* ── the third door's successor does not depend on history (independent verifier R5-V2-5) ────────────
+ * MEASURED (release build, probe-stale.mjs): at 1440 px, focus on the evidence rail's first citation, a
+ * resize to 1152 hides the rail — and focus went to MAIN "Fabric" on a fresh load, but to the queue's
+ * "Filter findings" after an earlier 1440 -> 1152 -> 1440 round trip with the filter focused. The rail's
+ * third door recorded whatever held focus at EVERY hidden -> shown transition, a resize back included,
+ * and a later hide returned there: a landing chosen by history, not by the layout. The record means "the
+ * control that OPENED this container" (the drawer's opener), so it is taken only when a reader's action
+ * shows the container; a show that is part of a commit changing a DECLARED layout (the fourth door's
+ * key) records nothing, and its hide goes to the stated successors — the same place a fresh load goes.
+ * These cases drive the owner's hooks directly, as the rails use them. */
+describe("the third door's successor does not depend on history (R5-V2-5)", () => {
+  function Rail({ hidden, closed }: { hidden: boolean; closed: boolean }): ReactElement {
+    const ref = useRef<HTMLElement | null>(null);
+    useReleaseFocusOnHide(ref, !hidden && !closed, () => [document.getElementById("stated")]);
+    return createElement("aside", { ref, hidden, "aria-label": "Evidence" }, createElement("button", { id: "cite", type: "button" }, "Cite"));
+  }
+  function Frame({ layout, closed }: { layout: "wide" | "narrow"; closed: boolean }): ReactElement {
+    /* The frame declares its layout to the owner, as App.tsx does with the rung. */
+    useReleaseFocusOnLayoutChange(layout);
+    return createElement(
+      "div",
+      null,
+      createElement("button", { id: "filter", type: "button" }, "Filter findings"),
+      createElement("button", { id: "other", type: "button" }, "Other"),
+      createElement("button", { id: "stated", type: "button" }, "Stated successor"),
+      createElement(Rail, { hidden: layout === "narrow", closed }),
+    );
+  }
+  let root: Root | null = null;
+  let host: HTMLElement | null = null;
+  const render = (layout: "wide" | "narrow", closed = false): void => {
+    if (host === null) {
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      root = createRoot(host);
+    }
+    act(() => {
+      root!.render(createElement(Frame, { layout, closed }));
+    });
+  };
+  const focusOn = (id: string): void => {
+    act(() => {
+      document.getElementById(id)!.focus();
+    });
+  };
+  const at = (): string => (document.activeElement as HTMLElement | null)?.id || document.activeElement?.tagName || "null";
+  afterEach(() => {
+    if (root !== null) act(() => root!.unmount());
+    host?.remove();
+    root = null;
+    host = null;
+  });
+
+  it("a layout hide lands where a fresh load lands, whatever showed the rail before (the verifier's round trip)", async () => {
+    /* Fresh: the rail was shown from the first render; focus inside; the layout hides it. */
+    render("wide");
+    focusOn("cite");
+    render("narrow");
+    await actAsync(async () => {});
+    const fresh = at();
+    act(() => root!.unmount());
+    host!.remove();
+    root = null;
+    host = null;
+    /* History: the rail was shown by a LAYOUT change while "Filter findings" held focus; the reader then
+       moved on and into the rail; the layout hides it again. */
+    render("narrow");
+    focusOn("filter");
+    render("wide");
+    await actAsync(async () => {});
+    focusOn("other");
+    focusOn("cite");
+    render("narrow");
+    await actAsync(async () => {});
+    expect(fresh, "precondition: a fresh load hands focus to the stated successor").toBe("stated");
+    expect(at(), "the landing after a round trip is the same as a fresh load's, not the control focused when a resize showed the rail").toBe(fresh);
+  });
+
+  it("a rail a reader's action showed still returns to the control that showed it (the drawer's opener)", async () => {
+    render("wide", true);
+    focusOn("filter");
+    render("wide", false); /* shown by a command, no layout change */
+    await actAsync(async () => {});
+    focusOn("cite");
+    render("wide", true);
+    await actAsync(async () => {});
+    expect(at(), "the opener recorded when the reader's action showed the rail").toBe("filter");
+  });
 });

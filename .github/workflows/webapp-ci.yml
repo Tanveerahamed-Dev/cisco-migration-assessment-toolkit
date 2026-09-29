@@ -106,9 +106,17 @@ jobs:
       - name: Install Atlas Scope's locked toolchain
         working-directory: atlas-scope
         run: npm ci
+      # The hub build is what AssessHub serves at /scope by default (app._REPO_ATLAS_SCOPE_DIST ->
+      # atlas-scope/dist-hub). Building it here makes test_scope_mount's real-artifact pin run instead
+      # of skip (ATLAS_SCOPE_REQUIRE_HUB_BUILD=1 below): the repository's own hub build must pass every
+      # /scope refusal and be linked.
+      - name: Build Atlas Scope's hub build (the /scope artifact)
+        working-directory: atlas-scope
+        run: npm run build:hub
       - name: Backend tests
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+          ATLAS_SCOPE_REQUIRE_HUB_BUILD: "1"
         run: python -m pytest webapp/tests -q
 
   frontend:

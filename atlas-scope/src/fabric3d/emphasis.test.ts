@@ -758,10 +758,23 @@ describe("C5: the tier-fade driver: step on raw, write, remove at exactly 0 — 
     expect(writes.length).toBe(1);
   });
 
-  it("reduced motion from the fade's first frame: the overlay, still at exactly 1, is removed on that frame (a swap, never an animation)", () => {
+  it("reduced motion from the fade's first frame: the overlay, still at exactly 1, leaves at the cap per frame — never in one frame (R4-VR2-4)", () => {
+    /* A driver starts only through a hold the slot handed out on `presented(false)`: the overlay was on screen
+       under FULL motion. A reduced flag on its first frame is therefore a reduced-motion TOGGLE, one of the
+       owner's named paths (C5-R2-1), and it may not take the overlay down faster than the cap. It used to
+       swap 1 -> 0 in one frame (verifier round 2 of R4: "the slot then swaps the overlay away in one frame,
+       uncovering the whole tier pop"). §4.8's swap at exactly 1 is the slot's, for an overlay never shown
+       under full motion (below). */
     const { d, writes, finished } = drive();
-    expect(d.frame(16.7, true)).toBe(false);
-    expect(writes).toEqual([]);
+    let prev = 1;
+    let frames = 0;
+    for (; frames < 20 && d.frame(16.7, true); frames += 1) {
+      expect(prev - d.value, `frame ${frames}`).toBeLessThanOrEqual(FADE_MAX_STEP + EPS);
+      prev = d.value;
+    }
+    expect(prev - d.value, "the last step to 0").toBeLessThanOrEqual(FADE_MAX_STEP + EPS);
+    expect(frames + 1).toBe(Math.ceil(1 / FADE_MAX_STEP - EPS));
+    expect(writes.every((v) => v > 0 && v < 1)).toBe(true);
     expect(finished()).toBe(1);
   });
 
@@ -1053,9 +1066,10 @@ describe("R4-VR1-4: the tier-fade slot — mount, hand-over, hold, fade and remo
     expect(p.shown.size).toBe(0);
   });
 
-  it("reduced motion: a HELD overlay (exactly 1) is swapped away on the new tier's frame; a fading one is never swapped by `presented`", () => {
+  it("reduced motion: a HELD overlay (exactly 1) mounted while motion was already reduced is swapped away on the new tier's frame (§4.8); a fading one is never swapped by `presented`", () => {
     const p = page();
     const slot = createTierFadeSlot<Pic>(p.host);
+    slot.frame(F, true, true); // the scene's frames have been passing reduced = true since before the change
     slot.tierChange(picCopy(0.9), false);
     expect(slot.presented(true)).toBeNull();
     expect(p.shown.size).toBe(0);
@@ -1064,6 +1078,64 @@ describe("R4-VR1-4: the tier-fade slot — mount, hand-over, hold, fade and remo
     slot.frame(F, false, true);
     expect(slot.presented(true)).toBeNull();
     expect(slot.state).toBe("fading");
+  });
+
+  /* R4-VR2-4 (verifier round 2 of R4): the class model exempted "a reduced-motion toggle landing while an overlay
+     is held or waiting at exactly 1, including a composed overlay that carries a remnant of a fade already
+     running", and the slot swapped such an overlay away in one frame. The owner's decision grants no exemption
+     for a held overlay. The rule now: an overlay that was on screen under FULL motion when reduced motion turned
+     on is finished at the cap like a mid-fade one; only an overlay mounted and held while motion was reduced
+     throughout gets §4.8's swap at exactly 1. */
+  const leavesAtCap = (slot: ReturnType<typeof createTierFadeSlot<Pic>>, p: ReturnType<typeof page>): number => {
+    let prev = [...p.shown.values()].at(-1) ?? 0;
+    let frames = 0;
+    while (p.shown.size > 0 && frames < 40) {
+      slot.frame(F, true, true);
+      const now = [...p.shown.values()].at(-1) ?? 0;
+      expect(prev - now, `frame ${frames}: one frame moved the overlay ${prev - now}`).toBeLessThanOrEqual(FADE_MAX_STEP + EPS);
+      prev = now;
+      frames += 1;
+    }
+    expect(p.shown.size, "the overlay leaves").toBe(0);
+    return frames;
+  };
+
+  it("a reduced-motion toggle while an overlay is HELD at 1 finishes it at the cap, never swaps it", () => {
+    const p = page();
+    const slot = createTierFadeSlot<Pic>(p.host);
+    slot.frame(F, false, true);
+    slot.tierChange(picCopy(0.9), false);
+    slot.frame(F, true, true); // the toggle lands while the overlay is held
+    expect(slot.presented(true)).toBeNull();
+    expect(p.shown.size, "the new tier's frame did not take the overlay down").toBe(1);
+    expect(leavesAtCap(slot, p)).toBe(Math.ceil(1 / FADE_MAX_STEP - EPS));
+  });
+
+  it("a reduced-motion toggle while an overlay is WAITING on its hold finishes it at the cap once the hold starts", () => {
+    const p = page();
+    const slot = createTierFadeSlot<Pic>(p.host);
+    slot.frame(F, false, true);
+    slot.tierChange(picCopy(0.9), false);
+    const hold = slot.presented(false)!;
+    slot.frame(F, true, true); // the toggle lands while the hold waits
+    expect(p.shown.size).toBe(1);
+    hold.start();
+    leavesAtCap(slot, p);
+  });
+
+  it("a COMPOSED overlay carrying a running fade's remnant, held when the toggle lands, is finished at the cap too", () => {
+    const p = page();
+    const slot = createTierFadeSlot<Pic>(p.host);
+    slot.frame(F, false, true);
+    slot.tierChange(picCopy(0.9), false);
+    slot.presented(false)!.start();
+    for (let i = 0; i < 5; i += 1) slot.frame(F, false, true);
+    expect(slot.state).toBe("fading");
+    expect(slot.tierChange(picCopy(0.2), false).kind).toBe("composed");
+    slot.frame(F, true, true);
+    expect(slot.presented(true)).toBeNull();
+    expect(p.shown.size).toBe(1);
+    leavesAtCap(slot, p);
   });
 
   it("dispose removes whatever is up (teardown with the canvas), and is final", () => {
@@ -1109,21 +1181,40 @@ function runOverlayModel(seed: number, policy: ModelPolicy) {
     return s / 2 ** 32;
   };
   const p = page();
-  const slot = createTierFadeSlot<Pic>(p.host);
-  let base = rnd();
   let reduced = false;
+  /* R4-VR2-4: §4.8's swap at exactly 1 is exempt from the cap only for an overlay that has been up under
+     REDUCED motion throughout: mounted while reduced, carrying no remnant of an overlay that was not itself
+     exempt (a `composed` overlay replaces the running one in the same task, and draws it in), and never
+     shown under full motion since. An overlay on screen under full motion when reduced turns on is a toggle
+     landing, and is held to the cap like any other path. Recorded at the mount, from the page's own events. */
+  const reducedThroughout = new Map<Pic, boolean>();
+  let justUnmounted: Pic | null = null;
+  const slot = createTierFadeSlot<Pic>({
+    mount(el: Pic): void {
+      reducedThroughout.set(el, reduced && (justUnmounted === null || reducedThroughout.get(justUnmounted) === true));
+      justUnmounted = null;
+      p.host.mount(el);
+    },
+    unmount(el: Pic): void {
+      justUnmounted = el;
+      p.host.unmount(el);
+    },
+    write: p.host.write,
+  });
+  let base = rnd();
   let warmup = 0;
   let pendingBase: number | null = null;
   /* The tier change a warm-up is for (null: a theme change or new data), and the one deferred. */
   let tierWarm: { askAlpha: number; copyFailed: boolean } | null = null;
   let deferred = false;
   let hold: { handle: TierFadeHoldHandle; frames: number } | null = null;
-  const r = { worst: 0, frames: 0, handovers: 0, deferrals: 0, landings: 0, landingShortfall: 0, partialLandings: 0, residualLandings: 0, maxMounted: 0, leftOver: 0 };
-  const top = (): { pic: number; alpha: number } | null => {
-    let out: { pic: number; alpha: number } | null = null;
-    for (const [el, alpha] of p.shown) out = { pic: el.pic, alpha };
+  const r = { worst: 0, frames: 0, handovers: 0, deferrals: 0, landings: 0, landingShortfall: 0, partialLandings: 0, residualLandings: 0, maxMounted: 0, leftOver: 0, exemptSwaps: 0 };
+  const top = (): { el: Pic; pic: number; alpha: number } | null => {
+    let out: { el: Pic; pic: number; alpha: number } | null = null;
+    for (const [el, alpha] of p.shown) out = { el, pic: el.pic, alpha };
     return out;
   };
+  const exemptSwap = (was: { el: Pic; alpha: number } | null): boolean => was !== null && was.alpha === 1 && reducedThroughout.get(was.el) === true;
   const tierChange = (askAlpha: number): void => {
     const warming = warmup > 0;
     const fails = !warming && rnd() < 0.15; // a copy that fails outright (the kept-fading path, and its residual)
@@ -1150,6 +1241,7 @@ function runOverlayModel(seed: number, policy: ModelPolicy) {
   let prev: { pic: number; alpha: number } | null = null;
   let prevBase = base;
   const step = (raw: number, events: boolean): void => {
+    justUnmounted = null;
     if (events) {
       const e = rnd();
       if (e < 0.06) tierChange(slot.opacity);
@@ -1188,19 +1280,27 @@ function runOverlayModel(seed: number, policy: ModelPolicy) {
         const was = top();
         const h = slot.presented(reduced);
         if (h !== null) hold = { handle: h, frames: Math.floor(rnd() * 4) };
-        else if (was !== null && was.alpha === 1 && top() === null) swapped = true; // §4.8's swap at exactly 1
+        else if (exemptSwap(was) && top() === null) {
+        swapped = true; // §4.8's swap at exactly 1
+        r.exemptSwaps += 1;
+      }
       }
     } else {
+      const was = top();
       const h = slot.presented(reduced);
       if (h !== null) hold = { handle: h, frames: Math.floor(rnd() * 4) };
+      else if (exemptSwap(was) && top() === null) {
+        swapped = true; // §4.8's swap at exactly 1
+        r.exemptSwaps += 1;
+      }
       if (hold !== null && hold.handle.live && hold.frames-- <= 0) {
         hold.handle.start();
         hold = null;
       }
     }
     const now = top();
-    // The driver's own reduced-motion swap of an overlay still at exactly 1 is that contract too.
-    if (reduced && now === null && prev !== null && prev.alpha === 1) swapped = true;
+    if (!reduced) for (const el of reducedThroughout.keys()) reducedThroughout.set(el, false);
+    for (const el of [...reducedThroughout.keys()]) if (!p.shown.has(el)) reducedThroughout.delete(el);
     if (prev !== null && !swapped) {
       const moved = Math.abs((now === null ? prevBase : now.alpha * now.pic + (1 - now.alpha) * prevBase) - (prev.alpha * prev.pic + (1 - prev.alpha) * prevBase));
       const span = Math.abs(prev.pic - prevBase);
@@ -1236,6 +1336,9 @@ describe("C5-R2-1 as a class: no path removes, replaces or resets a running over
     }
     // Not vacuous: running overlays were actually handed over, many times.
     expect(handovers).toBeGreaterThan(20);
+    /* ...and §4.8's exempt swap (an overlay up under reduced motion throughout) is actually taken, so the
+       exemption is exercised rather than merely declared (R4-VR2-4). */
+    expect(runs.reduce((n, x) => n + x.r.exemptSwaps, 0)).toBeGreaterThan(0);
   });
 
   it("a new tier's first frame always lands under at least the overlay that was on screen when the change was asked for (the fade holds while nothing new is presented)", () => {

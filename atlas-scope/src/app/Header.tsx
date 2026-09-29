@@ -25,7 +25,9 @@ import {
   useState,
   type ReactElement,
 } from "react";
-import { fabric, severityCounts } from "../core/data";
+import { fabric, findingsByHost, severityCounts } from "../core/data";
+import { datasetOrigin } from "../core/dataset";
+import { applyToFindings, parseQuery } from "../core/query";
 import { encodeInvestigation, useInvestigation } from "../core/store";
 import { SEVERITY_ORDER, type SurfaceId } from "../core/types";
 import { IconClose, IconCommand, IconCopy, IconSearch } from "../ui/icons";
@@ -40,6 +42,7 @@ import {
   orNotObserved,
 } from "../ui/primitives";
 import { setHelpOpen } from "./keyboard";
+import { describeOrigin, digestFormLabel, OpenSnapshotControl, ReturnToSample, verificationWords } from "./OpenSnapshot";
 import { recordReturn, returnFocus, useReleaseFocusOnLayoutChange, type ReturnRecord } from "./focus-return";
 import { useLadder } from "./surfaces";
 import { ThemeToggle, useThemeShortcut } from "./ThemeToggle";
@@ -119,16 +122,38 @@ const isTypingTarget = (el: EventTarget | null): boolean => {
 };
 
 /**
- * An example query built from this snapshot's own vocabulary: the highest severity that actually
- * has findings, and a host whose routing table we actually hold.
+ * An example query built from the loaded snapshot's own vocabulary that RETURNS ROWS on it: submitting
+ * the bar opens the findings surface, and an example that lands on "no findings" teaches the reader
+ * the tool is broken.
+ *
+ * Every literal existing is not enough. This used to pair the highest severity that has findings with
+ * the first host whose routing table we hold — two true facts that need not co-occur: on a fleet whose
+ * first routable host (usually a core router) carries no finding of that severity, `severity:High
+ * host:core1` returned nothing. So the candidates are PAIRS drawn from the findings themselves — for
+ * each severity that has findings, most severe first, the hosts that carry a finding of it (hosts whose
+ * routing table we hold first, then the inventory order) — and each is run through the query engine the
+ * findings surface uses (`applyToFindings`), so the example is one the engine is known to answer with
+ * rows, whatever the dataset. A severity alone is the next candidate; with no finding at all nothing can
+ * return findings, and the example falls back to the device filter the grammar also teaches.
  */
 export function exampleQuery(): string {
   const counts = severityCounts(fabric.findings);
-  const sev = SEVERITY_ORDER.find((s) => (counts[s] ?? 0) > 0) ?? null;
-  const host = fabric.coverage.routableHosts[0] ?? fabric.devices[0]?.host ?? null;
-  const parts = [sev === null ? null : `severity:${sev}`, host === null ? null : `host:${host}`];
-  const built = parts.filter((p): p is string => p !== null).join(" ");
-  return built === "" ? "is:uncollected" : built;
+  const routable = new Set(fabric.coverage.routableHosts);
+  const hostOrder = [
+    ...fabric.devices.filter((d) => routable.has(d.host)).map((d) => d.host),
+    ...fabric.devices.filter((d) => !routable.has(d.host)).map((d) => d.host),
+  ];
+  const returnsRows = (q: string): boolean => applyToFindings(fabric.findings, parseQuery(q)).items.length > 0;
+  for (const sev of SEVERITY_ORDER) {
+    if ((counts[sev] ?? 0) === 0) continue;
+    for (const host of hostOrder) {
+      if (!(findingsByHost.get(host) ?? []).some((f) => f.severity === sev)) continue;
+      const q = `severity:${sev} host:${host}`;
+      if (returnsRows(q)) return q;
+    }
+    if (returnsRows(`severity:${sev}`)) return `severity:${sev}`;
+  }
+  return "is:uncollected";
 }
 
 /* ── the brand mark ────────────────────────────────────────────────────────── */
@@ -149,8 +174,12 @@ function Mark(): ReactElement {
 
 function SnapshotIdentity({ compact }: { compact: boolean }): ReactElement {
   const m = fabric.meta;
-  const file = m.source.split("/").pop() ?? m.source;
+  /* The name the chrome shows: an AssessHub record by its snapshot id (its source label is
+     `assesshub:snapshot/<id>`, whose last path segment alone would read as a bare number), a file by
+     its file name. */
+  const file = datasetOrigin.kind === "assesshub" ? `AssessHub snapshot ${datasetOrigin.snapshotId}` : (m.source.split("/").pop() ?? m.source);
   const sha8 = m.sourceSha256.slice(0, 8);
+  const verification = verificationWords(datasetOrigin);
 
   return (
     <Popover
@@ -194,6 +223,13 @@ function SnapshotIdentity({ compact }: { compact: boolean }): ReactElement {
         <h2 className="snapdetail__title">Snapshot provenance</h2>
         <dl className="snapdetail__list">
           <div className="snapdetail__row">
+            <dt>Dataset</dt>
+            <dd data-dataset-origin={datasetOrigin.kind}>
+              {describeOrigin(datasetOrigin)}
+              {verification === null ? null : ` — ${verification}`}
+            </dd>
+          </div>
+          <div className="snapdetail__row">
             <dt>Source</dt>
             <dd>
               <code>{m.source}</code>
@@ -207,7 +243,13 @@ function SnapshotIdentity({ compact }: { compact: boolean }): ReactElement {
           </div>
           <div className="snapdetail__row">
             <dt>Size</dt>
-            <dd>{`${groupDigits(m.sourceBytes)} bytes (LF-normalised)`}</dd>
+            <dd>{`${groupDigits(m.sourceBytes)} bytes (${digestFormLabel(m.sourceDigestForm)})`}</dd>
+          </div>
+          <div className="snapdetail__row">
+            <dt>Exact bytes</dt>
+            <dd>
+              <Copyable value={m.sourceExactSha256} label="the sha256 of the exact bytes read" digest />
+            </dd>
           </div>
           <div className="snapdetail__row">
             <dt>Schema</dt>
@@ -236,12 +278,24 @@ function SnapshotIdentity({ compact }: { compact: boolean }): ReactElement {
             </dd>
           </div>
         </dl>
-        <p className="snapdetail__note">
-          Every figure in this application is read from this file. It is a frozen collection, not a
-          live view of the network: nothing here reflects a change made after the collection time
-          above. The sha256 and size are taken over the file's LF-normalised form (every CR LF read
-          as LF, the form Git stores), so they are the same on a Windows and a Linux checkout.
-        </p>
+        {m.sourceDigestForm === "assesshub-store-blob" ? (
+          <p className="snapdetail__note">
+            Every figure in this application is read from this snapshot, fetched from AssessHub when
+            the page opened and compiled in this browser. It is a frozen collection, not a live view
+            of the network: nothing here reflects a change made after the collection time above. The
+            sha256 and size are taken over the bytes AssessHub stores for it, exactly — the store's own
+            binding, which is not the digest of the file that was uploaded.
+          </p>
+        ) : (
+          <p className="snapdetail__note">
+            Every figure in this application is read from this file. It is a frozen collection, not a
+            live view of the network: nothing here reflects a change made after the collection time
+            above. The sha256 and size are taken over the file's LF-normalised form (every CR LF read
+            as LF, the form Git stores), so they are the same on a Windows and a Linux checkout.
+          </p>
+        )}
+        <OpenSnapshotControl />
+        <ReturnToSample />
       </div>
     </Popover>
   );

@@ -624,6 +624,45 @@ describe("capture-motion.mjs: a running cross-fade must be handed over, never cu
     expect(j.fails.join("\n")).toMatch(/one overlay's opacity moved 0\.4 in one frame \(a 2616\.7 ms frame; bar 0\.2\)/);
   });
 
+  /* R4-VR2-2 (verifier round 2 of R4): C5-R2-2's rule — judge at FULL precision plus FADE_STEP_EPS, never the
+     rounded figure — was pinned only at the analyseFade sites. analyseHandover judges with the same rule at two
+     more: one overlay's step between frames, and a removal on its opacity. The known answers above used only
+     0.4 and 0.5, so a regression to judging the rounded figure (0.2 + 2 x EPS prints as 0.2) with a looser
+     tolerance passed them all. These straddle the bar by the EPS itself, both ways, at both sites. */
+  it("one overlay's step is judged at full precision: FADE_MAX_STEP + 2 x FADE_STEP_EPS fails though it prints as 0.2; + FADE_STEP_EPS / 2 passes", async () => {
+    const { T } = (await harness()) as Harness & { T: { FADE_STEP_EPS: number } };
+    const E = T.FADE_STEP_EPS;
+    const at = 30;
+    const from = handoverTrace(at, null, [])[at]!.fade!.opacity;
+    const stepTo = (s: number) => {
+      const v = from - s;
+      return handoverTrace(at, null, [[1, v], ...fadeFrom(1, Math.round((v - 0.1) * 1000) / 1000)]);
+    };
+    const over = stepTo(T.FADE_MAX_STEP + 2 * E);
+    const o = await analyseHandover(over, winOf(over), trigAt(at, from));
+    expect(o.fails.join("\n")).toMatch(/one overlay's opacity moved 0\.2 in one frame/);
+    const within = stepTo(T.FADE_MAX_STEP + E / 2);
+    const w = await analyseHandover(within, winOf(within), trigAt(at, from));
+    expect(w.fails).toEqual([]);
+  });
+
+  it("a removal is judged on its full-precision opacity: FADE_MAX_STEP + 2 x FADE_STEP_EPS fails; + FADE_STEP_EPS / 2 is judged 'opacity' and passes", async () => {
+    const { T } = (await harness()) as Harness & { T: { FADE_STEP_EPS: number } };
+    const E = T.FADE_STEP_EPS;
+    const at = 30;
+    const removedAt = async (fromOpacity: number) => {
+      const meta = handoverTrace(at, null, []);
+      meta[at + 1]!.handover = { kind: "removed", fromOpacity, share: null, maskedPx: 0 };
+      return analyseHandover(meta, winOf(meta), trigAt(at, fromOpacity));
+    };
+    const over = await removedAt(T.FADE_MAX_STEP + 2 * E);
+    expect(over.fails.join("\n")).toMatch(/removed at opacity 0\.2 \(a removal above 0\.2 is a cut, whatever the pixels\)/);
+    const within = await removedAt(T.FADE_MAX_STEP + E / 2);
+    expect(within.events.map((e) => e.how)).toEqual(["opacity"]);
+    expect(within.fails).toEqual([]);
+    expect(within.established, within.why).toBe(true);
+  });
+
   it("never established vacuously: a trigger that never fired, a tab that never returned, a fade still up at the end, or lost frames", async () => {
     const at = 30;
     const meta = handoverTrace(at, { kind: "replaced", fromOpacity: 0.5, share: 0.004, maskedPx: 7800 }, [[2, 1], ...fadeFrom(2, 0.9)]);

@@ -36,12 +36,13 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { lfNormalise } from "../../tools/source-binding.mjs";
 import { compileToDisk } from "../../tools/lib/compile-io.mjs";
 import { CompileError, OUTPUTS } from "../../tools/lib/compile-model.mjs";
 import { SOURCE_BINDING_KEYS } from "./types";
@@ -447,6 +448,58 @@ describe("client data never reaches the tracked files", () => {
       expect(existsSync(join(pkg, ".local-data", "fabric.json"))).toBe(false);
     });
 
+    /* R3-V2R-2 — .local-data/ ITSELF is placed by identity. Only --out used to be: the default destination was
+       checked as text (Git ignores the NAME ".local-data/"), so a .local-data that is a junction or symbolic link
+       to another in-repository directory took a client compile there — measured by the verifier, a junction to
+       src/data overwrote the tracked fabric.json with exit 0, and one to dist/assets wrote into the directory
+       AssessHub serves. The class is "a .local-data that is a second name for somewhere else", however it is
+       reached (the default run, or --out below it). */
+    describe(".local-data/ is placed by identity, not by its name (R3-V2R-2)", () => {
+      const alias = (from: string, to: string): void => {
+        mkdirSync(to, { recursive: true });
+        symlinkSync(to, from, process.platform === "win32" ? "junction" : "dir");
+      };
+      it.each([
+        ["src/data", "the default run"],
+        ["src/data", "--out .local-data/x"],
+        ["dist/assets", "the default run"],
+        ["dist/assets", "--out .local-data/x"],
+      ])("a .local-data that is a junction to %s is refused for %s, writing nothing", (target, how) => {
+        const { pkg, tools } = gitSandbox();
+        alias(join(pkg, ".local-data"), join(pkg, target));
+        expect(lstatSync(join(pkg, ".local-data")).isSymbolicLink(), "precondition: .local-data is a link").toBe(true);
+        const before = snapshotOf(pkg);
+        const listing = readdirSync(join(pkg, target)).sort();
+        const { file } = external();
+        const r = cli(tools, ["--source", file, ...(how === "the default run" ? [] : ["--out", join(pkg, ".local-data", "x")])]);
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+        expect(r.stderr).toMatch(/\.local-data/);
+        expect(snapshotOf(pkg), "the tracked files are untouched").toEqual(before);
+        expect(readdirSync(join(pkg, target)).sort(), `nothing was written into ${target}`).toEqual(listing);
+      });
+
+      it("a .local-data that is a link to a directory OUTSIDE the repository is refused too: the name must be the place", () => {
+        const { pkg, tools } = gitSandbox();
+        const outside = tmp("atlas-local-data-elsewhere-");
+        alias(join(pkg, ".local-data"), outside);
+        const { file } = external();
+        const r = cli(tools, ["--source", file]);
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+        expect(readdirSync(outside)).toEqual([]);
+      });
+
+      it("a plain .local-data directory is accepted (positive control)", () => {
+        const { pkg, tools } = gitSandbox();
+        mkdirSync(join(pkg, ".local-data"), { recursive: true });
+        const { file } = external();
+        const r = cli(tools, ["--source", file]);
+        expect(r.status, r.stderr).toBe(0);
+        expect(existsSync(join(pkg, ".local-data", "fabric.json"))).toBe(true);
+      });
+    });
+
     it("the SAMPLE keeps its freedom outside src/ in a Git-owned tree (it is public)", () => {
       const { pkg, tools } = gitSandbox();
       const r = cli(tools, ["--out", join(pkg, "review", "sample-out")]);
@@ -512,11 +565,19 @@ describe("client data never reaches the tracked files", () => {
         },
       );
 
-      it("the spellings above are exercised on this host (win32 with the admin-share loopback reachable), or say why not", () => {
-        /* A block that always skips pins nothing. Where it cannot run, this names the reason instead of passing silently. */
+      it("the spellings above are exercised on this host (win32 with the admin-share loopback reachable), or Windows says why not", () => {
+        /* A block that always skips pins nothing, and a warning is not a verdict (verifier R3-V2R-4: this used to
+           console.warn and assert only that `reachable` was a boolean, so an always-skip passed). The skip is now
+           legal only for the reason WINDOWS states: it does not list this drive's administrative share. Where it
+           lists it, the loopback spellings are expected to reach it and the identity cases must run; where the
+           listing itself cannot be read, the reason is not established and this fails. */
         if (process.platform !== "win32") return void expect(reachable).toBe(false);
-        if (!reachable) console.warn("R3-V1 identity cases SKIPPED: \\\\localhost\\<drive>$ is not reachable from this process (admin shares off, or a sandbox).");
-        expect(typeof reachable).toBe("boolean");
+        const drive = PKG[0]!.toUpperCase();
+        const shares = spawnSync("net", ["share"], { encoding: "utf8", windowsHide: true, timeout: 30_000 });
+        expect(shares.status, `\`net share\` could not be read (${String(shares.error ?? shares.stderr)}), so a skip has no stated reason`).toBe(0);
+        const listed = new RegExp(`^${drive}\\$\\s`, "m").test(shares.stdout ?? "");
+        if (listed) expect(reachable, `Windows lists the ${drive}$ administrative share, so the identity cases must run here`).toBe(true);
+        else expect(reachable, `Windows lists no ${drive}$ administrative share, so the identity cases cannot run here`).toBe(false);
       });
     });
 
@@ -663,6 +724,65 @@ describe("client data never reaches the tracked files", () => {
       const m = (JSON.parse(readFileSync(join(out, "fabric.json"), "utf8")) as { meta: Record<string, unknown> }).meta;
       expect(m.sourceExactSha256).toBe(`sha256:${sha256(crlf)}`);
       expect(m.sourceExactSha256).not.toBe(`sha256:${String(m.sourceSha256)}`);
+    });
+
+    /* R3-V2R-3 — the refusal above must not fire on a FRESH CLONE of this repository on a host whose Git
+       converts line endings (core.autocrlf=true is this host's system default). What prevents it is the
+       repository's own `.gitattributes` pin for the sample; this proves the pin does it, by cloning a repository
+       that holds the sample and the REAL .gitattributes under core.autocrlf=true and compiling the clone — and,
+       as the control, that the same clone WITHOUT the sample's pin checks out CRLF and is refused. */
+    describe("a fresh clone under core.autocrlf=true compiles the tracked set, because of the .gitattributes pin (R3-V2R-3)", () => {
+      const git = (cwd: string, args: string[]): string =>
+        execFileSync("git", ["-c", "core.autocrlf=true", "-c", "user.name=atlas-test", "-c", "user.email=atlas-test@example.invalid", ...args], {
+          cwd,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      const realAttributes = readFileSync(resolve(REPO, ".gitattributes"), "utf8");
+      const samplePin = /^webapp\/sample_data\/\S+\s.*\beol=lf\b/m;
+      const cloneWith = (attributes: string): { clone: string; tools: string; pkg: string } => {
+        const origin = tmp("atlas-autocrlf-origin-");
+        git(origin, ["init", "-q"]);
+        writeFileSync(join(origin, ".gitattributes"), attributes);
+        mkdirSync(join(origin, "webapp", "sample_data"), { recursive: true });
+        writeFileSync(join(origin, SAMPLE_REL), lfNormalise(readFileSync(resolve(REPO, SAMPLE_REL))));
+        git(origin, ["add", "-A"]);
+        git(origin, ["commit", "-q", "-m", "sample"]);
+        const clone = join(tmp("atlas-autocrlf-clone-"), "repo");
+        git(dirname(clone), ["clone", "-q", "--config", "core.autocrlf=true", origin, clone]);
+        // The package beside the clone's sample, as a checkout of this repository has it.
+        const pkg = join(clone, "atlas-scope");
+        cpSync(TOOLS, join(pkg, "tools"), { recursive: true });
+        cpSync(resolve(PKG, "contracts"), join(pkg, "contracts"), { recursive: true });
+        for (const o of OUTPUTS) mkdirSync(dirname(join(pkg, o.trackedPath)), { recursive: true });
+        return { clone, tools: join(pkg, "tools"), pkg };
+      };
+
+      it("the repository's .gitattributes pins the sample LF (the premise of the clone below)", () => {
+        expect(realAttributes).toMatch(samplePin);
+      });
+
+      it("with the repository's .gitattributes: the clone's sample is LF and the default run writes the tracked set, byte-identical", () => {
+        const { clone, pkg, tools } = cloneWith(realAttributes);
+        expect(git(clone, ["config", "--get", "core.autocrlf"]).trim(), "the clone converts line endings").toBe("true");
+        expect(git(clone, ["check-attr", "eol", "--", SAMPLE_REL]).trim()).toBe(`${SAMPLE_REL}: eol: lf`);
+        expect(readFileSync(join(clone, SAMPLE_REL), "latin1").includes("\r\n"), "the clone checked the sample out LF").toBe(false);
+        const r = cli(tools, []);
+        expect(r.status, r.stderr).toBe(0);
+        for (const o of OUTPUTS) {
+          expect(readFileSync(join(pkg, o.trackedPath)).equals(readFileSync(resolve(PKG, o.trackedPath))), o.trackedPath).toBe(true);
+        }
+      });
+
+      it("control — the same clone WITHOUT the sample's pin checks it out CRLF, and the tracked compile is refused", () => {
+        const { clone, pkg, tools } = cloneWith(realAttributes.split("\n").filter((l) => !samplePin.test(l)).join("\n"));
+        expect(git(clone, ["check-attr", "eol", "--", SAMPLE_REL]).trim()).toBe(`${SAMPLE_REL}: eol: unspecified`);
+        expect(readFileSync(join(clone, SAMPLE_REL), "latin1").includes("\r\n"), "without the pin, autocrlf checks it out CRLF").toBe(true);
+        const r = cli(tools, []);
+        expect(r.status, r.stderr).toBe(1);
+        expect(r.stderr).toMatch(/E_TRACKED_SOURCE_FORM/);
+        for (const o of OUTPUTS) expect(existsSync(join(pkg, o.trackedPath)), o.trackedPath).toBe(false);
+      });
     });
 
     it("an LF sample still writes the tracked files (control: the refusal is about the form, not the source)", () => {

@@ -9,10 +9,12 @@
     "compile:data": "node tools/compile-all.mjs",
     "dev": "vite",
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.config.json && vite build",
+    "build:hub": "tsc -p tsconfig.json && tsc -p tsconfig.config.json && vite build --mode hub",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit --noImplicitAny && tsc -p tsconfig.config.json --noEmit",
     "preview": "vite preview --port 4181",
     "test": "vitest run",
     "test:watch": "vitest",
+    "rename:snapshot": "node review/rename-snapshot.mjs",
     "capture": "node review/capture.mjs app",
     "capture:refs": "node review/capture.mjs refs"
   },

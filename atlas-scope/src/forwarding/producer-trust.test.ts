@@ -18,6 +18,10 @@
 import { describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
 import { lineEvaluability, suggestedFlows, traceFlow } from "./engine";
+import { describeGolden } from "../test-support/golden-sample";
+import { GOLDEN_FORWARDING as G } from "./golden-expectations";
+
+const C1 = G.core1Acls;
 
 describe("the producer's evaluability verdict is authoritative", () => {
   /**
@@ -69,16 +73,6 @@ describe("the producer's evaluability verdict is authoritative", () => {
     ).toEqual([]);
   });
 
-  it("does override MGMT_IN, because MGMT_HOSTS is carried — and this is the only override", () => {
-    // Pins the override to a specific, justified case rather than leaving the rule abstract.
-    const overridden: string[] = [];
-    for (const [host, named] of Object.entries(fabric.acls))
-      for (const [acl, lines] of Object.entries(named))
-        for (const line of lines)
-          if (line.unevaluable && lineEvaluability(line).evaluable) overridden.push(`${host}.${acl}[${line.index}]`);
-    expect(overridden).toEqual(["core1.MGMT_IN[0]"]);
-  });
-
   it("citations keep the shape the host is derived from", () => {
     // `hostOfAclLine` reads the host out of `acls.<host>.<name>[<i>]`. If that shape ever changes,
     // object-group resolution silently stops working and every group line quietly reverts to
@@ -102,10 +96,23 @@ describe("the producer's evaluability verdict is authoritative", () => {
   });
 });
 
-describe("our own model limits are not described as gaps in the collection", () => {
+describeGolden("the producer's evaluability verdict — the one override on the reference sample", () => {
+  it("does override MGMT_IN, because MGMT_HOSTS is carried — and this is the only override", () => {
+    // Pins the override to a specific, justified case rather than leaving the rule abstract.
+    const overridden: string[] = [];
+    for (const [host, named] of Object.entries(fabric.acls))
+      for (const [acl, lines] of Object.entries(named))
+        for (const line of lines)
+          if (line.unevaluable && lineEvaluability(line).evaluable) overridden.push(`${host}.${acl}[${line.index}]`);
+    expect(overridden).toEqual([...C1.mgmtIn.overrides]);
+  });
+});
+
+/* Golden (phase 3): the two blocks below read core1's MGMT_HOSTS and INET_RETURN[1] by name. */
+describeGolden("our own model limits are not described as gaps in the collection", () => {
   it("never tells a user that object-group members were not collected when they were", () => {
-    const group = fabric.objectGroups["core1"]?.["MGMT_HOSTS"];
-    expect(group, "the snapshot carries core1/MGMT_HOSTS").toBeDefined();
+    const group = fabric.objectGroups[C1.host]?.[C1.mgmtIn.group];
+    expect(group, `the snapshot carries ${C1.host}/${C1.mgmtIn.group}`).toBeDefined();
     expect(group!.members.length).toBeGreaterThan(0);
 
     // Gather every sentence the engine can put in front of a user about core1's ACLs.
@@ -118,11 +125,12 @@ describe("our own model limits are not described as gaps in the collection", () 
         for (const ev of h.evidence) prose.push(ev.label);
       }
     }
-    const line = fabric.acls["core1"]?.["MGMT_IN"]?.[0];
-    if (line) prose.push(lineEvaluability(line).reason ?? "");
+    const line = fabric.acls[C1.host]?.[C1.mgmtIn.name]?.[0];
+    expect(line, `${C1.mgmtIn.lineCite} exists`).toBeDefined();
+    prose.push(lineEvaluability(line!).reason ?? "");
 
     const falseClaims = prose.filter(
-      (p) => /MGMT_HOSTS/.test(p) && /not collected|were not collected|no members/i.test(p),
+      (p) => p.includes(C1.mgmtIn.group) && /not collected|were not collected|no members/i.test(p),
     );
     expect(
       falseClaims,
@@ -131,14 +139,15 @@ describe("our own model limits are not described as gaps in the collection", () 
   });
 });
 
-describe("a conditional rule never yields an unconditional verdict", () => {
+describeGolden("a conditional rule never yields an unconditional verdict", () => {
   it("treats a time-ranged line as conditional rather than always-active", () => {
     // core1.INET_RETURN[1] is "... eq 443 time-range BUSINESS_HOURS".
-    const line = fabric.acls["core1"]?.["INET_RETURN"]?.[1];
-    expect(line?.timeRange, "this fixture depends on a real time-ranged rule").toBe("BUSINESS_HOURS");
+    const line = fabric.acls[C1.host]?.[C1.inetReturn.name]?.[1];
+    expect(line?.cite).toBe(C1.inetReturn.timeRangedCite);
+    expect(line?.timeRange, "this fixture depends on a real time-ranged rule").toBe(C1.inetReturn.timeRange);
     const e = lineEvaluability(line!);
     expect(e.evaluable, "a rule that is only active inside a window cannot be evaluated flatly").toBe(false);
-    expect(e.reason ?? "").toMatch(/time[- ]range|BUSINESS_HOURS/i);
+    expect(/time[- ]range/i.test(e.reason ?? "") || (e.reason ?? "").includes(C1.inetReturn.timeRange), e.reason ?? "").toBe(true);
   });
 });
 

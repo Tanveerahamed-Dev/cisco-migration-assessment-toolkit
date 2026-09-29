@@ -2,8 +2,9 @@
  * engine.ts — the forwarding simulator.
  *
  * It answers one question: can this flow get from A to B, and if not, exactly what stopped it?
- * The answer is always paired with the scope it holds over, because this snapshot is thin where it
- * matters: RIBs were collected for 2 of 26 hosts and ACLs for 1, and the interface ACL bindings
+ * The answer is always paired with the scope it holds over, because a snapshot is thin where it
+ * matters: RIBs and ACLs are collected for only some hosts (the counts are fabric.coverage's, never
+ * this comment's), and the interface ACL bindings
  * (`ip access-group`) are only partly observed — see ./bindings.ts. Every one of those gaps is a reason a result is narrower than it looks, and
  * each is emitted as a caveat rather than silently absorbed.
  *
@@ -13,6 +14,7 @@
  * the one that fires. Absence is absence.
  */
 import { aclsOf, fabric, hasRib, linksByHost, resolveCite, routesOf } from "../core/data";
+import { listPhrase } from "../core/phrases";
 import { adminDistanceRank, routeFieldReading } from "../core/route-fields";
 import { aclLineName } from "./acl-line";
 import { ribIncompleteness, ribIncompletenessSentence } from "./rib-completeness";
@@ -270,6 +272,15 @@ const ACL_FINDING_BY_CITE: ReadonlyMap<string, AclFinding> = new Map(
 const ROUTABLE = fabric.coverage.routableHosts;
 const HOST_COUNT = fabric.devices.length;
 const UNROUTABLE_COUNT = HOST_COUNT - ROUTABLE.length;
+
+/**
+ * A list of CITATIONS, joined for a parenthesis — "(l3_forwarding[0], l3_forwarding[3])". Names
+ * (hosts, ACLs, interfaces, fields) are prose and go through the one owner, `listPhrase`
+ * (../core/phrases.ts), which always yields a phrase ("no host" when empty); citations are a record
+ * list, not prose. These two helpers are the only comma joins in this module, which
+ * `engine.phrases.test.ts` holds structurally so a new name list cannot be joined bare.
+ */
+const citeList = (cites: readonly string[]): string => cites.join(", ");
 
 /* ── ACL line evaluability, decided structurally ────────────────────────────── */
 
@@ -974,12 +985,12 @@ function notAppliedCaveat(
   const parts: string[] = [];
   if (outscored.length > 0) {
     parts.push(
-      `${host} also defines ${outscored.join(", ")} (acls.${host}); ${outscored.length === 1 ? "it was" : "they were"} not applied to this flow because ${applied.length === 0 ? "no ACL on this host names its addresses specifically" : `${applied.join(", ")} names its addresses more specifically`}.`,
+      `${host} also defines ${listPhrase(outscored, "no other list")} (acls.${host}); ${outscored.length === 1 ? "it was" : "they were"} not applied to this flow because ${applied.length === 0 ? "no ACL on this host names its addresses specifically" : `${listPhrase(applied, "no list")} names its addresses more specifically`}.`,
     );
   }
   if (unscoreable.length > 0) {
     parts.push(
-      `${host} also defines ${unscoreable.join(", ")}; because that address space cannot be resolved in this model, ${unscoreable.length === 1 ? "the list scores nothing and is" : "those lists score nothing and are"} excluded from selection for EVERY flow, not only this one — ${unscoreable.length === 1 ? "its" : "their"} catch-all deny can therefore never fire here, which is a property of this model rather than of the device.`,
+      `${host} also defines ${listPhrase(unscoreable, "no other list")}; because that address space cannot be resolved in this model, ${unscoreable.length === 1 ? "the list scores nothing and is" : "those lists score nothing and are"} excluded from selection for EVERY flow, not only this one — ${unscoreable.length === 1 ? "its" : "their"} catch-all deny can therefore never fire here, which is a property of this model rather than of the device.`,
     );
   }
   parts.push(
@@ -1126,7 +1137,7 @@ function runLists(
  *  neither interface resolved to a record. */
 function interfaceCites(host: string, intfs: readonly (string | null)[]): string {
   const cites = intfs.flatMap((i) => (i === null ? [] : [`interfaces.${host}.${i}`])).filter((c) => resolveCite(c) !== undefined);
-  return cites.length === 0 ? `interfaces.${host}` : [...new Set(cites)].join(", ");
+  return cites.length === 0 ? `interfaces.${host}` : citeList([...new Set(cites)]);
 }
 
 function bindingGapClause(pb: PathBindings | null): string {
@@ -1177,7 +1188,7 @@ function evaluateObservedBindings(
   pb: PathBindings,
 ): AclEval {
   const caveats = [...pb.notes];
-  const where = pb.states.map((st) => `${st.intf ?? "?"} ${st.dir}`).join(", ");
+  const where = listPhrase(pb.states.map((st) => `${st.intf ?? "?"} ${st.dir}`), "no interface");
   const boundNames = [...new Set(pb.bound.map((b) => b.acl))];
   const unbound = Object.keys(named)
     .sort()
@@ -1192,7 +1203,7 @@ function evaluateObservedBindings(
        the sentence that draws the conclusion from them (acceptance B6: a claim with its citation). */
     const stateCites = [...new Set(pb.states.flatMap((st) => (st.cite === null ? [] : [st.cite])))];
     caveats.push(
-      `${host} also defines ${unbound.join(", ")}, bound to none of the interfaces this flow crosses at ${host} (${where}; observed running configuration, ${[...stateCites, `acls.${host}`].join(", ")}), so ${unbound.length === 1 ? "it does" : "they do"} not filter this flow here.`,
+      `${host} also defines ${listPhrase(unbound, "no other list")}, bound to none of the interfaces this flow crosses at ${host} (${where}; observed running configuration, ${citeList([...stateCites, `acls.${host}`])}), so ${unbound.length === 1 ? "it does" : "they do"} not filter this flow here.`,
     );
   }
   if (pb.bound.length === 0) {
@@ -1270,7 +1281,7 @@ function evaluateBySpecificity(
           ...notes,
           ...(only === null ? [] : [only]),
           `${host} holds ${n} ${n === 1 ? "line" : "lines"} in access lists the specificity rule did not apply which could ` +
-            `match this flow and cannot be evaluated (${unappliedUndecidable.map((e) => e.cite).join(", ")}). ` +
+            `match this flow and cannot be evaluated (${citeList(unappliedUndecidable.map((e) => e.cite))}). ` +
             `Because ${gap}, the ACL result at ${host} is indeterminate, not a permit.`,
         ],
         decision: null,
@@ -1307,7 +1318,7 @@ function evaluateBySpecificity(
     const n = unappliedUndecidable.length;
     caveats.push(
       `${host} holds ${n} ${n === 1 ? "line" : "lines"} in access lists the specificity rule did not apply which could ` +
-        `match this flow and cannot be evaluated (${unappliedUndecidable.map((e) => e.cite).join(", ")}). ` +
+        `match this flow and cannot be evaluated (${citeList(unappliedUndecidable.map((e) => e.cite))}). ` +
         `Because ${gap}, a verdict here steps over ${n === 1 ? "it" : "them"}: ` +
         `it is at best indeterminate, never a definite permit.`,
     );
@@ -1331,6 +1342,26 @@ interface Ingress {
   host: string;
   evidence: HopEvidence[];
   caveats: string[];
+  /**
+   * The FHRP / shared-subnet choice this ingress rests on, when there was one: the caveat that states
+   * it, and every alternate member it names. Carried so the caveat can be re-stated once the
+   * alternates have been TRACED (`ingressPolicyGaps`): an alternate that reproduces the outcome with
+   * nothing on its modelled path left open is not "a guarantee we lack" but a checked fact, and a
+   * caveat that kept saying "traffic may enter via dist2" beside a SCOPED verdict contradicted the
+   * trace's own evidence (deferred E2 item; engine.test.ts "no SCOPED trace rests on an ingress the
+   * trace's own caveat calls not a guarantee").
+   */
+  choice: IngressChoice | null;
+}
+
+interface IngressChoice {
+  /** The caveat as first stated, before any alternate was traced. */
+  caveat: string;
+  /** The sentence up to where the alternates are named. */
+  lead: string;
+  /** Whether the chosen member was the observed Active one (the lead then ends "a point-in-time observation"). */
+  active: boolean;
+  alternates: { host: string; described: string }[];
 }
 
 function attachmentEvidence(ip: Ipv4): { evidence: HopEvidence[]; caveats: string[] } {
@@ -1348,7 +1379,7 @@ function attachmentEvidence(ip: Ipv4): { evidence: HopEvidence[]; caveats: strin
   ];
   const caveats = [
     sorted.length > 1
-      ? `${formatIpv4(ip)} is reported as an endpoint on ${sorted.length} hosts (${sorted.map((s) => `${s.host}: ${s.cite}`).join(", ")}); the attachment point is ambiguous in the collected evidence, and the L2 path from it to the gateway is not simulated.`
+      ? `${formatIpv4(ip)} is reported as an endpoint on ${sorted.length} hosts (${citeList(sorted.map((s) => `${s.host}: ${s.cite}`))}); the attachment point is ambiguous in the collected evidence, and the L2 path from it to the gateway is not simulated.`
       : `${formatIpv4(ip)} attaches at ${first.host} ${first.port ?? "(no port)"} (${first.cite}); the L2 path from that port to the gateway is not simulated.`,
   ];
   return { evidence, caveats };
@@ -1458,13 +1489,14 @@ function resolveIngress(ip: Ipv4): Ingress | { none: string } {
         return `${h} (${o.fhrpRole === null ? "no FHRP role observed" : `${o.fhrp ?? "FHRP"} ${o.fhrpRole}`}, ${o.cite})`;
       };
       caveats.push(
-        `${formatIpv4(ip)} is an address of ${others.length + 1} collected hosts (${[chosen.host, ...others].join(", ")}; ${[...new Set(sorted.map((o) => o.cite))].join(", ")}) — an FHRP group shares its virtual address. ${chosen.host} was taken as ingress because ${chosen.cite} records it as ${chosen.fhrpRole === null ? "the first candidate holding a collected RIB" : `${chosen.fhrp ?? "FHRP"} ${chosen.fhrpRole}`}; that is a point-in-time observation, and the flow may instead enter via ${others.map(describe).join(", ")}, whose forwarding may differ.`,
+        `${formatIpv4(ip)} is an address of ${others.length + 1} collected hosts (${listPhrase([chosen.host, ...others])}; ${citeList([...new Set(sorted.map((o) => o.cite))])}) — an FHRP group shares its virtual address. ${chosen.host} was taken as ingress because ${chosen.cite} records it as ${chosen.fhrpRole === null ? "the first candidate holding a collected RIB" : `${chosen.fhrp ?? "FHRP"} ${chosen.fhrpRole}`}; that is a point-in-time observation, and the flow may instead enter via ${listPhrase(others.map(describe))}, whose forwarding may differ.`,
       );
     }
     return {
       host: chosen.host,
       evidence: [{ kind: chosen.kind, label: `source address is ${chosen.label}`, raw: null, cite: chosen.cite }, ...attach.evidence],
       caveats,
+      choice: null,
     };
   }
 
@@ -1474,14 +1506,17 @@ function resolveIngress(ip: Ipv4): Ingress | { none: string } {
     const sorted = orderIngress(inSubnet);
     const chosen = sorted[0]!;
     const caveats = [...attach.caveats];
+    let choice: IngressChoice | null = null;
     if (sorted.length > 1) {
-      const others = sorted.slice(1).map((s) => `${s.host} (${s.record.fhrpRole ?? "no FHRP role observed"}, ${s.record.cite})`).join(", ");
-      const gateways = sorted.map((s) => s.record.cite).join(", ");
-      caveats.push(
-        isActive(chosen.fhrpRole)
-          ? `${formatIpv4(ip)} sits in ${formatPrefix(chosen.prefix)}, gatewayed by ${sorted.length} collected SVIs (${gateways}); ${chosen.host} was taken as ingress because ${chosen.record.cite} records it as ${chosen.record.fhrp ?? "FHRP"} ${chosen.fhrpRole}. That role is a point-in-time observation, not a guarantee — traffic may enter via ${others}.`
-          : `${formatIpv4(ip)} sits in ${formatPrefix(chosen.prefix)}, gatewayed by ${sorted.length} collected SVIs (${gateways}) and no active FHRP role was observed; ${chosen.host} was taken as ingress by deterministic ordering (${chosen.record.cite}). Traffic may enter via ${others}.`,
-      );
+      const alternates = sorted.slice(1).map((s) => ({ host: s.host, described: `${s.host} (${s.record.fhrpRole ?? "no FHRP role observed"}, ${s.record.cite})` }));
+      const gateways = citeList(sorted.map((s) => s.record.cite));
+      const active = isActive(chosen.fhrpRole);
+      const lead = active
+        ? `${formatIpv4(ip)} sits in ${formatPrefix(chosen.prefix)}, gatewayed by ${sorted.length} collected SVIs (${gateways}); ${chosen.host} was taken as ingress because ${chosen.record.cite} records it as ${chosen.record.fhrp ?? "FHRP"} ${chosen.fhrpRole}. That role is a point-in-time observation`
+        : `${formatIpv4(ip)} sits in ${formatPrefix(chosen.prefix)}, gatewayed by ${sorted.length} collected SVIs (${gateways}) and no active FHRP role was observed; ${chosen.host} was taken as ingress by deterministic ordering (${chosen.record.cite})`;
+      const caveat = ingressChoiceCaveat(lead, active, alternates, []);
+      caveats.push(caveat);
+      choice = { caveat, lead, active, alternates };
     }
     return {
       host: chosen.host,
@@ -1495,6 +1530,7 @@ function resolveIngress(ip: Ipv4): Ingress | { none: string } {
         ...attach.evidence,
       ],
       caveats,
+      choice,
     };
   }
 
@@ -1511,6 +1547,7 @@ function resolveIngress(ip: Ipv4): Ingress | { none: string } {
           ...attach.evidence,
         ],
         caveats: attach.caveats,
+        choice: null,
       };
     }
   }
@@ -1520,7 +1557,7 @@ function resolveIngress(ip: Ipv4): Ingress | { none: string } {
   const eps = ENDPOINTS_BY_IP.get(ip);
   if (eps !== undefined && eps.length > 0) {
     const chosen = [...eps].sort((a, b) => a.host.localeCompare(b.host))[0]!;
-    return { host: chosen.host, evidence: attach.evidence, caveats: attach.caveats };
+    return { host: chosen.host, evidence: attach.evidence, caveats: attach.caveats, choice: null };
   }
 
   return {
@@ -1529,6 +1566,29 @@ function resolveIngress(ip: Ipv4): Ingress | { none: string } {
 }
 
 const isActive = (role: string | null): boolean => role !== null && role.toLowerCase() === "active";
+
+/**
+ * The ingress-choice caveat, stated from what is known about each alternate member. An alternate the
+ * flow was traced from, which ended the same way with nothing on its modelled path left open
+ * (`reproduced`), is named as traced; every other alternate keeps "may enter via". Before any
+ * alternate is traced (`reproduced` empty) this is exactly the sentence resolveIngress always wrote.
+ */
+function ingressChoiceCaveat(
+  lead: string,
+  active: boolean,
+  alternates: readonly { host: string; described: string }[],
+  reproduced: readonly string[],
+): string {
+  const same = alternates.filter((a) => reproduced.includes(a.host)).map((a) => a.described);
+  const open = alternates.filter((a) => !reproduced.includes(a.host)).map((a) => a.described);
+  const traced =
+    same.length === 0
+      ? ""
+      : `the flow was also traced with ${listPhrase(same)} as its ingress and ends the same way there, with nothing on that modelled path left open`;
+  if (open.length === 0) return `${lead}; ${traced}, so this result does not rest on that choice.`;
+  const mayEnter = active ? `${lead}, not a guarantee — traffic may enter via ${listPhrase(open)}` : `${lead}. Traffic may enter via ${listPhrase(open)}`;
+  return traced === "" ? `${mayEnter}.` : `${mayEnter}; ${traced}.`;
+}
 
 /**
  * The distinct hosts behind a list of owner records, in list order.
@@ -1580,7 +1640,7 @@ export function resolveNextHost(fromHost: string, route: RouteEntry, links = lin
           evidence: { kind: "topology", label: `next hop ${route.nextHop} is ${chosen.label}`, raw: null, cite: chosen.cite },
           caveat:
             hosts.length > 1
-              ? `Next hop ${route.nextHop} is an address of ${hosts.length} collected hosts (${hosts.join(", ")}; ${[...new Set(sorted.map((o) => o.cite))].join(", ")}); ${chosen.host} was followed because ${chosen.fhrpRole === null ? "it is the first candidate holding a collected RIB" : `${chosen.cite} records it as ${chosen.fhrp ?? "FHRP"} ${chosen.fhrpRole}`}. The others were not explored.`
+              ? `Next hop ${route.nextHop} is an address of ${hosts.length} collected hosts (${listPhrase(hosts)}; ${citeList([...new Set(sorted.map((o) => o.cite))])}); ${chosen.host} was followed because ${chosen.fhrpRole === null ? "it is the first candidate holding a collected RIB" : `${chosen.cite} records it as ${chosen.fhrp ?? "FHRP"} ${chosen.fhrpRole}`}. The others were not explored.`
               : null,
         };
       }
@@ -1639,9 +1699,9 @@ export function chooseRoute(host: string, dstIp: Ipv4, routes: readonly RouteEnt
     const withAd = tied.filter((t) => adminDistanceOf(t.item) !== null);
     if (withAd.length === tied.length) {
       winner = [...tied].sort((a, b) => adminDistanceOf(a.item)! - adminDistanceOf(b.item)!)[0]!.item;
-      caveat = `${tied.length} routes at ${host} tie at /${topBits} for ${formatIpv4(dstIp)} (${tied.map((t) => t.item.cite).join(", ")}); the lowest administrative distance (${routeFieldReading(winner, "adminDistance").text}) was followed and equal-cost paths were not explored.`;
+      caveat = `${tied.length} routes at ${host} tie at /${topBits} for ${formatIpv4(dstIp)} (${citeList(tied.map((t) => t.item.cite))}); the lowest administrative distance (${routeFieldReading(winner, "adminDistance").text}) was followed and equal-cost paths were not explored.`;
     } else {
-      caveat = `${tied.length} routes at ${host} tie at /${topBits} for ${formatIpv4(dstIp)} and administrative distance was not observed for all of them (${tied.filter((t) => adminDistanceOf(t.item) === null).map((t) => t.item.cite).join(", ")}); the first in RIB order was followed. Which one the device actually prefers is unproven.`;
+      caveat = `${tied.length} routes at ${host} tie at /${topBits} for ${formatIpv4(dstIp)} and administrative distance was not observed for all of them (${citeList(tied.filter((t) => adminDistanceOf(t.item) === null).map((t) => t.item.cite))}); the first in RIB order was followed. Which one the device actually prefers is unproven.`;
     }
   }
   return { winner, alternatives: ranked.map((r) => r.item).filter((r) => r !== winner), caveat };
@@ -1676,7 +1736,9 @@ function denialPhrase(acl: AclEval): string {
   return `ACL ${d.aclName} ${aclLineName(d.lineIndex, d.lineCount)}`;
 }
 
-const SCOPE_PHRASE = `Under the collected RIBs of ${ROUTABLE.join(" and ")} only (${ROUTABLE.length} of ${HOST_COUNT} hosts in this topology)`;
+/* The host list goes through the one list-phrase owner: a fleet with no collected RIB reads "of no host",
+   never "of  only" (disc-app-sample-assumptions #6). */
+const SCOPE_PHRASE = `Under the collected RIBs of ${listPhrase(ROUTABLE)}${ROUTABLE.length === 0 ? "" : " only"} (${ROUTABLE.length} of ${HOST_COUNT} hosts in this topology)`;
 
 /**
  * The scope clause THIS trace's claim opens with, read from the claim itself — or null when the claim
@@ -1691,7 +1753,7 @@ export function scopeClauseOf(trace: Trace): string | null {
 
 function baseCaveats(): string[] {
   return [
-    `Forwarding is modelled only from the RIBs collected for ${ROUTABLE.join(", ")} (${fabric.coverage.cite}); ${UNROUTABLE_COUNT} of ${HOST_COUNT} hosts in this topology have no collected routing table, so nothing can be proven about forwarding on them.`,
+    `Forwarding is modelled only from the RIBs collected for ${listPhrase(ROUTABLE)} (${fabric.coverage.cite}); ${UNROUTABLE_COUNT} of ${HOST_COUNT} hosts in this topology have no collected routing table, so nothing can be proven about forwarding on them.`,
     ...bindingCoverageSentences(),
     "Stateful inspection, NAT, policy-based routing and any firewall in the path are not modelled: this walks stateless ACL text and the collected RIB only.",
     "Only the forward direction was simulated; the return path may be filtered or routed differently.",
@@ -1805,7 +1867,9 @@ function notePartialRouteBasis(hop: Hop, host: string, win: RouteEntry, dstIp: I
   const directlyAttached =
     win.source === "connected" ||
     win.source === "local" ||
-    SVI_SUBNETS.some((s) => s.host === host && prefixContains(s.prefix, dstIp));
+    /* Same longest-prefix rule as the delivery branch: a local SVI is the basis only when no more specific
+       route won. */
+    SVI_SUBNETS.some((s) => s.host === host && prefixContains(s.prefix, dstIp) && s.prefix.bits >= (parsePrefix(win.prefix)?.bits ?? 0));
   const sentence = ribIncompletenessSentence(host);
   if (sentence === null) return;
   if (directlyAttached) {
@@ -1943,7 +2007,7 @@ function receivedAtOwner(
 function receivedElsewhereEvidence(dstIp: Ipv4): { decidedBy: HopEvidence; owner: HopEvidence; caveat: string } | null {
   const owners = ADDRESS_OWNERS.get(dstIp);
   if (owners === undefined || owners.length === 0) return null;
-  const who = distinctHosts(owners).join(", ");
+  const who = listPhrase(distinctHosts(owners));
   const first = owners[0]!;
   return {
     decidedBy: {
@@ -1974,7 +2038,7 @@ export function traceFlow(flow: Flow): Trace {
     return refuse({
       kind: addressOnly ? "invalid-address" : "invalid-flow",
       key: addressOnly ? "invalid-address" : "invalid-flow",
-      reason: `the flow's ${fields.join(", ")} ${fields.length === 1 ? "is" : "are"} not valid${addressOnly ? " (not an IPv4 address)" : ""}, so nothing was simulated`,
+      reason: `the flow's ${listPhrase(fields, "input")} ${fields.length === 1 ? "is" : "are"} not valid${addressOnly ? " (not an IPv4 address)" : ""}, so nothing was simulated`,
       cite: fabric.coverage.cite,
     }, finish(
       flow,
@@ -2065,7 +2129,7 @@ export function traceFlow(flow: Flow): Trace {
   if (srcOwners !== undefined && srcOwners.length > 0) {
     const ownerHosts = distinctHosts(srcOwners);
     const owner = srcOwners[0]!;
-    const who = ownerHosts.join(", ");
+    const who = listPhrase(ownerHosts);
     const device = ownerHosts.length === 1 ? "that device" : "one of those devices";
     return refuse({
       kind: "router-originated",
@@ -2284,7 +2348,14 @@ export function traceFlow(flow: Flow): Trace {
     const win = route.winner;
     const routeEv = routeEvidence(host, win);
     const connected = win.source === "connected" || win.source === "local";
-    const localSvi = SVI_SUBNETS.find((s) => s.host === host && prefixContains(s.prefix, dstIp));
+    /* A local SVI subnet delivers only where longest-prefix match would put the packet on it: a route MORE
+       specific than the SVI's own prefix (a host route or a longer static inside the VLAN) outranks the
+       connected subnet, and the packet leaves by that route instead. Treating "some local SVI contains the
+       destination" as a delivery regardless reported a /32 pointing at another router as delivered on the
+       VLAN (found phase 3 by multihop.test.tsx's loop fixture). An SVI whose connected route the RIB does
+       not hold still delivers when nothing more specific won — that is the case this branch exists for. */
+    const winBits = parsePrefix(win.prefix)?.bits ?? 0;
+    const localSvi = SVI_SUBNETS.find((s) => s.host === host && prefixContains(s.prefix, dstIp) && s.prefix.bits >= winBits);
 
     if (connected || localSvi !== undefined) {
       const sviEv: HopEvidence[] =
@@ -2401,7 +2472,7 @@ export function traceFlow(flow: Flow): Trace {
   // moment the wording changes.
   if (aclIndeterminateSeen && outcome === "delivered") outcome = "indeterminate";
 
-  const trace = finish(flow, outcome, hops, claim, [...caveats, ...baseCaveats()], unmodelledHosts, startedAt);
+  const trace = withIngressChoiceStated(finish(flow, outcome, hops, claim, [...caveats, ...baseCaveats()], unmodelledHosts, startedAt), ingress.choice);
   /* A delivery the engine itself does not rate as definite (a host passed with no collected ACLs,
      an evidence item recorded as an absence) is a ROUTING result, not a decided pass. The sentence
      used to read exactly like a fully-scoped delivery — "is delivered at core2 on connected route …"
@@ -2425,6 +2496,23 @@ export function traceFlow(flow: Flow): Trace {
   return trace;
 }
 
+
+/**
+ * Re-state the ingress-choice caveat once the alternates have been traced. Not done while an alternate
+ * is itself being judged (that trace's gaps are not computed, by design — `judgingAlternate`). The
+ * gaps are carried to the new object so nothing is traced twice.
+ */
+function withIngressChoiceStated(t: Trace, choice: IngressChoice | null): Trace {
+  if (choice === null || judgingAlternate) return t;
+  const gaps = unobservedPolicyInputs(t);
+  const reproduced = REPRODUCED.get(t) ?? [];
+  if (reproduced.length === 0) return t;
+  const stated = ingressChoiceCaveat(choice.lead, choice.active, choice.alternates, reproduced);
+  const out: Trace = { ...t, caveats: t.caveats.map((c) => (c === choice.caveat ? stated : c)) };
+  GAPS.set(out, gaps);
+  REPRODUCED.set(out, reproduced);
+  return out;
+}
 
 /** Why a denial or drop is not a decided refusal, stated from the trace's own undeciding gaps. */
 function undecidedRefusalSentence(outcome: "denied" | "dropped", gaps: readonly PolicyGap[]): string {
@@ -2608,6 +2696,8 @@ const PASSING: ReadonlySet<Hop["verdict"]> = new Set(["forwarded", "delivered", 
 let judgingAlternate = false;
 const ALTERNATE_TRACES = new Map<string, Trace>();
 const GAPS = new WeakMap<Trace, PolicyGap[]>();
+/** Per trace: the alternate ingress hosts it was traced from that reproduced its outcome with nothing left open. */
+const REPRODUCED = new WeakMap<Trace, string[]>();
 
 /** The same flow, traced with `host` taken as its ingress. Memoised: the trace is deterministic. */
 function traceVia(flow: Flow, host: string): Trace {
@@ -2634,6 +2724,8 @@ function ingressPolicyGaps(t: Trace): PolicyGap[] {
   const src = parseIpv4(t.flow.srcIp);
   if (first === undefined || src === null || judgingAlternate) return [];
   const out: PolicyGap[] = [];
+  const reproduced: string[] = [];
+  REPRODUCED.set(t, reproduced);
 
   const cands = ingressCandidates(src);
   const chosen = cands.find((c) => c.host === first.host);
@@ -2644,7 +2736,10 @@ function ingressPolicyGaps(t: Trace): PolicyGap[] {
       if (at.hops[0]?.host !== alt.host) continue; // the override could not place it; nothing was traced from there
       const altGaps = pathPolicyGaps(at);
       const altUndecided = at.hops.some((h) => h.verdict === "unmodeled" || h.evidence.some((e) => e.kind === "absence"));
-      if (at.outcome === t.outcome && altGaps.length === 0 && !altUndecided) continue; // modelled equivalently
+      if (at.outcome === t.outcome && altGaps.length === 0 && !altUndecided) {
+        reproduced.push(alt.host); // modelled equivalently — and the caveat says so (withIngressChoiceStated)
+        continue;
+      }
       const why: string[] = [];
       /* Each reason names the record it rests on: the alternate trace's own deciding evidence, and
          the absence it recorded (acceptance B6 — a claim is displayed with its citation). */
@@ -2676,7 +2771,7 @@ function ingressPolicyGaps(t: Trace): PolicyGap[] {
         out.push({
           host: first.host,
           kind: "ingress-port-unobserved",
-          label: `${formatIpv4(src)}'s frames could reach ${first.host} Vlan${vlan} by ${open.length} physical ${open.length === 1 ? "port" : "ports"} whose inbound filtering was not observed (${shown.join(", ")}${open.length > 4 ? ` and ${open.length - 4} more` : ""}; ${open[0]!.cite ?? `interfaces.${first.host}`}) — the attachment path is not simulated, so which port it is, and what it filters, is unobserved`,
+          label: `${formatIpv4(src)}'s frames could reach ${first.host} Vlan${vlan} by ${open.length} physical ${open.length === 1 ? "port" : "ports"} whose inbound filtering was not observed (${listPhrase(open.length > 4 ? [...shown, `${open.length - 4} more`] : shown, "no port")}; ${open[0]!.cite ?? `interfaces.${first.host}`}) — the attachment path is not simulated, so which port it is, and what it filters, is unobserved`,
           cite: open[0]!.cite ?? `interfaces.${first.host}`,
         });
       }
@@ -2912,22 +3007,66 @@ export function suggestedFlows(): SuggestedFlow[] {
   return SUGGESTED.map((s) => ({ ...s, flow: { ...s.flow } }));
 }
 
+/**
+ * A refusal (denied / dropped) that nothing it rests on leaves open: its hops support it (no hop is
+ * unmodelled and the terminal hop is a refusing one) and no gap that undecides a refusal
+ * (`REFUSAL_UNDECIDING_KINDS`) is present. The same rule `claims.ts :: isDecidedOutcome` states for a
+ * refusal, over the same owners; it lives here so the suggestion builder can ask it without importing
+ * the claims module (which imports this one). `engine.suggestions.test.ts` holds the two in agreement
+ * over a sweep, so they cannot drift apart silently.
+ */
+export function isDecidedRefusal(t: Trace): boolean {
+  if (t.outcome !== "denied" && t.outcome !== "dropped") return false;
+  const last = t.hops[t.hops.length - 1];
+  if (last === undefined || !REFUSING.has(last.verdict)) return false;
+  if (t.hops.some((h) => h.verdict === "unmodeled")) return false;
+  return !unobservedPolicyInputs(t).some((g) => REFUSAL_UNDECIDING_KINDS.has(g.kind));
+}
+const REFUSING: ReadonlySet<Hop["verdict"]> = new Set(["denied", "no-route", "loop", "ttl-exceeded"]);
+
+/**
+ * How many candidate flows the multi-hop preset search may trace for EACH preset it looks for (the
+ * decided multi-hop delivery, the decided multi-hop denial). A structural budget like
+ * `COUNTEREXAMPLE_CANDIDATE_CAP`: the suggestion list is built on first use, inside a gesture, so its
+ * work is bounded by a count, not by the machine.
+ */
+export const MULTIHOP_PRESET_CANDIDATE_CAP = 96;
+
+/** A candidate for a multi-hop preset: a flow whose first routed hop's RIB sends it on to another collected host. */
+interface MultiHopCandidate {
+  flow: Flow;
+  gateway: SviSubnet;
+  route: RouteEntry;
+  nextHost: string;
+  nextCite: Cite;
+  srcIsObserved: boolean;
+}
+
 function buildSuggestions(): SuggestedFlow[] {
   const out: SuggestedFlow[] = [];
+  /**
+   * Trace a candidate and keep it only if the trace produced the outcome the preset poses — and, where
+   * `accept` is given, only if the trace has the SHAPE the rationale describes. The rationale may be a
+   * function of the trace, so a sentence about the evidence that decided it is built FROM that
+   * evidence (disc-app-sample-assumptions #2: a "no-route" preset asserted "its collected RIB holds no
+   * default route" over a drop that came from a routing loop at another hop).
+   */
   const take = (
     id: string,
     title: string,
     flow: Flow,
-    rationale: string,
+    rationale: string | ((t: Trace) => string),
     want: TraceOutcome,
     srcProvenance: SourceProvenance,
+    accept?: (t: Trace) => boolean,
   ): boolean => {
     if (out.some((o) => o.id === id)) return false;
     const t = traceFlow(flow);
     if (t.outcome !== want) return false;
     // Same-source comparison: the ingress assumption is the source's and the flow's own card states it.
     if (want === "delivered" && !isDefiniteOnModelledPath(t)) return false;
-    out.push({ id, title, flow, rationale, expectedOutcome: t.outcome, srcProvenance });
+    if (accept !== undefined && !accept(t)) return false;
+    out.push({ id, title, flow, rationale: typeof rationale === "string" ? rationale : rationale(t), expectedOutcome: t.outcome, srcProvenance });
     return true;
   };
 
@@ -2966,6 +3105,29 @@ function buildSuggestions(): SuggestedFlow[] {
      had traced as delivered, so the moment the engine stopped calling an undecidable permit
      "delivered" they silently disappeared too. Their own outcomes are traced independently. */
   let permitCandidate: Flow | null = null;
+
+  /* The services the collected ACLs name — every evaluable tcp/udp permit line with one port — and
+     one port no permit line names (posed to ask what the rest of a list does). The multi-hop search
+     below poses its questions on these, so a service is a question the evidence suggests, never one
+     typed here; the fixed probe-port list only feeds questions that are traced, never a claim. */
+  const services: { protocol: "tcp" | "udp"; port: number }[] = [];
+  const namedPorts = new Set<number>();
+  for (const named of Object.values(fabric.acls)) {
+    for (const lines of Object.values(named)) {
+      for (const line of lines) {
+        if ((line.action ?? "").toLowerCase() !== "permit" || !lineEvaluability(line).evaluable) continue;
+        const proto = (line.proto ?? "").toLowerCase();
+        if (proto !== "tcp" && proto !== "udp") continue;
+        const port = line.dport !== null && line.dport.op.toLowerCase() === "eq" ? portValue(line.dport.val) : null;
+        if (port === null) continue;
+        namedPorts.add(port);
+        if (!services.some((s) => s.protocol === proto && s.port === port)) services.push({ protocol: proto, port });
+      }
+    }
+  }
+  services.sort((a, b) => a.port - b.port || a.protocol.localeCompare(b.protocol));
+  const unnamedPort = [3389, 23, 445, 8080, 1].find((p) => !namedPorts.has(p));
+  if (unnamedPort !== undefined) services.push({ protocol: "tcp", port: unnamedPort });
 
   for (const [host, named] of Object.entries(fabric.acls).sort(([a], [b]) => a.localeCompare(b))) {
     for (const [name, lines] of Object.entries(named).sort(([a], [b]) => a.localeCompare(b))) {
@@ -3053,6 +3215,101 @@ function buildSuggestions(): SuggestedFlow[] {
     }
   }
 
+  /* ── A2 / B8: questions that cross more than one collected routing table ──────────────────────
+     Derived from the RIBs, never typed: for each observed subnet, one source (an observed endpoint
+     inside it, else a derived host address), the gateway that source enters by, and every route in
+     THAT gateway's collected table whose next hop is an address another collected host owns — the
+     edge that makes a path longer than one hop. Destinations lie inside the route's prefix (an
+     observed endpoint first, else a derived host address). Each candidate is TRACED, and a preset is
+     kept only when the trace itself is what the preset poses:
+       - "multi-hop-delivery": delivered over two or more hops, with nothing on the path or before it
+         left open (`isDefiniteDelivery`) — a decided delivery;
+       - "multi-hop-denial": denied over two or more hops by an ACL line whose text was collected, as a
+         decided refusal (`isDecidedRefusal`), AND with a counterexample the search actually finds
+         (B8) — so opening it shows the blocking line and the nearest flow that would pass.
+     On a snapshot where no such trace exists the preset is simply absent: the list never offers a
+     question whose answer it had to assume. */
+  const multiHop: MultiHopCandidate[] = [];
+  {
+    const seenSubnet = new Set<string>();
+    const subnets = [...SVI_SUBNETS].sort((a, b) => a.prefix.base - b.prefix.base || a.prefix.bits - b.prefix.bits || a.host.localeCompare(b.host));
+    for (const s of subnets) {
+      const key = formatPrefix(s.prefix);
+      if (seenSubnet.has(key)) continue;
+      seenSubnet.add(key);
+      const observed = observedSources.find((ip) => prefixContains(s.prefix, ip) && !ADDRESS_OWNERS.has(ip));
+      const src = observed ?? hostAddressIn(s.prefix, 50);
+      if (src === null || ADDRESS_OWNERS.has(src)) continue;
+      const gw = ingressCandidates(src)[0]?.host;
+      if (gw === undefined || !hasRib(gw)) continue;
+      const gateway = SVI_SUBNETS.find((x) => x.host === gw && prefixContains(x.prefix, src)) ?? s;
+      for (const r of routesOf(gw)) {
+        if (r.nextHop === null) continue;
+        const p = parsePrefix(r.prefix);
+        if (p === null || p.bits === 0 || prefixContains(p, src)) continue;
+        const next = resolveNextHost(gw, r);
+        if (next.host === null || next.host === gw || next.evidence === null) continue;
+        const dsts: Ipv4[] = [];
+        for (const ip of observedSources) if (prefixContains(p, ip) && !ADDRESS_OWNERS.has(ip) && !dsts.includes(ip)) dsts.push(ip);
+        const derived = hostAddressIn(p, 10);
+        if (derived !== null && !ADDRESS_OWNERS.has(derived) && !dsts.includes(derived)) dsts.push(derived);
+        for (const dst of dsts)
+          for (const svc of services)
+            multiHop.push({
+              flow: { srcIp: formatIpv4(src), dstIp: formatIpv4(dst), protocol: svc.protocol, dstPort: svc.port, srcPort: null },
+              gateway,
+              route: r,
+              nextHost: next.host,
+              nextCite: next.evidence.cite,
+              srcIsObserved: observed !== undefined,
+            });
+      }
+    }
+  }
+  const multiHopTitle = (c: MultiHopCandidate): string =>
+    `${c.flow.protocol.toUpperCase()}/${c.flow.dstPort ?? "any"} from ${formatPrefix(c.gateway.prefix)} to ${c.route.prefix}, ${c.gateway.host} then ${c.nextHost}`;
+  const multiHopPath = (c: MultiHopCandidate): string =>
+    `${c.gateway.host} gateways ${formatPrefix(c.gateway.prefix)} (${c.gateway.record.cite}), and its collected RIB sends ${c.route.prefix} to next hop ${c.route.nextHop} (${c.route.cite}), an address of ${c.nextHost} (${c.nextCite})`;
+  const multiHopSource = (c: MultiHopCandidate): SourceProvenance => {
+    const ip = parseIpv4(c.flow.srcIp)!;
+    return c.srcIsObserved
+      ? observedAt(ip)
+      : derivedFrom(ip, c.gateway.prefix, c.gateway.record.cite, `which ${c.gateway.host} gateways on Vlan${c.gateway.record.vlan ?? "?"}`);
+  };
+  for (const c of multiHop.slice(0, MULTIHOP_PRESET_CANDIDATE_CAP)) {
+    if (
+      take(
+        "multi-hop-delivery",
+        multiHopTitle(c),
+        c.flow,
+        `${multiHopPath(c)} — posed to ask what a flow crossing more than one collected routing table meets on the way.`,
+        "delivered",
+        multiHopSource(c),
+        (t) => t.hops.length >= 2 && isDefiniteDelivery(t),
+      )
+    )
+      break;
+  }
+  for (const c of multiHop.slice(0, MULTIHOP_PRESET_CANDIDATE_CAP)) {
+    if (
+      take(
+        "multi-hop-denial",
+        multiHopTitle(c),
+        c.flow,
+        `${multiHopPath(c)} — posed to ask what the access lists on that routed path do with ${c.flow.protocol.toUpperCase()}/${c.flow.dstPort ?? "any"}.`,
+        "denied",
+        multiHopSource(c),
+        (t) => {
+          if (t.hops.length < 2 || !isDecidedRefusal(t)) return false;
+          const b = blockingHop(t);
+          if (b === null || b.evidence.kind !== "acl" || b.evidence.raw === null) return false;
+          return counterexample(t.flow, t).found;
+        },
+      )
+    )
+      break;
+  }
+
   // A source gatewayed by a host whose RIB was never collected.
   for (const s of SVI_SUBNETS) {
     if (hasRib(s.host)) continue;
@@ -3067,14 +3324,16 @@ function buildSuggestions(): SuggestedFlow[] {
         `${s.host} gateways ${formatPrefix(s.prefix)} (${s.record.cite}) but no routing table was collected for it — posed to show what the engine says about a source it holds no table for.`,
         "indeterminate",
         derivedFrom(src, s.prefix, s.record.cite, `which ${s.host} gateways on Vlan${s.record.vlan ?? "?"}`),
+        /* The rationale names s.host's missing table; it is kept only when the trace stops THERE. */
+        (t) => t.hops[0]?.host === s.host && t.hops[0].verdict === "unmodeled" && t.unmodelledHosts.includes(s.host),
       )
     ) {
       break;
     }
   }
 
-  // A source on a RIB host with no default route, aimed off-fabric: a drop — decided only when the
-  // host's table is not shown incomplete by the snapshot (./rib-completeness.ts).
+  // A source on a RIB host aimed off-fabric: a drop — decided only when the host's table is not shown
+  // incomplete by the snapshot (./rib-completeness.ts).
   const offFabric = ["198.51.100.7", "203.0.113.9", "192.0.2.5"].find((ip) => {
     const v = parseIpv4(ip);
     return v !== null && "none" in resolveIngress(v);
@@ -3089,12 +3348,19 @@ function buildSuggestions(): SuggestedFlow[] {
           "no-route",
           `${s.host} Vlan${s.record.vlan ?? "?"} to the internet`,
           { srcIp: formatIpv4(src), dstIp: offFabric, protocol: "tcp", dstPort: 443, srcPort: null },
-          /* The question only. This used to answer it too — "…so this address is unreachable from
-             there…, so the drop is not decided" — a second, hand-written verdict beside the trace's
-             own claim, which already says both and says them with its scope (B2). */
-          `${s.host} is the observed active gateway for ${formatPrefix(s.prefix)} (${s.record.cite}) and its collected RIB holds no default route — posed to ask what that table does with an address outside every prefix it holds.`,
+          /* The question only, and its premise read from the trace's OWN terminal hop. The sentence
+             used to be written before the trace ran — "its collected RIB holds no default route" —
+             and take() accepted any drop, so a drop that came from a routing loop at another hop, or
+             from the hop cap, carried a sentence about a table that does hold a default route
+             (disc-app-sample-assumptions #2). The preset is now kept only when the trace IS a
+             first-hop no-route at this gateway, and the premise is that hop's decidedBy. */
+          (t) => {
+            const d = t.hops[0]!.decidedBy!;
+            return `${s.host} is the observed active gateway for ${formatPrefix(s.prefix)} (${s.record.cite}), and ${d.label} (${d.cite}) — posed to ask what that table does with an address outside every prefix it holds.`;
+          },
           "dropped",
           derivedFrom(src, s.prefix, s.record.cite, `for which ${s.host} is the observed active gateway`),
+          (t) => t.hops.length === 1 && t.hops[0]!.host === s.host && t.hops[0]!.verdict === "no-route" && t.hops[0]!.decidedBy !== null,
         )
       ) {
         break;

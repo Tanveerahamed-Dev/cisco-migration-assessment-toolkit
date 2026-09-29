@@ -611,3 +611,140 @@
   font-family: var(--font-mono);
   font-size: var(--fs-1);
 }
+
+/* ══ what the engine points at (step 3) ══════════════════════════════════════
+   The engine's own evidence pointers for the finding (EvidencePane.tsx `EngineEvidence`). Each pointed
+   record says what it IS — a configuration record, configuration text, an analysis row, a device fact, an
+   absence witness — before it shows anything, so nothing reads as configuration that is not. Achromatic like
+   the chain rail: the severity badge stays the loudest thing on the surface. */
+
+.ev-engine {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.ev-engine__basis {
+  padding: var(--sp-2);
+  border-inline-start: 3px solid var(--border-strong);
+  background: var(--surface-2);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text);
+}
+
+.ev-engine__cap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.ev-erefs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ev-eref {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+
+.ev-eref__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-2);
+  margin: 0;
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+}
+
+.ev-eref__kind {
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.ev-eref__label,
+.ev-eref__note {
+  margin: 0;
+  font-size: var(--fs-1);
+  line-height: var(--lh-2);
+  max-inline-size: 72ch;
+}
+
+.ev-eref__note {
+  color: var(--text-muted);
+}
+
+/* ── an engine record's members (panels/Inspector.tsx EvidenceRecordView; also rendered in the Inspector) ── */
+
+.ev-rec__list {
+  display: grid;
+  grid-template-columns: minmax(8ch, max-content) minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-1);
+}
+
+.ev-rec__row {
+  display: contents;
+}
+
+.ev-rec__key {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.ev-rec__val {
+  margin: 0;
+  min-inline-size: 0;
+}
+
+.ev-rec__num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.ev-rec__meta,
+.ev-rec__cut {
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: var(--fs-1);
+}
+
+.ev-rec__meta {
+  margin: 0;
+}
+
+/* A nested record's JSON and a configuration line are single tokens with no boundary a reader accepts; they
+   scroll inside their own box rather than break inside a token or paint past the pane. */
+.ev-rec__json,
+.ev-rec__literal {
+  display: block;
+  max-inline-size: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  /* UNBREAKABLE-TOKEN CONTAINER (see "wrapping" in src/ui/primitives.css): a nested member is compact JSON
+     and a configuration line is verbatim text, so either can be one token with no space in it (a 240-character
+     `{"key":"value",…}`) wider than the rail. It wraps rather than scrolling sideways: a scrollable region
+     with nothing focusable in it cannot be scrolled from the keyboard (axe scrollable-region-focusable).
+     Line breaks and runs of spaces in the engine's text are kept as written. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ev-rec__scalar {
+  margin: 0;
+}

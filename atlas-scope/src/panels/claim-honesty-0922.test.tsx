@@ -19,13 +19,15 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { failureImpact, linkFailureImpact } from "../analysis/blast";
 import { disputesOf, findPortDisputes, PORT_DISPUTES } from "../analysis/port-claims";
-import { isDecidedOutcome, undecidedOutcomeWord } from "../core/claims";
+import { isDecidedOutcome } from "../core/claims";
 import { fabric, interfacesOf, physicalByHost } from "../core/data";
 import type { Flow, Link } from "../core/types";
 import { counterexample, refusalOf, suggestedFlows, traceFlow } from "../forwarding/engine";
-import { ClaimCard, outcomeWordOf } from "./ClaimCard";
+import { ClaimCard } from "./ClaimCard";
 import { joinPorts, physHasMeasurement, physUnassessedReason } from "./DevicePane";
 import { intentCatalog, runIntentSearch } from "./PathTrace";
+import { describeGolden } from "../test-support/golden-sample";
+import { need } from "./trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -67,6 +69,9 @@ describe("1. a physical row with no measurement is not assessed, whatever the pr
     expect(measured).toBeGreaterThan(0);
   });
 
+  /* The critic's named rows are facts about the reference sample: golden tier (phase 3). The class is the
+     test above, over every physical row. */
+  describeGolden("the critic's rows", () => {
   it("the critic's rows: core1 Gi1/0/40 and core2 Eth1/47 carry 'ok'/'Info' over nothing, and are withheld", () => {
     for (const [host, port] of [["core1", "Gi1/0/40"], ["core1", "Gi1/0/26"], ["core2", "Eth1/47"]] as const) {
       const p = (physicalByHost.get(host) ?? []).find((r) => r.port === port);
@@ -77,15 +82,40 @@ describe("1. a physical row with no measurement is not assessed, whatever the pr
       expect(physUnassessedReason(p!)).toMatch(/stamped risk "ok" and severity "Info" over no measurements/);
     }
   });
+  });
+  it("some unmeasured row carries a producer grade over nothing, and it is withheld with that reason", () => {
+    const stamped = fabric.physical.filter((p) => !physHasMeasurement(p) && p.risk === "ok");
+    expect(stamped.length, "precondition: a row stamped 'ok' over no measurement").toBeGreaterThan(0);
+    for (const p of stamped) expect(physUnassessedReason(p), `${p.host} ${p.port}`).toMatch(/no port status and no error or drop counter was observed/);
+  });
 });
 
 describe("2. an unobserved running configuration is not an observed absence", () => {
-  it("the ports the critic named have runConfigObserved false and no channel/description", () => {
-    const rows = joinPorts("core1").filter((r) => r.intf !== null && r.intf.runConfigObserved === false && r.intf.description === null);
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows.map((r) => r.port)).toContain("Gi1/0/40");
-    // And the compiled data does carry ports whose config WAS observed, so both branches are live.
-    expect(interfacesOf("core1").some((i) => i.runConfigObserved === true)).toBe(true);
+  /* RE-EXPRESSED 2026-09-28 (phase 3). This named core1 Gi1/0/40; the regenerated sample made that port
+     a routed transit link WITH an observed running configuration, so it no longer shows the property.
+     The subject is now found by property — a host carrying both an unobserved-config port with no
+     description and an observed-config port, so both branches are live on one pane — and the critic's
+     remaining named port is pinned in the golden block. */
+  const bothBranches = (): string[] =>
+    Object.keys(fabric.interfaces)
+      .sort()
+      .filter(
+        (h) =>
+          joinPorts(h).some((r) => r.intf !== null && r.intf.runConfigObserved === false && r.intf.description === null) &&
+          interfacesOf(h).some((i) => i.runConfigObserved === true),
+      );
+
+  it("some host carries ports with runConfigObserved false and no description beside ports whose config WAS observed", () => {
+    expect(bothBranches().length, "precondition: a host where both branches are live").toBeGreaterThan(0);
+  });
+
+  describeGolden("the critic's ports", () => {
+    it("core1 Gi1/0/26 still has no observed configuration; Gi1/0/40 gained one when it became the dist1 transit", () => {
+      expect(bothBranches()).toContain("core1");
+      const rows = joinPorts("core1").filter((r) => r.intf !== null && r.intf.runConfigObserved === false && r.intf.description === null);
+      expect(rows.map((r) => r.port)).toContain("Gi1/0/26");
+      expect(interfacesOf("core1").find((i) => i.port === "Gi1/0/40")?.runConfigObserved).toBe(true);
+    });
   });
 });
 
@@ -105,14 +135,11 @@ describe("3. an undecided refusal is undecided in its own sentence", () => {
     expect(undecidedRefusals).toBeGreaterThan(0);
   });
 
-  it("the critic's case: core2 Vlan20 to the internet names the incomplete table in the claim, and the headline word is the undecided one", () => {
-    const t = traceFlow(tcp("10.0.20.50", "198.51.100.7", 443));
-    expect(t.outcome).toBe("dropped");
-    expect(t.claim).toMatch(/That drop is not decided: .*core2/);
-    expect(t.claim).toMatch(/not a decided absence of a route/);
-    expect(outcomeWordOf(t)).toBe(undecidedOutcomeWord(t));
-    expect(outcomeWordOf(t)).toMatch(/^dropped for want of a collected route — not decided/);
-  });
+  /* "the critic's case: core2 Vlan20 to the internet names the incomplete table in the claim, and the
+     headline word is the undecided one" moved 2026-09-28 (phase 3) to
+     claim-honesty.no-route.counterfactual.test.tsx, unchanged in what it asserts: the regenerated core2
+     carries a default route, so no trace of the real snapshot is dropped for want of a route any more,
+     and that branch runs there with default routes counterfactually removed. */
 });
 
 describe("4. a hop-less trace carries the engine's own reason", () => {
@@ -163,6 +190,18 @@ describe("5. the intent tally never states an undecided outcome as decided", () 
 });
 
 describe("6. one port, one cable", () => {
+  /* Every subject below is a port the cable map puts on two cables. On a snapshot with none (the engine's
+     golden fleet) the property has no subject, so each test skips BY NAME through `need`; on the reference
+     sample an absent dispute is a failure (verifier V3). The detector itself is pinned structurally, on a
+     synthetic map, by the last test of this block, which runs on every snapshot. */
+  it("some port is claimed by two cables, and each cable is marked disputed", (ctx) => {
+    for (const d of need(ctx, PORT_DISPUTES.length > 0 ? PORT_DISPUTES : undefined, "port the cable map places on two cables")) {
+      expect(d.claims.length).toBeGreaterThan(1);
+      for (const c of d.claims) expect(disputesOf(c.linkId).length, c.linkId).toBeGreaterThan(0);
+    }
+  });
+
+  describeGolden("the critic's port", () => {
   it("L7 and L26 both claim core1 Gi1/0/40, and each is marked disputed naming the other", () => {
     const d = PORT_DISPUTES.find((x) => x.host === "core1" && x.port === "Gi1/0/40");
     expect(d).toBeDefined();
@@ -173,8 +212,10 @@ describe("6. one port, one cable", () => {
     expect(d!.claims.find((c) => c.linkId === "L26")?.confirmedByOwner).toBe(true);
     expect(d!.claims.find((c) => c.linkId === "L7")?.confirmedByOwner).toBe(false);
   });
+  });
 
-  it("no link blast radius over a disputed cable is 'observed' or names stranded hosts", () => {
+  it("no link blast radius over a disputed cable is 'observed' or names stranded hosts", (ctx) => {
+    need(ctx, PORT_DISPUTES[0], "port the cable map places on two cables");
     let disputedCarrying = 0;
     for (const link of fabric.links) {
       const r = linkFailureImpact(link.id);
@@ -184,16 +225,44 @@ describe("6. one port, one cable", () => {
       expect(r.caveats.join(" "), link.id).toMatch(/A port terminates one cable/);
       if (r.presence === "carrying") disputedCarrying += 1;
     }
-    expect(disputedCarrying).toBeGreaterThan(0);
-    const l7 = linkFailureImpact("L7");
-    expect(l7.claim).toMatch(/disputed/);
-    expect(l7.caveats.join(" ")).toMatch(/L26/);
+    need(ctx, disputedCarrying > 0 ? disputedCarrying : undefined, "disputed cable the projection carries");
+    /* Each disputed cable the projection carries says its radius is disputed, states the dispute, and — for a
+       two-cable dispute — names the cable it is disputed WITH (was L7/L26 by name). A cable the projection does
+       not carry (its far end was never collected) is worded as that collection gap instead, a different claim. */
+    let named = 0;
+    for (const d of PORT_DISPUTES)
+      for (const c of d.claims) {
+        const r = linkFailureImpact(c.linkId);
+        if (r.presence !== "carrying") continue;
+        expect(r.claim, c.linkId).toMatch(/disputed/);
+        expect(r.caveats.join(" "), c.linkId).toContain(`${d.host} ${d.port} is placed on ${d.claims.length} cables`);
+        if (d.claims.length !== 2) continue;
+        const other = d.claims.find((x) => x.linkId !== c.linkId)!;
+        expect(r.caveats.join(" "), c.linkId).toContain(other.linkId);
+        named += 1;
+      }
+    need(ctx, named > 0 ? named : undefined, "two-cable port dispute the projection carries");
   });
 
-  it("a host radius computed with a disputed cable in reach is not 'observed'", () => {
-    const r = failureImpact("core1");
+  describeGolden("the critic's cable", () => {
+    it("L7's radius is disputed and names L26", () => {
+      const l7 = linkFailureImpact("L7");
+      expect(l7.claim).toMatch(/disputed/);
+      expect(l7.caveats.join(" ")).toMatch(/L26/);
+    });
+  });
+
+  it("a host radius computed with a disputed cable in reach is not 'observed'", (ctx) => {
+    /* A disputed port on a COLLECTED host, read from the detector (was core1 by name; phase 3 rename leg).
+       An uncollected host's radius is worded as a collection gap instead, which is not this property. */
+    const d = need(
+      ctx,
+      PORT_DISPUTES.find((x) => fabric.devices.some((dev) => dev.host === x.host && dev.collected)),
+      "collected host's port the cable map places on two cables",
+    );
+    const r = failureImpact(d.host);
     expect(r.certainty).not.toBe("observed");
-    expect(r.caveats.join(" ")).toMatch(/core1 Gi1\/0\/40 is placed on 2 cables/);
+    expect(r.caveats.join(" ")).toContain(`${d.host} ${d.port} is placed on ${d.claims.length} cables`);
   });
 
   it("the detector is structural: a synthetic map with a shared member port is caught, a clean one is not", () => {

@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
+import { describeGolden } from "../test-support/golden-sample";
 import type { Link } from "../core/types";
 import { findPortDisputes } from "./port-claims";
 import {
@@ -26,10 +27,32 @@ import {
 
 const ALL_NODES = () => buildAdjacency({ transit: "all-nodes" });
 
+/* ── TWO TIERS (src/test-support/golden-sample.ts; phase 3) ──
+ * The blocks marked `describeGolden` pin answers derived by hand from the tracked reference sample (host and
+ * cable names, counts, derivations in their comments): they run only on that sample and are skipped BY NAME on
+ * any other dataset (the rename and golden-snapshot legs). Everything else here is an invariant over whatever
+ * fabric is loaded, its subjects resolved by PROPERTY below, never by name. */
+const cmpStr = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+const G0 = buildAdjacency();
+/** The articulation point whose loss strands the most hosts (on the sample: core1); a transit node if none. */
+const CUT: string =
+  [...articulationPoints().points.map((p) => p.host)].sort(
+    (a, b) => failureImpact(b).newlyStranded.length - failureImpact(a).newlyStranded.length || cmpStr(a, b),
+  )[0] ?? G0.nodes[0]!;
+/** A transit node that is not a cut vertex (on the sample: an access leaf). */
+const LEAF: string = G0.nodes.find((n) => !articulationPoints().points.some((p) => p.host === n)) ?? G0.nodes[0]!;
+/** A device the collector never reached, or a name the fabric does not hold. */
+const UNCOLLECTED: string = fabric.devices.find((d) => !d.collected)?.host ?? "no-uncollected-device";
+/** A cable the projection calls a bridge, and one outside the default projection (unknown status), if any. */
+const BRIDGE: string = bridges().bridges[0]?.linkId ?? fabric.links[0]!.id;
+const UNCERTAIN: string = G0.uncertainLinkIds[0] ?? fabric.links[fabric.links.length - 1]!.id;
+/** Two hosts joined by a carrying cable, so a path between them exists on any fabric that has one. */
+const PAIR: readonly [string, string] = [G0.edges[0]!.a, G0.edges[0]!.b];
+
 /** The 17 links `link_centrality` marks is_bridge:true, read straight out of the snapshot. */
 const ENGINE_BRIDGES = fabric.links.filter((l) => l.isBridge === true).map((l) => l.id).sort();
 
-describe("link status classes in the real snapshot", () => {
+describeGolden("link status classes in the real snapshot", () => {
   /* Derivation: histogram of cable_map.cables[].op_status — 42 "up", 2 "unknown" (L34 core2↔
      AP-floor3-01, L35 core2↔wan-edge-rtr1.lab), 0 "down". The observed-down path therefore cannot
      be exercised by the snapshot as collected; it is exercised below on a graph built from the REAL
@@ -49,7 +72,7 @@ describe("link status classes in the real snapshot", () => {
   });
 });
 
-describe("articulationPoints", () => {
+describeGolden("articulationPoints", () => {
   /* Derivation (default = collected-only projection, unknown links excluded):
      every accessN is single-homed to exactly one core — access1/2/4/6/8/10/12/14/16 to core1
      (cables L18–L25 + L7), access3/5/7/9/11/13/15/17 to core2 (L28–L31, L33, L36–L38) — so each
@@ -79,7 +102,7 @@ describe("articulationPoints", () => {
   });
 });
 
-describe("bridges and the cross-check against link_centrality", () => {
+describeGolden("bridges and the cross-check against link_centrality", () => {
   it("agrees with every engine is_bridge verdict on the collected-only graph", () => {
     const r = bridges();
     expect(r.bridges.map((b) => b.linkId).sort()).toEqual(ENGINE_BRIDGES);
@@ -115,7 +138,7 @@ describe("bridges and the cross-check against link_centrality", () => {
   });
 });
 
-describe("failureImpact", () => {
+describeGolden("failureImpact", () => {
   /* Derivation from endpoint_identity counts per host: access1,2,3,4,5,6,13,14,15,16,17 have 3
      endpoints each; access7,8,9,10,11,12 have 2; core1 has 1; podacc1/podacc2 have 2 each.
      Removing core1 on the collected-only graph separates its nine leaves
@@ -181,7 +204,7 @@ describe("failureImpact", () => {
   });
 });
 
-describe("linkFailureImpact", () => {
+describeGolden("linkFailureImpact", () => {
   it("strands the leaf behind a bridge link", () => {
     const r = linkFailureImpact("L18");
     expect(r.presence).toBe("carrying");
@@ -207,7 +230,7 @@ describe("linkFailureImpact", () => {
   });
 });
 
-describe("observed-down links", () => {
+describeGolden("observed-down links", () => {
   /* No cable in this snapshot is observed down, so this exercises the exclusion on a graph built
      from the REAL link records with exactly one field changed: L18 (core1↔access1) flipped to
      "down". Everything else — ports, confirmation, centrality — is the real record. */
@@ -231,7 +254,7 @@ describe("observed-down links", () => {
   });
 });
 
-describe("reachableSet", () => {
+describeGolden("reachableSet", () => {
   it("returns the whole collected fabric from any of its members", () => {
     const r = reachableSet("core1");
     expect(r.hosts).toHaveLength(23);
@@ -246,7 +269,7 @@ describe("reachableSet", () => {
   });
 });
 
-describe("pathsBetween (topology adjacency, not forwarding)", () => {
+describeGolden("pathsBetween (topology adjacency, not forwarding)", () => {
   it("finds the spine path between two access switches on different cores", () => {
     const r = pathsBetween("access1", "access3", 5);
     expect(r.paths).toHaveLength(1);
@@ -280,7 +303,7 @@ describe("pathsBetween (topology adjacency, not forwarding)", () => {
   });
 });
 
-describe("load-bearing measures", () => {
+describeGolden("load-bearing measures", () => {
   /* Derivation: peel degree-1 first — all 17 access switches are leaves on the collected-only
      graph, so coreness 1. What is left (core1, core2, dist1, dist2, podacc1, podacc2) has minimum
      degree 2 and survives as the 2-core; nothing has three independent neighbours inside it, so
@@ -309,15 +332,15 @@ describe("honesty invariants", () => {
     buildAdjacency(),
     articulationPoints(),
     bridges(),
-    failureImpact("core1"),
-    failureImpact("AP-floor1"),
+    failureImpact(CUT),
+    failureImpact(UNCOLLECTED),
     failureImpact("no-such-switch"),
-    linkFailureImpact("L18"),
-    linkFailureImpact("L34"),
+    linkFailureImpact(BRIDGE),
+    linkFailureImpact(UNCERTAIN),
     kCore(),
     linkBetweenness(),
-    reachableSet("core1"),
-    pathsBetween("access1", "access3", 5),
+    reachableSet(CUT),
+    pathsBetween(PAIR[0], PAIR[1], 5),
   ];
 
   it("gives every result a non-empty assumption list", () => {
@@ -387,7 +410,7 @@ describe("Hopcroft–Tarjan against brute force", () => {
   });
 
   it("matches brute force on every single-cable-down perturbation of the real graph", () => {
-    expect(fabric.links).toHaveLength(44);
+    expect(fabric.links.length, "precondition: there are cables to perturb").toBeGreaterThan(0);
     for (const target of fabric.links) {
       const links: Link[] = fabric.links.map((l) => (l.id === target.id ? { ...l, opStatus: "down" } : l));
       check(buildAdjacencyFrom(links, fabric.devices), `collected-only minus ${target.id}`);
@@ -456,15 +479,15 @@ describe("determinism", () => {
        themselves). */
     expect(repeatable("articulationPoints", () => articulationPoints()).points.length).toBeGreaterThan(0);
     expect(repeatable("bridges", () => bridges()).bridges.length).toBeGreaterThan(0);
-    const fi = repeatable("failureImpact(core1)", () => failureImpact("core1"));
-    expect(JSON.stringify(fi).length, "precondition: failureImpact(core1) carries a result").toBeGreaterThan(50);
-    const lfi = repeatable("linkFailureImpact(L18)", () => linkFailureImpact("L18"));
-    expect(JSON.stringify(lfi).length, "precondition: linkFailureImpact(L18) carries a result").toBeGreaterThan(50);
-    expect(repeatable("pathsBetween", () => pathsBetween("podacc1", "podacc2", 5)).paths.length).toBeGreaterThan(0);
+    const fi = repeatable(`failureImpact(${CUT})`, () => failureImpact(CUT));
+    expect(JSON.stringify(fi).length, "precondition: failureImpact(CUT) carries a result").toBeGreaterThan(50);
+    const lfi = repeatable(`linkFailureImpact(${BRIDGE})`, () => linkFailureImpact(BRIDGE));
+    expect(JSON.stringify(lfi).length, "precondition: linkFailureImpact(BRIDGE) carries a result").toBeGreaterThan(50);
+    expect(repeatable("pathsBetween", () => pathsBetween(PAIR[0], PAIR[1], 5)).paths.length).toBeGreaterThan(0);
     const kc = repeatable("kCore", () => kCore());
     expect(JSON.stringify(kc).length, "precondition: kCore carries a result").toBeGreaterThan(50);
-    const rs = repeatable("reachableSet(core1)", () => reachableSet("core1"));
-    expect(JSON.stringify(rs).length, "precondition: reachableSet(core1) carries a result").toBeGreaterThan(50);
+    const rs = repeatable(`reachableSet(${CUT})`, () => reachableSet(CUT));
+    expect(JSON.stringify(rs).length, "precondition: reachableSet(CUT) carries a result").toBeGreaterThan(50);
   });
 
   it("the repeat check can fail: it catches a memo that hands every caller the same object", () => {
@@ -477,8 +500,8 @@ describe("determinism", () => {
   });
 
   it("is independent of the graph instance it was handed", () => {
-    const a = failureImpact("core2", buildAdjacency());
-    const b = failureImpact("core2", buildAdjacencyFrom(fabric.links, fabric.devices));
+    const a = failureImpact(CUT, buildAdjacency());
+    const b = failureImpact(CUT, buildAdjacencyFrom(fabric.links, fabric.devices));
     expect(a).toEqual(b);
   });
 });
@@ -535,7 +558,7 @@ const oracleLink = (g: Graph, linkId: string): string[] => {
   return e === undefined ? [] : oracle(g, [...walk(g, e.a)], undefined, linkId);
 };
 
-describe("regression: a blast radius is measured inside the failed element's own component", () => {
+describeGolden("regression: a blast radius is measured inside the failed element's own component", () => {
   /* L26 (core1↔dist1) and L27 (core1↔core2) are real cables. With both down the projection is in
      two pieces: core1 plus its nine single-homed leaves, and everything else — the larger one.
      access1 is single-homed to core1 by L18 alone, so its removal can strand nobody. Measured
@@ -628,7 +651,7 @@ describe("regression: a blast radius is measured inside the failed element's own
   }, 600_000);
 });
 
-describe("regression: a cut vertex separates only what its removal separates", () => {
+describeGolden("regression: a cut vertex separates only what its removal separates", () => {
   /* With L26, L39, L40, L42 and L43 down, podacc1 and podacc2 hold no carrying cable at all —
      g.isolatedNodes names them in the same object. They were credited to core1, core2 AND dist2 as
      hosts each one separates, inflating three different SPOF verdicts with the same dead hosts. */
@@ -652,7 +675,7 @@ describe("regression: a cut vertex separates only what its removal separates", (
   });
 });
 
-describe("regression: a cut vertex's endpoint count keeps its coverage honesty", () => {
+describeGolden("regression: a cut vertex's endpoint count keeps its coverage honesty", () => {
   /* endpoint_identity holds no record for AP-floor1, AP-floor3-01, core2, dist1, dist2 or
      wan-edge-rtr1.lab. Down core2's eight leaf cables plus L27 and L41 and the fabric becomes
      core1—dist1—podacc{1,2}—dist2—core2: dist2 is then a cut vertex whose entire blast radius is
@@ -705,7 +728,7 @@ describe("regression: a cut vertex's endpoint count keeps its coverage honesty",
   });
 });
 
-describe("regression: reachability from a host whose own cabling was never observed", () => {
+describeGolden("regression: reachability from a host whose own cabling was never observed", () => {
   /* AP-floor3-01's only cable is L34 (core2↔AP-floor3-01, op_status "unknown"). Asked from core2
      the module says "uncertain" and names it; asked from AP-floor3-01 it said "observed: 0
      reachable, 23 unreachable" — the identical unobserved evidence, rendered as a definite answer.
@@ -737,7 +760,7 @@ describe("regression: reachability from a host whose own cabling was never obser
   });
 });
 
-describe("regression: projection prose quotes the quantity that actually moved", () => {
+describeGolden("regression: projection prose quotes the quantity that actually moved", () => {
   /* `differs` is true when EITHER the stranded set or the component count changed, but the sentence
      interpolated only the stranded count — so a component-only difference printed "0 host(s)
      stranded instead of 0", and the endpoint caveat printed "3 endpoint(s) instead of 3". */
@@ -769,7 +792,7 @@ describe("regression: projection prose quotes the quantity that actually moved",
   });
 });
 
-describe("regression: the shared graph is evidence a renderer cannot edit", () => {
+describeGolden("regression: the shared graph is evidence a renderer cannot edit", () => {
   it("freezes what this module builds, mutators included", () => {
     const g = buildAdjacency();
     expect(Object.isFrozen(g)).toBe(true);
@@ -791,7 +814,7 @@ describe("regression: the shared graph is evidence a renderer cannot edit", () =
   });
 });
 
-describe("regression: the path-enumeration ceiling is a ceiling", () => {
+describeGolden("regression: the path-enumeration ceiling is a ceiling", () => {
   /* Math.max(1, Math.min(Math.trunc(NaN), 64)) is NaN, so `paths.length >= cap` was never true and
      enumeration ran unbounded while `truncated` reported false. The snapshot's largest minimum-hop
      path count between any pair is 17, so the ceiling itself is unreachable through pathsBetween —
@@ -833,7 +856,7 @@ describe("regression: the path-enumeration ceiling is a ceiling", () => {
  * Asserted over the whole class, not over L0: for every link the projection excludes as
  * non-transit, every host the message names as never-collected must actually be uncollected.
  */
-describe("the non-transit refusal names only the ends that were never collected", () => {
+describeGolden("the non-transit refusal names only the ends that were never collected", () => {
   const graph = buildAdjacency();
   const collectedOf = new Map(graph.source.devices.map((d) => [d.id, d.collected]));
   const nonTransit = graph.excluded.filter((x) => x.reason === "non-transit-endpoint");
@@ -868,4 +891,60 @@ describe("the non-transit refusal names only the ends that were never collected"
       }
     },
   );
+});
+
+/* ── invariants over any compiled fabric (phase 3), the property-level counterparts of the golden blocks ── */
+describe("blast invariants on the loaded fabric", () => {
+  it("the subjects above were resolved from the data, not named", () => {
+    expect(G0.nodes).toContain(CUT);
+    expect(G0.nodes).toContain(LEAF);
+    expect(fabric.links.map((l) => l.id)).toContain(BRIDGE);
+  });
+
+  it("the engine comparison accounts for every cable once, and never reads silence as a verdict", () => {
+    const r = bridges();
+    const silent = fabric.links.filter((l) => l.isBridge === null).map((l) => l.id).sort();
+    expect([...r.engineComparison.linksWithoutEngineRecord].sort()).toEqual(silent);
+    expect(r.engineComparison.rows.every((row) => row.engine !== false || row.agreement !== "engine-silent")).toBe(true);
+    // every bridge the ENGINE names is one ours names too, or a disagreement is surfaced for it
+    const ours = new Set(r.bridges.map((b) => b.linkId));
+    const disputed = new Set(r.engineComparison.disagreed.map((d) => d.linkId));
+    const engineBridges = fabric.links.filter((l) => l.isBridge === true).map((l) => l.id);
+    expect(engineBridges.filter((id) => !ours.has(id) && !disputed.has(id))).toEqual([]);
+  });
+
+  it("each articulation point's separated hosts are exactly what failureImpact strands, all real nodes", () => {
+    const aps = articulationPoints().points;
+    for (const p of aps) {
+      expect(p.separatedHosts, p.host).toEqual(failureImpact(p.host).newlyStranded);
+      expect(p.separatedHosts.filter((h) => !G0.nodes.includes(h)), p.host).toEqual([]);
+    }
+    expect(aps.every((p) => p.componentsAfterRemoval >= 2)).toBe(true);
+  });
+
+  it("a non-cut transit node strands nobody else", () => {
+    expect(failureImpact(LEAF).newlyStranded).toEqual([]);
+  });
+
+  it("kCore scores every transit node and names every attached non-transit node as unscored, never as 0", () => {
+    const r = kCore();
+    expect(r.coreness.map((c) => c.host).sort()).toEqual([...G0.nodes].sort());
+    expect(r.notScored.map((n) => n.host).sort()).toEqual(G0.attachedNonTransit.map((a) => a.host).sort());
+    expect(r.maxCore).toBe(Math.max(0, ...r.coreness.map((c) => c.k)));
+  });
+
+  it("reachableSet from a node holds every node its own component walks to", () => {
+    const seen = new Set<string>([CUT]);
+    const stack = [CUT];
+    while (stack.length > 0) for (const e of G0.adjacency.get(stack.pop()!) ?? []) if (!seen.has(e.host)) (seen.add(e.host), stack.push(e.host));
+    expect([...seen].filter((h) => !reachableSet(CUT).hosts.includes(h))).toEqual([]);
+  });
+});
+
+describeGolden("blast on the reference sample: the resolved subjects and the population", () => {
+  it("the property-resolved subjects are the ones the golden blocks name", () => {
+    expect(CUT).toBe("core1");
+    expect(fabric.links).toHaveLength(44);
+    expect(G0.uncertainLinkIds).toEqual(["L34", "L35"]);
+  });
 });

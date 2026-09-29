@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# The AssessHub build (npm run build:hub): served by AssessHub at /scope/, regenerated, never authored.
+dist-hub/
 .vite/
 *.tsbuildinfo
 

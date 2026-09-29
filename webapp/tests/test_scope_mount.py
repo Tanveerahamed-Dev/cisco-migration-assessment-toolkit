@@ -363,6 +363,92 @@ def test_a_build_not_made_for_the_scope_mount_is_refused_honestly(tmp_path, vari
         assert view.status_code == 404
 
 
+#: R8-V2-1. Every way an HTML document can declare its own referrer policy, which OVERRIDES the
+#: `Referrer-Policy: same-origin` header every /scope response carries. A policy that strips the path
+#: on same-origin requests (no-referrer, origin, strict-origin) makes the viewer's /api writes arrive
+#: with no /scope Referer, so `_referred_from_scope` cannot refuse them. The server's header is the one
+#: owner of the policy, so the class refused is "the document declares a policy at all" — whatever the
+#: value, the spelling of the name, or which element carries it — not a list of bad values.
+_REFERRER_DECLARATIONS = {
+    "meta-no-referrer": '<meta name="referrer" content="no-referrer">',
+    "meta-origin": '<meta name="referrer" content="origin">',
+    "meta-strict-origin": '<meta name="referrer" content="strict-origin">',
+    "meta-same-origin-still-a-second-owner": '<meta name="referrer" content="same-origin">',
+    "meta-name-case": '<meta NAME="Referrer" content="no-referrer">',
+    "meta-no-content": '<meta name="referrer">',
+    "meta-policy-list": '<meta name="referrer" content="unsafe-url, no-referrer">',
+    "script-referrerpolicy": '<script type="module" referrerpolicy="no-referrer" '
+                             'src="/scope/assets/react-def456.js"></script>',
+    "link-referrerpolicy": '<link rel="modulepreload" referrerpolicy="origin" '
+                           'href="/scope/assets/react-def456.js">',
+    # A duplicated attribute: the HTML tokenizer keeps the FIRST one, so a browser applies this
+    # no-referrer policy whatever the second NAME says. A document that cannot be read the way a
+    # browser reads it is refused, never passed (P3F-V1-2).
+    "meta-duplicate-name-first-wins": '<meta name="referrer" NAME="x" content="no-referrer">',
+    # The `noreferrer` link type is a referrer-policy declaration too: a form (or a followed link)
+    # carrying it sends NO Referer, so a same-origin write from it escapes the /scope containment.
+    "form-rel-noreferrer": '<form method="post" action="/api/demo/seed" rel="noreferrer"></form>',
+    "a-rel-noreferrer-token-case": '<a rel="noopener NoReferrer">x</a>',
+    "area-rel-noreferrer": '<area rel="noreferrer">',
+    # A nested document the page itself declares (iframe srcdoc) is a page under /scope too.
+    "iframe-srcdoc-meta": ('<iframe srcdoc="&lt;meta name=&quot;referrer&quot; '
+                           'content=&quot;no-referrer&quot;&gt;"></iframe>'),
+}
+
+
+@pytest.mark.parametrize("declaration", sorted(_REFERRER_DECLARATIONS))
+def test_a_scope_shell_that_declares_its_own_referrer_policy_is_refused(tmp_path, declaration):
+    dist = tmp_path / "scope-dist"
+    files = write_scope_dist(dist)
+    shell = files["index.html"].replace(
+        b"<title>", _REFERRER_DECLARATIONS[declaration].encode("utf-8") + b"<title>", 1)
+    assert shell != files["index.html"]
+    (dist / "index.html").write_bytes(shell)
+    with _client(tmp_path, dist) as c:
+        assert c.app.state.scope_status == "invalid_build", declaration
+        r = c.get("/scope/snapshots/1/")
+        assert r.status_code == 503 and SCOPE_MARKER not in r.text
+    # the control: the same build without the declaration is served
+    (dist / "index.html").write_bytes(files["index.html"])
+    with _client(tmp_path, dist, db_name="control.db") as c:
+        assert c.app.state.scope_status == "ready"
+
+
+def test_any_html_document_the_scope_mount_serves_may_not_declare_a_referrer_policy(tmp_path):
+    """The class is every HTML document served under /scope, not only the shell: an HTML asset at
+    /scope/assets/x.html is a page under /scope too, and its own policy would strip ITS Referer."""
+    dist = tmp_path / "scope-dist"
+    page = (b"<!doctype html><html><head><meta name=\"referrer\" content=\"no-referrer\"></head>"
+            b"<body>x</body></html>")
+    write_scope_dist(dist, extra_asset=("x.html", page))
+    with _client(tmp_path, dist) as c:
+        assert c.app.state.scope_status == "invalid_build"
+    write_scope_dist(dist, extra_asset=("x.html", page.replace(b"referrer", b"description")))
+    with _client(tmp_path, dist, db_name="control.db") as c:
+        assert c.app.state.scope_status == "ready"
+        assert c.get("/scope/assets/x.html").status_code == 200
+
+
+@pytest.mark.parametrize("declaration", sorted(_REFERRER_DECLARATIONS))
+def test_an_html_asset_declaring_a_referrer_policy_in_any_form_is_refused(tmp_path, declaration):
+    """Every declaration form the shell is refused for is refused in an HTML ASSET too. An asset's
+    references are not held to the shell's /scope/assets grammar, so the shell's other refusals (an
+    unindexed reference, a duplicate attribute) cannot stand in for the referrer rule there: a form
+    with rel=noreferrer, or a duplicated meta name, must be refused on its own."""
+    dist = tmp_path / "scope-dist"
+    page = ("<!doctype html><html><head><title>x</title>" + _REFERRER_DECLARATIONS[declaration]
+            + "</head><body>x</body></html>").encode("utf-8")
+    write_scope_dist(dist, extra_asset=("x.html", page))
+    with _client(tmp_path, dist) as c:
+        assert c.app.state.scope_status == "invalid_build", declaration
+        assert c.get("/scope/assets/x.html").status_code == 503
+    # the control: the same page with the declaration removed is served
+    write_scope_dist(dist, extra_asset=(
+        "x.html", b"<!doctype html><html><head><title>x</title></head><body>x</body></html>"))
+    with _client(tmp_path, dist, db_name="control.db") as c:
+        assert c.app.state.scope_status == "ready"
+
+
 def test_default_scope_dist_is_the_repository_build_when_present(tmp_path, monkeypatch):
     present = tmp_path / "repo-scope-dist"
     write_scope_dist(present)
@@ -375,9 +461,33 @@ def test_default_scope_dist_is_the_repository_build_when_present(tmp_path, monke
     with TestClient(app, base_url="http://localhost") as c:
         r = c.get("/scope/snapshots/1/")
         assert r.status_code == 503 and _NOT_BUILT in r.text
-    # the module default points at the repository's atlas-scope/dist, not somewhere invented
+    # The module default is the repository's HUB build (atlas-scope `npm run build:hub` ->
+    # atlas-scope/dist-hub, the /scope runtime-snapshot build), never the standalone sample build
+    # (atlas-scope/dist), which declares no runtime source and is refused as invalid_build: defaulting
+    # to it made a checkout answer "not built for AssessHub" even after the hub build existed.
     assert app_mod._REPO_ATLAS_SCOPE_DIST == Path(app_mod.__file__).resolve().parents[2] / \
-        "atlas-scope" / "dist"
+        "atlas-scope" / "dist-hub"
+    monkeypatch.undo()
+    assert app_mod.ATLAS_SCOPE_DIST == app_mod._REPO_ATLAS_SCOPE_DIST
+
+
+def test_the_default_and_the_contract_are_the_hub_builds_own_constants():
+    """Two owners, one fact each, reconciled from source text (no node needed): atlas-scope's build
+    config owns where `npm run build:hub` writes and which runtime-source meta it declares; the
+    server's default directory and its build contract must be exactly those."""
+    config = (_ATLAS_SCOPE_ROOT / "vite.config.ts").read_text(encoding="utf-8")
+    package = json.loads((_ATLAS_SCOPE_ROOT / "package.json").read_text(encoding="utf-8"))
+    out_dir = re.search(r'export const HUB_OUT_DIR = "([^"]+)"', config)
+    mode = re.search(r'export const HUB_MODE = "([^"]+)"', config)
+    meta = re.search(r'export const RUNTIME_SOURCE_META = \{ name: "([^"]+)", content: "([^"]+)" \}',
+                     config)
+    assert out_dir and mode and meta, "atlas-scope/vite.config.ts no longer exports the hub constants"
+    assert out_dir.group(1) == app_mod._ATLAS_SCOPE_HUB_BUILD_DIR
+    assert f"--mode {mode.group(1)}" in package["scripts"]["build:hub"]
+    assert meta.groups() == (app_mod._SCOPE_RUNTIME_SOURCE_META, app_mod._SCOPE_RUNTIME_SOURCE_VALUE)
+
+
+_ATLAS_SCOPE_ROOT = Path(__file__).resolve().parents[2] / "atlas-scope"
 
 
 # ── static output carries no client data ────────────────────────────────────────────────────────
@@ -415,6 +525,33 @@ def test_storing_a_snapshot_whose_digest_a_running_scope_build_embeds_withdraws_
         r = c.get("/scope/assets/mount-x.js")
         assert r.status_code == 503 and digest not in r.text
         assert c.get("/scope/snapshots/1/").status_code == 503
+
+
+def test_the_insert_observer_withdraws_the_build_before_the_insert_commits(tmp_path):
+    """R8-V2-3(a). The pre-commit insert observer is its own mechanism, not a duplicate of the
+    request-time watermark recheck: the build is withdrawn BEFORE the row is committed (so before any
+    reader can see it), with no scope request at all. A second observer registered after the app's
+    runs inside the same pre-commit window and records the status there."""
+    digest = _demo_blob_sha256()
+    write_scope_dist(tmp_path / "scope-dist",
+                     extra_asset=("mount-x.js", f'export const s="{digest}";'.encode()))
+    with _client(tmp_path, tmp_path / "scope-dist") as c:
+        store = c.app.state.store
+        assert c.app.state.scope_status == "ready"
+        seen_before_commit = []
+
+        def _witness(_blob_digest):
+            # the insert's transaction is still open here: nothing has been committed yet (another
+            # connection cannot even read the database — the writer holds it — so the Store's own
+            # connection state is the witness)
+            seen_before_commit.append((c.app.state.scope_status, store._conn.in_transaction))
+        store.add_snapshot_digest_observer(_witness)
+        c.post("/api/demo/seed")
+        # inside the pre-commit window: already withdrawn, and the row is not yet committed
+        assert seen_before_commit == [("refused_embeds_stored_snapshot", True)]
+        assert store._conn.in_transaction is False  # ...and it did commit afterwards
+        # and with no /scope request or capability read having run the watermark recheck
+        assert c.app.state.scope_status == "refused_embeds_stored_snapshot"
 
 
 def test_no_served_scope_file_carries_a_stored_snapshot_digest_and_requests_cannot_add_one(tmp_path):
@@ -724,26 +861,105 @@ def test_a_runtime_build_that_bundles_the_compiler_is_not_mistaken_for_a_compile
 #: the compiler. A STATED residual (the compiler owns the fix: a section-rooted citation on every
 #: member), whose exposure the access guard in front of /scope bounds. The member census below fails
 #: if this set GROWS (a new unrecognisable member would be a new silent gap).
+#: `evidenceProjection` (the bounds and counts of the evidence-record projection) is uncited because
+#: it carries no record at all: aggregate numbers only, which _AGGREGATE_ONLY_MEMBERS pins
+#: mechanically (no string anywhere in its value), so it can never carry a host, address or text.
 _UNCITED_MEMBERS = frozenset({("fabric.json", "tiers"), ("fabric.json", "coverage"),
-                              ("producer-emission.json", "deviceAbsent")})
+                              ("producer-emission.json", "deviceAbsent"),
+                              ("fabric.json", "evidenceProjection")})
+_AGGREGATE_ONLY_MEMBERS = frozenset({("fabric.json", "evidenceProjection")})
 
 
 def _compiler_strings(name: str) -> list[str]:
     return re.findall(r'"([^"]+)"', _compiler_export(name))
 
 
-def _member_forms(value) -> dict[str, bytes]:
-    """One compiled member with its file's envelope gone, as a bundler ships a named JSON export:
-    the value alone, JSON.parse of a template literal (rolldown's form for a large member), of a
-    string literal, and a plain object literal (its form for a small one)."""
-    text = json.dumps(value, separators=(",", ":"))
-    template = text.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+#: Every JSON text a member can be serialised to before a bundler wraps it: compact (a named-export
+#: stringify), and the pretty forms a compiled file is written in or a sourcemap carries verbatim
+#: (one space — the tracked sidecars —, two spaces, a tab, and a CRLF checkout of a pretty file).
+_MEMBER_SERIALISATIONS = {
+    "compact": lambda v: json.dumps(v, separators=(",", ":")),
+    "indent1": lambda v: json.dumps(v, indent=1),
+    "indent2": lambda v: json.dumps(v, indent=2),
+    "indent-tab": lambda v: json.dumps(v, indent="\t"),
+    "indent1-crlf": lambda v: json.dumps(v, indent=1).replace("\n", "\r\n"),
+    # JSON allows whitespace on BOTH sides of a colon; a newline or tab there becomes an ESCAPE once
+    # the document is a string (\n inside JSON.parse, \\n inside a sourcemap). No serialiser above puts
+    # one there, so without this form the escaped-whitespace rule is pinned only between members.
+    "ws-around-colon": lambda v: json.dumps(v, indent="\t", separators=(",", "\r\n:\t")),
+}
+
+
+#: One minimal document per signature — each signature is exercised on its OWN, so no other
+#: signature in the same file can mask a regression in it (P3F-V1-3: three of the four were
+#: previously pinned only through documents another signature also recognised).
+def _signature_documents() -> dict[str, tuple[object, object]]:
+    meta = json.loads(min(_tracked_compiled_files().values(), key=len))["meta"]
+    model = {key: meta[key] for key in app_mod._SCOPE_COMPILED_MODEL_SIGNATURE_KEYS}
+    citation = "interfaces.core1.Gi1/0/1"
+    assert citation.split(".", 1)[0] in app_mod._SCOPE_SNAPSHOT_SECTIONS
     return {
-        "json-value": json.dumps(value, indent=1).encode("utf-8"),
-        "json-parse-template": ("var e=JSON.parse(`" + template + "`);export{e as t};").encode(),
-        "json-parse-string": ("var e=JSON.parse(" + json.dumps(text) + ");export{e as t};").encode(),
-        "object-literal": ("var e=" + _js_literal(value) + ";export{e as t};").encode("utf-8"),
+        "compiled-model-envelope": ({"meta": model}, app_mod._SCOPE_COMPILED_MODEL_SIGNATURE),
+        "cite-key": ([{"cite": citation}], (app_mod._SCOPE_RECORD_CITATION_SIGNATURE[0],)),
+        "citation-object-key": ({"x": 1, citation: 1},
+                                (app_mod._SCOPE_RECORD_CITATION_SIGNATURE[1],)),
+        "raw-engine-snapshot": ({"schema": json.loads(_SAMPLE.read_bytes())["schema"]},
+                                (app_mod._SCOPE_RAW_SNAPSHOT_SIGNATURE,)),
     }
+
+
+@pytest.mark.parametrize("document", ["compiled-model-envelope", "cite-key", "citation-object-key",
+                                      "raw-engine-snapshot"])
+def test_each_signature_on_its_own_tolerates_escaped_whitespace_in_every_form(document):
+    value, patterns = _signature_documents()[document]
+    assert len(patterns) >= 1
+    missed = []
+    for serialisation, dump in _MEMBER_SERIALISATIONS.items():
+        for embedding, shipped in _embeddings("doc.json", dump(value).encode("utf-8")).items():
+            views = [shipped]
+            if embedding == "inline-base64-sourcemap":  # the scan reads the decoded payload
+                views = [base64.b64decode(m) for m in app_mod._BASE64_DATA_URI_RE.findall(shipped)]
+            if not all(any(p.search(view) for view in views) for p in patterns):
+                missed.append(f"{serialisation}/{embedding}")
+            if not app_mod._scope_file_carries_compiled_model(shipped):
+                missed.append(f"{serialisation}/{embedding} (verdict)")
+    assert not missed, (document, missed)
+    # NON-VACUITY: the new form really does put an ESCAPED whitespace on both sides of a colon
+    escaped = _embeddings("doc.json", _MEMBER_SERIALISATIONS["ws-around-colon"](value)
+                          .encode("utf-8"))["json-parse-module"]
+    assert re.search(rb'\\"\\r\\n:\\t', escaped), escaped[:200]
+
+
+def _member_forms(value) -> dict[str, bytes]:
+    """One compiled member with its file's envelope gone, in every form a build can ship it. DERIVED,
+    not a hand list (R8-V2-2): every serialisation above composed with every file-level embedding
+    `_embeddings` owns (the JSON asset, an escaped string inside JSON.parse, rolldown's object literal,
+    a sourcemap's sourcesContent and an inline base64 sourcemap) — so a pretty member escaped inside a
+    JS string or a sourcemap is in the census — plus the named-export shapes rolldown emits for one
+    member (JSON.parse of a template literal or a string literal, and a plain object literal)."""
+    forms: dict[str, bytes] = {}
+    for serialisation, dump in _MEMBER_SERIALISATIONS.items():
+        text = dump(value)
+        for embedding, shipped in _embeddings("member.json", text.encode("utf-8")).items():
+            forms[f"{serialisation}/{embedding}"] = shipped
+        template = text.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+        forms[f"{serialisation}/json-parse-template"] = (
+            "var e=JSON.parse(`" + template + "`);export{e as t};").encode("utf-8")
+        forms[f"{serialisation}/json-parse-string"] = (
+            "var e=JSON.parse(" + json.dumps(text) + ");export{e as t};").encode("utf-8")
+    forms["object-literal"] = ("var e=" + _js_literal(value) + ";export{e as t};").encode("utf-8")
+    assert len(forms) == len(_MEMBER_SERIALISATIONS) * (len(_FORMS) + 2) + 1
+    return forms
+
+
+def _strings_in(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in [k, *_strings_in(v)] if isinstance(s, str)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings_in(v)]
+    return []
 
 
 def _member_census(files: dict[str, bytes]) -> tuple[set, set]:
@@ -752,6 +968,11 @@ def _member_census(files: dict[str, bytes]) -> tuple[set, set]:
         members = {key: value for key, value in json.loads(content).items() if key != "meta"}
         assert members, name
         for member, value in members.items():
+            if (name, member) in _AGGREGATE_ONLY_MEMBERS:
+                # the residual's own claim: no string VALUE at any depth (keys are the projection's
+                # own field names, never snapshot data)
+                values = value.values() if isinstance(value, dict) else [value]
+                assert not [s for v in values for s in _strings_in(v)], (name, member)
             forms = _member_forms(value)
             for form, shipped in forms.items():
                 # the envelope really is gone from what is scanned
@@ -759,18 +980,24 @@ def _member_census(files: dict[str, bytes]) -> tuple[set, set]:
                     assert key.encode() not in shipped, (name, member, form, key)
             verdicts = {form: app_mod._scope_file_carries_compiled_model(shipped)
                         for form, shipped in forms.items()}
-            assert len(set(verdicts.values())) == 1, (name, member, verdicts)  # forms agree
+            # forms agree: a member recognised in one form and not another is a form-specific gap
+            assert len(set(verdicts.values())) == 1, (
+                name, member, sorted(form for form, seen in verdicts.items() if not seen))
             (caught if all(verdicts.values()) else uncaught).add((name, member))
     return caught, uncaught
 
 
-def _assert_the_uncited_residual_is_exactly(uncaught: set) -> None:
-    """The residual is recorded (docs/open-issues) as exactly these members, so it is pinned EXACTLY:
-    a new uncited member is a new silent gap, and a member the compiler has since given a citation
-    must leave _UNCITED_MEMBERS (and the record) rather than linger as a stale, over-broad excuse."""
-    assert not uncaught - _UNCITED_MEMBERS, f"new uncited compiled member(s): {uncaught - _UNCITED_MEMBERS}"
-    assert not _UNCITED_MEMBERS - uncaught, (
-        f"now recognised, so no longer a residual: {_UNCITED_MEMBERS - uncaught} — remove them from "
+def _assert_the_uncited_residual_is_exactly(uncaught: set, present: set) -> None:
+    """The residual is recorded (docs/open-issues) as exactly these members, so it is pinned EXACTLY
+    over the members the census input actually carries: a new uncited member is a new silent gap, and
+    a present member the compiler has since given a citation must leave _UNCITED_MEMBERS (and the
+    record) rather than linger as a stale, over-broad excuse. (Exact over what is PRESENT, so tracked
+    output that trails the compiler by one regeneration is judged on its own members; that the
+    residual names only members the compiler still emits is pinned against the REAL compiler.)"""
+    expected = _UNCITED_MEMBERS & present
+    assert not uncaught - expected, f"new uncited compiled member(s): {uncaught - expected}"
+    assert not expected - uncaught, (
+        f"now recognised, so no longer a residual: {expected - uncaught} — remove them from "
         f"_UNCITED_MEMBERS and from the recorded /scope residual")
 
 
@@ -786,13 +1013,33 @@ def test_the_citation_signature_is_the_compilers_own_snapshot_sections():
     assert json.loads(_SAMPLE.read_bytes())["schema"].startswith(tuple(families))
 
 
+def test_a_record_citing_the_snapshot_by_engine_json_pointer_is_recognised_in_every_form():
+    """A compiled record that projects a pointed-to engine record cites it in the ENGINE's form, an
+    RFC 6901 pointer (the form of every punch-list evidence_refs pointer), which may root at a section
+    the compiler's dotted citations never use. The pointers here come from the real producer: the
+    engine's sample snapshot's own punch-list evidence refs."""
+    snap = json.loads(_SAMPLE.read_bytes())
+    pointers = sorted({ref["ref"] for row in snap["punchlist"]
+                       for ref in row.get("evidence_refs") or []
+                       if isinstance(ref, dict) and isinstance(ref.get("ref"), str)
+                       and ref["ref"].startswith("/")})
+    roots = {p.split("/")[1] for p in pointers}
+    assert len(pointers) >= 10 and roots - set(app_mod._SCOPE_SNAPSHOT_SECTIONS), roots  # NON-VACUITY
+    for pointer in pointers:
+        record = [{"pointer": pointer, "cite": pointer, "type": "object", "text": None}]
+        forms = _member_forms(record)
+        missed = sorted(f for f, shipped in forms.items()
+                        if not app_mod._scope_file_carries_compiled_model(shipped))
+        assert not missed, (pointer, missed)
+
+
 def test_every_compiled_member_shipped_without_its_envelope_is_recognised():
     """Member by member over the compiler's real tracked output (no hand-made records): every member
     that carries a citation is recognised in every form a bundler ships it; the rest is exactly the
     stated residual and may not grow."""
     tracked = {Path(path).name: content for path, content in _tracked_compiled_files().items()}
     caught, uncaught = _member_census(tracked)
-    _assert_the_uncited_residual_is_exactly(uncaught)
+    _assert_the_uncited_residual_is_exactly(uncaught, caught | uncaught)
     assert len(caught) >= 15 and {name for name, _member in caught} == set(tracked), caught
 
 
@@ -802,7 +1049,9 @@ def test_every_member_the_real_compiler_emits_is_recognised_without_its_envelope
     assert {s.rsplit("/", 1)[0] + "/" for s in exports["SUPPORTED_SCHEMAS"]} == set(
         app_mod._SCOPE_SNAPSHOT_SCHEMA_FAMILIES)
     caught, uncaught = _member_census(files)
-    _assert_the_uncited_residual_is_exactly(uncaught)
+    _assert_the_uncited_residual_is_exactly(uncaught, caught | uncaught)
+    # the real compiler is the authority on what exists: the residual names no member it stopped emitting
+    assert _UNCITED_MEMBERS <= caught | uncaught, _UNCITED_MEMBERS - (caught | uncaught)
     assert len(caught) >= 15 and {name for name, _member in caught} == set(files), caught
 
 
@@ -886,6 +1135,55 @@ def test_a_real_vite_runtime_build_that_bundles_the_compiler_is_ready(tmp_path, 
     for key in app_mod._SCOPE_COMPILED_MODEL_SIGNATURE_KEYS:  # NON-VACUITY: the names ARE there
         assert key.encode() in shipped, key
     assert app_mod._scope_file_index(runtime)[0] == "ready"
+
+
+def test_the_repositorys_own_hub_build_is_served_at_the_one_door(tmp_path):
+    """The real artifact, not a fixture: atlas-scope's `npm run build:hub` output is what AssessHub
+    serves by default, and it passes every /scope refusal (runtime-snapshot contract, no compiled
+    dataset, fully inspectable) — then a stored snapshot's capability hands out a live link to it.
+    Needs the built directory: a leg that builds it sets ATLAS_SCOPE_REQUIRE_HUB_BUILD=1 (webapp-ci's
+    backend leg), and there its absence FAILS instead of skipping."""
+    hub = app_mod._REPO_ATLAS_SCOPE_DIST
+    if not (hub / "index.html").is_file():
+        reason = f"{hub} is not built (atlas-scope `npm run build:hub`)"
+        if os.environ.get(_REQUIRE_HUB_BUILD_ENV) == "1":
+            pytest.fail(f"{_REQUIRE_HUB_BUILD_ENV}=1 but {reason}", pytrace=False)
+        pytest.skip(reason)
+    assert not [p for p in hub.rglob("*") if p.name.casefold().endswith(".map")]
+    assert app_mod._scope_file_index(hub)[0] == "ready"
+    shell = (hub / "index.html").read_bytes()
+    with _client(tmp_path, _SCOPE_DIST_DEFAULT_SENTINEL) as c:
+        assert c.app.state.scope_status == "ready"
+        sid = c.post("/api/demo/seed").json()["snapshot"]["id"]
+        view = c.get(f"/api/snapshots/{sid}/scope-view").json()
+        assert view["available"] is True and view["href"] == f"/scope/snapshots/{sid}/"
+        page = c.get(view["href"], headers={"sec-fetch-site": "same-origin"})
+        assert page.status_code == 200 and page.content == shell
+        for asset in sorted((hub / "assets").iterdir()):
+            r = c.get(f"/scope/assets/{asset.name}", headers={"sec-fetch-site": "same-origin"})
+            assert r.status_code == 200 and r.content == asset.read_bytes(), asset.name
+
+
+def test_a_required_hub_build_that_is_absent_fails_instead_of_skipping(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_mod, "_REPO_ATLAS_SCOPE_DIST", tmp_path / "not-built")
+    monkeypatch.delenv(_REQUIRE_HUB_BUILD_ENV, raising=False)
+    with pytest.raises(pytest.skip.Exception):
+        test_the_repositorys_own_hub_build_is_served_at_the_one_door(tmp_path)
+    monkeypatch.setenv(_REQUIRE_HUB_BUILD_ENV, "1")
+    with pytest.raises(pytest.fail.Exception, match=_REQUIRE_HUB_BUILD_ENV):
+        test_the_repositorys_own_hub_build_is_served_at_the_one_door(tmp_path)
+    # and the leg that builds it really asks for it
+    webapp_ci = (Path(__file__).resolve().parents[2] / ".github" / "workflows"
+                 / "webapp-ci.yml").read_text(encoding="utf-8")
+    backend = webapp_ci.split("\n  backend:", 1)[1].split("\n  frontend:", 1)[0]
+    assert "run: npm run build:hub" in backend and f'{_REQUIRE_HUB_BUILD_ENV}: "1"' in backend
+    assert backend.index("run: npm run build:hub") < backend.index("python -m pytest webapp/tests")
+
+
+_SCOPE_DIST_DEFAULT_SENTINEL = app_mod._SCOPE_DIST_DEFAULT
+#: Set to 1 on a leg that runs atlas-scope `npm run build:hub` before this suite (the hub build is
+#: untracked build output, so only such a leg can hold this pin to account).
+_REQUIRE_HUB_BUILD_ENV = "ATLAS_SCOPE_REQUIRE_HUB_BUILD"
 
 
 def test_no_module_a_runtime_build_can_bundle_reads_as_snapshot_evidence():
@@ -1131,6 +1429,46 @@ def test_an_unchanged_scope_build_is_indexed_once_and_a_changed_one_is_revalidat
     assert app.state.scope_status == "ready" and reads
     with TestClient(app, base_url="http://localhost") as c:
         assert c.get("/scope/assets/react-def456.js").content == b"export const react = 'rebuilt';"
+
+
+def test_a_build_that_moved_while_it_was_indexed_is_not_remembered(tmp_path, monkeypatch):
+    """R8-V2-3(b). The index is cached only when the build's census is unchanged AFTER indexing: a
+    tree that moved mid-read produced a verdict over bytes that may not match either census, so it
+    stands for that start and is never replayed. Simulated deterministically: the census taken right
+    after the uncached index differs once; the next start, over the original census, must re-read."""
+    dist = tmp_path / "scope-dist"
+    write_scope_dist(dist)
+    real_census = app_mod._frontend_tree_census
+    real_uncached = app_mod._scope_file_index_uncached
+    moved = {"pending": False, "fired": 0}
+
+    def uncached(*args, **kwargs):
+        result = real_uncached(*args, **kwargs)
+        moved["pending"] = True  # the NEXT census is the post-index one in _scope_file_index
+        return result
+
+    def census(root):
+        value = real_census(root)
+        if moved["pending"] and value is not None:
+            moved["pending"] = False
+            moved["fired"] += 1
+            return (value[0] + (("file", "assets/appeared-mid-read.js", ()),), value[1])
+        return value
+    monkeypatch.setattr(app_mod, "_scope_file_index_uncached", uncached)
+    monkeypatch.setattr(app_mod, "_frontend_tree_census", census)
+    reads = _count_reads(monkeypatch)
+    assert _scope_app(tmp_path, dist, "a.db").state.scope_status == "ready"
+    assert moved["fired"] == 1 and reads  # NON-VACUITY: the move was observed after a real read
+    reads.clear()
+    assert _scope_app(tmp_path, dist, "b.db").state.scope_status == "ready"
+    assert reads, "a verdict indexed while the build moved was cached and replayed"
+    # control: once the tree holds still across a start, that verdict IS remembered
+    monkeypatch.setattr(app_mod, "_scope_file_index_uncached", real_uncached)
+    monkeypatch.setattr(app_mod, "_frontend_tree_census", real_census)
+    assert _scope_app(tmp_path, dist, "c.db").state.scope_status == "ready"
+    reads.clear()
+    assert _scope_app(tmp_path, dist, "d.db").state.scope_status == "ready"
+    assert reads == []
 
 
 def test_a_build_without_the_runtime_declaration_is_refused_after_reading_only_its_shell(

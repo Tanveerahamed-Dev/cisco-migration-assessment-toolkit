@@ -67,12 +67,17 @@ function announceServer(server) {
  * The investigation states a reviewer must see. Each is a URL the store can rehydrate from, using
  * the grammar in src/core/store.ts :: encodeInvestigation.
  *
- * Every parameter below was verified against the real compiled data, not assumed:
- *   - `core1` is a real inventoried host and the one host whose ACLs we hold.
- *   - `F001` is a real Critical finding ("CR-01: End-of-support keystone") on core1.
- *   - tcp/3389 to 10.0.30.10 is genuinely DENIED by acls.core1.PROTECT_SERVERS[3]; tcp/443 on the
- *     same pair is DELIVERED. An earlier version of this file used 443 for the "blocked" state,
- *     which would have shown a critic a successful trace under a screenshot named "blocked".
+ * THE QUERIES ARE BOUND TO THE REFERENCE SAMPLE, AND SAY SO. Their parameters (a device, a finding, a
+ * flow) are the tracked engine sample's — the golden tier, src/test-support/golden-sample.ts GOLDEN_SHA —
+ * and every record carries `sample` (the compiled fabric's own sourceSha256, and whether it IS that
+ * golden sample); a run on any other compiled fabric fails its frames loudly rather than showing a
+ * critic an unintended state under an intended name. THE NOTES RESTATE NO FACT OF THE SAMPLE (no host,
+ * finding, ACL, line number or address: the selftest derives those from src/data/fabric.json and fails
+ * a note that names one): what a state answered is read from the page at capture time and recorded as
+ * `observed`, so the manifest cites the compiled data rather than a copy of it that can go stale
+ * (discovery app-sample-assumptions, item 7). History: an earlier version used a DELIVERED port for
+ * the "blocked" state, which would have shown a critic a successful trace under a name saying blocked —
+ * `observed.verdict` now shows what the page said.
  */
 const APP_STATES = [
   { id: "01-fabric-overview", q: "", note: "First paint: the whole fabric, nothing selected." },
@@ -84,16 +89,50 @@ const APP_STATES = [
     id: "06-path-blocked",
     q: "s=path&flow=10.0.10.50>10.0.30.10>tcp>3389&hop=0",
     note:
-      "A genuinely denied flow: the blocking-hop answer, naming PROTECT_SERVERS line 4 of 4 (acls.core1.PROTECT_SERVERS[3]). " +
-      "On the fabric the trace is a '? UNDECIDED' verdict marker on core1 only — the ACL line denies the flow but the denial is not decided, and the trace is single-hop, so no path geometry between devices is drawn (acceptance A5).",
+      "A denied flow: the blocking-hop answer, naming the ACL line that denies it. On the fabric, the verdict marker its " +
+      "decision state calls for; a single-hop trace draws no path geometry between devices (acceptance A5). What the page answered is in `observed`.",
   },
   {
     id: "08-path-indeterminate",
     q: "s=path&flow=10.0.40.50>10.0.30.10>tcp>443&hop=0",
-    note: "A flow reaching dist1, which has no collected RIB — the honest 'I cannot tell you' state.",
+    note: "A flow reaching a device with no collected RIB — the honest 'I cannot tell you' state. What the page answered is in `observed`.",
   },
   { id: "07-evidence-raw", q: "s=evidence&d=core1&tab=raw", note: "Raw inspectable evidence, Grafana-style." },
 ];
+
+/** The compiled fabric this run's queries are read against, and whether it is the golden reference sample. */
+function sampleBinding() {
+  try {
+    const meta = JSON.parse(readFileSync(resolve(HERE, "..", "src", "data", "fabric.json"), "utf8")).meta ?? {};
+    const golden = /GOLDEN_SHA\s*=\s*"([0-9a-f]{64})"/.exec(readFileSync(resolve(HERE, "..", "src", "test-support", "golden-sample.ts"), "utf8"))?.[1] ?? null;
+    return { source: meta.source ?? null, sourceSha256: meta.sourceSha256 ?? null, goldenSha256: golden, golden: golden !== null && meta.sourceSha256 === golden };
+  } catch (e) {
+    return { source: null, sourceSha256: null, goldenSha256: null, golden: false, error: String(e).slice(0, 160) };
+  }
+}
+
+/**
+ * Every fact of the compiled sample a note could restate: device hosts and ids, finding ids, ACL names, and
+ * any IPv4 address or "line N of M" (sample facts by nature). Derived from src/data/fabric.json, never listed.
+ */
+function sampleLiterals() {
+  const f = JSON.parse(readFileSync(resolve(HERE, "..", "src", "data", "fabric.json"), "utf8"));
+  const words = new Set();
+  for (const d of f.devices ?? []) for (const w of [d.host, d.id]) if (typeof w === "string" && w.length > 2) words.add(w);
+  for (const x of f.findings ?? []) if (typeof x.id === "string") words.add(x.id);
+  for (const host of Object.keys(f.acls ?? {})) for (const name of Object.keys(f.acls[host] ?? {})) words.add(name);
+  return [...words];
+}
+/** The sample facts a manifest note restates, as `id: token` (empty when it restates none). */
+function notesRestatingSample(states, words) {
+  const out = [];
+  for (const st of states) {
+    const note = String(st.note ?? "");
+    for (const w of words) if (new RegExp(`(^|[^A-Za-z0-9_])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^A-Za-z0-9_])`).test(note)) out.push(`${st.id}: ${w}`);
+    for (const m of note.matchAll(/\b\d{1,3}(?:\.\d{1,3}){3}\b|\bline \d+ of \d+\b/g)) out.push(`${st.id}: ${m[0]}`);
+  }
+  return out;
+}
 
 const VIEWPORTS = [
   { id: "1920", width: 1920, height: 1080 },
@@ -815,10 +854,19 @@ const READ_FORM_REACH = `(${readFormReach.toString()})()`;
  *                            cut-row scrim's case). Informational; never a failure.
  * Self-contained; serialised into the page.
  */
-function readScrollEdge() {
+function readScrollEdge(paintedBox) {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const out = [];
+  /* A cover the hit test cannot see is still a cover (R9 verifier m3): a positioned box with
+     `pointer-events: none` — App.css's opaque `.stage-warmup` is one — is skipped by elementsFromPoint and
+     elementFromPoint alike, so the reader's view of what it paints over was invisible to this check and to
+     the paint census below. For the duration of this read every element takes part in hit testing (a
+     sheet, removed in `finally`), so the stack IS the paint order; nothing is laid out differently. */
+  const hitAll = document.createElement("style");
+  hitAll.textContent = "*, *::before, *::after { pointer-events: auto !important; }";
+  document.head.appendChild(hitAll);
+  try {
   const seen = (el) => {
     for (let n = el; n; n = n.parentElement) {
       const cs = getComputedStyle(n);
@@ -877,32 +925,10 @@ function readScrollEdge() {
        scrolled away and clips (542.22-630.45 against a strip at 597.03-630.03). Taken by its layout
        box it "covered" the whole strip, which then read as absent: a strip-level slice would have
        gone unreported. The clip chain follows the containing block — a fixed or absolutely
-       positioned box escapes the clip of an ancestor that does not contain it. */
-    const paintedBox = (el) => {
-      const r = el.getBoundingClientRect();
-      let top = Math.max(r.top, 0);
-      let bottom = Math.min(r.bottom, vh);
-      const holdsFixed = (cs) =>
-        (cs.transform !== "" && cs.transform !== "none") ||
-        (cs.filter !== "" && cs.filter !== "none") ||
-        (cs.perspective !== "" && cs.perspective !== "none") ||
-        /\b(?:paint|layout|strict|content)\b/.test(cs.contain) ||
-        /\b(?:transform|perspective|filter)\b/.test(cs.willChange);
-      const escapeOf = (cs) => (cs.position === "fixed" ? "fixed" : cs.position === "absolute" ? "absolute" : "flow");
-      const rootOy = getComputedStyle(document.documentElement).overflowY;
-      let escape = escapeOf(getComputedStyle(el));
-      for (let a = el.parentElement; a && a !== document.documentElement && bottom > top; a = a.parentElement) {
-        const cs = getComputedStyle(a);
-        if (!(escape === "flow" || holdsFixed(cs) || (escape === "absolute" && cs.position !== "static"))) continue;
-        escape = escapeOf(cs);
-        if (a === document.body && rootOy === "visible") continue;
-        if (cs.overflowY === "visible") continue;
-        const ab = a.getBoundingClientRect();
-        top = Math.max(top, ab.top + a.clientTop);
-        bottom = Math.min(bottom, ab.top + a.clientTop + a.clientHeight);
-      }
-      return { top, bottom };
-    };
+       positioned box escapes the clip of an ancestor that does not contain it. `paintedBox` is the
+       PRODUCT's (src/panels/DataGrid.tsx, cut out and transpiled: readScrollEdgeScript), not a copy of it
+       — the hand-written copy this replaced clipped to the padding box where the guard clips to the
+       border box, so the detector's cover logic could drift from the guard's unnoticed (R9 verifier m4). */
     const coversAt = (y) => {
       const over = [];
       for (const hit of document.elementsFromPoint(x, y)) {
@@ -1008,8 +1034,17 @@ function readScrollEdge() {
     });
   }
   return out;
+  } finally {
+    hitAll.remove();
+  }
 }
-const READ_SCROLL_EDGE = `(${readScrollEdge.toString()})()`;
+/** readScrollEdge, run with the product's own `paintedBox` (see readScrollEdge). */
+async function readScrollEdgeScript() {
+  return `(() => {
+    ${await guardExtentSource()}
+    return (${readScrollEdge.toString()})(paintedBox);
+  })()`;
+}
 
 /**
  * C2 (R9 verifier V1): the navigation GUARD's own measure agrees with what the browser paints.
@@ -1027,7 +1062,8 @@ const READ_SCROLL_EDGE = `(${readScrollEdge.toString()})()`;
  */
 const GUARD_EXTENT_FUNCTIONS = ["onScreenExtent", "paintedBox", "uncovered"];
 let guardExtentJs = null;
-async function readNavExtentScript() {
+/** The guard's own functions, cut from src/panels/DataGrid.tsx and stripped of their types (cached). */
+async function guardExtentSource() {
   if (guardExtentJs === null) {
     const src = readFileSync(resolve(HERE, "..", "src", "panels", "DataGrid.tsx"), "utf8").replace(/\r\n/g, "\n");
     const parts = GUARD_EXTENT_FUNCTIONS.map((fn) => {
@@ -1039,8 +1075,11 @@ async function readNavExtentScript() {
     const { default: ts } = await import("typescript");
     guardExtentJs = ts.transpileModule(parts.join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
   }
+  return guardExtentJs;
+}
+async function readNavExtentScript() {
   return `(() => {
-    ${guardExtentJs}
+    ${await guardExtentSource()}
     const vh = window.innerHeight;
     const vw = window.innerWidth;
     const shown = (el) => {
@@ -1054,15 +1093,24 @@ async function readNavExtentScript() {
     for (const strip of document.querySelectorAll('[role="tablist"],[role="toolbar"],[role="menubar"]')) {
       const b = strip.getBoundingClientRect();
       if (b.height <= 1 || b.width <= 1 || !shown(strip)) continue;
+      /* The guard runs as the product runs it; the census below sees what the browser PAINTS, a
+         pointer-events:none cover included (R9 verifier m3: both used to share the hit test's blind spot). */
       const guard = onScreenExtent(strip);
       const maxX = vw - 1;
       const x = Math.min(Math.max((Math.max(b.left, 0) + Math.min(b.right, maxX)) / 2, 0), maxX);
       let truth = 0;
-      for (let y = Math.max(Math.floor(b.top), 0); y < Math.min(Math.ceil(b.bottom), vh); y++) {
-        const py = y + 0.5;
-        if (py < b.top || py > b.bottom) continue;
-        const hit = document.elementFromPoint(x, py);
-        if (hit !== null && strip.contains(hit)) truth++;
+      const hitAll = document.createElement("style");
+      hitAll.textContent = "*, *::before, *::after { pointer-events: auto !important; }";
+      document.head.appendChild(hitAll);
+      try {
+        for (let y = Math.max(Math.floor(b.top), 0); y < Math.min(Math.ceil(b.bottom), vh); y++) {
+          const py = y + 0.5;
+          if (py < b.top || py > b.bottom) continue;
+          const hit = document.elementFromPoint(x, py);
+          if (hit !== null && strip.contains(hit)) truth++;
+        }
+      } finally {
+        hitAll.remove();
       }
       const label = (strip.getAttribute("aria-label") || strip.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 40);
       out.push({ label, box: "y" + b.top.toFixed(1) + "-" + b.bottom.toFixed(1), guard: +guard.toFixed(1), truth });
@@ -1508,6 +1556,9 @@ async function awaitSettledOnScreen(page, t0) {
 async function captureApp(outRoot = resolve(SHOTS, "app")) {
   const server = await serverIdentity();
   announceServer(server);
+  /* The queries are the golden sample's; a frame of any other compiled fabric is not the state its name says. */
+  const sample = sampleBinding();
+  console.log(`sample: ${sample.source} sha256 ${sample.sourceSha256} (${sample.golden ? "the golden reference sample" : "NOT the golden reference sample " + sample.goldenSha256})`);
   const browser = await chromium.launch({ args: GPU_ARGS });
   const written = [];
   const failures = [];
@@ -1590,7 +1641,7 @@ async function captureApp(outRoot = resolve(SHOTS, "app")) {
         const formReach = await page.evaluate(READ_FORM_REACH).catch((e) => [`form reach check failed: ${String(e).slice(0, 160)}`]);
         problems.push(...formReach);
         if (prepareError === null && !(await awaitScrollQuiet(page).catch(() => false))) problems.push("scroll ports never went quiet: a port was still moving when the frame was checked");
-        const scrollEdge = await page.evaluate(READ_SCROLL_EDGE).catch((e) => [{ kind: "check-failed", detail: String(e).slice(0, 160) }]);
+        const scrollEdge = await page.evaluate(await readScrollEdgeScript()).catch((e) => [{ kind: "check-failed", detail: String(e).slice(0, 160) }]);
         problems.push(...describeScrollEdge(scrollEdge));
         problems.push(...describeNavExtent(await readNavExtent(page)));
         if (prepareError !== null) problems.push(`could not prepare the page in 3 attempts: ${prepareError}`);
@@ -1658,7 +1709,15 @@ async function captureApp(outRoot = resolve(SHOTS, "app")) {
             );
           }
         }
-        const rec = { ...st, theme, viewport: vp.id, file, url, server, render, prepMs, settle, attempts: attempts + 1, problems };
+        if (!sample.golden) problems.push(`the compiled fabric (sha256 ${sample.sourceSha256}) is not the golden reference sample this state's query is bound to (${sample.goldenSha256})`);
+        /* What the page itself answered: the manifest cites the compiled data through the app, never a copy of it. */
+        const observed = await page
+          .evaluate(() => {
+            const m = (document.body.innerText || "").match(/\b(denied|indeterminate|dropped|delivered|out of scope)\b/i);
+            return { verdict: m ? m[1].toLowerCase() : null, title: document.title };
+          })
+          .catch(() => null);
+        const rec = { ...st, theme, viewport: vp.id, file, url, server, sample, observed, render, prepMs, settle, attempts: attempts + 1, problems };
         written.push(rec);
         if (problems.length) {
           failures.push(`${theme}/${vp.id}/${st.id}: ${problems.join("; ")}`);
@@ -2014,7 +2073,7 @@ async function checkText() {
             coverage = await page.evaluate(READ_COVERAGE_VISIBILITY);
             tabOverflow = await page.evaluate(READ_TAB_OVERFLOW);
             formReach = await page.evaluate(READ_FORM_REACH);
-            scrollEdge = await page.evaluate(READ_SCROLL_EDGE);
+            scrollEdge = await page.evaluate(await readScrollEdgeScript());
             navExtent = await readNavExtent(page);
             if (st.contrastOf) {
               contrast = await page.evaluate(`(${readContrast.toString()})(${JSON.stringify(st.contrastOf)})`);
@@ -2318,11 +2377,33 @@ const SELFTEST_SCROLL_EDGE_CASES = [
     html: `<div id="p" style="height:200px;overflow-y:auto"><div style="position:sticky;top:0;background:#fff;z-index:1">${EDGE_TABS}</div><div style="height:900px"></div></div>${scrolledTo("p", 19)}`,
     want: null,
   },
+  /* A cover the HIT TEST cannot see (R9 verifier m3): a fixed, 90%-opaque bar with pointer-events:none over
+     0-60 px, the strip at 40-72. The reader sees 12 px of the strip; elementsFromPoint returns nothing of the
+     bar, so this read the strip as whole — as did the paint census and the guard. */
+  {
+    name: "a tab strip half under a pointer-events:none translucent fixed bar is sliced (a hit-test-invisible cover)",
+    html: `<header style="position:fixed;top:0;left:0;right:0;height:60px;background:rgba(255,255,255,0.9);pointer-events:none;z-index:2">bar</header><div style="height:32px"></div>${EDGE_TABS}<div style="height:900px"></div><script>scrollTo(0, 0)</script>`,
+    want: /^chrome-sliced .*"Mode".*top by header \(painted over it\)/,
+  },
 ];
 
+/* The guard's measure on every overlay fixture above, not only the clip one (R9 verifier m1: with the
+   overlay step taken out of onScreenExtent this selftest still passed 42 of 42). Each case names its
+   strip and the px the guard must read, agreeing with the paint census: the toolbar half under a sticky
+   footer, the strip half under a fixed top bar, the toolbar wholly under the footer (0 — covered is
+   absent), and the strip under a pointer-events:none bar (R9 m3: read by a census that sees it). */
+const edgeFixture = (re) => {
+  const c = SELFTEST_SCROLL_EDGE_CASES.find((x) => re.test(x.name));
+  if (c === undefined) throw new Error(`selftest: no scroll-edge fixture matches ${re}`);
+  return c.html;
+};
 const SELFTEST_NAV_EXTENT_CASES = [
-  { name: "the guard reads the state-06 mode strip whole at rest", html: SELFTEST_SCROLL_EDGE_CASES.find((c) => /whole at rest \(its clipped-away/.test(c.name)).html, px: 33 },
-  { name: "the guard reads that strip as cut when its rail scrolled 16 px", html: SELFTEST_SCROLL_EDGE_CASES.find((c) => /scrolled 16 px, is reported sliced/.test(c.name)).html, px: 17 },
+  { name: "the guard reads the state-06 mode strip whole at rest", html: edgeFixture(/whole at rest \(its clipped-away/), label: "Mode", px: 33 },
+  { name: "the guard reads that strip as cut when its rail scrolled 16 px", html: edgeFixture(/scrolled 16 px, is reported sliced/), label: "Mode", px: 17 },
+  { name: "the guard trims a toolbar half under a sticky footer", html: edgeFixture(/toolbar half under a sticky footer/), label: "Tools", px: 27 },
+  { name: "the guard trims a tab strip half under a fixed top bar", html: edgeFixture(/half under a fixed top bar/), label: "Mode", px: 20 },
+  { name: "the guard reads a toolbar wholly under a sticky footer as absent (0 px)", html: edgeFixture(/toolbar wholly under a sticky footer/), label: "Tools", px: 0 },
+  { name: "the guard trims a tab strip under a pointer-events:none bar (a hit-test-invisible cover)", html: edgeFixture(/pointer-events:none translucent fixed bar/), label: "Mode", px: 12 },
 ];
 
 /* Stylesheets and modules with a known set of licences. Each BAD marker is a line the scan must
@@ -2389,9 +2470,28 @@ async function selfTest() {
       problems.push(`${c.name}: expected ${c.want === null ? "no form finding" : c.want}, got ${said}`);
     }
   }
+  /* The manifest's prose restates no fact of the sample (discovery app-sample-assumptions, item 7): every host,
+     device id, finding id and ACL name of the compiled fabric, and any address or "line N of M", is looked for in
+     every state's note. The derived set must be non-empty, or the check read nothing. */
+  {
+    const words = sampleLiterals();
+    ran++;
+    const restated = notesRestatingSample([...APP_STATES, ...TEXT_EXTRA_STATES], words);
+    if (words.length < 10) problems.push(`manifest prose: only ${words.length} sample fact(s) derived from src/data/fabric.json, so the check read nothing`);
+    else if (restated.length) problems.push(`manifest prose restates sample facts (cite the compiled data or the golden tier instead): ${restated.join(", ")}`);
+  }
+  /* The detector's cover logic IS the guard's (R9 verifier m4): readScrollEdge takes the product's paintedBox
+     as its argument and defines none of its own, so the two cannot drift apart. */
+  {
+    ran++;
+    const own = readScrollEdge.toString();
+    if (!/^function readScrollEdge\(paintedBox\)/.test(own) || /(?:const|let|var|function)\s+paintedBox\b/.test(own)) {
+      problems.push("readScrollEdge measures covers with a paintedBox of its own, not the guard's (src/panels/DataGrid.tsx)");
+    }
+  }
   for (const c of SELFTEST_SCROLL_EDGE_CASES) {
     await page.setContent(shell(c.html));
-    const findings = describeScrollEdge(await page.evaluate(READ_SCROLL_EDGE));
+    const findings = describeScrollEdge(await page.evaluate(await readScrollEdgeScript()));
     ran++;
     const said = findings.join(" | ") || "nothing";
     if (c.want === null ? findings.length > 0 : !findings.some((f) => c.want.test(f))) {
@@ -2406,10 +2506,10 @@ async function selfTest() {
     await page.setContent(shell(c.html));
     const rows = await readNavExtent(page);
     ran++;
-    const mode = rows.find((r) => r.label === "Mode");
+    const mode = rows.find((r) => r.label === c.label);
     const said = rows.map((r) => (r.kind === "check-failed" ? r.detail : `"${r.label}" guard ${r.guard} / painted ${r.truth}`)).join(" | ") || "nothing";
     const disagree = describeNavExtent(rows);
-    if (disagree.length || !mode || Math.abs(mode.guard - c.px) > 1) problems.push(`${c.name}: expected the guard to read "Mode" as ${c.px} px, agreeing with paint; got ${said}`);
+    if (disagree.length || !mode || Math.abs(mode.guard - c.px) > 1 || Math.abs(mode.truth - c.px) > 1) problems.push(`${c.name}: expected the guard to read "${c.label}" as ${c.px} px, agreeing with paint; got ${said}`);
   }
   await browser.close();
 

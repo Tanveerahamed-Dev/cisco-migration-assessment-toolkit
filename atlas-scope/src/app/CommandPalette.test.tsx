@@ -15,8 +15,8 @@
  * No testing-library: this project does not depend on one. React's own `act` over a real
  * `createRoot` in jsdom is enough, and it keeps the dependency surface honest.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -497,6 +497,38 @@ describe("command palette", () => {
     expect(useInvestigation.getState().paletteOpen).toBe(false);
     press("k", MOD);
     expect(useInvestigation.getState().paletteOpen).toBe(true);
+  });
+
+  /* R5-V2-2 (independent verifier R5, round 2): the drawer case 'open by palette -> close by palette' went NOT
+     DRIVEN because, when the palette reopened, its search box still held the previous query ("Toggle the
+     evidence rail"), so the harness's typing doubled it and no row matched. The query was reset only in a
+     passive effect of the reopen — after the Dialog had already focused the box with the old text in it.
+     A query belongs to ONE opening: it is gone from the moment the palette closes, so no later opening —
+     whatever path closed it — ever starts from, focuses, or paints it. */
+  it("a reopened palette never starts from the previous opening's query", () => {
+    openPaletteUI();
+    type("Toggle the evidence rail");
+    expect(paletteInput().value, "precondition: a query was typed").toBe("Toggle the evidence rail");
+    press("Escape", {}, paletteInput());
+    expect(useInvestigation.getState().paletteOpen, "precondition: closed").toBe(false);
+    const atFocus: string[] = [];
+    const onFocus = (e: FocusEvent): void => {
+      if (e.target instanceof HTMLInputElement && e.target.classList.contains("palette__input")) atFocus.push(e.target.value);
+    };
+    document.addEventListener("focusin", onFocus, true);
+    try {
+      press("k", MOD);
+    } finally {
+      document.removeEventListener("focusin", onFocus, true);
+    }
+    expect(useInvestigation.getState().paletteOpen, "precondition: reopened").toBe(true);
+    expect(atFocus, "the search box took focus holding the previous opening's query").toEqual([""]);
+    expect(paletteInput().value).toBe("");
+    /* And a close that does not go through the palette's own Escape (the store, as a command does). */
+    type("device core1");
+    act(() => { useInvestigation.getState().setPaletteOpen(false); });
+    act(() => { useInvestigation.getState().setPaletteOpen(true); });
+    expect(paletteInput().value, "closed from outside, reopened: the query is gone").toBe("");
   });
 
   it("implements the APG combobox contract", () => {
@@ -994,9 +1026,13 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
     window.cancelAnimationFrame = (id) => void frames.delete(id);
     delete document.documentElement.dataset.paletteWarm;
     releaseSceneStats();
+    /* DRIVEN TIME (VR2-2): every timer the pre-warm and the dialog stack set runs when the test advances
+       the clock, never because the host happened to be slow or fast. Frames are driven by hand above. */
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     w.requestIdleCallback = saved.ric;
     w.cancelIdleCallback = saved.cic;
     window.requestAnimationFrame = saved.raf;
@@ -1016,24 +1052,30 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
     }
     return ran;
   };
-  /** Present `n` frames, then let the zero-delay timers the frames scheduled run. */
-  const presentFrames = async (n: number): Promise<void> => {
+  /** One presented frame's worth of driven time (a 60 Hz frame interval). */
+  const FRAME_MS = 16;
+  /** Present `n` frames, each followed by one frame interval of driven time (the zero-delay timers the
+   *  frames scheduled run in it). `during` runs inside the frame, for a planted slow host. */
+  const presentFrames = async (n: number, during?: () => void): Promise<void> => {
     for (let i = 0; i < n; i++) {
       const due = [...frames.values()];
       frames.clear();
       act(() => {
         for (const cb of due) cb(0);
+        during?.();
       });
-      await actAsync(async () => {
-        await new Promise((r) => setTimeout(r, 5));
+      act(() => {
+        vi.advanceTimersByTime(FRAME_MS);
       });
     }
+    await actAsync(async () => {});
   };
-  /** Let the drawn phase's minimum hold (WARM_MIN_HOLD_MS, 250 ms) run out, in real time. */
+  /** Let the drawn phase's minimum hold (WARM_MIN_HOLD_MS, 250 ms) run out, in driven time. */
   const holdElapsed = async (): Promise<void> => {
-    await actAsync(async () => {
-      await new Promise((r) => setTimeout(r, 320));
+    act(() => {
+      vi.advanceTimersByTime(320);
     });
+    await actAsync(async () => {});
   };
   const stats = (converged: boolean): SceneStatsEx =>
     ({
@@ -1185,13 +1227,36 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
     expect(warmFrame()?.getAttribute("data-dialog-prewarm"), "still parked, never drawn again").toBe("parked");
   });
 
+  /* VR2-2 (independent verifier R6, round 2): the case above asserted, in REAL time, that three frames had
+     not yet used up the 250 ms hold — red on a loaded host, where three frames take longer than that. A unit
+     test asserts no wall-clock time (vitest.config.ts): the hold is judged in DRIVEN time, which the test
+     advances itself, one nominal frame interval per presented frame. This case is the loaded host, planted:
+     a presented frame that burns 300 ms of real CPU is still one frame, so the frame is not parked early. */
+  it("the minimum hold is counted in driven time, not the host's: a slow frame does not park the frame early", async () => {
+    mount(<CommandPalette />);
+    converge();
+    flushIdle();
+    expect(warmFrame(), "precondition: the pre-warm mounted").not.toBeNull();
+    const burn = (ms: number): void => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        /* a loaded host: real time passes, no work of the test's advances */
+      }
+    };
+    await presentFrames(1, () => burn(300));
+    await presentFrames(3);
+    expect(warmFrame()?.getAttribute("data-dialog-prewarm"), "four frames on a slow host are still four frames: the hold is not over").toBe("raster");
+    await holdElapsed();
+    expect(warmFrame()?.getAttribute("data-dialog-prewarm"), "the hold, driven, ends it").toBe("parked");
+  });
+
   it("parks on a bounded timer when no frame is ever presented (an occluded window)", async () => {
     mount(<CommandPalette />);
     converge();
     flushIdle();
     expect(warmFrame(), "precondition: the pre-warm mounted").not.toBeNull();
-    await actAsync(async () => {
-      await new Promise((r) => setTimeout(r, 1100));
+    act(() => {
+      vi.advanceTimersByTime(1100);
     });
     expect(warmFrame()?.getAttribute("data-dialog-prewarm"), "a drawn layer must not outlive its purpose: it is parked").toBe("parked");
     expect(warmFrame()?.style.visibility).toBe("hidden");
@@ -1220,16 +1285,11 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
   });
 
   it("waits no longer than its ceiling for a scene that never converges", () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      mount(<CommandPalette />);
-      act(() => void vi.advanceTimersByTime(9_900));
-      expect(document.documentElement.dataset.paletteWarm, "before the ceiling it waits for convergence").toBe("waiting");
-      act(() => void vi.advanceTimersByTime(200));
-      expect(document.documentElement.dataset.paletteWarm, "a scene that never converges does not leave the palette cold").toBe("scheduled");
-    } finally {
-      vi.useRealTimers();
-    }
+    mount(<CommandPalette />);
+    act(() => void vi.advanceTimersByTime(9_900));
+    expect(document.documentElement.dataset.paletteWarm, "before the ceiling it waits for convergence").toBe("waiting");
+    act(() => void vi.advanceTimersByTime(200));
+    expect(document.documentElement.dataset.paletteWarm, "a scene that never converges does not leave the palette cold").toBe("scheduled");
   });
 
   it("the pre-warm renders in a transition, so a keystroke is never queued behind it", () => {
@@ -1426,9 +1486,16 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
      dialog stack in src/ui/primitives.tsx (its own sweep there covers every mount order, opening order
      and pre-warm mode of two Dialogs). This sweep runs the APP's dialogs through it.
 
-     THE SET IS DISCOVERED, NOT LISTED: every source module that renders `<Dialog` is found by
-     scanning src. The table below says only HOW each one is opened; a consumer it has no opener for
-     fails the completeness check, so a new dialog cannot arrive unpaired. Each ordered pair runs in
+     THE SET IS DISCOVERED, NOT LISTED — by the RENDERED dialog primitive, not by a spelling (independent
+     verifier R6 VR2-3: the regex /<Dialog\b/ missed `<DialogFrame`, an aliased or namespaced import, a
+     createElement call and an inline modal element). `modalDialogsIn` in review/palette-warm.mjs reads the
+     syntax tree of every non-test module: a modal element is an intrinsic element given role "dialog" and an
+     aria-modal that is not false; a component that renders one or a primitive, resolving tags through
+     imports and aliases, is a dialog component; one whose name comes from its caller (it takes a `title`)
+     is a PRIMITIVE, one that names its dialog itself is an OWNER — a dialog the app opens. The same owner
+     feeds the D3 rung-crossing pass's modal denominator. The table below says only HOW each owner is
+     opened; an owner it has no opener for fails the completeness check, so a new dialog cannot arrive
+     unpaired. Each ordered pair runs in
      both mount orders, with the palette cold and with its frame parked (the state D1 was found in).
      IN A BROWSER, jsdom paints nothing, so this sweep pins attributes (layer, inert, focus, keys), not
      pixels. A rendered check was run on the release build (1280x800, dark and light; reported with
@@ -1470,18 +1537,16 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
   });
 
   const SRC_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const sourceTsx = (dir: string): string[] =>
-    readdirSync(dir).flatMap((name) => {
-      if (name.startsWith("_") || name === "node_modules") return [];
-      const p = join(dir, name);
-      if (statSync(p).isDirectory()) return sourceTsx(p);
-      return name.endsWith(".tsx") && !name.endsWith(".test.tsx") ? [p] : [];
-    });
-  const dialogConsumers = sourceTsx(SRC_ROOT)
-    .map((f) => ({ file: relative(SRC_ROOT, f).split(sep).join("/"), text: readFileSync(f, "utf8") }))
-    .filter((f) => f.file !== "ui/primitives.tsx" && /<Dialog\b/.test(f.text))
-    .map((f) => f.file)
-    .sort();
+  interface DialogCensus {
+    owners: { file: string; component: string }[];
+    primitives: { file: string; component: string }[];
+  }
+  interface DialogDiscovery {
+    modalDialogsIn: (files: Record<string, string>) => Promise<DialogCensus>;
+    appModalDialogs: (dir: string) => Promise<DialogCensus>;
+  }
+  const dialogDiscovery = async (): Promise<DialogDiscovery> =>
+    (await import(/* @vite-ignore */ pathToFileURL(resolve(SRC_ROOT, "..", "review", "palette-warm.mjs")).href)) as DialogDiscovery;
 
   interface AppDialog {
     render: () => ReactNode;
@@ -1505,9 +1570,54 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
     },
   };
 
-  it("the dialog set is discovered from the source, and every discovered dialog has an opener here", () => {
-    expect(dialogConsumers.length, "a pair sweep over fewer than two dialogs pins nothing").toBeGreaterThanOrEqual(2);
-    expect(Object.keys(APP_DIALOGS).sort(), "a module renders <Dialog but this sweep cannot open it").toEqual(dialogConsumers);
+  it("the dialog set is discovered from the source, and every discovered dialog has an opener here", async () => {
+    const census = await (await dialogDiscovery()).appModalDialogs(SRC_ROOT);
+    const owners = [...new Set(census.owners.map((o) => o.file))].sort();
+    expect(census.primitives.map((p) => p.component), "the primitive the app renders its dialogs with was found").toContain("Dialog");
+    expect(owners.length, "a pair sweep over fewer than two dialogs pins nothing").toBeGreaterThanOrEqual(2);
+    expect(Object.keys(APP_DIALOGS).sort(), "a module renders a modal dialog but this sweep cannot open it").toEqual(owners);
+  });
+
+  it("the discovery follows the rendered primitive, not a spelling: every way of rendering one is found", async () => {
+    const PRIMS = [
+      'import { type ReactNode } from "react";',
+      "export function DialogFrame({ title, children }: { title: string; children?: ReactNode }): ReactNode {",
+      '  return <div {...(title ? { role: "dialog", "aria-modal": "true" as const } : {})}><h2>{title}</h2>{children}</div>;',
+      "}",
+      "export function Dialog({ title, open, children }: { title: string; open: boolean; children?: ReactNode }): ReactNode {",
+      "  return open ? <DialogFrame title={title}>{children}</DialogFrame> : null;",
+      "}",
+      "export function Popover({ label }: { label: string }): ReactNode {",
+      '  return <div role="dialog" aria-modal="false" aria-label={label} />;',
+      "}",
+    ].join("\n");
+    const files: Record<string, string> = {
+      "ui/primitives.tsx": PRIMS,
+      "ui/index.ts": 'export { Dialog } from "./primitives";',
+      "a/Frame.tsx": 'import { DialogFrame } from "../ui/primitives";\nexport function A() { return <DialogFrame title="A" />; }',
+      "b/Aliased.tsx": 'import { Dialog as Modal } from "../ui/primitives";\nexport function B() { return <Modal open title="B" />; }',
+      "c/Namespace.tsx": 'import * as ui from "../ui/primitives";\nexport function C() { return <ui.Dialog open title="C" />; }',
+      "d/Created.tsx": 'import { createElement } from "react";\nimport { Dialog } from "../ui/primitives";\nexport const D = () => createElement(Dialog, { open: true, title: "D" });',
+      "e/Inline.tsx": 'export function E() { return <div role="dialog" aria-modal="true" aria-label="E" />; }',
+      "f/Wrapper.tsx": 'import { Dialog } from "../ui/primitives";\nexport function Sheet(props: { title: string }) { return <Dialog open title={props.title} />; }',
+      "f/UsesWrapper.tsx": 'import { Sheet } from "./Wrapper";\nexport function F() { return <Sheet title="F" />; }',
+      "g/ConstAlias.tsx": 'import { Dialog } from "../ui/primitives";\nconst Box = Dialog;\nexport function G() { return <Box open title="G" />; }',
+      "h/Reexport.tsx": 'import { Dialog } from "../ui";\nexport function H() { return <Dialog open title="H" />; }',
+      "x/NotModal.tsx": 'import { Popover } from "../ui/primitives";\nexport function X() { return <><Popover label="x" /><div role="dialog" aria-modal="false" /></>; }',
+      "y/MountsOwner.tsx": 'import { A } from "../a/Frame";\nexport function App() { return <A />; }',
+    };
+    const census = await (await dialogDiscovery()).modalDialogsIn(files);
+    expect(census.owners.map((o) => `${o.file}#${o.component}`), "every rendering of a modal dialog, and nothing that only mounts one").toEqual([
+      "a/Frame.tsx#A",
+      "b/Aliased.tsx#B",
+      "c/Namespace.tsx#C",
+      "d/Created.tsx#D",
+      "e/Inline.tsx#E",
+      "f/UsesWrapper.tsx#F",
+      "g/ConstAlias.tsx#G",
+      "h/Reexport.tsx#H",
+    ]);
+    expect(census.primitives.map((p) => `${p.file}#${p.component}`)).toEqual(["f/Wrapper.tsx#Sheet", "ui/primitives.tsx#Dialog", "ui/primitives.tsx#DialogFrame"]);
   });
 
   const scrimOf = (panel: HTMLElement): HTMLElement | null => {
@@ -1519,8 +1629,8 @@ describe("the palette pre-warm (E2/E3: the first Ctrl+K after load)", () => {
   /** One presented frame and the deferred timers behind it: every open dialog's page-wide inert lands. */
   const settleDialogs = async (): Promise<void> => {
     await presentFrames(2);
-    await actAsync(async () => {
-      await new Promise((r) => setTimeout(r, 130));
+    act(() => {
+      vi.advanceTimersByTime(130);
     });
   };
   const expectOnTop = (top: AppDialog, under: AppDialog, where: string): void => {

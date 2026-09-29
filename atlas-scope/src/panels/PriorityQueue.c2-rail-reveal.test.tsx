@@ -13,7 +13,10 @@
  * the CHAIN a reader actually drives: the real PriorityQueue, a click that selects and holds a row,
  * then the content above growing (the only signal the queue gets is its row's visibility changing),
  * the hold's re-reveal, and the fits-first decision inside it (C2 verifier m4). The control is the
- * R106 shape: a band that cannot hold the row still moves the rail and not the grid.
+ * R106 shape: a band that cannot hold the row still moves the rail and not the grid. And the chain the
+ * C2 defect was MEASURED on (C2 leftover m5): an act from outside the queue changes its `actKey`, the
+ * same commit grows the panel above it, and the act-view restore brings the selection the reader saw
+ * back through `revealBelowHeader` — no intersection delivered, no click in the grid.
  *
  * jsdom has no layout, so it is supplied exactly as PriorityQueue.a4-surface-switch.test.tsx does
  * (`mountInRail`): a scrolling rail whose box clips the grid; the grid, its sticky header and uniform
@@ -23,6 +26,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { actAsync } from "../test-support/act-turns";
+import { findingById } from "../core/data";
 import { useInvestigation } from "../core/store";
 import { PriorityQueue } from "./PriorityQueue";
 
@@ -43,6 +47,12 @@ const STRIP_H = 32;
 
 let portTop = 0;
 let portBottom = 0;
+/** How far content the current commit put ABOVE the grid moved it down (see "act-view restore" below). */
+const GROWTH_PX = 288.7;
+const grown = (): number => (railEl?.querySelector(".path-growth") ? GROWTH_PX : 0);
+/** The grid box's top and bottom as laid out now: where the reader left it, plus what grew above it. */
+const gridBoxTop = (): number => portTop + grown();
+const gridBoxBottom = (): number => portBottom + grown();
 let railEl: HTMLElement | null = null;
 let stripEl: HTMLElement | null = null;
 const railShift = (): number => railEl?.scrollTop ?? 0;
@@ -65,13 +75,26 @@ function mount(ui: ReactNode): HTMLElement {
   return container;
 }
 
+/**
+ * The path panel's answer above the queue, which the reader's ACT grows: rendered from the URGENT store
+ * value, so it mounts in the act's first commit — the very commit whose before-mutation phase
+ * `BeforeCommit` records the reader's view in. Its presence moves the grid down by GROWTH_PX (see
+ * `grown`), exactly as the measured state-06 path panel did.
+ */
+let growthArmed = false;
+function PathAnswerAbove(): ReactNode {
+  const findingId = useInvestigation((s) => s.findingId);
+  return findingId === null || !growthArmed ? null : <div className="path-growth" />;
+}
+
 /** Rail A in miniature around the real queue, with the path panel's tab strip above it. */
-function mountInRail(): { c: HTMLElement; grid: HTMLElement } {
+function mountInRail(opts: { growsOnAct?: boolean } = {}): { c: HTMLElement; grid: HTMLElement } {
   const c = mount(
     <nav className="rail" style={{ overflowY: "auto" }}>
       <div role="tablist" aria-label="Path mode" className="strip">
         <button role="tab">Trace a flow</button>
       </div>
+      {opts.growsOnAct ? <PathAnswerAbove /> : null}
       <PriorityQueue debounceMs={0} />
     </nav>,
   );
@@ -104,13 +127,12 @@ function mountInRail(): { c: HTMLElement; grid: HTMLElement } {
   HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement): DOMRect {
     if (this === railEl) return rect(RAIL.top, RAIL.bottom);
     if (this === stripEl || stripEl?.contains(this)) return rect(RAIL.top - railShift(), RAIL.top - railShift() + STRIP_H);
-    if (this.classList.contains("ag__grid")) return rect(portTop - railShift(), portBottom - railShift());
-    if (this.classList.contains("ag__head")) return rect(portTop - railShift(), portTop - railShift() + HEAD_PX);
+    if (this.classList.contains("ag__grid")) return rect(gridBoxTop() - railShift(), gridBoxBottom() - railShift());
+    if (this.classList.contains("ag__head")) return rect(gridBoxTop() - railShift(), gridBoxTop() - railShift() + HEAD_PX);
     const row = this.closest<HTMLElement>(".ag__row--data");
     if (row) {
       const owner = row.closest<HTMLElement>(".ag__grid");
-      const rows = owner ? [...owner.querySelectorAll<HTMLElement>(".ag__row--data")] : [];
-      const top = portTop - railShift() + HEAD_PX + rows.indexOf(row) * ROW_PX - (owner?.scrollTop ?? 0);
+      const top = gridBoxTop() - railShift() + HEAD_PX + rowIndexOf(row) * ROW_PX - (owner?.scrollTop ?? 0);
       return rect(top, top + ROW_PX);
     }
     return original.call(this) as DOMRect;
@@ -118,14 +140,27 @@ function mountInRail(): { c: HTMLElement; grid: HTMLElement } {
   restore = () => {
     HTMLElement.prototype.getBoundingClientRect = original;
   };
+  const rows = dataRows(c);
+  expect(rows.length, "precondition: the queue draws its rows").toBeGreaterThan(20);
+  expect(new Set(rows.map((r) => r.parentElement)).size, "precondition: every data row shares one parent, so its sibling position is its grid position").toBe(1);
   return { c, grid };
+}
+
+/* A data row's position among the grid's data rows, by walking its earlier siblings (every data row shares
+   one parent — asserted at mount). This was `[...grid.querySelectorAll(rows)].indexOf(row)` inside the
+   layout stub: the act-view case lays out ~1,400 boxes over 146 rows, and a selector query per box took it
+   past the 30 s limit on a loaded host (verifier V2, 2026-09-28). The geometry is unchanged. */
+function rowIndexOf(row: HTMLElement): number {
+  let i = 0;
+  for (let s = row.previousElementSibling; s !== null; s = s.previousElementSibling) if (s.classList.contains("ag__row--data")) i += 1;
+  return i;
 }
 
 const dataRows = (c: HTMLElement): HTMLElement[] => [...c.querySelectorAll<HTMLElement>(".ag__row--data")];
 /** The queue's visible band: below its header, inside the rail's port. */
 const bandOf = (): { top: number; bottom: number } => ({
-  top: Math.max(portTop - railShift() + HEAD_PX, RAIL.top),
-  bottom: Math.min(portBottom - railShift(), RAIL.bottom),
+  top: Math.max(gridBoxTop() - railShift() + HEAD_PX, RAIL.top),
+  bottom: Math.min(gridBoxBottom() - railShift(), RAIL.bottom),
 });
 const inBand = (row: HTMLElement): boolean => {
   const r = row.getBoundingClientRect();
@@ -193,6 +228,7 @@ async function clickRow20(c: HTMLElement, grid: HTMLElement): Promise<HTMLElemen
 beforeEach(() => {
   railEl = null;
   stripEl = null;
+  growthArmed = false;
   watchers.length = 0;
   pageScrolls = 0;
   window.scrollBy = (() => {
@@ -280,6 +316,54 @@ describe("C2 through the real queue: the path panel grows above it inside Rail A
     expect(grid.scrollTop, "the grid's own port already showed the row: it did not scroll").toBe(gridBefore);
     const seen = stripSeen();
     expect(seen <= 1 || seen >= STRIP_H - 1, `the tab strip is whole or gone, not ${seen} of ${STRIP_H} px`).toBe(true);
+    expect(pageScrolls, "the document was never scrolled").toBe(0);
+  });
+
+  /* C2 leftover m5 (R9 verifier, 2026-09-27). The case above drives the hold's re-reveal through an
+     IntersectionObserver delivery. The C2 defect was MEASURED on a different chain: the reader's act
+     changes the queue's `actKey`; `BeforeCommit` records what was on screen in that commit's
+     before-mutation phase; the same commit grows the path panel above the queue; and the deferred
+     reveal, finding the selection it recorded as seen now slid out of the band, restores it by the
+     least movement ("nearest") through `revealBelowHeader` — where the fits-first decision is taken.
+     This case drives exactly that chain: no intersection is delivered, no click lands in the grid,
+     and the act comes from outside the queue (a store write, as the Evidence pane, the palette or a
+     hop does). */
+  it("act-view restore: an act that grows the path panel above a SEEN selection scrolls the grid by the least movement, not the rail", async () => {
+    const { c, grid } = mountInRail({ growsOnAct: true });
+    portTop = RAIL.top + 420;
+    portBottom = portTop + GRID_H;
+    readerScroll(grid, 20 * ROW_PX - 30);
+    const row = dataRows(c)[20]!;
+    expect(row.getBoundingClientRect().top, "precondition: row 20 sits 30 px below the header").toBeCloseTo(portTop + HEAD_PX + 30, 6);
+    expect(inBand(row), `precondition: the reader sees row 20 (${where(row)})`).toBe(true);
+    /* Which finding row 20 is: read from its row header, the finding's id as the queue prints it. (It was
+       read by clicking the row and clearing the selection again — two full queue commits that took this
+       case past the 30 s limit on a loaded host, verifier V2 2026-09-28. The act below asserts the row it
+       selects is THIS row, so a header that named another finding fails there, never silently.) */
+    const id = (row.querySelector('[role="rowheader"]')?.textContent ?? "").trim();
+    expect(findingById.has(id), `precondition: row 20's header names a finding (${id})`).toBe(true);
+    expect(useInvestigation.getState().findingId, "precondition: nothing is selected").toBeNull();
+    expect(row.getAttribute("data-active"), "precondition: nothing is selected").not.toBe("yes");
+    expect(inBand(row), `precondition: the reader still sees row 20 (${where(row)})`).toBe(true);
+    const gridBefore = grid.scrollTop;
+    expect(stripSeen(), "precondition: the tab strip is whole").toBe(STRIP_H);
+    expect(railEl!.querySelector(".path-growth"), "precondition: nothing has grown above the queue yet").toBeNull();
+
+    // The act: select that finding from OUTSIDE the grid. Its first commit changes actKey and grows the panel.
+    growthArmed = true;
+    act(() => {
+      useInvestigation.getState().selectFinding(id);
+    });
+    await settle();
+
+    expect(railEl!.querySelector(".path-growth"), "the act grew the path panel above the queue").not.toBeNull();
+    expect(railShift(), "the shared rail did not move: the grid's own band could hold the row").toBe(0);
+    const b = bandOf();
+    expect(b.bottom - b.top, "the measured 51.3 px band the growth left the grid").toBeCloseTo(51.3, 6);
+    expect(row.getAttribute("data-active"), "the act selected the row").toBe("yes");
+    expect(inBand(row), `the selection the reader was looking at is back in view (${where(row)}; rail ${railShift()}, grid +${grid.scrollTop - gridBefore})`).toBe(true);
+    expect(grid.scrollTop - gridBefore, "restored by the least movement: the 19.1 px slide, rounded away from the row").toBe(20);
+    expect(stripSeen(), "the path panel's tab strip is whole").toBe(STRIP_H);
     expect(pageScrolls, "the document was never scrolled").toBe(0);
   });
 });

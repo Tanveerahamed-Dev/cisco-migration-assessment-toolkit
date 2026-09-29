@@ -86,9 +86,15 @@ def _default_db_path() -> str:
 
 FRONTEND_DIST = _WEBAPP / "frontend" / "dist"
 # Atlas Scope (the 3-D investigation app, `atlas-scope/` in this repository) is served same-origin at
-# /scope when its /scope build exists. Absent in an installed wheel (the parent is site-packages), in
-# which case /scope answers honestly that it is not built. `create_app(scope_dist_dir=...)` overrides.
-_REPO_ATLAS_SCOPE_DIST = _WEBAPP.parent / "atlas-scope" / "dist"
+# /scope when its /scope build exists: the HUB build, which atlas-scope's `npm run build:hub` writes to
+# atlas-scope/dist-hub (base /scope/, no compiled dataset, the runtime-source declaration below). The
+# standalone sample build (atlas-scope/dist, `npm run build`) is a different artifact that declares no
+# runtime source and is refused here (invalid_build), so it is never the default. Absent in an
+# installed wheel (the parent is site-packages), in which case /scope answers honestly that it is not
+# built. A frozen Atlas bundle passes its bundled copy explicitly (webapp/backend/serve.py
+# `_resolve_scope_dist`); `create_app(scope_dist_dir=...)` overrides.
+_ATLAS_SCOPE_HUB_BUILD_DIR = "dist-hub"
+_REPO_ATLAS_SCOPE_DIST = _WEBAPP.parent / "atlas-scope" / _ATLAS_SCOPE_HUB_BUILD_DIR
 ATLAS_SCOPE_DIST = _REPO_ATLAS_SCOPE_DIST
 _SCOPE_MOUNT = "/scope/"
 # The build contract a scope build must declare to be linked from a stored snapshot: it reads that
@@ -105,7 +111,9 @@ _SCOPE_UNAVAILABLE_DETAIL = {
     "invalid_build": "Atlas Scope is not built in this installation for AssessHub: the build found is "
                      "not a /scope runtime-snapshot build (every asset must load from /scope/assets/ "
                      f"and index.html must declare <meta name=\"{_SCOPE_RUNTIME_SOURCE_META}\" "
-                     f"content=\"{_SCOPE_RUNTIME_SOURCE_VALUE}\">), so it is not served.",
+                     f"content=\"{_SCOPE_RUNTIME_SOURCE_VALUE}\">, and no HTML document in it "
+                     "may declare its own referrer policy, which would override the same-origin "
+                     "policy AssessHub's write containment relies on), so it is not served.",
     "refused_compiled_evidence": "Atlas Scope is withheld: its static build carries snapshot "
                                  "evidence (a compiled snapshot model — a compiled source binding "
                                  "or a compiled record's snapshot citation — or an engine snapshot "
@@ -142,11 +150,17 @@ _SCOPE_READY_DETAIL = ("Atlas Scope is built for this installation: the build de
 # literal. webapp/tests/test_scope_mount.py pins the pair to BINDING_KEYS and to the compiler's
 # real output, so a rename there fails the suite instead of silently reopening the gap.
 _SCOPE_COMPILED_MODEL_SIGNATURE_KEYS = ("sourceDigestForm", "sourceGitBlob")
+# Whitespace between JSON tokens in every form a build ships a document: literal whitespace (JSON, a
+# bundler's object literal) or its escape (\n \r \t) when the document is itself a string — escaped
+# inside a JS string, or once more inside a sourcemap's sourcesContent (\\n). Every signature below
+# uses it wherever JSON allows whitespace, so a PRETTY-printed document escaped inside a string is
+# recognised exactly like a compact one (R8-V2-2: a pretty, escaped citation-keyed map was not).
+_JS_WS = rb"(?:\s|\\+[nrt])*"
 # A key bound to a string literal in any form a build ships it: JSON ("k": "v"), a JSON document
 # escaped inside a JS string or a sourcemap (\"k\":\"v\"), or a bundler's object literal (k:`v`).
 _SCOPE_COMPILED_MODEL_SIGNATURE = tuple(
     re.compile(rb"(?<![A-Za-z0-9_$])" + re.escape(key.encode("ascii"))
-               + rb"(?![A-Za-z0-9_$])\\*[\"'`]?\s*:\s*\\*[\"'`]")
+               + rb"(?![A-Za-z0-9_$])\\*[\"'`]?" + _JS_WS + rb":" + _JS_WS + rb"\\*[\"'`]")
     for key in _SCOPE_COMPILED_MODEL_SIGNATURE_KEYS)
 # The binding lives only in each compiled file's `meta` ENVELOPE, which a bundler drops: Vite's JSON
 # plugin turns every top-level member into a named export, so `import { devices } from
@@ -172,18 +186,26 @@ _SCOPE_SNAPSHOT_SCHEMA_FAMILIES = ("collect_parse_snapshot/",)
 # string \"..\", a bundler's `..` or '..'), whose body has no template substitution.
 _JS_QUOTE = rb"""\\*["'`]"""
 _JS_LITERAL_BODY = rb"""(?:[^"'`\\\r\n$]|\$(?!\{))+"""
+# A citation takes one of the two forms a snapshot address is written in: the compiler's dotted path
+# rooted at a section it reads (`interfaces.core1.Gi1/0/1`), or the ENGINE's own form — an RFC 6901
+# JSON Pointer into the same snapshot (`/interfaces/core1/Gi1~10~11`, the form of every punch-list
+# `evidence_refs` pointer, docs/ssot.md "Per-finding evidence pointers"), which a compiled record
+# carries when it projects a pointed-to engine record. A pointer may root at ANY published section
+# (the engine publishes more sections than the compiler reads), so its root is bounded by shape — a
+# lowercase snake-case section name followed by at least one more reference token — not by
+# SECTIONS_READ.
 _SNAPSHOT_CITATION = (
-    _JS_QUOTE + rb"(?:" + b"|".join(re.escape(s.encode("ascii")) for s in _SCOPE_SNAPSHOT_SECTIONS)
-    + rb")[.\[]" + _JS_LITERAL_BODY + _JS_QUOTE)
+    _JS_QUOTE + rb"(?:(?:" + b"|".join(re.escape(s.encode("ascii")) for s in _SCOPE_SNAPSHOT_SECTIONS)
+    + rb")[.\[]|/[a-z][a-z0-9_]*/)" + _JS_LITERAL_BODY + _JS_QUOTE)
 _SCOPE_RECORD_CITATION_SIGNATURE = (
     # a citation bound to a `cite`-named key
     re.compile(rb"(?<![A-Za-z0-9_$])(?:[A-Za-z_$][A-Za-z0-9_$]*)?[Cc]ite" + _JS_QUOTE
-               + rb"?\s*:\s*" + _SNAPSHOT_CITATION),
+               + rb"?" + _JS_WS + rb":" + _JS_WS + _SNAPSHOT_CITATION),
     # a citation used as an object key (a map keyed by citation)
-    re.compile(rb"[{,]\s*" + _SNAPSHOT_CITATION + rb"\s*:"),
+    re.compile(rb"[{,]" + _JS_WS + _SNAPSHOT_CITATION + _JS_WS + rb":"),
 )
 _SCOPE_RAW_SNAPSHOT_SIGNATURE = re.compile(
-    rb"(?<![A-Za-z0-9_$])schema" + _JS_QUOTE + rb"?\s*:\s*" + _JS_QUOTE + rb"(?:"
+    rb"(?<![A-Za-z0-9_$])schema" + _JS_QUOTE + rb"?" + _JS_WS + rb":" + _JS_WS + _JS_QUOTE + rb"(?:"
     + b"|".join(re.escape(f.encode("ascii")) for f in _SCOPE_SNAPSHOT_SCHEMA_FAMILIES)
     + rb")[0-9]+" + _JS_QUOTE)
 # A base64 `data:` URI: how a bundler inlines a small asset or an inline sourcemap (whose
@@ -1501,14 +1523,36 @@ class _ScopeShellParser(HTMLParser):
         self.references: list[tuple[str, str, str]] = []  # (tag, rel/type, url)
         self.runtime_sources: list[str] = []
         self.invalid = False
+        # The document declares its OWN referrer policy (R8-V2-1). Every /scope response carries
+        # `Referrer-Policy: same-origin`, which the /api guard's same-origin write containment
+        # (_referred_from_scope) relies on; a `<meta name="referrer">` overrides that header for the
+        # whole document, and one that strips the path on same-origin requests (no-referrer,
+        # origin, strict-origin) makes the viewer's writes arrive with no /scope Referer. The
+        # server's header is the one owner of the policy, so ANY declaration is refused — whatever
+        # its value — and so is a `referrerpolicy` attribute on any element, the `noreferrer` link
+        # type on any element (a form or followed link carrying it sends NO Referer), and any of these
+        # inside a nested document the page itself declares (an iframe `srcdoc`).
+        self.declares_referrer_policy = False
+        # An element with a duplicated attribute: a browser keeps the FIRST occurrence, so what the
+        # element declares cannot be read here the way a browser reads it. Refused, never passed.
+        self.ambiguous = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         names = [name.casefold() for name, _value in attrs]
         if len(names) != len(set(names)):
+            self.ambiguous = True
             self.invalid = True
             return
         attributes = {name.casefold(): (value or "") for name, value in attrs}
         tag = tag.casefold()
+        if ("referrerpolicy" in attributes
+                or (tag == "meta" and attributes.get("name", "").strip().casefold() == "referrer")
+                or "noreferrer" in attributes.get("rel", "").casefold().split()
+                or ("srcdoc" in attributes
+                    and _scope_html_text_declares_referrer_policy(attributes["srcdoc"]))):
+            self.declares_referrer_policy = True
+            self.invalid = True
+            return
         if tag == "base" or (tag == "meta" and "http-equiv" in attributes):
             self.invalid = True
             return
@@ -1551,6 +1595,37 @@ def _scope_shell_valid(indexed: dict[str, _FrontendFile]) -> bool:
                 return False
             module_entries += 1
     return module_entries >= 1
+
+
+#: The media types a browser renders as an HTML document (read from the index's own media-type
+#: inference, so .htm/.xhtml/.shtml are covered by the same registry that serves them).
+_SCOPE_HTML_MEDIA_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+
+
+def _scope_html_text_declares_referrer_policy(text: str) -> bool:
+    """Whether one HTML text declares its own referrer policy in any form _ScopeShellParser knows,
+    or cannot be read the way a browser reads it (a duplicated attribute, unparseable markup): what
+    was not read is refused, never passed."""
+    try:
+        parser = _ScopeShellParser()
+        parser.feed(text)
+        parser.close()
+    except (ValueError, RecursionError):
+        return True
+    return parser.declares_referrer_policy or parser.ambiguous
+
+
+def _scope_html_declares_referrer_policy(entry: _FrontendFile) -> bool:
+    """Whether one served HTML member declares its own referrer policy (see _ScopeShellParser). A
+    member whose bytes are not UTF-8 — or whose markup is ambiguous — cannot be read the way a
+    browser may read it, so it counts as declaring one: what was not read is refused, never passed."""
+    if entry.media_type.split(";", 1)[0].strip().casefold() not in _SCOPE_HTML_MEDIA_TYPES:
+        return False
+    try:
+        text = entry.content.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return True
+    return _scope_html_text_declares_referrer_policy(text)
 
 
 class _ScopeUninspectable(Exception):
@@ -1757,6 +1832,11 @@ def _scope_file_index_uncached(
     if index is None:
         return "invalid_build", {}, frozenset()
     files = index[1]
+    # Every HTML document the mount serves is a page under /scope, not only the shell (which
+    # _scope_shell_valid already held to this): none may declare its own referrer policy.
+    if any(_scope_html_declares_referrer_policy(entry)
+           for relative, entry in files.items() if relative != "index.html"):
+        return "invalid_build", {}, frozenset()
     uninspectable = False
     for relative, entry in files.items():
         verdict = _scope_file_verdict(relative, entry.content)

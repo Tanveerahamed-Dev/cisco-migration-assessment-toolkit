@@ -26,6 +26,8 @@ import {
   sharePayload,
 } from "./claims";
 import { fabric } from "./data";
+import { listPhrase } from "./phrases";
+import { describeGolden } from "../test-support/golden-sample";
 import { suggestedFlows, traceFlow } from "../forwarding/engine";
 import type { Flow, Trace } from "./types";
 
@@ -34,13 +36,55 @@ const DENIED: Flow = { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "tcp"
 // INET_RETURN), so the delivered case is a flow core2 delivers with nothing on its path undecided.
 const DELIVERED: Flow = { srcIp: "10.0.20.10", dstIp: "10.0.10.10", protocol: "tcp", dstPort: 443, srcPort: null };
 const NO_RIB: Flow = { srcIp: "10.0.40.50", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 443, srcPort: null };
+
+/* ── a trace that touched a host with no collected RIB ──
+ * These tests used to take that trace from the real engine, over the flow NO_RIB, because on an older sample it
+ * entered at dist1, which had no RIB. The regenerated sample collects dist1's RIB (routableHosts is read from
+ * fabric.coverage), and MEASURED: no SVI-to-SVI or SVI-to-external flow on the reference sample reaches a host
+ * without a RIB (the golden block below pins that, so the day the sample gains one this file says so). The rule
+ * itself holds for any dataset, so it is pinned on a hand-built trace whose unmodelled host is resolved by
+ * PROPERTY: a device the loaded fabric collected no routing table for (or, on a fleet where every device has one,
+ * a host the fabric does not contain, which by definition has no RIB). The first hop is a RIB host, so the
+ * sentence's "N of them on a RIB host" clause has both a RIB and a no-RIB hop to count. */
+const ribHost = (): string => {
+  const h = fabric.coverage.routableHosts[0];
+  expect(h, "precondition: the fabric collected at least one RIB (else there is no modelled hop to start from)").toBeDefined();
+  return h!;
+};
+const noRibHost = (): string =>
+  fabric.devices.map((d) => d.host).find((h) => !fabric.coverage.routableHosts.includes(h)) ?? "host-without-a-collected-rib";
+function touchedNoRib(outcome: Trace["outcome"], listUnmodelled = true): Trace {
+  const x = noRibHost();
+  const hop = (index: number, host: string, verdict: Trace["hops"][number]["verdict"]): Trace["hops"][number] => ({
+    index, host, outIntf: null, nextHop: null, nextHost: null, verdict, decidedBy: null, evidence: [], alternatives: [],
+  });
+  return {
+    flow: { srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 443, srcPort: null },
+    outcome,
+    hops: [hop(0, ribHost(), "forwarded"), hop(1, x, outcome === "delivered" ? "delivered" : "unmodeled")],
+    claim: "",
+    caveats: [],
+    unmodelledHosts: listUnmodelled ? [x] : [],
+    elapsedMs: 0,
+  };
+}
 const OFF_MODEL: Flow = { srcIp: "198.51.100.7", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 443, srcPort: null };
 
 describe("badge strength is bounded by what the evidence supports", () => {
   it("never awards SCOPED to a trace that touched a host with no RIB", () => {
-    const t = traceFlow(NO_RIB);
-    expect(t.unmodelledHosts).toContain("dist1");
+    /* outcome "delivered", so the outcome-band rule does not answer first: only the unmodelled-host rule can
+       withhold the badge here. The control (same trace, the host not listed as unmodelled) proves the fixture
+       reaches the later checks, which answer PARTIAL for the no-RIB hop, so a removed rule turns this red. */
+    const t = touchedNoRib("delivered");
+    expect(fabric.coverage.routableHosts).not.toContain(t.unmodelledHosts[0]);
+    expect(claimBadge(touchedNoRib("delivered", false)), "control").toBe("PARTIAL");
     expect(claimBadge(t)).toBe("INDETERMINATE");
+  });
+
+  it("every real trace that did touch a host with no RIB is INDETERMINATE (the invariant over the engine)", () => {
+    const flows = [DENIED, DELIVERED, NO_RIB, OFF_MODEL, ...suggestedFlows().map((s) => s.flow)];
+    const touched = flows.map((f) => traceFlow(f)).filter((t) => t.unmodelledHosts.length > 0);
+    expect(touched.filter((t) => claimBadge(t) !== "INDETERMINATE").map((t) => t.flow)).toEqual([]);
   });
 
   it("marks a flow we cannot even enter as OUT OF SCOPE, not as a failure", () => {
@@ -73,7 +117,7 @@ describe("the verdict header states its own denominators", () => {
   });
 
   it("reports unmodelled hosts on the path rather than omitting them", () => {
-    const t = traceFlow(NO_RIB);
+    const t = touchedNoRib("indeterminate");
     const s = scopeTuple(t);
     expect(s.unmodelledOnPath).toBeGreaterThan(0);
     expect(T1_verdict(t)).toContain("could not be modelled");
@@ -108,17 +152,20 @@ describe("the verdict header states its own denominators", () => {
 });
 
 describe("the blocking-hop answer names the literal configuration line", () => {
-  it("gives host, ACL name and the raw config text with a citation", () => {
-    const t = traceFlow(DENIED);
-    expect(t.outcome).toBe("denied");
-    const hop = t.hops.find((h) => h.verdict === "denied");
+  it("gives host, ACL name and the raw config text with a citation (invariant: read from the deciding hop)", () => {
+    /* The denied case is resolved by property: the first suggested flow the product itself offers whose trace is
+       denied at an ACL. Every expected fragment is read off that hop, so this holds on any dataset. */
+    const t = [DENIED, ...suggestedFlows().map((s) => s.flow)].map((f) => traceFlow(f)).find((x) => x.outcome === "denied" && x.hops.some((h) => h.decidedBy?.kind === "acl"));
+    expect(t, "precondition: the product offers a flow an ACL denies (else T2 has nothing to name)").toBeDefined();
+    const hop = t!.hops.find((h) => h.verdict === "denied" && h.decidedBy?.kind === "acl");
     expect(hop).toBeDefined();
+    const e = hop!.decidedBy!;
     const sentence = T2_blockingHop(hop!);
     expect(sentence).not.toBeNull();
-    expect(sentence!).toContain("core1");
-    expect(sentence!).toContain("PROTECT_SERVERS");
-    expect(sentence!).toContain("deny ip any any");
-    expect(sentence!).toContain("acls.core1.PROTECT_SERVERS[3]");
+    expect(sentence!).toContain(`Blocked at ${hop!.host}, ACL ${e.label}: `);
+    expect(e.raw, "the deciding line carries its raw text").toBeTruthy();
+    expect(sentence!).toContain(e.raw!);
+    expect(sentence!).toContain(`Cited at ${e.cite}.`);
   });
 
   it("returns null rather than inventing a sentence when the hop was decided by a route", () => {
@@ -226,7 +273,8 @@ describe("a verdict cannot be quoted without its bounds", () => {
     const p = sharePayload(t);
     expect(p).toContain(t.claim);
     expect(p).toContain("SCOPE:");
-    expect(p).toContain("core1");
+    // The scope line names the RIB hosts through the one list owner, read from the coverage (not a literal host).
+    expect(p).toContain(`SCOPE: RIBs collected for ${listPhrase(fabric.coverage.routableHosts)} (`);
     expect(p).toContain("CAVEATS");
     expect(p).toContain(fabric.meta.sourceSha256);
     expect(p).toContain(T10_SAMPLE_PATH);
@@ -508,5 +556,41 @@ describe("routeFieldReading — the one owner of how a route field reads (B1)", 
         expect(na(r, f), `${r.cite}.${f}`).toBe(reading.kind === "not-applicable" ? reading.text : null);
       }
     }
+  });
+});
+
+/* ── the golden tier: facts true only of the tracked reference sample (src/test-support/golden-sample.ts) ── */
+describeGolden("claims over the reference sample", () => {
+  it("DENIED is refused at core1's PROTECT_SERVERS final line, cited to the record", () => {
+    const t = traceFlow(DENIED);
+    expect(t.outcome).toBe("denied");
+    const sentence = T2_blockingHop(t.hops.find((h) => h.verdict === "denied")!);
+    expect(sentence!).toContain("core1");
+    expect(sentence!).toContain("PROTECT_SERVERS");
+    expect(sentence!).toContain("deny ip any any");
+    expect(sentence!).toContain("acls.core1.PROTECT_SERVERS[3]");
+  });
+
+  it("no SVI-to-SVI or SVI-to-external flow reaches a host without a RIB (why the no-RIB rule is pinned on a hand-built trace)", () => {
+    /* Measured on the regenerated sample: every host a trace can reach has a collected RIB. If the sample changes
+       so one does not, this goes red and the real engine case can come back as the primary test. */
+    const ips = new Set<string>();
+    for (const r of fabric.l3) {
+      const ip = (r.sviIp ?? "").split(" ")[0] ?? "";
+      if (ip !== "") ips.add(ip).add(ip.replace(/\.\d+$/, ".50"));
+    }
+    const dsts = [...ips, "8.8.8.8", "172.16.5.5", "192.168.1.1"];
+    const touched: string[] = [];
+    let traced = 0;
+    for (const src of ips)
+      for (const dst of dsts) {
+        if (src === dst) continue;
+        traced++;
+        const t = traceFlow({ srcIp: src, dstIp: dst, protocol: "tcp", dstPort: 443, srcPort: null });
+        if (t.unmodelledHosts.length > 0) touched.push(`${src}->${dst}: ${t.unmodelledHosts.join(",")}`);
+      }
+    expect(traced).toBeGreaterThan(100);
+    expect(touched).toEqual([]);
+    expect(fabric.coverage.routableHosts).toEqual(["core1", "core2", "dist1", "dist2"]);
   });
 });

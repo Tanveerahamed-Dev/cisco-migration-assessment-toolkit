@@ -1,11 +1,15 @@
 /**
- * data.ts — loads the compiled evidence model and builds the indexes every surface reads from.
+ * data.ts — the compiled evidence model and the indexes every surface reads from.
  *
- * `fabric.json` is produced by `tools/compile-snapshot.mjs` from the engine snapshot. It is
- * imported statically so the whole model is available synchronously on first paint: no loading
- * spinner sits between a user and their evidence, and the INP budget never pays for a fetch.
+ * The model is the fabric document of the ONE dataset this page shows, read from `core/dataset.ts`
+ * (the only door the compiled documents enter by). In a standalone build that is the bundled sample,
+ * statically imported there, so the whole model is available synchronously on first paint: no loading
+ * spinner sits between a user and their evidence, and the INP budget never pays for a fetch. When a
+ * snapshot was fetched from AssessHub or opened by the reader, it was compiled and installed before
+ * the application loaded, and this module reads that one instead — its exported API is the same either
+ * way, so none of the modules that import it know or care which.
  */
-import rawFabric from "../data/fabric.json";
+import { fabricDocument } from "./dataset";
 import type {
   AclLine,
   CrossLayerFinding,
@@ -23,7 +27,7 @@ import type {
 } from "./types";
 import { SEVERITY_ORDER } from "./types";
 
-export const fabric = rawFabric as unknown as Fabric;
+export const fabric: Fabric = fabricDocument;
 
 /* ── primary indexes ───────────────────────────────────────────────────────── */
 

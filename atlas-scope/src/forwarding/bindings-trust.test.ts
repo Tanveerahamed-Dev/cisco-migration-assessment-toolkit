@@ -15,7 +15,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import real from "./acl-bindings.json";
-import { fabric } from "../core/data";
+import { fabric, resolveCite } from "../core/data";
+import { need } from "./test-subjects";
 
 type Sidecar = { meta: { sourceSha256: string }; hosts: Record<string, { port: string }[]> };
 const REAL = real as unknown as Sidecar;
@@ -68,6 +69,21 @@ describe("acl-bindings.json is refused when it was compiled from other bytes", (
     for (const line of sentences) expect(line).toMatch(/are not read in this build/);
   });
 
+  it("the refusal sentence cites what the mismatch was read from, not the ACL table (2026-09-28 verifier, D7)", async () => {
+    const sha = REAL.meta.sourceSha256;
+    const other = `${sha[0] === "0" ? "1" : "0"}${sha.slice(1)}`;
+    const b = await loadWith({ ...REAL, meta: { ...REAL.meta, sourceSha256: other } });
+    const sentences = b.bindingCoverageSentences();
+    expect(sentences.length).toBeGreaterThan(0);
+    for (const line of sentences) {
+      // The two digests that disagree, each named, and the record of this build's own binding.
+      expect(line).toContain(other.slice(0, 8));
+      expect(line).toContain(fabric.meta.sourceSha256.slice(0, 8));
+      expect(line).toContain("(meta.sourceSha256)");
+      expect(resolveCite("meta.sourceSha256")).toBe(fabric.meta.sourceSha256);
+    }
+  });
+
   /* O15. A digest names bytes only together with the FORM it was taken over (tools/source-binding.mjs:
      LF-normalised). A sidecar whose digest string matches but that states another form — or states
      none, as every sidecar did before the canonical form existed — is a claim about different bytes
@@ -83,6 +99,35 @@ describe("acl-bindings.json is refused when it was compiled from other bytes", (
     expect(b.BINDINGS_TRUSTED).toBe(false);
     const kinds = new Set(EVERY.map((e) => b.bindingAt(e.host, e.port, e.dir).kind));
     expect([...kinds]).toEqual(["unknown"]);
+  });
+});
+
+/* D7 (2026-09-28 verifier). A host that holds collected ACLs but for which the binding projection carries no
+   interface record: the sentence says "no interface record was collected for it", and that absence must cite
+   what it was read from — the snapshot's collection-coverage record, which counts the hosts with interface
+   records — not the ACL table (which proves nothing about interfaces). No ACL host on the reference sample
+   lacks interface records, so the branch runs here, on the real sidecar with ONE host's records removed. */
+describe("an ACL host with no interface record: the absence cites the coverage record it was read from", () => {
+  const aclHost = (): string | undefined =>
+    Object.keys(fabric.acls)
+      .sort()
+      .find((h) => Object.keys(fabric.acls[h] ?? {}).length > 0 && (REAL.hosts[h]?.length ?? 0) > 0);
+
+  it("the sentence for that host cites the coverage record and names the host's own ACL table separately", async (ctx) => {
+    const h = need(ctx, aclHost(), "host holding collected ACLs and interface records");
+    const hosts = Object.fromEntries(Object.entries(REAL.hosts).filter(([k]) => k !== h));
+    const b = await loadWith({ ...REAL, hosts });
+    expect(b.BINDINGS_TRUSTED).toBe(true);
+    const line = b.bindingCoverageSentences().find((s) => s.startsWith(`${h}:`));
+    expect(line, `a sentence for ${h}`).toBeDefined();
+    expect(line).toMatch(/no interface record was collected for it/);
+    const absence = line!.slice(0, line!.indexOf(", so"));
+    // The absence clause cites the coverage record (a real record's cite), not acls.<host>.
+    expect(absence).toContain(`(${fabric.coverage.cite}`);
+    expect(absence).not.toContain(`acls.${h}`);
+    expect(absence).toContain(`${fabric.coverage.hostsWithInterfaces} hosts`);
+    // The ACLs the fallback applies to are still cited by their own table.
+    expect(line).toContain(`(acls.${h})`);
   });
 });
 
@@ -127,7 +172,13 @@ describe("every source-bound sidecar consumer fails closed on any binding mismat
   ];
 
   for (const c of CONSUMERS) {
-    const real = JSON.parse(readFileSync(join(SRC, c.json), "utf8")) as { meta: Record<string, unknown> };
+    /* The LOADED sidecar, unmocked. `vi.importActual` resolves through the runner's dataset override, so on the
+       rename or golden-snapshot leg this is that dataset's document, paired with that dataset's fabric. Reading
+       the tracked file from disk paired the sample's sidecar with another fleet's fabric, and the positive
+       control then failed on every other dataset (2026-09-28 verifier legs). The partition check above stays a
+       walk of the SOURCE TREE: which sidecars exist is a property of the code, not of the data. */
+    const loaded = async (): Promise<{ meta: Record<string, unknown> }> =>
+      structuredClone(((await vi.importActual(specOf(c.json))) as { default: { meta: Record<string, unknown> } }).default);
     const load = async (doc: unknown): Promise<Record<string, unknown>> => {
       vi.resetModules();
       vi.doMock(specOf(c.json), () => ({ default: doc }));
@@ -139,11 +190,14 @@ describe("every source-bound sidecar consumer fails closed on any binding mismat
     };
 
     it(`${c.json}: positive control — the shipped pair is trusted`, async () => {
+      const real = await loaded();
+      expect(real.meta.sourceSha256).toBe(fabric.meta.sourceSha256);
       expect((await load(real))[c.flag]).toBe(true);
     });
 
     for (const [why, rewrite] of rewrites)
       it(`${c.json}: the same sourceSha256 that ${why} is refused`, async () => {
+        const real = await loaded();
         expect(real.meta.sourceSha256).toBe(fabric.meta.sourceSha256);
         expect((await load({ ...real, meta: rewrite(real.meta) }))[c.flag]).toBe(false);
       });

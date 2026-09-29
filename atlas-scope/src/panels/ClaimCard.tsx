@@ -397,6 +397,12 @@ function CounterBlock({
      UNDETERMINED (2026-09-21 critic, B1). Its word and band now come from `bandOfTrace`. */
   const counterDecided = result.found && isDecidedOutcome(result.trace);
   const diffs = result.found ? flowDifferences(trace.flow, result.flow) : [];
+  /* The record that decided the COUNTEREXAMPLE's own outcome. The "Not established" line states that
+     outcome ("… is delivered"), and it rests on a different line of evidence than the denial — so it
+     carries that record's citation, as the "Intended" line carries the denial's. It was drawn with none:
+     no decided counterexample existed in the shipped data until the phase 3 regeneration, so the branch
+     that rendered it had never run on real evidence (PathTrace.decided-multihop.test.tsx). */
+  const counterDecider = result.found ? (result.trace.hops[result.trace.hops.length - 1]?.decidedBy ?? null) : null;
   return (
     <>
       <Section
@@ -455,6 +461,7 @@ function CounterBlock({
               {`that ${diffs.length === 0 ? "a neighbouring flow" : `a flow differing in ${diffs.join(" and ")}`} is treated the same way — ${flowText(
                 result.flow,
               )} is ${outcomeWordOf(result.trace)}. The two statements rest on different lines of evidence and neither one closes the other.`}
+              {counterDecider !== null ? <CiteLink cite={counterDecider.cite} onOpen={onOpenCite} /> : null}
             </dd>
           </dl>
         </Section>

@@ -17,7 +17,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { coverageRows } from "../app/CoverageBar";
 import { missingInventoryFields } from "../core/claims";
-import { deviceById, fabric } from "../core/data";
+import { deviceById, fabric, routesOf } from "../core/data";
+import type { Trace } from "../core/types";
+import { describeGolden } from "../test-support/golden-sample";
+import { need, universeTraces } from "./trace-universe";
 import { useInvestigation } from "../core/store";
 import { traceFlow } from "../forwarding/engine";
 import { ribIncompletenessSentence } from "../forwarding/rib-completeness";
@@ -105,11 +108,33 @@ describe("the inventory coverage rows count record CONTENT separately from the f
 });
 
 describe("a connected delivery on an incomplete table names the partial table (B2)", () => {
-  it("10.0.10.50 -> 10.0.30.10 tcp/443 delivered at core1 discloses core1's partial RIB", () => {
-    const t = traceFlow({ srcIp: "10.0.10.50", dstIp: "10.0.30.10", protocol: "tcp", dstPort: 443, srcPort: null });
-    const last = t.hops[t.hops.length - 1]!;
-    const sentence = ribIncompletenessSentence(last.host);
-    expect(sentence, "precondition: the delivering host's table is shown incomplete").not.toBeNull();
-    expect(t.caveats.some((c) => c.includes(sentence!) && /longest-prefix/.test(c))).toBe(true);
+  /* RE-EXPRESSED 2026-09-28 (phase 3). This named tcp 10.0.10.50 -> 10.0.30.10:443, delivered on a
+     connected route at core1, whose table the old sample showed incomplete. The regenerated sample
+     completed core1's table, so the property moved: the subject is now found by property — a delivery on
+     a connected route at a host whose table the snapshot shows incomplete. */
+  const subject = (): Trace | undefined =>
+    universeTraces().find((t) => {
+      const last = t.hops[t.hops.length - 1];
+      if (t.outcome !== "delivered" || last === undefined || ribIncompletenessSentence(last.host) === null) return false;
+      const cite = last.evidence.find((e) => e.kind === "route")?.cite;
+      return routesOf(last.host).find((r) => r.cite === cite)?.source === "connected";
+    });
+
+  it("a connected delivery at a host whose table is shown incomplete discloses the partial RIB in a longest-prefix caveat", (ctx) => {
+    const t = need(ctx, subject(), "connected delivery at a host whose table is shown incomplete");
+    const sentence = ribIncompletenessSentence(t.hops[t.hops.length - 1]!.host)!;
+    expect(t.caveats.some((c) => c.includes(sentence) && /longest-prefix/.test(c))).toBe(true);
+  });
+
+  describeGolden("the reference sample's case", () => {
+    it("core2 delivering 10.0.20.50 -> 10.0.10.50 on its connected Vlan10", () => {
+      const t = traceFlow({ srcIp: "10.0.20.50", dstIp: "10.0.10.50", protocol: "tcp", dstPort: 443, srcPort: null });
+      const last = t.hops[t.hops.length - 1]!;
+      expect(last.host).toBe("core2");
+      expect(last.outIntf).toBe("Vlan10");
+      const sentence = ribIncompletenessSentence(last.host);
+      expect(sentence, "precondition: the delivering host's table is shown incomplete").not.toBeNull();
+      expect(t.caveats.some((c) => c.includes(sentence!) && /longest-prefix/.test(c))).toBe(true);
+    });
   });
 });

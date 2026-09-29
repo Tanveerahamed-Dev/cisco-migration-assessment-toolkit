@@ -17,8 +17,12 @@ import { describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
 import type { Flow, Trace } from "../core/types";
 import { counterexample, traceFlow } from "./engine";
+import { formatIpv4, hostAddressIn, parseInterfaceAddress } from "./ip";
+import { describeGolden } from "../test-support/golden-sample";
+import { GOLDEN_FORWARDING as G } from "./golden-expectations";
 
-const tcp = (srcIp: string, dstIp: string, dstPort: number): Flow => ({ srcIp, dstIp, protocol: "tcp", dstPort, srcPort: null });
+const RD = G.routerDestined;
+const PS = G.core1Acls.protectServers;
 
 /** host -> the addresses its collected interfaces own. */
 function ownedAddresses(): Map<string, Set<string>> {
@@ -40,7 +44,17 @@ function ownedAddresses(): Map<string, Set<string>> {
 }
 
 const OWNED = ownedAddresses();
-const SOURCES = ["10.0.10.50", "10.0.20.10", "10.0.30.5", "10.0.40.50"];
+/* UPDATED phase 3: sources derived from the data — a host address in every observed SVI subnet — rather than
+   typed, so the sweep below is an invariant over whatever fabric is loaded. */
+const SOURCES = [
+  ...new Set(
+    fabric.l3.flatMap((r) => {
+      const a = r.sviIp === null ? null : parseInterfaceAddress(r.sviIp);
+      const h = a === null ? null : hostAddressIn(a.prefix, 50);
+      return h === null ? [] : [formatIpv4(h)];
+    }),
+  ),
+].sort();
 const PROBES: ReadonlyArray<[Flow["protocol"], number | null]> = [["tcp", 22], ["tcp", 443], ["tcp", 3389], ["udp", 53], ["udp", 161], ["icmp", null]];
 
 /**
@@ -55,34 +69,7 @@ const outboundDecidedAtOwner = (t: Trace): boolean => {
   return last !== undefined && last.verdict === "denied" && owners.has(last.host) && /applied outbound/.test(t.claim);
 };
 
-describe("B8: traffic addressed to a router's own interface is not decided by an outbound interface ACL", () => {
-  it("the class is non-empty and includes the address the defect was found on", () => {
-    expect(OWNED.size, "precondition: collected interface addresses exist").toBeGreaterThan(5);
-    expect([...(OWNED.get("10.0.30.1") ?? [])]).toEqual(["core1"]);
-  });
-
-  it("10.0.10.50 → 10.0.30.1 tcp/3389 is not a PROTECT_SERVERS denial: it is undecided, and says why", () => {
-    const t = traceFlow(tcp("10.0.10.50", "10.0.30.1", 3389));
-    expect(t.hops.length).toBeGreaterThan(0);
-    expect(t.outcome).toBe("indeterminate");
-    expect(t.hops.flatMap((h) => (h.decidedBy === null ? [] : [h.decidedBy.cite]))).not.toContain("acls.core1.PROTECT_SERVERS[3]");
-    const last = t.hops[t.hops.length - 1]!;
-    expect(last.host).toBe("core1");
-    expect(last.verdict).toBe("unmodeled");
-    expect(last.outIntf).toBeNull();
-    // What is and is not modelled, in the verdict itself.
-    expect(t.claim).toMatch(/received by core1/);
-    expect(t.claim).toMatch(/outbound interface ACL does not/);
-    expect(t.claim).toMatch(/control-plane/);
-    expect(t.claim).toMatch(/not modelled/);
-  });
-
-  it("…and tcp/22 to the same address is not 'delivered' on the strength of that outbound list either", () => {
-    const t = traceFlow(tcp("10.0.10.50", "10.0.30.1", 22));
-    expect(t.outcome).toBe("indeterminate");
-    expect(JSON.stringify(t.hops.map((h) => h.decidedBy))).not.toMatch(/PROTECT_SERVERS/);
-  });
-
+describe("B8: traffic addressed to a router's own interface is not decided by an outbound interface ACL (invariant)", () => {
   it("no flow toward any collected interface address is delivered, or refused by an outbound list at its owner", () => {
     let checked = 0;
     const bad: string[] = [];
@@ -100,16 +87,45 @@ describe("B8: traffic addressed to a router's own interface is not decided by an
     expect(checked, "precondition: flows toward owned addresses reached a device").toBeGreaterThan(20);
     expect(bad).toEqual([]);
   });
+});
+
+describeGolden("B8: traffic addressed to a router's own interface is not decided by an outbound interface ACL", () => {
+  it("the class is non-empty and includes the address the defect was found on", () => {
+    expect(OWNED.size, "precondition: collected interface addresses exist").toBeGreaterThan(RD.ownedAtLeast);
+    expect([...(OWNED.get(RD.address) ?? [])]).toEqual([RD.owner]);
+  });
+
+  it("10.0.10.50 → 10.0.30.1 tcp/3389 is not a PROTECT_SERVERS denial: it is undecided, and says why", () => {
+    const t = traceFlow(RD.rdp);
+    expect(t.hops.length).toBeGreaterThan(0);
+    expect(t.outcome).toBe("indeterminate");
+    expect(t.hops.flatMap((h) => (h.decidedBy === null ? [] : [h.decidedBy.cite]))).not.toContain(PS.denyAllCite);
+    const last = t.hops[t.hops.length - 1]!;
+    expect(last.host).toBe(RD.owner);
+    expect(last.verdict).toBe("unmodeled");
+    expect(last.outIntf).toBeNull();
+    // What is and is not modelled, in the verdict itself.
+    expect(t.claim).toContain(`received by ${RD.owner}`);
+    expect(t.claim).toMatch(/outbound interface ACL does not/);
+    expect(t.claim).toMatch(/control-plane/);
+    expect(t.claim).toMatch(/not modelled/);
+  });
+
+  it("…and tcp/22 to the same address is not 'delivered' on the strength of that outbound list either", () => {
+    const t = traceFlow(RD.ssh);
+    expect(t.outcome).toBe("indeterminate");
+    expect(JSON.stringify(t.hops.map((h) => h.decidedBy))).not.toContain(PS.name);
+  });
 
   it("control: TRANSIT traffic through the same interface is still decided by the outbound list", () => {
-    const t = traceFlow(tcp("10.0.10.50", "10.0.30.10", 3389));
+    const t = traceFlow(G.headline.deny);
     expect(t.outcome).toBe("denied");
-    expect(t.hops[0]!.decidedBy?.cite).toBe("acls.core1.PROTECT_SERVERS[3]");
-    expect(t.claim).toMatch(/applied outbound on core1 Vlan30/);
+    expect(t.hops[0]!.decidedBy?.cite).toBe(PS.denyAllCite);
+    expect(t.claim).toContain(G.multiHopDenial.boundOn);
   });
 
   it("the near-miss that rested on the misattribution is no longer offered", () => {
-    const f = tcp("10.0.10.50", "10.0.30.1", 3389);
+    const f = RD.rdp;
     const cx = counterexample(f, traceFlow(f));
     expect(cx.found).toBe(false);
   });

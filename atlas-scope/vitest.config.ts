@@ -83,7 +83,24 @@ import { configDefaults, defineConfig, mergeConfig } from "vitest/config";
 
 /* Extension included deliberately: Vite's native config loader warns about a bare specifier here
    and will reject it once that loader becomes the default. */
-import viteConfig from "./vite.config.ts";
+import viteConfig, { datasetDirOverride } from "./vite.config.ts";
+
+/* ── Which dataset the suite runs against ───────────────────────────────────────────────────────
+ * By default, the tracked sample (the four compiled documents under src/). With ATLAS_DATASET_DIR set
+ * to a directory the compiler wrote — `node tools/compile-all.mjs --source <snapshot> --out <dir>` —
+ * every import of a compiled document resolves to that directory's file instead, so the WHOLE suite
+ * runs against another dataset. That is how the phase gates' legs run:
+ *
+ *   rename leg     node review/rename-snapshot.mjs --compile        (an isomorphic rename of the sample)
+ *                  ATLAS_DATASET_DIR=.local-data/rename-compiled npx vitest run
+ *   golden leg     node tools/compile-all.mjs --source ../tests/golden/snapshot.json --out .local-data/golden
+ *                  ATLAS_DATASET_DIR=.local-data/golden npx vitest run
+ *
+ * Every invariant test must pass on either; the golden tier (src/test-support/golden-sample.ts) reports
+ * itself skipped BY NAME, because those facts are the tracked sample's alone. A directory missing a
+ * document, or holding documents bound to different bytes, fails the run at configuration time — it is
+ * never a silent fallback to the sample. (src/core/dataset.test.ts proves which dataset a run read.) */
+const DATASET_DIR = process.env.ATLAS_DATASET_DIR;
 
 /* Half the reported cores, floored at 2: enough parallelism to keep the suite quick, far enough
    below saturation that one heavy file does not starve the rest into a timeout. */
@@ -92,6 +109,7 @@ const WORKERS = Math.max(2, Math.floor(cpus().length / 2));
 export default mergeConfig(
   viteConfig,
   defineConfig({
+    plugins: datasetDirOverride(DATASET_DIR),
     test: {
       environment: "jsdom",
       globals: true,

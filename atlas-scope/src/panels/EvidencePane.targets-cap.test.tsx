@@ -12,6 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
+import { describeGolden } from "../test-support/golden-sample";
 import { configEvidenceFor, EvidencePane, nearestConfigFor } from "./EvidencePane";
 
 declare global {
@@ -47,17 +48,26 @@ const targetsOf = (id: string) => {
   const named = configEvidenceFor(f);
   return named.length > 0 ? named : nearestConfigFor(f);
 };
+/* The CONTEXT list (step 5): the records this pane reaches by matching words or listing a host's records.
+   Since phase 3 the engine's own records to open sit in step 3, in their own `.ev-cfgactions--engine` rows
+   (EvidencePane.engine-refs.test.tsx), so the list this file measures is named by its data attribute rather
+   than by the shared class. */
 const buttonsIn = (c: HTMLElement): string[] =>
-  [...c.querySelectorAll<HTMLElement>(".ev-cfgactions > button")].map((b) => b.textContent ?? "");
+  [...c.querySelectorAll<HTMLElement>('[data-evidence-list="context"] > button')].map((b) => b.textContent ?? "");
 
-describe("step 4's record list", () => {
+describeGolden("the context list on the reference sample", () => {
   it("F001 shows every access list core1 holds, MGMT_IN and INET_RETURN included", () => {
     const c = mountFor("F001");
     const shown = buttonsIn(c);
-    for (const acl of Object.keys(fabric.acls["core1"] ?? {})) {
+    const acls = Object.keys(fabric.acls["core1"] ?? {});
+    expect(acls.length, "precondition: core1 holds access lists").toBeGreaterThan(0);
+    for (const acl of acls) {
       expect(shown.some((b) => b.includes(`core1 · ${acl}`)), acl).toBe(true);
     }
   });
+});
+
+describe("step 5's context record list", () => {
 
   /* EVERY FINDING, ONE TEST EACH (acceptance report F2, 2026-09-23). This was one test mounting the
      real pane for every finding in a loop: 13.5-15.7 s on a green full-suite run and a timeout at

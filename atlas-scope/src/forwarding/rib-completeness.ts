@@ -56,6 +56,7 @@
 import engineContract from "../../contracts/engine-contract.v1.json";
 import evidenceJson from "./rib-evidence.json";
 import { fabric, routesOf } from "../core/data";
+import { listPhrase } from "../core/phrases";
 import { sameSourceBinding, type Cite, type SourceBinding } from "../core/types";
 import { parseIpv4, parsePrefix, prefixContains } from "./ip";
 
@@ -334,7 +335,7 @@ function computeReasons(host: string): Reason[] {
   for (const [fam, r] of unreceipted) {
     const named = r.source === null || r.source.trim() === "" ? "an unrecorded source" : `"${r.source.trim()}"`;
     out.push({
-      label: `the table holds a route whose source is ${named} (${r.cite}), a protocol with no collection receipt in the snapshot (its receipted routing families are ${vocab.join(", ")}), so what it installs on ${host} is unknown`,
+      label: `the table holds a route whose source is ${named} (${r.cite}), a protocol with no collection receipt in the snapshot (its receipted routing families are ${listPhrase(vocab, "none")}), so what it installs on ${host} is unknown`,
       cite: r.cite,
       family: fam === "" ? null : fam,
     });

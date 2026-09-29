@@ -477,4 +477,45 @@ describe("R9 V3: an element wholly under a cover is absent, not whole", () => {
     expect(r.bottom <= BAR.top + 0.5, `the row is above the status bar (${r.top}-${r.bottom}, scrollY ${scrollY})`).toBe(true);
     expect(scrollY, "the page scrolled the 15 px the row needed").toBe(1015);
   });
+
+  /* C2 leftover m2 (R9 verifier, 2026-09-27): R9 made keepsFocus trim overlays (onScreenExtent now runs
+     `uncovered()`), and nothing pinned it — the case above separates only the strict-inside mutant, and a
+     clip-only keepsFocus ("keepsFocus-old-clip-only") survived every C2 test. This is the case that
+     separates them: the reveal slides a focused control from ABOVE the status bar to partly UNDER it.
+     Clip-only, the control reads 40 px before and 40 after (it never leaves the viewport), so the reveal
+     stands and the reader loses 11 px of the control they are on; overlay-aware, it reads 40 then 29, and
+     the reveal is undone. */
+  it("a reveal that slides the focused control from above the status bar to under it is undone", () => {
+    /* 390x844, the status bar over 759-844. The row sits 30 px above the viewport's top edge; the reveal
+       scrolls the page UP 30 px, which moves the focused "Copy" button from 700-740 (whole, above the
+       bar) to 730-770 — still inside the viewport, but 11 px of it under the bar. */
+    viewH = 844;
+    maxScrollY = 20_000;
+    scrollY = 1000;
+    const BAR = { top: 759, bottom: 844 };
+    const grid = document.createElement("div");
+    grid.setAttribute("role", "grid");
+    Object.defineProperty(grid, "scrollTop", { get: () => 0, set: () => undefined, configurable: true });
+    const row = document.createElement("div");
+    row.setAttribute("role", "row");
+    grid.appendChild(row);
+    const copy = document.createElement("button");
+    copy.textContent = "Copy";
+    document.body.append(grid, copy);
+    const pageBox = (el: HTMLElement, pageTop: number, h: number): void => {
+      el.getBoundingClientRect = () => rect(pageTop - scrollY, h);
+      paint.push({ el, box: () => ({ top: pageTop - scrollY, bottom: pageTop - scrollY + h }) });
+    };
+    pageBox(row, 970, 34); // -30..4 on screen: the reveal must scroll the page up 30 px
+    pageBox(copy, 1700, 40); // 700-740 on screen: whole, above the bar
+    pageBox(grid, 400, 1100);
+    overlayAt(BAR.top, BAR.bottom);
+    copy.focus();
+    expect(document.activeElement, "precondition: the button holds focus").toBe(copy);
+    const port = { top: 0, bottom: viewH };
+    expect(readerSees(copy.getBoundingClientRect(), port, BAR), "precondition: the reader sees all of the button").toBe(40);
+    revealBelowHeader(grid, null, row, "nearest");
+    expect(scrollY, "the reveal that would slide the focused button under the bar is undone").toBe(1000);
+    expect(readerSees(copy.getBoundingClientRect(), port, BAR), "the reader still sees all of the button they are on").toBe(40);
+  });
 });

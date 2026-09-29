@@ -319,3 +319,55 @@ def test_the_guide_does_not_promise_total_redaction_verification():
     assert "kept on purpose" in flat, "the guide lost the hostnames-are-kept disclosure"
     assert "does not certify every field of every file" in flat, (
         "the guide lost the scope of what Atlas actually verifies")
+
+
+# -- the Atlas Scope view (/scope) -- every fact the guide states is read from its owner ----------
+
+def _scope_section() -> str:
+    text = GUIDE.read_text(encoding="ascii")
+    match = re.search(r"^ATLAS SCOPE[^\n]*\n-+\n(.*?)(?=^[A-Z][A-Z /()-]+\n-+\n|\Z)", text, re.M | re.S)
+    assert match, "field guide lost its 'ATLAS SCOPE' section (the 3-D view of a snapshot)"
+    return " ".join(match.group(1).split())
+
+
+def test_the_scope_section_names_the_link_the_cockpit_really_renders():
+    """The engineer is told which link to click; the SPA owns its text (pages/Snapshot.tsx
+    AtlasScopeLink), and the guide must quote it exactly or the engineer looks for a link that
+    is not there."""
+    spa = (ROOT / "webapp" / "frontend" / "src" / "pages" / "Snapshot.tsx").read_text(encoding="utf-8")
+    component = spa.split("function AtlasScopeLink", 1)[1].split("\n}\n", 1)[0]
+    rendered = re.search(r">\s*(?:\S+\s+)?(Open in Atlas Scope)\s*</a>", component)
+    assert rendered, "AtlasScopeLink no longer renders its link text where this test reads it"
+    assert f'"{rendered.group(1)}"' in _scope_section()
+
+
+def test_the_scope_section_quotes_the_url_the_server_hands_out():
+    """The view's address is owned by the scope-view capability's href (app.py
+    get_snapshot_scope_view: f"{_SCOPE_MOUNT}snapshots/{snapshot_id}/")."""
+    app_src = (ROOT / "webapp" / "backend" / "app.py").read_text(encoding="utf-8")
+    mount = re.search(r'^_SCOPE_MOUNT = "([^"]+)"', app_src, re.M)
+    assert mount and 'f"{_SCOPE_MOUNT}snapshots/{snapshot_id}/"' in app_src
+    assert f"{mount.group(1)}snapshots/<id>/" in _scope_section()
+
+
+def test_the_scope_section_names_the_selftest_line_that_really_prints():
+    """The guide sends the engineer to one --selftest line; serve.run_selftest owns its name, and
+    on the stick it must read [ ok ] (a frozen bundle requires the build)."""
+    serve_src = (ROOT / "webapp" / "backend" / "serve.py").read_text(encoding="utf-8")
+    names = set(re.findall(r'check\(\s*"(atlas-scope[a-z-]*)"', serve_src))
+    assert len(names) == 1, names
+    name = names.pop()
+    section = _scope_section()
+    assert f'"{name}"' in section and "[ ok ]" in section
+    assert "def _scope_build_required" in serve_src and "return _frozen()" in serve_src
+
+
+def test_the_scope_section_does_not_promise_more_than_the_view_does():
+    """The view is read-only and reads the snapshot from Atlas itself; it proves nothing about
+    what the collection did not see. The section must say both, and must not call an empty view
+    healthy."""
+    section = _scope_section().lower()
+    assert "read-only" in section
+    assert "not a clean bill of health" in section
+    for banned in ("everything is fine", "healthy network", "all clear"):
+        assert banned not in section, banned

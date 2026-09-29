@@ -37,7 +37,6 @@ import {
 
 import { linkFailureImpact, type LinkFailureResult } from "../analysis/blast";
 import { bandObserved, presentBand } from "../core/band-qualification";
-import { linksByHost } from "../core/data";
 import { classifyLink } from "./geometry/cables";
 import { useInvestigation } from "../core/store";
 import type { Device, Link } from "../core/types";
@@ -48,6 +47,19 @@ export const TREE_GESTURES =
   "Click or Space selects, as a click on the fabric does, and leaves the camera where it is. Double-click or Enter selects and frames the device, as a double-click on the fabric does.";
 
 const TYPEAHEAD_MS = 500;
+
+/**
+ * How many device rows the tree opens on first render. Tiers are opened in order while their devices
+ * fit this budget; a tier that would overrun it starts collapsed, its row still stating its count.
+ *
+ * SCALE (2026-09-28). Every tier used to open, a choice made for the 26-device reference sample ("26
+ * device rows are readable in one pass, 70 rows are not"). On a 300-node fleet that is 300 rows before
+ * the first tier ends, and 1 000 on the next size up — a list a screen-reader user cannot get through
+ * and a mount that renders every row. 40 keeps the reference sample fully open (26 rows, unchanged)
+ * and a large fleet's small tiers (core, distribution) open, with the access blocks one keystroke away.
+ * Type-ahead still finds a device inside a collapsed tier (see onKeyDown).
+ */
+export const TREE_OPEN_DEVICE_BUDGET = 40;
 
 type RowKind = "tier" | "device" | "link";
 
@@ -71,6 +83,23 @@ interface Row {
 interface TreeModel {
   rows: Map<string, Row>;
   roots: string[];
+  /** Each row's 1-based position among its siblings: computed once, not searched per rendered row. */
+  posInSet: Map<string, number>;
+  /** Links by id, so a link row's wording is computed when the row is shown, not for every link at mount. */
+  linkById: Map<string, Link>;
+}
+
+/** Tiers opened on first render: in order, while their devices fit TREE_OPEN_DEVICE_BUDGET. */
+function initiallyOpen(model: TreeModel): Set<string> {
+  const open = new Set<string>();
+  let shown = 0;
+  for (const key of model.roots) {
+    const n = model.rows.get(key)?.childKeys.length ?? 0;
+    if (shown + n > TREE_OPEN_DEVICE_BUDGET) continue;
+    open.add(key);
+    shown += n;
+  }
+  return open;
 }
 
 function buildModel(
@@ -86,14 +115,23 @@ function buildModel(
     if (!byHost.has(d.id)) byHost.set(d.id, d);
   }
   const linkById = new Map(links.map((l) => [l.id, l]));
+  /* The links touching each device, from THIS tree's link list — the fabric it was given, not the
+     module-level sample index — so a tree over another fabric lists that fabric's cables. */
+  const incidentByHost = new Map<string, Link[]>();
+  for (const l of links) {
+    for (const h of l.a === l.b ? [l.a] : [l.a, l.b]) {
+      const list = incidentByHost.get(h);
+      if (list) list.push(l);
+      else incidentByHost.set(h, [l]);
+    }
+  }
   const placed = new Set<string>();
 
   const addDevice = (parentKey: string, level: number, host: string): string => {
     const dev = byHost.get(host);
     const key = `device:${dev ? dev.id : host}`;
     if (rows.has(key)) return key;
-    const incident = (dev ? (linksByHost.get(dev.host) ?? linksByHost.get(dev.id) ?? []) : [])
-      .filter((l) => linkById.has(l.id))
+    const incident = (dev ? (incidentByHost.get(dev.host) ?? incidentByHost.get(dev.id) ?? []) : [])
       .slice()
       .sort((a, b) => a.id.localeCompare(b.id));
     const childKeys: string[] = [];
@@ -122,17 +160,18 @@ function buildModel(
       const nearPort = l.a === peer ? l.bPort : l.aPort;
       const farPort = l.a === peer ? l.aPort : l.bPort;
       const linkKey = `${key}/link:${l.id}`;
-      const cut = linkCutMeta(l);
       rows.set(linkKey, {
         key: linkKey,
         kind: "link",
         level: level + 1,
         parent: key,
         label: `${nearPort ?? "port not observed"} → ${peer} ${farPort ?? "port not observed"}`,
-        /* The same computation, and certainty, the Inspector and the live announcement use
-           (linkCutMeta, below) — the snapshot's bridge flag is not stated as fact on a disputed cable. */
-        meta: cut.text,
-        metaUnobserved: cut.unobserved,
+        /* Filled in when the row is shown (linkRowMeta): the same computation, and certainty, the
+           Inspector and the live announcement use — the snapshot's bridge flag is not stated as fact on
+           a disputed cable. Computing it for every link at mount was a failure analysis per cable
+           before the tree could draw at all. */
+        meta: "",
+        metaUnobserved: true,
         targetId: l.id,
         childKeys: [],
         orphan: false,
@@ -188,7 +227,21 @@ function buildModel(
     }
   }
 
-  return { rows, roots };
+  const posInSet = new Map<string, number>();
+  roots.forEach((k, i) => posInSet.set(k, i + 1));
+  for (const row of rows.values()) row.childKeys.forEach((k, i) => posInSet.set(k, i + 1));
+  return { rows, roots, posInSet, linkById };
+}
+
+/** A row as shown: a link row gets its wording here, the first time it is on screen. */
+function shownRow(model: TreeModel, row: Row): Row {
+  if (row.kind !== "link" || row.meta !== "" || row.targetId === null) return row;
+  const link = model.linkById.get(row.targetId);
+  if (link === undefined) return row;
+  const cut = linkCutMeta(link);
+  row.meta = cut.text;
+  row.metaUnobserved = cut.unobserved;
+  return row;
 }
 
 export interface FabricA11yTreeProps {
@@ -213,8 +266,8 @@ export function FabricA11yTree({
   const domId = useId();
   const model = useMemo(() => buildModel(devices, links, tiers), [devices, links, tiers]);
 
-  /* Tiers open, link lists closed: 26 device rows are readable in one pass, 70 rows are not. */
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(model.roots));
+  /* Link lists closed, and tiers open only while their devices fit TREE_OPEN_DEVICE_BUDGET. */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => initiallyOpen(model));
   const [activeKey, setActiveKey] = useState<string | null>(() => model.roots[0] ?? null);
   const [focusReq, setFocusReq] = useState(0);
   /** The row a focus request is for. Read only when `focusReq` changes — see the focus effect. */
@@ -238,7 +291,7 @@ export function FabricA11yTree({
       for (const k of keys) {
         const row = model.rows.get(k);
         if (!row) continue;
-        out.push(row);
+        out.push(shownRow(model, row));
         if (row.childKeys.length > 0 && expanded.has(k)) walk(row.childKeys);
       }
     };
@@ -434,10 +487,28 @@ export function FabricA11yTree({
           return;
         }
       }
+      /* Nothing on screen matches: look inside the collapsed tiers too, in tree order, and open the
+         one that holds the match. A tier collapsed only because the fabric is large must not hide its
+         devices from the one gesture that finds a device by name. */
+      for (const tierKey of model.roots) {
+        const tier = model.rows.get(tierKey);
+        if (!tier || expanded.has(tierKey)) continue;
+        const hit = tier.childKeys.find((k) => model.rows.get(k)?.label.toLowerCase().startsWith(buf.buffer) === true);
+        if (hit !== undefined) {
+          setOpen(tierKey, true);
+          move(hit);
+          return;
+        }
+      }
     }
   };
 
   const uncollected = devices.filter((d) => !d.collected).length;
+  /* Tiers that are collapsed right now and hold devices, so the reader is told what is not listed. */
+  const collapsed = model.roots
+    .map((k) => model.rows.get(k))
+    .filter((r): r is Row => r !== undefined && !expanded.has(r.key) && r.childKeys.length > 0);
+  const collapsedDevices = collapsed.reduce((n, r) => n + r.childKeys.length, 0);
   const unmeasured = links.filter((l) => l.isBridge === null).length;
   /* Decided against the rows actually rendered: an active key that is stale or hidden under a
      collapsed ancestor must not leave the tree with no tab stop (FabricA11yTree.tabstop.test.tsx). */
@@ -464,7 +535,7 @@ export function FabricA11yTree({
         <div
           role="tree"
           aria-labelledby={`${domId}-title`}
-          aria-describedby={`${domId}-gestures`}
+          aria-describedby={collapsed.length === 0 ? `${domId}-gestures` : `${domId}-gestures ${domId}-collapsed`}
           aria-multiselectable={false}
           onKeyDown={onKeyDown}
         >
@@ -473,7 +544,7 @@ export function FabricA11yTree({
               row.parent === null
                 ? model.roots
                 : (model.rows.get(row.parent)?.childKeys ?? []);
-            const pos = siblings.indexOf(row.key) + 1;
+            const pos = model.posInSet.get(row.key) ?? 0;
             const isSelected = row.key === selectedKey;
             return (
               <div
@@ -528,6 +599,15 @@ export function FabricA11yTree({
         {unmeasured} links have no centrality measurement, so whether cutting them partitions the
         fabric is unknown.
       </p>
+      {collapsed.length === 0 ? null : (
+        <p className="fabric3d__tree-foot" id={`${domId}-collapsed`} data-testid="fabric3d-tree-collapsed">
+          {collapsedDevices} {collapsedDevices === 1 ? "device is" : "devices are"} in{" "}
+          {collapsed.length} collapsed {collapsed.length === 1 ? "tier" : "tiers"} (
+          {collapsed.map((r) => `${r.label}: ${r.childKeys.length}`).join(", ")}). Tiers start open only while they
+          hold {TREE_OPEN_DEVICE_BUDGET} devices or fewer between them; Right arrow opens a tier, and typing a name
+          finds a device in any tier.
+        </p>
+      )}
       <p className="fabric3d__tree-foot fabric3d__tree-gestures" id={`${domId}-gestures`}>
         {TREE_GESTURES}
       </p>

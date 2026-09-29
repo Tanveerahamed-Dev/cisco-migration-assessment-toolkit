@@ -50,6 +50,8 @@ import {
 import { createPortal } from "react-dom";
 import { aclUndecidability } from "../core/acl-coverage";
 import { fabric } from "../core/data";
+import { datasetNotices, isBundledSample } from "../core/dataset";
+import { DatasetBanner, digestFormLabel } from "./OpenSnapshot";
 import { ribCountQualifier, ribHostsShownIncomplete } from "../forwarding/rib-completeness";
 import { useInvestigation } from "../core/store";
 import type { Cite } from "../core/types";
@@ -244,8 +246,15 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
       ))
     );
 
+  /* The dataset line (OpenSnapshot.tsx) sits on this bar because the bar is on every screen: when the
+     page shows anything but this build's bundled sample — an AssessHub snapshot, an opened file — or an
+     opened file could not be restored, it is said here permanently, on its own row. The bar wraps only
+     then, so the bundled sample's line is unchanged. */
+  const datasetLine = !isBundledSample || datasetNotices.length > 0;
+
   return (
-    <footer ref={barRef} id="status-bar" className="app__status sb">
+    <footer ref={barRef} id="status-bar" className="app__status sb" style={datasetLine ? { flexWrap: "wrap" } : undefined}>
+      {datasetLine ? <DatasetBanner /> : null}
       <div className="sb__group" role="group" aria-label="Collection coverage">
         <span className="sb__key">coverage</span>
         {denominator(
@@ -292,7 +301,7 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
               page is running on — two different numbers, and the source one is what binds this model
               to an upstream artefact. The Inspector's Provenance tab carries the full argument,
               including that this value is the compiler's declaration read back, not a recomputation. */}
-          <code className="sb__sha" title={`Source snapshot sha256 (LF-normalised) ${fabric.meta.sourceSha256}`}>
+          <code className="sb__sha" title={`Source snapshot sha256 (${digestFormLabel(fabric.meta.sourceDigestForm)}) ${fabric.meta.sourceSha256}`}>
             {fabric.meta.sourceSha256.slice(0, 8)}
           </code>
           <span className="sb__when">

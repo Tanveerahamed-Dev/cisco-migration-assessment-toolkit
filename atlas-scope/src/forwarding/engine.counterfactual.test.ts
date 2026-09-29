@@ -2,7 +2,13 @@
  * engine.counterfactual.test.ts — the DECIDED branches of the engine, exercised on the real
  * compiled snapshot with two completeness producers answered counterfactually.
  *
- * Why this file exists (2026-09-22 auditor, B1 + B2). On the shipped snapshot NO trace is decided:
+ * UPDATED phase 3: the regenerated sample DOES produce decided traces (a two-hop delivery and a two-hop
+ * denial through dist1 -> core1; see engine.suggestions.test.ts), so the decided branches now also run on
+ * the real completeness producers. This file keeps the counterfactual for the cases the real data still
+ * leaves undecided (core2's table, the unobserved core1 ports); its sample-specific blocks are golden
+ * (../test-support/golden-sample.ts) and the two that pinned old-sample flows are re-expressed by property.
+ *
+ * Why this file exists (2026-09-22 auditor, B1 + B2). On the then-shipped snapshot NO trace was decided:
  *  - every decided verdict the fabric used to produce was sourced from a router's OWN address, which
  *    the engine now refuses as router-originated (inbound interface ACLs do not filter it); and
  *  - every remaining delivery or denial is reached through a route chosen from core1's or core2's
@@ -36,9 +42,16 @@ vi.mock("./bindings", async (orig) => {
 });
 
 import { bandOfTrace, claimBadge } from "../core/claims";
-import { aclsOf } from "../core/data";
+import { aclsOf, fabric } from "../core/data";
+import { describeGolden } from "../test-support/golden-sample";
+import { formatIpv4, hostAddressIn, parseInterfaceAddress } from "./ip";
 import type { Flow } from "../core/types";
 import { counterexample, isDefiniteDelivery, isDefiniteOnModelledPath, traceFlow, unobservedPolicyInputs } from "./engine";
+import { GOLDEN_FORWARDING as G } from "./golden-expectations";
+import { lazy, need, needSome } from "./test-subjects";
+
+const C1 = G.core1Acls;
+const PS = C1.protectServers;
 
 const udp = (srcIp: string, dstIp: string, dstPort: number): Flow => ({ srcIp, dstIp, protocol: "udp", dstPort, srcPort: null });
 const tcp = (srcIp: string, dstIp: string, dstPort: number): Flow => ({ srcIp, dstIp, protocol: "tcp", dstPort, srcPort: null });
@@ -47,15 +60,29 @@ beforeEach(() => {
   cf.portsObserved = false;
 });
 
-describe("counterfactual: complete routing tables — the decided delivery", () => {
+/** Every ACL-line citation in a sentence (one helper for the file: the invariant block's copy had lost its
+ *  escapes — `/acls.[A-Za-z0-9_.-]+[d+]/` — and matched almost nothing, so "cites exactly its own trace's
+ *  lines" compared [] with [] whatever the rationale said). */
+const aclCites = (text: string): string[] => text.match(/acls\.[A-Za-z0-9_.-]+\[\d+\]/g) ?? [];
+/** Every cite a flow's own fresh trace consulted: each hop's decider and every piece of its evidence. */
+const consultedCites = (flow: Flow): Set<string> => {
+  const cites = new Set<string>();
+  for (const hop of traceFlow(flow).hops) {
+    if (hop.decidedBy !== null) cites.add(hop.decidedBy.cite);
+    for (const e of hop.evidence) cites.add(e.cite);
+  }
+  return cites;
+};
+
+describeGolden("counterfactual: complete routing tables — the decided delivery", () => {
   it("the headline flow, whose bindings WERE observed, is decided by the bound list alone", () => {
-    const t = traceFlow(tcp("10.0.10.50", "10.0.30.10", 443));
+    const t = traceFlow(G.headline.permit);
     expect(t.outcome).toBe("delivered");
     const hop = t.hops[0]!;
     const cites = hop.evidence.map((e) => e.cite);
-    expect(cites).toContain("acls.core1.PROTECT_SERVERS[0]");
-    expect(cites).not.toContain("acls.core1.INET_RETURN[0]");
-    expect(hop.evidence.find((e) => e.cite === "interfaces.core1.Vlan30")?.raw).toBe("acl_out: PROTECT_SERVERS");
+    expect(cites).toContain(PS.permit443Cite);
+    expect(cites).not.toContain(C1.inetReturn.establishedCite);
+    expect(hop.evidence.find((e) => e.cite === PS.bindingCite)?.raw).toBe(PS.bindingRaw);
     // Decided on the modelled path; the ingress before it is still assumed, so not definite, not SCOPED.
     expect(isDefiniteOnModelledPath(t)).toBe(true);
     expect(isDefiniteDelivery(t)).toBe(false);
@@ -63,11 +90,12 @@ describe("counterfactual: complete routing tables — the decided delivery", () 
   });
 
   it("a delivery at a host whose ACLs WERE collected and decide nothing against it stays definite on its path", () => {
-    const t = traceFlow(tcp("10.0.10.50", "10.0.20.10", 22));
+    const L = G.flows.localDelivery;
+    const t = traceFlow(L.flow);
     expect(t.outcome).toBe("delivered");
     expect(isDefiniteOnModelledPath(t)).toBe(true);
-    expect(t.caveats.join(" ")).toMatch(/none is bound to the interfaces this flow enters \(Vlan10\) or leaves \(Vlan20\)/);
-    expect(unobservedPolicyInputs(t).map((g) => g.kind).sort()).toEqual(["ingress-alternate", "ingress-port-unobserved"]);
+    expect(t.caveats.join(" ")).toContain(`none is bound to the interfaces this flow enters (${L.enters}) or leaves (${L.leaves})`);
+    expect(unobservedPolicyInputs(t).map((g) => g.kind).sort()).toEqual([...G.headline.gapKinds]);
     expect(isDefiniteDelivery(t)).toBe(false);
     expect(claimBadge(t)).toBe("PARTIAL");
   });
@@ -76,7 +104,7 @@ describe("counterfactual: complete routing tables — the decided delivery", () 
     /* 10.0.30.0/24 has one gateway (core1 Vlan30), so there is no FHRP alternate; with its physical
        ingress ports counterfactually observed, nothing is assumed and the badge reaches its ceiling. */
     cf.portsObserved = true;
-    const t = traceFlow(tcp("10.0.30.5", "10.0.10.50", 443));
+    const t = traceFlow(G.counterfactual.scoped);
     expect(t.outcome).toBe("delivered");
     expect(unobservedPolicyInputs(t)).toEqual([]);
     expect(isDefiniteDelivery(t)).toBe(true);
@@ -86,8 +114,7 @@ describe("counterfactual: complete routing tables — the decided delivery", () 
 
   it("no trace anywhere is 'delivered' while carrying the never-a-definite-permit caveat", () => {
     cf.portsObserved = true;
-    const srcs = ["10.0.10.50", "10.0.10.77", "10.0.10.5", "10.0.20.50", "10.0.30.5", "10.0.40.50"];
-    const dsts = ["10.0.10.10", "10.0.20.10", "10.0.30.10", "10.0.40.10"];
+    const { srcs, dsts } = G.counterfactual.neverADefinitePermitSweep;
     const flows = srcs.flatMap((s) => dsts.flatMap((d) => [...[22, 443, 3389, 8080].map((p) => tcp(s, d, p)), udp(s, d, 53)]));
     let caveated = 0;
     let definite = 0;
@@ -112,57 +139,68 @@ describe("counterfactual: complete routing tables — the decided delivery", () 
   });
 });
 
-describe("counterfactual: complete routing tables — the counterexample search", () => {
-  const aclCites = (text: string): string[] => text.match(/acls\.[A-Za-z0-9_.-]+\[\d+\]/g) ?? [];
-  const consultedCites = (flow: Flow): Set<string> => {
-    const cites = new Set<string>();
-    for (const hop of traceFlow(flow).hops) {
-      if (hop.decidedBy !== null) cites.add(hop.decidedBy.cite);
-      for (const e of hop.evidence) cites.add(e.cite);
+/** A grid between host addresses in every observed SVI subnet, over tcp and udp — refusals to search around. */
+function refusalSweep(): Flow[] {
+  const addrs = new Set<string>();
+  for (const r of fabric.l3) {
+    const a = r.sviIp === null ? null : parseInterfaceAddress(r.sviIp);
+    for (const off of [5, 10]) {
+      const h = a === null ? null : hostAddressIn(a.prefix, off);
+      if (h !== null) addrs.add(formatIpv4(h));
     }
-    return cites;
-  };
+  }
+  for (const e of fabric.endpoints) if (e.ip !== null) addrs.add(e.ip);
+  const out: Flow[] = [];
+  for (const s of [...addrs].sort())
+    for (const d of [...addrs].sort())
+      if (s !== d) for (const [p, port] of [["tcp", 22], ["tcp", 3389], ["udp", 53]] as const) out.push({ srcIp: s, dstIp: d, protocol: p, dstPort: port, srcPort: null });
+  return out;
+}
 
-  it("offers no counterexample whose own delivery is undecided", () => {
-    const flow = tcp("10.0.10.50", "10.0.30.10", 3389);
-    const trace = traceFlow(flow);
-    expect(trace.outcome).toBe("denied");
-    const cx = counterexample(flow, trace);
-    expect(cx.found).toBe(true);
-    if (!cx.found) return;
-    expect(isDefiniteOnModelledPath(cx.trace)).toBe(true);
-    expect(cx.trace.hops.flatMap((h) => h.evidence).some((e) => e.kind === "absence")).toBe(false);
-    expect(cx.rationale).toMatch(/same ingress assumption as the flow above/);
+describe("counterfactual: complete routing tables — the counterexample search (invariant)", () => {
+  /** Every refusal in the sweep whose counterexample search found one — computed once, on first use. */
+  const found = lazy((): { flow: Flow; refused: ReturnType<typeof traceFlow>; cx: Extract<ReturnType<typeof counterexample>, { found: true }> }[] =>
+    refusalSweep().flatMap((flow) => {
+      const refused = traceFlow(flow);
+      if (refused.outcome !== "denied" && refused.outcome !== "dropped") return [];
+      const cx = counterexample(flow, refused);
+      return cx.found ? [{ flow, refused, cx }] : [];
+    }),
+  );
+
+  it("any counterexample it does offer is a definite delivery (over every refusal in the sweep)", (ctx) => {
+    /* UPDATED phase 3: this pinned udp 10.0.10.50 -> 10.0.40.5:53 as a denial; on the regenerated sample
+       10.0.40.0/24 is routed to dist1 and that flow is delivered, so the subject is now every refusal the
+       sweep finds a counterexample for — the class, not the instance. */
+    const all = found();
+    for (const { flow, cx } of all) {
+      expect(isDefiniteOnModelledPath(cx.trace), JSON.stringify(flow)).toBe(true);
+      expect(cx.trace.caveats.some((c) => /never a definite permit/.test(c)), JSON.stringify(flow)).toBe(false);
+    }
+    needSome(ctx, all.length, "refusal in the sweep whose counterexample search finds one");
   });
 
-  it("any counterexample it does offer is a definite delivery", () => {
-    const dropFlow = udp("10.0.10.50", "10.0.40.5", 53);
-    const dropped = traceFlow(dropFlow);
-    expect(dropped.outcome).toBe("denied");
-    const cx = counterexample(dropFlow, dropped);
-    expect(cx.found).toBe(true);
-    if (!cx.found) return;
-    expect(isDefiniteOnModelledPath(cx.trace)).toBe(true);
-    expect(cx.trace.caveats.some((c) => /never a definite permit/.test(c))).toBe(false);
-  });
-
-  it("cites the line its own trace was decided by, not the line that generated the candidate", () => {
+  it("cites the line its own trace was decided by, not the line that generated the candidate", (ctx) => {
     /* HOLLOW until 2026-09-22 (acceptance report, F2): this used to loop `toContain` over the cited
        lines — and the rationale cites none, so the loop ran zero times and only `cited == []`
        asserted anything. It now proves both halves of its name, with preconditions that make each
        half reachable: the candidate's OWN trace consulted no ACL line (so "no line" is the correct
        citation), and the blocking host DOES hold the permit lines that generate candidates (so a
-       rationale narrated from the generator would have had a line to mis-cite). */
-    const dropFlow = udp("10.0.10.50", "10.0.40.5", 53);
-    const dropped = traceFlow(dropFlow);
-    const cx = counterexample(dropFlow, dropped);
-    expect(cx.found).toBe(true);
-    if (!cx.found) return;
+       rationale narrated from the generator would have had a line to mis-cite).
+       UPDATED phase 3: the subject (once udp 10.0.10.50 -> 10.0.40.5:53) is resolved by those two
+       preconditions over the sweep, since the regenerated sample delivers that flow. */
+    const subject = found().find(({ refused, cx }) => {
+      const own = [...consultedCites(cx.flow)].filter((c) => /^acls\./.test(c));
+      const blockingHost = refused.hops[refused.hops.length - 1]!.host;
+      const generators = Object.values(aclsOf(blockingHost)).flatMap((lines) => lines.filter((l) => (l.action ?? "").toLowerCase() === "permit"));
+      return own.length === 0 && generators.length > 0;
+    });
+    const { refused, cx } = need(ctx, subject, "found counterexample whose own trace consulted no ACL line, at a host holding permit lines");
     const fresh = traceFlow(cx.flow);
     expect(fresh.outcome).toBe("delivered");
     const decidedByOwnTrace = [...consultedCites(cx.flow)].filter((c) => /^acls\./.test(c));
     expect(decidedByOwnTrace, "precondition: the candidate's own trace consulted no ACL line").toEqual([]);
-    const blockingHost = dropped.hops[dropped.hops.length - 1]!.host;
+    const blockingHost = refused.hops[refused.hops.length - 1]!.host;
     const generators = Object.entries(aclsOf(blockingHost)).flatMap(([, lines]) =>
       lines.filter((l) => (l.action ?? "").toLowerCase() === "permit").map((l) => l.cite),
     );
@@ -174,9 +212,29 @@ describe("counterfactual: complete routing tables — the counterexample search"
     // Half two: no line that GENERATED a candidate is cited in its place.
     for (const g of generators) expect(cx.rationale).not.toContain(g);
   });
+});
+
+describeGolden("counterfactual: complete routing tables — the counterexample search", () => {
+
+  it("offers no counterexample whose own delivery is undecided", () => {
+    const flow = G.headline.deny;
+    const trace = traceFlow(flow);
+    expect(trace.outcome).toBe("denied");
+    const cx = counterexample(flow, trace);
+    expect(cx.found).toBe(true);
+    if (!cx.found) return;
+    expect(isDefiniteOnModelledPath(cx.trace)).toBe(true);
+    expect(cx.trace.hops.flatMap((h) => h.evidence).some((e) => e.kind === "absence")).toBe(false);
+    expect(cx.rationale).toMatch(/same ingress assumption as the flow above/);
+  });
+
+  /* MOVED phase 3: "any counterexample it does offer is a definite delivery" and "cites the line its own
+     trace was decided by, not the line that generated the candidate" pinned udp 10.0.10.50 -> 10.0.40.5:53
+     as a denial; the regenerated sample routes 10.0.40.0/24 to dist1 and delivers it. Both are re-expressed
+     above by property ("... (invariant)" block), over every refusal the sweep finds a counterexample for. */
 
   it("cites a line its own trace consulted — on the flow that originally mis-cited MGMT_IN[0]", () => {
-    const denied = tcp("10.0.10.50", "10.0.30.10", 53);
+    const denied = G.headline.tcp53;
     const cx = counterexample(denied, traceFlow(denied));
     expect(cx.found).toBe(true);
     if (!cx.found) return;
@@ -185,11 +243,11 @@ describe("counterfactual: complete routing tables — the counterexample search"
     expect(cited.length).toBeGreaterThan(0);
     const consulted = consultedCites(cx.flow);
     for (const cite of cited) expect([...consulted]).toContain(cite);
-    expect(cited).not.toContain("acls.core1.MGMT_IN[0]");
+    expect(cited).not.toContain(C1.mgmtIn.lineCite);
   });
 
   it("every counterexample rationale that cites an ACL line cites one its own fresh trace consulted (sweep)", () => {
-    const addrs = ["10.0.10.50", "10.0.20.10", "10.0.30.10", "10.0.30.50", "10.0.40.5", "10.0.99.10", "203.0.113.9"];
+    const addrs = G.counterfactual.citationSweepAddresses;
     let citing = 0;
     let checked = 0;
     const violations: string[] = [];

@@ -24,7 +24,7 @@ This is enforced in four places, not just intended:
 
 | Mechanism | File | What it does |
 |---|---|---|
-| Compiler | `tools/compile-snapshot.mjs` | Converts `""`, `"-"`, `"N/A"` and the engine's `[NOT OBSERVED]` marker to `null`, and stamps a `cite` path on every record. |
+| Compiler | `tools/lib/compile-model.mjs` | The ONE compiler (the Node wrappers in `tools/` and the browser both call it). Converts `""`, `"-"`, `"N/A"` and the engine's `[NOT OBSERVED]` marker to `null`, and stamps a `cite` path on every record — except the stated uncited residual of bare host lists / host-keyed maps and aggregate summaries (`webapp/tests/test_scope_mount.py :: _UNCITED_MEMBERS`). |
 | Types | `src/core/types.ts` | `null` is in the type of every optional datum, so a renderer cannot forget the case. |
 | Claim layer | `src/core/claims.ts` | The only place a `null` becomes words, and the only source of verdict prose. |
 | Gate | `src/core/claim-lint.test.ts` | Scans every source file's user-visible strings each test run and fails on an asserted overclaim. |
@@ -36,47 +36,75 @@ that as "not observed" would be the same lie in mirror image.
 
 ## What the data actually covers
 
-Read from `fabric.coverage` at runtime — these are the real numbers, not a target:
+Whatever the loaded snapshot recorded, and no more. The figures (devices on the topology and how
+many were actually collected, links with centrality, which hosts have a collected RIB or ACLs,
+findings, endpoints) are read from the loaded dataset's `fabric.coverage` at run time and shown in
+the app; this page deliberately restates none of them, because a count copied here is a cache that
+drifts from its owner (`docs/ssot.md`, "Atlas Scope compiled fabric"). For the bundled sample the
+owner is the engine's sample fleet, `webapp/sample_data/sample_fleet.snapshot.json`, regenerated
+only by `python webapp/sample_data/build_sample.py`.
 
-- **26 devices** on the topology; **23** were inventoried, **3** are neighbours we never collected.
-- **44 links**, of which **25** carry centrality analysis.
-- **RIBs for 2 hosts** (`core1`, `core2`) out of 26. Forwarding claims are scoped to those two and
-  say so in every verdict.
-- **ACLs for 1 host** (`core1`). No `ip access-group` binding was collected anywhere, so *which
-  interface and direction* an ACL applies to is unknown — every trace carries that caveat.
-- **146 findings**, **43 cross-layer findings**, **122 port-health records**, **50 endpoints**.
-
-The strongest claim this product can make is **SCOPED**. There is deliberately no badge above it:
-with RIBs for 2 of 26 hosts there is no exhaustive search to be had, so nothing here is ever
-labelled *proven*.
+Forwarding verdicts are scoped to the hosts whose RIB was collected, and say so in every verdict;
+where no `ip access-group` binding was collected, *which interface and direction* an ACL applies to
+is unknown and every trace carries that caveat. The strongest claim this product can make is
+**SCOPED**. There is deliberately no badge above it: without a collected RIB for every host there is
+no exhaustive search to be had, so nothing here is ever labelled *proven*.
 
 ---
 
-## Running it
+## Running it — three ways, one compiler
+
+Every way runs the same compiler, `tools/lib/compile-model.mjs`, over an engine snapshot; they
+differ only in which snapshot and where it is compiled. Install the locked toolchain once
+(`npm ci`, Node per `package.json` `engines`).
+
+**1. Standalone, the bundled sample.** The tracked compiled documents (the compiler's
+`OUTPUTS[].trackedPath`) are the sample fleet, compiled ahead of time.
 
 ```bash
-npm install
-npm run compile:data   # rebuilds src/data/fabric.json from the engine snapshot
 npm run dev            # http://localhost:4180
-```
-
-```bash
-npm run build          # typecheck + production bundle
+npm run build          # typecheck + the standalone bundle in dist/ (base "/")
 npm test               # the full suite
+npm run compile:data   # regenerate the tracked compiled documents from the sample (never hand-edit them)
 ```
 
-The data is **source-bound**: `src/data/fabric.json` is reproducible byte-for-byte from
-`webapp/sample_data/sample_fleet.snapshot.json` by running `npm run compile:data`, and the source
-file's sha256 is displayed in the application. If the app shows a hash, that hash is what it was
-built from.
+The data is **source-bound**: the compiled documents are reproducible byte-for-byte from
+`webapp/sample_data/sample_fleet.snapshot.json`, and the app displays the digest it was compiled
+from, with its form (see "digest forms" below).
+
+**2. Open a snapshot file.** In a standalone build, "Open a snapshot file…" (the header) validates
+and compiles an engine snapshot in a worker in the browser, keeps it in that browser (IndexedDB) and
+reloads into it; nothing is uploaded. A banner names the opened file on every screen, and "Return to
+the sample" forgets it (`src/app/OpenSnapshot.tsx`). From the command line,
+`node tools/compile-all.mjs --source <snapshot.json>` compiles a snapshot into `.local-data/` (the
+only in-repository place it will write a real assessment, because that directory is ignored);
+`ATLAS_DATASET_DIR=<that directory> npx vitest run` runs the suite against it (`vitest.config.ts`).
+
+**3. Inside AssessHub — the one door.** `npm run build:hub` writes the hub build to `dist-hub/`
+(base `/scope/`, no sourcemaps, and no compiled dataset at all: the page reads the snapshot at run
+time). AssessHub serves that directory at `/scope` by default (`webapp/backend/app.py`
+`_REPO_ATLAS_SCOPE_DIST`); start AssessHub from the repository root with
+`python -m webapp.backend.serve`, open a snapshot, and use **Open in Atlas Scope**
+(`/scope/snapshots/{id}/`). The page fetches `GET /api/snapshots/{id}/raw` — the stored bytes, under
+every AssessHub access guard — and compiles them in the browser. AssessHub refuses to serve a /scope
+build that is not a runtime build or that carries any snapshot evidence, and says why instead of
+linking it (`webapp/backend/app.py` `_scope_file_index`; its self-test prints the verdict on its
+`atlas-scope-dist` line). The portable Atlas bundle ships the same hub build as its own member
+(`portable/atlas_bundle.py` `SCOPE_DIST_SOURCE`), and its build refuses to proceed without it.
+
+**Digest forms.** A digest is shown with its form, because the same snapshot has several: the
+file's LF-normalised digest (ways 1 and 2) and AssessHub's stored-blob digest (way 3) are NOT the
+same fact — the store re-serialises what it parses. The forms are registered in `docs/ssot.md`
+("Facts that live in two homes").
 
 ---
 
 ## Architecture
 
 ```
-tools/compile-snapshot.mjs     the ONLY bridge from engine snapshot to UI model
-  └── src/data/fabric.json     compiled, cited, sha-stamped
+tools/lib/compile-model.mjs    the ONE compiler: engine snapshot -> UI model (Node and browser)
+  ├── tools/compile-all.mjs    Node wrapper: the tracked sample outputs, or --source <file>
+  └── src/data/fabric.json     compiled, cited, sha-stamped (plus the three sidecars)
 
 src/core/
   types.ts        domain model — FROZEN contract

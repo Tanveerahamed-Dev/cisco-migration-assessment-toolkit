@@ -21,7 +21,7 @@
  *                 or the sidecar was compiled from other bytes. Unknown is never read as `none`.
  */
 import bindingsJson from "./acl-bindings.json";
-import { aclsOf, fabric, linksByHost, routesOf } from "../core/data";
+import { aclsOf, fabric, linksByHost, resolveCite, routesOf } from "../core/data";
 import { sameSourceBinding, type Cite, type Hop, type HopEvidence, type SourceBinding } from "../core/types";
 import { formatIpv4, parseInterfaceAddress, parseIpv4, prefixContains, rankPrefixMatches, type Ipv4 } from "./ip";
 
@@ -320,18 +320,34 @@ export function pathBindings(host: string, ingress: string | null, egress: strin
 /**
  * One sentence per ACL-holding host describing what the collection says about bindings — the
  * replacement for the old global "no binding was collected anywhere", which was false.
+ *
+ * Every clause that names the host cites the records it counted (acceptance B6: a claim is displayed
+ * with its citation). "dist1: 0 interface ACL bindings were observed." used to stand uncited: a count
+ * of zero is a statement about records, and the reader must be able to open the records it was
+ * counted over — the host's interface table, or its ACL table where no interface record exists.
  */
 export function bindingCoverageSentences(): string[] {
   const out: string[] = [];
   for (const host of Object.keys(fabric.acls).sort()) {
     if (Object.keys(aclsOf(host)).length === 0) continue;
+    /* Each clause cites what IT was read from (2026-09-28 verifier, D7): a refusal cites the two digests
+       that disagree and this build's own binding record, an absence cites the coverage record that counts
+       the hosts with interface records — never the ACL table, which says nothing about either. */
     if (!BINDINGS_TRUSTED) {
       out.push(
-        `ACL bindings on ${host} are not read in this build: the binding projection was compiled from different snapshot bytes, so which interface and direction each ACL is applied to is treated as unknown and the list is chosen by the address-specificity rule.`,
+        `ACL bindings on ${host} are not read in this build: the binding projection was compiled from snapshot bytes ${String(FILE.meta.sourceSha256).slice(0, 8)}…, not this build's ${fabric.meta.sourceSha256.slice(0, 8)}… (meta.sourceSha256), so which interface and direction each of its ACLs (acls.${host}) is applied to is treated as unknown and the list is chosen by the address-specificity rule.`,
       );
       continue;
     }
     const recs = [...(BY_HOST.get(host)?.values() ?? [])];
+    if (recs.length === 0) {
+      out.push(
+        `${host}: no interface record was collected for it (${fabric.coverage.cite}: interface records were collected for ${fabric.coverage.hostsWithInterfaces} hosts, and the binding projection holds none for ${host}), so which interface and direction each of its ACLs (acls.${host}) is applied to is unknown; a trace through ${host} falls back to the address-specificity rule and says so at that hop.`,
+      );
+      continue;
+    }
+    /* The host's interface table where the compiled model resolves it, else the first record counted. */
+    const counted = resolveCite(`interfaces.${host}`) !== undefined ? `interfaces.${host}` : recs[0]!.cite;
     const bound = recs.flatMap((r) => [
       ...(r.aclIn === null ? [] : [`${r.aclIn} in on ${r.port} (${r.cite})`]),
       ...(r.aclOut === null ? [] : [`${r.aclOut} out on ${r.port} (${r.cite})`]),
@@ -339,11 +355,11 @@ export function bindingCoverageSentences(): string[] {
     const incomplete = recs.filter((r) => r.gateUnmodeled.includes(INCOMPLETE)).map((r) => `${r.port} (${r.cite})`);
     const unobserved = recs.filter((r) => !r.runConfigObserved).length;
     out.push(
-      `${host}: ${bound.length} interface ACL ${bound.length === 1 ? "binding was" : "bindings were"} observed${bound.length === 0 ? "" : ` — ${bound.join("; ")}`}. ` +
+      `${host}: ${bound.length} interface ACL ${bound.length === 1 ? "binding was" : "bindings were"} observed across its ${recs.length} interface ${recs.length === 1 ? "record" : "records"} (${counted})${bound.length === 0 ? "" : ` — ${bound.join("; ")}`}. ` +
         (incomplete.length === 0
           ? ""
           : `${incomplete.length} ${incomplete.length === 1 ? "port has" : "ports have"} an access-group whose ACL name the collector did not project (${incomplete.join(", ")}; ${INCOMPLETE}). `) +
-        (unobserved === 0 ? "" : `${unobserved} of ${recs.length} interface records carry no observed running configuration, so their bindings are unknown. `) +
+        (unobserved === 0 ? "" : `${unobserved} of ${recs.length} interface records carry no observed running configuration (${counted}), so their bindings are unknown. `) +
         `A trace applies the observed bindings of the interfaces it enters and leaves by; only where one of those is unknown does it fall back to the address-specificity rule, and it says so at that hop.`,
     );
   }

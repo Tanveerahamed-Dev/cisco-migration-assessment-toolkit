@@ -44,6 +44,7 @@ import {
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { CHASSIS_EXTENT } from "../layout";
+import type { RoleGlyphClass } from "../../core/roles";
 
 export type ChassisKind = "device" | "router" | "ap";
 
@@ -714,17 +715,32 @@ export function buildStateRing(shape: StateRingShape): BufferGeometry {
   return mergeOrEmpty(dashes);
 }
 
-export type RoleGlyph = "access" | "distribution" | "unobserved";
+/** One glyph per class the role owner (src/core/roles.ts roleGlyphClass) can return — the type IS the owner's. */
+export type RoleGlyph = RoleGlyphClass;
+
+/** Every role glyph, in draw order. Typed against the owner's class set, so a class with no glyph is a type error. */
+export const ROLE_GLYPHS: readonly RoleGlyph[] = (() => {
+  const all: Record<RoleGlyph, true> = { access: true, distribution: true, other: true, unobserved: true };
+  return Object.keys(all) as RoleGlyph[];
+})();
 
 /**
  * The role glyph, extruded 0.08 off the faceplate.
  *
- * `unobserved` is the important one. 17 of the 26 devices in this snapshot carry `role: null`, and
- * the glyph for that is an OUTLINED dash — a visible mark that says "we did not observe a role",
- * not an absent glyph, which would be indistinguishable from a device whose glyph failed to draw.
+ * `unobserved` means the snapshot never stated a role (null or blank; how many devices that is depends on the
+ * loaded snapshot — read it from the data, never from this comment). Its glyph is an OUTLINED open rectangle — a
+ * visible mark that says "we did not observe a role", not an absent glyph, which would be indistinguishable from
+ * a device whose glyph failed to draw.
+ *
+ * `other` is an OBSERVED role outside access/distribution (core, spine, backbone, ... — the engine emits them).
+ * It used to fall through to the unobserved mark, drawing an observed fact as absence. Its glyph is one solid
+ * bar: the mark the legend's "Other role" row draws, and nothing like the four-bar open rectangle.
  */
 export function buildRoleGlyph(glyph: RoleGlyph): BufferGeometry {
   const t = 0.1;
+  if (glyph === "other") {
+    return mergeOrEmpty([at(box(0.52, 0.11, t), 0, 0, 0)]);
+  }
   if (glyph === "access") {
     return mergeOrEmpty([
       at(box(0.62, 0.1, t), 0, 0.17, 0),

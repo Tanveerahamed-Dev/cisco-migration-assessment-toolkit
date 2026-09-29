@@ -24,6 +24,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { fabric, findingById } from "../core/data";
 import { useInvestigation } from "../core/store";
+import { describeGolden } from "../test-support/golden-sample";
 import { EvidencePane } from "./EvidencePane";
 
 declare global {
@@ -59,7 +60,6 @@ const fleetWide = fabric.findings.filter((f) => f.devices.length === 0);
 describe("a finding that names no device", () => {
   it("exists in this snapshot, so the assertions below are about something", () => {
     expect(fleetWide.length, "no device-less finding left to test — re-derive this suite").toBeGreaterThan(0);
-    expect(fleetWide.map((f) => f.id)).toContain("F142");
   });
 
   it("never claims configuration was not COLLECTED for hosts it does not name", () => {
@@ -93,6 +93,12 @@ describe("a finding that names no device", () => {
         `${f.id} has no configuration target and must still say so`,
       ).not.toBeNull();
     }
+  });
+});
+
+describeGolden("the reference sample's fleet-wide finding", () => {
+  it("is F142 ('No QoS configured anywhere')", () => {
+    expect(fleetWide.map((f) => f.id)).toContain("F142");
   });
 });
 

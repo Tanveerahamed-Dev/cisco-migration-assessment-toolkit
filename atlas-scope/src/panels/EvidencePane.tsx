@@ -23,6 +23,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   crossLayerByHost,
@@ -43,6 +44,11 @@ import type {
   AclLine,
   Cite,
   CrossLayerFinding,
+  EvidenceBasis,
+  EvidenceRecord,
+  EvidenceRef,
+  EvidenceRefKind,
+  EvidenceRefRole,
   Finding,
   InterfaceRecord,
   RouteEntry,
@@ -57,9 +63,11 @@ import {
   SeverityBadge,
   orNotObserved,
 } from "../ui/primitives";
+import { CitedText } from "./cited-text";
 import { AclLines, Kv, Section, useOpenCite, type KvRow } from "./DevicePane";
 import "./EvidencePane.css";
 import { RouteFieldValue } from "./HopList";
+import { EvidenceRecordView } from "./Inspector";
 
 const cx = (...parts: (string | false | null | undefined)[]): string => parts.filter(Boolean).join(" ");
 
@@ -382,6 +390,277 @@ export function nearestConfigFor(finding: Finding): ConfigEvidence[] {
 
 /** True when a nearest record was ranked first because it matches the finding's own words. */
 export const isMatchedNearest = (t: ConfigEvidence): boolean => t.kind !== "route" && t.matched === true;
+
+/* ══ the engine's own evidence pointers ════════════════════════════════════
+   Since the phase-3 regeneration every punch-list row carries `evidence_basis` and `evidence_refs`: RFC 6901
+   pointers into the snapshot, naming the records the ENGINE derived the finding from (kinds and rules:
+   contracts/engine-contract.v1.json). The compiler projects each pointed record into the model
+   (`fabric.evidenceRecords`, keyed by pointer). This is the finding's evidence route; the word-matching above
+   is kept only as context, and for a snapshot written before the engine published pointers. */
+
+/** The projected records, by pointer. Absent from a model compiled before the projection existed. */
+const EVIDENCE_RECORDS: ReadonlyMap<string, EvidenceRecord> = new Map((fabric.evidenceRecords ?? []).map((r) => [r.pointer, r]));
+
+/** The projected record an engine pointer names, or null when this model carries none for it. */
+export const evidenceRecordAt = (pointer: string): EvidenceRecord | null => EVIDENCE_RECORDS.get(pointer) ?? null;
+
+/** RFC 6901: the reference tokens of a pointer ("~1" is "/", then "~0" is "~"), or null for a non-pointer. */
+export function pointerTokens(pointer: string): string[] | null {
+  if (!pointer.startsWith("/")) return null;
+  return pointer
+    .slice(1)
+    .split("/")
+    .map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~"));
+}
+
+/** What each kind of pointed record IS, in words — keyed by the contract's kinds, so a new kind is a type error here. */
+const KIND_WORDS: Readonly<Record<EvidenceRefKind, string>> = {
+  interface: "interface record",
+  acl_line: "access-list line",
+  route: "route entry",
+  config_text: "configuration text",
+  device_fact: "device fact",
+  analysis_row: "analysis row, derived by the engine",
+  adjacency: "routing adjacency",
+  absence_witness: "absence witness",
+};
+const ROLE_WORDS: Readonly<Record<EvidenceRefRole, string>> = {
+  derived_from: "the finding is derived from it",
+  subject: "the finding is about it",
+  witness: "it witnesses the finding",
+};
+/** The basis, stated in plain words: what the finding rests on, and what it does not. */
+const BASIS_WORDS: Readonly<Record<EvidenceBasis, string>> = {
+  record:
+    "Basis: record. The engine names the configuration or device record this finding rests on — it is below, as the engine points at it.",
+  row:
+    "Basis: derived from an analysis row. The engine derived this finding from the row(s) below. They are the engine's own analysis records, not configuration, and are shown as what they are.",
+  absence:
+    "Basis: absence. This finding is about something that is NOT there. The engine witnesses the absence with the per-device records below; there is no configuration line to show, because the line is missing.",
+};
+
+/** One of the engine's pointers, with the record the model carries for it and, where there is one, the compiled record to open. */
+export interface EngineRef {
+  ref: EvidenceRef;
+  /** The projected record at `ref.ref` (null only for a model compiled before the projection existed). */
+  record: EvidenceRecord | null;
+  /** The compiled interface / access-list / route record the pointer names, opened like any configuration record. */
+  open: ConfigEvidence | null;
+}
+
+/**
+ * The compiled configuration record an engine pointer names, when the pointer is the path of one the model
+ * compiles — decided by the pointer's own tokens against the compiled records, never by the ref's label.
+ */
+function openableFor(ref: EvidenceRef): ConfigEvidence | null {
+  const t = pointerTokens(ref.ref);
+  if (t === null) return null;
+  const how = `the engine names it for this finding (“${ref.label}”)`;
+  const [section, host, a, b] = t;
+  if (host === undefined) return null;
+  if (section === "interfaces" && t.length === 3 && a !== undefined) {
+    const record = interfacesOf(host).find((i) => i.port === a);
+    return record ? { kind: "interface", host, label: `${host} ${a}`, record, cite: record.cite, how } : null;
+  }
+  if (section === "acls" && t.length === 4 && a !== undefined && b !== undefined && /^(0|[1-9]\d*)$/.test(b)) {
+    const lines = fabric.acls[host]?.[a];
+    const line = lines?.[Number(b)];
+    return lines && line ? { kind: "acl", host, label: `${host} · ${a}`, lines, focusIndex: line.index, cite: `acls.${host}.${a}`, how } : null;
+  }
+  if (section === "routes" && t.length === 3 && a !== undefined) {
+    const entry = routesOf(host).find((r) => r.cite === `routes.${host}[${a}]`);
+    return entry ? { kind: "route", host, label: `${host} · ${entry.prefix}`, entries: [entry], cite: entry.cite, how } : null;
+  }
+  return null;
+}
+
+/** The finding's engine pointers, in the engine's order — or null when the snapshot published none for it. */
+export function engineEvidenceFor(finding: Finding): EngineRef[] | null {
+  const refs = finding.evidenceRefs ?? null;
+  if (refs === null) return null;
+  return refs.map((ref) => ({ ref, record: evidenceRecordAt(ref.ref), open: openableFor(ref) }));
+}
+
+/** Where an excerpt this pane opens was asked for: a record the engine names, or one this pane matched. */
+type OpenOrigin = "engine" | "context";
+
+/** Refs listed before the reader asks for the rest. Configuration text is never folded. */
+const ENGINE_REF_CAP = 8;
+/** With at most this many records to disclose, their members are open from the start. */
+const OPEN_FIELDS_AT_MOST = 3;
+
+function EngineEvidence({
+  finding,
+  refs,
+  onOpenCite,
+  onOpenRecord,
+  expandedFor,
+  openedCite = null,
+  excerpt = null,
+}: {
+  finding: Finding;
+  refs: EngineRef[];
+  onOpenCite: (c: Cite) => void;
+  onOpenRecord: (t: ConfigEvidence, trigger: HTMLButtonElement) => void;
+  /** Whether a record opened in this pane is the one showing (aria-expanded), or undefined when a wider surface owns it. */
+  expandedFor: (t: ConfigEvidence) => boolean | undefined;
+  /**
+   * The engine-named record this pane has opened (null: none, or a wider surface owns the disclosure), and the
+   * excerpt that shows it. It is rendered HERE, next to the pointer that names it, under this step's heading —
+   * never in the context step below, whose note says its records are not the engine's evidence.
+   */
+  openedCite?: string | null;
+  excerpt?: ReactNode;
+}): ReactElement {
+  const [allFor, setAllFor] = useState<string | null>(null);
+  const [openFields, setOpenFields] = useState<{ findingId: string; pointers: ReadonlySet<string> } | null>(null);
+  const showAll = allFor === finding.id;
+  const disclosable = refs.filter((r) => r.open === null && r.ref.kind !== "config_text");
+  const openByDefault = disclosable.length <= OPEN_FIELDS_AT_MOST;
+  const opened = openFields !== null && openFields.findingId === finding.id ? openFields.pointers : new Set<string>();
+  const fieldsOpen = (p: string): boolean => (openByDefault ? !opened.has(p) : opened.has(p));
+  const toggle = (p: string): void => {
+    const next = new Set(opened);
+    if (next.has(p)) next.delete(p);
+    else next.add(p);
+    setOpenFields({ findingId: finding.id, pointers: next });
+  };
+  /* The ref whose record is open stays listed even when it is past the fold (the header can open the first
+     named record wherever it sits), so the excerpt always has its pointer beside it. */
+  const holder = openedCite === null ? -1 : refs.findIndex((r) => r.open?.cite === openedCite);
+  const shown = showAll ? refs : refs.filter((r, i) => i < ENGINE_REF_CAP || r.ref.kind === "config_text" || i === holder);
+  /* Each section is COUNTED over every ref the engine names for it, and says how many the fold leaves on
+     screen: a heading counting only the unfolded ones printed "witnessed by 7 records" for an absence 20
+     devices witness (verifier P3A1-V1-1). */
+  const isOpenable = (r: EngineRef): boolean => r.open !== null;
+  const isWitness = (r: EngineRef): boolean => r.open === null && r.ref.kind === "absence_witness";
+  const isOther = (r: EngineRef): boolean => r.open === null && r.ref.kind !== "absence_witness";
+  const openable = shown.filter(isOpenable);
+  const witnesses = shown.filter(isWitness);
+  const others = shown.filter(isOther);
+  const openableTotal = refs.filter(isOpenable).length;
+  const witnessesTotal = refs.filter(isWitness).length;
+  const onScreen = (n: number, total: number): string => (n < total ? ` (${n} shown)` : "");
+  const basis = finding.evidenceBasis ?? null;
+  const total = finding.evidenceRefsTotal ?? null;
+
+  const item = (r: EngineRef, i: number): ReactElement => {
+    const p = r.ref.ref;
+    const holdsExcerpt = r.open !== null && refs.indexOf(r) === holder;
+    const rec = r.record;
+    const disclose = r.open === null && r.ref.kind !== "config_text" && rec !== null && !rec.withheld;
+    const isOpen = disclose && fieldsOpen(p);
+    return (
+      <li key={`${i}:${p}`} className="ev-eref" data-evidence-ref={p} data-evidence-kind={r.ref.kind}>
+        <p className="ev-eref__head">
+          <span className="ev-eref__kind">{KIND_WORDS[r.ref.kind]}</span>
+          {r.ref.host === null ? null : <span className="ev-mono ev-eref__host">{r.ref.host}</span>}
+          <span className="ev-eref__role">{ROLE_WORDS[r.ref.role]}</span>
+        </p>
+        <p className="ev-eref__label">
+          <CitedText text={r.ref.label} onOpenCite={onOpenCite} />{" "}
+          <CiteButton cite={p} onOpen={onOpenCite} />
+        </p>
+        {r.open !== null ? (
+          <>
+            <div className="ev-cfgactions ev-cfgactions--engine">
+              <Button
+                variant="primary"
+                size="sm"
+                data-open-record={r.open.cite}
+                aria-expanded={expandedFor(r.open)}
+                onClick={(e) => onOpenRecord(r.open!, e.currentTarget)}
+              >
+                {r.open.kind === "acl" ? "Show the configuration" : "Open the record"}: {r.open.label}
+              </Button>
+            </div>
+            {holdsExcerpt ? excerpt : null}
+          </>
+        ) : rec === null ? (
+          <NotObserved
+            what="the pointed record"
+            why="this model was compiled without the engine's evidence records, so the record is only in the source snapshot at the citation"
+            cite={p}
+            onOpenCite={onOpenCite}
+          />
+        ) : r.ref.kind === "config_text" ? (
+          <div className="ev-eref__text">
+            <p className="ev-eref__note">Configuration text, verbatim from the snapshot:</p>
+            <EvidenceRecordView record={rec} onOpenCite={onOpenCite} />
+          </div>
+        ) : rec.withheld ? (
+          <EvidenceRecordView record={rec} onOpenCite={onOpenCite} />
+        ) : (
+          <>
+            <Button variant="ghost" size="sm" aria-expanded={isOpen} data-evidence-disclose={p} onClick={() => toggle(p)}>
+              {isOpen ? "Hide the record's members" : `Show the record's members (${rec.fieldsTotal})`}
+            </Button>
+            {isOpen ? <EvidenceRecordView record={rec} onOpenCite={onOpenCite} className="ev-eref__fields" /> : null}
+          </>
+        )}
+      </li>
+    );
+  };
+
+  return (
+    <div className="ev-engine" data-engine-evidence="" data-evidence-basis={basis ?? "unstated"}>
+      <p className="ev-step__text ev-engine__basis">
+        {basis === null
+          ? "The engine published evidence pointers for this finding but stated no basis for them, so what they establish is not stated."
+          : BASIS_WORDS[basis]}
+      </p>
+      {total !== null ? (
+        <p className="ev-step__text ev-engine__capped" data-evidence-refs-total={total}>
+          {`The engine capped this list: it names ${refs.length} of ${total} records. The other ${total - refs.length} are not in this snapshot's row, so they cannot be shown here.`}
+        </p>
+      ) : null}
+      {refs.length === 0 ? (
+        <NotObserved
+          what="evidence pointers"
+          why="the engine's row carries an empty pointer list, so it names no record of its own"
+          cite={finding.cite}
+          onOpenCite={onOpenCite}
+        />
+      ) : null}
+      {openable.length > 0 ? (
+        <section aria-label="Records the engine names">
+          <h4 className="ev-sub">
+            {(openableTotal === 1 ? "The record the engine names" : `The ${openableTotal} records the engine names`) + onScreen(openable.length, openableTotal)}
+          </h4>
+          <ul className="ev-erefs">{openable.map(item)}</ul>
+        </section>
+      ) : null}
+      {others.length > 0 ? (
+        <section aria-label="Records the engine derived it from">
+          <h4 className="ev-sub">
+            {others.every((r) => r.ref.kind === "config_text")
+              ? "Configuration text the engine points at"
+              : "Records the engine points at — shown as what they are"}
+          </h4>
+          <ul className="ev-erefs">{others.map(item)}</ul>
+        </section>
+      ) : null}
+      {witnesses.length > 0 ? (
+        <section aria-label="Absence, witnessed by">
+          <h4 className="ev-sub">{`Absence, witnessed by ${plural(witnessesTotal, "record")}${onScreen(witnesses.length, witnessesTotal)}`}</h4>
+          <p className="ev-step__text">
+            Each is the engine&rsquo;s per-device record of the check that looked for the missing configuration.
+            It witnesses the absence; it is not a configuration line.
+          </p>
+          <ul className="ev-erefs">{witnesses.map(item)}</ul>
+        </section>
+      ) : null}
+      {shown.length < refs.length ? (
+        <p className="ev-step__text ev-engine__cap">
+          {`Showing ${shown.length} of the ${plural(refs.length, "record")} the engine points at; configuration text is never folded. `}
+          <Button variant="ghost" size="sm" data-engine-show-all="" onClick={() => setAllFor(finding.id)}>
+            {`Show all ${refs.length}`}
+          </Button>
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 /* ══ the configuration excerpt ═════════════════════════════════════════════ */
 
@@ -748,16 +1027,21 @@ function ChainStep({
   n,
   title,
   children,
+  headingRef,
 }: {
   n: number;
   title: string;
   children: ReactNode;
+  /** A step a control elsewhere moves the reader to: its heading takes focus. */
+  headingRef?: RefObject<HTMLHeadingElement | null>;
 }): ReactElement {
   return (
     <li className="ev-step">
       <span className="ev-step__num" aria-hidden="true">{n}</span>
       <div className="ev-step__body">
-        <h3 className="ev-step__title">{title}</h3>
+        <h3 className="ev-step__title" ref={headingRef} tabIndex={headingRef === undefined ? undefined : -1}>
+          {title}
+        </h3>
         {children}
       </div>
     </li>
@@ -807,6 +1091,55 @@ function FindingSource({ finding }: { finding: Finding }): ReactElement {
   );
 }
 
+/**
+ * The header's route to the engine's evidence: the first record the engine names that the model compiles
+ * (one interaction opens it), or — when the engine names rows, facts or witnesses rather than a
+ * configuration record — a move to step 3, where they are rendered. It replaces the word-matched landing for
+ * every finding that carries pointers: the engine said what it rests on, so nothing is guessed.
+ */
+function EngineJump({
+  engine,
+  onShow,
+  onGo,
+}: {
+  engine: EngineRef[];
+  onShow: (t: ConfigEvidence, trigger: HTMLButtonElement) => void;
+  onGo: () => void;
+}): ReactElement | null {
+  const first = engine.find((r) => r.open !== null)?.open ?? null;
+  if (engine.length === 0) return null;
+  return (
+    <div className="ev__jump" data-evidence-route="engine">
+      {first !== null ? (
+        <Button variant="primary" size="sm" onClick={(e) => onShow(first, e.currentTarget)}>
+          {`Show the record the engine names: ${first.label}`}
+        </Button>
+      ) : (
+        <Button variant="primary" size="sm" onClick={onGo}>
+          {`Go to the ${plural(engine.length, "record")} the engine points at`}
+        </Button>
+      )}
+      <span className="ev__jump-note">
+        {first !== null
+          ? engine.length === 1
+            ? "The engine's own pointer for this finding."
+            : `The first of the ${plural(engine.length, "record")} the engine points at; step 3 lists every one.`
+          : "The engine points at analysis rows, device facts or absence witnesses, not a configuration record; step 3 shows them as what they are."}
+      </span>
+    </div>
+  );
+}
+
+/** The producer's own words about a finding's severity and evidence, as header rows, where it wrote them. */
+function producerWords(f: Finding): KvRow[] {
+  const said = (s: string): ReactNode =>
+    s === "" ? <span className="ev-rec__meta">an empty statement — the engine wrote this key with no words</span> : <span data-producer-words="">{s}</span>;
+  const rows: KvRow[] = [];
+  if (f.severityBasis !== undefined && f.severityBasis !== null) rows.push({ k: "Severity basis (the engine's words)", v: said(f.severityBasis), wide: true });
+  if (f.evidenceConfidence !== undefined && f.evidenceConfidence !== null) rows.push({ k: "Evidence confidence (the engine's words)", v: said(f.evidenceConfidence), wide: true });
+  return rows;
+}
+
 export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePaneProps): ReactElement {
   const findingId = useInvestigation((s) => s.findingId);
   const selectFinding = useInvestigation((s) => s.selectFinding);
@@ -818,12 +1151,21 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
   /* The open excerpt belongs to the finding it was opened FOR. It used to be plain state, so a record
      opened under F004 stayed open under F099 — present in F099's list, but opened by nobody for
      F099. Keying it to the finding id closes it on every selection change without an effect. */
-  const [opened, setOpened] = useState<{ findingId: string; target: ConfigEvidence } | null>(null);
-  const openTarget = opened !== null && opened.findingId === findingId ? opened.target : null;
+  /* It also records WHERE it was opened from: a record the engine names opens in step 3, beside its pointer,
+     and a record this pane matched by words opens in step 5, as context. Both used to open in step 5, under a
+     note saying its records are "context, not the engine's evidence" — the engine's own record presented as
+     a guess (verifier P3A1-V1-2). */
+  const [opened, setOpened] = useState<{ findingId: string; target: ConfigEvidence; origin: OpenOrigin } | null>(null);
+  const openCurrent = opened !== null && opened.findingId === findingId ? opened : null;
   const setOpenTarget = useCallback(
-    (t: ConfigEvidence | null) => setOpened(t === null || findingId === null ? null : { findingId, target: t }),
+    (t: ConfigEvidence | null, origin: OpenOrigin = "context") =>
+      setOpened(t === null || findingId === null ? null : { findingId, target: t, origin }),
     [findingId],
   );
+  const openedAs = (origin: OpenOrigin): ConfigEvidence | null =>
+    openCurrent !== null && openCurrent.origin === origin ? openCurrent.target : null;
+  const openedEngine = openedAs("engine");
+  const openedContext = openedAs("context");
   /* The element that opened the excerpt, captured at click time rather than bound to the first
      button: focus must return to the control the reader actually used, not to the one that
      happens to be first. */
@@ -854,6 +1196,9 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
     if (lost) titleRef.current?.focus();
   }, [findingId]);
 
+  /* The ENGINE's pointers for this finding — its own evidence route (null: the snapshot published none). */
+  const engine = useMemo(() => (finding ? engineEvidenceFor(finding) : null), [finding]);
+  const engineStepRef = useRef<HTMLHeadingElement>(null);
   const named = useMemo(() => (finding ? configEvidenceFor(finding) : []), [finding]);
   const nearest = useMemo(() => (finding && named.length === 0 ? nearestConfigFor(finding) : []), [finding, named.length]);
   const targets = named.length > 0 ? named : nearest;
@@ -869,13 +1214,14 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
     : targets.filter((t, i) => i < TARGET_CAP || t.kind === "acl");
 
   const show = useCallback(
-    (t: ConfigEvidence, trigger: HTMLButtonElement) => {
+    (t: ConfigEvidence, trigger: HTMLButtonElement, origin: OpenOrigin = "context") => {
       triggerRef.current = trigger;
       if (onShowConfig) onShowConfig(t);
-      else setOpenTarget(t);
+      else setOpenTarget(t, origin);
     },
     [onShowConfig, setOpenTarget],
   );
+  const showEngine = useCallback((t: ConfigEvidence, trigger: HTMLButtonElement) => show(t, trigger, "engine"), [show]);
 
   const closeConfig = useCallback(() => {
     setOpenTarget(null);
@@ -978,12 +1324,26 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
             { k: "Wave", v: orNotObserved(finding.wave, (s) => s, { what: "migration wave", compact: true, why: "the engine assigned no wave to this finding" }) },
             { k: "Priority", v: orNotObserved(finding.priority, (n) => String(n), { what: "priority", compact: true }) },
             { k: "Rank", v: orNotObserved(finding.rank, (n) => String(n), { what: "rank", compact: true }) },
+            /* The producer's own disclosures about this finding, verbatim, where it wrote them (a key it did not
+               write is null and is not shown: it states nothing, and a row saying "not observed" would read as
+               a gap in the finding). An empty statement is shown as one. */
+            ...producerWords(finding),
           ]}
           onOpenCite={openCite}
           className="ev__facts"
         />
         <FindingSource finding={finding} />
-        {first === null ? null : (
+        {engine !== null ? (
+          <EngineJump
+            engine={engine}
+            onShow={showEngine}
+            onGo={() => {
+              const el = engineStepRef.current;
+              el?.scrollIntoView?.({ block: "start" });
+              el?.focus();
+            }}
+          />
+        ) : first === null ? null : (
           <div className="ev__jump" data-evidence-route={named.length > 0 ? "named" : isMatchedNearest(first) ? "ranked" : "context"}>
             {/* A record reached only by collection order is CONTEXT, not the configuration evidence
                 behind the finding: 133 of 139 fallback landings were such records, and the primary
@@ -1152,7 +1512,30 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
               )}
             </ChainStep>
 
-            <ChainStep n={3} title="The records in the same evidence family">
+            <ChainStep n={3} title="What the engine points at" headingRef={engineStepRef}>
+              {engine === null ? (
+                <NotObserved
+                  what="engine evidence pointers"
+                  why="this snapshot's punch-list row carries no evidence_refs — it was written before the engine published them — so the steps below reach records by this pane's own matching, not by the engine's"
+                  cite={finding.cite}
+                  onOpenCite={openCite}
+                />
+              ) : (
+                <EngineEvidence
+                  finding={finding}
+                  refs={engine}
+                  onOpenCite={openCite}
+                  onOpenRecord={showEngine}
+                  expandedFor={(t) => (onShowConfig ? undefined : openedEngine?.cite === t.cite)}
+                  openedCite={openedEngine?.cite ?? null}
+                  excerpt={
+                    openedEngine === null ? null : <ConfigExcerpt target={openedEngine} onClose={closeConfig} onOpenCite={openCite} />
+                  }
+                />
+              )}
+            </ChainStep>
+
+            <ChainStep n={4} title="The records in the same evidence family">
               <p className="ev-step__text">
                 Routed from this finding&rsquo;s category
                 {finding.category === null ? " (not observed)" : ` (${finding.category})`}. This is
@@ -1197,8 +1580,17 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
               </ul>
             </ChainStep>
 
-            <ChainStep n={4} title="The configuration behind it">
-              {named.length > 0 ? (
+            <ChainStep n={5} title={engine === null ? "The configuration behind it" : "Other records we hold for these hosts"}>
+              {engine !== null ? (
+                <p className="ev-step__text ev-step__text--absent" data-context-note="">
+                  {engine.some((r) => r.open !== null || r.ref.kind === "config_text")
+                    ? "The configuration evidence the engine names for this finding is in step 3."
+                    : "The engine names no configuration line for this finding: its evidence is the records in step 3."}{" "}
+                  {targets.length === 0
+                    ? null
+                    : "The records below are ones this pane matched to the finding's words or listed for its hosts — context, not the engine's evidence."}
+                </p>
+              ) : named.length > 0 ? (
                 <p className="ev-step__text">
                   This finding names {plural(named.length, "configuration record")} literally.
                 </p>
@@ -1236,7 +1628,7 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
                   onOpenCite={openCite}
                 />
               ) : (
-                <div className="ev-cfgactions" data-targets-shown={shownTargets.length} data-targets-total={targets.length}>
+                <div className="ev-cfgactions" data-evidence-list="context" data-targets-shown={shownTargets.length} data-targets-total={targets.length}>
                   {shownTargets.length < targets.length ? (
                     <p className="ev-step__text ev-cfgactions__cap">
                       Showing {shownTargets.length} of {plural(targets.length, "record")} — every access
@@ -1250,12 +1642,12 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
                   {shownTargets.map((t, i) => (
                     <Button
                       key={`${t.kind}-${t.cite}`}
-                      variant={i === 0 && named.length > 0 ? "primary" : "secondary"}
+                      variant={i === 0 && named.length > 0 && engine === null ? "primary" : "secondary"}
                       size="sm"
                       /* Only claimed when this pane owns the disclosure. With an external
                          overlay handler the open state lives elsewhere, and asserting a
                          collapsed control while the panel is open would be a false state. */
-                      aria-expanded={onShowConfig ? undefined : openTarget?.cite === t.cite}
+                      aria-expanded={onShowConfig ? undefined : openedContext?.cite === t.cite}
                       onClick={(e) => show(t, e.currentTarget)}
                     >
                       {t.kind === "acl" ? "Show the configuration" : "Show the record"}: {t.label}
@@ -1263,8 +1655,8 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
                   ))}
                 </div>
               )}
-              {openTarget ? (
-                <ConfigExcerpt target={openTarget} onClose={closeConfig} onOpenCite={openCite} />
+              {openedContext !== null ? (
+                <ConfigExcerpt target={openedContext} onClose={closeConfig} onOpenCite={openCite} />
               ) : null}
             </ChainStep>
 
@@ -1273,7 +1665,7 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
                 snapshot is not bundled with this build, and the Inspector says so: it shows the
                 COMPILED record that carries the citation. A projection presented as the source
                 bytes is the exact overclaim B6 forbids, so the words now match the Inspector's. */}
-            <ChainStep n={5} title="The compiled record behind the citation">
+            <ChainStep n={6} title="The compiled record behind the citation">
               {/* Named once, as the control that opens it (B6), as in step 1. */}
               <p className="ev-step__text">
                 <CiteButton cite={finding.cite} onOpen={openCite} /> is a path into the source

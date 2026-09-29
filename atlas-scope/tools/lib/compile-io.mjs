@@ -19,7 +19,9 @@
  *     portable build ships), public/, review/, node_modules/, src/, docs/, the package root — and it is
  *     named by the one allowed place rather than by a list of forbidden ones: "Git ignores it" says a file
  *     will not be COMMITTED, never that it will not be PUBLISHED (refuter X2, verifier S1-R2V-2). Where
- *     Git owns the tree, .local-data/ must itself be Git-ignored, or a client compile there is refused too.
+ *     Git owns the tree, .local-data/ must itself be Git-ignored, or a client compile there is refused too;
+ *     and it must be a directory OF ITS OWN (`aliasOf`): a .local-data that is a junction, a symbolic link or
+ *     a mount names another place under a private-sounding name, and is refused (verifier R3-V2R-2).
  *     Outside the repository the caller owns the location.
  * "THE REPOSITORY" is every work tree of this Git repository — the main checkout and every linked
  *   worktree (`git worktree list`), plus its common Git directory — not only the checkout this command runs
@@ -57,7 +59,7 @@
  * app refuses silently at runtime.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bindSource, SOURCE_REL, workingTreeDigest } from "../source-binding.mjs";
@@ -217,6 +219,52 @@ function placeOf(canon, given) {
 }
 
 /**
+ * Why `dir` (the package's .local-data/, a direct child of the canonical package directory) is NOT a
+ * directory of its own — or null when it is, or when it does not exist yet (it is then created as a plain
+ * directory). A second name for another place is refused however it is made:
+ *   - a symbolic link or a junction (Node's lstat reports a Windows junction or mount point as a link);
+ *   - a path the OS resolves elsewhere (its real path is not its own spelling — a link Node cannot see);
+ *   - a mount point (a Linux bind mount keeps the directory's own path, so realpath cannot see it; the
+ *     kernel's mount table can).
+ * @param {string} dir  absolute, under a canonical parent
+ * @returns {string | null}
+ */
+function aliasOf(dir) {
+  let st;
+  try {
+    st = lstatSync(dir);
+  } catch {
+    return null;
+  }
+  if (st.isSymbolicLink()) return "it is a symbolic link or a junction";
+  if (!st.isDirectory()) return "it is not a directory";
+  let real;
+  try {
+    real = realpathSync.native(dir);
+  } catch (e) {
+    return `its real path cannot be read (${e instanceof Error ? e.message : String(e)})`;
+  }
+  const same = process.platform === "win32" ? real.toLowerCase() === dir.toLowerCase() : real === dir;
+  if (!same) return "the file system resolves it to another directory";
+  if (process.platform === "linux") {
+    let table = "";
+    try {
+      table = readFileSync("/proc/self/mountinfo", "utf8");
+    } catch {
+      table = "";
+    }
+    /* Field 5 of each line is the mount point, with space, tab, newline and backslash octal-escaped. */
+    const points = table
+      .split("\n")
+      .map((l) => l.split(" ")[4])
+      .filter((p) => p !== undefined)
+      .map((p) => p.replace(/\\([0-7]{3})/g, (_m, o) => String.fromCharCode(Number.parseInt(o, 8))));
+    if (points.includes(real)) return "it is a mount point";
+  }
+  return null;
+}
+
+/**
  * What Git says about this repository — or null where Git does not own it (no Git, not a work tree, or a
  * work tree whose top level is not this repository, e.g. a sandbox copy under a directory that is one).
  * @param {string} repo  canonical repository root
@@ -336,6 +384,20 @@ export function compileToDisk(o) {
      the tree, .local-data/ must be one Git ignores, or the default run would leave the model one `git add`
      from the history. */
   const landsInLocalData = !isSample && (outDir === undefined || inside(localData));
+  /* ...and it is placed by IDENTITY, not by its name (verifier R3-V2R-2): a .local-data that is a junction, a
+     symbolic link or a mount is a second name for another directory — src/data (whose fabric.json is tracked),
+     dist/ (served at /scope) or anywhere else — and "Git ignores .local-data/" says nothing about that place. */
+  if (landsInLocalData) {
+    const why = aliasOf(localData);
+    if (why !== null) {
+      throw new CompileError(
+        "E_OUT_REFUSED",
+        `${posix(relative(repo, localData))}/ is not a directory of its own: ${why}. A client compile there would land in whatever ` +
+          `it names — src/data, dist/ or anywhere else — under a name that says it is private. Make ${posix(relative(repo, localData))}/ ` +
+          `a plain directory, or compile to a directory outside the repository with --out. Nothing was written.`,
+      );
+    }
+  }
   if (landsInLocalData && git !== null && !git.ignoredDir(posix(relative(repo, localData)))) {
     throw new CompileError(
       "E_OUT_REFUSED",

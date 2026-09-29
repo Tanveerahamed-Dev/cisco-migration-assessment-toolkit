@@ -52,6 +52,7 @@ import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { presentBand } from "../core/band-qualification";
 import type { Device, Link, Trace } from "../core/types";
+import { roleGlyphClass } from "../core/roles";
 import {
   CAMERA_TWEEN_MS,
   createCameraRig,
@@ -99,6 +100,7 @@ import { createFlowOverlay, type FlowOverlay } from "./flow";
 import {
   buildChassis,
   buildRoleGlyph,
+  ROLE_GLYPHS,
   buildStateRing,
   chassisSilhouette,
   chassisSpec,
@@ -211,13 +213,27 @@ import type { FabricLayout, FabricTierBounds } from "./layout";
  * report is stripped out of the bundle that ships.
  */
 
-/** A composed frame with no outline effect active. Measured 74 at `high`; 14 calls of headroom. */
+/**
+ * A composed frame with no outline effect active. Measured 74 at `high` on the 9cc348bd reference sample
+ * (2026-09-21, the compiled fabric of the commit that recorded it); 14 calls of headroom. A measurement of ONE
+ * 26-device sample, not a derived bound: device meshes are instanced per chassis kind and per glyph/ring class, so
+ * the count scales with the number of distinct kinds and classes present, not with the device count, but no
+ * larger fleet had been measured when this was set.
+ *
+ * RE-MEASURED 2026-09-28 (phase 3), after the "other" role glyph added a fourth role-glyph instanced mesh, on the
+ * regenerated reference sample (GOLDEN_SHA, src/test-support/golden-sample.ts) (Playwright Chromium, SwiftShader WebGL2, 1440x900, no outline active,
+ * `stats().drawCalls` after the warm-up converged): 71 at `high`, 31 at `low`. The sample has no role outside
+ * access/distribution, so its "other" mesh has count 0 and three.js skips it (WebGLBufferRenderer:
+ * `if ( primcount === 0 ) return;`). With a third of the sample's roles re-stated as "core" through `setData`:
+ * 73 at `high` (+2: the glyph mesh is drawn in two passes) and 32 at `low` (+1). Every figure is inside this base.
+ */
 export const DRAW_CALL_BUDGET_BASE = 88;
 
 /**
  * What one `OutlineEffect` with a non-empty selection is allowed to add.
  *
- * Measured +29 (selection outline) and +38 (blocked outline, which also runs a Kawase blur). The
+ * Measured +29 (selection outline) and +38 (blocked outline, which also runs a Kawase blur), on the same
+ * 9cc348bd reference sample as the base. The
  * budget is one number for both because the chain may run either, and the larger measurement is
  * the one a ceiling has to survive.
  */
@@ -619,22 +635,39 @@ const _colour = new Color();
 const _world = new Vector3();
 const AXIS_X = new Vector3(1, 0, 0);
 
-const ROLE_GLYPHS: readonly RoleGlyph[] = ["access", "distribution", "unobserved"];
 const RING_SHAPES: readonly StateRingShape[] = ["solid", "dashed", "double"];
 
-function topologySignature(devices: readonly Device[], links: readonly Link[]): string {
-  const d = devices.map((x) => `${x.id}/${x.kind}/${x.collected ? 1 : 0}`).join(",");
-  const l = links.map((x) => `${x.id}:${x.a}>${x.b}`).join(",");
-  return `${d}|${l}`;
+/**
+ * What `setData` compares to decide between repainting in place and rebuilding the graph.
+ *
+ * It was `id/kind/collected` per device and `id:a>b` per link, so a new snapshot with the same topology kept the
+ * OLD role glyphs, state rings, cable encodings and positions on screen: measured while re-measuring the draw-call
+ * budget for the "other" role glyph (a third of the sample's roles re-stated as "core" through setData left draw
+ * calls and triangles byte-identical). The fast path repaints exactly one thing — the band tint and LED of each
+ * body — so the signature is everything the build reads EXCEPT the device's `band`: every other device field,
+ * every link field, and the layout's node positions, tier bounds and cable midpoints. A spurious rebuild costs a
+ * stutter; a missed one draws a fact the snapshot no longer states. `scene.data-signature.test.ts` perturbs every
+ * field, so a field added to Device or Link is covered without editing this.
+ */
+/** The one Device field `setData`'s fast path repaints in place (the body tint and LED), by name. */
+const REPAINTED_IN_PLACE: keyof Device = "band";
+
+export function sceneDataSignature(
+  devices: readonly Device[],
+  links: readonly Link[],
+  layout: Pick<LayoutResult, "nodes" | "tierBounds" | "linkMidpoints">,
+): string {
+  /* The band is left out by KEY, never read: its value belongs to the band owner (band-read.guard.test.ts). */
+  const d = JSON.stringify(devices.map((x) => Object.entries(x).filter(([k]) => k !== REPAINTED_IN_PLACE)));
+  const l = JSON.stringify(links);
+  const n = JSON.stringify([layout.nodes, layout.tierBounds, [...layout.linkMidpoints]]);
+  return `${d}|${l}|${n}`;
 }
 
-function roleGlyphFor(role: string | null): RoleGlyph {
-  if (role === "access") return "access";
-  if (role === "distribution") return "distribution";
-  // Every other value, `null` included, gets the OUTLINED mark. 17 of 26 devices in this snapshot
-  // carry role: null, and rendering nothing for them would be indistinguishable from a bug.
-  return "unobserved";
-}
+/* A role's glyph comes from the one owner (src/core/roles.ts): access / distribution, "other" for any other
+   OBSERVED role, and the outlined "unobserved" mark only for a role the snapshot never stated. Case and
+   whitespace are normalised there, so " Access" is access here exactly as it is in the legend. */
+const roleGlyphFor = (role: string | null): RoleGlyph => roleGlyphClass(role);
 
 function ringShapeFor(status: string): StateRingShape {
   if (status === "up") return "solid";
@@ -994,8 +1027,10 @@ export function buildFabricGraph(opts: BuildGraphOptions): FabricGraph {
     mirrors.push({ attr, deviceIndex: members.map((m) => m.index) });
   };
 
-  /* Role glyphs. Three shapes, one instanced mesh each, on the chassis lid where the default
-     camera can actually see them. */
+  /* Role glyphs. One shape per owner class (ROLE_GLYPHS), one instanced mesh each, on the chassis lid where
+     the default camera can actually see them. A class no device holds is an instanced mesh with count 0, which
+     three.js does not draw (WebGLBufferRenderer: `if ( primcount === 0 ) return;`), so a fleet without an
+     "other" role renders the same draw calls as before that glyph existed. */
   const roleGlyphs: InstancedMesh[] = [];
   for (const glyph of ROLE_GLYPHS) {
     const members = order.filter((s) => roleGlyphFor(s.device.role) === glyph);
@@ -1270,7 +1305,7 @@ export function buildFabricGraph(opts: BuildGraphOptions): FabricGraph {
     materials,
     maps,
     tokens,
-    signature: topologySignature(devices, links),
+    signature: sceneDataSignature(devices, links, layout),
     neighbours,
     linkEnds,
     emissiveObjects,
@@ -1487,8 +1522,9 @@ export interface FabricSceneEx extends FabricScene {
    * The reader's motion preference changed (C5-R2-1, 2026-09-27). Through this setter the scene keeps
    * running: the camera and the flow overlay take the new preference, the emphasis eases apply it from
    * their next step (under reduced motion they land on their targets, §4.8), and a tier cross-fade
-   * already running finishes at FADE_MAX_STEP per frame (./emphasis `createTierFadeDriver`); one still
-   * held at 1 is swapped when the new tier presents (§4.8). A host that disposes and recreates the
+   * already running finishes at FADE_MAX_STEP per frame (./emphasis `createTierFadeDriver`), and so does one
+   * still held or waiting at 1, which was on screen under full motion (R4-VR2-4); only an overlay up under
+   * reduced motion throughout is swapped when the new tier presents (§4.8). A host that disposes and recreates the
    * scene on a toggle instead takes the overlay down with the canvas, camera pose included. Which of
    * the two Fabric3D.tsx does is read from its source by scene.test.ts.
    */
@@ -2626,7 +2662,9 @@ const createSceneImpl = (
   /** Called after a composed frame lands on the canvas (at `now`): release the old tier's picture. */
   function releaseTierFade(now: number): void {
     /* Only a HELD overlay (at exactly 1) is released. Under reduced motion the slot swaps it away on
-       this frame (§4.8: a swap, not an animation — the same as having had no overlay); otherwise it
+       this frame if it has been up under reduced motion throughout (§4.8: a swap, not an animation — the
+       same as having had no overlay), and starts it at the cap if it was shown under full motion
+       (R4-VR2-4); otherwise it
        hands back its hold, and this decides when the fade starts. From then on `frame()` drives it:
        the driver steps it on the frame's raw duration (capped at FADE_MAX_STEP per frame), writes the
        overlay's opacity, and removes it on the frame it reaches exactly 0. It holds no timer: a hidden
@@ -3757,7 +3795,7 @@ const createSceneImpl = (
 
   const api: FabricSceneEx = {
     setData(devices: Device[], links: Link[], nextLayout: LayoutResult): void {
-      const signature = topologySignature(devices, links);
+      const signature = sceneDataSignature(devices, links, nextLayout);
       if (signature === graph.signature) {
         // Same topology: the GPU buffers are still correct and only the per-instance colours can
         // have moved. Rebuilding here would drop every material and recompile every shader for a

@@ -17,6 +17,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fabric, interfacesOf, physicalByHost } from "../core/data";
 import { useInvestigation } from "../core/store";
+import { describeGolden } from "../test-support/golden-sample";
+import { need } from "./trace-universe";
 import { DevicePane, joinPorts, parseDeduction } from "./DevicePane";
 import { EvidencePane, blocksFor, configEvidenceFor } from "./EvidencePane";
 
@@ -69,6 +71,35 @@ const key = (el: Element, k: string, opts: KeyboardEventInit = {}): void => {
 };
 
 /* ══ the data this file depends on, asserted rather than assumed ═══════════ */
+
+
+/**
+ * The densest host in the loaded snapshot — the one with the most port rows (interface records joined
+ * with physical-health rows), ties broken by name — and its device id. These tests named core1 ("the
+ * densest host in this snapshot"); reading it by that property keeps them true on any snapshot where
+ * the property holds (phase 3 rename leg). The reference sample's answer is pinned in the golden block.
+ */
+const denseHost = (): string => {
+  const hosts = [...new Set(fabric.devices.map((d) => d.host))].sort();
+  let best: { host: string; n: number } | null = null;
+  for (const h of hosts) {
+    const n = joinPorts(h).length;
+    if (best === null || n > best.n) best = { host: h, n };
+  }
+  expect(best, "precondition: the snapshot has devices").not.toBeNull();
+  return best!.host;
+};
+const idOf = (host: string): string => {
+  const d = fabric.devices.find((x) => x.host === host);
+  expect(d, `precondition: ${host} is in the inventory`).toBeDefined();
+  return d!.id;
+};
+
+describeGolden("the reference sample's densest host", () => {
+  it("is core1", () => {
+    expect(denseHost()).toBe("core1");
+  });
+});
 
 describe("the real snapshot still has the shape these tests probe", () => {
   it("carries at least one device that was never collected, and it has no score", () => {
@@ -143,12 +174,13 @@ describe("joinPorts", () => {
   });
 
   it("marks a one-sided row instead of dropping it", () => {
-    // core1 is the densest host in this snapshot and has physical-health rows for only some ports.
-    const rows = joinPorts("core1");
+    // The densest host has physical-health rows for only some ports.
+    const host = denseHost();
+    const rows = joinPorts(host);
     const oneSided = rows.filter((r) => r.intf === null || r.phys === null);
     expect(oneSided.length).toBeGreaterThan(0);
     act(() => {
-      useInvestigation.getState().selectDevice("core1");
+      useInvestigation.getState().selectDevice(idOf(host));
       useInvestigation.getState().setEvidenceTab("ports");
     });
     const c = mount(<DevicePane />);
@@ -179,9 +211,10 @@ describe("health deductions", () => {
   });
 
   it("states the residual between the itemised deductions and the published score", () => {
-    const d = fabric.devices.find((x) => x.host === "core1");
+    const host = denseHost();
+    const d = fabric.devices.find((x) => x.host === host);
     expect(d).toBeDefined();
-    act(() => { useInvestigation.getState().selectDevice("core1"); });
+    act(() => { useInvestigation.getState().selectDevice(idOf(host)); });
     const c = mount(<DevicePane />);
     const arith = panel(c, "summary").querySelector(".dp-arith")?.textContent ?? "";
     const sum = (d?.deductions ?? []).reduce(
@@ -198,7 +231,7 @@ describe("health deductions", () => {
 
 describe("failure impact", () => {
   it("renders the snapshot's own number and ours without picking a winner", () => {
-    act(() => { useInvestigation.getState().selectDevice("core1"); });
+    act(() => { useInvestigation.getState().selectDevice(idOf(denseHost())); });
     const c = mount(<DevicePane />);
     const heads = [...panel(c, "summary").querySelectorAll(".dp-cmp__head")].map((h) => h.textContent);
     expect(heads).toHaveLength(2);
@@ -300,7 +333,7 @@ describe("evidence tabs", () => {
 describe("the record grid keyboard contract", () => {
   const openPorts = (): HTMLElement => {
     act(() => {
-      useInvestigation.getState().selectDevice("core1");
+      useInvestigation.getState().selectDevice(idOf(denseHost()));
       useInvestigation.getState().setEvidenceTab("ports");
     });
     const c = mount(<DevicePane />);
@@ -319,7 +352,7 @@ describe("the record grid keyboard contract", () => {
 
   it("declares the LOGICAL row and column counts", () => {
     const grid = openPorts();
-    const rows = joinPorts("core1").length;
+    const rows = joinPorts(denseHost()).length;
     expect(grid.getAttribute("aria-rowcount")).toBe(String(rows + 1));
     expect(Number(grid.getAttribute("aria-colcount"))).toBeGreaterThan(5);
     const first = grid.querySelector('[role="row"]:nth-child(2)');
@@ -341,7 +374,7 @@ describe("the record grid keyboard contract", () => {
 
   it("moves five rows on Page Down and clamps at the last row", () => {
     const grid = openPorts();
-    const rows = joinPorts("core1").length;
+    const rows = joinPorts(denseHost()).length;
     key(roving(grid)!, "PageDown");
     expect(roving(grid)?.dataset.r).toBe("5");
     // Enough Page Downs to overshoot the last row by a clear margin, and no more: each one is a
@@ -353,7 +386,7 @@ describe("the record grid keyboard contract", () => {
 
   it("honours Ctrl+End and Ctrl+Home", () => {
     const grid = openPorts();
-    const rows = joinPorts("core1").length;
+    const rows = joinPorts(denseHost()).length;
     const cols = Number(grid.getAttribute("aria-colcount"));
     key(roving(grid)!, "End", { ctrlKey: true });
     expect(roving(grid)?.dataset.r).toBe(String(rows));
@@ -376,10 +409,22 @@ describe("the record grid keyboard contract", () => {
 /* ══ the evidence chain ════════════════════════════════════════════════════ */
 
 describe("configEvidenceFor", () => {
-  it("resolves a finding that names a port to that port's real interface record", () => {
-    const f = fabric.findings.find((x) => /\bGi1\/0\/38\b/.test(x.detail ?? ""));
-    expect(f).toBeDefined();
-    const targets = configEvidenceFor(f!);
+  /* Found by property (was the sample's "Gi1/0/38" by name; verifier V5, phase 3): a finding whose detail
+     quotes one of the snapshot's collected ports as "<host> <port>", ending at a word boundary. The
+     sample's own case is pinned in the golden block below. */
+  const quotesAPort = (x: (typeof fabric.findings)[number]): boolean => {
+    const d = x.detail ?? "";
+    return Object.entries(fabric.interfaces).some(([h, recs]) =>
+      recs.some((i) => {
+        const k = `${h} ${i.port}`;
+        const at = d.indexOf(k);
+        return at !== -1 && !/[\w/.]/.test(d.charAt(at + k.length));
+      }),
+    );
+  };
+  it("resolves a finding that names a port to that port's real interface record", (ctx) => {
+    const f = need(ctx, fabric.findings.find(quotesAPort), "finding whose detail quotes a collected port");
+    const targets = configEvidenceFor(f);
     const ifaces = targets.filter((t) => t.kind === "interface");
     expect(ifaces.length).toBeGreaterThan(0);
     for (const t of ifaces) {
@@ -409,6 +454,15 @@ describe("configEvidenceFor", () => {
      the other 140 name devices but no configuration line. F001 and F003 both name core1 (the host
      with the richest evidence), so returning its records for them would be exactly the guess this
      test forbids. */
+  describeGolden("the reference sample's configuration-evidence census", () => {
+  it("resolves the sample's Gi1/0/38 finding to that port's interface record", () => {
+    const f = fabric.findings.find((x) => /\bGi1\/0\/38\b/.test(x.detail ?? ""));
+    expect(f).toBeDefined();
+    const ifaces = configEvidenceFor(f!).filter((t) => t.kind === "interface");
+    expect(ifaces.length).toBeGreaterThan(0);
+    for (const t of ifaces) expect(interfacesOf(t.host).some((i) => i.cite === t.cite)).toBe(true);
+  });
+
   it("returns nothing for a finding that names no configuration, rather than guessing", () => {
     const byId = (id: string) => {
       const f = fabric.findings.find((x) => x.id === id);
@@ -417,11 +471,12 @@ describe("configEvidenceFor", () => {
     };
     for (const id of ["F001", "F003"]) {
       const f = byId(id);
-      expect(f.devices, `precondition: ${id} names a device`).toContain("core1");
+      expect(f.devices, `precondition: ${id} names the host with the richest evidence`).toContain(denseHost());
       expect(configEvidenceFor(f)).toEqual([]);
     }
     const named = fabric.findings.filter((x) => configEvidenceFor(x).length > 0).map((x) => x.id);
     expect(named.sort()).toEqual(["F002", "F136", "F137", "F138", "F139", "F140"]);
+  });
   });
 });
 

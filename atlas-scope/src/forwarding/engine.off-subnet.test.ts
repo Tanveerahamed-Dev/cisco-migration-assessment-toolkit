@@ -16,6 +16,8 @@ import { fabric } from "../core/data";
 import type { Flow } from "../core/types";
 import { FLOW_PROTOCOLS, formatIpv4, hostAddressIn, parseInterfaceAddress, parseIpv4, parsePrefix, prefixContains, protocolCarriesPorts, type Prefix } from "./ip";
 import { refusalOf, suggestedFlows, traceFlow } from "./engine";
+import { describeGolden } from "../test-support/golden-sample";
+import { GOLDEN_FORWARDING as G } from "./golden-expectations";
 
 /** Every prefix the collection observed: SVI subnets and connected routes. */
 const OBSERVED: Prefix[] = [
@@ -92,6 +94,21 @@ describe("B4: a source in no observed subnet is out of scope and the claim says 
             expect(t.claim, where).toContain("so no ingress device can be named and no forwarding claim is made");
           }
     expect(traces).toBe(SOURCES.length * dsts.length * (FLOW_PROTOCOLS.filter(protocolCarriesPorts).length * 2 + FLOW_PROTOCOLS.filter((p) => !protocolCarriesPorts(p)).length));
-    expect(traces).toBeGreaterThan(500);
+    /* UPDATED phase 3: the sweep's size was pinned as "> 500", a number measured on the old sample (its
+       suggested flows then had more distinct destinations). What it guarded is that the destinations reach
+       into EVERY observed SVI subnet, so that is asserted from the data; the exact count is the golden pin. */
+    for (const r of fabric.l3) {
+      const a = r.sviIp === null ? null : parseInterfaceAddress(r.sviIp);
+      if (a === null) continue;
+      expect(dsts.some((d) => prefixContains(a.prefix, parseIpv4(d)!)), `a destination inside ${r.cite}'s subnet`).toBe(true);
+    }
+    expect(traces).toBeGreaterThan(SOURCES.length);
+  });
+});
+
+describeGolden("B4 on the reference sample", () => {
+  it("the off-subnet sweep's size", () => {
+    const dsts = destinations();
+    expect(SOURCES.length * dsts.length * (FLOW_PROTOCOLS.filter(protocolCarriesPorts).length * 2 + FLOW_PROTOCOLS.filter((p) => !protocolCarriesPorts(p)).length)).toBe(G.offSubnetTraces);
   });
 });

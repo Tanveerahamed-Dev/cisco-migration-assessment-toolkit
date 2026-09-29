@@ -43,9 +43,12 @@
  * returning or passed-by-name callback; React's act used as a value (stored, re-exported, `.call`ed)
  * or reached without its name (a computed key on, or an escape of, a value that carries it); and a
  * Promise-returning look-alike of a library member. An act the checker cannot resolve counts as
- * React's. What that scan does not see — a thenable wearing a non-void primitive type through `any`
- * or an assertion written elsewhere, or a library's implementation replaced where no type describes
- * it (a `vi.mock` factory, `Object.assign`) — is the canary's to catch. A scope whose callback never
+ * React's. Every checked source is read, and a `void` proof is void for anything a Vitest mock anywhere
+ * in the program can replace (`vi.spyOn`, a `vi.mock`/`vi.doMock` factory's module, or any module in a
+ * file that mocks one the scan cannot resolve). What that scan does not see — a thenable wearing a
+ * non-void primitive type through `any` or an assertion written elsewhere, a library's implementation
+ * replaced by `Object.assign`/`defineProperty`/prototype patching, a `__mocks__` file an automock loads —
+ * is the canary's to catch. A scope whose callback never
  * resolves cannot be settled; the after-each hook then times out and says so.
  *
  * The containment and the canary are proved by a planted child Vitest run in

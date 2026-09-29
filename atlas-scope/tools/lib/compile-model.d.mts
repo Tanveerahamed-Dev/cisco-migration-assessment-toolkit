@@ -6,6 +6,8 @@
  */
 import type {
   EvidenceBasis,
+  EvidenceProjection,
+  EvidenceRecord,
   EvidenceRefKind,
   EvidenceRefRole,
   Fabric,
@@ -83,6 +85,20 @@ export declare function bindSourceWith(bytes: Uint8Array, label: SourceLabel, ha
 export declare function bindSourceAsync(bytes: Uint8Array, label: SourceLabel, hashes: AsyncHashes): Promise<SourceBinding>;
 
 export declare function parsePointer(pointer: unknown): string[] | null;
+/** The bounds evidence records are projected under (characters of text); stated in `Fabric.evidenceProjection`. */
+export declare const EVIDENCE_PROJECTION_CAPS: Readonly<{
+  fieldTextChars: number;
+  scalarTextChars: number;
+  recordFields: number;
+  recordChars: number;
+  totalChars: number;
+}>;
+/** Project every record the findings' (already resolved) evidence pointers name, once per distinct pointer. */
+export declare function compileEvidenceRecords(
+  findings: readonly { priority?: number | null; evidenceRefs?: readonly { ref: string }[] | null }[],
+  snap: unknown,
+  caps?: typeof EVIDENCE_PROJECTION_CAPS,
+): { records: EvidenceRecord[]; projection: EvidenceProjection };
 export declare function resolvePointer(doc: unknown, pointer: unknown): { ok: true; value: unknown } | { ok: false; reason: string };
 
 /** One port's ACL binding, as src/forwarding/bindings.ts reads it. */

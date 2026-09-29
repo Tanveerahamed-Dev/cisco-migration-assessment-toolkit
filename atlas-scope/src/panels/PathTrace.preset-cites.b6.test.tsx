@@ -32,6 +32,7 @@ import { refusalOf, suggestedFlows, traceFlow } from "../forwarding/engine";
 import { verdictStatement } from "./ClaimCard";
 import { resolveCitation } from "./Inspector";
 import { PathTrace } from "./PathTrace";
+import { describeGolden } from "../test-support/golden-sample";
 import { citesIn } from "./cited-text";
 
 declare global {
@@ -128,12 +129,26 @@ async function mountPresets(search: string, onOpenCite: (c: Cite) => void): Prom
 }
 
 describe("B6 wave 7: the preset cards' citations", () => {
-  it("the data this rests on: the five cards print five citations, and the refuter's four are among them", () => {
+  /* RE-EXPRESSED 2026-09-28 (phase 3). This pinned the refuter's printed citations by name
+     (acls.core1.PROTECT_SERVERS[2], l3_forwarding[5], l3_forwarding[4]). The last two were printed by the
+     no-route preset from core2's subnet and a pod-subnet preset; the regenerated sample gave core2 a default
+     route (no no-route preset is offered) and the engine now derives its presets from the new multi-hop
+     paths, so which cards exist is the engine's choice, not evidence. The invariant is what the refuter's
+     probe meant: the cards print citations and each one resolves, as does every record behind every
+     card's verdict word (each is then checked as a working control, per card, by the tests below). The
+     refuter's own record that is still printed on this sample is pinned in the golden block. */
+  it("the data this rests on: the cards print citations, and every one of them and every verdict record resolves", () => {
     const printed = cases.flatMap(({ s }) => [...citesIn(s.rationale), ...citesIn(s.srcProvenance.note)]);
     expect(printed.length, "the cards print citations at all").toBeGreaterThan(0);
-    expect(printed).toEqual(expect.arrayContaining(["acls.core1.PROTECT_SERVERS[2]", "l3_forwarding[5]", "l3_forwarding[4]"]));
     for (const c of printed) expect(resolveCitation(c).kind, c).not.toBe("unresolved");
     for (const { behind } of cases) for (const c of behind) expect(resolveCitation(c).kind, c).not.toBe("unresolved");
+  });
+
+  describeGolden("the refuter's records on the reference sample", () => {
+    it("the undecidable ICMP card still prints the unevaluable PROTECT_SERVERS line it rests on", () => {
+      const printed = cases.flatMap(({ s }) => [...citesIn(s.rationale), ...citesIn(s.srcProvenance.note)]);
+      expect(printed).toContain("acls.core1.PROTECT_SERVERS[2]");
+    });
   });
 
   for (const [where, search] of PLACES) {

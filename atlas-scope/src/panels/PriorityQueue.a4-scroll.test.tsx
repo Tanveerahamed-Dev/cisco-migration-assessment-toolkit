@@ -26,6 +26,8 @@ import { actAsync } from "../test-support/act-turns";
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
 import { PriorityQueue } from "./PriorityQueue";
+import { describeGolden } from "../test-support/golden-sample";
+import { need } from "./trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -144,8 +146,43 @@ afterEach(() => {
    under three names would be ceremony, not coverage. */
 const pickDevice = (host: string): void => useInvestigation.getState().selectDevice(host, { surface: "fabric" });
 
+/**
+ * The hosts the picks are made on, read from the snapshot by how many findings name them — not named
+ * (phase 3 rename leg: "access13", "core2" and "dist1" are the sample's names for the measured case).
+ * One heavily named host (the second most named: the most named is on nearly every screen), and two
+ * lightly named ones — the third-fewest and the fewest among hosts named by at least four findings — so
+ * a pick is exercised at both ends of the naming density. Ties are broken by name. The reference sample's
+ * answer is pinned in the golden block to the measured hosts.
+ */
+const PICKED: readonly string[] = (() => {
+  const n = new Map<string, number>();
+  for (const f of fabric.findings) for (const d of new Set(f.devices)) n.set(d, (n.get(d) ?? 0) + 1);
+  const byCount = [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const light = byCount.filter(([, c]) => c >= 4).sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
+  return [byCount[1]?.[0], light[2]?.[0], light[0]?.[0]].filter((h): h is string => h !== undefined);
+})();
+const HEAVY = (): string => {
+  expect(PICKED[0], "precondition: some host is named by several findings").toBeDefined();
+  return PICKED[0]!;
+};
+
+describeGolden("the measured hosts", () => {
+  it("are the hosts the property picks on the reference sample", () => {
+    expect(PICKED).toEqual(["access13", "core2", "dist1"]);
+  });
+});
+
 describe("A4: a device pick with no finding selected keeps the reader's place when it already answers", () => {
-  for (const host of ["access13", "core2", "dist1"]) {
+  /* Up to three hosts: the second most named, and the lightest and third-lightest of those named by four or
+     more findings. The reference sample offers all three (pinned by name in the golden block above); a
+     smaller fleet may offer fewer — the engine's golden fleet offers two — and each one it offers is still
+     checked below. A snapshot offering none has no subject, and says so by name (verifier V5, phase 3). */
+  it("the snapshot offers hosts to pick", (ctx) => {
+    need(ctx, PICKED[0], "host named by several findings");
+    expect(PICKED.length).toBeLessThanOrEqual(3);
+  });
+
+  for (const host of PICKED) {
     it(`${host}: scrollTop is unchanged when a row naming it is already visible`, async () => {
       const c = mount(<PriorityQueue debounceMs={0} />);
       const grid = installLayout(c);
@@ -202,7 +239,7 @@ describe("A4: a device pick with no finding selected keeps the reader's place wh
        F002. The skipped reveal still moved the ROVING cell to the first naming row, and the palette
        returning focus to the grid re-entered on that roving cell, which paged the list to it. The
        roving cell must follow what the reader is looking at — a naming row already in view. */
-    const host = "access13";
+    const host = HEAVY();
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     const idx = namingIndices(c, host);
@@ -236,7 +273,7 @@ describe("A4: a device pick with no finding selected keeps the reader's place wh
        back on the F060 cell BEFORE the deferred marks commit, so the grid owns focus at the moment
        the reveal target changes — and the focus-follows-roving effect used to move focus (and the
        list) to F002 before any reveal decision ran. */
-    const host = "access13";
+    const host = HEAVY();
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     const idx = namingIndices(c, host);
@@ -264,7 +301,7 @@ describe("A4: a device pick with no finding selected keeps the reader's place wh
     act(() => { useInvestigation.getState().selectFinding(id); });
     expect(inView(rows.at(-1)!)).toBe(true);
     readerScrollsTo(grid, 47);
-    act(() => { pickDevice("access13"); });
+    act(() => { pickDevice(HEAVY()); });
     await settle();
     expect(grid.scrollTop).toBe(47);
   });

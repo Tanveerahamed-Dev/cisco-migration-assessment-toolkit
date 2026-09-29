@@ -35,6 +35,8 @@ import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
 import { useUrlSync } from "../app/urlSync";
 import { PriorityQueue } from "./PriorityQueue";
+import { describeGolden } from "../test-support/golden-sample";
+import { need } from "./trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -215,6 +217,51 @@ const bandNow = (portTop: () => number, g: Geometry): number => g.bottom - portT
 
 const pickDevice = (host: string | null): void => useInvestigation.getState().selectDevice(host, { surface: "fabric" });
 
+/**
+ * The hosts the picks are made on, read from the snapshot by how many findings name them (ties by name),
+ * not named — phase 3 rename leg: "access13", "core1" and "access5" are the sample's names for the
+ * measured cases, which stay pinned by name in the golden blocks. MOST is the most named host (the
+ * device a reader selects first), HEAVY the second most named (named on many screens, never all).
+ */
+const BY_NAMING: readonly string[] = (() => {
+  const n = new Map<string, number>();
+  for (const f of fabric.findings) for (const d of new Set(f.devices)) n.set(d, (n.get(d) ?? 0) + 1);
+  return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([h]) => h);
+})();
+const MOST = (): string => {
+  expect(BY_NAMING[0], "precondition: some finding names a host").toBeDefined();
+  return BY_NAMING[0]!;
+};
+const HEAVY = (): string => {
+  expect(BY_NAMING[1], "precondition: two hosts are named by findings").toBeDefined();
+  return BY_NAMING[1]!;
+};
+
+/**
+ * The host a band test picks, found by the PROPERTY the test needs in the mounted queue (verifier V5,
+ * phase 3): the first host in naming order starting from the second most named (HEAVY — the measured
+ * access13 on the reference sample, pinned in the golden block), then the most named, whose naming rows
+ * satisfy `ok`. On the engine's golden fleet the second most named host is named by nearly every row, so
+ * no offset shows it alone and no offset shows none of it; a smaller host still does. Undefined when no
+ * host of the snapshot has the property — the caller skips by name through `need`.
+ */
+function subjectHost(c: HTMLElement, ok: (idx: readonly number[]) => boolean, exclude: string | null = null): string | undefined {
+  const order = [...BY_NAMING.slice(1), ...BY_NAMING.slice(0, 1)];
+  return order.find((h) => h !== exclude && ok(namingIndices(c, h)));
+}
+/** Every offset of the band has a naming row that is the only one visible there. */
+const soleAtEveryOffset = (g: Geometry, bandPx: number) => (idx: readonly number[]): boolean =>
+  idx.length > 0 && offsets(g, bandPx).every((o) => soleNamingRowAt(o, idx, g, bandPx) !== null);
+/** Some scroll position after the first naming row shows no naming row at all. */
+const someOffsetShowsNone = (rowCount: number, g: Geometry, bandPx: number) => (idx: readonly number[]): boolean => {
+  if (idx.length === 0) return false;
+  for (let i = idx[0]! + 1; i < rowCount; i += 1) {
+    const start = scrollFor(i, 0, g);
+    if (idx.every((k) => { const top = k * g.row - start; return !(top >= 0 && top + g.row <= bandPx); })) return true;
+  }
+  return false;
+};
+
 beforeEach(() => {
   (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
     observe(): void {}
@@ -245,16 +292,24 @@ afterEach(() => {
  * row naming `host` is the ONLY visible naming row and sits at that offset, pick `host`, and record
  * every offset at which the reader lost it or the list moved further than the layout did.
  */
-async function sweep(g: Geometry, host: string, from: string | null): Promise<{ failures: string[]; checked: number; maxShift: number }> {
+async function sweep(
+  g: Geometry,
+  hostOrProperty: string | null,
+  from: string | null,
+): Promise<{ host: string | null; failures: string[]; checked: number; maxShift: number }> {
   const c = mount(<PriorityQueue debounceMs={0} />);
   const { grid, portTop } = installLayout(c, g);
-  const idx = namingIndices(c, host);
   const failures: string[] = [];
   let checked = 0;
   let maxShift = 0;
   act(() => { pickDevice(from); });
   await flush();
   const band0 = bandNow(portTop, g);
+  /* `null`: the host is the first one (from the second most named) whose naming rows put a sole visible
+     naming row at every offset of this band — the property the sweep needs. */
+  const host = hostOrProperty ?? subjectHost(c, soleAtEveryOffset(g, band0), from) ?? null;
+  if (host === null) return { host, failures, checked, maxShift };
+  const idx = namingIndices(c, host);
   for (const o of offsets(g, band0)) {
     act(() => { pickDevice(from); });
     await flush();
@@ -287,13 +342,14 @@ async function sweep(g: Geometry, host: string, from: string | null): Promise<{ 
       );
     }
   }
-  return { failures, checked, maxShift };
+  return { host, failures, checked, maxShift };
 }
 
 describe("A4: the whole band — a naming row visible when the reader acted keeps their place", () => {
   for (const g of GEOMETRIES) {
-    it(`${g.name}: access13 picked with nothing selected, the only visible naming row at every offset from the top to the bottom edge`, async () => {
-      const { failures, checked, maxShift } = await sweep(g, "access13", null);
+    it(`${g.name}: the second most named host picked with nothing selected, the only visible naming row at every offset from the top to the bottom edge`, async (ctx) => {
+      const { host, failures, checked, maxShift } = await sweep(g, null, null);
+      need(ctx, host, "host whose naming rows leave one of them alone at every offset of the band");
       expect(maxShift, "the model must move the port on the pick (else this proves nothing)").toBeGreaterThan(20);
       expect(checked).toBeGreaterThan(30);
       expect(failures, `${failures.length} of ${checked} offsets lost the reader's place:\n${failures.slice(0, 8).join("\n")}`).toEqual([]);
@@ -301,13 +357,43 @@ describe("A4: the whole band — a naming row visible when the reader acted keep
   }
 
   for (const g of [GEOMETRIES[0]!]) {
-    it(`${g.name}: device-to-device — core1 selected, then access5 picked (the sentence re-words; the port does not move, and neither may the list)`, async () => {
-      const { failures, checked } = await sweep(g, "access5", "core1");
+    it(`${g.name}: device-to-device — the most named host selected, then the second most named picked (the sentence re-words; the port does not move, and neither may the list)`, async (ctx) => {
+      const { host, failures, checked } = await sweep(g, null, MOST());
+      need(ctx, host, "second host whose naming rows leave one of them alone at every offset of the band");
       expect(checked).toBeGreaterThan(30);
       expect(failures, `${failures.length} of ${checked} offsets lost the reader's place:\n${failures.slice(0, 8).join("\n")}`).toEqual([]);
     }, 180_000);
   }
 
+  describeGolden("the measured device-to-device case", () => {
+    for (const g of [GEOMETRIES[0]!]) {
+      it(`${g.name}: device-to-device — core1 selected, then access5 picked (the sentence re-words; the port does not move, and neither may the list)`, async () => {
+        const { failures, checked } = await sweep(g, "access5", "core1");
+        expect(checked).toBeGreaterThan(30);
+        expect(failures, `${failures.length} of ${checked} offsets lost the reader's place:\n${failures.slice(0, 8).join("\n")}`).toEqual([]);
+      }, 180_000);
+    }
+    it("the hosts the property picks are the measured ones", () => {
+      expect([MOST(), HEAVY()]).toEqual(["core1", "access13"]);
+    });
+    it("on the reference sample the band property picks the second most named host itself, at every geometry", async () => {
+      for (const g of GEOMETRIES) {
+        const c = mount(<PriorityQueue debounceMs={0} />);
+        const { portTop } = installLayout(c, g);
+        const band = bandNow(portTop, g);
+        expect(subjectHost(c, soleAtEveryOffset(g, band)), g.name).toBe(HEAVY());
+        expect(subjectHost(c, someOffsetShowsNone(dataRows(c).length, g, band)), g.name).toBe(HEAVY());
+        for (const m of mounted.splice(0)) {
+          act(() => m.root.unmount());
+          m.container.remove();
+        }
+        restore?.();
+        restore = null;
+      }
+    });
+  });
+
+  describeGolden("the report's exact case", () => {
   it("1920x1080: the report's exact case — F099 13 px above the port's bottom edge, access13 picked: scrollTop does not fall to 0", async () => {
     const g = GEOMETRIES[0]!;
     const c = mount(<PriorityQueue debounceMs={0} />);
@@ -324,31 +410,49 @@ describe("A4: the whole band — a naming row visible when the reader acted keep
     expect(Math.abs(grid.scrollTop - start)).toBeLessThanOrEqual(38);
     expect(inView(dataRows(c)[n]!, portTop, g), "F099 stays fully visible").toBe(true);
   });
+  });
 
-  it("centred control: the only naming row mid-port does not move the list at all", async () => {
+  it("centred control: the only naming row mid-port does not move the list at all", async (ctx) => {
     const g = GEOMETRIES[0]!;
     const c = mount(<PriorityQueue debounceMs={0} />);
     const { grid, portTop } = installLayout(c, g);
     const o = Math.round((bandNow(portTop, g) - g.row) / 2);
-    const n = soleNamingRowAt(o, namingIndices(c, "access13"), g, bandNow(portTop, g));
+    const host = need(
+      ctx,
+      subjectHost(c, (idx) => soleNamingRowAt(o, idx, g, bandNow(portTop, g)) !== null),
+      "host with a naming row alone mid-port",
+    );
+    const n = soleNamingRowAt(o, namingIndices(c, host), g, bandNow(portTop, g));
     expect(n, "precondition: some naming row is alone mid-port").not.toBeNull();
     const start = scrollFor(n!, o, g);
     readerScrollsTo(grid, start);
-    act(() => { pickDevice("access13"); });
+    act(() => { pickDevice(host); });
     await flush();
     expect(grid.scrollTop).toBe(start);
   });
 
-  it("negative control: with NO naming row visible, the first naming row is still revealed", async () => {
+  it("negative control: with NO naming row visible, the first naming row is still revealed", async (ctx) => {
     const g = GEOMETRIES[0]!;
     const c = mount(<PriorityQueue debounceMs={0} />);
     const { grid, portTop } = installLayout(c, g);
-    const idx = namingIndices(c, "access13");
-    // Rows 25/26 and 59 name access13; rows 27-58 do not, and a port shows ~14 of them.
-    const start = scrollFor(30, 0, g);
+    const host = need(
+      ctx,
+      subjectHost(c, someOffsetShowsNone(dataRows(c).length, g, bandNow(portTop, g))),
+      "host some scroll position shows none of the naming rows of",
+    );
+    const idx = namingIndices(c, host);
+    /* The first offset past the first naming row at which no naming row is in view (was "row 30": rows
+       27-58 name no access13 on the sample) — found, not typed. */
+    const rows = dataRows(c);
+    let start = -1;
+    for (let i = (idx[0] ?? 0) + 1; i < rows.length && start < 0; i += 1) {
+      readerScrollsTo(grid, scrollFor(i, 0, g));
+      if (idx.every((k) => !inView(rows[k]!, portTop, g))) start = scrollFor(i, 0, g);
+    }
+    expect(start, "precondition: some offset shows no naming row").toBeGreaterThan(-1);
     readerScrollsTo(grid, start);
     expect(idx.every((i) => !inView(dataRows(c)[i]!, portTop, g)), "precondition: no naming row visible").toBe(true);
-    act(() => { pickDevice("access13"); });
+    act(() => { pickDevice(host); });
     await flush();
     expect(inView(dataRows(c)[idx[0]!]!, portTop, g), "the first naming row is revealed").toBe(true);
   });
@@ -368,7 +472,8 @@ function Sync(): null {
 }
 
 describe("A4: browser Back onto a device selection keeps the reader's place", () => {
-  it("1920x1080: the only visible naming row 2 px above the bottom edge survives Back to ?d=access13", async () => {
+  it("1920x1080: the only visible naming row 2 px above the bottom edge survives Back to ?d=<the picked host>", async () => {
+    const host = HEAVY();
     const g = GEOMETRIES[0]!;
     window.history.replaceState(null, "", "/");
     const c = mount(
@@ -378,14 +483,14 @@ describe("A4: browser Back onto a device selection keeps the reader's place", ()
       </>,
     );
     const { grid, portTop } = installLayout(c, g);
-    const idx = namingIndices(c, "access13");
-    act(() => { pickDevice("access13"); });
+    const idx = namingIndices(c, host);
+    act(() => { pickDevice(host); });
     await flush();
     const withDevice = window.location.search;
-    expect(withDevice).toContain("d=access13");
+    expect(withDevice).toContain(`d=${encodeURIComponent(host)}`);
     act(() => { pickDevice(null); });
     await flush();
-    expect(window.location.search).not.toContain("d=access13");
+    expect(window.location.search).not.toContain(`d=${encodeURIComponent(host)}`);
     const o = bandNow(portTop, g) - 2 - g.row;
     const n = soleNamingRowAt(o, idx, g, bandNow(portTop, g));
     expect(n, "precondition: some naming row is alone at the bottom edge").not.toBeNull();
@@ -399,7 +504,7 @@ describe("A4: browser Back onto a device selection keeps the reader's place", ()
       window.dispatchEvent(new PopStateEvent("popstate"));
     });
     await flush();
-    expect(useInvestigation.getState().deviceId).toBe("access13");
+    expect(useInvestigation.getState().deviceId).toBe(host);
     const shift = portTop() - top0;
     expect(shift).toBeGreaterThan(20);
     expect(grid.scrollTop, `scrollTop ${start} -> ${grid.scrollTop}`).not.toBe(0);

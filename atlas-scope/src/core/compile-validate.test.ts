@@ -276,6 +276,27 @@ describe("the engine's on-disk form compiles to the same content", () => {
   const records = (d: Ports): [string, string, Record<string, unknown>][] =>
     Object.entries(d).flatMap(([h, ports]) => Object.entries(ports).map(([p, r]) => [h, p, r] as [string, string, Record<string, unknown>]));
 
+  it("the fixture is byte-reproducible across platforms: it records no platform path, and its generator writes none (R3-V2R-5)", () => {
+    /* A Windows regeneration recorded "tests\\golden\\snapshot.json" (os.path.join) and a POSIX one
+       "tests/golden/snapshot.json", so the same producer output was two different files. The class is any
+       platform-dependent value in what the generator WRITES beside the records: every metadata string of the
+       fixture (everything but the producer's own dense/sparse records) is checked, and the generator must name
+       its source by a POSIX literal and write with an explicit "\n" newline. */
+    const doc = JSON.parse(readFileSync(resolve(PKG, "tools", "fixtures", "engine-sparse-interfaces.json"), "utf8")) as Record<string, unknown>;
+    const meta = Object.entries(doc).filter(([k]) => k !== "dense" && k !== "sparse");
+    expect(meta.map(([k]) => k).sort(), "the fixture's metadata keys").toEqual(["about", "recordsFrom"]);
+    for (const [k, v] of meta) expect(typeof v === "string" && !v.includes("\\"), `${k} = ${JSON.stringify(v)} carries a backslash`).toBe(true);
+    expect(doc.recordsFrom).toBe("tests/golden/snapshot.json");
+    const py = readFileSync(resolve(PKG, "tools", "fixtures", "engine-sparse-interfaces.py"), "utf8");
+    expect(py).toMatch(/^SOURCE_REL = "tests\/golden\/snapshot\.json"$/m);
+    expect(py, "the recorded source is the POSIX literal, not a joined path").toMatch(/"recordsFrom": SOURCE_REL,/);
+    expect(py).toMatch(/newline="\\n"/);
+    // The file itself is LF-only and ends with one newline, as the generator writes it.
+    const raw = readFileSync(resolve(PKG, "tools", "fixtures", "engine-sparse-interfaces.json"), "latin1");
+    expect(raw.includes("\r")).toBe(false);
+    expect(raw.endsWith("}\n")).toBe(true);
+  });
+
   it("the producer's sparsify rule is still the one the fixture was generated under", () => {
     expect(HTML_PY).toContain('if v != "" and not (k == "run_config_observed" and v is False)}');
   });

@@ -5,6 +5,7 @@ all be in datas, the dynamic imports static analysis cannot see must all be hidd
 the dist destination must be the exact directory the entry module probes when frozen."""
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -126,10 +127,17 @@ def test_datas_cover_every_selftest_guarded_asset():
 
 
 def test_tracked_sources_exist_on_a_checkout():
-    """Everything except the built dist is tracked — it must exist on any checkout. The dist is
-    build output (engine CI has no node), so it is the only tolerated absence here."""
-    missing = {Path(p).name for p in atlas_bundle.missing_data_sources(ROOT)}
-    assert missing <= {"dist"}, f"tracked bundle sources missing from the checkout: {missing}"
+    """Everything except build output is tracked — it must exist on any checkout. The built SPA dist
+    and the Atlas Scope hub build are build output (engine CI has no node), so they are the only
+    tolerated absences here — read from the manifest's own BUILD_OUTPUTS, not a list of names."""
+    outputs = [ROOT / rel for rel in atlas_bundle.BUILD_OUTPUTS]
+    missing = [p for p in atlas_bundle.missing_data_sources(ROOT)
+               if not any(Path(p) == out or Path(p).is_relative_to(out) for out in outputs)]
+    assert not missing, f"tracked bundle sources missing from the checkout: {missing}"
+    # and every declared build output really is a bundle source (the tolerance is not over-broad)
+    sources = [Path(src) for src, _dest in atlas_bundle.bundle_datas(ROOT)]
+    for out in outputs:
+        assert any(src == out or src.is_relative_to(out) for src in sources), out
 
 
 def test_missing_sources_fail_loud_on_an_empty_root(tmp_path):
@@ -273,3 +281,163 @@ def test_expected_release_reads_the_checkout_through_the_apps_own_owner():
     from webapp.backend.serve import _release_version
 
     assert expected_release() == _release_version() != ""
+
+
+# ── Atlas Scope (/scope): the hub build rides the bundle as its own member ──────────────────────
+def _serve():
+    if str(ROOT) not in sys.path:  # webapp is a namespace package off the repo root
+        sys.path.insert(0, str(ROOT))
+    from webapp.backend import serve
+
+    return serve
+
+
+def _write_scope_hub_build(dist: Path, *, with_maps: bool = True) -> None:
+    """A small /scope runtime build shaped like atlas-scope's `npm run build:hub` output."""
+    (dist / "assets").mkdir(parents=True, exist_ok=True)
+    (dist / "assets" / "index-a1.js").write_bytes(b"export const scope = 1;")
+    (dist / "assets" / "index-b2.css").write_bytes(b":root{--bg:#000}")
+    if with_maps:
+        (dist / "assets" / "index-a1.js.map").write_bytes(b'{"version":3,"sources":[]}')
+        (dist / "assets" / "vendor.JS.MAP").write_bytes(b'{"version":3}')
+    (dist / "index.html").write_bytes(
+        b'<!doctype html><html><head><meta charset="UTF-8">'
+        b'<meta name="atlas-scope-snapshot-source" content="assesshub-api-runtime">'
+        b'<script type="module" crossorigin src="/scope/assets/index-a1.js"></script>'
+        b'<link rel="stylesheet" crossorigin href="/scope/assets/index-b2.css">'
+        b'</head><body><div id="root"></div></body></html>')
+
+
+def test_scope_dist_dest_matches_the_entry_modules_frozen_probe(monkeypatch, tmp_path):
+    """The two owners of 'where does the Atlas Scope hub build live when frozen' -- the bundle's
+    SCOPE_DIST_DEST and serve._resolve_scope_dist's _MEIPASS probe -- name the SAME directory."""
+    serve = _serve()
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert serve._resolve_scope_dist() == tmp_path / atlas_bundle.SCOPE_DIST_DEST
+    assert atlas_bundle.SCOPE_DIST_DEST != atlas_bundle.DIST_DEST  # its own member, never the SPA's
+
+
+def test_scope_dist_source_is_the_apps_own_default_hub_build(monkeypatch):
+    """The bundle ships the build AssessHub serves from a checkout (app._REPO_ATLAS_SCOPE_DIST, the
+    output of atlas-scope `npm run build:hub`), and a checkout resolves to it unfrozen."""
+    serve = _serve()
+    from webapp.backend import app as app_module
+
+    assert ROOT / atlas_bundle.SCOPE_DIST_SOURCE == app_module._REPO_ATLAS_SCOPE_DIST
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    assert serve._resolve_scope_dist() == app_module.ATLAS_SCOPE_DIST
+
+
+def test_the_scope_member_ships_every_build_file_except_sourcemaps(tmp_path):
+    hub = tmp_path / atlas_bundle.SCOPE_DIST_SOURCE
+    _write_scope_hub_build(hub)
+    datas = atlas_bundle.bundle_datas(tmp_path)
+    shipped = sorted((Path(src).relative_to(hub).as_posix(), dest) for src, dest in datas
+                     if Path(src).is_relative_to(hub))
+    assert shipped == [
+        ("assets/index-a1.js", f"{atlas_bundle.SCOPE_DIST_DEST}/assets"),
+        ("assets/index-b2.css", f"{atlas_bundle.SCOPE_DIST_DEST}/assets"),
+        ("index.html", atlas_bundle.SCOPE_DIST_DEST),
+    ]
+    assert not [src for src, _dest in datas if src.casefold().endswith(".map")]
+    assert not [m for m in atlas_bundle.missing_data_sources(tmp_path) if Path(m).is_relative_to(hub)]
+
+
+def test_the_build_refuses_a_bundle_without_the_scope_hub_build(tmp_path):
+    """Refuse-on-missing: no hub build (or one without its shell) is a missing source, so
+    atlas.spec refuses to build instead of shipping an Atlas whose /scope is silently absent."""
+    hub = tmp_path / atlas_bundle.SCOPE_DIST_SOURCE
+    assert str(hub) in atlas_bundle.missing_data_sources(tmp_path)
+    _write_scope_hub_build(hub)
+    (hub / "index.html").unlink()
+    assert str(hub / "index.html") in atlas_bundle.missing_data_sources(tmp_path)
+    # a build of sourcemaps alone is not a build either
+    for path in (hub / "assets").iterdir():
+        if not path.name.casefold().endswith(".map"):
+            path.unlink()
+    assert str(hub / "index.html") in atlas_bundle.missing_data_sources(tmp_path)
+    spec = (ROOT / "portable" / "atlas.spec").read_text(encoding="utf-8")
+    assert "npm run build:hub" in spec  # the refusal names the command that fixes it
+
+
+def _selftest(serve, capsys, tmp_path, *, scope_dist):
+    pytest.importorskip("docx")
+    pytest.importorskip("pptx")
+    spa = tmp_path / "spa"
+    (spa / "assets").mkdir(parents=True)
+    (spa / "assets" / "app.js").write_bytes(b"export const ready = true;")
+    (spa / "index.html").write_bytes(b'<!doctype html><html><head><script type="module" '
+                                     b'src="/assets/app.js"></script></head><body>'
+                                     b'<div id="root"></div></body></html>')
+    rc = serve.run_selftest(dist_dir=spa, db_path=str(tmp_path / "data" / "hub.db"),
+                            scope_dist_dir=scope_dist)
+    out = capsys.readouterr().out
+    return rc, [line for line in out.splitlines() if "atlas-scope" in line], out
+
+
+def test_selftest_requires_a_ready_scope_build_in_a_frozen_bundle(monkeypatch, tmp_path, capsys):
+    serve = _serve()
+    monkeypatch.setattr(serve, "_scope_build_required", lambda: True)
+    _rc, lines, out = _selftest(serve, capsys, tmp_path / "a", scope_dist=tmp_path / "no-scope")
+    assert len(lines) == 1 and lines[0].lstrip().startswith("[FAIL]"), out
+    assert "not_built" in lines[0]
+    hub = tmp_path / "hub"
+    _write_scope_hub_build(hub)
+    _rc, lines, out = _selftest(serve, capsys, tmp_path / "b", scope_dist=hub)
+    assert len(lines) == 1 and lines[0].lstrip().startswith("[ ok ]"), out
+    # the frozen predicate is the requirement's owner
+    monkeypatch.undo()
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert serve._scope_build_required() is True
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    assert serve._scope_build_required() is False
+
+
+def test_selftest_refuses_a_present_scope_build_it_would_not_serve(tmp_path, capsys):
+    """A checkout with a scope build that AssessHub refuses (here: a root-mounted build, the
+    standalone sample shape) fails loud -- present-but-refused is never rendered as fine."""
+    serve = _serve()
+    bad = tmp_path / "bad"
+    _write_scope_hub_build(bad)
+    (bad / "index.html").write_bytes((bad / "index.html").read_bytes().replace(b"/scope/", b"/"))
+    rc, lines, out = _selftest(serve, capsys, tmp_path, scope_dist=bad)
+    assert rc == 1 and len(lines) == 1 and lines[0].lstrip().startswith("[FAIL]"), out
+    assert "invalid_build" in lines[0]
+
+
+def test_selftest_in_a_checkout_reports_an_absent_scope_build_as_not_applicable(tmp_path, capsys):
+    """In a checkout the hub build is optional build output (/scope then answers 'not built' and
+    AssessHub shows no link): the line says so, is NOT counted as a passing check, and does not by
+    itself fail the run. It is never printed as '[ ok ]'."""
+    serve = _serve()
+    rc, lines, out = _selftest(serve, capsys, tmp_path, scope_dist=tmp_path / "none")
+    assert len(lines) == 1 and lines[0].lstrip().startswith("[ -- ]"), out
+    assert "not built" in lines[0]
+    assert "[ ok ] atlas-scope" not in out
+    assert "1 not applicable" in out
+    verdict = re.search(r"SELFTEST: (PASS|FAIL) \((\d+)/(\d+) checks ok", out)
+    assert verdict, out
+    assert (rc == 0) == (verdict.group(1) == "PASS")
+    assert int(verdict.group(2)) <= int(verdict.group(3))
+
+
+def test_serve_passes_the_resolved_scope_build_to_the_app(monkeypatch, tmp_path):
+    """The production entry serves the resolved scope build (the frozen bundle's member), not
+    whatever create_app's checkout default would resolve to inside _MEIPASS."""
+    serve = _serve()
+    from webapp.backend import app as app_module
+
+    seen = {}
+
+    def fake_create_app(**kwargs):
+        seen.update(kwargs)
+        import sqlite3
+
+        raise sqlite3.DatabaseError("stop after construction arguments were captured")
+    monkeypatch.setattr(app_module, "create_app", fake_create_app)
+    monkeypatch.setattr(serve, "_resolve_scope_dist", lambda: tmp_path / "bundled-scope")
+    rc = serve.main(["--db", str(tmp_path / "data" / "a.db"), "--no-browser",
+                     "--dist", str(tmp_path / "spa")])
+    assert rc == 1
+    assert seen["scope_dist_dir"] == str(tmp_path / "bundled-scope")

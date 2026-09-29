@@ -35,7 +35,7 @@
  * extension list is "text formats this project authors".
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, extname, join, relative, resolve } from "node:path";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -550,6 +550,9 @@ const hostWith = (planted: ReadonlyMap<string, string> = new Map()): ts.Compiler
   const getSourceFile = host.getSourceFile.bind(host);
   host.readFile = (f) => planted.get(resolve(f)) ?? readFile(f);
   host.fileExists = (f) => planted.has(resolve(f)) || fileExists(f);
+  /* A planted module in a directory of its own (a mock scenario's ./H) resolves only if its directory "exists". */
+  const directoryExists = host.directoryExists?.bind(host);
+  host.directoryExists = (d) => [...planted.keys()].some((p) => p.startsWith(`${resolve(d)}${sep}`)) || (directoryExists?.(d) ?? true);
   host.getSourceFile = (fileName, languageVersion, onError, shouldCreate) => {
     const text = planted.get(resolve(fileName));
     if (text !== undefined) return parseAs(text, fileName);
@@ -652,10 +655,18 @@ const VITEST_TYPINGS = /[\\/]node_modules[\\/](?:vitest|@vitest[\\/][^\\/]+)[\\/
  * implementing one, an assignment over one (`el.focus = async () => {}`), or a Vitest mock's
  * implementation (`vi.spyOn(el, "focus").mockImplementation(async () => {})`) — is reported where it
  * is written, as is a mock of such a member made to return a thenable by value (`mockResolvedValue`,
- * `mockReturnValue(promise)`). The scan reads every source under src/ that names act or imports React.
+ * `mockReturnValue(promise)`). The scan judges EVERY checked source under src/, whatever words it contains
+ * (verifier finding R7-V2-2: a helper that never named act or react was never read).
  *
- * WHAT COUNTS AS REACT'S act, decided by the checker: a name (`act`, an import alias of it, a
- * destructured alias of it), a `.act` property, or an `["act"]` key that resolves to the `act` export
+ * MOCKS VOID PROOFS (verifier finding R7-V2-2). A proof trusts that the value called IS the declared function
+ * (or the library's member); a Vitest mock replaces it at run time. So every declaration that a `vi.spyOn(obj,
+ * name)` or a `vi.mock`/`vi.doMock` WITH a factory anywhere in the program can replace (`mockCensus`) proves
+ * nothing, and a file that registers a mock whose module the scan cannot resolve proves nothing at all. An
+ * automock (no factory) makes each export a `vi.fn()` returning undefined, and voids no proof.
+ *
+ * WHAT COUNTS AS REACT'S act, decided by the checker: any name whose SYMBOL resolves to it, through every
+ * alias (an import alias, an import-equals `import a = React.act` — verifier finding R7-V2-1 — which is also
+ * reported as act stored under another name), a destructured alias of it, a `.act` property, or an `["act"]` key that resolves to the `act` export
  * of the module "react" resolves to, or whose type IS that export's type. One whose symbol or type
  * cannot be resolved (`require("react")` is `any`) counts as React's: failing closed. Reaching act
  * WITHOUT naming it is reported where the value that carries it escapes typing (verifier finding
@@ -670,7 +681,12 @@ const VITEST_TYPINGS = /[\\/]node_modules[\\/](?:vitest|@vitest[\\/][^\\/]+)[\\/
  * (including `export * from "react"`) — the last because a file that never names act or react is
  * never read, and could reach act through it by a computed key. The one place it may be returned is
  * a `vi.mock`/`vi.doMock` factory of React, which hands it back to React's own name; a member named
- * act (or computed) written in such a factory is reported as act replaced.
+ * act (or computed) written in such a factory is reported as act replaced. Such a factory is found by what
+ * the call NAMES (verifier finding R7-V2-3): a specifier string, a const typed as one, or Vitest's
+ * `import("react")` form, and a factory inline or passed by name; one the scan cannot read is reported. A
+ * LITERAL holding React's module handed to a call is judged by the parameter the callee DECLARES
+ * (`Object.assign(globalThis, { R: React })`, `Object.defineProperty(o, "R", { value: React })`), and a
+ * specifier written in any quote (``require(`react`)``) counts as React's.
  *
  * WHAT IT DOES NOT SEE, stated rather than implied: a thenable that wears a non-void primitive type
  * through `any` or an assertion written somewhere other than the returned value; a library's
@@ -697,7 +713,94 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
     /** React's `act` export, and its type (what an alias of it has). */
     act: ts.Symbol;
     actType: ts.Type;
+    /** Every declaration a Vitest mock anywhere in the program can replace, with where (R7-V2-2). */
+    mocked: Map<ts.Node, string>;
+    /** The files that mock a module the scan cannot resolve, with where: any proof in them may be replaced. */
+    opaqueMocks: Map<ts.SourceFile, string>;
   }
+  /** The one string an expression can be, by its type (a literal, a const bound to one); null when not one knowable string. */
+  const literalText = (checker: ts.TypeChecker, e: ts.Expression): string | null => {
+    const x = e;
+    if (ts.isStringLiteralLike(x)) return x.text;
+    const t = checker.getTypeAtLocation(x);
+    return t.isStringLiteral() ? t.value : null;
+  };
+  /** Whether a call's callee is Vitest's own function of one of these names (resolved to Vitest's typings). */
+  const vitestCall = (checker: ts.TypeChecker, call: ts.CallExpression, names: RegExp): boolean => {
+    let c: ts.Expression = call.expression;
+    while (ts.isParenthesizedExpression(c) || ts.isNonNullExpression(c)) c = c.expression;
+    const nm = ts.isPropertyAccessExpression(c) ? c.name : ts.isIdentifier(c) ? c : undefined;
+    if (nm === undefined || !names.test(nm.text)) return false;
+    let s = checker.getSymbolAtLocation(nm);
+    if (s !== undefined && s.flags & ts.SymbolFlags.Alias) s = checker.getAliasedSymbol(s);
+    return s?.declarations?.some((d) => VITEST_TYPINGS.test(d.getSourceFile().fileName)) === true;
+  };
+  /** The module specifier a vi.mock/vi.doMock names: a string (or a const typed as one), or Vitest's `import("…")` form. */
+  const mockSpecifier = (checker: ts.TypeChecker, e: ts.Expression | undefined): string | null => {
+    if (e === undefined) return null;
+    let x = e;
+    while (ts.isParenthesizedExpression(x) || ts.isAwaitExpression(x)) x = x.expression;
+    if (ts.isCallExpression(x) && x.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const a = x.arguments[0];
+      return a === undefined ? null : literalText(checker, a);
+    }
+    return literalText(checker, x);
+  };
+  /**
+   * WHAT A VITEST MOCK CAN REPLACE, over EVERY project source of the program — tests and the helpers they call
+   * alike, whatever words they contain (independent verifier R7-V2-2: a spy installed in a helper that never
+   * names act or react was never read). `vi.spyOn(obj, name)` replaces that member of obj's type (every member,
+   * when the name cannot be read); `vi.mock`/`vi.doMock` with a factory replaces every export of the module it
+   * names (an automock without one makes each export a `vi.fn()` that returns undefined, and replaces no proof);
+   * a specifier the scan cannot resolve replaces anything, in the file that registers it. A void-call proof is
+   * void for a declaration in this census: at run time the value called need not be that function at all.
+   */
+  const mockCensus = (program: ts.Program, checker: ts.TypeChecker): { mocked: Map<ts.Node, string>; opaqueMocks: Map<ts.SourceFile, string> } => {
+    const mocked = new Map<ts.Node, string>();
+    const opaqueMocks = new Map<ts.SourceFile, string>();
+    const add = (s0: ts.Symbol | undefined, where: string): void => {
+      const s = s0 !== undefined && s0.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(s0) : s0;
+      for (const d of s?.declarations ?? []) {
+        if (!mocked.has(d)) mocked.set(d, where);
+        if (ts.isVariableDeclaration(d) && d.initializer !== undefined) {
+          let init: ts.Expression = d.initializer;
+          while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init) || ts.isSatisfiesExpression(init)) init = init.expression;
+          if (!mocked.has(init)) mocked.set(init, where);
+        }
+      }
+    };
+    const resolutionHost: ts.ModuleResolutionHost = {
+      fileExists: (f) => program.getSourceFile(f) !== undefined || ts.sys.fileExists(f),
+      readFile: (f) => program.getSourceFile(f)?.text ?? ts.sys.readFile(f),
+      directoryExists: (d) => ts.sys.directoryExists(d) || program.getSourceFiles().some((sf) => resolve(sf.fileName).startsWith(`${resolve(d)}${sep}`)),
+    };
+    for (const sf of program.getSourceFiles()) {
+      if (fromLibrary(program, sf)) continue;
+      const where = (n: ts.Node): string => `${rel(sf.fileName)}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`;
+      const visit = (n: ts.Node): void => {
+        if (ts.isCallExpression(n)) {
+          if (n.arguments.length >= 2 && vitestCall(checker, n, /^spyOn$/)) {
+            const objType = checker.getApparentType(checker.getNonNullableType(checker.getTypeAtLocation(n.arguments[0]!)));
+            const name = literalText(checker, n.arguments[1]!);
+            for (const p of name === null ? checker.getPropertiesOfType(objType) : [checker.getPropertyOfType(objType, name)]) add(p, where(n));
+          } else if (n.arguments.length >= 2 && vitestCall(checker, n, /^(?:mock|doMock)$/)) {
+            const spec = mockSpecifier(checker, n.arguments[0]);
+            const file = spec === null ? undefined : ts.resolveModuleName(spec, sf.fileName, OPTIONS, resolutionHost).resolvedModule?.resolvedFileName;
+            const target = file === undefined ? undefined : program.getSourceFile(file);
+            if (spec === null || file === undefined) {
+              if (!opaqueMocks.has(sf)) opaqueMocks.set(sf, where(n));
+            } else if (target !== undefined) {
+              const moduleSymbol = checker.getSymbolAtLocation(target);
+              if (moduleSymbol !== undefined) for (const e of checker.getExportsOfModule(moduleSymbol)) add(e, where(n));
+            }
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(sf);
+    }
+    return { mocked, opaqueMocks };
+  };
   const scanOf = (program: ts.Program): Scan => {
     const checker = program.getTypeChecker();
     /* React's act is whatever the module "react" resolves to from src/ exports as `act` — found through
@@ -708,7 +811,7 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
     const exported = moduleSymbol === undefined ? undefined : checker.getExportsOfModule(moduleSymbol).find((s) => s.name === "act");
     if (exported === undefined) throw new Error(`React's act could not be found through "react" (typings: ${typings ?? "unresolved"})`);
     const act = exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
-    return { program, checker, act, actType: checker.getTypeOfSymbol(act) };
+    return { program, checker, act, actType: checker.getTypeOfSymbol(act), ...mockCensus(program, checker) };
   };
 
   const PRIMITIVE =
@@ -745,7 +848,8 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
     ts.forEachChild(body, visit);
     return out;
   };
-  const REACT_SPECIFIER = /["'](?:react(?:-dom)?(?:\/[^"']*)?|@testing-library\/react)["']/;
+  /* Any quote a specifier can be written in — a template literal too (R7-V2-3: ``require(`react`)``). */
+  const REACT_SPECIFIER = /["'`](?:react(?:-dom)?(?:\/[^"'`]*)?|@testing-library\/react)["'`]/;
   const MOCK_METHOD = /^(?:mock|with)/;
   const vitestDeclared = (t: ts.Type): boolean =>
     (t.isUnion() || t.isIntersection() ? t.types : [t]).some((u) => [u.symbol, u.aliasSymbol].some((s) => s?.declarations?.some((d) => VITEST_TYPINGS.test(d.getSourceFile().fileName)) === true));
@@ -871,6 +975,14 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
       if (checker.isArrayType(x) || checker.isTupleType(x)) return checker.getTypeArguments(x as ts.TypeReference).some(carriesAct);
       return (x.flags & ts.TypeFlags.Object) !== 0 && checker.getPropertiesOfType(x).some((p) => carriesAct(checker.getTypeOfSymbol(p)));
     };
+    /** holdsAct, `depth` levels down (an array of tuples of React's module, a property of a property). */
+    const holdsActDeep = (t: ts.Type, depth: number): boolean => {
+      if (carriesAct(t)) return true;
+      if (depth <= 0 || (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0) return false;
+      const x = checker.getApparentType(checker.getNonNullableType(t));
+      if (checker.isArrayType(x) || checker.isTupleType(x)) return checker.getTypeArguments(x as ts.TypeReference).some((u) => holdsActDeep(u, depth - 1));
+      return (x.flags & ts.TypeFlags.Object) !== 0 && checker.getPropertiesOfType(x).some((p) => holdsActDeep(checker.getTypeOfSymbol(p), depth - 1));
+    };
     /**
      * Follow a value that carries React's act up through the expressions that pass it on, and report where it
      * lands somewhere the scan does not follow it: a slot whose type no longer carries act (`const R: any =
@@ -916,18 +1028,43 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
       }
       escapes(`passed on (${ts.SyntaxKind[p.kind]})`);
     };
-    /** Whether `fn` is the factory handed to Vitest's `vi.mock`/`vi.doMock` for a React module. */
-    const reactMockFactory = (fn: ts.Node): boolean => {
-      const call = fn.parent;
-      if (!ts.isCallExpression(call) || call.arguments[1] !== fn) return false;
-      const first = call.arguments[0];
-      if (first === undefined || !ts.isStringLiteralLike(first) || !REACT_MODULE.test(first.text)) return false;
-      const callee = unparen(call.expression);
-      if (!ts.isPropertyAccessExpression(callee) || !/^(?:mock|doMock)$/.test(callee.name.text)) return false;
-      let s = checker.getSymbolAtLocation(callee.name);
-      if (s !== undefined && s.flags & ts.SymbolFlags.Alias) s = checker.getAliasedSymbol(s);
-      return s?.declarations?.some((d) => VITEST_TYPINGS.test(d.getSourceFile().fileName)) === true;
+    /* The factories handed to Vitest's `vi.mock`/`vi.doMock` for a React module, found by what the call NAMES
+       (R7-V2-3): a specifier that is a string, a const typed as one, or Vitest's `import("react")` form; and a
+       factory written inline OR passed by name (resolved to the function it is bound to). A factory the scan
+       cannot read — a call's result, a function from another module — is reported where it is handed over. A
+       mock whose specifier cannot be read at all may be React's: its inline factory is read for an act member,
+       but it gets no allowance to hand React back. */
+    const reactFactories = new Set<ts.Node>();
+    const maybeReactFactories = new Set<ts.Node>();
+    const collectFactories = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && n.arguments.length >= 2 && vitestCall(checker, n, /^(?:mock|doMock)$/)) {
+        const spec = mockSpecifier(checker, n.arguments[0]);
+        const react = spec !== null && REACT_MODULE.test(spec);
+        if (spec === null || react) {
+          const into = react ? reactFactories : maybeReactFactories;
+          const f = unparen(n.arguments[1]!);
+          let fn: ts.Node | undefined;
+          if (ts.isArrowFunction(f) || ts.isFunctionExpression(f)) fn = f;
+          else if (ts.isIdentifier(f)) {
+            let s = checker.getSymbolAtLocation(f);
+            if (s !== undefined && s.flags & ts.SymbolFlags.Alias) s = checker.getAliasedSymbol(s);
+            const d = s?.valueDeclaration;
+            if (d !== undefined && ts.isFunctionDeclaration(d)) fn = d;
+            else if (d !== undefined && ts.isVariableDeclaration(d) && d.initializer !== undefined) {
+              const init = unparen(d.initializer);
+              if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) fn = init;
+            }
+          }
+          if (fn === undefined || fn.getSourceFile() !== sf) {
+            if (react) report(n, "a vi.mock factory of React the scan cannot read (not a function written in this file), which may replace act where no type describes it");
+          } else into.add(fn);
+        }
+      }
+      ts.forEachChild(n, collectFactories);
     };
+    collectFactories(sf);
+    /** Whether `fn` is a factory handed to Vitest's `vi.mock`/`vi.doMock` for a React module. */
+    const reactMockFactory = (fn: ts.Node): boolean => reactFactories.has(fn);
 
     /** Why a call's `void` result is not proved to be a non-thenable, or null when it is. */
     const whyVoidCall = (call: ts.CallExpression, seen: Set<ts.Node>): string | null => {
@@ -941,6 +1078,12 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
       const named = ts.isIdentifier(callee) ? callee : ts.isPropertyAccessExpression(callee) ? callee.name : undefined;
       let symbol = named === undefined ? undefined : checker.getSymbolAtLocation(named);
       if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+      /* A Vitest mock anywhere in the program can replace what is called (R7-V2-2): then the value called need not
+         be the declared function, and neither its body nor a library's contract proves anything about it. */
+      const mockedAt = [d, ...(symbol?.declarations ?? [])].map((x) => scan.mocked.get(x)).find((w) => w !== undefined);
+      if (mockedAt !== undefined) return `\`${brief(call)}\` calls a function that can be replaced by a Vitest mock (${mockedAt}), so what it returns is not proved (write the callback as a block, { …; }, so it returns undefined)`;
+      const opaque = scan.opaqueMocks.get(call.getSourceFile());
+      if (opaque !== undefined) return `\`${brief(call)}\` is called in a file that mocks a module the scan cannot resolve (${opaque}), which may replace it (write the callback as a block, { …; })`;
       /* A library's function or member, called AS that member (`root.render(ui)`, an imported function) —
          not a value merely typed like one (`handler(e)` with `handler: MouseEventHandler`). */
       /* And only a `void` the library WRITES as its return type. A return type that is a type parameter, or
@@ -1111,6 +1254,19 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
         } else if (!declaresName(n) && !(ts.isPropertyAssignment(p) && p.name === n) && !(ts.isQualifiedName(p) && p.right === n)) {
           if (isReactAct(n, checker.getSymbolAtLocation(n))) judge(n);
         }
+      } else if (ts.isIdentifier(n) && !inTypePosition(n) && !declaresName(n) && !ts.isQualifiedName(n.parent) && !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) && !(ts.isPropertyAssignment(n.parent) && n.parent.name === n)) {
+        /* BY SYMBOL, whatever the name (R7-V2-1): a name bound by any syntax the list above does not know — an
+           import-equals alias (`import a2 = React.act`) — that resolves to React's act is a use of it. */
+        let s = checker.getSymbolAtLocation(n);
+        if (s !== undefined && s.flags & ts.SymbolFlags.Alias) s = checker.getAliasedSymbol(s);
+        if (s === act) judge(n);
+      }
+      /* An import-equals whose reference IS React's act stores it under another name (R7-V2-1). */
+      if (ts.isImportEqualsDeclaration(n) && !ts.isExternalModuleReference(n.moduleReference)) {
+        const ref = n.moduleReference;
+        let s = checker.getSymbolAtLocation(ts.isQualifiedName(ref) ? ref.right : ref);
+        if (s !== undefined && s.flags & ts.SymbolFlags.Alias) s = checker.getAliasedSymbol(s);
+        if (s === act) report(n, "React's act used as a value (an import-equals alias), so its uses cannot be proved synchronous");
       }
       if (ts.isElementAccessExpression(n)) {
         const key = n.argumentExpression;
@@ -1143,7 +1299,7 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
         follow(n);
       }
       /* A vi.mock factory of React that writes a member named act: React's act replaced where no type describes it. */
-      if (ts.isFunctionLike(n) && reactMockFactory(n)) {
+      if (ts.isFunctionLike(n) && (reactMockFactory(n) || maybeReactFactories.has(n))) {
         const members = (x: ts.Node): void => {
           if ((ts.isPropertyAssignment(x) || ts.isShorthandPropertyAssignment(x) || ts.isMethodDeclaration(x) || ts.isGetAccessorDeclaration(x)) && ts.isObjectLiteralExpression(x.parent)) {
             const key = x.name;
@@ -1167,8 +1323,19 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
         }
       }
       if ((ts.isCallExpression(n) || ts.isNewExpression(n)) && n.arguments !== undefined) {
-        for (const a of n.arguments) {
+        for (const [ai, a] of n.arguments.entries()) {
           const x = unparen(ts.isSpreadElement(a) ? a.expression : a);
+          /* A LITERAL holding React's module (R7-V2-3: `Object.assign(globalThis, { R: React })`,
+             `Object.defineProperty(o, "R", { value: React })`): followed into the parameter it is handed to, as the
+             callee DECLARES it — a type parameter, or a type that does not carry act where the literal put it, is
+             where the module leaves typing. (The instantiated contextual type is the literal's own, and proves nothing.) */
+          if ((ts.isObjectLiteralExpression(x) || ts.isArrayLiteralExpression(x)) && carrierExpression(x)) {
+            const decl = ts.isCallExpression(n) || ts.isNewExpression(n) ? checker.getResolvedSignature(n)?.declaration : undefined;
+            const param = decl === undefined || ts.isJSDocSignature(decl) ? undefined : decl.parameters[Math.min(ai, decl.parameters.length - 1)];
+            const declared = param === undefined ? undefined : checker.getTypeAtLocation(param);
+            if (declared === undefined || !holdsActDeep(declared, 3)) report(a, `a literal holding a value that carries React's act passed to \`${brief(n.expression)}\`, where its act is no longer typed as React's`);
+            continue;
+          }
           if (ts.isFunctionLike(x) || ts.isLiteralExpression(x) || ts.isObjectLiteralExpression(x) || ts.isArrayLiteralExpression(x)) continue;
           if (!isReactObject(x)) continue;
           const slot = ts.isSpreadElement(a) ? undefined : checker.getContextualType(a);
@@ -1230,9 +1397,12 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
   });
 
   /* One case per file: the unit of work is split one record per test (vitest.config.ts), so no case
-     carries the whole tree's checking, and each finding names its file. */
+     carries the whole tree's checking, and each finding names its file. EVERY checked source is judged, not only
+     the ones that name act or react (independent verifier R7-V2-2): a look-alike — a thenable-returning stand-in
+     for a library member declared void — written in a helper that never says either word was never read. */
+  const judged = codeFiles.filter((f) => f !== HELPER && CHECKED.test(f));
   describe("no file outside the helper uses React's act in a way that can be asynchronous", () => {
-    it.each(suspects)("%s", (f) => {
+    it.each(judged)("%s", (f) => {
       const s = scanned();
       const found = offendersIn(s, s.program.getSourceFile(resolve(ROOT, f))!);
       expect(found, `act() uses not proved synchronous in ${f}; use actAsync/flushTurns from ${HELPER}, or write the callback inline as a block that returns nothing:\n${found.join("\n")}`).toEqual([]);
@@ -1456,13 +1626,28 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
         'import { vi } from "vitest";\nvi.mock("./elsewhere", async () => {\n  const m = await import("react");\n  return { ...m };\n});\nexport {};',
         CARRIER,
       ],
-      /* Look-alikes: a Promise-returning function standing in for a library member declared void. */
+      /* R7-V2-1: React's act aliased by a TypeScript import-equals (`import a2 = React.act`): no binding syntax the
+         scan listed, so the plainest raw async scope there is passed. Decided by symbol now, not by a list of names. */
+      ['import * as React from "react";\nimport a2 = React.act;\nawait a2(async () => {});', VALUE],
+      ['import * as React from "react";\nexport import a3 = React.act;', VALUE],
+      /* R7-V2-3: a literal holding React's module handed to a call, where the parameter does not type its act. */
+      ["Object.assign(globalThis, { R: React });", CARRIER],
+      ['Object.defineProperty(globalThis, "R", { value: React });', CARRIER],
+      ['const m = new Map([["R", React]]);\nawait (m.get("R") as any)["a" + "ct"](async () => {});', CARRIER],
+      /* ...a vi.mock factory of React passed by NAME, or in Vitest's import() form, that replaces act... */
+      ['import { vi } from "vitest";\nconst factory = () => ({ act: async () => {} });\nvi.mock("react", factory);\nexport {};', MOCKED],
+      ['import { vi } from "vitest";\nvi.mock(import("react"), () => ({ act: async () => {} }));\nexport {};', MOCKED],
+      /* ...and React required through a template literal. */
+      ['const R11 = require(`react`);\nawait R11["a" + "ct"](async () => {});', CARRIER],
+      /* Look-alikes: a Promise-returning function standing in for a library member declared void. (The spies below
+         replace `click`, not `focus`: every planted text is ONE program, and a spy voids the member's proofs
+         program-wide (R7-V2-2), as at run time — `focus` is what the FINE shapes prove.) */
       [
         'import { act } from "react";\nimport type { Root } from "react-dom/client";\nconst root: Root = { render: async () => {}, unmount() {} };\nact(() => root.render(null));\nexport {};',
         LOOKALIKE,
       ],
       [
-        'import { act } from "react";\nimport { vi } from "vitest";\nvi.spyOn(document.body, "focus").mockImplementation(async () => {});\nact(() => document.body.focus());\nexport {};',
+        'import { act } from "react";\nimport { vi } from "vitest";\nvi.spyOn(document.body, "click").mockImplementation(async () => {});\nact(() => document.body.click());\nexport {};',
         LOOKALIKE,
       ],
       [
@@ -1470,11 +1655,11 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
         LOOKALIKE,
       ],
       [
-        'import { act } from "react";\nimport { vi } from "vitest";\nvi.spyOn(document.body, "focus").mockResolvedValue(undefined as never);\nact(() => document.body.focus());\nexport {};',
+        'import { act } from "react";\nimport { vi } from "vitest";\nvi.spyOn(document.body, "click").mockResolvedValue(undefined as never);\nact(() => document.body.click());\nexport {};',
         LOOKALIKE,
       ],
       [
-        'import { act } from "react";\nimport { vi } from "vitest";\nvi.spyOn(document.body, "focus").mockReturnValue(Promise.resolve() as unknown as void);\nact(() => document.body.focus());\nexport {};',
+        'import { act } from "react";\nimport { vi } from "vitest";\nvi.spyOn(document.body, "click").mockReturnValue(Promise.resolve() as unknown as void);\nact(() => document.body.click());\nexport {};',
         LOOKALIKE,
       ],
       ['document.body.focus = async () => {};\nact(() => document.body.focus());', LOOKALIKE],
@@ -1566,6 +1751,85 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
       expect(plantedNow().offenders(i), t).toEqual([]);
     });
   });
+
+  /* R7-V2-2 (independent verifier): Vitest's mocks defeat a void-call proof. A project function is proved from its
+     own body because "the value called IS that function" — until `vi.mock` or `vi.spyOn` replaces it at run time; and
+     a library member's `void` is trusted because every look-alike is reported — but only in files the text prefilter
+     read, so a spy installed in a helper that never names act or react was never seen. Each scenario is its OWN
+     program (a mock anywhere in a program voids the proofs it replaces everywhere in it, as a spy on a shared object
+     does at run time), made of virtual modules under src/core/<scenario>/. */
+  const MOCK = /can be replaced by a Vitest mock|mocks a module the scan cannot resolve/;
+  const HANDLER = "export const handler = (): void => {};\n";
+  const SLOW = "() => new Promise<void>((r) => setTimeout(r, 50))";
+  const SCENARIOS: { name: string; files: Record<string, string>; judged: string[]; expect: RegExp | null }[] = [
+    {
+      name: "a project function replaced by vi.mock in the same file",
+      files: { "H.ts": HANDLER, "T.test.tsx": `import { act } from "react";\nimport { vi } from "vitest";\nimport { handler } from "./H";\nvi.mock("./H", () => ({ handler: ${SLOW} }));\nact(() => handler());\n` },
+      judged: ["T.test.tsx"],
+      expect: MOCK,
+    },
+    {
+      name: "a project function replaced by vi.spyOn(namespace, name)",
+      files: { "H.ts": HANDLER, "T.test.tsx": `import { act } from "react";\nimport { vi } from "vitest";\nimport * as H from "./H";\nvi.spyOn(H, "handler").mockImplementation(${SLOW});\nact(() => H.handler());\n` },
+      judged: ["T.test.tsx"],
+      expect: MOCK,
+    },
+    {
+      name: "a library member spied on in a helper that never names act or react",
+      files: {
+        "S.ts": `import { vi } from "vitest";\nexport const stubFocus = (): void => {\n  vi.spyOn(document.body, "focus").mockImplementation((${SLOW}) as unknown as () => void);\n};\n`,
+        "T.test.tsx": 'import { act } from "react";\nimport { stubFocus } from "./S";\nstubFocus();\nact(() => document.body.focus());\n',
+      },
+      judged: ["T.test.tsx"],
+      expect: MOCK,
+    },
+    {
+      name: "a mock whose module the scan cannot resolve voids the proofs in its file",
+      files: { "H.ts": HANDLER, "T.test.tsx": 'import { act } from "react";\nimport { vi } from "vitest";\nimport { handler } from "./H";\nconst spec = String(1);\nvi.doMock(spec, () => ({}));\nact(() => handler());\n' },
+      judged: ["T.test.tsx"],
+      expect: MOCK,
+    },
+    {
+      name: "CONTROL: the same project function, not mocked, is proved",
+      files: { "H.ts": HANDLER, "T.test.tsx": 'import { act } from "react";\nimport { handler } from "./H";\nact(() => handler());\n' },
+      judged: ["T.test.tsx"],
+      expect: null,
+    },
+    {
+      name: "CONTROL: an automock (no factory: every export a vi.fn() returning undefined) leaves the proof",
+      files: { "H.ts": HANDLER, "T.test.tsx": 'import { act } from "react";\nimport { vi } from "vitest";\nimport { handler } from "./H";\nvi.mock("./H");\nact(() => handler());\n' },
+      judged: ["T.test.tsx"],
+      expect: null,
+    },
+    {
+      name: "CONTROL: the block form needs no proof, mocked or not",
+      files: { "H.ts": HANDLER, "T.test.tsx": `import { act } from "react";\nimport { vi } from "vitest";\nimport { handler } from "./H";\nvi.mock("./H", () => ({ handler: ${SLOW} }));\nact(() => { handler(); });\n` },
+      judged: ["T.test.tsx"],
+      expect: null,
+    },
+  ];
+  let scenarioScans: Map<string, { scan: Scan; files: Map<string, ts.SourceFile> }> | undefined;
+  beforeAll(() => {
+    scenarioScans = new Map();
+    SCENARIOS.forEach((s, k) => {
+      const dir = resolve(SRC, "core", `act-mock-scenario-${k}`);
+      const paths = new Map(Object.entries(s.files).map(([name, text]) => [resolve(dir, name), text]));
+      const program = ts.createProgram([...paths.keys()], OPTIONS, hostWith(paths));
+      scenarioScans!.set(s.name, { scan: scanOf(program), files: new Map(Object.keys(s.files).map((name) => [name, program.getSourceFile(resolve(dir, name))!])) });
+    });
+  }, PROGRAM_BUILD_LIMIT);
+
+  describe("a Vitest mock voids the proof of whatever it replaces, wherever the mock is installed", () => {
+    it.each(SCENARIOS.map((s) => [s.name, s] as const))("%s", (_name, s) => {
+      const built = scenarioScans?.get(s.name);
+      if (built === undefined) throw new Error("the scenario programs were not built (beforeAll failed)");
+      for (const f of s.judged) {
+        const found = offendersIn(built.scan, built.files.get(f)!);
+        if (s.expect === null) expect(found, `${s.name}: ${f}:\n${found.join("\n")}`).toEqual([]);
+        else expect(found.join("\n"), `${s.name}: ${f}`).toMatch(s.expect);
+      }
+    });
+  });
 });
 
 /* ── no test or hook carries a time limit below the configured hang detector (acceptance F2, load) ─
@@ -1606,7 +1870,10 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
  * one; a call through an untyped value (`globalThis.it`, `require("vitest")`) whose NAME is one of the
  * derived functions, read by name, and a call through an untyped modifier CALL chained on one
  * (`(globalThis as any).it.each(t)(…)`, which has no name of its own: verifier finding R7-V8), read by
- * every derived name on its chain; an options object written to, or handed anywhere, before it is
+ * every derived name on its chain; a local bound from a derived function under ANOTHER name from an untyped
+ * value (`const { it: x } = globalThis as any`), or a typed alias of an untyped read (`const x: typeof it =
+ * (globalThis as any).it`), read at the positions of the name it was bound from, and an untyped call through
+ * such a name that nothing resolves reported (verifier finding R7-V2-4); an options object written to, or handed anywhere, before it is
  * read. The files read are every source under src/ — the tests, the setupFiles vitest.config.ts
  * names (read from the config, not assumed), and every module they can call into. */
 describe("no test or hook sets a time limit below the configured hang detector", () => {
@@ -1901,6 +2168,10 @@ describe("no test or hook sets a time limit below the configured hang detector",
       if (!anyTyped(t)) return null;
       const name = calleeName(call.expression);
       if (name !== null && a.byName.has(name)) return a.byName.get(name)!;
+      /* A local bound from a derived function under ANOTHER name, from an untyped value (R7-V2-4:
+         `const { it: x } = globalThis as any`): held at the positions of the name it was bound from. */
+      const bound = name === null ? undefined : derivedKey.get(name);
+      if (bound !== undefined) return a.byName.get(bound)!;
       const derived = chainNames(call.expression).filter((n) => a.byName.has(n));
       if (derived.length === 0) return null;
       return new Set(derived.flatMap((n) => [...a.byName.get(n)!]));
@@ -1916,6 +2187,8 @@ describe("no test or hook sets a time limit below the configured hang detector",
        context, a parameter of a function handed to one. Any other flow of such a value out of its name —
        an argument, a return, a property, an assertion — is reported below, so these are all the calls. */
     const candidates = new Set(a.byName.keys());
+    /** For a local bound from a derived function, the derived name it was bound from (`x` -> `it`). */
+    const derivedKey = new Map<string, string>();
     for (const st of sf.statements) {
       if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier) || !VITEST_MODULE.test(st.moduleSpecifier.text)) continue;
       const clause = st.importClause;
@@ -1933,7 +2206,12 @@ describe("no test or hook sets a time limit below the configured hang detector",
          parameter `({ setConfig: s })`): its local name is a way to the member. */
       if (ts.isBindingElement(n) && ts.isObjectBindingPattern(n.parent)) {
         const key = n.propertyName ?? n.name;
-        if ((ts.isIdentifier(key) || ts.isStringLiteral(key)) && a.byName.has(key.text)) for (const name of bindingNames(n.name)) candidates.add(name);
+        if ((ts.isIdentifier(key) || ts.isStringLiteral(key)) && a.byName.has(key.text)) {
+          for (const name of bindingNames(n.name)) {
+            candidates.add(name);
+            if (ts.isIdentifier(n.name) && !derivedKey.has(name)) derivedKey.set(name, key.text);
+          }
+        }
       }
       ts.forEachChild(n, gather);
     };
@@ -1950,6 +2228,14 @@ describe("no test or hook sets a time limit below the configured hang detector",
       for (const d of locals) {
         const root = rootNameOf(d.initializer!);
         if ((root !== null && candidates.has(root)) || VITEST_SPECIFIER.test(d.initializer!.getText(sf))) bind(bindingNames(d.name));
+        /* A local whose initializer READS a derived function through a member chain, from whatever root — a typed
+           alias of an untyped read (R7-V2-4: `const x: typeof it = (globalThis as any).it`): its calls are read too,
+           and, untyped, at the positions of the name the chain reached. */
+        const reached = chainNames(d.initializer!).find((n) => a.byName.has(n));
+        if (reached !== undefined) {
+          bind(bindingNames(d.name));
+          if (ts.isIdentifier(d.name) && !derivedKey.has(d.name.text)) derivedKey.set(d.name.text, reached);
+        }
       }
       for (const call of handedFunctions) {
         const root = rootNameOf(call.expression);
@@ -1977,6 +2263,12 @@ describe("no test or hook sets a time limit below the configured hang detector",
       if (ts.isCallExpression(n) && mayHold(n)) {
         const name = calleeName(n.expression) ?? brief(n.expression);
         const positions = heldPositions(n);
+        /* FAILING CLOSED (R7-V2-4): an untyped call through a name bound from a Vitest function, whose limit
+           positions nothing above could resolve, is reported — never passed as "not a Vitest call". */
+        const callee0 = unwrap(n.expression);
+        if (positions === null && ts.isIdentifier(callee0) && candidates.has(callee0.text) && !a.byName.has(callee0.text) && anyTyped(checker.getTypeAtLocation(callee0))) {
+          out.push(`${lineOf(n)}: ${callee0.text}(…) is an untyped call through a name bound from a Vitest function, and which limit it takes cannot be read`);
+        }
         if (positions !== null) {
           if (tally !== undefined) tally.held += 1;
           let supplied = false;
@@ -2168,6 +2460,10 @@ describe("no test or hook sets a time limit below the configured hang detector",
       "void Object.values(vi);",
       'const t: any = it;\nt("x", async () => {}, 1000);',
       '(it as any)("x", async () => {}, 1000);',
+      /* R7-V2-4: an untyped value's derived function taken out under ANOTHER name, and a typed alias of an untyped read. */
+      'const { it: x } = globalThis as any;\nx("n", async () => {}, 1000);',
+      'const { setConfig: s } = (globalThis as any).vi;\ns({ testTimeout: 1000 });',
+      'const x: typeof it = (globalThis as any).it;\nx("n", async () => {}, 1000);',
       /* The waiting functions: a low limit, and no limit at all (Vitest's own 1 s default). */
       "await vi.waitFor(() => true, { timeout: 1000 });",
       "await vi.waitFor(() => true);",
@@ -2212,6 +2508,9 @@ describe("no test or hook sets a time limit below the configured hang detector",
       '(globalThis as any).it.skipIf(false)("x", async () => {});',
       'declare const p: { waitFor(): number; poll(n: number): number };\np.waitFor();\np.poll(5);',
       'const stepUp = { poll: (_t: string, _n: number): null => null };\nstepUp.poll("low", 5999);',
+      /* The same renamed and aliased shapes, held — fine when the limit is. */
+      'const { it: x } = globalThis as any;\nx("n", async () => {}, 60_000);',
+      'const x: typeof it = (globalThis as any).it;\nx("n", async () => {});',
     ];
 
   /* One program for every planted shape, built once (the unit PROGRAM_BUILD_LIMIT describes); each shape is its own case. */

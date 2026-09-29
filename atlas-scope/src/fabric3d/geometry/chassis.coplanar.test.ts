@@ -31,7 +31,7 @@ import { BufferGeometry, Matrix4, Quaternion, Vector3 } from "three";
 import { describe, expect, it } from "vitest";
 import type { QualityTier } from "../contract";
 import { profileFor } from "../quality";
-import { ALL_CHASSIS_KINDS, buildChassis, buildRoleGlyph, buildStateRing, chassisSpec, type RoleGlyph, type StateRingShape } from "./chassis";
+import { ALL_CHASSIS_KINDS, buildChassis, buildRoleGlyph, buildStateRing, chassisSpec, ROLE_GLYPHS, type RoleGlyph, type StateRingShape } from "./chassis";
 
 /** Two parallel same-facing planes closer than this (world units) are a tie: 20x the depth
  *  buffer's resolution at the overview pose, so "not a tie" means comfortably resolved. */
@@ -170,7 +170,9 @@ function roleGlyphOnLid(kind: string, glyph: RoleGlyph, half: readonly [number, 
 }
 
 const TIERS: readonly QualityTier[] = ["high", "balanced", "low"];
-const GLYPHS: readonly RoleGlyph[] = ["access", "distribution", "unobserved"];
+/* Every glyph the owner can ask for (chassis.ts ROLE_GLYPHS, typed against core/roles.ts), not a hand-kept list:
+   the "other" glyph (added phase 3) is checked on every lid the day it exists. */
+const GLYPHS: readonly RoleGlyph[] = ROLE_GLYPHS;
 
 describe("the detector is live", () => {
   it("flags two boxes whose faces share a plane, and not two boxes a millimetre-scale step apart", async () => {

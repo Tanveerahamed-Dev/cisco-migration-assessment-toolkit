@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CONFIG = resolve(PKG, "tsconfig.scripts.json");
@@ -36,6 +36,16 @@ const CONFIG = resolve(PKG, "tsconfig.scripts.json");
  * of the program that first bound it). A PLANTED text is never cached, and never served to a
  * program that did not plant it: every liveness test below still sees its own in-memory error. */
 const sourceFiles = new Map<string, Map<string, ts.SourceFile>>();
+
+/* The one limit ABOVE the configured detector in this file, and why (the same unit, and the same
+   reason, as source-hygiene.test.ts's PROGRAM_BUILD_LIMIT): the unit of work is one whole-program parse,
+   bind and check of a project (the scripts, or the runner/bundler configs with all of Vite's and
+   Vitest's types). It cannot be split — every file's types depend on the rest — and it asserts nothing
+   about time. Every such build runs in a beforeAll under this limit; everything that ASSERTS runs in a
+   test, inside the detector. MEASURED (independent verifier R7-V2-5, 12 busy loops): the config
+   project's build inside a test body crossed the 30 s detector. The last describe below checks the rule
+   over this file's own source. */
+const PROGRAM_BUILD_LIMIT = 300_000;
 
 function sharedHost(options: ts.CompilerOptions, planted: ReadonlyMap<string, string> = new Map()): ts.CompilerHost {
   const host = ts.createCompilerHost(options, true);
@@ -58,6 +68,10 @@ function sharedHost(options: ts.CompilerOptions, planted: ReadonlyMap<string, st
   };
   return host;
 }
+
+/** The planted .mjs the checkJs liveness case reads (never written to disk). */
+const LIVENESS_FILE = resolve(PKG, "tools", "__typecheck_liveness.mjs");
+const LIVENESS_TEXT = "const n = 1;\nn.toFixed(2, 3, 4);\nexport default n;\n";
 
 function check(): { files: string[]; diagnostics: string[]; program: ts.Program; options: ts.CompilerOptions } {
   const raw = ts.readConfigFile(CONFIG, (p) => readFileSync(p, "utf8"));
@@ -89,17 +103,38 @@ function check(): { files: string[]; diagnostics: string[]; program: ts.Program;
 }
 
 describe("the build scripts are inside a type-checking gate", () => {
-  const result = check();
+  /* The whole-program builds, once each, in the bounded hook (see PROGRAM_BUILD_LIMIT). */
+  let built: { result: ReturnType<typeof check>; liveness: string[]; strict: ts.Program } | undefined;
+  beforeAll(() => {
+    const result = check();
+    /* A checkJs typo would make the gate pass over any file at all: a real error planted in memory. */
+    const raw = ts.readConfigFile(CONFIG, (p) => readFileSync(p, "utf8"));
+    const parsed = ts.parseJsonConfigFileContent(raw.config, ts.sys, PKG, undefined, CONFIG);
+    const program = ts.createProgram([LIVENESS_FILE], parsed.options, sharedHost(parsed.options, new Map([[LIVENESS_FILE, LIVENESS_TEXT]])));
+    const liveness = program.getSemanticDiagnostics().map((d) => ts.flattenDiagnosticMessageText(d.messageText, " "));
+    /* The forced-on program IS the one the gate already built whenever the config's effective setting is
+       on (strict, and noImplicitAny not switched off), so it is reused rather than built a second time.
+       Only a config that switches the flag off gets a program of its own, and it is red below anyway. */
+    const effective = result.options.noImplicitAny ?? result.options.strict === true;
+    const strict = effective ? result.program : ts.createProgram(parsed.fileNames, { ...parsed.options, noImplicitAny: true });
+    built = { result, liveness, strict };
+  }, PROGRAM_BUILD_LIMIT);
+  const now = (): NonNullable<typeof built> => {
+    if (built === undefined) throw new Error("the scripts' program was not built (beforeAll failed)");
+    return built;
+  };
 
   it("checks the scripts the main config only appears to cover", () => {
     /* The denominator, pinned. An empty file list would make the assertion below vacuous, which is
        exactly the shape of the defect this file answers. */
+    const { result } = now();
     expect(result.files).toContain("tools/compile-snapshot.mjs");
     expect(result.files.every((f) => f.endsWith(".mjs"))).toBe(true);
     expect(result.files.length).toBeGreaterThan(0);
   });
 
   it("reports no type error in them", () => {
+    const { result } = now();
     expect(result.diagnostics, `type errors in the build scripts:\n${result.diagnostics.join("\n")}`).toEqual(
       [],
     );
@@ -108,21 +143,12 @@ describe("the build scripts are inside a type-checking gate", () => {
   it("is checking JavaScript, not silently skipping it", () => {
     /* A `checkJs: false` typo would make the gate above pass over any file at all. Plant a real
        error in memory and confirm the same settings report it. */
-    const raw = ts.readConfigFile(CONFIG, (p) => readFileSync(p, "utf8"));
-    const parsed = ts.parseJsonConfigFileContent(raw.config, ts.sys, PKG, undefined, CONFIG);
-    const planted = resolve(PKG, "tools", "__typecheck_liveness.mjs");
-    const source = "const n = 1;\nn.toFixed(2, 3, 4);\nexport default n;\n";
-
-    const host = sharedHost(parsed.options, new Map([[planted, source]]));
-    const program = ts.createProgram([planted], parsed.options, host);
-    const found = program
-      .getSemanticDiagnostics()
-      .map((d) => ts.flattenDiagnosticMessageText(d.messageText, " "));
+    const found = now().liveness;
     expect(found.join(" "), "the same settings must reject a real error in a .mjs file").toMatch(
       /Expected 0-1 arguments|Expected 1 arguments/,
     );
     // ...and the planted file was never written to disk.
-    expect(existsSync(planted)).toBe(false);
+    expect(existsSync(LIVENESS_FILE)).toBe(false);
   });
 
   it("is fully strict: noImplicitAny is ON, and the scripts are clean under it", () => {
@@ -139,13 +165,9 @@ describe("the build scripts are inside a type-checking gate", () => {
     expect(parsed.options.noUncheckedIndexedAccess).toBe(true);
     expect(parsed.options.noImplicitAny, "tsconfig.scripts.json must not relax noImplicitAny").not.toBe(false);
 
-    /* The forced-on program IS the one the gate above already built whenever the config's effective
-       setting is on (strict, and noImplicitAny not switched off), so it is reused rather than built a
-       second time: a second whole-program check was this test's entire cost, and on the loaded F2
-       re-run (12 busy loops on a 14-core host) that alone took it past the 30 s hang detector. Only a
-       config that switches the flag off gets a program of its own, and it is red above anyway. */
-    const effective = result.options.noImplicitAny ?? result.options.strict === true;
-    const strictProgram = effective ? result.program : ts.createProgram(parsed.fileNames, { ...parsed.options, noImplicitAny: true });
+    /* The forced-on program was built in the beforeAll (the gate's own, reused, when the config's
+       effective setting is on). */
+    const strictProgram = now().strict;
     expect(strictProgram.getCompilerOptions().noImplicitAny ?? strictProgram.getCompilerOptions().strict, "the program checked has noImplicitAny on").toBe(true);
     const extra = strictProgram.getSemanticDiagnostics().map((d) => {
       const file = d.file === undefined ? "" : relative(PKG, d.file.fileName).split("\\").join("/");
@@ -236,29 +258,41 @@ describe("every authored script is inside a type-checked project", () => {
     expect(readFileSync(CONFIG, "utf8")).toContain("review/*.mjs");
   });
 
-  it("tsconfig.config.json reads both configs and is clean under strict", () => {
+  /* The config project's two whole-program builds (clean, and with the defect planted back in memory),
+     once each, in the bounded hook (see PROGRAM_BUILD_LIMIT) — the unit that crossed the detector. */
+  let configBuilt: { p: { name: string; parsed: ts.ParsedCommandLine }; clean: string[]; planted: string } | undefined;
+  beforeAll(() => {
     const p = projects().find((x) => x.name === "tsconfig.config.json")!;
+    const clean = diagnosticsOf(ts.createProgram(p.parsed.fileNames, p.parsed.options, sharedHost(p.parsed.options)));
+    const vitestCfg = resolve(PKG, "vitest.config.ts");
+    const viteCfg = resolve(PKG, "vite.config.ts");
+    const vitestText = readFileSync(vitestCfg, "utf8");
+    const planted = new Map<string, string>([
+      [vitestCfg, vitestText.replace("maxWorkers: WORKERS,", "maxWorkers: WORKERS,\n      minWorkers: 1,")],
+      [viteCfg, `${readFileSync(viteCfg, "utf8")}\nexport const planted: number = "not a number";\n`],
+    ]);
+    const found = diagnosticsOf(ts.createProgram(p.parsed.fileNames, p.parsed.options, sharedHost(p.parsed.options, planted))).join("\n");
+    configBuilt = { p, clean, planted: found };
+  }, PROGRAM_BUILD_LIMIT);
+  const config = (): NonNullable<typeof configBuilt> => {
+    if (configBuilt === undefined) throw new Error("the config project's program was not built (beforeAll failed)");
+    return configBuilt;
+  };
+
+  it("tsconfig.config.json reads both configs and is clean under strict", () => {
+    const { p, clean: found } = config();
     expect(p.parsed.fileNames.map(posixRel).sort()).toEqual(["vite.config.ts", "vitest.config.ts"]);
     expect(p.parsed.options.strict).toBe(true);
     expect(p.parsed.options.noUncheckedIndexedAccess).toBe(true);
-    const found = diagnosticsOf(ts.createProgram(p.parsed.fileNames, p.parsed.options, sharedHost(p.parsed.options)));
     expect(found, `type errors in the runner/bundler configs:\n${found.join("\n")}`).toEqual([]);
   });
 
   it("is live: the dead option and a type error, planted back in memory, are both reported", () => {
     /* The exact defect, restored in memory only, plus a plain type error in the build config: a gate
        whose failure path never ran is not a gate. The files on disk are never written. */
-    const p = projects().find((x) => x.name === "tsconfig.config.json")!;
-    const vitestCfg = resolve(PKG, "vitest.config.ts");
-    const viteCfg = resolve(PKG, "vite.config.ts");
-    const vitestText = readFileSync(vitestCfg, "utf8");
-    expect(vitestText).toMatch(/maxWorkers: WORKERS,/);
-    const planted = new Map<string, string>([
-      [vitestCfg, vitestText.replace("maxWorkers: WORKERS,", "maxWorkers: WORKERS,\n      minWorkers: 1,")],
-      [viteCfg, `${readFileSync(viteCfg, "utf8")}\nexport const planted: number = "not a number";\n`],
-    ]);
-    const host = sharedHost(p.parsed.options, planted);
-    const found = diagnosticsOf(ts.createProgram(p.parsed.fileNames, p.parsed.options, host)).join("\n");
+    /* The planted text must still find its anchor, or the planted program proves nothing. */
+    expect(readFileSync(resolve(PKG, "vitest.config.ts"), "utf8")).toMatch(/maxWorkers: WORKERS,/);
+    const found = config().planted;
     expect(found).toMatch(/vitest\.config\.ts:\d+ TS2769 .*minWorkers/);
     expect(found).toMatch(/vite\.config\.ts:\d+ TS2322/);
   });
@@ -544,4 +578,84 @@ describe("an abandoned test costs one red, and a leaked act() scope is named", (
     expect(canary.get("LEAKS")!.status).toBe("failed");
     expect(canary.get("LEAKS")!.failureMessages.join("\n")).toMatch(/\[act-scope guard\] React's act\(\) queue is still open after this test ended/);
   }, 120_000);
+});
+
+/* ── the whole-program builds in THIS file run where the detector does not judge them (F2, R7-V2-5) ──
+ * MEASURED (independent verifier R7-V2-5, 12 busy loops on the shared 14-core host): 'tsconfig.config.json
+ * reads both configs and is clean under strict' timed out at the 30 s hang detector, because it built a
+ * whole ts.createProgram over Vite's and Vitest's types and checked it INSIDE the test body. That is the
+ * indivisible whole-program unit source-hygiene.test.ts moved into a beforeAll with its stated
+ * PROGRAM_BUILD_LIMIT; the detector is not raised for a test. The rule is checked here as a class, over
+ * this file's own source: every `ts.createProgram` call lies lexically inside a `beforeAll(…,
+ * PROGRAM_BUILD_LIMIT)` callback, or inside a function whose every call does. A build anywhere else — a test
+ * body, a describe body run at collection, a helper a test calls — is named with its line. */
+describe("every whole-program build in this file runs in a beforeAll under PROGRAM_BUILD_LIMIT", () => {
+  const SELF = fileURLToPath(import.meta.url);
+  const misplacedBuilds = (text: string): string[] => {
+    const sf = ts.createSourceFile(SELF, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const isCreateProgram = (n: ts.Node): n is ts.CallExpression =>
+      ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "createProgram";
+    /** Inside the callback of `beforeAll(cb, PROGRAM_BUILD_LIMIT)`. */
+    const inBoundedHook = (n: ts.Node): boolean => {
+      for (let p: ts.Node | undefined = n.parent; p !== undefined; p = p.parent) {
+        if (!ts.isCallExpression(p) || !ts.isIdentifier(p.expression) || p.expression.text !== "beforeAll") continue;
+        const [cb, limit] = p.arguments;
+        if (cb !== undefined && n.pos >= cb.pos && n.end <= cb.end && limit !== undefined && ts.isIdentifier(limit) && limit.text === "PROGRAM_BUILD_LIMIT") return true;
+      }
+      return false;
+    };
+    /** The named function (declaration, or a const bound to an arrow/function) `n` sits in, if any. */
+    const enclosingNamed = (n: ts.Node): string | null => {
+      for (let p: ts.Node | undefined = n.parent; p !== undefined; p = p.parent) {
+        if (ts.isFunctionDeclaration(p) && p.name !== undefined) return p.name.text;
+        if ((ts.isArrowFunction(p) || ts.isFunctionExpression(p)) && ts.isVariableDeclaration(p.parent) && ts.isIdentifier(p.parent.name)) return p.parent.name.text;
+      }
+      return null;
+    };
+    const callsOf = (name: string): ts.CallExpression[] => {
+      const out: ts.CallExpression[] = [];
+      const visit = (n: ts.Node): void => {
+        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === name) out.push(n);
+        ts.forEachChild(n, visit);
+      };
+      visit(sf);
+      return out;
+    };
+    const line = (n: ts.Node): number => sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
+    /** Bounded: in the hook itself, or in a named function every one of whose calls is (one level of indirection per step, cycle-safe). */
+    const bounded = (n: ts.Node, seen: ReadonlySet<string> = new Set()): boolean => {
+      if (inBoundedHook(n)) return true;
+      const fn = enclosingNamed(n);
+      if (fn === null || seen.has(fn)) return false;
+      const calls = callsOf(fn);
+      return calls.length > 0 && calls.every((c) => bounded(c, new Set([...seen, fn])));
+    };
+    const out: string[] = [];
+    const visit = (n: ts.Node): void => {
+      if (isCreateProgram(n) && !bounded(n)) out.push(`line ${line(n)}: ${n.getText(sf).replace(/\s+/g, " ").slice(0, 70)}`);
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+    return out;
+  };
+
+  it("finds this file's program builds, and none is outside the bounded hook", () => {
+    const text = readFileSync(SELF, "utf8");
+    expect((text.match(/\bts\.createProgram\(/g) ?? []).length, "the rule reads nothing: no program build in this file").toBeGreaterThan(3);
+    expect(misplacedBuilds(text), "a whole-program build the 30 s detector would judge").toEqual([]);
+  });
+
+  it("is live: a build in a test body, at collection, and in a helper a test calls are each named", () => {
+    const planted = [
+      "const L = 1;",
+      'it("t", () => { ts.createProgram([], {}); });',
+      'describe("d", () => { const p = ts.createProgram([], {}); });',
+      "function helper(): void { ts.createProgram([], {}); }",
+      'it("u", () => { helper(); });',
+      "function fine(): void { ts.createProgram([], {}); }",
+      "beforeAll(() => { fine(); ts.createProgram([], {}); }, PROGRAM_BUILD_LIMIT);",
+      "beforeAll(() => { ts.createProgram([], {}); }, 30_000);",
+    ].join("\n");
+    expect(misplacedBuilds(planted).map((s) => s.replace(/:.*/, ""))).toEqual(["line 2", "line 3", "line 4", "line 8"]);
+  });
 });

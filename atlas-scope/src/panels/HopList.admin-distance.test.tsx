@@ -30,6 +30,7 @@ import { formatIpv4, hostAddressIn, parseInterfaceAddress } from "../forwarding/
 import { DevicePane } from "./DevicePane";
 import { HopList } from "./HopList";
 import { Inspector, setInspectorCite } from "./Inspector";
+import { describeGolden } from "../test-support/golden-sample";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -129,31 +130,42 @@ describe("a structural null in a route renders the same words in the hop list an
     expect(squash(fact!.textContent)).not.toMatch(/administrative distance: not observed/);
   });
 
-  it("every rendered route field whose null is structural reads exactly as the Inspector reads it", () => {
-    let compared = 0;
-    for (const t of TRACES) {
-      if (t.hops.length === 0) continue;
+  /* ONE TRACE PER TEST (verifier V2, 2026-09-28). This was one test rendering every trace of the subnet
+     grid and an Inspector per structural cell; the regenerated sample's four RIBs made that unit of work
+     time out under load (30 s). Split like the suite's other sweeps (vitest.config.ts: one record per test,
+     never a raised limit): each case compares one trace's cells and tallies what it compared, and the
+     closing case asserts every case ran and that the comparison happened at all — run this file whole. */
+  const structuralTally = { ran: 0, compared: 0 };
+  const tracedWithHops = TRACES.filter((t) => t.hops.length > 0);
+  it.each(tracedWithHops.map((t, i) => [`#${i} ${t.flow.srcIp} -> ${t.flow.dstIp}`, t] as const))(
+    "every rendered route field whose null is structural reads exactly as the Inspector reads it: %s",
+    (_name, t) => {
       const c = mount(<HopList trace={t} activeIndex={0} onSelect={() => {}} />);
-      for (const cell of c.querySelectorAll<HTMLElement>("[data-route-field]")) {
-        const field = cell.dataset["routeField"]!;
-        const cite = cell.dataset["routeCite"]!;
+      // The comparison is over what was drawn: one hop row per hop of the trace, whatever its route fields.
+      expect(c.querySelectorAll(".hop").length, "the hop list draws every hop").toBe(t.hops.length);
+      const cells = [...c.querySelectorAll<HTMLElement>("[data-route-field]")].map((cell) => ({
+        field: cell.dataset["routeField"]!,
+        cite: cell.dataset["routeCite"]!,
+        words: squash(cell.textContent),
+      }));
+      for (const { field, cite, words } of cells) {
         const record = (fabric.routes[/^routes\.([^[]+)\[/.exec(cite)?.[1] ?? ""] ?? [])[Number(/\[(\d+)\]$/.exec(cite)?.[1])];
         expect(record, `the hop list cites ${cite}, which does not resolve`).toBeDefined();
         const na = notApplicableReason(record, field);
         if (na === null) continue;
-        const words = squash(cell.textContent);
         expect(words, `${cite}.${field} in the hop list`).toBe(na);
         expect(words).not.toMatch(/not observed/);
         expect(inspectorWords(cite, field), `${cite}.${field} in the Inspector`).toBe(words);
-        compared += 1;
+        structuralTally.compared += 1;
       }
-      for (const m of mounted.splice(0)) {
-        act(() => m.root.unmount());
-        m.container.remove();
-      }
-    }
+      structuralTally.ran += 1;
+    },
+  );
+  it("every per-trace structural comparison ran, and it compared more than one record", () => {
+    expect(tracedWithHops.length, "precondition: the grid traces flows that take a hop").toBeGreaterThan(0);
+    expect(structuralTally.ran, "every per-trace case above ran (run this file whole)").toBe(tracedWithHops.length);
     // Both fields, and more than one record: a comparison that never ran proves nothing.
-    expect(compared, "no structural null was compared at all").toBeGreaterThan(1);
+    expect(structuralTally.compared, "no structural null was compared at all").toBeGreaterThan(1);
   });
 
   it("marks every route field it renders, so none can escape the comparison above", () => {
@@ -199,6 +211,9 @@ function routingCells(c: HTMLElement, host: string): Map<string, Record<string, 
 }
 
 describe("B1: a route field reads the same on the Routing tab, the Path panel and the Inspector", () => {
+  /* The reported record is a fact about the reference sample (golden tier, phase 3 rename leg); every
+     record of every routable host is compared by the per-host cases below. */
+  describeGolden("the reported record", () => {
   it("the reported record, routes.core1[6].adminDistance: identical on all three surfaces, and never a bare 0", () => {
     const cite = "routes.core1[6]";
     const record = fabric.routes["core1"]?.[6];
@@ -220,24 +235,44 @@ describe("B1: a route field reads the same on the Routing tab, the Path panel an
       expect(w, `${where}: a structural null is not an evidence gap`).not.toMatch(/not observed/);
     }
   });
+  });
 
   /* One Routing tab per case (acceptance F2, W6 gate 2026-09-25): the loop over every routable host
      was one test whose unit of work was every host's grid, and the load-sensitive class split its
      like one record per test. The denominator check that the hosts cover every route record is its
-     own case below, so no record can fall between the per-host cases. */
+     own case below, so no record can fall between the per-host cases.
+     ONE RECORD PER TEST (verifier V2, 2026-09-28): the per-host case still mounted 2 Inspectors per record,
+     and core1's twelve records timed out under load. Each host's grid is read once (its words cached as
+     text — the DOM is unmounted after every test), each record is its own case comparing its two fields,
+     and each host's closing case asserts the grid showed every record and every record's case ran. */
   const fields = { AD: "adminDistance", "Next hop": "nextHop" } as const;
+  const gridWords = new Map<string, Map<string, Record<string, string>>>();
+  const cellsOf = (host: string): Map<string, Record<string, string>> => {
+    let cells = gridWords.get(host);
+    if (cells === undefined) {
+      cells = routingCells(routingTab(host), host);
+      gridWords.set(host, cells);
+    }
+    return cells;
+  };
   for (const host of fabric.coverage.routableHosts) {
-    it(`every route record on ${host}'s Routing tab reads each route field exactly as the Inspector reads it`, () => {
-      let compared = 0;
-      const cells = routingCells(routingTab(host), host);
-      expect(cells.size, `${host}: the grid shows every route record`).toBe(fabric.routes[host]!.length);
-      for (const [cite, row] of cells) {
-        for (const [header, field] of Object.entries(fields)) {
-          expect(row[header], `${cite} ${header} on the Routing tab`).toBe(inspectorWords(cite, field));
-          compared += 1;
-        }
-      }
-      expect(compared).toBe(fabric.routes[host]!.length * 2);
+    const records = fabric.routes[host] ?? [];
+    const ranFor = new Set<string>();
+    it(`${host}'s Routing tab shows every route record`, () => {
+      expect(cellsOf(host).size, `${host}: the grid shows every route record`).toBe(records.length);
+    });
+    it.each(records.map((r) => [r.cite] as const))(
+      `every route field of %s on ${host}'s Routing tab reads exactly as the Inspector reads it`,
+      (cite) => {
+        const row = cellsOf(host).get(cite);
+        expect(row, `${cite}: no row on ${host}'s Routing tab`).toBeDefined();
+        for (const [header, field] of Object.entries(fields))
+          expect(row![header], `${cite} ${header} on the Routing tab`).toBe(inspectorWords(cite, field));
+        ranFor.add(cite);
+      },
+    );
+    it(`every route record on ${host}'s Routing tab was compared (run this file whole)`, () => {
+      expect([...ranFor].sort()).toEqual(records.map((r) => r.cite).sort());
     });
   }
 

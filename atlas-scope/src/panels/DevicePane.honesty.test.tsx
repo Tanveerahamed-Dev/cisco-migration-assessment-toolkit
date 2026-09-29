@@ -12,7 +12,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fabric, physicalByHost, routesOf } from "../core/data";
 import { useInvestigation } from "../core/store";
 import { DevicePane, unassessedScoringDomains } from "./DevicePane";
-import { ribCountQualifier, ribIncompleteness } from "../forwarding/rib-completeness";
+import { ribCountQualifier, ribHostsShownIncomplete, ribIncompleteness } from "../forwarding/rib-completeness";
+import { coverageRows } from "../app/CoverageBar";
+import { describeGolden } from "../test-support/golden-sample";
+import { need, nonEmpty } from "./trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -43,8 +46,10 @@ afterEach(() => {
   }
 });
 
+/* RE-EXPRESSED 2026-09-28 (phase 3): the hosts are the snapshot's routable hosts, read from its coverage,
+   not the two names the old sample happened to collect RIBs for. */
 describe("the Routing tab badge is the RIB size", () => {
-  for (const host of ["core1", "core2"]) {
+  for (const host of fabric.coverage.routableHosts) {
     it(host, () => {
       const n = routesOf(host).length;
       expect(n, "precondition: a RIB was collected").toBeGreaterThan(0);
@@ -59,34 +64,70 @@ describe("the Routing tab badge is the RIB size", () => {
 });
 
 describe("a collected routing table the snapshot shows incomplete is never presented as whole (B7, 2026-09-22)", () => {
-  for (const host of ["core1", "core2"]) {
-    it(host, () => {
+  /* RE-EXPRESSED 2026-09-28 (phase 3). This iterated core1 and core2 and required both tables to be shown
+     incomplete; the regenerated sample completed core1's (and collected dist1's and dist2's), so only
+     core2's is still partial. The subjects are now read from the owner — every host the snapshot shows
+     incomplete — and the counterpart is pinned too: a COMPLETE collected table is not described as
+     incomplete. */
+  const tabText = (host: string): string => {
+    act(() => {
+      useInvestigation.getState().selectDevice(host);
+      useInvestigation.getState().setEvidenceTab("routing");
+    });
+    const c = mount(<DevicePane />);
+    return c.textContent ?? "";
+  };
+
+  it("the snapshot shows some collected table incomplete", (ctx) => {
+    expect(need(ctx, nonEmpty(ribHostsShownIncomplete()), "collected routing table shown incomplete").length).toBeGreaterThan(0);
+  });
+
+  for (const host of ribHostsShownIncomplete()) {
+    it(`${host}: shown incomplete, with every reason`, () => {
       const reasons = ribIncompleteness(host);
       expect(reasons.length, "precondition: the snapshot shows this table incomplete").toBeGreaterThan(0);
-      act(() => {
-        useInvestigation.getState().selectDevice(host);
-        useInvestigation.getState().setEvidenceTab("routing");
-      });
-      const c = mount(<DevicePane />);
-      const text = c.textContent ?? "";
+      const text = tabText(host);
       expect(text).not.toMatch(/on those entries and on nothing else/);
       expect(text).toMatch(/shows that table to be incomplete/);
       for (const r of reasons) expect(text).toContain(r.label);
     });
   }
-  it("the RIB count carries the qualifier wherever it is shown", () => {
-    expect(ribCountQualifier()).toBe("(both shown incomplete)");
+
+  it("a complete collected table is not described as incomplete", (ctx) => {
+    const complete = need(ctx, fabric.coverage.routableHosts.find((h) => ribIncompleteness(h).length === 0), "complete collected routing table");
+    expect(tabText(complete)).not.toMatch(/shows that table to be incomplete/);
+  });
+
+  it("the RIB count carries the qualifier wherever it is shown, with counts read from the data", () => {
+    const all = fabric.coverage.routableHosts.length;
+    const partial = ribHostsShownIncomplete().length;
+    const q = ribCountQualifier();
+    expect(q === "", "a qualifier exactly when some table is shown incomplete").toBe(partial === 0);
+    if (partial > 0 && partial < all) expect(q).toContain(`${partial} of ${all}`);
+    if (partial > 0) expect(coverageRows().some((r) => r.meaning.includes(q)), "the coverage bar's RIB row carries it").toBe(true);
+  });
+
+  describeGolden("the reference sample's qualifier", () => {
+    it("one of four collected tables is shown incomplete", () => {
+      expect(ribCountQualifier()).toBe("(1 of 4 shown incomplete)");
+    });
   });
 });
 
 describe("an unassessed port is not graded", () => {
-  it("access1: every row with the producer's NOT-assessed marker renders 'not graded', never a severity chip", () => {
+  it("every row with the producer's NOT-assessed marker renders 'not graded', never a severity chip", () => {
+    /* The device is found by property — the first (by name) carrying unassessed rows; the auditor's was
+       access1 (phase 3 rename leg). */
     type Phys = { port: string; risk: string | null; riskUnobserved?: string | null; severity: string | null };
-    const rows = (physicalByHost.get("access1") ?? []) as unknown as Phys[];
-    const unassessed = rows.filter((r) => r.risk === null && typeof r.riskUnobserved === "string");
-    expect(unassessed.length, "precondition: access1 carries unassessed rows").toBeGreaterThan(0);
+    const unassessedOf = (h: string): Phys[] =>
+      ((physicalByHost.get(h) ?? []) as unknown as Phys[]).filter((r) => r.risk === null && typeof r.riskUnobserved === "string");
+    const host = [...physicalByHost.keys()].sort().find((h) => unassessedOf(h).length > 0);
+    expect(host, "precondition: some device carries unassessed rows").toBeDefined();
+    const unassessed = unassessedOf(host!);
+    const device = fabric.devices.find((d) => d.host === host);
+    expect(device, "precondition: the device is in the inventory").toBeDefined();
     act(() => {
-      useInvestigation.getState().selectDevice("access1");
+      useInvestigation.getState().selectDevice(device!.id);
       useInvestigation.getState().setEvidenceTab("ports");
     });
     const c = mount(<DevicePane />);
@@ -132,9 +173,11 @@ describe("a favourable health band names the scoring domains that were never ass
     expect(qualified, "no favourable band on an under-assessed device was checked").toBeGreaterThan(0);
   }, 60_000);
 
-  it("podacc1 — the auditor's device — names protocol health, routing and ACLs", () => {
-    expect(unassessedScoringDomains("podacc1")).toEqual(
-      expect.arrayContaining(["protocol health (not assessed)", "routing (no RIB collected)", "ACLs (none collected)"]),
-    );
+  describeGolden("the auditor's device", () => {
+    it("podacc1 — the auditor's device — names protocol health, routing and ACLs", () => {
+      expect(unassessedScoringDomains("podacc1")).toEqual(
+        expect.arrayContaining(["protocol health (not assessed)", "routing (no RIB collected)", "ACLs (none collected)"]),
+      );
+    });
   });
 });

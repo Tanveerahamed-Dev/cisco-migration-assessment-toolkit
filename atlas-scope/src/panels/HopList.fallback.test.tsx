@@ -35,6 +35,13 @@ const flow = (srcIp: string, dstIp: string, protocol: Flow["protocol"], dstPort:
   srcPort: null,
 });
 
+/** The host of the flow's first hop — its gateway — read from the trace, not named (phase 3 rename leg). */
+const gatewayOf = (f: Flow): string => {
+  const h = traceFlow(f).hops[0]?.host;
+  expect(h, "precondition: the flow reaches a gateway").toBeDefined();
+  return h!;
+};
+
 function hopOn(f: Flow, host: string): HTMLElement {
   const el = document.createElement("div");
   document.body.appendChild(el);
@@ -52,7 +59,7 @@ describe("ACL rows on the hop card", () => {
   const INTERNET = flow("10.0.10.50", "8.8.8.8", "tcp", 443);
 
   it("a non-deciding ACL row states what the engine said the line does, outside the evidence list", () => {
-    const hop = hopOn(INTERNET, "core1");
+    const hop = hopOn(INTERNET, gatewayOf(INTERNET));
     const row = factRows(hop).find((f) => f.dataset.decided === undefined && /INET_RETURN line 3 of 3/.test(f.textContent ?? ""));
     expect(row, "precondition: the non-deciding INET_RETURN line 3 row is on the card").toBeDefined();
     expect(row!.textContent).toContain("deny ip any any");
@@ -62,14 +69,14 @@ describe("ACL rows on the hop card", () => {
   });
 
   it("every ACL row on the card carries a qualifier", () => {
-    const hop = hopOn(INTERNET, "core1");
+    const hop = hopOn(INTERNET, gatewayOf(INTERNET));
     const acls = factRows(hop).filter((f) => f.querySelector("dt")?.textContent?.startsWith("ACL") && f.querySelector(".hop__raw"));
     expect(acls.length).toBeGreaterThan(1);
     for (const r of acls) expect(r.querySelector("[data-acl-qualifier]")?.textContent ?? "").not.toBe("");
   });
 
   it("a list applied by the specificity fallback says so on the card and names the unobserved binding", () => {
-    const hop = hopOn(INTERNET, "core1");
+    const hop = hopOn(INTERNET, gatewayOf(INTERNET));
     const note = hop.querySelector(".hop__facts [data-acl-fallback]")?.textContent ?? "";
     expect(note).toContain("address-specificity fallback");
     expect(note).toContain("INET_RETURN");
@@ -77,7 +84,7 @@ describe("ACL rows on the hop card", () => {
   });
 
   it("a fallback list is never headlined as what decided the hop (2026-09-22 critic, A2)", () => {
-    const hop = hopOn(INTERNET, "core1");
+    const hop = hopOn(INTERNET, gatewayOf(INTERNET));
     for (const r of factRows(hop)) {
       if (/INET_RETURN/.test(r.querySelector(".hop__val")?.textContent ?? "") && r.querySelector("dt")?.textContent?.startsWith("ACL")) {
         expect(r.dataset.decided, "an unbound list's row is marked as the decider").toBeUndefined();
@@ -90,7 +97,8 @@ describe("ACL rows on the hop card", () => {
 
   it("a list applied by an OBSERVED binding carries no fallback note", () => {
     /* PROTECT_SERVERS is bound outbound on core1 Vlan30 in the observed running configuration. */
-    const hop = hopOn(flow("10.0.10.50", "10.0.30.10", "tcp", 443), "core1");
+    const f = flow("10.0.10.50", "10.0.30.10", "tcp", 443);
+    const hop = hopOn(f, gatewayOf(f));
     expect(hop.textContent).toContain("PROTECT_SERVERS");
     expect(hop.querySelector("[data-acl-fallback]")).toBeNull();
   });

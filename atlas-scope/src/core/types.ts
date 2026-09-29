@@ -152,7 +152,7 @@ export interface Finding {
    * null only where the producer did not emit the key. The engine writes both on every Multicast/Media
    * row, with a non-empty "NOT published" sentence when it has no basis: that sentence is a DISCLOSURE,
    * never a measurement. Optional so fixtures built before the fields existed stay valid; the compiler
-   * always emits them. Not yet rendered.
+   * always emits them. Rendered, verbatim and labelled as the producer's words, in the Evidence pane header.
    */
   severityBasis?: string | null;
   evidenceConfidence?: string | null;
@@ -161,7 +161,8 @@ export interface Finding {
    * `null` = the producer did not emit the key (an older snapshot) — never "no evidence". Every ref's
    * `ref` is an RFC 6901 JSON Pointer that the compiler RESOLVED against this model's own source
    * snapshot to a NON-NULL value; a pointer that did not stopped the build. `evidenceRefsTotal` is how many refs the
-   * producer had before it capped the list, so a capped list is never read as complete. Not yet rendered.
+   * producer had before it capped the list, so a capped list is never read as complete. Rendered by the
+   * Evidence pane (panels/EvidencePane.tsx `EngineEvidence`) from the projected `Fabric.evidenceRecords`.
    */
   evidenceBasis?: EvidenceBasis | null;
   evidenceRefs?: EvidenceRef[] | null;
@@ -188,7 +189,15 @@ export type EvidenceRefKind = (typeof EVIDENCE_REF_KINDS)[number];
 export const EVIDENCE_REF_ROLES = ["derived_from", "subject", "witness"] as const;
 export type EvidenceRefRole = (typeof EVIDENCE_REF_ROLES)[number];
 
-/** One pointer from a finding to the snapshot record it rests on (`punchlist[i].evidence_refs[k]`). */
+/**
+ * One pointer from a finding to the snapshot record it rests on (`punchlist[i].evidence_refs[k]`).
+ *
+ * The producer's short human label arrives as `cite` and is compiled as `label`. In this model `cite`
+ * means ONE thing — a path back into the source snapshot — and every object carrying a string `cite` is
+ * indexed as that citation's bearer (panels/Inspector.tsx `citeBearers`). Carried under `cite`, every
+ * producer label — "(fleet) QoS finding row (best-effort-fleet)" first among them — became a "citation" that
+ * no resolver could recognise (the inert-citation census's copy-tool case, 2026-09-28). The path is `ref`.
+ */
 export interface EvidenceRef {
   kind: EvidenceRefKind;
   /** The device the record belongs to, or null for a fabric-wide record. */
@@ -196,8 +205,70 @@ export interface EvidenceRef {
   /** An RFC 6901 JSON Pointer into the SOURCE snapshot, resolved at compile time. */
   ref: string;
   role: EvidenceRefRole;
-  /** The producer's short human label for the record. */
-  cite: string;
+  /** The producer's short human label for the record (its `cite`), verbatim. */
+  label: string;
+}
+
+/** The JSON type of a projected value. */
+export type EvidenceValueType = "string" | "number" | "boolean" | "null" | "object" | "array";
+
+/** A member as the projection carries it: a scalar the engine wrote, or a nested value's compact JSON text. */
+export type EvidenceScalar = string | number | boolean | null;
+
+/**
+ * The record an engine evidence pointer names, projected into the model (`Fabric.evidenceRecords`). The
+ * compiler copies ONLY values some finding's `evidence_refs` point at, once per distinct pointer, and bounds
+ * every one (EvidenceProjection). Its `cite` IS its pointer, so the Inspector resolves the pointer to it.
+ *
+ * - `value` is the engine's value, one level deep: an object's or list's members in the engine's order, each
+ *   scalar as the engine wrote it; a member that is itself an object or list is its compact JSON TEXT and is
+ *   named in `nested`. A scalar record (a configuration line, a literal evidence string) is the scalar.
+ * - `cut` names every text shortened to its cap, with the WHOLE length (a scalar record's own under ""), so a
+ *   cut is always stated. `fieldsTotal` is how many members the record has; fewer carried = members omitted.
+ * - `withheld`: the model's total budget was spent before this record, so no value is carried (`value` is
+ *   null) — the record is still in the source snapshot at `pointer`, and a surface must say so.
+ */
+export interface EvidenceRecord {
+  pointer: string;
+  cite: Cite;
+  type: EvidenceValueType;
+  /** Length of the whole record, as compact JSON, in the source. */
+  jsonChars: number;
+  value: EvidenceScalar | Record<string, EvidenceScalar> | EvidenceScalar[];
+  nested: string[];
+  cut: Record<string, number>;
+  fieldsTotal: number;
+  withheld: boolean;
+}
+
+/** The bounds the compiler projected evidence records under, and what they cost (stated, never implied). */
+export interface EvidenceProjection {
+  /** Most characters of one member's text, and of a scalar record's text. */
+  fieldTextChars: number;
+  scalarTextChars: number;
+  /** Most members carried for one record, and most characters one projected record may take. */
+  recordFields: number;
+  recordChars: number;
+  /**
+   * Most characters the whole projection may take AS WRITTEN, the withheld records' pointer-only stubs
+   * included; records past it are `withheld`, chosen in the engine's priority order (a lower-ranked record never
+   * displaces a higher-ranked one). Exceeded only when the stubs alone outgrow it — then every record is
+   * withheld, and `writtenChars` > `totalChars` states it.
+   */
+  totalChars: number;
+  /** Distinct pointers the findings carry (= evidenceRecords.length). */
+  records: number;
+  /** Characters the carried (not withheld) records take together; a withheld record carries its pointer only. */
+  projectedChars: number;
+  recordsWithheld: number;
+  /** Members not carried because a record hit `recordFields` or `recordChars`. */
+  fieldsOmitted: number;
+  /** Field or scalar texts shortened to their cap. */
+  textsCut: number;
+  /** Characters the withheld records' pointer-only stubs take together. */
+  withheldChars: number;
+  /** Characters every record takes as written (= projectedChars + withheldChars) — the figure `totalChars` bounds. */
+  writtenChars: number;
 }
 
 export interface CrossLayerFinding {
@@ -487,6 +558,13 @@ export interface Fabric {
   cable_map: { nodes: CableMapNode[] };
   health_scores: HealthScore[];
   link_centrality: LinkCentrality[];
+  /**
+   * The records the findings' engine evidence pointers name, one per distinct pointer, sorted by pointer
+   * (tools/lib/compile-model.mjs `compileEvidenceRecords`). Optional so a model compiled before the
+   * projection existed stays readable; the compiler always emits both keys.
+   */
+  evidenceRecords?: EvidenceRecord[];
+  evidenceProjection?: EvidenceProjection;
 }
 
 /* ── forwarding simulation contract ─────────────────────────────────────────

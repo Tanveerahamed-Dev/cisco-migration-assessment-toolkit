@@ -60,14 +60,17 @@ describe("an undecided hop on a host WITH a RIB names the model limit, not a col
     ["icmp 10.0.10.50 -> 10.0.30.10", flow("10.0.10.50", "10.0.30.10", "icmp", null), "Vlan30"],
   ] as const) {
     it(label, () => {
-      expect(hasRib("core1"), "precondition: core1 carries a collected RIB in this snapshot").toBe(true);
-      const hop = hopOn(render(f), "core1");
+      /* The host is read from the trace (the hop left undecided), not named: phase 3, 2026-09-28. */
+      const at = traceFlow(f).hops.find((h) => h.verdict === "unmodeled")?.host;
+      expect(at, "precondition: the flow stops at an undecided hop").toBeDefined();
+      expect(hasRib(at!), `precondition: ${at} carries a collected RIB in this snapshot`).toBe(true);
+      const hop = hopOn(render(f), at!);
       const text = hop.textContent ?? "";
 
       expect(text, "a host whose RIB was collected was described as having nothing collected").not.toMatch(COLLECTION_BLAME);
       const reason = hop.querySelector("[data-undecided-reason]")?.textContent ?? "";
       expect(reason, "the undecided verdict must name the ACL line that cannot be evaluated").toMatch(
-        /ACL \S+ line \d+ of \d+ on core1 cannot be evaluated/,
+        new RegExp(`ACL \\S+ line \\d+ of \\d+ on ${at!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} cannot be evaluated`),
       );
       const labels = [...hop.querySelectorAll("dt")].map((d) => d.textContent?.trim().toLowerCase());
       expect(labels, "the route was decided, so the egress it decided must be shown").toContain("egress");
@@ -76,11 +79,6 @@ describe("an undecided hop on a host WITH a RIB names the model limit, not a col
   }
 });
 
-describe("a hop on a host with NO RIB does not imply a RIB was searched", () => {
-  it("tcp 10.0.40.50 -> 10.0.30.10:443 at dist1", () => {
-    expect(hasRib("dist1"), "precondition: dist1 has no collected RIB in this snapshot").toBe(false);
-    const hop = hopOn(render(flow("10.0.40.50", "10.0.30.10", "tcp", 443)), "dist1");
-    expect(hop.textContent).not.toMatch(/collected RIB matched/);
-    expect(hop.textContent, "the no-RIB case keeps its collection-gap wording").toMatch(/no routing table was collected/);
-  });
-});
+/* "a hop on a host with NO RIB does not imply a RIB was searched" (tcp 10.0.40.50 -> 10.0.30.10:443 at
+   dist1) moved 2026-09-28 (phase 3) to HopList.no-rib.counterfactual.test.tsx, unchanged: the regenerated
+   sample collected dist1's RIB, and no trace of the real snapshot reaches a host without one any more. */

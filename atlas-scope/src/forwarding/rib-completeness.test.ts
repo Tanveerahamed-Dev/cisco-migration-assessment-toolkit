@@ -45,6 +45,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import realEvidence from "./rib-evidence.json";
 import { fabric, routesOf } from "../core/data";
+import { describeGolden } from "../test-support/golden-sample";
+import { needSome } from "./test-subjects";
 
 const fx = vi.hoisted(() => {
   const row = (protocol: string, state: string | null, i: number) => ({
@@ -635,6 +637,48 @@ describe("the contract filter is live: an absence state the engine retires or re
   }
 });
 
+/**
+ * Every REAL up session on a host with a collected table, and whether its link is held. "Real" is the LOADED
+ * dataset's compiled record, unmocked: `vi.importActual` resolves through the runner's dataset override, so on
+ * the rename or golden-snapshot leg it is THAT dataset's record, judged against THAT dataset's tables. Reading
+ * the tracked file from disk judged the sample's sessions against another fleet's routes (2026-09-28 verifier, D1).
+ */
+async function realUpSessions(): Promise<{ real: string[]; up: { host: string; cite: string; held: boolean; viaInterface: boolean }[] }> {
+  const disk = ((await vi.importActual("./rib-evidence.json")) as { default: unknown }).default as {
+    hosts: Record<string, { adjacencies: { neighbor: string | null; state: string | null; cite: string; address?: string | null; interface?: string | null }[] }>;
+  };
+  const real = Object.keys(disk.hosts);
+  expect(real.some((h) => h.startsWith("t-"))).toBe(false);
+  const UP = /^(full|2way|established|up)\b|^\d+$/i;
+  const toInt = (ip: string) => ip.split(".").reduce((n, o) => n * 256 + Number(o), 0);
+  const inPrefix = (prefix: string, ip: string) => {
+    const [net, len] = prefix.split("/");
+    const size = 2 ** (32 - Number(len));
+    return Math.floor(toInt(ip) / size) === Math.floor(toInt(net!) / size);
+  };
+  const intfKey = (s: string) => {
+    const m = /^([a-z-]+)\s*(\S+)$/i.exec(s.trim());
+    return m === null ? s.toLowerCase() : `${m[1]!.slice(0, 2).toLowerCase()}${m[2]!.toLowerCase()}`;
+  };
+  const up: { host: string; cite: string; held: boolean; viaInterface: boolean }[] = [];
+  for (const h of real) {
+    const rs = routesOf(h);
+    if (rs.length === 0) continue;
+    for (const a of disk.hosts[h]!.adjacencies) {
+      if (a.state === null || !UP.test(a.state.trim())) continue;
+      const addr = a.address ?? a.neighbor;
+      const viaInterface = a.interface !== null && a.interface !== undefined;
+      const held =
+        addr !== null &&
+        (viaInterface
+          ? rs.some((r) => r.source === "connected" && r.outIntf !== null && intfKey(r.outIntf) === intfKey(a.interface!) && inPrefix(r.prefix, addr))
+          : rs.some((r) => !r.prefix.endsWith("/0") && inPrefix(r.prefix, addr)));
+      up.push({ host: h, cite: a.cite, held, viaInterface });
+    }
+  }
+  return { real, up };
+}
+
 describe("over every host in the compiled record (the committed snapshot's plus the synthetic ones)", () => {
   const ev = realEvidence as unknown as { hosts: Record<string, { protocols: { protocol: string; state: string | null; cite: string }[] }> };
   const hosts = Object.keys(ev.hosts);
@@ -702,75 +746,25 @@ describe("over every host in the compiled record (the committed snapshot's plus 
     expect(uncited, "the sweep must reach at least one uncited session (the held-link branch)").toBeGreaterThan(0);
   });
 
-  it("the held-link sweep reaches REAL hosts' sessions, read from the compiled file on disk -- no synthetic host counts (R2V-3)", () => {
+  it("the held-link sweep reaches REAL hosts' sessions, read from the unmocked loaded record -- no synthetic host counts (R2V-3)", async (ctx) => {
     /* The sweep above iterates the MOCKED record, whose synthetic hosts alone satisfied its `uncited > 0`
        precondition (2026-09-28 verifier, R2V-3). This one reads the compiled record from disk, so only hosts
        the engine's snapshot names are asked, and each session is judged against the real compiled table. */
-    const disk = JSON.parse(readFileSync(`${import.meta.dirname}/rib-evidence.json`, "utf8")) as {
-      hosts: Record<string, { adjacencies: { neighbor: string | null; state: string | null; cite: string; address?: string | null; interface?: string | null }[] }>;
-    };
-    const real = Object.keys(disk.hosts);
+    const { real, up } = await realUpSessions();
     expect(real.some((h) => h.startsWith("t-"))).toBe(false);
-    const UP = /^(full|2way|established|up)\b|^\d+$/i;
-    const toInt = (ip: string) => ip.split(".").reduce((n, o) => n * 256 + Number(o), 0);
-    const inPrefix = (prefix: string, ip: string) => {
-      const [net, len] = prefix.split("/");
-      const size = 2 ** (32 - Number(len));
-      return Math.floor(toInt(ip) / size) === Math.floor(toInt(net!) / size);
-    };
-    const intfKey = (s: string) => {
-      const m = /^([a-z-]+)\s*(\S+)$/i.exec(s.trim());
-      return m === null ? s.toLowerCase() : `${m[1]!.slice(0, 2).toLowerCase()}${m[2]!.toLowerCase()}`;
-    };
-    const up: { host: string; cite: string; held: boolean; viaInterface: boolean }[] = [];
-    for (const h of real) {
-      const rs = routesOf(h);
-      if (rs.length === 0) continue;
-      for (const a of disk.hosts[h]!.adjacencies) {
-        if (a.state === null || !UP.test(a.state.trim())) continue;
-        const addr = a.address ?? a.neighbor;
-        const viaInterface = a.interface !== null && a.interface !== undefined;
-        const held =
-          addr !== null &&
-          (viaInterface
-            ? rs.some((r) => r.source === "connected" && r.outIntf !== null && intfKey(r.outIntf) === intfKey(a.interface!) && inPrefix(r.prefix, addr))
-            : rs.some((r) => !r.prefix.endsWith("/0") && inPrefix(r.prefix, addr)));
-        up.push({ host: h, cite: a.cite, held, viaInterface });
-      }
-    }
-    expect(up.length, "the compiled snapshot must hold at least one real up session").toBeGreaterThan(0);
+    /* Non-vacuity is a property of the data: required on the reference sample, not applicable (by name) on a
+       fleet whose routed hosts hold no up session (2026-09-28 verifier, D2). */
+    needSome(ctx, up.length, "real up routing session on a host with a collected table");
     const uncited = up.filter((s) => !cites(s.host).includes(s.cite));
     // Whatever the fleet: an uncited real session is one whose link its table holds (never the reverse).
     for (const s of uncited) expect(s.held, `${s.cite}: uncited, yet its link is not held`).toBe(true);
-    /* RATCHET. The tracked fleet these files were compiled from predates the forwarding substrate: its one
-       real up session -- core1's FULL/DR neighbour on the L2 trunk Po1 -- runs over a link core1's table does
-       not hold, so it is cited and NO real session reaches the held-link branch there. The exemption is
-       bound to the ABSENCE of the whole substrate and to that exact reason, never to a typed digest (a
-       literal copy of the snapshot digest is a cache nothing invalidates: src/core/provenance.test.ts).
-       "Predates the substrate" is read from the engine's own demo builder: every host its substrate gives a
-       whole routing table (`<var>["show ip route"] = (` on a `<var> = cols["<host>"][1]`) must be a real
-       host of the compiled fleet holding NO routes. A fleet carrying any part of the substrate (the
-       regenerated one carries the inter-core session on Vlan10, the dist1 transit and the dist pair's OSPF)
-       must bring real sessions into the held-link branch, both with and without a recorded interface.
-       Phase 3 (fleet regeneration) deletes this exemption. */
-    const build = readFileSync(`${import.meta.dirname}/../../../webapp/sample_data/build_sample.py`, "utf8");
-    const substrate = /\ndef _add_forwarding_substrate\(cols: dict\) -> dict:\n([\s\S]*?)\n\n\n/.exec(build)?.[1] ?? "";
-    const hostOf = new Map([...substrate.matchAll(/^ {4}(\w+) = cols\["([^"]+)"\]\[1\]$/gm)].map((m) => [m[1]!, m[2]!]));
-    const tabled = [...substrate.matchAll(/^ {4}(\w+)\["show ip route"\] = \($/gm)].map((m) => hostOf.get(m[1]!));
-    expect(tabled.length, "the builder's substrate gives at least one host a whole routing table").toBeGreaterThan(0);
-    for (const h of tabled) {
-      expect(h, "every substrate-tabled variable resolves to a builder host").toBeDefined();
-      expect(real, `${h}: a substrate-tabled host is a real host of the compiled fleet`).toContain(h);
-    }
-    const predatesSubstrate = tabled.every((h) => routesOf(h!).length === 0);
-    if (predatesSubstrate) {
-      expect(uncited).toEqual([]);
-      // ...and the exemption's reason, recomputed: not one real up session's link is held there.
-      for (const s of up) expect(s.held, s.cite).toBe(false);
-    } else {
-      expect(uncited.filter((s) => s.viaInterface).length, "a real session over a recorded interface in the held-link branch").toBeGreaterThan(0);
-      expect(uncited.filter((s) => !s.viaInterface).length, "a real session with no recorded interface in the held-link branch").toBeGreaterThan(0);
-    }
+    /* RATCHET RETIRED (phase 3). This used to exempt a tracked fleet that predated the forwarding substrate
+       (its one real up session, core1's FULL/DR neighbour on the L2 trunk Po1, ran over a link core1's table
+       did not hold, so no real session reached the held-link branch), recognised by parsing the demo
+       builder, and said "Phase 3 (fleet regeneration) deletes this exemption". The fleet is regenerated, so
+       the exemption and the builder parse are deleted: what stays here is the invariant (every uncited real
+       session's link is held, above), and the non-vacuity it guarded — real sessions in the held-link branch,
+       with and without a recorded interface — is pinned on the reference sample in the golden block below. */
   });
 
   it("an absence-state row (captured_empty / not_running) is cited as a reason exactly when the table holds routes of its family", () => {
@@ -786,5 +780,15 @@ describe("over every host in the compiled record (the committed snapshot's plus 
       }
     }
     expect(rows).toBeGreaterThan(0);
+  });
+});
+
+/* Golden (phase 3): the non-vacuity the retired ratchet guarded, on the reference sample. */
+describeGolden("the held-link sweep reaches real sessions on the reference sample", () => {
+  it("real sessions reach the held-link branch both over a recorded interface and without one", async () => {
+    const { up } = await realUpSessions();
+    const uncited = up.filter((s) => !cites(s.host).includes(s.cite));
+    expect(uncited.filter((s) => s.viaInterface).length, "a real session over a recorded interface in the held-link branch").toBeGreaterThan(0);
+    expect(uncited.filter((s) => !s.viaInterface).length, "a real session with no recorded interface in the held-link branch").toBeGreaterThan(0);
   });
 });

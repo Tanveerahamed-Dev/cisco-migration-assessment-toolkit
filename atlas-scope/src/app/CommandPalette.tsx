@@ -33,6 +33,7 @@ import {
   useDeferredValue,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -664,6 +665,19 @@ export function CommandPalette(): ReactNode {
     const back = focusReturn;
     if (returnFocus(back === document.body ? null : back, null) === null) landFocus(landing ?? stageLanding);
   }, [setPaletteOpen, focusReturn]);
+
+  /* A QUERY BELONGS TO ONE OPENING (independent verifier R5-V2-2, measured in the release build): the
+     reset below runs in a passive effect of the REOPEN, after the Dialog has already focused the search
+     box — which then held the previous opening's text ("Toggle the evidence rail"), and a keystroke typed
+     into it doubled the query so nothing matched. So the query is cleared in the commit that CLOSES the
+     palette, whatever closed it (its own Escape, a command, the store): no later opening starts from,
+     focuses or paints it. CommandPalette.test.tsx pins the value the box holds as it takes focus. */
+  useLayoutEffect(() => {
+    if (open) return;
+    pendingEnterRef.current = null;
+    setInput("");
+    setActive(0);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;

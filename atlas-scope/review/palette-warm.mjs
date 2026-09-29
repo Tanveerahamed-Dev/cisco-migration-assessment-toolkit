@@ -177,6 +177,262 @@ export async function checkPaletteOverDialog(page) {
   return { failures, states };
 }
 
+/* ── the app's modal dialogs, discovered by the RENDERED primitive (independent verifier R6 VR2-3) ──────
+ * Both the D1 pair sweep (src/app/CommandPalette.test.tsx) and the D3 rung-crossing pass
+ * (review/audit-d3-focus.mjs) need "every modal dialog the app can open". They used to find it with the
+ * regex /<Dialog\b/ over the source — the modules that SPELL `<Dialog`. A module rendering the exported
+ * `<DialogFrame` directly, an aliased import (`import { Dialog as Modal }`), a namespace member
+ * (`<ui.Dialog>`), `createElement(Dialog, …)`, or an inline `role="dialog" aria-modal="true"` element was
+ * invisible to it, so the set was "modules that spell <Dialog", not "dialogs the app can open".
+ *
+ * THE RULE, read from the syntax tree of every non-test .ts/.tsx under the root:
+ *   1. A MODAL ELEMENT is an intrinsic JSX element (lower-case tag) that is given `role` "dialog" and an
+ *      `aria-modal` that is not literally false — as a JSX attribute, or as a property of an object
+ *      spread into it (DialogFrame spreads `{ role: "dialog", "aria-modal": "true" }`).
+ *   2. A component (a function declaration, or a const bound to an arrow/function) that renders a modal
+ *      element, or a DIALOG PRIMITIVE, is a dialog component. A tag or `createElement` argument is resolved
+ *      through the module's own declarations and const aliases, named/default/aliased imports, and
+ *      namespace members, to the component it names — never by its spelling.
+ *   3. A dialog component whose accessible name comes from ITS CALLER — it takes a `title` (a destructured
+ *      parameter property, or `props.title`) — is a PRIMITIVE: Dialog, DialogFrame, and any wrapper that
+ *      forwards a title. One that names the dialog itself is an OWNER: a dialog the app opens.
+ * A component that merely MOUNTS an owner (App renders <CommandPalette />) renders no primitive and no
+ * modal element, so it is neither. `aria-modal="false"` (a popover, the status bar's coverage panel) is not
+ * a modal dialog. Returns the owners (module-relative file and component) and the primitives.
+ * @param {Record<string, string>} files  module path relative to the root ("app/X.tsx") -> source text
+ * @returns {Promise<{ owners: { file: string, component: string }[], primitives: { file: string, component: string }[] }>}
+ */
+export async function modalDialogsIn(files) {
+  const ts = (await import("typescript")).default;
+  const posix = (p) => p.split("\\").join("/");
+  const norm = (p) => {
+    const out = [];
+    for (const part of posix(p).split("/")) {
+      if (part === "" || part === ".") continue;
+      if (part === "..") out.pop();
+      else out.push(part);
+    }
+    return out.join("/");
+  };
+  const resolveModule = (from, spec) => {
+    if (!spec.startsWith(".")) return null;
+    const base = norm(`${from.split("/").slice(0, -1).join("/")}/${spec}`);
+    for (const c of [base, `${base}.tsx`, `${base}.ts`, `${base}/index.tsx`, `${base}/index.ts`]) if (c in files) return c;
+    return null;
+  };
+  /** Per module: its components (name -> function node), import bindings, const aliases and export names. */
+  const mods = new Map();
+  for (const [file, text] of Object.entries(files)) {
+    const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+    const components = new Map();
+    const imports = new Map(); /* local -> { module, name } ; name "*" = namespace */
+    const aliases = new Map(); /* local const -> the expression it is bound to */
+    const exported = new Map(); /* exported name -> local name */
+    const reexports = new Map(); /* exported name -> { module, name } */
+    const starFrom = []; /* modules re-exported whole */
+    for (const st of sf.statements) {
+      if (ts.isImportDeclaration(st) && ts.isStringLiteral(st.moduleSpecifier) && st.importClause !== undefined) {
+        const target = resolveModule(file, st.moduleSpecifier.text);
+        if (target === null) continue;
+        const c = st.importClause;
+        if (c.name !== undefined) imports.set(c.name.text, { module: target, name: "default" });
+        const nb = c.namedBindings;
+        if (nb !== undefined && ts.isNamespaceImport(nb)) imports.set(nb.name.text, { module: target, name: "*" });
+        if (nb !== undefined && ts.isNamedImports(nb)) for (const e of nb.elements) imports.set(e.name.text, { module: target, name: (e.propertyName ?? e.name).text });
+      }
+      const isExported = ts.canHaveModifiers(st) && (ts.getModifiers(st) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+      const isDefault = ts.canHaveModifiers(st) && (ts.getModifiers(st) ?? []).some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
+      if (ts.isFunctionDeclaration(st) && st.name !== undefined) {
+        components.set(st.name.text, st);
+        if (isExported) exported.set(isDefault ? "default" : st.name.text, st.name.text);
+      }
+      if (ts.isVariableStatement(st)) {
+        for (const d of st.declarationList.declarations) {
+          if (!ts.isIdentifier(d.name) || d.initializer === undefined) continue;
+          let init = d.initializer;
+          while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init) || ts.isSatisfiesExpression(init)) init = init.expression;
+          /* memo(fn) / forwardRef(fn): the component is the function inside. */
+          if (ts.isCallExpression(init) && init.arguments.length > 0 && (ts.isArrowFunction(init.arguments[0]) || ts.isFunctionExpression(init.arguments[0]))) init = init.arguments[0];
+          if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) components.set(d.name.text, init);
+          else aliases.set(d.name.text, init);
+          if (isExported) exported.set(d.name.text, d.name.text);
+        }
+      }
+      if (ts.isExportAssignment(st) && ts.isIdentifier(st.expression)) exported.set("default", st.expression.text);
+      if (ts.isExportDeclaration(st) && st.moduleSpecifier === undefined && st.exportClause !== undefined && ts.isNamedExports(st.exportClause))
+        for (const e of st.exportClause.elements) exported.set(e.name.text, (e.propertyName ?? e.name).text);
+      /* `export { X as Y } from "./m"` and `export * from "./m"`: resolved in the module they come from. */
+      if (ts.isExportDeclaration(st) && st.moduleSpecifier !== undefined && ts.isStringLiteral(st.moduleSpecifier)) {
+        const target = resolveModule(file, st.moduleSpecifier.text);
+        if (target === null) continue;
+        if (st.exportClause === undefined) starFrom.push(target);
+        else if (ts.isNamedExports(st.exportClause)) for (const e of st.exportClause.elements) reexports.set(e.name.text, { module: target, name: (e.propertyName ?? e.name).text });
+      }
+    }
+    mods.set(file, { sf, components, imports, aliases, exported, reexports, starFrom });
+  }
+  const key = (file, name) => `${file}#${name}`;
+  /** The component key an expression (a JSX tag, or createElement's first argument) names, or null. */
+  const resolveExpr = (file, expr, seen = new Set()) => {
+    const m = mods.get(file);
+    if (m === undefined) return null;
+    if (ts.isIdentifier(expr)) {
+      const name = expr.text;
+      if (seen.has(key(file, name))) return null;
+      const next = new Set([...seen, key(file, name)]);
+      if (m.components.has(name)) return key(file, name);
+      if (m.aliases.has(name)) return resolveExpr(file, m.aliases.get(name), next);
+      const imp = m.imports.get(name);
+      if (imp !== undefined && imp.name !== "*") return resolveExport(imp.module, imp.name, next);
+      return null;
+    }
+    if (ts.isPropertyAccessExpression(expr) && ts.isIdentifier(expr.expression)) {
+      const imp = m.imports.get(expr.expression.text);
+      if (imp !== undefined && imp.name === "*") return resolveExport(imp.module, expr.name.text, seen);
+    }
+    if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr)) return resolveExpr(file, expr.expression, seen);
+    return null;
+  };
+  const resolveExport = (file, name, seen) => {
+    const m = mods.get(file);
+    if (m === undefined) return null;
+    const local = m.exported.get(name) ?? (name !== "default" && m.components.has(name) ? name : undefined);
+    if (local !== undefined) return resolveExpr(file, ts.factory.createIdentifier(local), seen);
+    const guard = `${file}#export:${name}`;
+    if (seen.has(guard)) return null;
+    const next = new Set([...seen, guard]);
+    const re = m.reexports.get(name);
+    if (re !== undefined) return resolveExport(re.module, re.name, next);
+    for (const star of m.starFrom) {
+      const k = resolveExport(star, name, next);
+      if (k !== null) return k;
+    }
+    return null;
+  };
+  const literal = (e) => {
+    if (e === undefined) return true; /* `<div aria-modal>` */
+    if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return e.text;
+    if (ts.isJsxExpression(e)) return e.expression === undefined ? undefined : literal(e.expression);
+    if (ts.isAsExpression(e) || ts.isParenthesizedExpression(e) || ts.isSatisfiesExpression(e)) return literal(e.expression);
+    if (e.kind === ts.SyntaxKind.TrueKeyword) return true;
+    if (e.kind === ts.SyntaxKind.FalseKeyword) return false;
+    return undefined; /* not knowable: an expression */
+  };
+  /** The role and aria-modal an intrinsic element is given, from attributes and spread object literals. */
+  const modalOf = (attrs) => {
+    let role;
+    let modal;
+    const fromObject = (o) => {
+      for (const p of o.properties) {
+        if (ts.isPropertyAssignment(p)) {
+          const n = ts.isIdentifier(p.name) || ts.isStringLiteral(p.name) ? p.name.text : null;
+          if (n === "role") role = literal(p.initializer) ?? role;
+          if (n === "aria-modal") modal = literal(p.initializer);
+        } else if (ts.isSpreadAssignment(p)) visitSpread(p.expression);
+      }
+    };
+    const visitSpread = (e) => {
+      if (ts.isObjectLiteralExpression(e)) fromObject(e);
+      else if (ts.isConditionalExpression(e)) {
+        visitSpread(e.whenTrue);
+        visitSpread(e.whenFalse);
+      } else if (ts.isParenthesizedExpression(e)) visitSpread(e.expression);
+      else if (ts.isBinaryExpression(e)) {
+        visitSpread(e.left);
+        visitSpread(e.right);
+      }
+    };
+    for (const a of attrs.properties) {
+      if (ts.isJsxAttribute(a)) {
+        const n = a.name.getText();
+        if (n === "role") role = literal(a.initializer) ?? role;
+        if (n === "aria-modal") modal = literal(a.initializer);
+      } else if (ts.isJsxSpreadAttribute(a)) visitSpread(a.expression);
+    }
+    return role === "dialog" && modal !== false && modal !== "false" && modal !== null;
+  };
+  /** Per component: whether it renders a modal element, which components it renders, whether it takes a title. */
+  const facts = new Map();
+  for (const [file, m] of mods) {
+    for (const [name, fn] of m.components) {
+      const renders = new Set();
+      let modal = false;
+      const visit = (n) => {
+        if (ts.isJsxElement(n) || ts.isJsxSelfClosingElement(n)) {
+          const open = ts.isJsxElement(n) ? n.openingElement : n;
+          const tag = open.tagName;
+          if (ts.isIdentifier(tag) && /^[a-z]/.test(tag.text)) {
+            if (modalOf(open.attributes)) modal = true;
+          } else {
+            const k = resolveExpr(file, tag);
+            if (k !== null) renders.add(k);
+          }
+        }
+        if (ts.isCallExpression(n) && n.arguments.length > 0) {
+          const callee = n.expression;
+          const nm = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : "";
+          if (nm === "createElement" || nm === "jsx" || nm === "jsxs") {
+            const k = resolveExpr(file, n.arguments[0]);
+            if (k !== null) renders.add(k);
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(fn);
+      const p0 = fn.parameters[0];
+      let takesTitle = false;
+      if (p0 !== undefined && ts.isObjectBindingPattern(p0.name)) takesTitle = p0.name.elements.some((e) => (e.propertyName ?? e.name).getText() === "title");
+      else if (p0 !== undefined && ts.isIdentifier(p0.name)) {
+        const pn = p0.name.text;
+        const find = (n) => (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === pn && n.name.text === "title") || (ts.forEachChild(n, find) ?? false);
+        takesTitle = find(fn.body ?? fn);
+      }
+      facts.set(key(file, name), { file, component: name, renders, modal, takesTitle });
+    }
+  }
+  /* Primitives: the least fixed point of "takes a title, and renders a modal element or a primitive". */
+  const primitives = new Set();
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [k, f] of facts) {
+      if (primitives.has(k) || !f.takesTitle) continue;
+      if (f.modal || [...f.renders].some((r) => primitives.has(r))) {
+        primitives.add(k);
+        changed = true;
+      }
+    }
+  }
+  const owners = [...facts]
+    .filter(([k, f]) => !primitives.has(k) && (f.modal || [...f.renders].some((r) => primitives.has(r))))
+    .map(([, f]) => ({ file: f.file, component: f.component }));
+  const pick = (ks) => [...ks].map((k) => facts.get(k)).map((f) => ({ file: f.file, component: f.component }));
+  const byName = (a, b) => (a.file + a.component).localeCompare(b.file + b.component);
+  return { owners: owners.sort(byName), primitives: pick(primitives).sort(byName) };
+}
+
+/**
+ * modalDialogsIn over every non-test .ts/.tsx module under `srcDir` (a directory URL or path), keyed by
+ * its path relative to `srcDir`.
+ * @param {string | URL} srcDir
+ */
+export async function appModalDialogs(srcDir) {
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { join, relative } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const root = typeof srcDir === "string" ? srcDir : fileURLToPath(srcDir);
+  const files = {};
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      if (name === "node_modules") continue;
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name) && !name.endsWith(".d.ts")) files[relative(root, p).split("\\").join("/")] = readFileSync(p, "utf8");
+    }
+  };
+  walk(root);
+  return modalDialogsIn(files);
+}
+
 /* `node review/palette-warm.mjs --dialog-stack [url]`: the D1 procedure at 1280x800, dark and light,
    against a release preview (default http://localhost:4181). Exit 0 only when both legs held. Imported,
    this module runs nothing. */

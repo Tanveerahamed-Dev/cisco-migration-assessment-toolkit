@@ -29,7 +29,7 @@ import { createHoverChannel, FabricLabels, type HoverChannel } from "./FabricLab
 import { publishSceneStats, releaseSceneStats } from "./telemetry";
 import { FabricLegend } from "./FabricLegend";
 import { CANVAS_ARIA_KEYSHORTCUTS, viewKeyMove } from "./canvasKeys";
-import { computeLayout } from "./layout";
+import { layoutJob, type FabricLayout, type LayoutJob } from "./layout";
 import { exposeSceneForCapture } from "./devHandle";
 import { createScene, type FabricSceneEx } from "./scene";
 import { setStageOcclusion, type StageOcclusionPx } from "./camera";
@@ -45,6 +45,74 @@ const SCENE_DETAIL_CHASSIS: ChassisBuildOptions = {
   bevelSegments: SCENE_DETAIL.chassisBevelSegments,
   fineDetail: SCENE_DETAIL.chassisFineDetail,
 };
+
+/**
+ * Counted layout work (layout.ts :: LayoutJob — one unit per cable and per chassis measured against a
+ * route) run per slice before the stage yields to the event loop.
+ *
+ * SCALE (2026-09-28). The layout used to run whole, inside a useMemo, in the render that mounted the
+ * stage. After its route stage became index-driven it costs, LABORATORY figures on this 14-core host
+ * under load from other agents (review/synth-fleet.mjs --measure): ~15 ms for the 26-device reference
+ * sample, ~120-170 ms for a 300-node synthetic fleet and ~0.6-1.2 s for 1 000 (at 100 % load: 610 ms
+ * and 4.2 s median; the ≤ 300 ms / ≤ 2 s quiet-host budgets are unconfirmed) — the last two a stall
+ * no keystroke could get through. MEASURED in Node at ~1.3-1.9 µs a unit, 4 000 units is a slice of
+ * ~5-8 ms; in Chromium on the DEV build, under a CPU profiler, with the host at 100 % load, the 300
+ * fleet ran as 16 slices of 16-28 ms, none of them a long task (before: one 6.8 s and one 3.5 s task —
+ * the dev build's StrictMode lays out twice). Every indivisible step reports the work it did (pinned
+ * step by step in scale.test.ts), and the largest one — an ordering pass or the embedding, charged N+E
+ * units; a cable's detour ladder is smaller — is pinned below LAYOUT_SLICE_WORK at 300 and 1 000
+ * nodes, so a slice there is at most twice its budget. Past N+E = 4 000 (~1 500 campus nodes) a single
+ * ordering pass is longer than one slice.
+ *
+ * The first slice runs synchronously where the layout is requested: the reference sample needs ~1.3 k
+ * units (2.3 k with the flattest tier pitch the tests use), so it is laid out before first paint
+ * exactly as before, and only a fabric too large for one slice waits — shown as the stage's existing
+ * "Building the 3-D fabric" state, since no scene exists until its layout does. Sliced by WORK, not by a
+ * clock (the materials.ts precedent), so the layout is the same bytes however the slices fell.
+ */
+export const LAYOUT_SLICE_WORK = 4000;
+
+/** Yield to the event loop between slices: `scheduler.yield()` where it exists, else a zero timeout
+ *  (materials.ts :: prepareProceduralMaps states the difference between the two). */
+const yieldToEventLoop = (): Promise<void> => {
+  const sched = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  return typeof sched?.yield === "function"
+    ? sched.yield()
+    : new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+};
+
+/**
+ * The layout for these inputs: the finished layout, or null while it is still being computed in
+ * slices. A new set of inputs starts a new job; the old one is abandoned where it stands. Exported so
+ * scale.test.ts can drive it without the rest of the stage.
+ */
+export function useSlicedLayout(
+  devices: readonly Device[],
+  links: readonly Link[],
+  tiers: readonly (readonly string[])[],
+): FabricLayout | null {
+  const job = useMemo((): LayoutJob => {
+    const j = layoutJob({ devices, links, tiers });
+    j.step(LAYOUT_SLICE_WORK);
+    return j;
+  }, [devices, links, tiers]);
+  /* Only a re-render trigger: the layout itself is read from the job, never duplicated in state. */
+  const [, setFinished] = useState<LayoutJob | null>(null);
+  useEffect(() => {
+    if (job.done) return;
+    let live = true;
+    void (async () => {
+      while (live && job.step(LAYOUT_SLICE_WORK) === null) await yieldToEventLoop();
+      if (live) setFinished(job);
+    })();
+    return () => {
+      live = false;
+    };
+  }, [job]);
+  return job.result;
+}
 
 /** Pointer travel (CSS px) above which a press is an orbit drag, not a click on a node. */
 const DRAG_SLOP = 4;
@@ -450,7 +518,9 @@ export function Fabric3D({
   reducedMotionRef.current = reducedMotion;
 
   const hover = useMemo<HoverChannel>(() => createHoverChannel(), []);
-  const layout = useMemo(() => computeLayout({ devices, links, tiers }), [devices, links, tiers]);
+  /* null while a fabric too large for one slice is still being laid out (see LAYOUT_SLICE_WORK). */
+  const layout = useSlicedLayout(devices, links, tiers);
+  const layoutReady = layout !== null;
 
   const [sceneEpoch, setSceneEpoch] = useState(0);
   const [qualityTier, setQualityTier] = useState<QualityTier | null>(quality ?? null);
@@ -501,6 +571,10 @@ export function Fabric3D({
   const devicesRef = useRef(devices);
   devicesRef.current = devices;
 
+  /* True while the stage holds a primary press on the canvas (set by the scene-lifetime effect's
+     pointer handlers). One rule for BOTH hover paths: a held pointer is orbiting, not pointing. */
+  const pressHeldRef = useRef(false);
+
   const onEvent = useCallback((e: SceneEvent) => {
     switch (e.type) {
       case "pick":
@@ -514,6 +588,13 @@ export function Fabric3D({
            `forcedStyleAndLayoutDuration` on every device click. */
         break;
       case "hover":
+        /* SCALE (2026-09-28). The scene flushes its own hover every frame, drag or not; the stage's
+           own path already drops hover while a press is held ("hover during an orbit drag is
+           noise"), and this one did not. Every change of the hovered device re-renders the label
+           layer, which renders one element per device: MEASURED on the 300 fleet (dev build, CPU
+           profile) that was ~3-3.7 s of every 6 s orbit drag, as the pointer swept across chassis.
+           scale.test.ts pins it by React commits. */
+        if (pressHeldRef.current) break;
         hover.set(
           e.result === null || !isDrawn(sceneRef.current)
             ? { deviceId: null, linkId: null }
@@ -573,7 +654,12 @@ export function Fabric3D({
    */
   useEffect(() => {
     const slot = canvasSlotRef.current;
-    if (!slot || !mapsReady) return;
+    /* No scene before its layout: a scene built on no geometry would draw nothing and license picks. */
+    if (!slot || !mapsReady || !layoutReady) return;
+    /* determinism: `o.quality` is the CALLER's requested tier (a prop), not a measurement. */
+    const o = optsRef.current;
+    const builtLayout = o.layout;
+    if (builtLayout === null) return;
 
     const canvas = slot.ownerDocument.createElement("canvas");
     canvas.className = "fabric3d__canvas";
@@ -587,8 +673,6 @@ export function Fabric3D({
     slot.appendChild(canvas);
     canvasRef.current = canvas;
 
-    /* determinism: `o.quality` is the CALLER's requested tier (a prop), not a measurement. */
-    const o = optsRef.current;
     let scene: FabricSceneEx;
     try {
       scene = createScene(
@@ -596,7 +680,7 @@ export function Fabric3D({
         {
           devices: o.devices,
           links: o.links,
-          layout: o.layout,
+          layout: builtLayout,
           theme: o.theme,
           reducedMotion: reducedMotionRef.current,
           ...(o.quality ? { quality: o.quality } : {}),
@@ -647,6 +731,7 @@ export function Fabric3D({
 
     const onPointerDown = (e: PointerEvent) => {
       press.down = true;
+      pressHeldRef.current = true;
       press.moved = false;
       press.x = e.clientX;
       press.y = e.clientY;
@@ -668,6 +753,7 @@ export function Fabric3D({
     const endPress = () => {
       press.down = false;
       press.moved = false;
+      pressHeldRef.current = false;
     };
 
     /* ── a canvas click: acknowledged on the canvas now, committed everywhere after it is shown ──
@@ -845,6 +931,8 @@ export function Fabric3D({
       canvas.removeEventListener("keydown", onKeyDown);
       stopWatchingSelection();
       cancelPendingCommit();
+      /* A scene released mid-press must not leave the next one believing a press is held. */
+      pressHeldRef.current = false;
       if (hoverFrame !== 0) cancelAnimationFrame(hoverFrame);
       releaseHandle();
       /* "Not observed" has to mean it: a released scene must not leave its last reading on screen
@@ -855,14 +943,22 @@ export function Fabric3D({
       scene.dispose();
       canvas.remove();
     };
-  }, [onEvent, hover, helpId, mapsReady]);
+  }, [onEvent, hover, helpId, mapsReady, layoutReady]);
 
   /* A reduced-motion toggle reaches the running scene by exactly one route: its setter. */
   useEffect(() => {
     sceneRef.current?.setReducedMotion(reducedMotion);
   }, [reducedMotion]);
 
-  /* ── data: replaced imperatively, never by rebuilding the scene ──────────── */
+  /* ── data: replaced imperatively, never by rebuilding the scene — while the layout keeps up ──
+ *
+ * New inputs whose layout fits the first, synchronous slice (the reference sample, and any fabric of
+ * that order) reach the running scene through setData below. New inputs too large for one slice make
+ * `layoutReady` false for the commit that brings them: the scene-lifetime effect above then RELEASES
+ * the scene (the stage reads as "Building the 3-D fabric", as on first mount) and builds a new one
+ * from the new layout once it exists. Deliberately: an old scene left drawing would be handed the new
+ * selection, trace and blast radius against the old fabric, and new devices with the old geometry
+ * would be a picture of neither (scale.test.ts pins the swap). */
 
   const appliedRef = useRef<{
     scene: FabricScene | null;
@@ -873,7 +969,10 @@ export function Fabric3D({
 
   useEffect(() => {
     const scene = sceneRef.current;
-    if (!scene) return;
+    /* No layout for these inputs yet: the scene-lifetime effect has released the scene and will build
+       a new one from the layout when it exists (see the section note above), so there is nothing to
+       update in place — and new devices with the old geometry would be a picture of neither. */
+    if (!scene || layout === null) return;
     const prev = appliedRef.current;
     // A scene that was just constructed already holds this data; calling setData on it would throw
     // away GPU resources the contract asks to reuse.

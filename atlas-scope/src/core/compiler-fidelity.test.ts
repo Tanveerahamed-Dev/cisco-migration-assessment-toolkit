@@ -24,11 +24,38 @@
  */
 import { describe, expect, it } from "vitest";
 import { fabric } from "./data";
+import { describeGolden } from "../test-support/golden-sample";
 
 const allLines = () =>
   Object.entries(fabric.acls).flatMap(([host, named]) =>
     Object.entries(named).flatMap(([acl, lines]) => lines.map((l) => ({ host, acl, l }))),
   );
+
+/** Every port match in the compiled ACLs: how many, how many carry a null value, and which break the property. */
+function portCensus(): { ports: number; nullPorts: number; violations: string[] } {
+  let ports = 0;
+  let nullPorts = 0;
+  const violations: string[] = [];
+  for (const { host, acl, l } of allLines()) {
+    for (const [side, p] of [
+      ["sport", l.sport],
+      ["dport", l.dport],
+    ] as const) {
+      if (p === null) continue;
+      ports += 1;
+      const hasNull = p.val === null || p.val === undefined || ("val2" in p && p.val2 === null);
+      if (hasNull) nullPorts += 1;
+      const ok = hasNull ? l.unevaluable === true : p.val !== null && p.val !== undefined;
+      if (!ok)
+        violations.push(
+          hasNull
+            ? `${host}.${acl}[${l.index}] ${side} has a null port value but is not marked unevaluable`
+            : `${host}.${acl}[${l.index}] ${side} has no port value`,
+        );
+    }
+  }
+  return { ports, nullPorts, violations };
+}
 
 describe("the compiled ACL model preserves the producer's own verdicts", () => {
   it("carries at least one line, so this suite cannot pass on an empty set", () => {
@@ -112,29 +139,19 @@ describe("the compiled ACL model preserves the producer's own verdicts", () => {
        ZERO assertions (the runtime assertion guard, src/test-setup.ts, found it). Each port now
        either carries a readable value or is marked unevaluable — the property itself, stated for
        the whole population — and the population is pinned so an empty one cannot pass. */
-    let ports = 0;
-    let nullPorts = 0;
-    for (const { host, acl, l } of allLines()) {
-      for (const [side, p] of [
-        ["sport", l.sport],
-        ["dport", l.dport],
-      ] as const) {
-        if (p === null) continue;
-        ports += 1;
-        const hasNull = p.val === null || p.val === undefined || ("val2" in p && p.val2 === null);
-        if (hasNull) nullPorts += 1;
-        expect(
-          hasNull ? l.unevaluable === true : p.val !== null && p.val !== undefined,
-          hasNull
-            ? `${host}.${acl}[${l.index}] ${side} has a null port value but is not marked unevaluable`
-            : `${host}.${acl}[${l.index}] ${side} has no port value`,
-        ).toBe(true);
-      }
-    }
-    /* Known answer for this snapshot (fabric.json is byte-pinned by provenance.test.ts): six port
-       matches, none with a null value. So on THIS data the null branch is empty, and that is now a
-       stated, checked fact instead of a silent pass; a recompiled snapshot that changes it fails
-       here and has to be looked at. */
-    expect({ ports, nullPorts }, "port matches in the compiled snapshot").toEqual({ ports: 6, nullPorts: 0 });
+    /* The property is collected as a list of violations and asserted once, so it runs (and asserts) on a
+       dataset with no port match at all; the population itself is a fact about ONE snapshot and is pinned in
+       the golden tier below, not here. */
+    expect(portCensus().violations).toEqual([]);
+  });
+});
+
+describeGolden("the compiled ACL model of the reference sample", () => {
+  it("carries eight port matches, none with a null value", () => {
+    /* Known answer re-derived from the regenerated sample (GOLDEN_SHA). It was six on the sample before the
+       phase-3 regeneration; the count is a fact about one snapshot, so it lives here. On THIS data the null
+       branch of the property above is empty, and that is a stated, checked fact instead of a silent pass. */
+    const { ports, nullPorts } = portCensus();
+    expect({ ports, nullPorts }, "port matches in the compiled snapshot").toEqual({ ports: 8, nullPorts: 0 });
   });
 });

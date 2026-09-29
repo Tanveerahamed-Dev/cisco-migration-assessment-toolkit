@@ -158,8 +158,9 @@ export const EASES: readonly EaseSpec[] = [RECEDE_EASE, HOVER_EASE, SELECT_EASE]
  * a toggle takes the overlay down with the canvas it covers, a new canvas and camera included —
  * scene.test.ts reads which one Fabric3D.tsx does. The overlay's whole life is `createTierFadeSlot`
  * below. What still removes an overlay in one frame is stated there and is not a cut of a running
- * fade: the driver's removal at exactly 0, the reduced-motion swap of an overlay still at exactly 1
- * (that contract), and the scene's disposal (the WebGL canvas it covers goes with it). scene.test.ts
+ * fade: the driver's removal at exactly 0, the reduced-motion swap of an overlay held at exactly 1 that
+ * has been up under reduced motion throughout (that contract; one shown under full motion when reduced
+ * motion turns on is finished at the cap, R4-VR2-4), and the scene's disposal (the WebGL canvas it covers goes with it). scene.test.ts
  * enumerates every site in scene.ts that touches the DOM, by type, and holds each to a stated reason;
  * emphasis.test.ts executes the class through the slot on a model of the screen.
  *
@@ -240,10 +241,11 @@ export interface TierFadeDriver {
  * a stale frame, could reach 0 and leave, and the next tier's first frame then landed with no overlay
  * at all. Held, that frame lands under the overlay's value, and the fade resumes on the next one.
  *
- * REDUCED MOTION. On the fade's first frame, with the overlay still at exactly 1, reduced motion swaps
- * it away at once (§4.8: a swap, not an animation; the scene normally never starts the fade then). If
- * the `reduced` flag turns on MID-FADE, the driver takes the rest from the current value at the cap,
- * FADE_MAX_STEP per frame, never in one frame: the least motion that is not a cut. The scene passes
+ * REDUCED MOTION. A driver runs only for an overlay that was on screen under full motion (the slot starts
+ * it from a hold it handed out on `presented(false)`), so a `reduced` flag it is handed is a toggle, at
+ * whatever value — exactly 1 included (R4-VR2-4) — and the driver takes the rest from the current value
+ * at the cap, FADE_MAX_STEP per frame, never in one frame: the least motion that is not a cut. §4.8's
+ * swap (not an animation) is the slot's, for an overlay up under reduced motion throughout. The scene passes
  * its `reducedMotion`, which only its `setReducedMotion` changes; whether the host calls that is read
  * by scene.test.ts from Fabric3D.tsx.
  *
@@ -256,10 +258,14 @@ export function createTierFadeDriver(host: TierFadeHost): TierFadeDriver {
     frame(rawMs: number, reduced: boolean, presenting = true): boolean {
       if (done) return false;
       if (!presenting) return true;
-      /* Mid-fade, reduced motion takes the rest at the cap: a frame long enough to reach the end of
-         the curve (TIER_FADE_MS), so the cap is the whole step. */
-      if (reduced && fade.value < 1) stepTierFade(fade, TIER_FADE_MS, false);
-      else stepTierFade(fade, rawMs, reduced);
+      /* Under reduced motion the fade takes the rest at the cap: a frame long enough to reach the end of
+         the curve (TIER_FADE_MS), so the cap is the whole step. That holds at exactly 1 too (R4-VR2-4,
+         verifier round 2 of R4): a driver starts only from a hold the slot handed out on `presented(false)`,
+         so its overlay was on screen under FULL motion and a reduced flag here is a toggle — one of the
+         owner's named paths, which may not take an overlay down faster than the cap. It used to swap
+         1 -> 0 in one frame. §4.8's swap at exactly 1 is the slot's alone, for an overlay never shown under
+         full motion. */
+      stepTierFade(fade, reduced ? TIER_FADE_MS : rawMs, false);
       if (fade.value === 0) {
         done = true;
         host.finish();
@@ -393,9 +399,11 @@ export interface TierFadeSlot<E> {
   /** A tier change is asked for: apply `handOverTierFade`'s plan and return it. On `deferred` the caller
    *  must not land the change yet (see `TierFadeHandover`). */
   tierChange(copy: () => TierFadeCopy<E> | null, warming: boolean): TierFadeHandover<E>;
-  /** A composed frame of the new tier has landed. A HELD overlay under reduced motion is swapped away
-   *  (§4.8: at exactly 1, a swap, not an animation) and null returned; otherwise a held overlay's
-   *  hold handle is returned (null when none is held): the caller decides WHEN it starts. */
+  /** A composed frame of the new tier has landed. Under reduced motion a HELD overlay that has been up under
+   *  reduced motion throughout is swapped away (§4.8: at exactly 1, a swap, not an animation); one that was on
+   *  screen under full motion when reduced motion turned on starts its fade now, at the cap per frame (R4-VR2-4);
+   *  either way null is returned. Otherwise a held overlay's hold handle is returned (null when none is held):
+   *  the caller decides WHEN it starts. */
   presented(reduced: boolean): TierFadeHoldHandle | null;
   /** One animation frame (the running fade's driver, `createTierFadeDriver`). */
   frame(rawMs: number, reduced: boolean, presenting: boolean): void;
@@ -416,15 +424,28 @@ export interface TierFadeSlot<E> {
  *
  * The one-step removals it makes, each stated: `unmount` of an overlay replaced by a `new`/`composed`
  * one that already shows its picture, in the same task; the driver's removal at exactly 0; the
- * reduced-motion swap of an overlay HELD at exactly 1; and `dispose`.
+ * reduced-motion swap of an overlay HELD at exactly 1 that has been up under reduced motion THROUGHOUT (it
+ * never showed under full motion, so no fade is being cut: §4.8); and `dispose`. An overlay that was up under
+ * full motion when reduced motion turned on — held, waiting on its hold, or a composed one carrying a running
+ * fade's remnant — is finished at the cap like a mid-fade one (R4-VR2-4). The slot learns the preference from
+ * the `reduced` its caller passes every frame (and to `presented`); before the first such call it assumes full
+ * motion, which can only ever make a swap a capped fade, never the reverse.
  */
 export function createTierFadeSlot<E>(host: TierFadeSlotHost<E>): TierFadeSlot<E> {
   interface Rec {
     readonly el: E;
     driver: TierFadeDriver | null;
     waiting: boolean;
+    /** Up under reduced motion since it was mounted: only then is §4.8's swap at exactly 1 its exit. */
+    reducedThroughout: boolean;
   }
   let cur: Rec | null = null;
+  /** The motion preference the caller last passed (full motion until told otherwise). */
+  let lastReduced = false;
+  const seeReduced = (reduced: boolean): void => {
+    lastReduced = reduced;
+    if (!reduced && cur !== null) cur.reducedThroughout = false;
+  };
   const remove = (r: Rec): void => {
     r.driver?.dispose();
     if (cur === r) cur = null;
@@ -439,23 +460,36 @@ export function createTierFadeSlot<E>(host: TierFadeSlotHost<E>): TierFadeSlot<E
         warming,
       );
       if (plan.kind === "new" || plan.kind === "composed") {
-        /* The replacement already shows the picture on screen; it goes up in the same task. */
+        /* The replacement already shows the picture on screen; it goes up in the same task. A composed one
+           carries the running overlay drawn in, so it is swap-exempt only if that one was (R4-VR2-4). */
         if (running !== null) remove(running);
-        cur = { el: plan.mount, driver: null, waiting: false };
+        cur = { el: plan.mount, driver: null, waiting: false, reducedThroughout: lastReduced && (running === null || running.reducedThroughout) };
         host.mount(plan.mount);
       } else if (plan.kind === "kept" && plan.rehold && running !== null) {
         /* The SAME element, still at 1, waits for the new tier's first composed frame again: a fresh
            record, so the old hold's handle is no longer live. */
-        cur = { el: running.el, driver: null, waiting: false };
+        cur = { el: running.el, driver: null, waiting: false, reducedThroughout: running.reducedThroughout };
       }
       /* `none`, `deferred`, and `kept` with a fade running: nothing changes; the fade runs on. */
       return plan;
     },
     presented(reduced) {
+      seeReduced(reduced);
       const r = cur;
       if (r === null || r.driver !== null || r.waiting) return null;
+      const start = (): void => {
+        if (cur !== r || r.driver !== null) return;
+        r.waiting = false;
+        r.driver = createTierFadeDriver({
+          write: (opacity) => host.write(r.el, opacity),
+          finish: () => {
+            if (cur === r) remove(r);
+          },
+        });
+      };
       if (reduced) {
-        remove(r);
+        if (r.reducedThroughout) remove(r);
+        else start();
         return null;
       }
       r.waiting = true;
@@ -463,19 +497,11 @@ export function createTierFadeSlot<E>(host: TierFadeSlotHost<E>): TierFadeSlot<E
         get live() {
           return cur === r && r.driver === null;
         },
-        start() {
-          if (cur !== r || r.driver !== null) return;
-          r.waiting = false;
-          r.driver = createTierFadeDriver({
-            write: (opacity) => host.write(r.el, opacity),
-            finish: () => {
-              if (cur === r) remove(r);
-            },
-          });
-        },
+        start,
       };
     },
     frame(rawMs, reduced, presenting) {
+      seeReduced(reduced);
       cur?.driver?.frame(rawMs, reduced, presenting);
     },
     dispose() {

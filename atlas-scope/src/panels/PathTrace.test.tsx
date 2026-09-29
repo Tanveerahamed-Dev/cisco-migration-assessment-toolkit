@@ -24,6 +24,10 @@ import { decodeInvestigation, useInvestigation } from "../core/store";
 import type { Flow, Trace } from "../core/types";
 import { counterexample, isDefiniteDelivery, traceFlow } from "../forwarding/engine";
 import { formatPrefix, parseInterfaceAddress, parseIpv4, prefixContains } from "../forwarding/ip";
+import { routeFieldReading } from "../core/route-fields";
+import { aclsOf, hasRib, routesOf } from "../core/data";
+import { describeGolden } from "../test-support/golden-sample";
+import { OUTSIDE_ADDRESSES, subnetHostAddresses } from "./trace-universe";
 import { ClaimCard, IntentClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
 import {
@@ -95,13 +99,18 @@ const flow = (srcIp: string, dstIp: string, protocol: Flow["protocol"], dstPort:
   srcPort: null,
 });
 
-/* The three flows below are the engine's own documented cases over this snapshot; each is asserted
+/* The flows below are the engine's own documented cases over this snapshot; each is asserted
    to still behave that way before it is used, so a data or engine change fails loudly here rather
-   than quietly weakening a test into one that proves nothing. */
+   than quietly weakening a test into one that proves nothing.
+
+   RE-EXPRESSED 2026-09-28 (phase 3). UNMODELLED (tcp 10.0.40.50 -> 10.0.30.10:443, stopping at dist1
+   because dist1 had no RIB) left this file: the regenerated sample collected dist1's table, and no trace
+   of the real snapshot reaches a host without a RIB any more. Its three tests run unchanged under a
+   one-producer counterfactual in HopList.no-rib.counterfactual.test.tsx. DROPPED_OFF_FABRIC is found by
+   property below (a flow to an address outside every subnet, from a subnet whose gateway has no
+   collected ACLs), since its old flow no longer ends at the host it was chosen for. */
 const DENIED = flow("10.0.10.50", "10.0.30.10", "tcp", 3389);
 const INDETERMINATE = flow("10.0.10.50", "10.0.30.10", "icmp", null);
-const UNMODELLED = flow("10.0.40.50", "10.0.30.10", "tcp", 443);
-const DROPPED_OFF_FABRIC = flow("10.0.20.50", "198.51.100.7", "tcp", 443);
 
 const text = (el: Element | null): string => (el?.textContent ?? "").replace(/\s+/g, " ");
 
@@ -109,9 +118,6 @@ describe("the data these tests rest on", () => {
   it("still produces the outcomes the assertions below assume", () => {
     expect(traceFlow(DENIED).outcome).toBe("denied");
     expect(traceFlow(INDETERMINATE).outcome).toBe("indeterminate");
-    const unmod = traceFlow(UNMODELLED);
-    expect(unmod.outcome).toBe("indeterminate");
-    expect(unmod.unmodelledHosts.length).toBeGreaterThan(0);
     // Every claim on this surface is scoped by these; a hardcoded copy would rot silently.
     expect(fabric.coverage.hostsWithRoutes).toBeLessThan(fabric.devices.length);
   });
@@ -125,13 +131,31 @@ describe("HopList — a denied flow", () => {
   it("names the host, the ACL, the line index and the literal configuration text", () => {
     const { container } = mount(<HopList trace={trace} activeIndex={0} onSelect={() => {}} />);
     const body = text(container);
-    expect(body).toContain("core1");
-    expect(body).toContain("PROTECT_SERVERS");
+    /* Read from the trace and the compiled list, not named (phase 3 rename leg); the sample's own words
+       are pinned in the golden block below. */
+    const hop = trace.hops[trace.hops.length - 1]!;
+    const m = /^acls\.([^.]+)\.([^[]+)\[(\d+)\]$/.exec(hop.decidedBy?.cite ?? "");
+    expect(m, "precondition: an ACL line decided the denial").not.toBeNull();
+    const [, host, acl, idx] = m!;
+    const lines = aclsOf(host!)[acl!] ?? [];
+    expect(body).toContain(hop.host);
+    expect(body).toContain(acl!);
     // 1-based with the list length; the 0-based index survives only in the citation (A3).
-    expect(body).toContain("PROTECT_SERVERS line 4 of 4");
-    expect(body).toContain("acls.core1.PROTECT_SERVERS[3]");
+    expect(body).toContain(`${acl} line ${Number(idx) + 1} of ${lines.length}`);
+    expect(body).toContain(hop.decidedBy!.cite);
     // The literal line, verbatim — not a paraphrase of it.
-    expect(container.querySelector(".hop__raw")?.textContent).toBe("deny ip any any");
+    expect(container.querySelector(".hop__raw")?.textContent).toBe(lines[Number(idx)]?.raw);
+  });
+
+  describeGolden("the reference sample's denial", () => {
+    it("is PROTECT_SERVERS line 4 of 4 on core1, `deny ip any any`", () => {
+      const { container } = mount(<HopList trace={trace} activeIndex={0} onSelect={() => {}} />);
+      const body = text(container);
+      expect(body).toContain("core1");
+      expect(body).toContain("PROTECT_SERVERS line 4 of 4");
+      expect(body).toContain("acls.core1.PROTECT_SERVERS[3]");
+      expect(container.querySelector(".hop__raw")?.textContent).toBe("deny ip any any");
+    });
   });
 
   it("marks the ACL row as the one that decided the hop, without hiding it behind a disclosure", () => {
@@ -143,15 +167,33 @@ describe("HopList — a denied flow", () => {
     expect(decided?.closest("[hidden]")).toBeNull();
   });
 
-  it("renders the beaten routes, with a null administrative distance as not observed", () => {
+  /* RE-EXPRESSED 2026-09-28 (phase 3), with evidence. The title said a null administrative distance
+     reads "not observed", but the one owner of that reading (core/route-fields.ts, DECISION CHANGED
+     2026-09-23) renders a CONNECTED route's null distance as "not recorded — … zero by platform
+     convention", and only a non-attached route's null as "not observed". The old assertion was a
+     substring search over the whole facts block, and it matched other text on the hop; on the
+     regenerated sample that other text is gone and the search found nothing. So the distance row is now
+     checked against the owner's own reading of the winning route. */
+  it("renders the beaten routes, and the winning route's null administrative distance as its owner reads it", () => {
     const { container } = mount(<HopList trace={trace} activeIndex={0} onSelect={() => {}} />);
     const hop = trace.hops[0];
     expect(hop?.alternatives.length ?? 0).toBeGreaterThan(0);
     const alts = container.querySelector(".hop__alts");
     expect(alts).not.toBeNull();
     for (const alt of hop?.alternatives ?? []) expect(text(alts)).toContain(alt.prefix);
-    // The winning route here is connected and carries no admin distance in the snapshot.
-    expect(text(container.querySelector(".hop__facts"))).toContain("not observed");
+    const routeCite = hop?.evidence.find((e) => e.kind === "route")?.cite;
+    const winner = routesOf(hop!.host).find((r) => r.cite === routeCite);
+    expect(winner, "precondition: the hop cites the route it chose").toBeDefined();
+    expect(winner!.adminDistance, "precondition: the winning route carries no distance in the record").toBeNull();
+    const reading = routeFieldReading(winner!, "adminDistance");
+    const facts = container.querySelector(".hop__facts")!;
+    expect(text(facts)).toContain(reading.text);
+    // A structural null is not an evidence gap: its row never wears the not-observed mark.
+    if (reading.kind === "not-applicable") {
+      const adRow = [...facts.querySelectorAll(".hop__fact")].find((f) => text(f).includes(reading.text));
+      expect(adRow, "the row carrying the distance").toBeDefined();
+      expect(adRow!.querySelector(".ui-notobs")).toBeNull();
+    }
   });
 
   it("gives every hop a citation control", () => {
@@ -162,32 +204,9 @@ describe("HopList — a denied flow", () => {
   });
 });
 
-/* ══ the unmodelled hop — neither a pass nor a failure ═════════════════════ */
-
-describe("HopList — a hop on a host with no RIB", () => {
-  const trace = traceFlow(UNMODELLED);
-
-  it("renders as UNDETERMINED with its own words, not as a pass and not as a failure", () => {
-    const { container } = mount(<HopList trace={trace} activeIndex={0} onSelect={() => {}} />);
-    const hop = container.querySelector(".hop");
-    expect(hop?.getAttribute("data-verdict")).toBe("unmodeled");
-    expect(hop?.getAttribute("data-band")).toBe("UNDETERMINED");
-    expect(container.querySelectorAll('.hop[data-band="RESOLVED"]').length).toBe(0);
-    expect(container.querySelectorAll('.hop[data-band="REFUTED"]').length).toBe(0);
-    const body = text(container);
-    expect(body).toContain("not modelled");
-    expect(body).toContain("no routing table was collected");
-    // The absence renderer, not a blank and not a dash.
-    expect(container.querySelector(".ui-notobs")).not.toBeNull();
-  });
-
-  it("does not invent an egress or a next hop it could not have observed", () => {
-    const { container } = mount(<HopList trace={trace} activeIndex={0} onSelect={() => {}} />);
-    const body = text(container);
-    expect(body).not.toContain("delivered");
-    expect(body).not.toContain("forwarded");
-  });
-});
+/* ══ the unmodelled hop — neither a pass nor a failure ═════════════════════
+   Moved 2026-09-28 (phase 3) to HopList.no-rib.counterfactual.test.tsx: no trace of the regenerated
+   sample reaches a host without a RIB, so the branch runs there under a one-producer counterfactual. */
 
 /* ══ A2: a MODEL gap is never reported as a COLLECTION gap ═════════════════ */
 
@@ -201,10 +220,10 @@ describe("HopList — an undecided hop on a host whose RIB WAS collected", () =>
 
   it("rests on the data it claims to", () => {
     const hop = trace.hops[0]!;
-    expect(hop.host).toBe("core1");
+    expect(hasRib(hop.host), "the hop's host HAS a collected RIB").toBe(true);
     expect(hop.verdict).toBe("unmodeled");
     expect(hop.nextHop).toBe("10.0.10.254");
-    expect(hop.decidedBy?.cite).toBe("acls.core1.INET_RETURN[0]");
+    expect(hop.decidedBy?.cite).toBe(`acls.${hop.host}.INET_RETURN[0]`);
   });
 
   it("renders EGRESS and NEXT from the matched route and names the unevaluable ACL line", () => {
@@ -214,10 +233,11 @@ describe("HopList — an undecided hop on a host whose RIB WAS collected", () =>
     expect(body).not.toContain("nothing was collected");
     expect(facts.some((f) => /^Egress/.test(f))).toBe(true);
     expect(facts.find((f) => /^Next/.test(f)) ?? "").toContain("10.0.10.254");
-    expect(body).toContain("ACL INET_RETURN line 1 of 3 on core1 cannot be evaluated for this flow");
+    const at = trace.hops[0]!.host;
+    expect(body).toContain(`ACL INET_RETURN line 1 of 3 on ${at} cannot be evaluated for this flow`);
     // A2: the static default names only a next hop; the egress is resolved through the RIB and cited.
     expect(facts.find((f) => /^Egress/.test(f)) ?? "").toMatch(
-      /Vlan10.*resolved: next hop 10\.0\.10\.254 lies in connected 10\.0\.10\.0\/24.*routes\.core1\[2\]/,
+      new RegExp(`Vlan10.*resolved: next hop 10\\.0\\.10\\.254 lies in connected 10\\.0\\.10\\.0/24.*routes\\.${at.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\[2\\]`),
     );
     expect(container.querySelector(".verdict__word")?.textContent).toBe("undecided");
     // Still UNDETERMINED: the new wording is not a softer verdict.
@@ -233,13 +253,8 @@ describe("HopList — an undecided hop on a host whose RIB WAS collected", () =>
     expect(facts.find((f) => /^Next/.test(f)) ?? "").toContain("directly connected");
   });
 
-  it("keeps the collection-gap wording for a host with NO RIB, and claims no routes were beaten there", () => {
-    const { container } = mount(<HopList trace={traceFlow(UNMODELLED)} activeIndex={0} onSelect={() => {}} />);
-    const noRib = [...container.querySelectorAll(".hop")].find((h) => h.getAttribute("data-verdict") === "unmodeled")!;
-    expect(text(noRib)).toContain("no routing table was collected");
-    expect(text(noRib)).not.toContain("nothing was beaten");
-    expect(noRib.querySelector(".hop__why-none")).toBeNull();
-  });
+  /* "keeps the collection-gap wording for a host with NO RIB, and claims no routes were beaten there"
+     moved to HopList.no-rib.counterfactual.test.tsx (phase 3): see the note above. */
 });
 
 /* ══ A3: the reader lands ON the answer ═════════════════════════════════════ */
@@ -351,11 +366,21 @@ describe("ClaimCard", () => {
     const { container } = mount(<ClaimCard trace={trace} counterexample={ce} onRunFlow={() => {}} />);
     expect([...container.querySelectorAll("button")].some((b) => (b.textContent ?? "").includes("Trace this flow instead"))).toBe(false);
     expect(container.querySelector(".claim")?.getAttribute("data-band")).toBe("UNDETERMINED");
-    // And the core2 drop is never answered with a core2 delivery: core2 has no collected ACL.
-    const off = traceFlow(DROPPED_OFF_FABRIC);
+    /* And a refusal of traffic leaving every observed subnet, sourced in a subnet whose gateway has no
+       collected ACL, is never answered with a delivery there: the nearby search derives its variations
+       from the evidence at the host that ENDED the trace, and says so. RE-EXPRESSED 2026-09-28 (phase
+       3): this was "the core2 drop" (tcp 10.0.20.50 -> 198.51.100.7:443); the regenerated core2 now
+       forwards it to core1, so the host is read from the trace rather than named. */
+    const noAclGateway = subnetHostAddresses().find(
+      (h) => fabric.coverage.routableHosts.includes(h.host) && !fabric.coverage.aclHosts.includes(h.host) && /^active$/i.test(h.fhrpRole ?? ""),
+    );
+    expect(noAclGateway, "precondition: a subnet whose active gateway has a RIB and no collected ACLs").toBeDefined();
+    const off = traceFlow(flow(noAclGateway!.ip, OUTSIDE_ADDRESSES[0]!, "tcp", 443));
+    expect(off.outcome === "denied" || off.outcome === "dropped", `precondition: ${off.outcome} is a refusal`).toBe(true);
     const offCe = counterexample(off.flow, off);
     expect(offCe.found).toBe(false);
-    if (!offCe.found) expect(offCe.reason).toMatch(/nearby variations derived from the evidence at core2/);
+    const ender = off.hops[off.hops.length - 1]!.host;
+    if (!offCe.found) expect(offCe.reason).toContain(`nearby variations derived from the evidence at ${ender} `);
   });
 });
 
@@ -702,7 +727,8 @@ describe("runIntentSearch", () => {
        - "every flow from the SVI reaches VLAN 10" has decided passes AND undecided flows — the case
          the undecided-is-not-consistent rule actually bites on. */
   const sviIntents = (): { refuted: Intent; held: Intent; mixed: Intent } => {
-    const l3 = fabric.l3.find((r) => r.host === "core1" && r.sviIp?.split(" ")[0] === "10.0.30.1");
+    /* By the address, not the host name: phase 3 rename leg (the address is the evidence; the name is not). */
+    const l3 = fabric.l3.find((r) => r.sviIp?.split(" ")[0] === "10.0.30.1");
     if (l3 === undefined) throw new Error("the snapshot no longer records core1's Vlan30 SVI at 10.0.30.1");
     const svi = { ip: "10.0.30.1", provenance: "observed" as const, cite: l3.cite, note: "core1's own Vlan30 SVI address" };
     const v20 = catalog.find((i) => i.id === "no-reach-10_0_20_0_24-10_0_30_0_24")!;
@@ -785,7 +811,7 @@ describe("runIntentSearch", () => {
     /* 2026-09-22 auditor (B2): none-reach from 10.0.20.2 (core1's Vlan20 address) to 10.0.10.50 over
        udp/53 + tcp/443 returned "no-counterexample-found" with "2 of 2 decided: 2 denied (decided)" —
        both denials were core1 Vlan20's INBOUND list applied to traffic core1 itself originates. */
-    const l3 = fabric.l3.find((r) => r.host === "core1" && r.sviIp?.split(" ")[0] === "10.0.20.2");
+    const l3 = fabric.l3.find((r) => r.sviIp?.split(" ")[0] === "10.0.20.2");
     if (l3 === undefined) throw new Error("the snapshot no longer records core1's Vlan20 SVI at 10.0.20.2");
     const base = catalog.find((i) => i.kind === "none-reach")!;
     const crafted: Intent = {

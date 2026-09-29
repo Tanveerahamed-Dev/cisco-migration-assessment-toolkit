@@ -17,8 +17,10 @@
  * graze real chassis. None of them fires on the shipped fabric at the shipped pitch — which is a
  * claim, not an assumption, and the "absent hint" test below proves it.
  */
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
+import { describeGolden } from "../test-support/golden-sample";
 import type { Link } from "../core/types";
 import {
   CHASSIS_EXTENT,
@@ -31,6 +33,7 @@ import {
   ROUTE_T_MARGIN,
   computeLayout,
   focusFraming,
+  layoutJob,
   type FabricLayout,
   type LayoutNode,
   type LayoutOptions,
@@ -471,6 +474,98 @@ describe("computeLayout — determinism", () => {
     const c = computeLayout({ ...OPTS, seed: 8 });
     expect(c.nodes.map((n) => n.rank)).toEqual(a.nodes.map((n) => n.rank));
     expect(c.nodes.map((n) => n.x)).not.toEqual(a.nodes.map((n) => n.x));
+  });
+});
+
+/* ── golden geometry (tracked reference sample only) ───────────────────────────
+   SCALE (2026-09-28). The route stage now measures each cable only against the chassis a spatial
+   index returns near it, crossings are counted as inversions, and the pipeline can be run in slices
+   (layoutJob). None of that may move a chassis: the index is a pruning of the same arithmetic, never
+   a different measure. These digests were taken from the PRE-index layout.ts on this very input, for
+   every configuration known to exercise a distinct branch (the defaults, a seed, no sweeps, five
+   flattened pitches that make the detour ladder run, and the CROSS / INTRA / TIGHT links that reach
+   the cross-plane, intra-tier and unresolved branches), and the post-index layout reproduces every
+   one bit for bit. They pin geometry and diagnostics — every coordinate, rank, tier, bound, framing
+   figure, hint and count — and leave out only the per-node `cite`, which is the compiler's wording.
+
+   Two pins, so a failure says which half moved: INPUT is the layout-relevant part of the compiled
+   sample (device id/host/order/tier/role/collected, link id/ends/betweenness, the tier partition). A
+   changed INPUT means the data was recompiled and every digest below must be re-derived from the
+   regenerated data, with the reason recorded; a changed digest under an unchanged INPUT is the layout
+   itself moving, which is a regression unless the change was meant and re-baselined with evidence. */
+
+const sha256 = (v: unknown): string => createHash("sha256").update(JSON.stringify(v)).digest("hex");
+const byKey = <V,>(a: readonly [string, V], b: readonly [string, V]): number => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+const geometryOf = (l: FabricLayout) => ({
+  nodes: l.nodes.map((n) => [n.id, n.host, n.x, n.y, n.z, n.tier, n.observedTier, n.layer, n.rank, n.groupKey, n.collected, n.degree, n.droppedAdjacency]),
+  tierBounds: l.tierBounds,
+  bounds: l.bounds,
+  framing: l.framing,
+  layerY: l.layerY,
+  routeHints: l.routeHints,
+  diagnostics: l.diagnostics,
+  linkMidpoints: [...l.linkMidpoints].sort(byKey),
+  adjacency: [...l.adjacency].sort(byKey),
+});
+const GOLDEN_LAYOUT_INPUT = "543c58bc24c2d393e52eda85cf5af8fde78ccb0c6a3d1a9507063cf0ffd448f7";
+const GOLDEN_LAYOUT: readonly (readonly [string, Partial<LayoutOptions>, string, number])[] = [
+  ["default", {}, "97fa8831bb9ab3a97be98a45987a1dbd688337d966316d3815aae3e3f6f92cf6", 0],
+  ["seed 101", { seed: 101 }, "5786dbc10db8aad6ede6ed8587a500967351b55aba020b549eecca9324de64c7", 0],
+  ["sweeps 0", { sweeps: 0 }, "b9c9837f082b8967741b445228169c6ecaeec8b8156ddd04e0a5cdeaa96df147", 0],
+  ["pitch MIN_NODE_SEPARATION", { tierYPitch: MIN_NODE_SEPARATION }, "0055e7abc052dd7a8093332eedf7daf6e9946658acf6b36bf0c403140c07ea6a", 21],
+  ["pitch 26", { tierYPitch: 26 }, "971bcab0eda6656d97d268eab4ed356f3a96b62ba6f5b358ba7b8434b468c2f7", 20],
+  ["pitch 28", { tierYPitch: 28 }, "4116e1223007f6edd466ad4b8f61456d16fc0812767f6c085e29027a626c283f", 20],
+  ["pitch 32", { tierYPitch: 32 }, "9712d10b078ffc5601e1a91496ee70caa22555dc20c13b04a0ebc2934de6bcd7", 18],
+  ["pitch 36", { tierYPitch: 36 }, "645a4e5ab84b2ba0ce9a6b69647c4f68ab6b029f3e83f548e2b37db207d2640f", 17],
+  ["CROSS", { links: [...fabric.links, relinked("CROSS", "access1", "dist1")] }, "a7aa289733e3fcf6bda853cc8adad540e73f058efe3bc548dbd133cc9bb38a8f", 1],
+  ["INTRA", { links: [...fabric.links, ...star("INTRA", "access1", TIER1)] }, "09fa93c8097c18f78e602a515ce64c3f76b19c810b8bd6a35ed385fce13dcb52", 12],
+  [
+    "TIGHT",
+    { links: [...fabric.links, ...star("TIGHT", "dist1", TIER1)], tierYPitch: MIN_NODE_SEPARATION },
+    "b49f1fbba27fccc37a1cf733a2d53d53f3642daeeed88b483beb21c6e45b700e",
+    34,
+  ],
+];
+
+describeGolden("computeLayout — the reference sample's geometry is the pre-index geometry, bit for bit", () => {
+  it("is fed the input the digests were taken from", () => {
+    const input = {
+      devices: fabric.devices.map((d) => [d.id, d.host, d.order, d.tier, d.role, d.collected]),
+      links: fabric.links.map((k) => [k.id, k.a, k.b, k.betweenness]),
+      tiers: fabric.tiers,
+    };
+    expect(sha256(input), "the compiled sample's layout inputs changed: re-derive every GOLDEN_LAYOUT digest").toBe(
+      GOLDEN_LAYOUT_INPUT,
+    );
+  });
+
+  for (const [name, extra, digest, hints] of GOLDEN_LAYOUT) {
+    it(`${name}: every coordinate, hint and diagnostic is unchanged`, () => {
+      const l = computeLayout({ ...OPTS, ...extra });
+      // The hint count first: it names the branch that moved when the digest does.
+      expect(l.routeHints.length).toBe(hints);
+      expect(sha256(geometryOf(l))).toBe(digest);
+    });
+  }
+});
+
+describe("computeLayout — a sliced run is the same layout", () => {
+  it("gives a deeply equal result however small the slices, on every hint-bearing configuration", () => {
+    for (const [name, extra] of GOLDEN_LAYOUT) {
+      const whole = computeLayout({ ...OPTS, ...extra });
+      const job = layoutJob({ ...OPTS, ...extra });
+      let slices = 0;
+      let out: FabricLayout | null = null;
+      while (out === null) {
+        out = job.step(1);
+        slices += 1;
+      }
+      // A budget of one stops at every yield, so this is the most finely divided run there is.
+      expect(slices, `${name}: the run never yielded`).toBeGreaterThan(fabric.links.length);
+      expect(job.done).toBe(true);
+      expect(job.result).toBe(out);
+      expect(out, name).toEqual(whole);
+    }
   });
 });
 
@@ -1052,15 +1147,19 @@ describe("computeLayout — honesty and budget", () => {
      The count is deterministic — the same number on every run and every seed (the layout reads no
      clock, and the seed moves only the jitter) — so it is held to a budget with no margin for noise. The budget is stated in the fabric's own size, so a larger fabric earns a
      larger one and only a change in the ORDER of the work goes red:
-       - 12·E·N — the straight-route clearance scan measures every placed link against every other
-         chassis (3 counted calls a pair), and everything else outside the sweeps is linear in N + E.
-         Measured on this fabric with sweeps 0: 7 035, against 13 728.
+       - 12·E·N — the straight-route clearance scan at its exhaustive size: every placed link against
+         every other chassis (3 counted calls a pair), and everything else outside the sweeps linear
+         in N + E. Since the chassis index (2026-09-28) a link is measured only against the chassis the
+         index returns near it, so on a fabric this small the term is a loose ceiling; scale.test.ts
+         holds the index to its own near-linear budget on 300- and 1 000-node fleets, where the
+         difference is the point. Measured on this fabric with sweeps 0: 7 035 before the index,
+         9 969 after (the index is built even where a fabric this small gains nothing), against 13 728.
        - 20·(N + E) per barycentre sweep — one reorder pass per layer and one crossing count.
          Measured: 764 a sweep, against 1 400.
        - per route hint, 2 directions × ROUTE_DETOUR_STEPS candidates, each measured against every
          chassis along ROUTE_CURVE_SAMPLES segments at 5 counted calls: the detour ladder at its
          longest. Measured with the pitch flattened to 26: 20 hints, 33 558 a hint, against 74 880.
-     In all, 16 206 at the defaults against 30 528: about 2x headroom on each term over what the
+     In all, 16 206 at the defaults (20 184 since the index) against 30 528: about 2x headroom on each term over what the
      layout does today (1.3x on a detour that exhausts its whole ladder), and the known answer below
      proves the sweep term is not decorative — a sweep loop run N times over is red. */
   const workBudget = (n: number, e: number, sweeps: number, hints: number): number =>
@@ -1076,8 +1175,10 @@ describe("computeLayout — honesty and budget", () => {
       });
       // Stated, not assumed: no route hint fires on the shipped fabric (see the "absent hint" test).
       expect(l!.routeHints, "precondition: the shipped fabric needs no detour").toHaveLength(0);
-      // The instrument is live: the clearance scan alone makes 3 counted calls per (link, chassis).
-      expect(ops, "the counter saw less than the clearance scan's own work").toBeGreaterThanOrEqual(3 * E * (N - 2));
+      // The instrument is live. This floor was derived as "the clearance scan alone makes 3 counted
+      // calls per (link, chassis)"; the index broke that derivation, not the floor (20 184 counted
+      // calls against 3 168), so it stays as a floor and is no longer explained as the scan's work.
+      expect(ops, "the counter saw less than 3·E·(N−2) operations").toBeGreaterThanOrEqual(3 * E * (N - 2));
       expect(ops, `seed ${100 + i}: ${ops} primitive operations`).toBeLessThanOrEqual(workBudget(N, E, l!.diagnostics.sweeps, 0));
     }
   });

@@ -33,6 +33,8 @@ import {
   openInspector,
 } from "./Inspector";
 import { JsonView, ancestorsOf, rowCite, searchDocument } from "./JsonView";
+import type { AclLine, Finding, RouteEntry } from "../core/types";
+import { describeGolden } from "../test-support/golden-sample";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -93,25 +95,56 @@ const tabFor = (c: HTMLElement, id: string): HTMLElement => {
   return el;
 };
 
-/* Real citations taken from the shipped data, not invented. */
-const FIRST_FINDING = fabric.findings[0]!;
-const MODEL_CITE = fabric.routes["core1"]![0]!.cite; // resolves by path: routes.core1[0]
+/* Real citations taken from the shipped data, not invented — and resolved INSIDE each test, never at
+   module scope. RE-EXPRESSED 2026-09-28 (phase 3): `fabric.routes["core1"]![0]!` was dereferenced while
+   the file was collected, so on any snapshot without a host named core1 the whole file crashed before a
+   single test ran (62 tests uncollectable on an isomorphic rename). Every subject is now found by
+   property, behind a precondition that names what is missing; the sample's own records are pinned in
+   the golden blocks. */
+const firstFinding = (): Finding => {
+  const f = fabric.findings[0];
+  expect(f, "precondition: the snapshot carries a finding").toBeDefined();
+  return f!;
+};
+/** A route record's citation, which resolves by its own model path (routes.<host>[i]). */
+const modelCite = (): string => {
+  const host = fabric.coverage.routableHosts.find((h) => (fabric.routes[h]?.length ?? 0) > 0);
+  expect(host, "precondition: the snapshot carries a collected route").toBeDefined();
+  return fabric.routes[host!]![0]!.cite;
+};
+/** Every compiled ACL line with its host and list, in a stable order. */
+const aclLines = (): { host: string; acl: string; line: AclLine }[] =>
+  Object.entries(fabric.acls)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .flatMap(([host, lists]) =>
+      Object.entries(lists)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .flatMap(([acl, lines]) => lines.map((line) => ({ host, acl, line }))),
+    );
+/** The first route of any collected table with the property, and its host. */
+const routeWhere = (p: (r: RouteEntry) => boolean): { host: string; index: number; route: RouteEntry } | undefined => {
+  for (const host of fabric.coverage.routableHosts) {
+    const index = (fabric.routes[host] ?? []).findIndex(p);
+    if (index >= 0) return { host, index, route: fabric.routes[host]![index]! };
+  }
+  return undefined;
+};
 
 describe("citation resolution has two honest layers", () => {
   it("resolves a citation that names a path inside the compiled model", () => {
-    const r = resolveCitation(MODEL_CITE);
+    const r = resolveCitation(modelCite());
     expect(r.kind).toBe("model");
-    expect(r.modelPath).toBe(MODEL_CITE);
+    expect(r.modelPath).toBe(modelCite());
     expect(r.record).toBeDefined();
   });
 
   it("resolves a source-snapshot citation to the compiled record that carries it", () => {
     /* The finding's cite points into the SOURCE snapshot (`punchlist[0]`), which this build does
        not bundle. Reporting that as broken would be a false alarm on 628 of 652 citations. */
-    const r = resolveCitation(FIRST_FINDING.cite);
+    const r = resolveCitation(firstFinding().cite);
     expect(r.kind).toBe("bearer");
     expect(r.modelPath).toBe("findings[0]");
-    expect((r.record as { id: string }).id).toBe(FIRST_FINDING.id);
+    expect((r.record as { id: string }).id).toBe(firstFinding().id);
   });
 
   it("reports a citation that names nothing at all as unresolved", () => {
@@ -170,18 +203,18 @@ describe("citation resolution has two honest layers", () => {
 
 describe("the Data tab shows the record behind a claim", () => {
   it("renders the resolved record as key/value rows", () => {
-    const c = mount(<Inspector cite={FIRST_FINDING.cite} forceOpen />);
+    const c = mount(<Inspector cite={firstFinding().cite} forceOpen />);
     const body = text(panel(c, "data"));
     expect(body).toContain("severity");
-    expect(body).toContain(FIRST_FINDING.title);
+    expect(body).toContain(firstFinding().title);
     expect(body).toContain("findings[0]");
   });
 
   it("renders a null field through the not-observed treatment, never as a blank cell", () => {
     /* F001 carries `wave: null`. A blank cell there would read as "no wave needed"; the record
        actually says nobody recorded one. */
-    expect(FIRST_FINDING.wave).toBeNull();
-    const c = mount(<Inspector cite={FIRST_FINDING.cite} forceOpen />);
+    expect(firstFinding().wave).toBeNull();
+    const c = mount(<Inspector cite={firstFinding().cite} forceOpen />);
     const rows = [...(panel(c, "data")?.querySelectorAll(".insp-kv__row") ?? [])];
     const waveRow = rows.find((r) => text(r.querySelector(".insp-kv__key")) === "wave");
     expect(waveRow, "the null field must still be listed, not omitted").toBeTruthy();
@@ -201,7 +234,13 @@ describe("the Data tab shows the record behind a claim", () => {
       expect(row, key).toBeTruthy();
       return row!;
     };
-    const acl = rowsOf("acls.core1.PROTECT_SERVERS[3]");
+    /* An `ip any any` line: its record's shape says no port or ICMP field can apply. Found by that
+       property (was acls.core1.PROTECT_SERVERS[3], pinned in the golden block below). */
+    const structural = aclLines().find(
+      ({ line }) => ["sport", "dport", "icmpType"].every((k) => claims.notApplicableReason(line, k) !== null),
+    );
+    expect(structural, "precondition: an ACL line whose port and ICMP fields cannot apply").toBeDefined();
+    const acl = rowsOf(structural!.line.cite);
     for (const key of ["sport", "dport", "icmpType"]) {
       const row = pick(acl, key);
       expect(row.querySelector('[data-unobserved="true"]'), key).toBeNull();
@@ -219,9 +258,9 @@ describe("the Data tab shows the record behind a claim", () => {
       expect(row, key).toBeTruthy();
       return row!;
     };
-    const connected = fabric.routes["core1"]!.findIndex((r) => r.source === "connected" && r.nextHop === null);
-    expect(connected).toBeGreaterThanOrEqual(0);
-    const nh = pick(rowsOf(`routes.core1[${connected}]`), "nextHop");
+    const connected = routeWhere((r) => r.source === "connected" && r.nextHop === null);
+    expect(connected, "precondition: a connected route with no next hop").toBeDefined();
+    const nh = pick(rowsOf(connected!.route.cite), "nextHop");
     expect(text(nh)).toContain("a connected route has no next hop");
     expect(nh.querySelector('[data-unobserved="true"]')).toBeNull();
   });
@@ -241,8 +280,13 @@ describe("the Data tab shows the record behind a claim", () => {
 
   it("reads a port operator by POSITION: a destination 'eq' says nothing about the source port (2026-09-22 auditor, B1)", () => {
     const { notApplicableReason } = claims;
-    const line = fabric.acls["core1"]!["PROTECT_SERVERS"]![0]!;
-    expect(line.raw).toBe("permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443");
+    /* A line with a DESTINATION port operator and no source one — found by that property (was
+       acls.core1.PROTECT_SERVERS[0], pinned in the golden block below). */
+    const line = aclLines().find(
+      ({ line: l }) => l.sport === null && l.dport !== null && /\b(eq|gt|lt|neq|range)\b/.test(l.raw ?? "") && claims.notApplicableReason(l, "sport") !== null,
+    )?.line;
+    expect(line, "precondition: an ACL line with a destination port operator and no source one").toBeDefined();
+    if (line === undefined) return;
     expect(line.sport).toBeNull();
     expect(notApplicableReason(line, "sport")).toMatch(/no source-port constraint/);
     expect(notApplicableReason({ action: "permit", raw: "permit tcp any eq 1024 any", proto: "tcp", unevaluable: false, dport: null }, "dport")).toMatch(/no destination-port constraint/);
@@ -262,31 +306,31 @@ describe("the Data tab shows the record behind a claim", () => {
      recorded", with the platform convention stated as the reason. */
   it("renders a connected route's missing administrative distance as not recorded — never as 0, and not as not observed", () => {
     const { notApplicableReason } = claims;
-    const i = fabric.routes["core1"]!.findIndex((r) => r.source === "connected" && r.adminDistance === null);
-    expect(i, "precondition: a connected route with no AD in the record").toBeGreaterThanOrEqual(0);
-    expect(notApplicableReason(fabric.routes["core1"]![i], "adminDistance")).toMatch(/^not recorded — .*a connected route's administrative distance is zero by platform convention/);
-    expect(notApplicableReason(fabric.routes["core1"]![i], "adminDistance")).not.toMatch(/^0\b/);
+    const hit = routeWhere((r) => r.source === "connected" && r.adminDistance === null);
+    expect(hit, "precondition: a connected route with no AD in the record").toBeDefined();
+    expect(notApplicableReason(hit!.route, "adminDistance")).toMatch(/^not recorded — .*a connected route's administrative distance is zero by platform convention/);
+    expect(notApplicableReason(hit!.route, "adminDistance")).not.toMatch(/^0\b/);
     expect(notApplicableReason({ prefix: "0.0.0.0/0", source: "static", adminDistance: null }, "adminDistance")).toBeNull();
-    const c = mount(<Inspector cite={`routes.core1[${i}]`} forceOpen />);
+    const c = mount(<Inspector cite={hit!.route.cite} forceOpen />);
     const row = [...(panel(c, "data")?.querySelectorAll(".insp-kv__row") ?? [])].find((r) => text(r.querySelector(".insp-kv__key")) === "adminDistance");
     expect(row!.querySelector('[data-unobserved="true"]')).toBeNull();
   });
 
   it("distinguishes an empty array from an unobserved one", () => {
-    const c = mount(<Inspector cite={FIRST_FINDING.cite} forceOpen />);
+    const c = mount(<Inspector cite={firstFinding().cite} forceOpen />);
     const rows = [...(panel(c, "data")?.querySelectorAll(".insp-kv__row") ?? [])];
     const devicesRow = rows.find((r) => text(r.querySelector(".insp-kv__key")) === "devices");
-    expect(text(devicesRow!)).toContain(FIRST_FINDING.devices[0]!);
+    expect(text(devicesRow!)).toContain(firstFinding().devices[0]!);
     expect(devicesRow!.querySelector('[data-unobserved="true"]')).toBeNull();
   });
 
   it("copies exactly the record it displayed", () => {
-    const c = mount(<Inspector cite={FIRST_FINDING.cite} forceOpen />);
+    const c = mount(<Inspector cite={firstFinding().cite} forceOpen />);
     const btn = [...c.querySelectorAll("button")].find((b) => text(b).includes("Copy record"));
     click(btn!);
     expect(writeText).toHaveBeenCalledTimes(1);
     const sent = JSON.parse(writeText.mock.calls[0]![0]) as { id: string };
-    expect(sent.id).toBe(FIRST_FINDING.id);
+    expect(sent.id).toBe(firstFinding().id);
   });
 });
 
@@ -301,23 +345,46 @@ describe("a broken evidence chain is loud", () => {
   });
 
   it("renders no alert for a citation that does resolve — the warning is not decoration", () => {
-    const c = mount(<Inspector cite={FIRST_FINDING.cite} forceOpen />);
+    const c = mount(<Inspector cite={firstFinding().cite} forceOpen />);
     expect(c.querySelector('[role="alert"]')).toBeNull();
   });
 });
 
 describe("the Provenance tab answers 'where exactly did this come from'", () => {
   it("shows the source file, its digest and byte length, read from the model", () => {
-    const c = mount(<Inspector cite={FIRST_FINDING.cite} forceOpen />);
-    const body = text(panel(c, "provenance"));
+    const c = mount(<Inspector cite={firstFinding().cite} forceOpen />);
+    const prov = panel(c, "provenance")!;
+    expect(prov, "the Provenance tab renders").not.toBeNull();
+    const body = text(prov);
     expect(body).toContain(fabric.meta.source);
     expect(body).toContain(fabric.meta.sourceSha256);
     expect(body).toContain(fabric.meta.sourceBytes.toLocaleString("en-GB"));
-    expect(body).toContain(fabric.meta.schema!);
-    expect(body).toContain(fabric.meta.collectedAt!);
-    expect(body).toContain(fabric.meta.scriptVersion!);
+    /* The snapshot's own stamps are read from the model: each row shows the recorded value, or — when the
+       snapshot carries none (the engine's golden fleet has no collection timestamp) — says "not observed"
+       in that row. It was `toContain(fabric.meta.collectedAt!)`, which on a null stamp asked the page to
+       contain the word "null" (verifier V5, phase 3). */
+    const rowOf = (label: string): Element => {
+      const row = [...prov.querySelectorAll(".insp-kv__row")].find((r) => text(r.querySelector(".insp-kv__key")) === label);
+      expect(row, `the Provenance tab has a ${label} row`).toBeDefined();
+      return row!;
+    };
+    const stamps: readonly (readonly [string, string | null | undefined])[] = [
+      ["Snapshot schema", fabric.meta.schema],
+      ["Collected at", fabric.meta.collectedAt],
+      ["Collection engine", fabric.meta.scriptVersion],
+    ];
+    for (const [label, value] of stamps) {
+      const row = rowOf(label);
+      if (typeof value === "string" && value !== "") {
+        expect(text(row.querySelector(".insp-kv__val")), label).toContain(value);
+        expect(row.querySelector('[data-unobserved="true"]'), `${label} is recorded, not unobserved`).toBeNull();
+      } else {
+        expect(row.querySelector('[data-unobserved="true"]'), `${label} is absent from the snapshot and must say so`).not.toBeNull();
+        expect(text(row.querySelector(".insp-kv__val")), label).not.toMatch(/\bnull\b|undefined/);
+      }
+    }
     expect(body).toContain("tools/compile-snapshot.mjs");
-    expect(body).toContain(FIRST_FINDING.cite);
+    expect(body).toContain(firstFinding().cite);
   });
 
   /* O15: the digest and the byte count are taken over the LF-normalised form (tools/source-binding.mjs),
@@ -325,7 +392,7 @@ describe("the Provenance tab answers 'where exactly did this come from'", () => 
      exact bytes" without naming the form sends a reader to hash the wrong file. */
   it("names the byte form its digest and byte count are taken over", () => {
     expect(fabric.meta.sourceDigestForm).toBe("lf-normalised");
-    const c = mount(<Inspector cite={FIRST_FINDING.cite} forceOpen />);
+    const c = mount(<Inspector cite={firstFinding().cite} forceOpen />);
     const p = panel(c, "provenance")!;
     const labels = [...p.querySelectorAll("dt")].map((d) => d.textContent ?? "");
     expect(labels).toContain("Source sha256 (LF-normalised)");
@@ -359,16 +426,33 @@ describe("the Provenance tab answers 'where exactly did this come from'", () => 
     };
     const modelResolvable = [...citeBearers().keys()].filter((cite) => resolveCitation(cite).kind === "model");
 
-    it("the refuter's record: routes.core1[6] is the compiled projection and may differ from the source record", () => {
-      expect(resolveCitation("routes.core1[6]").kind, "precondition: resolves by model path").toBe("model");
-      expect(citeBearers().get("routes.core1[6]"), "precondition: a compiled record carries it as a source citation").toBeDefined();
-      const c = mount(<Inspector cite="routes.core1[6]" forceOpen />);
+    it("a route citation that is also a source path is drawn as the compiled projection", () => {
+      /* Found by property: the first route record the model resolves by path that a compiled record also
+         carries as its source citation (the refuter's routes.core1[6] is pinned in the golden block). */
+      const cite = modelResolvable.find((c) => c.startsWith("routes."));
+      expect(cite, "precondition: a route citation that is also a source path").toBeDefined();
+      expect(citeBearers().get(cite!), "precondition: a compiled record carries it as a source citation").toBeDefined();
+      const c = mount(<Inspector cite={cite!} forceOpen />);
       const note = dataNote(c);
-      expect(note).toContain("routes.core1[6]");
+      expect(note).toContain(cite!);
       expect(note).toMatch(/also a path in the source snapshot/);
       expect(note).toMatch(/compiled projection/);
       expect(note).toMatch(/may differ from the source record/);
       expect(text(panel(c, "provenance"))).toMatch(/compiled projection/);
+    });
+
+    describeGolden("the refuter's record", () => {
+      it("routes.core1[6] is the compiled projection and may differ from the source record", () => {
+        expect(resolveCitation("routes.core1[6]").kind, "precondition: resolves by model path").toBe("model");
+        expect(citeBearers().get("routes.core1[6]"), "precondition: a compiled record carries it as a source citation").toBeDefined();
+        const c = mount(<Inspector cite="routes.core1[6]" forceOpen />);
+        const note = dataNote(c);
+        expect(note).toContain("routes.core1[6]");
+        expect(note).toMatch(/also a path in the source snapshot/);
+        expect(note).toMatch(/compiled projection/);
+        expect(note).toMatch(/may differ from the source record/);
+        expect(text(panel(c, "provenance"))).toMatch(/compiled projection/);
+      });
     });
 
     it("every source-named top-level collection the model resolves by path says so", () => {
@@ -378,7 +462,10 @@ describe("the Provenance tab answers 'where exactly did this come from'", () => 
         const head = /^[A-Za-z_][\w-]*/.exec(cite)?.[0] ?? cite;
         if (!byCollection.has(head)) byCollection.set(head, cite);
       }
-      expect(modelResolvable.length, "the model resolves source citations by path").toBeGreaterThan(50);
+      /* Was `> 50`, the reference sample's size (35 on the engine's golden fleet; verifier V5). The invariant
+         is that the denominator is non-empty and spans more than one collection; the sample's own size is
+         pinned in the golden block below, so the reference snapshot keeps the original guard. */
+      expect(modelResolvable.length, "the model resolves source citations by path").toBeGreaterThan(0);
       expect(byCollection.size).toBeGreaterThan(1);
       const bare: string[] = [];
       for (const cite of byCollection.values()) {
@@ -387,6 +474,12 @@ describe("the Provenance tab answers 'where exactly did this come from'", () => 
         if (!/compiled projection/.test(dataNote(c)) || !/may differ from the source record/.test(dataNote(c))) bare.push(`${cite} :: ${dataNote(c)}`);
       }
       expect(bare).toEqual([]);
+    });
+
+    describeGolden("the reference sample's model-resolvable citations", () => {
+      it("the model resolves more than 50 source citations by path", () => {
+        expect(modelResolvable.length).toBeGreaterThan(50);
+      });
     });
 
     it("a model path that names no source record is not called a projection of one", () => {
@@ -404,7 +497,7 @@ describe("the Provenance tab answers 'where exactly did this come from'", () => 
   });
 
   it("says which layer answered the citation rather than implying the source was read", () => {
-    const c = mount(<Inspector cite={FIRST_FINDING.cite} forceOpen />);
+    const c = mount(<Inspector cite={firstFinding().cite} forceOpen />);
     expect(text(panel(c, "provenance"))).toContain("the compiled record carrying it");
   });
 });
@@ -570,8 +663,8 @@ describe("JsonView per-path annotations", () => {
 describe("the panel is a dock, not a detour", () => {
   it("opening it preserves the investigation", () => {
     act(() => {
-      useInvestigation.getState().selectDevice("core1");
-      useInvestigation.getState().selectFinding(FIRST_FINDING.id);
+      useInvestigation.getState().selectDevice(fabric.devices[0]!.id);
+      useInvestigation.getState().selectFinding(firstFinding().id);
     });
     const before = useInvestigation.getState();
     const snapshot = {
@@ -582,7 +675,7 @@ describe("the panel is a dock, not a detour", () => {
       flow: before.flow,
     };
     mount(<Inspector />);
-    act(() => openInspector(FIRST_FINDING.cite));
+    act(() => openInspector(firstFinding().cite));
     const after = useInvestigation.getState();
     expect(after.deviceId).toBe(snapshot.deviceId);
     expect(after.findingId).toBe(snapshot.findingId);
@@ -593,9 +686,9 @@ describe("the panel is a dock, not a detour", () => {
   });
 
   it("falls back to the current selection when opened with no citation of its own", () => {
-    act(() => { useInvestigation.getState().selectFinding(FIRST_FINDING.id); });
+    act(() => { useInvestigation.getState().selectFinding(firstFinding().id); });
     const c = mount(<Inspector forceOpen />);
-    expect(text(c.querySelector(".inspector__head"))).toContain(FIRST_FINDING.cite);
+    expect(text(c.querySelector(".inspector__head"))).toContain(firstFinding().cite);
   });
 
   it("says so plainly when there is nothing to inspect, instead of rendering an empty table", () => {
@@ -605,7 +698,7 @@ describe("the panel is a dock, not a detour", () => {
   });
 
   it("implements the APG tabs contract", () => {
-    const c = mount(<Inspector cite={MODEL_CITE} forceOpen />);
+    const c = mount(<Inspector cite={modelCite()} forceOpen />);
     const list = c.querySelector('[role="tablist"]')!;
     expect(list.getAttribute("aria-label")).toBeTruthy();
     const data = tabFor(c, "data");
@@ -621,7 +714,7 @@ describe("the panel is a dock, not a detour", () => {
   });
 
   it("offers a keyboard route to every drag on the resize divider (WCAG 2.5.7)", () => {
-    const c = mount(<Inspector cite={MODEL_CITE} forceOpen />);
+    const c = mount(<Inspector cite={modelCite()} forceOpen />);
     const sep = c.querySelector<HTMLElement>('[role="separator"]')!;
     expect(sep.tabIndex).toBe(0);
     const start = Number(sep.getAttribute("aria-valuenow"));
@@ -655,7 +748,7 @@ describe("closing the Inspector never drops focus to <body> (D3)", () => {
   };
 
   it("returns to the element focused when it opened, even when opened without openInspector (the `i` path)", () => {
-    const c = mount(<Inspector cite={MODEL_CITE} />);
+    const c = mount(<Inspector cite={modelCite()} />);
     const invoker = addButton("invoker");
     invoker.focus();
     setOpen(true);
@@ -673,7 +766,7 @@ describe("closing the Inspector never drops focus to <body> (D3)", () => {
     mount(<Inspector />);
     const invoker = addButton("invoker");
     invoker.focus();
-    act(() => openInspector(MODEL_CITE));
+    act(() => openInspector(modelCite()));
     invoker.remove();
     setOpen(false);
     expect(document.activeElement).not.toBe(document.body);
@@ -685,7 +778,7 @@ describe("closing the Inspector never drops focus to <body> (D3)", () => {
     const invoker = addButton("invoker");
     const elsewhere = addButton("elsewhere");
     invoker.focus();
-    act(() => openInspector(MODEL_CITE));
+    act(() => openInspector(modelCite()));
     elsewhere.focus();
     setOpen(false);
     expect(document.activeElement).toBe(elsewhere);
@@ -725,7 +818,7 @@ describe("JsonView is a real tree over the real document", () => {
     const cited = rowFor(c, "findings[0].title");
     expect(cited.dataset["cited"]).toBe("true");
     expect(text(cited)).toContain("cited here");
-    expect(text(cited)).toContain(FIRST_FINDING.title);
+    expect(text(cited)).toContain(firstFinding().title);
     expect(rowFor(c, "findings").getAttribute("aria-expanded")).toBe("true");
   });
 
@@ -788,7 +881,7 @@ describe("JsonView is a real tree over the real document", () => {
   });
 
   it("searches keys and values across the whole document and reports the true total", () => {
-    const res = searchDocument(fabric as unknown, "core1");
+    const res = searchDocument(fabric as unknown, fabric.coverage.routableHosts[0]!);
     expect(res.total).toBeGreaterThan(10);
     expect(res.hits.length).toBeLessThanOrEqual(res.total);
     expect(searchDocument(fabric as unknown, "zzz-no-such-token").total).toBe(0);
@@ -799,7 +892,7 @@ describe("JsonView is a real tree over the real document", () => {
     const input = c.querySelector<HTMLInputElement>("input")!;
     act(() => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-      setter.call(input, FIRST_FINDING.title);
+      setter.call(input, firstFinding().title);
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     const next = [...c.querySelectorAll("button")].find((b) => text(b) === "Next match")!;
@@ -879,14 +972,14 @@ describe("JsonView is a real tree over the real document", () => {
         <JsonView value={fabric as unknown} rootLabel="fabric.json" label="doc" citedPath="findings[0].cite" onOpenCite={(x) => opened.push(x)} />,
       );
       const row = rowFor(c, "findings[0].cite");
-      expect(citationCandidates(FIRST_FINDING.cite).length, "the finding's cite resolves").toBeGreaterThan(0);
-      expect(row.getAttribute("aria-description")).toContain(`opens the record ${FIRST_FINDING.cite}`);
+      expect(citationCandidates(firstFinding().cite).length, "the finding's cite resolves").toBeGreaterThan(0);
+      expect(row.getAttribute("aria-description")).toContain(`opens the record ${firstFinding().cite}`);
       key(row, "Enter");
-      expect(opened).toEqual([FIRST_FINDING.cite]);
+      expect(opened).toEqual([firstFinding().cite]);
     });
 
     it("goes through openInspector: the docked Inspector is re-pointed at the record the row names", () => {
-      act(() => openInspector(MODEL_CITE));
+      act(() => openInspector(modelCite()));
       const c = mount(<Inspector />);
       click(tabFor(c, "json"));
       const row = [...c.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.dataset["nodeId"] === KEY_CITE)!;
@@ -942,7 +1035,16 @@ describe("JsonView is a real tree over the real document", () => {
         else if (v !== null && typeof v === "object") for (const [k, x] of Object.entries(v)) walk(x, k, path === "" ? k : `${path}.${k}`);
       };
       walk(fabric, "fabric.json", "");
-      expect(rows, "the walk visited the whole model").toBeGreaterThan(10_000);
+      /* Was `> 10_000`, the reference sample's size (4,277 on the engine's golden fleet; verifier V5). The
+         denominator is counted independently of the walk: JSON.parse calls its reviver once for every value
+         of the serialised model, the root included, which is exactly the set the walk must visit. */
+      let values = 0;
+      JSON.parse(JSON.stringify(fabric), (_k, v: unknown) => {
+        values += 1;
+        return v;
+      });
+      expect(rows, "the walk visited the whole model").toBe(values);
+      expect(rows, "the model is not empty").toBeGreaterThan(1);
       expect(opening, "some rows do open records (the positive half is exercised)").toBeGreaterThan(0);
       expect(bad).toEqual([]);
     });
@@ -978,7 +1080,7 @@ describe("JsonView is a real tree over the real document", () => {
     });
 
     it("the tree's announcement clears when something else moves the Inspector, and survives its own open", () => {
-      act(() => openInspector(FIRST_FINDING.cite));
+      act(() => openInspector(firstFinding().cite));
       const c = mount(<Inspector />);
       click(tabFor(c, "json"));
       const region = (): string => text(c.querySelector(".jsonview > [aria-live]"));
@@ -987,7 +1089,7 @@ describe("JsonView is a real tree over the real document", () => {
       key(row, "Enter");
       expect(c.querySelector<HTMLElement>("#inspector")?.dataset["cite"]).toBe(KEY_CITE);
       expect(region(), "the tree's own open re-points the Inspector and stays announced").toBe(`Opened ${KEY_CITE} in the Inspector.`);
-      act(() => openInspector(MODEL_CITE));
+      act(() => openInspector(modelCite()));
       expect(region(), "another control moved the Inspector: the tree's message is no longer current").toBe("");
     });
 
@@ -1036,16 +1138,40 @@ describe("an ACL line record carries this model's evaluability, not only the col
      and an empty qualifier list, reading as "evaluable", while the status bar and every trace
      listed it as undecidable. */
   it("marks a line the collector flagged false as undecidable to this model, with the reason", () => {
-    const r = resolveCitation("acls.core1.INET_RETURN[1]");
-    expect((r.record as { unevaluable: boolean }).unevaluable).toBe(false);
+    /* Found by property: a line the collector flagged evaluable that this model cannot evaluate (the
+       regression's own line, INET_RETURN[1] with its time-range, is pinned in the golden block). */
+    const hit = aclLines().find(({ line }) => {
+      const r = resolveCitation(line.cite);
+      const v = aclLineVerdict(r.modelPath, r.record);
+      return (r.record as { unevaluable?: boolean } | undefined)?.unevaluable === false && v !== null && !v.evaluable;
+    });
+    expect(hit, "precondition: a line the collector calls evaluable and this model cannot evaluate").toBeDefined();
+    const r = resolveCitation(hit!.line.cite);
     const v = aclLineVerdict(r.modelPath, r.record);
-    expect(v).not.toBeNull();
     expect(v!.evaluable).toBe(false);
-    expect(v!.reason).toMatch(/time-range/);
+    expect(v!.reason, "the reason is stated").not.toBe("");
+  });
+
+  describeGolden("the regression's own line", () => {
+    it("acls.core1.INET_RETURN[1] is undecidable for its time-range", () => {
+      const r = resolveCitation("acls.core1.INET_RETURN[1]");
+      expect((r.record as { unevaluable: boolean }).unevaluable).toBe(false);
+      const v = aclLineVerdict(r.modelPath, r.record);
+      expect(v).not.toBeNull();
+      expect(v!.evaluable).toBe(false);
+      expect(v!.reason).toMatch(/time-range/);
+    });
+  });
+
+  describeGolden("the structural-null and port-position records", () => {
+    it("acls.core1.PROTECT_SERVERS[3] is the `deny ip any any` line and [0] the destination-eq line", () => {
+      expect(fabric.acls["core1"]!["PROTECT_SERVERS"]![3]!.raw).toBe("deny ip any any");
+      expect(fabric.acls["core1"]!["PROTECT_SERVERS"]![0]!.raw).toBe("permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443");
+    });
   });
 
   it("returns null for a record that is not an ACL line", () => {
-    const r = resolveCitation("routes.core1[0]");
+    const r = resolveCitation(modelCite());
     expect(aclLineVerdict(r.modelPath, r.record)).toBeNull();
   });
 });

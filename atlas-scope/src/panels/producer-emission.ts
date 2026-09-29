@@ -13,7 +13,9 @@
  * Fail-closed: when the sidecar was compiled from other bytes than this build's data, every field the
  * sidecar is about reads "whether the collector emitted it is unknown" — never as emitted.
  */
-import emissionJson from "./producer-emission.json";
+/* The sidecar of the ONE dataset this page shows (core/dataset.ts): the bundled sample's, or the one
+   compiled with an AssessHub snapshot or an opened file — never a static copy of the sample's. */
+import { producerEmission as emissionJson } from "../core/dataset";
 import { fabric } from "../core/data";
 import { sameSourceBinding, type SourceBinding } from "../core/types";
 

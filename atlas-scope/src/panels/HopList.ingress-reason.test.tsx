@@ -16,10 +16,12 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { fabric } from "../core/data";
-import type { Flow } from "../core/types";
+import type { Flow, Trace } from "../core/types";
+import { describeGolden } from "../test-support/golden-sample";
 import { traceFlow, unobservedPolicyInputs } from "../forwarding/engine";
 import { ClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
+import { firstTrace, need } from "./trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -68,8 +70,11 @@ const FLOWS: readonly Flow[] = [
 const NO_ACLS = /no ACLs were collected for (\S+),/;
 
 describe("'no ACLs were collected' is said only of a host with no collected ACLs", () => {
-  it("precondition: core1 carries collected ACLs in this snapshot", () => {
-    expect(fabric.coverage.aclHosts).toContain("core1");
+  it("precondition: the gateway of the ingress-port case carries collected ACLs in this snapshot", () => {
+    /* Read from the trace, not named (phase 3 rename leg): the case below is about its gateway. */
+    const host = traceFlow(flow("10.0.10.50", "10.0.30.10", "tcp", 443)).hops[0]?.host;
+    expect(host, "precondition: the flow reaches a gateway").toBeDefined();
+    expect(fabric.coverage.aclHosts).toContain(host);
   });
 
   /* Every undecided reason is checked against what the coverage denominator and the engine's own gaps
@@ -123,12 +128,29 @@ describe("'no ACLs were collected' is said only of a host with no collected ACLs
     expect(total.noAclReasons, "no 'no ACLs were collected' reason was checked").toBeGreaterThan(0);
   });
 
-  it("the core1 ingress-port gap names the unobserved ports instead", () => {
-    const f = flow("10.0.10.50", "10.0.30.10", "tcp", 443);
+  /* The subject is found by property (verifier V5, phase 3): a traced flow whose FIRST hop's host — the
+     gateway it enters by — carries an unobserved ingress-port gap. The sample's flow is pinned in the
+     golden block below; on a snapshot with no such flow the case skips by name. */
+  const gatewayIngressGap = (t: Trace): boolean =>
+    t.hops[0] !== undefined && unobservedPolicyInputs(t).some((g) => g.host === t.hops[0]!.host && g.kind === "ingress-port-unobserved");
+  it("the gateway's ingress-port gap names the unobserved ports instead", (ctx) => {
+    checkGatewayIngressGap(need(ctx, firstTrace(gatewayIngressGap), "flow entering by a gateway with an unobserved ingress port").flow);
+  });
+
+  describeGolden("the critic's flow", () => {
+    it("tcp 10.0.10.50 -> 10.0.30.10:443 enters core1 by an unobserved ingress port, and says so", () => {
+      const f = flow("10.0.10.50", "10.0.30.10", "tcp", 443);
+      expect(gatewayIngressGap(traceFlow(f)), "precondition: the critic's flow carries the gap").toBe(true);
+      checkGatewayIngressGap(f);
+    });
+  });
+
+  function checkGatewayIngressGap(f: Flow): void {
+    const gw = traceFlow(f).hops[0]!.host;
     const kinds = unobservedPolicyInputs(traceFlow(f)).map((g) => [g.host, g.kind]);
-    expect(kinds, "precondition: this flow carries an ingress-port gap at core1").toContainEqual(["core1", "ingress-port-unobserved"]);
+    expect(kinds, `precondition: this flow carries an ingress-port gap at ${gw}`).toContainEqual([gw, "ingress-port-unobserved"]);
     const hop = render(f).querySelector<HTMLElement>(".hop")!;
-    expect(hop.querySelector(".hop__host")?.textContent).toBe("core1");
+    expect(hop.querySelector(".hop__host")?.textContent).toBe(gw);
     /* UPDATED 2026-09-22 (auditor, B1): this hop is ALSO undecided because the connected route it
        delivers on was chosen from core1's incomplete table, and the verdict word names one cause. Either
        true cause may head it; what it may never say is "no ACLs were collected" (checked below). */
@@ -137,7 +159,7 @@ describe("'no ACLs were collected' is said only of a host with no collected ACLs
     const reason = hop.querySelector("[data-undecided-reason]")?.textContent ?? "";
     expect(reason).toMatch(/physical ports? whose inbound filtering was not observed/);
     expect(reason).not.toMatch(/no ACLs were collected/);
-  });
+  }
 });
 
 describe("the undecided trace headline is built from the actual cause", () => {

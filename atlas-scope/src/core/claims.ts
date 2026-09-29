@@ -21,6 +21,7 @@
  * surface emits one.
  */
 import { fabric } from "./data";
+import { listPhrase } from "./phrases";
 import { isRouteRecord, routeFieldReading } from "./route-fields";
 import type { Cite, Device, Hop, Trace, TraceOutcome } from "./types";
 import { INVALID_INPUT_REFUSALS, isDefiniteDelivery, portOperatorsInText, REFUSAL_UNDECIDING_KINDS, refusalOf, unobservedPolicyInputs, type PolicyGap } from "../forwarding/engine";
@@ -455,7 +456,8 @@ export function scopeTuple(trace: Trace): ScopeTuple {
 
 /**
  * SCOPED is the strongest badge that exists in this product. There is deliberately no badge above
- * it: with RIBs for 2 of 26 hosts there is no exhaustive search to be had, so no result here can
+ * it: RIBs are collected for only some hosts (fabric.coverage.hostsWithRoutes of fabric.devices.length on
+ * whatever snapshot is loaded), so there is no exhaustive search to be had, and no result here can
  * earn the word "proven" no matter how clean the traversal was.
  */
 export function claimBadge(trace: Trace): ClaimBadge {
@@ -601,7 +603,7 @@ export function T3_outOfScope(srcIp: string, observedSubnets: readonly string[])
   return (
     `OUT OF SCOPE: ${srcIp} is not inside any subnet observed in this snapshot, so no ingress point ` +
     `can be determined. This is not a statement that the flow fails; it is a statement that we ` +
-    `cannot evaluate it. Observed subnets: ${observedSubnets.length ? observedSubnets.join(", ") : "none recorded"}.`
+    `cannot evaluate it. Observed subnets: ${listPhrase(observedSubnets, "none recorded")}.`
   );
 }
 
@@ -611,7 +613,7 @@ export function T4_unmodelledHost(host: string): string {
   return (
     `INDETERMINATE: forwarding could not be modelled at ${host} because no routing table was ` +
     `collected for it (${c.hostsWithRoutes} of ${fabric.devices.length} hosts have one: ` +
-    `${c.routableHosts.join(", ")}). The result above stops here. It is NOT a delivery and NOT a drop.`
+    `${listPhrase(c.routableHosts, "none")}). The result above stops here. It is NOT a delivery and NOT a drop.`
   );
 }
 
@@ -820,8 +822,8 @@ export function sharePayload(trace: Trace): string {
     "",
     trace.claim,
     "",
-    `SCOPE: RIBs collected for ${s.routableHosts.join(", ")} (${s.hostsWithRibs} of ${s.hostsTotal} hosts). ` +
-      `ACLs collected for ${fabric.coverage.aclHosts.join(", ") || "no host"}.`,
+    `SCOPE: RIBs collected for ${listPhrase(s.routableHosts)} (${s.hostsWithRibs} of ${s.hostsTotal} hosts). ` +
+      `ACLs collected for ${listPhrase(fabric.coverage.aclHosts)}.`,
     "",
     T10_SAMPLE_PATH,
     "",

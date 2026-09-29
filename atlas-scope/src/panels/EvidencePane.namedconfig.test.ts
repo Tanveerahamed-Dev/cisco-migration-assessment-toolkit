@@ -16,10 +16,17 @@
  * at test time. A hand-shaped ACL record would only prove the branch agrees with a fixture built
  * to its own expectations. The first test below states the coverage fact itself, so the day the
  * data changes, the claim in `docs/acceptance.md` fails with it rather than quietly rotting.
+ *
+ * SINCE PHASE 3 (2026-09-28) this is the CONTEXT route. Every punch-list row now carries the engine's own
+ * evidence pointers, and the pane's header and step 3 route through them (EvidencePane.engine-refs.test.tsx
+ * re-measures A1 over every finding that way). The word-matched records measured here are shown in step 5 as
+ * context — "not the engine's evidence" — and are the route only for a snapshot written before the engine
+ * published pointers. The numbers true only of the tracked sample are in the golden tier below.
  */
 import { describe, expect, it } from "vitest";
 import { fabric, hasRib, routesOf } from "../core/data";
 import type { Finding } from "../core/types";
+import { describeGolden } from "../test-support/golden-sample";
 import { configEvidenceFor, nearestConfigFor } from "./EvidencePane";
 
 const findingNaming = (devices: string[], title: string, detail: string | null = null): Finding => ({
@@ -44,7 +51,7 @@ const aclName = aclHost === undefined ? undefined : Object.keys(fabric.acls[aclH
 const ribHost = Object.keys(fabric.routes).find((h) => routesOf(h).length > 0);
 const routedPrefix = ribHost === undefined ? undefined : routesOf(ribHost)[0]?.prefix;
 
-describe("the named-configuration path, and how much of the punchlist actually reaches it", () => {
+describeGolden("the word-matched (context) route on the reference sample, and how much of the punchlist it reaches", () => {
   it("records which branch the real findings reach, so the acceptance claim cannot rot silently", () => {
     const kinds: Record<string, number> = {};
     let named = 0;
@@ -132,7 +139,9 @@ describe("the named-configuration path, and how much of the punchlist actually r
     });
     expect(citedLiteral.map((f) => f.id), "cited findings whose two-click record is literal text").toEqual(["F106", "F107"]);
   });
+});
 
+describe("the named-configuration path, over the real collected records", () => {
   it("resolves an ACL the finding names, against the real collected list", () => {
     expect(aclHost, "this snapshot must hold at least one collected ACL").toBeDefined();
     expect(aclName).toBeDefined();
@@ -204,7 +213,7 @@ describe("the named-configuration path, and how much of the punchlist actually r
   });
 });
 
-describe("the nearest record is nearest by a stated measure, not by list order (A1)", () => {
+describeGolden("the nearest record on the reference sample: named findings land where their words say (A1)", () => {
   it("F099 ('L1 risk err-disabled on 6 switches') opens an err-disabled port, not the first port", () => {
     const f = fabric.findings.find((x) => x.id === "F099");
     expect(f, "precondition: F099 exists in the compiled data").toBeDefined();
@@ -219,16 +228,8 @@ describe("the nearest record is nearest by a stated measure, not by list order (
     expect(first.how).toMatch(/deductions name it/);
   });
 
-  it("every matched landing is a record whose collected STATUS or the host's deductions the finding states", () => {
-    let matched = 0;
-    for (const f of fabric.findings) {
-      if (configEvidenceFor(f).length > 0) continue;
-      const first = nearestConfigFor(f)[0];
-      if (first === undefined || first.kind !== "interface" || first.matched !== true) continue;
-      matched++;
-      expect(first.how, f.id).toMatch(/deductions name it|collected status/);
-    }
-    expect(matched, "precondition: at least one finding lands on a matched interface record").toBeGreaterThan(0);
+  it("the sample has matched interface landings for the invariant below to judge", () => {
+    expect(matchedLandings(), "findings landing on a matched interface record").toBeGreaterThan(0);
   });
 
   it("an access list is never 'nearest' by list order: F004, F100 and F106 no longer all open core1's first list", () => {
@@ -250,6 +251,33 @@ describe("the nearest record is nearest by a stated measure, not by list order (
       expect(first?.label, id).not.toBe(`core1 · ${firstAcl}`);
       expect(first?.how, id).toMatch(/not ranked/);
     }
+  });
+
+});
+
+/** Findings whose first nearest record is an interface matched by the finding's words — each one is judged below. */
+function matchedLandings(judge?: (f: Finding, how: string) => void): number {
+  let matched = 0;
+  for (const f of fabric.findings) {
+    if (configEvidenceFor(f).length > 0) continue;
+    const first = nearestConfigFor(f)[0];
+    if (first === undefined || first.kind !== "interface" || first.matched !== true) continue;
+    matched++;
+    judge?.(f, first.how);
+  }
+  return matched;
+}
+
+describe("the nearest record is nearest by a stated measure, not by list order (A1, any dataset)", () => {
+  it("every matched landing is a record whose collected STATUS or the host's deductions the finding states", () => {
+    let judged = 0;
+    const n = matchedLandings((f, how) => {
+      judged += 1;
+      expect(how, f.id).toMatch(/deductions name it|collected status/);
+    });
+    /* The count is the data's; the invariant is that EVERY one was judged (the golden tier pins that the
+       reference sample has some). */
+    expect(judged).toBe(n);
   });
 
   it("every unmatched nearest record says it is not ranked, and no matched one follows it", () => {

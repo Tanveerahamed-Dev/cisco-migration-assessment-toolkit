@@ -15,15 +15,14 @@
  * no list of labels — and requires each to carry a citation control that the Inspector resolves, or
  * to declare itself a computation of this application (`data-derived`, with the basis stated).
  */
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fabric, resolveCite } from "../core/data";
 import { useInvestigation, type EvidenceTab } from "../core/store";
 import type { Device } from "../core/types";
+import { describeGolden } from "../test-support/golden-sample";
+import { describeWithSource, sourceDocument } from "./source-snapshot";
 import { DevicePane } from "./DevicePane";
 import { resolveCitation } from "./Inspector";
 
@@ -62,13 +61,12 @@ const squash = (s: string | null | undefined): string => (s ?? "").replace(/\s+/
 /* The SOURCE snapshot the compiler read (`meta.source`, relative to the repository root, the
    package's parent). A citation is a path into THIS document; resolving it here is the only way to
    check that the record a citation names actually holds the field the row shows. */
-const SOURCE = JSON.parse(
-  readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", fabric.meta.source), "utf8"),
-) as unknown;
+/* Opened lazily, and only for a dataset whose source is a repository file (source-snapshot.ts): read at
+   collection it crashed this whole file on the rename leg, whose source lives outside the tree. */
 
 /** Resolve a citation path in the source snapshot — the same grammar `resolveCite` reads. */
 function sourceRecord(path: string): unknown {
-  let cur: unknown = SOURCE;
+  let cur: unknown = sourceDocument();
   for (const part of path.split(/[.[]/).map((p) => p.replace(/]$/, "")).filter(Boolean)) {
     if (cur === null || typeof cur !== "object") return undefined;
     const kv = /^([A-Za-z_]\w*)=(.*)$/.exec(part);
@@ -156,7 +154,7 @@ describe("B6: every link centrality figure cites the link_centrality record that
 
 /* ── the rows the refuter named: identity and health ───────────────────── */
 
-describe("B6: identity and health rows cite a record that carries the value they show", () => {
+describeWithSource("B6: identity and health rows cite a record that carries the value they show", () => {
   /* The compiled field each row shows, and the key the SOURCE record holds it under. Resolving the
      citation in the compiled model alone cannot discriminate here: every device citation is borne by
      the same compiled device record, so a row citing the inventory record for a health score would
@@ -318,13 +316,30 @@ describe("B6 class guard: no value row in the device or link pane lacks a resolv
     });
   }
 
-  it("the walk met the rows it is about — an empty walk is not a pass", () => {
-    const total = records.map(([kind, id]) => auditOf(kind, id)).reduce(
+  const totalOf = (): { rows: number; cited: number; derived: number; grid: number } =>
+    records.map(([kind, id]) => auditOf(kind, id)).reduce(
       (a, o) => ({ rows: a.rows + o.rows, cited: a.cited + o.cited, derived: a.derived + o.derived, grid: a.grid + o.grid }),
       { rows: 0, cited: 0, derived: 0, grid: 0 },
     );
-    expect(total.rows).toBeGreaterThan(500);
-    expect(total.grid).toBeGreaterThan(100);
+
+  it("the walk met the rows it is about — an empty walk is not a pass", () => {
+    /* Stated over the denominator rather than as the reference sample's size (`> 500` rows, `> 100` grid
+       cells: 401 rows on the engine's golden fleet — verifier V5, phase 3): EVERY device and link pane the
+       walk opened drew rows, some grid cells were audited, and citations outnumber derivations. The
+       sample's own sizes are pinned in the golden block below. */
+    const empty = records.filter(([kind, id]) => auditOf(kind, id).rows === 0).map(([kind, id]) => `${kind} ${id}`);
+    expect(empty, "panes that drew no row at all").toEqual([]);
+    const total = totalOf();
+    expect(total.rows).toBeGreaterThanOrEqual(records.length);
+    expect(total.grid).toBeGreaterThan(0);
     expect(total.cited).toBeGreaterThan(total.derived);
+  });
+
+  describeGolden("the reference sample's walk size", () => {
+    it("the walk met more than 500 rows and 100 grid cells", () => {
+      const total = totalOf();
+      expect(total.rows).toBeGreaterThan(500);
+      expect(total.grid).toBeGreaterThan(100);
+    });
   });
 });

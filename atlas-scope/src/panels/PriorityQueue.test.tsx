@@ -19,6 +19,8 @@ import { actAsync } from "../test-support/act-turns";
 import { fabric, severityCounts } from "../core/data";
 import { useInvestigation } from "../core/store";
 import { PriorityQueue } from "./PriorityQueue";
+import { describeGolden } from "../test-support/golden-sample";
+import { need } from "./trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -678,6 +680,14 @@ const inView = (row: HTMLElement): boolean => {
   return r.top >= HEAD_PX - 1 && r.bottom <= VIEWPORT_PX + 1;
 };
 
+/** Hosts by how many findings name them, most first, ties by name — read from the snapshot, not named
+ *  (phase 3 rename leg: these cases named core1/core2, which only the sample's names produce). */
+const hostsByNaming = (): string[] => {
+  const n = new Map<string, number>();
+  for (const f of fabric.findings) for (const d of new Set(f.devices)) n.set(d, (n.get(d) ?? 0) + 1);
+  return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([h]) => h);
+};
+
 describe("a selection from another surface is revealed, not merely marked", () => {
   afterEach(() => {
     restoreLayout?.();
@@ -702,30 +712,51 @@ describe("a selection from another surface is revealed, not merely marked", () =
     expect(inView(revealed), "the active row must be inside the scroll port").toBe(true);
   });
 
-  it("reveals it under a FILTER that hides its row: pinned, current, in view, and said in words", () => {
-    /* The refuter's case (A4 overturned at 78bdba5): `?q=severity:Critical`, then the palette picks
-       F120. Every test above ran over an unfiltered queue, and under a filter the selected row did
-       not exist in the grid at all — no aria-current, no data-active, no "F120" anywhere in the rail.
-       The full contract (every clause key, text, chips, the cross-layer table, the widening control)
-       is in PriorityQueue.filtered-reveal.test.tsx; this is the named regression's own witness. */
-    const hidden = fabric.findings.find((f) => f.id === "F120");
-    expect(hidden, "the refuter's finding must exist").toBeDefined();
-    expect(String(hidden!.severity), "F120 must be one the filter hides, or this proves nothing").not.toBe("Critical");
+  /* The refuter's case (A4 overturned at 78bdba5): `?q=severity:Critical`, then the palette picks
+     F120. Every test above ran over an unfiltered queue, and under a filter the selected row did
+     not exist in the grid at all — no aria-current, no data-active, no "F120" anywhere in the rail.
+     The full contract (every clause key, text, chips, the cross-layer table, the widening control)
+     is in PriorityQueue.filtered-reveal.test.tsx; this is the named regression's own witness.
+     Phase 3 (verifier V5): the invariant runs on a subject found by property — the last finding the
+     filter hides — and F120 itself is pinned in the golden block. */
+  const hiddenWitness = (id: string): void => {
+    const hidden = fabric.findings.find((f) => f.id === id);
+    expect(hidden, `the subject ${id} must exist`).toBeDefined();
+    expect(String(hidden!.severity), `${id} must be one the filter hides, or this proves nothing`).not.toBe("Critical");
     setQuery("severity:Critical");
     const c = mount(<PriorityQueue debounceMs={0} />);
     installLayout(c);
-    expect(textOf(c)).not.toContain("F120");
+    expect(
+      [...c.querySelectorAll('[role="grid"] [role="rowheader"]')].map((r) => r.textContent?.trim()),
+      "precondition: the filter hides the subject's row",
+    ).not.toContain(id);
 
-    act(() => { useInvestigation.getState().selectFinding("F120"); });
+    act(() => { useInvestigation.getState().selectFinding(id); });
 
     const current = [...c.querySelectorAll<HTMLElement>('[role="grid"] [aria-current]')];
-    expect(current.map((r) => r.querySelector('[role="rowheader"]')?.textContent?.trim())).toEqual(["F120"]);
+    expect(current.map((r) => r.querySelector('[role="rowheader"]')?.textContent?.trim())).toEqual([id]);
     expect(current[0]!.getAttribute("data-active")).toBe("yes");
     expect(inView(current[0]!), "the selected row must be inside the scroll port").toBe(true);
     const said = textOf(c.querySelector(".pq-pinned")!);
-    expect(said).toContain("F120");
+    expect(said).toContain(id);
     expect(said).toContain("severity:Critical");
     expect(useInvestigation.getState().query, "the reader's filter is not discarded").toBe("severity:Critical");
+  };
+  it("reveals it under a FILTER that hides its row: pinned, current, in view, and said in words", (ctx) => {
+    hiddenWitness(need(ctx, [...fabric.findings].reverse().find((f) => String(f.severity) !== "Critical"), "finding the severity:Critical filter hides").id);
+  });
+  describeGolden("the refuter's finding", () => {
+    it("F120 under severity:Critical: pinned, current, in view, and said in words", () => {
+      setQuery("severity:Critical");
+      const c = mount(<PriorityQueue debounceMs={0} />);
+      installLayout(c);
+      expect(textOf(c)).not.toContain("F120");
+      for (const m of mounted.splice(0)) {
+        act(() => m.root.unmount());
+        m.container.remove();
+      }
+      hiddenWitness("F120");
+    });
   });
 
   it("leaves the scroll position alone when the active row is already visible", () => {
@@ -748,7 +779,8 @@ describe("a selection from another surface is revealed, not merely marked", () =
     installLayout(c);
     expect(c.querySelectorAll('[data-related="yes"]')).toHaveLength(0);
 
-    const host = "core2";
+    /* Any host some finding names (was core2 by name; phase 3 rename leg). */
+    const host = hostsByNaming().at(-1)!;
     const expected = fabric.findings.filter((f) => f.devices.includes(host)).length;
     expect(expected, "this test needs a host some finding names").toBeGreaterThan(0);
 
@@ -764,7 +796,9 @@ describe("a selection from another surface is revealed, not merely marked", () =
     /* With Medium collapsed (a persisted, ordinary state), `?d=core1` read "21 of 146 shown
        findings name core1" while the Device pane on the same screen said 32: the count walked
        only the rendered rows while its denominator counted every shown row. */
-    const host = "core1";
+    /* The most-named host with Medium findings (was core1 by name; phase 3 rename leg). */
+    const host =
+      hostsByNaming().find((h) => fabric.findings.some((f) => f.devices.includes(h) && String(f.severity) === "Medium")) ?? hostsByNaming()[0]!;
     const named = fabric.findings.filter((f) => f.devices.includes(host));
     const medium = named.filter((f) => String(f.severity) === "Medium").length;
     expect(medium, "this test needs Medium findings naming the host").toBeGreaterThan(0);

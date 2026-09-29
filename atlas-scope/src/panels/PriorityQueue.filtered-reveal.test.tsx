@@ -29,6 +29,8 @@ import { applyToCrossLayer, applyToFindings, FILTER_KEYS, parseQuery, valueDomai
 import { useInvestigation } from "../core/store";
 import type { CrossLayerFinding, Finding } from "../core/types";
 import { PriorityQueue } from "./PriorityQueue";
+import { describeGolden } from "../test-support/golden-sample";
+import { need } from "./trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -220,23 +222,40 @@ function hidingClause(key: string, negated: boolean): { clause: string; finding:
   return null;
 }
 
+/**
+ * The refuter's shape, found by property (verifier V5, phase 3; F120 was the measured finding on the
+ * reference sample and stays pinned by id in the golden block below): a finding `severity:Critical` hides,
+ * the LAST such in the snapshot's order, so it sits below the fold of the full list.
+ */
+const farHidden = (): Finding | undefined => [...fabric.findings].reverse().find((f) => String(f.severity) !== "Critical");
+
+async function refutersCase(id: string): Promise<void> {
+  const f = fabric.findings.find((x) => x.id === id);
+  expect(f, `the subject ${id} exists in this snapshot`).toBeDefined();
+  expect(String(f!.severity)).not.toBe("Critical");
+  act(() => { useInvestigation.getState().setQuery("severity:Critical"); });
+  const c = mount(<PriorityQueue debounceMs={0} />);
+  const grid = installLayout(c);
+  await expectRevealedThenWidened({
+    c,
+    grid,
+    selectId: id,
+    rowLabel: id,
+    hiding: "severity:Critical",
+    stillFiltered: () => useInvestigation.getState().query.includes("severity:Critical"),
+  });
+  expect(grid.scrollTop, `${id} is far below the fold of the full list, so showing it in place must scroll`).toBeGreaterThan(0);
+}
+
 describe("A4 under a filter: the refuter's case", () => {
-  it("severity:Critical, then F120 from another surface: named, pinned, current, in view; then shown in place", async () => {
-    const f120 = fabric.findings.find((f) => f.id === "F120");
-    expect(f120, "the refuter's finding must exist in this snapshot").toBeDefined();
-    expect(String(f120!.severity)).not.toBe("Critical");
-    act(() => { useInvestigation.getState().setQuery("severity:Critical"); });
-    const c = mount(<PriorityQueue debounceMs={0} />);
-    const grid = installLayout(c);
-    await expectRevealedThenWidened({
-      c,
-      grid,
-      selectId: "F120",
-      rowLabel: "F120",
-      hiding: "severity:Critical",
-      stillFiltered: () => useInvestigation.getState().query.includes("severity:Critical"),
+  it("severity:Critical, then a hidden finding far down the list from another surface: named, pinned, current, in view; then shown in place", async (ctx) => {
+    await refutersCase(need(ctx, farHidden(), "finding the severity:Critical filter hides").id);
+  });
+
+  describeGolden("the refuter's finding", () => {
+    it("severity:Critical, then F120 from another surface: named, pinned, current, in view; then shown in place", async () => {
+      await refutersCase("F120");
     });
-    expect(grid.scrollTop, "F120 is far below the fold of the full list, so showing it in place must scroll").toBeGreaterThan(0);
   });
 
   it("a finding the filter keeps is never pinned and nothing is said about it", async () => {
@@ -267,11 +286,12 @@ describe("A4 under a filter: the refuter's case", () => {
 });
 
 describe("A4 under a filter: the pinned group is a group like any other", () => {
-  it("the reader may fold it; a NEW hidden selection opens it again; the filter never moves", async () => {
+  it("the reader may fold it; a NEW hidden selection opens it again; the filter never moves", async (ctx) => {
+    const subject = need(ctx, farHidden(), "finding the severity:Critical filter hides");
     act(() => { useInvestigation.getState().setQuery("severity:Critical"); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     installLayout(c);
-    act(() => { useInvestigation.getState().selectFinding("F120"); });
+    act(() => { useInvestigation.getState().selectFinding(subject.id); });
     await flush();
     const header = outsideGroup(c)!;
     expect(header).toBeDefined();
@@ -281,9 +301,9 @@ describe("A4 under a filter: the pinned group is a group like any other", () => 
     await flush();
     expect(outsideGroup(c)!.querySelector('[role="gridcell"]')?.getAttribute("aria-expanded")).toBe("false");
     expect(currentRows(c), "folded by the reader: the row is not forced back open").toHaveLength(0);
-    expect(textOf(c.querySelector(".pq-pinned")), "the statement stays while the row is folded").toContain("F120");
+    expect(textOf(c.querySelector(".pq-pinned")), "the statement stays while the row is folded").toContain(subject.id);
 
-    const other = fabric.findings.find((f) => String(f.severity) !== "Critical" && f.id !== "F120")!;
+    const other = need(ctx, fabric.findings.find((f) => String(f.severity) !== "Critical" && f.id !== subject.id), "second finding the filter hides");
     act(() => { useInvestigation.getState().selectFinding(other.id); });
     await flush();
     expect(currentRows(c).map(rowId), "a new selection is revealed again").toEqual([other.id]);
@@ -319,14 +339,24 @@ describe("A4 under a filter: every clause key the grammar registers, positive an
   }
 });
 
+/** Hosts by how many findings name them, most first, ties by name — read from the snapshot, not named
+ *  (phase 3 rename leg: these cases named core1/core2, which only the sample's names produce). */
+const hostsByNaming = (): string[] => {
+  const n = new Map<string, number>();
+  for (const f of fabric.findings) for (const d of new Set(f.devices)) n.set(d, (n.get(d) ?? 0) + 1);
+  return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([h]) => h);
+};
+
 describe("A4 under a filter: free text, excluded text, and a clause beside text the row passes", () => {
   it("free text: the term the row lacks is named", async () => {
     /* A word some finding carries and the chosen one does not. */
-    const withCore = fabric.findings.find((f) => f.devices.includes("core1"))!;
-    expect(withCore).toBeDefined();
-    const term = "core1";
+    const host = hostsByNaming()[0];
+    expect(host, "precondition: some finding names a host").toBeDefined();
+    const withHost = fabric.findings.find((f) => f.devices.includes(host!))!;
+    expect(withHost).toBeDefined();
+    const term = host!;
     const hidden = hiddenBy(term)!;
-    expect(hidden, "free text core1 must hide something").not.toBeNull();
+    expect(hidden, `free text ${term} must hide something`).not.toBeNull();
     act(() => { useInvestigation.getState().setQuery(term); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
@@ -341,9 +371,11 @@ describe("A4 under a filter: free text, excluded text, and a clause beside text 
   });
 
   it("excluded free text (-term): the exclusion is named", async () => {
-    const hidden = fabric.findings.find((f) => f.devices.includes("core1"))!;
-    const term = "-core1";
-    expect(hiddenBy(term), "-core1 must hide something").not.toBeNull();
+    const host = hostsByNaming()[0];
+    expect(host, "precondition: some finding names a host").toBeDefined();
+    const hidden = fabric.findings.find((f) => f.devices.includes(host!))!;
+    const term = `-${host}`;
+    expect(hiddenBy(term), `${term} must hide something`).not.toBeNull();
     act(() => { useInvestigation.getState().setQuery(term); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
@@ -357,19 +389,20 @@ describe("A4 under a filter: free text, excluded text, and a clause beside text 
     });
   });
 
-  it("only the part that hides the row is removed; a part the row passes is kept", async () => {
-    const f120 = fabric.findings.find((f) => f.id === "F120")!;
+  it("only the part that hides the row is removed; a part the row passes is kept", async (ctx) => {
+    const f120 = need(ctx, farHidden(), "finding far down the list");
     const keep = `severity:${String(f120.severity)}`;
-    const hide = "-F120";
+    const hide = `-${f120.id}`;
     expect(applyToFindings([f120], parseQuery(keep)).items).toHaveLength(1);
+    expect(applyToFindings([f120], parseQuery(hide)).items, `precondition: ${hide} hides ${f120.id}`).toHaveLength(0);
     act(() => { useInvestigation.getState().setQuery(`${keep} ${hide}`); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     await expectRevealedThenWidened({
       c,
       grid,
-      selectId: "F120",
-      rowLabel: "F120",
+      selectId: f120.id,
+      rowLabel: f120.id,
       hiding: hide,
       stillFiltered: () => useInvestigation.getState().query.includes(hide),
     });
@@ -379,18 +412,17 @@ describe("A4 under a filter: free text, excluded text, and a clause beside text 
 });
 
 describe("A4 under a filter: the scope chips the store carries", () => {
-  const f120 = (): Finding => fabric.findings.find((f) => f.id === "F120")!;
-
-  it("a severity chip: named, pinned, and the control removes the chip", async () => {
-    const other = (["Critical", "High", "Medium", "Low", "Info"] as const).find((s) => s !== String(f120().severity))!;
+  it("a severity chip: named, pinned, and the control removes the chip", async (ctx) => {
+    const subject = need(ctx, farHidden(), "finding far down the list");
+    const other = (["Critical", "High", "Medium", "Low", "Info"] as const).find((s) => s !== String(subject.severity))!;
     act(() => { useInvestigation.getState().toggleSeverity(other as Finding["severity"]); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     await expectRevealedThenWidened({
       c,
       grid,
-      selectId: "F120",
-      rowLabel: "F120",
+      selectId: subject.id,
+      rowLabel: subject.id,
       hiding: `severity:${other}`,
       stillFiltered: () => useInvestigation.getState().severities.size > 0,
     });

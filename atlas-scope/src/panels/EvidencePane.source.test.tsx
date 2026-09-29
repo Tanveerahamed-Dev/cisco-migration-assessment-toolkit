@@ -25,6 +25,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
+import { describeGolden } from "../test-support/golden-sample";
 import { EvidencePane } from "./EvidencePane";
 
 declare global {
@@ -59,8 +60,14 @@ describe("the compiler carries every field the producer put on a finding", () =>
       expect(f.sourceCommand ?? null, f.id).toBe(want);
       if (want !== null) cited++;
     });
-    // Measured 2026-09-22 on the shipped snapshot. A ratchet over the data, not a target.
-    expect(cited, "findings whose producer row names its source command").toBe(33);
+    citedRows = cited;
+  });
+});
+
+let citedRows = -1;
+describeGolden("the reference sample's cited rows", () => {
+  it("33 of its rows name their source command (a ratchet over the data, not a target)", () => {
+    expect(citedRows, "the per-row comparison above ran").toBe(33);
   });
 });
 
@@ -84,7 +91,7 @@ afterEach(() => {
   }
 });
 
-describe("the pane shows the finding's own evidence pointer, and says what it is not", () => {
+describeGolden("the pane shows the finding's own source command, and says what it is not (F017 on the reference sample)", () => {
   it("F017 ('Undefined acl 7') names show running-config as the engine's source, in the header", () => {
     const f = fabric.findings.find((x) => x.id === "F017")!;
     expect(f.sourceCommand, "precondition").toBe("show running-config");
@@ -101,6 +108,9 @@ describe("the pane shows the finding's own evidence pointer, and says what it is
     expect(text).toMatch(/output is not held in this snapshot/);
   });
 
+});
+
+describe("a finding whose row cites no command", () => {
   it("a finding whose row cites no command says so, rather than implying one", () => {
     const f = fabric.findings.find((x) => x.sourceCommand === null)!;
     const c = mountFor(f.id);

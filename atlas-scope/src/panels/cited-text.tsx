@@ -26,15 +26,38 @@ import { citationCandidates } from "./Inspector";
 /* One path segment chain: an identifier followed by `.member`, `[index]` / `[key=value]` or
    `#sidecar-path` parts. Interface names carry `/` (`interfaces.core1.Gi1/0/5`). */
 const SEGMENT = String.raw`[A-Za-z_][\w-]*(?:\.[A-Za-z0-9_/-]*[A-Za-z0-9_]|\[[^\]\s]+\]|#[A-Za-z_][\w-]*)*`;
+/* The engine's own citation grammar: an RFC 6901 JSON Pointer (`/security/core1/findings/8`,
+   `/interfaces/core1/Gi1~10~19`), which every finding's `evidence_refs` carries and the model projects under
+   (Fabric.evidenceRecords). One is a whole token, not preceded by a word character, a slash or a pointer
+   character — so `10.0.0.0/24`, `and/or` and the `//` of a URL never start one — and it ends at white space
+   or punctuation that cannot be inside it. Tried FIRST at each position: its segments would otherwise be
+   read as bare words ("health_scores" in `/health_scores/3` names a different record, the whole list). */
+const POINTER = String.raw`(?<![\w/~.-])/[^\s/"'()<>[\]{},;]+(?:/[^\s/"'()<>[\]{},;]*)*`;
 /* A citation may join two record names with " / " — the snapshot's coverage record is cited as
    `collection_completeness / coverage_matrix`. The joined form is tried first, then each part. */
-const CANDIDATE = new RegExp(String.raw`${SEGMENT}(?:\s/\s${SEGMENT})*`, "g");
+const JOINED = String.raw`${SEGMENT}(?:\s/\s${SEGMENT})*`;
+const CANDIDATE = new RegExp(String.raw`${POINTER}|${JOINED}`, "g");
+/* The dotted grammar alone, anchored at one position: what a slash that did NOT start a carried pointer may
+   hold instead (`punchlist[0]/punchlist[1]`). */
+const JOINED_AT = new RegExp(JOINED, "y");
 
 /* A bare identifier ("routes", "coverage", "devices") is an English word as often as it is a model
-   key, so a candidate must carry path structure before resolution is even asked. */
-const PATH_SHAPED = /[.[#_]|\s\/\s/;
+   key, so a candidate must carry path structure before resolution is even asked. A pointer is path
+   structure by its grammar. */
+const PATH_SHAPED = /[.[#_]|\s\/\s|^\//;
 
 const resolves = (token: string): boolean => PATH_SHAPED.test(token) && citationCandidates(token).length > 0;
+
+/**
+ * A pointer at the end of a sentence carries the sentence's full stop ("…at /interfaces/core1/Vlan30.") — a
+ * character a pointer may contain — so the token is tried as written, then without trailing sentence
+ * punctuation. The resolver still decides; this only offers it the token a reader means.
+ */
+const pointerCitation = (token: string): string | null => {
+  if (resolves(token)) return token;
+  const trimmed = token.replace(/[.:!?]+$/, "");
+  return trimmed !== token && trimmed.length > 1 && resolves(trimmed) ? trimmed : null;
+};
 
 export type CitedPart = { text: string } | { cite: Cite };
 
@@ -49,9 +72,29 @@ export function splitCited(text: string): CitedPart[] {
     if (last !== undefined && "text" in last) last.text += s;
     else out.push({ text: s });
   };
-  for (const m of text.matchAll(CANDIDATE)) {
-    const start = m.index;
-    const whole = m[0];
+  const re = new RegExp(CANDIDATE.source, "g");
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    let start = m.index;
+    let whole = m[0];
+    if (whole.startsWith("/")) {
+      const cite = pointerCitation(whole);
+      if (cite !== null) {
+        push(text.slice(at, start));
+        out.push({ cite });
+        at = start + cite.length;
+        continue;
+      }
+      /* The slash starts no pointer the model carries. Its own segments are not read as bare records (the
+         pointer grammar is tried first for exactly that), but where the DOTTED grammar reads on past the point
+         the pointer grammar stopped — `/punchlist[1]` stops at "[" — the text is a dotted citation after a
+         slash, and skipping the whole token lost it (verifier P3A1-V1-3). */
+      JOINED_AT.lastIndex = start + 1;
+      const d = JOINED_AT.exec(text);
+      if (d === null || start + 1 + d[0].length <= start + whole.length) continue;
+      start += 1;
+      whole = d[0];
+      re.lastIndex = start + whole.length;
+    }
     if (resolves(whole)) {
       push(text.slice(at, start));
       out.push({ cite: whole });

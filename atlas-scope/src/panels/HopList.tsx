@@ -151,7 +151,12 @@ const UNDECIDED_WORD: Readonly<Record<HopUndecided, (v: HopVerdict, d: Decider |
       : d?.kind === "acl"
         ? `${verdictBy(v, d)} — reached by a route from an incomplete table`
         : `${verdictBy(v, d)} — table incomplete`,
-  "refusal-undecided": (v) => `${VERDICT_WORD[v]} — outcome not decided`,
+  /* The hop that ended an undecided refusal still has a decider — the list line or the route the block
+     below marks — and the header names it like every other reason does. It named none ("denied — outcome
+     not decided") above a block reading "ACL — this is what decided the hop" once the regenerated sample
+     completed core1's table and PROTECT_SERVERS' denial became undecided by its FHRP-alternate ingress
+     instead (phase 3, HopList.decider-header.test.tsx). */
+  "refusal-undecided": (v, d) => `${verdictBy(v, d)} — outcome not decided`,
 };
 
 /* `acl-uncollected` ("no ACLs were collected") and `ingress-port-unobserved` (ACLs WERE collected,

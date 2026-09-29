@@ -57,7 +57,10 @@
  * delayed 240 ms `visibility` step. No code ran on that path at all, so no guard shape could see it.
  * The door is called SYNCHRONOUSLY on the shown -> hidden transition (a layout effect, before any
  * delayed style step), and acts only when focus is inside the container. Its order:
- *   a. the recorded target (what held focus when the container was SHOWN — the drawer's opener),
+ *   a. the recorded target (what held focus when a READER'S ACTION showed the container — the drawer's
+ *      opener; a show that is part of a commit changing a declared layout records nothing, so a hide
+ *      never returns to whatever happened to hold focus when a resize showed the rail — independent
+ *      verifier R5-V2-5, a landing that depended on history),
  *   b. that target's opener (rule 2),
  *   c. the caller's fallbacks, in order,
  *   d. the region landmark around the container, then the target's recorded region (rule 4),
@@ -98,15 +101,17 @@
  *      tab stop.
  * `src/app/rung-focus-crossing.test.tsx` drives the unmount shapes through the real frame at the
  * real ladder widths, and `review/audit-d3-focus.mjs --sweep` (its rung-crossing pass) focuses EVERY
- * rendered tab stop — and every tab stop inside every popover a visible trigger opens — at one width
- * per rung, crosses to each neighbouring rung, and fails on <body> or on a landing that is not seen.
+ * rendered tab stop — and every tab stop inside every surface a control's activation reveals, found by
+ * the effect (the tab stops that were not there before) — at one width per rung, crosses to each
+ * neighbouring rung, and fails on <body> or on a landing that is not seen.
  *
  * `src/app/focus-return.guard.test.ts` parses every source
  * file and fails on a `.blur()` call anywhere but here, on an `isConnected` focus branch whose
  * else-arm does not call this module, on a state-driven `hidden`/`inert` attribute on an element
- * whose `ref` is not the container a third-door call names, on a hide written from script (`hidden` /
- * `inert` assigned or set as an attribute, `display: none`, `visibility: hidden`) on an element no
- * third-door call names, and on a component that renders from the viewport ladder without declaring
+ * whose `ref` is not the container a third-door call names, on a write from script whose DOM effect
+ * leaves an element unrendered or detached (its hidden/inert state, a hiding style however written, a
+ * popover or dialog closed, a removal or a contents replacement) on an element no third-door call names
+ * (on it or an ancestor), and on a component that renders from the viewport ladder without declaring
  * the fourth door keyed on it.
  */
 import { useLayoutEffect, useRef, type RefObject } from "react";
@@ -290,9 +295,24 @@ export function releaseFocusFrom(
 const NO_FALLBACKS = (): readonly Candidate[] => [];
 
 /**
+ * The declared layouts (fourth-door users) whose value changes in the commit being rendered. A declarer
+ * adds itself while it RENDERS a changed value and leaves in that commit's layout phase — after its
+ * descendants' layout effects (the rails' third doors run first) and after its own earlier hooks'. So
+ * while any is pending, a container shown in this commit was shown by the LAYOUT, not by a reader's
+ * action (independent verifier R5-V2-5). A render that is discarded before it commits leaves its
+ * declarer's token until that declarer next commits (the membership check below runs every commit).
+ */
+const layoutChanging = new Set<object>();
+
+/**
  * The third door as a React hook, for the component that decides whether `ref`'s element is SHOWN.
- * On every hidden -> shown transition it records what holds focus at that moment (for a drawer, the
- * control that opened it — focus has not moved yet when the open commits); on every shown -> hidden
+ * On a hidden -> shown transition made by a READER'S ACTION it records what holds focus at that moment
+ * (for a drawer, the control that opened it — focus has not moved yet when the open commits). A show
+ * that is part of a commit changing a declared layout (a resize across a rung: `layoutChanging`)
+ * records nothing, and the record is cleared: what held focus when a resize showed the rail is not the
+ * rail's opener, and returning there on a later hide made the landing depend on history (independent
+ * verifier R5-V2-5). Such a container's hide goes to the stated fallbacks and on down the order, which
+ * is where a fresh load goes. On every shown -> hidden
  * transition it calls `releaseFocusFrom` synchronously, in the layout phase, before the browser gets
  * to a delayed style step or its own focus fix-up. `fallbacks` is read when the release runs.
  *
@@ -322,7 +342,7 @@ export function useReleaseFocusOnHide(
     if (shown) {
       if (madeInert.current && el !== null) el.removeAttribute("inert");
       madeInert.current = false;
-      if (before !== shown) record.current = recordReturn(document.activeElement, el);
+      if (before !== shown) record.current = layoutChanging.size > 0 ? null : recordReturn(document.activeElement, el);
       return;
     }
     if (before !== shown) {
@@ -630,6 +650,14 @@ export function useReleaseFocusOnLayoutChange(layout: unknown, fallbacks: () => 
   const was = useRef(layout);
   const latestFallbacks = useRef(fallbacks);
   latestFallbacks.current = fallbacks;
+  /* Announce, while rendering, that this commit changes the layout (a render-phase write: idempotent,
+     so a double render adds the same token once). Withdrawn in this commit's layout phase, below. */
+  const token = useRef<object>({});
+  if (!Object.is(was.current, layout)) layoutChanging.add(token.current);
+  useLayoutEffect(() => {
+    layoutChanging.delete(token.current);
+  });
+  useLayoutEffect(() => () => void layoutChanging.delete(token.current), []);
   useLayoutEffect(() => followFocus(), []);
   useLayoutEffect(() => {
     if (Object.is(was.current, layout)) return;

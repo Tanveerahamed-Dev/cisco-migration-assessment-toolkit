@@ -526,6 +526,185 @@ export const PROTOCOL_ASSESSABILITY_STATES = ENGINE_CONTRACT.protocolAssessabili
 /** The keys an evidence ref carries — all required (a null host is STATED, never implied). */
 const EVIDENCE_REF_FIELDS = Object.freeze(["kind", "host", "ref", "role", "cite"]);
 
+/* ── the evidence-record projection ─────────────────────────────────────────────────────────── */
+
+/**
+ * The bounds every record an evidence pointer names is projected under, in characters of text (JavaScript
+ * string length). A record is copied into the model ONLY because a finding's `evidence_refs` names it; these
+ * caps keep that copy small on a large fleet (the engine caps a row at 64 refs, so a 300-device fleet can name
+ * thousands of records). Stated in the model as `fabric.evidenceProjection`, beside what they cost.
+ *   fieldTextChars  — one member's text (a string member, or a nested object or list written as compact
+ *                     JSON), cut past this;
+ *   scalarTextChars — a record that IS a string (a configuration line, a literal evidence line);
+ *   recordFields    — members carried per record, in the engine's order;
+ *   recordChars     — one projected record, serialised; members past it are not carried;
+ *   totalChars      — the whole projection as written, withheld records' pointer-only stubs included; records
+ *                     past it, in the engine's priority order, are carried WITHHELD (compileEvidenceRecords).
+ * Measured on the regenerated sample (2026-09-28): 369 distinct pointers; the largest pointed value is 4 347
+ * characters of JSON (/operational_drift/0), all of them together 191 106, and their projection about 230 000 —
+ * so the total cap holds the sample whole with room to spare, and bounds a large fleet at about 0.5 M characters.
+ */
+export const EVIDENCE_PROJECTION_CAPS = Object.freeze({
+  fieldTextChars: 240,
+  scalarTextChars: 1024,
+  recordFields: 32,
+  recordChars: 4096,
+  totalChars: 524288,
+});
+
+/** @param {unknown} v @returns {"string" | "number" | "boolean" | "null" | "object" | "array"} */
+const jsonType = (v) => {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "array";
+  const t = typeof v;
+  if (t === "string" || t === "number" || t === "boolean") return t;
+  return "object";
+};
+/** The first `cap` characters, never ending inside a surrogate pair. @param {string} s @param {number} cap */
+const cutText = (s, cap) => {
+  if (s.length <= cap) return s;
+  const t = s.slice(0, cap);
+  return /[\uD800-\uDBFF]$/.test(t) ? t.slice(0, -1) : t;
+};
+/** Code-unit order, which does not depend on a runtime's locale. @param {string} a @param {string} b */
+const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * Project every record the findings' evidence pointers name (see EVIDENCE_PROJECTION_CAPS). One record per
+ * DISTINCT pointer, sorted by pointer; each carries `cite` = its pointer, so the Inspector's citation index
+ * resolves the engine's pointer to it. Nothing is copied that no pointer names: a pointed record's members
+ * are part of it, its siblings are not.
+ *
+ * THE FORM of a record is the engine's value itself, one level deep: an object or list keeps its members in
+ * the engine's order with every scalar member as the engine wrote it; a member that is itself an object or
+ * list is written as its compact JSON text and named in `nested`; any text longer than its cap is cut and
+ * its WHOLE length stated in `cut` (a scalar record's own cut under the key ""). Members past the per-record
+ * caps are not carried and are counted by `fieldsTotal`. So every cut is stated, and nothing is paraphrased.
+ *
+ * THE TOTAL bounds everything written, the WITHHELD records included. A record past the budget is written as
+ * a pointer-only stub (it is never dropped: a finding carries that pointer), and every stub's size is reserved
+ * from the total before any record is carried; so the whole projection stays within `totalChars` whenever the
+ * stubs alone fit. When they do not, every record is withheld and `writtenChars` > `totalChars` states the
+ * overrun, which is then the pointers the findings carry and nothing more. The budget is spent in the
+ * ENGINE's priority order — findings by `priority`, then punch-list order, each finding's pointers in the
+ * engine's order — so a record the engine ranks lower never displaces one it ranks higher; the output stays
+ * sorted by pointer. (Before 2026-09-28 stubs were outside every budget and records were admitted in pointer
+ * sort order: verifier P3A1-V1-4.)
+ * @param {readonly { priority?: number | null; evidenceRefs?: readonly { ref: string }[] | null }[]} findings  compiled findings (every ref already RESOLVED)
+ * @param {unknown} snap
+ * @param {typeof EVIDENCE_PROJECTION_CAPS} [caps]  the bounds (the stated constant; a test may pass others)
+ */
+export function compileEvidenceRecords(findings, snap, caps = EVIDENCE_PROJECTION_CAPS) {
+  /* The engine's priority order: a pointer's place is its first naming there. */
+  const byPriority = findings
+    .map((f, i) => ({ f, i }))
+    .sort((a, b) => (a.f.priority ?? Infinity) - (b.f.priority ?? Infinity) || a.i - b.i);
+  /** @type {Map<string, number>} */
+  const rank = new Map();
+  for (const { f } of byPriority) for (const r of f.evidenceRefs ?? []) if (!rank.has(r.ref)) rank.set(r.ref, rank.size);
+  const pointers = [...rank.keys()].sort(byCodeUnit);
+  const built = pointers.map((pointer) => {
+    const hit = resolvePointer(snap, pointer);
+    /* compileEvidence refused every pointer that does not resolve, so this cannot fire from a snapshot; it
+       would be a compiler defect, and is refused as one rather than projected as "nothing". */
+    if (!hit.ok) throw new CompileError("E_EVIDENCE_REF_UNRESOLVED", `${pointer} did not resolve at projection time (${hit.reason}).`, pointer);
+    const v = hit.value;
+    const base = { pointer, cite: pointer, type: jsonType(v), jsonChars: JSON.stringify(v).length };
+    /** @type {string[]} */
+    const nested = [];
+    /** @type {[string, number][]} */
+    const cut = [];
+    /** @type {unknown} */
+    let value;
+    let fieldsTotal = 0;
+    let carried = 0;
+    if (v !== null && typeof v === "object") {
+      /** @type {[string, unknown][]} */
+      const entries = Array.isArray(v) ? v.map((x, i) => [String(i), x]) : Object.entries(v);
+      fieldsTotal = entries.length;
+      /** @type {[string, unknown][]} */
+      const kept = [];
+      /* The record as it will be written with no member yet; then each member's cost as it would be written. */
+      let size = JSON.stringify({ ...base, value: Array.isArray(v) ? [] : {}, nested, cut: {}, fieldsTotal, withheld: false }).length;
+      for (const [key, x] of entries) {
+        if (kept.length >= caps.recordFields) break;
+        const isNested = x !== null && typeof x === "object";
+        const whole = isNested ? JSON.stringify(x) : x;
+        const member = typeof whole === "string" ? cutText(whole, caps.fieldTextChars) : whole;
+        const wasCut = typeof whole === "string" && typeof member === "string" && member.length < whole.length;
+        const add =
+          (Array.isArray(v) ? JSON.stringify(member).length : JSON.stringify({ [key]: member }).length - 2) +
+          (kept.length === 0 ? 0 : 1) +
+          (isNested ? JSON.stringify(key).length + 1 : 0) +
+          (wasCut ? JSON.stringify({ [key]: 0 }).length : 0);
+        if (size + add > caps.recordChars) break;
+        kept.push([key, member]);
+        if (isNested) nested.push(key);
+        if (wasCut) cut.push([key, /** @type {string} */ (whole).length]);
+        size += add;
+      }
+      /* Object.fromEntries defines each member as data, so an engine key such as "__proto__" stays a member. */
+      const build = () => ({ ...base, value: Array.isArray(v) ? kept.map(([, x]) => x) : Object.fromEntries(kept), nested, cut: Object.fromEntries(cut), fieldsTotal, withheld: false });
+      /* The running size above is an estimate; the cap is checked on the record as written, dropping trailing
+         members until it holds. */
+      while (kept.length > 0 && JSON.stringify(build()).length > caps.recordChars) {
+        const [k] = /** @type {[string, unknown]} */ (kept.pop());
+        if (nested[nested.length - 1] === k) nested.pop();
+        if (cut.length > 0 && cut[cut.length - 1]?.[0] === k) cut.pop();
+      }
+      carried = kept.length;
+      value = build().value;
+    } else {
+      const whole = v;
+      value = typeof whole === "string" ? cutText(whole, caps.scalarTextChars) : whole;
+      if (typeof whole === "string" && typeof value === "string" && value.length < whole.length) cut.push(["", whole.length]);
+    }
+    const rec = { ...base, value, nested, cut: Object.fromEntries(cut), fieldsTotal, withheld: false };
+    const stub = { ...base, value: null, nested: [], cut: {}, fieldsTotal, withheld: true };
+    return { pointer, rec, stub, recChars: JSON.stringify(rec).length, stubChars: JSON.stringify(stub).length, omitted: fieldsTotal - carried, cuts: cut.length };
+  });
+  /* Everything starts withheld (every stub reserved); records are then carried in priority order while the
+     whole — carried records plus the remaining stubs — stays within the total. */
+  let writtenChars = built.reduce((a, b) => a + b.stubChars, 0);
+  /** @type {Set<string>} */
+  const carriedSet = new Set();
+  for (const b of [...built].sort((x, y) => /** @type {number} */ (rank.get(x.pointer)) - /** @type {number} */ (rank.get(y.pointer)))) {
+    const next = writtenChars - b.stubChars + b.recChars;
+    if (next > caps.totalChars) continue;
+    writtenChars = next;
+    carriedSet.add(b.pointer);
+  }
+  let projectedChars = 0;
+  let withheldChars = 0;
+  let recordsWithheld = 0;
+  let fieldsOmitted = 0;
+  let textsCut = 0;
+  const records = built.map((b) => {
+    if (!carriedSet.has(b.pointer)) {
+      recordsWithheld += 1;
+      withheldChars += b.stubChars;
+      return b.stub;
+    }
+    projectedChars += b.recChars;
+    fieldsOmitted += b.omitted;
+    textsCut += b.cuts;
+    return b.rec;
+  });
+  return {
+    records,
+    projection: {
+      ...caps,
+      records: records.length,
+      projectedChars,
+      recordsWithheld,
+      fieldsOmitted,
+      textsCut,
+      withheldChars,
+      writtenChars: projectedChars + withheldChars,
+    },
+  };
+}
+
 /**
  * Compile one row's evidence contract, resolving every pointer against the snapshot it came from.
  * A key that is absent compiles to null ("not emitted"); a key that is present must honour the
@@ -550,7 +729,7 @@ function compileEvidence(p, i, snap) {
     basis = /** @type {string} */ (b);
   }
 
-  /** @type {{ kind: string; host: string | null; ref: string; role: string; cite: string }[] | null} */
+  /** @type {{ kind: string; host: string | null; ref: string; role: string; label: string }[] | null} */
   let refs = null;
   if (Object.hasOwn(p, "evidence_refs")) {
     if (!Array.isArray(p.evidence_refs)) contract(`${at}.evidence_refs`, `is not a list (${JSON.stringify(p.evidence_refs).slice(0, 80)}).`);
@@ -600,7 +779,11 @@ function compileEvidence(p, i, snap) {
           where,
         );
       }
-      return { kind: r.kind, host: r.host, ref: r.ref, role: r.role, cite: r.cite };
+      /* The producer's `cite` is a human LABEL ("core1 Gi1/0/9 (L1 leg of the stacked SPOF)"), compiled as
+         `label`: in this model `cite` is a snapshot path, and every object carrying one is indexed as that
+         citation's bearer (src/panels/Inspector.tsx citeBearers) — a label there is a "citation" nothing can
+         open. The path is `ref`. */
+      return { kind: r.kind, host: r.host, ref: r.ref, role: r.role, label: r.cite };
     });
   }
 
@@ -876,6 +1059,8 @@ export function compileFabric(snap, binding, opts = {}) {
     };
   });
 
+  const evidence = compileEvidenceRecords(findings, snap);
+
   const crossLayer = arr(snap.cross_layer).map((c, i) => ({
     id: val(c.id) ?? `CL-${i}`,
     severity: val(c.severity) ?? "Info",
@@ -1089,6 +1274,10 @@ export function compileFabric(snap, binding, opts = {}) {
     cable_map: { nodes: cableMapNodes },
     health_scores: healthScores,
     link_centrality: linkCentrality,
+    /* The records the findings' evidence pointers name, bounded (compileEvidenceRecords). Appended last so
+       every earlier model path is unchanged. */
+    evidenceRecords: evidence.records,
+    evidenceProjection: evidence.projection,
   };
 }
 

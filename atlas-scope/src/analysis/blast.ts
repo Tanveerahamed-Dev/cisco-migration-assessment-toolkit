@@ -1684,10 +1684,12 @@ export function kCore(graph?: TopologyGraph): KCoreResult {
     cite: a.cite,
   }));
 
+  const maxCore = entries.length > 0 ? Math.max(...entries.map((e) => e.k)) : 0;
+
   return {
     graphOptions: g.options,
     coreness: entries,
-    maxCore: entries.length > 0 ? Math.max(...entries.map((e) => e.k)) : 0,
+    maxCore,
     shells,
     notScored,
     certainty: g.uncertainLinkIds.length > 0 ? "uncertain" : "observed",
@@ -1700,11 +1702,39 @@ export function kCore(graph?: TopologyGraph): KCoreResult {
         : []),
     ],
     assumptions: g.assumptions,
-    claim:
-      `Coreness over observed adjacency: the ${entries.filter((e) => e.k === Math.max(...entries.map((x) => x.k), 0)).length} host(s) ` +
-      "in the highest shell are the mutually redundant spine; shell 1 and 0 hosts hang off it. Structural redundancy only — " +
-      "it says nothing about capacity, control-plane state or configuration.",
+    claim: kCoreClaim(maxCore, shells),
   };
+}
+
+const hostCount = (n: number): string => `${n} host${n === 1 ? "" : "s"}`;
+
+/**
+ * The k-core sentence, branched on THIS graph's maximum coreness and naming its shells from the data.
+ *
+ * It used to be one literal — "the N host(s) in the highest shell are the mutually redundant spine; shell 1 and 0
+ * hosts hang off it" — true only of a fleet whose maximum coreness is 2. A graph whose maximum coreness is 1 is a
+ * forest (degeneracy 1 means no cycle), so no host has a second, independent path and there is no redundant core
+ * to name; one whose maximum is 0 has no carrying link at all.
+ */
+function kCoreClaim(maxCore: number, shells: readonly { k: number; hosts: readonly string[] }[]): string {
+  const scope = "Structural redundancy only — it says nothing about capacity, control-plane state or configuration.";
+  if (maxCore <= 0) {
+    return `Coreness over observed adjacency: there is no carrying adjacency to peel (maximum coreness 0), so no host is in any core. ${scope}`;
+  }
+  if (maxCore === 1) {
+    return (
+      "Coreness over observed adjacency: the carrying links form a loop-free forest (maximum coreness 1), so no host has " +
+      `redundant adjacency and there is no redundant core; every carrying link is a bridge. ${scope}`
+    );
+  }
+  const top = shells.find((s) => s.k === maxCore);
+  const lower = shells.filter((s) => s.k < maxCore).map((s) => `k = ${s.k} (${hostCount(s.hosts.length)})`);
+  return (
+    `Coreness over observed adjacency: the ${hostCount(top?.hosts.length ?? 0)} in the highest shell (k = ${maxCore}) each keep at least ` +
+    `${maxCore} neighbours inside it — the most mutually redundant part of the graph` +
+    (lower.length > 0 ? `; the lower shells hang off it: ${lower.join(", ")}. ` : "; there is no lower shell. ") +
+    scope
+  );
 }
 
 export interface BetweennessRow {

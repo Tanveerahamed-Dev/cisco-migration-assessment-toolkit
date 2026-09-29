@@ -42,10 +42,11 @@ import { recordReturn, returnFocus, type ReturnRecord } from "../app/focus-retur
 import { aclUndecidability } from "../core/acl-coverage";
 import { bandObserved } from "../core/band-qualification";
 import { deviceById, fabric, findingById, linkById, resolveCite } from "../core/data";
+import { aclBindings, documentsByFile, fabricDocument, ribEvidence } from "../core/dataset";
 import { isRouteRecord, missingInventoryFields, notApplicableReason } from "../core/claims";
 import { placeholderZero } from "../core/placeholders";
 import { useInvestigation } from "../core/store";
-import type { Cite } from "../core/types";
+import type { Cite, EvidenceRecord } from "../core/types";
 import { IconClose, IconCopy } from "../ui/icons";
 import {
   Button,
@@ -141,19 +142,23 @@ export interface CiteResolution {
 }
 
 /* ── the sidecar documents ─────────────────────────────────────────────────
-   Every compiled JSON next to the forwarding engine that binds the snapshot's bytes
+   Every compiled document of THIS page's dataset, besides the fabric, that binds the snapshot's bytes
    (`meta.sourceSha256`) is a citation bearer too — found by content, not listed by name, so a new
    sidecar compiler cannot fall outside the Inspector the way acl-bindings.json once did. A sidecar
-   path is written `<file>#<path inside it>`. */
-const SIDECAR_MODULES = import.meta.glob("../forwarding/*.json", { eager: true, import: "default" }) as Record<string, unknown>;
+   path is written `<file>#<path inside it>`.
+   Read through the one door (core/dataset.ts `documentsByFile`), never by globbing the build's own
+   files: a glob of ../forwarding/*.json bound the Inspector to the BUNDLED sample's sidecars, so on a
+   snapshot fetched from AssessHub or opened from a file a citation resolved against another snapshot's
+   records (and src/core/dataset.test.ts names this module as a second door). */
+const FORWARDING_DOCS: ReadonlySet<unknown> = new Set([aclBindings, ribEvidence]);
 
 const SIDECARS: ReadonlyMap<string, unknown> = new Map(
-  Object.entries(SIDECAR_MODULES)
+  Object.entries(documentsByFile)
+    .filter(([, doc]) => doc !== fabricDocument)
     .filter(([, doc]) => {
       const meta = (doc as { meta?: { sourceSha256?: unknown } } | null)?.meta;
       return typeof meta?.sourceSha256 === "string";
     })
-    .map(([p, doc]) => [p.slice(p.lastIndexOf("/") + 1), doc] as const)
     .sort(([a], [b]) => a.localeCompare(b)),
 );
 
@@ -369,6 +374,133 @@ function FieldValue({
     return <span className="insp-val">{orNotObserved(value, (s) => <CitedText text={s} onOpenCite={openInspector} />, { what: name })}</span>;
   }
   return <span className="insp-val insp-val--num">{String(value)}</span>;
+}
+
+/* ── an engine evidence record (Fabric.evidenceRecords) ─────────────────────────
+   The record an engine evidence pointer names, as the compiler projected it (tools/lib/compile-model.mjs
+   `compileEvidenceRecords`). Rendered by ONE component, here and in the Evidence pane, so the two cannot
+   disagree about what a cut, an omitted member or a withheld record means. */
+
+/** A projected evidence record — recognised by its shape (the compiler's form), never by where it sits. */
+export function isEvidenceRecord(v: unknown): v is EvidenceRecord {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
+  const r = v as Record<string, unknown>;
+  return (
+    typeof r["pointer"] === "string" &&
+    r["cite"] === r["pointer"] &&
+    Array.isArray(r["nested"]) &&
+    r["cut"] !== null &&
+    typeof r["cut"] === "object" &&
+    typeof r["withheld"] === "boolean" &&
+    typeof r["fieldsTotal"] === "number"
+  );
+}
+
+/**
+ * A text the projection may have cut, shown whole or up to its last delimiter. A cut can end INSIDE a
+ * citation — `/interfaces/core1/Gi1~10~19` cut to `/interfaces/core1/Gi1~10~1` names a DIFFERENT port — so the
+ * trailing fragment after the last delimiter is not shown (and so never becomes a control for the wrong
+ * record); the sentence beside it states exactly how many characters are shown of how many.
+ */
+function CutText({ text, whole, onOpenCite }: { text: string; whole: number | undefined; onOpenCite: (c: Cite) => void }): ReactElement {
+  if (whole === undefined || whole <= text.length) return <CitedText text={text} onOpenCite={onOpenCite} />;
+  const tail = text.slice(-40);
+  const d = Math.max(tail.lastIndexOf(" "), tail.lastIndexOf(","), tail.lastIndexOf('"'), tail.lastIndexOf(";"));
+  const shown = d < 0 ? text : text.slice(0, text.length - tail.length + d + 1);
+  return (
+    <>
+      <CitedText text={shown} onOpenCite={onOpenCite} />
+      <span className="ev-rec__cut">{` … (the first ${shown.length} of ${whole} characters)`}</span>
+    </>
+  );
+}
+
+/** One member of an engine record, as the engine wrote it — nothing coerced, nothing read as healthy. */
+function EvidenceMember({ value, nested, whole, onOpenCite }: { value: unknown; nested: boolean; whole: number | undefined; onOpenCite: (c: Cite) => void }): ReactElement {
+  if (value === null) return <span className="ev-rec__meta">null — the engine recorded no value here</span>;
+  if (typeof value === "string") {
+    if (value === "") return <span className="ev-rec__meta">empty — the engine wrote an empty string</span>;
+    return nested ? (
+      <>
+        <code className="ev-rec__json">
+          <CutText text={value} whole={whole} onOpenCite={onOpenCite} />
+        </code>
+        <span className="ev-rec__meta"> (a nested record, written as JSON)</span>
+      </>
+    ) : (
+      <CutText text={value} whole={whole} onOpenCite={onOpenCite} />
+    );
+  }
+  return <span className="ev-rec__num">{String(value)}</span>;
+}
+
+/**
+ * The members of an engine evidence record, in the engine's order, with every cut, every member not carried
+ * and a withheld record stated in words. `className` styles the list for its host surface.
+ */
+export function EvidenceRecordView({
+  record,
+  onOpenCite,
+  className,
+}: {
+  record: EvidenceRecord;
+  onOpenCite: (c: Cite) => void;
+  className?: string;
+}): ReactElement {
+  if (record.withheld) {
+    return (
+      <p className="ev-rec__withheld" data-evidence-withheld="true">
+        <NotObserved
+          what="record content"
+          why="this build carries the pointer but not the record: the compiled model's evidence budget, spent in the engine's priority order, had no room left for it (see the model's evidenceProjection). The engine's record is in the source snapshot at the citation"
+          cite={record.pointer}
+          onOpenCite={onOpenCite}
+        />
+      </p>
+    );
+  }
+  const members: [string, unknown][] = Array.isArray(record.value)
+    ? record.value.map((x, i) => [String(i), x])
+    : record.value !== null && typeof record.value === "object"
+      ? Object.entries(record.value)
+      : [];
+  if (record.type !== "object" && record.type !== "array") {
+    return (
+      <p className="ev-rec__scalar" data-evidence-fields="scalar">
+        {typeof record.value === "string" ? (
+          <code className="ev-rec__literal">
+            <CutText text={record.value} whole={record.cut[""]} onOpenCite={onOpenCite} />
+          </code>
+        ) : (
+          <EvidenceMember value={record.value} nested={false} whole={undefined} onOpenCite={onOpenCite} />
+        )}
+      </p>
+    );
+  }
+  const omitted = record.fieldsTotal - members.length;
+  return (
+    <div className="ev-rec" data-evidence-fields={record.pointer}>
+      {members.length === 0 ? (
+        <p className="ev-rec__meta">{record.type === "array" ? "An empty list — the engine recorded 0 items." : "An empty record — the engine recorded 0 members."}</p>
+      ) : (
+        <dl className={["ev-rec__list", className].filter(Boolean).join(" ")}>
+          {members.map(([k, v]) => (
+            <div key={k} className="ev-rec__row">
+              <dt className="ev-rec__key">{k}</dt>
+              <dd className="ev-rec__val">
+                <EvidenceMember value={v} nested={record.nested.includes(k)} whole={record.cut[k]} onOpenCite={onOpenCite} />
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {omitted > 0 ? (
+        <p className="ev-rec__meta" data-evidence-omitted={omitted}>
+          {`${omitted} more member${omitted === 1 ? "" : "s"} of this record ${omitted === 1 ? "is" : "are"} not carried in this build (the projection's per-record cap); the whole record is in the source snapshot.`}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 function GapSection({
@@ -868,7 +1000,17 @@ export function Inspector({
           ? undefined
           : resolution.kind === "unresolved"
             ? null
-            : fields.length,
+            : isEvidenceRecord(record)
+              ? /* An engine record shows its OWN members (EvidenceRecordView), so the count is theirs; a withheld one
+                   carries none, and that is not-observed (null), never a count of 0. */
+                record.withheld
+                ? null
+                : Array.isArray(record.value)
+                ? record.value.length
+                : record.value !== null && typeof record.value === "object"
+                  ? Object.keys(record.value).length
+                  : 1
+              : fields.length,
     },
     { id: "provenance", label: "Provenance" },
     {
@@ -1025,7 +1167,16 @@ export function Inspector({
                   ))}
                 </div>
               ) : null}
-              {fields.length === 0 ? (
+              {isEvidenceRecord(record) ? (
+                <>
+                  <p className="insp-note" data-evidence-record={record.pointer}>
+                    {`The engine's record at this pointer, as this build projects it: a ${record.type} of ${record.jsonChars} characters of JSON in the source${
+                      record.type === "object" || record.type === "array" ? `, with ${record.fieldsTotal} member${record.fieldsTotal === 1 ? "" : "s"}` : ""
+                    }. The compiler copies only records an engine evidence pointer names, and bounds each one; every cut is stated beside the text it shortens.`}
+                  </p>
+                  <EvidenceRecordView record={record} onOpenCite={openInspector} className="insp-kv" />
+                </>
+              ) : fields.length === 0 ? (
                 <p className="insp-note">
                   The record at this citation is a {typeOf(record)} rather than a keyed record. Read
                   it in the JSON tab, where its structure is navigable.
@@ -1082,7 +1233,7 @@ export function Inspector({
                   <p className="insp-note">
                     The same citation is also carried by <code>{c.path}</code> in{" "}
                     <code>{documentOf(c.path)}</code>, a second record compiled from the same snapshot
-                    bytes. {documentOf(c.path) === "fabric.json" ? "" : "The forwarding engine reads its evidence from this one. "}
+                    bytes. {FORWARDING_DOCS.has(SIDECARS.get(documentOf(c.path))) ? "The forwarding engine reads its evidence from this one. " : ""}
                     It is shown in full here, not behind the switcher above.
                   </p>
                   {c.record !== null && typeof c.record === "object" && !Array.isArray(c.record) ? (

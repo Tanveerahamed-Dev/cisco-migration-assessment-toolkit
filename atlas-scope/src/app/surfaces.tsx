@@ -50,13 +50,14 @@ import {
 
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
-import type { SurfaceId } from "../core/types";
+import type { Device, SurfaceId } from "../core/types";
 import { DevicePane } from "../panels/DevicePane";
 import { EvidencePane } from "../panels/EvidencePane";
 import { Inspector } from "../panels/Inspector";
 import { PathTrace } from "../panels/PathTrace";
 import { PriorityQueue } from "../panels/PriorityQueue";
 import { useSceneStats } from "../fabric3d/telemetry";
+import { reconcileTierGroups } from "../fabric3d/tier-groups";
 import type { SceneStatsEx } from "../fabric3d/scene";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { releaseFocusFrom, useReleaseFocusOnHide } from "./focus-return";
@@ -665,20 +666,78 @@ export function RailB({ hidden = false, closed = false, onOpenCite, view, onView
  * fetch. Restore a responsiveness promise only when the measurement supports it, and quote the
  * measurement here when you do.
  */
+/**
+ * The digest (first 8 hex of `fabric.meta.sourceSha256`) of the sample the warm-up figure in the sentence below
+ * was measured on: the seven cold loads quoted above ran on the release build over the reference sample of
+ * 2026-09-21 (the compiled fabric of the commit that recorded them, 9cc348bd…). It is NOT a property of whatever
+ * snapshot is loaded, so the sentence says which sample it came from and whether that is the one on screen.
+ * Re-measure (`review/audit-e5-coldload.mjs`) and update this digest together, never one without the other.
+ */
+export const WARMUP_MEASURED_ON = "9cc348bd";
+
+export interface StageSkeletonGroup {
+  /** Index into `fabric.tiers`, or null for the group of devices no tier group lists. */
+  index: number | null;
+  /** "tier 3 · 4" — the RECONCILED tier (fabric3d/tier-groups.ts), or "tier not observed · 2". */
+  label: string;
+  ids: string[];
+}
+
+/**
+ * The skeleton's groups, in the fabric's own tier numbering.
+ *
+ * Labelled by each group's RECONCILED tier (what its members are recorded at — the reading the layout publishes as
+ * `diagnostics.cableMapGroups`), not by its array index, which is an artifact of serialisation: the index labelled
+ * the AP the fabric announces as "Tier 0" as "tier 1". A cable-map host with no device record is not drawn (the
+ * layout does not place it), and a device no tier group lists IS drawn, in a trailing "tier not observed" group,
+ * because the layout places it too. `placed` is therefore every device record.
+ */
+export function stageSkeleton(
+  devices: readonly Pick<Device, "id" | "host" | "tier">[],
+  tiers: readonly (readonly string[])[],
+): { groups: StageSkeletonGroup[]; placed: number } {
+  const byName = new Map<string, string>();
+  for (const d of devices) {
+    byName.set(d.id, d.id);
+    if (!byName.has(d.host)) byName.set(d.host, d.id);
+  }
+  const readings = reconcileTierGroups(devices, tiers);
+  const listed = new Set<string>();
+  const groups: StageSkeletonGroup[] = [];
+  tiers.forEach((names, index) => {
+    const ids = names.map((n) => byName.get(n)).filter((id): id is string => id !== undefined && !listed.has(id));
+    for (const id of ids) listed.add(id);
+    if (ids.length === 0) return;
+    const tier = readings[index]?.tier ?? null;
+    groups.push({ index, label: `${tier === null ? "tier not observed" : `tier ${tier}`} · ${ids.length}`, ids });
+  });
+  const unlisted = devices.filter((d) => !listed.has(d.id)).map((d) => d.id);
+  if (unlisted.length > 0) groups.push({ index: null, label: `tier not observed · ${unlisted.length}`, ids: unlisted });
+  return { groups, placed: devices.length };
+}
+
 function StagePending(): ReactElement {
-  const tiers = fabric.tiers;
-  const placed = tiers.reduce((n, t) => n + t.length, 0);
+  const { groups, placed } = stageSkeleton(fabric.devices, fabric.tiers);
+  const observedTiers = new Set(
+    reconcileTierGroups(fabric.devices, fabric.tiers)
+      .map((g) => g.tier)
+      .filter((t): t is number => t !== null),
+  ).size;
+  const sha8 = fabric.meta.sourceSha256.slice(0, 8);
+  const measured = fabric.meta.sourceSha256.startsWith(WARMUP_MEASURED_ON)
+    ? `measured over cold loads of the reference sample ${WARMUP_MEASURED_ON}, which is this snapshot`
+    : `measured over cold loads of the reference sample ${WARMUP_MEASURED_ON}, not of this snapshot (${sha8})`;
   return (
     <div className="stage-pending" role="status">
       {/* The skeleton is decorative: every device it stands for is already reachable by name in
-          the fabric list and in the queue, so announcing 26 empty boxes to a screen reader would
-          be noise. The sentence below is the accessible content. */}
+          the fabric list and in the queue, so announcing one empty box per device to a screen reader
+          would be noise. The sentence below is the accessible content. */}
       <div className="stage-skeleton" aria-hidden="true">
-        {tiers.map((tier, i) => (
-          <div className="stage-skeleton__tier" key={`tier-${i}`}>
-            <span className="stage-skeleton__label">{`tier ${i + 1} · ${tier.length}`}</span>
+        {groups.map((g) => (
+          <div className="stage-skeleton__tier" key={g.index === null ? "tier-unlisted" : `tier-${g.index}`}>
+            <span className="stage-skeleton__label">{g.label}</span>
             <div className="stage-skeleton__row">
-              {tier.map((id) => (
+              {g.ids.map((id) => (
                 <span className="stage-skeleton__node" key={id} />
               ))}
             </div>
@@ -686,7 +745,7 @@ function StagePending(): ReactElement {
         ))}
       </div>
       <p className="stage-pending__text">
-        {`Drawing the 3-D fabric: ${placed} devices across ${tiers.length} tiers, laid out as shown. The queue, the path panel and the evidence rail are already populated from the same snapshot and can be read now; the fabric's warm-up can hold the main thread for up to about a second, so a keystroke made during it may take that long to land.`}
+        {`Drawing the 3-D fabric: ${placed} devices across ${observedTiers} observed ${observedTiers === 1 ? "tier" : "tiers"}, laid out as shown. The queue, the path panel and the evidence rail are already populated from the same snapshot and can be read now; the fabric's warm-up can hold the main thread for up to about a second (${measured}), so a keystroke made during it may take that long to land.`}
       </p>
     </div>
   );

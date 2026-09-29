@@ -14,7 +14,9 @@ exists to catch, and the dynamic imports PyInstaller's static analysis cannot se
 * uvicorn's loop/protocol/lifespan modules — resolved by name at runtime ("auto" selection).
 
 The dist lands at ``_MEIPASS/webapp_dist`` — the exact directory ``serve._resolve_dist`` probes in
-a frozen build (reconciled by ``tests/test_atlas_bundle.py``). ``pyproject.toml`` rides along so
+a frozen build (reconciled by ``tests/test_atlas_bundle.py``). Atlas Scope's hub build (the /scope
+view, atlas-scope ``npm run build:hub``) is its OWN member at ``_MEIPASS/atlas_scope_dist`` — the
+directory ``serve._resolve_scope_dist`` probes — shipped file by file without sourcemaps. ``pyproject.toml`` rides along so
 ``serve._release_version`` reports the real build version instead of falling back to (possibly
 stale) installed-dist metadata.
 """
@@ -29,6 +31,17 @@ from cisco_toolkit.docmeta import artifact_dependency_modules, artifact_writer_m
 
 #: Destination of the built SPA inside the bundle — MUST match serve._resolve_dist's frozen probe.
 DIST_DEST = "webapp_dist"
+
+#: Atlas Scope's hub build (atlas-scope ``npm run build:hub``; base /scope/, reads every snapshot at
+#: run time from AssessHub's guarded /api) — the build AssessHub serves at /scope from a checkout
+#: (``webapp.backend.app._REPO_ATLAS_SCOPE_DIST``; reconciled by tests/test_atlas_bundle.py).
+SCOPE_DIST_SOURCE = "atlas-scope/dist-hub"
+#: Its destination inside the bundle — MUST match serve._resolve_scope_dist's frozen probe.
+SCOPE_DIST_DEST = "atlas_scope_dist"
+
+#: Sources that are BUILD OUTPUT rather than tracked files: the only sources a fresh checkout may
+#: lack (the build creates them first; atlas.spec refuses while any is missing).
+BUILD_OUTPUTS = ("webapp/frontend/dist", SCOPE_DIST_SOURCE)
 
 #: The one-page field guide (ADR-0004 P3). It must land in the bundle ROOT beside the exe —
 #: PyInstaller ≥6 puts spec `datas` under _internal\, where no field engineer would ever look —
@@ -58,12 +71,39 @@ def bundle_datas(root: Path) -> List[Tuple[str, str]]:
         (str(root / "cisco_toolkit" / "blast_radius_explorer.html"), "cisco_toolkit"),
         # The built SPA — the "one door" UI.
         (str(root / "webapp" / "frontend" / "dist"), DIST_DEST),
+        # Atlas Scope's hub build, served by the same door at /scope.
+        *scope_dist_datas(root),
         # Demo seed fixture (POST /api/demo/seed) — zero-setup exploration in the field.
         (str(root / "webapp" / "sample_data" / "sample_fleet.snapshot.json"), "webapp/sample_data"),
         # serve._release_version prefers this over installed-dist metadata (which on a dev box can
         # be STALE — observed: pip metadata 3.26.0 vs checkout 3.31.0).
         (str(root / "pyproject.toml"), "."),
     ]
+
+
+def _is_sourcemap(path: Path) -> bool:
+    return path.name.casefold().endswith(".map")
+
+
+def scope_dist_datas(root: Path) -> List[Tuple[str, str]]:
+    """(source file, bundle-dest-dir) for every file of the Atlas Scope hub build EXCEPT sourcemaps,
+    keeping its layout under :data:`SCOPE_DIST_DEST`. A sourcemap is never served usefully in the
+    field and carries the full source text, so it is not shipped (the /scope privacy scan would also
+    read it). When the build is absent, or holds no shell (``index.html``), the missing path itself is
+    returned so :func:`missing_data_sources` refuses the build instead of shipping a silent gap."""
+    dist = Path(root) / SCOPE_DIST_SOURCE
+    if not dist.is_dir():
+        return [(str(dist), SCOPE_DIST_DEST)]
+    datas: List[Tuple[str, str]] = []
+    for path in sorted(dist.rglob("*")):
+        if not path.is_file() or _is_sourcemap(path):
+            continue
+        parent = path.parent.relative_to(dist).as_posix()
+        datas.append((str(path), SCOPE_DIST_DEST if parent == "." else f"{SCOPE_DIST_DEST}/{parent}"))
+    shell = dist / "index.html"
+    if (str(shell), SCOPE_DIST_DEST) not in datas:
+        datas.append((str(shell), SCOPE_DIST_DEST))
+    return datas
 
 
 def root_files(root: Path) -> List[str]:

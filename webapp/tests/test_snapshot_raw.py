@@ -169,3 +169,85 @@ def test_a_scope_page_reads_raw_with_the_session_but_cannot_write_with_it(db_pat
         ui_page = {**scope_page, "referer": "http://localhost/campaigns"}
         created = c.post("/api/campaigns", json={"name": "from the UI"}, headers=ui_page)
         assert created.status_code == 201, created.text[:200]
+
+
+# ── the digest forms are NOT the same fact (docs/ssot.md, "Facts that live in two homes") ─────────
+_REPO = Path(__file__).resolve().parents[2]
+_ATLAS_SCOPE_TOOLS = _REPO / "atlas-scope" / "tools"
+_SAMPLE = _REPO / "webapp" / "sample_data" / "sample_fleet.snapshot.json"
+_REQUIRE_REAL_TOOLCHAIN_ENV = "ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN"
+
+#: Runs Atlas Scope's ONE compiler (the same module the browser runs) twice: over the bytes this
+#: route serves, labelled as an AssessHub stored blob, and over the tracked sample FILE, labelled as a
+#: repository file. Prints the two bindings and whether every compiled document is identical once
+#: its `meta` (the binding) is set aside.
+_COMPILE_BOTH = r"""
+const [modelUrl, validateUrl, bindingUrl, storePath, filePath, snapshotId, fileRel] = process.argv.slice(1);
+const { readFileSync } = await import("node:fs");
+const { compileAll } = await import(modelUrl);
+const { assertValidSnapshot } = await import(validateUrl);
+const { bindSource } = await import(bindingUrl);
+const compile = (path, label) => {
+  const bytes = new Uint8Array(readFileSync(path));
+  const v = assertValidSnapshot(bytes);
+  const binding = bindSource(bytes, label);
+  return { binding, set: compileAll(v.snap, binding, { schemaAssumed: v.schemaAssumed }) };
+};
+const store = compile(storePath, { source: `assesshub:snapshot/${snapshotId}`, sourceOrigin: "assesshub-store",
+                                   sourceDigestForm: "assesshub-store-blob" });
+const file = compile(filePath, { source: fileRel, sourceOrigin: "repository-file" });
+const sansMeta = (doc) => JSON.stringify(Object.fromEntries(Object.entries(doc).filter(([k]) => k !== "meta")));
+const identical = Object.fromEntries(Object.keys(store.set).map((k) => [k, sansMeta(store.set[k]) === sansMeta(file.set[k])]));
+console.log(JSON.stringify({ store: store.binding, file: file.binding, identical }));
+"""
+
+
+def test_the_store_blob_digest_is_its_own_form_and_the_compiled_fabric_does_not_depend_on_it(
+        client, tmp_path):
+    """Four digests name 'the sample snapshot' and they are four different facts: the LF-normalised
+    FILE digest and the Git blob id (both over the tracked file), the exact bytes-as-read digest, and
+    the AssessHub STORE-BLOB digest this route serves (the store re-serialises what it parses). The
+    compiled fabric is a projection of the snapshot CONTENT: compiled from the stored blob or from the
+    file, every compiled document is identical except the binding, and the store-form binding is
+    exactly this route's headers. Runs Atlas Scope's real compiler (node)."""
+    import os
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node or not (_ATLAS_SCOPE_TOOLS / "lib" / "compile-model.mjs").is_file():
+        reason = "node or atlas-scope/tools is absent: the cross-language digest-form pin is skipped"
+        if os.environ.get(_REQUIRE_REAL_TOOLCHAIN_ENV) == "1":
+            pytest.fail(f"{_REQUIRE_REAL_TOOLCHAIN_ENV}=1 but {reason}", pytrace=False)
+        pytest.skip(reason)
+    sid = _seed(client)
+    raw = client.get(f"/api/snapshots/{sid}/raw")
+    assert raw.status_code == 200
+    stored = tmp_path / "stored.json"
+    stored.write_bytes(raw.content)
+    proc = subprocess.run(
+        [node, "--input-type=module", "-e", _COMPILE_BOTH,
+         (_ATLAS_SCOPE_TOOLS / "lib" / "compile-model.mjs").as_uri(),
+         (_ATLAS_SCOPE_TOOLS / "lib" / "validate-snapshot.mjs").as_uri(),
+         (_ATLAS_SCOPE_TOOLS / "source-binding.mjs").as_uri(),
+         str(stored), str(_SAMPLE), str(sid), "webapp/sample_data/sample_fleet.snapshot.json"],
+        capture_output=True, text=True, timeout=600)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    store, file = result["store"], result["file"]
+
+    # the store-form binding IS this route's binding
+    assert store["sourceDigestForm"] == raw.headers["x-snapshot-digest-form"] == "assesshub-store-blob"
+    assert store["sourceSha256"] == raw.headers["x-snapshot-sha256"]
+    assert store["sourceBytes"] == int(raw.headers["x-snapshot-bytes"]) == len(raw.content)
+    # ...and the file-form binding is a different fact over different bytes
+    file_bytes = _SAMPLE.read_bytes()
+    lf = file_bytes.replace(b"\r\n", b"\n")
+    assert file["sourceDigestForm"] == "lf-normalised"
+    assert file["sourceSha256"] == hashlib.sha256(lf).hexdigest() != store["sourceSha256"]
+    assert file["sourceExactSha256"] == "sha256:" + hashlib.sha256(file_bytes).hexdigest()
+    assert file["sourceGitBlob"] == hashlib.sha1(b"blob %d\0" % len(lf) + lf).hexdigest()
+    assert len({file["sourceSha256"], store["sourceSha256"], file["sourceGitBlob"],
+                file["sourceExactSha256"].removeprefix("sha256:")}) >= 3
+    # the compiled model does not depend on which form bound it
+    assert result["identical"] and all(result["identical"].values()), result["identical"]

@@ -14,7 +14,9 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { Flow } from "../core/types";
+import { isDecidedOutcome } from "../core/claims";
 import { counterexample, suggestedFlows, traceFlow } from "../forwarding/engine";
+import { universeTraces } from "./trace-universe";
 import { ClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
 
@@ -109,8 +111,20 @@ describe("the counterexample heading does not promise a flow the body does not o
      "None of the 8 nearby variations … so no counterexample is offered". A heading that names a flow
      over a body that offers none is a claim the card then retracts. Class-wide over every flow whose
      card offers nothing: every suggested flow, plus the undecided udp denial pinned above. */
+  /* RE-EXPRESSED 2026-09-28 (phase 3). The negative state was found on the suggested flows plus one named
+     undecided udp denial; on the regenerated sample every one of those now finds a nearby flow, so the
+     class ran on nothing ("expected 0 to be greater than 0"). The subjects are now every suggested flow
+     plus, from the snapshot's own flow universe, the first refusal whose search offers nothing for each
+     decided/undecided state — the negative state wherever this snapshot has it. */
   it("every card whose search offered nothing says so in its heading", () => {
-    const flows: Flow[] = [...suggestedFlows().map((s) => s.flow), flow("10.0.10.50", "8.8.8.8", "udp", 53)];
+    const negatives = new Map<string, Flow>();
+    for (const t of universeTraces()) {
+      if (t.outcome !== "denied" && t.outcome !== "dropped") continue;
+      const key = `${t.outcome}/${isDecidedOutcome(t)}`;
+      if (negatives.has(key) || counterexample(t.flow, t).found) continue;
+      negatives.set(key, t.flow);
+    }
+    const flows: Flow[] = [...suggestedFlows().map((s) => s.flow), flow("10.0.10.50", "8.8.8.8", "udp", 53), ...negatives.values()];
     let negative = 0;
     for (const f of flows) {
       const c = render(f);
@@ -122,7 +136,7 @@ describe("the counterexample heading does not promise a flow the body does not o
       expect(title).not.toMatch(/the nearest flow that behaves differently/);
       document.body.innerHTML = "";
     }
-    // Non-vacuity: this snapshot's negative state is the one the report saw.
-    expect(negative).toBeGreaterThan(0);
+    // Non-vacuity: the snapshot's negative state was drawn at least once.
+    expect(negative, "precondition: some refusal in this snapshot is offered no nearby flow").toBeGreaterThan(0);
   });
 });

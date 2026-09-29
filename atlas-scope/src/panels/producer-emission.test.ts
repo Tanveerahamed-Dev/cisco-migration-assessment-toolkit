@@ -6,42 +6,44 @@
  * and every device, each defaulted field whose source key is absent must be answered "not emitted".
  */
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 
 import { fabric } from "../core/data";
 import emission from "./producer-emission.json";
 import { PRODUCER_EMISSION_TRUSTED, producerFieldNotEmitted } from "./producer-emission";
+import { describeWithSource, sourceBytes, sourceDocument } from "./source-snapshot";
+import { describeGolden } from "../test-support/golden-sample";
 
 /* The dataset under test: the file this sidecar names (`meta.source`, repository-relative), not a typed
    path (R7). The critic's-line and AP-floor1 cases below are explicitly SAMPLE-scoped: they name records
    of the tracked sample fleet, which is the only source the tracked sidecar may be compiled from. */
-const SRC = resolve(__dirname, "../../..", emission.meta.source);
-const raw = readFileSync(SRC);
-const snap = JSON.parse(raw.toString("utf8")) as Record<string, any>;
+/* Opened lazily, and only for a dataset whose source is a repository file (source-snapshot.ts): read at
+   collection it crashed this whole file on the rename leg, whose source lives outside the tree. The
+   sidecar and the fabric name the same source (asserted below), so the fabric's owner is the one asked. */
+const snap = (): Record<string, any> => sourceDocument() as Record<string, any>;
 
 /* The bound form (O15, tools/source-binding.mjs): the LF-normalised bytes — every CR LF read as LF,
    nothing else touched — which is what Git stores, so the digest is the same from a CRLF (Windows)
    or an LF checkout. Restated here independently of the tool (latin1 is a byte-preserving decode).
    This used to hash the RAW disk bytes, i.e. the Windows working tree, which no clone reproduces. */
-const lfNormalised = Buffer.from(raw.toString("latin1").split("\r\n").join("\n"), "latin1");
+const lfNormalised = (): Buffer => Buffer.from(sourceBytes().toString("latin1").split("\r\n").join("\n"), "latin1");
 
-describe("the emission sidecar is bound to the same bytes", () => {
+describeWithSource("the emission sidecar is bound to the same bytes", () => {
   it("sha256 matches the source (LF-normalised form) and the compiled fabric", () => {
     expect(emission.meta.sourceDigestForm).toBe("lf-normalised");
-    expect(emission.meta.sourceSha256).toBe(createHash("sha256").update(lfNormalised).digest("hex"));
-    expect(emission.meta.sourceBytes).toBe(lfNormalised.byteLength);
+    expect(emission.meta.source, "the sidecar and the fabric name the same source").toBe(fabric.meta.source);
+    expect(emission.meta.sourceSha256).toBe(createHash("sha256").update(lfNormalised()).digest("hex"));
+    expect(emission.meta.sourceBytes).toBe(lfNormalised().byteLength);
     expect(emission.meta.sourceSha256).toBe(fabric.meta.sourceSha256);
     expect(PRODUCER_EMISSION_TRUSTED).toBe(true);
   });
 });
 
-describe("a missing source key never becomes producer testimony", () => {
+describeWithSource("a missing source key never becomes producer testimony", () => {
   it("ACL lines: every compiled defaulted field whose source key is absent reads as not emitted", () => {
     const fields = emission.meta.aclLineFields as Record<string, string>;
     let absent = 0;
-    for (const [host, lists] of Object.entries(snap.acls ?? {}))
+    for (const [host, lists] of Object.entries(snap().acls ?? {}))
       for (const [name, lines] of Object.entries(lists as Record<string, any[]>))
         lines.forEach((l, i) => {
           const path = `acls.${host}.${name}[${i}]`;
@@ -57,15 +59,22 @@ describe("a missing source key never becomes producer testimony", () => {
     expect(absent, "the sweep must meet at least one absent key").toBeGreaterThan(0);
   });
 
+  /* The critic's named records are facts about the reference sample: golden tier (phase 3 rename leg). */
+  describeGolden("the critic's records", () => {
   it("the critic's line: INET_RETURN[0] emitted no unevaluable and no unmodeled_qualifiers", () => {
     const rec = (fabric.acls as any).core1.INET_RETURN[0];
     expect(producerFieldNotEmitted("acls.core1.INET_RETURN[0]", rec, "unevaluable")).toMatch(/not emitted by the collector/);
     expect(producerFieldNotEmitted("acls.core1.INET_RETURN[0]", rec, "unmodeledQualifiers")).toMatch(/not emitted by the collector/);
     expect(producerFieldNotEmitted("acls.core1.INET_RETURN[0]", rec, "established")).toBeNull();
   });
+  it("AP-floor1, never reached, is never scored", () => {
+    const ap = fabric.devices.find((d) => d.host === "AP-floor1")!;
+    expect(producerFieldNotEmitted(null, ap, "deductions")).toMatch(/never reached, so it was never scored/);
+  });
+  });
 
   it("devices: deductions read as not emitted exactly where no health_scores record carries the host", () => {
-    const scored = new Set((snap.health_scores as any[]).map((h) => h.switch));
+    const scored = new Set((snap().health_scores as any[]).map((h) => h.switch));
     let unscored = 0;
     for (const d of fabric.devices) {
       const why = producerFieldNotEmitted(null, d, "deductions");
@@ -73,7 +82,8 @@ describe("a missing source key never becomes producer testimony", () => {
       expect(why === null, d.host).toBe(scored.has(d.host));
     }
     expect(unscored).toBeGreaterThan(0);
-    const ap = fabric.devices.find((d) => d.host === "AP-floor1")!;
-    expect(producerFieldNotEmitted(null, ap, "deductions")).toMatch(/never reached, so it was never scored/);
+    /* Every unscored device that was never reached reads that reason (the AP-floor1 case, by property). */
+    for (const d of fabric.devices.filter((x) => !scored.has(x.host) && !x.collected))
+      expect(producerFieldNotEmitted(null, d, "deductions"), d.host).toMatch(/never reached, so it was never scored/);
   });
 });

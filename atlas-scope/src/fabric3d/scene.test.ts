@@ -799,9 +799,18 @@ describe("the pass-by-pass warm-up primes the interaction visuals on every step 
  *   - a value that holds DOM at some path flowing where that path is not DOM: an `as`, an
  *     annotated binding, `=`, an argument, a `return`, a literal's property, or a callback's
  *     annotated parameter — every place the checker checks assignability                `launder`
+ *   - a METHOD read off a DOM or DOM-carrying receiver anywhere but the callee of a call
+ *     made in place: a member access (`const drop = slot.dispose`, `Reflect.apply(slot.dispose,
+ *     …)`, `slot.dispose.call(…)`, `slot["dispose"]` handed on) or a destructuring binding or
+ *     assignment (`const { dispose: drop } = slot`)                                      `extract`
  * so no DOM effect reaches an element without passing one of them: to change it, the element must be
  * called, written or handed to code that does, and hiding its type anywhere it is held is itself a
- * site. Reads are not sites. */
+ * site. Verifier round 2 of R4 (R4-VR2-1) called the slot's `dispose` through a value read off it
+ * (`const drop = tierFade.dispose; drop()`, a destructure, `Reflect.apply`), and the slot's methods
+ * close over their state, so the call through the value is a real removal the `call` rule never saw:
+ * `drop()` has no DOM receiver and a function value carries no DOM. The method VALUE leaving the
+ * receiver is the site, found by the receiver's type, whatever the method is named. Reads of data
+ * are not sites. */
 const DOM_LIB = /[\\/]lib\.dom(\.[a-z]+)*\.d\.ts$/;
 function isDomType(t: ts.Type): boolean {
   if (t.isUnionOrIntersection()) return t.types.some(isDomType);
@@ -925,7 +934,28 @@ function domSites(checker: ts.TypeChecker, sf: ts.SourceFile): { key: string; li
     while (ts.isParenthesizedExpression(x)) x = x.expression;
     return (ts.isPropertyAccessExpression(x) || ts.isElementAccessExpression(x)) && (dom(x.expression) || loose(x.expression) || carries(x.expression));
   };
+  /** A value that is a function (a method pulled off its receiver). */
+  const callable = (n: ts.Node): boolean => checker.getNonNullableType(typeOf(n)).getCallSignatures().length > 0;
+  /** A DOM or DOM-carrying source a method could be pulled off. */
+  const holdsDom = (n: ts.Node): boolean => dom(n) || carries(n);
+  /** Is `n` the callee of a call made right here (through parentheses and a non-null assertion)? */
+  const calledInPlace = (n: ts.Node): boolean => {
+    let x: ts.Node = n;
+    while (ts.isParenthesizedExpression(x.parent) || ts.isNonNullExpression(x.parent)) x = x.parent;
+    return (ts.isCallExpression(x.parent) || ts.isNewExpression(x.parent)) && x.parent.expression === x;
+  };
   const visit = (n: ts.Node): void => {
+    /* `typeof x.m` only inspects the value; it cannot hand it on, so it is not an extraction. */
+    if ((ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) && holdsDom(n.expression) && callable(n) && !calledInPlace(n) && !ts.isTypeOfExpression(n.parent))
+      add("extract", n);
+    if (ts.isBindingElement(n) && (ts.isObjectBindingPattern(n.parent) || ts.isArrayBindingPattern(n.parent)) && holdsDom(n.parent) && callable(n)) add("extract", n);
+    if (
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      (ts.isObjectLiteralExpression(n.left) || ts.isArrayLiteralExpression(n.left)) &&
+      holdsDom(n.right)
+    )
+      add("extract", n);
     if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
       if (onDomReceiver(n.expression)) add("call", n);
       for (const a of n.arguments ?? []) {
@@ -972,6 +1002,25 @@ function domSites(checker: ts.TypeChecker, sf: ts.SourceFile): { key: string; li
   });
 }
 
+/** What a host does on a reduced-motion toggle, read from its source: it calls the scene's setter (`wired`), and/or
+ *  its scene-lifetime effect (the `useEffect` whose body calls `createScene`) lists `reducedMotion` among its
+ *  dependencies, so a toggle disposes the scene and builds a new one (`recreates`). */
+function hostMotionRoute(hostSource: string): { lifetimeEffects: number; wired: boolean; recreates: boolean } {
+  const hostSf = ts.createSourceFile("Fabric3D.tsx", hostSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let wired = false;
+  const lifetimeDeps: string[][] = [];
+  const scan = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "setReducedMotion") wired = true;
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "useEffect" && n.arguments.length === 2) {
+      const [body, deps] = n.arguments as unknown as [ts.Expression, ts.Expression];
+      if (/\bcreateScene\(/.test(body.getText(hostSf)) && ts.isArrayLiteralExpression(deps)) lifetimeDeps.push(deps.elements.map((e) => e.getText(hostSf)));
+    }
+    ts.forEachChild(n, scan);
+  };
+  scan(hostSf);
+  return { lifetimeEffects: lifetimeDeps.length, wired, recreates: lifetimeDeps.some((d) => d.includes("reducedMotion")) };
+}
+
 describe("R4-V1-1: the DOM-site enumerator sees every way to touch an element, by type (known answers)", () => {
   it("flags each mutation shape the name vocabulary missed, a value hidden behind `any`, and no plain read", () => {
     const PLANTED = [
@@ -1014,6 +1063,20 @@ describe("R4-V1-1: the DOM-site enumerator sees every way to touch an element, b
       /* 36 */ "const takeCb = (f: (el: HTMLCanvasElement) => void): void => { void f; };",
       /* 37 */ "takeCb((el: { remove(): void }) => el.remove());",
       /* 38 */ "export { r2, blank, opaque, same, n, dropIt, slot };",
+      // R4-VR2-1: a slot (or element) METHOD read into a value and called later. Each is found by the
+      // receiver's type; the later call through the value has no DOM receiver and is not itself a site.
+      /* 39 */ "const drop = slot.dispose;",
+      /* 40 */ "drop();",
+      /* 41 */ "const { dispose: drop2 } = slot;",
+      /* 42 */ "Reflect.apply(slot.dispose, undefined, []);",
+      /* 43 */ "slot.dispose.call(undefined);",
+      /* 44 */ 'const byKey = slot["dispose"];',
+      /* 45 */ "const rm = el.remove;",
+      /* 46 */ "let drop3: () => void = () => {}; ({ dispose: drop3 } = slot);",
+      /* 47 */ "const count = slot.n;",
+      /* 48 */ "(slot.dispose)();",
+      /* 49 */ 'const probe = typeof slot.dispose === "function";',
+      /* 50 */ "export { drop, drop2, byKey, rm, drop3, count, probe };",
     ].join("\n");
     const planted = resolve(process.cwd(), "src/fabric3d/__planted_dom_sites__.ts");
     const opts: ts.CompilerOptions = { target: ts.ScriptTarget.ES2022, lib: ["lib.es2022.d.ts", "lib.dom.d.ts"], types: [], strict: true, noEmit: true };
@@ -1031,7 +1094,13 @@ describe("R4-V1-1: the DOM-site enumerator sees every way to touch an element, b
        an annotated binding (26), an argument (28), a binding that drops the path (29), a slot built
        over the element type called (32) or cast away (33), a callback's annotated parameter (37) —
        are sites; a binding that keeps the element DOM (34) and a read through it (35) are not. */
-    expect(lines).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 22, 25, 26, 28, 29, 32, 33, 37]);
+    /* R4-VR2-1: a method pulled off the slot into a value (39), a destructure (41), `Reflect.apply` (42,
+       whose `slot.dispose` is a value handed on), `.call` (43), an element access (44), a method pulled off
+       an element (45) and a destructuring ASSIGNMENT (46) are sites; the later call through the value (40)
+       is not (the site is where the method left its receiver), a data read off the slot (47) is not, and a
+       parenthesised call made in place (48) is the ordinary `call` site, and a `typeof` probe (49) cannot
+       hand the method on and is not a site. */
+    expect(lines).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 22, 25, 26, 28, 29, 32, 33, 37, 39, 41, 42, 43, 44, 45, 46, 48]);
   }, 60_000);
 });
 
@@ -1169,10 +1238,10 @@ describe("C5: the render loop feeds the history and tier-fade rules their real i
       "arg createSceneImpl > copyFrameForTierFade :: ctx -> tierFadeCopy<HTMLCanvasElement>(el, ctx, w, h)": "the NEW element's own 2-D context, for that compose; executed in emphasis.test.ts",
       "call createSceneImpl > mount :: canvas.parentElement?.appendChild(el)": "the page the slot is lent: mounts a `new`/`composed` overlay, which already shows the picture on screen, in the task the one it replaces leaves (emphasis.test.ts)",
       "arg createSceneImpl > mount :: el -> canvas.parentElement?.appendChild(el)": "the overlay being mounted (see the line above)",
-      "call createSceneImpl > unmount :: el.remove()": "the page the slot is lent: its one DOM removal, reached only for a replaced overlay, the driver's removal at exactly 0, the reduced-motion swap at exactly 1 and teardown (emphasis.test.ts)",
+      "call createSceneImpl > unmount :: el.remove()": "the page the slot is lent: its one DOM removal, reached only for a replaced overlay, the driver's removal at exactly 0, the reduced-motion swap at exactly 1 of an overlay up under reduced motion throughout, and teardown (emphasis.test.ts)",
       "write createSceneImpl > write :: el.style.opacity = String(opacity)": "the page the slot is lent: the driver's per-frame write, capped at FADE_MAX_STEP (emphasis.test.ts)",
       'call createSceneImpl > snapshotForTierFade :: tierFade.tierChange(copyFrameForTierFade, !compiled)': "a tier change handed to the slot (handOverTierFade's plan); `deferred` is honoured by applyQuality (positions pinned below)",
-      "call createSceneImpl > releaseTierFade :: tierFade.presented(reducedMotion)": "the new tier's composed frame handed to the slot: a HELD overlay starts its hold, or under reduced motion is swapped at exactly 1 (§4.8)",
+      "call createSceneImpl > releaseTierFade :: tierFade.presented(reducedMotion)": "the new tier's composed frame handed to the slot: a HELD overlay starts its hold; under reduced motion it is swapped at exactly 1 only if it has been up under reduced motion throughout (§4.8), and otherwise finished at the cap (R4-VR2-4, emphasis.test.ts)",
       "call createSceneImpl > frame :: tierFade.frame(raw, reducedMotion, compiled)": "the slot's driver, once per frame on the raw duration, holding while nothing new is presented (pinned above)",
       "call createSceneImpl > dispose :: tierFade.dispose()": "teardown: the WebGL canvas the overlay covers goes with it",
       /* The WebGL canvas and the rest of the page: none of these reaches an overlay element. */
@@ -1298,32 +1367,18 @@ describe("C5: the render loop feeds the history and tier-fade rules their real i
     expect(setter, "the setter hands the preference to every part that reads it").toMatch(/reducedMotion = reduced;\s*cameraRig\.setReducedMotion\(reduced\);\s*flow\.setReducedMotion\(reduced\);\s*markDirty\(\);/);
 
     const hostSource = readFileSync(resolve(process.cwd(), "src/fabric3d/Fabric3D.tsx"), "utf8");
-    const hostSf = ts.createSourceFile("Fabric3D.tsx", hostSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-    /* What the host does on a toggle, read from its source: it calls the setter (`wired`), and/or its
-       scene-lifetime effect (the `useEffect` whose body calls `createScene`) lists `reducedMotion` among
-       its dependencies, so a toggle disposes the scene and builds a new one (`recreates`). */
-    let wired = false;
-    const lifetimeDeps: string[][] = [];
-    const scan = (n: ts.Node): void => {
-      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "setReducedMotion") wired = true;
-      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "useEffect" && n.arguments.length === 2) {
-        const [body, deps] = n.arguments as unknown as [ts.Expression, ts.Expression];
-        if (/\bcreateScene\(/.test(body.getText(hostSf)) && ts.isArrayLiteralExpression(deps)) lifetimeDeps.push(deps.elements.map((e) => e.getText(hostSf)));
-      }
-      ts.forEachChild(n, scan);
-    };
-    scan(hostSf);
-    expect(lifetimeDeps, "exactly one scene-lifetime effect, found by its `createScene` call").toHaveLength(1);
-    const recreates = lifetimeDeps[0]!.includes("reducedMotion");
-    /* A toggle must reach the scene by one of the two routes (neither is a stale motion preference, an
-       accessibility defect), and never both: a host that calls the setter AND still recreates the scene
-       on the same change has wired a setter that never keeps a scene running. */
-    expect(wired || recreates, "a reduced-motion toggle reaches the scene neither through setReducedMotion nor by recreating it").toBe(true);
-    expect(wired && recreates, "the host calls setReducedMotion but still recreates the scene on the same toggle").toBe(false);
-    /* The prose in the owner and the scene states BOTH routes and what each does, so it is true of the
-       host whichever it takes; it never claims the host takes one of them. Which one it takes today is
-       C5-R2-1's open reduced-motion residual while `recreates` holds (open-issues O57; Fabric3D.tsx is
-       the fabric controls' owner). */
+    /* R4-VR2-3 (verifier round 2 of R4): this test used to accept `wired || recreates`, so it was green
+       while the host still disposed and rebuilt the scene on a toggle — the owner-named cut path — and
+       nothing red marked the open requirement. The host now wires the setter (R5), so the ONLY accepted
+       route is the setter with no rebuild; a host that recreates the scene on a toggle, alone or beside
+       the setter, fails here. The runtime half is Fabric3D.test.tsx ("a reduced-motion toggle reaches the
+       running scene through setReducedMotion, never by rebuilding it"), which counts scenes built and
+       disposed across a real toggle. The classifier's own known answers are the next test. */
+    const route = hostMotionRoute(hostSource);
+    expect(route.lifetimeEffects, "exactly one scene-lifetime effect, found by its `createScene` call").toBe(1);
+    expect(route, "a reduced-motion toggle reaches the running scene through setReducedMotion and never rebuilds it").toEqual({ lifetimeEffects: 1, wired: true, recreates: false });
+    /* The prose in the owner and the scene states what the setter route does and why the rebuild route is
+       refused; it never claims the host takes the rebuild route. */
     const flat = (text: string): string => text.replace(/\s*\n\s*\*\s?/g, " ").replace(/\s+/g, " ");
     const doctrine = flat(readFileSync(resolve(process.cwd(), "src/fabric3d/emphasis.ts"), "utf8"));
     const sceneProse = flat(source);
@@ -1335,6 +1390,38 @@ describe("C5: the render loop feeds the history and tier-fade rules their real i
       expect(text, `${where} claims the host recreates the scene`).not.toMatch(/(the|so the) host recreates the whole scene|until the host calls it/);
       expect(text, `${where} claims the host calls the setter`).not.toMatch(/the host calls (it|setReducedMotion) now/);
     }
+  });
+
+  it("R4-VR2-3: the host-route classifier sees a rebuild on a toggle (known answers over the host's own source)", () => {
+    /* Fabric3D.tsx is another cluster's file, so its mutation is made HERE, on a copy of its text: the
+       real source with `reducedMotion` added to the scene-lifetime dependencies (the pre-R5 shape) must
+       read as `recreates`, and with its setter call renamed away as not `wired`. */
+    const hostSource = readFileSync(resolve(process.cwd(), "src/fabric3d/Fabric3D.tsx"), "utf8");
+    expect(hostMotionRoute(hostSource)).toEqual({ lifetimeEffects: 1, wired: true, recreates: false });
+    const sf = ts.createSourceFile("Fabric3D.tsx", hostSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const ends: number[] = [];
+    const find = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "useEffect" && n.arguments.length === 2) {
+        const [body, d] = n.arguments as unknown as [ts.Expression, ts.Expression];
+        if (/\bcreateScene\(/.test(body.getText(sf)) && ts.isArrayLiteralExpression(d)) ends.push(d.getEnd() - 1);
+      }
+      ts.forEachChild(n, find);
+    };
+    find(sf);
+    expect(ends).toHaveLength(1);
+    const end = ends[0]!;
+    const rebuilds = `${hostSource.slice(0, end)}, reducedMotion${hostSource.slice(end)}`;
+    expect(hostMotionRoute(rebuilds)).toEqual({ lifetimeEffects: 1, wired: true, recreates: true });
+    const unwired = hostSource.replace(/\.setReducedMotion\(/g, ".setReducedMotionGone(");
+    expect(hostMotionRoute(unwired).wired).toBe(false);
+    /* The verifier's case, the pre-R5 host (rebuild, no setter): the old `wired || recreates` accepted it; the
+       route the test above now requires does not. */
+    const preR5 = `${unwired.slice(0, end)}, reducedMotion${unwired.slice(end)}`;
+    const accepted = { lifetimeEffects: 1, wired: true, recreates: false };
+    const pre = hostMotionRoute(preR5);
+    expect(pre).toEqual({ lifetimeEffects: 1, wired: false, recreates: true });
+    expect(pre.wired || pre.recreates, "the old acceptance rule let it through").toBe(true);
+    expect(pre).not.toEqual(accepted);
   });
 
   it("a held step-down lands only with the camera at rest — before the gate, so its 6 s backstop cannot land it mid-orbit", () => {

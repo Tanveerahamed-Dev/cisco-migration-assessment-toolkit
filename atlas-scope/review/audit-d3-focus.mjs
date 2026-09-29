@@ -108,10 +108,10 @@
  * BODY or did not run, a focus stop was not visible, or a required kind was never driven or never
  * checked for visibility. Exit 2: nothing was driven at all.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { chromium } from "@playwright/test";
 import ts from "typescript";
-import { checkPaletteOverDialog } from "./palette-warm.mjs";
+import { appModalDialogs, checkPaletteOverDialog } from "./palette-warm.mjs";
 
 const APP = process.env["ATLAS_URL"] ?? "http://localhost:4181";
 const SETTLE_MS = 1000;
@@ -1600,7 +1600,15 @@ async function drawerLoad(page) {
    re-rendered. The palette still has to rank the evidence toggle first, within 5 s, or the case is NOT
    DRIVEN exactly as before. */
 let paletteLastTop = "";
+/** What the palette's search box held as it took focus, when that was not empty (a reopened stale query). */
+let paletteStale = null;
+/** Why the last paletteToggle did not run the toggle: a PALETTE DEFECT (a failure) or the harness's NOT DRIVEN. */
+const paletteMiss = () =>
+  paletteStale !== null
+    ? `PALETTE DEFECT: the palette opened holding a query from an earlier opening ("${paletteStale.slice(0, 60)}"), so what a reader types is appended to it (independent verifier R5-V2-2)`
+    : `NOT DRIVEN: the palette's top row was not the evidence toggle (it read "${paletteLastTop.slice(0, 60)}")`;
 async function paletteToggle(page) {
+  paletteStale = null;
   /* The previous palette (open by palette -> close by palette) must be gone first: MEASURED (R5 repair,
      default run) mod+k pressed while it was still closing read an empty top row ("it read \"\""). */
   await page
@@ -1610,6 +1618,18 @@ async function paletteToggle(page) {
   await page
     .waitForFunction(() => document.activeElement?.getAttribute("role") === "combobox" && document.activeElement.closest('[role="dialog"]') !== null, null, { timeout: 5000 })
     .catch(() => {});
+  /* The box must be EMPTY as it takes focus (independent verifier R5-V2-2): a query left from the previous
+     opening doubled what was typed here, nothing matched, and the case read as NOT DRIVEN — a palette defect
+     reported as the harness's. It is reported as what it is, never cleared silently. */
+  const held = await page.evaluate(() => {
+    const a = document.activeElement;
+    return a instanceof HTMLInputElement && a.getAttribute("role") === "combobox" ? a.value : "";
+  });
+  if (held !== "") {
+    paletteStale = held;
+    await page.keyboard.press("Escape");
+    return false;
+  }
   await page.keyboard.type(PALETTE_TOGGLE);
   const readTop = () =>
     page.evaluate(() => {
@@ -1651,7 +1671,7 @@ async function drawerOpen(page, opener) {
   else if (opener === "g e") {
     await page.keyboard.press("g");
     await page.keyboard.press("e");
-  } else if (!(await paletteToggle(page))) return `the palette's top row was not the evidence toggle (it read "${paletteLastTop.slice(0, 60)}")`;
+  } else if (!(await paletteToggle(page))) return paletteMiss();
   await page.waitForTimeout(500);
   /* And eight animation frames: `v` moves focus a frame (up to six under reduced motion) after the
      open commits. MEASURED (this cluster, 2026-09-26, reduced motion at 1152 px, 8 runs): that frame
@@ -1676,7 +1696,7 @@ async function drawerCase(page, w, opener, close, motion = "") {
   const scenario = `open by ${opener} → focus inside → close by ${close}`;
   if (!(await drawerLoad(page))) return drawerResult(where, scenario, false, "NOT DRIVEN: no grid cell to start from");
   const notOpened = await drawerOpen(page, opener);
-  if (notOpened !== null) return drawerResult(where, scenario, false, `NOT DRIVEN: ${notOpened}`);
+  if (notOpened !== null) return drawerResult(where, scenario, false, /^(?:PALETTE DEFECT|NOT DRIVEN):/.test(notOpened) ? notOpened : `NOT DRIVEN: ${notOpened}`);
   if (opener === "g e") {
     const st = await page.evaluate(drawerState);
     const claims = /^Moved to/.test(st.status);
@@ -1693,7 +1713,7 @@ async function drawerCase(page, w, opener, close, motion = "") {
   await drawerVisible(page, "drawer control", where, scenario);
   if (close === "e") await page.keyboard.press("e");
   else if (close === "palette") {
-    if (!(await paletteToggle(page))) return drawerResult(where, scenario, false, `NOT DRIVEN: the palette's top row was not the evidence toggle (it read "${paletteLastTop.slice(0, 60)}")`);
+    if (!(await paletteToggle(page))) return drawerResult(where, scenario, false, paletteMiss());
   } else {
     /* Escape: an inner layer (the configuration overlay) closes first; the drawer on a later press. */
     for (let k = 0; k < 3; k += 1) {
@@ -1856,55 +1876,54 @@ async function runDrawer(browser, only) {
  * focusable element is a case:
  *   - every rendered tab stop (tabindex >= 0, not disabled, not inert, not aria-hidden) — the stops a
  *     keyboard reader holds; a roving group's other items are reached through its one stop;
- *   - every rendered tab stop INSIDE every popover a visible `[aria-haspopup]` trigger opens (Enter on
- *     the trigger; the panel is the trigger's `aria-controls`), because a popover's content exists
- *     only while it is open — the verifier's `thm__opt` inside More is one;
+ *   - every rendered tab stop of every SURFACE a reader can open there, FOUND BY ITS EFFECT (independent
+ *     verifier R5-V2-3: a hand-kept list of surface states, and popovers found only through
+ *     `[aria-haspopup]`, left disclosures, the status bar's coverage panel and the evidence drawer at its
+ *     own rung outside the denominator). An OPENER is every rendered control whose ARIA contract says its
+ *     activation reveals something (a popup, a collapsed disclosure or `<summary>`, an unselected tab, an
+ *     unchecked radio — crossOpeners) and every keyed command the app declares (read from the keyboard
+ *     reference it renders — crossChords: the Inspector's `i`, the drawer's `e`, the palette's mod+k, the
+ *     reference's `?`). Each is activated on a fresh page; the rendered tab stops that were NOT there
+ *     before are the surface it revealed, and each is a case. The verifier's `thm__opt` inside More is one;
  *   - every PROGRAMMATIC LANDING: a rendered element focusable by script but not by Tab (an explicit
  *     `tabindex="-1"` that is not a roving item of a composite widget — `#stage` — and every named
  *     landmark, or the heading that labels it, which focus-return.ts makes focusable for exactly as
  *     long as it holds focus). Those are where the owner itself hands focus, so a crossing that took
  *     focus from one of them is the class too (independent verifier R5-V3: the pass drove none).
- * THE STATES (crossStates) are the three page states (idle, a finding selected, a traced flow), whose
- * cases are the whole page, and the SURFACE states a command opens — the Inspector (`i`), the device
- * view of the evidence rail, the fabric's off-view finding pointer (drawn by panning the camera until
- * a selected finding's host leaves the view), and every MODAL DIALOG a command opens (the palette's mod+k, the keyboard
- * reference's `?`) — whose cases are the elements inside that surface (the rest of the page was driven
- * in the page states). The modal denominator is the source's own: every `<Dialog` a non-test source
- * file renders must have been opened in some crossing, or the pass fails NEVER EXERCISED. A surface
- * state that does not exist at a start width (the Inspector inside the display:none stage at 390 px)
- * is reported as such; a state no crossing could drive at all fails the run.
+ * THE STATES (crossStates) are the PAGE states a URL restores (idle, a finding selected, a device
+ * selected, a traced flow) and the one view state no control reaches (the fabric's off-view finding
+ * pointer, drawn by panning the camera until a selected finding's host leaves the view). The modal
+ * denominator is the source's own — the modules that own a modal dialog, found by the rendered dialog
+ * primitive (review/palette-warm.mjs appModalDialogs) — and every one must have been opened by a
+ * discovered opener, or the pass fails NEVER EXERCISED. A state that does not exist at a start width is
+ * reported as such; a state no crossing could drive at all fails the run, and so does a pass whose
+ * openers revealed no surface anywhere, or a keyed command it could not press.
  * Each case: focus the element (and confirm focus got there, or it is NOT DRIVEN), resize to the
  * neighbouring rung's width, let the page process it (two frames) and CROSS_SETTLE_MS more (longer
  * than the drawer's 240 ms visibility step), then FAIL when focus is on <body>, or on an element that
  * is not rendered (`checkVisibility`, inert), or on one with no part on screen, or one another layer
  * paints over (the nine-point hit test every other stop in this file must pass). Then resize back.
  * A page whose tab-stop signature drifted (a case changed the state) is reloaded before the next case.
- * The denominators — cases per crossing, and popovers opened — are printed; a crossing in scope that
- * drove no case fails the run (SWEEP NEVER EXERCISED: rung crossings).
+ * The denominators — cases per crossing and per state, openers activated, surfaces revealed per
+ * crossing and state — are printed; a crossing in scope that drove no case fails the run (SWEEP NEVER
+ * EXERCISED: rung crossings).
  * `--vp=` narrows it: a crossing runs when its start or end width is listed. `--state=` narrows the
  * states like the rest of the sweep.
  */
 const CROSS_SETTLE_MS = 500;
-const crossCount = { cases: 0, crossings: 0, popovers: 0, landings: 0, lost: 0, recovered: 0 };
+const crossCount = { cases: 0, crossings: 0, openersTried: 0, surfaces: 0, unstable: 0, landings: 0, lost: 0, recovered: 0, unreadChords: [] };
+/** Surfaces revealed, per crossing and state (`crossing … / state`): the denominator of family 2. */
+const crossSurfaces = new Map();
 /** Surface states that did not exist at a crossing's start width, by state name (reported, not failed). */
 const crossAbsent = new Map();
 /** The modal dialogs (by accessible name) a surface state opened, over the whole pass. */
 const crossDialogsOpened = new Set();
 
-/** The modal dialogs the SOURCE renders: every non-test .tsx under src/ that renders `<Dialog`. */
-const SOURCE_DIALOGS = (() => {
-  const root = new URL("../src/", import.meta.url);
-  const out = [];
-  const walk = (dir) => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const p = new URL(e.name + (e.isDirectory() ? "/" : ""), dir);
-      if (e.isDirectory()) walk(p);
-      else if (e.name.endsWith(".tsx") && !/\.test\.tsx$/.test(e.name) && /<Dialog[\s>]/.test(readFileSync(p, "utf8"))) out.push(e.name);
-    }
-  };
-  walk(root);
-  return out.sort();
-})();
+/* The modal dialogs the SOURCE renders, found by the RENDERED dialog primitive (review/palette-warm.mjs
+   `appModalDialogs`: a modal element, or a component that renders one or a primitive, resolved through
+   imports and aliases — independent verifier R6 VR2-3), not by the spelling `<Dialog`: the modules that own
+   a dialog the app opens. */
+const SOURCE_DIALOGS = [...new Set((await appModalDialogs(new URL("../src/", import.meta.url))).owners.map((o) => o.file))].sort();
 /* How many directed crossings run at once. Each holds a page with a WebGL fabric; MEASURED, eight at
    once crashed a renderer on this shared host. `ATLAS_CROSS_PARALLEL` overrides it (>= 1). */
 const CROSS_PARALLEL = Math.max(1, Number(process.env["ATLAS_CROSS_PARALLEL"] ?? 3) || 3);
@@ -1913,43 +1932,200 @@ const crossPerCrossing = new Map();
 /** One width per rung: the sweep's own width in that rung (coverRungs guarantees there is one). */
 const RUNG_WIDTHS = RUNGS.map((r) => SWEEP_VIEWPORTS.find(([w]) => rungOf(Number(w)) === r.name)).filter((v) => v !== undefined);
 
-/** Open a modal dialog by its command's chord; true when a modal dialog is on screen afterwards. */
-const openModalBy = (chord) => async (page) => {
-  await page.keyboard.press(chord);
-  await page.waitForTimeout(500);
-  const name = await page.evaluate(() => {
-    const d = [...document.querySelectorAll('[aria-modal="true"]')].find((el) => el.getClientRects().length > 0);
-    if (d === undefined) return null;
-    /* Its accessible NAME, never the id it is labelled by (a React useId, different on every load). */
-    const by = (d.getAttribute("aria-labelledby") ?? "").split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
-    return (d.getAttribute("aria-label") ?? by).replace(/\s+/g, " ").trim() || "(an unnamed modal dialog)";
-  });
-  if (name !== null) crossDialogsOpened.add(name);
-  return name !== null;
+/**
+ * In-page, before an opener is activated: mark every element that could hold focus and is rendered now —
+ * tab stops AND programmatically focusable ones (a roving item's tabindex=-1) — so what the activation
+ * REVEALS is judged by element identity: a roving stop that moved, or a button whose label changed, is not a
+ * surface (measured on the first run: a tree item's Enter "revealed" the grid's moved roving cell, and the
+ * status bar's re-labelled scene button). Clears any earlier marking first.
+ */
+const crossMarkSeen = () => {
+  for (const el of document.querySelectorAll("[data-d3-seen]")) el.removeAttribute("data-d3-seen");
+  const SEL = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable='true']";
+  /* Rendered and reachable as crossUnseenStops judges it: a closed drawer's controls (visibility:hidden, inert)
+     are NOT seen, so opening it reveals them. */
+  const rendered = (el) =>
+    el.isConnected &&
+    (typeof el.checkVisibility === "function" ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0) &&
+    el.closest("[inert], [aria-hidden='true']") === null;
+  for (const el of document.querySelectorAll(SEL)) if (rendered(el)) el.setAttribute("data-d3-seen", "");
+};
+/** In-page: the rendered tab stops that were NOT marked by crossMarkSeen — what the activation revealed. */
+const crossUnseenStops = () => {
+  const SEL = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable='true']";
+  const rendered = (el) =>
+    el.isConnected &&
+    (typeof el.checkVisibility === "function" ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0) &&
+    el.closest("[inert], [aria-hidden='true']") === null;
+  const pathOf = (el) => {
+    const parts = [];
+    for (let n = el; n !== null && n !== document.body; n = n.parentElement) parts.push(`${n.tagName}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
+    return parts.reverse().join("/");
+  };
+  const out = [];
+  for (const el of document.querySelectorAll(SEL)) {
+    if (el.hasAttribute("data-d3-seen") || el.id === "__sr-top" || el.tabIndex < 0 || el.disabled || !rendered(el)) continue;
+    const cls = typeof el.className === "string" ? el.className.split(" ")[0] : "";
+    out.push({ path: pathOf(el), label: `${el.tagName}${cls ? `.${cls}` : ""}${el.getAttribute("role") ? `[${el.getAttribute("role")}]` : ""}` });
+  }
+  return out;
 };
 
+/** In-page: the accessible names of the modal dialogs on screen now (never a React useId). */
+const crossModalNames = () =>
+  [...document.querySelectorAll('[aria-modal="true"]')]
+    .filter((el) => el.getClientRects().length > 0)
+    .map((d) => {
+      const by = (d.getAttribute("aria-labelledby") ?? "").split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
+      return (d.getAttribute("aria-label") ?? by).replace(/\s+/g, " ").trim() || "(an unnamed modal dialog)";
+    });
+
 /**
- * [name, query, prep, scope]. `prep` (after the load) brings the state about and returns true, or
- * "n/a"/false when the state does not exist at this width; `scope` is the selector of the surface
- * whose elements are this state's cases (null: the whole page).
+ * [name, query, prep, scope]: the PAGE states — what a URL restores (idle, a selection, a trace), and the one
+ * view state no control reaches (the off-view finding pointer, drawn by panning the camera). `prep` (after the
+ * load) brings the state about and returns true, or "n/a"/false when it does not exist at this width; `scope`
+ * is the selector of the surface whose elements are this state's cases (null: the whole page).
+ *
+ * THE SURFACES ARE NOT LISTED HERE (independent verifier R5-V2-3: the Inspector, the device view, the
+ * palette and the keyboard reference were hand-kept states, and an `aria-expanded` disclosure, the status
+ * bar's coverage panel or the evidence drawer at its own rung were outside the denominator). In every page
+ * state the pass DISCOVERS them: every control whose activation reveals new focusables — see crossOpeners
+ * and crossChords — is activated, and the tab stops that were not there before are that surface's cases.
  */
 const crossStates = () => {
   const fabricJson = JSON.parse(readFileSync(new URL("../src/data/fabric.json", import.meta.url), "utf8"));
   const flow = encodeURIComponent("10.0.10.50>10.0.30.10>tcp>3389");
-  const finding = `f=${encodeURIComponent(fabricJson.findings[0].id)}&s=findings`;
+  const first = fabricJson.findings[0];
+  const finding = `f=${encodeURIComponent(first.id)}&s=findings`;
+  const device = first.devices?.[0] ?? fabricJson.devices[0].id;
   return [
     ["idle", "", null, null],
     ["a finding selected", finding, null, null],
+    ["a device selected", `d=${encodeURIComponent(device)}&s=evidence`, null, null],
     ["a traced flow", `s=path&flow=${flow}`, null, null],
-    ["the Inspector open", finding, ensureInspector, "#inspector"],
-    ["the device view", finding, ensureDeviceView, "#rail-evidence"],
     /* The off-view finding pointer (FabricLabels.tsx), hidden from script when a re-projection brings
        its device into view: the imperative member of the class (independent verifier R5-V2). */
     ["an off-view pointer drawn", "f=F094", panUntilOffViewPointer, '[data-testid="fabric3d-pointers"]'],
-    ["the command palette open (mod+k)", "", openModalBy("Control+k"), '[aria-modal="true"]'],
-    ["the keyboard reference open (?)", "", openModalBy("?"), '[aria-modal="true"]'],
   ];
 };
+
+/**
+ * In-page: every rendered control whose ARIA contract says its activation reveals something — a popup
+ * (`aria-haspopup`), a collapsed disclosure (`aria-expanded="false"`, a `<summary>`), an unselected tab, an
+ * unchecked radio (a view switch) — whether or not it is a tab stop (a roving item still activates). The
+ * key each is activated with is the one its role takes. Whether it REALLY reveals focusables is measured
+ * (crossPass), not assumed: this is where to look, the effect is the judge.
+ */
+const crossOpeners = (rootPath) => {
+  let root = document.body;
+  if (rootPath !== null) {
+    for (const part of rootPath.split("/")) {
+      const [tag, i] = part.split(":");
+      const c = root?.children[Number(i)];
+      if (!c || c.tagName !== tag) return [];
+      root = c;
+    }
+  }
+  const SEL = '[aria-haspopup]:not([disabled]), [aria-expanded="false"]:not([disabled]), summary, [role="tab"][aria-selected="false"], [role="radio"][aria-checked="false"]';
+  const rendered = (el) =>
+    el.isConnected &&
+    (typeof el.checkVisibility === "function" ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0) &&
+    el.closest("[inert], [aria-hidden='true']") === null;
+  const pathOf = (el) => {
+    const parts = [];
+    for (let n = el; n !== null && n !== document.body; n = n.parentElement) parts.push(`${n.tagName}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
+    return parts.reverse().join("/");
+  };
+  return [...root.querySelectorAll(SEL)]
+    .filter((el) => rendered(el) && el.id !== "__sr-top")
+    .map((el) => ({
+      path: pathOf(el),
+      /* The key its role reveals with: a radio is checked with Space; a collapsed tree item or grid row/cell
+         EXPANDS with ArrowRight (Enter there selects, which is not a reveal); everything else takes Enter. */
+      key: el.getAttribute("role") === "radio" ? "Space" : /^(?:treeitem|row|gridcell)$/.test(el.getAttribute("role") ?? "") ? "ArrowRight" : "Enter",
+      label: `${el.tagName}${el.getAttribute("role") ? `[${el.getAttribute("role")}]` : ""} "${(el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40)}"`,
+    }));
+};
+
+/* THE APP'S OWN COMMANDS, read from the keyboard reference it renders (ShortcutHelp: "this list is generated
+   from them"), and pressed as a reader presses them. A keyed command that makes a container visible — the
+   Inspector's `i`, the drawer's `e`, the palette's mod+k, the reference's own `?` — is an opener with no
+   control on screen. The display tokens are mapped back to keys through keyboard.ts's own KEY_DISPLAY and
+   modifier table (read from the source, not restated). */
+const KEY_DISPLAY_INVERSE = (() => {
+  const sf = ts.createSourceFile("keyboard.ts", readFileSync(new URL("../src/app/keyboard.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const inverse = new Map();
+  const visit = (n) => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === "KEY_DISPLAY" && n.initializer !== undefined) {
+      let init = n.initializer;
+      while (ts.isAsExpression(init) || ts.isSatisfiesExpression(init) || ts.isParenthesizedExpression(init)) init = init.expression;
+      if (ts.isObjectLiteralExpression(init)) {
+        for (const p of init.properties) {
+          if (!ts.isPropertyAssignment(p) || !ts.isStringLiteralLike(p.initializer)) continue;
+          const key = ts.isIdentifier(p.name) || ts.isStringLiteralLike(p.name) ? p.name.text : null;
+          if (key !== null) inverse.set(p.initializer.text, key);
+        }
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return inverse;
+})();
+/** A keyboard.ts key name ("arrowup", " ") as the key Playwright presses ("ArrowUp", "Space"). */
+const playwrightKey = (k) =>
+  k === " " ? "Space" : k.length === 1 ? k : k.replace(/^(arrow|page)?(.)(.*)$/, (_, pre, c, rest) => (pre ? pre[0].toUpperCase() + pre.slice(1) + c.toUpperCase() + rest : c.toUpperCase() + rest));
+const MODIFIER_TOKENS = new Map([
+  ["Ctrl", "Control"],
+  ["Alt", "Alt"],
+  ["Shift", "Shift"],
+  ["Win", "Meta"],
+]);
+/** "Ctrl K" -> ["Control+k"], "G then E" -> ["g", "e"], "Shift V" -> ["Shift+V"]; null when a token cannot be read. */
+function chordPresses(text) {
+  const out = [];
+  for (const chord of text.split(/\s+then\s+/)) {
+    const tokens = chord.trim().split(/\s+/).filter((t) => t !== "");
+    if (tokens.length === 0) return null;
+    const mods = tokens.slice(0, -1).map((t) => MODIFIER_TOKENS.get(t));
+    if (mods.some((m) => m === undefined)) return null;
+    const last = tokens[tokens.length - 1];
+    const name = KEY_DISPLAY_INVERSE.get(last) ?? (last.length === 1 ? (mods.includes("Shift") ? last.toUpperCase() : last.toLowerCase()) : null);
+    if (name === null) return null;
+    out.push([...mods, playwrightKey(name)].join("+"));
+  }
+  return out;
+}
+/** In-page: the keyboard reference's rows (outside the canvas-only section), as label and shortcut text. */
+const crossReadChords = () =>
+  [...document.querySelectorAll(".kb-help__scope:not([data-testid]) .kb-help__row")].map((row) => {
+    const hidden = row.querySelector(".kb-help__label .visually-hidden")?.textContent ?? "";
+    const label = (row.querySelector(".kb-help__label")?.firstChild?.textContent ?? "").trim();
+    return { label, keys: hidden.replace(/^:\s*/, "").trim() };
+  });
+/** Every keyed command, read once per run from a fresh page (the reference is the app's own list). */
+let chordsRead = null;
+async function crossChords(page) {
+  if (chordsRead !== null) return chordsRead;
+  chordsRead = (async () => {
+    await page.keyboard.press("?");
+    await page.waitForSelector(".kb-help__row", { timeout: 10000 }).catch(() => {});
+    const rows = await page.evaluate(crossReadChords);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(300);
+    const chords = [];
+    const unread = [];
+    for (const r of rows) {
+      const presses = r.keys === "" ? null : chordPresses(r.keys);
+      if (presses === null) unread.push(`${r.label} (${r.keys})`);
+      else if (!chords.some((c) => c.presses.join(" ") === presses.join(" "))) chords.push({ label: `the command "${r.label}" (${r.keys})`, presses });
+    }
+    console.log(`INFO  rung crossing: ${chords.length} keyed command(s) read from the keyboard reference${unread.length > 0 ? `; ${unread.length} not readable as keys: ${unread.join("; ")}` : ""}`);
+    if (unread.length > 0) crossCount.unreadChords.push(...unread);
+    return chords;
+  })();
+  return chordsRead;
+}
 
 /** In-page: the structural path of the first RENDERED match of `selector` (null when none is). */
 const crossScopePath = (selector) => {
@@ -2075,31 +2251,6 @@ const crossMark = (path) => {
   return true;
 };
 
-/** In-page: mark the `index`-th rendered tab stop inside the panel at `panelPath`, if its label is still
- *  `label` (a popover's content is portalled, so its absolute path moves between openings). */
-const crossMarkNth = ([panelPath, index, label]) => {
-  for (const el of document.querySelectorAll("[data-d3-cross]")) el.removeAttribute("data-d3-cross");
-  let n = document.body;
-  for (const part of panelPath.split("/")) {
-    const [tag, i] = part.split(":");
-    const c = n?.children[Number(i)];
-    if (!c || c.tagName !== tag) return false;
-    n = c;
-  }
-  const SEL = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable='true']";
-  const rendered = (el) =>
-    el.isConnected &&
-    (typeof el.checkVisibility === "function" ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0) &&
-    el.closest("[inert], [aria-hidden='true']") === null;
-  const stops = [...n.querySelectorAll(SEL)].filter((el) => el.id !== "__sr-top" && el.tabIndex >= 0 && !el.disabled && rendered(el));
-  const el = stops[index];
-  if (!el) return false;
-  const name = (el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
-  const cls = typeof el.className === "string" ? el.className.split(" ")[0] : "";
-  if (`${el.tagName}${cls ? `.${cls}` : ""}${el.getAttribute("role") ? `[${el.getAttribute("role")}]` : ""} "${name}"` !== label) return false;
-  el.setAttribute("data-d3-cross", "");
-  return true;
-};
 
 /** In-page: where focus is after the crossing, and whether that element is rendered. */
 const crossLanding = () => {
@@ -2114,35 +2265,6 @@ const crossLanding = () => {
   return { lost: false, rendered, connected: a.isConnected, desc: `${a.tagName}${a.id ? `#${a.id}` : ""}${cls ? `.${cls}` : ""} "${name}"` };
 };
 
-/** In-page: every visible popover trigger, as structural paths. */
-const crossTriggers = () => {
-  const pathOf = (el) => {
-    const parts = [];
-    for (let n = el; n !== null && n !== document.body; n = n.parentElement) parts.push(`${n.tagName}:${n.parentElement ? [...n.parentElement.children].indexOf(n) : 0}`);
-    return parts.reverse().join("/");
-  };
-  return [...document.querySelectorAll("[aria-haspopup]:not([disabled])")]
-    .filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0 && getComputedStyle(el).visibility === "visible" && el.closest("[inert], [aria-hidden='true']") === null)
-    .map((el) => ({ path: pathOf(el), label: `${el.tagName} "${(el.getAttribute("aria-label") ?? el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40)}"` }));
-};
-
-/** In-page: the open panel a trigger controls, as a structural path (null when it did not open). */
-const crossPanelOf = (triggerPath) => {
-  let n = document.body;
-  for (const part of triggerPath.split("/")) {
-    const [tag, i] = part.split(":");
-    const c = n?.children[Number(i)];
-    if (!c || c.tagName !== tag) return null;
-    n = c;
-  }
-  if (n.getAttribute("aria-expanded") !== "true") return null;
-  const id = (n.getAttribute("aria-controls") ?? "").split(/\s+/).find((x) => x !== "");
-  const panel = id ? document.getElementById(id) : null;
-  if (panel === null || panel.getClientRects().length === 0) return null;
-  const parts = [];
-  for (let m = panel; m !== null && m !== document.body; m = m.parentElement) parts.push(`${m.tagName}:${m.parentElement ? [...m.parentElement.children].indexOf(m) : 0}`);
-  return parts.reverse().join("/");
-};
 
 /**
  * Load a state and wait until it has SETTLED: the lazy fabric (and its canvas, a tab stop) mounts an
@@ -2332,48 +2454,89 @@ async function crossPass(browser, from, to, height, onlyState) {
           await crossDrive(page, at, s.label, from, to, height, () => page.evaluate(crossMarkLanding, s.path), load);
         });
       }
-      /* Family 2: every tab stop inside every popover a visible trigger opens (inside the surface, in a
-         surface state — where Escape would close the surface itself, so a drifted page is reloaded). */
-      let triggers = [];
-      await guarded("the popover triggers", async () => {
+      /* Family 2: every SURFACE a reader can open here, found by its EFFECT (independent verifier R5-V2-3: the
+         hand-kept surface states and `[aria-haspopup]`-only popovers left disclosures, the coverage panel and
+         the drawer at its own rung outside the denominator). Only in the page states: a scoped state's
+         surface is already open. Each opener — every control whose ARIA contract says it reveals something
+         (crossOpeners) and every keyed command of the app (crossChords) — is activated on a fresh page; the
+         rendered tab stops that were NOT there before are the surface it revealed, and each is a case. An
+         opener that reveals nothing is counted, not cased. The dialogs a surface opens feed the modal
+         denominator. */
+      if (scope !== null) continue;
+      const openers = [];
+      await guarded("the openers", async () => {
         await fresh();
-        triggers = (await page.evaluate(crossTriggers)).filter((t) => scopePath === null || t.path.startsWith(`${scopePath}/`));
+        const controls = await page.evaluate(crossOpeners, null);
+        const chords = await crossChords(page);
+        openers.push(...controls.map((c) => ({ kind: "control", ...c })), ...chords.map((c) => ({ kind: "command", ...c })));
       });
-      const escape = async () => {
-        if (scope === null) for (let i = 0; i < 3; i += 1) await page.keyboard.press("Escape").catch(() => {});
-      };
-      for (const t of triggers) {
-        const open = async () => {
-          await fresh();
-          await escape();
-          if (!(await page.evaluate(crossMark, t.path))) return null;
+      /** Activate an opener on a fresh page, every element rendered before it marked; false when it could not be. */
+      const activate = async (o) => {
+        await fresh();
+        await page.evaluate(crossMarkSeen);
+        if (o.kind === "control") {
+          if (!(await page.evaluate(crossMark, o.path))) return false;
           await page.locator("[data-d3-cross]").first().focus().catch(() => {});
-          await page.keyboard.press("Enter");
-          await page.waitForTimeout(300);
-          return page.evaluate(crossPanelOf, t.path);
-        };
-        let panel = null;
-        let inner = [];
-        await guarded(`the popover of ${t.label}`, async () => {
-          panel = await open();
-          inner = panel === null ? [] : await page.evaluate(crossStops, panel);
-        });
-        if (panel === null) {
-          console.log(`INFO  ${at}: ${t.label} did not open a panel on Enter (not a popover here); not a case`);
-          continue;
+          await page.keyboard.press(o.key);
+        } else {
+          /* Pressed where a reader presses it: with focus on nothing in particular. */
+          await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
+          for (const k of o.presses) await page.keyboard.press(k);
         }
-        crossCount.popovers += 1;
-        console.log(`INFO  ${at}: popover of ${t.label}: ${inner.length} tab stop(s) inside`);
-        for (const [k, s] of inner.entries()) {
-          await guarded(`inside the popover of ${t.label}: ${s.label}`, async () => {
+        await framesSettled(page);
+        await page.waitForTimeout(400);
+        return true;
+      };
+      const revealedNow = () => page.evaluate(crossUnseenStops);
+      for (const o of openers) {
+        let revealed = [];
+        await guarded(`the opener ${o.label}`, async () => {
+          crossCount.openersTried += 1;
+          if (!(await activate(o))) return;
+          revealed = await revealedNow();
+          for (const name of await page.evaluate(crossModalNames)) crossDialogsOpened.add(name);
+        });
+        if (revealed.length === 0) continue;
+        /* A stop is the OPENER's only if a second activation reveals it again: one that appeared the first time
+           and not the second came with something else (the status bar's scene button, mounted when the scene
+           settled — MEASURED, run 1: "revealed" by a disclosure, then never again, NOT DRIVEN twice). Such stops
+           are counted and named, not cased. Stops are matched by what they are and their occurrence, not by index. */
+        const occurrence = (list) => {
+          const seen = new Map();
+          return list.map((s) => {
+            const n = (seen.get(s.label) ?? 0) + 1;
+            seen.set(s.label, n);
+            return `${s.label}#${n}`;
+          });
+        };
+        let again = [];
+        await guarded(`the opener ${o.label}, again`, async () => {
+          if (await activate(o)) again = await revealedNow();
+        });
+        const againKeys = new Set(occurrence(again));
+        const keys = occurrence(revealed);
+        const stable = revealed.map((s, i) => ({ s, key: keys[i] })).filter((x) => againKeys.has(x.key));
+        const unstable = keys.filter((k) => !againKeys.has(k));
+        if (unstable.length > 0) {
+          crossCount.unstable += unstable.length;
+          console.log(`INFO  ${at}: ${o.label}: ${unstable.length} stop(s) appeared on one activation and not on the next (not the opener's; not cased): ${unstable.join(", ")}`);
+        }
+        if (stable.length === 0) continue;
+        crossCount.surfaces += 1;
+        crossSurfaces.set(at, (crossSurfaces.get(at) ?? 0) + 1);
+        console.log(`INFO  ${at}: ${o.label} revealed ${stable.length} tab stop(s)`);
+        for (const { s, key } of stable) {
+          const label = `revealed by ${o.label}: ${s.label}`;
+          await guarded(label, async () => {
             const mark = async () => {
-              const p = await open();
-              return p !== null && (await page.evaluate(crossMarkNth, [p, k, s.label]));
+              if (!(await activate(o))) return false;
+              const now = await revealedNow();
+              const i = occurrence(now).indexOf(key);
+              return i >= 0 && (await page.evaluate(crossMark, now[i].path));
             };
-            await crossDrive(page, at, `inside the popover of ${t.label}: ${s.label}`, from, to, height, mark, load);
+            await crossDrive(page, at, label, from, to, height, mark, load);
           });
         }
-        await escape();
       }
     }
   } finally {
@@ -2409,19 +2572,27 @@ async function runCrossings(browser, only, onlyState) {
   /* Per state: a state no crossing drove proved nothing about it (a surface absent at SOME widths is
      reported; absent at every width in the plan, or present and caseless, is a failure). */
   if (plan.length > 0) {
+    /* Family 2's own denominator: the openers activated and the surfaces their activation revealed. A pass
+       that activated nothing, or whose openers revealed nothing anywhere, exercised no surface at all. */
+    console.log(`INFO  rung crossing: ${crossCount.openersTried} opener(s) activated (controls by their ARIA contract, and every keyed command), ${crossCount.surfaces} revealed a surface; ${crossCount.unstable} stop(s) appeared on one activation only (not cased)`);
+    for (const [k, n] of [...crossSurfaces].sort()) console.log(`INFO  ${k}: ${n} surface(s) revealed`);
+    if (!onlyState && (crossCount.openersTried === 0 || crossCount.surfaces === 0)) {
+      sweepFail("rung crossing / surfaces", `NEVER EXERCISED: ${crossCount.openersTried} opener(s) activated, ${crossCount.surfaces} revealed a surface`);
+    }
+    if (crossCount.unreadChords.length > 0) {
+      sweepFail("rung crossing / keyed commands", `NOT DRIVEN: the keyboard reference lists commands the pass could not press: ${[...new Set(crossCount.unreadChords)].join("; ")}`);
+    }
     for (const [state] of crossStates().filter(([name]) => !onlyState || name.includes(onlyState))) {
       const n = [...crossPerCrossing].filter(([k]) => k.endsWith(` / ${state}`)).reduce((s, [, c]) => s + c, 0);
       const absent = crossAbsent.get(state) ?? [];
       console.log(`INFO  rung crossing / ${state}: ${n} case(s) driven${absent.length > 0 ? `; not present at the start of ${absent.join(", ")}` : ""}`);
       if (n === 0) sweepFail(`rung crossing / ${state}`, "NEVER EXERCISED: no crossing drove a case in this state");
     }
-    /* The modal denominator is the source's: every file rendering `<Dialog` must have been opened. */
-    const dialogStates = crossStates().filter(([name, , , scope]) => scope === '[aria-modal="true"]' && (!onlyState || name.includes(onlyState)));
-    if (dialogStates.length > 0) {
-      console.log(`INFO  rung crossing: ${crossDialogsOpened.size} modal dialog(s) opened (${[...crossDialogsOpened].join("; ")}) of ${SOURCE_DIALOGS.length} rendered by the source (${SOURCE_DIALOGS.join(", ")})`);
-      if (!onlyState && crossDialogsOpened.size < SOURCE_DIALOGS.length) {
-        sweepFail("rung crossing / modal dialogs", `NEVER EXERCISED: the source renders ${SOURCE_DIALOGS.length} modal dialog(s) but the pass opened ${crossDialogsOpened.size}; give the missing one a state in crossStates`);
-      }
+    /* The modal denominator is the source's (the modules that own a modal dialog, by the rendered primitive):
+       every one must have been opened by some discovered opener. */
+    console.log(`INFO  rung crossing: ${crossDialogsOpened.size} modal dialog(s) opened (${[...crossDialogsOpened].join("; ")}) of ${SOURCE_DIALOGS.length} owned by the source (${SOURCE_DIALOGS.join(", ")})`);
+    if (!onlyState && crossDialogsOpened.size < SOURCE_DIALOGS.length) {
+      sweepFail("rung crossing / modal dialogs", `NEVER EXERCISED: the source owns ${SOURCE_DIALOGS.length} modal dialog(s) but the discovered openers opened ${crossDialogsOpened.size}: a dialog no control or keyed command opens`);
     }
   }
   return plan.length > 0;
@@ -2462,7 +2633,7 @@ async function runSweep(browser) {
   if (!crossNamed) console.log(`INFO  rung-crossing pass left out by --state="${onlyState}"`);
   console.log(
     `RUNG CROSSING: ${crossCount.cases} case(s) driven over ${crossCount.crossings} directed crossing(s) ` +
-      `(${crossCount.popovers} popover(s) opened for their contents, ${crossCount.landings} programmatic landing(s), ${crossStates().length} state(s), ${crossDialogsOpened.size} of ${SOURCE_DIALOGS.length} modal dialog(s) opened); ${crossCount.lost} landed on <body> or out of sight; ${crossCount.recovered} crashed renderer(s) replaced.`,
+      `(${crossCount.openersTried} opener(s) activated, ${crossCount.surfaces} surface(s) revealed and cased, ${crossCount.landings} programmatic landing(s), ${crossStates().length} page state(s), ${crossDialogsOpened.size} of ${SOURCE_DIALOGS.length} modal dialog owner(s) opened); ${crossCount.lost} landed on <body> or out of sight; ${crossCount.recovered} crashed renderer(s) replaced.`,
   );
   console.log(
     `\nSWEEP: ${sweepCount.widgets} composite widget(s) counted, ${sweepCount.stops} tab stop(s) walked, ` +
@@ -2493,7 +2664,7 @@ if (process.argv.includes("--crossings")) {
   }
   console.log(
     `\nRUNG CROSSING: ${crossCount.cases} case(s) driven over ${crossCount.crossings} directed crossing(s) ` +
-      `(${crossCount.popovers} popover(s) opened for their contents, ${crossCount.landings} programmatic landing(s), ${crossStates().length} state(s), ${crossDialogsOpened.size} of ${SOURCE_DIALOGS.length} modal dialog(s) opened); ${crossCount.lost} landed on <body> or out of sight; ${crossCount.recovered} crashed renderer(s) replaced; ${sweepFails.length} failure(s).`,
+      `(${crossCount.openersTried} opener(s) activated, ${crossCount.surfaces} surface(s) revealed and cased, ${crossCount.landings} programmatic landing(s), ${crossStates().length} page state(s), ${crossDialogsOpened.size} of ${SOURCE_DIALOGS.length} modal dialog owner(s) opened); ${crossCount.lost} landed on <body> or out of sight; ${crossCount.recovered} crashed renderer(s) replaced; ${sweepFails.length} failure(s).`,
   );
   for (const f of sweepFails) console.log(`  FAIL ${f.where} :: ${f.what}`);
   if (!inScope || crossCount.cases === 0) console.log("SWEEP NEVER EXERCISED: rung crossings");
