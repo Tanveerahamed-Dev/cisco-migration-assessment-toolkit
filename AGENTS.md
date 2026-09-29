@@ -4,12 +4,21 @@ This is the Codex entry point for this repository. `CLAUDE.md` is the shared
 operating-doctrine and current-state owner; its name does not make it
 Claude-only. Before substantive work:
 
-1. Read `CLAUDE.md` completely.
-2. Read `docs/ssot.md` before using or repeating a shared fact. Read the fact
+1. Read `docs/NOW.md` first, from `main`: the one live work board. There is
+   one application (GitHub `main`). Work only on a branch listed in its Active
+   table, one writer per workstream. New work gets its row in the same pull
+   request, never an unlisted branch, worktree or project. In the Codex app,
+   use Local mode in the folder where that branch is already checked out; Git
+   will not check it out a second time. Before the session ends, or a quota
+   runs out: commit to that branch and update the board's row and handoff log.
+   Push only under the explicit-authority rule at the end of this file, and
+   never for a row marked local-only.
+2. Read `CLAUDE.md` completely.
+3. Read `docs/ssot.md` before using or repeating a shared fact. Read the fact
    from the owner named there rather than from a cached count or plan.
-3. Read `docs/quality/learnings.md` when its verified engine lessons are
+4. Read `docs/quality/learnings.md` when its verified engine lessons are
    relevant to the task.
-4. Inspect the live repository with `git status --short --branch` and recent
+5. Inspect the live repository with `git status --short --branch` and recent
    `git log`. When inheriting work from another agent or session, also inspect
    `git worktree list --porcelain`, relevant local branches, and any explicitly
    referenced uncommitted or ignored workspace. A clean root status does not
@@ -18,7 +27,8 @@ Claude-only. Before substantive work:
 Use this precedence when sources disagree:
 
 1. Current owner code, tests, manifests, runtime evidence, and live Git state.
-2. Explicit current/reconciled sections in `CLAUDE.md` and owner documents.
+2. Explicit current/reconciled sections in `CLAUDE.md`, the Active table and
+   pending decisions in `docs/NOW.md`, and owner documents.
 3. Accepted ADR decisions.
 4. Dated plans, handoffs, closeouts, review ledgers, chats, and agent memories.
 
