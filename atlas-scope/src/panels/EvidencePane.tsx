@@ -41,6 +41,7 @@ import {
   routesOf,
   bySeverityThenRank,
 } from "../core/data";
+import { own } from "../core/own";
 import { useInvestigation, type EvidenceTab } from "../core/store";
 import type {
   AclLine,
@@ -179,7 +180,7 @@ export function configEvidenceFor(finding: Finding): ConfigEvidence[] {
   }
 
   for (const host of finding.devices) {
-    const named = fabric.acls[host];
+    const named = own(fabric.acls, host);
     if (!named) continue;
     for (const [aclName, lines] of Object.entries(named)) {
       if (!text.includes(aclName)) continue;
@@ -292,7 +293,7 @@ export function nearestConfigFor(finding: Finding): ConfigEvidence[] {
   let order = 0;
 
   for (const host of finding.devices) {
-    const named = fabric.acls[host];
+    const named = own(fabric.acls, host);
     if (named) {
       for (const [aclName, lines] of Object.entries(named)) {
         const first = lines[0];
@@ -465,7 +466,7 @@ function openableFor(ref: EvidenceRef): ConfigEvidence | null {
     return record ? { kind: "interface", host, label: `${host} ${a}`, record, cite: record.cite, how } : null;
   }
   if (section === "acls" && t.length === 4 && a !== undefined && b !== undefined && /^(0|[1-9]\d*)$/.test(b)) {
-    const lines = fabric.acls[host]?.[a];
+    const lines = own(own(fabric.acls, host), a);
     const line = lines?.[Number(b)];
     return lines && line ? { kind: "acl", host, label: `${host} · ${a}`, lines, focusIndex: line.index, cite: `acls.${host}.${a}`, how } : null;
   }
@@ -1192,7 +1193,7 @@ function rawFamilyCount(family: RecordFamily, host: string): number | null {
     case "l3": return (l3ByHost.get(host) ?? []).length;
     case "protocols": return (protocolsByHost.get(host) ?? []).length;
     case "acl": {
-      const named = fabric.acls[host];
+      const named = own(fabric.acls, host);
       return named ? Object.values(named).reduce((a, l) => a + l.length, 0) : null;
     }
     case "crossLayer": return (crossLayerByHost.get(host) ?? []).length;

@@ -9,6 +9,17 @@
 /** A dotted path back into the source snapshot, e.g. `punchlist[12]` or `acls.core1.MGMT_IN[3]`. */
 export type Cite = string;
 
+declare const NAME_KEYED: unique symbol;
+/**
+ * A dictionary keyed by names the SNAPSHOT supplies (hosts, ACL and object-group names, severities, producer
+ * fields). Such a name is untrusted text, and `dict[name]` answers one the dictionary does not hold from the
+ * prototype chain — so a host named "constructor" read the Object function as its routing table. Read one ONLY
+ * through `own` / `holds` (core/own.ts). The optional brand member costs nothing at run time; it is what lets
+ * `own-read.guard.test.ts` find every such dictionary by TYPE, and that guard also requires every string-keyed
+ * dictionary the compiled documents carry to be one of these.
+ */
+export type NameKeyed<T> = Record<string, T> & { readonly [NAME_KEYED]?: never };
+
 export type Severity = "Critical" | "High" | "Medium" | "Low" | "Info";
 export type Band = "Excellent" | "Good" | "Fair" | "Poor" | "Critical";
 export type OpStatus = "up" | "down" | "unknown" | string;
@@ -234,9 +245,9 @@ export interface EvidenceRecord {
   type: EvidenceValueType;
   /** Length of the whole record, as compact JSON, in the source. */
   jsonChars: number;
-  value: EvidenceScalar | Record<string, EvidenceScalar> | EvidenceScalar[];
+  value: EvidenceScalar | NameKeyed<EvidenceScalar> | EvidenceScalar[];
   nested: string[];
-  cut: Record<string, number>;
+  cut: NameKeyed<number>;
   fieldsTotal: number;
   withheld: boolean;
 }
@@ -452,7 +463,7 @@ export interface Coverage {
   routableHosts: string[];
   aclHosts: string[];
   linksWithCentrality: number;
-  aclSummary: Record<string, number>;
+  aclSummary: NameKeyed<number>;
   cite: Cite;
 }
 
@@ -546,13 +557,13 @@ export interface Fabric {
   links: Link[];
   findings: Finding[];
   crossLayer: CrossLayerFinding[];
-  routes: Record<string, RouteEntry[]>;
-  acls: Record<string, Record<string, AclLine[]>>;
+  routes: NameKeyed<RouteEntry[]>;
+  acls: NameKeyed<NameKeyed<AclLine[]>>;
   /** Object groups an ACL match field may reference, keyed by host then group name. */
-  objectGroups: Record<string, Record<string, ObjectGroup>>;
+  objectGroups: NameKeyed<NameKeyed<ObjectGroup>>;
   aclFindings: AclFinding[];
   l3: L3Interface[];
-  interfaces: Record<string, InterfaceRecord[]>;
+  interfaces: NameKeyed<InterfaceRecord[]>;
   physical: PhysicalHealth[];
   protocols: ProtocolHealth[];
   endpoints: Endpoint[];

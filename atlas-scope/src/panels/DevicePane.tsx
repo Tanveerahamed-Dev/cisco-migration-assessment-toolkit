@@ -41,6 +41,7 @@ import {
   routesOf,
   severityRank,
 } from "../core/data";
+import { own } from "../core/own";
 import { presentBand, unassessedScoringDomains } from "../core/band-qualification";
 import { aclUndecidability } from "../core/acl-coverage";
 import { ribIncompleteness } from "../forwarding/rib-completeness";
@@ -1592,7 +1593,9 @@ function RoutingPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: 
 /* ══ device: ACL ═══════════════════════════════════════════════════════════ */
 
 function AclPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: Cite) => void }): ReactElement {
-  const named = fabric.acls[device.host];
+  /* The host's OWN table, or undefined — "no ACL collected" (core/own.ts): `fabric.acls[host]` handed a host named
+     "constructor" the Object function, and the pane listed "0 access lists collected" for a table never collected. */
+  const named = own(fabric.acls, device.host);
   const findings = fabric.aclFindings.filter((f) => f.host === device.host);
   const cov = fabric.coverage;
   /* The union of the three undecidability sets, not the producer's flag alone — see
@@ -2142,7 +2145,7 @@ export function DevicePane({ onOpenCite, className }: DevicePaneProps): ReactEle
     if (subject === "device" && device) {
       const collected = device.collected;
       const ports = joinPorts(device.host);
-      const acls = fabric.acls[device.host];
+      const acls = own(fabric.acls, device.host);
       const aclLines = acls ? Object.values(acls).reduce((a, ls) => a + ls.length, 0) : null;
       return [
         {

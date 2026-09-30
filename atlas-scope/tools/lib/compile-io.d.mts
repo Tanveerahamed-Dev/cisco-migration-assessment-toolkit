@@ -27,7 +27,15 @@ export interface CompileToDiskOptions {
    * rolls the set back); beforeRestoreStep before each file of a rollback is restored (a throw stands
    * for a restore that cannot happen, e.g. a Windows file lock, and must leave the previous file kept).
    */
-  hooks?: { beforeCommitStep?: (index: number, key: OutputKey) => void; beforeRestoreStep?: (index: number, key: OutputKey) => void };
+  hooks?: {
+    beforeCommitStep?: (index: number, key: OutputKey) => void;
+    beforeRestoreStep?: (index: number, key: OutputKey) => void;
+    /**
+     * Called before each open of the source or of a sibling output; a throw stands for that open failing with the
+     * thrown error (an errno this host cannot produce — ELOOP, ENXIO, EACCES on a directory — is injected so).
+     */
+    beforeOpen?: (path: string) => void;
+  };
 }
 export interface CompileToDiskResult {
   sourcePath: string;

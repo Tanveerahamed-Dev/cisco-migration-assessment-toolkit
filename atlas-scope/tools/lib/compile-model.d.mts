@@ -11,6 +11,7 @@ import type {
   EvidenceRefKind,
   EvidenceRefRole,
   Fabric,
+  NameKeyed,
   SourceBinding,
   SourceDigestForm,
   SourceOrigin,
@@ -115,12 +116,11 @@ export interface AclBindingRecord {
 }
 export interface AclBindingsDocument {
   meta: SourceBinding;
-  hosts: Record<string, AclBindingRecord[]>;
+  hosts: NameKeyed<AclBindingRecord[]>;
 }
 export interface RibEvidenceDocument {
   meta: SourceBinding & { routingProtocols: string[]; routingProtocolsFrom: string };
-  hosts: Record<
-    string,
+  hosts: NameKeyed<
     {
       protocols: { protocol: string; state: string | null; reason: string | null; cite: string }[];
       adjacencies: {
@@ -136,9 +136,9 @@ export interface RibEvidenceDocument {
   >;
 }
 export interface ProducerEmissionDocument {
-  meta: SourceBinding & { aclLineFields: Record<string, string>; deviceHealthFields: Record<string, string> };
-  aclLineAbsent: Record<string, string[]>;
-  deviceAbsent: Record<string, string[]>;
+  meta: SourceBinding & { aclLineFields: NameKeyed<string>; deviceHealthFields: NameKeyed<string> };
+  aclLineAbsent: NameKeyed<string[]>;
+  deviceAbsent: NameKeyed<string[]>;
 }
 export interface CompiledSet {
   fabric: Fabric;

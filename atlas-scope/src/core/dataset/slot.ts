@@ -49,6 +49,10 @@ export function takeInstalledDataset(): { installed: InstalledDataset | null; no
 const BINDING_KEYS = ["source", "sourceOrigin", "sourceDigestForm", "sourceSha256", "sourceBytes", "sourceExactSha256", "sourceGitBlob"] as const;
 const DOCUMENTS = ["fabric", "aclBindings", "ribEvidence", "producerEmission"] as const;
 
+const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object";
+/** A document's `meta` when it is an object, else null. */
+const metaOf = (doc: unknown): Record<string, unknown> | null => (isRecord(doc) && isRecord(doc.meta) ? doc.meta : null);
+
 /**
  * Why `dataset` cannot be one compile of one snapshot, or null. The four documents must all be present
  * and all bound to the same source (every binding key equal): a mixed set would render ACL bindings or
@@ -57,13 +61,16 @@ const DOCUMENTS = ["fabric", "aclBindings", "ribEvidence", "producerEmission"] a
  * by src/core/dataset.test.ts against SOURCE_BINDING_KEYS.
  */
 export function incoherence(dataset: InstalledDataset): string | null {
-  const set = dataset.set as unknown as Record<string, { meta?: Record<string, unknown> } | undefined> | null;
-  if (set === null || typeof set !== "object") return "it is not a compiled set";
-  const fabricMeta = set.fabric?.meta;
-  if (fabricMeta === undefined || fabricMeta === null || typeof fabricMeta !== "object") return "the fabric document carries no binding";
+  /* Read as an untrusted shape (a restored set may be malformed) by narrowing, not by asserting a type over the
+     compiled one — an assertion is how a reader drops the NameKeyed brand (core/own.ts). Every key read here is
+     one of this module's own constants. */
+  const set: unknown = dataset.set;
+  if (!isRecord(set)) return "it is not a compiled set";
+  const fabricMeta = metaOf(set.fabric);
+  if (fabricMeta === null) return "the fabric document carries no binding";
   for (const doc of DOCUMENTS) {
-    const meta = set[doc]?.meta;
-    if (meta === undefined || meta === null || typeof meta !== "object") return `the ${doc} document is missing or carries no binding`;
+    const meta = metaOf(set[doc]);
+    if (meta === null) return `the ${doc} document is missing or carries no binding`;
     for (const k of BINDING_KEYS) {
       if (meta[k] === undefined || meta[k] !== fabricMeta[k]) return `the ${doc} document is bound to other bytes than the fabric (${k} differs)`;
     }

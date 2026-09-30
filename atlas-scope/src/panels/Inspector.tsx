@@ -42,6 +42,7 @@ import { recordReturn, returnFocus, type ReturnRecord } from "../app/focus-retur
 import { aclUndecidability } from "../core/acl-coverage";
 import { bandObserved } from "../core/band-qualification";
 import { deviceById, fabric, findingById, linkById, resolveCite } from "../core/data";
+import { own } from "../core/own";
 import { aclBindings, documentsByFile, fabricDocument, ribEvidence } from "../core/dataset";
 import { isRouteRecord, missingInventoryFields, notApplicableReason } from "../core/claims";
 import { placeholderZero } from "../core/placeholders";
@@ -175,7 +176,8 @@ export function resolveCandidate(path: string): unknown {
   let cur: unknown = SIDECARS.get(doc);
   for (const part of path.slice(doc.length + 1).split(/[.[]/).map((p) => p.replace(/]$/, "")).filter(Boolean)) {
     if (cur === null || typeof cur !== "object") return undefined;
-    cur = Array.isArray(cur) ? cur[Number(part)] : (cur as Record<string, unknown>)[part];
+    /* A sidecar path's parts are snapshot names (`hosts.<host>`): an OWN member only (core/own.ts). */
+    cur = Array.isArray(cur) ? cur[Number(part)] : own(cur as Record<string, unknown>, part);
   }
   return cur;
 }
@@ -205,7 +207,7 @@ export function citeBearers(): ReadonlyMap<string, string[]> {
     }
     for (const k of Object.keys(rec)) walk(rec[k], path === "" || path.endsWith("#") ? `${path}${k}` : `${path}.${k}`);
   };
-  walk(fabric as unknown, "");
+  walk(fabric, "");
   // The sidecars follow the fabric, so a citation's first candidate stays the fabric record.
   for (const [name, doc] of SIDECARS) walk(doc, `${name}#`);
   bearerIndex = map;
@@ -478,7 +480,7 @@ export function EvidenceRecordView({
       <p className="ev-rec__scalar" data-evidence-fields="scalar">
         {typeof record.value === "string" ? (
           <code className="ev-rec__literal">
-            <CutText text={record.value} whole={record.cut[""]} onOpenCite={onOpenCite} />
+            <CutText text={record.value} whole={own(record.cut, "")} onOpenCite={onOpenCite} />
           </code>
         ) : (
           <EvidenceMember value={record.value} nested={false} whole={undefined} onOpenCite={onOpenCite} />
@@ -497,7 +499,7 @@ export function EvidenceRecordView({
             <div key={k} className="ev-rec__row">
               <dt className="ev-rec__key">{k}</dt>
               <dd className="ev-rec__val">
-                <EvidenceMember value={v} nested={record.nested.includes(k)} whole={record.cut[k]} onOpenCite={onOpenCite} />
+                <EvidenceMember value={v} nested={record.nested.includes(k)} whole={own(record.cut, k)} onOpenCite={onOpenCite} />
               </dd>
             </div>
           ))}
@@ -733,7 +735,7 @@ function reconcileCoverage(): Reconciliation[] {
   const c = fabric.coverage;
   const aclLines = Object.values(fabric.acls).flatMap((a) => Object.values(a).flat());
   const undecidable = aclUndecidability();
-  const snapshotIndeterminate = c.aclSummary["n_indeterminate"] ?? null;
+  const snapshotIndeterminate = own(c.aclSummary, "n_indeterminate") ?? null;
 
   const rows: [string, number | string, number | string, ReconKind, string][] = [
     [
@@ -1466,7 +1468,7 @@ export function Inspector({
           className="inspector__jsonpanel"
         >
           <JsonView
-            value={fabric as unknown}
+            value={fabric}
             rootLabel="fabric.json"
             label="Compiled evidence document"
             citedPath={resolution.modelPath !== null && documentOf(resolution.modelPath) === "fabric.json" ? resolution.modelPath : null}

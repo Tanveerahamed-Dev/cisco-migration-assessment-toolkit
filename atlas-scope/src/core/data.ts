@@ -10,6 +10,7 @@
  * way, so none of the modules that import it know or care which.
  */
 import { fabricDocument } from "./dataset";
+import { holds, own } from "./own";
 import type {
   AclLine,
   CrossLayerFinding,
@@ -20,6 +21,7 @@ import type {
   InterfaceRecord,
   L3Interface,
   Link,
+  NameKeyed,
   PhysicalHealth,
   ProtocolHealth,
   RouteEntry,
@@ -101,17 +103,22 @@ export const protocolsByHost: ReadonlyMap<string, ProtocolHealth[]> = groupBy(fa
 export const endpointsByHost: ReadonlyMap<string, Endpoint[]> = groupBy(fabric.endpoints, (e) => e.host);
 export const l3ByHost: ReadonlyMap<string, L3Interface[]> = groupBy(fabric.l3, (r) => r.host);
 
-export const interfacesOf = (host: string): InterfaceRecord[] => fabric.interfaces[host] ?? [];
-export const routesOf = (host: string): RouteEntry[] => fabric.routes[host] ?? [];
-export const aclsOf = (host: string): Record<string, AclLine[]> => fabric.acls[host] ?? {};
+/* Each reads the host's OWN entry (core/own.ts): a host the dictionary does not hold — whatever it is named — has
+   none, and these three flatten "none collected" into an empty table. A surface that must tell the two apart
+   asks `hasRib`, or reads the dictionary through `own`, which answers undefined. */
+export const interfacesOf = (host: string): InterfaceRecord[] => own(fabric.interfaces, host) ?? [];
+export const routesOf = (host: string): RouteEntry[] => own(fabric.routes, host) ?? [];
+export const aclsOf = (host: string): NameKeyed<AclLine[]> => own(fabric.acls, host) ?? {};
 
 /** True only when we actually hold a RIB for this host. Drives every forwarding scope statement. */
-export const hasRib = (host: string): boolean => Object.prototype.hasOwnProperty.call(fabric.routes, host);
+export const hasRib = (host: string): boolean => holds(fabric.routes, host);
 
 /* ── ordering helpers shared by every list surface ─────────────────────────── */
 
-const SEV_RANK: Record<string, number> = Object.fromEntries(SEVERITY_ORDER.map((s, i) => [s, i]));
-export const severityRank = (s: string | null): number => (s === null ? 99 : (SEV_RANK[s] ?? 98));
+/* A Map: the severity asked about is the SNAPSHOT's, and `SEV_RANK[s]` on a plain object ranked a severity named
+   "toString" as a function (core/own.ts says why). */
+const SEV_RANK: ReadonlyMap<string, number> = new Map(SEVERITY_ORDER.map((s, i) => [s, i]));
+export const severityRank = (s: string | null): number => (s === null ? 99 : (SEV_RANK.get(s) ?? 98));
 
 export const bySeverityThenRank = (a: Finding, b: Finding): number =>
   severityRank(a.severity) - severityRank(b.severity) ||
@@ -119,7 +126,7 @@ export const bySeverityThenRank = (a: Finding, b: Finding): number =>
   (a.rank ?? 1e9) - (b.rank ?? 1e9) ||
   a.id.localeCompare(b.id);
 
-export const severityCounts = (items: readonly { severity: Severity | string }[]): Record<string, number> => {
+export const severityCounts = (items: readonly { severity: Severity | string }[]): NameKeyed<number> => {
   /* Keyed by a severity the SNAPSHOT supplies, so counted in a Map (tools/lib/compile-model.mjs, THE DICTIONARY
      RULE): on a plain object a severity named "constructor" started its count from the Object function, and one
      named "__proto__" from Object.prototype. Object.fromEntries defines each count as an ordinary member. */
@@ -138,13 +145,16 @@ export const severityCounts = (items: readonly { severity: Severity | string }[]
  */
 export function resolveCite(path: string): unknown {
   const parts = path.split(/[.[]/).map((p) => p.replace(/]$/, "")).filter(Boolean);
-  let cur: unknown = fabric as unknown;
+  /* A cite's parts are snapshot names (`routes.<host>[0]`), so each step reads an OWN member only (core/own.ts):
+     `routes.__proto__`, for a host the dictionary does not hold, resolved to Object.prototype — and a host so
+     named then rendered, wherever prose mentioned it, as a citation of that. */
+  let cur: unknown = fabric;
   for (const part of parts) {
     if (cur === null || cur === undefined) return undefined;
     const kv = /^([A-Za-z_][\w]*)=(.*)$/.exec(part);
     if (kv && Array.isArray(cur)) {
       const [, key, want] = kv;
-      cur = (cur as Record<string, unknown>[]).find((r) => String(r[key!]) === want);
+      cur = (cur as Record<string, unknown>[]).find((r) => String(own(r, key!)) === want);
       continue;
     }
     if (Array.isArray(cur)) {
@@ -153,7 +163,7 @@ export function resolveCite(path: string): unknown {
       continue;
     }
     if (typeof cur === "object") {
-      cur = (cur as Record<string, unknown>)[part];
+      cur = own(cur as Record<string, unknown>, part);
       continue;
     }
     return undefined;

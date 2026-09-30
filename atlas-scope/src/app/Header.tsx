@@ -26,6 +26,7 @@ import {
   type ReactElement,
 } from "react";
 import { fabric, findingsByHost, severityCounts } from "../core/data";
+import { own } from "../core/own";
 import { datasetOrigin } from "../core/dataset";
 import { applyToDevices, applyToFindings, parseQuery } from "../core/query";
 import { encodeInvestigation, useInvestigation } from "../core/store";
@@ -147,7 +148,7 @@ export function exampleQuery(): string {
   ];
   const returnsRows = (q: string): boolean => applyToFindings(fabric.findings, parseQuery(q)).items.length > 0;
   for (const sev of SEVERITY_ORDER) {
-    if ((counts[sev] ?? 0) === 0) continue;
+    if ((own(counts, sev) ?? 0) === 0) continue;
     for (const host of hostOrder) {
       if (!(findingsByHost.get(host) ?? []).some((f) => f.severity === sev)) continue;
       const q = `severity:${sev} host:${host}`;

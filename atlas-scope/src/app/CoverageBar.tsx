@@ -26,6 +26,7 @@ import { useMemo, type ReactElement } from "react";
 import { aclUndecidability, undecidableAclSentence } from "../core/acl-coverage";
 import { bandObserved } from "../core/band-qualification";
 import { fabric, hasRib } from "../core/data";
+import { own } from "../core/own";
 import { missingInventoryFields } from "../core/claims";
 import { ribCountQualifier, ribHostsShownIncomplete } from "../forwarding/rib-completeness";
 import type { Cite, Device } from "../core/types";
@@ -152,7 +153,9 @@ export function coverageRows(): CoverageRow[] {
       "interfaces",
       "Interface table",
       "the interface list was collected",
-      (d) => (fabric.interfaces[d.host]?.length ?? 0) > 0,
+      /* The host's OWN table (core/own.ts): `fabric.interfaces[host]` counted a host named "constructor", which has
+         none, as collected — the Object function has a length. */
+      (d) => (own(fabric.interfaces, d.host)?.length ?? 0) > 0,
       c.hostsWithInterfaces,
       "coverage.hostsWithInterfaces",
     ),
