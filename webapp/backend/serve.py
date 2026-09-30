@@ -837,7 +837,7 @@ def _main_scoped(argv: list[str]) -> int:
     if argv and argv[0] == ENGINE_SENTINEL:
         log_path = None
         if _frozen():
-            # Importing the engine installs its audit FileHandler. A bundle-tree cwd resolves to
+            # Running the engine (its main()) installs its audit FileHandler. A bundle-tree cwd resolves to
             # ``Atlas\data`` and is probed here; an external per-job cwd deliberately stays
             # relative so concurrent AssessHub engine children retain isolated audit logs.
             log_path = Path(engine_log_path(
