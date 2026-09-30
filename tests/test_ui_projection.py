@@ -1111,6 +1111,31 @@ def test_t6_negative_paths(snaps):
     assert "census_present_keys_only" in summ["n_not_collected"]["caveats"]
 
 
+def test_t6b_the_withheld_average_says_which_owner_reason_withheld_it(snaps):
+    """``ssot.fleet_avg_health`` withholds a published average for one of two reasons
+    (``ssot.FLEET_AVG_UNVERIFIED_REASONS``). The projection said "not a finite number" for both, which is false
+    for a finite number that merely has no scored health rows behind it."""
+    bare = copy.deepcopy(snaps["a"])
+    bare.pop("health_scores")                                   # a finite average, no rows to back it
+    text = copy.deepcopy(snaps["a"])
+    text["executive_brief"]["posture"]["avg_health"] = "abc"    # scored rows, a published value that is no number
+    cases = {"no_scored_basis": bare, "not_a_number": text}
+    assert set(cases) == set(ssot.FLEET_AVG_UNVERIFIED_REASONS)  # every owner reason is exercised
+    for why, snap in cases.items():
+        fh = ssot.fleet_avg_health(snap)
+        assert (fh["state"], fh["reason"]) == (UV, why)
+        p = uip.project(snap)
+        fact = _fact(p, "avg_health")
+        assert fact["state"] == UV and why in fact["reason"], (why, fact["reason"])
+        assert p["overview"]["fleet_health"]["reason"] == fact["reason"]
+        if why == "no_scored_basis":
+            assert "not a finite number" not in fact["reason"], fact["reason"]
+            assert "no scored health rows" in fact["reason"] and "health_scores" in fact["reason"], fact["reason"]
+        else:
+            assert "not a finite number" in fact["reason"], fact["reason"]
+    assert "no scored-row basis" in uip.DOMAIN_STATE_OWNERS[UV]
+
+
 def test_t7_minimal_snapshot_is_blind_spots_not_health(snaps, payloads):
     p = payloads["b"]
     ov, tr = p["overview"], p["trust"]
