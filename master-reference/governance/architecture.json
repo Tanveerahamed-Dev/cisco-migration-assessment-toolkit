@@ -92,6 +92,7 @@
         "cisco_toolkit/protocol_receipt_surfaces.py",
         "cisco_toolkit/stp_topology.py",
         "cisco_toolkit/traffic_assurance.py",
+        "cisco_toolkit/ui_projection.py",
         "cisco_toolkit/upgrade_targets.py",
         "cisco_toolkit/vtp_extended.py",
         "cisco_toolkit/vtp_safety.py",
