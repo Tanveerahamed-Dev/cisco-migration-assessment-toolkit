@@ -70,10 +70,8 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot`, **local-only until its D11 conditions hold** | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | Finishing phase 3.5 under a bounded audit (2026-09-30) | Commit 3.5. Run the rule-7 checks. Push, then open a PR to `main` listing the remaining FAILs as preview scope (D11 approved). |
-| W2 | One-application UI consolidation (AssessHub + Scope + explorer) | engine slices on short branches off `main` (now: `fix/engine-honest-headline`); UI slices after W1 merges | Claude Code | P0 prototype built from the engine sample fleet and published privately to the owner; ranked backlog in `docs/one-app-feature-backlog-2026-09-30.md`. P1 engine honesty fix under review (2026-09-30). | Merge `fix/engine-honest-headline`. Owner runs the prototype's 2-D vs 2.5-D task test on the reference laptop. After W1 merges: typed projection (`cisco_toolkit/ui_projection.py`) and the first core screens. |
-| W3 | This board + ADR 0007 | `docs/one-app-board` | Claude Code | Pull request #573; merges after the dependency-audit fix (#574) (2026-09-30) | Merge. Then delete this row (rule 8). |
-| W4 | Required-check unblock: master-reference npm advisories | `deps/master-reference-audit-20260930` | Claude Code | Pull request #574 (2026-09-30) | Merge. Then delete this row (rule 8). |
+| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot`, **local-only until its D11 conditions hold** | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | Finishing phase 3.5 preconditions. D11 is approved in ADR 0007, but that session pushes only after the owner confirms it directly in that session (2026-09-30). | Owner tells that session "D11 approved, push". It then commits 3.5, runs the rule-7 checks, merges `main`, and opens a PR listing the remaining FAILs as preview scope. |
+| W2 | One-application UI consolidation (AssessHub + Scope + explorer) | engine slices on short branches off `main` (now: `feat/ui-projection-slice1`); UI slices after W1 merges | Claude Code | Engine honesty (#575) merged. `ui_projection/1` slice 1 (Overview + Trust) is PR #577. Prototype published privately to the owner; backlog in `docs/one-app-feature-backlog-2026-09-30.md` (2026-09-30). | Merge #577. Owner runs the prototype's 2-D vs 2.5-D task test on the reference laptop. After W1 merges: backend endpoint serving the projection with response models, then the first core screens. |
 
 ## Owner decisions
 
@@ -99,6 +97,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-09-30, Claude Code:
+  - Merged #574 (npm advisories), #575 (engine honesty) and #573 (this board + ADR 0007); deleted
+    rows W3 and W4 (rule 8).
+  - Opened #577 (`ui_projection/1` slice 1).
 
 - 2026-09-30, Claude Code:
   - The owner delegated D0/D9/D10/D11 with full authority; recorded in ADR 0007.
