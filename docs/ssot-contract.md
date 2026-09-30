@@ -79,19 +79,31 @@ decides on the **key**, not the value: `avg_health` present and `null` is the pu
 must never be replaced by a recompute (an `Insufficient Data` row keeps its deduction-free score, so an
 all-rows mean fabricates ~100). A stored **number** over zero scored rows — every pre-G15 snapshot's
 hard `0` — is `not_assessed` too, and a non-numeric value is `unverified` (never "0 of N scored"). A
-finite number with **no scored-row basis** — `health_scores` absent or not a list, and no non-negative
-integer `posture.n_scored` — is `unverified` as well: the engine always writes the `health_scores` list
-(even a failed phase's `[]`) and publishes `n_scored` only on the abstention, so that shape is never its
-verbatim output, and without the rows the pre-G15 hard `0` over nothing cannot be told from a
-measurement. The result's `reason` (`ssot.FLEET_AVG_UNVERIFIED_REASONS`: `not_a_number` /
-`no_scored_basis`) names which; it is `null` for every other state. The explorer's `fleetHealthState`
+finite number with **no scored-row basis** — `health_scores` absent or not a list, and no abstention
+record `posture.n_scored` equal to the integer `0` — is `unverified` as well: the engine always writes
+the `health_scores` list (even a failed phase's `[]`) and publishes `n_scored` only on the abstention and
+only as `0`, so that shape is never its verbatim output, and without the rows the pre-G15 hard `0` over
+nothing cannot be told from a measurement. A positive `posture.n_scored` is no basis (a count vouching
+for its own average is not evidence that anything was scored), and a bool or float `0` is not the
+abstention record. The result's `reason` (`ssot.FLEET_AVG_UNVERIFIED_REASONS`: `not_a_number` /
+`no_scored_basis`) names which; it is `null` for every other state (a `not_assessed` cause, when the
+engine published one, is `posture.not_assessed`). The same absence makes every posture fact
+`not_collected` in the abstention core (so the fact lineage and the assertion pack never pass
+`n_critical == 0` over no health rows), and `ssot.summary` does not count a posture fact it cannot back —
+nor an `unverified` average — among its published headline figures. The explorer's `fleetHealthState`
 port does not yet carry the `no_scored_basis` rule (it still reads such a number as `measured`), so the
-two readers agree only on snapshots that carry `health_scores`. Only
+two readers agree only on snapshots that carry a `health_scores` **list**;
+`tests/test_ssot_owner_robustness.py` pins that divergence with a strict xfail that fails once the port
+lands. Only
 an `unpublished` brief (absent / failed / pre-posture) may recompute, over scored rows only.
 `ssot.reconcile` checks both directions for `avg_health`, `n_critical` and `n_poor`: a number published
 for zero scored rows, and `null` published while rows are scored (or the band is observed), are
 violations. When the `Health Scores` phase itself failed, its `[]` is not a raw basis: nothing is
-checked against it and nothing is counted as verified.
+checked against it and nothing is counted as verified. A health row whose band is outside the producer's
+vocabulary (or that is not a record) could be any band, so a band count or worst band it could change is
+reported as unverifiable rather than certified; only an observed `Critical` row still decides the worst
+band. `reconcile`, `audit` and `summary` are total on bad input: a finite-score sum that overflows a
+float falls back to the exact rational mean, and a hostile value is quoted through a bounded repr.
 
 ### Abstention states
 
@@ -108,8 +120,11 @@ phase-failure record (`failed_phases`, `phase_errors`) and the disclosure `ssot.
 (`ssot.AUDIT_DISCLOSURE_KEYS`: `ssot_reconciliation`, `n_violations`, `violations`) — are never read as a
 failed section, even though `ssot_reconciliation` carries the token `failed`: a reconciliation drift makes
 no section a fallback. `tests/test_ssot_owner_robustness.py` holds that classification complete against
-every literal key the producer writes. The deep-empty predicate behind `collected_but_empty` is iterative,
-so a hostile upload nested past the interpreter's recursion limit is classified, not raised on.
+every literal key any first-party module writes. The deep-empty predicate behind `collected_but_empty` is
+iterative, so a hostile upload nested past the interpreter's recursion limit is classified, not raised on;
+a failure label that is not a string is `unknown` (fails closed) without being rendered. A device scope
+that is not a string names no host the evidence can confirm was collected, so a fact scoped to it is
+`not_collected` (the assertion pack abstains) rather than a fleet-level verdict under its name.
 
 A headline fact stored under `executive_brief` is **derived** from other sections, so the abstention
 core also checks its raw basis: `ssot.DERIVED_FACT_BASIS` maps each dotted prefix
