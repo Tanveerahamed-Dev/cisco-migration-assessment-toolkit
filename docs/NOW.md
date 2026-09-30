@@ -70,8 +70,8 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot`, **local-only until its D11 conditions hold** | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | Finishing phase 3.5 preconditions. D11 is approved in ADR 0007, but that session pushes only after the owner confirms it directly in that session (2026-09-30). | Owner tells that session "D11 approved, push". It then commits 3.5, runs the rule-7 checks, merges `main`, and opens a PR listing the remaining FAILs as preview scope. |
-| W2 | One-application UI consolidation (AssessHub + Scope + explorer) | engine slices on short branches off `main` (now: `feat/ui-projection-slice1`); UI slices after W1 merges | Claude Code | Engine honesty (#575) merged. `ui_projection/1` slice 1 (Overview + Trust) is PR #577. Prototype published privately to the owner; backlog in `docs/one-app-feature-backlog-2026-09-30.md` (2026-09-30). | Merge #577. Owner runs the prototype's 2-D vs 2.5-D task test on the reference laptop. After W1 merges: backend endpoint serving the projection with response models, then the first core screens. |
+| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot`, published as PR #579 | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | PR #579 is open. The required master-reference compile fails on undeclared `atlas_scope` edges, unresolved `vite.config` imports, ambiguous `producer-emission` targets and JSONC `tsconfig` files; the diagnosis was sent to its holder. The PR is one merge behind `main` (2026-09-30). | Fix the compile findings, merge `main`, get CI green, merge. |
+| W2 | One-application UI consolidation (AssessHub + Scope + explorer) | engine slices on short branches off `main` (now: `feat/ui-projection-slice2`); UI slices after W1 merges | Claude Code | Merged: #575 engine honesty, #577 `ui_projection/1` slice 1 (Overview + Trust), #578 `ssot` owner robustness. Slice 2 (Inventory, device page, Findings) is a draft PR waiting for W1: it carries a tripwire for W1's new `evidence_refs` fields (2026-09-30). | After #579 merges: merge `main` into slice 2, project `evidence_refs` / `evidence_basis` / `deduction_refs`, then merge. Then add the backend endpoint serving the projection (paged, with response models) and the first core screens. The owner runs the prototype's 2-D vs 2.5-D task test. |
 
 ## Owner decisions
 
@@ -97,6 +97,12 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-09-30, Claude Code:
+  - Merged #577 (`ui_projection` slice 1) and #578 (`ssot` owner robustness).
+  - The owner confirmed D11, so W1 is published as PR #579; its compile diagnosis was sent to its
+    holder.
+  - Slice 2 is held as a draft until W1 merges.
 
 - 2026-09-30, Claude Code:
   - Merged #574 (npm advisories), #575 (engine honesty) and #573 (this board + ADR 0007); deleted
