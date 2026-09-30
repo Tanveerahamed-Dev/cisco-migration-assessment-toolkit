@@ -848,9 +848,16 @@ def test_t4g_a_zero_over_an_uncollected_basis_is_not_a_measurement(snaps):
     legacy = copy.deepcopy(snaps["a"])
     legacy.pop("health_scores")
     legacy["executive_brief"]["posture"] = {"avg_health": 0, "n_critical": 0, "n_poor": 0, "worst_band": ""}
-    assert ssot.fleet_avg_health(legacy)["state"] == "measured"          # the owner gap this guards
+    # the owner itself now withholds a number with no scored-row basis (it read `measured` when this
+    # projection first guarded the gap), and its abstention core calls the siblings a blind spot
+    fh = ssot.fleet_avg_health(legacy)
+    assert (fh["state"], fh["reason"]) == (UV, "no_scored_basis")
+    projected = uip.project(legacy)
+    assert _sv(_fact(projected, "avg_health")) == (UV, None)
     for name in POSTURE_NAMES:
-        assert _fact(uip.project(legacy), name)["state"] in (NC, NA), name
+        if name != "avg_health":
+            assert ssot.abstention_reason(legacy, ssot.CANONICAL_FACTS[name][0]) == NC, name
+            assert _fact(projected, name)["state"] == NC, name
 
 
 def test_t4h_top_gating_must_equal_the_producers_rule(snaps):
@@ -1039,32 +1046,45 @@ def test_t6_negative_paths(snaps):
     assert _sv(_fact(p, "n_unknown")) == (UV, None)
     p = edit(lambda s: s["executive_brief"]["posture"].update(avg_health=150))
     assert _fact(p, "avg_health")["state"] == UV
-    # a finite, fractional average is a measurement its owner accepts (a legacy / foreign producer)
+    # a finite, fractional average over scored rows is a measurement its owner accepts (a legacy / foreign
+    # producer): 72.5 reconciles to round(mean(72, 73))
     frac = copy.deepcopy(sample)
+    frac["health_scores"] = [{"switch": "a", "band": "Fair", "score": 72}, {"switch": "b", "band": "Fair", "score": 73}]
     frac["executive_brief"]["posture"]["avg_health"] = 72.5
-    frac.pop("health_scores")
     assert ssot.fleet_avg_health(frac)["state"] == "measured"
+    assert not any(v.startswith("executive_brief.posture.avg_health=") for v in ssot.reconcile(frac))
     assert _sv(_fact(uip.project(frac), "avg_health")) == (PUB, 72.5)
-    # with no health list to reconcile against, the score slot itself must bound the average
+    # over rows that reconcile, the score slot itself must still bound the average
     over = copy.deepcopy(frac)
+    over["health_scores"] = [{"switch": "a", "band": "Excellent", "score": 150}]
     over["executive_brief"]["posture"]["avg_health"] = 150
-    assert ssot.fleet_avg_health(over)["state"] == "measured" and ssot.reconcile(over) == []
+    assert ssot.fleet_avg_health(over)["state"] == "measured"
+    assert not any(v.startswith("executive_brief.posture.avg_health=") for v in ssot.reconcile(over))
     assert _sv(_fact(uip.project(over), "avg_health")) == (UV, None)
-    # the not-assessed reason says which case it is
-    withheld = copy.deepcopy(frac)
+    # with no health list at all the owner withholds the number itself (no scored-row basis)
+    bare = copy.deepcopy(frac)
+    bare.pop("health_scores")
+    assert (ssot.fleet_avg_health(bare)["state"], ssot.fleet_avg_health(bare)["reason"]) == (UV, "no_scored_basis")
+    assert _sv(_fact(uip.project(bare), "avg_health")) == (UV, None)
+    # the not-assessed reason says which case it is; a positive posture n_scored is no scored-row basis
+    withheld = copy.deepcopy(bare)
     withheld["executive_brief"]["posture"].update(avg_health=None, n_scored=5)
-    fact = _fact(uip.project(withheld), "avg_health")
-    assert fact["state"] == NA and "5 health row(s) are scored" in fact["reason"]
-    withheld["executive_brief"]["posture"].pop("n_scored")
+    assert ssot.fleet_avg_health(withheld)["n_scored"] is None
     fact = _fact(uip.project(withheld), "avg_health")
     assert fact["state"] == NA and "no scored health rows can be counted" in fact["reason"]
-    # an empty band over rows that carry no recognised band is the producer's "none observed"
+    withheld["executive_brief"]["posture"]["n_scored"] = 0          # the producer's abstention record
+    fact = _fact(uip.project(withheld), "avg_health")
+    assert fact["state"] == NA and "no device was health-scored" in fact["reason"]
+    # rows that carry no recognised band could be any band: the owner no longer certifies "none observed"
+    # over them, so the empty band is withheld with reconcile's reason rather than published as empty
     odd = copy.deepcopy(sample)
     for row in odd["health_scores"]:
         row["band"] = "Unrecognised"
     odd["executive_brief"]["posture"]["worst_band"] = ""
-    assert not any(v.startswith("executive_brief.posture.worst_band=") for v in ssot.reconcile(odd))
-    assert _fact(uip.project(odd), "worst_band")["state"] == CBE
+    worst = [v for v in ssot.reconcile(odd) if v.startswith("executive_brief.posture.worst_band=")]
+    assert len(worst) == 1 and "cannot be determined" in worst[0], worst
+    fact = _fact(uip.project(odd), "worst_band")
+    assert fact["state"] == UV and "cannot be determined" in fact["reason"], fact
     # failure refs: the `_unavailable` sentinel and an integrity failure token
     p = edit(lambda s: s.update(punchlist={"_unavailable": True}))
     punch = _axis_item(p, "Migration punch-list")["fact"]
@@ -1207,16 +1227,19 @@ def test_t10_total_on_garbage(name, snaps, payloads, validator):
         assert tr["unknown_evidence"]["state"]["state"] == UV
         assert [it["fact"]["state"] for it in tr["unknown_evidence"]["sources"]["items"]] == [UV]
     if name == "g_band_unhashable":
+        # the owner no longer raises on an unhashable band: it reports the band facts that row could change
+        # as unverifiable, so the live self-verification is published -- and says NOT verified
         s = tr["ssot"]
-        for key in ("verified", "n_facts", "n_checked", "n_violations", "violations"):
-            assert s[key]["state"] == UV and "ssot." in s[key]["reason"], key
-        assert s["stamp_matches_live"] is None
+        assert _sv(s["verified"]) == (PUB, False), s["verified"]
+        assert s["n_violations"]["state"] == PUB and s["n_violations"]["value"] >= 1
+        assert any("carry no recognised band" in v for v in s["violations"]["items"]), s["violations"]
+        assert s["stamp_matches_live"] is False                         # the engine's stamp said verified
         assert _fact(p, "n_devices")["state"] == PUB                    # the rest is unaffected
     if name == "g_deep_axes":
-        assert ov["axes"]["state"] == UV and "raised" in ov["axes"]["reason"]
+        # the owners are total at this depth: the brief is withheld for what it lacks, not for an owner fault
+        assert ov["axes"]["state"] == UV and "raised" not in ov["axes"]["reason"], ov["axes"]["reason"]
     if name == "g_deep_section":
-        assert {r["key"]: r["state"] for r in tr["census"]["rows"]["items"]} == {} or \
-            tr["census"]["rows"]["state"] == UV
+        assert {r["key"]: r["state"] for r in tr["census"]["rows"]["items"]} == {"schema": PUB, "punchlist": CBE}
         punch = [row for row in ov["absent_axes"] if row["axis"] == "Migration punch-list"]
         assert punch and punch[0]["fact"]["state"] in (UV, NC)
     if name == "g_deep_label":
