@@ -615,6 +615,12 @@ _TOO_DEEP = 20000                                           # past what str()/re
 
 
 def test_r2_the_nesting_really_defeats_str():
+    # Precondition for the bounded-message tests below: on the interpreters where it was observed
+    # (CPython 3.10-3.13 in CI), str() of this nesting raises. CPython 3.14's reworked recursion
+    # protection renders the same nesting (observed on the 3.14 CI leg), so the precondition is
+    # version-scoped rather than dropped; the bounding tests themselves run on every version.
+    if sys.version_info >= (3, 14):
+        pytest.skip("CPython 3.14+ renders a nesting this deep without RecursionError")
     with pytest.raises(RecursionError):
         str(_nest(_TOO_DEEP, 0, "list"))
 
