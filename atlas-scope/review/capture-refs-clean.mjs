@@ -614,7 +614,15 @@ async function captureLive(browser, t, { seed = true } = {}) {
 
 async function fetchAll(only) {
   mkdirSync(REFS_DIR, { recursive: true });
-  const prior = existsSync(MANIFEST) ? JSON.parse(readFileSync(MANIFEST, "utf8")) : { frames: [], controls: [] };
+  /* One read, no exists-check first (CodeQL js/file-system-race): no manifest yet is the empty set; one that is
+     there but will not parse still stops the run, as before. */
+  let prior;
+  try {
+    prior = JSON.parse(readFileSync(MANIFEST, "utf8"));
+  } catch (e) {
+    if (e?.code !== "ENOENT") throw e;
+    prior = { frames: [], controls: [] };
+  }
   const frames = new Map(prior.frames.map((f) => [f.id, f]));
   const controls = new Map((prior.controls ?? []).map((f) => [f.id, f]));
   const browser = await chromium.launch();

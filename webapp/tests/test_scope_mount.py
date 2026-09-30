@@ -196,7 +196,7 @@ def test_scope_routes_answer_without_any_store_access(tmp_path):
 
 
 #: Which inputs a NAIVE filesystem-serving shell (``Path(scope_dist) / rest``) would resolve to a
-#: file inside this test's own tmp directory on EVERY platform — there the secret is planted exactly
+#: file inside this test's own tmp directory on EVERY platform — there the canary is planted exactly
 #: where that shell would read it. The others resolve to a drive root or a UNC share (or, on POSIX, a
 #: backslash-named file inside the build), where nothing can be planted; for every input the
 #: request-time filesystem trap below is what a naive shell cannot pass.
@@ -221,15 +221,15 @@ _ASSET_TRAVERSALS = [
 
 def _nested_scope_dist(tmp_path: Path) -> Path:
     """The build sits three levels below tmp_path so every ``..`` input above still lands INSIDE the
-    test's own directory, where a secret can be planted at the exact spot a naive shell would read."""
+    test's own directory, where a canary can be planted at the exact spot a naive shell would read."""
     return tmp_path / "d1" / "d2" / "scope-dist"
 
 
 def _plant_where_a_naive_shell_would_read(tmp_path: Path, dist: Path, raw_target: str,
                                           prefix: str, base: Path | None = None) -> bytes | None:
-    """Plant a unique secret at ``normpath(base / rest)`` (``base`` defaults to the build root) —
+    """Plant a unique canary at ``normpath(base / rest)`` (``base`` defaults to the build root) —
     pure string arithmetic, never a filesystem resolve (which would touch a UNC share) — when that
-    lands outside the build ``dist`` and inside tmp_path. Returns the secret, or None when the target
+    lands outside the build ``dist`` and inside tmp_path. Returns the canary, or None when the target
     cannot be planted."""
     rest = urllib.parse.unquote(raw_target)[len(prefix):]
     target = Path(os.path.normpath(str((base or dist) / rest)))
@@ -240,10 +240,10 @@ def _plant_where_a_naive_shell_would_read(tmp_path: Path, dist: Path, raw_target
         return None
     if not inside_tmp or inside_dist:
         return None
-    secret = b"TOP-SECRET-" + hashlib.sha256(raw_target.encode()).hexdigest()[:16].encode()
+    canary = b"PLANTED-CANARY-" + hashlib.sha256(raw_target.encode()).hexdigest()[:16].encode()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(secret)
-    return secret
+    target.write_bytes(canary)
+    return canary
 
 
 @contextlib.contextmanager
@@ -284,16 +284,16 @@ def test_scope_traversal_and_unc_input_falls_back_to_the_shell(tmp_path, monkeyp
                                                                plantable):
     dist = _nested_scope_dist(tmp_path)
     files = write_scope_dist(dist)
-    secret = _plant_where_a_naive_shell_would_read(tmp_path, dist, path, "/scope/")
-    # NON-VACUITY: the inputs that climb out of the build really do have a secret waiting exactly
+    canary = _plant_where_a_naive_shell_would_read(tmp_path, dist, path, "/scope/")
+    # NON-VACUITY: the inputs that climb out of the build really do have a canary waiting exactly
     # where `dist / rest` points, so serving from disk would hand it out.
-    assert secret is not None or not plantable, f"{path}: nothing planted where it resolves"
+    assert canary is not None or not plantable, f"{path}: nothing planted where it resolves"
     with _client(tmp_path, dist) as c:
         with _filesystem_trap(monkeypatch) as touched:
             status, body = _raw_get(c.app, path)
         assert touched == [], f"{path}: the scope shell touched the filesystem at request time"
-        if secret is not None:
-            assert secret not in body
+        if canary is not None:
+            assert canary not in body
         assert status == 200, (path, status)
         assert body == files["index.html"], path
 
@@ -303,15 +303,15 @@ def test_scope_asset_traversal_is_404_never_a_file_outside_assets(tmp_path, monk
                                                                   plantable):
     dist = _nested_scope_dist(tmp_path)
     write_scope_dist(dist)
-    secret = _plant_where_a_naive_shell_would_read(tmp_path, dist, path, "/scope/assets/",
+    canary = _plant_where_a_naive_shell_would_read(tmp_path, dist, path, "/scope/assets/",
                                                    base=dist / "assets")
-    assert secret is not None or not plantable, f"{path}: nothing planted where it resolves"
+    assert canary is not None or not plantable, f"{path}: nothing planted where it resolves"
     with _client(tmp_path, dist) as c:
         with _filesystem_trap(monkeypatch) as touched:
             status, body = _raw_get(c.app, path)
         assert touched == [], f"{path}: the scope asset route touched the filesystem"
-        if secret is not None:
-            assert secret not in body
+        if canary is not None:
+            assert canary not in body
         assert status == 404, (path, status)
         assert SCOPE_MARKER.encode() not in body
 

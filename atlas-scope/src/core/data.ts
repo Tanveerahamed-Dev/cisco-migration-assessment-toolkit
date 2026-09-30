@@ -120,10 +120,12 @@ export const bySeverityThenRank = (a: Finding, b: Finding): number =>
   a.id.localeCompare(b.id);
 
 export const severityCounts = (items: readonly { severity: Severity | string }[]): Record<string, number> => {
-  const out: Record<string, number> = {};
-  for (const s of SEVERITY_ORDER) out[s] = 0;
-  for (const it of items) out[it.severity] = (out[it.severity] ?? 0) + 1;
-  return out;
+  /* Keyed by a severity the SNAPSHOT supplies, so counted in a Map (tools/lib/compile-model.mjs, THE DICTIONARY
+     RULE): on a plain object a severity named "constructor" started its count from the Object function, and one
+     named "__proto__" from Object.prototype. Object.fromEntries defines each count as an ordinary member. */
+  const counts = new Map<string, number>(SEVERITY_ORDER.map((s) => [s, 0]));
+  for (const it of items) counts.set(it.severity, (counts.get(it.severity) ?? 0) + 1);
+  return Object.fromEntries(counts);
 };
 
 /* ── resolving a citation back to the raw evidence it names ────────────────── */

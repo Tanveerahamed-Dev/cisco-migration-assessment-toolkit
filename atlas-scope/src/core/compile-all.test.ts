@@ -342,7 +342,31 @@ describe("client data never reaches the tracked files", () => {
     expect(readdirSync(join(pkg, "src")).sort(), "nothing new was created under src/").toEqual(srcBefore);
   });
 
-  it.each([["src/..data"], ["src./data"], ["src /data"], ["SRC/data"], ["src/panels"]])(
+  it("SRC/data for the SAMPLE is refused exactly where it IS src/data: on a case-insensitive file system (S1-V2)", () => {
+    /* The rule is identity, not spelling. Where the file system folds case (Windows, default macOS), "SRC" is
+       the src/ directory and the sample must be refused like any other spelling of it. Where it does not
+       (Linux CI), "SRC" is a different, new directory outside src/ — the sample is public, so compiling there
+       is allowed, and src/ must still be untouched. Which branch runs is measured, never assumed from the
+       platform name; both branches assert. */
+    const { pkg, tools } = sandbox({ withShipped: true });
+    const foldsCase = existsSync(join(pkg, "SRC"));
+    const before = snapshotOf(pkg);
+    const srcBefore = readdirSync(join(pkg, "src")).sort();
+    const dataBefore = readdirSync(join(pkg, "src", "data")).sort();
+    const r = cli(tools, ["--out", join(pkg, "SRC", "data")]);
+    if (foldsCase) {
+      expect(r.status, r.stderr).toBe(2);
+      expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+      expect(snapshotOf(pkg)).toEqual(before);
+    } else {
+      expect(r.status, r.stderr).toBe(0);
+      expect(existsSync(join(pkg, "SRC", "data", "fabric.json")), "it compiled to the separate SRC/ directory").toBe(true);
+    }
+    expect(readdirSync(join(pkg, "src")).sort(), "nothing new was created under src/").toEqual(srcBefore);
+    expect(readdirSync(join(pkg, "src", "data")).sort(), "src/data was not written").toEqual(dataBefore);
+  });
+
+  it.each([["src/..data"], ["src./data"], ["src /data"], ["src/panels"]])(
     "refuses --out %s even for the SAMPLE — the src/ rule alone, with no repository rule behind it (S1-V2)",
     (out) => {
       /* For a non-sample source the repository rule (S1-V4) would refuse these as well, so the cases above

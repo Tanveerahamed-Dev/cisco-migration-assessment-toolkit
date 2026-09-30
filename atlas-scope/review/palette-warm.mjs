@@ -435,16 +435,18 @@ export async function modalDialogsIn(files) {
  * @param {string | URL} srcDir
  */
 export async function appModalDialogs(srcDir) {
-  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { readdirSync, readFileSync } = await import("node:fs");
   const { join, relative } = await import("node:path");
   const { fileURLToPath } = await import("node:url");
   const root = typeof srcDir === "string" ? srcDir : fileURLToPath(srcDir);
   const files = {};
   const walk = (dir) => {
-    for (const name of readdirSync(dir)) {
+    /* The entry's type comes from the directory read itself — no second stat of the path before it is read. */
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const name = entry.name;
       if (name === "node_modules") continue;
       const p = join(dir, name);
-      if (statSync(p).isDirectory()) walk(p);
+      if (entry.isDirectory()) walk(p);
       else if (/\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name) && !name.endsWith(".d.ts")) files[relative(root, p).split("\\").join("/")] = readFileSync(p, "utf8");
     }
   };

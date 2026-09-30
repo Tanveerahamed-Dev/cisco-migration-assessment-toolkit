@@ -206,6 +206,12 @@
       "paths": ["webapp/frontend/"]
     },
     {
+      "id": "atlas_scope",
+      "layer": 9,
+      "trust_zone": "presentation",
+      "paths": ["atlas-scope/"]
+    },
+    {
       "id": "atlas_portable",
       "layer": 9,
       "trust_zone": "local_application",
@@ -368,6 +374,7 @@
     {"from": "master_reference", "to": "custody_collection", "reason": "Reference cannot collect or mutate operational evidence."},
     {"from": "master_reference", "to": "evidence_intake", "reason": "Reference accepts no client or device evidence."},
     {"from": "assesshub_frontend", "to": "analysis", "reason": "The client cannot rederive canonical or assessed facts."},
+    {"from": "atlas_scope", "to": "analysis", "reason": "The 3-D view projects one engine snapshot; it cannot import the engine's analysis to rederive facts."},
     {"from": "deliverables", "to": "custody_collection", "reason": "A renderer cannot trigger collection."},
     {"from": "sanitized_knowledge", "to": "canonical_snapshot", "reason": "Advisory knowledge cannot become observed truth."},
     {"from": "research_lane", "to": "canonical_snapshot", "reason": "Connected research is quarantined from assessment truth."}

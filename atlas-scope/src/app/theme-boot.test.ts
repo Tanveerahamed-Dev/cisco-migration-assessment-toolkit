@@ -191,9 +191,10 @@ describe("C4 half 3: one reader of the stored preference", () => {
     const owners: string[] = [];
     const readers: string[] = [];
     const walk = (dir: string): void => {
-      for (const name of readdirSync(dir)) {
-        const p = join(dir, name);
-        if (statSync(p).isDirectory()) walk(p);
+      /* The entry's type comes from the directory read itself — no second stat of the path before it is read. */
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, entry.name);
+        if (entry.isDirectory()) walk(p);
         else if (/\.(ts|tsx|mjs|js)$/.test(p) && !/\.test\.(ts|tsx)$/.test(p)) {
           const text = readFileSync(p, "utf8");
           if (!text.includes(THEME_STORAGE_KEY)) continue;
@@ -214,9 +215,10 @@ describe("C4 half 3: one reader of the stored preference", () => {
        second policy for a refused write. Writers go through writeThemePreference(). */
     const named: string[] = [];
     const walk = (dir: string): void => {
-      for (const name of readdirSync(dir)) {
-        const p = join(dir, name);
-        if (statSync(p).isDirectory()) walk(p);
+      /* The entry's type comes from the directory read itself — no second stat of the path before it is read. */
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, entry.name);
+        if (entry.isDirectory()) walk(p);
         else if (/\.(ts|tsx|mjs|js)$/.test(p) && !/\.test\.(ts|tsx)$/.test(p)) {
           if (readFileSync(p, "utf8").includes(THEME_STORAGE_KEY)) named.push(relative(SRC, p).split("\\").join("/"));
         }

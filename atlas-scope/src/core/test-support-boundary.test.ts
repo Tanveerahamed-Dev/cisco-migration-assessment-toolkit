@@ -172,9 +172,12 @@ function moduleGraph(root: string): ModuleGraph {
   const modules: string[] = [];
   const edges: Edge[] = [];
   const walk = (dir: string, asModules: boolean): void => {
-    for (const name of readdirSync(dir).sort()) {
+    /* The entry's type comes from the directory read itself — no second stat of the path before it is read. Sorted by
+       name in code-unit order, as `readdirSync(dir).sort()` was. */
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const name = entry.name;
       const p = join(dir, name);
-      if (statSync(p).isDirectory()) {
+      if (entry.isDirectory()) {
         if (name !== "node_modules") walk(p, asModules);
         continue;
       }

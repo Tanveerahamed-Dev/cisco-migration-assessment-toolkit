@@ -779,7 +779,9 @@ const markup = [
 ].join("\n");
 function rendered(selector: string): boolean {
   const classes = [...selector.matchAll(/\.([\w-]+)/g)].map((m) => m[1]!);
-  return classes.every((c) => new RegExp(`(^|[\\s"'\`{])${c.replace(/-/g, "\\-")}(?=[\\s"'\`}]|$)`, "m").test(markup));
+  /* Each class is matched as LITERAL text: every regex metacharacter is escaped (backslash included). A hyphen needs
+     no escape outside a character class, so `a-b` matches as it did when only hyphens were escaped. */
+  return classes.every((c) => new RegExp(`(^|[\\s"'\`{])${c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=[\\s"'\`}]|$)`, "m").test(markup));
 }
 const NEVER_RENDERED = /NEVER RENDERED/;
 

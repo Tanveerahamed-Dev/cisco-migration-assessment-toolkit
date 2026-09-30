@@ -315,7 +315,9 @@ describe("B7: every overlay states the coverage figures while it is open", () =>
     const q = ribCountQualifier();
     // Guard against a vacuous pass: on this snapshot both collected tables are shown incomplete.
     expect(q, "the snapshot's RIB qualifier is empty; this check would prove nothing").not.toBe("");
-    expect(text).toMatch(new RegExp(`RIBs \\d+/\\d+ ${q.replace(/[()]/g, "\\$&")}`));
+    /* The qualifier is matched as LITERAL text: every regex metacharacter in it is escaped (backslash included),
+       not only the parentheses it carries today. */
+    expect(text).toMatch(new RegExp(`RIBs \\d+/\\d+ ${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   });
 
   it("the qualifier is never dropped: it rides on the RIB segment, or stands alone when there is none", () => {

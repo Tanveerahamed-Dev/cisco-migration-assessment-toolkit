@@ -59,7 +59,7 @@
  * app refuses silently at runtime.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bindSource, SOURCE_REL, workingTreeDigest } from "../source-binding.mjs";
@@ -116,6 +116,37 @@ const within = (parent, child) => {
   return r.split(sep)[0] !== "..";
 };
 const posix = (/** @type {string} */ p) => p.split(sep).join("/");
+
+/** The Node error code of a failed file-system call, or undefined. @param {unknown} e */
+const errnoOf = (e) => (e !== null && typeof e === "object" && "code" in e && typeof e.code === "string" ? e.code : undefined);
+/** A failed open or read that means "no such file here": nothing at the path, a path through a non-directory, a directory. */
+const NOT_A_FILE = new Set(["ENOENT", "ENOTDIR", "EISDIR"]);
+
+/**
+ * The bytes of the REGULAR file at `path`, or null when there is none (nothing there, a directory, a device or a
+ * pipe). ONE open: the type is checked on the open descriptor and the same descriptor is read, so the file checked
+ * is the file read. The earlier `existsSync(p) && statSync(p).isFile()` followed by `readFileSync(p)` named the
+ * path twice, and another process could replace what it names between the check and the read (CodeQL
+ * js/file-system-race). O_NONBLOCK, where the platform has it, keeps the open of a FIFO from waiting for a writer.
+ * Any other failure (a permission refusal, an I/O error) is thrown as it is.
+ * @param {string} path
+ * @returns {Buffer | null}
+ */
+function readRegularFile(path) {
+  /** @type {number} */
+  let fd;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+  } catch (e) {
+    if (NOT_A_FILE.has(errnoOf(e) ?? "")) return null;
+    throw e;
+  }
+  try {
+    return fstatSync(fd).isFile() ? readFileSync(fd) : null;
+  } finally {
+    closeSync(fd);
+  }
+}
 
 /** Characters Win32 reserves in a path component (the drive colon lives in the root, not a component). */
 const WIN32_RESERVED = /[<>:"|?*]/;
@@ -426,11 +457,12 @@ export function compileToDisk(o) {
     ? { source: repoRel, sourceOrigin: "repository-file" }
     : { source: o.label ?? basename(sourceCanon), sourceOrigin: "external-file" };
 
-  /* ONE read of the bytes: everything below — validation, binding, compile — reads this buffer. */
-  if (!existsSync(sourcePath) || !statSync(sourcePath).isFile()) {
+  /* ONE read of the bytes: everything below — validation, binding, compile — reads this buffer. It is also the one
+     check that a regular file is there (readRegularFile), so what was checked is what was read. */
+  const bytes = readRegularFile(sourcePath);
+  if (bytes === null) {
     throw new CompileError("E_SOURCE_MISSING", `there is no snapshot file at ${inRepo ? repoRel : label.source + " (outside the repository)"}.`);
   }
-  const bytes = readFileSync(sourcePath);
   const v = assertValidSnapshot(bytes, { allowLegacy: o.allowLegacy === true });
   const binding = bindSource(bytes, label);
   /* The TRACKED set is compiled from the committed form only (see the header, THE TRACKED SET): the bytes as
@@ -452,11 +484,20 @@ export function compileToDisk(o) {
   /* A per-file command writes one file of a SET: refuse if a sibling on disk is bound elsewhere. */
   if (o.only !== undefined) {
     const mine = /** @type {{ file: string }} */ (allTargets.find((t) => t.key === o.only));
-    for (const sib of allTargets.filter((t) => t.key !== o.only && existsSync(t.path))) {
+    for (const sib of allTargets.filter((t) => t.key !== o.only)) {
+      /* One read, no exists-check first (CodeQL js/file-system-race): no sibling there is no mixed set; one that is
+         there but cannot be read or parsed is a sibling of unknown binding. */
+      /** @type {string | null} */
+      let text = null;
+      try {
+        text = readFileSync(sib.path, "utf8");
+      } catch (e) {
+        if (errnoOf(e) === "ENOENT" || errnoOf(e) === "ENOTDIR") continue;
+      }
       /** @type {Record<string, unknown> | null} */
       let meta = null;
       try {
-        meta = /** @type {{ meta?: Record<string, unknown> }} */ (JSON.parse(readFileSync(sib.path, "utf8"))).meta ?? null;
+        meta = text === null ? null : /** @type {{ meta?: Record<string, unknown> }} */ (JSON.parse(text)).meta ?? null;
       } catch {
         meta = null;
       }
