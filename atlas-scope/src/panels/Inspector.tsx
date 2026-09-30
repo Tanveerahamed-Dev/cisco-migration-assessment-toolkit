@@ -40,7 +40,7 @@ import {
 } from "react";
 import { recordReturn, returnFocus, type ReturnRecord } from "../app/focus-return";
 import { aclUndecidability } from "../core/acl-coverage";
-import { bandObserved } from "../core/band-qualification";
+import { bandScored, presentBand } from "../core/band-qualification";
 import { deviceById, fabric, findingById, linkById, resolveCite } from "../core/data";
 import { own } from "../core/own";
 import { aclBindings, documentsByFile, fabricDocument, ribEvidence } from "../core/dataset";
@@ -655,8 +655,10 @@ function computeGaps(): Gap[] {
         "Scoring produced no band for these devices. A missing band is not a good band: they are rendered as indeterminate, never as the default colour of the ramp.",
       total: nDev,
       items: fabric.devices
-        .filter((d) => !bandObserved(d))
-        .map((d) => d.host)
+        .filter((d) => !bandScored(d))
+        /* A device the engine banded not-measured, or with a band Atlas Scope does not recognise, has no health band
+           either; the row says which, in the band owner's words. */
+        .map((d) => (presentBand(d).legendKey === "none" ? d.host : `${d.host} — ${presentBand(d).short}`))
         .sort(),
     },
     {

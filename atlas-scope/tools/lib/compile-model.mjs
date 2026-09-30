@@ -1089,7 +1089,9 @@ export function compileFabric(snap, binding, opts = {}) {
     const ev = compileEvidence(obj(p), i, snap);
     return {
       id: `F${String(i + 1).padStart(3, "0")}`,
-      severity: term(p.severity, `punchlist[${i}].severity`) ?? "Info",
+      /* null = the producer states NO severity (absent, "", "-", "N/A", [NOT OBSERVED]): NOT STATED, never a member.
+         This read used to end `?? "Info"` — absence compiled to a low-risk grade (src/core/severity-absence.test.ts). */
+      severity: term(p.severity, `punchlist[${i}].severity`),
       rank: num(p.rank),
       priority: num(p.priority),
       category: val(p.category),
@@ -1117,7 +1119,7 @@ export function compileFabric(snap, binding, opts = {}) {
 
   const crossLayer = arr(snap.cross_layer).map((c, i) => ({
     id: val(c.id) ?? `CL-${i}`,
-    severity: term(c.severity, `cross_layer[${i}].severity`) ?? "Info",
+    severity: term(c.severity, `cross_layer[${i}].severity`), // null = not stated, never Info (as punchlist above)
     layers: val(c.layers),
     title: val(c.title) ?? "",
     detail: val(c.detail),

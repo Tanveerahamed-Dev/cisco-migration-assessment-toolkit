@@ -102,8 +102,8 @@ describe("the ranked queue", () => {
     const expected = [...fabric.findings]
       .sort(
         (a, b) =>
-          ["Critical", "High", "Medium", "Low", "Info"].indexOf(a.severity) -
-            ["Critical", "High", "Medium", "Low", "Info"].indexOf(b.severity) ||
+          ["Critical", "High", "Medium", "Low", "Info"].indexOf(String(a.severity)) -
+            ["Critical", "High", "Medium", "Low", "Info"].indexOf(String(b.severity)) ||
           (a.priority ?? 1e9) - (b.priority ?? 1e9) ||
           (a.rank ?? 1e9) - (b.rank ?? 1e9) ||
           a.id.localeCompare(b.id),
@@ -575,7 +575,7 @@ describe("the cross-layer corpus", () => {
      had no row in the DOM at all — neither marked nor revealed. */
   const joinsCrossLayer = (id: string): boolean => {
     const f = fabric.findings.find((x) => x.id === id)!;
-    const same = (a: { severity: string; title: string; detail: string | null }) =>
+    const same = (a: { severity: string | null; title: string; detail: string | null }) =>
       a.severity === f.severity && a.title === f.title && (a.detail ?? "") === (f.detail ?? "");
     return fabric.crossLayer.some(same) && fabric.findings.filter(same).length === 1;
   };

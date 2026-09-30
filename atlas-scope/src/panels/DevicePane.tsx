@@ -40,9 +40,10 @@ import {
   deviceById,
   routesOf,
   severityRank,
+  tallySeverities,
 } from "../core/data";
 import { holds, own } from "../core/own";
-import { presentBand, unassessedScoringDomains } from "../core/band-qualification";
+import { measuredScore, presentBand, unassessedScoringDomains } from "../core/band-qualification";
 import { aclUndecidability } from "../core/acl-coverage";
 import { ribIncompleteness } from "../forwarding/rib-completeness";
 import { placeholderZero } from "../core/placeholders";
@@ -61,7 +62,7 @@ import type {
   PhysicalHealth,
   Severity,
 } from "../core/types";
-import { recognisedKind, recognisedSeverity, SEVERITY_ORDER } from "../core/types";
+import { recognisedKind, recognisedSeverity } from "../core/types";
 
 /**
  * Fields `tools/compile-snapshot.mjs` emits that `PhysicalHealth` in `core/types.ts` does not yet
@@ -746,10 +747,17 @@ function HealthSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
             ...deviceFieldEvidence(device, "score"),
             v: (
               <>
-                <Meter label="Health score" value={device.score} max={100} tone={tone} />
+                {/* The score as a MEASUREMENT: none where the engine banded the device not-measured, whose published
+                    number is not one (core/band-qualification.ts measuredScore) — the band beside it says why. */}
+                <Meter label="Health score" value={measuredScore(device)} max={100} tone={tone} />
                 {/* The band's own citation names the record the band was READ from (health_scores),
                     not the inventory record, which holds no band and no score (B6). */}
                 <Band band={presentation} cite={device.fieldCites?.band ?? device.cite} onOpenCite={onOpenCite} {...(qualified ? { className: "dp-band--partial" } : {})} />
+                {presentation.notMeasured && device.score !== null ? (
+                  <span className="dp-score-gap" data-score-not-measured="">
+                    {`the engine publishes ${device.score} beside its not-measured band, so that number is not a health measurement`}
+                  </span>
+                ) : null}
                 {unassessed.length > 0 ? (
                   <span className="dp-score-gap" data-score-unassessed={unassessed.length}>
                     {`score does not reflect: ${unassessed.join(", ")} — never assessed on ${device.host}, so nothing there could deduct`}
@@ -1752,7 +1760,11 @@ function FindingsPanel({ hosts, onOpenCite }: { hosts: readonly string[]; onOpen
     return [...seen.values()].sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || a.id.localeCompare(b.id));
   }, [hosts]);
 
-  const counts = SEVERITY_ORDER.map((s) => ({ s, n: findings.filter((f) => f.severity === s).length }));
+  /* The tally accounts for EVERY listed finding (core/data.ts `tallySeverities`): the five graded severities, then each
+     severity the vocabulary does not name and the findings that state none, each in a slot of its own — so the slots
+     sum to the list below. Over the five alone it read `C0 H0 M0 L0 I0` above a list of findings whose severity it
+     does not name (2026-10-01 refuter): an all-zero readout over a non-empty list. */
+  const tally = tallySeverities(findings);
   /* "C 0 H 0 M 0 L 0 I 0" is a positive statement about a search, and it may only be made where a
      search was possible. On a host the collection never visited it is a clean all-zero readout on
      a device nobody looked at — the false-health class this pane exists to refuse. */
@@ -1777,12 +1789,24 @@ function FindingsPanel({ hosts, onOpenCite }: { hosts: readonly string[]; onOpen
       {searchable ? (
         <>
           <ul className="dp-sevcounts" aria-label={`Severity tally over ${collectedHosts.join(", ")}`}>
-            {counts.map(({ s, n }) => (
+            {tally.graded.map(({ severity: s, n }) => (
               <li key={s} className="dp-sevcounts__item">
                 <SeverityBadge severity={s} compact />
                 <span className="dp-sevcounts__n">{n}</span>
               </li>
             ))}
+            {tally.unrecognised.map(({ value, n }) => (
+              <li key={`unrecognised:${value}`} className="dp-sevcounts__item" data-sevcount="unrecognised">
+                <UnrecognisedValue what="severity" value={value} compact />
+                <span className="dp-sevcounts__n">{n}</span>
+              </li>
+            ))}
+            {tally.notStated > 0 ? (
+              <li className="dp-sevcounts__item" data-sevcount="not-stated">
+                <SeverityBadge severity={null} compact />
+                <span className="dp-sevcounts__n">{tally.notStated}</span>
+              </li>
+            ) : null}
           </ul>
           {partial ? (
             <NotObserved

@@ -37,9 +37,15 @@ export type Unrecognised = string & { readonly [UNRECOGNISED]: true };
 /*
  * THE CLOSED VOCABULARIES, owned here for Atlas Scope. Each mirrors an ENGINE constant that the engine contract
  * (contracts/engine-contract.v1.json) does not yet project, so none can be read from it: severity mirrors
- * cisco_toolkit/analyze.py `_APP_SEV_RANK`; band mirrors `_HEALTH_BANDS` (the engine also writes "Insufficient Data",
- * which this vocabulary does not name, so it is shown as unrecognised — never as a band); kind mirrors `_KIND_RANK`
- * plus the "device" every collected host is given. Membership is decided by the recognisers below and nowhere else.
+ * cisco_toolkit/analyze.py `_APP_SEV_RANK`; band mirrors `_HEALTH_BANDS` (the five SCORED bands) plus the engine's
+ * own not-measured band, NOT_MEASURED_BAND below; kind mirrors `_KIND_RANK` plus the "device" every collected host is
+ * given. Membership is decided by the recognisers below and nowhere else.
+ *
+ * A grouping, tally or ordering over one of these places EVERY record (2026-10-01 refuter: the queue grouped by
+ * severity dropped every finding whose severity the vocabulary does not name, and the device pane's tally read
+ * `C0 H0 M0 L0 I0` above a list of them): a member under its member, a value the vocabulary does not name under its
+ * own "unrecognised" entry, an absent value under an explicit not-observed / not-stated entry — so the counts sum to
+ * the records. core/query.ts `groupItems` and core/data.ts `tallySeverities` are the owners that do it.
  */
 export type Severity = "Critical" | "High" | "Medium" | "Low" | "Info";
 export type Band = "Excellent" | "Good" | "Fair" | "Poor" | "Critical";
@@ -47,22 +53,41 @@ export type OpStatus = "up" | "down" | "unknown" | string;
 
 export const SEVERITY_ORDER: readonly Severity[] = ["Critical", "High", "Medium", "Low", "Info"];
 export const BAND_ORDER: readonly Band[] = ["Excellent", "Good", "Fair", "Poor", "Critical"];
+/**
+ * The ENGINE'S OWN NOT-MEASURED BAND. cisco_toolkit/analyze.py `compute_health_scores` writes it for a host whose data
+ * quality was never measured, fell below the threshold, or whose interface parse yielded nothing ("collection gap /
+ * unparseable != healthy"), and `_APP_BAND_RANK` / `_CRIT_WEIGHTS` name it beside the five scored bands; the engine
+ * excludes such rows from its own score statistics. It is a STATED ABSENCE of a measurement, not a health verdict and
+ * not an unknown word: it is shown as "not measured" — indeterminate, never healthy, never scored (the number the
+ * engine publishes beside it is not a measurement: core/band-qualification.ts `measuredScore`), never a band colour.
+ */
+export const NOT_MEASURED_BAND = "Insufficient Data";
+export type NotMeasuredBand = typeof NOT_MEASURED_BAND;
 export const DEVICE_KINDS = ["device", "switch", "router", "firewall", "ap", "phone", "endpoint", "unknown"] as const;
 export type DeviceKind = (typeof DEVICE_KINDS)[number];
+/** The closed vocabularies, by the name every surface uses for them. */
+export type VocabularyName = "severity" | "band" | "kind";
 
 /** Whether `value` is exactly a member of `terms` (an array test: no prototype member can answer). */
 const member = <T extends string>(terms: readonly T[], value: string | null | undefined): value is T =>
   typeof value === "string" && (terms as readonly string[]).includes(value);
 /** Is this a severity Atlas Scope knows? The one test a surface narrows a snapshot severity by. */
 export const recognisedSeverity = (value: string | null | undefined): value is Severity => member(SEVERITY_ORDER, value);
-/** Is this a health band Atlas Scope knows? */
+/** Is this one of the five SCORED health bands? (The engine's not-measured band is not one: see `notMeasuredBand`.) */
 export const recognisedBand = (value: string | null | undefined): value is Band => member(BAND_ORDER, value);
+/** Is this the engine's own not-measured band — a stated absence of a measurement, never an unrecognised band? */
+export const notMeasuredBand = (value: string | null | undefined): value is NotMeasuredBand => value === NOT_MEASURED_BAND;
 /** Is this a device kind Atlas Scope knows? */
 export const recognisedKind = (value: string | null | undefined): value is DeviceKind => member(DEVICE_KINDS, value);
 /** How every surface names an unrecognised value: the vocabulary, then the producer's text exactly (JSON-quoted, so
  *  an empty, padded or odd string stays visible). */
-export const unrecognisedPhrase = (vocabulary: "severity" | "band" | "kind", value: string): string =>
+export const unrecognisedPhrase = (vocabulary: VocabularyName, value: string): string =>
   `unrecognised ${vocabulary} ${JSON.stringify(value)}`;
+/** How every surface names a record that states NO severity: not graded — never Info, never "not observed" alone. */
+export const SEVERITY_NOT_STATED = "severity not stated";
+/** A compiled severity in words: the member itself, `unrecognised severity "…"`, or "severity not stated". */
+export const severityWords = (severity: string | null): string =>
+  severity === null ? SEVERITY_NOT_STATED : recognisedSeverity(severity) ? severity : unrecognisedPhrase("severity", severity);
 
 export interface FailureImpact {
   severity: string | null;
@@ -97,8 +122,9 @@ export interface Device {
   powerSupplies: number | null;
   modules: number | null;
   score: number | null;
-  /** null = no band computed; an Unrecognised value = a band the snapshot states that Atlas Scope does not know. */
-  band: Band | Unrecognised | null;
+  /** null = no band computed; NOT_MEASURED_BAND = the engine states it could not measure this device; an Unrecognised
+   *  value = a band the snapshot states that Atlas Scope does not know. Read only by core/band-qualification.ts. */
+  band: Band | NotMeasuredBand | Unrecognised | null;
   criticality: number | null;
   dataQuality: number | null;
   deductions: string[];
@@ -179,8 +205,9 @@ export interface CableMapNode {
 
 export interface Finding {
   id: string;
-  /** The producer's severity, or an Unrecognised value it wrote (see `recognisedSeverity`). */
-  severity: Severity | Unrecognised;
+  /** The producer's severity, an Unrecognised value it wrote (see `recognisedSeverity`), or null when it states
+   *  none — NOT STATED, which is never Info (tools/lib/compile-model.mjs; `severityWords`, SEVERITY_NOT_STATED). */
+  severity: Severity | Unrecognised | null;
   rank: number | null;
   priority: number | null;
   category: string | null;
@@ -327,7 +354,8 @@ export interface EvidenceProjection {
 
 export interface CrossLayerFinding {
   id: string;
-  severity: Severity | Unrecognised;
+  /** As `Finding.severity`: a member, an Unrecognised value, or null when the record states none (never Info). */
+  severity: Severity | Unrecognised | null;
   layers: string | null;
   title: string;
   detail: string | null;

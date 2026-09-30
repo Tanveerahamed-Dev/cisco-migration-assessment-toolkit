@@ -24,7 +24,7 @@
  */
 import { useMemo, type ReactElement } from "react";
 import { aclUndecidability, undecidableAclSentence } from "../core/acl-coverage";
-import { bandObserved } from "../core/band-qualification";
+import { bandScored } from "../core/band-qualification";
 import { fabric, hasRib } from "../core/data";
 import { own } from "../core/own";
 import { missingInventoryFields } from "../core/claims";
@@ -181,7 +181,9 @@ export function coverageRows(): CoverageRow[] {
       "band",
       "Health score and band",
       "the engine scored this device and placed it in a band",
-      bandObserved,
+      /* Scored into one of the five bands: not the engine's "Insufficient Data" (it says it could not score), and not
+         a band Atlas Scope does not recognise. */
+      bandScored,
       null,
       null,
     ),

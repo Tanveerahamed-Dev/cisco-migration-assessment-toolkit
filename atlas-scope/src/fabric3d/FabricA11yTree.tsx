@@ -36,7 +36,7 @@ import {
 } from "react";
 
 import { linkFailureImpact, type LinkFailureResult } from "../analysis/blast";
-import { bandObserved, presentBand } from "../core/band-qualification";
+import { bandScored, presentBand } from "../core/band-qualification";
 import { classifyLink } from "./geometry/cables";
 import { useInvestigation } from "../core/store";
 import type { Device, Link } from "../core/types";
@@ -150,7 +150,7 @@ function buildModel(
           : "topology only — never collected"
         : "no device record",
       /* A qualified band is partly an absence of evidence, so it is styled as a claim too (B1). */
-      metaUnobserved: !dev || !dev.collected || !bandObserved(dev) || presentBand(dev).qualified,
+      metaUnobserved: !dev || !dev.collected || !bandScored(dev) || presentBand(dev).qualified,
       targetId: dev ? dev.id : null,
       childKeys,
       orphan: !dev,

@@ -398,7 +398,7 @@ const memo = <T>(fn: () => T): (() => T) => {
    members are ever looked up in it, so an unrecognised severity is counted but never offered as an example. */
 const findingsBySeverity = memo((): Map<string, number> => {
   const counts = new Map<string, number>();
-  for (const f of fabric.findings) counts.set(f.severity, (counts.get(f.severity) ?? 0) + 1);
+  for (const f of fabric.findings) if (f.severity !== null) counts.set(f.severity, (counts.get(f.severity) ?? 0) + 1);
   return counts;
 });
 

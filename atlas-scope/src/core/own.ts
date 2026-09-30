@@ -91,16 +91,21 @@ const isDictionary = (v: unknown): v is object => v !== null && typeof v === "ob
 /** The steps of a path: "fabric.evidenceRecords[].cut" -> ["fabric", "evidenceRecords", "[]", "cut"]. */
 const stepsOf = (path: string): string[] => path.split(".").flatMap((s) => (s.endsWith("[]") ? [s.slice(0, -2), "[]"] : [s]));
 
-/** Every value `steps` reaches from `from` (own members only; a value of the wrong shape reaches nothing). */
+/**
+ * Every value `steps` reaches from `from` (own members only; a value of the wrong shape reaches nothing). Appended
+ * ELEMENT BY ELEMENT: `next.push(...list)` passes every element as a call argument, and past ~130,000 evidence
+ * records that overflowed the engine's argument limit, so the install door threw `RangeError: Maximum call stack size
+ * exceeded` on a large fleet (2026-10-01 refuter; own.scale.test.ts runs 200,000).
+ */
 function reach(from: unknown, steps: readonly string[]): unknown[] {
   let here: unknown[] = [from];
   for (const step of steps) {
     const next: unknown[] = [];
     for (const v of here) {
       if (step === "[]") {
-        if (Array.isArray(v)) next.push(...(v as unknown[]));
+        if (Array.isArray(v)) for (const x of v as unknown[]) next.push(x);
       } else if (step === "*") {
-        if (isDictionary(v)) next.push(...Object.values(v));
+        if (isDictionary(v)) for (const x of Object.values(v)) next.push(x);
       } else if (isDictionary(v) && Object.hasOwn(v, step)) {
         next.push((v as Record<string, unknown>)[step]);
       }

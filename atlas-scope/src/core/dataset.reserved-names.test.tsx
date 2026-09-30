@@ -311,7 +311,9 @@ describe("a name a dictionary does not hold reads as absent, never as an inherit
   });
 
   it("core/data severityRank: a severity no rank is defined for sorts after every known one", () => {
-    for (const s of RESERVED) expect(answer(() => R.data.severityRank(s)), s).toBe("98");
+    /* The unrecognised rank, stated once in core/data.ts (after Info, before not stated) — never a function's answer. */
+    for (const s of RESERVED) expect(answer(() => R.data.severityRank(s)), s).toBe(String(R.data.UNRECOGNISED_SEVERITY_RANK));
+    expect(R.data.UNRECOGNISED_SEVERITY_RANK).toBeGreaterThan(R.data.severityRank("Info"));
   });
 
   it("core/data resolveCite: a path through a name no dictionary holds does not resolve", () => {

@@ -120,7 +120,21 @@ export const hasRib = (host: string): boolean => holds(fabric.routes, host);
 /* A Map: the severity asked about is the SNAPSHOT's, and `SEV_RANK[s]` on a plain object ranked a severity named
    "toString" as a function (core/own.ts says why). */
 const SEV_RANK: ReadonlyMap<string, number> = new Map(SEVERITY_ORDER.map((s, i) => [s, i]));
-export const severityRank = (s: string | null): number => (s === null ? 99 : (SEV_RANK.get(s) ?? 98));
+/**
+ * WHERE A SEVERITY OFF THE GRADED SCALE SORTS — a deliberate position, stated once. The five graded severities rank
+ * 0-4, Critical first. A severity the vocabulary does not name, and a record that states none, are NOT points on that
+ * scale: ranking an unrecognised "Bogus" 98 — after Info — said it was the least severe finding there is (2026-10-01
+ * refuter). So both come AFTER every graded finding in the ranked order — unrecognised first (the producer graded it,
+ * in words Atlas Scope does not know), then not stated (it graded nothing) — each shown under its own labelled group
+ * (core/query.ts `groupItems`), never folded into a graded one. A sort the reader can REVERSE reads
+ * `gradedSeverityRank`, which answers null for both, so they sink in either direction exactly as an unobserved value
+ * does (core/query.ts `cmpCell`): an ungraded record is never presented as the extreme of the scale, at either end.
+ */
+export const UNRECOGNISED_SEVERITY_RANK = SEVERITY_ORDER.length;
+export const NOT_STATED_SEVERITY_RANK = SEVERITY_ORDER.length + 1;
+export const severityRank = (s: string | null): number => (s === null ? NOT_STATED_SEVERITY_RANK : (SEV_RANK.get(s) ?? UNRECOGNISED_SEVERITY_RANK));
+/** The rank on the graded scale, or null for a severity that is not a point on it (unrecognised, or not stated). */
+export const gradedSeverityRank = (s: string | null): number | null => (s === null ? null : (SEV_RANK.get(s) ?? null));
 
 export const bySeverityThenRank = (a: Finding, b: Finding): number =>
   severityRank(a.severity) - severityRank(b.severity) ||
@@ -128,15 +142,51 @@ export const bySeverityThenRank = (a: Finding, b: Finding): number =>
   (a.rank ?? 1e9) - (b.rank ?? 1e9) ||
   a.id.localeCompare(b.id);
 
-export const severityCounts = (items: readonly { severity: Severity | string }[]): NameKeyed<number> => {
+/** Counts by the severity each record STATES (a record that states none is not counted here — `tallySeverities` is
+ *  the accounting that sums to its input). */
+export const severityCounts = (items: readonly { severity: Severity | string | null }[]): NameKeyed<number> => {
   /* Keyed by a severity the SNAPSHOT supplies, so counted in a Map (tools/lib/compile-model.mjs, THE DICTIONARY
      RULE): on a plain object a severity named "constructor" started its count from the Object function, and one
      named "__proto__" from Object.prototype. `nameKeyed` defines each count as an own member of a dictionary with no
      prototype (core/own.ts). */
   const counts = new Map<string, number>(SEVERITY_ORDER.map((s) => [s, 0]));
-  for (const it of items) counts.set(it.severity, (counts.get(it.severity) ?? 0) + 1);
+  for (const it of items) if (it.severity !== null) counts.set(it.severity, (counts.get(it.severity) ?? 0) + 1);
   return nameKeyed(counts);
 };
+
+/** A severity tally that accounts for every record it is given: graded + unrecognised + not stated = total. */
+export interface SeverityTally {
+  /** Every graded severity in SEVERITY_ORDER, zero included ("Info 0" is a statement about a search). */
+  graded: { severity: Severity; n: number }[];
+  /** Each severity the vocabulary does not name, as the producer wrote it, with its count (ordered by that text). */
+  unrecognised: { value: string; n: number }[];
+  /** Records that state no severity. */
+  notStated: number;
+  total: number;
+}
+/**
+ * THE ONE SEVERITY TALLY a surface prints. A tally over the five graded severities alone read `C0 H0 M0 L0 I0` above a
+ * list of findings whose severity the vocabulary does not name (2026-10-01 refuter): an all-zero readout over a
+ * non-empty list, the false-health class. This one places every record — graded, unrecognised or not stated — so
+ * its parts always sum to `total`, which is the input's length.
+ */
+export function tallySeverities(items: readonly { severity: Severity | string | null }[]): SeverityTally {
+  const graded = new Map<string, number>(SEVERITY_ORDER.map((s) => [s, 0]));
+  const other = new Map<string, number>();
+  let notStated = 0;
+  for (const it of items) {
+    const s = it.severity;
+    if (s === null) notStated++;
+    else if (graded.has(s)) graded.set(s, (graded.get(s) ?? 0) + 1);
+    else other.set(s, (other.get(s) ?? 0) + 1);
+  }
+  return {
+    graded: SEVERITY_ORDER.map((severity) => ({ severity, n: graded.get(severity) ?? 0 })),
+    unrecognised: [...other].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([value, n]) => ({ value, n })),
+    notStated,
+    total: items.length,
+  };
+}
 
 /* ── resolving a citation back to the raw evidence it names ────────────────── */
 

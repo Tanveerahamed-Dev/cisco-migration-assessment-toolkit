@@ -46,6 +46,7 @@ import { presentBand } from "../core/band-qualification";
 import { deviceById, fabric, findingById } from "../core/data";
 import { applyToFindings, parseQuery, rankedSearch, type SearchHit } from "../core/query";
 import { useInvestigation } from "../core/store";
+import { severityWords } from "../core/types";
 import { useSceneStats } from "../fabric3d/telemetry";
 import { IconArrowRight, IconSearch } from "../ui/icons";
 import { Band, coverageFigures, Dialog, Kbd, LiveRegion, NotObserved, SeverityBadge } from "../ui/primitives";
@@ -387,24 +388,23 @@ function hitRow(hit: SearchHit, close: Close): Row {
   }
 
   if (hit.kind === "finding" || hit.kind === "cross-layer") {
-    const severity =
-      hit.kind === "finding"
-        ? (findingById.get(hit.id)?.severity ?? null)
-        : (crossLayerByCite(hit.cite)?.severity ?? null);
+    /* The record, not its severity, decides the not-observed branch: a record that STATES no severity is shown as
+       "severity not stated" by the badge, and one this snapshot does not hold as not observed. */
+    const record = (hit.kind === "finding" ? findingById.get(hit.id) : crossLayerByCite(hit.cite)) ?? null;
     return {
       ...base,
       label: (
         <span className="palette__title">
-          {severity === null ? (
+          {record === null ? (
             <NotObserved what="severity" compact />
           ) : (
-            <SeverityBadge severity={severity} compact />
+            <SeverityBadge severity={record.severity} compact />
           )}
           <span className="palette__mono">{hit.id}</span>
           <span className="palette__text">{hit.label}</span>
         </span>
       ),
-      text: `${severity ?? "severity not observed"}, ${hit.id}, ${hit.label}`,
+      text: `${record === null ? "severity not observed" : severityWords(record.severity)}, ${hit.id}, ${hit.label}`,
       detail: hit.detail ?? <NotObserved what="detail" compact />,
       run: () => {
         close(hit.kind === "finding" ? activeFindingLanding : undefined);

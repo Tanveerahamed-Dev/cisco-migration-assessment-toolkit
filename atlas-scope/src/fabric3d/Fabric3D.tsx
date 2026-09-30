@@ -21,7 +21,7 @@ import { bandOfHopIn, bandOfTrace } from "../core/claims";
 import { deviceById, fabric, findingsByHost, linkById, linksByHost } from "../core/data";
 import { applyToDevices, parseQuery } from "../core/query";
 import { useInvestigation, useReducedMotion } from "../core/store";
-import { recognisedSeverity, type Device, type Link, type Trace } from "../core/types";
+import { recognisedKind, recognisedSeverity, unrecognisedPhrase, type Device, type Link, type Trace } from "../core/types";
 
 import type { FabricScene, HighlightState, PickResult, QualityTier, SceneEvent } from "./contract";
 import { FabricA11yTree, linkCutSentence } from "./FabricA11yTree";
@@ -517,7 +517,7 @@ export function describeDevice(id: string): string {
     : "Finding count not observed — this device was never collected, so a tally would count an empty search rather than an assessed device.";
   return [
     `${d.host} selected.`,
-    `${d.kind}.`,
+    `${recognisedKind(d.kind) ? d.kind : unrecognisedPhrase("kind", d.kind)}.`,
     d.collected ? "Collected." : "Topology only: this device was never collected.",
     /* The band as the ONE owner presents it: a favourable band on a host with unassessed scoring
        domains is announced as partial with the gaps named, exactly as DevicePane draws it (B1). */
@@ -1384,7 +1384,10 @@ export function Fabric3D({
   const labelFinding = useMemo(() => {
     if (findingId === null) return null;
     const f = fabric.findings.find((x) => x.id === findingId);
-    return f === undefined ? null : { id: f.id, severity: String(f.severity).toLowerCase(), hosts: new Set(f.devices) };
+    /* The mark's ink is keyed by a MEMBER only: `String(severity).toLowerCase()` drew an unrecognised "critical" in the
+       Critical outline and a missing one as "null". Anything off the graded scale gets a non-member token. */
+    const severity = f === undefined ? "" : recognisedSeverity(f.severity) ? f.severity.toLowerCase() : f.severity === null ? "not-stated" : "unrecognised";
+    return f === undefined ? null : { id: f.id, severity, hosts: new Set(f.devices) };
   }, [findingId]);
 
   useEffect(() => {

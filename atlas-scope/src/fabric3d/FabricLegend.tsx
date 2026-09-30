@@ -20,7 +20,7 @@ import {
   type ReactNode,
 } from "react";
 
-import { bandToken, isFavourableBand, PARTIAL_MARK, presentBand, QUALIFIED_BAND_TOKEN } from "../core/band-qualification";
+import { bandToken, isFavourableBand, NOT_MEASURED_LABEL, PARTIAL_MARK, presentBand, QUALIFIED_BAND_TOKEN } from "../core/band-qualification";
 import { recognisedKind, unrecognisedPhrase, type Device, type DeviceKind, type Link } from "../core/types";
 import { roleGlyphClass } from "../core/roles";
 
@@ -228,6 +228,9 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
   const keyCount = (k: string) => legendKeys.filter((x) => x === k).length;
   const bandCount = (b: string) => keyCount(b);
   const bandUnobserved = keyCount("none");
+  /* The engine's own not-measured band ("Insufficient Data") is counted in a row of its own: it is neither a band nor an
+     unrecognised value, and a device counted in no row would be a chassis no row describes. */
+  const bandNotMeasured = keyCount("not-measured");
   /* A band the snapshot states that the vocabulary does not name is counted in a row of its own, by the value it
      carries (core/band-qualification.ts gives it the legend key "unrecognised"): dropped from every row, the device
      would be counted nowhere and its chassis described by no row. */
@@ -345,6 +348,14 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
               count={unrecognisedBandCount(b)}
             />
           ))}
+          {bandNotMeasured > 0 ? (
+            <Row
+              swatch={bandSwatch("?", undefined, "fabric3d-legend__chassis--wire")}
+              name={NOT_MEASURED_LABEL}
+              meaning="The engine states it could not measure the device. Drawn indeterminate; not a band, not a score."
+              count={bandNotMeasured}
+            />
+          ) : null}
           <Row
             swatch={bandSwatch("?", undefined, "fabric3d-legend__chassis--wire")}
             name="Band not observed"
