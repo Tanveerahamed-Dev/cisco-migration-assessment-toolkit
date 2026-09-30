@@ -1006,6 +1006,17 @@ def _glance_rows(snap):
         health = ("fleet health NOT ASSESSED — no device was health-scored [NOT OBSERVED]; "
                   "not assessed, not clear"
                   + (f" · {f.get('n_critical')} Critical-band switch(es) observed" if f.get("n_critical") else ""))
+    elif _fh["state"] == "unverified" and _fh.get("reason") == "no_scored_basis":
+        # A NUMBER is published, but the snapshot carries no health-score rows it was computed over (an
+        # upload or a stripped snapshot; the engine always writes them). "the published value is not a number"
+        # was false for it, and the posture's band counts are exactly as unbacked: "0 Critical, 0 Poor" read
+        # as a healthy fleet. A reported adverse count is still shown (hiding it would read as health too),
+        # labelled unverified; a zero is never printed.
+        _adverse = [f"{f[k]} {label}" for k, label in (("n_critical", "Critical"), ("n_poor", "Poor"))
+                    if f.get(k)]
+        health = ("average health UNVERIFIED — a value is published but the snapshot carries no health-score "
+                  "rows to verify it [NOT OBSERVED]; not assessed, not clear"
+                  + (f" · {', '.join(_adverse)} reported, unverified" if _adverse else ""))
     elif _fh["state"] == "unverified":
         health = (f"average health UNVERIFIED — the published value is not a number; "
                   f"{v(f.get('n_critical'))} Critical, {v(f.get('n_poor'))} Poor")

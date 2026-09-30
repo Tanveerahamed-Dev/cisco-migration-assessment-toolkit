@@ -95,7 +95,8 @@ WITHHELD_STATES: Tuple[str, ...] = tuple(s for s in STATES if s != _PUB)
 #: Who applies each domain token (the abstention states are owned by ``ssot.abstention_reason``).
 DOMAIN_STATE_OWNERS: Mapping[str, str] = MappingProxyType({
     _NA: "ssot.fleet_avg_health (avg_health; the other posture facts follow it when no device is scored)",
-    _UV: "ssot.fleet_avg_health (a non-finite avg_health); cisco_toolkit.ui_projection (slot type checks, "
+    _UV: "ssot.fleet_avg_health (an avg_health that is not a finite number, or has no scored-row basis); "
+         "cisco_toolkit.ui_projection (slot type checks, "
          "ssot.reconcile violations, contradictions with the producer's rule, owner faults, untrustworthy zeros)",
 })
 #: ``ssot.fleet_avg_health`` state vocabulary (not exported by its owner; held by tests).
@@ -510,6 +511,19 @@ def _not_assessed_reason(ctx: _Ctx) -> str:
     return f"{head} (ssot.fleet_avg_health){tail}"
 
 
+def _fleet_unverified_reason(owner_reason: Any) -> str:
+    """Why ``ssot.fleet_avg_health`` withholds a published average, in its own reason's words: a finite number
+    with no scored health rows behind it is NOT "not a finite number" (``ssot.FLEET_AVG_UNVERIFIED_REASONS``)."""
+    if owner_reason == "no_scored_basis":
+        return ("unverified: ssot.fleet_avg_health finds no scored health rows behind the published average "
+                "(reason no_scored_basis): the snapshot carries no health_scores list, so the number is not a "
+                "measurement")
+    if owner_reason == "not_a_number":
+        return ("unverified: ssot.fleet_avg_health reports a published average that is not a finite number "
+                "(reason not_a_number)")
+    return "unverified: ssot.fleet_avg_health withholds the published average as not a measurement"
+
+
 def _envelope(state: str, value: Any, subject: Optional[str], refs: List[Dict[str, str]], basis: str,
               reason: str, owner_token: Optional[str] = None, token_owner: str = "ssot.abstention_reason",
               caveats: Sequence[str] = ()) -> Dict[str, Any]:
@@ -576,7 +590,7 @@ def _scalar(ctx: _Ctx, path: str, slot: str, basis: str, *, vocab: Sequence[str]
             state = _NA
         elif owner_token == _UV:
             state = _UV
-            reason = "unverified: ssot.fleet_avg_health reports a published average that is not a finite number"
+            reason = _fleet_unverified_reason(ctx.fh.get("reason"))
     elif (posture_name in _POSTURE_FACTS and (ctx.fh["state"] == _NA or ctx.fh.get("n_scored") == 0)
           and _carries_nothing(raw)):
         state = _NA
