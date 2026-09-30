@@ -32,6 +32,8 @@ Round 2 -- the independent refuters of that fix, each finding reproduced here be
   host / device still raised out of ``failed_sections``, ``reconcile``, ``segmentation_facts`` and
   ``abstention_reason``; a non-dict snapshot raised out of ``reconcile`` / ``audit`` / ``summary``.
 * The producer-key scan covered one file; it now covers every first-party Python file.
+* The DOCX At-a-Glance row said "the published value is not a number" for a published NUMBER with no rows
+  behind it, beside "0 Critical, 0 Poor" counts exactly as unbacked; it now branches on the owner's reason.
 """
 from __future__ import annotations
 
@@ -446,12 +448,54 @@ def test_d4_every_state_with_a_scored_row_basis_is_unchanged():
                                                "n_rows": None, "reason": None}
 
 
-def test_d4_a_stripped_legacy_zero_is_no_longer_rendered_as_a_measurement():
-    """The consumer view of the defect: the At-a-Glance row printed "average health 0/100"."""
+def _glance_health(snap):
     from cisco_toolkit import docmeta
+    return dict(docmeta._glance_rows(snap))["How healthy is the fleet?"]
+
+
+def test_d4_a_stripped_legacy_zero_is_no_longer_rendered_as_a_measurement():
+    """The consumer view of the defect: the At-a-Glance row printed "average health 0/100". Round 2: it must
+    also not give a false reason ("not a number" -- 0 is a number) nor print the posture's zero band counts,
+    which are exactly as unbacked as the average ("0 Critical" reads as a healthy fleet)."""
     snap = {"executive_brief": {"posture": {"avg_health": 0, "n_critical": 0, "n_poor": 0, "worst_band": ""}}}
-    health = dict(docmeta._glance_rows(snap))["How healthy is the fleet?"]
+    health = _glance_health(snap)
     assert "UNVERIFIED" in health and "0/100" not in health, health
+    assert "not a number" not in health and "no health-score rows" in health, health
+    assert "0 Critical" not in health and "0 Poor" not in health and "[NOT OBSERVED]" in health, health
+
+
+def test_r2_an_unbacked_adverse_count_is_still_shown_but_marked_unverified():
+    """An adverse count the snapshot publishes is not hidden (hiding a reported Critical would read as
+    health), but it is labelled as unverified -- no health row backs it either."""
+    snap = _sample()
+    del snap["health_scores"]
+    posture = snap["executive_brief"]["posture"]
+    assert posture["n_critical"] and posture["n_poor"]                # non-vacuous: real adverse counts
+    health = _glance_health(snap)
+    assert "UNVERIFIED" in health and "not a number" not in health, health
+    tail = health.split("·", 1)[1]
+    assert f"{posture['n_critical']} Critical" in tail and f"{posture['n_poor']} Poor" in tail, health
+    assert "unverified" in tail, health
+
+
+def test_r2_a_non_number_over_real_rows_keeps_its_reason_and_its_verified_counts():
+    snap = {"health_scores": [{"band": "Critical", "score": 20}],
+            "executive_brief": {"posture": {"avg_health": "abc", "n_critical": 1, "n_poor": 0}}}
+    assert _glance_health(snap) == ("average health UNVERIFIED — the published value is not a number; "
+                                    "1 Critical, 0 Poor")
+
+
+def test_r2_every_withheld_reason_has_its_own_docx_wording():
+    """The reason vocabulary is closed, and each reason renders differently (a new reason must be worded)."""
+    rows = [{"band": "Good", "score": 80}]
+    by_reason = {"not_a_number": {"health_scores": rows, "executive_brief": {"posture": {"avg_health": "abc"}}},
+                 "no_scored_basis": {"executive_brief": {"posture": {"avg_health": 72}}}}
+    assert set(by_reason) == set(ssot.FLEET_AVG_UNVERIFIED_REASONS)
+    texts = {}
+    for why, snap in by_reason.items():
+        assert ssot.fleet_avg_health(snap)["reason"] == why
+        texts[why] = _glance_health(snap).split(";", 1)[0]
+    assert len(set(texts.values())) == len(texts), texts
 
 
 def test_d4_the_withheld_reason_vocabulary_is_closed():

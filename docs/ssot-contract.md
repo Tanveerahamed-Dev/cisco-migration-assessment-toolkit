@@ -87,7 +87,9 @@ nothing cannot be told from a measurement. A positive `posture.n_scored` is no b
 for its own average is not evidence that anything was scored), and a bool or float `0` is not the
 abstention record. The result's `reason` (`ssot.FLEET_AVG_UNVERIFIED_REASONS`: `not_a_number` /
 `no_scored_basis`) names which; it is `null` for every other state (a `not_assessed` cause, when the
-engine published one, is `posture.not_assessed`). The same absence makes every posture fact
+engine published one, is `posture.not_assessed`). Consumers word the two reasons differently — the DOCX
+At-a-Glance row (`docmeta`) and `ui_projection` never call a finite number with no rows "not a number",
+and the DOCX row prints no unbacked zero band count. The same absence makes every posture fact
 `not_collected` in the abstention core (so the fact lineage and the assertion pack never pass
 `n_critical == 0` over no health rows), and `ssot.summary` does not count a posture fact it cannot back —
 nor an `unverified` average — among its published headline figures. The explorer's `fleetHealthState`
