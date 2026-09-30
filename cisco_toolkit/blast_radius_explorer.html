@@ -4008,6 +4008,39 @@ function toggleLayerLens(force){
 }
 
 function healthList(){return SNAP&&SNAP.health_scores?SNAP.health_scores:[];}
+/* FLEET-AVG-HEALTH START */
+/* SSOT (G15): the ONE explorer reader of the fleet average -- a faithful port of cisco_toolkit/ssot.py
+   fleet_avg_health. Decided on the KEY, not the value: a posture that carries avg_health:null is the engine's
+   published abstention (0 devices health-scored). The old nullish-coalescing fallback fell through on that null to
+   a mean over EVERY row, and an Insufficient-Data row keeps its deduction-free score, so an unscored fleet rendered
+   a fabricated 100. A stored NUMBER over rows of which none is scored (every pre-G15 snapshot's hard 0) is not
+   assessed either; a non-numeric value is unverified. Only a legacy / failed brief with no posture value
+   ('unpublished') recomputes -- over genuinely-scored rows, the engine's own definition. */
+function _fhScored(r){return !!r&&typeof r==="object"&&typeof r.score==="number"&&isFinite(r.score)&&r.band!=="Insufficient Data";}
+function fleetHealthState(hs){
+  const snap=SNAP||{}, rows=Array.isArray(hs)?hs:[];
+  const have=rows.length>0||Array.isArray(snap.health_scores);   // a raw basis to count scored rows against
+  const nScored=rows.filter(_fhScored).length;
+  const eb=snap.executive_brief;
+  const po=(eb&&typeof eb==="object"&&!Array.isArray(eb)&&!eb._unavailable)?eb.posture:null;
+  const st={state:"unpublished",value:null,nScored:have?nScored:null,nRows:have?rows.length:null};
+  if(!po||typeof po!=="object"||Array.isArray(po)||!Object.prototype.hasOwnProperty.call(po,"avg_health"))return st;
+  const v=po.avg_health;
+  if(v===null||v===undefined||(have&&nScored===0)||po.n_scored===0)st.state="not_assessed";
+  else if(typeof v==="number"&&isFinite(v)){st.state="measured";st.value=v;}
+  else st.state="unverified";
+  return st;}
+function fleetAvgHealth(hs){const st=fleetHealthState(hs);
+  if(st.state==="measured")return st.value;
+  if(st.state!=="unpublished")return null;
+  const sc=(hs||[]).filter(_fhScored);
+  return sc.length?Math.round(sc.reduce((s,r)=>s+r.score,0)/sc.length):null;}
+/* The phrase for a fleet average that is NOT a number (null from fleetAvgHealth), naming WHICH state it is:
+   "0 of N switches health-scored" is false when rows are scored and the published value is merely malformed. */
+function fleetHealthGap(hs){const st=fleetHealthState(hs), n=(hs||[]).length;
+  if(st.state==="unverified")return {tag:"unverified",note:"the published fleet average is not a number"};
+  return {tag:"not assessed",note:n?`0 of ${n} switch${n===1?"":"es"} health-scored (no evidence)`:"no health scores were produced"};}
+/* FLEET-AVG-HEALTH END */
 function healthBandToken(band){const b=(band||"").toLowerCase();
   if(b.includes("excellent"))return "ok"; if(b.includes("good"))return "ok";
   if(b.includes("fair"))return "watch"; if(b.includes("poor"))return "risk";
@@ -4224,7 +4257,8 @@ function modeSummary(m){
     if(m==="health"){const hs=healthList(); if(!hs.length)return "";
       // SSOT: same canonical posture.avg_health the drawer headline uses (excludes uncollected rows) -- the raw
       // recompute inflated the screen-reader announcement to 49 vs the SSOT 41 (audit-3 #9).
-      const avg=(((SNAP||{}).executive_brief||{}).posture||{}).avg_health??Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/hs.length);
+      const avg=fleetAvgHealth(hs);
+      if(avg==null){const g=fleetHealthGap(hs); return ` ${hs.length} switches, fleet health ${g.tag}: ${g.note}.`;}
       let nc=0,np=0; hs.forEach(r=>{const t=r.band?healthBandToken(r.band):scoreToken(r.score);
         if(t==="crit")nc++; else if(t==="risk")np++;});
       return ` ${hs.length} switches scored, average ${avg}${nc?`, ${nc} critical`:""}${np?`, ${np} poor`:""}.`;}
@@ -11185,8 +11219,12 @@ function buildNarrative(model){
   // ---- fleet posture: worst switch + average, from health_scores ----
   const hs=(typeof healthList==="function")?healthList():[];
   if(hs.length){
-    const _po=((SNAP||{}).executive_brief||{}).posture||{};   // SSOT: prefer the engine's canonical posture.avg_health
-    const n=hs.length, avg=_po.avg_health??Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/Math.max(1,n));
+    const n=hs.length, avg=fleetAvgHealth(hs);   // SSOT: the canonical posture.avg_health (null = not assessed)
+    if(avg==null){
+      const g=fleetHealthGap(hs);
+      out.push({text:`Fleet health is <b>${esc(g.tag)}</b>: ${esc(g.note)}. `+
+        `This is a coverage gap, not a clean result.`,severity:"watch"});
+    }else{
     const worst=hs.slice().sort((a,b)=>(a.score||0)-(b.score||0))[0];
     const wtok=worst.band?healthBandToken(worst.band):scoreToken(worst.score);
     const sev=wtok==="crit"?"crit":wtok==="risk"?"risk":wtok==="watch"?"watch":"ok";
@@ -11194,6 +11232,7 @@ function buildNarrative(model){
       `weakest is ${wrapHost(worst.switch)} at <b>${esc(worst.score)}</b>${worst.band?` (${esc(worst.band)})`:""}. `+
       `Treat the score as a heat-map and fix the structural SPOFs above first.`,
       severity:sev});
+    }
   }
 
   // ---- nothing fired: a single positive line ----
@@ -11320,7 +11359,8 @@ function briefCard(){
   return `<div class="sec"><h3>Migration brief</h3>`+
     `<div class="card crit" style="margin-bottom:9px"><div class="ln">${esc(ps)}</div></div>`+
     (tg.length?`<div class="ln" style="margin-bottom:7px"><b>Address first:</b> <span class="faint">${tg.map(esc).join(" · ")}</span></div>`:"")+
-    `<div class="sub" style="margin-bottom:5px">${(+sc.n_devices||0)} devices · ${(+sc.n_domains||0)} application domains · ${(+sc.n_endpoints||0)} endpoints — one headline per axis:</div>`+
+    /* n_devices null = not published (no health rows): the explorer's own host count, as abH_exec uses -- never "0 devices" */
+    `<div class="sub" style="margin-bottom:5px">${sc.n_devices==null?(+(((typeof MODEL!=="undefined"&&MODEL&&MODEL.hosts)||[]).length)||0):(+sc.n_devices||0)} devices · ${(+sc.n_domains||0)} application domains · ${(+sc.n_endpoints||0)} endpoints — one headline per axis:</div>`+
     (ss?`<div class="ln" style="margin-bottom:6px"><span class="pill pl-${ss.verified?"ok":"crit"}" title="${ss.verified?"Every published headline figure reconciles to the raw evidence (cisco_toolkit/ssot.py)":esc((+ss.n_violations||0)+" headline figure(s) did not reconcile to the raw evidence")}">${ss.verified?("✓ "+(+ss.n_facts||0)+" headline figures self-verified"):("⚠ "+(+ss.n_violations||0)+" figures unreconciled")}</span> <span class="faint">single source of truth — reconciled to raw evidence</span></div>`:"")+
     rows+`</div>`;
 }
@@ -11485,8 +11525,7 @@ function drawHealth(){
   // SSOT: prefer the engine's canonical posture.avg_health (which EXCLUDES uncollected 'Insufficient Data' rows);
   // the raw recompute over all rows inflated the headline (49 vs 41) by averaging score-90 uncollected devices as
   // ~healthy -- contradicting the SSOT value rendered just below in the same drawer (audit-3 #9).
-  const n=hs.length, _po=((SNAP||{}).executive_brief||{}).posture||{},
-        avg=_po.avg_health??Math.round(hs.reduce((s,r)=>s+(r.score||0),0)/Math.max(1,n));
+  const n=hs.length, avg=fleetAvgHealth(hs);   // null = NOT ASSESSED (never a countUp target: it renders NaN)
   const bands={ok:0,watch:0,risk:0,crit:0};
   hs.forEach(r=>{const t=r.band?healthBandToken(r.band):scoreToken(r.score);if(bands[t]!=null)bands[t]++;});
   const sorted=hs.slice().sort((a,b)=>a.score-b.score);
@@ -11504,7 +11543,7 @@ function drawHealth(){
       ${checks}</div>`;});
   // is the scoring crying wolf?
   const allBad=(bands.crit+bands.risk)===n && n>2;
-  return `<div class="drawer-head"><div class="eyebrow">Fleet health</div><div class="title"><span class="num" data-to="${avg}">0</span><span class="sub" style="font-size:13px;font-weight:400"> / 100 avg</span></div></div>
+  return `<div class="drawer-head"><div class="eyebrow">Fleet health</div><div class="title">${avg==null?(g=>`<span>${esc(g.tag)}</span><span class="sub" style="font-size:13px;font-weight:400"> · ${esc(g.note)}</span>`)(fleetHealthGap(hs)):`<span class="num" data-to="${avg}">0</span><span class="sub" style="font-size:13px;font-weight:400"> / 100 avg</span>`}</div></div>
     ${narrativeCard()}
     <div class="sec"><div class="headline">
       <div class="stat ok"><div class="v"><span class="num" data-to="${bands.ok}">0</span></div><div class="k">good</div></div>
@@ -12669,7 +12708,7 @@ function abH_help(){return {html:`<h4>What you can ask (all offline, all from th
 function abH_didyoumean(E,q){const opts=E.matches.slice(0,6).map(([h])=>
     `<span class="chip" data-abq="${abAttr(q)} ${abAttr(h)}">${esc(abShort(h))}</span>`).join(" ");
   return {html:`<h4>Which switch did you mean?</h4><div class="ab-acts">${opts}</div>`,acts:[]};}
-/* W3-1 (NotebookLM teardown): first-class [NOT OBSERVED] 3-state abstention -- a faithful JS port of the engine
+/* W3-1 (NotebookLM teardown): first-class [NOT OBSERVED] abstention (4 states since G14) -- a JS port of the engine
    SSOT (cisco_toolkit/ssot.py abstention_reason) so a BLIND SPOT ('not collected') or a real negative ('collected,
    none found') is never conflated with an NLU miss ('didn't catch that'). Precedent: abH_license. */
 function _abDotted(snap, path){ let cur=snap;
@@ -12680,9 +12719,28 @@ function _abDeviceNotCollected(snap, device){ const want=String(device||"").trim
   for(const d of (_abDotted(snap,"collection_completeness.devices")||[])){
     if(d&&typeof d==="object"&&String(d.host||"").trim().toLowerCase()===want)return String(d.status||"").trim().toLowerCase()==="not collected"; }
   return false; }
-function abAbstention(subject, device){ const snap=SNAP||{};   // -> 'published' | 'collected_but_empty' | 'not_collected'
+/* G14: a section whose analysis phase FAILED this run holds its fallback ([] / {} / a sentinel), byte-identical to
+   "computed fine, found nothing". The engine SSOT (ssot.failed_sections) already projects that onto
+   snap.schema_census -- read the census row's state rather than porting a second phase registry. Without a census
+   (an older snapshot) only the section-keyed signals attribute (an {_unavailable:true} sentinel, an
+   assessment_integrity[<section>] failure stamp); any other recorded failure fails CLOSED for a present-but-empty
+   value (ssot's unattributed rule) -- it can never take the green 'collected, none found' path. */
+const _AB_FAIL_TOKENS=["failed","compute_failed","unavailable","error"];
+function _abAnalysisFailed(snap, top, val){
+  const cen=snap.schema_census, rows=(cen&&typeof cen==="object"&&Array.isArray(cen.sections))?cen.sections:null;
+  if(rows){const row=rows.find(r=>r&&typeof r==="object"&&r.key===top); if(row)return row.state==="analysis_unavailable";}
+  const sec=snap[top];
+  if(sec&&typeof sec==="object"&&!Array.isArray(sec)&&sec._unavailable)return true;
+  const ai=snap.assessment_integrity;
+  if(!ai||typeof ai!=="object"||Array.isArray(ai))return false;
+  const stamp=ai[top];
+  if(typeof stamp==="string"&&_AB_FAIL_TOKENS.includes(stamp.trim().toLowerCase()))return true;
+  const fp=ai.failed_phases, recorded=Array.isArray(fp)?fp.length>0:!!fp;
+  return !rows&&recorded&&val!==undefined&&val!==null&&_abEmptyVal(val);}
+function abAbstention(subject, device){ const snap=SNAP||{};   // -> 'published' | 'collected_but_empty' | 'not_collected' | 'analysis_unavailable'
   if(device&&_abDeviceNotCollected(snap,device))return "not_collected";
   const val=String(subject).indexOf(".")>=0?_abDotted(snap,subject):((snap&&(subject in snap))?snap[subject]:undefined);
+  if(_abAnalysisFailed(snap,String(subject).split(".")[0],val))return "analysis_unavailable";
   if(val===undefined||val===null)return "not_collected";
   if(_abEmptyVal(val))return "collected_but_empty";
   return "published"; }
@@ -12720,6 +12778,8 @@ function abH_notobserved(q, E){
       const host=(E&&E.host)||null, r=abAbstention(section, host);
       if(r==="published")
         return {html:`<h4>${esc(label)}</h4><div>That evidence <b>was collected</b> — it's in the workbook's ${esc(label)} sheet and the explorer's analysis modes. I don't have a dedicated chat answer for it yet, so I'm pointing you there rather than guessing.</div>`,acts:[{label:"help",run:abAskAct("help")}]};
+      if(r==="analysis_unavailable")   /* G14: never the green 'real negative' pill for a crashed phase */
+        return {html:`<h4>${esc(label)} — analysis failed</h4><div><span class="pill pl-crit">NOT OBSERVED · analysis failed this run</span></div><div style="margin-top:6px">The <b>${esc(label)}</b> analysis <b>failed during this assessment run</b>, so what the snapshot holds for it is a fallback — neither a clean result nor a collection blind spot. <span class="faint">Check assessment_integrity.failed_phases and re-run the assessment before relying on this axis.</span></div>`,acts:[]};
       const tag=r==="not_collected"?`<span class="pill pl-watch">NOT OBSERVED · not collected</span>`:`<span class="pill pl-ok">NOT OBSERVED · collected, none found</span>`;
       const why=r==="not_collected"
         ?(host?`<b>${esc(shortName(host))}</b> was not collected in this assessment, so its ${esc(label)} is a <b>blind spot</b> — not a clean result`
@@ -12970,7 +13030,13 @@ function abH_conflicts(){const ac=(SNAP||{}).addressing_conflicts||{};
 function abH_exec(){const eb=(SNAP||{}).executive_brief||{};const sc=eb.scale||{},po=eb.posture||{};
   let b=`<h4>Executive summary</h4>`;
   b+=abKv("Estate",`<b>${sc.n_devices??MODEL.hosts.length}</b> switches · <b>${sc.n_endpoints??MODEL.endpointTotal}</b> endpoints · <b>${sc.n_domains??"?"}</b> app domains`);
-  if(po.avg_health!=null)b+=abKv("Average health",abBarHtml(po.avg_health)+` · worst band ${abPill(po.worst_band)} · ${po.n_critical??0} critical / ${po.n_poor??0} poor`);
+  /* G15: the band counts and worst band belong to a PUBLISHED posture. With the brief absent / failed there is
+     none -- rendering po.* then printed "worst band · 0 critical / 0 poor" beside a recomputed average. */
+  const _st=fleetHealthState(healthList());
+  if(_st.state==="measured")b+=abKv("Average health",abBarHtml(_st.value)+` · worst band ${abPill(po.worst_band)} · ${po.n_critical??0} critical / ${po.n_poor??0} poor`);
+  else if(_st.state==="unpublished")b+=abKv("Average health",`<span class="pill pl-neutral">unavailable</span> · executive brief not produced this run`);
+  else{const _g=fleetHealthGap(healthList());
+    b+=abKv("Average health",`<span class="pill pl-neutral">${esc(_g.tag)}</span> · ${esc(_g.note)}`);}
   if(eb.posture_statement)b+=`<div class="ab-note">${esc(eb.posture_statement)}</div>`;
   if(Array.isArray(eb.top_gating)&&eb.top_gating.length)
     b+=`<div class="ab-sec"><h4>Gating items</h4>`+abSteps(eb.top_gating.slice(0,5).map(g=>

@@ -279,16 +279,39 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     for r in hs:
         _b = str(r.get("band", ""))   # str(): a list/dict band from a malformed upload is an unhashable key
         band_counts[_b] = band_counts.get(_b, 0) + 1
-    avg = posture.get("avg_health", "—")
+    avg_label = "avg health / 100"
     health_unavailable = _phase_failed("health score") or not isinstance(snap.get("health_scores"), list)
+    # G15: the canonical average through its ONE reader (lazy import, like docmeta). NOT ASSESSED covers
+    # the engine's published abstention AND a stored number over zero scored rows (every pre-G15
+    # snapshot's 0); `f"{None}"` once rendered a literal "None" on this client-facing slide.
+    from cisco_toolkit import ssot as _ssot
+    _fh = _ssot.fleet_avg_health(snap)
+    _health_unmeasured = _fh["state"] == "not_assessed" or (
+        _fh["state"] == "unpublished" and bool(_fh["n_rows"]) and not _fh["n_scored"])
     if health_unavailable:
         avg = "-"
+    elif _fh["state"] == "measured":
+        avg = _fh["value"]
+    elif _fh["state"] == "not_assessed":
+        avg, avg_label = "—", "avg health: NOT ASSESSED (0 scored)"
+    elif _fh["state"] == "unverified":
+        avg, avg_label = "—", "avg health: UNVERIFIED (not a number)"
+    else:
+        avg = "—"                      # no canonical value published (brief absent / failed)
     # stat callouts across the full width (generous gaps, no side-by-side columns to overlap)
-    stat(s, 0.7, 1.95, f"{avg}", "avg health / 100", _NAVY, w=3.4)
+    stat(s, 0.7, 1.95, f"{avg}", avg_label, _NAVY, w=3.4)
     # false-health guard: if the brief is absent/failed, posture is {} — fall back to the band tally
     # computed above from health_scores, never a literal 0 that would claim '0 Critical' on a Critical fleet.
-    stat(s, 5.0, 1.95, "-" if health_unavailable else posture.get(
-        "n_critical", band_counts.get("Critical", 0)), "Critical-band switches", _CRIT, w=3.4)
+    # ...and over a fleet with NOTHING scored a zero band count is not a count either (an observed
+    # Critical band still is): the old stat read "0 Critical-band switches" beside NOT ASSESSED.
+    _crit = posture.get("n_critical", band_counts.get("Critical", 0))
+    if health_unavailable:
+        _crit = "-"
+    elif _crit is None:                # the producer's abstention: an observed Critical band still counts
+        _crit = band_counts.get("Critical", 0) or "—"
+    elif _health_unmeasured and _crit == 0:
+        _crit = "—"
+    stat(s, 5.0, 1.95, _crit, "Critical-band switches", _CRIT, w=3.4)
     stat(s, 9.3, 1.95, "-" if health_unavailable else len(hs), "switches in scope", _INK, w=3.3)
     # full-width band-distribution bar
     order = ["Excellent", "Good", "Fair", "Poor", "Critical", "Insufficient Data"]
@@ -314,9 +337,12 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     _more = axes[4:]
     if _more:
         _more_hi = sum(1 for a in _more if a.get("severity") in ("Critical", "High"))
+        # Info sorts after every Low axis, so the cap drops a NOT-ASSESSED axis first -- count those too.
+        _more_info = sum(1 for a in _more if a.get("severity") == "Info")
         text(s, 0.7, y, 11.8, 0.3,
              [[(f"+ {len(_more)} more axis headline(s)"
                 + (f" — {_more_hi} at High or above" if _more_hi else "")
+                + (f" — {_more_info} Info (not assessed / informational)" if _more_info else "")
                 + " — full set in the workbook Executive Summary.", 10, _MUTED, False)]])
 
     # ---------------------------------------------------------------- 3. Top risks (light)

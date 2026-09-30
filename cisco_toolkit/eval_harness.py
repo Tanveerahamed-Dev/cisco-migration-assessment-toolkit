@@ -299,8 +299,12 @@ def _check_not_observed(snap: Dict[str, Any], texts: Optional[str]) -> List[Chec
         out.append(CheckResult("law8.census", "L8", _UNVERIFIED, "no sections to account for"))
     else:
         summ = census.get("summary", {})
-        total = sum(summ.get(k, 0) for k in ("n_published", "n_collected_but_empty", "n_not_collected"))
-        dishonest = [s for s in sections if s.get("state") == "not_collected"
+        # G14: `analysis_unavailable` (a failed phase's fallback) is its own partition cell; leaving it out
+        # made this check fail a snapshot that finally disclosed a crash -- or, before the census knew
+        # the state, certify "absence never labeled healthy" over crashed sections read as clean empties.
+        total = sum(summ.get(k, 0) for k in ("n_published", "n_collected_but_empty", "n_not_collected",
+                                             "n_analysis_unavailable"))
+        dishonest = [s for s in sections if s.get("state") in ("not_collected", ssot.ANALYSIS_UNAVAILABLE)
                      and re.search(r"\b(healthy|ok|pass(?:ed|ing)?|fine|green)\b", str(s.get("note", "")), re.I)]
         if total != len(sections) or dishonest:
             out.append(CheckResult("law8.census", "L8", _FAIL,

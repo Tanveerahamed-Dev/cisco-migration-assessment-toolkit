@@ -62,6 +62,41 @@ def test_ssot_does_not_make_claude_memory_the_cross_agent_owner() -> None:
     assert "Codex enters through root `AGENTS.md`" in doctrine_row
 
 
+def test_live_work_board_is_the_shared_entry_point() -> None:
+    board = _read("docs/NOW.md")
+
+    for heading in (
+        "## The one product",
+        "## Working rules",
+        "## Active workstreams",
+        "## Owner decisions",
+        "## Handoff log",
+    ):
+        assert heading in board, f"docs/NOW.md lost its '{heading}' section"
+    agents = _read("AGENTS.md")
+    assert "docs/NOW.md" in agents, "AGENTS.md no longer routes Codex to the board"
+    assert agents.index("docs/NOW.md") < agents.index("Read `CLAUDE.md` completely"), (
+        "AGENTS.md must send Codex to the board before anything else"
+    )
+    assert "docs/NOW.md" in _read("CLAUDE.md"), "CLAUDE.md no longer routes Claude to the board"
+    # The board must never instruct an unconditional push (the repository is public).
+    assert "Push only with the owner's explicit authority" in board
+    state_row = next(
+        line
+        for line in _read("docs/ssot.md").splitlines()
+        if "Project decisions / current cross-agent state" in line
+    )
+    assert "docs/NOW.md" in state_row
+    # The repository is public: judge the board with the owning client-marker patterns (the
+    # structural class), plus the machine-path shapes those patterns do not cover.
+    from cisco_toolkit.distribution_verify import _client_marker_patterns
+
+    for pattern in _client_marker_patterns():
+        assert not pattern.search(board), f"docs/NOW.md carries a client marker ({pattern.pattern})"
+    for marker in ("C:\\Users", "C:/Users", "/home/", "%USERPROFILE%"):
+        assert marker not in board, f"docs/NOW.md carries a machine path ({marker})"
+
+
 @pytest.mark.parametrize(
     ("path", "required", "spent_instruction"),
     [

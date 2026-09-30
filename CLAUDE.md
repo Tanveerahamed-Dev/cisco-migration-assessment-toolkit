@@ -1,3 +1,13 @@
+## The one application and its live work board
+
+There is **one application: GitHub `main`**. **`docs/NOW.md` is the live work board.** It holds the
+active workstreams, their branch and holder, the next step, pending owner decisions and the handoff
+log. Read it first and update it last. Work only on a branch listed there, keep one writer per
+workstream, and never start a new app, repository or long-lived parallel branch. Before a session
+ends, or a quota runs out: commit to the row's branch and update the board. Pushing still needs the
+user's explicit authority and never applies to a row marked local-only (`docs/NOW.md` rule 5). This
+applies to Claude Code and Codex alike; Codex enters through root `AGENTS.md`.
+
 ## Repository-review record (CLOSED 2026-08-03)
 
 The whole-repository hardening review is **complete and merged to `main`**. There is nothing to
