@@ -2761,7 +2761,9 @@ def _trend_point(snap: dict) -> dict:
     # (`sum(scores)/len(scores)` -> "integer division result too large for a float", aborting the whole
     # --trend workbook) and the bare `Infinity`/`NaN` json.loads accepts (which would render an average
     # of inf/nan into the campaign deck).
-    scores = [r.get("score") for r in hs if _renderable_num(r.get("score"))]
+    # ... and only genuinely-SCORED rows: an 'Insufficient Data' row keeps its deduction-free score (G15).
+    scores = [r.get("score") for r in hs
+              if _renderable_num(r.get("score")) and r.get("band") != "Insufficient Data"]
     bands: Dict[str, int] = {}
     for r in hs:
         bands[str(r.get("band", ""))] = bands.get(str(r.get("band", "")), 0) + 1
@@ -2784,9 +2786,27 @@ def _trend_point(snap: dict) -> dict:
     _eb = _d(snap.get("executive_brief"))
     _scale = _d(_eb.get("scale"))
     _posture = _d(_eb.get("posture"))
-    avg = _posture.get("avg_health")
-    if avg is None and scores:
+    # G15: read through the ONE reader (lazy import: this module never imports ssot at load). A published
+    # abstention (0 devices health-scored) -- or a stored number over zero scored rows, every pre-G15
+    # snapshot's 0 -- is NOT ASSESSED: re-deriving a mean here averaged the unscored 'Insufficient Data'
+    # rows' deduction-free scores into a fabricated 100. The recompute is only for a legacy / failed brief
+    # with no posture value at all -- and even then over the scored rows only, the engine's own definition.
+    from cisco_toolkit import ssot as _ssot
+    _fh = _ssot.fleet_avg_health(snap)
+    avg = _fh["value"] if _fh["state"] == "measured" else None
+    if _fh["state"] == "unpublished" and scores:
         avg = round(sum(scores) / len(scores), 1)
+    # ...and its sibling metric, canonical-first as before, except that a ZERO over a fleet in which nothing
+    # was scored is not a count: the campaign trend read "Critical-band switches 6 -> 0" as an IMPROVEMENT.
+    # A published non-zero count, or an OBSERVED Critical band, is still a real count.
+    # (rows present, none scored; an EMPTY list with no brief is a fleet with no switches -- its 0 stays a 0)
+    _health_unmeasured = _fh["state"] == "not_assessed" or (_fh["state"] == "unpublished" and bool(hs)
+                                                            and not scores)
+    _crit = _posture.get("n_critical")
+    if _crit is None:
+        _crit = bands.get("Critical", 0) if have_hs else ""
+    if _health_unmeasured and _crit == 0:
+        _crit = ""
     # str() (not `or ""`): `generated_at` is a timestamp STRING by contract, but a truthy non-str survives
     # `or ""` and the ts[:10] slice below then raises (`5[:10]` -> TypeError) -- or, for a list, silently
     # returns a LIST into the timeline's 'date' column. The slicing variant of the same guard gap.
@@ -2800,8 +2820,7 @@ def _trend_point(snap: dict) -> dict:
         "avg_health": avg if avg is not None else "",
         # Each falls back to its raw tally ONLY when that section was collected; otherwise "" (abstain),
         # exactly like avg_health/past_ldos below. "Not observed" must never render as an observed zero.
-        "n_critical": _posture.get("n_critical") if _posture.get("n_critical") is not None else (
-            bands.get("Critical", 0) if have_hs else ""),
+        "n_critical": _crit,
         "n_punchlist": len(pl) if have_pl else "",
         "n_crit_high": sum(1 for f in pl if f.get("severity") in ("Critical", "High")) if have_pl else "",
         "n_not_ready": readiness["NOT READY"] if have_mr else "",
