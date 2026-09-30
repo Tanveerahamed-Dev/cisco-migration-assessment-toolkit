@@ -475,6 +475,20 @@ def test_every_consumer_covers_every_state_of_the_one_vocabulary():
 
 _STATE_NAMES = frozenset(PROTOCOL_ASSESSABILITY_STATES) - {"assessed", "partial"}   # the distinctive names
 
+# The coverage census (ssot.compute_schema_census) owns a DIFFERENT vocabulary that shares two names with the
+# receipt ('not_collected', 'analysis_unavailable'). A collection is the census's, not a hand-list of receipt
+# states, when every name in it is a census state AND at least one is census-only. Both sets derive from their
+# owners, so this can never drift into a hand-kept exemption; a collection of only the SHARED names stays
+# ambiguous and is still flagged (merge of main's #575, 2026-09-30).
+from cisco_toolkit.ssot import ABSTENTION_STATES as _CENSUS_STATES  # noqa: E402
+
+_CENSUS_ONLY = frozenset(_CENSUS_STATES) - frozenset(PROTOCOL_ASSESSABILITY_STATES)
+
+
+def _is_census_collection(literals):
+    names = set(literals)
+    return bool(names) and names <= set(_CENSUS_STATES) and bool(names & _CENSUS_ONLY)
+
 
 def _hand_listed_state_collections(path):
     """(file, line) of every site that ENUMERATES >=2 receipt states outside the one owner table.
@@ -504,9 +518,11 @@ def _hand_listed_state_collections(path):
                 continue
             names = set()
             if isinstance(node, ast.Dict):
-                names = _consts(node.keys)
+                lits = [k.value for k in node.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+                names = set() if _is_census_collection(lits) else _consts(node.keys)
             elif isinstance(node, (ast.Set, ast.Tuple, ast.List)):
-                names = _consts(node.elts)
+                lits = [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+                names = set() if _is_census_collection(lits) else _consts(node.elts)
             elif isinstance(node, ast.BoolOp):                      # s == "a" or s == "b"
                 for v in node.values:
                     if isinstance(v, ast.Compare) and all(isinstance(o, (ast.Eq, ast.NotEq)) for o in v.ops):
@@ -533,7 +549,8 @@ def _hand_listed_state_collections(path):
         # `case`) is not one -- the ladder / switch shapes below own those, so no site is counted twice
         if not re.fullmatch(r"[\s,:\w.+\-]*", re.sub(r"\"[^\"\n]*\"|'[^'\n]*'", "", m.group(0)[1:-1])):
             continue
-        if len(set(re.findall(r"[\"']([a-z_]+)[\"']", m.group(0))) & _STATE_NAMES) >= 2:
+        lits = re.findall(r"[\"']([a-z_]+)[\"']", m.group(0))
+        if not _is_census_collection(lits) and len(set(lits) & _STATE_NAMES) >= 2:
             hits.append((rel, _line(m.start())))
     for m in re.finditer(r"[^;{}]+", text):                                        # equality chains / ladders
         chunk = m.group(0)
@@ -723,6 +740,7 @@ _RECEIPT_READER_CLASS = {
     "cisco_toolkit/html.py": "derives",
     "cisco_toolkit/blast_radius_explorer.html": "rendered",
     "webapp/backend/protocol_portfolio.py": "derives",
+    "cisco_toolkit/ssot.py": "census",
 }
 
 
@@ -750,6 +768,16 @@ def test_every_module_that_reads_the_receipt_is_classified_with_a_mechanical_pro
             assert text.count(ENGINE_PA_CONCLUSIONS_MARKER) == 1, f"{rel} lost its engine vocabulary slot"
             assert "new Set(Object.keys(ENGINE_PA_CONCLUSIONS))" in text, rel
             assert not _hand_listed_state_collections(os.path.join(ROOT, rel)), rel
+        elif cls == "census":
+            # the schema-census owner NAMES the section among every section and interprets only its OWN census
+            # vocabulary (which shares two names with the receipt): it must own that vocabulary, and every
+            # receipt-state name it interprets must be a census state -- never a receipt-only state
+            assert "ABSTENTION_STATES" in text, f"{rel} is classified 'census' but no longer owns ABSTENTION_STATES"
+            lines = text.splitlines()
+            receipt_only = _ALL_STATES - set(_CENSUS_STATES)
+            foreign = [n for n in _python_state_interpretations(text)
+                       if set(re.findall(r"[\"']([a-z_]+)[\"']", lines[n - 1])) & receipt_only]
+            assert not foreign, f"{rel} interprets receipt-only states at lines {foreign} -- derive from analyze"
         elif cls == "carrier":
             if rel.endswith(".py"):
                 assert not _state_interpreting_lines_near_receipt(text), (
@@ -757,6 +785,23 @@ def test_every_module_that_reads_the_receipt_is_classified_with_a_mechanical_pro
                     f"{_state_interpreting_lines_near_receipt(text)} -- derive from analyze and reclassify")
         else:
             assert cls == "routed", (rel, cls)
+
+
+def test_the_census_vocabulary_is_told_apart_from_the_receipt_vocabulary(tmp_path):
+    """A census map is not a receipt hand-list; a collection of only the SHARED names, or one holding any
+    receipt-only name, still is -- in Python and in JS/TS alike."""
+    py = tmp_path / "census.py"
+    py.write_text(
+        "A = {'published': 1, 'collected_but_empty': 2, 'not_collected': 3, 'analysis_unavailable': 4}\n"
+        "B = ('not_collected', 'analysis_unavailable')\n"
+        "C = {'published', 'not_collected', 'captured_empty'}\n", encoding="utf-8")
+    assert sorted(line for _f, line in _hand_listed_state_collections(str(py))) == [2, 3]
+    ts = tmp_path / "census.ts"
+    ts.write_text(
+        'const A = {"published": 1, "not_collected": 2, "analysis_unavailable": 3};\n'
+        'const B = ["not_collected", "analysis_unavailable"];\n', encoding="utf-8")
+    assert sorted(line for _f, line in _hand_listed_state_collections(str(ts))) == [2]
+    assert _is_census_collection(list(_CENSUS_STATES)) and _CENSUS_ONLY
 
 
 def test_the_reader_proofs_see_a_binary_split():
