@@ -16,7 +16,10 @@ def _full():
                                               "n_edges": 31, "keystone_domain": "General",
                                               "pilot_domain": "Investigative", "last_domain": "Media Fabric"},
                                   "domains": [{"endpoint_count": 100}, {"endpoint_count": 50}]},
-        lifecycle_risk={"summary": {"n_devices": 200, "n_past_ldos": 151, "n_near": 9}},
+        # a well-formed rollup: its bands partition the fleet and it publishes its coverage count (a summary
+        # whose bands leave devices unaccounted is NOT complete coverage -- see test_executive_brief_no_scored)
+        lifecycle_risk={"summary": {"n_devices": 200, "n_past_ldos": 151, "n_near": 9, "n_past_eos": 0,
+                                    "n_active": 40, "n_unknown": 0}},
         segmentation={"summary": {"n_gateways": 232, "flat": True, "n_oncrit_exposed": 3,
                                   "gateway_acl_coverage": 0.0}},
         multicast_intelligence={"summary": {"n_groups": 73, "n_av_groups": 44, "n_mac_clashes": 1,
@@ -116,7 +119,8 @@ def test_cutover_sequence_and_flag_use_move_group_noun():
 
 def test_empty_and_deterministic():
     out = compute_executive_brief()
-    assert out["axes"] and out["scale"]["n_devices"] == 0            # health + punch-list axes always present
+    assert out["axes"]                                               # health + punch-list axes always present
+    assert out["scale"]["n_devices"] is None       # len([]) is no inventory: not published (G15), never a 0
     a = compute_executive_brief(**_full())
     c = compute_executive_brief(**_full())
     assert json.dumps(a, sort_keys=True) == json.dumps(c, sort_keys=True)

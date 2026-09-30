@@ -2876,14 +2876,16 @@ _CENSUS_STATE_FILL = {
     "published": "D9EAD3",             # green — seen
     "collected_but_empty": "FFF2CC",   # amber — collected, nothing of this kind found
     "not_collected": "F4CCCC",         # red — blind spot
+    "analysis_unavailable": "F4CCCC",  # red — the section's analysis FAILED this run (the protocol map's colour)
 }
 
 
 def write_coverage_schema_sheet(wb, census: dict) -> None:
     """Write the 'Coverage Schema' sheet from ssot.compute_schema_census() — the snapshot's own
     per-section coverage census (a SuzieQ `describe` analog). One row per top-level snapshot
-    section: its coverage-honest 3-state (published / collected_but_empty / not_collected), its
-    structural kind + cardinality, and an honest note. COVERAGE-HONEST: an EMPTY section reads
+    section: its coverage-honest state (published / collected_but_empty / not_collected /
+    analysis_unavailable -- a failed phase's fallback, red), its structural kind + cardinality, and an
+    honest note. COVERAGE-HONEST: an EMPTY section reads
     'collected, nothing found' (amber — NOT a blind spot); an ABSENT section reads 'blind spot —
     not collected' (red). Nothing renders as 'ok'/'healthy' — absence of evidence is never health.
 
@@ -2910,9 +2912,13 @@ def write_coverage_schema_sheet(wb, census: dict) -> None:
     ws.cell(3, 1, "(all sections)").font = Font(bold=True)
     ws.cell(3, 3, "summary")
     ws.cell(3, 4, summ.get("n_sections", 0))
+    # `n_analysis_unavailable` is present only when a phase failed (ssot.compute_schema_census), so a
+    # clean run's totals text is unchanged -- and a failed run's counts still sum to n_sections.
     ws.cell(3, 5, (f"published {summ.get('n_published', 0)} · collected-but-empty "
                    f"{summ.get('n_collected_but_empty', 0)} · NOT collected "
-                   f"{summ.get('n_not_collected', 0)} (blind spots)")).font = Font(bold=True)
+                   f"{summ.get('n_not_collected', 0)} (blind spots)"
+                   + (f" · analysis FAILED {summ.get('n_analysis_unavailable')} (fallbacks, not evidence)"
+                      if summ.get("n_analysis_unavailable") else ""))).font = Font(bold=True)
     r = 4
     for row in (c.get("sections") or []):
         state = str(row.get("state") or "")
@@ -6220,9 +6226,14 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     # arithmetic mean overstates vs posture.avg_health (criticality-weighted), and "assessed = 303" overstates
     # coverage by the 50 not-collected devices vs scale.n_collected. Fall back to the local recompute only if
     # the brief is absent (legacy snapshot).
-    _ebp = eb.get("posture") if isinstance(eb.get("posture"), dict) else {}
     _ebs = eb.get("scale") if isinstance(eb.get("scale"), dict) else {}
-    _ncoll = _ebs.get("n_collected"); _avgc = _ebp.get("avg_health")
+    _ncoll = _ebs.get("n_collected")
+    # G15: the canonical average through its ONE reader (lazy import: this module never imports ssot at
+    # load). NOT ASSESSED covers the engine's published abstention AND a stored number over zero scored
+    # rows (every pre-G15 snapshot's 0); a malformed value is UNVERIFIED, never "0 of N health-scored".
+    from cisco_toolkit import ssot as _ssot
+    _fh = _ssot.fleet_avg_health({"executive_brief": eb, "health_scores": hs})
+    _health_unmeasured = _fh["state"] == "not_assessed" or (_fh["state"] == "unpublished" and n and avg is None)
     _sub("Fleet posture")
     if health_unavailable:
         _kv("Switches collected / inventoried", "UNVERIFIED (health-score phase unavailable)")
@@ -6235,19 +6246,35 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
         _kv("Switches collected / inventoried", f"— / {n} (executive brief unavailable — compute failed)")
         _kv("Average health score", "— (executive brief unavailable)")
     else:
-        _kv("Switches collected / inventoried", f"{_ncoll if isinstance(_ncoll, int) else n} / {n}")
-        # G15: the canonical posture decides on the KEY. `avg_health: None` is the published abstention
-        # (0 devices health-scored) and must never be replaced by a recompute.
-        if isinstance(_avgc, (int, float)):
-            _kv("Average health score", f"{_avgc} / 100")
-        elif "avg_health" not in _ebp and avg is not None:
+        # the inventory is the canonical scale.n_devices (== len(health_scores) whenever rows exist); with no
+        # health rows it is not published, and "3 / 0" set a collected count above a zero inventory
+        _ninv = _ebs.get("n_devices") if isinstance(_ebs.get("n_devices"), int) else (n if n else None)
+        _kv("Switches collected / inventoried",
+            f"{_ncoll if isinstance(_ncoll, int) else n} / {_ninv}" if _ninv is not None
+            else f"{_ncoll if isinstance(_ncoll, int) else '—'} / — (inventory not published: no health rows)")
+        # The canonical posture decides on the KEY: a published abstention is never replaced by a recompute.
+        if _fh["state"] == "measured":
+            _kv("Average health score", f"{_fh['value']} / 100")
+        elif _fh["state"] == "unpublished" and avg is not None:
             _kv("Average health score", f"{avg} / 100")
+        elif _fh["state"] == "unverified":
+            _kv("Average health score", "UNVERIFIED — the published fleet average is not a number")
         else:
             _kv("Average health score",
-                f"NOT ASSESSED — 0 of {n} switch(es) health-scored (no evidence); not assessed, not clear")
-    _kv("Critical band", "UNVERIFIED" if health_unavailable else bands["Critical"])
-    _kv("Poor / Fair", "UNVERIFIED" if health_unavailable else bands["Poor"] + bands["Fair"])
-    _kv("Good / Excellent", "UNVERIFIED" if health_unavailable else bands["Good"] + bands["Excellent"])
+                f"NOT ASSESSED — 0 of {n} switch(es) health-scored (no evidence); not assessed, not clear"
+                if n else "NOT ASSESSED — no health scores were produced; not assessed, not clear")
+
+    def _band_kv(label, count):
+        # a zero band count over a fleet with nothing scored is not a count (an observed band still is)
+        if health_unavailable:
+            _kv(label, "UNVERIFIED")
+        elif _health_unmeasured and not count:
+            _kv(label, "— (not assessed: no device health-scored)")
+        else:
+            _kv(label, count)
+    _band_kv("Critical band", bands["Critical"])
+    _band_kv("Poor / Fair", bands["Poor"] + bands["Fair"])
+    _band_kv("Good / Excellent", bands["Good"] + bands["Excellent"])
     r += 1
 
     # canonical scope/scale from the published brief (one source — not a raw-array recompute). The sheet
@@ -6255,7 +6282,9 @@ def write_executive_summary_sheet(wb, health_scores: list, punchlist: list,
     _sc = eb.get("scale") or {}
     if _sc:
         _sub("Scope / scale")
-        _kv("Devices inventoried", _sc.get("n_devices"))
+        # None = not published (no health rows to count): say so rather than leave a bare blank
+        _kv("Devices inventoried", _sc.get("n_devices") if _sc.get("n_devices") is not None
+            else "— (not published: no health rows)")
         _kv("Endpoints (evidenced)", _sc.get("n_endpoints"))
         _kv("VLANs in use", _sc.get("n_vlans"))
         r += 1

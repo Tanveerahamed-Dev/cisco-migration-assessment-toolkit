@@ -16,12 +16,14 @@ import ast
 import json
 import os
 import pathlib
+import shutil
 import sys
 
 import pytest
 
 from cisco_toolkit import ssot
 
+NODE_BIN = shutil.which("node")
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ENGINE = ROOT / "COLLECT_PARSE_V3_23_0.py"
 GOLDEN = ROOT / "tests" / "golden" / "snapshot.json"
@@ -101,6 +103,72 @@ def test_t10_a_device_blind_spot_still_wins():
     assert ssot.abstention_reason(snap, "qos_audit", device="sw9") == "not_collected"
 
 
+def test_t11_a_non_string_subject_is_total():
+    """The docstring promises a total function; `"." in 5` raised TypeError."""
+    assert ssot.abstention_reason({"a": 1}, 5) == "not_collected"
+    assert ssot.abstention_reason({"a": 1}, ["a"]) == "not_collected"
+    assert ssot.abstention_reason({"a": 1}, None) == "not_collected"
+
+
+# --------------------------------------------------------------------------------------------------
+# one hop downstream: a canonical fact DERIVED from a failed phase's fallback
+# --------------------------------------------------------------------------------------------------
+def _crashed_health(**posture):
+    return {"assessment_integrity": {"failed_phases": ["Health Scores", "Endpoint identity"]},
+            "health_scores": [], "endpoint_identity": [],
+            "executive_brief": {"scale": {"n_devices": 0, "n_endpoints": 0, "n_domains": 2},
+                                "posture": dict({"avg_health": None, "n_critical": 0, "n_poor": 0,
+                                                 "worst_band": None}, **posture)},
+            "application_intelligence": {"summary": {"n_domains": 2}, "domains": [{}, {}]},
+            "collection_completeness": {"summary": {"inventory": 3, "complete": 3}, "devices": []}}
+
+
+def test_d1_lineage_marks_facts_derived_from_a_crashed_phase_unavailable():
+    """With 'Health Scores' failed, lineage published n_devices / n_critical / n_poor = 0 as
+    `collected_but_empty` -- 'looked, found nothing' about a count taken over the crash fallback."""
+    states = {f["name"]: f["state"] for f in ssot.compute_fact_lineage(_crashed_health())["facts"]}
+    for name in ("n_devices", "n_endpoints", "avg_health", "n_critical", "n_poor", "worst_band"):
+        assert states[name] == AU, (name, states[name])
+    # NON-VACUITY: facts whose basis did not fail keep their own state
+    assert states["n_domains"] == "published"
+
+
+def test_d2_an_assertion_over_a_derived_fact_of_a_crashed_phase_abstains():
+    from cisco_toolkit import assertions
+    spec = {"id": "no-critical-switches", "subject": "executive_brief.posture.n_critical",
+            "all_of": [{"type": "comparison", "op": "==", "value": 0}]}
+    r = assertions.evaluate_assertion(_crashed_health(), spec)
+    assert r["status"] == assertions.NOT_OBSERVED and r["abstention"] == AU, r
+    # NON-VACUITY: the same assertion over a clean, genuinely-zero posture still passes
+    clean = {"health_scores": [{"switch": "a", "band": "Good", "score": 80}],
+             "executive_brief": {"posture": {"n_critical": 0}}}
+    assert assertions.evaluate_assertion(clean, spec)["status"] == "pass"
+
+
+def test_d3_every_derived_canonical_fact_names_its_raw_basis():
+    """Ratchet: a headline fact stored under `executive_brief` is computed from OTHER sections; one
+    whose basis is not registered would read `collected_but_empty` over a crashed producer again."""
+    import re
+    known = {s for secs in ssot.PHASE_SECTIONS.values() for s in secs}
+    for prefix, basis in ssot.DERIVED_FACT_BASIS.items():
+        assert basis and set(basis) <= known, (prefix, basis)
+    for name, (path, concept) in ssot.CANONICAL_FACTS.items():
+        basis = ssot.fact_basis(path)
+        assert basis[0] == path.split(".", 1)[0], (name, basis)
+        if path.startswith("executive_brief."):
+            assert len(basis) > 1, f"{name}: derived headline fact with no registered raw basis"
+        for hint in re.findall(r"len\((?:analyze\.)?(\w+)\)", concept):
+            if hint in known:
+                assert hint in basis, (name, hint, basis)
+
+
+def test_d4_committed_sample_lineage_is_unchanged():
+    s = json.loads(SAMPLE.read_text(encoding="utf-8"))
+    if "fact_lineage" not in s:
+        pytest.skip("sample carries no embedded fact_lineage")
+    assert ssot.compute_fact_lineage(s) == s["fact_lineage"]
+
+
 def test_failed_sections_reports_attribution():
     direct, unattributed = ssot.failed_sections(
         _failed(["Golden-config drift", "QoS Audit sheet", "HTML Explorer"]))
@@ -124,6 +192,29 @@ def test_c1_census_counts_the_new_state_honestly():
             + s["n_analysis_unavailable"]) == s["n_sections"]
     clean = ssot.compute_schema_census({"vpc": {}, "qos_audit": {"a": 1}})["summary"]
     assert set(clean) == {"n_published", "n_collected_but_empty", "n_not_collected", "n_sections"}
+
+
+def test_c2_coverage_sheet_accounts_for_the_new_state():
+    """The Coverage Schema totals row omitted `analysis_unavailable`, so its counts silently stopped
+    summing to n_sections; the crashed rows carried no fill at all."""
+    import re
+    from openpyxl import Workbook
+    from cisco_toolkit.excel import COVERAGE_SCHEMA_SHEET_NAME, write_coverage_schema_sheet
+    census = ssot.compute_schema_census(_failed(["QoS audit"], qos_audit={}, vpc={}, fhrp={"a": 1}))
+    wb = Workbook()
+    write_coverage_schema_sheet(wb, census)
+    ws = wb[COVERAGE_SCHEMA_SHEET_NAME]
+    totals = str(ws.cell(3, 5).value)
+    assert "analysis FAILED 1" in totals, totals
+    assert sum(int(x) for x in re.findall(r"\d+", totals)) == ws.cell(3, 4).value == census["summary"]["n_sections"]
+    row = next(r for r in range(4, ws.max_row + 1) if ws.cell(r, 1).value == "qos_audit")
+    assert ws.cell(row, 2).value == AU
+    assert str(ws.cell(row, 2).fill.fgColor.rgb).upper().endswith("F4CCCC")
+    # NON-VACUITY: a clean census keeps its historical totals text exactly
+    clean_wb = Workbook()
+    write_coverage_schema_sheet(clean_wb, ssot.compute_schema_census({"vpc": {}, "fhrp": {"a": 1}}))
+    assert clean_wb[COVERAGE_SCHEMA_SHEET_NAME].cell(3, 5).value == (
+        "published 1 · collected-but-empty 1 · NOT collected 0 (blind spots)")
 
 
 def test_a1_assertion_over_a_crashed_section_abstains_instead_of_passing():
@@ -161,6 +252,65 @@ def test_e1b_law8_rejects_a_healthy_note_on_an_unavailable_row(monkeypatch):
     checks = {c.check_id: c for c in eval_harness._check_not_observed(
         _failed(["QoS audit"], qos_audit={}), None)}
     assert checks["law8.census"].status == eval_harness._FAIL
+
+
+# --------------------------------------------------------------------------------------------------
+# the offline explorer's Ask-Atlas port of the abstention core (executed in the real embedded script)
+# --------------------------------------------------------------------------------------------------
+def _explorer_run(driver, tmp_path):
+    if str(ROOT / "tests") not in sys.path:
+        sys.path.insert(0, str(ROOT / "tests"))
+    import test_explorer_render_safety as harness      # the repo's DOM-stubbed full-script runner
+    return harness._run(driver, tmp_path)
+
+
+def _with_census(snap):
+    snap = dict(snap)
+    snap["schema_census"] = ssot.compute_schema_census(snap)
+    return snap
+
+
+_JS_CASES = {
+    # the engine's own projection (schema_census) is present: the explorer reads it, no second registry
+    "census": _with_census(_failed(["QoS audit", "Syslog intelligence", "Platform health"],
+                                   qos_audit={}, syslog_intelligence={}, platform_health={}, vpc={})),
+    # an older snapshot with no census: only section-keyed signals attribute; the rest fails CLOSED
+    "no_census": _failed(["QoS audit"], qos_audit={}, vpc={"sw1": {"role": "primary"}}),
+    "sentinel": {"platform_health": {"_unavailable": True}, "vpc": {}},
+    "stamp": {"assessment_integrity": {"qos_audit": "compute_failed"}, "qos_audit": {"sw1": {"x": 1}}},
+    "clean": {"qos_audit": {}, "vpc": {"sw1": {"role": "primary"}}},
+}
+_JS_SUBJECTS = ("qos_audit", "syslog_intelligence", "platform_health", "vpc")
+
+
+@pytest.mark.skipif(not NODE_BIN, reason="node is not installed -- executed explorer check skipped")
+def test_x1_explorer_abstention_reads_failures_and_never_greens_a_crash(tmp_path):
+    """abAbstention ignored assessment_integrity: a crashed QoS / syslog / platform phase got the green
+    'NOT OBSERVED · collected, none found … a real negative, not a blind spot' pill."""
+    payload = json.dumps(_JS_CASES)
+    out = _explorer_run(r"""
+      const CASES=""" + payload + r""";
+      const res={};
+      for(const [k,s] of Object.entries(CASES)){globalThis.__S=s;__EV("SNAP=globalThis.__S");
+        res[k]={};
+        for(const subj of """ + json.dumps(list(_JS_SUBJECTS)) + r""")res[k][subj]=__EV("abAbstention")(subj);
+        const r=__EV("abH_notobserved")("what is my qos posture",{});
+        res[k].qos_pill=(r.html.match(/pill (pl-\w+)/)||[])[1]||"";
+        res[k].qos_text=r.html.replace(/<[^>]+>/g,"");}
+      console.log(JSON.stringify(res));
+    """, tmp_path)
+    for case, snap in _JS_CASES.items():
+        for subj in _JS_SUBJECTS:
+            py = ssot.abstention_reason(snap, subj)
+            assert out[case][subj] == py, (case, subj, out[case][subj], py)
+    for case in ("census", "no_census", "stamp"):
+        assert out[case]["qos_audit"] == AU, (case, out[case])
+        assert out[case]["qos_pill"] != "pl-ok", (case, out[case])
+        assert "analysis failed" in out[case]["qos_text"].lower(), (case, out[case]["qos_text"])
+        assert "real negative" not in out[case]["qos_text"], (case, out[case]["qos_text"])
+    assert out["sentinel"]["platform_health"] == AU
+    # NON-VACUITY: a clean empty is still the honest 'collected, none found'
+    assert out["clean"]["qos_audit"] == CBE and out["clean"]["qos_pill"] == "pl-ok"
 
 
 # --------------------------------------------------------------------------------------------------

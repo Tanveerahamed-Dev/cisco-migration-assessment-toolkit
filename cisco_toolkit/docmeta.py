@@ -998,13 +998,17 @@ def _glance_rows(snap):
 
     # G15: the engine publishes `posture.avg_health: None` (with `n_scored: 0`) when NO device was
     # health-scored. "average health [NOT OBSERVED]/100 — 0 Critical, 0 Poor" set a real-looking band
-    # count beside the abstention; name the state instead of templating it into a score.
-    _posture = ssot._dotted(snap if isinstance(snap, dict) else {}, "executive_brief.posture")
-    if (f.get("avg_health") is None and isinstance(_posture, dict) and "avg_health" in _posture
-            and _posture.get("n_scored") == 0):
+    # count beside the abstention; name the state instead of templating it into a score. Read through the
+    # ONE reader, so a stored number over zero scored rows (every pre-G15 snapshot's 0) is NOT ASSESSED
+    # too, and a malformed value is UNVERIFIED rather than "average health abc/100".
+    _fh = ssot.fleet_avg_health(snap if isinstance(snap, dict) else {})
+    if _fh["state"] == "not_assessed":
         health = ("fleet health NOT ASSESSED — no device was health-scored [NOT OBSERVED]; "
                   "not assessed, not clear"
                   + (f" · {f.get('n_critical')} Critical-band switch(es) observed" if f.get("n_critical") else ""))
+    elif _fh["state"] == "unverified":
+        health = (f"average health UNVERIFIED — the published value is not a number; "
+                  f"{v(f.get('n_critical'))} Critical, {v(f.get('n_poor'))} Poor")
     else:
         health = (f"average health {v(f.get('avg_health'))}/100 — {v(f.get('n_critical'))} Critical, "
                   f"{v(f.get('n_poor'))} Poor")

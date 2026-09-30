@@ -157,6 +157,54 @@ def canonical_facts(snap: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _scored_health_rows(health: Any) -> Optional[int]:
+    """How many health rows carry a usable score -- the predicate compute_executive_brief averages over
+    and reconcile() verifies with (a finite, non-bool number on a row that is not 'Insufficient Data').
+    None when `health` is not a list (no raw basis to count)."""
+    if not isinstance(health, list):
+        return None
+    return sum(1 for h in health if isinstance(h, dict) and is_finite_num(h.get("score"))
+               and h.get("band") != _HEALTH_BAND_NOT_SCORED)
+
+
+def fleet_avg_health(snap: Any) -> Dict[str, Any]:
+    """THE reader of the canonical fleet health average (G15). Every surface renders from this rather
+    than re-deriving a mean or trusting a stored number blindly. Returns
+    ``{state, value, n_scored, n_rows}`` where ``state`` is one of:
+
+    * ``measured``     -- ``value`` is the published, finite ``executive_brief.posture.avg_health``.
+    * ``not_assessed`` -- no device was health-scored: the engine's published abstention (``None``),
+      or a stored NUMBER over zero scored rows -- the pre-G15 producer's hard ``0`` (which
+      :func:`reconcile` reports as a violation) is a measurement of nothing and never renders as one.
+    * ``unverified``   -- a value is published but it is not a finite number (a malformed upload).
+    * ``unpublished``  -- no canonical value at all (brief absent, failed ``_unavailable``, or a
+      pre-posture snapshot). A consumer may fall back to its OWN mean over SCORED rows only.
+
+    ``n_rows`` / ``n_scored`` count the ``health_scores`` list (``None`` when it is not a list; the
+    posture's own ``n_scored`` stands in for the latter). ``value`` is ``None`` unless ``measured``.
+    Total on bad input; derives only, never mutates.
+    """
+    s = snap if isinstance(snap, dict) else {}
+    health = s.get("health_scores")
+    n_rows = len(health) if isinstance(health, list) else None
+    n_scored = _scored_health_rows(health)
+    eb = s.get("executive_brief")
+    posture = eb.get("posture") if isinstance(eb, dict) and not eb.get("_unavailable") else None
+    if n_scored is None and isinstance(posture, dict) and isinstance(posture.get("n_scored"), int):
+        n_scored = posture["n_scored"]
+    out: Dict[str, Any] = {"state": "unpublished", "value": None, "n_scored": n_scored, "n_rows": n_rows}
+    if not isinstance(posture, dict) or "avg_health" not in posture:
+        return out
+    value = posture.get("avg_health")
+    if value is None or n_scored == 0 or posture.get("n_scored") == 0:
+        out["state"] = "not_assessed"
+    elif is_finite_num(value):
+        out.update(state="measured", value=value)
+    else:
+        out["state"] = "unverified"
+    return out
+
+
 _MISSING = object()
 
 
@@ -373,6 +421,41 @@ def failed_sections(snap: Any) -> Tuple[FrozenSet[str], bool]:
     return frozenset(direct), unattributed
 
 
+# One hop downstream (G14). A headline fact stored under `executive_brief` is DERIVED from other
+# sections: with the 'Health Scores' phase failed, `compute_executive_brief` still publishes counts taken
+# over the `[]` fallback, and the abstention core -- which looked only at the fact path's own top-level
+# section -- classified them `collected_but_empty` ("looked, found nothing"); a user assertion
+# `executive_brief.posture.n_critical == 0` PASSED over the crash. Keyed by dotted-path prefix (the
+# longest registered prefix wins); the value is the raw-basis sections the fact is computed from. Held
+# complete for every CANONICAL_FACTS path under `executive_brief` by
+# tests/test_ssot_failed_phase_abstention.py, which also cross-checks each `== len(<section>)` basis
+# hint in CANONICAL_FACTS. Facts outside `executive_brief` (lifecycle_risk.summary.*,
+# design_blueprint.summary.*) are derived inside their own section, whose failure is already `direct`.
+DERIVED_FACT_BASIS: Dict[str, Tuple[str, ...]] = {
+    "executive_brief.posture": ("health_scores",),
+    "executive_brief.scale.n_devices": ("health_scores",),
+    "executive_brief.scale.n_collected": ("collection_completeness",),
+    "executive_brief.scale.n_endpoints": ("endpoint_identity",),
+    "executive_brief.scale.n_domains": ("application_intelligence",),
+    # vlan_inventory(interfaces, l3_forwarding, service_map): the two computed inputs can fail
+    "executive_brief.scale.n_vlans": ("l3_forwarding", "service_map"),
+}
+
+
+def fact_basis(path: Any) -> Tuple[str, ...]:
+    """The snapshot sections a (dotted) fact path is computed from: its own top-level section first,
+    then the raw basis of the longest :data:`DERIVED_FACT_BASIS` prefix that covers it. ``()`` for a
+    non-string / empty path. Total; derives only."""
+    if not isinstance(path, str) or not path:
+        return ()
+    best = ""
+    for prefix in DERIVED_FACT_BASIS:
+        if (path == prefix or path.startswith(prefix + ".")) and len(prefix) > len(best):
+            best = prefix
+    top = path.split(".", 1)[0]
+    return (top,) + tuple(s for s in DERIVED_FACT_BASIS.get(best, ()) if s != top)
+
+
 def _abstention(snap: Dict[str, Any], subject: Any, device: Optional[str],
                 failures: Tuple[FrozenSet[str], bool]) -> str:
     """:func:`abstention_reason` with the snapshot's :func:`failed_sections` computed once by the caller."""
@@ -380,13 +463,19 @@ def _abstention(snap: Dict[str, Any], subject: Any, device: Optional[str],
     if device and _device_not_collected(snap, device):
         return "not_collected"
     direct, unattributed = failures
-    top = subject.split(".", 1)[0] if isinstance(subject, str) else subject
-    # The section IS a failed phase's fallback: whatever it holds ([] / {} / an error-state default /
-    # an _unavailable sentinel / nothing at all) is not evidence. Checked before presence, so an ABSENT
-    # section of a failed phase is not mislabelled a collection blind spot either.
-    if isinstance(top, str) and top in direct:
+    # The section IS a failed phase's fallback, or the fact is DERIVED from one: whatever it holds ([] /
+    # {} / an error-state default / an _unavailable sentinel / a count over the fallback / nothing at
+    # all) is not evidence. Checked before presence, so an ABSENT section of a failed phase is not
+    # mislabelled a collection blind spot either.
+    if any(section in direct for section in fact_basis(subject)):
         return ANALYSIS_UNAVAILABLE
-    val = _dotted(snap, subject) if "." in subject else snap.get(subject, _MISSING)
+    if isinstance(subject, str) and "." in subject:
+        val = _dotted(snap, subject)
+    else:
+        try:
+            val = snap.get(subject, _MISSING)
+        except TypeError:            # an unhashable subject (a list from a malformed pack) names no section
+            val = _MISSING
     if val is _MISSING or val is None:
         return "not_collected"
     # DEEP-empty, not just shallow-falsy: a wrapper whose every payload is empty (a compute that always
@@ -406,9 +495,10 @@ def abstention_reason(snap: Dict[str, Any], subject: str, device: str = None) ->
       'not_collected'        -- the axis is absent, OR (device given) that device was never collected -- a BLIND
                                 SPOT, never a clean result. This is the 'not observed never becomes healthy' rule
                                 (the bare show-logging-on-NX-OS false-health class) made into a first-class token.
-      'analysis_unavailable' -- the section's analysis phase FAILED this run (see :func:`failed_sections`), so
-                                whatever it holds is a fallback: neither a blind spot of collection nor a finding
-                                that nothing is there.
+      'analysis_unavailable' -- the section's analysis phase FAILED this run (see :func:`failed_sections`), or
+                                the fact is derived from a section that did (see :data:`DERIVED_FACT_BASIS`),
+                                so whatever it holds is a fallback: neither a blind spot of collection nor a
+                                finding that nothing is there.
     Pure presence/absence logic over the snapshot -- no model, no egress; total (safe on None / bad input)."""
     snap = snap if isinstance(snap, dict) else {}
     return _abstention(snap, subject, device, failed_sections(snap))
@@ -652,6 +742,9 @@ def segmentation_facts(snap: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(pct, (int, float)) or isinstance(pct, bool):
         pct = (round(100.0 * n_with_acl / n_gateways, 1)
                if (n_gateways and isinstance(n_with_acl, int)) else None)
+    if not n_gateways:
+        # G15 class: a share over ZERO gateways is not a percentage (the owner publishes 0.0 there).
+        pct = None
 
     flat = ssum.get("flat")
     if not isinstance(flat, bool):
@@ -744,15 +837,40 @@ def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[st
             pass  # not derivable on this snapshot shape -> skip, never a false violation
 
     # --- posture (health bands) --------------------------------------------------------------
-    if health:
-        if "n_critical" in posture:
-            crit = sum(1 for h in health if isinstance(h, dict) and h.get("band") == _HEALTH_BAND_CRITICAL)
-            check("executive_brief.posture.n_critical", posture.get("n_critical"), crit,
-                  "count(health_scores.band==Critical)")
-        if "n_poor" in posture:
-            poor = sum(1 for h in health if isinstance(h, dict) and h.get("band") == _HEALTH_BAND_POOR)
-            check("executive_brief.posture.n_poor", posture.get("n_poor"), poor,
-                  "count(health_scores.band==Poor)")
+    # The raw basis is a health_scores LIST -- unless the 'Health Scores' phase FAILED (or a failure
+    # that cannot be attributed sits beside an EMPTY list): that list is then the phase's `[]` fallback,
+    # and a check against it certified the posture -- `summary()` reported `verified: True` over a
+    # crashed phase. Such a basis verifies nothing, and nothing is counted as having run.
+    _failed_direct, _failed_unattributed = failed_sections(snap)
+    _health_basis = (isinstance(snap.get("health_scores"), list)
+                     and "health_scores" not in _failed_direct
+                     and not (_failed_unattributed and not health))
+    # is_finite_num, not `isinstance(...) and math.isfinite(...)`: that idiom rejects the JSON
+    # Infinity/NaN correctly but CRASHES on the other value json.loads accepts -- an integer
+    # literal of unbounded precision, on which math.isfinite() itself raises OverflowError
+    # before it can return False. reconcile() runs inside docmeta.add_excellence_front, so
+    # that aborted EVERY deliverable in the docx family over one health score.
+    scored = [h.get("score") for h in health
+              if isinstance(h, dict) and is_finite_num(h.get("score"))
+              and h.get("band") != _HEALTH_BAND_NOT_SCORED]
+    if _health_basis and health:
+        for field, band in (("n_critical", _HEALTH_BAND_CRITICAL), ("n_poor", _HEALTH_BAND_POOR)):
+            if field not in posture:
+                continue
+            path = f"executive_brief.posture.{field}"
+            cnt = sum(1 for h in health if isinstance(h, dict) and h.get("band") == band)
+            published = posture.get(field)
+            if published is not None:
+                check(path, published, cnt, f"count(health_scores.band=={band})")
+                continue
+            # G15: a None band count is the producer's abstention for a fleet with NOTHING scored and
+            # no such band observed -- verified in both directions, exactly like avg_health below.
+            if _ran is not None:
+                _ran.append(path)
+            if cnt:
+                violations.append(f"{path}=None (not assessed) but {cnt} health row(s) carry the {band} band")
+            elif scored:
+                violations.append(f"{path}=None (not assessed) but {len(scored)} health row(s) are scored")
     # avg_health and worst_band are DERIVED aggregates published in posture; both are counted as
     # self-verified facts, so both must be reconciled too (mirroring compute_executive_brief
     # exactly -> no tolerance, no false positives). The mean excludes "Insufficient Data" scores.
@@ -760,15 +878,7 @@ def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[st
     # (None): a published number there -- the pre-G15 producer's hard 0, carried by every snapshot it
     # wrote -- is a measurement of nothing. With scored rows, a published None withholds a real mean.
     # The raw basis is a health_scores LIST (an empty one included: zero rows is zero scored rows).
-    if isinstance(snap.get("health_scores"), list) and "avg_health" in posture:
-        # is_finite_num, not `isinstance(...) and math.isfinite(...)`: that idiom rejects the JSON
-        # Infinity/NaN correctly but CRASHES on the other value json.loads accepts -- an integer
-        # literal of unbounded precision, on which math.isfinite() itself raises OverflowError
-        # before it can return False. reconcile() runs inside docmeta.add_excellence_front, so
-        # that aborted EVERY deliverable in the docx family over one health score.
-        scored = [h.get("score") for h in health
-                  if isinstance(h, dict) and is_finite_num(h.get("score"))
-                  and h.get("band") != _HEALTH_BAND_NOT_SCORED]
+    if _health_basis and "avg_health" in posture:
         published_avg = posture.get("avg_health")
         if scored and published_avg is not None:
             check("executive_brief.posture.avg_health", published_avg,
@@ -784,7 +894,7 @@ def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[st
                 violations.append(
                     f"executive_brief.posture.avg_health={published_avg!r} but 0 of {len(health)} "
                     f"health row(s) are scored (a number published for nothing; expected None)")
-    if health:
+    if _health_basis and health:
         if "worst_band" in posture:
             bands_present = {h.get("band") for h in health if isinstance(h, dict)}
             derived_worst = next((b for b in _HEALTH_BAND_ORDER if b in bands_present), "")

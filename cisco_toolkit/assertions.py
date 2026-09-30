@@ -287,8 +287,10 @@ def _evaluate_object_assertion(snap: Dict[str, Any], spec: Dict[str, Any]) -> Di
     if rows is None:
         return dict(base, status=NOT_OBSERVED, abstention="not_collected",
                     detail="for_each collection missing or unusable", object_evaluation=None)
-    # G14: rows resolved from a FAILED phase's fallback are not evidence (see evaluate_assertion).
-    if isinstance(path, str) and path.split(".", 1)[0] in ssot.failed_sections(snap)[0]:
+    # G14: rows resolved from a FAILED phase's fallback -- or derived from one -- are not evidence (see
+    # evaluate_assertion; ssot.fact_basis is the same basis the abstention core checks).
+    _direct = ssot.failed_sections(snap)[0]
+    if any(section in _direct for section in ssot.fact_basis(path)):
         return dict(base, status=NOT_OBSERVED, abstention=ssot.ANALYSIS_UNAVAILABLE,
                     detail="for_each collection's analysis failed this run — rows are a fallback, not evidence",
                     object_evaluation=None)
