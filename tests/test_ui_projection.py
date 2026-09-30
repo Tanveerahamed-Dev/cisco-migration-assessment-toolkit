@@ -1297,7 +1297,7 @@ def test_module_imports_only_stdlib_and_the_ssot_owner():
         elif isinstance(node, ast.ImportFrom):
             base = ("." * node.level) + (node.module or "")
             imported.update(f"{base}:{alias.name}" for alias in node.names)
-    allowed = {"math", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
+    allowed = {"math", "re", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:__version__"}
     extra = {name for name in imported if name not in allowed and not name.startswith("typing:")}
     assert not extra, extra

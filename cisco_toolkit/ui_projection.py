@@ -92,6 +92,7 @@ and a withheld branch, so generated TypeScript narrows ``value`` on ``state``.
 from __future__ import annotations
 
 import math
+import re
 from types import MappingProxyType
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -222,12 +223,34 @@ IF_COLUMNS: Tuple[str, ...] = (
     "status", "switchport_mode", "vlan", "speed", "duplex", "description", "cdp_neighbor", "neighbor_port",
     "trunk_allowed_vlans", "trunk_native_vlan", "stp_fwd_vlans", "stp_blk_vlans", "end_host_ip", "end_host_mac",
     "port_channel", "svi_ip", "vrf")
-#: Lists and texts the engine cuts with no total published (owner slice bounds).
+#: Lists and texts the engine cuts with no total published (owner slice bounds). tests/test_ui_projection_inventory.py
+#: walks every producer this module names and holds each prefix slice it reaches to this table or a reviewed exemption.
 ENGINE_LIST_CAPS: Mapping[str, int] = MappingProxyType({
     "health_scores[].deductions": 8,                      # analyze.compute_health_scores
     "endpoint_dependencies.dual_homed[].ports": 8,        # analyze.compute_endpoint_dependencies
     "remediation_plan[].why": 300,                        # analyze.compute_remediation_plan
+    "vlan_cutover[].app_domain": 3,                       # analyze.compute_vlan_cutover_matrix (domains joined " + ")
+    "punchlist[].detail": 400,                            # analyze.compute_migration_punchlist (_clip)
 })
+#: The separator compute_vlan_cutover_matrix joins the (at most 3) application domains with.
+APP_DOMAIN_JOINER = " + "
+#: What analyze.compute_migration_punchlist's _clip appends to a text it cut.
+PUNCH_DETAIL_CLIP_MARKER = " …"
+#: analyze._ESSENTIAL_LABELS: the essential command groups collection_completeness names as missing.
+ESSENTIAL_LABELS: Tuple[str, ...] = ("interface status", "switchport", "version/inventory", "CDP/LLDP neighbors")
+#: Device-page selection -> the essential captures its rows are derived from (all of them for the punch-list, which
+#: rolls up every axis). A partial device missing one of them gets a list that may be incomplete.
+SELECTION_NEEDS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
+    "links": ("CDP/LLDP neighbors",),                                     # analyze.compute_cable_map
+    "native_vlan_mismatches": ("CDP/LLDP neighbors", "switchport"),        # excel.compute_trunk_native_mismatches
+    "endpoints": ("interface status", "switchport"),                       # analyze.compute_endpoint_identity
+    "findings": ESSENTIAL_LABELS,                                          # analyze.compute_migration_punchlist
+})
+#: Every section an analysis phase writes (ssot.PHASE_SECTIONS): its value can be computed from a failed phase's
+#: fallback two hops away, which ssot.failed_sections does not mark.
+ANALYSIS_SECTIONS: FrozenSet[str] = frozenset(s for secs in ssot.PHASE_SECTIONS.values() for s in secs)
+#: The dossier bands a missing ('na') axis can understate: every band below the top one (Unassessed is no band).
+DOSSIER_UNDERSTATABLE: Tuple[str, ...] = ("Elevated", "Guarded", "Low")
 #: VLAN cutover field -> the ``compute_vlan_cutover_matrix`` inputs it is computed from. The producer publishes
 #: no per-field basis, so this table is owned HERE and held against the producer's parameters by tests.
 VLAN_FIELD_BASIS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
@@ -272,10 +295,11 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "one_hop_failure_attribution", "ssot.failed_sections",
         "A failed phase marks only the sections one hop away (ssot.PHASE_SECTIONS, ssot.DERIVED_FACT_BASIS). "
         "A section computed from a failed section's fallback is not marked: device_dossiers is not marked "
-        "when failure_impact fails. Every brief value published while a failure is recorded carries this "
-        "caveat.",
+        "when failure_impact fails. Every brief value, and every row value computed by an analysis phase, published "
+        "while a failure is recorded carries this caveat.",
         ["/overview/axes", "/overview/absent_axes", "/overview/top_gating", "/overview/posture_statement",
-         "/findings/rows"]),
+         "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
+         "/findings/rows", "/findings/total"]),
     _limitation(
         "axis_basis_owned_by_projection", "cisco_toolkit.ui_projection.AXIS_BASIS",
         "analyze.compute_executive_brief publishes no per-axis basis. The axis-to-input table is owned by "
@@ -287,7 +311,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "reconcile_checks_only_with_raw_basis", "ssot.reconcile",
         "A reconcile check runs only when its raw basis is present. n_checked counts the checks that "
         "actually ran, verified requires at least one, and with none run the violation count is withheld.",
-        ["/trust/ssot/verified", "/trust/ssot/n_checked", "/trust/ssot/n_violations"]),
+        ["/trust/ssot/verified", "/trust/ssot/n_checked", "/trust/ssot/n_violations", "/trust/ssot/violations"]),
     _limitation(
         "measured_zero_mapping", "cisco_toolkit.ui_projection",
         "The abstention core labels a present scalar 0 or false collected_but_empty. This projection "
@@ -295,7 +319,8 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "basis section is uncollected, ssot.reconcile does not reject it, and its owner's domain state does "
         "not call the input incomplete; engine_state keeps the owner's token. An empty text or mapping "
         "stays collected_but_empty.",
-        ["/overview/facts", "/trust/unknown_evidence"]),
+        ["/overview/facts", "/overview/lifecycle", "/trust/unknown_evidence", "/trust/ssot/engine_stamp",
+         "/inventory/devices/total"]),
     _limitation(
         "abstention_addresses_dict_paths_only", "ssot.abstention_reason",
         "The abstention core cannot address an array element. A list item takes its list's state, then its "
@@ -317,9 +342,15 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "key), stamp_matches_live, snapshot_schema_supported, the top_gating check against the producer's "
         "rule (every Critical/High axis headline, in axis order) and its axis_index join, the always-emitted "
         "axis check, and the unverified state for a failed type check, an integer above 2^53-1, a reconcile "
-        "violation or an owner fault.",
+        "violation or an owner fault. On the row screens: the device total's row-count check, the punch-list "
+        "priority and rank checks against the producer's rule, a cap's reached flag, the incomplete state of a list "
+        "whose input a blind spot, a missing essential capture or a missing security row withheld, the empty "
+        "VLAN-dependency and default-election checks against the gateway SVI and root-bridge records, and the "
+        "completeness claim of the uncollected-peer list.",
         ["/trust/census/embedded/matches_live", "/trust/ssot/stamp_matches_live",
-         "/engine/snapshot_schema_supported", "/overview/top_gating", "/overview/absent_axes"]),
+         "/engine/snapshot_schema_supported", "/overview/top_gating", "/overview/absent_axes",
+         "/inventory/devices/total", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
+         "/findings/rows"]),
     _limitation(
         "device_physical_defaults_not_observed", "model.DevicePhysical",
         "The device record defaults its text fields to '' and num_power_supplies, num_modules and total_ports to 0, "
@@ -331,15 +362,31 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "health_scored_without_security", "analyze.compute_health_scores",
         "A device with no captured running-config (no security row) gets no security deduction at all, so its "
         "health score and band are computed without that input. Every such published score or band carries this "
-        "caveat. The engine publishes no list of the other inputs a row was missing.",
+        "caveat.",
+        ["/inventory/devices"]),
+    _limitation(
+        "health_scored_over_partial_collection",
+        "analyze.compute_health_scores, analyze.compute_collection_completeness",
+        "A device collection_completeness lists as partial keeps its health band while enough essential captures "
+        "returned (its data quality at or above the scorer's threshold), so its score and band are computed without "
+        "the missing inputs, for example the CDP/LLDP neighbours behind the cross-layer deductions. Every such "
+        "published score or band carries this caveat, with a witness ref to the blind-spot row's missing list.",
+        ["/inventory/devices"]),
+    _limitation(
+        "dossier_band_over_unassessed_axes", "analyze.compute_device_dossiers",
+        "The risk register scores only the axes it could assess: an axis marked 'na' adds nothing to the exposure "
+        "score. A band below Severe computed while the row's own n_na is above zero may understate the risk, so it "
+        "carries this caveat, with a witness ref to that n_na. The count is the engine's; nothing is recomputed.",
         ["/inventory/devices"]),
     _limitation(
         "engine_list_capped",
-        "analyze.compute_health_scores, analyze.compute_endpoint_dependencies, analyze.compute_remediation_plan",
+        "analyze.compute_health_scores, analyze.compute_endpoint_dependencies, analyze.compute_remediation_plan, "
+        "analyze.compute_vlan_cutover_matrix, analyze.compute_migration_punchlist",
         "The engine cuts some lists and texts and publishes no total: health deductions after 8, dual-homed ports "
-        "after 8, and remediation 'why' text after 300 characters. A list at its cap means 'at least this many'; "
-        "the projection never computes the missing total.",
-        ["/inventory/endpoints/dual_homed"]),
+        "after 8, remediation 'why' text after 300 characters, a VLAN's application domains after 3, and a "
+        "punch-list detail near 400 characters (the engine marks that cut with ' …'). A list at its cap means "
+        "'at least this many'; the projection never computes the missing total.",
+        ["/inventory/vlans", "/inventory/endpoints/dual_homed", "/findings/rows"]),
     _limitation(
         "move_group_label_absent", "analyze.compute_move_groups",
         "compute_move_groups writes no 'group' label on its rows, yet the punch-list, remediation, dossier and "
@@ -366,10 +413,27 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         ["/findings/rows", "/findings/total"]),
     _limitation(
         "row_selection_by_exact_key", "cisco_toolkit.ui_projection",
-        "Rows are joined to a device, VLAN or endpoint by exact key equality, with the owner's own key rule. Two rows "
-        "naming the same key are unverified, never picked between. The inventory is the union of the devices map "
-        "and the collection_completeness blind spots.",
+        "Rows are joined to a device, VLAN or endpoint by exact key equality, with the owner's own key rule; a "
+        "collection_completeness blind-spot row is joined by the rule of its owner's device scope (the name without "
+        "case or surrounding space, ssot.abstention_reason). Two rows naming the same key are unverified, never "
+        "picked between. The inventory is the union of the devices map and the collection_completeness blind spots. "
+        "A selection is null when its source list could not be read (selection_sources says why), and [] when it "
+        "was read and names nothing.",
         ["/inventory/devices", "/inventory/endpoints", "/inventory/vlans"]),
+    _limitation(
+        "fleet_lists_exclude_blind_devices", "analyze.compute_collection_completeness",
+        "collection_completeness lists devices the collection reached only partly or not at all. A fleet list derived "
+        "from device evidence holds only what was collected: an uncollected capture adds no row. While any blind spot "
+        "is listed, a published list carries this caveat, with a witness ref to each blind-spot row, and an empty one "
+        "is not_collected, never 'nothing found'.",
+        ["/inventory/vlans", "/inventory/endpoints", "/findings/rows", "/findings/total"]),
+    _limitation(
+        "findings_without_running_config", "analyze.compute_migration_punchlist",
+        "A device in the devices map with no security row (no captured running-config) contributes no "
+        "configuration-derived punch-list row (security, configuration hygiene, QoS). While any device lacks one, "
+        "published findings carry this caveat, with a witness ref to each such device record, and an empty list is "
+        "not_collected.",
+        ["/findings/rows", "/findings/total"]),
 )
 #: What a device document cannot claim; addressed inside a ``DeviceDocument``.
 DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
@@ -389,8 +453,29 @@ DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "parsed. The engine does not tell these apart, so an empty list is withheld as not_collected.",
         ["/device/routing_neighbors"]),
 )
+#: The payload limitations a device page can cite, re-addressed into a ``DeviceDocument`` (so the document defines
+#: every caveat it carries): limitation id -> its applies_to inside the document.
+DEVICE_CITED_LIMITATIONS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
+    "one_hop_failure_attribution": ("/device/collection", "/device/health", "/device/lifecycle", "/device/dossier",
+                                    "/device/coverage", "/device/links", "/device/remediation", "/device/nrfu_cases",
+                                    "/device/findings", "/device/endpoints"),
+    "coverage_matrix_shown_as_published": ("/device/coverage",),
+    "projection_owned_verdicts": ("/device/health/deductions_cap", "/device/remediation/items", "/device/links",
+                                  "/device/native_vlan_mismatches", "/device/findings", "/device/endpoints"),
+    "device_physical_defaults_not_observed": ("/device/physical",),
+    "health_scored_without_security": ("/device/health",),
+    "health_scored_over_partial_collection": ("/device/health",),
+    "dossier_band_over_unassessed_axes": ("/device/dossier/risk_band",),
+    "engine_list_capped": ("/device/health/deductions", "/device/remediation/items"),
+    "move_group_label_absent": ("/device/remediation/items",),
+    "row_selection_by_exact_key": ("/device/links", "/device/native_vlan_mismatches", "/device/findings",
+                                   "/device/endpoints"),
+})
 _LIMITATION_IDS = tuple(lim["id"] for lim in LIMITATIONS)
 _ALL_LIMITATION_IDS = _LIMITATION_IDS + tuple(lim["id"] for lim in DEVICE_LIMITATIONS)
+_DEVICE_DOC_LIMITATIONS: Tuple[Mapping[str, Any], ...] = DEVICE_LIMITATIONS + tuple(
+    _limitation(lim["id"], lim["owner"], lim["text"], DEVICE_CITED_LIMITATIONS[lim["id"]])
+    for lim in LIMITATIONS if lim["id"] in DEVICE_CITED_LIMITATIONS)
 
 _R_CBE = "collected but empty: the engine looked and found nothing of this kind (not a blind spot)"
 _R_NC = "not collected: a blind spot, not a clean result"
@@ -452,6 +537,43 @@ _R_CAP_TOTAL = ("not collected: the engine cuts this list at {limit} and publish
                 "not known")
 _R_OWNER_EMPTY = ("unverified: the abstention core calls this list empty (it carries no evidence), yet it holds rows; "
                   "they cannot be read as findings")
+_R_DEVICE_BLIND = ("collection_completeness lists this device as not collected (ssot.abstention_reason, device "
+                   "scope)")
+_R_NO_IFACE = "this device has no interface parse result"
+_R_NO_CONFIG = ("security carries no row for this device (no captured running-config), so its configuration-derived "
+                "rows could not be generated")
+_R_ROLE_DEFAULT = ("not collected: the engine infers the role from the device's parsed interfaces (a gateway SVI makes "
+                   "it 'distribution', else 'access'); this device has none, so the role is the engine's default, not "
+                   "an observation")
+_R_FLEET_BLIND = ("not collected: collection_completeness lists {n} device(s) as partial or not collected, so an empty "
+                  "list is not a clean result; their uncollected evidence could add rows")
+_R_FLEET_NO_CONFIG = ("not collected: {n} device(s) in the devices map have no security row (no captured "
+                      "running-config), so their configuration-derived rows could not be generated; an empty list is "
+                      "not a clean result")
+
+
+def _is_text(value: Any) -> bool:
+    """A string a UTF-8 encoder can write. A lone surrogate (JSON admits the escape) is not text: it would make the
+    serializer raise, so a value or key carrying one is treated as not a string."""
+    if not isinstance(value, str):
+        return False
+    if value.isascii():
+        return True
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _norm(name: str) -> str:
+    """The owners' device-name match key (ssot._device_not_collected): no case, no surrounding space."""
+    return name.strip().lower()
+
+
+def _safe_text(value: str) -> str:
+    """Owner prose that may quote a snapshot value: a lone surrogate is escaped, never passed through."""
+    return value if _is_text(value) else value.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -495,19 +617,22 @@ def _fault_text(owner: str, exc: BaseException) -> str:
             f"nothing is claimed")
 
 
+_UNSET = object()
+
+
 class _Ctx:
+    """The owners' answers for one snapshot. ``failed_sections`` is read eagerly (every fact consults it); the
+    fleet-health, reconcile and summary owners run on first use, so a screen that never reads them never pays."""
+
     def __init__(self, snap: Any) -> None:
         self.s: Dict[str, Any] = snap if isinstance(snap, dict) else {}
         self.faults: Dict[str, str] = {}
         direct, unattributed = self._call("ssot.failed_sections", ssot.failed_sections, (frozenset(), True))
-        self.direct = frozenset(k for k in direct if isinstance(k, str))
+        self.direct = frozenset(k for k in direct if _is_text(k))
         self.unattributed = bool(unattributed)
-        self.fh = self._call("ssot.fleet_avg_health", ssot.fleet_avg_health,
-                             {"state": "unpublished", "value": None, "n_scored": None, "n_rows": None})
-        self.canon = self._call("ssot.canonical_facts", ssot.canonical_facts, {})
-        raw = self._call("ssot.reconcile", ssot.reconcile, None)
-        self.violations: Optional[List[str]] = None if raw is None else [str(v) for v in raw]
-        self.summary: Optional[Dict[str, Any]] = self._call("ssot.summary", ssot.summary, None)
+        self._fh: Any = _UNSET
+        self._violations: Any = _UNSET
+        self._summary: Any = _UNSET
         self._abst: Dict[str, str] = {}
         self._abst_dev: Dict[Tuple[str, str], str] = {}
         self._indexes: Dict[Any, Dict[str, List[int]]] = {}
@@ -516,6 +641,9 @@ class _Ctx:
         self._census_counts: Optional[Dict[str, Any]] = None
         self._mg: Optional[bool] = None
         self._cc_witness: Dict[str, List[Tuple[str, Sequence[Any]]]] = {}
+        self._blind_rows: Optional[List[int]] = None
+        self._no_config: Optional[List[str]] = None
+        self._stp_roots: Optional[Dict[int, Tuple[str, str, Dict[str, Any]]]] = None
 
     def _call(self, owner: str, fn: Callable[[Any], Any], fallback: Any) -> Any:
         try:
@@ -523,6 +651,26 @@ class _Ctx:
         except _OWNER_FAULTS as exc:
             self.faults[owner] = _fault_text(owner, exc)
             return fallback
+
+    @property
+    def fh(self) -> Dict[str, Any]:
+        if self._fh is _UNSET:
+            self._fh = self._call("ssot.fleet_avg_health", ssot.fleet_avg_health,
+                                  {"state": "unpublished", "value": None, "n_scored": None, "n_rows": None})
+        return self._fh
+
+    @property
+    def violations(self) -> Optional[List[str]]:
+        if self._violations is _UNSET:
+            raw = self._call("ssot.reconcile", ssot.reconcile, None)
+            self._violations = None if raw is None else [_safe_text(str(v)) for v in raw]
+        return self._violations
+
+    @property
+    def summary(self) -> Optional[Dict[str, Any]]:
+        if self._summary is _UNSET:
+            self._summary = self._call("ssot.summary", ssot.summary, None)
+        return self._summary
 
     @property
     def any_failure(self) -> bool:
@@ -591,27 +739,31 @@ class _Ctx:
     def device_blind(self, section: str, host: Any) -> bool:
         """The owner's device scope says ``not_collected`` where its section-level answer does not: the device
         is a collection blind spot (``collection_completeness`` lists it as not collected)."""
-        return (isinstance(host, str) and bool(host) and self.abst_dev(section, host) == _NC
+        return (_is_text(host) and bool(host) and self.abst_dev(section, host) == _NC
                 and self.abst(section) != _NC)
+
+    def cc_row(self, host: Any) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+        """The blind-spot row the owner's device scope reads for `host` (ssot._device_not_collected: the name
+        without case or surrounding space, first match wins), or ``(None, None)``."""
+        if not _is_text(host):
+            return None, None
+        idx = self.index(("collection_completeness", "devices"), ("host",), norm=True).get(_norm(host), [])
+        rows = _get(self.s, ("collection_completeness", "devices"))
+        return (idx[0], rows[idx[0]]) if idx else (None, None)
 
     def cc_witness(self, host: str) -> List[Tuple[str, Sequence[Any]]]:
         """The blind-spot row that makes `host` not collected, by the owner's matching rule."""
         if host not in self._cc_witness:
-            out: List[Tuple[str, Sequence[Any]]] = []
-            rows = _get(self.s, ("collection_completeness", "devices"))
-            want = host.strip().lower()
-            for i, row in enumerate(rows if isinstance(rows, list) else ()):
-                name = row.get("host") if isinstance(row, dict) else None
-                if isinstance(name, str) and name.strip().lower() == want:
-                    out = [("witness", ("collection_completeness", "devices", i))]
-                    break
-            self._cc_witness[host] = out
+            i, _row = self.cc_row(host)
+            self._cc_witness[host] = [] if i is None else [("witness", ("collection_completeness", "devices", i))]
         return list(self._cc_witness[host])
 
-    def index(self, toks: Tuple[Any, ...], fields: Tuple[str, ...], multi: bool = False) -> Dict[str, List[int]]:
-        """Key -> every row index naming it, over the list at `toks` (one pass, cached). A key is a string
-        field value (or, with `multi`, each string in a list field); duplicates stay visible."""
-        key = (toks, fields, multi)
+    def index(self, toks: Tuple[Any, ...], fields: Tuple[str, ...], multi: bool = False,
+              norm: bool = False) -> Dict[str, List[int]]:
+        """Key -> every row index naming it, over the list at `toks` (one pass, cached). A key is a text field
+        value (or, with `multi`, each text in a list field); with `norm` it is compared without case or surrounding
+        space. Duplicates stay visible."""
+        key = (toks, fields, multi, norm)
         if key not in self._indexes:
             out: Dict[str, List[int]] = {}
             rows = _get(self.s, toks)
@@ -622,13 +774,46 @@ class _Ctx:
                 for field in fields:
                     val = row.get(field)
                     if multi and isinstance(val, list):
-                        names.extend(x for x in val if isinstance(x, str))
-                    elif isinstance(val, str):
+                        names.extend(x for x in val if _is_text(x))
+                    elif _is_text(val):
                         names.append(val)
-                for name in dict.fromkeys(names):
+                for name in dict.fromkeys(_norm(n) if norm else n for n in names):
                     out.setdefault(name, []).append(i)
             self._indexes[key] = out
         return self._indexes[key]
+
+    def blind_rows(self) -> List[int]:
+        """Every collection_completeness row listing a device as partial or not collected (the owner's statuses)."""
+        if self._blind_rows is None:
+            rows = _get(self.s, ("collection_completeness", "devices"))
+            self._blind_rows = [i for i, row in enumerate(rows if isinstance(rows, list) else ())
+                                if isinstance(row, dict) and _is_text(row.get("status"))
+                                and _norm(row["status"]) in CC_STATUSES]
+        return list(self._blind_rows)
+
+    def no_config_hosts(self) -> List[str]:
+        """The devices-map hosts the security map carries no row for (no captured running-config)."""
+        if self._no_config is None:
+            devices, sec = self.s.get("devices"), self.s.get("security")
+            self._no_config = (sorted(h for h in devices if _is_text(h) and h not in sec)
+                               if isinstance(devices, dict) and isinstance(sec, dict) else [])
+        return list(self._no_config)
+
+    def stp_root_record(self, vid: int) -> Optional[Tuple[str, str, Dict[str, Any]]]:
+        """``(host, key, record)`` of the STP root compute_vlan_cutover_matrix reads for VLAN `vid`: the first sorted
+        host whose non-MST record, keyed by that VLAN id, claims root (its own rule, record order kept)."""
+        if self._stp_roots is None:
+            out: Dict[int, Tuple[str, str, Dict[str, Any]]] = {}
+            roots = self.s.get("stp_roots")
+            for host in sorted(k for k in roots if _is_text(k)) if isinstance(roots, dict) else ():
+                recs = roots[host]
+                for key, rec in (recs.items() if isinstance(recs, dict) else ()):
+                    v = _vid(key, strip=False) if _is_text(key) else None
+                    if (v is not None and isinstance(rec, dict) and not rec.get("is_mst") and rec.get("is_root")
+                            and v not in out):
+                        out[v] = (host, key, rec)
+            self._stp_roots = out
+        return self._stp_roots.get(vid)
 
     @property
     def mg_labelled(self) -> bool:
@@ -657,9 +842,11 @@ class _Ctx:
         return self._census_counts.get(section)
 
     def if_nc(self, host: Any) -> bool:
-        """The device has no interface parse result (its interfaces row is absent)."""
+        """The device has no interface parse result: its interfaces row is absent or empty (the engine writes an
+        unreached inventory host as ``{}``)."""
         ifaces = self.s.get("interfaces")
-        return not (isinstance(ifaces, dict) and isinstance(host, str) and host in ifaces)
+        row = ifaces.get(host) if isinstance(ifaces, dict) and _is_text(host) else None
+        return not (isinstance(row, dict) and row)
 
     def _failure_entries(self, sections: Iterable[str], unavailable: bool) -> List[Tuple[str, Sequence[Any]]]:
         secs = set(sections)
@@ -730,7 +917,7 @@ def _score(raw: Any) -> Tuple[bool, Any]:
 
 
 def _text_list(raw: Any) -> Tuple[bool, Any]:
-    if isinstance(raw, list) and all(isinstance(x, str) for x in raw):
+    if isinstance(raw, list) and all(_is_text(x) for x in raw):
         return True, list(raw)
     return False, None
 
@@ -740,15 +927,17 @@ _FHRP_MEMBER_TEXT = ("host", "proto", "group", "vip", "role", "vmac")
 
 
 def _fhrp(raw: Any) -> Tuple[bool, Any]:
-    """analyze.compute_vlan_cutover_matrix's FHRP record, rebuilt field by field (analyze.py members dict)."""
-    if not isinstance(raw, dict) or not all(isinstance(raw.get(k), str) for k in _FHRP_TEXT):
+    """analyze.compute_vlan_cutover_matrix's FHRP record, rebuilt field by field (analyze.py members dict). The
+    producer writes '' for a field no gateway evidenced (a joined group of no members, a member with no election
+    detail); that is not an observed value, so it travels as null."""
+    if not isinstance(raw, dict) or not all(_is_text(raw.get(k)) for k in _FHRP_TEXT):
         return False, None
     members = raw.get("members")
     if not isinstance(members, list):
         return False, None
     out: List[Dict[str, Any]] = []
     for member in members:
-        if not isinstance(member, dict) or not all(isinstance(member.get(k), str) for k in _FHRP_MEMBER_TEXT):
+        if not isinstance(member, dict) or not all(_is_text(member.get(k)) for k in _FHRP_MEMBER_TEXT):
             return False, None
         prio, preempt = member.get("priority"), member.get("preempt")
         if prio is not None:
@@ -757,10 +946,10 @@ def _fhrp(raw: Any) -> Tuple[bool, Any]:
                 return False, None
         if preempt is not None and not isinstance(preempt, bool):
             return False, None
-        row = {k: member[k] for k in _FHRP_MEMBER_TEXT}
+        row = {k: member[k] or None for k in _FHRP_MEMBER_TEXT}
         row.update(priority=prio, preempt=preempt)
         out.append({k: row[k] for k in ("host", "proto", "group", "vip", "role", "priority", "preempt", "vmac")})
-    return True, {**{k: raw[k] for k in _FHRP_TEXT}, "members": out}
+    return True, {**{k: raw[k] or None for k in _FHRP_TEXT}, "members": out}
 
 
 #: Fixed-shape records: slot -> ((field, slot, vocabulary), ...), in output order.
@@ -796,7 +985,8 @@ def _typed(raw: Any, slot: str, vocab: Sequence[str] = ()) -> Tuple[bool, Any]:
     if slot == "score":
         return _score(raw)
     if slot == "text":
-        return isinstance(raw, str), (raw if isinstance(raw, str) else None)
+        ok = _is_text(raw)
+        return ok, (raw if ok else None)
     if slot == "flag":
         return isinstance(raw, bool), (raw if isinstance(raw, bool) else None)
     if slot == "enum":
@@ -805,7 +995,7 @@ def _typed(raw: Any, slot: str, vocab: Sequence[str] = ()) -> Tuple[bool, Any]:
     if slot == "text_list":
         return _text_list(raw)
     if slot == "fhrp":
-        return (True, raw) if isinstance(raw, str) else _fhrp(raw)
+        return (True, raw) if _is_text(raw) else _fhrp(raw)
     if slot == "coverage_cell":
         ok = isinstance(raw, str) and raw in COVERAGE_STATES
         return ok, (raw if ok else None)
@@ -815,7 +1005,7 @@ def _typed(raw: Any, slot: str, vocab: Sequence[str] = ()) -> Tuple[bool, Any]:
         return _record(raw, slot)
     if slot == "axis":
         sev, head, det = raw.get("severity"), raw.get("headline"), raw.get("detail")
-        if isinstance(sev, str) and sev in SEVERITIES and isinstance(head, str) and isinstance(det, str):
+        if isinstance(sev, str) and sev in SEVERITIES and _is_text(head) and _is_text(det):
             return True, {"severity": sev, "headline": head, "detail": det}
         return False, None
     if slot == "by_state":
@@ -835,7 +1025,7 @@ def _typed(raw: Any, slot: str, vocab: Sequence[str] = ()) -> Tuple[bool, Any]:
     if slot == "source":
         sec, state, det = raw.get("section"), raw.get("state"), raw.get("detail_complete")
         ok_n, n = _count(raw.get("records_examined"))
-        if (isinstance(sec, str) and isinstance(state, str) and state in UE_SOURCE_STATES and ok_n
+        if (_is_text(sec) and isinstance(state, str) and state in UE_SOURCE_STATES and ok_n
                 and isinstance(det, bool)):
             return True, {"section": sec, "state": state, "records_examined": n, "detail_complete": det}
         return False, None
@@ -1175,7 +1365,7 @@ def _axes(ctx: _Ctx) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Any, str]:
     items: List[Dict[str, Any]] = []
     cav = _brief_caveats(ctx, "axis_basis_owned_by_projection")
     for i, row in enumerate(raw if isinstance(raw, list) else ()):
-        label = row.get("axis") if isinstance(row, dict) and isinstance(row.get("axis"), str) else None
+        label = row.get("axis") if isinstance(row, dict) and _is_text(row.get("axis")) else None
         basis = AXIS_BASIS.get(label, BRIEF_INPUTS) if label is not None else BRIEF_INPUTS
         toks = ("executive_brief", "axes", i)
         value = None
@@ -1351,7 +1541,7 @@ def _census(ctx: _Ctx) -> Dict[str, Any]:
     items = []
     for row in live["sections"]:
         key = row.get("key")
-        if not isinstance(key, str):
+        if not _is_text(key):
             continue                                  # a non-JSON key has no RFC 6901 address
         count = row.get("count")
         items.append({"key": key, "state": row["state"],
@@ -1394,7 +1584,7 @@ def _failures(ctx: _Ctx) -> Dict[str, Any]:
     items = []
     for i, label in enumerate(raw if isinstance(raw, list) else ()):
         kind = ctx.classify(label)
-        items.append({"index": i, "label": label if isinstance(label, str) else None, "classification": kind,
+        items.append({"index": i, "label": label if _is_text(label) else None, "classification": kind,
                       "sections": list(ssot.PHASE_SECTIONS.get(label, ())) if kind == "sections" else [],
                       "pointer": json_pointer("assessment_integrity", "failed_phases", i)})
     record = _factlist(ctx, path, "ssot.failed_sections", items, base, owner,
@@ -1475,8 +1665,9 @@ def _unknown_evidence(ctx: _Ctx) -> Dict[str, Any]:
 
 def _ssot_block(ctx: _Ctx) -> Dict[str, Any]:
     live = ctx.summary
+    violations = ctx.violations                       # both owners run before their faults are read
     fault = ctx.faults.get("ssot.summary") or ctx.faults.get("ssot.reconcile")
-    if live is None or ctx.violations is None:
+    if live is None or violations is None:
         fault = fault or _fault_text("ssot.summary", TypeError())
     block: Dict[str, Any] = {"basis": "ssot.summary"}
     rc = ("reconcile_checks_only_with_raw_basis",)
@@ -1498,7 +1689,7 @@ def _ssot_block(ctx: _Ctx) -> Dict[str, Any]:
                     "violation count would verify nothing")
         block["n_violations"] = _live_count(ctx, live.get("n_violations"), "ssot.summary:n_violations",
                                             withhold=(_NC, none_ran) if n_checked == 0 else None, caveats=rc)
-        texts = list(ctx.violations or ())
+        texts = list(violations or ())
         if n_checked == 0:
             vbase, vreason = _NC, none_ran
         elif texts:
@@ -1593,12 +1784,13 @@ def _secs_fail(ctx: _Ctx, sections: Sequence[str]) -> Optional[Tuple[str, str]]:
 
 def _resolve(ctx: _Ctx, path_toks: Tuple[str, ...], sections: Sequence[str], *, key: Any = _MISSING,
              key_field: Optional[str] = None, want: Any = dict, host: Any = None,
-             absent: Optional[Tuple[str, str]] = None, forced: Optional[Tuple[str, str]] = None) -> _Row:
+             absent: Optional[Tuple[str, str]] = None, forced: Optional[Tuple[str, str]] = None,
+             norm: bool = False) -> _Row:
     """Join one row. `path_toks` is a FIXED container path (never a host). With `key` alone the container is a
-    map keyed by it; with `key_field` it is a list whose rows name the key in that field; with neither the
-    container itself is the row. First match wins: forced (an unknown device) -> the device's blind spot
-    (owner order) -> a failed or faulted section -> an uncollected section -> a wrong container -> the join
-    (absent / ambiguous) -> a row of the wrong type."""
+    map keyed by it; with `key_field` it is a list whose rows name the key in that field (with `norm`, compared
+    without case or surrounding space); with neither the container itself is the row. First match wins: forced
+    (an unknown device) -> the device's blind spot (owner order) -> a failed or faulted section -> an uncollected
+    section -> a wrong container -> the join (absent / ambiguous) -> a row of the wrong type."""
     keyed = key is not _MISSING and key_field is None
     cand: Optional[Tuple[Any, ...]] = (path_toks + (key,)) if keyed else (path_toks if key is _MISSING else None)
     if forced is not None:
@@ -1621,11 +1813,12 @@ def _resolve(ctx: _Ctx, path_toks: Tuple[str, ...], sections: Sequence[str], *, 
         return _Row(_UV, f"unverified: {path} is not {_KIND[need]}, so no row can be read", cand, None, sections)
     miss = absent or (_NC, _R_NO_ROW.format(section=path))
     if keyed:
-        if key not in container:
+        if not _is_text(key) or key not in container:
             return _Row(miss[0], miss[1], cand, None, sections)
         toks, raw = path_toks + (key,), container[key]
     else:
-        idx = ctx.index(path_toks, (key_field,)).get(key, []) if isinstance(key, str) else []
+        idx = (ctx.index(path_toks, (key_field,), norm=norm).get(_norm(key) if norm else key, [])
+               if _is_text(key) else [])
         if not idx:
             return _Row(miss[0], miss[1], None, None, sections)
         if len(idx) > 1:
@@ -1647,8 +1840,16 @@ def _void(value: Any) -> bool:
     return _carries_nothing(value) or value == []
 
 
-#: A pre-check on a raw field: ``None`` to go on, else the withheld ``(state, reason)`` (a not-observed marker).
-_Pre = Callable[[Any, _Row], Optional[Tuple[str, str]]]
+#: A pre-check on a raw field: ``None`` to go on, else the withheld ``(state, reason)`` (a not-observed marker), or
+#: ``(state, reason, extra ref entries)`` when a record elsewhere in the snapshot witnesses why.
+_Pre = Callable[[Any, _Row], Optional[Tuple[Any, ...]]]
+
+
+def _one_hop(ctx: _Ctx, state: str, sections: Iterable[str]) -> Tuple[str, ...]:
+    """The one-hop caveat on a value an analysis phase computed, published while a failure is recorded."""
+    if state in (_PUB, _CBE) and ctx.any_failure and any(s in ANALYSIS_SECTIONS for s in sections):
+        return ("one_hop_failure_attribution",)
+    return ()
 #: A gate on a typed field value: ``None`` to publish, else ``(state, reason, extra ref entries)``.
 _CellGate = Callable[[_Ctx, Any, _Row], Optional[Tuple[str, str, List[Tuple[str, Sequence[Any]]]]]]
 
@@ -1679,7 +1880,8 @@ def _cell(ctx: _Ctx, row: _Row, field: Optional[str], slot: str, basis: str, *, 
             raw = row.raw if field is None else row.raw[field]
             early = pre(raw, row) if pre is not None else None
             if early is not None:
-                state, reason = early
+                state, reason = early[0], early[1]
+                extra += list(early[2]) if len(early) > 2 else []
             else:
                 ok, typed = _typed(raw, slot, vocab)
                 gated = gate(ctx, typed, row) if (gate is not None and ok) else None
@@ -1704,7 +1906,7 @@ def _cell(ctx: _Ctx, row: _Row, field: Optional[str], slot: str, basis: str, *, 
         if row.basis_refs:
             entries += [("basis", (s,)) for s in secs[1:]]
         refs = ctx.refs(entries + ctx.failure_entries(secs, state == AU) + extra + list(witness))
-    cav = list(caveats) + (list(published_caveats) if state == _PUB else [])
+    cav = list(caveats) + (list(published_caveats) + list(_one_hop(ctx, state, secs)) if state == _PUB else [])
     return _envelope(state, value, None if toks is None else json_pointer(*toks), refs, basis,
                      reason or _state_reason(ctx, state, slot, secs), caveats=cav)
 
@@ -1733,28 +1935,44 @@ def _rolled(ctx: _Ctx, state: str, reason: Optional[str], sections: Sequence[str
     return state, reason
 
 
+#: A qualification of a fleet list: ``(caveat id, reason when the list is empty, witness ref entries)``. A published
+#: list carries the caveat and its witnesses; an empty one is not_collected for that reason, never a clean absence.
+_Qualify = Tuple[str, str, List[Tuple[str, Sequence[Any]]]]
+
+
 def _listing(ctx: _Ctx, state: str, reason: Optional[str], toks: Optional[Tuple[Any, ...]], basis: str,
              items: List[Any], *, sections: Sequence[str] = (), rollup: Sequence[str] = (),
              extra: Sequence[Tuple[str, Sequence[Any]]] = (), caveats: Sequence[str] = (),
-             incomplete: Optional[str] = None, bare: bool = False) -> Dict[str, Any]:
+             incomplete: Optional[str] = None, bare: bool = False,
+             qualify: Sequence[_Qualify] = ()) -> Dict[str, Any]:
     all_secs = tuple(sections) + tuple(s for s in rollup if s not in sections)
     if not bare:
         state, reason = _rolled(ctx, state, reason, sections, rollup, incomplete)
     if state == _PUB and not items:
         state, reason = _CBE, reason or _R_CBE                  # a published list is never empty
+    witness: List[Tuple[str, Sequence[Any]]] = []
+    cav = list(caveats)
+    if qualify and state in (_PUB, _CBE):
+        for cid, _why, wit in qualify:
+            cav.append(cid)
+            witness += wit
+        if state == _CBE:
+            state, reason = _NC, "; ".join(why for _c, why, _w in qualify)
     if state != _PUB and not reason:
         reason = _R_CBE if state == _CBE else _state_reason(ctx, state, "list", all_secs)
     entries: List[Tuple[str, Sequence[Any]]] = []
     if not bare:
         entries = (([("subject", toks)] if toks is not None else []) + [("basis", (s,)) for s in rollup]
-                   + ctx.failure_entries(all_secs, state == AU) + list(extra))
+                   + ctx.failure_entries(all_secs, state == AU) + list(extra) + witness)
     out: Dict[str, Any] = {"state": state, "subject": None if toks is None else json_pointer(*toks),
                            "refs": ctx.refs(entries), "basis": basis}
     if state != _PUB:
         out["reason"] = reason
-    cav = [c for c in _ALL_LIMITATION_IDS if c in set(caveats)] if state in (_PUB, _CBE) else []
-    if cav:
-        out["caveats"] = cav
+    cav += _one_hop(ctx, state, all_secs)
+    # a withheld list still qualifies the rows it carries (an incomplete list shows what it has)
+    kept = [c for c in _ALL_LIMITATION_IDS if c in set(cav)] if (state in (_PUB, _CBE) or items) else []
+    if kept:
+        out["caveats"] = kept
     out["items"] = items
     return out
 
@@ -1817,29 +2035,71 @@ def _items(ctx: _Ctx, list_toks: Optional[Tuple[Any, ...]], raw_list: Any, slot:
     return out
 
 
-def _sel_state(ctx: _Ctx, base: str, reason: Optional[str], selected: Sequence[Any], host: Any,
-               cbe: str) -> Tuple[str, Optional[str]]:
-    """The state of the rows of one list that name a device: the owner's rows, or an honest absence."""
-    if base not in (_PUB, _CBE):
-        return base, reason
-    if selected:
-        return _PUB, None
+def _device_gap(ctx: _Ctx, host: Any, section: str, needs: Sequence[str],
+                config: bool = False) -> Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]]:
+    """Why rows naming `host` may be missing from a list derived from `needs` (essential captures), first match
+    wins: the owner's device scope calls it not collected -> its blind-spot row names a needed capture as
+    missing -> it has no interface parse -> (with `config`) it has no security row. ``None``: nothing withheld."""
+    if not _is_text(host):
+        return None
+    if ctx.device_blind(section, host):
+        return _R_DEVICE_BLIND, ctx.cc_witness(host)
+    i, row = ctx.cc_row(host)
+    if i is not None and isinstance(row, dict) and _is_text(row.get("status")) and _norm(row["status"]) == "partial":
+        missing = row.get("missing")
+        if isinstance(missing, list):
+            hit = [m for m in missing if _is_text(m) and m in needs]
+            if hit:
+                return (f"collection_completeness lists {', '.join(hit)} as missing for this device",
+                        [("witness", ("collection_completeness", "devices", i, "missing"))])
+        else:
+            return ("collection_completeness lists this device as partial and names no readable missing list",
+                    [("witness", ("collection_completeness", "devices", i))])
     if ctx.if_nc(host):
-        return _NC, ("not collected: this device has no interface parse result, so no row naming it could be "
-                     "derived; an absent row is not a clean result")
-    return _CBE, f"collected but empty: {cbe} (not a blind spot)"
+        return _R_NO_IFACE, []
+    if config and _cfg_missing(ctx, host):
+        return _R_NO_CONFIG, []
+    return None
 
 
-def _cap(limit: int, raw: Any, owner: str) -> Dict[str, Any]:
-    """An engine cap: the limit, whether the list reaches it, and a total that no owner publishes."""
-    return {"limit": limit, "reached": isinstance(raw, list) and len(raw) >= limit,
+def _cfg_missing(ctx: _Ctx, host: str) -> bool:
+    """`host` has no security row while the security map itself is readable (else the list rollup already says so)."""
+    sec = ctx.s.get("security")
+    return isinstance(sec, dict) and host not in sec
+
+
+def _sel_state(ctx: _Ctx, base: str, reason: Optional[str], selected: Sequence[Any],
+               gap: Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]],
+               cbe: str) -> Tuple[str, Optional[str], List[Tuple[str, Sequence[Any]]]]:
+    """The state of the rows of one list that name a device: the owner's rows, or an honest absence. A device gap
+    makes the selection not_collected: with rows it may be incomplete, without rows it is no clean result."""
+    if base not in (_PUB, _CBE):
+        return base, reason, []
+    if gap is not None:
+        why, wit = gap
+        if selected:
+            return _NC, (f"not collected: the list may be incomplete: {why}; the rows shown are the ones other "
+                         "evidence names"), wit
+        return _NC, (f"not collected: {why}, so no row naming it could be derived; an absent row is not a clean "
+                     "result"), wit
+    if selected:
+        return _PUB, None, []
+    return _CBE, f"collected but empty: {cbe} (not a blind spot)", []
+
+
+def _cap(limit: int, raw: Any, owner: str, readable: bool) -> Dict[str, Any]:
+    """An engine cap: the limit, whether the list reaches it (``None`` when the list could not be read), and a total
+    that no owner publishes."""
+    return {"limit": limit, "reached": (isinstance(raw, list) and len(raw) >= limit) if readable else None,
             "total": _envelope(_NC, None, None, [], f"{owner} (capped; no total published)",
                                _R_CAP_TOTAL.format(limit=limit))}
 
 
 def _total(ctx: _Ctx, section: str, listing: Dict[str, Any], *, sections: Sequence[str],
-           witness: Sequence[Tuple[str, Sequence[Any]]] = (), caveats: Sequence[str] = ()) -> Dict[str, Any]:
-    """A row list's total: the census count of its section, following the list's own final state."""
+           witness: Sequence[Tuple[str, Sequence[Any]]] = (), caveats: Sequence[str] = (),
+           qualify: Sequence[_Qualify] = ()) -> Dict[str, Any]:
+    """A row list's total: the census count of its section, following the list's own final state (a live count,
+    like the census summary: a zero over an empty list is published without a zero-mapping caveat)."""
     basis = f"ssot.compute_schema_census:{section}.count"
     state, reason, value = listing["state"], listing.get("reason"), None
     if state in (_PUB, _CBE):
@@ -1851,9 +2111,32 @@ def _total(ctx: _Ctx, section: str, listing: Dict[str, Any], *, sections: Sequen
             state, value, reason = _PUB, typed, None
         else:
             state, reason = _UV, _unverified_reason("count")
-    refs = ctx.refs([("witness", (section,))] + list(witness) + ctx.failure_entries(sections, state == AU))
+    cav = list(caveats)
+    wit = list(witness)
+    if state == _PUB:
+        for cid, _why, w in qualify:
+            cav.append(cid)
+            wit += w
+        cav += _one_hop(ctx, state, sections)
+    refs = ctx.refs([("witness", (section,))] + wit + ctx.failure_entries(sections, state == AU))
     return _envelope(state, value, None, refs, basis, reason or _state_reason(ctx, state, "count", sections),
-                     caveats=caveats if state == _PUB else ())
+                     caveats=cav if state == _PUB else ())
+
+
+def _fleet_qualify(ctx: _Ctx, config: bool = False) -> List[_Qualify]:
+    """The fleet-list qualifications (see :data:`_Qualify`): blind devices, and, for the punch-list, devices whose
+    running-config was not captured."""
+    out: List[_Qualify] = []
+    blind = ctx.blind_rows()
+    if blind:
+        out.append(("fleet_lists_exclude_blind_devices", _R_FLEET_BLIND.format(n=len(blind)),
+                    [("witness", ("collection_completeness", "devices", i)) for i in blind]))
+    if config:
+        lacking = ctx.no_config_hosts()
+        if lacking:
+            out.append(("findings_without_running_config", _R_FLEET_NO_CONFIG.format(n=len(lacking)),
+                        [("witness", ("devices", h)) for h in lacking]))
+    return out
 
 
 def _vid(value: Any, strip: bool = True) -> Optional[int]:
@@ -1947,10 +2230,11 @@ def _dev_basis(field: str) -> str:
 
 def _joins(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> Dict[str, _Row]:
     """The rows one device joins: its record, health, lifecycle, dossier and blind-spot rows. The blind-spot
-    row itself is evidence of non-collection, so the device scope does not withhold it. Its absence means
-    "not a blind spot" only for a device the devices map carries."""
+    row itself is evidence of non-collection, so the device scope does not withhold it; it is joined by the rule
+    of its owner's device scope (no case, no surrounding space). Its absence means "not a blind spot" only for a
+    device the devices map carries."""
     devices = ctx.s.get("devices")
-    in_devices = isinstance(host, str) and isinstance(devices, dict) and host in devices
+    in_devices = _is_text(host) and isinstance(devices, dict) and host in devices
     return {
         "devices": _resolve(ctx, ("devices",), ("devices",), key=host, host=host, absent=_ABSENT_DEVICE,
                             forced=forced),
@@ -1961,8 +2245,8 @@ def _joins(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> Di
         "dossier": _resolve(ctx, ("device_dossiers", "per_device"), ("device_dossiers",), key=host,
                             key_field="host", host=host, absent=_ABSENT_DOSSIER, forced=forced),
         "collection": _resolve(ctx, ("collection_completeness", "devices"), ("collection_completeness",),
-                               key=host, key_field="host", absent=_ABSENT_CC if in_devices else _ABSENT_CC_PEER,
-                               forced=forced),
+                               key=host, key_field="host", norm=True,
+                               absent=_ABSENT_CC if in_devices else _ABSENT_CC_PEER, forced=forced),
     }
 
 
@@ -1972,17 +2256,30 @@ def _row_pointer(row: _Row) -> Optional[str]:
 
 def _health_caveat(ctx: _Ctx, host: Any,
                    dossier: _Row) -> Tuple[Tuple[str, ...], List[Tuple[str, Sequence[Any]]]]:
-    """A score computed with no security row carries a caveat, witnessed by the dossier's own 'na' axis."""
-    sec = ctx.s.get("security")
-    if not isinstance(host, str) or (isinstance(sec, dict) and host in sec):
-        return (), []
+    """A score computed with no security row, or over a partial collection, carries a caveat: the first witnessed by
+    the dossier's own 'na' security axis, the second by the blind-spot row's missing list."""
+    cav: List[str] = []
     witness: List[Tuple[str, Sequence[Any]]] = []
-    exps = dossier.raw.get("exposures") if dossier.state is None and isinstance(dossier.raw, dict) else None
-    for j, exp in enumerate(exps if isinstance(exps, list) else ()):
-        if isinstance(exp, dict) and exp.get("axis") == "Security posture" and exp.get("state") == "na":
-            witness = [("witness", dossier.toks + ("exposures", j))]
-            break
-    return ("health_scored_without_security",), witness
+    if not _is_text(host):
+        return (), []
+    if _cfg_missing(ctx, host):
+        cav.append("health_scored_without_security")
+        exps = dossier.raw.get("exposures") if dossier.state is None and isinstance(dossier.raw, dict) else None
+        for j, exp in enumerate(exps if isinstance(exps, list) else ()):
+            if isinstance(exp, dict) and exp.get("axis") == "Security posture" and exp.get("state") == "na":
+                witness.append(("witness", dossier.toks + ("exposures", j)))
+                break
+    i, row = ctx.cc_row(host)
+    if i is not None and isinstance(row, dict) and _is_text(row.get("status")) and _norm(row["status"]) == "partial":
+        cav.append("health_scored_over_partial_collection")
+        witness.append(("witness", ("collection_completeness", "devices", i, "missing")))
+    return tuple(cav), witness
+
+
+def _role_pre(ctx: _Ctx, host: Any) -> _Pre:
+    def pre(_raw: Any, _row: _Row) -> Optional[Tuple[Any, ...]]:
+        return (_NC, _R_ROLE_DEFAULT) if ctx.if_nc(host) else None
+    return pre
 
 
 def _health_cells(ctx: _Ctx, host: Any, j: Dict[str, _Row]) -> Dict[str, Dict[str, Any]]:
@@ -1993,19 +2290,32 @@ def _health_cells(ctx: _Ctx, host: Any, j: Dict[str, _Row]) -> Dict[str, Dict[st
                        witness=wit),
         "band": _cell(ctx, health, "band", "enum", _B_HEALTH + "band", vocab=HEALTH_BANDS, pre=_not_scored,
                       published_caveats=cav, witness=wit),
-        "role": _cell(ctx, health, "role", "text", _B_HEALTH + "role"),
+        "role": _cell(ctx, health, "role", "text", _B_HEALTH + "role", pre=_role_pre(ctx, host)),
     }
 
 
-def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_index: Mapping[str, List[int]]) -> Dict[str, Any]:
+def _risk_band(ctx: _Ctx, dossier: _Row) -> Dict[str, Any]:
+    """The dossier band, caveated when it sits below the top band while the row's own n_na counts unassessed axes."""
+    cav: Tuple[str, ...] = ()
+    wit: List[Tuple[str, Sequence[Any]]] = []
+    if dossier.state is None and isinstance(dossier.raw, dict):
+        ok, n_na = _count(dossier.raw.get("n_na"))
+        if ok and n_na > 0 and dossier.raw.get("risk_band") in DOSSIER_UNDERSTATABLE:
+            cav, wit = ("dossier_band_over_unassessed_axes",), [("witness", dossier.toks + ("n_na",))]
+    return _cell(ctx, dossier, "risk_band", "enum", _B_DOSSIER + "risk_band", vocab=DOSSIER_BANDS,
+                 published_caveats=cav, witness=wit)
+
+
+def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_norm: Mapping[str, List[int]]) -> Dict[str, Any]:
     j = _joins(ctx, host)
     in_devices = host in dev_keys
+    blind = cc_norm.get(_norm(host), [])
     pointer = (json_pointer("devices", host) if in_devices
-               else json_pointer("collection_completeness", "devices", cc_index[host][0]))
+               else json_pointer("collection_completeness", "devices", blind[0]) if len(blind) == 1 else None)
     health = _health_cells(ctx, host, j)
     row: Dict[str, Any] = {
         "host": host, "pointer": pointer,
-        "rosters": {"devices": in_devices, "collection_completeness": host in cc_index},
+        "rosters": {"devices": in_devices, "collection_completeness": bool(blind)},
         "rows": {name: _row_pointer(j[name]) for name in ("health", "lifecycle", "dossier", "collection")},
         "collection_status": _cell(ctx, j["collection"], "status", "enum", _B_CC + "status", vocab=CC_STATUSES),
     }
@@ -2014,17 +2324,21 @@ def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_index: Mapping
     row.update(role=health["role"], health_score=health["score"], health_band=health["band"],
                lifecycle_band=_cell(ctx, j["lifecycle"], "band", "enum", _B_LIFECYCLE + "band",
                                     vocab=LIFECYCLE_BAND_ORDER),
-               risk_band=_cell(ctx, j["dossier"], "risk_band", "enum", _B_DOSSIER + "risk_band",
-                               vocab=DOSSIER_BANDS))
+               risk_band=_risk_band(ctx, j["dossier"]))
     return row
 
 
 def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
     devices = ctx.s.get("devices")
-    dev_keys = frozenset(k for k in devices if isinstance(k, str)) if isinstance(devices, dict) else frozenset()
-    cc_index = ctx.index(("collection_completeness", "devices"), ("host",))
-    hosts = sorted(dev_keys | set(cc_index))
-    items = [_device_row(ctx, host, dev_keys, cc_index) for host in hosts]
+    dev_keys = frozenset(k for k in devices if _is_text(k)) if isinstance(devices, dict) else frozenset()
+    cc_norm = ctx.index(("collection_completeness", "devices"), ("host",), norm=True)
+    dev_norm = {_norm(k) for k in dev_keys}
+    cc_rows = _get(ctx.s, ("collection_completeness", "devices"))
+    # a blind spot the devices map names (without case or surrounding space) is that device's row, not a new one;
+    # the rest are named by their first row's own spelling
+    blind_only = {cc_rows[idx[0]]["host"] for name, idx in cc_norm.items() if name not in dev_norm}
+    hosts = sorted(dev_keys | blind_only)
+    items = [_device_row(ctx, host, dev_keys, cc_norm) for host in hosts]
     base, reason, _raw = _list_state(ctx, ("devices",), ("devices",), want=dict)
     if base in (_PUB, _CBE):
         base = _PUB if items else _CBE
@@ -2044,7 +2358,8 @@ def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
     total = _scalar(ctx, "collection_completeness.summary.inventory", "count",
                     "analyze.compute_collection_completeness:collection_completeness.summary.inventory",
                     gate=_matches_rows, witness=[("witness", ("executive_brief", "scale", "n_devices")),
-                                                 ("witness", ("coverage_matrix", "summary", "n_devices"))])
+                                                 ("witness", ("coverage_matrix", "summary", "n_devices"))],
+                    published_caveats=_brief_caveats(ctx))
     return {"total": total, "rows": rows}
 
 
@@ -2062,20 +2377,81 @@ def _vlan_endpoint_zero(raw: Any, row: _Row) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _vlan_no_root(_raw: Any, row: _Row) -> Optional[Tuple[str, str]]:
-    if isinstance(row.raw, dict) and row.raw.get("stp_root") == NOT_OBSERVED_SENTINEL:
-        return (_NC, "not collected: no STP root was observed for this VLAN, so the default-election flag is a "
-                     "false over nothing")
-    return None
+def _vlan_election_pre(ctx: _Ctx) -> _Pre:
+    """The default-election flag is ``False`` over nothing when no root was observed, or when the root the owner
+    reads carries no parsed priority (compute_vlan_cutover_matrix tests ``isinstance(prio, int)``)."""
+    def pre(_raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
+        rec = row.raw if isinstance(row.raw, dict) else {}
+        if rec.get("stp_root") == NOT_OBSERVED_SENTINEL:
+            return (_NC, "not collected: no STP root was observed for this VLAN, so the default-election flag is a "
+                         "false over nothing")
+        ok, vid = _count(rec.get("vlan"))
+        root = ctx.stp_root_record(vid) if ok else None
+        if root is None:
+            return None
+        host, key, record = root
+        prio = record.get("root_priority")
+        if isinstance(prio, int) and not isinstance(prio, bool):
+            return None
+        toks = ("stp_roots", host, key) + (("root_priority",) if "root_priority" in record else ())
+        return (_NC, "not collected: the root bridge's root_priority for this VLAN was not parsed (it is not a "
+                     "number), so the default-election flag is a false over nothing", [("witness", toks)])
+    return pre
 
 
-#: VLAN field -> (slot, vocabulary, pre-check, empty rule, published caveats).
+_SVI = re.compile(r"^Vlan0*(\d+)$", re.IGNORECASE)                  # compute_vlan_cutover_matrix's SVI rule
+
+
+def _vlan_deps_pre(ctx: _Ctx) -> _Pre:
+    """An empty dependency list is a clean result only when the DHCP relay could be read on every gateway SVI: the
+    producer reads ``dhcp_helpers`` from the gateway SVI's running-config, so no gateway, or a gateway SVI whose
+    running-config was not observed, leaves the relay unread."""
+    def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
+        if not (isinstance(raw, list) and not raw):
+            return None
+        rec = row.raw if isinstance(row.raw, dict) else {}
+        ok, vid = _count(rec.get("vlan"))
+        hosts = rec.get("gateway_svi_hosts")
+        if not ok or not isinstance(hosts, list) or not hosts:
+            return (_NC, "not collected: no gateway SVI was observed for this VLAN, so its DHCP relay could not be "
+                         "read; an empty list is not a clean result")
+        ifaces = ctx.s.get("interfaces")
+        unread: List[Tuple[str, Sequence[Any]]] = []
+        for host in hosts:
+            ports = ifaces.get(host) if isinstance(ifaces, dict) and _is_text(host) else None
+            svis = [p for p in (ports if isinstance(ports, dict) else ())
+                    if _is_text(p) and _SVI.match(p) and _vid(_SVI.match(p).group(1)) == vid]
+            if not svis:
+                unread.append(("witness", ("interfaces", host)) if _is_text(host) else ("witness", ("interfaces",)))
+            for port in svis:
+                svi = ports[port]
+                if not (isinstance(svi, dict) and svi.get("run_config_observed") is True):
+                    unread.append(("witness", ("interfaces", host, port)))
+        if unread:
+            return (_NC, "not collected: the running-config of a gateway SVI for this VLAN was not observed, so its "
+                         "DHCP relay could not be read; an empty list is not a clean result", unread)
+        return None
+    return pre
+
+
+def _vlan_scenario_pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
+    if raw != "":
+        return None
+    wave = row.raw.get("wave") if isinstance(row.raw, dict) else None
+    if _is_text(wave) and wave:
+        return (_NC, "not collected: the wave sequencing names none of this VLAN's switches as hard cutover, "
+                     "make-before-break or homing unknown")
+    return _NC, _R_NO_GROUP
+
+
+#: VLAN field -> (slot, vocabulary, pre-check, empty rule, published caveats). A pre-check that reads other records
+#: is built per call (:func:`_vlan_rows`).
 _VLAN_CELLS: Mapping[str, Tuple[str, Tuple[str, ...], Optional[_Pre], Optional[Tuple[str, str]], Tuple[str, ...]]] = \
     MappingProxyType({
         "vlan": ("count", (), None, None, ()),
         "name": ("text", (), _blank("not collected: no VLAN name was evidenced"), None, ()),
         "stp_root": ("text", (), _marker, None, ()),
-        "stp_root_default_election": ("flag", (), _vlan_no_root, None, ()),
+        "stp_root_default_election": ("flag", (), None, None, ()),
         "fhrp": ("fhrp", (), _marker, None, ()),
         "gateway_svi_hosts": ("text_list", (), _blank("not collected: no gateway SVI was observed for this VLAN "
                                                       "(its fhrp abstains with the engine's marker)", []), None, ()),
@@ -2086,10 +2462,11 @@ _VLAN_CELLS: Mapping[str, Tuple[str, Tuple[str, ...], Optional[_Pre], Optional[T
         "criticality": ("text", (), None, (_CBE, "collected but empty: no application domain maps this VLAN "
                                                  "(not a blind spot)"), ()),
         "dependencies": ("text_list", (), None, (_CBE, "collected but empty: the engine flagged no multicast, "
-                                                       "querier or DHCP-relay dependency for this VLAN (not a blind "
-                                                       "spot)"), ()),
+                                                       "querier or DHCP-relay dependency for this VLAN, and every "
+                                                       "gateway SVI's running-config was read (not a blind spot)"),
+                         ()),
         "wave": ("text", (), _blank(_R_NO_GROUP), None, ()),
-        "scenario": ("text", (), _blank(_R_NO_GROUP), None, ()),
+        "scenario": ("text", (), _vlan_scenario_pre, None, ()),
         "readiness": ("enum", VLAN_READINESS, _blank("not collected: no readiness verdict covers this VLAN's move "
                                                      "groups"), None, ()),
         "cutover_window": ("text", (), _blank(_R_HUMAN), None, ()),
@@ -2101,39 +2478,66 @@ def _stp_root_index(ctx: _Ctx) -> Dict[int, List[str]]:
     """VLAN id -> ``/stp_roots/<host>/<vid>`` for every non-MST record whose key is a VLAN id (the owner's rule)."""
     out: Dict[int, List[str]] = {}
     roots = ctx.s.get("stp_roots")
-    for host in sorted(k for k in roots if isinstance(k, str)) if isinstance(roots, dict) else ():
+    for host in sorted(k for k in roots if _is_text(k)) if isinstance(roots, dict) else ():
         recs = roots[host]
-        for key in (sorted(k for k in recs if isinstance(k, str)) if isinstance(recs, dict) else ()):
+        for key in (sorted(k for k in recs if _is_text(k)) if isinstance(recs, dict) else ()):
             vid = _vid(key, strip=False)
             if vid is not None and isinstance(recs[key], dict) and not recs[key].get("is_mst"):
                 out.setdefault(vid, []).append(json_pointer("stp_roots", host, key))
     return {vid: sorted(ptrs) for vid, ptrs in out.items()}
 
 
+def _source(ctx: _Ctx, toks: Tuple[str, ...], sections: Sequence[str], basis: str,
+            want: Any = list) -> Tuple[Dict[str, Any], bool]:
+    """The evidence state of a list a selection reads, and whether its rows can be selected at all."""
+    state, reason, _raw = _list_state(ctx, toks, sections, want)
+    all_secs = (".".join(toks),) + tuple(sections)
+    out: Dict[str, Any] = {"state": state, "subject": json_pointer(*toks),
+                           "refs": ctx.refs([("subject", toks)] + ctx.failure_entries(all_secs, state == AU)),
+                           "basis": basis}
+    if state != _PUB:
+        out["reason"] = reason or (_R_CBE if state == _CBE else _state_reason(ctx, state, "list", all_secs))
+    return out, state in (_PUB, _CBE)
+
+
 def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
     toks = ("vlan_cutover",)
     base, reason, raw = _list_state(ctx, toks, toks)
+    src_roots, ok_roots = _source(ctx, ("stp_roots",), ("stp_roots",), "build.build_stp_roots:stp_roots{}{}", want=dict)
+    src_gw, ok_gw = _source(ctx, ("l3_forwarding",), ("l3_forwarding",),
+                            "excel.write_l3_forwarding_sheet:l3_forwarding[]")
+    src_ep, ok_ep = _source(ctx, ("endpoint_identity",), ("endpoint_identity",),
+                            "analyze.compute_endpoint_identity:endpoint_identity[]")
     roots, gateways, endpoints = _stp_root_index(ctx), _vid_index(ctx, ("l3_forwarding",)), _vid_index(
         ctx, ("endpoint_identity",))
+    pres = {"stp_root_default_election": _vlan_election_pre(ctx), "dependencies": _vlan_deps_pre(ctx)}
+    capped = ENGINE_LIST_CAPS["vlan_cutover[].app_domain"]
     items: List[Dict[str, Any]] = []
     for i, rec in enumerate(raw if isinstance(raw, list) else ()):
         row = _list_row(toks + (i,), rec, toks)
         item: Dict[str, Any] = {"index": i, "pointer": json_pointer(*toks, i)}
         for field, (slot, vocab, pre, empty, pub_cav) in _VLAN_CELLS.items():
+            if field == "app_domain":
+                dom = rec.get("app_domain") if isinstance(rec, dict) else None
+                if _is_text(dom) and dom and len(dom.split(APP_DOMAIN_JOINER)) >= capped:
+                    pub_cav = pub_cav + ("engine_list_capped",)
             item[field] = _cell(ctx, row, field, slot, _B_VLAN + field, vocab=vocab,
-                                sections=toks + VLAN_FIELD_BASIS[field], pre=pre, empty=empty,
+                                sections=toks + VLAN_FIELD_BASIS[field], pre=pres.get(field, pre), empty=empty,
                                 published_caveats=pub_cav)
         ok, vid = _count(rec.get("vlan")) if isinstance(rec, dict) else (False, None)
-        item["selections"] = {"stp_roots": list(roots.get(vid, ())) if ok else [],
-                              "gateways": list(gateways.get(vid, ())) if ok else [],
-                              "endpoints": list(endpoints.get(vid, ())) if ok else []}
+        item["selections"] = {"stp_roots": (list(roots.get(vid, ())) if ok else []) if ok_roots else None,
+                              "gateways": (list(gateways.get(vid, ())) if ok else []) if ok_gw else None,
+                              "endpoints": (list(endpoints.get(vid, ())) if ok else []) if ok_ep else None}
         items.append(item)
+    qualify = _fleet_qualify(ctx)
     listing = _listing(ctx, base, reason, toks, "analyze.compute_vlan_cutover_matrix:vlan_cutover", items,
                        sections=toks, caveats=("vlan_cutover_universe", "vlan_field_basis_owned_by_projection",
-                                               "row_selection_by_exact_key"))
+                                               "row_selection_by_exact_key"), qualify=qualify)
     total = _total(ctx, "vlan_cutover", listing, sections=toks,
-                   witness=[("witness", ("executive_brief", "scale", "n_vlans"))], caveats=("vlan_cutover_universe",))
-    return {"total": total, "rows": listing}
+                   witness=[("witness", ("executive_brief", "scale", "n_vlans"))], caveats=("vlan_cutover_universe",),
+                   qualify=qualify)
+    return {"total": total, "rows": listing,
+            "selection_sources": {"stp_roots": src_roots, "gateways": src_gw, "endpoints": src_ep}}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -2149,8 +2553,10 @@ _EP_BLANK = {
 }
 
 
-def _endpoint_row(ctx: _Ctx, i: int, rec: Any, vlan_rows: Mapping[int, List[int]],
-                  shared: Mapping[str, List[int]], dual: Mapping[str, List[int]]) -> Dict[str, Any]:
+def _endpoint_row(ctx: _Ctx, i: int, rec: Any, vlan_rows: Optional[Mapping[int, List[int]]],
+                  shared: Optional[Mapping[str, List[int]]], dual: Optional[Mapping[str, List[int]]],
+                  ifaces_ok: bool) -> Dict[str, Any]:
+    """One endpoint row. A selection whose source list could not be read is null (a ``None`` index)."""
     toks = ("endpoint_identity", i)
     row = _list_row(toks, rec, ("endpoint_identity",))
     item: Dict[str, Any] = {"index": i, "pointer": json_pointer(*toks)}
@@ -2163,13 +2569,15 @@ def _endpoint_row(ctx: _Ctx, i: int, rec: Any, vlan_rows: Mapping[int, List[int]
     item["evidence"] = _cell(ctx, row, "evidence", "text", _B_EP + "evidence")
     rec = rec if isinstance(rec, dict) else {}
     host, port, ip, mac = rec.get("host"), rec.get("port"), rec.get("ip"), rec.get("mac")
-    iface = (json_pointer("interfaces", host, port) if isinstance(host, str) and isinstance(port, str)
+    iface = (json_pointer("interfaces", host, port) if ifaces_ok and _is_text(host) and _is_text(port)
              and _get(ctx.s, ("interfaces", host, port)) is not _MISSING else None)
-    matches = vlan_rows.get(_vid(rec.get("vlan")), []) if _vid(rec.get("vlan")) is not None else []
-    ip_key = ip.strip() if isinstance(ip, str) else ""
-    item["selections"] = {"interface": iface, "vlan_row": matches[0] if len(matches) == 1 else None,
-                          "shared_ip": list(shared.get(ip_key, ())) if ip_key else [],
-                          "dual_homed": list(dual.get(mac.lower(), ())) if isinstance(mac, str) else []}
+    vid = _vid(rec.get("vlan")) if _is_text(rec.get("vlan")) or isinstance(rec.get("vlan"), int) else None
+    matches = (vlan_rows.get(vid, []) if vid is not None else []) if vlan_rows is not None else []
+    ip_key = ip.strip() if _is_text(ip) else ""
+    item["selections"] = {
+        "interface": iface, "vlan_row": matches[0] if len(matches) == 1 else None,
+        "shared_ip": None if shared is None else (list(shared.get(ip_key, ())) if ip_key else []),
+        "dual_homed": None if dual is None else (list(dual.get(mac.lower(), ())) if _is_text(mac) else [])}
     return item
 
 
@@ -2180,6 +2588,9 @@ def _dual_homed_row(ctx: _Ctx, k: int, rec: Any) -> Dict[str, Any]:
     mg_secs = ("endpoint_dependencies", "move_groups")
     ports = rec.get("ports") if isinstance(rec, dict) else None
     cap = ENGINE_LIST_CAPS["endpoint_dependencies.dual_homed[].ports"]
+    ports_fact = _cell(ctx, row, "ports", "text_list", basis + "ports",
+                       published_caveats=("engine_list_capped",) if isinstance(ports, list) and len(ports) >= cap
+                       else ())
     return {
         "index": k, "pointer": json_pointer(*toks),
         "mac": _cell(ctx, row, "mac", "text", basis + "mac"),
@@ -2187,10 +2598,8 @@ def _dual_homed_row(ctx: _Ctx, k: int, rec: Any) -> Dict[str, Any]:
         "ip": _cell(ctx, row, "ip", "text", basis + "ip", pre=_blank(_EP_BLANK["ip"])),
         "vendor": _cell(ctx, row, "vendor", "text", basis + "vendor", pre=_blank(_EP_BLANK["vendor"])),
         "switches": _cell(ctx, row, "switches", "text_list", basis + "switches"),
-        "ports": _cell(ctx, row, "ports", "text_list", basis + "ports",
-                       published_caveats=("engine_list_capped",) if isinstance(ports, list) and len(ports) >= cap
-                       else ()),
-        "ports_cap": _cap(cap, ports, "analyze.compute_endpoint_dependencies"),
+        "ports": ports_fact,
+        "ports_cap": _cap(cap, ports, "analyze.compute_endpoint_dependencies", ports_fact["state"] in (_PUB, _CBE)),
         "move_groups": _cell(ctx, row, "move_groups", "text_list", basis + "move_groups", sections=mg_secs,
                              pre=_mg_pre(ctx)),
         "split_across_groups": _cell(ctx, row, "split_across_groups", "flag", basis + "split_across_groups",
@@ -2201,32 +2610,40 @@ def _dual_homed_row(ctx: _Ctx, k: int, rec: Any) -> Dict[str, Any]:
 def _endpoint_rows(ctx: _Ctx) -> Dict[str, Any]:
     toks = ("endpoint_identity",)
     base, reason, raw = _list_state(ctx, toks, toks)
+    deps = ("endpoint_dependencies",)
+    stoks, dtoks = ("endpoint_dependencies", "shared_ip"), ("endpoint_dependencies", "dual_homed")
+    src_if, ok_if = _source(ctx, ("interfaces",), ("interfaces",), "html.snapshot_state:interfaces{}{}", want=dict)
+    src_vl, ok_vl = _source(ctx, ("vlan_cutover",), ("vlan_cutover",),
+                            "analyze.compute_vlan_cutover_matrix:vlan_cutover[]")
+    src_sh, ok_sh = _source(ctx, stoks, deps, _B_DEPS + "shared_ip[]")
+    src_dh, ok_dh = _source(ctx, dtoks, deps, _B_DEPS + "dual_homed[]")
     vlan_rows: Dict[int, List[int]] = {}
     vrows = ctx.s.get("vlan_cutover")
     for k, rec in enumerate(vrows if isinstance(vrows, list) else ()):
         ok, vid = _count(rec.get("vlan")) if isinstance(rec, dict) else (False, None)
         if ok:
             vlan_rows.setdefault(vid, []).append(k)
-    shared = ctx.index(("endpoint_dependencies", "shared_ip"), ("ip",))
-    dual = ctx.index(("endpoint_dependencies", "dual_homed"), ("mac",))
-    items = [_endpoint_row(ctx, i, rec, vlan_rows, shared, dual) for i, rec in enumerate(raw if isinstance(raw, list)
-                                                                                         else ())]
+    shared = ctx.index(stoks, ("ip",)) if ok_sh else None
+    dual = ctx.index(dtoks, ("mac",)) if ok_dh else None
+    items = [_endpoint_row(ctx, i, rec, vlan_rows if ok_vl else None, shared, dual, ok_if)
+             for i, rec in enumerate(raw if isinstance(raw, list) else ())]
+    qualify = _fleet_qualify(ctx)
     listing = _listing(ctx, base, reason, toks, "analyze.compute_endpoint_identity:endpoint_identity", items,
-                       sections=toks, caveats=("row_selection_by_exact_key",))
+                       sections=toks, caveats=("row_selection_by_exact_key",), qualify=qualify)
     total = _total(ctx, "endpoint_identity", listing, sections=toks,
-                   witness=[("witness", ("executive_brief", "scale", "n_endpoints"))])
-    deps = ("endpoint_dependencies",)
-    stoks = ("endpoint_dependencies", "shared_ip")
+                   witness=[("witness", ("executive_brief", "scale", "n_endpoints"))], qualify=qualify)
     sbase, sreason, sraw = _list_state(ctx, stoks, deps)
     shared_list = _listing(ctx, sbase, sreason, stoks, _B_DEPS + "shared_ip",
                            _items(ctx, stoks, sraw, "shared_ip", _B_DEPS + "shared_ip[]", deps), sections=deps,
-                           rollup=toks)
-    dtoks = ("endpoint_dependencies", "dual_homed")
+                           rollup=toks, qualify=qualify)
     dbase, dreason, draw = _list_state(ctx, dtoks, deps)
     dual_items = [_dual_homed_row(ctx, k, rec) for k, rec in enumerate(draw if isinstance(draw, list) else ())]
     dual_list = _listing(ctx, dbase, dreason, dtoks, _B_DEPS + "dual_homed", dual_items, sections=deps, rollup=toks,
-                         caveats=("engine_list_capped",) + (() if ctx.mg_labelled else ("move_group_label_absent",)))
-    return {"total": total, "rows": listing, "shared_ip": shared_list, "dual_homed": dual_list}
+                         caveats=("engine_list_capped",) + (() if ctx.mg_labelled else ("move_group_label_absent",)),
+                         qualify=qualify)
+    return {"total": total, "rows": listing, "shared_ip": shared_list, "dual_homed": dual_list,
+            "selection_sources": {"interfaces": src_if, "vlan_rows": src_vl, "shared_ip": src_sh,
+                                  "dual_homed": src_dh}}
 
 
 def _uncollected_peers(ctx: _Ctx) -> Dict[str, Any]:
@@ -2234,17 +2651,27 @@ def _uncollected_peers(ctx: _Ctx) -> Dict[str, Any]:
     base, reason, raw = _list_state(ctx, toks, ("cable_map",))
     basis = "analyze.compute_cable_map:cable_map.nodes[]."
     items = []
+    unreadable = []
     for i, node in enumerate(raw if isinstance(raw, list) else ()):
-        if isinstance(node, dict) and node.get("collected") is False:
+        if not (isinstance(node, dict) and isinstance(node.get("collected"), bool)):
+            unreadable.append(i)
+        elif node["collected"] is False:
             row = _Row(None, None, toks + (i,), node, ("cable_map",))
             items.append({"index": i, "pointer": json_pointer(*toks, i),
                           "host": _cell(ctx, row, "host", "text", basis + "host"),
                           "kind": _cell(ctx, row, "kind", "text", basis + "kind")})
+    extra: List[Tuple[str, Sequence[Any]]] = []
     if base in (_PUB, _CBE):
-        base, reason = (_PUB, None) if items else (
-            _CBE, "collected but empty: every cable-map node was collected (not a blind spot)")
+        if unreadable:
+            base = _UV
+            reason = (f"unverified: {len(unreadable)} cable-map node(s) carry no boolean 'collected' flag, so the "
+                      "list of uncollected peers cannot be complete")
+            extra = [("witness", toks + (i,)) for i in unreadable]
+        else:
+            base, reason = (_PUB, None) if items else (
+                _CBE, "collected but empty: every cable-map node was collected (not a blind spot)")
     return _listing(ctx, base, reason, toks, "analyze.compute_cable_map:cable_map.nodes (collected is false)", items,
-                    sections=("cable_map",))
+                    sections=("cable_map",), extra=extra)
 
 
 def _inventory(ctx: _Ctx) -> Dict[str, Any]:
@@ -2301,8 +2728,11 @@ def _finding_row(ctx: _Ctx, i: int, rec: Any, cav: Tuple[str, ...]) -> Dict[str,
         "rank": _cell(ctx, row, "rank", "count", _B_PUNCH + "rank", gate=_rank_gate, published_caveats=cav),
         "severity": _cell(ctx, row, "severity", "enum", _B_PUNCH + "severity", vocab=SEVERITIES, published_caveats=cav),
     }
-    for field in ("category", "title", "detail"):
+    for field in ("category", "title"):
         item[field] = _cell(ctx, row, field, "text", _B_PUNCH + field, published_caveats=cav)
+    detail = rec.get("detail") if isinstance(rec, dict) else None
+    clipped = ("engine_list_capped",) if _is_text(detail) and PUNCH_DETAIL_CLIP_MARKER in detail else ()
+    item["detail"] = _cell(ctx, row, "detail", "text", _B_PUNCH + "detail", published_caveats=cav + clipped)
     item["devices"] = _cell(ctx, row, "devices", "text_list", _B_PUNCH + "devices", published_caveats=cav,
                             empty=(_CBE, "collected but empty: a fleet-level row that names no device (not a blind "
                                          "spot)"))
@@ -2329,14 +2759,16 @@ def _findings(ctx: _Ctx) -> Dict[str, Any]:
     cav = _brief_caveats(ctx)
     items = [_finding_row(ctx, i, rec, cav) for i, rec in enumerate(raw if isinstance(raw, list) else ())]
     mg = () if ctx.mg_labelled else ("move_group_label_absent",)
+    qualify = _fleet_qualify(ctx, config=True)
     listing = _listing(ctx, base, reason, toks, "analyze.compute_migration_punchlist:punchlist", items, sections=toks,
-                       rollup=PUNCHLIST_INPUTS, caveats=("punch_rows_carry_no_evidence_pointers",) + mg + cav)
+                       rollup=PUNCHLIST_INPUTS, caveats=("punch_rows_carry_no_evidence_pointers",) + mg + cav,
+                       qualify=qualify)
     total = _total(ctx, "punchlist", listing, sections=toks + PUNCHLIST_INPUTS,
-                   caveats=("punch_rows_carry_no_evidence_pointers",))
+                   caveats=("punch_rows_carry_no_evidence_pointers",), qualify=qualify)
     axes = _get(ctx.s, ("executive_brief", "axes"))
-    headline = next((k for k, ax in enumerate(axes) if isinstance(ax, dict) and ax.get("axis") == "Migration punch-list"),
-                    None) if isinstance(axes, list) else None
-    return {"total": total, "headline_axis_index": headline, "rows": listing}
+    heads = [k for k, ax in enumerate(axes) if isinstance(ax, dict) and ax.get("axis") == "Migration punch-list"] \
+        if isinstance(axes, list) else []
+    return {"total": total, "headline_axis_index": heads[0] if len(heads) == 1 else None, "rows": listing}
 
 
 def project_findings(snap: Any) -> Dict[str, Any]:
@@ -2350,7 +2782,7 @@ def project_findings(snap: Any) -> Dict[str, Any]:
 _B_IF = "html.snapshot_state:interfaces{}{}."
 _B_SEC = "parse.parse_security:security{}."
 _B_RP = "analyze.compute_remediation_plan:remediation_plan.by_device{}[]."
-_B_NRFU = "nrfu_export:nrfu_commands.waves[].devices[].cases[]."
+_B_NRFU = "nrfu_export.compute_nrfu_commands:nrfu_commands.waves[].devices[].cases[]."
 
 
 def _nrfu_marker(raw: Any, _row: _Row) -> Optional[Tuple[str, str]]:
@@ -2367,7 +2799,7 @@ def _interfaces_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -
                    absent=(_NC, "not collected: interfaces carries no parse result for this device"))
     rows: List[Dict[str, Any]] = []
     if ifr.state is None:
-        for port in sorted(k for k in ifr.raw if isinstance(k, str)):
+        for port in sorted(k for k in ifr.raw if _is_text(k)):
             toks = ifr.toks + (port,)
             prow = _list_row(toks, ifr.raw[port], ("interfaces",))
             rows.append({"port": port, "pointer": json_pointer(*toks),
@@ -2386,19 +2818,22 @@ def _interfaces_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -
                              bare=ifr.bare)}
 
 
-def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], toks: Tuple[str, ...],
+def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], block: str, toks: Tuple[str, ...],
                     fields: Tuple[str, ...], basis: str, cbe: str, build: Callable[[int, Any], Dict[str, Any]], *,
                     multi: bool = False, base_state: Optional[Tuple[str, Optional[str], Any]] = None,
-                    sections: Optional[Tuple[str, ...]] = None) -> Dict[str, Any]:
-    """The rows of one engine list that name this device (selection only; never a count)."""
+                    sections: Optional[Tuple[str, ...]] = None, config: bool = False) -> Dict[str, Any]:
+    """The rows of one engine list that name this device (selection only; never a count). The device's own gaps
+    (:func:`_device_gap` over the captures :data:`SELECTION_NEEDS` names for `block`) make it not_collected."""
     secs = sections or (toks[0],)
     if forced is not None:
         return _listing(ctx, forced[0], forced[1], None, basis, [], bare=True)
     base, reason, raw = base_state or _list_state(ctx, toks, (toks[0],))
-    sel = ctx.index(toks, fields, multi).get(host, []) if isinstance(raw, list) else []
+    sel = ctx.index(toks, fields, multi).get(host, []) if isinstance(raw, list) and _is_text(host) else []
     items = [build(i, raw[i]) for i in sel]
-    state, reason = _sel_state(ctx, base, reason, sel, host, cbe)
-    return _listing(ctx, state, reason, toks, basis, items, sections=secs, bare=False)
+    gap = _device_gap(ctx, host, toks[0], SELECTION_NEEDS[block], config=config)
+    state, reason, wit = _sel_state(ctx, base, reason, sel, gap, cbe)
+    return _listing(ctx, state, reason, toks, basis, items, sections=secs, extra=wit,
+                    caveats=("row_selection_by_exact_key",))
 
 
 def _cable_row(ctx: _Ctx, i: int, rec: Any) -> Dict[str, Any]:
@@ -2443,7 +2878,7 @@ def _neighbors_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) ->
     group_basis = "build.build_routing_neighbors:routing_neighbors{}{}"
     basis = group_basis + "[]."
     groups: List[Dict[str, Any]] = []
-    for proto in (sorted(k for k in rn.raw if isinstance(k, str)) if rn.state is None else ()):
+    for proto in (sorted(k for k in rn.raw if _is_text(k)) if rn.state is None else ()):
         gtoks = rn.toks + (proto,)
         lst = rn.raw[proto]
         rows: List[Dict[str, Any]] = []
@@ -2523,7 +2958,7 @@ def _remediation_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) 
 
 def _nrfu_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
     toks = ("nrfu_commands", "waves")
-    basis = "nrfu_export:nrfu_commands.waves[].devices[].cases"
+    basis = "nrfu_export.compute_nrfu_commands:nrfu_commands.waves[].devices[].cases"
     if forced is not None:
         return _listing(ctx, forced[0], forced[1], None, basis, [], bare=True)
     if ctx.device_blind("nrfu_commands", host):
@@ -2566,15 +3001,16 @@ def _nrfu_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict
 
 
 def _device_limitations_payload() -> List[Dict[str, Any]]:
+    """The device document's own limitations, then every payload limitation a device page can cite, re-addressed."""
     return [{"id": lim["id"], "owner": lim["owner"], "text": lim["text"], "applies_to": list(lim["applies_to"])}
-            for lim in DEVICE_LIMITATIONS]
+            for lim in _DEVICE_DOC_LIMITATIONS]
 
 
 def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
-    if isinstance(host, str):
+    if _is_text(host):
         devices = ctx.s.get("devices")
         rosters = {"devices": isinstance(devices, dict) and host in devices,
-                   "collection_completeness": host in ctx.index(("collection_completeness", "devices"), ("host",)),
+                   "collection_completeness": ctx.cc_row(host)[0] is not None,
                    "cable_map": host in ctx.index(("cable_map", "nodes"), ("host",))}
         forced = None if any(rosters.values()) else (_NC, _R_UNKNOWN_HOST)
     else:
@@ -2596,10 +3032,13 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
     dstate, dreason, dtoks, draw = _sub_list(
         ctx, hrow, "deductions", pre_state=_not_scored(None, hrow),
         empty=(_CBE, "collected but empty: the device was scored with no deduction (not a blind spot)"))
+    ded_readable = dstate in (_PUB, _CBE)
+    ded_capped = ded_readable and isinstance(draw, list) and len(draw) >= ded_cap
     deductions = _listing(ctx, dstate, dreason, dtoks, _B_HEALTH + "deductions",
                           _items(ctx, dtoks, draw, "text", _B_HEALTH + "deductions[]", ("health_scores",),
                                  hold=(dstate, dreason) if dstate == _NA else None),
-                          sections=("health_scores",), extra=hrow.extra, bare=hrow.bare)
+                          sections=("health_scores",), extra=hrow.extra, bare=hrow.bare,
+                          caveats=("engine_list_capped",) if ded_capped else ())
     lc = j["lifecycle"]
     dated = _blank("not collected: the engine publishes no date here (it withholds the EoS / LDoS dates when no "
                    "retained bulletin matches the model)")
@@ -2611,7 +3050,7 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
     cov = _resolve(ctx, ("coverage_matrix", "by_device"), ("coverage_matrix",), key=host, host=host, forced=forced,
                    absent=(_NC, "not collected: coverage_matrix carries no row for this device"))
     cov_items: List[Dict[str, Any]] = []
-    for axis in (sorted(k for k in cov.raw if isinstance(k, str)) if cov.state is None else ()):
+    for axis in (sorted(k for k in cov.raw if _is_text(k)) if cov.state is None else ()):
         crow = _Row(None, None, cov.toks + (axis,), cov.raw[axis], ("coverage_matrix",))
         fact = _cell(ctx, crow, None, "coverage_cell", "coverage_matrix.compute_coverage_matrix:by_device{}{}",
                      published_caveats=("coverage_matrix_shown_as_published",))
@@ -2622,7 +3061,7 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
     punch_base, punch_reason, _praw = _list_state(ctx, ("punchlist",), ("punchlist",))
     punch_state = _rolled(ctx, punch_base, punch_reason, ("punchlist",), PUNCHLIST_INPUTS)
     return {
-        "host": host if isinstance(host, str) else None,
+        "host": host if _is_text(host) else None,
         "rosters": rosters,
         "identity": {f: _cell(ctx, dev, f, "text", _dev_basis(f), pre=_default_text) for f in IDENTITY_FIELDS},
         "physical": physical,
@@ -2630,7 +3069,7 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
                        "data_quality": _cell(ctx, cc, "data_quality", "score", _B_CC + "data_quality"),
                        "missing": _cell(ctx, cc, "missing", "text_list", _B_CC + "missing")},
         "health": {**health, "deductions": deductions,
-                   "deductions_cap": _cap(ded_cap, draw, "analyze.compute_health_scores")},
+                   "deductions_cap": _cap(ded_cap, draw, "analyze.compute_health_scores", ded_readable)},
         "lifecycle": {
             "band": _cell(ctx, lc, "band", "enum", _B_LIFECYCLE + "band", vocab=LIFECYCLE_BAND_ORDER),
             "status": _cell(ctx, lc, "status", "text", _B_LIFECYCLE + "status"),
@@ -2643,7 +3082,7 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
             "citation_status": _cell(ctx, lc, "citation_status", "text", _B_LIFECYCLE + "citation_status"),
         },
         "dossier": {
-            "risk_band": _cell(ctx, dd, "risk_band", "enum", _B_DOSSIER + "risk_band", vocab=DOSSIER_BANDS),
+            "risk_band": _risk_band(ctx, dd),
             "exposures": _listing(ctx, xs, xr, xt, _B_DOSSIER + "exposures",
                                   _items(ctx, xt, xraw, "exposure", _B_DOSSIER + "exposures[]", ("device_dossiers",)),
                                   sections=("device_dossiers",), extra=dd.extra, bare=dd.bare),
@@ -2655,27 +3094,31 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
                              cov_items, sections=("coverage_matrix",), extra=cov.extra,
                              caveats=("coverage_matrix_shown_as_published",), bare=cov.bare),
         "interfaces": _interfaces_block(ctx, host, forced),
-        "links": _selection_rows(ctx, host, forced, ("cable_map", "cables"), ("a", "b"),
+        "links": _selection_rows(ctx, host, forced, "links", ("cable_map", "cables"), ("a", "b"),
                                  "analyze.compute_cable_map:cable_map.cables", "no cable in the cable map names this "
                                  "device", lambda i, rec: _cable_row(ctx, i, rec), sections=("cable_map",)),
         "routes": _routes_block(ctx, host, forced),
         "routing_neighbors": _neighbors_block(ctx, host, forced),
         "security": _security_block(ctx, host, forced),
         "native_vlan_mismatches": _selection_rows(
-            ctx, host, forced, ("trunk_native",), ("a_host", "b_host"), "excel.trunk_native:trunk_native",
+            ctx, host, forced, "native_vlan_mismatches", ("trunk_native",), ("a_host", "b_host"),
+            "excel.compute_trunk_native_mismatches:trunk_native",
             "no native-VLAN mismatch names this device",
             lambda i, rec: {"index": i, "pointer": json_pointer("trunk_native", i),
                             "fact": _cell(ctx, _list_row(("trunk_native", i), rec, ("trunk_native",)), None,
-                                          "trunk_native", "excel.trunk_native:trunk_native[]")}),
+                                          "trunk_native", "excel.compute_trunk_native_mismatches:trunk_native[]")}),
         "remediation": _remediation_block(ctx, host, forced),
         "nrfu_cases": _nrfu_block(ctx, host, forced),
         "findings": _selection_rows(
-            ctx, host, forced, ("punchlist",), ("devices",), "analyze.compute_migration_punchlist:punchlist",
+            ctx, host, forced, "findings", ("punchlist",), ("devices",),
+            "analyze.compute_migration_punchlist:punchlist",
             "no punch-list row names this device",
             lambda i, _rec: {"index": i, "pointer": json_pointer("punchlist", i)}, multi=True,
-            base_state=(punch_state[0], punch_state[1], _praw), sections=("punchlist",) + PUNCHLIST_INPUTS),
+            base_state=(punch_state[0], punch_state[1], _praw), sections=("punchlist",) + PUNCHLIST_INPUTS,
+            config=True),
         "endpoints": _selection_rows(
-            ctx, host, forced, ("endpoint_identity",), ("host",), "analyze.compute_endpoint_identity:endpoint_identity",
+            ctx, host, forced, "endpoints", ("endpoint_identity",), ("host",),
+            "analyze.compute_endpoint_identity:endpoint_identity",
             "no endpoint was identified on this device",
             lambda i, _rec: {"index": i, "pointer": json_pointer("endpoint_identity", i)}),
         "limitations": _device_limitations_payload(),
@@ -2689,6 +3132,14 @@ def project_device(snap: Any, host: Any) -> Dict[str, Any]:
     names claims nothing; a host that is not a string names no row."""
     ctx = _Ctx(snap)
     return {"schema": SCHEMA, "engine": _engine(ctx), "device": _device_page(ctx, host)}
+
+
+def project_devices(snap: Any, hosts: Any) -> List[Dict[str, Any]]:
+    """One ``DeviceDocument`` per host in `hosts` (a list or tuple; anything else names none), in order, over ONE
+    shared context: each document equals :func:`project_device` for its host and owns every container in it."""
+    ctx = _Ctx(snap)
+    return [{"schema": SCHEMA, "engine": _engine(ctx), "device": _device_page(ctx, host)}
+            for host in (hosts if isinstance(hosts, (list, tuple)) else ())]
 
 
 def project(snap: Any) -> Dict[str, Any]:
@@ -2834,10 +3285,10 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
         defs[name] = _fact_def(name, _enum(vocab))
     defs["TextListFact"] = _fact_def("TextListFact", {"type": "array", "items": _str()})
     defs["FhrpMember"] = _closed("FhrpMember", ("host", "proto", "group", "vip", "role", "priority", "preempt", "vmac"),
-                                 {**{k: _str() for k in _FHRP_MEMBER_TEXT}, "priority": _nullable(_nonneg_int()),
-                                  "preempt": _nullable(_bool())})
+                                 {**{k: _nullable(_str()) for k in _FHRP_MEMBER_TEXT},
+                                  "priority": _nullable(_nonneg_int()), "preempt": _nullable(_bool())})
     defs["FhrpValue"] = _closed("FhrpValue", _FHRP_TEXT + ("members",),
-                                {**{k: _str() for k in _FHRP_TEXT},
+                                {**{k: _nullable(_str()) for k in _FHRP_TEXT},
                                  "members": {"type": "array", "items": _ref("FhrpMember")}})
     defs["FhrpFact"] = _fact_def("FhrpFact", {"anyOf": [_ref("FhrpValue"), _str()]})
     record_titles = {"exposure": "Exposure", "compound": "Compound", "security_check": "SecurityCheck",
@@ -2853,7 +3304,13 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     defs["CoverageCellFact"] = _fact_def("CoverageCellFact", _ref("CoverageCellValue"))
     defs["Cap"] = _closed("Cap", ("limit", "reached", "total"),
                           {"limit": {"type": "integer", "minimum": 1, "maximum": JS_MAX_SAFE_INT},
-                           "reached": _bool(), "total": _ref("CountFact")})
+                           "reached": _nullable(_bool()), "total": _ref("WithheldFact")})
+    source_required = ["state", "subject", "refs", "basis"]
+    defs["SelectionSource"] = {"title": "SelectionSource", "oneOf": [
+        _paired(_closed("SelectionSourcePublished", source_required, {"state": {"const": _PUB}, **_envelope_props()})),
+        _paired(_closed("SelectionSourceWithheld", source_required + ["reason"],
+                        {"state": _ref("WithheldState"), "reason": {"type": "string", "minLength": 1},
+                         **_envelope_props()}))]}
     defs["IndexList"] = {"title": "IndexList", "type": "array", "items": _nonneg_int()}
     defs["RowRef"] = _closed("RowRef", ("index", "pointer"), _indexed())
     for title, fact in (("TextItem", _TEXT), ("ExposureItem", "ExposureFact"), ("CompoundItem", "CompoundFact"),
@@ -2867,18 +3324,20 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     defs["DeviceRowRefs"] = _closed("DeviceRowRefs", ("health", "lifecycle", "dossier", "collection"),
                                     {k: _nullable(_ref("Pointer")) for k in ("health", "lifecycle", "dossier",
                                                                              "collection")})
-    defs["DeviceRow"] = _row_def("DeviceRow", {"host": _str(), "pointer": _ref("Pointer"),
+    defs["DeviceRow"] = _row_def("DeviceRow", {"host": _str(), "pointer": _nullable(_ref("Pointer")),
                                                "rosters": _ref("DeviceRosters"), "rows": _ref("DeviceRowRefs")},
                                  _DEVICE_ROW_CELLS)
     defs["VlanSelections"] = _closed("VlanSelections", ("stp_roots", "gateways", "endpoints"),
-                                     {"stp_roots": {"type": "array", "items": _ref("Pointer")},
-                                      "gateways": _ref("IndexList"), "endpoints": _ref("IndexList")})
+                                     {"stp_roots": _nullable({"type": "array", "items": _ref("Pointer")}),
+                                      "gateways": _nullable(_ref("IndexList")),
+                                      "endpoints": _nullable(_ref("IndexList"))})
     defs["VlanRow"] = _row_def("VlanRow", _indexed(),
                                [(f, _VLAN_ROW_FACTS.get(f, _TEXT)) for f in VLAN_FIELD_BASIS],
                                {"selections": _ref("VlanSelections")})
     defs["EndpointSelections"] = _closed("EndpointSelections", ("interface", "vlan_row", "shared_ip", "dual_homed"),
                                          {"interface": _nullable(_ref("Pointer")), "vlan_row": _nullable(_nonneg_int()),
-                                          "shared_ip": _ref("IndexList"), "dual_homed": _ref("IndexList")})
+                                          "shared_ip": _nullable(_ref("IndexList")),
+                                          "dual_homed": _nullable(_ref("IndexList"))})
     defs["EndpointRow"] = _row_def("EndpointRow", _indexed(), _ENDPOINT_ROW_CELLS,
                                    {"selections": _ref("EndpointSelections")})
     defs["DualHomedRow"] = _row_def("DualHomedRow", _indexed(),
@@ -2922,11 +3381,19 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
         defs[title] = _list_def(title, _ref(item))
     defs["InventoryDevices"] = _closed("InventoryDevices", ("total", "rows"),
                                        {"total": _ref("CountFact"), "rows": _ref("DeviceRowList")})
-    defs["InventoryVlans"] = _closed("InventoryVlans", ("total", "rows"),
-                                     {"total": _ref("CountFact"), "rows": _ref("VlanRowList")})
-    defs["InventoryEndpoints"] = _closed("InventoryEndpoints", ("total", "rows", "shared_ip", "dual_homed"),
+    vlan_sources = ("stp_roots", "gateways", "endpoints")
+    defs["InventoryVlans"] = _closed("InventoryVlans", ("total", "rows", "selection_sources"),
+                                     {"total": _ref("CountFact"), "rows": _ref("VlanRowList"),
+                                      "selection_sources": _closed("VlanSelectionSources", vlan_sources,
+                                                                   {k: _ref("SelectionSource") for k in vlan_sources})})
+    ep_sources = ("interfaces", "vlan_rows", "shared_ip", "dual_homed")
+    defs["InventoryEndpoints"] = _closed("InventoryEndpoints",
+                                         ("total", "rows", "shared_ip", "dual_homed", "selection_sources"),
                                          {"total": _ref("CountFact"), "rows": _ref("EndpointRowList"),
-                                          "shared_ip": _ref("SharedIpList"), "dual_homed": _ref("DualHomedList")})
+                                          "shared_ip": _ref("SharedIpList"), "dual_homed": _ref("DualHomedList"),
+                                          "selection_sources": _closed("EndpointSelectionSources", ep_sources,
+                                                                       {k: _ref("SelectionSource")
+                                                                        for k in ep_sources})})
     defs["Inventory"] = _closed("Inventory", ("devices", "vlans", "endpoints", "uncollected_peers"),
                                 {"devices": _ref("InventoryDevices"), "vlans": _ref("InventoryVlans"),
                                  "endpoints": _ref("InventoryEndpoints"), "uncollected_peers": _ref("PeerList")})
@@ -2936,7 +3403,7 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     identity = _closed("DeviceIdentity", IDENTITY_FIELDS, {f: _ref(_TEXT) for f in IDENTITY_FIELDS})
     physical_props = {**{f: _ref("CountFact") for f in DEVICE_PHYSICAL_ZERO_DEFAULTS + ("active_ports",)},
                       **{f: _ref(_TEXT) for f in PHYSICAL_TEXT_FIELDS}}
-    n_lims = len(DEVICE_LIMITATIONS)
+    n_lims = len(_DEVICE_DOC_LIMITATIONS)
     defs["DevicePage"] = _closed("DevicePage", (
         "host", "rosters", "identity", "physical", "collection", "health", "lifecycle", "dossier", "coverage",
         "interfaces", "links", "routes", "routing_neighbors", "security", "native_vlan_mismatches", "remediation",
@@ -3131,17 +3598,18 @@ def ui_projection_schema() -> Dict[str, Any]:
 
 
 __all__ = [
-    "ALWAYS_EMITTED_AXES", "AXIS_BASIS", "BRIEF_INPUTS", "CC_STATUSES", "CENSUS_KINDS", "COVERAGE_STATES",
-    "DEVICE_LIMITATIONS", "DEVICE_PHYSICAL_TEXT", "DEVICE_PHYSICAL_ZERO_DEFAULTS", "DOMAIN_STATE_OWNERS",
-    "DOSSIER_BANDS", "ENDPOINT_CONFIDENCES", "ENGINE_LIST_CAPS", "ENGINE_STATES", "ENGINE_STATE_OWNERS",
+    "ALWAYS_EMITTED_AXES", "ANALYSIS_SECTIONS", "APP_DOMAIN_JOINER", "AXIS_BASIS", "BRIEF_INPUTS", "CC_STATUSES",
+    "CENSUS_KINDS", "COVERAGE_STATES", "DEVICE_CITED_LIMITATIONS", "DEVICE_LIMITATIONS", "DEVICE_PHYSICAL_TEXT",
+    "DEVICE_PHYSICAL_ZERO_DEFAULTS", "DOMAIN_STATE_OWNERS", "DOSSIER_BANDS", "DOSSIER_UNDERSTATABLE",
+    "ENDPOINT_CONFIDENCES", "ENGINE_LIST_CAPS", "ENGINE_STATES", "ENGINE_STATE_OWNERS", "ESSENTIAL_LABELS",
     "EXPOSURE_STATES", "FLEET_HEALTH_STATES", "HEALTH_BANDS", "HEALTH_BAND_NOT_SCORED", "IDENTITY_FIELDS",
     "IF_COLUMNS", "JS_MAX_SAFE_INT", "LIFECYCLE_BAND_FACTS", "LIFECYCLE_BAND_FACTS_BY_BAND", "LIFECYCLE_BAND_ORDER",
     "LIMITATIONS", "MOVE_GROUP_LABEL", "NOT_ASSESSED_REASONS", "NOT_OBSERVED_SENTINEL", "NRFU_NOT_OBSERVED",
-    "OP_STATUSES", "PHASE_CLASSIFICATIONS", "PHYSICAL_TEXT_FIELDS", "POSTURE_STATEMENT_BASIS",
-    "PUNCHLIST_INPUTS", "PUNCH_BASIS_UNPUBLISHED", "PUNCH_CONFIDENCE_UNPUBLISHED", "PUNCH_RANK",
+    "OP_STATUSES", "PHASE_CLASSIFICATIONS", "PHYSICAL_TEXT_FIELDS", "POSTURE_STATEMENT_BASIS", "PUNCHLIST_INPUTS",
+    "PUNCH_BASIS_UNPUBLISHED", "PUNCH_CONFIDENCE_UNPUBLISHED", "PUNCH_DETAIL_CLIP_MARKER", "PUNCH_RANK",
     "RECONCILED_PATHS", "REF_ROLES", "SCHEMA", "SCHEMA_ID", "SEC_GRADES", "SEC_SEVERITIES", "SEC_STATUSES",
-    "SEVERITIES", "SNAPSHOT_SCHEMA", "STATES", "UE_COMPLETE_STATES", "UE_SOURCE_STATES", "UNKNOWN_EVIDENCE_STATES",
-    "VLAN_FIELD_BASIS", "VLAN_READINESS", "WITHHELD_STATES", "json_pointer", "project", "project_device",
-    "project_engine", "project_findings", "project_inventory", "project_overview", "project_trust",
-    "ui_projection_schema",
+    "SELECTION_NEEDS", "SEVERITIES", "SNAPSHOT_SCHEMA", "STATES", "UE_COMPLETE_STATES", "UE_SOURCE_STATES",
+    "UNKNOWN_EVIDENCE_STATES", "VLAN_FIELD_BASIS", "VLAN_READINESS", "WITHHELD_STATES", "json_pointer", "project",
+    "project_device", "project_devices", "project_engine", "project_findings", "project_inventory",
+    "project_overview", "project_trust", "ui_projection_schema",
 ]

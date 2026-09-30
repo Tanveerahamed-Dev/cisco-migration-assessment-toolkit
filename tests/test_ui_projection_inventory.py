@@ -216,6 +216,26 @@ def _all_limitation_ids():
     return {lim["id"] for lim in uip.LIMITATIONS} | {lim["id"] for lim in uip.DEVICE_LIMITATIONS}
 
 
+def _device_doc_limitation_ids():
+    """What a standalone device document must define: its own limitations, then every payload limitation a device
+    page can cite (in payload order)."""
+    return ([lim["id"] for lim in uip.DEVICE_LIMITATIONS]
+            + [lim["id"] for lim in uip.LIMITATIONS if lim["id"] in uip.DEVICE_CITED_LIMITATIONS])
+
+
+def _covered(where, pointers):
+    return any(where == p or where.startswith(p + "/") for p in pointers)
+
+
+def _cc_row(snap, host):
+    """The blind-spot row of `host` by the owner's rule (ssot._device_not_collected: case/space-insensitive, first
+    match wins), read independently."""
+    for i, r in enumerate(snap["collection_completeness"]["devices"]):
+        if isinstance(r, dict) and isinstance(r.get("host"), str) and r["host"].strip().lower() == host.strip().lower():
+            return i, r
+    return None, None
+
+
 # --------------------------------------------------------------------------------------------------
 # fixtures
 # --------------------------------------------------------------------------------------------------
@@ -354,29 +374,46 @@ GARBAGE = {
         fhrp={"proto": "HSRP", "group": "10", "vip": "v", "members": [{"host": 5}]})),
 }
 _ALL_NC = ("g_none", "g_list", "g_str", "g_zero", "g_empty", "g_eb_int")
-CORE = ("a", "b", "c", "hf", "pf", "ef", "real", "bl", "bl_nc", "mg", "dup", "odd")
+CORE = ("a", "b", "c", "hf", "pf", "ef", "fi", "real", "real2", "bl", "bl_nc", "mg", "dup", "odd")
 ALL_CASES = CORE + tuple(GARBAGE)
 REAL_FAILED = ("Health Scores", "Migration Punch-List", "Endpoint identity")
+#: The second real run: one inventory host the collection never reached, and one host whose CDP capture is gone.
+GHOST = {"hostname": "ghost-sw", "ip": "10.0.99.200", "username": "svc-audit", "password": "x", "platform": "ios"}
+PARTIAL = ("access1", "show cdp neighbors detail")
 
 
-def _run_real_engine(tmp_path, mp):
-    """The real pipeline with three phases forced to fail (pattern of
-    tests/test_ssot_failed_phase_abstention.py::_run_engine, copied rather than imported)."""
+def _failure_impact_failed(sample):
+    """'Failure Impact' failed: its fallback feeds the dossiers, which ssot does NOT mark (the one-hop gap).
+    The dossiers and the brief are recomputed with the REAL producers over the fallback."""
+    snap = copy.deepcopy(sample)
+    snap["failure_impact"] = []
+    snap["assessment_integrity"] = {"failed_phases": ["Failure Impact"]}
+    params = inspect.signature(analyze.compute_device_dossiers).parameters
+    snap["device_dossiers"] = analyze.compute_device_dossiers(**{p: snap.get(p) for p in params})
+    return _rebrief(snap, sample)
+
+
+def _run_real_engine(tmp_path, mp, *, fail=True, extra_devices=(), drop=()):
+    """The real pipeline (pattern of tests/test_ssot_failed_phase_abstention.py::_run_engine, copied rather than
+    imported): with `fail`, three phases are forced to fail; `extra_devices` join devices.json with no capture
+    directory; each ``(host, command)`` in `drop` has its capture removed."""
     mp.syspath_prepend(str(ROOT / "tests"))
     mp.syspath_prepend(str(ROOT))
+    mp.chdir(tmp_path)                       # before the engine import, so no log lands in the work tree
     import synthetic_fixtures as fx
     from openpyxl import Workbook
     import COLLECT_PARSE_V3_23_0 as cp
     collection = fx.write_collection(str(tmp_path / "collection"))
+    for host, command in drop:
+        os.remove(os.path.join(collection, host, fx.cmd_filename(command)))
     devices = tmp_path / "devices.json"
-    devices.write_text(json.dumps(fx.DEVICES), encoding="utf-8")
+    devices.write_text(json.dumps(list(fx.DEVICES) + list(extra_devices)), encoding="utf-8")
     template = tmp_path / "template.xlsx"
     wb = Workbook()
     wb.active.title = "Interface Data"
     wb.active.append(["Hostname", "Port", "Status"])
     wb.save(str(template))
     out = tmp_path / "out.xlsx"
-    mp.chdir(tmp_path)
     mp.setattr(sys, "argv", ["cisco-assess", "--no-collect", "--collection-dir", collection,
                              "--devices-file", str(devices), "--template", str(template),
                              "--output", str(out), "--workers", "1", "--no-html", "--no-docx",
@@ -386,9 +423,10 @@ def _run_real_engine(tmp_path, mp):
     def _boom(*_a, **_kw):
         raise RuntimeError("synthetic phase failure")
 
-    mp.setattr(cp, "compute_health_scores", _boom)
-    mp.setattr(cp, "_punchlist", _boom)
-    mp.setattr(cp, "compute_endpoint_identity", _boom)
+    if fail:
+        mp.setattr(cp, "compute_health_scores", _boom)
+        mp.setattr(cp, "_punchlist", _boom)
+        mp.setattr(cp, "compute_endpoint_identity", _boom)
     cp.main()
     return json.loads(pathlib.Path(str(out)[:-len(".xlsx")] + ".snapshot.json").read_text(encoding="utf-8"))
 
@@ -397,11 +435,14 @@ def _run_real_engine(tmp_path, mp):
 def snaps(tmp_path_factory):
     sample = _sample()
     out = {"a": sample, "b": _minimal(), "c": _all_insufficient(sample), "hf": _health_failed(sample),
-           "pf": _punch_failed(sample), "ef": _endpoints_failed(sample), "bl": _blind_spots(sample),
-           "bl_nc": _blind_existing(sample), "mg": _labelled_groups(sample), "dup": _duplicate_health(sample),
-           "odd": _odd_hosts(sample)}
+           "pf": _punch_failed(sample), "ef": _endpoints_failed(sample), "fi": _failure_impact_failed(sample),
+           "bl": _blind_spots(sample), "bl_nc": _blind_existing(sample), "mg": _labelled_groups(sample),
+           "dup": _duplicate_health(sample), "odd": _odd_hosts(sample)}
     with pytest.MonkeyPatch.context() as mp:
         out["real"] = _run_real_engine(tmp_path_factory.mktemp("uip_inventory_real_engine"), mp)
+    with pytest.MonkeyPatch.context() as mp:
+        out["real2"] = _run_real_engine(tmp_path_factory.mktemp("uip_inventory_real_blind"), mp, fail=False,
+                                        extra_devices=(GHOST,), drop=(PARTIAL,))
     for name, build in GARBAGE.items():
         out[name] = build(sample)
     return out
@@ -479,8 +520,12 @@ def test_i0_schema_sections_and_vocabularies():
     ids = [lim["id"] for lim in uip.LIMITATIONS] + [lim["id"] for lim in uip.DEVICE_LIMITATIONS]
     assert d["LimitationId"]["enum"] == ids and len(set(ids)) == len(ids)
     dev_lims = d["DevicePage"]["properties"]["limitations"]
-    assert dev_lims["minItems"] == dev_lims["maxItems"] == len(uip.DEVICE_LIMITATIONS)
+    assert dev_lims["minItems"] == dev_lims["maxItems"] == len(_device_doc_limitation_ids())
+    assert set(uip.DEVICE_CITED_LIMITATIONS) <= {lim["id"] for lim in uip.LIMITATIONS}
     assert d["DeviceDocument"]["required"] == ["schema", "engine", "device"]
+    assert "$anchor" not in d["DeviceDocument"]          # Ajv 2020 strict rejects it: address #/$defs/DeviceDocument
+    assert d["Cap"]["properties"]["total"] == {"$ref": "#/$defs/WithheldFact"}
+    assert d["Cap"]["properties"]["reached"] == {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
     assert d["DeviceDocument"]["properties"]["schema"]["const"] == uip.SCHEMA
     for name in ("Inventory", "Findings", "DevicePage", "DeviceRow", "VlanRow", "EndpointRow", "FindingRow",
                  "DualHomedRow", "InterfaceRow", "CableRow", "RouteRow", "NeighborRow", "RemediationRow",
@@ -506,6 +551,21 @@ def test_i0_schema_rejects_a_forged_device_row(payloads, validator):
         payload = copy.deepcopy(payloads["a"])
         forge(payload["inventory"]["devices"]["rows"]["items"][0])
         assert not validator.is_valid(payload), name
+
+
+def test_i0_schema_rejects_a_forged_device_document(docs, doc_validator):
+    doc = _doc(docs, "a", "core1")
+    assert doc_validator.is_valid(doc)
+    forgeries = {
+        "published_cap_total": lambda d: d["device"]["health"]["deductions_cap"].update(
+            total={"state": PUB, "value": 9, "subject": None, "refs": [], "basis": "x"}),
+        "short_limitations": lambda d: d["device"]["limitations"].pop(),
+        "unknown_key": lambda d: d["device"].update(extra=1),
+    }
+    for name, forge in forgeries.items():
+        forged = copy.deepcopy(doc)
+        forge(forged)
+        assert not doc_validator.is_valid(forged), name
 
 
 # --------------------------------------------------------------------------------------------------
@@ -563,22 +623,44 @@ def test_i2_envelope_invariants_and_pointers(name, snaps, payloads, docs):
     for lim in p["trust"]["limitations"]:
         for pointer in lim["applies_to"]:
             assert _resolve(p, pointer) is not _MISSING, (lim["id"], pointer)
-    all_ids = _all_limitation_ids()
     for host, doc in docs[name]:
-        _check_facts(doc["device"], "/device", all_ids, snap)
+        doc_ids = {lim["id"] for lim in doc["device"]["limitations"]}
+        _check_facts(doc["device"], "/device", doc_ids, snap)            # self-contained: its OWN limitations
         for where, ptr in _walk_pointers(doc["device"]):
             if where.startswith("/limitations"):
                 continue
             assert _resolve(snap, ptr) is not _MISSING, (host, where, ptr)
-        assert [lim["id"] for lim in doc["device"]["limitations"]] == [lim["id"] for lim in uip.DEVICE_LIMITATIONS]
+        assert [lim["id"] for lim in doc["device"]["limitations"]] == _device_doc_limitation_ids()
         for lim in doc["device"]["limitations"]:
             for pointer in lim["applies_to"]:
+                assert pointer.startswith("/device/"), (lim["id"], pointer)
                 assert _resolve(doc, pointer) is not _MISSING, (lim["id"], pointer)
     if name == "a":
         rows = p["inventory"]["devices"]["rows"]["items"]
         assert all(_resolve(snap, r["pointer"]) is not _MISSING for r in rows)
         roles = {r["role"] for _w, f in _walk_facts(p["inventory"]) for r in f["refs"]}
         assert {"subject", "witness"} <= roles
+
+
+@pytest.mark.parametrize("name", ALL_CASES)
+def test_i2_every_caveat_is_defined_where_it_is_used(name, payloads, docs):
+    """A caveat names a limitation the SAME document defines, and one of that limitation's applies_to pointers
+    prefixes the caveat's location (the whole payload, slice 1 included, and every standalone device document)."""
+    p = payloads[name]
+    lims = {lim["id"]: lim["applies_to"] for lim in p["trust"]["limitations"]}
+    n = 0
+    for where, fact in _walk_facts(p):
+        for cav in fact.get("caveats", ()):
+            n += 1
+            assert cav in lims and _covered(where, lims[cav]), (where, cav)
+    for host, doc in docs[name]:
+        dl = {lim["id"]: lim["applies_to"] for lim in doc["device"]["limitations"]}
+        for where, fact in _walk_facts(doc["device"], "/device"):
+            for cav in fact.get("caveats", ()):
+                n += 1
+                assert cav in dl and _covered(where, dl[cav]), (host, where, cav)
+    if name in ("a", "real2", "fi"):
+        assert n > 50
 
 
 def test_i2_odd_hostnames_escape_and_resolve(snaps, payloads, docs):
@@ -805,8 +887,10 @@ def test_i5_capped_lists_say_at_least_and_publish_no_total(snaps, payloads, docs
         page = _doc(docs, "a", host)["device"]["health"]
         n = len(health[host]["deductions"])
         assert page["deductions_cap"]["limit"] == cap
+        assert page["deductions"]["state"] in (PUB, CBE)
         assert page["deductions_cap"]["reached"] is (n >= cap)
         assert page["deductions_cap"]["total"]["state"] == NC and page["deductions_cap"]["total"]["value"] is None
+        assert ("engine_list_capped" in page["deductions"].get("caveats", ())) is (n >= cap), host
         reached += n >= cap
         short += n < cap
         assert [it["fact"]["value"] for it in page["deductions"]["items"]] == health[host]["deductions"]
@@ -816,6 +900,9 @@ def test_i5_capped_lists_say_at_least_and_publish_no_total(snaps, payloads, docs
         assert row["ports_cap"]["limit"] == uip.ENGINE_LIST_CAPS["endpoint_dependencies.dual_homed[].ports"]
         assert row["ports_cap"]["reached"] is (len(raw["ports"]) >= row["ports_cap"]["limit"])
         assert row["ports_cap"]["total"]["state"] == NC
+    for host, doc in docs["c"]:                                  # an unreadable list reaches no cap
+        if doc["device"]["health"]["deductions"]["state"] not in (PUB, CBE):
+            assert doc["device"]["health"]["deductions_cap"]["reached"] is None, host
     edit = copy.deepcopy(snap)
     edit["remediation_plan"]["by_device"]["core1"][0]["why"] = "x" * 300
     item = uip.project_device(edit, "core1")["device"]["remediation"]["items"]["items"][0]
@@ -1103,7 +1190,13 @@ def test_i11_never_mutates_and_never_aliases(snaps):
     assert snap == before
     assert uip.project_device(snap, "core1") == uip.project_device(before, "core1")
     again = uip.project_device(snap, "core1")["device"]["limitations"]
-    assert [lim["applies_to"] for lim in again] == [list(lim["applies_to"]) for lim in uip.DEVICE_LIMITATIONS]
+    want = ([list(lim["applies_to"]) for lim in uip.DEVICE_LIMITATIONS]
+            + [list(uip.DEVICE_CITED_LIMITATIONS[lim["id"]]) for lim in uip.LIMITATIONS
+               if lim["id"] in uip.DEVICE_CITED_LIMITATIONS])
+    assert [lim["applies_to"] for lim in again] == want
+    batch = uip.project_devices(snap, ["core1", "access1", "core1"])
+    _mutate_everything(batch[0])
+    assert batch[2] == uip.project_device(before, "core1")                # no container shared between documents
 
 
 def test_i11_pure_no_file_socket_or_process_io(snaps, payloads, monkeypatch):
@@ -1143,6 +1236,10 @@ def test_i12_vocabularies_equal_their_owners():
     assert uip.PUNCH_BASIS_UNPUBLISHED == analyze.PUNCH_BASIS_UNPUBLISHED
     assert uip.PUNCH_CONFIDENCE_UNPUBLISHED == analyze.PUNCH_CONFIDENCE_UNPUBLISHED
     assert uip.HEALTH_BAND_NOT_SCORED == ssot._HEALTH_BAND_NOT_SCORED
+    assert uip.ESSENTIAL_LABELS == analyze._ESSENTIAL_LABELS
+    for block, needs in uip.SELECTION_NEEDS.items():
+        assert set(needs) <= set(uip.ESSENTIAL_LABELS), block
+    assert set(uip.ANALYSIS_SECTIONS) == {s for secs in ssot.PHASE_SECTIONS.values() for s in secs}
     fields = dataclasses.fields(DevicePhysical)
     ints = tuple(f.name for f in fields if f.type in (int, "int") and f.default == 0)
     strs = tuple(f.name for f in fields if f.type in (str, "str") and f.name != "hostname")
@@ -1191,15 +1288,103 @@ def test_i12_literal_vocabularies_are_held_against_the_producer_source():
     assert op == set(uip.OP_STATUSES)
 
 
+#: Every prefix slice ``x[:n]`` reachable from a producer this projection names, reviewed: the ENGINE_LIST_CAPS key
+#: it is, or why it is no cap of a projected value. Keyed by (function, the slice's source text).
+CAP_SITES = {
+    ("analyze.compute_health_scores", "reasons[:8]"): "health_scores[].deductions",
+    ("analyze.compute_endpoint_dependencies", "sorted(m['ports'])[:8]"): "endpoint_dependencies.dual_homed[].ports",
+    ("analyze.compute_remediation_plan", "(why or '')[:300]"): "remediation_plan[].why",
+    ("analyze.compute_vlan_cutover_matrix", "doms[:3]"): "vlan_cutover[].app_domain",
+    ("analyze.compute_migration_punchlist", "s[:n]"): "punchlist[].detail",           # _clip(..., n=400)
+    ("analyze.compute_executive_brief", "flags[:4]"):
+        "exempt: the posture statement says in-band how many flags it holds back",
+    ("analyze._fmt_endpoint_mix", "items[:limit]"): "exempt: endpoint_mix says '+N more' in-band",
+    ("analyze._classify_endpoint", "desc.strip()[:32]"):
+        "exempt: a quoted fragment inside the evidence prose; the full description is on the interface record",
+    ("analyze._classify_endpoint", "plat.strip()[:24]"): "exempt: a quoted fragment inside the evidence prose",
+    ("analyze._static_vtp_safety_rows", "_strict_protocol_text(reason)[:180]"):
+        "exempt: a bounded validator reason quoted inside punch-list prose, which the detail cap covers",
+    ("analyze._static_vtp_safety_rows",
+     "('vtp_safety_subject_scope.valid/attempted/reason + vtp_safety_baseline' if scope_abstention else "
+     "f'vtp_safety_subject_scope[{host}] + protocol_assessability.rows[{host},VTP] + protocol_health[{host},VTP] + "
+     "vtp_safety_baseline')[:300]"):
+        "exempt: a length bound on a VTP row's source-key text, which is not projected",
+    ("nrfu_export.compute_nrfu_commands", "up[:12]"): "exempt: the NRFU expected text says '+N more' in-band",
+    ("nrfu_export._port_key", "p[:2]"): "exempt: a port-name sort key, not a value",
+    ("excel._parse_track", "line.strip()[:40]"): "exempt: l3_forwarding values are not projected (only row indices)",
+    ("excel._track_summary", "tr['objects'][:6]"): "exempt: l3_forwarding values are not projected (only row indices)",
+    ("excel._xls_cell_value", "v[:_XLSX_MAX_CELL - len(note)]"): "exempt: the workbook cell writer, not the snapshot",
+    ("analyze.compute_lifecycle_risk", "str(x or '')[:10]"): "exempt: the ISO date part of a timestamp",
+    ("analyze.compute_lifecycle_risk", "str(s)[:10]"): "exempt: the ISO date part of a timestamp",
+    ("parse.parse_security", "raw[:1]"): "exempt: a first-character test, not a value",
+    ("analyze.compute_cable_map", "badges[:3]"): "exempt: badges are not projected",
+    ("analyze.compute_device_dossiers",
+     "[d['host'] for d in per_device if d['risk_band'] in ('Severe', 'Elevated')][:3]"):
+        "exempt: the dossier summary headline is not projected",
+    ("analyze.compute_device_dossiers", "[e['label'] for e in exposures if e['state'] == 'risk'][:3]"):
+        "exempt: the dossier verdict prose is not projected",
+    ("analyze.compute_device_dossiers", "[e['label'] for e in exposures if e['state'] == 'watch'][:3]"):
+        "exempt: the dossier verdict prose is not projected",
+    ("analyze.compute_device_dossiers", "watch_labels[:max(0, 3 - len(red_labels))]"):
+        "exempt: the dossier verdict prose is not projected",
+}
+def _producer_roots():
+    """Every ``<module>.<function>`` this projection names as an owner (its basis strings and limitation owners)."""
+    import importlib
+    import re
+    names = set(re.findall(r"\b(analyze|build|parse|coverage_matrix|html|nrfu_export|excel)\.([A-Za-z_]\w*)",
+                           inspect.getsource(uip)))
+    out = set()
+    for mod, fn in names:
+        module = importlib.import_module(f"cisco_toolkit.{mod}")
+        if inspect.isfunction(getattr(module, fn, None)):
+            out.add((module, fn))
+    return out
+
+
+def _prefix_slices():
+    """``{(qualified function, slice source)}`` over every function reachable from the named producers by a direct
+    call to a function of the same module (transitive), plus the producers themselves."""
+    seen, queue, hits = set(), list(_producer_roots()), set()
+    while queue:
+        module, fn = queue.pop()
+        if (module.__name__, fn) in seen:
+            continue
+        seen.add((module.__name__, fn))
+        tree = _function_ast(getattr(module, fn))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                target = getattr(module, node.func.id, None)
+                if inspect.isfunction(target) and target.__module__ == module.__name__:
+                    queue.append((module, node.func.id))
+            if (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice) and node.slice.lower is None
+                    and node.slice.upper is not None):
+                hits.add((f"{module.__name__.rsplit('.', 1)[-1]}.{fn}", ast.unparse(node)))
+    return hits, seen
+
+
+def test_i12_every_engine_cap_is_registered_or_reviewed():
+    """Structural, not a hand-kept list: every prefix slice reachable from a producer this projection names is either
+    an ENGINE_LIST_CAPS entry (with the producer's own constant) or a reviewed exemption."""
+    hits, seen = _prefix_slices()
+    assert len(seen) > 20 and ("cisco_toolkit.analyze", "_classify_endpoint") in seen    # the walk is transitive
+    assert hits - set(CAP_SITES) == set(), "unreviewed prefix slice(s): register a cap or an exemption"
+    assert set(CAP_SITES) - hits == set(), "a reviewed slice no longer exists: drop it"
+    registered = {v for v in CAP_SITES.values() if not v.startswith("exempt:")}
+    assert registered == set(uip.ENGINE_LIST_CAPS)
+    for (fn, text), key in CAP_SITES.items():
+        if key in uip.ENGINE_LIST_CAPS and fn != "analyze.compute_migration_punchlist":
+            assert f"[:{uip.ENGINE_LIST_CAPS[key]}]" in text, (fn, text, key)
+    # the punch-list detail is cut by the producer's nested _clip(s, n=400): its default bound is the cap
+    clip = next(n for n in ast.walk(_function_ast(analyze.compute_migration_punchlist))
+                if isinstance(n, ast.FunctionDef) and n.name == "_clip")
+    names = [a.arg for a in clip.args.args]
+    default = clip.args.defaults[names.index("n") - (len(names) - len(clip.args.defaults))]
+    assert ast.literal_eval(default) == uip.ENGINE_LIST_CAPS["punchlist[].detail"]
+    assert uip.PUNCH_DETAIL_CLIP_MARKER in _str_constants(clip)
+
+
 def test_i12_caps_and_move_group_label_are_held_against_the_producer_source():
-    for key, fn in (("health_scores[].deductions", analyze.compute_health_scores),
-                    ("endpoint_dependencies.dual_homed[].ports", analyze.compute_endpoint_dependencies),
-                    ("remediation_plan[].why", analyze.compute_remediation_plan)):
-        uppers = {node.slice.upper.value for node in ast.walk(_function_ast(fn))
-                  if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice)
-                  and node.slice.lower is None and isinstance(node.slice.upper, ast.Constant)}
-        assert uip.ENGINE_LIST_CAPS[key] in uppers, (key, uppers)
-    assert len(uip.ENGINE_LIST_CAPS) == 3
     for fn in (analyze.compute_migration_punchlist, analyze.compute_remediation_plan,
                analyze.compute_device_dossiers, analyze.compute_endpoint_dependencies):
         reads = [node for node in ast.walk(_function_ast(fn))
@@ -1285,14 +1470,22 @@ def test_i14_selections_follow_the_owners_key_rules(name, snaps, payloads, docs)
         assert [it["index"] for it in page["native_vlan_mismatches"]["items"]] == tn
     l3 = snap.get("l3_forwarding") or []
     roots = snap.get("stp_roots") or {}
+    def readable(path):                      # the owner's own answer: a selection reads only what it can read
+        return ssot.abstention_reason(snap, path) in (PUB, CBE)
+
+    srcs = p["inventory"]["vlans"]["selection_sources"]
+    for key, path in (("endpoints", "endpoint_identity"), ("gateways", "l3_forwarding"), ("stp_roots", "stp_roots")):
+        assert (srcs[key]["state"] in (PUB, CBE)) is readable(path), key
     for row in p["inventory"]["vlans"]["rows"]["items"]:
         vid = row["vlan"]["value"]
         sel = row["selections"]
-        assert sel["endpoints"] == [i for i, r in enumerate(eps) if _digit(r.get("vlan")) == vid]
-        assert sel["gateways"] == [i for i, r in enumerate(l3) if _digit(r.get("vlan")) == vid]
+        assert sel["endpoints"] == ([i for i, r in enumerate(eps) if _digit(r.get("vlan")) == vid]
+                                    if readable("endpoint_identity") else None)
+        assert sel["gateways"] == ([i for i, r in enumerate(l3) if _digit(r.get("vlan")) == vid]
+                                   if readable("l3_forwarding") else None)
         want = sorted(_ptr("stp_roots", h, k) for h in roots for k, rec in roots[h].items()
                       if k.isdigit() and int(k) == vid and isinstance(rec, dict) and not rec.get("is_mst"))
-        assert sel["stp_roots"] == want
+        assert sel["stp_roots"] == (want if readable("stp_roots") else None)
     deps = snap.get("endpoint_dependencies") or {}
     shared = deps.get("shared_ip") or []
     dual = deps.get("dual_homed") or []
@@ -1300,8 +1493,10 @@ def test_i14_selections_follow_the_owners_key_rules(name, snaps, payloads, docs)
     for item, raw in zip(p["inventory"]["endpoints"]["rows"]["items"], eps):
         sel = item["selections"]
         ip = raw["ip"].strip()
-        assert sel["shared_ip"] == [k for k, r in enumerate(shared) if ip and r["ip"] == ip]
-        assert sel["dual_homed"] == [k for k, r in enumerate(dual) if r["mac"] == raw["mac"].lower()]
+        assert sel["shared_ip"] == ([k for k, r in enumerate(shared) if ip and r["ip"] == ip]
+                                    if readable("endpoint_dependencies.shared_ip") else None)
+        assert sel["dual_homed"] == ([k for k, r in enumerate(dual) if r["mac"] == raw["mac"].lower()]
+                                     if readable("endpoint_dependencies.dual_homed") else None)
         matches = [k for k, r in enumerate(vrows) if r["vlan"] == _digit(raw["vlan"])]
         assert sel["vlan_row"] == (matches[0] if len(matches) == 1 else None)
         iface = (snap.get("interfaces") or {}).get(raw["host"], {}).get(raw["port"])
@@ -1401,3 +1596,439 @@ def test_i15_scale_300_devices_20k_interfaces(snaps, validator, doc_validator):
         json.dumps(doc, allow_nan=False)
     assert uip.project_device(big, hosts[150])["device"]["interfaces"]["rows"]["state"] == PUB
     assert len(uip.project_device(big, hosts[150])["device"]["interfaces"]["rows"]["items"]) == 67
+    start = time.perf_counter()
+    every = uip.project_devices(big, hosts)                  # one shared context for all 300 pages
+    took = time.perf_counter() - start
+    assert took <= 60.0, took
+    assert [d["device"]["host"] for d in every] == hosts
+    assert every[150] == uip.project_device(big, hosts[150])
+
+
+# --------------------------------------------------------------------------------------------------
+# I16 -- a device the collection never reached, or reached only partly, is never a clean result
+# --------------------------------------------------------------------------------------------------
+_SELECTIONS = ("links", "native_vlan_mismatches", "findings", "endpoints")
+
+
+def test_i16_an_uncollected_device_page_claims_no_clean_absence(snaps, docs, payloads):
+    """The REAL engine writes an unreached inventory host as all defaults with an empty interface parse and a
+    'not collected' blind-spot row. Nothing on its page may read 'collected but empty (not a blind spot)'."""
+    snap, host = snaps["real2"], GHOST["hostname"]
+    i, cc = _cc_row(snap, host)
+    assert cc["status"] == "not collected"                                   # the engine's own verdict
+    assert snap["devices"][host]["model"] == "" and snap["interfaces"][host] == {}
+    page = _doc(docs, "real2", host)["device"]
+    n = 0
+    for where, fact in _walk_facts(page):
+        n += 1
+        assert fact["state"] != CBE, (where, fact.get("reason"))
+    assert n > 40
+    witness = {"pointer": _ptr("collection_completeness", "devices", i), "role": "witness"}
+    for block in _SELECTIONS:
+        assert page[block]["state"] == NC, block
+        assert witness in page[block]["refs"], block
+    assert page["health"]["role"]["state"] != PUB         # 'access' is the engine's default over no interfaces
+    assert page["health"]["deductions_cap"]["reached"] is None
+    assert _row_for(payloads["real2"], host)["role"]["state"] != PUB
+
+
+def test_i16_an_empty_interface_parse_is_no_clean_absence(snaps):
+    """A device whose captures parsed to no interface (the engine writes ``{}``; the scorer bands it Insufficient
+    Data) need not be listed as not collected, yet nothing derived from its interfaces reads as a clean absence,
+    and its 'access' role is the engine's default, not an observation."""
+    snap = copy.deepcopy(snaps["a"])
+    snap["interfaces"]["access1"] = {}
+    assert _cc_row(snap, "access1") == (None, None)                       # no blind-spot row names it
+    page = uip.project_device(snap, "access1")["device"]
+    for block in _SELECTIONS:
+        fact = page[block]
+        assert fact["state"] == NC and "no interface parse result" in fact["reason"], block
+    assert page["links"]["items"]                                        # neighbours still name it: shown, qualified
+    assert page["health"]["role"]["state"] == NC and "default" in page["health"]["role"]["reason"]
+    assert page["interfaces"]["rows"]["state"] == NC
+    assert _row_for({"inventory": uip.project_inventory(snap)}, "access1")["role"]["state"] == NC
+
+
+def test_i16_a_partial_device_says_which_capture_its_lists_miss(snaps, docs, payloads):
+    snap, (host, _cmd) = snaps["real2"], PARTIAL
+    i, cc = _cc_row(snap, host)
+    assert cc["status"] == "partial" and cc["missing"] == ["CDP/LLDP neighbors"]     # the real engine's record
+    page = _doc(docs, "real2", host)["device"]
+    missing = {"pointer": _ptr("collection_completeness", "devices", i, "missing"), "role": "witness"}
+    for block in ("links", "native_vlan_mismatches", "findings"):
+        fact = page[block]
+        assert fact["state"] == NC and "CDP/LLDP neighbors" in fact["reason"], block
+        assert missing in fact["refs"], block
+    assert page["endpoints"]["state"] in (PUB, CBE)       # its interface status and switchport were collected
+    hs = next(r for r in snap["health_scores"] if r["switch"] == host)
+    assert hs["band"] != "Insufficient Data"              # 3 of 4 essentials: the scorer keeps the band
+    row = _row_for(payloads["real2"], host)
+    for fact in (page["health"]["score"], page["health"]["band"], row["health_score"], row["health_band"]):
+        assert fact["state"] == PUB
+        assert "health_scored_over_partial_collection" in fact["caveats"]
+        assert missing in fact["refs"]
+    other = next(h for h in snap["devices"] if h not in (host, GHOST["hostname"]))
+    assert "health_scored_over_partial_collection" not in _row_for(payloads["real2"], other)["health_band"].get(
+        "caveats", ())
+    fnd = payloads["real2"]["findings"]
+    blind = sorted(_ptr("collection_completeness", "devices", k) for k, _r in
+                   enumerate(snap["collection_completeness"]["devices"]))
+    for fact in (fnd["rows"], fnd["total"]):
+        assert fact["state"] == PUB and "fleet_lists_exclude_blind_devices" in fact["caveats"]
+        assert sorted(r["pointer"] for r in fact["refs"] if r["pointer"] in blind) == blind
+
+
+def test_i16_device_findings_without_running_config_are_incomplete(snaps, docs):
+    snap = snaps["a"]
+    lacking = 0
+    for host in sorted(snap["devices"]):
+        page = _doc(docs, "a", host)["device"]
+        sel = [i for i, r in enumerate(snap["punchlist"]) if host in r["devices"]]
+        assert [it["index"] for it in page["findings"]["items"]] == sel
+        rem = page["remediation"]["items"]
+        if host in snap["security"]:
+            assert page["findings"]["state"] == (PUB if sel else CBE), host
+            assert rem["state"] in (PUB, CBE), host
+        else:
+            lacking += 1
+            for fact in (page["findings"], rem):
+                assert fact["state"] == NC and "security carries no row" in fact["reason"], host
+    assert lacking == 5
+    edit = copy.deepcopy(snap)
+    edit["punchlist"] = [r for r in edit["punchlist"] if "podacc1" not in r["devices"]]
+    fact = uip.project_device(edit, "podacc1")["device"]["findings"]
+    assert fact["state"] == NC and fact["items"] == []                       # never 'no row names it'
+
+
+def test_i16_fleet_lists_over_blind_devices(snaps, payloads):
+    snap, p = snaps["a"], payloads["a"]
+    lacking = sorted(h for h in snap["devices"] if h not in snap["security"])
+    for fact in (p["findings"]["rows"], p["findings"]["total"]):
+        assert "findings_without_running_config" in fact["caveats"]
+        assert sorted(r["pointer"] for r in fact["refs"] if r["pointer"].startswith("/devices/")) == \
+            [_ptr("devices", h) for h in lacking]
+        assert "fleet_lists_exclude_blind_devices" not in fact["caveats"]           # the sample has no blind spot
+    full = copy.deepcopy(snap)
+    for h in lacking:
+        full["security"][h] = copy.deepcopy(snap["security"]["core1"])
+    assert "findings_without_running_config" not in uip.project_findings(full)["rows"].get("caveats", ())
+    bl = payloads["bl"]
+    witness = [{"pointer": _ptr("collection_completeness", "devices", k), "role": "witness"} for k in range(2)]
+    for fact in (bl["findings"]["rows"], bl["inventory"]["vlans"]["rows"], bl["inventory"]["vlans"]["total"],
+                 bl["inventory"]["endpoints"]["rows"], bl["inventory"]["endpoints"]["total"],
+                 bl["inventory"]["endpoints"]["dual_homed"]):
+        assert "fleet_lists_exclude_blind_devices" in fact["caveats"]
+        assert all(w in fact["refs"] for w in witness)
+    empty = copy.deepcopy(snaps["bl"])
+    empty["punchlist"] = []
+    fact = uip.project_findings(empty)["rows"]
+    assert fact["state"] == NC and "collection_completeness" in fact["reason"]      # never 'nothing found'
+
+
+# --------------------------------------------------------------------------------------------------
+# I17 -- the one-hop gap and a band over unassessed axes are stated on the value
+# --------------------------------------------------------------------------------------------------
+def test_i17_one_hop_failure_caveat_reaches_the_dossier(snaps, payloads, docs):
+    snap, p = snaps["fi"], payloads["fi"]
+    assert "device_dossiers" not in ssot.failed_sections(snap)[0]           # the owner does not mark it
+    rows = p["inventory"]["devices"]["rows"]["items"]
+    assert rows
+    for row in rows:
+        assert row["risk_band"]["state"] == PUB
+        assert "one_hop_failure_attribution" in row["risk_band"]["caveats"], row["host"]
+    page = _doc(docs, "fi", "core1")["device"]["dossier"]
+    assert "one_hop_failure_attribution" in page["risk_band"]["caveats"]
+    for where, fact in _walk_facts({"inventory": payloads["a"]["inventory"], "findings": payloads["a"]["findings"]}):
+        assert "one_hop_failure_attribution" not in fact.get("caveats", ()), where      # no failure, no caveat
+
+
+def test_i17_a_band_below_severe_over_unassessed_axes_is_caveated(snaps, payloads, docs):
+    snap, p = snaps["a"], payloads["a"]
+    per = snap["device_dossiers"]["per_device"]
+    kinds = set()
+    for row in p["inventory"]["devices"]["rows"]["items"]:
+        k = next(k for k, r in enumerate(per) if r["host"] == row["host"])
+        want = per[k]["n_na"] > 0 and per[k]["risk_band"] in ("Elevated", "Guarded", "Low")
+        for fact in (row["risk_band"], _doc(docs, "a", row["host"])["device"]["dossier"]["risk_band"]):
+            assert ("dossier_band_over_unassessed_axes" in fact.get("caveats", ())) is want, row["host"]
+            if want:
+                assert {"pointer": _ptr("device_dossiers", "per_device", k, "n_na"), "role": "witness"} in fact["refs"]
+        kinds.add((per[k]["risk_band"], want))
+    assert ("Low", True) in kinds and ("Severe", False) in kinds and ("Elevated", True) in kinds
+
+
+# --------------------------------------------------------------------------------------------------
+# I18 -- VLAN rows: a flag or an empty list over evidence nobody read is withheld
+# --------------------------------------------------------------------------------------------------
+def _vlan_item(inv, vid):
+    return next(it for it in inv["vlans"]["rows"]["items"] if it["vlan"]["value"] == vid)
+
+
+def test_i18_default_election_over_an_unparsed_root_priority_is_withheld(snaps, payloads):
+    assert _sv(_vlan_item(payloads["a"]["inventory"], 10)["stp_root_default_election"])[0] == PUB
+    snap = copy.deepcopy(snaps["a"])
+    roots = snap["stp_roots"]
+    # the owner's root: the first sorted host whose non-MST record claims root (compute_vlan_cutover_matrix)
+    host = next(h for h in sorted(roots) if isinstance(roots[h].get("10"), dict) and roots[h]["10"].get("is_root")
+                and not roots[h]["10"].get("is_mst"))
+    roots[host]["10"]["root_priority"] = None
+    next(r for r in snap["vlan_cutover"] if r["vlan"] == 10)["stp_root_default_election"] = False   # what it writes
+    fact = _vlan_item(uip.project_inventory(snap), 10)["stp_root_default_election"]
+    assert _sv(fact) == (NC, None) and "root_priority" in fact["reason"]
+    assert {"pointer": _ptr("stp_roots", host, "10", "root_priority"), "role": "witness"} in fact["refs"]
+
+
+def test_i18_empty_dependencies_need_every_gateway_config(snaps, payloads):
+    for item, raw in zip(payloads["a"]["inventory"]["vlans"]["rows"]["items"], snaps["a"]["vlan_cutover"]):
+        want = (PUB, raw["dependencies"]) if raw["dependencies"] else (CBE, None)      # every gateway SVI observed
+        assert _sv(item["dependencies"]) == want, raw["vlan"]
+    snap = copy.deepcopy(snaps["a"])
+    snap["interfaces"]["core2"]["Vlan20"].pop("run_config_observed")
+    row30 = next(r for r in snap["vlan_cutover"] if r["vlan"] == 30)
+    row30.update(gateway_svi_hosts=[], fhrp=uip.NOT_OBSERVED_SENTINEL)              # what it writes with no gateway
+    inv = uip.project_inventory(snap)
+    fact = _vlan_item(inv, 20)["dependencies"]
+    assert fact["state"] == NC and "DHCP relay" in fact["reason"]
+    assert {"pointer": _ptr("interfaces", "core2", "Vlan20"), "role": "witness"} in fact["refs"]
+    fact = _vlan_item(inv, 30)["dependencies"]
+    assert fact["state"] == NC and "no gateway SVI" in fact["reason"]
+    assert _vlan_item(inv, 40)["dependencies"]["state"] == CBE
+
+
+def test_i18_scenario_reason_names_the_right_gap(snaps):
+    snap = copy.deepcopy(snaps["a"])
+    snap["vlan_cutover"][0]["scenario"] = ""
+    snap["vlan_cutover"][1].update(wave="", scenario="")
+    items = uip.project_inventory(snap)["vlans"]["rows"]["items"]
+    with_wave, no_wave = items[0]["scenario"], items[1]["scenario"]
+    assert with_wave["state"] == no_wave["state"] == NC
+    assert "sequenced move group" not in with_wave["reason"] and "wave sequencing" in with_wave["reason"]
+    assert "sequenced move group" in no_wave["reason"]
+
+
+def test_i18_fhrp_blank_fields_are_null(snaps, payloads):
+    blanks = 0
+    for item, raw in zip(payloads["a"]["inventory"]["vlans"]["rows"]["items"], snaps["a"]["vlan_cutover"]):
+        if not isinstance(raw["fhrp"], dict):
+            continue
+        val = item["fhrp"]["value"]
+        for k in ("proto", "group", "vip"):
+            assert val[k] == (raw["fhrp"][k] or None), k
+        for got, rm in zip(val["members"], raw["fhrp"]["members"]):
+            for k in ("host", "proto", "group", "vip", "role", "vmac"):
+                assert got[k] == (rm[k] or None), k
+                blanks += rm[k] == ""
+    assert blanks
+
+
+def test_i18_text_caps_say_so(snaps):
+    snap = copy.deepcopy(snaps["a"])
+    snap["vlan_cutover"][0]["app_domain"] = "A + B + C"
+    snap["vlan_cutover"][1]["app_domain"] = "A + B"
+    snap["punchlist"][0]["detail"] = ("word " * 90).strip() + uip.PUNCH_DETAIL_CLIP_MARKER
+    vl = uip.project_inventory(snap)["vlans"]["rows"]["items"]
+    assert "engine_list_capped" in vl[0]["app_domain"]["caveats"]
+    assert "engine_list_capped" not in vl[1]["app_domain"].get("caveats", ())
+    rows = uip.project_findings(snap)["rows"]["items"]
+    assert "engine_list_capped" in rows[0]["detail"]["caveats"]
+    assert all("engine_list_capped" not in r["detail"].get("caveats", ())
+               for r, raw in zip(rows[1:], snap["punchlist"][1:]) if uip.PUNCH_DETAIL_CLIP_MARKER not in raw["detail"])
+
+
+def test_i18_dual_homed_ports_cap_caveat_is_exact(snaps):
+    snap = copy.deepcopy(snaps["a"])
+    rows = snap["endpoint_dependencies"]["dual_homed"]
+    assert all(len(r["ports"]) == 8 for r in rows)
+    rows[1]["ports"] = rows[1]["ports"][:7]
+    dual = uip.project_inventory(snap)["endpoints"]["dual_homed"]["items"]
+    for item, raw in zip(dual, rows):
+        at_cap = len(raw["ports"]) >= 8
+        assert ("engine_list_capped" in item["ports"].get("caveats", ())) is at_cap
+        assert item["ports_cap"]["reached"] is at_cap
+
+
+def test_i18_severity_basis_marker_from_the_real_producer(snaps):
+    """The punch-list producer's own fold of two media risks: one publishing its basis, one falling back to the
+    engine's not-published marker."""
+    rows = analyze.compute_migration_punchlist(
+        cross_layer=[], security={}, config_hygiene={}, physical_health=[], l3_forwarding=[], protocol_health=[],
+        stp_findings={}, health_scores=[], move_groups=[],
+        media_risks=[{"severity": "High", "devices": ["access1"], "title": "MAC alias", "detail": "d1",
+                      "remediation": "r1", "severity_basis": "curated on-air classification",
+                      "evidence_confidence": "registry hint"},
+                     {"severity": "Medium", "devices": ["access2"], "title": "IGMP querier gap", "detail": "d2"}])
+    snap = copy.deepcopy(snaps["a"])
+    snap["punchlist"] = rows
+    items = uip.project_findings(snap)["rows"]["items"]
+    by_title = {it["title"]["value"]: it for it in items}
+    alias, gap = by_title["MAC alias"], by_title["IGMP querier gap"]
+    assert _sv(alias["severity_basis"]) == (PUB, "curated on-air classification")
+    assert _sv(alias["evidence_confidence"]) == (PUB, "registry hint")
+    for f in ("severity_basis", "evidence_confidence"):
+        assert gap[f]["state"] == NC and "marker" in gap[f]["reason"], f
+    assert rows[[r["title"] for r in rows].index("IGMP querier gap")]["severity_basis"] == uip.PUNCH_BASIS_UNPUBLISHED
+
+
+# --------------------------------------------------------------------------------------------------
+# I19 -- joins follow the owner's key rule; two rows are never picked between
+# --------------------------------------------------------------------------------------------------
+_ALL_ESSENTIAL = ["interface status", "switchport", "version/inventory", "CDP/LLDP neighbors"]
+
+
+@pytest.mark.parametrize("variant", ("CORE1", " core1 ", "Core1"))
+def test_i19_blind_spot_join_follows_the_owners_key_rule(snaps, variant):
+    snap = copy.deepcopy(snaps["a"])
+    snap["collection_completeness"]["devices"] = [
+        {"host": variant, "status": "not collected", "data_quality": 0, "missing": list(_ALL_ESSENTIAL)}]
+    assert ssot.abstention_reason(snap, "devices", device="core1") == NC          # the owner matches it
+    inv = uip.project_inventory(snap)["devices"]
+    rows = [r for r in inv["rows"]["items"] if r["host"].strip().lower() == "core1"]
+    assert [r["host"] for r in rows] == ["core1"]                                  # no phantom row
+    row = rows[0]
+    assert row["rosters"] == {"devices": True, "collection_completeness": True}
+    assert _sv(row["collection_status"]) == (PUB, "not collected")
+    assert row["rows"]["collection"] == "/collection_completeness/devices/0"
+    assert row["model"]["state"] == NC
+    assert _sv(inv["total"]) == (PUB, 23)
+    page = uip.project_device(snap, "core1")["device"]
+    assert page["rosters"]["collection_completeness"] is True
+    assert _sv(page["collection"]["status"]) == (PUB, "not collected")
+
+
+def test_i19_two_blind_spot_rows_for_one_device_are_unverified(snaps):
+    snap = copy.deepcopy(snaps["a"])
+    snap["collection_completeness"]["devices"] = [
+        {"host": "CORE1", "status": "partial", "data_quality": 75, "missing": ["CDP/LLDP neighbors"]},
+        {"host": "core1", "status": "partial", "data_quality": 50, "missing": ["switchport", "CDP/LLDP neighbors"]},
+        {"host": "GHOST9", "status": "not collected", "data_quality": 0, "missing": list(_ALL_ESSENTIAL)},
+        {"host": "ghost9", "status": "not collected", "data_quality": 0, "missing": list(_ALL_ESSENTIAL)}]
+    snap["collection_completeness"]["summary"]["inventory"] = 24
+    inv = uip.project_inventory(snap)["devices"]
+    core = _row_for({"inventory": {"devices": inv}}, "core1")
+    assert core["collection_status"]["state"] == UV and core["rows"]["collection"] is None
+    ghosts = [r for r in inv["rows"]["items"] if r["host"].lower() == "ghost9"]
+    assert len(ghosts) == 1 and ghosts[0]["pointer"] is None                      # never picked between
+    assert ghosts[0]["collection_status"]["state"] == UV
+    assert _sv(inv["total"]) == (PUB, 24)
+
+
+def test_i19_ambiguous_headline_and_unreadable_peer_flags(snaps, payloads):
+    snap = copy.deepcopy(snaps["a"])
+    axes = snap["executive_brief"]["axes"]
+    axes.append(copy.deepcopy(axes[payloads["a"]["findings"]["headline_axis_index"]]))
+    assert uip.project_findings(snap)["headline_axis_index"] is None
+    snap = copy.deepcopy(snaps["a"])
+    snap["cable_map"]["nodes"][1]["collected"] = None
+    peers = uip.project_inventory(snap)["uncollected_peers"]
+    assert peers["state"] == UV and NOT_A_BLIND_SPOT not in peers["reason"]
+
+
+# --------------------------------------------------------------------------------------------------
+# I20 -- a selection says whether its source could be read
+# --------------------------------------------------------------------------------------------------
+def test_i20_selections_carry_their_source_state(snaps, payloads):
+    p = payloads["a"]["inventory"]
+    assert {k: v["state"] for k, v in p["vlans"]["selection_sources"].items()} == \
+        {"stp_roots": PUB, "gateways": PUB, "endpoints": PUB}
+    assert {k: v["state"] for k, v in p["endpoints"]["selection_sources"].items()} == \
+        {"interfaces": PUB, "vlan_rows": PUB, "shared_ip": PUB, "dual_homed": PUB}
+    snap = copy.deepcopy(snaps["a"])
+    del snap["stp_roots"], snap["l3_forwarding"]
+    vl = uip.project_inventory(snap)["vlans"]
+    assert vl["selection_sources"]["stp_roots"]["state"] == NC
+    assert vl["selection_sources"]["gateways"]["state"] == NC
+    assert vl["rows"]["items"]
+    for row in vl["rows"]["items"]:
+        assert row["selections"]["stp_roots"] is None and row["selections"]["gateways"] is None
+        assert isinstance(row["selections"]["endpoints"], list)
+    failed = copy.deepcopy(snaps["a"])
+    failed["endpoint_dependencies"] = {}
+    failed["assessment_integrity"] = {"failed_phases": ["Endpoint dependencies"]}
+    ep = uip.project_inventory(failed)["endpoints"]
+    assert ep["selection_sources"]["shared_ip"]["state"] == AU
+    assert ep["rows"]["items"]
+    for row in ep["rows"]["items"]:
+        assert row["selections"]["shared_ip"] is None and row["selections"]["dual_homed"] is None
+
+
+# --------------------------------------------------------------------------------------------------
+# I21 -- a lone surrogate never reaches the output (a UTF-8 encoder would raise on it)
+# --------------------------------------------------------------------------------------------------
+_SUR = "\udc80"
+
+
+def _poison_text(obj):
+    if isinstance(obj, str):
+        return obj + _SUR
+    if isinstance(obj, dict):
+        return {k: _poison_text(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_poison_text(v) for v in obj]
+    return obj
+
+
+def _rename_host(obj, old, new):
+    if isinstance(obj, str):
+        return new if obj == old else obj
+    if isinstance(obj, dict):
+        return {(new if k == old else k): _rename_host(v, old, new) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_rename_host(v, old, new) for v in obj]
+    return obj
+
+
+def test_i21_lone_surrogates_are_withheld(snaps, validator, doc_validator):
+    values = _poison_text(copy.deepcopy(snaps["a"]))
+    keys = _rename_host(copy.deepcopy(snaps["a"]), "access1", "access1" + _SUR)
+    keys["executive_brief"]["axes"][0]["axis"] += _SUR
+    keys["assessment_integrity"] = {"failed_phases": ["Health Scores" + _SUR]}
+    for snap in (values, keys):
+        payload = uip.project(snap)
+        json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        assert validator.is_valid(payload)
+        for host in _roster_hosts(snap)[:4] + ["access1" + _SUR]:
+            doc = uip.project_device(snap, host)
+            json.dumps(doc, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            assert doc_validator.is_valid(doc)
+    model = uip.project_device(values, "core1")["device"]["identity"]["model"]
+    assert model["state"] == UV
+    page = uip.project_device(keys, "access1" + _SUR)["device"]
+    assert page["host"] is None and page["identity"]["model"]["state"] == UV
+
+
+# --------------------------------------------------------------------------------------------------
+# I22 -- device pages share one context; owners a page does not read are never called
+# --------------------------------------------------------------------------------------------------
+def test_i22_project_devices_equals_one_page_at_a_time(snaps, monkeypatch):
+    snap = snaps["a"]
+    hosts = _roster_hosts(snap) + ["no-such", 7]
+    want = [uip.project_device(snap, h) for h in hosts]
+    assert uip.project_devices(snap, hosts) == want
+    assert uip.project_devices(snap, tuple(hosts[:2])) == want[:2]
+    assert uip.project_devices(snap, None) == [] and uip.project_devices(snap, 5) == []
+
+    def _boom(*_a, **_kw):
+        raise AssertionError("a device page does not read this owner")
+
+    monkeypatch.setattr(ssot, "summary", _boom)
+    monkeypatch.setattr(ssot, "canonical_facts", _boom)
+    assert uip.project_device(snap, "core1") == want[hosts.index("core1")]
+    assert uip.project_inventory(snap) == uip.project_inventory(copy.deepcopy(snap))
+
+
+# --------------------------------------------------------------------------------------------------
+# I23 -- tripwire: the engine starts publishing evidence pointers (a sibling branch adds them)
+# --------------------------------------------------------------------------------------------------
+_EVIDENCE_KEYS = ("evidence_refs", "evidence_refs_total", "evidence_basis", "deduction_refs")
+
+
+def test_i23_tripwire_engine_publishes_no_row_evidence_pointers_yet():
+    """This projection states that a punch-list row carries no evidence pointer and a health deduction no ref
+    (punch_rows_carry_no_evidence_pointers). The moment the engine writes those keys that limitation is false and
+    the pointers are dropped: project them (a closed list, each pointer resolved, the basis held to the producer's
+    vocabulary), apply the limitation only where the key is absent, then retire this tripwire."""
+    consts = _str_constants(ast.parse(inspect.getsource(analyze)))
+    assert not consts & set(_EVIDENCE_KEYS), sorted(consts & set(_EVIDENCE_KEYS))
+    sample = _sample()
+    assert not any(k in r for r in sample["punchlist"] for k in _EVIDENCE_KEYS)
+    assert not any(k in r for r in sample["health_scores"] for k in _EVIDENCE_KEYS)
