@@ -381,7 +381,8 @@ _LEGACY_ZERO = {"health_scores": _insufficient(3), "devices": {f"sw{i}": {} for 
     ({"health_scores": _insufficient(2),
       "executive_brief": {"posture": {"avg_health": None, "n_scored": 0}}}, "not_assessed", None),
     (_LEGACY_ZERO, "not_assessed", None),                     # pre-G15 hard 0 over zero scored rows
-    ({"executive_brief": {"posture": {"avg_health": 0}}}, "measured", 0),   # no raw basis -> trust it
+    # no scored-row basis -> not a measurement (tests/test_ssot_owner_robustness.py, defect 4)
+    ({"executive_brief": {"posture": {"avg_health": 0}}}, "unverified", None),
     ({"health_scores": [{"band": "Good", "score": 80}],
       "executive_brief": {"posture": {"avg_health": "abc"}}}, "unverified", None),
     ({"health_scores": [{"band": "Good", "score": 80}]}, "unpublished", None),

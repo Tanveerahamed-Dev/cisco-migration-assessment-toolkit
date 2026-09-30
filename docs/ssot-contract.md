@@ -78,7 +78,15 @@ Every surface reads the average through **`ssot.fleet_avg_health(snap)`** (the e
 decides on the **key**, not the value: `avg_health` present and `null` is the published abstention and
 must never be replaced by a recompute (an `Insufficient Data` row keeps its deduction-free score, so an
 all-rows mean fabricates ~100). A stored **number** over zero scored rows — every pre-G15 snapshot's
-hard `0` — is `not_assessed` too, and a non-numeric value is `unverified` (never "0 of N scored"). Only
+hard `0` — is `not_assessed` too, and a non-numeric value is `unverified` (never "0 of N scored"). A
+finite number with **no scored-row basis** — `health_scores` absent or not a list, and no non-negative
+integer `posture.n_scored` — is `unverified` as well: the engine always writes the `health_scores` list
+(even a failed phase's `[]`) and publishes `n_scored` only on the abstention, so that shape is never its
+verbatim output, and without the rows the pre-G15 hard `0` over nothing cannot be told from a
+measurement. The result's `reason` (`ssot.FLEET_AVG_UNVERIFIED_REASONS`: `not_a_number` /
+`no_scored_basis`) names which; it is `null` for every other state. The explorer's `fleetHealthState`
+port does not yet carry the `no_scored_basis` rule (it still reads such a number as `measured`), so the
+two readers agree only on snapshots that carry `health_scores`. Only
 an `unpublished` brief (absent / failed / pre-posture) may recompute, over scored rows only.
 `ssot.reconcile` checks both directions for `avg_health`, `n_critical` and `n_poor`: a number published
 for zero scored rows, and `null` published while rows are scored (or the band is observed), are
@@ -95,7 +103,13 @@ not evidence. Failure labels are attributed to sections through `ssot.PHASE_SECT
 ratchet (`tests/test_ssot_failed_phase_abstention.py`) keeps complete against
 `COLLECT_PARSE_V3_23_0.main()`; a label that cannot be attributed fails closed (every evidence-free
 section reads `analysis_unavailable`). `schema_census.summary.n_analysis_unavailable` is emitted only
-when non-zero.
+when non-zero. The `assessment_integrity` keys that describe failures rather than name a section — the
+phase-failure record (`failed_phases`, `phase_errors`) and the disclosure `ssot.audit` stamps on drift
+(`ssot.AUDIT_DISCLOSURE_KEYS`: `ssot_reconciliation`, `n_violations`, `violations`) — are never read as a
+failed section, even though `ssot_reconciliation` carries the token `failed`: a reconciliation drift makes
+no section a fallback. `tests/test_ssot_owner_robustness.py` holds that classification complete against
+every literal key the producer writes. The deep-empty predicate behind `collected_but_empty` is iterative,
+so a hostile upload nested past the interpreter's recursion limit is classified, not raised on.
 
 A headline fact stored under `executive_brief` is **derived** from other sections, so the abstention
 core also checks its raw basis: `ssot.DERIVED_FACT_BASIS` maps each dotted prefix
