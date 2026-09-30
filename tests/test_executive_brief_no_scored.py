@@ -16,7 +16,6 @@ The scored path is pinned too -- it must stay byte-for-byte what it was (the gol
 sample fleet are regenerated from it).
 """
 import json
-import os
 import pathlib
 import re
 import shutil

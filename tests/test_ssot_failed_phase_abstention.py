@@ -14,7 +14,6 @@ this file rather than silently tainting nothing.
 """
 import ast
 import json
-import os
 import pathlib
 import shutil
 import sys
