@@ -12,6 +12,7 @@ import { useSyncExternalStore } from "react";
 import { create } from "zustand";
 import type { Flow, Severity, SurfaceId, Trace } from "./types";
 import { readFlow, type FlowProblem } from "../forwarding/ip";
+import { own } from "./own";
 
 export type BandFilter = "all" | "degraded";
 /** Every Device-evidence tab, as a runtime value: the URL parser accepts exactly these and the
@@ -238,7 +239,7 @@ export function decodeInvestigation(search: string): Partial<InvestigationState>
   if (p.has("sev")) {
     const set = new Set<Severity>();
     for (const ch of p.get("sev") ?? "") {
-      const sev = SEV_CODES[ch];
+      const sev = own(SEV_CODES, ch);
       if (sev) set.add(sev);
     }
     out.severities = set;

@@ -40,6 +40,7 @@ import { IconChevronDown, IconChevronRight, IconSortAsc, IconSortDesc, IconSortN
 import { LiveRegion, NotObserved } from "../ui/primitives";
 import { returnFocus } from "../app/focus-return";
 import "./DataGrid.css";
+import { own } from "../core/own";
 
 /* ── column model ───────────────────────────────────────────────────────────── */
 
@@ -1890,7 +1891,7 @@ export function DataGrid<T>({
   const resizeBy = useCallback(
     (col: GridColumn<T>, delta: number | "reset"): void => {
       if (!onResizeColumn || !col.resizable) return;
-      const current = columnWidths?.[col.id];
+      const current = own(columnWidths, col.id);
       const el = cellRefs.current.get(cellKey(0, columns.indexOf(col)));
       const base = current ?? (el ? Math.round(el.getBoundingClientRect().width) : 0);
       if (delta === "reset") {
@@ -2182,7 +2183,7 @@ export function DataGrid<T>({
         {col.resizable && col.headerHidden !== true && onResizeColumn ? (
           <ColumnResizer
             column={col}
-            widthPx={columnWidths?.[col.id]}
+            widthPx={own(columnWidths, col.id)}
             headerRef={{ current: cellRefs.current.get(cellKey(0, c)) ?? null }}
             onResize={onResizeColumn}
           />

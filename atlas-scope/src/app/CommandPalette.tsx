@@ -66,6 +66,7 @@ import {
 import { returnFocus } from "./focus-return";
 import { formatShortcut, shortcutText, useGlobalKeyboard } from "./keyboard";
 import "./CommandPalette.css";
+import { own } from "../core/own";
 
 /* ══ the result model ══════════════════════════════════════════════════════ */
 
@@ -329,7 +330,7 @@ export const FIELD_WORDS: Readonly<Record<string, string>> = {
  * step away on the pane the row lands on.
  */
 export function MatchReason({ hit }: { hit: SearchHit }): ReactNode {
-  const words = FIELD_WORDS[hit.field];
+  const words = own(FIELD_WORDS, hit.field);
   return (
     <span className="palette__matched">
       matched this {KIND_NOUN[hit.kind]}'s{" "}

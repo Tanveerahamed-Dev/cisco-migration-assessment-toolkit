@@ -248,7 +248,7 @@ function aclNameWords(aclName: string): { raw: string; word: string }[] {
   return aclName
     .split(/[^A-Za-z0-9]+/)
     .filter((raw) => raw.length > 0)
-    .map((raw) => ({ raw, word: NAME_ABBREVIATIONS[raw.toLowerCase()] ?? raw.toLowerCase() }))
+    .map((raw) => ({ raw, word: own(NAME_ABBREVIATIONS, raw.toLowerCase()) ?? raw.toLowerCase() }))
     .filter(({ word }) => word.length >= 4 && /[a-z]/.test(word) && !ACL_ROLE_WORDS.has(word));
 }
 
@@ -1488,7 +1488,11 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
   }
 
   const cross = crossLayerByTitle.get(finding.title) ?? null;
-  const families = FAMILY_BY_CATEGORY[finding.category ?? ""] ?? (["impact"] as const);
+  /* The category is the SNAPSHOT's text, so the table is read through `own` (core/own.ts): a category it does not map —
+     "constructor" included, which once read the Object function here and threw — routes to the failure-impact default,
+     and step 4 says it is a default rather than a route from the category. */
+  const routedFamilies = finding.category === null ? undefined : own(FAMILY_BY_CATEGORY, finding.category);
+  const families = routedFamilies ?? (["impact"] as const);
 
   return (
     <section className={cx("ev", className)} aria-label="Evidence chain" ref={paneRef}>
@@ -1718,12 +1722,20 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
             </ChainStep>
 
             <ChainStep n={4} title="The records in the same evidence family">
-              <p className="ev-step__text">
-                Routed from this finding&rsquo;s category
-                {finding.category === null ? " (not observed)" : ` (${finding.category})`}. This is
-                a route into the evidence, not a statement that the engine derived the finding from
-                these exact rows.
-              </p>
+              {routedFamilies !== undefined || finding.category === null ? (
+                <p className="ev-step__text">
+                  Routed from this finding&rsquo;s category
+                  {finding.category === null ? " (not observed)" : ` (${finding.category})`}. This is
+                  a route into the evidence, not a statement that the engine derived the finding from
+                  these exact rows.
+                </p>
+              ) : (
+                <p className="ev-step__text" data-category-unrouted="">
+                  {`This finding’s category ${JSON.stringify(finding.category)} is not one Atlas Scope routes to an evidence family, ` +
+                    "so the failure-impact records are offered as a default — not a route from the category, and not a statement " +
+                    "that the engine derived the finding from these rows."}
+                </p>
+              )}
               <ul className="ev-families">
                 {families.flatMap((family) =>
                   finding.devices.map((host) => {

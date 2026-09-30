@@ -28,7 +28,7 @@
 import { fabric, findingById } from "../core/data";
 import { useInvestigation, encodeInvestigation } from "../core/store";
 import { valueDomain } from "../core/query";
-import { SEVERITY_ORDER, type Flow, type Severity, type SurfaceId } from "../core/types";
+import { SEVERITY_ORDER, type Flow, type SurfaceId } from "../core/types";
 import { suggestedFlows, traceFlow } from "../forwarding/engine";
 import { verdictStatement, type VerdictStatement } from "../panels/ClaimCard";
 import { withoutCitations } from "../panels/cited-text";
@@ -394,8 +394,10 @@ const memo = <T>(fn: () => T): (() => T) => {
   return () => (cached ??= { v: fn() }).v;
 };
 
-const findingsBySeverity = memo((): Map<Severity, number> => {
-  const counts = new Map<Severity, number>();
+/* Counted by the severity AS WRITTEN (a Map: a snapshot value is never a key into an object); only the vocabulary's
+   members are ever looked up in it, so an unrecognised severity is counted but never offered as an example. */
+const findingsBySeverity = memo((): Map<string, number> => {
+  const counts = new Map<string, number>();
   for (const f of fabric.findings) counts.set(f.severity, (counts.get(f.severity) ?? 0) + 1);
   return counts;
 });

@@ -125,6 +125,8 @@ async function loadGraph(set: CompiledDataset) {
     store: await import("./store"),
     devicePane: await import("../panels/DevicePane"),
     evidencePane: await import("../panels/EvidencePane"),
+    dataset: await import("./dataset"),
+    own: await import("./own"),
   };
 }
 type Graph = Awaited<ReturnType<typeof loadGraph>>;
@@ -316,6 +318,105 @@ describe("a name a dictionary does not hold reads as absent, never as an inherit
     for (const s of RESERVED) {
       expect(answer(() => R.data.resolveCite(`routes.${s}`)), `routes.${s}`).toBe("undefined");
       expect(answer(() => R.data.resolveCite(`acls.${s}`)), `acls.${s}`).toBe("undefined");
+    }
+  });
+});
+
+/* ── THE STRUCTURAL GUARANTEE: every read shape, not only the ones a type checker can see ────────── */
+/**
+ * The refuter's read shapes (2026-09-30, round 3), each written out as real code and run against every name-keyed
+ * dictionary of the INSTALLED renamed set. The declared-type guard missed seven of them; they answer correctly here
+ * only because `core/dataset.ts` removed every such dictionary's prototype at install (`withoutPrototypes`,
+ * core/own.ts) — remove that call and this block fails. A COPY (spread, `Object.assign({}, …)`,
+ * `Object.fromEntries(Object.entries(…))`, a JSON round trip) is an ordinary object again, which no run-time structure
+ * can follow: those four are asserted to still read an inherited member, which is why own-read.guard.test.ts flags
+ * each of them (its planted lines 8, 10, 11 and 13).
+ */
+function getOf<T>(d: Record<string, T>, k: string): T | undefined {
+  return d[k];
+}
+const READ_SHAPES: ReadonlyArray<readonly [string, (d: object, k: string) => unknown]> = [
+  ["d[k]", (d, k) => (d as Record<string, unknown>)[k]],
+  ["d?.[k]", (d, k) => (d as Record<string, unknown> | undefined)?.[k]],
+  ["Reflect.get(d, k)", (d, k) => Reflect.get(d, k)],
+  ["a generic helper over Record<string, T>", (d, k) => getOf(d as Record<string, unknown>, k)],
+  ["assigned (no cast) to Record<string, readonly RouteEntry[]>", (d, k) => {
+    const x: Record<string, readonly unknown[]> = d as Record<string, readonly unknown[]>;
+    return x[k];
+  }],
+  ["assigned to { [k: string]: unknown }", (d, k) => {
+    const x: { [k: string]: unknown } = d as { [k: string]: unknown };
+    return x[k];
+  }],
+  ["assigned to any", (d, k) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const x: any = d;
+    return x[k] as unknown;
+  }],
+  ["assigned to Record<string, AclLine[] | undefined>", (d, k) => {
+    const x: Record<string, unknown[] | undefined> = d as Record<string, unknown[] | undefined>;
+    return x[k];
+  }],
+];
+const COPY_SHAPES: ReadonlyArray<readonly [string, (d: object, k: string) => unknown]> = [
+  ["{ ...d }[k]", (d, k) => ({ ...(d as Record<string, unknown>) })[k]],
+  ["Object.assign({}, d)[k]", (d, k) => (Object.assign({}, d) as Record<string, unknown>)[k]],
+  ["Object.fromEntries(Object.entries(d))[k]", (d, k) => Object.fromEntries(Object.entries(d))[k]],
+  ["JSON.parse(JSON.stringify(d))[k]", (d, k) => (JSON.parse(JSON.stringify(d)) as Record<string, unknown>)[k]],
+];
+/** Every value `path` (a COMPILED_NAME_KEYED_PATHS entry) reaches in `set` — walked here, independently of own.ts. */
+function dictionariesAt(set: unknown, path: string): object[] {
+  let here: unknown[] = [set];
+  for (const step of path.split(".").flatMap((s) => (s.endsWith("[]") ? [s.slice(0, -2), "[]"] : [s]))) {
+    here = here.flatMap((v) => {
+      if (step === "[]") return Array.isArray(v) ? (v as unknown[]) : [];
+      if (v === null || typeof v !== "object" || Array.isArray(v)) return [];
+      if (step === "*") return Object.values(v);
+      return Object.hasOwn(v, step) ? [(v as Record<string, unknown>)[step]] : [];
+    });
+  }
+  return here.filter((v): v is object => v !== null && typeof v === "object" && !Array.isArray(v));
+}
+
+describe("every read shape answers only a dictionary's own entries (the install removed their prototypes)", () => {
+  it("every name-keyed dictionary of the installed set has no prototype; the dictionaries the application builds neither", () => {
+    let reached = 0;
+    for (const path of R.own.COMPILED_NAME_KEYED_PATHS) {
+      for (const d of dictionariesAt(R.dataset.dataset, path)) {
+        reached += 1;
+        expect(Object.getPrototypeOf(d), path).toBeNull();
+      }
+    }
+    expect(reached, "the walk reached no dictionary").toBeGreaterThan(50);
+    expect(Object.getPrototypeOf(R.data.aclsOf("constructor"))).toBeNull();
+    expect(Object.getPrototypeOf(R.data.severityCounts(R.data.fabric.findings))).toBeNull();
+  });
+
+  for (const [shape, read] of READ_SHAPES) {
+    it(`${shape}: answers exactly what own() answers, for reserved names, renamed hosts and held names`, () => {
+      const wrong: string[] = [];
+      let asked = 0;
+      for (const path of R.own.COMPILED_NAME_KEYED_PATHS) {
+        for (const d of dictionariesAt(R.dataset.dataset, path)) {
+          const held = Object.keys(d).slice(0, 2);
+          for (const k of [...RESERVED, ...RENAME.values(), ...held]) {
+            asked += 1;
+            const want = answer(() => R.own.own(d as Record<string, unknown>, k));
+            const got = answer(() => read(d, k));
+            if (got !== want) wrong.push(`${path} [${k}]: ${got} (own: ${want})`);
+            if (answer(() => k in d) !== answer(() => R.own.holds(d as Record<string, unknown>, k))) wrong.push(`${path} ${k} in d`);
+          }
+        }
+      }
+      expect(asked).toBeGreaterThan(300);
+      expect(wrong.slice(0, 12)).toEqual([]);
+    });
+  }
+
+  it("a COPY is an ordinary object again: each copy shape still reads an inherited member (so the guard forbids it)", () => {
+    const routes = R.dataset.dataset.fabric.routes;
+    for (const [shape, read] of COPY_SHAPES) {
+      expect(answer(() => read(routes, "constructor")), shape).toBe(`"<a function: Object>"`);
     }
   });
 });

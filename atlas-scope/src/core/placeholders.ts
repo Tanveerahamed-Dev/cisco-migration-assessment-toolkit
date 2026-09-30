@@ -13,6 +13,7 @@
  */
 import { fabric } from "./data";
 import type { Device } from "./types";
+import { own } from "./own";
 
 export interface PlaceholderZero {
   /** How many inventoried devices carry the field — the denominator of the reconciliation. */
@@ -31,7 +32,7 @@ export const PLACEHOLDER_ZERO_FIELDS: ReadonlyMap<string, PlaceholderZero> = (()
   const keys = new Set<string>();
   for (const d of inventoried) for (const [k, v] of Object.entries(d)) if (typeof v === "number") keys.add(k);
   for (const k of [...keys].sort()) {
-    const all = inventoried.map((d) => (d as unknown as Record<string, unknown>)[k]);
+    const all = inventoried.map((d) => own(d as unknown as Record<string, unknown>, k));
     if (all.every((v) => v === 0)) {
       out.set(k, {
         inventoried: inventoried.length,
@@ -45,6 +46,6 @@ export const PLACEHOLDER_ZERO_FIELDS: ReadonlyMap<string, PlaceholderZero> = (()
 /** The placeholder reading for `field` on `device`, or null when the value should render as itself. */
 export function placeholderZero(device: Device, field: string): PlaceholderZero | null {
   if (!device.inventoried) return null;
-  const v = (device as unknown as Record<string, unknown>)[field];
+  const v = own(device as unknown as Record<string, unknown>, field);
   return v === 0 ? (PLACEHOLDER_ZERO_FIELDS.get(field) ?? null) : null;
 }

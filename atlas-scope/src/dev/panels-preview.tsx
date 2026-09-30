@@ -29,6 +29,7 @@ import "../panels/DevicePane.css";
 import "../panels/EvidencePane.css";
 import "../panels/PathTrace.css";
 import "../panels/Inspector.css";
+import { own } from "../core/own";
 
 const params = new URLSearchParams(window.location.search);
 document.documentElement.setAttribute("data-theme", params.get("theme") === "light" ? "light" : "dark");
@@ -89,13 +90,13 @@ function Preview() {
     inspector: { w: 560, el: <Inspector cite={cite} forceOpen /> },
   };
 
-  const show = only && panels[only] ? [only] : Object.keys(panels);
+  const show = only && own(panels, only) ? [only] : Object.keys(panels);
 
   return (
     <div style={{ position: "fixed", inset: 0, display: "flex", background: "var(--surface-1)" }}>
       {show.map((k) => (
-        <Frame key={k} title={k} width={panels[k]!.w}>
-          {panels[k]!.el}
+        <Frame key={k} title={k} width={own(panels, k)!.w}>
+          {own(panels, k)!.el}
         </Frame>
       ))}
       <div

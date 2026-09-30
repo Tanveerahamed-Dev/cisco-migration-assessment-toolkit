@@ -203,7 +203,7 @@ const hostDomain = memo((): DomainValue[] =>
       count: null,
       source: "devices",
       detail: d.collected
-        ? nonEmpty([d.role, bandKey(d) === null ? null : `band ${presentBand(d).short}`]).join(" · ") || "collected"
+        ? nonEmpty([d.role, bandKey(d) !== null ? `band ${presentBand(d).short}` : presentBand(d).legendKey === "unrecognised" ? presentBand(d).short : null]).join(" · ") || "collected"
         : "not collected — findings unknown",
     }))
     .sort((a, b) => cmpStr(a.value, b.value)),

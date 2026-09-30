@@ -205,7 +205,7 @@ export function citeBearers(): ReadonlyMap<string, string[]> {
       if (list) list.push(path);
       else map.set(cite, [path]);
     }
-    for (const k of Object.keys(rec)) walk(rec[k], path === "" || path.endsWith("#") ? `${path}${k}` : `${path}.${k}`);
+    for (const k of Object.keys(rec)) walk(own(rec, k), path === "" || path.endsWith("#") ? `${path}${k}` : `${path}.${k}`);
   };
   walk(fabric, "");
   // The sidecars follow the fabric, so a citation's first candidate stays the fabric record.

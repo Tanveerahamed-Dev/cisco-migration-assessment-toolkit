@@ -38,7 +38,7 @@ import { createPortal } from "react-dom";
 import type { BandPresentation } from "../core/band-qualification";
 import { T8_coverageLine } from "../core/claims";
 import { ribCountQualifier } from "../forwarding/rib-completeness";
-import type { Cite as CitePath, OpStatus, Severity } from "../core/types";
+import { recognisedSeverity, unrecognisedPhrase, type Cite as CitePath, type OpStatus, type Severity, type Unrecognised } from "../core/types";
 import {
   IconCheck,
   IconChevronDown,
@@ -127,6 +127,41 @@ export function NotObserved({
       {reason && !compact ? <span className="visually-hidden">{" — "}</span> : null}
       {reason && !compact ? <span className="ui-notobs__why">{reason}</span> : null}
       {!compact && cite && onOpenCite ? <Cite cite={cite} onOpen={onOpenCite} /> : null}
+    </span>
+  );
+}
+
+/** The data attribute each unrecognised vocabulary is also exposed under, so a selector for a severity or a band
+ *  finds the mark and reads "unrecognised" there — never a member. */
+const UNRECOGNISED_DATA = { severity: "data-severity", band: "data-band", kind: "data-kind" } as const;
+
+/**
+ * A value the snapshot supplied for a CLOSED vocabulary that the vocabulary does not name (core/types.ts
+ * `Unrecognised`): the words say so and quote the producer's text exactly, in every form — never a member's glyph,
+ * colour or initial, never a blank, never a crash. Drawn with the not-observed treatment, because like an absence it
+ * is not a result; the words, not the drawing, say which it is.
+ */
+export function UnrecognisedValue({
+  what,
+  value,
+  compact = false,
+  className,
+}: {
+  what: keyof typeof UNRECOGNISED_DATA;
+  value: string;
+  compact?: boolean;
+  className?: string;
+}): ReactElement {
+  const words = unrecognisedPhrase(what, value);
+  return (
+    <span
+      className={cx("ui-notobs", compact && "ui-notobs--compact", className)}
+      data-unrecognised={what}
+      {...{ [UNRECOGNISED_DATA[what]]: "unrecognised" }}
+      title={`The snapshot states ${what} ${JSON.stringify(value)}, which Atlas Scope does not recognise; it is shown as written and never read as a ${what}.`}
+    >
+      <IconNotObserved className="ui-notobs__glyph" />
+      <span className="ui-notobs__text">{words}</span>
     </span>
   );
 }
@@ -353,10 +388,14 @@ export function SeverityBadge({
   compact = false,
   className,
 }: {
-  severity: Severity;
+  /** A compiled severity: a member, or text the snapshot wrote that no member is (rendered as unrecognised). */
+  severity: Severity | Unrecognised;
   compact?: boolean;
   className?: string;
 }): ReactElement {
+  if (!recognisedSeverity(severity)) {
+    return <UnrecognisedValue what="severity" value={severity} compact={compact} {...(className ? { className } : {})} />;
+  }
   const Glyph = SEVERITY_ICON[severity];
   return (
     <span
@@ -442,6 +481,9 @@ export function Band({
   onOpenCite?: (cite: CitePath) => void;
   className?: string;
 }): ReactNode {
+  if (band && band.unrecognised !== null) {
+    return <UnrecognisedValue what="band" value={band.unrecognised} compact {...(className ? { className } : {})} />;
+  }
   if (!band || band.legendKey === "none") {
     return (
       <NotObserved

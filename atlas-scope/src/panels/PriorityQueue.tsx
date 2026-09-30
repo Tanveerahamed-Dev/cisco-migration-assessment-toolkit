@@ -84,6 +84,7 @@ import {
 import { DataGrid, type GridColumn, type GridNode, type GridSort } from "./DataGrid";
 import { deferPastPaint } from "./deferPastPaint";
 import "./PriorityQueue.css";
+import { own } from "../core/own";
 
 /* One shared empty set, so "nothing is related" is reference-stable and cannot re-render the grid
    on every keystroke. */
@@ -231,7 +232,7 @@ const DEVICE_ATTRIBUTE: Readonly<Record<string, (d: (typeof fabric.devices)[numb
  *  name a device. For a device-keyed bucket, true only when at least one COLLECTED device carries
  *  the value: a bucket whose every device was never collected is silence, not a zero. */
 export function searchedByCollection(key: string, value: string): boolean {
-  const pick = DEVICE_ATTRIBUTE[key];
+  const pick = own(DEVICE_ATTRIBUTE, key);
   if (!pick) return true;
   const want = value.toLowerCase();
   return fabric.devices.some((d) => d.collected && (pick(d) ?? "").toLowerCase() === want);
@@ -1068,7 +1069,7 @@ export function PriorityQueue({
         { value: "none", label: "No grouping", vocabulary: () => [] },
       ],
       group: (rows, key) => groupBy(rows, key as FindingGroupKey),
-      sortFieldOf: (columnId) => FINDING_SORT_OF[columnId] ?? null,
+      sortFieldOf: (columnId) => own(FINDING_SORT_OF, columnId) ?? null,
       order: (rows, o) =>
         o.kind === "ranked"
           ? [...rows].sort(bySeverityThenRank)
@@ -1095,7 +1096,7 @@ export function PriorityQueue({
         { value: "none", label: "No grouping", vocabulary: () => [] },
       ],
       group: groupCross,
-      sortFieldOf: (columnId) => CROSS_SORT_OF[columnId] ?? null,
+      sortFieldOf: (columnId) => own(CROSS_SORT_OF, columnId) ?? null,
       order: (rows, o) =>
         o.kind === "ranked"
           ? [...rows].sort(
@@ -2216,7 +2217,7 @@ export function PriorityQueue({
                   .filter((c) => c.resizable && !hidden.has(c.id))
                   .map((c) => {
                     const name = c.headerLabel ?? c.header;
-                    const px = columnWidths[c.id];
+                    const px = own(columnWidths, c.id);
                     const stepBy = (delta: number): void => {
                       const measured = rootRef.current
                         ?.querySelector<HTMLElement>(`[role="columnheader"][data-col="${c.id}"]`)

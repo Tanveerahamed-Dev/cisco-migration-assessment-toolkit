@@ -31,6 +31,7 @@ import {
   type Texture,
 } from "three";
 import { agxInverse } from "./env";
+import { own } from "../core/own";
 
 /* ── token bridge ──────────────────────────────────────────────────────────── */
 
@@ -127,7 +128,7 @@ export function readTokens(theme: ThemeName, root?: Element): TokenPalette {
   const missing: string[] = [];
   for (const key of Object.keys(fallback)) {
     const live = computed === null ? "" : computed.getPropertyValue(key).trim();
-    const fb = fallback[key] ?? "#ff00ff";
+    const fb = own(fallback, key) ?? "#ff00ff";
     if (live === "") {
       missing.push(key);
       css[key] = fb;
@@ -144,7 +145,7 @@ export function readTokens(theme: ThemeName, root?: Element): TokenPalette {
     color(token: string): Color {
       const hit = cache.get(token);
       if (hit !== undefined) return hit;
-      const raw = css[token] ?? fallback[token] ?? "#ff00ff";
+      const raw = own(css, token) ?? own(fallback, token) ?? "#ff00ff";
       // setStyle converts sRGB → working space when ColorManagement is enabled. Never setHex on a
       // literal read from CSS: that injects an sRGB value as a raw linear number (brief §4.3.5).
       const c = new Color().setStyle(raw);

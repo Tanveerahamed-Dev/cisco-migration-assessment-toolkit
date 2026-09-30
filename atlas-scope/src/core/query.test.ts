@@ -121,7 +121,7 @@ const TERM_FINDINGS = TERM === undefined ? 0 : fabric.findings.filter((f) => raw
 /** A never-collected device no finding names (the sample's AP-floor1). */
 const DARK = [...fabric.devices].sort((a, b) => (a.id < b.id ? -1 : 1)).find((d) => !d.collected && !fabric.findings.some((f) => names(f, d.host)));
 /** A device kind every one of whose devices went uncollected (the sample's ap). */
-const DARK_KIND = most(countBy(fabric.devices.map((d) => d.kind).filter((k): k is string => k !== null)), (k) =>
+const DARK_KIND = most(countBy(fabric.devices.map((d): string => d.kind).filter((k): k is string => k !== null)), (k) =>
   fabric.devices.filter((d) => d.kind === k).every((d) => !d.collected),
 );
 /** A tier holding both collected and uncollected devices (the sample's tier 3). */

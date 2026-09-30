@@ -21,7 +21,7 @@ import { bandOfHopIn, bandOfTrace } from "../core/claims";
 import { deviceById, fabric, findingsByHost, linkById, linksByHost } from "../core/data";
 import { applyToDevices, parseQuery } from "../core/query";
 import { useInvestigation, useReducedMotion } from "../core/store";
-import type { Device, Link, Trace } from "../core/types";
+import { recognisedSeverity, type Device, type Link, type Trace } from "../core/types";
 
 import type { FabricScene, HighlightState, PickResult, QualityTier, SceneEvent } from "./contract";
 import { FabricA11yTree, linkCutSentence } from "./FabricA11yTree";
@@ -39,6 +39,7 @@ import { SCENE_DETAIL } from "./quality";
 import { deferPastPresentation } from "../panels/deferPastPaint";
 
 import "./Fabric3D.css";
+import { own } from "../core/own";
 
 /** The chassis tessellation every tier builds with (quality.ts SCENE_DETAIL), for prepareChassis. */
 const SCENE_DETAIL_CHASSIS: ChassisBuildOptions = {
@@ -1024,7 +1025,7 @@ export function Fabric3D({
       }
       if (e.altKey || e.ctrlKey || e.metaKey) return;
       const st = useInvestigation.getState();
-      const dir = DIRECTIONS[e.key];
+      const dir = own(DIRECTIONS, e.key);
       if (dir) {
         e.preventDefault();
         const nodes = projectAll(scene, devicesRef.current);
@@ -1323,7 +1324,8 @@ export function Fabric3D({
     if (severities.size > 0) {
       const hosts = new Set<string>();
       for (const f of fabric.findings) {
-        if (!severities.has(f.severity)) continue;
+        /* The filter holds severities the vocabulary names; an unrecognised one is never among them. */
+        if (!recognisedSeverity(f.severity) || !severities.has(f.severity)) continue;
         for (const h of f.devices) hosts.add(h);
       }
       matched = matched.filter((d) => hosts.has(d.host) || hosts.has(d.id));

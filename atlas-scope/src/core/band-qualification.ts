@@ -23,12 +23,16 @@
  * "unknown". podacc1's "90 Excellent" therefore answers `is:healthy` with unknown, never yes.
  */
 import { fabric, hasRib, protocolsByHost } from "./data";
-import { BAND_ORDER, type Band, type Device } from "./types";
+import { holds } from "./own";
+import { BAND_ORDER, recognisedBand, unrecognisedPhrase, type Band, type Device } from "./types";
 
 /** The tone a band is drawn in when it stands unqualified. */
 export type BandTone = "up" | "high" | "critical" | "neutral";
 
-export const BAND_TONE: Readonly<Record<string, BandTone>> = {
+/* Keyed by the CLOSED band vocabulary and read only with a band `recognisedBand` admitted: a snapshot band the
+   vocabulary does not name ("constructor", "Bogus", the engine's "Insufficient Data") never reaches this table, so it
+   can neither answer from Object.prototype nor borrow a member's tone. */
+export const BAND_TONE: Readonly<Record<Band, BandTone>> = {
   Excellent: "up",
   Good: "up",
   Fair: "high",
@@ -38,13 +42,12 @@ export const BAND_TONE: Readonly<Record<string, BandTone>> = {
 
 /** A band whose unqualified tone is favourable — the only bands the absence of evidence can flatter. */
 export const isFavourableBand = (band: string | null | undefined): boolean =>
-  typeof band === "string" && BAND_TONE[band] === "up";
+  recognisedBand(band) && BAND_TONE[band] === "up";
 
 /** `interfacesOf`/`physicalByHost` flatten "no records" and "host never collected" into an empty
  *  array. The difference decides whether an empty table means zero or means unknown, so the
  *  presence of the host KEY is read directly rather than the length of what it returns. */
-const hasInterfaceRecords = (host: string): boolean =>
-  Object.prototype.hasOwnProperty.call(fabric.interfaces, host);
+const hasInterfaceRecords = (host: string): boolean => holds(fabric.interfaces, host);
 
 /**
  * The scoring domains with NO evidence on this device, each named with why — read from the per-host
@@ -86,12 +89,15 @@ export interface BandPresentation {
   short: string;
   /** One sentence for a live region or a tooltip. */
   sentence: string;
-  /** Which legend row counts this device: the band, `${band}${PARTIAL_MARK}`, or "none". */
+  /** Which legend row counts this device: the band, `${band}${PARTIAL_MARK}`, "none", or "unrecognised". */
   legendKey: string;
+  /** The text the snapshot states for a band the vocabulary does not name (legendKey "unrecognised"), exactly as
+   *  written, so a surface can quote it; null for every other band. Never a band: a surface shows it, never reads it as one. */
+  unrecognised: string | null;
 }
 
 /** Colour token for each band; `null` (no band computed) is indeterminate, never neutral grey. */
-const BAND_TOKEN: Readonly<Record<string, string>> = {
+const BAND_TOKEN: Readonly<Record<Band, string>> = {
   Excellent: "--band-excellent",
   Good: "--band-good",
   Fair: "--band-fair",
@@ -102,7 +108,7 @@ const BAND_TOKEN: Readonly<Record<string, string>> = {
 export const QUALIFIED_BAND_TOKEN = "--text-muted";
 export const NO_BAND_TOKEN = "--claim-indeterminate";
 
-export const bandToken = (band: string): string => BAND_TOKEN[band] ?? "--band-critical";
+export const bandToken = (band: Band): string => BAND_TOKEN[band];
 
 /**
  * The presentation of one device's band. `unassessed` defaults to the snapshot's own coverage
@@ -126,6 +132,25 @@ export function presentBand(
       short: "band not observed",
       sentence: "Health band not observed.",
       legendKey: "none",
+      unrecognised: null,
+    };
+  }
+  if (!recognisedBand(band)) {
+    /* A band the snapshot STATES that the vocabulary does not name: shown as it was written, drawn indeterminate,
+       and never read as a band — no tone, no colour, no ceiling, no answer to is:healthy. */
+    const words = unrecognisedPhrase("band", band);
+    return {
+      band,
+      unassessed,
+      qualified: false,
+      label: words,
+      tone: "neutral",
+      colorToken: NO_BAND_TOKEN,
+      letter: "?",
+      short: words,
+      sentence: `Health band not recognised: the snapshot states ${JSON.stringify(band)}, which is not one of ${BAND_ORDER.join(", ")}, so it is not read as a band.`,
+      legendKey: "unrecognised",
+      unrecognised: band,
     };
   }
   const qualified = isFavourableBand(band) && unassessed.length > 0;
@@ -135,12 +160,13 @@ export function presentBand(
       unassessed,
       qualified,
       label: band,
-      tone: BAND_TONE[band] ?? "neutral",
+      tone: BAND_TONE[band],
       colorToken: bandToken(band),
       letter: band.slice(0, 1),
       short: band,
       sentence: `Health band ${band}.`,
       legendKey: band,
+      unrecognised: null,
     };
   }
   const names = unassessed.map(domainName).join(", ");
@@ -155,6 +181,7 @@ export function presentBand(
     short: `${band}, partial — not assessed: ${names}`,
     sentence: `Health band ${band}, partial: the score does not reflect ${names} — never assessed on ${device.host}, so nothing there could deduct.`,
     legendKey: `${band}${PARTIAL_MARK}`,
+    unrecognised: null,
   };
 }
 
@@ -178,10 +205,10 @@ export const BAND_KEY_ORDER: readonly string[] = BAND_ORDER.flatMap((b) =>
 );
 
 /** The key a device's band is filed, grouped, faceted and counted under: "Excellent",
- *  "Excellent-partial", or null when no band was computed. */
+ *  "Excellent-partial", or null when no band was computed or the band is not one the vocabulary names. */
 export function bandKey(device: BandSubject): string | null {
   const band = device.band;
-  if (band === null) return null;
+  if (band === null || !recognisedBand(band)) return null;
   return presentBand(device).qualified ? `${band}${PARTIAL_KEY_SUFFIX}` : band;
 }
 
@@ -208,7 +235,7 @@ export function bandRank(device: BandSubject): number | null {
  */
 export function bandCandidates(device: BandSubject): readonly Band[] | null {
   const band = device.band;
-  if (band === null) return null;
+  if (band === null || !recognisedBand(band)) return null;
   if (!presentBand(device).qualified) return [band];
   return BAND_ORDER.slice(BAND_ORDER.indexOf(band));
 }

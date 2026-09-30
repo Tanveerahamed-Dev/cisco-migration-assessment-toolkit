@@ -20,12 +20,49 @@ declare const NAME_KEYED: unique symbol;
  */
 export type NameKeyed<T> = Record<string, T> & { readonly [NAME_KEYED]?: never };
 
+declare const UNRECOGNISED: unique symbol;
+/**
+ * Text the snapshot supplied for a CLOSED vocabulary — a finding's severity, a device's health band, a device's
+ * kind — that the vocabulary below does not name. The compiler carries it VERBATIM (tools/lib/compile-model.mjs
+ * `term`): never coerced to a member, never dropped, never typed as one. A compiled field that can hold one is
+ * typed `<Member> | Unrecognised`, so a surface cannot use it AS a member — a key into a table typed by the union,
+ * a prop typed by it — without first asking the vocabulary's recogniser (`recognisedSeverity`, `recognisedBand`,
+ * `recognisedKind`), and what it shows for one is `unrecognisedPhrase` ("unrecognised severity "Bogus""): never a
+ * crash, never a member's colour or glyph, never a neutral state that hides it. The brand exists only in the
+ * type; at run time the value is the producer's string, so a stored compile is re-classified by the vocabulary of
+ * the build that reads it, never by the one that wrote it.
+ */
+export type Unrecognised = string & { readonly [UNRECOGNISED]: true };
+
+/*
+ * THE CLOSED VOCABULARIES, owned here for Atlas Scope. Each mirrors an ENGINE constant that the engine contract
+ * (contracts/engine-contract.v1.json) does not yet project, so none can be read from it: severity mirrors
+ * cisco_toolkit/analyze.py `_APP_SEV_RANK`; band mirrors `_HEALTH_BANDS` (the engine also writes "Insufficient Data",
+ * which this vocabulary does not name, so it is shown as unrecognised — never as a band); kind mirrors `_KIND_RANK`
+ * plus the "device" every collected host is given. Membership is decided by the recognisers below and nowhere else.
+ */
 export type Severity = "Critical" | "High" | "Medium" | "Low" | "Info";
 export type Band = "Excellent" | "Good" | "Fair" | "Poor" | "Critical";
 export type OpStatus = "up" | "down" | "unknown" | string;
 
 export const SEVERITY_ORDER: readonly Severity[] = ["Critical", "High", "Medium", "Low", "Info"];
 export const BAND_ORDER: readonly Band[] = ["Excellent", "Good", "Fair", "Poor", "Critical"];
+export const DEVICE_KINDS = ["device", "switch", "router", "firewall", "ap", "phone", "endpoint", "unknown"] as const;
+export type DeviceKind = (typeof DEVICE_KINDS)[number];
+
+/** Whether `value` is exactly a member of `terms` (an array test: no prototype member can answer). */
+const member = <T extends string>(terms: readonly T[], value: string | null | undefined): value is T =>
+  typeof value === "string" && (terms as readonly string[]).includes(value);
+/** Is this a severity Atlas Scope knows? The one test a surface narrows a snapshot severity by. */
+export const recognisedSeverity = (value: string | null | undefined): value is Severity => member(SEVERITY_ORDER, value);
+/** Is this a health band Atlas Scope knows? */
+export const recognisedBand = (value: string | null | undefined): value is Band => member(BAND_ORDER, value);
+/** Is this a device kind Atlas Scope knows? */
+export const recognisedKind = (value: string | null | undefined): value is DeviceKind => member(DEVICE_KINDS, value);
+/** How every surface names an unrecognised value: the vocabulary, then the producer's text exactly (JSON-quoted, so
+ *  an empty, padded or odd string stays visible). */
+export const unrecognisedPhrase = (vocabulary: "severity" | "band" | "kind", value: string): string =>
+  `unrecognised ${vocabulary} ${JSON.stringify(value)}`;
 
 export interface FailureImpact {
   severity: string | null;
@@ -45,7 +82,8 @@ export interface Device {
   collected: boolean;
   /** Is there an inventory record (model/serial/software) for it? */
   inventoried: boolean;
-  kind: string;
+  /** The engine node kind (`cable_map.nodes[host=…].kind`), or an Unrecognised value it wrote (see `recognisedKind`). */
+  kind: DeviceKind | Unrecognised;
   role: string | null;
   tier: number | null;
   order: number;
@@ -59,7 +97,8 @@ export interface Device {
   powerSupplies: number | null;
   modules: number | null;
   score: number | null;
-  band: Band | null;
+  /** null = no band computed; an Unrecognised value = a band the snapshot states that Atlas Scope does not know. */
+  band: Band | Unrecognised | null;
   criticality: number | null;
   dataQuality: number | null;
   deductions: string[];
@@ -140,7 +179,8 @@ export interface CableMapNode {
 
 export interface Finding {
   id: string;
-  severity: Severity;
+  /** The producer's severity, or an Unrecognised value it wrote (see `recognisedSeverity`). */
+  severity: Severity | Unrecognised;
   rank: number | null;
   priority: number | null;
   category: string | null;
@@ -287,7 +327,7 @@ export interface EvidenceProjection {
 
 export interface CrossLayerFinding {
   id: string;
-  severity: Severity;
+  severity: Severity | Unrecognised;
   layers: string | null;
   title: string;
   detail: string | null;

@@ -10,7 +10,7 @@
  * way, so none of the modules that import it know or care which.
  */
 import { fabricDocument } from "./dataset";
-import { holds, own } from "./own";
+import { holds, nameKeyed, own } from "./own";
 import type {
   AclLine,
   CrossLayerFinding,
@@ -108,7 +108,9 @@ export const l3ByHost: ReadonlyMap<string, L3Interface[]> = groupBy(fabric.l3, (
    asks `hasRib`, or reads the dictionary through `own`, which answers undefined. */
 export const interfacesOf = (host: string): InterfaceRecord[] => own(fabric.interfaces, host) ?? [];
 export const routesOf = (host: string): RouteEntry[] => own(fabric.routes, host) ?? [];
-export const aclsOf = (host: string): NameKeyed<AclLine[]> => own(fabric.acls, host) ?? {};
+/* The empty table is one of `nameKeyed`'s (core/own.ts): no prototype, so no read of it can answer an inherited member. */
+const NO_ACLS: NameKeyed<AclLine[]> = Object.freeze(nameKeyed<AclLine[]>());
+export const aclsOf = (host: string): NameKeyed<AclLine[]> => own(fabric.acls, host) ?? NO_ACLS;
 
 /** True only when we actually hold a RIB for this host. Drives every forwarding scope statement. */
 export const hasRib = (host: string): boolean => holds(fabric.routes, host);
@@ -129,10 +131,11 @@ export const bySeverityThenRank = (a: Finding, b: Finding): number =>
 export const severityCounts = (items: readonly { severity: Severity | string }[]): NameKeyed<number> => {
   /* Keyed by a severity the SNAPSHOT supplies, so counted in a Map (tools/lib/compile-model.mjs, THE DICTIONARY
      RULE): on a plain object a severity named "constructor" started its count from the Object function, and one
-     named "__proto__" from Object.prototype. Object.fromEntries defines each count as an ordinary member. */
+     named "__proto__" from Object.prototype. `nameKeyed` defines each count as an own member of a dictionary with no
+     prototype (core/own.ts). */
   const counts = new Map<string, number>(SEVERITY_ORDER.map((s) => [s, 0]));
   for (const it of items) counts.set(it.severity, (counts.get(it.severity) ?? 0) + 1);
-  return Object.fromEntries(counts);
+  return nameKeyed(counts);
 };
 
 /* ── resolving a citation back to the raw evidence it names ────────────────── */

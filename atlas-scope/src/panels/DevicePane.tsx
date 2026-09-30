@@ -41,7 +41,7 @@ import {
   routesOf,
   severityRank,
 } from "../core/data";
-import { own } from "../core/own";
+import { holds, own } from "../core/own";
 import { presentBand, unassessedScoringDomains } from "../core/band-qualification";
 import { aclUndecidability } from "../core/acl-coverage";
 import { ribIncompleteness } from "../forwarding/rib-completeness";
@@ -61,7 +61,7 @@ import type {
   PhysicalHealth,
   Severity,
 } from "../core/types";
-import { SEVERITY_ORDER } from "../core/types";
+import { recognisedKind, recognisedSeverity, SEVERITY_ORDER } from "../core/types";
 
 /**
  * Fields `tools/compile-snapshot.mjs` emits that `PhysicalHealth` in `core/types.ts` does not yet
@@ -114,6 +114,7 @@ import {
   SeverityBadge,
   StateDot,
   Tabs,
+  UnrecognisedValue,
   TabPanel,
   orNotObserved,
   type TabItem,
@@ -152,11 +153,19 @@ export function useOpenCite(handler?: (cite: Cite) => void): (cite: Cite) => voi
 
 const cx = (...parts: (string | false | null | undefined)[]): string => parts.filter(Boolean).join(" ");
 
-const SEVERITY_SET = new Set<string>(SEVERITY_ORDER);
+/** The model types several severity fields as a bare string. Anything off the vocabulary is not a severity
+ *  (core/types.ts `recognisedSeverity`, the one test). */
+export const asSeverity = (s: string | null | undefined): Severity | null => (recognisedSeverity(s) ? s : null);
 
-/** The model types several severity fields as a bare string. Anything off the enum is not a severity. */
-export const asSeverity = (s: string | null | undefined): Severity | null =>
-  typeof s === "string" && SEVERITY_SET.has(s) ? (s as Severity) : null;
+/**
+ * A severity field typed as a bare string, as a mark: a severity the vocabulary names as its badge; text it does not
+ * name as UNRECOGNISED, quoted — never "not observed", because the producer DID write it; nothing written as not
+ * observed.
+ */
+function SeverityMark({ severity, compact = true, what = "severity" }: { severity: string | null | undefined; compact?: boolean; what?: string }): ReactElement {
+  if (typeof severity !== "string" || severity.trim() === "") return <NotObserved what={what} compact />;
+  return recognisedSeverity(severity) ? <SeverityBadge severity={severity} compact={compact} /> : <UnrecognisedValue what="severity" value={severity} compact={compact} />;
+}
 
 /**
  * The severity of a row whose producer ALSO says the row was not assessed.
@@ -182,15 +191,13 @@ function GradedSeverity({ severity, unassessed }: { severity: string | null | un
       </span>
     );
   }
-  const sev = asSeverity(severity);
-  return sev ? <SeverityBadge severity={sev} compact /> : <NotObserved what="severity" compact />;
+  return <SeverityMark severity={severity} />;
 }
 
 /** `interfacesOf`/`physicalByHost` flatten "no records" and "host never collected" into an empty
  *  array. The difference decides whether an empty table means zero or means unknown, so the
  *  presence of the host KEY is read directly rather than the length of what it returns. */
-const hasInterfaceRecords = (host: string): boolean =>
-  Object.prototype.hasOwnProperty.call(fabric.interfaces, host);
+const hasInterfaceRecords = (host: string): boolean => holds(fabric.interfaces, host);
 
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
 
@@ -550,7 +557,7 @@ export const FLEET_CONSTANTS: ReadonlyMap<string, number> = (() => {
   for (const d of INVENTORIED_DEVICES) for (const k of Object.keys(d)) keys.add(k);
   for (const k of keys) {
     if (NOT_PRODUCER_FIELDS.has(k)) continue;
-    const vals = INVENTORIED_DEVICES.map((d) => (d as unknown as Record<string, unknown>)[k]);
+    const vals = INVENTORIED_DEVICES.map((d) => own(d as unknown as Record<string, unknown>, k));
     if (!vals.every((v) => typeof v === "number" && Number.isFinite(v))) continue;
     if (new Set(vals).size === 1) out.set(k, vals[0] as number);
   }
@@ -607,7 +614,7 @@ function IdentitySection({ device, onOpenCite }: { device: Device; onOpenCite: (
   const ev = (field: keyof Device): { cite: Cite } | { derived: string } => deviceFieldEvidence(device, field);
   const rows: EvidenceRow[] = [
     { k: "Host", v: <span className="dp-mono">{device.host}</span>, ...ev("host") },
-    { k: "Kind", v: device.kind, ...ev("kind") },
+    { k: "Kind", v: recognisedKind(device.kind) ? device.kind : <UnrecognisedValue what="kind" value={device.kind} compact />, ...ev("kind") },
     {
       k: "Role",
       v: orNotObserved(device.role, (s) => s, {
@@ -934,12 +941,7 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
               rows={[
                 {
                   k: "Severity",
-                  v:
-                    asSeverity(theirs.severity) !== null ? (
-                      <SeverityBadge severity={asSeverity(theirs.severity) as Severity} />
-                    ) : (
-                      orNotObserved(theirs.severity, (s) => s, { what: "impact severity", compact: true })
-                    ),
+                  v: <SeverityMark severity={theirs.severity} compact={false} what="impact severity" />,
                   cite: theirs.cite,
                 },
                 { k: "Endpoints stranded", v: orNotObserved(theirs.stranded, (n) => n.toLocaleString("en-GB"), { what: "stranded endpoints", compact: true }), cite: theirs.cite },
@@ -1106,11 +1108,10 @@ function ProtocolSection({ device, onOpenCite }: { device: Device; onOpenCite: (
     <Section title="Protocol health">
       <ul className="dp-list">
         {rows.map((p) => {
-          const sev = asSeverity(p.severity);
           return (
             <li key={p.cite} className="dp-list__row">
               <span className="dp-list__lead">
-                {sev ? <SeverityBadge severity={sev} compact /> : <NotObserved what="severity" compact />}
+                <SeverityMark severity={p.severity} />
                 <span className="dp-mono">{orNotObserved(p.protocol, (s) => s, { what: "protocol", compact: true })}</span>
               </span>
               <span className="dp-list__main">
@@ -2261,7 +2262,7 @@ export function DevicePane({ onOpenCite, className }: DevicePaneProps): ReactEle
         <p className="dp__sub">
           {subject === "device" && device ? (
             <>
-              {device.kind} ·{" "}
+              {recognisedKind(device.kind) ? device.kind : <UnrecognisedValue what="kind" value={device.kind} compact />} ·{" "}
               {orNotObserved(device.role, (s) => s, { what: "role", compact: true })} ·{" "}
               {device.collected ? "assessed" : "topology only"}
             </>
