@@ -9,7 +9,7 @@
  * nowhere (the palette's only motion is its rows' 80 ms hover tint), and it omitted the skip-link,
  * stage-dim, drawer, switch, chevron, label and progress transitions — because this test never read
  * a CSS `transition:` declaration at all. The keyframes loop it did run iterated over an empty list
- * and asserted nothing (the runtime assertion guard, src/test-setup.ts, now fails that shape).
+ * and asserted nothing (the runtime assertion guard, src/test-support/test-setup.ts, now fails that shape).
  *
  * WHAT IS DISCOVERED, from the code, not from a list:
  *   CSS  every `transition`, `transition-duration`, `animation` and `animation-duration` declaration in

@@ -47,8 +47,8 @@ import { describeGolden } from "../test-support/golden-sample";
 import { formatIpv4, hostAddressIn, parseInterfaceAddress } from "./ip";
 import type { Flow } from "../core/types";
 import { counterexample, isDefiniteDelivery, isDefiniteOnModelledPath, traceFlow, unobservedPolicyInputs } from "./engine";
-import { GOLDEN_FORWARDING as G } from "./golden-expectations";
-import { lazy, need, needSome } from "./test-subjects";
+import { GOLDEN_FORWARDING as G } from "../test-support/golden-expectations";
+import { lazy, need, needSome } from "../test-support/test-subjects";
 
 const C1 = G.core1Acls;
 const PS = C1.protectServers;

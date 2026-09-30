@@ -54,7 +54,7 @@ import { traceMarkOf } from "../fabric3d/Fabric3D";
 import { ClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
 import { intentCatalog, runIntentSearch, type Intent } from "./PathTrace";
-import { deviceOwnedAddresses, need, subnetHostAddresses, universeTraces } from "./trace-universe";
+import { deviceOwnedAddresses, need, subnetHostAddresses, universeTraces } from "../test-support/trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var

@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Flow } from "../core/types";
 import { isDecidedOutcome } from "../core/claims";
 import { counterexample, suggestedFlows, traceFlow } from "../forwarding/engine";
-import { universeTraces } from "./trace-universe";
+import { universeTraces } from "../test-support/trace-universe";
 import { ClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
 

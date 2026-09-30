@@ -19,7 +19,7 @@ import type { Flow, Trace } from "../core/types";
 import { counterexample, traceFlow } from "./engine";
 import { formatIpv4, hostAddressIn, parseInterfaceAddress } from "./ip";
 import { describeGolden } from "../test-support/golden-sample";
-import { GOLDEN_FORWARDING as G } from "./golden-expectations";
+import { GOLDEN_FORWARDING as G } from "../test-support/golden-expectations";
 
 const RD = G.routerDestined;
 const PS = G.core1Acls.protectServers;

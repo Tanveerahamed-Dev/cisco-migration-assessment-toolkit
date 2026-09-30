@@ -1,7 +1,7 @@
 /**
  * golden-expectations.test.ts — every golden value is READ by some test.
  *
- * A value stored in ./golden-expectations.ts that no test reads is a number that can go stale unnoticed on
+ * A value stored in ../test-support/golden-expectations.ts that no test reads is a number that can go stale unnoticed on
  * the next re-derivation: the file says it was measured, and nothing measures it (2026-09-28 verifier, D3:
  * `depthRatchet.decidedOutcomes`, `refusals` and `counterexamplesFound` were stored and read by nothing).
  * This walks the WHOLE object — every key at every depth of every plain object, not a list of the keys
@@ -15,7 +15,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { GOLDEN_FORWARDING } from "./golden-expectations";
+import { GOLDEN_FORWARDING } from "../test-support/golden-expectations";
 
 /** A Flow is one value (a question), read whole; its fields are not separate golden facts. */
 const isFlow = (v: unknown): boolean => v !== null && typeof v === "object" && "srcIp" in v && "dstIp" in v && "protocol" in v;

@@ -50,7 +50,7 @@ import { hasRib } from "../core/data";
 import type { Trace } from "../core/types";
 import { traceFlow } from "../forwarding/engine";
 import { HopList } from "./HopList";
-import { flowOf, subnetHostAddresses } from "./trace-universe";
+import { flowOf, subnetHostAddresses } from "../test-support/trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var

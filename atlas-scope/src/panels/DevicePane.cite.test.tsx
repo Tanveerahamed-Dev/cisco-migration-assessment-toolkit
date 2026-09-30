@@ -22,7 +22,7 @@ import { fabric, resolveCite } from "../core/data";
 import { useInvestigation, type EvidenceTab } from "../core/store";
 import type { Device } from "../core/types";
 import { describeGolden } from "../test-support/golden-sample";
-import { describeWithSource, sourceDocument } from "./source-snapshot";
+import { describeWithSource, sourceDocument } from "../test-support/source-snapshot";
 import { DevicePane } from "./DevicePane";
 import { resolveCitation } from "./Inspector";
 

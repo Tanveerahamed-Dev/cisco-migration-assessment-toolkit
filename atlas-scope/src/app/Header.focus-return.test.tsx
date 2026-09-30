@@ -13,6 +13,15 @@
  * capture listener on `document`, so Tab is dispatched ON document (a dispatch on `window` would
  * exercise nothing, R11). Escape belongs to the input's React handler, which only sees an event
  * whose target is the input; it is dispatched there and bubbles through document like a real key.
+ *
+ * A dispatched Tab has no DEFAULT ACTION in jsdom: a browser moves focus to the next tab stop when no
+ * handler prevents the key, jsdom moves nothing. While the panel held ONE control (the sha256 Copy
+ * button) its first control was its last, the handler claimed the first Tab, and the gap did not show.
+ * Phase 3 added "Exact bytes" and "Open a snapshot file…" to the panel; from the first control the
+ * handler rightly leaves Tab to the browser, jsdom then moved nothing, and ten presses never left the
+ * panel (red since 1061fdea). `tab()` below performs the browser's default action — the next tab
+ * stop in document order — ONLY when no handler prevented the key, so every step the popover owns is
+ * still exercised by the popover's own code, and the walk's length is pinned to the panel's controls.
  */
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -40,6 +49,29 @@ function mount(ui: ReactNode): HTMLElement {
 const key = (target: EventTarget, k: string, init: KeyboardEventInit = {}): void => {
   act(() => {
     target.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...init }));
+  });
+};
+
+/* The sequential-focus candidates a browser walks: the same reachable set the popover's own trap
+   counts (src/ui/primitives.tsx FOCUSABLE), minus `hidden` subtrees and negative tabindex. */
+const TAB_STOPS =
+  'a[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"]),[contenteditable="true"],summary';
+const tabStops = (): HTMLElement[] =>
+  [...document.body.querySelectorAll<HTMLElement>(TAB_STOPS)].filter((el) => el.closest("[hidden]") === null && el.tabIndex >= 0);
+
+/** One Tab press: the key goes to its listeners; if none prevented it, focus moves as a browser moves it. */
+const tab = (): void => {
+  const ev = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+  act(() => {
+    document.dispatchEvent(ev);
+  });
+  if (ev.defaultPrevented) return;
+  const stops = tabStops();
+  const at = stops.indexOf(document.activeElement as HTMLElement);
+  const next = stops[at + 1];
+  act(() => {
+    if (next === undefined) (document.activeElement as HTMLElement | null)?.blur();
+    else next.focus();
   });
 };
 
@@ -73,10 +105,17 @@ describe("D3: Escape in the query bar never drops focus to <body>", () => {
     expect(panel).not.toBeNull();
     expect(panel!.contains(document.activeElement)).toBe(true);
 
-    /* Tab until focus leaves the panel (it holds one or more controls). */
-    for (let i = 0; i < 10 && panel!.isConnected && panel!.contains(document.activeElement); i += 1) {
-      key(document, "Tab");
+    /* Tab until focus leaves the panel. Focus opened on its first control, so leaving takes exactly
+       one press per control: the browser's moves between them, then the popover's own on the last. */
+    const controls = tabStops().filter((el) => panel!.contains(el));
+    expect(controls.length, "the panel holds controls to walk").toBeGreaterThan(0);
+    expect(document.activeElement).toBe(controls[0]);
+    let presses = 0;
+    while (presses < controls.length + 1 && panel!.isConnected && panel!.contains(document.activeElement)) {
+      tab();
+      presses += 1;
     }
+    expect(presses, "one Tab per control in the panel").toBe(controls.length);
     expect(document.querySelector('[role="dialog"][aria-label="Snapshot provenance"]')).toBeNull();
     expect(document.activeElement).toBe(input);
 

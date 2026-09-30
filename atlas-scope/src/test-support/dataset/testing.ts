@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { compileAll } from "../../../tools/lib/compile-model.mjs";
 import { assertValidSnapshot } from "../../../tools/lib/validate-snapshot.mjs";
 import { bindSource } from "../../../tools/source-binding.mjs";
-import type { CompiledDataset, InstalledDataset } from "./types";
+import type { CompiledDataset, InstalledDataset } from "../../core/dataset/types";
 
 /** The atlas-scope package root. */
 export const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");

@@ -35,7 +35,7 @@ import { ClaimCard } from "./ClaimCard";
 import { HopList, HopVerdictBadge } from "./HopList";
 import { resolveCitation } from "./Inspector";
 import { PathTrace } from "./PathTrace";
-import { firstTrace, flowLabel, flowOf, need, nonEmpty, pathSearch, tracesWhere } from "./trace-universe";
+import { firstTrace, flowLabel, flowOf, need, nonEmpty, pathSearch, tracesWhere } from "../test-support/trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var

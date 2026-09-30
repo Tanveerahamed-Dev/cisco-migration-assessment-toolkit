@@ -56,6 +56,44 @@
 >   unchanged: a real run judges registry health against its wall clock. The golden is a test fixture,
 >   never the shipped data, so nothing this app renders changes; and the boundary is gone from the
 >   golden only — the engine's other EoL/data-authority tests keep it (O63).
+>
+> **Phases 3 and 3.5 (2026-09-28 to 2026-09-30) — the regenerated fleet is the shipped data, and the
+> owner's decisions it was built under.** Phase 3's precursor (`74275919`) regenerated the sample fleet
+> from this branch's engine and recompiled the four documents from it (source digest `4d1805c6…`), so the
+> data paragraph above describes the fleet of 2026-09-20, not the shipped one: the regenerated fleet
+> carries RIBs for more hosts, ACLs for more than one, and decided multi-hop traces — read every figure from
+> `fabric.json` / `fabric.coverage`, never from this brief. What these phases settled — the owner's
+> decisions where marked "(owner)", otherwise designs their independent verifiers upheld
+> (`docs/open-issues.md` R120–R129, O68–O77):
+> - **A1's evidence route (§5.1):** the Evidence pane's header lists one control per record the engine
+>   names, never folded and never scrolled with the pane body, so any finding reaches any engine-named
+>   record in palette (1), id + Enter (2), control (3).
+> - **(owner) The loading skeleton labels every device at the tier the layout places it** — the same
+>   reconciliation, in the layout's own device order (`src/fabric3d/tier-groups.ts`); "tier not observed"
+>   is only the layout's synthetic plane.
+> - **(owner) The tier-fade slot's methods cannot act through a copy** (§4.8): the slot is a class with ES-private
+>   state.
+> - **(owner) Every test that pinned the old sample is an invariant chosen by property or a golden block**
+>   (`src/test-support/golden-sample.ts`, which throws when the tracked sample's digest changes).
+> - **(owner) Scale:** a 300- and a 1,000-device fleet lay out in slices that never stall the UI and fail loudly
+>   into the fabric's error boundary; the wall-clock budgets (≤ 300 ms at 300 devices, ≤ 2 s at 1,000,
+>   median main-thread layout compute) are gated in a real browser by `review/measure-scale.mjs`, and no
+>   receipt is yet acceptance evidence (open-issues O74).
+> - **One door for data:** `src/core/dataset.ts` is the only reader of the compiled documents; the
+>   AssessHub hub build (`npm run build:hub` → `dist-hub`) carries no compiled dataset and compiles the
+>   stored snapshot in a worker at run time; a standalone build can open a snapshot file. Every load
+>   failure is a coded refusal; a digest the page did not compute says ", as AssessHub stated it (not
+>   recomputed here)".
+> - **(owner) AssessHub reads a /scope document only as a browser reads it**, in a restricted markup language
+>   (the XML path is still open: open-issues O69).
+> - **(owner) C1:** pairings matched by task on both panels, neutral masks on both, and a pre-registered KEY rule
+>   under which a loss is never ignored (acceptance.md, "The blind comparison protocol"; three validator
+>   holes remain, O70).
+> - **(owner) D3's focus audit must finish each mode in ≤ 60 minutes with its denominators intact** — not met by
+>   any recorded run (O68).
+> - **(owner) Instruction of 2026-09-29:** phase 3.5 finishes without further focus-audit runs, without the C1
+>   critic panel and without the acceptance re-grade, so no criterion moves on the strength of these
+>   phases.
 
 ---
 
@@ -606,6 +644,14 @@ samples per state with `min === max` in every row. The traced frame's extra cost
 second outline effect: a *delivered* trace measures 103, identical to a plain device selection, so
 the trace geometry itself costs **zero** additional draw calls.
 
+The base figure of 74 above was measured on the 2026-09-20 sample (`9cc348bd…`). Re-measured 2026-09-28 on
+the regenerated sample (phase 3, reported): 71 at the `high` tier and 31 at `low`, and 73 / 32 with the
+"other" role glyph present. A synthetic 300-device fleet opened through "Open a snapshot file…" measured
+77 idle (45–47 during an orbit), inside the same base budget (phase 3, reported; laboratory, host at 100 %,
+and on a 420×508 CSS px canvas, about a fifth of the sample's 1160×962 pixels, so not like-for-like:
+open-issues R124).
+The budget is unchanged.
+
 The per-frame budget is `base + active outline effects × surcharge`, so the idle frame is now held
 to 88 rather than to 120 — the model tightens the common frame while it stops lying about the rare
 one. A breach is reported through `stats().overBudget` after two consecutive rendered frames over
@@ -872,7 +918,7 @@ parses `src/` and fails on an exponential step anywhere, and steps each ease aga
 | Dim / undim on filter change (`RECEDE_MS`, `RECEDE_EASE`) | **240 ms** (`--dur-medium`); settles in **250 ms** at 60 fps (15 frames) | `--ease-out` | Long enough to see *which* nodes left the set. Devices, cable segments, state rings and role glyphs recede on this one ease. Under reduced motion: lands on its target in the frame the subject changes. |
 | Trace path draw-on (`DRAW_ON_MS`, `src/fabric3d/flow.ts`) | **240 ms** total — ONE reveal along the whole path, whatever the hop count. There is no per-hop stagger | ease-out cubic, `1 − (1 − t)³`, computed in script | The head of the path moves fastest at the start, which is what makes the hop ORDER legible rather than just the path's existence. (Until 2026-09-23 this row promised a per-hop stagger; `flow.ts` has never had one.) Under reduced motion: the path draws instantly and fully. |
 | Trace packet marker (`PACKET_LOOP_MS`, `PACKET_LOOPS` in `src/fabric3d/flow.ts`) | **1600 ms** per loop, one marker, stops after `PACKET_LOOPS` = 3 loops and leaves the path drawn | linear | The only looping animation in the product, and it is bounded. Exempt from the 300 ms bar: a bounded loop whose job is to distinguish a live trace overlay from a static path screenshot. NOT OBSERVED: the acceptance grading records that the packet never ran on the shipped snapshot (depth-1), so this loop is unexercisable there; its bound is a property of the code, not a measurement. (No stylesheet declares an unbounded loop: the unrendered stage-pending spinner App.css used to declare was dead CSS and is deleted — open-issues O18.) Under reduced motion: the packet does not run at all. |
-| Quality-tier cross-fade (`TIER_FADE_MS`, `createTierFadeDriver` in `src/fabric3d/emphasis.ts`, wired by `src/fabric3d/scene.ts`) | **280 ms** opacity, started when the hold in the next row ends; settles in **283.4 ms** at 60 fps (17 frames). FRAME-STEPPED, at most 0.2 opacity per frame | `ease-in-out`, stepped in script on each frame's real duration (never a CSS transition) | A tier change (manual or the automatic step-down) swaps SMAA, SSAO and outlines in one frame — a measured 3.6 % canvas pop. The old tier's frame is held over the canvas and faded out. 280 ms, not 300: a 300 ms transition MEASURED 299.9–300.1 ms (acceptance grading, C6) — at the ceiling, not under it — and a transition's end state can land up to one 60 Hz frame after its duration, so 280 + 16.7 stays under 300. **Owner decision (C5, 2026-09-26): the fade is frame-stepped with a per-frame cap, and the cap wins.** The render loop steps it through the ease owner's driver on each frame's real duration, and no frame — including the one after a host stall or a returning tab — moves the overlay's opacity by more than `FADE_MAX_STEP` = 0.2; the overlay is removed on the frame its value reaches exactly 0, and a no-frames watchdog of two `maxHoldMs` windows removes it if frames stop arriving. The old CSS transition was wall-clock: one 116.6 ms host frame moved it 0.36 at once, a cut. On ordinary frames the cap never binds (a frame under 33 ms never engages it) and the fade IS the 280 ms ease-in-out. On a host stall it binds, and the fade can run past 300 ms on the wall clock — modelled at 60 Hz, it adds at most 1, 2 or 4 frames for an 83–100, 116–133 or 200–250 ms stall, and the uncapped wall-clock fade already reached 300 ms on one 50 ms frame among its last. So `review/capture-motion.mjs` judges the product's 300 ms on ordinary frames, and a fade with a host stall inside it (a frame over 25 ms, one missed vsync) may run past 300 ms only if every frame from 300 ms on ends the fade or moves the full 0.2: catching up passes, dawdling fails. A tier change that lands while a fade is running must not remove the half-faded overlay in one frame; at the time of this decision it still does, outside the driver (`docs/open-issues.md` O57). Under reduced motion: no fade — the held frame is removed in one step on the new tier's first frame (a swap, not an animation). |
+| Quality-tier cross-fade (`TIER_FADE_MS`, `createTierFadeDriver` in `src/fabric3d/emphasis.ts`, wired by `src/fabric3d/scene.ts`) | **280 ms** opacity, started when the hold in the next row ends; settles in **283.4 ms** at 60 fps (17 frames). FRAME-STEPPED, at most 0.2 opacity per frame | `ease-in-out`, stepped in script on each frame's real duration (never a CSS transition) | A tier change (manual or the automatic step-down) swaps SMAA, SSAO and outlines in one frame — a measured 3.6 % canvas pop. The old tier's frame is held over the canvas and faded out. 280 ms, not 300: a 300 ms transition MEASURED 299.9–300.1 ms (acceptance grading, C6) — at the ceiling, not under it — and a transition's end state can land up to one 60 Hz frame after its duration, so 280 + 16.7 stays under 300. **Owner decision (C5, 2026-09-26): the fade is frame-stepped with a per-frame cap, and the cap wins.** The render loop steps it through the ease owner's driver on each frame's real duration, and no frame — including the one after a host stall or a returning tab — moves the overlay's opacity by more than `FADE_MAX_STEP` = 0.2; the overlay is removed on the frame its value reaches exactly 0, and a no-frames watchdog of two `maxHoldMs` windows removes it if frames stop arriving. The old CSS transition was wall-clock: one 116.6 ms host frame moved it 0.36 at once, a cut. On ordinary frames the cap never binds (a frame under 33 ms never engages it) and the fade IS the 280 ms ease-in-out. On a host stall it binds, and the fade can run past 300 ms on the wall clock — modelled at 60 Hz, it adds at most 1, 2 or 4 frames for an 83–100, 116–133 or 200–250 ms stall, and the uncapped wall-clock fade already reached 300 ms on one 50 ms frame among its last. So `review/capture-motion.mjs` judges the product's 300 ms on ordinary frames, and a fade with a host stall inside it (a frame over 25 ms, one missed vsync) may run past 300 ms only if every frame from 300 ms on ends the fade or moves the full 0.2: catching up passes, dawdling fails. A tier change that lands while a fade is running must not remove the half-faded overlay in one frame; at the time of this decision it still did, outside the driver (`docs/open-issues.md` O57). Since phase 3.5 the slot is a class with ES-private state, so no copy of one of its methods can remove the overlay behind the driver's back, and the phase-3.5 laboratory motion run passed its "handed over, never cut" item (open-issues R123, O57). Under reduced motion: no fade for an overlay that has been up under reduced motion throughout — the held frame is removed in one step on the new tier's first frame (a swap, not an animation); an overlay shown under full motion when reduced motion turns on (held, waiting or composed) finishes at `FADE_MAX_STEP` per frame, never in one step. |
 | Quality-tier cross-fade HOLD — the wait before that fade starts (`TIER_FADE_HOLD_DEFAULTS.maxHoldMs`, `createTierFadeHold` in `src/fabric3d/stepdown.ts`) | **1200 ms** at most, counted from the new tier's first presented frame, and ONLY while the camera and the content are exactly as in the frame the held picture was taken from. The first frame on which the camera moves or the content changes ends it | none (a hold, not a curve) | The fade waits for the new tier's frames to be ordinary ones (three frames under 40 ms), because a heavy frame just after the swap swallowed a fade started at once — measured low → high, one 210 ms frame took the overlay from 0.94 to 0.056, a cut. A hold, not an animation: nothing moves while it holds, so the 300 ms bar that governs the fade does not govern it — its bound does, and `src/core/motion-inventory.test.ts` holds this row to the code's. It holds only over a still view, where the held picture IS the current view at the previous tier, and it never holds over a camera move or a content change: that was the C5 defect of 2026-09-23 (an automatic step-down mid-orbit on a contended host held a frozen frame at full opacity for about 1,000 ms while the camera kept moving, then released it as a 6.08× one-frame change). The automatic step-down also lands only with the camera at rest, never mid-motion — the new tier's re-warm-up presents nothing until it ends, so a mid-orbit landing froze the view for ~600 ms-1 s — so this hold, and the re-warm-up before it, are over a still view unless the reader starts moving during them; a caller-made tier change (`setQuality`) is not deferred. Under reduced motion: no hold — the held frame is removed in one step on the new tier's first frame. |
 | Hover / active tint on controls and rows (`.ui-btn`, `.palette__row`, `.ag__row--data`, `.pt-preset__btn`, `.hop__head`) | **80 ms** (`--dur-instant`) on background-color, background and color; the palette row also eases its box-shadow (its inset active marker) | linear | A hover is a cursor property, not an event. This is the command palette's ONLY motion: the palette itself opens without animating (an earlier row here claimed a palette transition that the code has never had). Under reduced motion: `--dur-instant` collapses to 1 ms (tokens.css). |
 | Column-resizer rule (`.ag__resizer::after`) | **80 ms** (`--dur-instant`) opacity, on hover | linear | Reveals the drag handle only where the pointer is. Under reduced motion: `--dur-instant` collapses to 1 ms. |
@@ -1020,7 +1066,7 @@ and of the config overlay, so the detail reads "1 of 1 under these filters" rath
 unqualified claim about the device.
 
 **Per-finding evidence pointers — the rendering contract (decided 2026-09-26, phase 2 of the
-single-source-of-truth program; NOT YET RENDERED, the phase-3 work).** The engine now publishes, on
+single-source-of-truth program; not rendered until phase 3 — RENDERED since phases 3 and 3.5, below).** The engine now publishes, on
 every punch-list row, `evidence_basis` (`record` / `row` / `absence`), `evidence_refs` (elements
 `{kind, host, ref, role, cite}`, where `ref` is an RFC 6901 pointer into the SAME snapshot) and, only
 when the list is capped, `evidence_refs_total`; the compiler carries them onto the finding as
@@ -1043,6 +1089,25 @@ when the list is capped, `evidence_refs_total`; the compiler carries them onto t
   on-disk writer may drop, and no ref indexes a list a published consumer re-filters (the explorer
   embed re-filters `physical_health`).
 Acceptance A1 does not move until these are rendered and re-graded (`docs/open-issues.md` O12, O50).
+
+**As rendered (phases 3 and 3.5, 2026-09-30; open-issues R120).** Step 3 of the chain, "What the engine
+points at", lists the engine's refs in the engine's order, and each section heading counts every ref the
+engine names, saying how many are shown when a fold hides some (F142: "Absence, witnessed by 20 records (7
+shown)"). The pane's header carries one control per engine-named record, in the engine's order, never
+folded, in a header that does not scroll with the pane body; activating one lists that record in step 3
+even past the fold, opens it there — the compiled interface, ACL or route record, the record's members, or
+its verbatim text — scrolls it to the top of the body and moves focus to it, and leaves the topology
+untouched. Word-matched records open only in step 5, as context. A projected text cut never ends inside a
+citation: when the cut text holds no delimiter at all, none of the cut token is shown and the sentence
+says so. The compiled projection (`fabric.evidenceRecords`) is bounded as WRITTEN:
+`evidenceProjection.totalChars` covers the whole array — every withheld record's pointer-only stub, its
+brackets and separating commas (`writtenChars` = `projectedChars` + `withheldChars` + n + 1) — stubs are
+reserved first, and full records are admitted in the engine's priority order (finding priority, then
+punch-list order, each finding's pointers in the engine's order), so a lower-ranked record never
+displaces a higher-ranked one; when the stubs alone exceed the total, every record is withheld and
+`writtenChars` above `totalChars` says so. Known limit: the header grows with the number of records a
+finding names — up to about 512 px on this sample — and at 1280×720 it leaves too little body for A1
+(open-issues O72).
 
 ### 5.2 Flow B — path question → blocking-hop explanation
 

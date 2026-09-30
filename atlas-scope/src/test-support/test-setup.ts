@@ -50,7 +50,7 @@
  */
 import { afterEach, aroundEach, expect } from "vitest";
 
-import { assertActScopeObservable, openActScope, runInTestChain, settleActTurns } from "./test-support/act-turns";
+import { assertActScopeObservable, openActScope, runInTestChain, settleActTurns } from "./act-turns";
 
 /* Read by the guard's own test to prove this file ran in the worker executing it. */
 (globalThis as Record<symbol, unknown>)[Symbol.for("atlas-scope.assertion-guard.installed")] = true;

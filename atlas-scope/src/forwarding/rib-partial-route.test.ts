@@ -25,7 +25,7 @@
  * (a host in every observed SVI subnet and in every routed prefix, every routing neighbour's router ID and
  * link address, and two addresses outside every collected prefix), never typed sample addresses. The
  * critic's flow names the sample's host, neighbour and addresses, so it is golden and reads them from
- * ./golden-expectations.ts.
+ * ../test-support/golden-expectations.ts.
  */
 import { describe, expect, it } from "vitest";
 import { describeGolden } from "../test-support/golden-sample";
@@ -35,10 +35,10 @@ import { bandOfTrace } from "../core/claims";
 import { fabric, routesOf } from "../core/data";
 import type { Flow, Trace } from "../core/types";
 import { traceFlow, unobservedPolicyInputs } from "./engine";
-import { GOLDEN_FORWARDING } from "./golden-expectations";
+import { GOLDEN_FORWARDING } from "../test-support/golden-expectations";
 import { formatIpv4, hostAddressIn, parseInterfaceAddress, parseIpv4, parsePrefix, prefixContains } from "./ip";
 import { ribIncompleteness } from "./rib-completeness";
-import { lazy, needSome } from "./test-subjects";
+import { lazy, needSome } from "../test-support/test-subjects";
 
 type Adjacency = { neighbor: string | null; state: string | null; cite: string; address?: string | null; interface?: string | null };
 const EVIDENCE = evidenceJson as unknown as { hosts: Record<string, { adjacencies: Adjacency[] }> };

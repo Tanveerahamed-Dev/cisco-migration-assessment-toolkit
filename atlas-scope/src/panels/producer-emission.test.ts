@@ -11,7 +11,7 @@ import { expect, it } from "vitest";
 import { fabric } from "../core/data";
 import emission from "./producer-emission.json";
 import { PRODUCER_EMISSION_TRUSTED, producerFieldNotEmitted } from "./producer-emission";
-import { describeWithSource, sourceBytes, sourceDocument } from "./source-snapshot";
+import { describeWithSource, sourceBytes, sourceDocument } from "../test-support/source-snapshot";
 import { describeGolden } from "../test-support/golden-sample";
 
 /* The dataset under test: the file this sidecar names (`meta.source`, repository-relative), not a typed

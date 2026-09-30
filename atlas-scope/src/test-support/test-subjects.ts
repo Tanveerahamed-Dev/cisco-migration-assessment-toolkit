@@ -15,7 +15,7 @@
  * Resolve subjects inside a test or hook (lazily, memoised if they are costly), never at module scope.
  */
 import { expect, type TestContext } from "vitest";
-import { isGoldenSample } from "../test-support/golden-sample";
+import { isGoldenSample } from "./golden-sample";
 
 /** The subject, or — only on a fabric that is not the reference sample — a named not-applicable skip. */
 export function need<T>(ctx: TestContext, subject: T | undefined | null, what: string): T {

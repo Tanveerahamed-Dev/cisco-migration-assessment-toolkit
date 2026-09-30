@@ -751,17 +751,31 @@ function uncovered(el: HTMLElement, doc: Document, box: DOMRect, top: number, bo
   };
   /* A probe a pixel inside the edge (never past the middle of a sliver). */
   const inset = (): number => Math.min(1, (bottom - top) / 2);
-  for (let i = 0; i < 4 && bottom > top; i += 1) {
-    let next = bottom;
-    for (const c of coversAt(bottom - inset())) if (c.top < next) next = Math.max(top, c.top);
-    if (next >= bottom) break;
-    bottom = next;
-  }
-  for (let i = 0; i < 4 && bottom > top; i += 1) {
-    let next = top;
-    for (const c of coversAt(top + inset())) if (c.bottom > next) next = Math.min(bottom, c.bottom);
-    if (next <= top) break;
-    top = next;
+  /* A COVER THE HIT TEST CANNOT SEE IS STILL A COVER (R9 verifier m3; owner requirement: pointer-events:none overlays
+     are counted by this guard). A positioned box with `pointer-events: none` — a translucent fixed bar, App.css's
+     opaque `.stage-warmup` — is skipped by elementsFromPoint, so a strip half under one read as whole here while the
+     reader saw it sliced (review/capture.mjs selftest: "Mode" read 32 px, painted 12). For the duration of the probes
+     every element takes part in hit testing — one sheet, removed in `finally`, synchronously, so nothing is painted,
+     laid out or dispatched in between — and the stack IS the paint order: the census's own technique
+     (capture.mjs `readScrollEdge`), now in the product. */
+  const hitAll = doc.createElement("style");
+  hitAll.textContent = "*, *::before, *::after { pointer-events: auto !important; }";
+  (doc.head ?? doc.documentElement).appendChild(hitAll);
+  try {
+    for (let i = 0; i < 4 && bottom > top; i += 1) {
+      let next = bottom;
+      for (const c of coversAt(bottom - inset())) if (c.top < next) next = Math.max(top, c.top);
+      if (next >= bottom) break;
+      bottom = next;
+    }
+    for (let i = 0; i < 4 && bottom > top; i += 1) {
+      let next = top;
+      for (const c of coversAt(top + inset())) if (c.bottom > next) next = Math.min(bottom, c.bottom);
+      if (next <= top) break;
+      top = next;
+    }
+  } finally {
+    hitAll.remove();
   }
   return { top, bottom: Math.max(top, bottom) };
 }

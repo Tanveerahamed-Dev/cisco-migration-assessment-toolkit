@@ -46,7 +46,7 @@ import { describe, expect, it, vi } from "vitest";
 import realEvidence from "./rib-evidence.json";
 import { fabric, routesOf } from "../core/data";
 import { describeGolden } from "../test-support/golden-sample";
-import { needSome } from "./test-subjects";
+import { needSome } from "../test-support/test-subjects";
 
 const fx = vi.hoisted(() => {
   const row = (protocol: string, state: string | null, i: number) => ({

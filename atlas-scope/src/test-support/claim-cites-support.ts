@@ -10,8 +10,8 @@
 import { fabric } from "../core/data";
 import type { Trace } from "../core/types";
 import { scopeClauseOf } from "../forwarding/engine";
-import { resolveCitation } from "./Inspector";
-import { citesIn } from "./cited-text";
+import { resolveCitation } from "../panels/Inspector";
+import { citesIn } from "../panels/cited-text";
 
 /* What makes a clause a claim about THIS network rather than about the model: it names a collected
    device or an address. Read from the compiled fabric, never listed. */

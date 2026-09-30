@@ -26,6 +26,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { handOffFocus } from "../app/focus-return";
 import {
   crossLayerByHost,
   deviceById,
@@ -1560,7 +1561,11 @@ export function EvidencePane({ onOpenCite, onShowConfig, className }: EvidencePa
               variant="secondary"
               size="sm"
               aria-keyshortcuts="d"
-              onClick={() => selectDevice(finding.devices[0] ?? null)}
+              /* This note — the button with it — is gone once the device is selected (and the rail switches to the
+                 Device pane, hiding this one): the focus-return owner's second door hands focus on (phase 3.5 close;
+                 found by the rename leg, whose seeded device was not the seeded finding's — the sample's seed never
+                 rendered the note, so the press left focus on <body> unobserved). */
+              onClick={(e) => handOffFocus(e.currentTarget, () => selectDevice(finding.devices[0] ?? null))}
             >
               {`Select ${finding.devices[0]}`}
               <kbd className="ev__kbd" aria-hidden="true">D</kbd>

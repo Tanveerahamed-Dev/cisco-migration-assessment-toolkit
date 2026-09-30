@@ -35,7 +35,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { need } from "./test-subjects";
+import { need } from "../test-support/test-subjects";
 
 interface RouteRow {
   prefix: string;

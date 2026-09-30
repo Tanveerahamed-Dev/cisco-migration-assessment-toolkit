@@ -28,7 +28,7 @@
  */
 import { expect, type TestContext } from "vitest";
 import { fabric } from "../core/data";
-import { isGoldenSample } from "../test-support/golden-sample";
+import { isGoldenSample } from "./golden-sample";
 import type { Flow, RouteEntry, Trace } from "../core/types";
 import { suggestedFlows, traceFlow } from "../forwarding/engine";
 import { formatIpv4, hostAddressIn, parseInterfaceAddress, parseIpv4, parsePrefix, rankPrefixMatches, type Ipv4, type Prefix } from "../forwarding/ip";

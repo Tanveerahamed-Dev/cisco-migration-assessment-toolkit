@@ -20,7 +20,7 @@ import { missingInventoryFields } from "../core/claims";
 import { deviceById, fabric, routesOf } from "../core/data";
 import type { Trace } from "../core/types";
 import { describeGolden } from "../test-support/golden-sample";
-import { need, universeTraces } from "./trace-universe";
+import { need, universeTraces } from "../test-support/trace-universe";
 import { useInvestigation } from "../core/store";
 import { traceFlow } from "../forwarding/engine";
 import { ribIncompletenessSentence } from "../forwarding/rib-completeness";

@@ -27,6 +27,7 @@ The contract pinned here (webapp/backend/app.py, ``create_app(scope_dist_dir=...
 """
 import base64
 import contextlib
+import glob
 import hashlib
 import json
 import os
@@ -1866,22 +1867,309 @@ def test_every_media_type_chromium_renders_as_markup_is_read_as_markup(scope_mar
     assert len(media_cases) >= 20, len(media_cases)
 
 
+# ── the test-only boundary, proved here rather than trusted (phase 3.5) ─────────────────────────
+# Atlas Scope keeps its test-only modules under src/test-support/. The evidence scan below may pass
+# over that directory ONLY because this file proves, with its own parser over the tree, that no
+# module a build can reach imports anything there: every non-test module under the scanned roots,
+# every root HTML page's module scripts, and every Vite configuration a build loads (the default
+# vite.config.* and any file a package script passes with --config/-c). The specifier forms read are
+# static import, re-export, side-effect import, dynamic import(), require(), `new URL(...,
+# import.meta.url)`, `import.meta.glob` patterns — literal and expanded — and CSS @import/url(), with
+# whitespace, block and line comments, and redundant parentheses between the tokens read as the
+# trivia a bundler skips; in a configuration, every string literal that names the boundary
+# directory is an edge, since its inputs are plain strings. A specifier Vite expands from pieces
+# (`import("./test-support/" + name)`, a template literal with substitutions) is read by its first
+# literal piece, so it is an edge whenever that piece names the directory; a directory name spelt
+# ACROSS pieces, or a specifier held in a variable, is not modelled. A form that mentions a boundary
+# path in a comment reads as an edge too: that only fails closed. The vitest
+# guard (src/core/test-support-boundary.test.ts) states the same rule; this is deliberately a second,
+# independent reading, so a bug or an edit in that file cannot quietly widen what this one skips.
+# The CLASS of files a Vite build can bundle, stated as the vitest guard states it (src/core/test-support-boundary.test.ts:
+# code is [cm]?[jt]sx?) plus the JSON and CSS a build imports. A fixed suffix list silently exempted .jsx/.cjs/.cts
+# (phase 3.5 finishing verifier). A test module is exactly what vitest runs: *.test.[cm]?[jt]sx?.
+_SCOPE_BUILD_FILE = re.compile(r"\.(?:[cm]?[jt]sx?|json|css)$")
+_SCOPE_TEST_FILE = re.compile(r"\.test\.[cm]?[jt]sx?$")
+_SCOPE_SOURCE_ROOTS = ("src", "tools/lib", "contracts")
+_SCOPE_SUPPORT = Path("src") / "test-support"
+_SCOPE_QUOTED = r"""(["'`])([^"'`\n]+)\1"""
+# Trivia between a form's tokens, as a bundler's own scanner skips it: whitespace, a /* block */ and a
+# // line comment. A form written across a comment is the same edge (phase 3.5 V2: `import(` then a
+# line comment then the specifier was bundled by Vite and read here as no edge at all).
+_SCOPE_GAP = r"(?:\s|/\*[\s\S]*?\*/|//[^\n]*(?:\n|$))*"
+_SCOPE_GAP1 = r"(?:\s|/\*[\s\S]*?\*/|//[^\n]*(?:\n|$))+"
+# ... and, inside a call, redundant parentheses around the argument: `import(("x"))` names "x" too.
+_SCOPE_ARG = r"(?:\s|\(|/\*[\s\S]*?\*/|//[^\n]*(?:\n|$))*"
+_SCOPE_SPECIFIER_FORMS = (
+    ("from", re.compile(r"\bfrom" + _SCOPE_GAP + _SCOPE_QUOTED)),
+    ("import", re.compile(r"(?<!@)\bimport" + _SCOPE_GAP + _SCOPE_QUOTED)),
+    ("import()", re.compile(r"\bimport" + _SCOPE_GAP + r"\(" + _SCOPE_ARG + _SCOPE_QUOTED)),
+    ("require()", re.compile(r"\brequire" + _SCOPE_GAP + r"\(" + _SCOPE_ARG + _SCOPE_QUOTED)),
+    ("new URL", re.compile(r"\bnew" + _SCOPE_GAP1 + r"URL" + _SCOPE_GAP + r"\(" + _SCOPE_ARG + _SCOPE_QUOTED)),
+    ("@import", re.compile(r"@import" + _SCOPE_GAP + r"(?:url\(" + _SCOPE_GAP + r")?"
+                           + r"""(["']?)([^"')\s;]+)\1""")),
+    ("url()", re.compile(r"\burl\(" + _SCOPE_GAP + r"""(["']?)([^"')\s]+)\1\s*\)""")),
+    ("script src", re.compile(r"""<script\b[^>]*\bsrc\s*=\s*(["'])([^"']+)\1""", re.IGNORECASE)),
+)
+_SCOPE_GLOB_CALL = re.compile(
+    r"\bimport" + _SCOPE_GAP + r"\." + _SCOPE_GAP + r"meta" + _SCOPE_GAP + r"\." + _SCOPE_GAP + r"glob"
+    + _SCOPE_GAP + r"(?:<[^>()]*>)?" + _SCOPE_GAP + r"\(" + _SCOPE_ARG
+    + r"""(\[[^\]]*\]|(["'`])[^"'`\n]*\2)""")
+_SCOPE_LITERAL = re.compile(_SCOPE_QUOTED)
+# A build configuration names its inputs as plain strings (rollupOptions.input, a plugin's path), so
+# every literal in one that mentions the boundary directory is read as an edge into it.
+_SCOPE_BOUNDARY_NAME = re.compile(r"(?:^|[\\/])test-support(?:[\\/]|$)")
+_SCOPE_DEFAULT_CONFIGS = tuple(f"vite.config.{ext}" for ext in ("js", "mjs", "ts", "cjs", "mts", "cts"))
+_SCOPE_CONFIG_FLAG = re.compile(r"""(?:^|\s)(?:--config|-c)(?:=|\s+)(["']?)([^\s"']+)\1""")
+
+
+def _scope_is_build_file(path: Path) -> bool:
+    return bool(_SCOPE_BUILD_FILE.search(path.name))
+
+
+def _scope_is_test_module(path: Path) -> bool:
+    return bool(_SCOPE_TEST_FILE.search(path.name))
+
+
+def _scope_inside(target: str, directory: Path) -> bool:
+    here, there = os.path.normcase(os.path.normpath(target)), os.path.normcase(os.path.normpath(directory))
+    return here == there or here.startswith(there + os.sep)
+
+
+def _scope_import_targets(path: Path, text: str, package: Path) -> list[tuple[str, str]]:
+    """(form, normalised file-system path) for every specifier in one source that names a file:
+    relative ones against the file's directory, root-absolute ones ('/src/...') against the
+    package, bare package names skipped. A glob yields its pattern AND every file it expands to."""
+    out: list[tuple[str, str]] = []
+
+    def place(spec: str) -> str | None:
+        spec = re.split(r"[?#]", spec, maxsplit=1)[0]
+        if spec.startswith("/"):
+            return os.path.normpath(package / spec.lstrip("/"))
+        if spec.startswith("."):
+            return os.path.normpath(path.parent / spec)
+        return None
+
+    for form, pattern in _SCOPE_SPECIFIER_FORMS:
+        for match in pattern.finditer(text):
+            target = place(match.group(2))
+            if target is not None:
+                out.append((form, target))
+    for call in _SCOPE_GLOB_CALL.finditer(text):
+        for literal in _SCOPE_LITERAL.finditer(call.group(1)):
+            spec = literal.group(2)
+            target = place(spec.lstrip("!"))
+            if target is None:
+                continue
+            out.append(("import.meta.glob", target))
+            out.extend(("import.meta.glob", os.path.normpath(hit))
+                       for hit in glob.glob(target, recursive=True))
+    return out
+
+
+def _scope_build_configs(package: Path) -> list[Path]:
+    """The Vite configurations a build loads, from the package itself: the default config file Vite
+    looks for at the root, and every file a package.json script hands Vite with --config/-c."""
+    configs = {package / name for name in _SCOPE_DEFAULT_CONFIGS}
+    manifest = package / "package.json"
+    if manifest.is_file():
+        scripts = json.loads(manifest.read_text(encoding="utf-8")).get("scripts") or {}
+        for command in scripts.values():
+            if isinstance(command, str) and re.search(r"(?:^|[\s&|;])vite\b", command):
+                configs.update(package / m.group(2) for m in _SCOPE_CONFIG_FLAG.finditer(command))
+    return sorted(path for path in configs if path.is_file())
+
+
+def _scope_test_support_boundary(package: Path) -> dict:
+    """The boundary, read from the tree: every edge from a module a build can reach (a non-test
+    module outside src/test-support/, a root HTML page, or a build configuration) into
+    src/test-support/."""
+    support = package / _SCOPE_SUPPORT
+    violations, product_modules, test_edges = [], [], 0
+    configs = _scope_build_configs(package)
+    sources = [page for page in sorted(package.glob("*.html")) if page.is_file()] + configs
+    for root in _SCOPE_SOURCE_ROOTS:
+        sources += [p for p in sorted((package / root).rglob("*"))
+                    if p.is_file() and _scope_is_build_file(p) and p not in configs]
+    for path in sources:
+        if _scope_inside(str(path), support):
+            continue  # the boundary may import product code; that is not an edge out of a build
+        text = path.read_text(encoding="utf-8", errors="replace")
+        into = [(form, target) for form, target in _scope_import_targets(path, text, package)
+                if _scope_inside(target, support)]
+        if path in configs:
+            # Every literal in a config that names the boundary directory is an edge, however it is
+            # spelt or joined (resolve(__dirname, "src/test-support/x"), "./src/...", "src/..."):
+            # reported at its package-relative reading, and never filtered by where that lands.
+            into += [("build config literal", os.path.normpath(package / spec.lstrip("/")))
+                     for _quote, spec in _SCOPE_LITERAL.findall(text) if _SCOPE_BOUNDARY_NAME.search(spec)]
+        if _scope_is_test_module(path):
+            test_edges += len(into)
+            continue
+        product_modules.append(path)
+        violations += [f"{path.relative_to(package).as_posix()} -> "
+                       f"{Path(os.path.relpath(target, package)).as_posix()} ({form})"
+                       for form, target in into]
+    return {"violations": sorted(set(violations)), "product_modules": product_modules,
+            "test_edges": test_edges, "build_configs": configs}
+
+
+def test_the_boundary_reader_reads_every_bundleable_suffix_and_only_real_tests_as_tests(tmp_path):
+    """Phase 3.5 finishing verifier: the product-module class was a fixed suffix list, so a .jsx/.cjs/.cts
+    module Vite bundles could reach into src/test-support/ unseen while the scan still skipped the boundary;
+    and any name containing '.test.' was taken for a test. The class is now the vitest guard's own rule
+    ([cm]?[jt]sx?, plus the JSON and CSS a build imports), and a test is exactly *.test.[cm]?[jt]sx?."""
+    def put(rel: str, text: str) -> None:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+
+    put("src/test-support/s.ts", "export const s = 1;\n")
+    put("src/leak.jsx", 'import { s } from "./test-support/s";\nexport const x = s;\n')
+    put("src/leak.cjs", 'module.exports = require("./test-support/s");\n')
+    put("src/leak.cts", 'import { s } from "./test-support/s";\nexport = s;\n')
+    put("src/helper.test.data.ts", 'import { s } from "./test-support/s";\nexport const d = s;\n')
+    put("src/real.test.tsx", 'import { s } from "./test-support/s";\nexport { s };\n')
+    put("src/notes.md", 'import { s } from "./test-support/s";\n')
+    put("src/readme_ts", 'import { s } from "./test-support/s";\n')  # no suffix: the dot in the rule is literal
+
+    report = _scope_test_support_boundary(tmp_path)
+    assert report["violations"] == sorted([
+        "src/helper.test.data.ts -> src/test-support/s (from)",
+        "src/leak.cjs -> src/test-support/s (require())",
+        "src/leak.cts -> src/test-support/s (from)",
+        "src/leak.jsx -> src/test-support/s (from)",
+    ]), report["violations"]
+
+
+def test_the_test_support_boundary_reader_sees_every_import_form(tmp_path):
+    """Known answer: a planted package whose product modules reach into src/test-support/ by each
+    form is reported edge by edge; a test importing the boundary, and the boundary importing
+    product code, are not; and the same package with those edges removed is clean."""
+    def put(rel: str, text: str) -> None:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+
+    for name in ("s", "r", "e", "d", "u", "g", "a", "w", "c"):
+        put(f"src/test-support/{name}.ts", f"export const {name} = 1;\n")
+    put("src/test-support/c.css", "a { color: red; }\n")
+    put("src/test-support/back.ts", 'import { x } from "../static";\nexport { x };\n')
+    put("index.html", '<script type="module" src="/src/test-support/e.ts"></script>\n')
+    put("src/static.ts", 'import { s } from "./test-support/s";\nexport const x = s;\n')
+    put("src/types.ts", 'import type {\n  R,\n} from "./test-support/r";\nexport type T = R;\n')
+    put("src/reexport.ts", 'export * from "./test-support/e";\n')
+    put("src/side.ts", 'import "./test-support/d";\n')
+    put("src/dyn.tsx", 'export const f = () => import(\n  "./test-support/u"\n);\n')
+    put("src/url.ts", 'export const w = new URL("./test-support/w.ts?url", import.meta.url);\n')
+    put("src/glob.ts", 'export const g = import.meta.glob("./test-support/g.ts");\n')
+    put("src/glob-array.ts", 'export const a = import . meta . glob(["!./x", "./test-support/a.ts"]);\n')
+    put("src/glob-wild.ts", 'export const m = import.meta.glob("./*/w.ts", { eager: true });\n')
+    put("src/style.css", '@import "./test-support/c.css";\n.b { background: url(./test-support/c.css); }\n')
+    put("src/root-abs.ts", 'import { s } from "/src/test-support/s";\nexport { s };\n')
+    put("src/x.test.ts", 'import { s } from "./test-support/s";\nexport { s };\n')
+    put("src/clean.ts", '// mentions src/test-support/s.ts in prose only\nimport { y } from "./static";\n'
+                        'import React from "react";\nexport { y, React };\n')
+    # comments are trivia to a bundler: every form still names its file across a line or block comment
+    put("src/dyn-line-comment.ts", 'export const f = () =>\n  import(\n    // the golden tier, lazily\n'
+                                   '    "./test-support/u"\n  );\n')
+    put("src/dyn-block-comment.ts",
+        'export const f = () => import(/* webpackChunkName: "g" */ "./test-support/u");\n')
+    put("src/from-comment.ts", 'import { u } from /* golden */ "./test-support/u";\nexport { u };\n')
+    put("src/side-comment.ts", 'import /* for its effect */ "./test-support/d";\n')
+    put("src/url-comment.ts", 'export const w = new /* an asset */ URL(\n  // the worker\n'
+                              '  "./test-support/w.ts", import.meta.url);\n')
+    put("src/glob-comment.ts", 'export const k = import.meta/* x */.glob(\n  /* lazily */ "./test-support/g.ts");\n')
+    put("src/paren.ts", 'export const p = () => import(("./test-support/u"));\n')
+    put("src/cjs.ts", 'export const r = require(\n  // interop\n  "./test-support/s");\n')
+    # a specifier Vite expands from pieces is read by its first literal piece
+    put("src/concat.ts", 'export const f = (n: string) => import("./test-support/" + n + ".ts");\n')
+    put("src/template.ts", 'export const f = (n: string) => import(`./test-support/${n}.ts`);\n')
+    # a build config names its inputs as plain strings: the default config and one a script selects
+    put("package.json", '{"scripts": {"build": "tsc && vite build",'
+                        ' "build:alt": "vite build --config build/alt.config.mjs --mode alt"}}\n')
+    put("vite.config.ts", 'import { resolve } from "node:path";\nexport default { build: { rollupOptions:'
+                          ' { input: { t: resolve(__dirname, "src/test-support/s.ts") } } } };\n')
+    put("build/alt.config.mjs", 'export default { build: { rollupOptions: { input: "./src/test-support/e.ts" } } };\n')
+
+    report = _scope_test_support_boundary(tmp_path)
+    assert [p.relative_to(tmp_path).as_posix() for p in report["build_configs"]] == [
+        "build/alt.config.mjs", "vite.config.ts"], report["build_configs"]
+    assert report["violations"] == sorted([
+        "src/dyn-line-comment.ts -> src/test-support/u (import())",
+        "src/dyn-block-comment.ts -> src/test-support/u (import())",
+        "src/from-comment.ts -> src/test-support/u (from)",
+        "src/side-comment.ts -> src/test-support/d (import)",
+        "src/url-comment.ts -> src/test-support/w.ts (new URL)",
+        "src/glob-comment.ts -> src/test-support/g.ts (import.meta.glob)",
+        "src/paren.ts -> src/test-support/u (import())",
+        "src/cjs.ts -> src/test-support/s (require())",
+        "src/concat.ts -> src/test-support (import())",
+        "src/template.ts -> src/test-support/${n}.ts (import())",
+        "vite.config.ts -> src/test-support/s.ts (build config literal)",
+        "build/alt.config.mjs -> src/test-support/e.ts (build config literal)",
+        "index.html -> src/test-support/e.ts (script src)",
+        "src/static.ts -> src/test-support/s (from)",
+        "src/types.ts -> src/test-support/r (from)",
+        "src/reexport.ts -> src/test-support/e (from)",
+        "src/side.ts -> src/test-support/d (import)",
+        "src/dyn.tsx -> src/test-support/u (import())",
+        "src/url.ts -> src/test-support/w.ts (new URL)",
+        "src/glob.ts -> src/test-support/g.ts (import.meta.glob)",
+        "src/glob-array.ts -> src/test-support/a.ts (import.meta.glob)",
+        "src/glob-wild.ts -> src/test-support/w.ts (import.meta.glob)",
+        "src/style.css -> src/test-support/c.css (@import)",
+        "src/style.css -> src/test-support/c.css (url())",
+        "src/root-abs.ts -> src/test-support/s (from)",
+    ]), report["violations"]
+    assert report["test_edges"] == 1
+
+    # the same package with every product edge into the boundary removed is clean
+    for rel in ("index.html", "src/static.ts", "src/types.ts", "src/reexport.ts", "src/side.ts",
+                "src/dyn.tsx", "src/url.ts", "src/glob.ts", "src/glob-array.ts", "src/glob-wild.ts",
+                "src/style.css", "src/root-abs.ts", "src/dyn-line-comment.ts", "src/dyn-block-comment.ts",
+                "src/from-comment.ts", "src/side-comment.ts", "src/url-comment.ts", "src/glob-comment.ts",
+                "src/paren.ts", "src/cjs.ts", "src/concat.ts", "src/template.ts"):
+        (tmp_path / rel).unlink()
+    put("src/static.ts", "export const x = 1;\n")
+    put("vite.config.ts", 'import { resolve } from "node:path";\nexport default { build: { rollupOptions:'
+                          ' { input: { t: resolve(__dirname, "index.html") } } } };\n')
+    put("build/alt.config.mjs", 'export default { build: { outDir: "dist-alt" } };\n')
+    clean = _scope_test_support_boundary(tmp_path)
+    assert clean["violations"] == [] and clean["test_edges"] == 1, clean["violations"]
+
+
 def test_no_module_a_runtime_build_can_bundle_reads_as_snapshot_evidence():
     """Every non-test module under atlas-scope/src and the compiler library — what a runtime build
     can import — scanned as a build file, derived from the tree. None may read as snapshot evidence,
     or the phase-3 runtime build would be refused for its own code. The compiled datasets (the
-    compiler's own OUTPUTS[].trackedPath) are exactly what is excluded."""
+    compiler's own OUTPUTS[].trackedPath) are excluded, and so is src/test-support/ — but only
+    because the boundary is proved first, by this file's own reading of the import graph: no module
+    a build can reach imports anything there."""
+    boundary = _scope_test_support_boundary(_ATLAS_SCOPE)
+    assert boundary["violations"] == [], boundary["violations"]
+    # NON-VACUITY: the reader resolves the real tree's imports — the app entry's own, and the
+    # suite's edges into the boundary — so an empty violation list was found by looking
+    entry = _ATLAS_SCOPE / "src" / "main.tsx"
+    assert len(_scope_import_targets(entry, entry.read_text(encoding="utf-8"), _ATLAS_SCOPE)) >= 3
+    assert boundary["test_edges"] >= 30, boundary["test_edges"]
+    assert len(boundary["product_modules"]) >= 50, len(boundary["product_modules"])
+    # the build's own configuration was read as a build input, not assumed to name nothing
+    assert _ATLAS_SCOPE / "vite.config.ts" in boundary["build_configs"], boundary["build_configs"]
+
+    support = _ATLAS_SCOPE / _SCOPE_SUPPORT
     compiled = {(_ATLAS_SCOPE / path).resolve() for path in _tracked_compiled_files()}
-    scanned = []
+    scanned, skipped = [], []
     for root in (_ATLAS_SCOPE / "src", _ATLAS_SCOPE / "tools" / "lib", _ATLAS_SCOPE / "contracts"):
         for path in sorted(root.rglob("*")):
-            if (not path.is_file() or path.resolve() in compiled or ".test." in path.name
-                    or path.suffix not in {".ts", ".tsx", ".mts", ".mjs", ".js", ".json", ".css"}):
+            if (not path.is_file() or path.resolve() in compiled or _scope_is_test_module(path)
+                    or not _scope_is_build_file(path)):
+                continue
+            if _scope_inside(str(path), support):
+                skipped.append(path)
                 continue
             scanned.append(path)
             assert not app_mod._scope_file_carries_compiled_model(path.read_bytes()), path
     assert len(scanned) >= 50, len(scanned)
     assert len(compiled) >= 4
+    assert skipped, "the boundary this test skips exists"
 
 
 _EVIDENCE_FORMS = ("raw-engine-snapshot", "gzip-compiled-file", "gzip-raw-engine-snapshot",

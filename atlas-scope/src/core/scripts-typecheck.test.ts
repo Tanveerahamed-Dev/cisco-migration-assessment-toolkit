@@ -299,13 +299,13 @@ describe("every authored script is inside a type-checked project", () => {
 });
 
 /* ── the runtime assertion guard (acceptance F2) ─────────────────────────────────────────────────
- * src/test-setup.ts fails any test that makes zero assertions WHEN IT RUNS. These tests prove it is
+ * src/test-support/test-setup.ts fails any test that makes zero assertions WHEN IT RUNS. These tests prove it is
  * installed by the real config, that it really fails such a test and names it, that it leaves an
  * asserting test alone, and that its one opt-out is explicit and justified wherever it is used. */
 describe("every test makes at least one assertion when it runs", () => {
   it("the guard ran in this very worker (the real config's setupFiles installed it)", () => {
     expect((globalThis as Record<symbol, unknown>)[Symbol.for("atlas-scope.assertion-guard.installed")]).toBe(true);
-    expect(readFileSync(resolve(PKG, "vitest.config.ts"), "utf8")).toMatch(/setupFiles:\s*\[fileURLToPath\(new URL\("\.\/src\/test-setup\.ts"/);
+    expect(readFileSync(resolve(PKG, "vitest.config.ts"), "utf8")).toMatch(/setupFiles:\s*\[fileURLToPath\(new URL\("\.\/src\/test-support\/test-setup\.ts"/);
   });
 
   it("a planted zero-assertion test FAILS under the real config and is named; an asserting one passes", () => {
@@ -390,7 +390,7 @@ describe("every test makes at least one assertion when it runs", () => {
  * not stop a timed-out body, the abandoned body's async act() scope interleaved with the next
  * case's, and React's act depth stuck at 1 so nothing committed for the rest of the file. The fix
  * is src/test-support/act-turns.ts (checkpoints on the test's own signal; every scope settled after
- * each test) plus the canary in src/test-setup.ts. These tests run a PLANTED file through a child
+ * each test) plus the canary in src/test-support/test-setup.ts. These tests run a PLANTED file through a child
  * Vitest with the real config, three ways:
  *   - contained: each planted abandonment through the helper costs exactly ONE red. There are two,
  *     one per checkpoint, so each checkpoint is pinned on its own (verifier finding F2-V3: with one

@@ -15,7 +15,7 @@ import { DevicePane, unassessedScoringDomains } from "./DevicePane";
 import { ribCountQualifier, ribHostsShownIncomplete, ribIncompleteness } from "../forwarding/rib-completeness";
 import { coverageRows } from "../app/CoverageBar";
 import { describeGolden } from "../test-support/golden-sample";
-import { need, nonEmpty } from "./trace-universe";
+import { need, nonEmpty } from "../test-support/trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var

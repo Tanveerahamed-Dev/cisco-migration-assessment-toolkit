@@ -37,7 +37,6 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import fabric from "../data/fabric.json";
 import { SOURCE_BINDING_BYTE_KEYS } from "./types";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -97,6 +96,13 @@ function sameContentAcrossCheckouts(a: { out: Buffer; read: Buffer }, b: { out: 
   return sha256(ma.masked) === sha256(mb.masked);
 }
 
+/* THE TRACKED MODEL, READ FROM DISK — never through the `../data/fabric.json` import. Every gate in this file
+   compares the TRACKED files (MODEL, SRC_DIR) against a compile of the source their meta names. Under a phase
+   leg's dataset override (vitest.config.ts, ATLAS_DATASET_DIR) that import resolves to ANOTHER dataset, and the
+   file then compared the tracked bytes against a compile of the other dataset's source (the golden leg: 18 reds,
+   the rename leg: an unlocatable external file name) — two datasets in one comparison. What this file certifies is
+   a property of what the repository ships, so it holds, and runs, on every leg (phase 3.5 close, 2026-09-30). */
+const fabric = JSON.parse(readFileSync(MODEL, "utf8")) as { meta: Record<string, unknown> };
 const meta = fabric.meta as {
   source: string;
   sourceOrigin: string;

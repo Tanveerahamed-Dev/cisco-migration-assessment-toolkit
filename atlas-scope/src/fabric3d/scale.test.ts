@@ -758,16 +758,21 @@ describe("the stage lays a large fleet out in slices and never on one long task"
         canvas.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: 10, clientY: 10, button: 0 }));
       });
     };
+    /* Distinct devices by position, sized to the dataset (it was indices 0..12, which the engine's 7-device golden
+       does not have): 0 before the press, 1..k during it, the last device after it — each hover a CHANGE. */
+    const n = fabric.devices.length;
+    const during = Array.from({ length: Math.min(9, n - 2) }, (_, k) => k + 1);
+    expect(during.length, "precondition: at least two distinct hovers happen during the press").toBeGreaterThanOrEqual(2);
     let before = commits;
     hoverOn(0);
     expect(commits, "precondition: a scene hover with no press reaches the stage").toBeGreaterThan(before);
     press("pointerdown");
     before = commits;
-    for (let i = 1; i < 10; i += 1) hoverOn(i);
+    for (const i of during) hoverOn(i);
     expect(commits - before, "scene hovers during an orbit drag re-rendered the stage").toBe(0);
     press("pointerup");
     before = commits;
-    hoverOn(12);
+    hoverOn(n - 1);
     expect(commits, "hover never came back after the press ended").toBeGreaterThan(before);
   });
 

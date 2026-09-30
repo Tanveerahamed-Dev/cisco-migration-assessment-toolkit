@@ -12,7 +12,7 @@
  * PAGE — the page had dozens — so a claim with none of its own passed (acceptance report, B6).
  *
  * So every check here is per claim: (a)–(c) on the refuter's own flows, per element that shows the
- * claim; (d) over every flow of the subject universe (./trace-universe.ts), per CLAUSE of every
+ * claim; (d) over every flow of the subject universe (../test-support/trace-universe.ts), per CLAUSE of every
  * claim, caveat and policy-gap sentence the engine writes, and per rendered prose element of the claim
  * card and hop list. Nothing is a fixture: the flows, the expected citations and the resolver are the
  * shipped ones.
@@ -27,8 +27,8 @@ import type { Flow, Trace } from "../core/types";
 import { counterexample, suggestedFlows, traceFlow, unobservedPolicyInputs } from "../forwarding/engine";
 import { hopUndecided } from "../core/claims";
 import { describeGolden } from "../test-support/golden-sample";
-import { controlsIn, renderedOffenders, uncitedClauses, withoutScope } from "./claim-cites-support";
-import { need, nonEmpty, pathSearch, universeFlows, universeTraces } from "./trace-universe";
+import { controlsIn, renderedOffenders, uncitedClauses, withoutScope } from "../test-support/claim-cites-support";
+import { need, nonEmpty, pathSearch, universeFlows, universeTraces } from "../test-support/trace-universe";
 import { ribHostsShownIncomplete, ribIncompleteness } from "../forwarding/rib-completeness";
 import { ClaimCard, IntentClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
@@ -222,7 +222,7 @@ describeGolden("B6 (a)–(c): the refuter's records on the reference sample", ()
    moved unchanged to claim-cites-support.ts on 2026-09-28 (phase 3), so the no-route counterfactual holds a
    dropped trace to exactly this rule. */
 
-/** The flows the class is checked over: the subject universe itself (./trace-universe.ts) — every suggested
+/** The flows the class is checked over: the subject universe itself (../test-support/trace-universe.ts) — every suggested
  *  flow, every ordered pair of the snapshot's SVI, FHRP and SVI-host addresses and two outside addresses,
  *  and every ROUTED destination — never a list of its own (phase 3.5, P3B-R2-m1). */
 const sweep = (): Flow[] => universeFlows();
@@ -252,7 +252,7 @@ describe("B6 (d): the class — every displayed claim and caveat carries a citat
      with "dropped" absent, is pinned in the golden block so a sample that drops again is noticed. */
   /* ONE DENOMINATOR (phase 3.5, P3B-R2-m1). This sweep used to build its own address list (SVI addresses,
      SVI+50, two outside addresses and the suggested flows) — a hand-kept stand-in for the class the
-     subject universe (./trace-universe.ts) owns, so it never rendered a flow to a ROUTED off-SVI
+     subject universe (../test-support/trace-universe.ts) owns, so it never rendered a flow to a ROUTED off-SVI
      destination and its outcome-only coverage check could not see the gap. The per-clause rule is only
      as wide as the flows it is checked over, so the sweep must hold every flow of the universe. */
   it("the sweep holds every flow of the subject universe, routed destinations included", () => {

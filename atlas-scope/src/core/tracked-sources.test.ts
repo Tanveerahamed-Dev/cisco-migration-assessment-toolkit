@@ -12,7 +12,7 @@
  * WHAT WAS WRONG WITH THE FIRST VERSION OF THIS GATE (independent refuter, wave 3). It re-implemented
  * the bundler's module resolution: a TypeScript walk of `import`/`export`/`import()` from
  * `index.html`'s one module script. The bundler follows more edges than that walk did —
- * `import.meta.glob` (`src/panels/Inspector.tsx`), CSS `@import` and `url()`, and the two preview
+ * `import.meta.glob` (then in `src/panels/Inspector.tsx`; removed in phase 3), CSS `@import` and `url()`, and the two preview
  * pages the dev server serves — so the gate's denominator was smaller than the build's. Measured in
  * a copy: an untracked `src/forwarding/zz-untracked-probe.json`, matched by Inspector's glob, gave
  * "Tests 3 passed (3)" while `grep` found its marker in the built `mount-*.js`. The clean result on
@@ -297,17 +297,27 @@ describe("everything the build loads and the compilers import is committed", () 
     expect(real.files.length).toBeGreaterThan(80);
   });
 
-  it("the two forwarding sidecars are reached through Inspector's import.meta.glob edge", () => {
+  /* RE-EXPRESSED 2026-09-30 (phase 3.5 close). This case used to pin Inspector's
+     `import.meta.glob("../forwarding/*.json")` edge. Phase 3 (1061fdea) removed that glob on purpose —
+     it bound the Inspector to the BUNDLED sample's sidecars whatever dataset was installed, a second
+     door src/core/dataset.test.ts now forbids — and the sidecars reach the standalone build through the
+     one door, `core/dataset/bundled.ts`. The case asserted an edge the tree no longer has, so it was red
+     from 1061fdea on. That the gate follows glob edges at all stays proved on a planted project below
+     ("names exactly the planted files…": an eager glob and a lazy array glob); this case now pins the
+     real tree's actual edge, and that the retired glob edge has not come back. */
+  it("the two forwarding sidecars are reached through the dataset's one door, and Inspector no longer globs them", () => {
+    const door = "src/core/dataset/bundled.ts";
+    const doorSource = real.originalSource.get(door);
+    expect(doorSource, "the build transformed the bundled-dataset door").toBeDefined();
+    const doorStatics = specifiersOf(door, doorSource!);
     const inspector = "src/panels/Inspector.tsx";
-    const source = real.originalSource.get(inspector);
-    expect(source, "the build transformed Inspector.tsx").toBeDefined();
-    expect(source!).toMatch(/import\.meta\.glob\(\s*["']\.\.\/forwarding\/\*\.json["']/);
-    // Not by a static import in Inspector's own text: the edge exists only because of the glob.
-    const statics = specifiersOf(inspector, source!);
-    expect(statics.length, "Inspector has static imports to compare against").toBeGreaterThan(0);
+    const inspectorSource = real.originalSource.get(inspector);
+    expect(inspectorSource, "the build transformed Inspector.tsx").toBeDefined();
+    expect(inspectorSource!).not.toMatch(/import\.meta\.glob\s*\(/);
     for (const sidecar of ["acl-bindings.json", "rib-evidence.json"]) {
-      expect(statics.some((s) => s.endsWith(sidecar)), `Inspector imports ${sidecar} statically`).toBe(false);
-      expect(real.importsOf.get(inspector), `the glob edge Inspector -> ${sidecar}`).toContain(`src/forwarding/${sidecar}`);
+      expect(doorStatics, `the door imports ${sidecar} statically`).toContain(`../../forwarding/${sidecar}`);
+      expect(real.importsOf.get(door), `the edge ${door} -> ${sidecar}`).toContain(`src/forwarding/${sidecar}`);
+      expect(real.importsOf.get(inspector) ?? [], `Inspector reaches ${sidecar} directly`).not.toContain(`src/forwarding/${sidecar}`);
       expect(real.files).toContain(`src/forwarding/${sidecar}`);
     }
   });

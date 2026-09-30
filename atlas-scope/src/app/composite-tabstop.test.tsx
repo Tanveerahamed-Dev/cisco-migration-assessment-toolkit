@@ -383,6 +383,19 @@ describe("PaneSwitch always exposes exactly one tab stop", () => {
 
 const FLOW = "10.0.10.50>10.0.30.10>tcp>3389";
 const firstFinding = fabric.findings[0]?.id ?? "";
+/* The device the device-pane states select, chosen by PROPERTY (phase 3.5 close): the routable host — one whose
+   routing table was collected, so its Routing tab has records — with the most links (its Ports tab), ties by
+   host. It was the literal "core1", which on the rename leg named no device: every "device evidence: <tab>" case
+   there censused a page with no device pane at all, and failed on the tab it could not open. */
+const SELECTED_DEVICE = ((): string => {
+  const degree = new Map<string, number>();
+  for (const l of fabric.links) for (const h of [l.a, l.b]) degree.set(h, (degree.get(h) ?? 0) + 1);
+  const routable = new Set(fabric.coverage.routableHosts);
+  const pool = fabric.devices.some((d) => routable.has(d.host)) ? fabric.devices.filter((d) => routable.has(d.host)) : fabric.devices;
+  const best = [...pool].sort((x, y) => (degree.get(y.host) ?? 0) - (degree.get(x.host) ?? 0) || (x.host < y.host ? -1 : x.host > y.host ? 1 : 0))[0];
+  if (best === undefined) throw new Error("precondition: the dataset has a device to select");
+  return best.id;
+})();
 /** The states a reader reaches, as shareable links, so each is one reproducible URL. */
 /** Open a surface the way a pointer reader does: click the first rendered control matching `sel`. */
 const clickFirst =
@@ -401,7 +414,7 @@ const STATES: readonly (readonly [string, string, (() => boolean)?])[] = [
   ["path surface, no flow", "s=path"],
   ["findings surface", "s=findings"],
   ["evidence surface", "s=evidence"],
-  ["a device selected", "d=core1&s=fabric"],
+  ["a device selected", `d=${encodeURIComponent(SELECTED_DEVICE)}&s=fabric`],
   ["a finding selected", `f=${encodeURIComponent(firstFinding)}&s=findings`],
   ["a traced flow", `s=path&flow=${encodeURIComponent(FLOW)}`],
   ["the command palette open", "", () => (act(() => { useInvestigation.getState().setPaletteOpen(true); }), true)],
@@ -412,7 +425,7 @@ const STATES: readonly (readonly [string, string, (() => boolean)?])[] = [
      cite button — were never counted. Derived from the tab list the URL parser itself accepts, not
      listed here; the default tab is the "a device selected" state above. */
   ...EVIDENCE_TABS.filter((t) => t !== useInvestigation.getInitialState().evidenceTab).map(
-    (t) => [`device evidence: ${t}`, `d=core1&s=fabric&tab=${t}`] as const,
+    (t) => [`device evidence: ${t}`, `d=${encodeURIComponent(SELECTED_DEVICE)}&s=fabric&tab=${t}`] as const,
   ),
 ];
 /** One width per ladder rung (1100 is the drawer rung). The runtime audit derives its own widths from
@@ -523,7 +536,7 @@ describe("each case starts from the store's own initial state", () => {
     expect(fields.length, "precondition: the store has state fields").toBeGreaterThan(5);
     act(() => {
       const s = useInvestigation.getState();
-      s.hydrate({ deviceId: "core1", findingId: firstFinding, query: "x", onlyUncollected: true });
+      s.hydrate({ deviceId: SELECTED_DEVICE, findingId: firstFinding, query: "x", onlyUncollected: true });
       s.setSurface("path");
       s.setEvidenceTab("routing");
       s.setPaletteOpen(true, document.createElement("button"));

@@ -34,7 +34,7 @@ import { bandOfTrace } from "../core/claims";
 import { fabric } from "../core/data";
 import { traceFlow } from "../forwarding/engine";
 import { formatIpv4, hostAddressIn, parseInterfaceAddress } from "../forwarding/ip";
-import { lazy, need, needSome } from "../forwarding/test-subjects";
+import { lazy, need, needSome } from "../test-support/test-subjects";
 import { createFlowOverlay, type TraceSegmentSource } from "./flow";
 import { readTokens } from "./materials";
 

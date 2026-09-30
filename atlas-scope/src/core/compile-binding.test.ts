@@ -26,10 +26,6 @@ import { describe, expect, it } from "vitest";
 
 import { bindSource } from "../../tools/source-binding.mjs";
 import { bindSourceAsync, CompileError } from "../../tools/lib/compile-model.mjs";
-import fabricJson from "../data/fabric.json";
-import aclJson from "../forwarding/acl-bindings.json";
-import ribJson from "../forwarding/rib-evidence.json";
-import emissionJson from "../panels/producer-emission.json";
 import { SOURCE_BINDING_BYTE_KEYS, SOURCE_BINDING_KEYS, sameSourceBinding, type SourceBinding } from "./types";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -39,13 +35,16 @@ const sha256 = (b: Uint8Array): string => createHash("sha256").update(b).digest(
 /* The LF-normalised form, restated independently of the tools (latin1 is a byte-preserving decode). */
 const lf = (b: Buffer): Buffer => Buffer.from(b.toString("latin1").split("\r\n").join("\n"), "latin1");
 
-const COMPILED: Record<string, { meta: Record<string, unknown> }> = {
-  "src/data/fabric.json": fabricJson as unknown as { meta: Record<string, unknown> },
-  "src/forwarding/acl-bindings.json": aclJson as unknown as { meta: Record<string, unknown> },
-  "src/forwarding/rib-evidence.json": ribJson as unknown as { meta: Record<string, unknown> },
-  "src/panels/producer-emission.json": emissionJson as unknown as { meta: Record<string, unknown> },
-};
-const fabricMeta = (fabricJson as unknown as { meta: SourceBinding }).meta;
+/* THE FOUR TRACKED FILES, READ FROM DISK — never through their imports. What this file pins is a property of what
+   the repository ships ("the TRACKED model is compiled from a repository file", Git's blob at HEAD). Under a phase
+   leg's dataset override (vitest.config.ts, ATLAS_DATASET_DIR) the imports resolve to ANOTHER dataset: on the
+   rename leg, one compiled from an external file Git has never held, which failed this whole file at load time
+   (phase 3.5 close, 2026-09-30). Read from disk, the claims hold, and run, on every leg. */
+const TRACKED = ["src/data/fabric.json", "src/forwarding/acl-bindings.json", "src/forwarding/rib-evidence.json", "src/panels/producer-emission.json"];
+const COMPILED: Record<string, { meta: Record<string, unknown> }> = Object.fromEntries(
+  TRACKED.map((rel) => [rel, JSON.parse(readFileSync(resolve(PKG, rel), "utf8")) as { meta: Record<string, unknown> }]),
+);
+const fabricMeta = COMPILED["src/data/fabric.json"]!.meta as unknown as SourceBinding;
 /* The dataset under test is the one the shipped model names — not a path typed here. */
 const SOURCE = resolve(REPO, fabricMeta.source);
 

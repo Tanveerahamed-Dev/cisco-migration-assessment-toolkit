@@ -23,7 +23,7 @@ import { resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { hubBundleProblems } from "../../vite.config";
-import { PKG } from "./dataset/testing";
+import { PKG } from "../test-support/dataset/testing";
 
 const scan = (name: string, text: string | Uint8Array): string[] =>
   hubBundleProblems([{ name, bytes: typeof text === "string" ? Buffer.from(text, "utf8") : text, moduleIds: [] }], new Set());

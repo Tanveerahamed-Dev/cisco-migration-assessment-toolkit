@@ -18,7 +18,7 @@ import type { Flow } from "../core/types";
 import { bindingCoverageSentences } from "./bindings";
 import { ingressCandidates, suggestedFlows, traceFlow, unobservedPolicyInputs } from "./engine";
 import { formatIpv4, hostAddressIn, parseInterfaceAddress, parseIpv4 } from "./ip";
-import { lazy, needSome } from "./test-subjects";
+import { lazy, needSome } from "../test-support/test-subjects";
 
 /** Every `cite` a compiled record carries — endpoint and l3 cites are source-snapshot paths resolveCite does not walk. */
 const RECORD_CITES: ReadonlySet<string> = (() => {

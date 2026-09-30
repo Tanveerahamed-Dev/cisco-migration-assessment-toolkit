@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { OUTPUTS } from "../../tools/lib/compile-model.mjs";
-import { PKG } from "./dataset/testing";
+import { PKG } from "../test-support/dataset/testing";
 
 interface Chunk {
   fileName: string;

@@ -14,8 +14,8 @@ import type { Flow } from "../core/types";
 import { describeGolden } from "../test-support/golden-sample";
 import { formatIpv4, hostAddressIn, parseInterfaceAddress } from "./ip";
 import { isDefiniteDelivery, suggestedFlows, traceFlow, unobservedPolicyInputs } from "./engine";
-import { GOLDEN_FORWARDING as G } from "./golden-expectations";
-import { lazy } from "./test-subjects";
+import { GOLDEN_FORWARDING as G } from "../test-support/golden-expectations";
+import { lazy } from "../test-support/test-subjects";
 
 const CH = G.claimHonesty;
 

@@ -27,7 +27,7 @@ import { ClaimCard } from "./ClaimCard";
 import { joinPorts, physHasMeasurement, physUnassessedReason } from "./DevicePane";
 import { intentCatalog, runIntentSearch } from "./PathTrace";
 import { describeGolden } from "../test-support/golden-sample";
-import { need } from "./trace-universe";
+import { need } from "../test-support/trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var

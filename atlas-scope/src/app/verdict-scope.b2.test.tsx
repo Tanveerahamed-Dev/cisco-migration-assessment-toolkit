@@ -38,7 +38,7 @@ import { isDecidedOutcome, undecidedOutcomeWord } from "../core/claims";
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
 import type { Flow, HopVerdict, Trace, TraceOutcome } from "../core/types";
-import { suggestedFlows, traceFlow, type SuggestedFlow } from "../forwarding/engine";
+import { scopeClauseOf, suggestedFlows, traceFlow, type SuggestedFlow } from "../forwarding/engine";
 import { PathTrace } from "../panels/PathTrace";
 import { CommandPalette } from "./CommandPalette";
 import { allCommands, formatFlow, grammarExamples, runFlow, useCommandAnnouncement } from "./commands";
@@ -102,12 +102,20 @@ const verdictWordsIn = (s: string): string[] => {
 interface Case {
   s: SuggestedFlow;
   t: Trace;
-  /** The trace's own scope clause: the claim's opening clause, up to its first comma. */
+  /** The trace's own scope clause: the claim's opening clause, through its "(N of M hosts …)" parenthetical. */
   scope: string;
 }
+/* The clause ends at the parenthetical that closes it, NOT at the claim's first comma. RED FROM 1061fdea: the
+   regenerated sample collected four RIBs, the host list became "core1, core2, dist1 and dist2", and "up to the
+   first comma" cut the clause to "Under the collected RIBs of core1" — which also shrank every includes() check
+   in boundsProblems below to that fragment. The engine's own reading (`scopeClauseOf`) must agree with it. */
+const scopeOf = (claim: string): string => {
+  const close = claim.indexOf("), ");
+  return close < 0 ? "" : claim.slice(0, close + 1);
+};
 const cases: Case[] = suggestedFlows().map((s) => {
   const t = traceFlow(s.flow);
-  return { s, t, scope: t.claim.slice(0, t.claim.indexOf(",")) };
+  return { s, t, scope: scopeOf(t.claim) };
 });
 
 /** The assertions every verdict-stating string must satisfy for its trace. Returns the failures. */
@@ -137,6 +145,7 @@ describe("B2 preconditions: the engine's own bounds, which every surface must ca
     expect(cases.length).toBeGreaterThan(0);
     for (const c of cases) {
       expect(c.scope, c.s.id).toMatch(/^Under the collected RIBs of /);
+      expect(c.scope, `${c.s.id}: the engine's own scope clause`).toBe(scopeClauseOf(c.t));
       expect(c.scope, c.s.id).toContain(`${fabric.coverage.hostsWithRoutes} of ${fabric.devices.length} hosts`);
       expect(c.t.caveats.length, c.s.id).toBeGreaterThan(0);
     }

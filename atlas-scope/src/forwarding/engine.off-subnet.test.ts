@@ -17,7 +17,7 @@ import type { Flow } from "../core/types";
 import { FLOW_PROTOCOLS, formatIpv4, hostAddressIn, parseInterfaceAddress, parseIpv4, parsePrefix, prefixContains, protocolCarriesPorts, type Prefix } from "./ip";
 import { refusalOf, suggestedFlows, traceFlow } from "./engine";
 import { describeGolden } from "../test-support/golden-sample";
-import { GOLDEN_FORWARDING as G } from "./golden-expectations";
+import { GOLDEN_FORWARDING as G } from "../test-support/golden-expectations";
 
 /** Every prefix the collection observed: SVI subnets and connected routes. */
 const OBSERVED: Prefix[] = [

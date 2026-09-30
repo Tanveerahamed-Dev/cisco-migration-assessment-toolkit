@@ -16,7 +16,7 @@ import { join, relative, resolve, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import real from "./acl-bindings.json";
 import { fabric, resolveCite } from "../core/data";
-import { need } from "./test-subjects";
+import { need } from "../test-support/test-subjects";
 
 type Sidecar = { meta: { sourceSha256: string }; hosts: Record<string, { port: string }[]> };
 const REAL = real as unknown as Sidecar;

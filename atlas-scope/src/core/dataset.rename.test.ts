@@ -19,7 +19,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Fabric } from "./types";
-import { compileBytes, PKG, SAMPLE_SNAPSHOT } from "./dataset/testing";
+import { compileBytes, PKG, SAMPLE_SNAPSHOT } from "../test-support/dataset/testing";
 
 interface RenameModule {
   planOutputs(argv: string[]): { source: string; out: string; compile: boolean; compiled: string } | { usage: string };

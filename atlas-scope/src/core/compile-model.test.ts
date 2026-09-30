@@ -28,9 +28,12 @@ import { describe, expect, it } from "vitest";
 import { bindSource } from "../../tools/source-binding.mjs";
 import { compileAll, META_KEYS_READ, OUTPUTS, SECTIONS_READ, serialiseCompiled } from "../../tools/lib/compile-model.mjs";
 import { assertValidSnapshot } from "../../tools/lib/validate-snapshot.mjs";
-import fabricJson from "../data/fabric.json";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+/* The TRACKED model, read from disk: the cases below compare the tracked files, byte for byte, with a compile of
+   the source THEIR meta names. The `../data/fabric.json` import resolves to another dataset under a phase leg's
+   override (ATLAS_DATASET_DIR), which paired the tracked bytes with another dataset's source (phase 3.5 close). */
+const fabricJson: unknown = JSON.parse(readFileSync(resolve(PKG, "src", "data", "fabric.json"), "utf8"));
 const TOOLS = resolve(PKG, "tools");
 const LIB = resolve(TOOLS, "lib");
 const PURE = ["compile-model.mjs", "validate-snapshot.mjs"].map((f) => resolve(LIB, f));

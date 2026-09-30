@@ -20,7 +20,7 @@ import { fabric, severityCounts } from "../core/data";
 import { useInvestigation } from "../core/store";
 import { PriorityQueue } from "./PriorityQueue";
 import { describeGolden } from "../test-support/golden-sample";
-import { need } from "./trace-universe";
+import { need } from "../test-support/trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var

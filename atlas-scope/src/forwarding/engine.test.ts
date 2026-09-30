@@ -7,7 +7,7 @@
  *
  * TWO TIERS (phase 3; ../test-support/golden-sample.ts). Blocks written `describeGolden` pin what the
  * tracked reference sample holds — its hosts, ACL names, flows and counts — and read the phase-3 numbers
- * from ./golden-expectations.ts; on any other dataset they are skipped BY NAME, and on a regenerated
+ * from ../test-support/golden-expectations.ts; on any other dataset they are skipped BY NAME, and on a regenerated
  * sample the golden import throws until they are re-derived. Every other block is an INVARIANT: its
  * subjects are resolved by property from whatever fabric is loaded, and it asserts relations.
  *
@@ -20,9 +20,9 @@
 import { describe, expect, it } from "vitest";
 import { fabric, hasRib, linksByHost, routesOf } from "../core/data";
 import { describeGolden } from "../test-support/golden-sample";
-import { GOLDEN_FORWARDING as G } from "./golden-expectations";
+import { GOLDEN_FORWARDING as G } from "../test-support/golden-expectations";
 import { bandOfHop, bandOfTrace, claimBadge, isDecidedOutcome, scopeTuple, T1_verdict } from "../core/claims";
-import { literal } from "./test-subjects";
+import { literal } from "../test-support/test-subjects";
 import type { AclLine, Flow, RouteEntry } from "../core/types";
 import { addressRoleIn, formatIpv4, hostAddressIn, parseInterfaceAddress, parseIpv4, parsePrefix, prefixContains } from "./ip";
 import {
@@ -48,7 +48,7 @@ import {
   unobservedPolicyInputs,
 } from "./engine";
 
-/* Golden-tier shorthands: every sample fact below is read from ./golden-expectations.ts. */
+/* Golden-tier shorthands: every sample fact below is read from ../test-support/golden-expectations.ts. */
 const C1 = G.core1Acls;
 const PS = C1.protectServers;
 const IR = C1.inetReturn;
@@ -989,7 +989,7 @@ describeGolden("the not-applied caveat MEASURES its claim about each discarded l
        is emitted on this snapshot. The first version read `traceFlow` alone; with the bindings now
        observed on core1 the trace never takes the fallback, so the loop over emissions was empty and
        the test ran, passed and made ZERO assertions (found by the runtime assertion guard,
-       src/test-setup.ts). The emissions are now counted and the lists that earn the phrase pinned. */
+       src/test-support/test-setup.ts). The emissions are now counted and the lists that earn the phrase pinned. */
     const named = new Set<string>();
     for (const flow of [G.headline.permit, G.headline.ssh, G.headline.deny]) {
       const fallback = evaluateAcls(C1.host, flow, parseIpv4(flow.srcIp)!, parseIpv4(flow.dstIp)!).caveats;

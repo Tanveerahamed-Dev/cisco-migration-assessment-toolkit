@@ -19,7 +19,7 @@ import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { actAsync } from "../test-support/act-turns";
 import type { CompiledDataset, InstalledDataset } from "./dataset/types";
-import { asOpenedFile, compileGolden } from "./dataset/testing";
+import { asOpenedFile, compileGolden } from "../test-support/dataset/testing";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -150,7 +150,7 @@ describe("which dataset the page shows is always said", () => {
        generated_at), not a hand-made list: the banner must carry whatever the validator reported. */
     const { runCompileRequest } = await import("./dataset/compile-request");
     const { readFileSync } = await import("node:fs");
-    const { GOLDEN_SNAPSHOT } = await import("./dataset/testing");
+    const { GOLDEN_SNAPSHOT } = await import("../test-support/dataset/testing");
     const bytes = new Uint8Array(readFileSync(GOLDEN_SNAPSHOT));
     const outcome = await runCompileRequest({ bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), label: { source: "snapshot.json", sourceOrigin: "external-file" }, expect: null }, globalThis.crypto.subtle);
     if (!outcome.ok) throw new Error(`golden did not compile: ${JSON.stringify(outcome.errors)}`);

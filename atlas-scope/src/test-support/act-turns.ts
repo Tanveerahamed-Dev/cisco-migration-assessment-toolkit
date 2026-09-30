@@ -1,6 +1,6 @@
 /**
  * act-turns.ts — the one way a test opens an ASYNC `act()` scope, and the reader the act-scope
- * canary in `src/test-setup.ts` uses.
+ * canary in `src/test-support/test-setup.ts` uses.
  *
  * WHY (acceptance F2, the load cascade). On a run at 85-100 % host CPU, one 37 s timeout in
  * `self-removing-focus.test.tsx` was followed by 277 failures reading "the seeded flow had not been
@@ -21,10 +21,10 @@
  *   - CHECKPOINTS. Before a scope opens and after it closes, the calling test's own `signal` is
  *     read; if Vitest abandoned that test, the continuation throws `AbandonedTestError` instead of
  *     opening another scope in a later test. "The calling test" is carried by an AsyncLocalStorage
- *     chain that `src/test-setup.ts` enters around every test (`runInTestChain`), so an abandoned
+ *     chain that `src/test-support/test-setup.ts` enters around every test (`runInTestChain`), so an abandoned
  *     body checks ITS signal, not whichever test happens to be running when it wakes up.
  *   - SETTLING. Every scope opened here, and every promise handed to `track()`, is awaited by
- *     `settleActTurns()` — which `src/test-setup.ts` runs after each test, before the canary. A
+ *     `settleActTurns()` — which `src/test-support/test-setup.ts` runs after each test, before the canary. A
  *     timed-out case therefore costs exactly one red: the scope it was parked in closes (one turn),
  *     its continuation hits the checkpoint and stops, and the next case starts with a clean depth.
  *
@@ -67,7 +67,7 @@ interface Chain {
 
 const chains = new AsyncLocalStorage<Chain>();
 
-/** Run one test (its hooks and its body) inside its own chain. Called by `src/test-setup.ts` only. */
+/** Run one test (its hooks and its body) inside its own chain. Called by `src/test-support/test-setup.ts` only. */
 export function runInTestChain<T>(signal: AbortSignal, test: string, run: () => T): T {
   return chains.run({ signal, test }, run);
 }

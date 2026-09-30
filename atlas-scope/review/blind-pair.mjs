@@ -650,7 +650,7 @@ export function identityBoxes(ocr, phrases, dpr, { tokens, findPhrase }) {
 
 /* ── OUR identity, by DOM geometry (phase 3.5) ────────────────────────────────────────────────
    OCR cannot be the proof that our identity is masked: on the 1x IP Fabric sheet it read neither
-   "collect_parse_snapshot/1" nor "4d1805c6", so no mask was painted AND the post-mask leak check
+   "collect_parse_snapshot/1" nor the 8-hex snapshot tag, so no mask was painted AND the post-mask leak check
    (the same OCR) passed, while a person could read both. The fix is the class, not a longer phrase
    list: OUR frame is our own page, so its identity marks are measured in its DOM — every visible
    element whose text holds an identity string, widened to the compact block it sits in (the brand

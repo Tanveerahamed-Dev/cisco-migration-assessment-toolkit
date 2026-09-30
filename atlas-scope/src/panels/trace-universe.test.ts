@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
 import { parseIpv4 } from "../forwarding/ip";
 import { describeGolden } from "../test-support/golden-sample";
-import { exercisableRoutes, longestMatchOn, ownedAddressesWithHostRoutes, routedHostAddresses, universeFlows } from "./trace-universe";
+import { exercisableRoutes, longestMatchOn, ownedAddressesWithHostRoutes, routedHostAddresses, universeFlows } from "../test-support/trace-universe";
 
 const destinations = (): number[] => [...new Set(universeFlows().map((f) => f.dstIp))].flatMap((a) => {
   const ip = parseIpv4(a);

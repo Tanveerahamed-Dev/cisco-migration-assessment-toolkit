@@ -19,7 +19,7 @@ import { aclsOf, fabric } from "../core/data";
 import type { Trace } from "../core/types";
 import { counterexample, isDefiniteDelivery, suggestedFlows, traceFlow, unobservedPolicyInputs } from "../forwarding/engine";
 import { describeGolden } from "../test-support/golden-sample";
-import { flowLabel, universeTraces } from "./trace-universe";
+import { flowLabel, universeTraces } from "../test-support/trace-universe";
 import { ribIncompleteness } from "../forwarding/rib-completeness";
 import { traceMarkOf } from "../fabric3d/Fabric3D";
 import { ClaimCard } from "./ClaimCard";

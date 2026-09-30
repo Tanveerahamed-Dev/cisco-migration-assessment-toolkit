@@ -694,7 +694,7 @@ const VITEST_TYPINGS = /[\\/]node_modules[\\/](?:vitest|@vitest[\\/][^\\/]+)[\\/
  * `vi.mock` factory (`Object.assign` or `Object.defineProperty` onto a library object, prototype
  * patching, a factory of a module that re-exports React); a computed key on a value that is `any`
  * at its root (`(globalThis as any).x[k]`) which no React binding flowed into in a file read here.
- * The runtime canary in src/test-setup.ts is the backstop for those.
+ * The runtime canary in src/test-support/test-setup.ts is the backstop for those.
  *
  * WHY A CHECKER AND NOT TEXT. A text stripper cannot tell a regex literal from division (a quote in
  * `/'s IP address$/` hid a raw scope in CommandPalette.test.tsx: F2-V1), and syntax alone cannot

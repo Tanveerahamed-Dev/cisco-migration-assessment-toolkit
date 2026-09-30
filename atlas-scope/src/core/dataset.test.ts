@@ -16,7 +16,7 @@ import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OUTPUTS } from "../../tools/lib/compile-model.mjs";
 import { SOURCE_BINDING_KEYS } from "./types";
-import { asOpenedFile, compileGolden, PKG } from "./dataset/testing";
+import { asOpenedFile, compileGolden, PKG } from "../test-support/dataset/testing";
 
 const SRC = resolve(PKG, "src");
 const posix = (p: string): string => p.split("\\").join("/");

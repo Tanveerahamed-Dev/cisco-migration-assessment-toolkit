@@ -77,6 +77,12 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const LINK = fabric.links[0]?.id ?? null;
 const FLOW = "10.0.10.50>10.0.30.10>tcp>3389";
+/* The selected device, chosen by PROPERTY so every dataset leg seeds the same page: the first device that is
+   NOT the seeded finding's own, so the Evidence pane's "the Device pane still shows …" note and its
+   self-removing "Select <host>" button are on the seeded page on every leg. It was the literal "core1": on the
+   sample that is findings[0]'s device, so the note never rendered and its button was never pressed; on the
+   rename leg "core1" named no device at all. */
+const SEEDED_DEVICE = fabric.devices.find((d) => !fabric.findings[0]!.devices.includes(d.id))!.id;
 const SEEDED = (): string => {
   const p = new URLSearchParams();
   p.set("s", "findings");
@@ -85,7 +91,7 @@ const SEEDED = (): string => {
   p.set("role", "access");
   p.set("unc", "1");
   p.set("f", fabric.findings[0]!.id);
-  p.set("d", "core1");
+  p.set("d", SEEDED_DEVICE);
   if (LINK !== null) p.set("l", LINK);
   p.set("flow", FLOW);
   return `/?${p.toString()}`;

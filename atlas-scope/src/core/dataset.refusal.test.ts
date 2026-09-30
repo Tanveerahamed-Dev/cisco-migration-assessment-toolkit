@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DatasetBootError } from "./dataset/boot";
 import { showDatasetRefusal } from "./dataset/refusal";
 import { selectActiveDataset } from "./dataset/select";
-import { asOpenedFile, compileGolden, PKG } from "./dataset/testing";
+import { asOpenedFile, compileGolden, PKG } from "../test-support/dataset/testing";
 
 function bootLine(): HTMLElement {
   const root = document.createElement("div");

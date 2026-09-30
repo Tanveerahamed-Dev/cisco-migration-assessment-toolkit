@@ -27,8 +27,8 @@ import { fabric } from "../core/data";
 import type { AclLine, Flow } from "../core/types";
 import { FLOW_PROTOCOLS, formatIpv4, hostAddressIn, parseInterfaceAddress, parseIpv4, protocolCarriesPorts } from "./ip";
 import { evaluateAcls, matchTri, suggestedFlows, traceFlow, type Tri } from "./engine";
-import { GOLDEN_FORWARDING as G } from "./golden-expectations";
-import { lazy } from "./test-subjects";
+import { GOLDEN_FORWARDING as G } from "../test-support/golden-expectations";
+import { lazy } from "../test-support/test-subjects";
 
 const C1 = G.core1Acls;
 const IR = C1.inetReturn;

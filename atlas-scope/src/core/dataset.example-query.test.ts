@@ -13,7 +13,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CompiledDataset } from "./dataset/types";
-import { asOpenedFile, compileGolden } from "./dataset/testing";
+import { asOpenedFile, compileGolden } from "../test-support/dataset/testing";
 
 afterEach(() => {
   vi.resetModules();

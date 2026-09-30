@@ -153,6 +153,19 @@ const REGION_SELECTOR = [
 const isNamed = (el: Element): boolean =>
   (el.getAttribute("aria-label") ?? "").trim() !== "" || (el.getAttribute("aria-labelledby") ?? "").trim() !== "";
 
+/** The ids an ID-reference list attribute names (`aria-labelledby`, `aria-controls`): whitespace-separated, empty
+ *  entries dropped. The ONE place this module splits such a list — a restated split once used `/s+/`, the letter s,
+ *  and misread every id containing one (focus-return.labelledby.test.ts). */
+const idRefs = (el: Element, attr: string): string[] => (el.getAttribute(attr) ?? "").split(/\s+/).filter((id) => id !== "");
+
+/** How a named region is stated: the heading its `aria-labelledby` names when that heading lies inside it, else the
+ *  region itself. The ONE statement of that rule, for `landmarkOf` and the second door's outer walk alike. */
+function statedRegion(n: HTMLElement): HTMLElement {
+  const by = idRefs(n, "aria-labelledby")[0];
+  const heading = by === undefined ? null : document.getElementById(by);
+  return heading instanceof HTMLElement && n.contains(heading) ? heading : n;
+}
+
 /** The element whose `aria-controls` names `el` or one of its ancestors: the surface's opener. */
 function openerOf(el: HTMLElement): HTMLElement | null {
   if (typeof document === "undefined") return null;
@@ -162,7 +175,7 @@ function openerOf(el: HTMLElement): HTMLElement | null {
     const id = n.id;
     if (id === "") continue;
     const hit = controllers.find(
-      (c) => !n!.contains(c) && (c.getAttribute("aria-controls") ?? "").split(/\s+/).includes(id),
+      (c) => !n!.contains(c) && idRefs(c, "aria-controls").includes(id),
     );
     if (hit) return hit;
   }
@@ -197,10 +210,7 @@ function tryFocus(el: Candidate): boolean {
 function landmarkOf(from: Element | null | undefined): HTMLElement | null {
   let n = from?.parentElement?.closest<HTMLElement>(REGION_SELECTOR) ?? null;
   while (n !== null && !isNamed(n)) n = n.parentElement?.closest<HTMLElement>(REGION_SELECTOR) ?? null;
-  if (n === null) return null;
-  const by = (n.getAttribute("aria-labelledby") ?? "").split(/\s+/).find((id) => id !== "");
-  const heading = by === undefined ? null : document.getElementById(by);
-  return heading instanceof HTMLElement && n.contains(heading) ? heading : n;
+  return n === null ? null : statedRegion(n);
 }
 
 /** Make a landmark programmatically focusable for exactly as long as it holds focus. */
@@ -395,6 +405,8 @@ interface HandOffPlan {
   readonly label: HTMLElement | null;
   /** The region landmark around the control (rule 4). */
   readonly landmark: HTMLElement | null;
+  /** Every named region landmark further out, nearest first: where rule 4 goes when the nearest one was hidden. */
+  readonly outer: readonly HTMLElement[];
 }
 
 /** Everything the hand-off may need, captured while the control and its surroundings still exist. */
@@ -406,12 +418,22 @@ function planHandOff(control: HTMLElement): HandOffPlan {
       : [...set.querySelectorAll<HTMLElement>(TAB_STOP_SELECTOR)].filter((s) => s !== control && !control.contains(s) && isTabStop(s));
   const after = stops.filter((s) => (control.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
   const before = stops.filter((s) => (control.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_PRECEDING) !== 0).reverse();
-  const by = (set?.getAttribute("aria-labelledby") ?? "").split(/\s+/).find((id) => id !== "");
+  const by = set === null ? undefined : idRefs(set, "aria-labelledby")[0];
   const labelEl = by === undefined ? null : document.getElementById(by);
+  /* Every named region around the control, nearest first, each as landmarkOf states it (its labelling heading, else
+     itself); the nearest is rule 4's landmark, the rest are `outer`. Walked by REGION, not by the stated element, so a
+     region labelled by a heading inside it does not stop the walk at that heading. */
+  const around: HTMLElement[] = [];
+  for (let n = control.parentElement?.closest<HTMLElement>(REGION_SELECTOR) ?? null; n !== null; n = n.parentElement?.closest<HTMLElement>(REGION_SELECTOR) ?? null) {
+    if (isNamed(n)) around.push(statedRegion(n));
+  }
+  const landmark = landmarkOf(control);
+  const outer = around.filter((m) => m !== landmark);
   return {
     siblings: [...after, ...before],
     label: labelEl instanceof HTMLElement && set !== null && !set.contains(labelEl) ? labelEl : null,
-    landmark: landmarkOf(control),
+    landmark,
+    outer,
   };
 }
 
@@ -449,10 +471,20 @@ export function handOffFocus(control: EventTarget | null | undefined, action: ()
       return;
     }
     done = true;
-    for (const c of plan.siblings) if (tryFocus(c)) return;
-    for (const s of stated) if (tryFocus(typeof s === "function" ? s() : s)) return;
-    if (plan.label !== null && focusLandmark(plan.label)) return;
-    if (plan.landmark !== null) focusLandmark(plan.landmark);
+    /* Never into a `hidden` subtree — the rule the third door already keeps (`releaseFocusFrom`'s `usable`). The action
+       may hide the control's whole surface as well as removing the control: the Finding pane's "Select <host>" selects a
+       device, and the rail switches to the Device pane and hides the Finding pane with every sibling the plan captured
+       (phase 3.5 close, 2026-09-30). A browser refuses focus() there; jsdom does not, so without this the owner's answer
+       depended on the engine running it. With the siblings, the label and the nearest landmark all hidden, the next
+       SHOWN landmark further out is where focus goes (the Evidence rail around both panes) — never <body>. */
+    const shown = (el: Candidate): boolean => el instanceof HTMLElement && el.closest("[hidden]") === null;
+    for (const c of plan.siblings) if (shown(c) && tryFocus(c)) return;
+    for (const s of stated) {
+      const c = typeof s === "function" ? s() : s;
+      if (shown(c) && tryFocus(c)) return;
+    }
+    if (plan.label !== null && shown(plan.label) && focusLandmark(plan.label)) return;
+    for (const m of plan.landmark === null ? [] : [plan.landmark, ...plan.outer]) if (shown(m) && focusLandmark(m)) return;
   };
   queueMicrotask(attempt);
   if (typeof setTimeout === "function") for (const ms of HANDOFF_DELAYS_MS) setTimeout(attempt, ms);

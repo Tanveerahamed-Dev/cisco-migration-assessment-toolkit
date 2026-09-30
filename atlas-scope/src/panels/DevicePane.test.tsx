@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fabric, interfacesOf, physicalByHost } from "../core/data";
 import { useInvestigation } from "../core/store";
 import { describeGolden } from "../test-support/golden-sample";
-import { need } from "./trace-universe";
+import { need } from "../test-support/trace-universe";
 import { DevicePane, joinPorts, parseDeduction } from "./DevicePane";
 import { EvidencePane, blocksFor, configEvidenceFor } from "./EvidencePane";
 

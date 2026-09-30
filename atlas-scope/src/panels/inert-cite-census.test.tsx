@@ -56,6 +56,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { actAsync } from "../test-support/act-turns";
+import { describeGolden, isGoldenSample } from "../test-support/golden-sample";
 import { fabric } from "../core/data";
 import { EVIDENCE_TABS, decodeInvestigation, useInvestigation } from "../core/store";
 import { counterexample, suggestedFlows, traceFlow } from "../forwarding/engine";
@@ -708,7 +709,12 @@ describe("every citation the app prints is a working citation control", () => {
         Error.stackTraceLimit = stack;
       }
       if (OUT) fs.appendFileSync(OUT, `## inspector: ${universe.length} records, ${byShape.size} shapes, ${layers.size} layers, ${documents.size} documents\n`);
-      expect(universe.length, "the model cites records at all").toBeGreaterThan(500);
+      /* Not vacuous on ANY dataset: every finding's own citation is among the records censused (the 500 floor below is
+         the reference sample's size, which the 7-device engine golden does not reach — 224 records there). */
+      const findingCites = new Set(fabric.findings.map((f) => f.cite));
+      expect(findingCites.size, "precondition: the dataset has findings to cite").toBeGreaterThan(0);
+      expect([...findingCites].filter((c) => !universe.includes(c)), "finding citations the census never reached").toEqual([]);
+      if (isGoldenSample()) expect(universe.length, "the reference sample cites more than 500 records").toBeGreaterThan(500);
       expect(byShape.size, "the records fall into more than a handful of rendering shapes").toBeGreaterThan(10);
       expect([...layers.keys()].sort(), "every resolution layer the data holds is censused").toEqual(expect.arrayContaining(["bearer", "model+source"]));
       expect(rendered).toBe(byShape.size + layers.size * 2 + documents.size);
@@ -759,10 +765,18 @@ describe("every citation the app prints is a working citation control", () => {
   });
 
   describe("the verdict", () => {
-    it("the census is not vacuous: it opened records, and it clicked the refuter's preset citations", () => {
+    it("the census is not vacuous: it opened records", () => {
       expect([...verified.values()].filter(Boolean).length, "controls proven to open their record").toBeGreaterThan(500);
       expect(inspected.size, "the Inspector was censused at records of many shapes").toBeGreaterThan(10);
-      for (const c of ["l3_forwarding[5]", "l3_forwarding[4]", "acls.core1.PROTECT_SERVERS[2]"]) expect([...verified.keys()].some((k) => k.startsWith(`${c}|`)), c).toBe(true);
+    });
+
+    /* The refuter's three preset citations name records of the tracked sample by its own host and array
+       positions ("acls.core1…"), so they are GOLDEN facts: on another dataset (the rename leg's "acls.rn-07…")
+       they name nothing. Split out 2026-09-30 (phase 3.5 close) so the invariant half above runs on every leg. */
+    describeGolden("the census clicked the refuter's preset citations", () => {
+      it("each preset citation was among the controls proven to open their record", () => {
+        for (const c of ["l3_forwarding[5]", "l3_forwarding[4]", "acls.core1.PROTECT_SERVERS[2]"]) expect([...verified.keys()].some((k) => k.startsWith(`${c}|`)), c).toBe(true);
+      });
     });
 
     it("no file this wave owns prints an inert citation, a dead one, or a control inside a control", () => {

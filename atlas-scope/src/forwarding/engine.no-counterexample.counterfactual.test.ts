@@ -27,7 +27,7 @@
  */
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Flow } from "../core/types";
-import { need } from "./test-subjects";
+import { need } from "../test-support/test-subjects";
 
 interface AclLineShape {
   action: string | null;

@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
 import { describeGolden } from "../test-support/golden-sample";
-import { GOLDEN_FORWARDING as G } from "./golden-expectations";
+import { GOLDEN_FORWARDING as G } from "../test-support/golden-expectations";
 import {
   addressRoleIn,
   formatIpv4,

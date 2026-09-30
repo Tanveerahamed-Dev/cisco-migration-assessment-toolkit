@@ -19,7 +19,7 @@ import { scopeClauseOf } from "../forwarding/engine";
 import { describeGolden } from "../test-support/golden-sample";
 import { ClaimCard } from "./ClaimCard";
 import { splitCited } from "./cited-text";
-import { flowLabel, universeTraces } from "./trace-universe";
+import { flowLabel, universeTraces } from "../test-support/trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var

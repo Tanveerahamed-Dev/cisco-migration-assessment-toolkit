@@ -18,13 +18,12 @@
  * compiler forgets fails here by name, not by someone remembering to look.
  */
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
 import { useInvestigation } from "../core/store";
+import { datasetSourcePath } from "../test-support/dataset-source";
 import { describeGolden } from "../test-support/golden-sample";
 import { EvidencePane } from "./EvidencePane";
 
@@ -34,9 +33,9 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-/** The source is the one `fabric.meta.source` names, relative to the repository root. */
-const source = JSON.parse(readFileSync(resolve(PKG, "..", fabric.meta.source), "utf8")) as {
+/** The source is the one `fabric.meta` binds, found by its digest (test-support/dataset-source.ts): on the rename
+    leg it is an external file named by its file name only, which "relative to the repository root" never found. */
+const source = JSON.parse(readFileSync(datasetSourcePath(fabric.meta), "utf8")) as {
   punchlist: Record<string, unknown>[];
 };
 const camel = (k: string) => k.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());

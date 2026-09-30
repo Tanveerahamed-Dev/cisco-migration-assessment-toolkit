@@ -40,8 +40,8 @@ import { counterexample, unobservedPolicyInputs } from "../forwarding/engine";
 import { ribIncompleteness, ribIncompletenessSentence } from "../forwarding/rib-completeness";
 import { ClaimCard, outcomeWordOf } from "./ClaimCard";
 import { HopList } from "./HopList";
-import { renderedOffenders, uncitedClauses, withoutScope } from "./claim-cites-support";
-import { flowLabel, need, nonEmpty, tracesWhere } from "./trace-universe";
+import { renderedOffenders, uncitedClauses, withoutScope } from "../test-support/claim-cites-support";
+import { flowLabel, need, nonEmpty, tracesWhere } from "../test-support/trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var

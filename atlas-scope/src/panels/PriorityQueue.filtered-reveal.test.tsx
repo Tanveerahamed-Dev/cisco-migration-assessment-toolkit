@@ -30,7 +30,7 @@ import { useInvestigation } from "../core/store";
 import type { CrossLayerFinding, Finding } from "../core/types";
 import { PriorityQueue } from "./PriorityQueue";
 import { describeGolden } from "../test-support/golden-sample";
-import { need } from "./trace-universe";
+import { need } from "../test-support/trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var

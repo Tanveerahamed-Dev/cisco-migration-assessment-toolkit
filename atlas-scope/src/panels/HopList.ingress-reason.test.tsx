@@ -21,7 +21,7 @@ import { describeGolden } from "../test-support/golden-sample";
 import { traceFlow, unobservedPolicyInputs } from "../forwarding/engine";
 import { ClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
-import { firstTrace, need } from "./trace-universe";
+import { firstTrace, need } from "../test-support/trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var

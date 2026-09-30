@@ -224,7 +224,7 @@ describe("the compiled ACL model preserves the producer's own verdicts", () => {
        visible in the model rather than erased. */
     /* EVERY port match is judged, not only the null ones: the first version asserted inside
        `if (hasNull)` alone, and this snapshot carries no null port value, so it ran, passed and made
-       ZERO assertions (the runtime assertion guard, src/test-setup.ts, found it). Each port now
+       ZERO assertions (the runtime assertion guard, src/test-support/test-setup.ts, found it). Each port now
        either carries a readable value or is marked unevaluable — the property itself, stated for
        the whole population — and the population is pinned so an empty one cannot pass. */
     /* The property is collected as a list of violations and asserted once, so it runs (and asserts) on a

@@ -9,15 +9,15 @@
  *    its absence is honest: an independent sweep over the same observed subnets and ACL-named services finds
  *    no such trace the engine failed to offer. The rationale's citations name real records, and its route
  *    claim is re-read from the RIB.
- *  - GOLDEN, on the tracked sample only: which flows those are, read from ./golden-expectations.ts.
+ *  - GOLDEN, on the tracked sample only: which flows those are, read from ../test-support/golden-expectations.ts.
  */
 import { describe, expect, it } from "vitest";
 import { bandOfTrace, claimBadge, isDecidedOutcome } from "../core/claims";
 import { aclsOf, fabric, resolveCite, routesOf } from "../core/data";
 import type { Flow, Trace } from "../core/types";
 import { describeGolden } from "../test-support/golden-sample";
-import { GOLDEN_FORWARDING as G } from "./golden-expectations";
-import { need } from "./test-subjects";
+import { GOLDEN_FORWARDING as G } from "../test-support/golden-expectations";
+import { need } from "../test-support/test-subjects";
 import { formatIpv4, hostAddressIn, parseInterfaceAddress, parseIpv4, parsePrefix, prefixContains } from "./ip";
 import {
   blockingHop,

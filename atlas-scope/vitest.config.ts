@@ -48,7 +48,7 @@
  *     function type-checks wherever `() => void` is expected), so `act(() => fn())` through a value is
  *     reported and written `act(() => { fn(); })`; a Promise/`any`-returning or passed-by-name callback,
  *     act used as a value or reached without its name, and a Promise-returning look-alike of a library
- *     member are reported, and an unresolvable act counts as React's. `src/test-setup.ts` settles
+ *     member are reported, and an unresolvable act counts as React's. `src/test-support/test-setup.ts` settles
  *     every such scope after each test, and its act-scope canary then fails a test that leaves
  *     React's act queue open, naming the cause. Proved by planted child runs in
  *     `scripts-typecheck.test.ts`. This makes a load timeout honest, not impossible: the limits
@@ -127,11 +127,11 @@ export default mergeConfig(
       /* Only a ceiling. `minWorkers: 1` stood here and did nothing: Vitest 4 removed the option, so
          it was silently ignored (TS2769 once this file was type-checked by tsconfig.config.json). */
       maxWorkers: WORKERS,
-      /* Every test must make at least one assertion WHEN IT RUNS — see src/test-setup.ts. A source
+      /* Every test must make at least one assertion WHEN IT RUNS — see src/test-support/test-setup.ts. A source
          scan cannot see an expect() inside a loop over an empty list; the runner can. Absolute, so
          the guard's own proof (src/core/scripts-typecheck.test.ts) can run THIS config over a
          planted test in another root and still get this file. */
-      setupFiles: [fileURLToPath(new URL("./src/test-setup.ts", import.meta.url))],
+      setupFiles: [fileURLToPath(new URL("./src/test-support/test-setup.ts", import.meta.url))],
       /* No `retry`. A test that passes on the second attempt is a test whose result is noise, and
          hiding that is the defect this file was written to remove, not a workaround for it. */
       retry: 0,

@@ -17,7 +17,7 @@ import { sha1Hex } from "./dataset/hashes";
 import { HUB_DIGEST_FORM, loadFromAssessHub, snapshotIdFromPath } from "./dataset/hub";
 import { openSnapshotFile, restoreOpenedDataset, returnToSample } from "./dataset/opened";
 import { memoryStore, STORED_RECORD_VERSION } from "./dataset/store";
-import { GOLDEN_SNAPSHOT, SAMPLE_SNAPSHOT } from "./dataset/testing";
+import { GOLDEN_SNAPSHOT, SAMPLE_SNAPSHOT } from "../test-support/dataset/testing";
 
 const subtle = globalThis.crypto.subtle;
 const inProcess: CompileFn = (req) => runCompileRequest(req, subtle);

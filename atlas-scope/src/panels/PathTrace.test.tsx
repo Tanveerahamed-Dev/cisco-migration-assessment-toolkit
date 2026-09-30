@@ -27,7 +27,7 @@ import { formatPrefix, parseInterfaceAddress, parseIpv4, prefixContains } from "
 import { routeFieldReading } from "../core/route-fields";
 import { aclsOf, hasRib, routesOf } from "../core/data";
 import { describeGolden } from "../test-support/golden-sample";
-import { OUTSIDE_ADDRESSES, subnetHostAddresses } from "./trace-universe";
+import { OUTSIDE_ADDRESSES, subnetHostAddresses } from "../test-support/trace-universe";
 import { ClaimCard, IntentClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
 import {

@@ -18,7 +18,7 @@ import type { Flow, Trace } from "../core/types";
 import { describeGolden } from "../test-support/golden-sample";
 import { traceFlow } from "../forwarding/engine";
 import { HopList } from "./HopList";
-import { flowLabel, need, nonEmpty, universeTraces } from "./trace-universe";
+import { flowLabel, need, nonEmpty, universeTraces } from "../test-support/trace-universe";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -144,7 +144,7 @@ describe("A2: the hop header and the decider block agree about what decided the 
      together with "every per-flow case ran": run this file whole, not one case of it. */
   describe("across every hop of every decider shape of the subject universe, a header never names a different agent than its decider", () => {
     /* UPDATED phase 3.5 (P3B-R2-m2): was every suggested flow plus a literal 3 × 5 × 3 grid of the sample's
-       addresses. Now the first flow of each distinct decider shape of the universe (./trace-universe.ts:
+       addresses. Now the first flow of each distinct decider shape of the universe (../test-support/trace-universe.ts:
        suggested flows first, then every SVI / FHRP / SVI-host / outside / routed pair), so the census is
        the class on whatever snapshot is loaded. */
     const flows: Flow[] = (() => {
