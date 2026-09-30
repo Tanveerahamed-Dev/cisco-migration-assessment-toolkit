@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot`, **local-only until its D11 conditions hold** | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | Finishing phase 3.5 preconditions. D11 is approved in ADR 0007, but that session pushes only after the owner confirms it directly in that session (2026-09-30). | Owner tells that session "D11 approved, push". It then commits 3.5, runs the rule-7 checks, merges `main`, and opens a PR listing the remaining FAILs as preview scope. |
+| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot` (pushed) | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | PR #579 open for review (2026-09-30). The owner confirmed D11 in that session. Phase 3.5 is committed, `main` is merged in, the rule-7 checks pass, and the remaining FAIL/UNPROVEN items are listed in the PR as preview scope. | Owner reviews and merges #579, preserving merge commits. Then delete this row (rule 8). D9 and D10 follow-ups start after the merge (ADR 0007). |
 | W2 | One-application UI consolidation (AssessHub + Scope + explorer) | engine slices on short branches off `main` (now: `feat/ui-projection-slice1`); UI slices after W1 merges | Claude Code | Engine honesty (#575) merged. `ui_projection/1` slice 1 (Overview + Trust) is PR #577. Prototype published privately to the owner; backlog in `docs/one-app-feature-backlog-2026-09-30.md` (2026-09-30). | Merge #577. Owner runs the prototype's 2-D vs 2.5-D task test on the reference laptop. After W1 merges: backend endpoint serving the projection with response models, then the first core screens. |
 
 ## Owner decisions
@@ -97,6 +97,15 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-09-30, Claude Code (W1):
+  - The owner confirmed D11 in the W1 session. Phase 3.5 is committed, and `main` is merged in (#573, #574,
+    #575, #577).
+  - Found while merging, and fixed in the branch:
+    - The assessability guard now tells #575's census vocabulary apart from the receipt's.
+    - Importing the engine no longer opens its audit log, which removes the `-n auto` collection
+      `PermissionError`.
+  - Rule-7 checks passed. Pushed the branch and opened #579 with the preview scope listed.
 
 - 2026-09-30, Claude Code:
   - Merged #574 (npm advisories), #575 (engine honesty) and #573 (this board + ADR 0007); deleted
