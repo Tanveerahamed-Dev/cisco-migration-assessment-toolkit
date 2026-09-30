@@ -19,6 +19,7 @@ ALLOWED_TOP_LEVEL_DIRECTORIES = frozenset(
         ".claude",
         ".design-sync",
         ".github",
+        "atlas-scope",
         "cisco_toolkit",
         "docs",
         "master-reference",
