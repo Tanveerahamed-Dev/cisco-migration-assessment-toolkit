@@ -198,6 +198,24 @@ def test_missing_queries_abstain_instead_of_inventing() -> None:
     assert result["reason"] == "line_not_present_or_blank_in_exact_bundle"
 
 
+def test_identity_depth_line_query_abstains_as_deferred_not_blank() -> None:
+    bundle = _bundle()
+    bundle.records["files"].append(
+        {
+            "id": "urn:atlas:file:deferred",
+            "path": "vendor-app/app.ts",
+            "privacy_exposure": "full",
+            "census_depth": "identity",
+            "census_depth_reason": "fixture_deferral:size_ceiling",
+        }
+    )
+    code, result = query_by_path(bundle, "vendor-app/app.ts", 1)
+    assert code == 3
+    assert result["status"] == "abstained"
+    assert result["reason"] == "census_depth_identity_line_not_projected"
+    assert result["census_depth_reason"] == "fixture_deferral:size_ceiling"
+
+
 def test_task_envelope_binds_exact_baseline_authority_scope_and_constraints(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     commit, tree = _repository(repo)

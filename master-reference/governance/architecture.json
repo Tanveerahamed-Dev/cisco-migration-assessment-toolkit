@@ -349,6 +349,8 @@
     ["assesshub_backend", "deliverables"],
     ["assesshub_frontend", "assesshub_backend"],
     ["assesshub_frontend", "design_sync"],
+    ["atlas_scope", "parse_model"],
+    ["atlas_scope", "deliverables"],
     ["atlas_portable", "assesshub_backend"],
     ["atlas_portable", "brand_profile"],
     ["atlas_portable", "deliverables"],

@@ -124,6 +124,16 @@ def query_by_path(bundle: Any, path: str, line: int | None = None) -> tuple[int,
             item for item in record.get("lines", []) if isinstance(item, dict) and item.get("number") == line
         )
     if not line_records and not source_lines:
+        file_record = next((record for group, record in matches if group == "files"), None)
+        if file_record is not None and file_record.get("census_depth") == "identity":
+            # Identity depth is deferred coverage, not a blank or absent line.
+            return 3, {
+                **_base(bundle, "path-line"),
+                "status": "abstained",
+                "reason": "census_depth_identity_line_not_projected",
+                "census_depth_reason": file_record.get("census_depth_reason"),
+                "query": {"path": path, "line": line},
+            }
         return 3, {
             **_base(bundle, "path-line"),
             "status": "abstained",

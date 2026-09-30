@@ -183,8 +183,10 @@ export function SourceFileView({ path }: { path: string }) {
           <h1>{file.path}</h1>
           <p>{file.roles.join(" · ")} · bound to {module.projection.sourceCommit.slice(0, 12)}</p>
         </div>
-        <span className={styles.badge} data-state={file.privacyExposure}>
-          {source ? "safe text · lazy loaded" : file.privacyExposure}
+        <span className={styles.badge} data-state={file.censusDepth === "identity" ? "identity" : file.privacyExposure}>
+          {file.censusDepth === "identity"
+            ? "identity only · not line-mapped"
+            : source ? "safe text · lazy loaded" : file.privacyExposure}
         </span>
       </header>
 
@@ -192,10 +194,27 @@ export function SourceFileView({ path }: { path: string }) {
         <div><dt>Parser</dt><dd>{file.parser ?? "not applicable"} · {file.parserMode ?? "unknown mode"}</dd></div>
         <div><dt>Extent</dt><dd>{file.lineCount.toLocaleString()} lines · {humanBytes(file.sizeBytes)}</dd></div>
         <div><dt>Content digest</dt><dd><code>{shortDigest(file.contentDigest, 20)}</code></dd></div>
-        <div><dt>Proof depth</dt><dd>Level 1 structural where mapped</dd></div>
+        <div>
+          <dt>Proof depth</dt>
+          <dd>
+            {file.censusDepth === "identity"
+              ? "Identity census only · no line, symbol or source records"
+              : "Level 1 structural where mapped"}
+          </dd>
+        </div>
       </dl>
 
-      {!source ? (
+      {file.censusDepth === "identity" ? (
+        <div className={styles.notice} role="note">
+          <strong>Identity-only census · line projection deferred</strong>
+          <span>
+            This file is censused by path, Git blob, content digest, size, classification and static imports, and its
+            full content passed the privacy decision. Its {file.nonblankLineCount.toLocaleString()} nonblank lines are
+            deliberately not projected (<code>{file.censusDepthReason}</code>), so no line, symbol, call or source
+            record exists here. This is deferred coverage, not verified or empty content.
+          </span>
+        </div>
+      ) : !source ? (
         <div className={styles.notice}>
           <strong>Content intentionally opaque</strong>
           <span>

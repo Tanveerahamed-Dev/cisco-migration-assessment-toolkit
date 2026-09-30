@@ -15,6 +15,7 @@
     "hard_failure",
     "fatal_errors",
     "census",
+    "census_depth",
     "parsing",
     "semantic_accounting",
     "record_counts",
@@ -116,6 +117,7 @@
       "additionalProperties": false
     },
     "record_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "census_depth": {"$ref": "#/$defs/censusDepth"},
     "graphify": {"$ref": "#/$defs/sourceBoundCompilerReceipt"},
     "architecture_conformance": {"$ref": "#/$defs/sourceBoundCompilerReceipt"},
     "consequential_claim_denominator": {"$ref": "#/$defs/consequentialClaimDenominator"},
@@ -156,13 +158,31 @@
           },
           "minContains": 1,
           "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_identity_depth_file_declared_privacy_scanned_and_unprojected"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
         }
       ]
     },
     "acceptance_gates": {
       "allOf": [
         {"$ref": "#/$defs/gates"},
-        {"minItems": 12, "maxItems": 12},
+        {"minItems": 13, "maxItems": 13},
+        {
+          "contains": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"const": "every_tracked_text_file_line_censused"}}
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
         {
           "contains": {
             "type": "object",
@@ -710,6 +730,79 @@
         "receipt_claims_trusted": {"const": false}
       },
       "additionalProperties": false
+    },
+    "censusDepth": {
+      "type": "object",
+      "required": [
+        "policy_owner",
+        "status",
+        "full_depth_files",
+        "identity_depth_files",
+        "identity_depth_text_files",
+        "identity_depth_nonblank_lines_deferred",
+        "retained_record_groups",
+        "deferred_record_groups",
+        "declarations",
+        "block_categories",
+        "claim"
+      ],
+      "properties": {
+        "policy_owner": {"type": "string", "minLength": 1},
+        "status": {"enum": ["full_depth", "identity_depth_deferred"]},
+        "full_depth_files": {"type": "integer", "minimum": 0},
+        "identity_depth_files": {"type": "integer", "minimum": 0},
+        "identity_depth_text_files": {"type": "integer", "minimum": 0},
+        "identity_depth_nonblank_lines_deferred": {"type": "integer", "minimum": 0},
+        "retained_record_groups": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "deferred_record_groups": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true, "minItems": 1},
+        "declarations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "prefix",
+              "census_depth",
+              "reason",
+              "block_category",
+              "follow_up_owner",
+              "tracked_files",
+              "text_files",
+              "privacy_scanned_text_files",
+              "metadata_only_files",
+              "content_bytes",
+              "deferred_physical_lines",
+              "deferred_nonblank_lines",
+              "retained_import_records"
+            ],
+            "properties": {
+              "prefix": {"type": "string", "pattern": "^[^/][^\\\\]*/$"},
+              "census_depth": {"const": "identity"},
+              "reason": {"type": "string", "pattern": "^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$"},
+              "block_category": {"type": "string", "pattern": "^census_depth_[a-z0-9_]+$"},
+              "follow_up_owner": {"type": "string", "minLength": 1},
+              "tracked_files": {"type": "integer", "minimum": 0},
+              "text_files": {"type": "integer", "minimum": 0},
+              "privacy_scanned_text_files": {"type": "integer", "minimum": 0},
+              "metadata_only_files": {"type": "integer", "minimum": 0},
+              "content_bytes": {"type": "integer", "minimum": 0},
+              "deferred_physical_lines": {"type": "integer", "minimum": 0},
+              "deferred_nonblank_lines": {"type": "integer", "minimum": 0},
+              "retained_import_records": {"type": "integer", "minimum": 0}
+            },
+            "additionalProperties": false
+          }
+        },
+        "block_categories": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^census_depth_[a-z0-9_]+$"},
+          "uniqueItems": true
+        },
+        "claim": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false,
+      "if": {"properties": {"identity_depth_files": {"const": 0}}},
+      "then": {"properties": {"status": {"const": "full_depth"}, "block_categories": {"maxItems": 0}}},
+      "else": {"properties": {"status": {"const": "identity_depth_deferred"}, "block_categories": {"minItems": 1}}}
     },
     "sourceBoundCompilerReceipt": {
       "type": "object",

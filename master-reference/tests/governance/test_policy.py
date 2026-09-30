@@ -502,3 +502,145 @@ def test_explicitly_excluded_test_import_does_not_define_runtime_edge() -> None:
     )
     assert receipt["status"] == "passed"
     assert receipt["static_edges"] == []
+
+
+def _single_component_ts_receipt(
+    paths: list[str], source: str, module: str, *, language: str = "typescript"
+) -> dict:
+    """Resolve one relative import inside a single component (no edge policy in play)."""
+
+    contract = {
+        "schema_version": "test",
+        "components": [{"id": "app", "paths": ["app/"]}],
+        "exclusions": [],
+        "python_import_roots": [""],
+        "internal_module_prefixes": [],
+        "allowed_edges": [],
+        "forbidden_edges": [],
+        "runtime_phases": [{"id": "run", "order": 1, "required": True}],
+        "synthetic_runtime_traces": [
+            {
+                "id": "happy",
+                "events": [{"phase": "run", "status": "passed", "receipt_id": "synthetic:run"}],
+            }
+        ],
+    }
+    languages = {
+        path: {".ts": "typescript", ".tsx": "tsx", ".js": "javascript", ".mjs": "javascript"}.get(
+            Path(path).suffix, "json"
+        )
+        for path in paths
+    }
+    languages[source] = language
+    return build_architecture_conformance(
+        paths=paths,
+        file_languages=languages,
+        imports=[{"id": "import:probe", "path": source, "module": module, "names": [], "alias": None}],
+        calls=[],
+        contract=contract,
+        source_commit="a" * 40,
+        source_tree_digest="b" * 64,
+    )
+
+
+def _resolved_targets(receipt: dict) -> list[str]:
+    return [edge["target_path"] for edge in receipt["static_edges"]]
+
+
+def test_dotted_basename_specifier_is_extensionless_like_typescript() -> None:
+    # ``vite.config`` has no module extension: TypeScript probes vite.config.ts
+    # (its ".config" segment is part of the basename, not an extension to strip).
+    receipt = _single_component_ts_receipt(
+        ["app/vite.config.ts", "app/src/probe/a.test.ts"], "app/src/probe/a.test.ts", "../../vite.config"
+    )
+    assert receipt["errors"] == []
+    assert _resolved_targets(receipt) == ["app/vite.config.ts"]
+    worker = _single_component_ts_receipt(
+        ["app/chart.worker.tsx", "app/main.ts"], "app/main.ts", "./chart.worker"
+    )
+    assert worker["errors"] == []
+    assert _resolved_targets(worker) == ["app/chart.worker.tsx"]
+    index = _single_component_ts_receipt(
+        ["app/lib.v2/index.ts", "app/main.ts"], "app/main.ts", "./lib.v2"
+    )
+    assert index["errors"] == []
+    assert _resolved_targets(index) == ["app/lib.v2/index.ts"]
+
+
+def test_dotted_basename_negative_cases_stay_unresolved() -> None:
+    # Nothing named vite.config.* is tracked: the import is reported, never guessed.
+    missing = _single_component_ts_receipt(["app/main.ts"], "app/main.ts", "./vite.config")
+    assert missing["errors"] == ["import:import:probe:unresolved_internal:./vite.config"]
+    # ".config" is not an extension TypeScript strips, so ./vite.config never means vite.ts.
+    stripped = _single_component_ts_receipt(["app/vite.ts", "app/main.ts"], "app/main.ts", "./vite.config")
+    assert stripped["errors"] == ["import:import:probe:unresolved_internal:./vite.config"]
+    assert stripped["static_edges"] == []
+
+
+def test_real_module_extensions_resolve_literally() -> None:
+    # An explicit extension names exactly one file, even beside a same-stem module.
+    json_module = _single_component_ts_receipt(
+        ["app/emission.json", "app/emission.ts", "app/main.ts"], "app/main.ts", "./emission.json"
+    )
+    assert json_module["errors"] == []
+    assert _resolved_targets(json_module) == ["app/emission.json"]
+    code_module = _single_component_ts_receipt(
+        ["app/emission.json", "app/emission.ts", "app/main.ts"], "app/main.ts", "./emission.ts"
+    )
+    assert code_module["errors"] == []
+    assert _resolved_targets(code_module) == ["app/emission.ts"]
+    esm = _single_component_ts_receipt(["app/util.mjs", "app/main.ts"], "app/main.ts", "./util.mjs")
+    assert esm["errors"] == []
+    assert _resolved_targets(esm) == ["app/util.mjs"]
+
+
+def test_extensionless_typescript_import_never_selects_a_json_module() -> None:
+    # TypeScript's probe for an extensionless specifier is .ts/.tsx/.d.ts/.js/.jsx;
+    # .json only for tsconfig ``extends``. The .ts sibling is the one module meant.
+    both = _single_component_ts_receipt(
+        ["app/emission.json", "app/emission.ts", "app/Inspector.tsx"],
+        "app/Inspector.tsx",
+        "./emission",
+        language="tsx",
+    )
+    assert both["errors"] == []
+    assert _resolved_targets(both) == ["app/emission.ts"]
+    # With only the JSON file present a TypeScript source cannot resolve it at all.
+    json_only = _single_component_ts_receipt(
+        ["app/settings.json", "app/main.ts"], "app/main.ts", "./settings"
+    )
+    assert json_only["errors"] == ["import:import:probe:unresolved_internal:./settings"]
+
+
+def test_extensionless_ambiguity_is_still_reported_not_ranked() -> None:
+    # Two code candidates remain a real toolchain divergence and are never silently ranked.
+    code_pair = _single_component_ts_receipt(
+        ["app/view.ts", "app/view.tsx", "app/main.ts"], "app/main.ts", "./view"
+    )
+    assert code_pair["errors"] == ["import:import:probe:ambiguous_target:app/view.ts,app/view.tsx"]
+    # CommonJS ``require`` appends .json, so a JavaScript source keeps the JSON candidate.
+    javascript = _single_component_ts_receipt(
+        ["app/emission.js", "app/emission.json", "app/main.js"],
+        "app/main.js",
+        "./emission",
+        language="javascript",
+    )
+    assert javascript["errors"] == [
+        "import:import:probe:ambiguous_target:app/emission.js,app/emission.json"
+    ]
+
+
+def test_atlas_scope_engine_fixture_edges_are_declared_and_analysis_stays_forbidden() -> None:
+    contract = load_contract()
+    fixture = "atlas-scope/tools/fixtures/engine-sparse-interfaces.py"
+    assert component_for_path(fixture, contract) == "atlas_scope"
+    assert component_for_path("cisco_toolkit/model.py", contract) == "parse_model"
+    assert component_for_path("cisco_toolkit/html.py", contract) == "deliverables"
+    allowed = {tuple(edge) for edge in contract["allowed_edges"]}
+    assert {("atlas_scope", "parse_model"), ("atlas_scope", "deliverables")}.issubset(allowed)
+    assert ("atlas_scope", "analysis") not in allowed
+    forbidden = {(row["from"], row["to"]) for row in contract["forbidden_edges"]}
+    assert ("atlas_scope", "analysis") in forbidden
+    assert validate_static_edges(
+        [{"from_component": "atlas_scope", "to_component": "analysis"}], contract
+    ) == ("edge:0:forbidden:atlas_scope->analysis",)

@@ -116,6 +116,8 @@ export function SourceExplorer({
   const projection = loadState.module.projection;
   const census = projection.completeness.census;
   const recordCounts = projection.completeness.record_counts;
+  const censusDepth = projection.completeness.census_depth;
+  const identityDeclarations = censusDepth?.declarations.filter((row) => row.tracked_files > 0) ?? [];
   return (
     <div>
       <div className={styles.notice}>
@@ -136,7 +138,13 @@ export function SourceExplorer({
         <article className={styles.proofCard}>
           <strong>{recordCounts.lines?.toLocaleString() ?? "—"}</strong>
           <span>Nonblank lines mapped</span>
-          <small>Exact denominator from completeness ledger</small>
+          <small>
+            {censusDepth === undefined
+              ? "Census depth not reported — line coverage unproven"
+              : censusDepth.identity_depth_files > 0
+                ? `Full-depth files only · ${censusDepth.identity_depth_nonblank_lines_deferred.toLocaleString()} lines in ${censusDepth.identity_depth_files.toLocaleString()} identity-only files deferred`
+                : "Exact denominator from completeness ledger"}
+          </small>
         </article>
         <article className={styles.proofCard}>
           <strong>{recordCounts.symbols?.toLocaleString() ?? "—"}</strong>
@@ -149,6 +157,22 @@ export function SourceExplorer({
           <small>Tree {shortDigest(projection.sourceTreeDigest)}</small>
         </article>
       </div>
+
+      {identityDeclarations.length ? (
+        <div className={styles.notice} role="note">
+          <strong>Identity-only census</strong>
+          <span>
+            {identityDeclarations.map((row) => (
+              <span key={row.prefix}>
+                <code>{row.prefix}</code>: {row.tracked_files.toLocaleString()} files censused by path, Git blob,
+                digest, size, classification and imports, and privacy-scanned in full — but not line-mapped
+                ({row.deferred_nonblank_lines.toLocaleString()} nonblank lines deferred, <code>{row.reason}</code>;
+                follow-up: {row.follow_up_owner}; release block <code>{row.block_category}</code>).{" "}
+              </span>
+            ))}
+          </span>
+        </div>
+      ) : null}
 
       <div className={styles.controls} aria-label="Source filters">
         <label>
@@ -211,8 +235,15 @@ export function SourceExplorer({
                     </span>
                     <span>{file.language}</span>
                     <span>{file.lineCount.toLocaleString()} lines · {humanBytes(file.sizeBytes)}</span>
-                    <span className={styles.badge} data-state={file.privacyExposure}>
-                      {file.privacyExposure === "full" ? file.parseStatus : file.privacyExposure}
+                    <span
+                      className={styles.badge}
+                      data-state={file.censusDepth === "identity" ? "identity" : file.privacyExposure}
+                    >
+                      {file.censusDepth === "identity"
+                        ? "identity only · not line-mapped"
+                        : file.privacyExposure === "full"
+                          ? file.parseStatus
+                          : file.privacyExposure}
                     </span>
                   </a>
                 ))}

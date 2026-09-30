@@ -238,6 +238,8 @@ Structural accounting is not Level 2-4 semantic proof. Blocking semantic gates:
 {chr(10).join(f'| `{name}` | {count} |' for name, count in counts.items())}
 
 Compiler parsing status: `{_line(parsing.get('status_counts', {}))}`.
+
+Census depth: `{_line(bundle.completeness.get('census_depth', {}).get('status'))}`; identity-depth files (not line-mapped): `{bundle.completeness.get('census_depth', {}).get('identity_depth_files')}`; BLOCK categories: `{_line(', '.join(bundle.completeness.get('census_depth', {}).get('block_categories', [])) or 'none')}`.
 Lines with explicit unresolved reasons:
 `{parsing.get('lines_with_explicit_unresolved_reasons', 'unknown')}`.
 
@@ -314,6 +316,8 @@ def source_symbol_index(bundle: CompilerBundle) -> dict[str, Any]:
                     "language",
                     "roles",
                     "privacy_exposure",
+                    "census_depth",
+                    "census_depth_reason",
                     "parse_status",
                     "parser",
                     "parser_mode",
@@ -362,7 +366,8 @@ def source_symbol_markdown(index: dict[str, Any]) -> str:
 - Source-tree digest: `{index['source_tree_digest']}`
 - Tracked files: **{len(files)}**
 - Symbols: **{len(symbols)}**
-- Line records: **{index['line_mapping']['record_count']}**
+- Line records: **{index['line_mapping']['record_count']}** (full-depth census only)
+- Identity-depth files (censused, privacy-scanned, not line-mapped): **{sum(1 for item in files if item.get('census_depth') == 'identity')}**
 - Safe source records: **{index['safe_source_text']['record_count']}**
 
 Exact line and safe-source envelopes live in the preservation pack. This
@@ -370,11 +375,18 @@ human index intentionally does not duplicate every source line.
 
 ## Files
 
-| Path | Language | Exposure | Parse status | Nonblank lines |
-|---|---|---|---|---:|
+| Path | Language | Exposure | Census depth | Parse status | Nonblank lines |
+|---|---|---|---|---|---:|
 """
     rows = [
-        f"| `{_line(item.get('path'))}` | `{_line(item.get('language'))}` | `{_line(item.get('privacy_exposure'))}` | `{_line(item.get('parse_status'))}` | {item.get('nonblank_line_count', '')} |"
+        f"| `{_line(item.get('path'))}` | `{_line(item.get('language'))}` | `{_line(item.get('privacy_exposure'))}` | "
+        f"`{_line(item.get('census_depth'))}` | `{_line(item.get('parse_status'))}` | "
+        + (
+            f"{item.get('nonblank_line_count', '')} (not line-mapped: `{_line(item.get('census_depth_reason'))}`)"
+            if item.get("census_depth") == "identity"
+            else f"{item.get('nonblank_line_count', '')}"
+        )
+        + " |"
         for item in files
     ]
     symbol_rows = [
@@ -636,6 +648,22 @@ def self_contained_html(bundle: CompilerBundle, content: ContentBundle) -> bytes
     states = Counter(str(item.get("state", "unknown")) for item in caps)
     search_script = """(()=>{const q=document.querySelector('#q');const rows=[...document.querySelectorAll('[data-search]')];const apply=()=>{const s=q.value.trim().toLowerCase();for(const r of rows)r.hidden=!!s&&!r.dataset.search.includes(s)};q.addEventListener('input',apply)})();"""
     script_hash = base64.b64encode(hashlib.sha256(search_script.encode()).digest()).decode()
+    census_depth = bundle.completeness.get("census_depth") or {}
+    identity_note = (
+        f" {int(census_depth.get('identity_depth_files') or 0)} files under "
+        + html.escape(
+            ", ".join(
+                str(row.get("prefix"))
+                for row in census_depth.get("declarations", [])
+                if isinstance(row, dict) and row.get("tracked_files")
+            )
+        )
+        + " are censused at identity depth only (privacy-scanned, not line-mapped; release block <code>"
+        + html.escape(", ".join(str(item) for item in census_depth.get("block_categories", [])))
+        + "</code>)."
+        if census_depth.get("identity_depth_files")
+        else ""
+    )
     capability_rows = "".join(
         f'<tr data-search="{html.escape((_line(item["id"]) + " " + _line(item["title"]) + " " + _line(item["state"]) + " " + _line(item["domain_ref"])).lower(), quote=True)}"><td><code>{html.escape(item["id"])}</code><br>{html.escape(_line(item["title"]))}</td><td><span class="state {html.escape(item["state"])}">{html.escape(item["state"])}</span></td><td>{html.escape(_line(item.get("current_scope")))}</td><td>{html.escape(", ".join(item.get("gap_refs", [])))}</td></tr>'
         for item in caps
@@ -654,7 +682,7 @@ def self_contained_html(bundle: CompilerBundle, content: ContentBundle) -> bytes
 """.strip()
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow,noarchive"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-{script_hash}'; img-src data:; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"><title>Atlas Master Reference · {bundle.source_commit[:12]}</title><style>{css}</style></head>
-<body><header><div class="eyebrow">Exact-source executive navigation · blocked unsigned preview</div><h1>Orient to the system. Follow the evidence bundle for completeness.</h1><p>Repository commit <code>{bundle.source_commit}</code><br>Source-tree digest <code>{bundle.source_tree_digest}</code></p><p>This self-contained page is the decision-oriented entry point, not the complete Source Explorer. The adjacent offline ZIP carries every safe line/source/symbol compiler record.</p></header><main>
+<body><header><div class="eyebrow">Exact-source executive navigation · blocked unsigned preview</div><h1>Orient to the system. Follow the evidence bundle for completeness.</h1><p>Repository commit <code>{bundle.source_commit}</code><br>Source-tree digest <code>{bundle.source_tree_digest}</code></p><p>This self-contained page is the decision-oriented entry point, not the complete Source Explorer. The adjacent offline ZIP carries every safe line/source/symbol compiler record.{identity_note}</p></header><main>
 <section aria-labelledby="truth"><h2 id="truth">Capability truth</h2><ul class="stats">{state_cards}</ul><p>{len(caps)} classified cells across {len(content.capabilities['domains'])} declared domains. Inclusion is not an implementation claim.</p></section>
 <section aria-labelledby="outcomes"><h2 id="outcomes">Outcome contracts</h2><div class="outcomes">{outcomes}</div></section>
 <label for="q"><h2>Search catalog and gaps</h2></label><input id="q" type="search" autocomplete="off" placeholder="Capability, protocol, design, gap…">
