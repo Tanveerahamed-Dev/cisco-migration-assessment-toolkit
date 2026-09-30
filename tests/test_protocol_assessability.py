@@ -490,6 +490,19 @@ def _is_census_collection(literals):
     return bool(names) and names <= set(_CENSUS_STATES) and bool(names & _CENSUS_ONLY)
 
 
+def _site_label(path):
+    """A scanned file's name in a hit: its repository path when it is inside the repository, else its own path.
+    A file outside the repository (a test's tmp_path) can sit on another Windows drive, where `relpath` raises
+    (the hosted runners check out on D: and keep the temp directory on C:)."""
+    full = os.path.abspath(path)
+    try:
+        rel = os.path.relpath(full, ROOT)
+    except ValueError:                                   # another drive: not in the repository
+        return full.replace(os.sep, "/")
+    outside = rel == os.pardir or rel.startswith(os.pardir + os.sep)
+    return (full if outside else rel).replace(os.sep, "/")
+
+
 def _hand_listed_state_collections(path):
     """(file, line) of every site that ENUMERATES >=2 receipt states outside the one owner table.
 
@@ -498,7 +511,7 @@ def _hand_listed_state_collections(path):
     and a switch / match whose cases name the states. R1V1-4: the collection shape alone missed the
     explorer's `_paTok` ladder, which keeps giving an unlisted state the 'watch' tone after its Sets are
     fixed."""
-    rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+    rel = _site_label(path)
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     hits = []
