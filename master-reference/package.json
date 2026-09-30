@@ -38,8 +38,9 @@
   },
   "overrides": {
     "browserslist": "4.28.7",
-    "fast-uri": "3.1.6",
+    "fast-uri": "3.1.8",
     "nanoid": "3.3.18",
+    "undici": "7.29.1",
     "miniflare@5.20260801.1-alpha": {
       "sharp": "0.35.4"
     },

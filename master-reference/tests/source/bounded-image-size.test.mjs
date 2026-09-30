@@ -152,6 +152,30 @@ test("the exact Miniflare edge resolves only the patched sharp release", () => {
   }
 });
 
+test("the exact Miniflare edge resolves only the patched undici release", () => {
+  // Miniflare 5.20260801.1-alpha pins undici 7.29.0 exactly; every release below 7.29.1 carries
+  // GHSA-r53p-7pc4-xj5r (high) and the related DoS/cache advisories. A global override lifts the
+  // single edge; the Sharp override above stays Miniflare-identity-scoped and unchanged.
+  const manifest = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8"));
+  const lock = JSON.parse(readFileSync(path.join(projectRoot, "package-lock.json"), "utf8"));
+
+  assert.equal(manifest.overrides.undici, "7.29.1");
+  assert.equal(lock.packages["node_modules/miniflare"].dependencies.undici, "7.29.0");
+  assert.deepEqual(
+    Object.entries(lock.packages)
+      .filter(([key]) => key === "node_modules/undici" || key.endsWith("/node_modules/undici"))
+      .map(([key, value]) => ({ path: key, version: value.version })),
+    [{ path: "node_modules/undici", version: "7.29.1" }],
+  );
+
+  const miniflareRequire = createRequire(path.join(projectRoot, "node_modules/miniflare/package.json"));
+  const installedUndici = JSON.parse(readFileSync(
+    path.join(path.dirname(miniflareRequire.resolve("undici/package.json")), "package.json"),
+    "utf8",
+  ));
+  assert.equal(installedUndici.version, "7.29.1");
+});
+
 test("the patched Miniflare sharp edge loads its native binding", async () => {
   const miniflareRequire = createRequire(path.join(projectRoot, "node_modules/miniflare/package.json"));
   const sharpLibrary = miniflareRequire("sharp");
