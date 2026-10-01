@@ -765,6 +765,21 @@ export const VALIDATOR_CASES = [
   { name: "faults as an object keyed by the dimension holding 'B' is a loss (QG-V2)", verdicts: [{ criticId: "k3", perDimension: {}, faults: { composition: "B" } }, {}, { criticId: "k2" }], want: { status: "UNPROVEN", counted: ["k1", "k2"] } },
   { name: "recognized: 'B' (not a boolean) is a possible loss (QG-V2)", verdicts: [{ criticId: "k3", perDimension: {}, recognized: "B" }, {}, { criticId: "k2" }], want: { status: "UNPROVEN", counted: ["k1", "k2"] } },
   { name: "reasons: 'B' (not an array) is a possible loss (QG-V2)", verdicts: [{ criticId: "k3", perDimension: {}, reasons: "B" }, {}, { criticId: "k2" }], want: { status: "UNPROVEN", counted: ["k1", "k2"] } },
+  /* SQG-R2-1: a field is typed by the schema's OWN entry only. A key that names an Object.prototype member
+     (constructor, toString, __proto__, hasOwnProperty, valueOf) once borrowed that member as its "type": a
+     pick under it was never read, or evaluate() threw on real input. Each line is built from JSON TEXT, as
+     readVerdicts builds it — an object literal would turn "__proto__" into a prototype, not a field. */
+  ...[
+    ['{"criticId":"k3","perDimension":{},"constructor":{"pick":"B"}}', "constructor holding {pick: 'B'}"],
+    ['{"criticId":"k3","perDimension":{},"toString":["B"]}', "toString holding ['B']"],
+    ['{"criticId":"k3","perDimension":{},"__proto__":"B"}', "__proto__ holding 'B'"],
+    ['{"criticId":"k3","perDimension":{},"hasOwnProperty":["Panel B"]}', "hasOwnProperty holding ['Panel B']"],
+    ['{"criticId":"k3","perDimension":{},"valueOf":"B"}', "valueOf holding 'B'"],
+  ].map(([text, shown]) => ({
+    name: `a pick under a field named like an Object.prototype member is read: ${shown} is a possible loss (SQG-R2-1)`,
+    verdicts: [JSON.parse(text), {}, { criticId: "k2" }],
+    want: { status: "UNPROVEN", counted: ["k1", "k2"] },
+  })),
   { name: "a non-string reason holding 'B' is a possible loss (QG-V2)", verdicts: [{ criticId: "k3", perDimension: {}, reasons: ["clear", { composition: "B" }] }, {}, { criticId: "k2" }], want: { status: "UNPROVEN", counted: ["k1", "k2"] } },
   { name: "a fault object holding 'B' is a possible loss (QG-V2)", verdicts: [{ criticId: "k3", perDimension: {}, faults: [{ panel: "B" }] }, {}, { criticId: "k2" }], want: { status: "UNPROVEN", counted: ["k1", "k2"] } },
   { name: "recognizedAs as an object holding 'B' is a possible loss (QG-V2)", verdicts: [{ criticId: "k3", perDimension: {}, recognizedAs: { composition: "B" } }, {}, { criticId: "k2" }], want: { status: "UNPROVEN", counted: ["k1", "k2"] } },
@@ -942,8 +957,10 @@ const carries = (x) =>
 
 /** The TYPE each schema field other than perDimension must have (verdictShapeProblems checks the same
     types, plus the consistency rules). A value of the wrong type is a shape the validator cannot
-    interpret, so it may hold a pick (QG-V2). */
-const FIELD_TYPE_OK = {
+    interpret, so it may hold a pick (QG-V2). The table has NO prototype and is read only through an own
+    entry (fieldTypeOf): a critic-supplied key such as "constructor" or "__proto__" must find no type here,
+    never a borrowed Object.prototype member (SQG-R2-1). */
+const FIELD_TYPE_OK = Object.assign(Object.create(null), {
   sheetSha: (x) => typeof x === "string",
   oursSha: (x) => typeof x === "string",
   refSha: (x) => typeof x === "string",
@@ -954,7 +971,9 @@ const FIELD_TYPE_OK = {
   recognizedAs: (x) => x === null || typeof x === "string",
   reasons: (x) => Array.isArray(x) && x.every((r) => typeof r === "string"),
   faults: (x) => Array.isArray(x) && x.every((r) => typeof r === "string"),
-};
+});
+/** The schema type of a critic-supplied field name, or null for any name the schema does not define. */
+const fieldTypeOf = (k) => (Object.hasOwn(FIELD_TYPE_OK, k) ? FIELD_TYPE_OK[k] : null);
 /** Every carrying LEAF of a value (objects and arrays recursed; a leaf past a depth of 16 is the
     remaining value itself), each with where it was found. Every object KEY on the way is handed to
     `onKey(key, where)`, whatever its value carries (SQG-V7: {B: null} names a pick by its key). */
@@ -1037,7 +1056,7 @@ export function pickValues(v, dimension) {
   for (const k of Object.keys(v ?? {})) {
     typedString(k, `key ${JSON.stringify(k)}`);
     if (k === "perDimension") continue;
-    const typed = FIELD_TYPE_OK[k];
+    const typed = fieldTypeOf(k);
     const list = (k === "reasons" || k === "faults") && Array.isArray(v[k]);
     if (list) {
       /* In a reasons or faults ARRAY only the non-string elements are the uninterpretable shape; its
