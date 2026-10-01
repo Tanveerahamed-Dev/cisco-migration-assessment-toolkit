@@ -1,6 +1,6 @@
 # W2b engine defects: validation and integration handoff (2026-10-01)
 
-**Partial: implementation and related validation complete; integration and push remain gated.**
+**Partial: implementation and related validation complete; integration waits for W1 and W2a.**
 Branch: `fix/engine-contract-defects`, continuing interrupted checkpoint `3cb8891d`.
 Design owner: `docs/engine-defects-design-2026-10-01.md`. Queue owner: `docs/NOW.md`.
 
@@ -63,12 +63,13 @@ invented input shapes; the coverage and rendering assertions are retained.
   eight linked-worktree environmental failures were not rerun or silently counted as passes.
 - Graph navigation used the canonical checkout as a lead. No graph/vault refresh, W1 branch,
   W1 folder, device, release, qualification, signing or publication action was performed.
-- Mandatory privacy verifier: **failed** on pre-existing untracked `.codex/hooks.json` containing
-  absolute machine paths. No push attempted. A narrow local hook-path repair is awaiting owner
-  approval because the board does not list that tooling change. `.agents/` and `.codex/` remain
-  preserved and excluded from staging.
+- Initial mandatory privacy verifier: **failed** on pre-existing untracked `.codex/hooks.json`
+  containing absolute machine paths. The owner subsequently approved the six-command path-only
+  repair and branch push. The repair is now applied; the repository verifier and history marker
+  scan both pass. Fresh successful gate reruns are required immediately before publication.
+  `.agents/` and `.codex/` remain preserved and excluded from staging.
 
-### Read-only preparation of the pending hook-path repair
+### Approved local hook-path repair
 
 The configuration has six absolute script paths (the initial approval question said seven):
 `vault-guard.sh`, `vault-guard-bash.sh`, `session-brief.sh`, `scorecard-append.sh`,
@@ -76,10 +77,13 @@ The configuration has six absolute script paths (the initial approval question s
 the root folder and `docs/`; all six targets are readable and byte-identical to their existing
 `.claude/hooks/` counterparts. No hook was executed.
 
-The proposed replacement for each command is the following, with `SCRIPT` replaced by its
+The applied replacement for each command is the following, with `SCRIPT` replaced by its
 existing filename. Root/path resolution failures remain nonzero for every hook; the script's
 own exit code propagates. No matcher, timeout, status message, script bytes, or working
-directory changes. A backup and exact JSON comparison are required before applying it.
+directory changes. A byte-identical backup and repair receipt were saved outside the checkout;
+independent structural and textual comparisons confirmed exactly six command-value changes.
+The configuration remains untracked. Repository-root resolution follows the
+[official hook guidance](https://learn.chatgpt.com/docs/hooks).
 
 ```sh
 _atlas_hook_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 2
@@ -93,18 +97,18 @@ fail-open conditions are not changed or represented as closed. In particular, do
 `session-brief.sh` for validation because it reads the vault log. Static inspection confirms
 the graph-refresh hook stops at this linked worktree's `.git` file before graph mutation.
 
-### Post-merge verification still in progress
+### Post-merge verification complete for docs-only #581
 
-On merged #581 commit `497e26b6`, hosted run `36858426410` is still executing its Windows
-test job and run `36858426344` is still building the Master Reference artifact family. Other
-CI jobs have passed. These are verified live waits, not terminal passes. #579 remains open
-and behind main, and local commit `ebb5a368` remains unpushed pending the privacy-gate repair.
+On merged #581 commit `497e26b653d2053aaefc8ab8381c921c68ba7321`, hosted CI run
+`36858426410` and Master Reference run `36858426344` both completed with **success**.
+These results apply to that docs-only merged-main source, not the unmerged W2b implementation.
+W1 has advanced to `0345eb1d`, but #579 remains open; W2a and final W2b integration still wait.
 
 ## Exact next action
 
-1. If authorized, repair only the local hook script paths with a backup and prove equivalent
-   Git-root resolution. Rerun the privacy verifier, scan every `origin/main..HEAD` commit message
-   and patch with `_client_marker_patterns()`, and gate the push on both exit codes.
+1. The owner authorizes publishing `fix/engine-contract-defects`. Rerun the privacy verifier,
+   scan every `origin/main..HEAD` commit message and patch with `_client_marker_patterns()`,
+   and gate the push on both exit codes. Keep local hook configuration untracked.
 2. W1's owning session updates and merges #579; this session does not modify that workstream.
 3. In the listed W2a folder, merge main with a merge commit, project the three evidence fields,
    run all gates, make #580 ready, and merge only its green exact head.

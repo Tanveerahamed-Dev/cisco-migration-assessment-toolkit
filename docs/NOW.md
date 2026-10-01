@@ -98,6 +98,12 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
 
 ## Handoff log (newest first)
 
+- 2026-10-01, Codex (approved W2 publication):
+  - Owner approved the six-command path-only repair and push of `fix/engine-contract-defects`. Repaired only the untracked hook command values, preserved an external local backup, and independently verified six syntax checks plus 12 path-resolution probes; no hooks executed.
+  - Repository privacy verifier and full new-commit message/patch marker scan passed. Publication is authorized and gated on fresh successful reruns; local tooling stays untracked.
+  - #581 exact-main CI `36858426410` and Master Reference `36858426344` both completed successfully on `497e26b6`.
+  - W1 advanced to `0345eb1d`; #579 remains unmerged. W2a implementation and W2b golden/sample regeneration remain held for its merge.
+
 - 2026-10-01, Codex (W2 blocked audit):
   - The same hook-repair approval and W1 merge dependency remain after three consecutive goal turns. #579 is still open/behind; the local hook marker is still present. Goal marked blocked, not complete.
   - The fixes and handoff are committed locally; no push is permitted until the mandatory privacy verifier passes. The existing approval request remains pending.
@@ -150,7 +156,7 @@ board edits. **W2 is now held by Codex.** Claude Code has stopped all W2 work, s
 | Item | Branch / PR | Folder to open (Codex: Local mode, that folder) | State (2026-10-01) | Next step |
 |---|---|---|---|---|
 | W2a: `ui_projection` slice 2 (Inventory, device page, Findings) | `feat/ui-projection-slice2`, draft PR #580 | `.claude/worktrees/ui-projection-2` | Built, refuted, gates green. HELD until #579 merges: its tripwire test fails once #579's `evidence_refs` / `evidence_basis` / `deduction_refs` fields land. | After #579 merges: merge `origin/main` (merge commit), project those three fields so the tripwire passes, run every gate, mark ready, merge. |
-| W2b: engine defects G13 (move-group label), G15 (STP root uniqueness), G49 (dossier absence semantics) | `fix/engine-contract-defects`, new fixes local, no PR yet | `.claude/worktrees/engine-defects` | **BLOCKED pending owner hook-path approval and W1 merge.** Codex completed the checkpoint and independent refutation; final related suite **1,022 passed**, ruff / CI mypy / frontend type check pass. Golden run: **4 failed, 17 passed**, refresh deliberately deferred. **Push blocked:** mandatory privacy verifier rejects pre-existing untracked `.codex/hooks.json`; path-only repair approval requested. See `docs/engine-defects-validation-2026-10-01.md`. | Approve the local hook-path repair, rerun both public-repo gates and push. After W1 merges #579: finish/merge W2a first, merge `origin/main` here with a merge commit, regenerate golden + sheet schema + sample ONCE with LF bytes, run all gates, open and merge W2b when CI is green. |
+| W2b: engine defects G13 (move-group label), G15 (STP root uniqueness), G49 (dossier absence semantics) | `fix/engine-contract-defects`, push authorized, no PR yet | `.claude/worktrees/engine-defects` | **HELD for W1 merge.** Codex completed the checkpoint and independent refutation; final related suite **1,022 passed**, ruff / CI mypy / frontend type check pass. Golden run: **4 failed, 17 passed**, refresh deliberately deferred. Owner approved the six-command local hook-path repair; it is applied and independently checked. Both public-repo privacy gates passed; rerun immediately before push. See `docs/engine-defects-validation-2026-10-01.md`. | After W1 merges #579: finish/merge W2a first, merge `origin/main` here with a merge commit, regenerate golden + sheet schema + sample ONCE with LF bytes, run all gates, open and merge W2b when CI is green. |
 | W2c: backend endpoint + first real screens | not started | none yet | Waits for W2a | A FastAPI endpoint serving `ui_projection` (paged, declared response models), then the AssessHub Overview / Trust / Inventory + device / Findings screens rendering only contract envelopes. The private prototype (v2) is the visual reference, and `docs/one-app-contract-gaps-2026-09-30.md` ranks the engine gaps. |
 
 **Not W2's (do not touch):** W1 / PR #579 (Atlas Scope) belongs to its own Claude Code session. It is green on
