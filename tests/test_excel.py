@@ -275,6 +275,58 @@ def test_l3_forwarding_never_stamps_ok_when_show_track_was_not_collected():
     assert all(r["tracking"] == HEALTH_NOT_OBSERVED for r in rows)  # blind spot, not a blank
 
 
+def _two_core_svis(vid, first, second):
+    return {"CORE1": {f"Vlan{vid}": _iface(f"Vlan{vid}", svi_ip=first)},
+            "CORE2": {f"Vlan{vid}": _iface(f"Vlan{vid}", svi_ip=second)}}
+
+
+def test_no_fhrp_is_not_raised_on_a_transit_subnet_whose_every_host_address_is_a_collected_svi():
+    """A /30 or /31 whose every usable address is itself a collected SVI address (core1 .1, core2 .2) leaves no
+    address free for a host, so no host can use a gateway there: a structural transit segment, not a missing
+    FHRP. Derived from the subnet size and the collected addresses -- never from a VLAN name or number list."""
+    from cisco_toolkit.excel import write_l3_forwarding_sheet
+
+    def risks(ifaces):
+        return {r["switch"]: r["risk"] for r in write_l3_forwarding_sheet(harden_workbook(Workbook()), ifaces, {})}
+
+    for first, second in (("10.0.199.1 255.255.255.252", "10.0.199.2/30"),     # both spellings the parser emits
+                          ("10.0.199.0/31", "10.0.199.1 255.255.255.254"),
+                          ("10.0.199.1/30", "10.0.199.2/30")):
+        got = risks(_two_core_svis(900, first, second))
+        assert not any("no-FHRP" in r for r in got.values()), (first, second, got)
+        # the VLAN number is irrelevant: the same transit on another VLAN is judged the same way
+        got = risks(_two_core_svis(12, first, second))
+        assert not any("no-FHRP" in r for r in got.values()), (first, second, got)
+    # a subnet with a free host address still needs first-hop redundancy
+    for first, second in (("10.0.199.1/29", "10.0.199.2/29"),             # /29: .3-.6 free for hosts
+                          ("10.0.10.2 255.255.255.0", "10.0.10.3/24"),
+                          ("10.0.199.1/30", "10.0.198.2/30")):            # different subnets: not one transit
+        got = risks(_two_core_svis(900, first, second))
+        assert any("no-FHRP" in r for r in got.values()), (first, second, got)
+    # a gateway whose own address was not collected cannot prove the subnet has no free host address
+    unaddressed = _two_core_svis(900, "10.0.199.1/30", "")
+    unaddressed["CORE2"]["Vlan900"] = _iface("Vlan900", subnet_primary_route="10.0.199.0/30")
+    got = risks(unaddressed)
+    assert any("no-FHRP" in r for r in got.values()), got
+
+
+def test_gateway_redundancy_finding_is_not_raised_on_a_transit_subnet():
+    """The same transit rule reaches analyze.compute_findings' split-gateway finding (one class, one owner:
+    analyze.svi_subnet_leaves_no_host_address)."""
+    from cisco_toolkit.analyze import compute_findings, svi_subnet_leaves_no_host_address
+
+    def gateway_findings(ifaces):
+        return [f for f in compute_findings(ifaces) if f[1] == "Gateway redundancy"]
+
+    assert gateway_findings(_two_core_svis(900, "10.0.199.1 255.255.255.252", "10.0.199.2/30")) == []
+    assert gateway_findings(_two_core_svis(900, "10.0.199.1/29", "10.0.199.2/29"))
+    assert svi_subnet_leaves_no_host_address(["10.0.199.1/30", "10.0.199.2/30"]) is True
+    assert svi_subnet_leaves_no_host_address(["10.0.199.1/30"]) is False
+    assert svi_subnet_leaves_no_host_address(["10.0.199.1/30", "10.0.199.2/30", "garbage"]) is False
+    assert svi_subnet_leaves_no_host_address(["2001:db8::/127", "2001:db8::1/127"]) is True
+    assert svi_subnet_leaves_no_host_address(["10.0.0.1/8", "10.0.0.2/8"]) is False
+
+
 def test_capacity_keeps_an_observed_zero_apart_from_never_observed():
     """[review #55] compute_capacity's own comment keeps `active_ports is None` (NOT observed) apart from a
     real 0, then `active or ""` threw it away -- emitting the blank the docstring reserves for unknown while

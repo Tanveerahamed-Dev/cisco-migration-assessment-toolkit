@@ -780,6 +780,27 @@ function DeliverablesPanel({ snapId }: { snapId: number }) {
   );
 }
 
+// "Open in Atlas Scope": a plain top-level link, never a sandboxed iframe (the explorer's pattern) —
+// Atlas Scope is a multi-file module app that fetches /api/snapshots/{id}/raw, and from an opaque
+// sandbox origin its module scripts would need CORS and that fetch would be refused as cross-site.
+// Rendered ONLY from the server's scope-view capability, whose `href` is the one owner of the link
+// target: while it loads, when it fails, or when the server says the view is unavailable (no /scope
+// build, or one withdrawn for embedding client evidence) there is no link at all — never a dead one.
+function AtlasScopeLink({ snapId }: { snapId: number }) {
+  const { data, error, loading } = useAsync(() => api.scopeView(snapId), [snapId]);
+  // useAsync keeps the previous snapshot's data while a new id loads or after it fails, so only a
+  // settled, successful read for THIS snapshot may produce a link. (Defensive: today the page shows
+  // <Loading/> on an id change, which remounts this component with no data — the snapshot-switch
+  // test in Snapshot.test.tsx pins the outcome, not this line.)
+  const href = !loading && !error && data?.available === true ? data.href : null;
+  if (typeof href !== "string" || !href.startsWith("/scope/")) return null;
+  return (
+    <a className="btn" href={href} title={data?.detail}>
+      ⬡ Open in Atlas Scope
+    </a>
+  );
+}
+
 export default function SnapshotPage() {
   const { id } = useParams();
   const sid = Number(id);
@@ -831,6 +852,7 @@ export default function SnapshotPage() {
           </div>
         </div>
         <span style={{ flex: 1 }} />
+        <AtlasScopeLink snapId={sid} />
         <a className="btn" href={api.explorerUrl(sid)} target="_blank" rel="noreferrer">↗ Explorer (new tab)</a>
         <button className="btn primary" aria-expanded={showExplorer} onClick={() => setShowExplorer((v) => !v)}>{showExplorer ? "Hide" : "◈ Open"} explorer</button>
       </div>

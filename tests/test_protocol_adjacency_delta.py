@@ -39,6 +39,7 @@ def _capture_state(state: str) -> str:
         "partial": "usable",
         "captured_no_record": "usable",
         "captured_empty": "empty",
+        "not_running": "usable",
         "capture_error": "error",
         "not_collected": "missing",
         "analysis_unavailable": "missing",
@@ -55,6 +56,7 @@ def _receipt(host: str, states: dict[str, str]) -> dict:
             "partial",
             "captured_no_record",
             "captured_empty",
+            "not_running",
             "capture_error",
             "not_collected",
             "analysis_unavailable",
@@ -64,17 +66,19 @@ def _receipt(host: str, states: dict[str, str]) -> dict:
         state = states.get(family, "not_collected")
         capture = _capture_state(state)
         by_state[state] += 1
-        rows.append(
-            {
-                "switch": host,
-                "protocol": family,
-                "input_states": {name: capture for name in INPUT_IDS[family]},
-                "capture_state": capture,
-                "health_row_emitted": state == "assessed",
-                "state": state,
-                "reason": f"fixture: {state}",
-            }
-        )
+        row = {
+            "switch": host,
+            "protocol": family,
+            "input_states": {name: capture for name in INPUT_IDS[family]},
+            "capture_state": capture,
+            "health_row_emitted": state == "assessed",
+            "state": state,
+            "reason": f"fixture: {state}",
+        }
+        if state == "not_running":
+            row["banner_evidence"] = [{"input": "peers", "command": "show ip bgp summary",
+                                       "banner": "% BGP not active"}]
+        rows.append(row)
     return {
         "schema": "protocol_assessability/1",
         "families": [{"protocol": family} for family in FAMILIES],
@@ -354,6 +358,32 @@ def test_assessed_emitted_cell_with_trimmed_peer_projection_is_a_coverage_gap():
     assert both_trimmed["summary"]["n_coverage_gaps"] == 1
     assert "before receipt is assessed with an emitted health row" in both_trimmed["coverage_gaps"][0]["reason"]
     assert "after receipt is assessed with an emitted health row" in both_trimmed["coverage_gaps"][0]["reason"]
+
+
+def test_a_not_running_cell_is_a_valid_receipt_state_not_a_receipt_wide_rejection():
+    """R1V-5: one cited vendor no-process banner (BGP not running on a host) is a member of the engine's
+    state vocabulary. It must not invalidate the whole receipt and turn every other compared cell into
+    REVIEW; the OSPF peer on the same host stays comparable and preserved."""
+    before = _snap(ospf=[_ospf("10.0.0.2")], states={"BGP": "not_running"})
+    after = deepcopy(before)
+
+    delta = compute_protocol_adjacency_delta(before, after)
+
+    assert delta["coverage_gaps"] == [], delta["coverage_gaps"]
+    assert delta["gate"] == "PASS" and delta["assessed"] is True
+    assert delta["summary"]["n_preserved"] == 1
+
+
+def test_a_baseline_peer_whose_protocol_is_later_not_running_is_never_comparable_as_assessed():
+    before = _snap(bgp=[_bgp("192.0.2.2", "12")])
+    after = _snap(states={"BGP": "not_running"})
+
+    delta = compute_protocol_adjacency_delta(before, after)
+
+    (gap,) = delta["coverage_gaps"]
+    assert (gap["switch"], gap["protocol"], gap["after_state"]) == ("core1", "BGP", "not_running")
+    assert "not running" in gap["reason"] and "% BGP not active" in gap["reason"]
+    assert delta["gate"] != "PASS"
 
 
 def test_down_peer_recovery_is_reported_without_a_regression_gate():

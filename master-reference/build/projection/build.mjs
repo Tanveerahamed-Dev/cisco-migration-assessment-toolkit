@@ -70,12 +70,14 @@ const FORBIDDEN_CONTENT_SCAN_KEYS = Object.freeze([
   "unresolved_reasons",
 ]);
 const REQUIRED_INVARIANTS = Object.freeze([
+  "every_identity_depth_file_declared_privacy_scanned_and_unprojected",
   "every_safe_line_structurally_mapped",
   "every_safe_parsed_source_has_one_structural_root",
   "every_gui_surface_has_standardized_evidence_honest_dossier",
   "graphify_receipt_exact_source_bound",
 ]);
 const REQUIRED_ACCEPTANCE_GATES = Object.freeze([
+  "every_tracked_text_file_line_censused",
   "architecture_contract_declared_and_conformant",
   "runtime_architecture_edges_observed_and_reconciled",
   "every_symbol_has_dossier_fields",
@@ -262,7 +264,7 @@ export const COMPILER_RECORD_KEYS_BY_GROUP = Object.freeze(Object.fromEntries(
     datasets: "content_digest entity_type file_id format id path size_bytes structured_record_count",
     dependencies: "constraint ecosystem entity_type file_id id name path resolved_version scope",
     documents: "entity_type file_id id line_count path status status_reasons title",
-    files: "classification_errors content_digest content_source documentation_status documentation_status_reasons entity_type git_blob_oid git_mode git_stage id language line_count media_type nonblank_line_count parse_status parser parser_mode parser_version path privacy_exposure privacy_reasons roles size_bytes unresolved_reasons",
+    files: "census_depth census_depth_reason classification_errors content_digest content_source documentation_status documentation_status_reasons entity_type git_blob_oid git_mode git_stage id language line_count media_type nonblank_line_count parse_status parser parser_mode parser_version path privacy_exposure privacy_reasons roles size_bytes unresolved_reasons",
     graph_edges: "confidence coordinate_occurrence entity_type extraction_mode id relation source source_file source_location target unresolved_reasons",
     graph_nodes: "community coordinate_occurrence entity_type extraction_mode file_id file_type graphify_id id kind label language origin source_file source_location unresolved_reasons",
     imports: "alias containing_symbol entity_type file_id id kind module names path range unresolved_reasons",
@@ -650,6 +652,107 @@ function validatePassedForbiddenContentScan(completeness, files) {
   ) {
     throw new Error("compiler privacy scan is absent, malformed, incomplete, or failed");
   }
+}
+
+const CENSUS_DEPTH_KEYS = Object.freeze([
+  "block_categories",
+  "claim",
+  "declarations",
+  "deferred_record_groups",
+  "full_depth_files",
+  "identity_depth_files",
+  "identity_depth_nonblank_lines_deferred",
+  "identity_depth_text_files",
+  "policy_owner",
+  "retained_record_groups",
+  "status",
+]);
+const CENSUS_DEPTH_DECLARATION_KEYS = Object.freeze([
+  "block_category",
+  "census_depth",
+  "content_bytes",
+  "deferred_nonblank_lines",
+  "deferred_physical_lines",
+  "follow_up_owner",
+  "metadata_only_files",
+  "prefix",
+  "privacy_scanned_text_files",
+  "reason",
+  "retained_import_records",
+  "text_files",
+  "tracked_files",
+]);
+
+// The compiler's census-depth receipt names every declared identity-depth
+// prefix (its single owner is compiler/policy.py; the release rejoins it to
+// that owner).  The projection reconciles every file against the receipt so an
+// identity-depth file can only ever render as identity-only: never as missing,
+// never as line-covered, and never under an undeclared prefix.
+export function validateCensusDepth(completeness, files) {
+  const receipt = completeness.census_depth;
+  const fail = () => {
+    throw new Error("compiler census-depth receipt is absent, malformed, or differs from the file census");
+  };
+  if (!hasExactKeys(receipt, CENSUS_DEPTH_KEYS) || !Array.isArray(receipt.declarations)) fail();
+  const declarations = receipt.declarations;
+  for (const row of declarations) {
+    if (
+      !hasExactKeys(row, CENSUS_DEPTH_DECLARATION_KEYS) ||
+      typeof row.prefix !== "string" ||
+      !row.prefix.endsWith("/") ||
+      row.census_depth !== "identity" ||
+      !isNonblankString(row.reason) ||
+      !isNonblankString(row.block_category) ||
+      !isNonblankString(row.follow_up_owner)
+    ) fail();
+  }
+  const identity = [];
+  let full = 0;
+  for (const file of files) {
+    const matches = declarations.filter((row) => file.path.startsWith(row.prefix));
+    if (matches.length > 1) fail();
+    if (matches.length === 1) {
+      if (
+        file.censusDepth !== "identity" ||
+        file.censusDepthReason !== matches[0].reason ||
+        file.parseStatus === "parsed"
+      ) fail();
+      identity.push(file);
+    } else {
+      if (file.censusDepth !== "full" || file.censusDepthReason !== null || file.parseStatus === "identity_census") {
+        fail();
+      }
+      full += 1;
+    }
+  }
+  const active = new Set();
+  for (const row of declarations) {
+    const members = identity.filter((file) => file.path.startsWith(row.prefix));
+    const text = members.filter((file) =>
+      file.privacyExposure === "full" && file.language !== "binary" && typeof file.contentDigest === "string");
+    const nonblank = text.reduce((total, file) => total + requireCount(file.nonblankLineCount, "identity nonblank"), 0);
+    if (
+      row.tracked_files !== members.length ||
+      row.text_files !== text.length ||
+      row.privacy_scanned_text_files !== text.length ||
+      row.deferred_nonblank_lines !== nonblank
+    ) fail();
+    if (members.length) active.add(row.block_category);
+  }
+  const identityText = identity.filter((file) =>
+    file.privacyExposure === "full" && file.language !== "binary" && typeof file.contentDigest === "string");
+  if (
+    receipt.identity_depth_files !== identity.length ||
+    receipt.full_depth_files !== full ||
+    receipt.identity_depth_text_files !== identityText.length ||
+    receipt.identity_depth_nonblank_lines_deferred !==
+      identityText.reduce((total, file) => total + file.nonblankLineCount, 0) ||
+    receipt.status !== (identity.length ? "identity_depth_deferred" : "full_depth") ||
+    stableJson(receipt.block_categories) !== stableJson([...active].sort())
+  ) fail();
+  const gate = completeness.acceptance_gates?.find((item) => item?.name === "every_tracked_text_file_line_censused");
+  if (!gate || (identityText.length > 0 && gate.passed !== false)) fail();
+  return receipt;
 }
 
 function isNonblankString(value) {
@@ -1698,6 +1801,10 @@ function compactRecord(group, record) {
       contentSource: record.content_source ?? null,
       privacyExposure: record.privacy_exposure ?? "metadata_only",
       privacyReasons: record.privacy_reasons ?? [],
+      // No default: a file without an explicit compiler census depth is
+      // refused by validateCensusDepth rather than rendered as covered.
+      censusDepth: record.census_depth,
+      censusDepthReason: record.census_depth_reason ?? null,
       parseStatus: record.parse_status ?? "unknown",
       parser: record.parser ?? null,
       parserMode: record.parser_mode ?? null,
@@ -3285,6 +3392,7 @@ async function writeSourceProjection({
   const expectedSourcePaths = new Set(
     [...filesByPath.values()]
       .filter((file) =>
+        file.censusDepth === "full" &&
         file.privacyExposure === "full" &&
         file.language !== "binary" &&
         typeof file.contentDigest === "string" &&
@@ -3306,6 +3414,9 @@ async function writeSourceProjection({
       const file = filesByPath.get(record.path);
       if (!file || file.privacyExposure !== "full") {
         throw new Error(`source text violates privacy exposure for ${record.path}`);
+      }
+      if (file.censusDepth !== "full") {
+        throw new Error(`source text exists for an identity-depth file: ${record.path}`);
       }
       if (
         record.file_id !== file.id ||
@@ -4498,6 +4609,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
     throw new Error("tracked/classified file denominator differs from the compiler file group");
   }
   validatePassedForbiddenContentScan(completeness, [...filesByPath.values()]);
+  validateCensusDepth(completeness, [...filesByPath.values()]);
   const safeParsedFiles = [...filesByPath.values()].filter((file) =>
     file.privacyExposure === "full" &&
     file.parseStatus === "parsed" &&
@@ -4557,6 +4669,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
       if (
         !file ||
         file.privacyExposure !== "full" ||
+        file.censusDepth !== "full" ||
         record.file_id !== file.id ||
         !Number.isSafeInteger(record.line) ||
         record.line < 1 ||
@@ -4609,10 +4722,14 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
       loadedLineCount += 1;
     },
   });
-  const expectedNonblankLines = groups.files.reduce(
-    (total, file) => total + requireCount(file.nonblankLineCount, `file nonblank_line_count ${file.path}`),
-    0,
-  );
+  // The line denominator is the full-depth census.  Identity-depth files keep
+  // their real counts and are accounted for by validateCensusDepth instead.
+  const expectedNonblankLines = groups.files
+    .filter((file) => file.censusDepth === "full")
+    .reduce(
+      (total, file) => total + requireCount(file.nonblankLineCount, `file nonblank_line_count ${file.path}`),
+      0,
+    );
   const lineInvariant = invariantByName.get("every_safe_line_structurally_mapped");
   if (
     loadedLineCount !== manifest.groups.lines.record_count ||
@@ -4686,6 +4803,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
         : "consequential_claim_contract_absent",
   });
   const expectedSourceFiles = [...filesByPath.values()].filter((file) =>
+    file.censusDepth === "full" &&
     file.privacyExposure === "full" &&
     file.language !== "binary" &&
     typeof file.contentDigest === "string" &&
@@ -4909,6 +5027,7 @@ async function buildProjectionUnsafe({ input, output, allowPreview = false }, li
       graphLoading: "bounded_summary_then_selected_community_shards",
       oversizedRecordLoading: "lossless_content_hashed_utf8_fragments_reassembled_on_demand",
       restrictedContent: "metadata_only_never_embedded",
+      identityDepthContent: "identity_depth_files_are_privacy_scanned_and_censused_but_never_line_projected",
       semanticLimit: "structural mapping is not behavioral or verified understanding",
     },
   };

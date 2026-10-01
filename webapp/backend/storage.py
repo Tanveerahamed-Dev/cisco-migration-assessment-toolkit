@@ -25,7 +25,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -801,6 +801,9 @@ class Store:
         # mtime BEFORE we connect: it decides backup freshness, and opening may recover a journal.
         db_mtime = dbfile.stat().st_mtime if dbfile.is_file() else None
         self._lock = threading.Lock()
+        # Observers of the persisted snapshot-blob digest, called by add_snapshot — the ONE insert
+        # into `snapshots` — before its commit (see add_snapshot_digest_observer).
+        self._snapshot_digest_observers: List[Callable[[str], None]] = []
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
@@ -1334,6 +1337,13 @@ class Store:
                        VALUES (?,?,?,?,?,?)""",
                     (sid, 1, *limbs),
                 )
+                if self._snapshot_digest_observers:
+                    # BEFORE the commit, so an observer that must react to this digest (the
+                    # /scope privacy withdrawal) has reacted before the row is readable; an
+                    # observer that raises rolls the insert back (fail closed).
+                    blob_digest = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+                    for observer in tuple(self._snapshot_digest_observers):
+                        observer(blob_digest)
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()
@@ -1382,14 +1392,40 @@ class Store:
             ).fetchone()
         return json.loads(row["snapshot_json"]) if row else None
 
-    def get_bound_snapshot(
-            self, snapshot_id: int) -> Optional[tuple[Dict[str, Any], Dict[str, str]]]:
-        """Read one snapshot and bind its parsed object to the exact persisted JSON bytes.
+    def add_snapshot_digest_observer(self, observer: Callable[[str], None]) -> None:
+        """Call ``observer(sha256_hex)`` with the persisted blob digest of every snapshot this Store
+        inserts from now on — the same digest ``get_snapshot_blob`` reports as its binding.
 
-        Original upload/archive bytes are not retained. The authoritative webapp compare/trend
-        input is therefore the blob in ``snapshots.snapshot_json``. Both parsing and SHA-256 consume
-        the same byte sequence from this single database read.
-        """
+        It hangs off ``add_snapshot`` because that is the only statement that inserts into
+        ``snapshots``: every upload, ingest and demo route reaches the store through it, so an
+        observer here sees the whole class of writes rather than a list of routes."""
+        self._snapshot_digest_observers.append(observer)
+
+    def stored_snapshot_blob_digests(self) -> frozenset[str]:
+        """The sha256 hex of every persisted snapshot blob (one full read per row)."""
+        return self.snapshot_blob_digests_after(0)[1]
+
+    def snapshot_blob_digests_after(self, after_id: int) -> tuple[int, frozenset[str]]:
+        """``(highest id seen, sha256 hex of every persisted blob with id > after_id)`` — digests
+        only, never snapshot content.
+
+        This is how a reader sees inserts committed by ANOTHER Store or process on the same database,
+        which never reach this Store's ``add_snapshot_digest_observer``: keep the returned id as the
+        next ``after_id``. ``snapshots.id`` is AUTOINCREMENT (never reused) and SQLite serialises
+        writers, so no committed row can appear below a watermark already returned. With nothing
+        new it is one primary-key range probe, cheap enough for a request path."""
+        highest = int(after_id)
+        digests = set()
+        with self._lock:
+            cursor = self._conn.execute(
+                """SELECT id, CAST(snapshot_json AS BLOB) AS snapshot_blob FROM snapshots
+                   WHERE id > ? ORDER BY id""", (highest,))
+            for row in cursor:
+                highest = max(highest, int(row["id"]))
+                digests.add(hashlib.sha256(_snapshot_blob_bytes(row["snapshot_blob"])).hexdigest())
+        return highest, frozenset(digests)
+
+    def _bound_snapshot_row(self, snapshot_id: int) -> Optional[sqlite3.Row]:
         with self._lock:
             row = self._conn.execute(
                 """SELECT s.id AS snapshot_id, s.campaign_id, i.engagement_id,
@@ -1406,13 +1442,34 @@ class Store:
                    LEFT JOIN snapshot_authority sa ON sa.snapshot_id=s.id
                    WHERE s.id = ?""", (snapshot_id,)
             ).fetchone()
-        if row is None:
-            return None
-        if not _snapshot_authority_row_valid(row):
+        if row is not None and not _snapshot_authority_row_valid(row):
             raise ExecutionReceiptAuthorityError(
                 "snapshot source authority does not reconcile with exact persisted bytes"
             )
-        raw, binding = _snapshot_binding_from_row(row)
+        return row
+
+    def get_snapshot_blob(self, snapshot_id: int) -> Optional[tuple[bytes, Dict[str, Any]]]:
+        """The exact persisted snapshot bytes and their binding, unparsed (or None).
+
+        The same authority check as ``get_bound_snapshot`` applies: bytes whose persisted
+        authority digest no longer reconciles raise instead of being handed out as evidence."""
+        row = self._bound_snapshot_row(snapshot_id)
+        if row is None:
+            return None
+        return _snapshot_binding_from_row(row)
+
+    def get_bound_snapshot(
+            self, snapshot_id: int) -> Optional[tuple[Dict[str, Any], Dict[str, str]]]:
+        """Read one snapshot and bind its parsed object to the exact persisted JSON bytes.
+
+        Original upload/archive bytes are not retained. The authoritative webapp compare/trend
+        input is therefore the blob in ``snapshots.snapshot_json``. Both parsing and SHA-256 consume
+        the same byte sequence from this single database read.
+        """
+        blob = self.get_snapshot_blob(snapshot_id)
+        if blob is None:
+            return None
+        raw, binding = blob
         from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
         return (
             bind_snapshot_json_bytes(raw),

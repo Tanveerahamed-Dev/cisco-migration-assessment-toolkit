@@ -128,6 +128,16 @@ behavior. The compiler may therefore prove 100% tracked-file, exact-line, root,
 and structural-mapping coverage while still blocking behavioral, runtime,
 executed-coverage, binary-review, or Level-4 claims.
 
+Census depth is declared in exactly one place,
+`compiler/policy.py::CENSUS_DEPTH_DECLARATIONS`. A declared prefix is censused at
+`identity` depth: its files keep their file record (path, Git blob, digest, size,
+classification, architecture disposition), static imports, and the full privacy
+decision over their complete bytes, but emit no line, symbol, call, structured,
+source-text or dossier records. The line and source denominators above are then
+the full-depth census; `completeness.json` `census_depth` accounts for every
+deferred file and line, the `every_tracked_text_file_line_censused` acceptance gate
+fails, and the release manifest carries the declaration's named BLOCK category.
+
 The required `consequential_claim_facets` group emits one schema-validated,
 payload-omitting fingerprint record for each field-atomic candidate in the bounded
 curated-content census. Its manifest receipt is the count owner; the records

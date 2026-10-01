@@ -1,0 +1,196 @@
+/**
+ * cited-text.tsx — a sentence and the citations inside it, rendered as one thing.
+ *
+ * The engine writes its claims and caveats as prose with the record behind each clause named in
+ * parentheses — "denied at core1 by ACL PROTECT_SERVERS line 4 of 4 (acls.core1.PROTECT_SERVERS[3]…)".
+ * A surface that printed that prose as a plain string showed the citation as inert text, and a
+ * sentence that was ASSEMBLED from cited records without carrying their cites (the RIB-incompleteness
+ * sentence joined each reason's `label` and dropped its `cite`) showed a claim with nothing behind it
+ * at all: on the Path surface "FULL/DR, yet the table" appeared five times and its citations, which the
+ * model held, appeared zero times (acceptance B6, refuter, 2026-09-24).
+ *
+ * `CitedText` renders every citation IN the sentence as the same citation control every other surface
+ * uses, in place, so the reader opens the record from the clause it backs. What counts as a citation
+ * is decided by the compiled model, never by a list of names or shapes: a token is a citation exactly
+ * when `citationCandidates` (./Inspector.tsx — the resolver the Inspector itself uses) finds a record
+ * for it. A path-shaped token that resolves to nothing stays text, and a resolvable path is never
+ * missed because its shape was not anticipated.
+ *
+ * `citesIn` exposes the same split, so a guard can count citations PER CLAIM rather than per page.
+ */
+import { Fragment, type ReactElement } from "react";
+import type { Cite } from "../core/types";
+import { Cite as CiteLink } from "../ui/primitives";
+import { citationCandidates } from "./Inspector";
+
+/* One path segment chain: an identifier followed by `.member`, `[index]` / `[key=value]` or
+   `#sidecar-path` parts. Interface names carry `/` (`interfaces.core1.Gi1/0/5`). */
+const SEGMENT = String.raw`[A-Za-z_][\w-]*(?:\.[A-Za-z0-9_/-]*[A-Za-z0-9_]|\[[^\]\s]+\]|#[A-Za-z_][\w-]*)*`;
+/* The engine's own citation grammar: an RFC 6901 JSON Pointer (`/security/core1/findings/8`,
+   `/interfaces/core1/Gi1~10~19`), which every finding's `evidence_refs` carries and the model projects under
+   (Fabric.evidenceRecords). One is a whole token, not preceded by a word character, a slash or a pointer
+   character — so `10.0.0.0/24`, `and/or` and the `//` of a URL never start one — and it ends at white space
+   or punctuation that cannot be inside it. Tried FIRST at each position: its segments would otherwise be
+   read as bare words ("health_scores" in `/health_scores/3` names a different record, the whole list). */
+const POINTER = String.raw`(?<![\w/~.-])/[^\s/"'()<>[\]{},;]+(?:/[^\s/"'()<>[\]{},;]*)*`;
+/* A citation may join two record names with " / " — the snapshot's coverage record is cited as
+   `collection_completeness / coverage_matrix`. The joined form is tried first, then each part. */
+const JOINED = String.raw`${SEGMENT}(?:\s/\s${SEGMENT})*`;
+const CANDIDATE = new RegExp(String.raw`${POINTER}|${JOINED}`, "g");
+/* The dotted grammar alone, anchored at one position: what a slash that did NOT start a carried pointer may
+   hold instead (`punchlist[0]/punchlist[1]`). */
+const JOINED_AT = new RegExp(JOINED, "y");
+
+/* A bare identifier ("routes", "coverage", "devices") is an English word as often as it is a model
+   key, so a candidate must carry path structure before resolution is even asked. A pointer is path
+   structure by its grammar. */
+const PATH_SHAPED = /[.[#_]|\s\/\s|^\//;
+
+const resolves = (token: string): boolean => PATH_SHAPED.test(token) && citationCandidates(token).length > 0;
+
+/**
+ * A pointer at the end of a sentence carries the sentence's full stop ("…at /interfaces/core1/Vlan30.") — a
+ * character a pointer may contain — so the token is tried as written, then without trailing sentence
+ * punctuation. The resolver still decides; this only offers it the token a reader means.
+ */
+const pointerCitation = (token: string): string | null => {
+  if (resolves(token)) return token;
+  const trimmed = token.replace(/[.:!?]+$/, "");
+  return trimmed !== token && trimmed.length > 1 && resolves(trimmed) ? trimmed : null;
+};
+
+export type CitedPart = { text: string } | { cite: Cite };
+
+/** Split prose into text runs and the citations inside it, in order. Concatenating the parts'
+ *  `text`/`cite` reproduces the input exactly. */
+export function splitCited(text: string): CitedPart[] {
+  const out: CitedPart[] = [];
+  let at = 0;
+  const push = (s: string): void => {
+    if (s === "") return;
+    const last = out[out.length - 1];
+    if (last !== undefined && "text" in last) last.text += s;
+    else out.push({ text: s });
+  };
+  const re = new RegExp(CANDIDATE.source, "g");
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    let start = m.index;
+    let whole = m[0];
+    if (whole.startsWith("/")) {
+      const cite = pointerCitation(whole);
+      if (cite !== null) {
+        push(text.slice(at, start));
+        out.push({ cite });
+        at = start + cite.length;
+        continue;
+      }
+      /* The slash starts no pointer the model carries. Its own segments are not read as bare records (the
+         pointer grammar is tried first for exactly that), but where the DOTTED grammar reads on past the point
+         the pointer grammar stopped — `/punchlist[1]` stops at "[" — the text is a dotted citation after a
+         slash, and skipping the whole token lost it (verifier P3A1-V1-3). */
+      JOINED_AT.lastIndex = start + 1;
+      const d = JOINED_AT.exec(text);
+      if (d === null || start + 1 + d[0].length <= start + whole.length) continue;
+      start += 1;
+      whole = d[0];
+      re.lastIndex = start + whole.length;
+    }
+    if (resolves(whole)) {
+      push(text.slice(at, start));
+      out.push({ cite: whole });
+      at = start + whole.length;
+      continue;
+    }
+    /* The joined form did not resolve: try each " / " part on its own. */
+    let offset = 0;
+    for (const part of whole.split(" / ")) {
+      const partStart = start + offset;
+      if (resolves(part)) {
+        push(text.slice(at, partStart));
+        out.push({ cite: part });
+        at = partStart + part.length;
+      }
+      offset += part.length + 3;
+    }
+  }
+  push(text.slice(at));
+  return out;
+}
+
+/** The citations a sentence carries, in order, as the resolver finds them. */
+export function citesIn(text: string): Cite[] {
+  return splitCited(text).flatMap((p) => ("cite" in p ? [p.cite] : []));
+}
+
+/** True when the Inspector, opened at `cite`, would show the record at `modelPath` (the resolver's own answer). */
+export function citeShows(cite: string, modelPath: string): boolean {
+  return cite === modelPath || citationCandidates(cite).includes(modelPath);
+}
+
+/* There is deliberately no "unresolved paths" counterpart to `citesIn`. One existed for a few hours
+   (wave 7 residuals) so the JSON tree could say "X names no record in this model"; an independent
+   verifier found 78 rows of fabric.json carrying that sentence, many about data that IS in the model
+   (ACL rows, MAC addresses, host names, version strings). Path SHAPE is a guess about a string, and
+   "no record" is a claim about the whole model; a surface states only what the resolver found. */
+
+/**
+ * The sentence with its citations taken OUT, for a place where a citation cannot be a working control:
+ * a `role="option"` row, whose activation runs something else and which may not contain a control
+ * (the command palette's suggested flows, acceptance B6). Printing the record there would name it
+ * where choosing it opens nothing. The same resolver decides what is a citation, so nothing
+ * citation-shaped survives and no ordinary word is cut. A bracket that held only citations goes with
+ * them; a citation listed beside other words in a bracket leaves the words; a citation that is a
+ * noun of the sentence ("acls.core1.X[2] could match this flow") becomes "the cited record", so the
+ * sentence keeps its subject.
+ */
+export function withoutCitations(text: string): string {
+  const MARK = "\u0000";
+  const SEP = String.raw`\s*(?:,|;|\/|and)\s*`;
+  return splitCited(text)
+    .map((p) => ("cite" in p ? MARK : p.text))
+    .join("")
+    .replace(new RegExp(String.raw`\s*\(\s*${MARK}(?:${SEP}${MARK})*\s*\)`, "g"), "")
+    .replace(new RegExp(String.raw`\(\s*${MARK}${SEP}`, "g"), "(")
+    .replace(new RegExp(String.raw`${SEP}${MARK}\s*\)`, "g"), ")")
+    .replace(new RegExp(MARK, "g"), (_m, at: number, all: string) =>
+      /(?:^|[.!?]\s+)$/.test(all.slice(0, at)) ? "The cited record" : "the cited record",
+    )
+    .trim();
+}
+
+/**
+ * Prose with every citation inside it rendered as a citation control, in place. `also` names
+ * citations that back the sentence but are not written in it (a structured record's `cite` beside its
+ * label); each one the text does not already carry is rendered after the text, so a sentence is never
+ * shown without the record behind it.
+ */
+export function CitedText({
+  text,
+  onOpenCite,
+  also = [],
+}: {
+  text: string;
+  onOpenCite: (cite: Cite) => void;
+  also?: readonly Cite[];
+}): ReactElement {
+  const parts = splitCited(text);
+  const inline = new Set(parts.flatMap((p) => ("cite" in p ? [p.cite] : [])));
+  const extra = [...new Set(also)].filter((c) => !inline.has(c));
+  return (
+    <>
+      {parts.map((p, i) =>
+        "cite" in p ? (
+          <CiteLink key={i} cite={p.cite} onOpen={onOpenCite} className="cited-text__cite" />
+        ) : (
+          <Fragment key={i}>{p.text}</Fragment>
+        ),
+      )}
+      {extra.map((c) => (
+        <Fragment key={`also-${c}`}>
+          {" "}
+          <CiteLink cite={c} onOpen={onOpenCite} className="cited-text__cite" />
+        </Fragment>
+      ))}
+    </>
+  );
+}

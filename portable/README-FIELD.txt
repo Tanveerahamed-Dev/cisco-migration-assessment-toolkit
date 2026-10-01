@@ -13,6 +13,22 @@ FIRST RUN / EVERY ENGAGEMENT START
 Everything the app stores lives in  Atlas\data\  beside the exe. That is
 the ONLY writable folder - updates replace everything else wholesale.
 
+ATLAS SCOPE (THE 3-D VIEW OF A SNAPSHOT)
+----------------------------------------
+On a snapshot's page in the cockpit, click "Open in Atlas Scope". The
+same snapshot opens as a 3-D investigation view in the same browser, at
+/scope/snapshots/<id>/ on the Atlas address. The view reads that
+snapshot from Atlas when the page opens: nothing is copied off the
+stick and nothing is sent anywhere else. It is read-only - it cannot
+change the snapshot or anything else Atlas stores.
+No link on the page means this build cannot show the view; everything
+else still works without it. On the stick, the --selftest line
+"atlas-scope-dist" must read [ ok ] - if it says FAIL, the stick is
+damaged or incomplete: update it (see UPDATE).
+The view draws what the collection recorded. A device, link or finding
+the collection did not see is simply not there - an empty or quiet
+view is NOT a clean bill of health.
+
 LOSS OF STICK (prepare BEFORE the first engagement)
 ---------------------------------------------------
 Client evidence lives on this stick; a lost unencrypted stick is a

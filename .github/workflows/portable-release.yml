@@ -138,7 +138,9 @@ jobs:
         with:
           node-version: "24.19.0"
           cache: npm
-          cache-dependency-path: webapp/frontend/package-lock.json
+          cache-dependency-path: |
+            webapp/frontend/package-lock.json
+            atlas-scope/package-lock.json
       - name: Verify pinned npm bytes and rebuild the tracked AssessHub frontend
         shell: pwsh
         run: |
@@ -166,6 +168,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           Set-Location ../..
           git diff --exit-code -- webapp/frontend/dist
+      # The bundle ships Atlas Scope's hub build as its own member (portable/atlas_bundle.py
+      # SCOPE_DIST_SOURCE -> atlas_scope_dist), and atlas.spec refuses to build without it. It is
+      # untracked build output, so it is produced here from the locked atlas-scope toolchain with the
+      # same verified npm; the frozen --selftest then requires AssessHub to serve it ([ ok ]).
+      - name: Build the Atlas Scope hub build the bundle serves at /scope
+        shell: pwsh
+        run: |
+          $npmRoot = Join-Path $env:RUNNER_TEMP 'atlas-npm-bin\node_modules\npm'
+          $npmCli = Join-Path $npmRoot 'bin\npm-cli.js'
+          if ((& node $npmCli --version) -ne '11.16.0') { throw 'verified npm version mismatch' }
+          Set-Location atlas-scope
+          & node $npmCli ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & node $npmCli run build:hub
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Test-Path -LiteralPath dist-hub/index.html -PathType Leaf)) { throw 'npm run build:hub wrote no dist-hub/index.html' }
+          if (Get-ChildItem -LiteralPath dist-hub -Recurse -File -Filter '*.map') { throw 'the hub build carries sourcemaps' }
       - name: Create isolated hash-locked build environment
         shell: pwsh
         run: |
@@ -180,7 +199,7 @@ jobs:
       - name: Prove preparation did not change tracked source
         shell: pwsh
         run: |
-          python .github/scripts/verify_checkout_immutable.py --expected-commit '${{ steps.source.outputs.commit }}' --expected-tree '${{ steps.source.outputs.tree }}' --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix portable/build --allow-untracked-prefix portable/dist
+          python .github/scripts/verify_checkout_immutable.py --expected-commit '${{ steps.source.outputs.commit }}' --expected-tree '${{ steps.source.outputs.tree }}' --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix atlas-scope/node_modules --allow-untracked-prefix atlas-scope/dist-hub --allow-untracked-prefix portable/build --allow-untracked-prefix portable/dist
       - name: Build, smoke, qualify, package, and reopen Atlas portable
         shell: pwsh
         run: |
@@ -190,7 +209,7 @@ jobs:
       - name: Prove build did not change tracked source
         shell: pwsh
         run: |
-          python .github/scripts/verify_checkout_immutable.py --expected-commit '${{ steps.source.outputs.commit }}' --expected-tree '${{ steps.source.outputs.tree }}' --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix portable/build --allow-untracked-prefix portable/dist
+          python .github/scripts/verify_checkout_immutable.py --expected-commit '${{ steps.source.outputs.commit }}' --expected-tree '${{ steps.source.outputs.tree }}' --allow-untracked-prefix webapp/frontend/node_modules --allow-untracked-prefix atlas-scope/node_modules --allow-untracked-prefix atlas-scope/dist-hub --allow-untracked-prefix portable/build --allow-untracked-prefix portable/dist
       - name: Upload exact portable candidate evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

@@ -1,0 +1,83 @@
+name: atlas-scope-ci
+
+# Atlas Scope (atlas-scope/, the 3-D investigation view AssessHub serves at /scope) has its own Node
+# toolchain and test suite. This workflow runs them whenever the app, its lock, or this file changes.
+# It is not a required check. Whether AssessHub SERVES the hub build it produces (the /scope
+# privacy-by-construction refusals, the markup read the way Chromium reads it, the one-door link) is
+# pinned by webapp/tests/test_scope_mount.py, which this job ALSO runs against the hub build it just
+# made: webapp-ci's path filter and classifier do not select a change confined to atlas-scope/**, so
+# without this step such a change would never meet the check that it is still servable (P3F-V2-2).
+# That step sets ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN=1, ATLAS_SCOPE_REQUIRE_HUB_BUILD=1 and
+# ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE=1, so a missing prerequisite (node, the hub build, the oracle's
+# Chromium) fails instead of skipping.
+on:
+  push:
+    branches: [main]
+    paths: ["atlas-scope/**", "webapp/sample_data/sample_fleet.snapshot.json", ".github/workflows/atlas-scope-ci.yml"]
+  pull_request:
+    paths: ["atlas-scope/**", "webapp/sample_data/sample_fleet.snapshot.json", ".github/workflows/atlas-scope-ci.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atlas-scope-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Pull-request code is isolated on GitHub-hosted runners. Action revisions are immutable,
+# while the comments retain the human-readable upstream release that each commit represents.
+jobs:
+  atlas-scope:
+    name: Atlas Scope typecheck + vitest + build + hub build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: atlas-scope
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: atlas-scope/package-lock.json
+      - name: Install the locked toolchain
+        run: npm ci
+      - name: Type-check the app, its scripts and its build config
+        run: npm run typecheck
+      - name: Unit and contract tests (vitest)
+        run: npm test
+      - name: Standalone build (the bundled sample fleet, dist/)
+        run: npm run build
+      - name: AssessHub hub build (base /scope/, no compiled dataset, no sourcemaps, dist-hub/)
+        run: npm run build:hub
+      - name: Require the hub build AssessHub serves by default
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist-hub/index.html || { echo "npm run build:hub wrote no dist-hub/index.html" >&2; exit 1; }
+          if find dist-hub -iname '*.map' | grep -q .; then
+            echo "the hub build carries sourcemaps; AssessHub bundles and serves it without them" >&2
+            exit 1
+          fi
+          grep -q 'name="atlas-scope-snapshot-source" content="assesshub-api-runtime"' dist-hub/index.html \
+            || { echo "dist-hub/index.html does not declare the runtime snapshot source" >&2; exit 1; }
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install AssessHub and its test dependencies
+        working-directory: .
+        run: python -m pip install -e ".[dev]"
+      - name: Install Playwright Chromium (the /scope markup oracle)
+        run: npx playwright install --with-deps chromium
+      - name: AssessHub serves this hub build at /scope (every /scope refusal and pin)
+        working-directory: .
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+          ATLAS_SCOPE_REQUIRE_HUB_BUILD: "1"
+          ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "1"
+        run: python -m pytest webapp/tests/test_scope_mount.py -q

@@ -168,6 +168,31 @@ def test_protocol_runtime_receipt_is_mounted_and_fails_closed():
         assert f'"{family}"' in runtime_block
 
 
+def test_explorer_receipt_vocabulary_is_rendered_from_the_engine_owner(tmp_path):
+    """R1V-5: the template carries no state list of its own. The renderer fills its one slot with analyze's
+    state -> conclusion map, so a state the engine adds (not_running) reaches the page; an unrendered template
+    has an empty vocabulary and every receipt fails closed."""
+    from cisco_toolkit.analyze import PROTOCOL_ASSESSABILITY_STATES, _protocol_assessability_conclusion
+    from cisco_toolkit.html import ENGINE_PA_CONCLUSIONS_MARKER, _render_engine_vocabulary, write_html_explorer
+
+    raw = _html()
+    assert raw.count(ENGINE_PA_CONCLUSIONS_MARKER) == 1
+    expected = {s: _protocol_assessability_conclusion(s) for s in PROTOCOL_ASSESSABILITY_STATES}
+    rendered = _render_engine_vocabulary(raw)
+    assert ENGINE_PA_CONCLUSIONS_MARKER not in rendered
+    assert "not_running" in expected and expected["not_running"] == "not_running"
+    slot = re.search(r"const ENGINE_PA_CONCLUSIONS=Object\.freeze\((\{.*?\})\);", rendered)
+    assert slot and json.loads(slot.group(1)) == expected
+    assert _render_engine_vocabulary(raw.replace(ENGINE_PA_CONCLUSIONS_MARKER, "{}")) is None
+    assert _render_engine_vocabulary(raw + ENGINE_PA_CONCLUSIONS_MARKER) is None
+
+    out = tmp_path / "explorer.html"
+    write_html_explorer(str(out), {"devices": {}}, "t")
+    page = out.read_text(encoding="utf-8")
+    assert ENGINE_PA_CONCLUSIONS_MARKER not in page
+    assert json.loads(re.search(r"const ENGINE_PA_CONCLUSIONS=Object\.freeze\((\{.*?\})\);", page).group(1)) == expected
+
+
 def test_protocol_receipt_keeps_sparse_health_and_evidence_state_orthogonal():
     html = _html()
     receipt_block = html[html.index("function protocolAssessability()"):
@@ -175,7 +200,10 @@ def test_protocol_receipt_keeps_sparse_health_and_evidence_state_orthogonal():
     assert "health_row_emitted" not in receipt_block, (
         "the explorer must render the producer-owned assessment state, not reconstruct it from health rows"
     )
-    assert 'r.state!=="assessed"' in receipt_block
+    # Read through the engine's conclusion class (R1V-5), never a binary `state!=="assessed"` split that would
+    # file a cited vendor no-process banner (not_running) as a coverage gap.
+    assert "_paConclusion(r.state)" in receipt_block and "_paIsGap" in receipt_block
+    assert 'r.state!=="assessed"' not in receipt_block and 'r.state==="assessed"' not in receipt_block
     assert "input_states" in receipt_block
     assert "Sparse health rows do not prove coverage for this device" in receipt_block
 
@@ -276,7 +304,7 @@ def test_compare_retains_second_snapshot_and_mounts_protocol_change_gate():
 
     core = html[html.index("function _padReceiptView(snap)"):
                 html.index("/* REASONING-CORE-PORT END")]
-    assert 'state==="assessed"&&row.health_row_emitted!==true' in core
+    assert '_paConclusion(state)==="assessed"&&row.health_row_emitted!==true' in core
     assert "protocol assessability marks a cell assessed without an emitted health row" in core
     assert "routing-neighbor projection has zero peers" in core
 
@@ -288,12 +316,16 @@ def _pad_receipt(host, states):
     rows = []
     for family in _PAD_FAMILIES:
         state = states.get(family, "not_collected")
-        rows.append({
+        row = {
             "switch": host,
             "protocol": family,
             "state": state,
             "health_row_emitted": state == "assessed",
-        })
+        }
+        if state == "not_running":
+            row["banner_evidence"] = [{"input": "peers", "command": "show ip bgp summary",
+                                       "banner": "% BGP not active"}]
+        rows.append(row)
     return {
         "schema": "protocol_assessability/1",
         "families": [{"protocol": family} for family in _PAD_FAMILIES],
@@ -362,8 +394,11 @@ def _protocol_delta_cases():
         bgp=[],
         states={"BGP": "assessed"},
     )
+    bgp_not_running = _pad_snap(ospf=[_ospf("10.0.0.2")], states={"BGP": "not_running"})
     return {
         "unchanged": [unchanged, unchanged],
+        "not_running_elsewhere_keeps_the_receipt_valid": [bgp_not_running, bgp_not_running],
+        "baseline_peer_then_not_running": [bgp_before, _pad_snap(states={"BGP": "not_running"})],
         "ospf_degraded": [unchanged, degraded],
         "ospf_two_way_acceptable": [unchanged, _pad_snap(ospf=[_ospf("10.0.0.2", "2WAY/DROTHER")])],
         "bgp_prefix_count_churn": [bgp_before, _pad_snap(bgp=[_bgp("192.0.2.2", "37")])],
@@ -386,7 +421,12 @@ def _protocol_delta_cases():
 
 
 def _extract_reasoning_core():
-    html = _html()
+    # The page as the engine RENDERS it: the vocabulary slot filled from analyze (the owner), exactly as
+    # write_html_explorer does. The raw template deliberately carries no vocabulary.
+    from cisco_toolkit.html import _render_engine_vocabulary
+
+    html = _render_engine_vocabulary(_html())
+    assert html is not None, "the explorer template lost its engine vocabulary slot"
     match = re.search(r"REASONING-CORE-PORT START.*?REASONING-CORE-PORT END", html, re.S)
     assert match, "explorer is missing its executable reasoning-core markers"
     block = match.group(0)
@@ -440,6 +480,12 @@ def test_protocol_compare_js_matches_python_public_semantics(tmp_path):
         ipv6 = expected[name]
         assert ipv6["gate"] == "PASS" and ipv6["summary"]["n_preserved"] == 1
         assert ipv6["summary"]["n_added"] == ipv6["summary"]["n_no_longer_observed"] == 0
+
+    elsewhere = expected["not_running_elsewhere_keeps_the_receipt_valid"]
+    assert elsewhere["gate"] == "PASS" and elsewhere["coverage_gaps"] == []
+    gone = expected["baseline_peer_then_not_running"]
+    assert gone["gate"] != "PASS"
+    assert "not running on this host (cited banner: % BGP not active)" in gone["coverage_gaps"][0]["reason"]
 
     eigrp_prefix = expected["eigrp_prefix_collision"]
     assert eigrp_prefix["gate"] == "REVIEW"

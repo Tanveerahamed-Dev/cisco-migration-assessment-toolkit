@@ -1,0 +1,51 @@
+{
+  /* The build/data scripts, type-checked for real.
+   *
+   * `tsconfig.json` lists "tools" and "e2e" in its `include`, which READS as coverage and is not:
+   * `allowJs` is off, so `npx tsc -p tsconfig.json --noEmit --listFiles` returns 77 entries and not
+   * one of them is a .mjs file, and `e2e/` does not exist at all. The F1 evidence command therefore
+   * says nothing whatever about `tools/compile-snapshot.mjs` — the only bridge between the
+   * assessment snapshot and everything the UI renders.
+   *
+   * This config is the coverage that claim implies. `src/core/scripts-typecheck.test.ts` runs it,
+   * so it is a gate rather than a file someone might remember to invoke.
+   *
+   * WHAT IS OUT OF SCOPE, measured rather than waved at. `review/*.mjs` is NOT included: checking
+   * the six tracked harnesses under the same settings produces 19 diagnostics, all of one shape —
+   * code inside `page.evaluate()` runs in the BROWSER, so it legitimately names `window`,
+   * `document` and the harness globals (`__atlasScene`, `__ev`, `__long`) that a Node type
+   * environment has never heard of, and Playwright's option unions reject the plain strings those
+   * scripts build viewports from. Fixing that is annotation work in files another review lane is
+   * actively editing, so it is named here instead of being silently implied. Re-measured 2026-09-23
+   * under THIS project's full settings (strict incl. noImplicitAny, noUncheckedIndexedAccess, checkJs):
+   * 919 diagnostics across 14 of the 17 tracked harnesses. `src/core/scripts-typecheck.test.ts`
+   * requires every other authored .ts/.tsx/.mjs/.js in the tree to be in some root tsconfig*.json;
+   * `review/*.mjs` is the one declared exclusion. The runner/bundler configs are in
+   * tsconfig.config.json.
+   *
+   * THIS PROJECT IS FULLY `strict`, noImplicitAny included (since 2026-09-22). Until then it ran
+   * strict minus noImplicitAny: measured 2026-09-21 with `--noImplicitAny`, 18 diagnostics, all in
+   * `tools/compile-snapshot.mjs` (12 TS7006 unannotated parameter, 6 TS7053 implicit index). That
+   * file is now JSDoc-annotated — with src/data/fabric.json hashed before and after to prove the
+   * compiled output byte-identical — and the flag is on. `src/core/scripts-typecheck.test.ts`
+   * asserts both that this config does not relax it and that a program built with it FORCED on
+   * reports nothing, so a future `"noImplicitAny": false` cannot hide a regression.
+   * `noUncheckedIndexedAccess` is on too (0 diagnostics), matching tsconfig.json.
+   */
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
+    "allowJs": true,
+    "checkJs": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["tools/**/*.mjs"]
+}

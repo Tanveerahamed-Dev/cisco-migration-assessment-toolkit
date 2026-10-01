@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { proofCardCoverageNote } from "./CoverageNotes.mjs";
 import { humanBytes, loadProjection, shortDigest, sourceHref } from "./SourceExplorerData";
 import type { ProjectionLoadState, SourceFileRecord } from "./SourceExplorerTypes";
 import styles from "./SourceExplorer.module.css";
@@ -116,6 +117,8 @@ export function SourceExplorer({
   const projection = loadState.module.projection;
   const census = projection.completeness.census;
   const recordCounts = projection.completeness.record_counts;
+  const censusDepth = projection.completeness.census_depth;
+  const identityDeclarations = censusDepth?.declarations.filter((row) => row.tracked_files > 0) ?? [];
   return (
     <div>
       <div className={styles.notice}>
@@ -136,12 +139,12 @@ export function SourceExplorer({
         <article className={styles.proofCard}>
           <strong>{recordCounts.lines?.toLocaleString() ?? "—"}</strong>
           <span>Nonblank lines mapped</span>
-          <small>Exact denominator from completeness ledger</small>
+          <small>{proofCardCoverageNote("lines", censusDepth, recordCounts)}</small>
         </article>
         <article className={styles.proofCard}>
           <strong>{recordCounts.symbols?.toLocaleString() ?? "—"}</strong>
           <span>Symbols</span>
-          <small>{recordCounts.tests?.toLocaleString() ?? "—"} declared tests</small>
+          <small>{proofCardCoverageNote("symbols", censusDepth, recordCounts)}</small>
         </article>
         <article className={styles.proofCard}>
           <strong>{projection.completeness.invariants.filter((item) => item.passed).length}</strong>
@@ -149,6 +152,22 @@ export function SourceExplorer({
           <small>Tree {shortDigest(projection.sourceTreeDigest)}</small>
         </article>
       </div>
+
+      {identityDeclarations.length ? (
+        <div className={styles.notice} role="note">
+          <strong>Identity-only census</strong>
+          <span>
+            {identityDeclarations.map((row) => (
+              <span key={row.prefix}>
+                <code>{row.prefix}</code>: {row.tracked_files.toLocaleString()} files censused by path, Git blob,
+                digest, size, classification and imports, and privacy-scanned in full — but not line-mapped
+                ({row.deferred_nonblank_lines.toLocaleString()} nonblank lines deferred, <code>{row.reason}</code>;
+                follow-up: {row.follow_up_owner}; release block <code>{row.block_category}</code>).{" "}
+              </span>
+            ))}
+          </span>
+        </div>
+      ) : null}
 
       <div className={styles.controls} aria-label="Source filters">
         <label>
@@ -211,8 +230,15 @@ export function SourceExplorer({
                     </span>
                     <span>{file.language}</span>
                     <span>{file.lineCount.toLocaleString()} lines · {humanBytes(file.sizeBytes)}</span>
-                    <span className={styles.badge} data-state={file.privacyExposure}>
-                      {file.privacyExposure === "full" ? file.parseStatus : file.privacyExposure}
+                    <span
+                      className={styles.badge}
+                      data-state={file.censusDepth === "identity" ? "identity" : file.privacyExposure}
+                    >
+                      {file.censusDepth === "identity"
+                        ? "identity only · not line-mapped"
+                        : file.privacyExposure === "full"
+                          ? file.parseStatus
+                          : file.privacyExposure}
                     </span>
                   </a>
                 ))}

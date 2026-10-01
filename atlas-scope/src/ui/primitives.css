@@ -1,0 +1,1236 @@
+/*
+ * primitives.css — the visual layer of the component vocabulary.
+ *
+ * Every value here resolves to a token in src/core/tokens.css. There is no hex literal, no px
+ * font-size and no bare duration in this file, and there must never be one: a literal colour in a
+ * component is how a design system stops being one.
+ *
+ * The restraint is deliberate and it is the product's whole argument. No gradient is used as
+ * decoration. No drop shadow appears on anything that is not actually floating. Corners are 3 or
+ * 5px, not inflated. Chrome is achromatic: --accent appears on the brand mark, the primary
+ * action, link emphasis and the active tab underline, and nowhere else. Hover is a fill change,
+ * never a border change and never a lift. Colour appears only where it carries meaning, so that
+ * a Critical finding is the loudest thing on screen.
+ */
+
+/* `position: fixed` with an explicit anchor, NOT `absolute` with none.
+   An absolutely-positioned box with no offsets keeps its STATIC position, and its containing
+   block is the nearest positioned ancestor — the initial containing block when there is none. A
+   visually-hidden span emitted deep inside a tall scroller (a grid body 7,000px long) therefore
+   landed at its static page offset, escaped every `overflow` clip on the way up (a scroller does
+   not clip a descendant it is not the containing block of), and stretched the document to 3,493px
+   against a 1,080px viewport — which let the whole application scroll and carried the header and
+   the coverage status bar off screen.
+   Fixed positioning takes the box out of document flow AND out of the document's scrollable area
+   in every containing block, so no future use of this utility can reintroduce that. It is still
+   in DOM order, so screen readers announce it exactly as before. */
+.visually-hidden {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ══ wrapping: prose and identifiers ═══════════════════════════════════════
+   ONE OWNER for where text may break (acceptance C2, 2026-09-22). There are two kinds of inline
+   text in this product and they break by different rules:
+
+   PROSE breaks at spaces. `overflow-wrap: anywhere` on a prose-bearing block is how a sentence
+   carrying an identifier printed "(num_power_supplie / s)": `anywhere` licenses a break between ANY
+   two characters, and it is INHERITED, so a block set it once for its longest token and every
+   identifier inside the sentence inherited a licence to split between two letters. No prose block
+   sets it any more.
+
+   IDENTIFIERS (code, cite and config tokens: `num_power_supplies`, `acls.core1.PROTECT_SERVERS[3]`,
+   `10.0.10.50`) break only at a `_ . / -` boundary, or not at all. `overflow-wrap: normal` IS that
+   rule in CSS: the UAX #14 break opportunities inside such a token are after `-` and `/`; `_` and
+   `.` between letters give none, so the token moves to the next line whole. Declared here on the
+   elements that carry identifiers (the <code>/<kbd>/<samp> elements, and every `*mono*` class, the
+   monospace face being this design system's mark for a machine token), so an identifier cannot
+   inherit `anywhere` from whatever block it sits in.
+
+   The one exception is an UNBREAKABLE-TOKEN CONTAINER: a box that holds a single token longer than
+   its column with no boundary a reader could accept (a sha256), where the only alternative to a
+   last-resort break is painting past the pane. Such a container may set `overflow-wrap: anywhere`,
+   and every one that does says so in a comment next to it, in the words UNBREAKABLE-TOKEN
+   CONTAINER. A token that no longer splits must still FIT: the part holding it needs a floor no
+   narrower than its longest token (see .ui-notobs__why), or a <wbr> after each separator.
+
+   Enforced by review/capture.mjs, not by this comment: `text` reports a line break inside a token
+   with no boundary character on either side (`mid-identifier`, or `mid-word` for a plain word),
+   including one that falls between two text nodes, and a line that runs past its block's content
+   edge (`overrun`); `wrap` fails any token-break licence in src/ without the words above; and
+   `selftest` proves each of those detectors still fires on a layout whose answer is known. */
+:where(code, kbd, samp, [class*="mono"]) {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+/* ══ not observed ══════════════════════════════════════════════════════════
+   THE most important treatment in the system. Four channels carry it: the --unobserved ink, a
+   DASHED edge (no other chip in this app is dashed), a 45-degree HATCH fill, and the literal
+   words. Remove any one of them and a reader can mistake "we never collected this" for either
+   "zero" or "fine". The dashed edge is not a style choice. */
+.ui-notobs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--row-hop-sub);
+  padding: 0 var(--sp-1);
+  border: 1px dashed var(--unobserved-edge);
+  border-radius: var(--radius-sm);
+  background-image: var(--unobserved-hatch);
+  color: var(--unobserved);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-0);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  vertical-align: baseline;
+  /* THE PARTS WRAP AS WHOLE PIECES, never squeeze (acceptance C2, 2026-09-22). With a reason and a
+     citation beside the words, this box is three flex items in one row, and inside a narrow value
+     column (the path trace's DECIDED BY, a device fact) each one shrank to its minimum: the reason
+     broke mid-word ("collecte / d for") and the citation wrapped into a two-character column
+     ("co / ll / ec / ti / on"). The box now wraps its parts onto new lines and gives each part a
+     floor (below), so a part that cannot keep a readable measure beside the others moves under
+     them instead. One rule here, for every surface that says "not observed". */
+  flex-wrap: wrap;
+  row-gap: 0;
+  max-inline-size: 100%;
+}
+
+.ui-notobs__glyph {
+  width: 0.75em;
+  height: 0.75em;
+}
+
+/* The reason ALWAYS takes a line of its own, under the words: its basis is the whole box (100%), so
+   a wrapping flex line can never hold it beside them. WHERE the reason goes is decided by the box's
+   structure, never by the reason's text.
+   It used to be `flex: 1 1 16ch` with the minimum at the reason's longest token, which placed a
+   reason BESIDE the words when that token fitted there and UNDER them when it did not — so two
+   adjacent rows of the same kind laid out two different ways (acceptance C2, 2026-09-23: on
+   `?d=core1` at 1440 "Power supplies" stacked, 76px tall, and "Modules" beside, 106px, because
+   "(num_power_supplies)" did not fit beside "not observed" and "(num_modules)" did). The minimum is
+   still `auto` — the longest unbreakable token — which is what keeps an identifier from running past
+   the dashed rim: an identifier no longer splits between two letters (see "wrapping" above), so the
+   line it sits on must be at least as wide as it is. */
+.ui-notobs__why {
+  flex: 1 1 100%;
+  color: var(--text-muted);
+  font-weight: var(--fw-regular);
+  white-space: normal;
+  /* The collector's reason is prose and is kept verbatim; it wraps rather than truncating,
+     because a truncated reason is not a reason. */
+}
+
+/* Compact drops the REASON and tightens the box. It never drops the words: a dashed frame on its
+   own is a shape a reader has to guess at, and guessing is how absence becomes health. */
+.ui-notobs--compact {
+  min-height: 1rem;
+  padding: 0 3px;
+  gap: 2px;
+}
+
+/* ══ buttons ══════════════════════════════════════════════════════════════ */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 1.75rem; /* 28px — clears the 24px target floor with room for a 1px edge */
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-instant) linear,
+    color var(--dur-instant) linear;
+}
+
+.ui-btn[data-size="sm"] {
+  min-height: var(--target-min); /* 24px — the floor, never below it */
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-0);
+  gap: var(--sp-1);
+}
+
+.ui-btn--icon {
+  padding: 0;
+  min-width: 1.75rem;
+}
+
+.ui-btn--icon[data-size="sm"] {
+  min-width: var(--target-min);
+}
+
+.ui-btn__icon {
+  display: inline-flex;
+  font-size: 0.875em;
+}
+
+.ui-btn[data-variant="secondary"] {
+  border-color: var(--border-strong);
+  background: var(--bg);
+}
+.ui-btn[data-variant="secondary"]:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.ui-btn[data-variant="ghost"]:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+/* Primary, IN A PANEL: an ink outline, not a fill. The brief spends the accent on "the primary
+   action in a dialog", and nowhere else a button can appear. A filled accent block in a working
+   panel — the Evidence empty state's "Open the highest-priority finding", a trace form's submit —
+   was the most saturated shape on the screen, louder than the Critical badges it points at. The
+   primary is still the heaviest button in its group (full-ink edge and semibold word against the
+   secondary's grey edge), without spending chroma that belongs to severity. */
+.ui-btn[data-variant="primary"] {
+  border-color: var(--text);
+  background: var(--bg);
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+.ui-btn[data-variant="primary"]:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+/* In a dialog the primary action is the accent fill, exactly as the brief allows: a modal holds
+   the whole of the reader's attention, so the one thing to press there may be the loudest. */
+:is(.ui-dialog, [role="dialog"]) .ui-btn[data-variant="primary"] {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+:is(.ui-dialog, [role="dialog"]) .ui-btn[data-variant="primary"]:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--accent) 88%, var(--text));
+}
+
+/* Destructive, and OUTLINED rather than filled. A solid alarm-coloured block competes with the
+   severity chips for the eye, and a button the user might press twice a session must not be
+   louder than a Critical finding. The border, the ink and the word all say destructive. */
+.ui-btn[data-variant="danger"] {
+  border-color: var(--sev-critical);
+  color: var(--sev-critical);
+  background: transparent;
+}
+.ui-btn[data-variant="danger"]:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--sev-critical) 14%, transparent);
+}
+
+.ui-btn:disabled {
+  /* Disabled is communicated by the cursor, the aria state and the absence of hover — not by a
+     colour that could be mistaken for the --unobserved treatment. */
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* A pressed toggle is marked by the accent underline, the product's one mark for "this one" (tabs,
+   the surface switcher, the pane switch). A fill of --surface-3 over a transparent or --bg button
+   is 1.26:1 at most, and the ink does not change at all, so fill alone did not carry the state
+   (acceptance D4, WCAG 1.4.11; src/ui/selected-state-contrast.test.ts). */
+.ui-btn[aria-pressed="true"],
+.ui-btn[data-active="true"] {
+  background: var(--surface-3);
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* ══ chip ═════════════════════════════════════════════════════════════════ */
+
+/* The floor belongs on the TARGET, not on the box around it — see `.ui-chip__body` below. This
+   `min-height` keeps a chip with no interactive part 24px tall; it is not what makes the button
+   inside one 24px tall, and reading it as though it were is how the remove control shipped at
+   24.0 x 22.0 px. */
+/* A chip is a TOKEN: in a row of them it does not shrink (acceptance C2, 2026-09-22 — at 390px
+   the scope bar squeezed "device dist1" and "severity Critical" into six-character columns of two
+   lines each). It keeps its own width up to the width of its row, and only a token longer than the
+   whole row wraps. A row of chips that no longer fits is the row's to scroll, not the chips' to
+   crush. */
+.ui-chip {
+  display: inline-flex;
+  flex-shrink: 0;
+  max-inline-size: 100%;
+  align-items: stretch;
+  min-height: var(--target-min);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--fs-1);
+  line-height: 1;
+  overflow: hidden;
+}
+
+.ui-chip[data-tone="accent"] {
+  border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+  color: var(--accent);
+}
+
+.ui-chip--mono .ui-chip__body {
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+}
+
+/* BOTH segments of a chip carry the 24px floor themselves.
+   `box-sizing: border-box` is global (shell.css), so the chip's own 24px min-height is measured
+   ACROSS its 1px border on each edge and leaves its stretched children 22px. Measured before this
+   was fixed: `button.ui-chip__remove` 24.0 x 22.0 px — a 2.5.8 failure that depended on the
+   spacing exception to be tolerable, produced by a rule that looked like it already set the floor.
+   The chip is 26px tall as a result; the target is 24 and owes nothing to an exception. */
+.ui-chip__body,
+.ui-chip__remove {
+  min-block-size: var(--target-min);
+}
+
+.ui-chip__body {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+
+button.ui-chip__body {
+  cursor: pointer;
+}
+button.ui-chip__body:hover {
+  background: var(--surface-3);
+}
+
+.ui-chip__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* A 24x24 target around an 11px glyph (the floor for anything interactive): the hit area is grown with padding, never by shrinking
+     the target (WCAG 2.5.8). The block axis is set with `.ui-chip__body` above. */
+  min-width: var(--target-min);
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  cursor: pointer;
+}
+.ui-chip__remove:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* ══ severity ═════════════════════════════════════════════════════════════
+   Filled pill, --chip-ink text: light theme is white ink on a deep fill, dark theme is near-black
+   ink on a bright fill. Every one of those pairings was measured (tokens.css) and the worst is
+   5.76:1. */
+
+.ui-sev {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 1.0625rem; /* 17px — a label, not a target; it is never the only click affordance */
+  padding: 0 var(--sp-1);
+  border-radius: var(--radius-sm);
+  background: var(--sev-fill);
+  color: var(--chip-ink);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-semibold);
+  line-height: 1;
+  letter-spacing: var(--ls-0);
+  white-space: nowrap;
+}
+
+.ui-sev__glyph {
+  width: 0.6875em;
+  height: 0.6875em;
+}
+
+.ui-sev--compact {
+  padding: 0 3px;
+  gap: 2px;
+}
+
+.ui-sev[data-severity="Critical"] {
+  --sev-fill: var(--sev-critical);
+}
+.ui-sev[data-severity="High"] {
+  --sev-fill: var(--sev-high);
+}
+.ui-sev[data-severity="Medium"] {
+  --sev-fill: var(--sev-medium);
+}
+.ui-sev[data-severity="Low"] {
+  --sev-fill: var(--sev-low);
+}
+.ui-sev[data-severity="Info"] {
+  --sev-fill: var(--sev-info);
+}
+
+/* ══ operational state ════════════════════════════════════════════════════ */
+
+.ui-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-1);
+  line-height: 1;
+  color: var(--state-ink);
+  white-space: nowrap;
+}
+
+.ui-state__glyph {
+  width: 0.625rem;
+  height: 0.625rem;
+}
+
+.ui-state__text {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-state[data-state="up"] {
+  --state-ink: var(--state-up);
+}
+.ui-state[data-state="down"] {
+  --state-ink: var(--state-down);
+}
+.ui-state[data-state="unknown"] {
+  --state-ink: var(--state-unknown);
+}
+
+/* ══ health band ══════════════════════════════════════════════════════════ */
+
+/* OUTLINED, where severity is FILLED. Two different kinds of claim must not look like the same
+   kind of object: a filled chip is a finding's severity, an outlined pill is a device's health
+   band. It also keeps a screen full of healthy devices quiet, so the few bad ones carry. */
+.ui-band {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.0625rem;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--band-fill);
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--band-fill) 10%, transparent);
+  color: var(--band-fill);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  letter-spacing: var(--ls-0);
+}
+
+.ui-band[data-band="Excellent"] {
+  --band-fill: var(--band-excellent);
+}
+.ui-band[data-band="Good"] {
+  --band-fill: var(--band-good);
+}
+.ui-band[data-band="Fair"] {
+  --band-fill: var(--band-fair);
+}
+.ui-band[data-band="Poor"] {
+  --band-fill: var(--band-poor);
+}
+.ui-band[data-band="Critical"] {
+  --band-fill: var(--band-critical);
+}
+
+/* ══ keycap ═══════════════════════════════════════════════════════════════ */
+
+.ui-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.125rem;
+  height: 1.125rem;
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  line-height: 1;
+}
+
+/* ══ form controls ════════════════════════════════════════════════════════ */
+
+/* No `min-width: 0` here: a field's minimum is its control's. A text input is compressible (its
+   min-content is 0 at `width: 100%`), so this changes nothing for one; a select's minimum is its
+   chosen label (see `.ui-select`), and a field that could shrink below it only moved the cut. */
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.ui-label {
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+}
+
+.ui-label__req {
+  text-transform: none;
+  color: var(--text-faint);
+  font-weight: var(--fw-regular);
+}
+
+.ui-field__hint {
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+}
+
+.ui-field__error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--sev-critical);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-0);
+}
+/* The error is not carried by colour alone: a solid left rule marks the message as an error even
+   with the hue removed, and aria-invalid carries it to assistive technology. */
+.ui-field__error::before {
+  content: "";
+  width: 2px;
+  align-self: stretch;
+  background: var(--sev-critical);
+}
+
+.ui-input,
+.ui-select__el {
+  min-height: 1.75rem;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--fs-1);
+  min-width: 0;
+  width: 100%;
+}
+
+.ui-input--mono {
+  font-family: var(--font-mono);
+}
+
+.ui-input::placeholder {
+  color: var(--text-faint);
+}
+
+.ui-input[aria-invalid="true"] {
+  border-color: var(--sev-critical);
+}
+
+/* A SELECT NEVER PAINTS A CUT LABEL (acceptance C2, 2026-09-22). The chosen option is painted by
+   the control, not laid out as text, and a `width: 100%; min-width: 0` select inside a shrinking
+   flex row cut the priority queue's ORDER to "Ranked: severity, th". The control is now sized from
+   its CHOSEN option (`field-sizing: content`; where unsupported, from its widest option, which is
+   never smaller) and fills any extra room by flexing, not by a percentage width, so its minimum is
+   its label. The row that holds it must therefore let it wrap to its own line rather than squeeze
+   it — see `.pq-controls`. */
+.ui-select {
+  position: relative;
+  display: flex;
+  max-inline-size: 100%;
+}
+
+.ui-select__el {
+  appearance: none;
+  padding-right: var(--sp-5);
+  field-sizing: content;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: auto;
+}
+
+.ui-select__chev {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: var(--sp-2);
+  margin: auto;
+  width: 0.75rem;
+  height: 0.75rem;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.ui-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--target-min);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.ui-switch__track {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 1.75rem;
+  height: 1rem;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.ui-switch__knob {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: var(--radius-pill);
+  background: var(--text-muted);
+  color: var(--accent);
+  font-size: 0.5rem;
+  /* Knob POSITION is the non-colour channel; the check glyph is a third. */
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.ui-switch[aria-checked="true"] .ui-switch__track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.ui-switch[aria-checked="true"] .ui-switch__knob {
+  background: var(--accent-text);
+  transform: translateX(0.75rem);
+}
+
+.ui-switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ══ tabs ═════════════════════════════════════════════════════════════════ */
+
+/* A tab strip that does not fit WRAPS onto a second row; it never hides a tab.
+ *
+ * It used to scroll with its scrollbar suppressed (`scrollbar-width: none`), which made an
+ * overflowing strip look complete: measured 2026-09-22 (acceptance C2) the device pane's strip had
+ * scrollWidth 427 against clientWidth 379 at 1440 px, and its Raw tab sat at x1440-1488, past the
+ * pane edge, with nothing on screen saying there was more. Every tab strip in the product renders
+ * this primitive, so the rule is fixed here, once, rather than on the one strip that was caught.
+ * `overflow-x: auto` stays only as the backstop for a single tab wider than the whole strip, and
+ * its scrollbar is left VISIBLE so that case still has an affordance. `review/capture.mjs` fails a
+ * frame on any tablist that overflows with no visible affordance. */
+.ui-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.ui-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--row-tab);
+  min-width: 3rem;
+  /* Never shrink below the label.
+   *
+   * `.ui-tabs` already declares `overflow-x: auto`, but a flex item defaults to `flex-shrink: 1`,
+   * so the items compressed to fit instead of overflowing — and because the label is
+   * `white-space: nowrap`, the text then spilled OUT of its own compressed box and printed on top
+   * of the next tab. Measured 2026-09-21 on the device pane at 2400px: the tablist reported
+   * scrollWidth === clientWidth === 419 while its six tabs occupied 470px, and the strip read
+   * "SummaryPorts 4 Routing …not observed… Findings 18Raw" as overlapping glyphs. Pinning the
+   * basis makes the line genuinely overflow, which is what turns the declared scroll on. */
+  flex: 0 0 auto;
+  padding: 0 var(--sp-3);
+  border: 0;
+  /* The active-tab underline is drawn INSIDE the button so the 1px tablist border is not doubled
+     and the tab strip keeps a single hairline baseline. */
+  box-shadow: inset 0 -2px 0 transparent;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ui-tab:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.ui-tab[aria-selected="true"] {
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* There is deliberately NO disabled tab rule here any more.
+ *
+ * A11Y AUDIT FIX, 2026-09-21 (D4). `opacity: 0.5` on a disabled tab was the LOWEST-CONTRAST text
+ * in the product: the device pane's "ACL — no ACL collected" label measured 2.26:1 / 2.18:1 in
+ * light and 2.68:1 / 3.30:1 in dark, against a 4.5:1 floor. The dimming came from the state, not
+ * from the token — the un-disabled sibling carrying the identical sentence ("no RIB collected")
+ * measured fine. And the dimmed string was the coverage-honesty claim itself, which is the one
+ * kind of text in this product that may never be the hardest to read.
+ *
+ * The tab state went with it (see Tabs in primitives.tsx): a tab whose panel explains an absence
+ * is a working tab, so it is styled like one. The absence is carried by the label's own
+ * `--unobserved` ink, which is contrast-checked (6.20:1 light, 9.93:1 dark). */
+
+.ui-tab__count {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-tab[aria-selected="true"] .ui-tab__count {
+  color: var(--text-muted);
+}
+
+.ui-tabpanel {
+  min-height: 0;
+}
+
+/* A FOCUS RING INSIDE A CLIP IS DRAWN INSIDE ITS ELEMENT (acceptance D3, "focus is always
+   visible"; measured 2026-09-23 by review/audit-d3-focus.mjs, which photographs every focus stop it
+   reaches against the same pixels unfocused).
+   The app-wide ring (shell.css) sits 2px OUTSIDE its element. Three primitives put a focusable
+   where the outside is cut off, and the ring went with it:
+   - a TAB PANEL is a tab stop (APG) and fills the box that holds it edge to edge — the device
+     pane's `.dp__body` scroller, the Inspector's body — and a scroller clips whatever paints past
+     its padding box: "0 pixels at >=3:1" on five of the device pane's six panels, focus on screen
+     and invisible;
+   - a TAB fills its strip's height, and the strip scrolls (`overflow-x: auto` above, which clips
+     both axes): the Inspector's first tab kept 64 ring pixels of the 97 the audit asks for;
+   - a CHIP clips its segments to its rounded edge (`overflow: hidden` above), so the remove
+     button's ring lost everything past the chip.
+   Each ring is drawn wholly inside its own box instead (offset = minus its width), where no
+   ancestor can cut it. The ring's colour, width and contrast are the global token's, unchanged. */
+.ui-tabpanel:focus-visible,
+.ui-tabs :focus-visible,
+.ui-chip :focus-visible {
+  outline-offset: calc(-1 * var(--focus-ring-w));
+}
+
+/* ══ disclosure ═══════════════════════════════════════════════════════════ */
+
+.ui-disclosure__trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: var(--row-hop);
+  padding: 0 var(--sp-2);
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  text-align: start;
+  cursor: pointer;
+}
+
+.ui-disclosure__trigger:hover {
+  background: var(--surface-2);
+}
+
+.ui-disclosure__chev {
+  width: 0.75rem;
+  height: 0.75rem;
+  color: var(--text-muted);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.ui-disclosure[data-open="true"] .ui-disclosure__chev {
+  transform: rotate(90deg);
+}
+
+.ui-disclosure__region {
+  padding: var(--sp-1) var(--sp-2) var(--sp-2) var(--sp-5);
+}
+
+/* ══ overlays ═════════════════════════════════════════════════════════════
+   The anchors use display:contents so wrapping a control in a Tooltip or Popover adds no box to
+   the layout — a wrapper that introduced an inline-block would silently break every flex row it
+   was dropped into. */
+
+.ui-tt-anchor,
+.ui-pop-anchor {
+  display: contents;
+}
+
+.ui-tooltip {
+  position: fixed;
+  top: var(--tt-top);
+  left: var(--tt-left);
+  z-index: var(--z-tooltip);
+  max-width: 34ch;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--overlay);
+  color: var(--text);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  box-shadow: var(--shadow-2);
+}
+
+.ui-tooltip[data-placement="top"] {
+  transform: translate(-50%, calc(-100% - var(--sp-2)));
+}
+
+.ui-tooltip[data-placement="bottom"] {
+  transform: translate(-50%, var(--sp-2));
+}
+
+.ui-popover {
+  position: fixed;
+  top: var(--pop-top);
+  left: var(--pop-left);
+  z-index: var(--z-popover);
+  min-width: 14rem;
+  max-width: min(28rem, 92vw);
+  max-height: min(70vh, var(--pop-maxh, 70vh));
+  overflow: auto;
+  /* The sticky coverage line (below) covers the bottom of this scrollport: a control scrolled "into view" must
+     land above it. `--pop-cov-h` is the line's measured height (Popover, src/ui/primitives.tsx). */
+  scroll-padding-block-end: var(--pop-cov-h, 0px);
+  margin-top: var(--sp-1);
+  padding: var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--overlay);
+  box-shadow: var(--shadow-2);
+}
+
+.ui-popover[data-align="end"] {
+  transform: translateX(-100%);
+}
+
+/* A dialog's paint order is its place on the dialog stack (primitives.tsx), never its DOM order:
+   the stack sets `--dialog-layer` on the scrim and panel of every OPEN dialog, 0 for the first one
+   opened, and each layer takes two steps above the one under it — its scrim, then its panel. So the
+   dialog opened last covers every other open one, however they were mounted or parked (D1; WCAG
+   2.4.11). A closed pre-warm frame has no layer and falls back to 0; it is invisible and inert. */
+.ui-dialog__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-dialog) + var(--dialog-layer, 0) * 2);
+  background: var(--scrim);
+}
+
+.ui-dialog {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: calc(var(--z-dialog) + var(--dialog-layer, 0) * 2 + 1);
+  display: flex;
+  flex-direction: column;
+  width: min(34rem, 92vw);
+  max-height: 76vh;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--overlay);
+  box-shadow: var(--shadow-3);
+}
+
+.ui-dialog[data-width="sm"] {
+  width: min(24rem, 92vw);
+}
+.ui-dialog[data-width="lg"] {
+  width: min(48rem, 94vw);
+}
+
+.ui-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.ui-dialog__title {
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+}
+
+.ui-dialog__desc {
+  padding: var(--sp-2) var(--sp-4) 0;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+.ui-dialog__body {
+  padding: var(--sp-3) var(--sp-4);
+  overflow: auto;
+  min-height: 0;
+}
+
+.ui-dialog__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
+/* ══ toolbar ══════════════════════════════════════════════════════════════ */
+
+.ui-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.ui-toolbar[aria-orientation="vertical"] {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* ══ quantities ═══════════════════════════════════════════════════════════ */
+
+.ui-meter {
+  display: grid;
+  grid-template-columns: minmax(6rem, 1fr) minmax(3rem, 5rem) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--row-kv);
+  font-size: var(--fs-1);
+}
+
+.ui-meter[data-unobserved="true"] {
+  grid-template-columns: minmax(6rem, 1fr) auto;
+}
+
+.ui-meter__label {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-meter__value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+.ui-meter__track,
+.ui-bar {
+  display: block;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.ui-meter__fill,
+.ui-bar__fill {
+  display: block;
+  height: 100%;
+  background: var(--tone-ink, var(--text-muted));
+}
+
+[data-tone="accent"] {
+  --tone-ink: var(--accent);
+}
+[data-tone="up"] {
+  --tone-ink: var(--state-up);
+}
+[data-tone="down"] {
+  --tone-ink: var(--state-down);
+}
+[data-tone="unknown"] {
+  --tone-ink: var(--state-unknown);
+}
+[data-tone="critical"] {
+  --tone-ink: var(--sev-critical);
+}
+[data-tone="high"] {
+  --tone-ink: var(--sev-high);
+}
+
+.ui-spark {
+  display: inline-block;
+  vertical-align: middle;
+  overflow: visible;
+}
+
+.ui-spark__line {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.25;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* A missing sample is a visible tick in the --unobserved ink, never a point on the line. */
+.ui-spark__gap {
+  stroke: var(--unobserved);
+  stroke-width: 1.5;
+  stroke-dasharray: 1.5 1;
+}
+
+/* ══ misc ═════════════════════════════════════════════════════════════════ */
+
+/* A Copyable is BOUNDED BY ITS CONTAINER (acceptance D3, measured 2026-09-23 at 1440 and 1920). It
+   is an inline flex box, and an inline box sizes to its content: with no bound, a no-wrap 64-digit
+   sha made it 422px wide inside a 300px row, so it overflowed the row and the snapshot popover's
+   scroll box and carried its copy button to x=641–668, past a popover ending at x=554. That button
+   is where the popover puts focus as it opens, so focus landed on a control nobody could see
+   (`elementFromPoint` at its centre: the 3-D canvas). The value is the part that gives way — it
+   may shrink below its content (`min-inline-size: 0`) and the button may not (`flex: none`) — so
+   the button stays inside whatever the value's length. */
+.ui-copyable {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-inline-size: 100%;
+}
+
+.ui-copyable > .ui-btn {
+  flex: none;
+}
+
+.ui-copyable__value {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-0);
+  color: var(--text-muted);
+}
+
+/* UNBREAKABLE-TOKEN CONTAINER (see "wrapping" at the top of this file). A DIGEST is one token with
+   no `_ . / -` boundary a reader could accept — the sha256 is the case the wrapping doctrine names —
+   and it is longer than any column it is shown in. An ellipsis would hide a third of it, and a
+   digest is compared character by character, so it is shown WHOLE and takes the last-resort break
+   instead. The copy button beside it copies the unbroken value. */
+.ui-copyable--digest .ui-copyable__value {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.ui-copyable__value--mono {
+  font-family: var(--font-mono);
+}
+
+.ui-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-4);
+  max-width: 48ch;
+}
+
+.ui-empty__title {
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+}
+
+.ui-empty__reason {
+  color: var(--text-muted);
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+}
+
+.ui-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.ui-skeleton__line {
+  display: block;
+  block-size: 0.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+/* A citation chip is a TARGET — it opens the source record — so it carries the 24px floor like
+   every other one. It used to be `min-height: 1rem`, and 36 of them rendered at 16px tall; the
+   only thing keeping that inside WCAG 2.5.8 was the spacing exception, measured centre-to-centre
+   at 47.7–67.2px and undocumented (the brief requires every such exception to be enumerated in a
+   file that does not exist). The hit area is grown with block padding, which is what the brief
+   asks for — the glyph and the text are unchanged, so the chip reads exactly as before. */
+.ui-cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-block-size: var(--target-min);
+  padding: var(--sp-1) 3px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-0);
+  line-height: 1;
+  letter-spacing: var(--ls-0);
+  cursor: pointer;
+  /* A citation takes the width its container has and never less than a readable measure: the
+     floor is what stops a flex parent squeezing it into a two-character column (C2). It used to be
+     capped at 28ch with an ellipsis, which is how "open devices.core1 in the inspector" became
+     "open devices.core1 in t…". */
+  max-inline-size: 100%;
+  min-inline-size: min(14ch, 100%);
+  text-align: start;
+}
+
+.ui-cite:hover {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.ui-cite__glyph {
+  width: 0.6875em;
+  height: 0.6875em;
+  flex: none;
+}
+
+/* A CITATION PATH IS EVIDENCE: it WRAPS rather than truncating, on every surface. An ellipsised
+   `acls.core1.PROTECT_SERV…` is not a citation anyone can check. This rule used to live only in
+   PathTrace.css (scoped to `.pathtrace`), so every other surface — the device pane's source line,
+   the claim card, the coverage table — kept the ellipsis (acceptance C2, 2026-09-22: the rule
+   applied on one surface only). It is owned here now, by the primitive every surface renders.
+   `anywhere` because a dotted path has no spaces to break at; the floor on `.ui-cite` above keeps
+   that from ever becoming a column of two characters.
+   UNBREAKABLE-TOKEN CONTAINER (see "wrapping" at the top of this file): a citation path is one
+   token that can be longer than its column, and CSS gives it no break opportunity at `.` or `_`,
+   so `anywhere` is the last resort that keeps it inside the pane. It is only half of the rule:
+   the preferred breaks at `.`/`_` need a <wbr> after each separator, emitted by `Cite` in
+   primitives.tsx — until then a path longer than its column can still split between letters, and
+   the text check says so (`mid-identifier`). */
+.ui-cite__path {
+  min-inline-size: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: var(--lh-0);
+}
+
+/* Forced colours: the hatch and the token fills are replaced by the system palette, so the SHAPE
+   channels have to survive on their own. Keep the dashed edge and the glyphs; drop nothing else. */
+@media (forced-colors: active) {
+  .ui-sev,
+  .ui-band {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    forced-color-adjust: none;
+  }
+
+  .ui-notobs {
+    border-style: dashed;
+    forced-color-adjust: none;
+  }
+
+  /* A border, not the inset box-shadow the normal rule uses: forced colours compute every
+     box-shadow to `none` — measured 2026-09-24, a `box-shadow: inset 0 -2px 0 Highlight` here
+     computed to `none` and the selected tab matched its siblings. A border survives. */
+  .ui-tab[aria-selected="true"] {
+    border-bottom: 2px solid Highlight;
+  }
+
+  .ui-btn[aria-pressed="true"],
+  .ui-btn[data-active="true"] {
+    border-color: Highlight;
+  }
+}
+
+/* ══ coverage under an overlay (acceptance B7) ═════════════════════════════
+   Every Dialog and Popover states the status bar's coverage figures itself, because an open overlay
+   can cover the bar (scrim at every width, popovers over the whole group at 390/320). The markup is
+   rendered by the primitives (`CoverageStatement`, src/ui/primitives.tsx), and the rule lives with
+   them, so the statement's visual contract does not depend on which other sheet a surface happens
+   to load (it moved here from CommandPalette.css when the status bar's own coverage disclosure
+   became a third consumer). In a Dialog or Popover it is the LAST child of the surface and never
+   scrolls away: a dialog is a flex column whose body owns the scrolling, and a popover — which
+   scrolls as a whole — pins it to its bottom edge. Muted key, full-contrast figures, as on the bar. */
+
+.ui-overlay-cov {
+  flex: none;
+  margin: 0;
+  padding: var(--sp-1) var(--sp-4) var(--sp-2);
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-overlay-cov__key {
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
+}
+
+/* A figure is one unit ("RIBs 2/26 (both shown incomplete)" must not break inside); the line
+   wraps between figures. */
+.ui-overlay-cov__fig {
+  white-space: nowrap;
+}
+
+.ui-overlay-cov__dot {
+  color: var(--text-muted);
+}
+
+/* The popover scrolls as a whole, so the line is pinned to its bottom edge over the popover's own
+   padding, on the popover's own surface so scrolled content never shows through it. It takes the
+   popover's width rather than setting it (`contain: inline-size`): a popover sized by its own
+   content must not be widened to fit one line of figures, which then wrap inside it instead. */
+.ui-popover > .ui-overlay-cov {
+  contain: inline-size;
+  position: sticky;
+  /* A sticky box pins its own compositing layer (acceptance F6, src/core/sticky-layer.test.ts):
+     left to Chrome, a sticky line at a fractional offset is layered on some loads and not others,
+     and its glyphs rasterize differently each way. The line holds no fixed-position descendant,
+     so the containing block this creates changes nothing inside it. */
+  will-change: transform;
+  bottom: calc(-1 * var(--sp-2));
+  margin: var(--sp-2) calc(-1 * var(--sp-2)) calc(-1 * var(--sp-2));
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  background: var(--overlay);
+}
+

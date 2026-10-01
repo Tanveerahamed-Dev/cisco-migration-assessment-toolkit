@@ -9,11 +9,12 @@ keystone, topology link, and lifecycle band is genuinely computed by the engine 
 
 Output: webapp/sample_data/sample_fleet.snapshot.json
 
-Run:  python webapp/sample_data/build_sample.py
+Run:  python webapp/sample_data/build_sample.py [--check] [--out PATH]
 """
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import os
@@ -34,6 +35,41 @@ OUT = os.path.join(_HERE, "sample_fleet.snapshot.json")
 # collection-directory stamp, which makes lifecycle bands and every derived design/executive section
 # deterministic instead of silently exempting them from --check.
 _SAMPLE_COLLECTION_STAMP = "20260807_000000"
+# The demo's statement of registry health ("is the retained EoL / OUI / port evidence fresh?") is judged at
+# the demo's OWN evidence date -- the same seam (registry_integrity.datetime) and the same rule as the golden
+# harness (tests/test_pipeline_golden.py, _GOLDEN_REGISTRY_CLOCK). Judged against the wall clock, a
+# regeneration after the retained registries' freshness window would flip every authority to stale and
+# cascade into assessment_integrity: the demo would change with the calendar, not with the engine.
+_SAMPLE_REGISTRY_CLOCK = (f"{_SAMPLE_COLLECTION_STAMP[0:4]}-{_SAMPLE_COLLECTION_STAMP[4:6]}-"
+                          f"{_SAMPLE_COLLECTION_STAMP[6:8]}T00:00:00+00:00")
+
+
+@contextlib.contextmanager
+def _registry_clock(iso: str):
+    """Pin the one clock every registry freshness read goes through for one in-process pipeline run. The
+    registries' per-process caches are cleared on BOTH sides, so no verdict computed under another clock is
+    reused inside the run, and none computed under the pin outlives it."""
+    from cisco_toolkit import eoldb, ouidb, portdb
+    from cisco_toolkit import registry_integrity as ri
+
+    caches = (eoldb._runtime_source_proof, ouidb._registry, portdb._registry)
+    real = ri.datetime
+    pinned = real.fromisoformat(iso)
+
+    class _RegistryClock(real):
+        @classmethod
+        def now(cls, tz=None):
+            return pinned if tz is None else pinned.astimezone(tz)  # exactly the golden harness's pin
+
+    for cache in caches:
+        cache.cache_clear()
+    ri.datetime = _RegistryClock
+    try:
+        yield pinned
+    finally:
+        ri.datetime = real
+        for cache in caches:
+            cache.cache_clear()
 
 # (model line for `show version`, roughly how the EoL KB bands it) — gives lifecycle variety.
 _PLATFORMS = [
@@ -323,6 +359,258 @@ def build_collections() -> dict:
     # Splice the new spokes into the cores' CDP neighbour tables so the topology forms a 2-hub star.
     cols["core1"][1]["show cdp neighbors detail"] += "".join(core1_cdp_extra)
     cols["core2"][1]["show cdp neighbors detail"] += "".join(core2_cdp_extra)
+    return _add_forwarding_substrate(cols)
+
+
+# --------------------------------------------------------------------------- #
+# Forwarding substrate — the routed evidence a multi-hop path decision needs.
+#
+# Without it only core1/core2 have a routing table, no collected route points at an address another
+# collected host owns, and the dist pair has no running-config: every trace stops after one hop.
+# The substrate turns the EXISTING dist1 Gi1/0/3 <-> core1 Gi1/0/40 cable into a routed /30 transit
+# (10.0.140.0/30, OSPF point-to-point), gives dist1/dist2 their routing tables, OSPF adjacencies and a
+# hardened running-config, and collects EIGRP/BGP on the dist pair as the output of switches that do
+# not run them. It deliberately does NOT fabricate EIGRP/BGP adjacencies:
+#   * `show ip eigrp neighbors` with no EIGRP AS configured prints nothing — a neighbor table captured
+#     and empty (protocol_assessability -> captured_empty);
+#   * `show ip bgp summary` with no `router bgp` prints IOS's no-process banner, `% BGP not active`
+#     — NOT empty output (2026-09-27 refuter X3: the earlier empty capture was shaped to the consumer,
+#     not taken from what a device emits). The engine reads that exact banner as its own `not_running`
+#     assessability state (cisco_toolkit/analyze.py; cluster R1), positive evidence of no BGP process.
+# core1 keeps its configured `router bgp 65001` as one Established upstream peer that has sent no
+# prefixes — its table holds no BGP route, and the two captures agree. The peer is the upstream core1
+# already defaults to (10.0.10.254 on Vlan10): a directly connected single-hop eBGP session, so the
+# route under it is CONNECTED and survives the engine's route scoping (scope_routes keeps every
+# connected route). An earlier multihop peer behind a static /32 was reached, on the snapshot Atlas
+# Scope reads, only by the default route: scoping dropped the /32 (2026-09-27 verifier, E2R2-V2).
+#
+# The routes each table holds are the ones the configuration beside it would originate: core1 puts
+# the Gi1/0/40 transit and Vlan10 (the inter-core home, below) in area 0 and brings its other connected
+# VLANs into OSPF with its existing `redistribute connected`, so dist1/dist2 hold Vlan10 intra-area (`O`)
+# and the voice/server VLANs as `O E2`; the dists' `O*E2` default exists because core1 now carries
+# `default-information originate` (it has a static default). The new dist running-configs end with `end`,
+# as a real IOS dump does, so the engine's capture-integrity guard reads them as whole.
+#
+# core1's own running-config keeps the fixtures' no-`end` convention (owner decision, phase 2.75), so
+# the guard reads it as INCOMPLETE -- and beside it the substrate collects a configured, Established eBGP
+# peer. The engine's BGP configured-peer baseline therefore cannot verify that peer against a
+# configuration it cannot trust, and reads INDETERMINATE with one not-verified core1 row. That is the
+# coverage-honest verdict for this collection, not a defect to be hidden by editing the capture; it is
+# pinned, with its reason derived from the producers, in tests/test_sample_fleet_substrate.py.
+#
+# core1's FULL/DR OSPF neighbour core2 (router ID 10.0.99.2) used to sit on the L2 trunk
+# Port-channel1 -- an adjacency that cannot form there, and whose link core1's table did not hold (the
+# fixture's B1 seed). It now runs over Vlan10, an SVI BOTH cores already have (core1 10.0.10.2, core2
+# 10.0.10.3, one /24) on a VLAN Po1 already carries: owner decision, phase 2.75 (verifier R2V-4),
+# replacing an earlier dedicated transit VLAN that changed the move groups. Of the two SVIs the cores
+# share, Vlan10 is the one an adjacency can hold FULL on: core1's Vlan20 carries the inbound
+# VOICE_FILTER, whose closing `deny ip any any` drops OSPF hellos, and the fixture's own core1 log
+# records exactly that Vlan20 adjacency going down on its dead timer. Each core only gains the OSPF
+# enable on its existing Vlan10 stanza; HSRP, the trunk allow-lists and every other L2 capture are
+# untouched. core2 -- which collects no neighbour table, so its OSPF stays not_collected -- holds what
+# core1 originates into OSPF, learned over Vlan10. core2's `show ip route` keeps the fixture's own line
+# convention (IOS-style code lines under the NX-OS header) so its existing entries are unchanged.
+#
+# Every CDP capture and every L2 capture of the cores is left byte-identical, including the deliberately
+# disputed core1 Gi1/0/40 that both access16 and dist1 claim; so the cable map, move groups, wave
+# sequencing and failure impact are unchanged (the cores were already one move group through VLAN
+# 10/20). Only deep copies are edited: tests/synthetic_fixtures.py (the golden's source) is not.
+# --------------------------------------------------------------------------- #
+_ROUTE_CODES = ("Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP\n"
+                "       D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area\n"
+                "       E1 - OSPF external type 1, E2 - OSPF external type 2\n")
+_OSPF_NEIGHBOR_HDR = "Neighbor ID     Pri   State           Dead Time   Address         Interface\n"
+# `show ip eigrp neighbors` on a switch with no EIGRP AS configured: the capture exists and holds
+# nothing (protocol_assessability -> captured_empty).
+_NO_EIGRP_AS = ""
+# `show ip bgp summary` on IOS/IOS-XE with no `router bgp`: the no-process banner.
+_NO_BGP_PROCESS = "% BGP not active\n"
+# The inter-core OSPF home: the SVI both cores already have (see the block above).
+_INTER_CORE_SVI = "Vlan10"
+_CORE1_SVI_ADDR, _CORE2_SVI_ADDR = "10.0.10.2", "10.0.10.3"
+
+
+def _replace_once(text: str, old: str, new: str) -> str:
+    """Replace exactly one occurrence; a missing anchor is a build error, never a silent no-op."""
+    if text.count(old) != 1:
+        raise ValueError(f"substrate anchor must occur exactly once, found {text.count(old)}: {old!r}")
+    return text.replace(old, new, 1)
+
+
+def _dist_running_config(hostname: str, router_id: str, networks: tuple, passive: tuple = ()) -> str:
+    return ("!\n"
+            f"hostname {hostname}\n"
+            "service password-encryption\n"
+            "aaa new-model\n"
+            "ip ssh version 2\n"
+            "no ip http server\n"
+            "no ip http secure-server\n"
+            "ntp server 10.0.0.10\n"
+            "logging host 10.0.0.20\n"
+            "banner login ^C\n"
+            "Authorized access only. Activity on this device is logged.\n"
+            "^C\n"
+            "ip access-list extended VTY_ACCESS\n"
+            " permit tcp 10.0.99.0 0.0.0.255 any eq 22\n"
+            " deny   ip any any\n"
+            "!\n"
+            "router ospf 1\n"
+            f" router-id {router_id}\n"
+            + "".join(f" passive-interface {p}\n" for p in passive)
+            + "".join(f" network {n} area 0\n" for n in networks)
+            + "!\n"
+            "line vty 0 4\n"
+            " access-class VTY_ACCESS in\n"
+            " exec-timeout 10 0\n"
+            " transport input ssh\n"
+            "!\n"
+            "end\n")
+
+
+def _add_forwarding_substrate(cols: dict) -> dict:
+    """Return a copy of `cols` with the routed core1<->dist1<->dist2 substrate (see the block above).
+    The argument is never mutated."""
+    cols = copy.deepcopy(cols)
+
+    # ---- core1: Gi1/0/40 (the port dist1 already cables to) becomes the routed transit.
+    c1 = cols["core1"][1]
+    c1["show running-config | section ^interface"] += (
+        "interface GigabitEthernet1/0/40\n description to-dist1\n no switchport\n"
+        " ip address 10.0.140.1 255.255.255.252\n ip ospf network point-to-point\n ip ospf 1 area 0\n")
+    c1["show ip route"] = _replace_once(
+        c1["show ip route"],
+        "      10.0.0.0/8 is variably subnetted, 8 subnets, 3 masks\n",
+        "      10.0.0.0/8 is variably subnetted, 11 subnets, 4 masks\n")
+    c1["show ip route"] = _replace_once(
+        c1["show ip route"],
+        "L        10.0.30.1/32 is directly connected, Vlan30\n",
+        "L        10.0.30.1/32 is directly connected, Vlan30\n"
+        "O        10.0.40.0/24 [110/2] via 10.0.140.2, 00:12:04, GigabitEthernet1/0/40\n"
+        "O        10.0.41.0/24 [110/2] via 10.0.140.2, 00:12:04, GigabitEthernet1/0/40\n"
+        "C        10.0.140.0/30 is directly connected, GigabitEthernet1/0/40\n"
+        "L        10.0.140.1/32 is directly connected, GigabitEthernet1/0/40\n")
+    c1["show ip ospf neighbor"] += (
+        "10.0.99.50        0   FULL/  -        00:00:38    10.0.140.2      GigabitEthernet1/0/40\n")
+    c1["show ip interface brief"] += (
+        "GigabitEthernet1/0/40  10.0.140.1      YES NVRAM  up                    up\n")
+    # core1 has a static default, and the dists' O*E2 default says core1 originates it into OSPF.
+    c1["show running-config"] = _replace_once(
+        c1["show running-config"],
+        "router ospf 1\n redistribute bgp 65001 subnets\n redistribute connected\n",
+        "router ospf 1\n redistribute bgp 65001 subnets\n redistribute connected\n default-information originate\n")
+    # The configured `router bgp 65001` gets its one upstream peer: Established, no prefixes received
+    # (core1 advertises the campus and keeps its static default), so the table rightly holds no B route.
+    # The peer is the upstream core1 already defaults to, on its connected Vlan10 subnet (single hop).
+    c1["show running-config"] = _replace_once(
+        c1["show running-config"],
+        "router bgp 65001\n",
+        "router bgp 65001\n neighbor 10.0.10.254 remote-as 64500\n")
+    c1["show ip bgp summary"] = (
+        "BGP router identifier 10.0.99.1, local AS number 65001\n"
+        "BGP table version is 7, main routing table version 7\n\n"
+        "Neighbor        V           AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n"
+        "10.0.10.254     4        64500     120     118        7    0    0 01:02:03        0\n")
+    c1["show ip eigrp neighbors"] = _NO_EIGRP_AS       # no `router eigrp` in core1's configuration
+
+    # ---- core1 <-> core2: the inter-core OSPF session moves off the L2 trunk Po1 onto Vlan10, an SVI both
+    # cores already have on a VLAN Po1 already carries. Same neighbour (router ID 10.0.99.2), same FULL/DR
+    # state (core2's router ID is the higher one, so it is the segment's DR); its link address is core2's
+    # own Vlan10 address. Each core's existing Vlan10 stanza gains only the OSPF enable.
+    c1["show ip ospf neighbor"] = _replace_once(
+        c1["show ip ospf neighbor"],
+        "10.0.99.2         1   FULL/DR         00:00:35    10.0.99.2       Port-channel1\n",
+        f"10.0.99.2         1   FULL/DR         00:00:35    {_CORE2_SVI_ADDR}       {_INTER_CORE_SVI}\n")
+    c1["show running-config | section ^interface"] = _replace_once(
+        c1["show running-config | section ^interface"],
+        f"interface {_INTER_CORE_SVI}\n description USERS\n ip address {_CORE1_SVI_ADDR} 255.255.255.0\n"
+        " ip helper-address 10.0.40.10\n ip helper-address 10.0.40.11\n"
+        " standby 10 ip 10.0.10.1\n standby 10 priority 110\n",
+        f"interface {_INTER_CORE_SVI}\n description USERS\n ip address {_CORE1_SVI_ADDR} 255.255.255.0\n"
+        " ip helper-address 10.0.40.10\n ip helper-address 10.0.40.11\n"
+        " standby 10 ip 10.0.10.1\n standby 10 priority 110\n ip ospf 1 area 0\n")
+
+    c2 = cols["core2"][1]
+    c2["show running-config interface"] = _replace_once(
+        c2["show running-config interface"],
+        f"interface {_INTER_CORE_SVI}\n  description USERS\n  ip address {_CORE2_SVI_ADDR}/24\n"
+        "  hsrp 10\n    ip 10.0.10.1\n",
+        f"interface {_INTER_CORE_SVI}\n  description USERS\n  ip address {_CORE2_SVI_ADDR}/24\n"
+        "  ip router ospf 1 area 0.0.0.0\n  hsrp 10\n    ip 10.0.10.1\n")  # NX-OS prints it before the hsrp sub-mode
+    # What core1 originates into OSPF, learned over Vlan10: its default and redistributed server VLAN
+    # (external type 2), the pod it learns from dist1 and the dist1 transit (intra-area). core2's own
+    # connected Vlan10/20 beat core1's copies (administrative distance).
+    c2["show ip route"] += (
+        f"O*E2 0.0.0.0/0 [110/1] via {_CORE1_SVI_ADDR}, 00:12:04, {_INTER_CORE_SVI}\n"
+        f"O E2 10.0.30.0/24 [110/20] via {_CORE1_SVI_ADDR}, 00:12:04, {_INTER_CORE_SVI}\n"
+        f"O    10.0.40.0/24 [110/3] via {_CORE1_SVI_ADDR}, 00:12:04, {_INTER_CORE_SVI}\n"
+        f"O    10.0.41.0/24 [110/3] via {_CORE1_SVI_ADDR}, 00:12:04, {_INTER_CORE_SVI}\n"
+        f"O    10.0.140.0/30 [110/2] via {_CORE1_SVI_ADDR}, 00:12:04, {_INTER_CORE_SVI}\n")
+
+    # ---- dist1: Gi1/0/3 goes from trunk to routed; OSPF to core1 (transit) and dist2 (Vlan40).
+    d1 = cols["dist1"][1]
+    d1["show interface status"] = _replace_once(
+        d1["show interface status"],
+        "Gi1/0/3   to-core1           connected    trunk        full  1000  1000BaseLX SFP\n",
+        "Gi1/0/3   to-core1           connected    routed       full  1000  1000BaseLX SFP\n")
+    d1["show interfaces switchport"] = _replace_once(
+        d1["show interfaces switchport"], _sw_trunk("Gi1/0/3"), "Name: Gi1/0/3\nSwitchport: Disabled\n\n")
+    d1["show interfaces trunk"] = _replace_once(
+        d1["show interfaces trunk"], "Gi1/0/3     on               802.1q         trunking      1\n", "")
+    d1["show interfaces trunk"] = _replace_once(d1["show interfaces trunk"], "Gi1/0/3     40,41\n", "")
+    d1["show running-config | section ^interface"] = _replace_once(
+        d1["show running-config | section ^interface"],
+        "interface GigabitEthernet1/0/3\n description to-core1\n switchport trunk encapsulation dot1q\n"
+        " switchport mode trunk\n",
+        "interface GigabitEthernet1/0/3\n description to-core1\n no switchport\n"
+        " ip address 10.0.140.2 255.255.255.252\n ip ospf network point-to-point\n")
+    d1["show ip interface brief"] += (
+        "GigabitEthernet1/0/3   10.0.140.2      YES NVRAM  up                    up\n")
+    d1["show ip route"] = (
+        _ROUTE_CODES
+        + "Gateway of last resort is 10.0.140.1 to network 0.0.0.0\n\n"
+        "O*E2  0.0.0.0/0 [110/1] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
+        "      10.0.0.0/8 is variably subnetted, 9 subnets, 3 masks\n"
+        "O        10.0.10.0/24 [110/2] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
+        "O E2     10.0.20.0/24 [110/20] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
+        "O E2     10.0.30.0/24 [110/20] via 10.0.140.1, 00:12:04, GigabitEthernet1/0/3\n"
+        "C        10.0.40.0/24 is directly connected, Vlan40\n"
+        "L        10.0.40.2/32 is directly connected, Vlan40\n"
+        "C        10.0.41.0/24 is directly connected, Vlan41\n"
+        "L        10.0.41.2/32 is directly connected, Vlan41\n"
+        "C        10.0.140.0/30 is directly connected, GigabitEthernet1/0/3\n"
+        "L        10.0.140.2/32 is directly connected, GigabitEthernet1/0/3\n")
+    d1["show ip ospf neighbor"] = (
+        _OSPF_NEIGHBOR_HDR
+        + "10.0.99.1         0   FULL/  -        00:00:38    10.0.140.1      GigabitEthernet1/0/3\n"
+        "10.0.99.51        1   FULL/BDR        00:00:35    10.0.40.3       Vlan40\n")
+    d1["show ip eigrp neighbors"] = _NO_EIGRP_AS
+    d1["show ip bgp summary"] = _NO_BGP_PROCESS
+    d1["show running-config"] = _dist_running_config(
+        "dist1", "10.0.99.50", ("10.0.40.0 0.0.1.255", "10.0.140.0 0.0.0.3"), passive=("Vlan41",))
+
+    # ---- dist2: its uplink to core2 stays an L2 trunk; it routes toward the core via dist1 on Vlan40,
+    # so the HSRP-standby ingress for a pod source is modelled the same way as the active one.
+    d2 = cols["dist2"][1]
+    d2["show ip route"] = (
+        _ROUTE_CODES
+        + "Gateway of last resort is 10.0.40.2 to network 0.0.0.0\n\n"
+        "O*E2  0.0.0.0/0 [110/1] via 10.0.40.2, 00:12:04, Vlan40\n"
+        "      10.0.0.0/8 is variably subnetted, 8 subnets, 3 masks\n"
+        "O        10.0.10.0/24 [110/3] via 10.0.40.2, 00:12:04, Vlan40\n"
+        "O E2     10.0.20.0/24 [110/20] via 10.0.40.2, 00:12:04, Vlan40\n"
+        "O E2     10.0.30.0/24 [110/20] via 10.0.40.2, 00:12:04, Vlan40\n"
+        "C        10.0.40.0/24 is directly connected, Vlan40\n"
+        "L        10.0.40.3/32 is directly connected, Vlan40\n"
+        "C        10.0.41.0/24 is directly connected, Vlan41\n"
+        "L        10.0.41.3/32 is directly connected, Vlan41\n"
+        "O        10.0.140.0/30 [110/2] via 10.0.40.2, 00:12:04, Vlan40\n")
+    d2["show ip ospf neighbor"] = (
+        _OSPF_NEIGHBOR_HDR
+        + "10.0.99.50        1   FULL/DR         00:00:35    10.0.40.2       Vlan40\n")
+    d2["show ip eigrp neighbors"] = _NO_EIGRP_AS
+    d2["show ip bgp summary"] = _NO_BGP_PROCESS
+    d2["show running-config"] = _dist_running_config(
+        "dist2", "10.0.99.51", ("10.0.40.0 0.0.1.255",), passive=("Vlan41",))
     return cols
 
 
@@ -353,19 +641,9 @@ def _strip_volatile(snap: dict) -> dict:
     out = {k: v for k, v in (snap or {}).items() if k not in _VOLATILE_TOP}
     if isinstance(out.get("attestation"), dict):
         out["attestation"] = {k: v for k, v in out["attestation"].items() if k != "generated_at"}
-    # Registry source ages advance continuously from their retained retrieval timestamps. The
-    # immutable timestamps, freshness bounds/status, hashes, and authority verdicts remain in the
-    # comparison; only the derived wall-clock age is volatile. Mirror the golden harness exactly,
-    # without mutating either snapshot passed to this helper.
-    if isinstance(out.get("data_authorities"), dict):
-        out["data_authorities"] = {
-            name: (
-                {k: v for k, v in health.items() if k != "source_age_days"}
-                if isinstance(health, dict)
-                else health
-            )
-            for name, health in out["data_authorities"].items()
-        }
+    # data_authorities is NOT volatile: main() judges registry health at the demo's evidence date
+    # (_registry_clock), so every registry field -- source_age_days included -- is a pure function of the
+    # pin and a drift in it is real staleness, exactly as in the golden harness.
     return out
 
 
@@ -381,12 +659,32 @@ def _freshness_drift(fresh: dict, committed_path: str):
     return sorted(set(k for k in set(a) | set(b) if a.get(k) != b.get(k)))
 
 
-def main() -> None:
+def _parse_args(argv: list) -> tuple:
+    """(check, out_path) from the command line. `--out PATH` writes (or, with --check, compares
+    against) PATH instead of the tracked fixture, so the fleet can be regenerated into scratch."""
+    import argparse
+    ap = argparse.ArgumentParser(prog="build_sample.py", description="Regenerate the engine-computed demo fleet.")
+    ap.add_argument("--check", action="store_true",
+                    help="rebuild in a temp dir and diff against the output path instead of writing it")
+    ap.add_argument("--out", default=OUT, metavar="PATH",
+                    help="snapshot path to write / check (default: the tracked sample_fleet.snapshot.json)")
+    ns = ap.parse_args(argv)
+    return ns.check, ns.out
+
+
+def _write_snapshot(path: str, snap: dict) -> None:
+    """Pretty (indent=2) JSON with LF line endings on EVERY platform: text-mode open() on Windows would
+    otherwise write CRLF, and the tracked blob (and Atlas Scope's digest binding of it) is LF."""
+    with open(path, "w", encoding="utf-8", newline="\n") as _out:
+        json.dump(snap, _out, indent=2)
+
+
+def main(argv: list = None) -> None:
     # --check: rebuild the demo in a temp dir and DIFF it against the committed fixture instead of
     # overwriting it — the full-fidelity freshness tool (runs the real pipeline, ~minutes; the cheap
     # per-section locks that run in the default test gate live in tests/test_sample_fleet.py).
     # Exit 0 = fresh, exit 2 = stale (regenerate by rerunning WITHOUT --check).
-    check = "--check" in sys.argv[1:]
+    check, out_path = _parse_args(sys.argv[1:] if argv is None else argv)
     cols = build_collections()
     devices = [{"hostname": h, "ip": f"10.0.99.{i + 1}", "username": "demo",
                 "password": "x", "platform": plat}
@@ -415,7 +713,8 @@ def main() -> None:
                     "--output", out_xlsx, "--workers", "1", "--no-html", "--no-docx",
                     "--no-pptx", "--no-design", "--no-mop"]
         try:
-            cp.main()
+            with _registry_clock(_SAMPLE_REGISTRY_CLOCK):
+                cp.main()
         finally:
             sys.argv = argv
             os.chdir(cwd)
@@ -427,22 +726,27 @@ def main() -> None:
         # only the demo copy webapp/ ships.)
         snap = json.loads(open(snap_path, encoding="utf-8").read())
         if check:
-            drift = _freshness_drift(snap, OUT)
+            drift = _freshness_drift(snap, out_path)
             if drift:
                 print("STALE sample_fleet.snapshot.json — section(s) drifted from the current engine:")
                 for s in drift:
                     print(f"  - {s}")
                 print("regenerate: python webapp/sample_data/build_sample.py")
+                # The fleet's bytes are also the bound source of Atlas Scope's tracked projection: its four
+                # compiled documents carry the fleet's Git blob and digest, and its golden tier is pinned to
+                # that digest. A regenerated fleet leaves them stale until they are re-bound.
+                print("then re-bind Atlas Scope: cd atlas-scope, run `node tools/compile-all.mjs`, and set "
+                      "GOLDEN_SHA in atlas-scope/src/test-support/golden-sample.ts to the new sourceSha256 "
+                      "(re-derive any golden expectation whose section changed)")
                 raise SystemExit(2)
             print("sample_fleet.snapshot.json is FRESH — matches the current engine output "
                   "(only genuine wall-clock leaves excluded)")
             return
-        with open(OUT, "w", encoding="utf-8") as _out:
-            json.dump(snap, _out, indent=2)
+        _write_snapshot(out_path, snap)
         bands: dict = {}
         for r in snap.get("health_scores", []):
             bands[r.get("band", "?")] = bands.get(r.get("band", "?"), 0) + 1
-        print(f"wrote {OUT}")
+        print(f"wrote {out_path}")
         print(f"  devices={len(snap.get('devices', {}))}  "
               f"links={len(snap.get('topology_links') or snap.get('link_centrality') or [])}  "
               f"punchlist={len(snap.get('punchlist', []))}  bands={bands}")

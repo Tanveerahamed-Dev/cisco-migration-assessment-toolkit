@@ -1,0 +1,677 @@
+/*
+ * Inspector.css — the raw-evidence inspector and its JSON tree.
+ *
+ * Every value resolves to a token in src/core/tokens.css. There is no hex literal, no px font
+ * size and no bare duration in this file.
+ *
+ * The panel is the quietest surface in the product on purpose. It is where a reader goes to
+ * disbelieve something, so nothing here competes for attention except the two things that carry
+ * meaning: the not-observed treatment (owned by primitives.css) and a broken evidence chain.
+ */
+
+/* Flex column, NOT a fixed grid track list. The broken-evidence banner is conditional, so a
+   template of N tracks silently mis-assigns every row the moment it appears — the body lands on an
+   implicit auto track and collapses to its content height while the tab strip takes the free
+   space. That is a layout bug only visible in the error state, which is exactly the state nobody
+   screenshots. */
+.inspector {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--overlay);
+  border-top: var(--hairline) solid var(--border);
+  /* --shadow-2 is reserved for the inspector and the config overlay (design brief §3.4). It is
+     how a bottom dock reads as floating over the stage on light, where a surface step cannot. */
+  box-shadow: var(--shadow-2);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-2);
+  line-height: var(--lh-2);
+}
+
+/* ── the resize divider ────────────────────────────────────────────────────
+   A drag target with a keyboard twin (WCAG 2.5.7), and a 24px POINTER TARGET in its own right
+   (WCAG 2.5.8, on its size — not on the spacing exception, which is not enumerated anywhere).
+   This used to be `block-size: var(--sp-2)` under a comment claiming "8px plus the header above it
+   clears the 24px minimum"; the header is BELOW it and is not part of the target, and measured in
+   the browser the handle was 760x8 at 1440 and 1160x8 at 1920 (acceptance D5, 2026-09-22). Same
+   pattern as the rail splitter (`.splitter`, shell.css): the extra height is transparent, so what
+   is DRAWN is still the hairline under the handle and the grab pill; the handle simply stops being
+   a strip only a steady hand can catch. src/ui/target-size.test.ts scans this rule. */
+.inspector__divider {
+  flex: none;
+  block-size: var(--sp-5); /* 24px */
+  cursor: row-resize;
+  touch-action: none;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.inspector__grip {
+  inline-size: var(--sp-6);
+  block-size: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
+
+.inspector__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-inline: var(--sp-3);
+  padding-block: var(--sp-1);
+  min-block-size: var(--row-tab);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.inspector__title {
+  margin: 0;
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+}
+
+.inspector__citelabel {
+  color: var(--text-faint);
+  font-family: var(--font-ui);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  margin-inline-end: var(--sp-1);
+}
+
+.inspector__nocite {
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+}
+
+.inspector__spacer {
+  flex: 1 1 auto;
+}
+
+/* ── broken evidence chain ─────────────────────────────────────────────────
+   The single loudest thing this panel can render, and deliberately so: a citation that resolves
+   to nothing means a claim on screen cannot be audited. It is a finding, not a display problem,
+   so it takes the critical ramp — paired, as always, with the literal words rather than relying
+   on the colour. */
+.inspector__broken {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-block-end: var(--hairline) solid var(--border);
+  border-inline-start: 3px solid var(--sev-critical);
+  background: var(--surface-2);
+  font-size: var(--fs-2);
+}
+
+.inspector__broken-title {
+  color: var(--sev-critical);
+  font-weight: var(--fw-semibold);
+}
+
+.inspector__broken-body {
+  color: var(--text);
+  max-inline-size: 96ch;
+}
+
+.inspector__broken-body code,
+.insp-note code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+}
+
+.inspector__tabsbar {
+  flex: none;
+  border-bottom: var(--hairline) solid var(--border);
+  padding-inline: var(--sp-2);
+}
+
+/* Each tab PANEL is its own scroll region rather than the body being one. Two reasons, both
+   load-bearing: a panel keeps its own scroll position while another is shown, and the JSON tab's
+   search toolbar can stay put while the document moves under it. `:not([hidden])` keeps the UA's
+   hidden rule winning — a display declaration on the bare class would un-hide every panel. */
+.inspector__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.inspector__body > .ui-tabpanel:not([hidden]) {
+  display: block;
+  min-block-size: 0;
+  overflow: auto;
+  padding: var(--sp-3);
+  scroll-padding-block: var(--sp-2);
+  /* The inspector owns its scroller through the Tabs primitive, so it opts into the shared
+     cut-row scrim here rather than by adding a class to a panel it does not render itself. The
+     declarations are the ones documented on `.scroll-scrim` in shell.css. */
+  padding-block-end: var(--sp-5);
+  background-image:
+    linear-gradient(to top, var(--scroll-scrim-bg, var(--surface-1)) 40%, transparent 100%),
+    linear-gradient(to top, var(--scroll-scrim-ink) 0, transparent 100%);
+  background-position: bottom center, bottom center;
+  background-size:
+    100% var(--sp-5),
+    100% var(--scroll-scrim-edge, var(--sp-1));
+  background-repeat: no-repeat, no-repeat;
+  background-attachment: local, scroll;
+}
+
+/* The JSON panel does not scroll; the tree inside it does. Sizing with minmax(0,1fr) rather than
+   clipping keeps every ancestor of a focusable row free of overflow:hidden, which is the single
+   most common way a focus ring silently disappears in a dense list. */
+.inspector__body > .inspector__jsonpanel:not([hidden]) {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  padding: var(--sp-3);
+  overflow: visible;
+}
+
+/* ── notes and actions ─────────────────────────────────────────────────────── */
+
+.insp-note {
+  margin: 0 0 var(--sp-2);
+  max-inline-size: 104ch;
+  color: var(--text-muted);
+  font-size: var(--fs-2);
+  line-height: var(--lh-body);
+}
+
+.insp-note--bad {
+  color: var(--sev-critical);
+  font-weight: var(--fw-medium);
+}
+
+.insp-bearers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-block-end: var(--sp-2);
+}
+
+.insp-bearers__label {
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+}
+
+.insp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-block-start: var(--sp-3);
+  padding-block-start: var(--sp-2);
+  border-block-start: var(--hairline) solid var(--border);
+}
+
+.insp-actions__note {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--ls-0);
+}
+
+/* ── key/value record table ────────────────────────────────────────────────
+   No per-row border, no per-row background, no per-row elevation (design brief §3.4). The key
+   column is a fixed measure so the values line up into a readable column edge. */
+.insp-kv {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(8ch, 17ch) minmax(0, 1fr);
+  column-gap: var(--sp-3);
+  align-items: baseline;
+}
+
+.insp-kv--wide {
+  grid-template-columns: minmax(12ch, 21ch) minmax(0, 1fr);
+}
+
+.insp-kv__row {
+  display: contents;
+}
+
+.insp-kv__key {
+  min-block-size: var(--row-inspect);
+  display: flex;
+  align-items: center;
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+  font-family: var(--font-mono);
+}
+
+.insp-kv__val {
+  margin: 0;
+  min-block-size: var(--row-inspect);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  color: var(--text);
+  font-size: var(--fs-2);
+}
+
+.insp-kv__val--mono,
+.insp-kv__val code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* UNBREAKABLE-TOKEN CONTAINER (see "wrapping" in src/ui/primitives.css). A sha256 is 64 hex digits
+   with no `_ . / -` boundary, so it has no legal break point and is longer than the column; the
+   last-resort `anywhere` is the only alternative to painting it past the pane. */
+.insp-sha {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  overflow-wrap: anywhere;
+}
+
+.insp-val--meta {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.insp-val--num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.insp-val__item + .insp-val__item::before {
+  content: "· ";
+  color: var(--text-faint);
+}
+
+/* ── coverage gaps ─────────────────────────────────────────────────────────── */
+
+.insp-gap {
+  margin-block-end: var(--sp-4);
+  padding-block-end: var(--sp-3);
+  border-block-end: var(--hairline) solid var(--border);
+}
+
+.insp-gap:last-child {
+  border-block-end: 0;
+}
+
+.insp-gap__title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+}
+
+.insp-gap__count {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--claim-indeterminate);
+}
+
+.insp-gap__meaning {
+  margin: 0 0 var(--sp-2);
+  max-inline-size: 104ch;
+  color: var(--text-muted);
+  font-size: var(--fs-2);
+  line-height: var(--lh-body);
+}
+
+.insp-gap__none {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+}
+
+.insp-gap__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  /* The column measure is set per section from its own longest member, so a list of short host
+     names packs tightly while a list of link descriptions still gets a readable line. */
+  grid-template-columns: repeat(auto-fill, minmax(var(--insp-gap-col, 26ch), 1fr));
+  gap: 0 var(--sp-3);
+}
+
+.insp-gap__item {
+  min-block-size: var(--row-inspect);
+  display: flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* ── reconciliation table ──────────────────────────────────────────────────── */
+
+.insp-tablewrap {
+  overflow-x: auto;
+}
+
+/* Shrink-to-fit, not full width: four short columns stretched across 1400px put a metre of empty
+   space between a counter and its verdict. The wrapper scrolls if the content outgrows the panel. */
+.insp-table {
+  border-collapse: collapse;
+  inline-size: auto;
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.insp-table th,
+.insp-table td {
+  text-align: start;
+  padding: 0 var(--sp-4) 0 0;
+  block-size: var(--row-inspect);
+  border-block-end: var(--hairline) solid var(--border);
+  font-weight: var(--fw-regular);
+  white-space: nowrap;
+}
+
+.insp-table thead th {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+}
+
+.insp-table tbody th {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+/* A disagreement between the snapshot's own counter and the arrays it describes is a finding.
+   It carries the word as well as the colour. */
+.insp-table tr[data-disagree="true"] td:last-child {
+  color: var(--sev-critical);
+  font-weight: var(--fw-semibold);
+}
+
+/* ══ JSON tree ═════════════════════════════════════════════════════════════ */
+
+.jsonview {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-block-size: 0;
+}
+
+.jsonview__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--sp-3);
+  padding-block-end: var(--sp-2);
+  border-block-end: var(--hairline) solid var(--border);
+}
+
+.jsonview__search {
+  flex: 0 1 44ch;
+}
+
+.jsonview__hits {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-block-end: var(--sp-1);
+}
+
+.jsonview__hitcount {
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.jsonview__hint {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+}
+
+/* Rows do not wrap, so the tree scrolls in BOTH axes inside its own region. The page body never
+   scrolls sideways, and a long value stays readable instead of being clipped by a parent that set
+   overflow-x: hidden. */
+.jsonview__tree {
+  overflow: auto;
+  min-block-size: 0;
+  scroll-padding-block: var(--sp-2);
+  padding-block: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+.jsonview__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  block-size: var(--row-inspect);
+  padding-inline-end: var(--sp-2);
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* Hover is a fill change. Never a border change, never a lift. */
+.jsonview__row:hover {
+  background: var(--surface-2);
+}
+
+.jsonview__twisty {
+  inline-size: var(--sp-3);
+  block-size: var(--sp-3);
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+}
+
+.jsonview__key {
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.jsonview__colon {
+  color: var(--text-faint);
+}
+
+.jsonview__value {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jsonview__value--string {
+  color: var(--claim-scoped);
+}
+
+.jsonview__value--number {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.jsonview__value--bool {
+  color: var(--claim-observed);
+}
+
+.jsonview__value--meta {
+  color: var(--text-faint);
+}
+
+/* A row whose key or value names a record it opens (Enter or double-click — B6). A dotted underline
+   on the text that names it, not a colour alone: the row is still a treeitem, not a link, so it does
+   not borrow the link's solid underline; the words saying what activation does are in the row's
+   accessible description and the tree's hint. */
+.jsonview__row[data-opens="true"] :is(.jsonview__key, .jsonview__value--string) {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+/* The cited node. An outline rather than a fill so it survives on top of the hover fill and of the
+   search-match fill, and it carries the words "cited here" beside it — the ring alone would be
+   meaning in colour. */
+.jsonview__row[data-cited="true"] {
+  outline: var(--hairline) solid var(--accent);
+  outline-offset: -1px;
+}
+
+.jsonview__citedmark {
+  margin-inline-start: var(--sp-2);
+  padding-inline: var(--sp-1);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+}
+
+/* A reader-facing note beside a field whose bare value would be misread (JsonView `annotations`).
+   Muted ink at the working size. A tree row is one fixed-height line, so the note cannot wrap: it
+   gives way before the key and value do, and its whole text is also the row's `title`. */
+.jsonview__note {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  margin-inline-start: var(--sp-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+}
+
+/* The tree's selected row (aria-selected follows the roving position, JsonView.tsx): a neutral
+   leading bar, --border-strong, so it reads as position and cannot be taken for the search's
+   current hit, which is the ACCENT bar below. Declared before the match rules so a row that is both
+   shows the current-hit bar, with the position bar just inside it (the combined rule). */
+.jsonview__row[aria-selected="true"] {
+  box-shadow: inset 2px 0 0 0 var(--border-strong);
+}
+
+.jsonview__row[data-match="true"] {
+  background: var(--surface-2);
+}
+
+/* The current search hit: a fill plus an accent bar. The fill alone is 1.00:1 against a row that
+   is not the current hit (and 1.09-1.12:1 against a plain match) on the worst ground (D4, WCAG
+   1.4.11); the bar carries the state. No later match/cited rule sets box-shadow, so the bar
+   survives both co-states (the cited ring is an outline). */
+.jsonview__row[data-current-match="true"] {
+  background: var(--surface-3);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+
+.jsonview__row[aria-selected="true"][data-current-match="true"] {
+  box-shadow:
+    inset 2px 0 0 0 var(--accent),
+    inset 4px 0 0 0 var(--border-strong);
+}
+
+.jsonview__mark {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: var(--radius-sm);
+  padding-inline: 1px;
+}
+
+.jsonview__row--more {
+  color: var(--claim-indeterminate);
+  font-family: var(--font-ui);
+  font-size: var(--fs-1);
+  cursor: pointer;
+}
+
+.jsonview__morelabel {
+  font-weight: var(--fw-medium);
+}
+
+/* The copy-path control stays out of the way until the row is hovered or the row has focus, so a
+   dense tree is not a wall of glyphs. It is never display:none — a hidden control cannot be
+   reached by a pointer at all, and the `c` key is its keyboard route regardless. */
+.jsonview__copy {
+  margin-inline-start: auto;
+  opacity: 0;
+}
+
+.jsonview__row:hover .jsonview__copy,
+.jsonview__row:focus-visible .jsonview__copy,
+.jsonview__copy:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .jsonview__copy {
+    opacity: 1;
+  }
+}
+
+/* ── responsive ────────────────────────────────────────────────────────────
+   Below the two-rail breakpoint the inspector is a full-width sheet (design brief §2.5). It keeps
+   its own height and its own scrolling; the page body never scrolls in two dimensions. */
+@media not all and (min-width: 64rem) {
+  .insp-kv,
+  .insp-kv--wide {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0;
+  }
+
+  .insp-kv__key {
+    min-block-size: auto;
+    padding-block-start: var(--sp-2);
+  }
+
+  .insp-gap__list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── forced colours ────────────────────────────────────────────────────────
+   The system palette replaces ours. The shape channels keep working: the cited ring becomes a
+   system outline and the disagreement row keeps its literal word. */
+@media (forced-colors: active) {
+  .jsonview__row[data-cited="true"] {
+    outline: 2px solid CanvasText;
+  }
+
+  .jsonview__row[data-match="true"],
+  .jsonview__row[data-current-match="true"] {
+    outline: var(--hairline) dashed CanvasText;
+    outline-offset: -1px;
+  }
+
+  .inspector__broken {
+    border-inline-start-color: CanvasText;
+  }
+}
+
+/* This model's evaluability verdict beside the collector's flag on an ACL line record. */
+.insp-kv__model {
+  flex-basis: 100%;
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-0);
+  line-height: var(--lh-2);
+  color: var(--text-muted);
+}
+
+.insp-kv__model[data-model-evaluable="false"] {
+  padding-inline-start: var(--sp-2);
+  border-inline-start: 3px solid var(--claim-indeterminate);
+  color: var(--text);
+}

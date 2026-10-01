@@ -257,6 +257,12 @@ _UNGUARDED_SURFACE: dict[str, tuple] = {
                           "the exact startup-indexed SPA assets, shell, and history fallback: a "
                           "user following a cross-site link must get the app, not a 403 (it reads "
                           "no store)"),
+    # Atlas Scope at /scope is deliberately NOT here: it is ON the guarded surface
+    # (backend.app.is_guarded_api_path). "No client data" in a static build is established by a
+    # content scan, and a scan recognises only the forms it knows (a bundler dropping a compiled
+    # file's envelope shipped compiled records the first scan missed), so the mount is guarded
+    # rather than recorded here with a claim the scan cannot fully back. The sweep below reaches its
+    # routes through the predicate and requires their cross-site refusal like any /api GET.
 }
 
 #: GET routes that are legitimately outside the /api surface the guard derives from. The SPA shell
@@ -300,11 +306,12 @@ def test_every_api_get_is_cross_site_guarded_unless_explicitly_exempt(client):
     stale, or if a GET route appears outside the derived surface entirely.
     """
     cid, sid, eid = _seed_ids(client)
-    exempt_seen, guarded_seen = set(), 0
+    exempt_seen, guarded_seen, guarded_non_api = set(), 0, set()
     for route in _api_get_routes(client.app):
-        if not route.path.startswith("/api"):
-            # A GET outside /api is outside what the middleware derives its rule from. Whitelisting
-            # one is a decision too: if a future /v2 or /internal GET appears, this fails.
+        if not app_mod.is_guarded_api_path(route.path, client.app.state.api_doc_paths):
+            # A GET outside the derived surface is outside what the middleware derives its rule
+            # from (classified by the middleware's OWN predicate, not by a prefix restated here).
+            # Whitelisting one is a decision too: if a future /v2 or /internal GET appears, this fails.
             assert route.path in _NON_API_GET_PATHS, (
                 f"{route.path} is a GET outside the /api surface the cross-site guard derives from — "
                 "it is unguarded by construction; guard it or record it as non-API here")
@@ -318,12 +325,18 @@ def test_every_api_get_is_cross_site_guarded_unless_explicitly_exempt(client):
         assert r.status_code == 403, f"{url} must refuse a cross-site GET, got {r.status_code}"
         assert "cross-site" in r.json()["detail"].lower(), r.text[:200]
         guarded_seen += 1
+        if not route.path.startswith("/api"):
+            guarded_non_api.add(route.path)
 
         # ...and the SPA's own call must still work, or the guard broke the product.
         ok = client.get(url, headers={"sec-fetch-site": "same-origin"})
         assert ok.status_code != 403, f"{url} same-origin was refused ({ok.status_code})"
 
     assert guarded_seen >= 21, f"only {guarded_seen} /api GETs enumerated — the sweep went stale"
+    # The Atlas Scope mount is guarded GETs outside /api: the sweep reached every one of them
+    # (NON-VACUITY for the predicate-based classification above).
+    assert {"/scope", "/scope/{rest:path}", "/scope/assets/{asset_path:path}"} <= guarded_non_api, (
+        guarded_non_api)
     assert exempt_seen == set(_EXEMPT_API_GETS), (
         f"exemption set is stale: declared {set(_EXEMPT_API_GETS)}, present {exempt_seen}")
 
@@ -371,6 +384,11 @@ def test_no_route_is_registered_outside_the_derived_guard_surface(client):
     assert app_mod.is_guarded_api_path("/api/anything", doc_paths)
     assert not app_mod.is_guarded_api_path("/v2/snapshots/1", doc_paths)
     assert not app_mod.is_guarded_api_path("/internal/metrics", doc_paths)
+    # Atlas Scope's mount is on the surface — exactly the mount, not a look-alike prefix.
+    for p in ("/scope", "/scope/", "/scope/snapshots/1/", "/scope/assets/index-abc.js"):
+        assert app_mod.is_guarded_api_path(p, doc_paths), p
+    for p in ("/scopes/1", "/scope-x", "/campaigns/scope"):
+        assert not app_mod.is_guarded_api_path(p, doc_paths), p
     for p in doc_paths:
         assert app_mod.is_guarded_api_path(p, doc_paths), p
 

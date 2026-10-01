@@ -35,7 +35,8 @@ if _missing:
     raise SystemExit(
         "Refusing to build an Atlas bundle with missing assets (the frozen app would only find "
         f"out via --selftest in the field): {_missing}\n"
-        "Build the frontend first: cd webapp/frontend && npm ci && npm run build"
+        "Build the frontend first: cd webapp/frontend && npm ci && npm run build\n"
+        "and the Atlas Scope hub build: cd atlas-scope && npm ci && npm run build:hub"
     )
 
 a = Analysis(  # noqa: F821

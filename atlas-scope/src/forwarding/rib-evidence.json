@@ -1,0 +1,645 @@
+{
+ "meta": {
+  "source": "webapp/sample_data/sample_fleet.snapshot.json",
+  "sourceOrigin": "repository-file",
+  "sourceDigestForm": "lf-normalised",
+  "sourceSha256": "3934281bb44cb7a1154c00d088c7c7805c569823ae8fc4099c1eba7adeee1e54",
+  "sourceBytes": 3306850,
+  "sourceExactSha256": "sha256:3934281bb44cb7a1154c00d088c7c7805c569823ae8fc4099c1eba7adeee1e54",
+  "sourceGitBlob": "f4572e88151045e26617e6bc74b0baaf586348fe",
+  "routingProtocols": [
+   "bgp",
+   "eigrp",
+   "ospf"
+  ],
+  "routingProtocolsFrom": "routing_neighbors"
+ },
+ "hosts": {
+  "access1": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[3]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[4]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[5]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access10": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[10]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[11]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[12]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access11": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[17]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[18]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[19]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access12": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[24]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[25]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[26]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access13": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[31]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[32]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[33]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access14": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[38]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[39]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[40]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access15": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[45]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[46]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[47]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access16": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[52]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[53]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[54]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access17": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[59]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[60]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[61]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access2": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[66]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[67]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[68]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access3": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[73]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[74]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[75]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access4": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[80]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[81]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[82]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access5": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[87]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[88]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[89]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access6": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[94]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[95]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[96]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access7": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[101]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[102]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[103]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access8": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[108]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[109]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[110]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "access9": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[115]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[116]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[117]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "core1": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "assessed",
+     "reason": "A bounded health row was emitted from usable current-run evidence. The family boundary still applies; this is not protocol-completeness proof.",
+     "cite": "protocol_assessability.rows[122]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "assessed",
+     "reason": "A bounded health row was emitted from usable current-run evidence. The family boundary still applies; this is not protocol-completeness proof.",
+     "cite": "protocol_assessability.rows[123]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "captured_empty",
+     "reason": "A recognized command capture was empty. No protocol state was observed and no health conclusion is made.",
+     "cite": "protocol_assessability.rows[124]"
+    }
+   ],
+   "adjacencies": [
+    {
+     "protocol": "ospf",
+     "neighbor": "10.0.99.2",
+     "state": "FULL/DR",
+     "cite": "routing_neighbors.core1.ospf[0]",
+     "address": "10.0.10.3",
+     "interface": "Vlan10"
+    },
+    {
+     "protocol": "ospf",
+     "neighbor": "10.0.99.9",
+     "state": "EXSTART/DROTHER",
+     "cite": "routing_neighbors.core1.ospf[1]",
+     "address": "10.0.40.9",
+     "interface": "Vlan40"
+    },
+    {
+     "protocol": "ospf",
+     "neighbor": "10.0.99.50",
+     "state": "FULL/-",
+     "cite": "routing_neighbors.core1.ospf[2]",
+     "address": "10.0.140.2",
+     "interface": "Gi1/0/40"
+    },
+    {
+     "protocol": "bgp",
+     "neighbor": "10.0.10.254",
+     "state": "0",
+     "cite": "routing_neighbors.core1.bgp[0]",
+     "address": null,
+     "interface": null
+    }
+   ],
+   "overlay": []
+  },
+  "core2": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[129]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[130]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[131]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": [
+    {
+     "kind": "evpn",
+     "neighbor": "10.255.0.254",
+     "state": "Established",
+     "prefixes": 240,
+     "cite": "overlay.core2.evpn_neighbors[0]"
+    },
+    {
+     "kind": "evpn",
+     "neighbor": "10.255.0.253",
+     "state": "Idle",
+     "prefixes": 0,
+     "cite": "overlay.core2.evpn_neighbors[1]"
+    }
+   ]
+  },
+  "dist1": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "assessed",
+     "reason": "A bounded health row was emitted from usable current-run evidence. The family boundary still applies; this is not protocol-completeness proof.",
+     "cite": "protocol_assessability.rows[136]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_running",
+     "reason": "`show ip bgp summary` printed exactly '% BGP not active' -- the vendor no-process banner: BGP is not running on this host, so it contributes no BGP state here. This is neither an assessment nor a health verdict.",
+     "cite": "protocol_assessability.rows[137]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "captured_empty",
+     "reason": "A recognized command capture was empty. No protocol state was observed and no health conclusion is made.",
+     "cite": "protocol_assessability.rows[138]"
+    }
+   ],
+   "adjacencies": [
+    {
+     "protocol": "ospf",
+     "neighbor": "10.0.99.1",
+     "state": "FULL/-",
+     "cite": "routing_neighbors.dist1.ospf[0]",
+     "address": "10.0.140.1",
+     "interface": "Gi1/0/3"
+    },
+    {
+     "protocol": "ospf",
+     "neighbor": "10.0.99.51",
+     "state": "FULL/BDR",
+     "cite": "routing_neighbors.dist1.ospf[1]",
+     "address": "10.0.40.3",
+     "interface": "Vlan40"
+    }
+   ],
+   "overlay": []
+  },
+  "dist2": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "assessed",
+     "reason": "A bounded health row was emitted from usable current-run evidence. The family boundary still applies; this is not protocol-completeness proof.",
+     "cite": "protocol_assessability.rows[143]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_running",
+     "reason": "`show ip bgp summary` printed exactly '% BGP not active' -- the vendor no-process banner: BGP is not running on this host, so it contributes no BGP state here. This is neither an assessment nor a health verdict.",
+     "cite": "protocol_assessability.rows[144]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "captured_empty",
+     "reason": "A recognized command capture was empty. No protocol state was observed and no health conclusion is made.",
+     "cite": "protocol_assessability.rows[145]"
+    }
+   ],
+   "adjacencies": [
+    {
+     "protocol": "ospf",
+     "neighbor": "10.0.99.50",
+     "state": "FULL/DR",
+     "cite": "routing_neighbors.dist2.ospf[0]",
+     "address": "10.0.40.2",
+     "interface": "Vlan40"
+    }
+   ],
+   "overlay": []
+  },
+  "podacc1": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[150]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[151]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[152]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  },
+  "podacc2": {
+   "protocols": [
+    {
+     "protocol": "OSPF",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[157]"
+    },
+    {
+     "protocol": "BGP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[158]"
+    },
+    {
+     "protocol": "EIGRP",
+     "state": "not_collected",
+     "reason": "No recognized command capture is present. Re-collect before drawing a protocol health conclusion.",
+     "cite": "protocol_assessability.rows[159]"
+    }
+   ],
+   "adjacencies": [],
+   "overlay": []
+  }
+ }
+}

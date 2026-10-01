@@ -15,8 +15,11 @@ Harness guarantees (pinned by tests/test_golden_guard.py — Plan A / Move-0.1):
   made explicit with ALLOW_GOLDEN_SHRINK=1.
 
 Determinism: we run with --workers 1 (sequential), give the synthetic collection
-a fixed collection timestamp (the lifecycle assessment boundary), and strip the
-remaining wall-clock field (`generated_at`) before comparing.
+a fixed collection timestamp (the lifecycle assessment boundary), pin the data-authority
+registries' freshness clock to that same evidence date (_GOLDEN_REGISTRY_CLOCK), and strip
+the remaining wall-clock stamps (`generated_at`, ...) before comparing. The golden has no
+calendar boundary: test_golden_does_not_depend_on_the_wall_clock_past_every_registry_window
+re-runs it with the whole process clock past every registry's freshness window.
 """
 import json
 import os
@@ -34,6 +37,29 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "COLLECT_PARSE_V3_23_0.py")
 GOLDEN_DIR = os.path.join(ROOT, "tests", "golden")
 _GOLDEN_COLLECTION_STAMP = "20260807_000000"
+# The golden's EVIDENCE instant, and the one clock the golden pins besides the collection stamp: the retained
+# data-authority registries' freshness clock. `data_authorities` is the pipeline's statement of the tool's
+# registry health TODAY -- legitimately wall-clock product behaviour, and the engine keeps it so. But a golden
+# frozen at whatever day it was last regenerated is a calendar alarm: from the day the first retained registry
+# passes registry_integrity.SOURCE_MAX_AGE_DAYS, that verdict turns stale and it CASCADES far beyond
+# data_authorities -- measured by running the pipeline 30 days past the windows (see
+# test_golden_does_not_depend_on_the_wall_clock_past_every_registry_window): every authority's status /
+# authoritative / integrity / error / record-count fields, a new `assessment_integrity` block naming the three
+# authority phases as failed, the `schema_census` counting it, `service_map`'s per-service authority flags,
+# and a new 'Assessment Integrity' workbook sheet. So normalising only the NOW-RELATIVE fields -- the five
+# registry_integrity.source_freshness derives from "now": source_age_days (now - retrieval), source_fresh,
+# source_stale, source_future_dated and freshness_status -- cannot make the golden date-independent (measured:
+# with exactly those five stripped, a run past the windows still differs in four snapshot sections and one
+# sheet), and normalising their effects field by field would be a hand-kept list standing in for its cause (and
+# would stop freezing the trust verdict itself). The cause is ONE clock, so the golden pins it -- registry
+# health as-of the golden's evidence date, exactly as the lifecycle bands are classified as-of that date -- and
+# NO data_authorities field is normalised: each of those five is a pure function of the pin and stays frozen.
+# What the pipeline publishes when a registry is fresh, exactly on its boundary, and stale (and what a registry
+# publishes when future-dated) is proven with an injected clock in tests/test_eol_registry_freshness_clock.py;
+# test_golden_registry_clock_is_inside_every_published_registry_window names the one event that moves the pin.
+_GOLDEN_EVIDENCE_DATE = f"{_GOLDEN_COLLECTION_STAMP[0:4]}-{_GOLDEN_COLLECTION_STAMP[4:6]}-{_GOLDEN_COLLECTION_STAMP[6:8]}"
+_GOLDEN_REGISTRY_CLOCK = f"{_GOLDEN_EVIDENCE_DATE}T00:00:00+00:00"
+_GOLDEN_CLOCKS = {"registry_clock": _GOLDEN_REGISTRY_CLOCK}
 
 
 def _make_template(path):
@@ -54,7 +80,64 @@ def test_synthetic_collection_bytes_are_platform_stable(tmp_path):
     assert b"\r\n" not in raw
 
 
-def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
+# The pipeline door with its clocks under test control. `python -c` this bootstrap, then the script's own
+# argv: it runs COLLECT_PARSE exactly as `python COLLECT_PARSE_V3_23_0.py ...` does (run as __main__, the
+# script's directory first on sys.path, so its `sys.exit(main())` exit code is the process exit code), after
+# optionally
+#   * WALL (argv[1], ISO-8601 with offset, "" = real): moving the WHOLE process wall clock -- datetime.now /
+#     utcnow / today, date.today and time.time -- to start at WALL and advance in real time. This is how a
+#     test observes what the pipeline does on a future day without waiting for it;
+#   * REGISTRY (argv[2], ISO-8601 with offset, "" = real): pinning the one clock the retained data-authority
+#     registries judge their freshness by. Every registry freshness read goes through
+#     `registry_integrity.source_freshness`, which reads `registry_integrity.datetime.now` (the seam the
+#     in-process tests below and tests/test_eol_registry_freshness_clock.py also use, and which that file
+#     proves is the only clock the registries read).
+_CLOCK_BOOTSTRAP = r"""
+import datetime as _dtm, os, runpy, sys, time as _time
+_wall, _registry, _script = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.argv = sys.argv[3:]
+sys.path.insert(0, os.path.dirname(os.path.abspath(_script)))
+if _wall:
+    _real_dt, _real_date, _real_time = _dtm.datetime, _dtm.date, _time.time
+    _offset = _real_dt.fromisoformat(_wall) - _real_dt.now(_dtm.timezone.utc)
+    class _DateMeta(type):
+        def __instancecheck__(cls, obj):
+            return isinstance(obj, _real_date)
+    class _DatetimeMeta(type):
+        def __instancecheck__(cls, obj):
+            return isinstance(obj, _real_dt)
+    class _Date(_real_date, metaclass=_DateMeta):
+        @classmethod
+        def today(cls):
+            return (_real_dt.now() + _offset).date()
+    class _Datetime(_real_dt, metaclass=_DatetimeMeta):
+        @classmethod
+        def now(cls, tz=None):
+            return _real_dt.now(tz) + _offset
+        @classmethod
+        def utcnow(cls):
+            return _real_dt.utcnow() + _offset
+        @classmethod
+        def today(cls):
+            return _real_dt.today() + _offset
+    _dtm.datetime, _dtm.date = _Datetime, _Date
+    _time.time = lambda: _real_time() + _offset.total_seconds()
+if _registry:
+    from cisco_toolkit import registry_integrity as _ri
+    _pinned = _ri.datetime.fromisoformat(_registry)
+    class _RegistryClock(_ri.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _pinned if tz is None else _pinned.astimezone(tz)
+    _ri.datetime = _RegistryClock
+runpy.run_path(_script, run_name="__main__")
+"""
+
+
+def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None, *, registry_clock=None, wall_clock=None):
+    """Run the real offline pipeline. `registry_clock` / `wall_clock` (ISO-8601 with an offset) pin the
+    data-authority registries' freshness clock / move the whole process clock -- see _CLOCK_BOOTSTRAP. With
+    neither, the plain `python COLLECT_PARSE_V3_23_0.py` door runs, untouched."""
     # The collection-dir stamp is the pipeline's authoritative lifecycle `asof`. A plain temporary
     # directory falls back to member mtimes, so lifecycle-derived punch-list/compound-risk rows drift
     # as the test date crosses a retained LDoS. Pin the evidence date, not just the sections stripped
@@ -67,12 +150,15 @@ def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
     if out_xlsx is None:
         out_xlsx = tmp_path / "out.xlsx"
 
-    cmd = [sys.executable, SCRIPT,
-           "--no-collect", "--collection-dir", collection,
-           "--devices-file", str(devices), "--template", str(template),
-           "--output", str(out_xlsx), "--no-html", "--workers", "1"]
+    argv = ["--no-collect", "--collection-dir", collection,
+            "--devices-file", str(devices), "--template", str(template),
+            "--output", str(out_xlsx), "--no-html", "--workers", "1"]
     if extra_args:
-        cmd += list(extra_args)
+        argv += list(extra_args)
+    if registry_clock or wall_clock:
+        cmd = [sys.executable, "-c", _CLOCK_BOOTSTRAP, wall_clock or "", registry_clock or "", SCRIPT, *argv]
+    else:
+        cmd = [sys.executable, SCRIPT, *argv]
     proc = subprocess.run(cmd, cwd=str(tmp_path), capture_output=True, text=True, timeout=300)
     assert proc.returncode == 0, f"pipeline failed:\nSTDOUT\n{proc.stdout}\nSTDERR\n{proc.stderr}"
     snap_path = os.path.splitext(str(out_xlsx))[0] + ".snapshot.json"
@@ -80,12 +166,15 @@ def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
     with open(snap_path, encoding="utf-8") as f:
         snap = json.load(f)
     snap.pop("generated_at", None)            # volatile: wall-clock timestamp
-    # Registry source_age_days advances continuously even though the pinned
-    # retrieval timestamp and freshness decision are the stable contract.
-    # Keep those trust fields frozen; exclude only the derived live age.
-    for health in (snap.get("data_authorities") or {}).values():
-        if isinstance(health, dict):
-            health.pop("source_age_days", None)
+    # data_authorities: every field is KEPT when the registry clock is pinned (the golden run -- see
+    # _GOLDEN_REGISTRY_CLOCK): its freshness verdict and the trust fields derived from it are then a pure
+    # function of the pin, source_age_days included. Only an UNPINNED run (a real-clock run such as
+    # test_import_inventory_reconcile's) publishes a source_age_days that advances every second, so only there
+    # is it excluded; such runs are never compared with the golden's data_authorities.
+    if registry_clock is None:
+        for health in (snap.get("data_authorities") or {}).values():
+            if isinstance(health, dict):
+                health.pop("source_age_days", None)
     # collection-time provenance: now() on a live run, dir-stamp/mtime on --no-collect -> volatile like
     # generated_at; exclude it (its consumer lifecycle_risk is already excluded below). (provenance R2-1-01)
     snap.pop("collected_at", None)
@@ -95,10 +184,17 @@ def _run_pipeline(tmp_path, out_xlsx=None, extra_args=None):
     # executive_brief rolls up lifecycle (its EoL headline is date-relative) -> exclude too; pinned by
     # tests/test_executive_brief.py with synthetic summaries. (V3.23.120)
     snap.pop("executive_brief", None)
-    # device_dossiers embeds the EoL band per asset (eol_band / exposure labels / risk_band), so exclude
-    # it like its lifecycle source; pinned by tests/test_device_dossiers.py with synthetic axes. Its
-    # downstream punch-list fold remains frozen because the synthetic evidence date above is fixed.
-    snap.pop("device_dossiers", None)
+    # device_dossiers is KEPT (owner decision, golden self-consistency): compound-risk punch-list rows point
+    # INTO it, so a golden without it could not back its own citations. What is and is NOT deterministic,
+    # measured rather than assumed: compute_device_dossiers itself reads no clock, and the lifecycle bands it
+    # folds are dated as-of the pipeline's evidence date (the collection-dir stamp above pins it --
+    # test_lifecycle_fold_is_dated_by_the_pinned_evidence_date_not_the_wall_clock). The one wall-clock read
+    # that used to sit upstream of them -- eoldb's retained-EoX-registry freshness gate, evaluated at "now" --
+    # is judged at the EVIDENCE date by compute_lifecycle_risk (R1V-1: fixed at the band's source, not
+    # characterised): test_dossiers_do_not_depend_on_the_wall_clock_even_past_the_eol_registry_window.
+    # data_authorities (the tool's registry health TODAY) is judged by the pinned registry clock in the golden
+    # run, so the golden has no calendar boundary:
+    # test_golden_does_not_depend_on_the_wall_clock_past_every_registry_window.
     # design_blueprint folds the date-relative lifecycle/EoL bands (its EoL decision count shifts as dates
     # pass) -> exclude like its lifecycle source; the blueprint logic is pinned deterministically by
     # tests/test_design_blueprint.py and its SSOT publish by tests/test_pipeline_inprocess.py. (design engine)
@@ -192,7 +288,8 @@ def _golden(name, produced):
                 + "\nRemoving contract surface must be explicit: re-run with "
                   "ALLOW_GOLDEN_SHRINK=1 after review.", pytrace=False)
     os.makedirs(GOLDEN_DIR, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    # newline="\n": the tracked goldens are LF; a text-mode write on Windows would rewrite every line.
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         # sort_keys=False: preserve meaningful order (snapshot key order is
         # code-defined; Excel sheet order is the workbook tab order).
         json.dump(produced, f, indent=1, sort_keys=False)
@@ -201,7 +298,8 @@ def _golden(name, produced):
 
 @pytest.fixture(scope="module")
 def golden_run(tmp_path_factory):
-    """ONE real pipeline run, shared by the tests that only READ its artifacts.
+    """ONE real pipeline run, shared by the tests that only READ its artifacts. It runs with the golden's
+    registry clock pinned (_GOLDEN_CLOCKS), so what it publishes does not depend on the day it runs.
 
     Seven tests here invoked `_run_pipeline` with identical arguments at ~30 s each — ~210 s, most of
     this file and a large share of the whole suite. They produce byte-identical output by
@@ -222,7 +320,7 @@ def golden_run(tmp_path_factory):
     rather than widening this fixture — a shared artifact mutated by one test is a defect the others
     inherit silently.
     """
-    return _run_pipeline(tmp_path_factory.mktemp("golden"))
+    return _run_pipeline(tmp_path_factory.mktemp("golden"), **_GOLDEN_CLOCKS)
 
 
 def test_snapshot_matches_golden(golden_run):
@@ -234,6 +332,225 @@ def test_snapshot_matches_golden(golden_run):
     assert set(snap) == set(golden), "snapshot top-level keys changed"
     for key in golden:
         assert snap[key] == golden[key], f"snapshot section '{key}' changed vs golden"
+
+
+def test_every_evidence_pointer_in_the_golden_file_resolves_in_the_golden_file_itself():
+    """Owner decision (a): the golden is a SELF-CONSISTENT document. Every evidence_ref it carries (punch
+    list + every upstream section that publishes refs) resolves, to the record it claims, INSIDE the
+    committed tests/golden/snapshot.json -- no section a pointer names may be stripped from it."""
+    from test_punchlist_evidence_refs import punchlist_evidence_problems
+
+    with open(os.path.join(GOLDEN_DIR, "snapshot.json"), encoding="utf-8") as f:
+        golden = json.load(f)
+    n_refs = sum(len(row.get("evidence_refs") or []) for row in golden.get("punchlist") or [])
+    assert n_refs > 0, "the golden carries no evidence refs -- the check would be vacuous"
+    assert any(ref["ref"].startswith("/device_dossiers/") for row in golden["punchlist"]
+               for ref in row["evidence_refs"]), "no compound-risk ref into device_dossiers -- vacuous"
+    problems = punchlist_evidence_problems(golden, "golden file")
+    assert not problems, "\n".join(problems[:40])
+
+
+def test_lifecycle_fold_is_dated_by_the_pinned_evidence_date_not_the_wall_clock(golden_run):
+    """The lifecycle bands the kept dossiers fold are CLASSIFIED as-of the EVIDENCE date (the collection-dir
+    stamp), never the day the test runs: if the pipeline fell back to the wall clock, `asof` would be today.
+    Whether the retained EoX registry may drive a band at all is judged at the same evidence date -- see
+    test_dossiers_do_not_depend_on_the_wall_clock_even_past_the_eol_registry_window."""
+    _snap, xlsx = golden_run
+    with open(os.path.splitext(xlsx)[0] + ".snapshot.json", encoding="utf-8") as f:
+        written = json.load(f)
+    stamp = _GOLDEN_COLLECTION_STAMP
+    evidence_date = f"{stamp[0:4]}-{stamp[4:6]}-{stamp[6:8]}"
+    assert written["lifecycle_risk"]["asof"] == evidence_date
+    assert written["collected_at"][:10] == evidence_date
+    assert _snap["device_dossiers"] == written["device_dossiers"]          # kept, not stripped
+
+
+# The dossier inputs the pipeline's ctx-adapter (COLLECT_PARSE `_device_dossiers`) passes, by the snapshot key
+# each is published under -- lifecycle_risk excepted: the golden strips it, so it is recomputed below.
+_DOSSIER_SECTIONS = ("health_scores", "failure_impact", "software_risk", "platform_health", "syslog_intelligence",
+                     "qos_audit", "golden_drift", "security", "config_hygiene", "stp_roots", "vpc",
+                     "physical_health", "protocol_health", "move_groups")
+
+
+def _golden_dossiers_under_wall_clock(monkeypatch, instant, evidence_date=None, *, break_chain=False):
+    """Recompute the committed golden's device_dossiers in-process with the wall clock pinned at `instant`
+    (every `datetime.now` the EoX registry's freshness policy can read) and the lifecycle classified as-of
+    `evidence_date` (default: the golden's pinned evidence date). `break_chain` makes the retained-source
+    byte/semantic verification fail, whatever the date. Returns (lifecycle_risk, device_dossiers, golden)."""
+    from datetime import datetime
+
+    from cisco_toolkit import analyze, eoldb, registry_integrity
+
+    class _PinnedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant if tz is None else instant.astimezone(tz)
+
+    with open(os.path.join(GOLDEN_DIR, "snapshot.json"), encoding="utf-8") as f:
+        golden = json.load(f)
+    stamp = _GOLDEN_COLLECTION_STAMP
+    evidence_date = evidence_date or f"{stamp[0:4]}-{stamp[4:6]}-{stamp[6:8]}"
+    devices = {d["host"]: {"model": d["model"], "sw_version": d["sw_version"]}
+               for d in golden["device_dossiers"]["per_device"]}
+    monkeypatch.setattr(registry_integrity, "datetime", _PinnedClock)
+    if break_chain:
+        def _tampered(*_a, **_k):
+            raise registry_integrity.PackIntegrityError("retained Cisco EoL fixture digest mismatch (test)")
+        monkeypatch.setattr(eoldb, "verify_retained_eol_source_chain", _tampered)
+    eoldb._runtime_source_proof.cache_clear()          # the proof is memoized per process
+    try:
+        lifecycle = analyze.compute_lifecycle_risk(devices, asof=evidence_date)
+        dossiers = analyze.compute_device_dossiers(
+            lifecycle_risk=lifecycle, **{k: golden.get(k) for k in _DOSSIER_SECTIONS})
+    finally:
+        monkeypatch.undo()
+        eoldb._runtime_source_proof.cache_clear()
+    return lifecycle, dossiers, golden
+
+
+def _eol_freshness_window():
+    from datetime import datetime, timedelta
+
+    from cisco_toolkit import eoldb, registry_integrity
+    retrieved = datetime.fromisoformat(eoldb._EOL_FIXTURE_RETRIEVED_AT.replace("Z", "+00:00"))
+    return retrieved, retrieved + timedelta(days=registry_integrity.SOURCE_MAX_AGE_DAYS)
+
+
+def test_dossiers_do_not_depend_on_the_wall_clock_even_past_the_eol_registry_window(monkeypatch):
+    """R1V-1 (owner decision (a): fix the wall-clock read at its SOURCE). Whether the retained Cisco EoX registry
+    may drive a lifecycle band is judged at the EVIDENCE date, never at the day the pipeline runs: the golden's
+    dossiers are reproduced EXACTLY at instants inside the registry's freshness window AND long past it. Before
+    the fix, one day past the window withheld every matched band (Unknown) and the dossiers differed."""
+    from datetime import timedelta
+
+    retrieved, boundary = _eol_freshness_window()
+    instants = (retrieved + timedelta(hours=1), boundary - timedelta(hours=1),
+                boundary + timedelta(days=1), boundary + timedelta(days=3650))
+    results = [_golden_dossiers_under_wall_clock(monkeypatch, t) for t in instants]
+    golden = results[0][2]
+    matched = [d for d in results[0][0]["per_device"] if d["match_kind"] != "none"]
+    assert matched and all(d["band"] != "Unknown" for d in matched), "no EoX-matched golden device -- vacuous"
+    for (lifecycle, dossiers, _g), instant in zip(results, instants):
+        assert lifecycle["per_device"] == results[0][0]["per_device"], f"lifecycle drifts at {instant}"
+        assert dossiers == golden["device_dossiers"], f"dossiers drift with the wall clock at {instant}"
+        for d in lifecycle["per_device"]:
+            if d["match_kind"] != "none":
+                assert d["citation_status"] == "retained-primary-fixture", (instant, d)
+
+
+def test_eol_registry_staleness_is_judged_at_the_evidence_date_and_fails_closed(monkeypatch):
+    """The coverage the old wall-clock characterisation provided, moved to the evidence date: evidence dated past
+    the registry's freshness window withholds every matched band (Unknown, no unverified dates published) even
+    while the wall clock is inside the window; evidence dated on the last fresh day still bands. And judging at
+    the evidence date never bypasses integrity: a retained chain that fails verification withholds the band
+    whatever the wall clock or the evidence date says."""
+    from datetime import timedelta
+
+    retrieved, boundary = _eol_freshness_window()
+    inside_clock = retrieved + timedelta(days=8)
+    last_fresh_day = (boundary - timedelta(days=1)).date().isoformat()
+    stale_day = (boundary + timedelta(days=1)).date().isoformat()
+
+    banded, _d, _g = _golden_dossiers_under_wall_clock(monkeypatch, inside_clock, last_fresh_day)
+    matched = [d for d in banded["per_device"] if d["match_kind"] != "none"]
+    assert matched and all(d["band"] != "Unknown" and d["ldos"] for d in matched), matched
+
+    stale, stale_dossiers, _g = _golden_dossiers_under_wall_clock(monkeypatch, inside_clock, stale_day)
+    by_host = {d["host"]: d for d in stale["per_device"]}
+    for d in matched:
+        row = by_host[d["host"]]
+        assert row["band"] == "Unknown" and row["eos"] == row["ldos"] == "", row
+        assert row["citation_status"] == "primary-url-unverified", row
+        assert "evidence date" in row["status"], row["status"]
+    dossier_by_host = {d["host"]: d for d in stale_dossiers["per_device"]}
+    assert all(dossier_by_host[d["host"]]["eol_band"] == "Unknown" for d in matched)
+
+    for clock in (inside_clock, boundary + timedelta(days=30)):
+        broken, _d, _g = _golden_dossiers_under_wall_clock(monkeypatch, clock, last_fresh_day, break_chain=True)
+        rows = {d["host"]: d for d in broken["per_device"]}
+        assert all(rows[d["host"]]["band"] == "Unknown" and rows[d["host"]]["ldos"] == "" for d in matched), clock
+
+
+def _registry_windows(golden):
+    """(authority, retrieved, stale-after) for EVERY data authority the golden publishes, read from the policy
+    fields each one publishes -- never a hand-kept list of registries."""
+    from datetime import datetime, timedelta
+
+    windows = []
+    for name, health in golden["data_authorities"].items():
+        retrieved = datetime.fromisoformat(health["source_retrieved_at"].replace("Z", "+00:00"))
+        windows.append((name, retrieved, retrieved + timedelta(days=health["source_max_age_days"])))
+    return windows
+
+
+def test_golden_does_not_depend_on_the_wall_clock_past_every_registry_window(tmp_path):
+    """The golden has no calendar boundary. The WHOLE pipeline process runs with its wall clock moved 30 days
+    past the LAST retained data-authority registry's freshness window -- the day CI would otherwise start
+    failing -- and the golden comparison (every snapshot section + the workbook sheet schema) still holds
+    exactly. Every other wall-clock read the pipeline makes really ran at that date (asserted), so this is the
+    whole-snapshot audit, not a list of fields someone remembered."""
+    from datetime import datetime, timedelta
+
+    with open(os.path.join(GOLDEN_DIR, "snapshot.json"), encoding="utf-8") as f:
+        golden = json.load(f)
+    with open(os.path.join(GOLDEN_DIR, "sheet_schema.json"), encoding="utf-8") as f:
+        golden_sheets = json.load(f)
+    windows = _registry_windows(golden)
+    assert any(name == "eol" for name, _r, _b in windows), windows
+    late = max(boundary for _n, _r, boundary in windows) + timedelta(days=30)
+
+    snap, xlsx = _run_pipeline(tmp_path, wall_clock=late.isoformat(), **_GOLDEN_CLOCKS)
+    with open(os.path.splitext(xlsx)[0] + ".snapshot.json", encoding="utf-8") as f:
+        written = json.load(f)
+    ran_at = datetime.fromisoformat(written["generated_at"]).astimezone()
+    assert ran_at > max(boundary for _n, _r, boundary in windows), (
+        f"the pipeline did not run past the registry windows (generated_at {written['generated_at']}) -- vacuous")
+    assert set(snap) == set(golden), "snapshot top-level keys differ from the golden past the registry windows"
+    for key in golden:
+        assert snap[key] == golden[key], f"snapshot section '{key}' depends on the wall clock (ran at {ran_at})"
+    assert _sheet_schema(xlsx) == golden_sheets, f"the workbook sheet schema depends on the wall clock ({ran_at})"
+
+
+def test_golden_registry_clock_is_inside_every_published_registry_window(golden_run):
+    """The pin is not a calendar boundary, but it is a DATA boundary: the golden's registry clock must sit inside
+    the freshness window of every registry the pipeline publishes. A registry REFRESH (a new retrieval) is the
+    one event that can move a registry out of it -- a retrieval after the pin reads future-dated at the pin --
+    and it would otherwise surface as an opaque data_authorities / assessment_integrity diff. Every published
+    authority is read from the run (never a hand-kept list), and its verdict is re-derived here by arithmetic."""
+    from datetime import datetime, timedelta
+
+    snap, _xlsx = golden_run
+    pin = datetime.fromisoformat(_GOLDEN_REGISTRY_CLOCK)
+    authorities = snap["data_authorities"]
+    assert authorities and all(isinstance(h, dict) for h in authorities.values()), authorities
+    for name, health in authorities.items():
+        retrieved = datetime.fromisoformat(health["source_retrieved_at"].replace("Z", "+00:00"))
+        inside = (retrieved - timedelta(seconds=health["source_max_future_skew_seconds"])
+                  <= pin <= retrieved + timedelta(days=health["source_max_age_days"]))
+        assert inside and health["freshness_status"] == "fresh", (
+            f"data authority {name!r} (retrieved {health['source_retrieved_at']}) is "
+            f"{health['freshness_status']} at the golden's registry clock {_GOLDEN_REGISTRY_CLOCK}: a registry "
+            "refresh moved it out of the pinned window. Move _GOLDEN_COLLECTION_STAMP (the evidence date the pin "
+            "follows) to an instant inside every registry's window, then regenerate with UPDATE_GOLDEN=1.")
+    assert "assessment_integrity" not in snap, snap.get("assessment_integrity")
+
+
+def test_every_punchlist_evidence_pointer_resolves_on_the_published_snapshot(golden_run):
+    """Per-finding evidence pointers (docs/ssot.md): over EVERY punch-list row of this real run --
+    never a named subset -- the basis is in the enum and allowed for the category, and every
+    RFC 6901 ref resolves to the record it claims (not merely a non-null node) in the snapshot AS
+    WRITTEN (sparsified, compact), after the whole-snapshot redaction, and in the explorer embed of
+    both (which re-filters lists). The committed golden file itself is checked separately
+    (test_every_evidence_pointer_in_the_golden_file_resolves_in_the_golden_file_itself)."""
+    from test_punchlist_evidence_refs import published_forms, punchlist_evidence_problems
+
+    _snap, xlsx = golden_run
+    with open(os.path.splitext(xlsx)[0] + ".snapshot.json", encoding="utf-8") as f:
+        written = json.load(f)
+    problems = []
+    for form, snap in published_forms(None, written):
+        problems += punchlist_evidence_problems(snap, f"golden {form}")
+    assert not problems, "\n".join(problems[:40])
 
 
 def test_stp_topology_owner_and_schema_census_ship_fail_closed(golden_run):

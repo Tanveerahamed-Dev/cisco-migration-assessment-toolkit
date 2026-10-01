@@ -52,7 +52,7 @@ from .model import (
     write_bytes,
 )
 from .provenance import provenance_statement
-from .sbom import NPM_LOCKFILES, PYTHON_DECLARATIONS, build_cyclonedx
+from .sbom import PYTHON_DECLARATIONS, build_cyclonedx, npm_lockfiles
 from .schema_validation import validate_release_object
 from .source_binding import read_bound_source_blob, validate_exact_source
 
@@ -674,6 +674,77 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
     return "blocked_external_current_advisory_applicability_review_required", limits
 
 
+def census_depth_release_gate(completeness: dict[str, Any]) -> tuple[str, list[str]]:
+    """Carry every active census-depth BLOCK category into the release gates.
+
+    The compiler bundle has already rejoined the receipt to the single policy
+    owner (``compiler.policy.CENSUS_DEPTH_DECLARATIONS``), so each declaration
+    here is a reviewed deferral.  While any file is censused at identity depth
+    the gate names its category and the honest limits say what is not covered.
+    """
+
+    receipt = completeness.get("census_depth")
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("declarations"), list):
+        raise ReleaseInputError("compiler census-depth receipt is absent")
+    active = [row for row in receipt["declarations"] if isinstance(row, dict) and row.get("tracked_files")]
+    categories = sorted({str(row["block_category"]) for row in active})
+    if categories != receipt.get("block_categories"):
+        raise ReleaseInputError("compiler census-depth BLOCK categories differ from their declarations")
+    if not categories:
+        return "passed_full_depth", []
+    limits = [
+        (
+            f"Census depth BLOCK {row['block_category']}: {row['tracked_files']} files under {row['prefix']} are "
+            f"censused at identity depth only ({row['reason']}); their {row['deferred_nonblank_lines']} nonblank "
+            "lines, symbols, calls, structured values, source text and dossiers are not projected, and "
+            "import-bound call candidates from them are unexamined. Follow-up owner: "
+            f"{row['follow_up_owner']}."
+        )
+        for row in sorted(active, key=lambda item: str(item["prefix"]))
+    ]
+    return "BLOCK:" + ",".join(categories), limits
+
+
+def _identity_depth_exception(completeness: dict[str, Any]) -> str:
+    """Name every active identity-depth prefix that a projection claim excludes."""
+
+    receipt = completeness.get("census_depth")
+    declarations = receipt.get("declarations") if isinstance(receipt, dict) else None
+    active = sorted(
+        (row for row in declarations or [] if isinstance(row, dict) and row.get("tracked_files")),
+        key=lambda item: str(item.get("prefix")),
+    )
+    if not active:
+        return ""
+    listed = "; ".join(
+        f"{row.get('tracked_files')} files under `{row.get('prefix')}` (release BLOCK {row.get('block_category')})"
+        for row in active
+    )
+    return (
+        " Files censused at identity depth carry only file, import and privacy records, and their lines, "
+        f"symbols and source text are deferred, not projected: {listed}."
+    )
+
+
+def offline_readme_projection_sentence(completeness: dict[str, Any]) -> str:
+    """The OFFLINE-README projection sentence, qualified by the census depth."""
+
+    return (
+        "The machine line/source/symbol projection of every full-depth file is under `compiler/`; use "
+        "`source-symbol-index.json` to locate records." + _identity_depth_exception(completeness)
+    )
+
+
+def self_contained_html_limit(completeness: dict[str, Any]) -> str:
+    """The manifest limit for the self-contained HTML, qualified by the census depth."""
+
+    return (
+        "The self-contained HTML is an executive navigation view; the safe source and line records of every "
+        "full-depth file are carried in the offline ZIP compiler projection, not embedded in the page."
+        + _identity_depth_exception(completeness)
+    )
+
+
 def _artifact(root: Path, relative: str, value: bytes, role: str) -> dict[str, Any]:
     suffix = PurePosixPath(relative).suffix
     if suffix in TEXT_SCAN_SUFFIXES:
@@ -728,9 +799,16 @@ def _validate_output_contract(content: Any, *, pdf_included: bool) -> set[str]:
 
 
 def _dependency_sources(repo_root: Path, bundle: CompilerBundle) -> dict[str, bytes]:
+    # Every npm lockfile in the compiled Git tree, by npm's own file names: the
+    # SBOM and its vulnerability gate never depend on a hand-kept lockfile list.
+    tracked_lockfiles = npm_lockfiles(
+        str(item["path"])
+        for item in bundle.records["files"]
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    )
     sources = {
         relative: read_bound_source_blob(repo_root, bundle, relative)
-        for relative in sorted(set(NPM_LOCKFILES + PYTHON_DECLARATIONS))
+        for relative in sorted(set(tracked_lockfiles) | set(PYTHON_DECLARATIONS))
     }
     try:
         lock = json.loads(sources[_BOUNDED_IMAGE_LOCKFILE].decode("utf-8", errors="strict"))
@@ -1511,7 +1589,7 @@ def build_release(
         offline_entries["OFFLINE-README.md"] = (
             "# Atlas Master Reference offline bundle\n\n"
             f"Exact source: `{bundle.source_commit}`. Open `master-reference.html` locally for the executive navigation view. "
-            "The complete machine line/source/symbol projection is under `compiler/`; use `source-symbol-index.json` to locate records. "
+            f"{offline_readme_projection_sentence(bundle.completeness)} "
             "Verify entries with `bundle-receipt.json`. The artifact inventory, outer release manifest, and optional detached "
             "owner signature are sibling family members and are not embedded in this ZIP. No network connection is required.\n"
         ).encode("utf-8")
@@ -1587,6 +1665,7 @@ def build_release(
             else "passed_text_outputs_binary_containers_not_content_scanned"
         )
         dependency_vulnerability_gate, dependency_vulnerability_limits = _dependency_vulnerability_assessment(sbom)
+        census_depth_gate, census_depth_limits = census_depth_release_gate(bundle.completeness)
         manifest = {
             "schema_version": "1.0.0",
             "id": stable_id("release-manifest", bundle.source_commit, bundle.source_tree_digest),
@@ -1614,6 +1693,7 @@ def build_release(
             },
             "gates": {
                 "whole_repository_compiler": "passed",
+                "line_census_depth": census_depth_gate,
                 "architecture_conformance": "passed",
                 "semantic_acceptance": semantic_gate,
                 "self_contained_complete_viewer": "blocked_executive_navigation_only",
@@ -1648,13 +1728,14 @@ def build_release(
                 "Unsigned previews are not verified releases.",
                 "PDF remains incomplete or independently unreviewed according to pdf-gate.json.",
                 *dependency_vulnerability_limits,
+                *census_depth_limits,
                 "Python dependency declarations are not a transitive resolution lock.",
                 "Static and Graphify edges are not runtime truth.",
                 "Structural line mapping is not behavioral or Level 4 understanding; failed semantic acceptance gates remain explicit.",
                 "The generated-output scanner covers high-confidence credential forms; privacy review remains required for contextual or encoded sensitive data.",
                 "PDF and ZIP compressed binary containers are not treated as UTF-8 privacy-scan proof; external PDF privacy coverage is explicitly blocked.",
                 "Preservation caches, installers, recovery keys, and exercise receipts are missing or externally custodied as detailed in preservation-coverage.json.",
-                "The self-contained HTML is an executive navigation view; complete safe source and line records are carried in the offline ZIP compiler projection, not embedded in the page.",
+                self_contained_html_limit(bundle.completeness),
                 "Cryptographic verification does not grant publication authority.",
             ],
             "manifest_self_exclusion": "A manifest cannot contain its own digest; sign these exact canonical bytes externally.",

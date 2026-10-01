@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-09-30** (Claude Code). Reasoning behind the current direction:
+Last reconciled: **2026-10-01** (Codex). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -70,8 +70,9 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot`, published as PR #579 | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | PR #579 is open. The required master-reference compile fails on undeclared `atlas_scope` edges, unresolved `vite.config` imports, ambiguous `producer-emission` targets and JSONC `tsconfig` files; the diagnosis was sent to its holder. The PR is one merge behind `main` (2026-09-30). | Fix the compile findings, merge `main`, get CI green, merge. |
-| W2 | One-application UI consolidation (AssessHub + Scope + explorer) | engine slices on short branches off `main` (now: `feat/ui-projection-slice2`); UI slices after W1 merges | Claude Code | Merged: #575 engine honesty, #577 `ui_projection/1` slice 1 (Overview + Trust), #578 `ssot` owner robustness. Slice 2 (Inventory, device page, Findings) is a draft PR waiting for W1: it carries a tripwire for W1's new `evidence_refs` fields (2026-09-30). | After #579 merges: merge `main` into slice 2, project `evidence_refs` / `evidence_basis` / `deduction_refs`, then merge. Next engine slices come from the ranked register in `docs/one-app-contract-gaps-2026-09-30.md`. Its top three are engine defects: STP root uniqueness (G15), dossier absence semantics (G49), and move groups with no label (G13). Then add the backend endpoint serving the projection (paged, with response models) and the first core screens. The owner runs the prototype's 2-D vs 2.5-D task test (prototype v2 now reads only the contract). |
+| W2a | `ui_projection` slice 2: Inventory, device page, Findings | `feat/ui-projection-slice2`, draft PR #580; existing `.claude/worktrees/ui-projection-2` checkout | Codex | Main merged after #579; evidence projection and validation in progress (2026-10-01) | Project `evidence_refs`, `evidence_basis`, `evidence_refs_total` and `deduction_refs`; refute, run all gates, pass both privacy checks before push, mark ready and merge the green exact head. |
+| W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`, pushed through `f950f888`; existing `.claude/worktrees/engine-defects` checkout | Codex | Engine fixes/refutation committed. Full run: 9,684 passed / 40 skipped / 20 failed; eight context and nine deferred fixture failures preserved, three actionable failures repaired with 146 focused tests passing. [Validation on its branch](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/blob/f950f888/docs/engine-defects-validation-2026-10-01.md). | After W2a merges: merge main with a merge commit, reconcile its projection consumers, regenerate golden/sheet schema/sample ONCE with LF bytes, run all gates, open the PR and merge when green. |
+| W2c | Backend endpoint and first core screens | not started; no branch or folder yet | Codex | Read-only API and static prototype-source preflights complete on the W2b branch; implementation waits for W2a/W2b | Add the paged, declared-response-model endpoint and Overview / Trust / Inventory + device / Findings screens using only contract envelopes. List the concrete branch/folder before creating either. |
 
 ## Owner decisions
 
@@ -98,11 +99,33 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
 
 ## Handoff log (newest first)
 
-- 2026-09-30, Claude Code:
-  - Merged #577 (`ui_projection` slice 1) and #578 (`ssot` owner robustness).
-  - The owner confirmed D11, so W1 is published as PR #579; its compile diagnosis was sent to its
-    holder.
-  - Slice 2 is held as a draft until W1 merges.
+- 2026-10-01, Codex (W2a):
+  - Verified #579 merged as `d92fcb1f`; its tree equals tested head `0345eb1d`. Removed W1's active row under rule 8; its branch, checkout and follow-ups remain with their owner.
+  - Merged current main into the existing `feat/ui-projection-slice2` checkout with a merge commit. Preserved every handoff entry from both sides of the board conflict.
+  - W2b is pushed through `f950f888`: engine fixes and full-suite refutations are saved on that branch. W2a now owns evidence-reference projection and its gates; W2b integration/regeneration follows W2a's merge.
+
+- 2026-10-01, Claude Code (W1):
+  - Made #579's CI honest. Each red check was fixed at its root, with a test that fails without the fix:
+    - a cross-drive `relpath` in a test helper;
+    - a case-folding test that assumed the file system;
+    - CodeQL;
+    - the master-reference contract, its allowlist, its TypeScript resolution and its size bounds.
+  - The CodeQL finding led to a snapshot-name defect class that three independent refuters widened until it was
+    closed by structure.
+  - `atlas-scope/` is censused at identity depth in the master reference, with a named BLOCK category. The
+    reference's deployment bundle is at 256 of 260 MB. Compact per-line encoding is urgent for its owner.
+  - The required dependency audit now covers every tracked npm lockfile.
+  - Merged #578. Regenerated the demo fleet and re-bound Atlas Scope to it.
+  - Pushed. The owner lifted "finish 3.5 only" in chat; that preview-scope work is row W5, stacked on this branch.
+
+- 2026-09-30, Claude Code (W1):
+  - The owner confirmed D11 in the W1 session. Phase 3.5 is committed, and `main` is merged in (#573, #574,
+    #575, #577).
+  - Found while merging, and fixed in the branch:
+    - The assessability guard now tells #575's census vocabulary apart from the receipt's.
+    - Importing the engine no longer opens its audit log, which removes the `-n auto` collection
+      `PermissionError`.
+  - Rule-7 checks passed. Pushed the branch and opened #579 with the preview scope listed.
 
 - 2026-09-30, Claude Code:
   - Merged #574 (npm advisories), #575 (engine honesty) and #573 (this board + ADR 0007); deleted
@@ -115,8 +138,41 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
     request.
   - W2 started.
 
+- 2026-09-30, Claude Code:
+  - Merged #577 (`ui_projection` slice 1) and #578 (`ssot` owner robustness).
+  - The owner confirmed D11, so W1 is published as PR #579; its compile diagnosis was sent to its
+    holder.
+  - Slice 2 is held as a draft until W1 merges.
+
 - 2026-09-29, Claude Code:
   - Created this board and recorded the direction verdict (dated record linked above).
   - Removed idle worktrees, fully merged local branches and empty orphan directories, preserving
     all uncommitted work.
   - W1 continues in its own session. W2 waits on the owner decisions above.
+
+## W2 handoff notes (2026-10-01)
+
+W2 was transferred from Claude Code to Codex. The Active table is now the current queue.
+W1 / #579 has merged; its follow-ups remain with its own holder.
+
+**Notes for the W2 holder (verified on this host):**
+- **Linked worktrees always show 8 test failures:** `test_graphify_guarded` (4), `test_graph_invariants` (3) and
+  `test_atlas_r2_authority_decision_binding` (1). They fail identically on an unchanged `main` in a linked
+  worktree, so they are environment failures. A rare `make_stick` / venv-redirector failure under load
+  passes when re-run alone.
+- **Adding a `cisco_toolkit` module moves two zero-egress attestation strings in the golden snapshot** ("across N
+  modules"). RUN `tests/test_pipeline_golden.py`; a byte-identical golden file proves nothing.
+- **Do not run a full `UPDATE_GOLDEN=1` regeneration on Windows:** it rewrites every line ending to CRLF (tens of
+  thousands of churned lines). Regenerate, then compare with `git diff --ignore-cr-at-eol`, and commit LF bytes
+  that change only the real content.
+- **Merges:**
+  - Use merge commits (never squash or rebase) and `gh pr merge <n> --merge --admin --match-head-commit <tested sha>`.
+  - Only do this after every required check is green and with the owner's standing merge authority: branch
+    protection needs one review, and authors cannot self-approve.
+  - Merging one PR puts the others behind `main` (the strict rule), so merge `main` in again.
+  - A clean 3-way merge of the same two commits always gives the same tree. Confirm it after merging:
+    `git rev-parse origin/main^{tree}` must equal the tested merge's tree.
+- **Before every push (public repo):**
+  - `py -3.12 -I -B .github/scripts/verify_repository_privacy.py --root .`
+  - a scan of `git log -p origin/main..HEAD` with `cisco_toolkit.distribution_verify._client_marker_patterns()`
+  - Gate each step on its exit code; never chain gates with `;`.
