@@ -70,8 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot` (pushed) | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | PR #579 green on every hosted check (2026-10-01; the master-reference job included) and waiting only for review. Its first hosted run was red on five checks; each is fixed in the PR. A snapshot-name defect class is closed by structure. `atlas-scope/` is in the master reference at identity depth: an owner-reversible decision, described in the PR. `main` (#578) is merged in. | Owner reviews and merges #579, preserving merge commits. Then delete this row (rule 8) and retarget W5's PR to `main`. D9 and D10 follow-ups start after the merge (ADR 0007). |
-| W5 | Atlas Scope preview-scope repairs: the D3 citation-path clipping, the `/scope` reader, the C1 KEY validator, engine-owned display vocabularies and bundle receipts, then the C1 critic panel and an independent 39-criterion re-grade | `claude/scope-preview-fixes` (pushed), stacked on W1's branch | Claude Code session in the `.claude/worktrees/scope-preview` checkout | PR #582 open against W1's branch (2026-10-01). Two repair waves, each independently verified. The engine gate re-ran, and a whole-branch refuter found no blocker or major. D3 and C1 stay UNPROVEN, and no re-grade has run. Residuals are in `atlas-scope/docs/open-issues.md` O78. | On a quiet host: run the full focus audit, rebuild the C1 sheets, run the critic panel, then the re-grade. When #579 merges, retarget #582 to `main` while it is open. |
+| W5 | Atlas Scope preview-scope repairs: the D3 citation-path clipping, the `/scope` reader, the C1 KEY validator, engine-owned display vocabularies and bundle receipts, then the C1 critic panel and an independent 39-criterion re-grade | `claude/scope-preview-fixes` (pushed), now against `main` | Claude Code session in the `.claude/worktrees/scope-preview` checkout | PR #582, retargeted to `main` after #579 merged, with `main` merged in (2026-10-01). Two repair waves, each independently verified; a whole-branch refuter found no blocker or major. D3 and C1 stay UNPROVEN, and no re-grade has run. Residuals are in `atlas-scope/docs/open-issues.md` O78. | The full D3 focus audit is running on a quiet host; then rebuild the C1 sheets, run the critic panel, then the re-grade. Owner reviews and merges #582, preserving merge commits. |
 | W2 | One-application UI consolidation (AssessHub + Scope + explorer) | engine slices on short branches off `main` (now: `feat/ui-projection-slice1`); UI slices after W1 merges | Claude Code | Engine honesty (#575) merged. `ui_projection/1` slice 1 (Overview + Trust) is PR #577. Prototype published privately to the owner; backlog in `docs/one-app-feature-backlog-2026-09-30.md` (2026-09-30). | Merge #577. Owner runs the prototype's 2-D vs 2.5-D task test on the reference laptop. After W1 merges: backend endpoint serving the projection with response models, then the first core screens. |
 
 ## Owner decisions
@@ -98,6 +97,13 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-01, Claude Code (W1, closing):
+  - #579 merged as `d92fcb1f` on the owner's instruction, after every required check was green on head
+    `0345eb1d` and `main`'s tree was confirmed equal to that head's. Row W1 deleted (rule 8).
+  - The W1 branch and its worktree stay until #582 lands; the main checkout's launch configuration still
+    points at that worktree (W0).
+  - #582 (W5) retargeted to `main` while open, and `main` merged in.
 
 - 2026-10-01, Claude Code (W5):
   - Ran the W5 repair wave and its W5b follow-up, each with independent verifiers and refuters.
