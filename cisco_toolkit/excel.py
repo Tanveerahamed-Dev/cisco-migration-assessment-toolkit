@@ -6149,7 +6149,7 @@ def write_vlan_cutover_sheet(wb, vlan_cutover: List[dict]) -> None:
             cl = [str(h) for h in (rec.get("stp_root_claimants") or [])]
             stp_root_txt = (f"{VLAN_CUTOVER_AMBIGUOUS} {len(cl)} claim root: " + ", ".join(cl[:12])
                             + (f" +{len(cl) - 12} more" if len(cl) > 12 else "")) if cl else VLAN_CUTOVER_AMBIGUOUS
-        elif isinstance(de_val, bool) and stp_root_txt != VLAN_CUTOVER_NOT_OBSERVED:
+        elif state in (None, "published") and isinstance(de_val, bool) and stp_root_txt != VLAN_CUTOVER_NOT_OBSERVED:
             de = "yes" if de_val else "no"
         else:
             de = ""

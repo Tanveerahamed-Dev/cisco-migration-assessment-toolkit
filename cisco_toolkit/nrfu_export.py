@@ -63,7 +63,7 @@ from cisco_toolkit.analyze import (
 from cisco_toolkit.bgp_intent import validate_bgp_configured_peer_baseline
 from cisco_toolkit.fhrp_intent import validate_fhrp_configured_group_baseline
 from cisco_toolkit.parse import _parse_fhrp
-from cisco_toolkit.stp_topology import classify_stp_root_election
+from cisco_toolkit.stp_topology import _election_priority, classify_stp_root_election
 
 NRFU_SCHEMA = "nrfu_commands/1"
 
@@ -152,7 +152,8 @@ def _port_key(p: str):
 
 def _vlan_key(v) -> tuple:
     s = str(v)
-    return (0, int(s), "") if s.isdigit() else (1, 0, s)
+    number = _election_priority(v)
+    return (0, number, "") if number is not None else (1, 0, s)
 
 
 def _fhrp_group_key(group: str) -> tuple:
@@ -674,7 +675,7 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
 
     waves: List[dict] = []
     for label in ordered:
-        wno = int(re.search(r"(\d+)", label).group(1)) if label != UNSCHEDULED_WAVE else 0
+        wno = wave_ordinal.get(label, 0)
         whosts = wave_hosts[label]
         cases_by_host: Dict[str, List[dict]] = {}
         seq = 0
@@ -856,25 +857,37 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
             for vlan, info in sorted(_as_dict(stp_roots.get(h)).items(), key=lambda kv: _vlan_key(kv[0])):
                 if not isinstance(info, dict):
                     continue
-                prio = info.get("root_priority")
-                root = str(info.get("root_address") or "").strip()
-                token = str(vlan).strip()
-                erec = (stp_election["mst_instance" if info.get("is_mst") else "pvst_vlan"].get(str(int(token)))
-                        if token.isdigit() else None) or {}
+                # The election owner alone defines usable numeric instance/VLAN tokens. A friendly
+                # identifier such as "broken" must never authorize a guessed command or root claim.
+                number = _election_priority(vlan)
+                if number is None or number < 0:
+                    continue
+                prio = _election_priority(info.get("root_priority"))
+                flag = info.get("is_root", False)
+                address = info.get("root_address", "")
+                root = address.strip() if isinstance(address, str) else ""
+                erec = stp_election["mst_instance" if info.get("is_mst") else "pvst_vlan"].get(str(number)) or {}
                 vtok = re.sub(r"[^\w.-]", "", str(vlan))
-                if info.get("is_root") and erec.get("state") == "ambiguous":
+                malformed = not isinstance(flag, bool) or not isinstance(address, str)
+                if erec.get("state") == "ambiguous" and (flag is True or malformed):
                     # G15: this bridge is ONE of several collected claimants -- certifying "this bridge is
                     # the root" would bless whichever claimant happened to be read; hold it for review.
                     # Family "STP Root", NOT "STP": the "STP" family is the consistency-baseline owner's,
                     # and its summary counts reconcile 1:1 to that owner's rows.
                     if vtok and vtok == str(vlan):
-                        others = max(0, len(erec.get("claimants") or []) - 1)
+                        claimants = erec.get("claimants") or []
+                        if h in claimants:
+                            expected = (f"AMBIGUOUS — this bridge and {len(claimants) - 1} other collected bridge(s) "
+                                        f"report being root for VLAN {vtok} ({erec.get('reason')}); reconcile before accepting")
+                        else:
+                            expected = (f"AMBIGUOUS — root ownership for VLAN {vtok} is not provable "
+                                        f"({erec.get('reason')}); reconcile the bridge and root identity before accepting")
                         case(h, 2, "per-site", f"show spanning-tree vlan {vtok}",
-                             f"AMBIGUOUS — this bridge and {others} other collected bridge(s) report being root "
-                             f"for VLAN {vtok} ({erec.get('reason')}); reconcile before accepting",
+                             expected,
                              f"stp_roots.{h}.{vtok}", evidence_family="STP Root", evidence_state="review")
                     continue
-                if info.get("is_root"):
+                if flag is True and erec.get("state") == "published" and erec.get("root") == h:
+                    prio = erec.get("root_priority")
                     exp = (f"This bridge is the root for VLAN {vlan}"
                            + (f" (priority {prio})" if prio not in (None, "") else ""))
                 elif root:

@@ -5699,20 +5699,27 @@ function flowBetween(s,d){
    A VLAN several collected bridges claim (or whose bridges disagree about the root identity) is
    "ambiguous": no claimant is ever shown as its root. MST instances are keyed separately and skipped. */
 function stpElectionPriority(v){
-  if(typeof v==="number")return Number.isInteger(v)?v:null;
-  if(typeof v==="string"&&/^\d+$/.test(v.trim()))return parseInt(v.trim(),10);
+  if(typeof v==="number")return Number.isSafeInteger(v)?v:null;
+  if(typeof v==="string"){const t=v.trim(); if(t.length<=16&&/^[0-9]+$/.test(t)){
+    const n=Number(t); return Number.isSafeInteger(n)?n:null;}}
   return null;}
 function stpRootElection(stpRoots){
-  const sr=(stpRoots!==undefined)?stpRoots:((SNAP&&SNAP.stp_roots)||{});
-  const work={};
+  // Explicit raw arguments are the parity-pinned compatibility mirror. Screen consumers use the
+  // engine's published VLAN-cutover verdict whenever present, never overwrite it from raw rows.
+  const useOwner=arguments.length===0;
+  const sr=useOwner?((SNAP&&SNAP.stp_roots)||{}):stpRoots;
+  const work=Object.create(null);
   const hosts=(sr&&typeof sr==="object"&&!Array.isArray(sr))?Object.keys(sr).filter(h=>h).sort():[];
   for(const h of hosts){const per=sr[h]; if(!per||typeof per!=="object"||Array.isArray(per))continue;
-    for(const k of Object.keys(per)){const rec=per[k]; const tok=String(k).trim();
-      if(!/^\d+$/.test(tok)||!rec||typeof rec!=="object"||Array.isArray(rec)||rec.is_mst)continue;
-      const vid=String(parseInt(tok,10));
-      const e=work[vid]||(work[vid]={malformed:[],claimants:[],ids:{}});
+    for(const k of Object.keys(per)){const rec=per[k], number=stpElectionPriority(k);
+      if(number===null||number<0)continue;
+      const valid=rec!==null&&typeof rec==="object"&&!Array.isArray(rec);
+      if(valid&&rec.is_mst)continue;
+      const vid=String(number);
+      const e=work[vid]||(work[vid]={malformed:[],claimants:[],ids:Object.create(null)});
+      if(!valid){e.malformed.push(h);continue;}
       const flag=("is_root" in rec)?rec.is_root:false;
-      let addr=("root_address" in rec)?rec.root_address:""; if(addr===null)addr="";
+      let addr=("root_address" in rec)?rec.root_address:"";
       if(typeof flag!=="boolean"||typeof addr!=="string"){e.malformed.push(h);continue;}
       addr=addr.trim().toLowerCase();
       if(flag)e.claimants.push(h);
@@ -5720,7 +5727,7 @@ function stpRootElection(stpRoots){
       const key=addr||("<unaddressed:"+h+">");
       const id=e.ids[key]||(e.ids[key]={prios:new Set()});
       const p=stpElectionPriority(rec.root_priority); if(p!==null)id.prios.add(p);}}
-  const out={};
+  const out=Object.create(null);
   for(const vid of Object.keys(work).sort((a,b)=>(+a)-(+b))){const e=work[vid];
     const ids=Object.keys(e.ids).map(k=>e.ids[k]); const cl=e.claimants.slice().sort();
     let state,reason;
@@ -5733,6 +5740,24 @@ function stpRootElection(stpRoots){
     const prio=(ids.length===1&&ids[0].prios.size===1)?[...ids[0].prios][0]:null;
     const def=(state==="published"&&prio!==null)?(prio===32768||prio===32768+(+vid)):null;
     out[vid]={state,reason,root:state==="published"?cl[0]:"",claimants:cl,default_election:def,root_priority:prio};}
+  if(useOwner&&SNAP&&Array.isArray(SNAP.vlan_cutover)){
+    const seen=new Set();
+    for(const row of SNAP.vlan_cutover){
+      if(!row||typeof row!=="object"||Array.isArray(row)||!Object.hasOwn(row,"stp_root_state"))continue;
+      const number=stpElectionPriority(row.vlan); if(number===null||number<0)continue;
+      const vid=String(number), state=row.stp_root_state;
+      const claimants=Array.isArray(row.stp_root_claimants)?row.stp_root_claimants.filter(h=>typeof h==="string"&&h):[];
+      const valid=["published","ambiguous","not_observed"].includes(state)&&
+        (state!=="published"||(typeof row.stp_root==="string"&&row.stp_root&&claimants.length===1&&
+          row.stp_root_claimants.length===1&&claimants[0]===row.stp_root));
+      const identities=Array.isArray(row.stp_root_identities)?row.stp_root_identities:[];
+      const priority=identities.length===1&&identities[0]?stpElectionPriority(identities[0].root_priority):null;
+      out[vid]={state:valid&&!seen.has(vid)?state:"ambiguous",
+        reason:valid&&!seen.has(vid)&&typeof row.stp_root_reason==="string"?row.stp_root_reason:"malformed_root_rows",
+        root:valid&&!seen.has(vid)&&state==="published"?row.stp_root:"",claimants,
+        default_election:valid&&!seen.has(vid)&&state==="published"&&typeof row.stp_root_default_election==="boolean"?row.stp_root_default_election:null,
+        root_priority:priority};
+      seen.add(vid);}}
   return out;}
 function stpRootFor(vid){const e=stpRootElection()[String(vid)]; return e&&e.state==="published"?e.root:"";}
 function epIdentity(ep){ if(!ep)return null; const ids=(SNAP&&SNAP.endpoint_identity)||[];
@@ -7388,10 +7413,9 @@ function platformHealthCard(){
    and (2) root / gateway MISALIGNMENT -- the root bridge isn't a switch hosting the VLAN's gateway, so
    traffic to the default gateway hairpins through the root. Fleet-overview card. Back-compat: no key -> no card. */
 function stpRootCard(){
-  const sr=SNAP&&SNAP.stp_roots; if(!sr||!Object.keys(sr).length)return "";
   const ifs=(SNAP&&SNAP.interfaces)||{};
   // G15: published roots only; an ambiguous VLAN is listed, never credited to its first claimant.
-  const el=stpRootElection(sr), rootOf={}, ambiguous=[];
+  const el=stpRootElection(), rootOf={}, ambiguous=[];
   for(const v in el){const e=el[v];
     if(e.state==="published")rootOf[v]={host:e.root,prio:e.root_priority,def:e.default_election};
     else if(e.state==="ambiguous")ambiguous.push({v,e});}
@@ -7399,20 +7423,22 @@ function stpRootCard(){
   const gwOf={};
   for(const host in ifs)for(const port in ifs[host]){const d=ifs[host][port]; const m=/^Vlan0*(\d+)$/.exec(port);
     if(m && d && String(d.svi_ip||"").trim()){ (gwOf[m[1]]=gwOf[m[1]]||new Set()).add(host); }}
-  const accidental=[], misaligned=[];
+  const accidental=[], misaligned=[], undetermined=[];
   for(const v in rootOf){const rt=rootOf[v];
     if(rt.def===true) accidental.push({v,host:rt.host,prio:rt.prio});
+    else if(rt.def===null)undetermined.push({v,host:rt.host});
     const gws=gwOf[v]; if(gws&&gws.size&&!gws.has(rt.host)) misaligned.push({v,root:rt.host,gws:[...gws].sort()});}
-  if(!accidental.length&&!misaligned.length&&!ambiguous.length)
+  if(!accidental.length&&!misaligned.length&&!ambiguous.length&&!undetermined.length)
     return `<div class="sec"><h3>STP root placement <span class="badge b-ok">clean</span></h3>`+
-      `<div class="ln faint">✓ Every VLAN's spanning-tree root runs a deliberate (non-default) priority and sits on a switch that hosts the VLAN's gateway — no accidental roots, no gateway hairpinning.</div></div>`;
+      `<div class="ln faint">✓ The published spanning-tree roots run deliberate (non-default) priorities; no gateway misalignment was observed.</div></div>`;
   const misRows=misaligned.map(x=>`<div class="ln"><span class="pill pl-crit">root ≠ gateway</span> VLAN <b>${esc(x.v)}</b> root is <span class="mono">${esc(shortName(x.root))}</span> but its gateway is on <span class="mono">${x.gws.map(g=>esc(shortName(g))).join(", ")}</span> — traffic to the default gateway hairpins through the root (suboptimal L2 path).</div>`).join("");
   const accRows=accidental.map(x=>`<div class="ln"><span class="pill pl-watch">accidental root</span> VLAN <b>${esc(x.v)}</b> is rooted at <span class="mono">${esc(shortName(x.host))}</span> on the <b>default priority</b> (${esc(x.prio)}) — nobody elected it; a MAC tiebreak chose it, so it can move unexpectedly on a cutover.</div>`).join("");
   const ambRows=ambiguous.map(x=>`<div class="ln"><span class="pill pl-watch">root ambiguous</span> VLAN <b>${esc(x.v)}</b>: ${x.e.claimants.length} collected bridge(s) claim root (${x.e.claimants.slice(0,6).map(h=>`<span class="mono">${esc(shortName(h))}</span>`).join(", ")}${x.e.claimants.length>6?` +${x.e.claimants.length-6}`:""}; ${esc(x.e.reason.replaceAll("_"," "))}) — no single root is provable; reconcile before cutover.</div>`).join("");
-  const n=accidental.length+misaligned.length+ambiguous.length;
+  const undRows=undetermined.map(x=>`<div class="ln"><span class="pill pl-watch">election undetermined</span> VLAN <b>${esc(x.v)}</b> has published root <span class="mono">${esc(shortName(x.host))}</span>, but its priority does not establish whether election was by default — verify before cutover.</div>`).join("");
+  const n=accidental.length+misaligned.length+ambiguous.length+undetermined.length;
   return `<div class="sec"><h3>STP root placement <span class="badge b-crit">${n} issue${n===1?"":"s"}</span></h3>`+
     `<div class="sub" style="margin-bottom:6px">Root-bridge design smells a migration inherits — an accidental (default-priority) root, a root that isn't where the gateway is, or a root several bridges claim.</div>`+
-    misRows+accRows+ambRows+`</div>`;
+    misRows+accRows+ambRows+undRows+`</div>`;
 }
 /* review r10 EXIT Y — the punch-list's SEVERITY BASIS.
    compute_migration_punchlist's media fold (analyze.py :4386) publishes, per item, WHY the row
@@ -12898,19 +12924,23 @@ function abH_spof(){const ch=((SNAP||{}).causality)||[];
     {label:"Blast-radius mode",run:()=>{abToggle(false);setMode("blast");}},
     {label:"STP root placement",run:abAskAct("is my stp root placement sane")},
     {label:"Gateway redundancy",run:abAskAct("fhrp coverage")}]};}
-function abH_stp(){const sr=(SNAP||{}).stp_roots||{};
+function abH_stp(){
   // G15: per-host root counts come from the one election rule -- only a PUBLISHED root is credited.
-  const el=stpRootElection(sr), byHost={}, defVlans=new Set(), ambV=[];
+  const el=stpRootElection(), byHost=Object.create(null), defVlans=new Set(), undetermined=new Set(), ambV=[];
   for(const [v,e] of Object.entries(el)){
+    if(e.default_election===null)undetermined.add(v);
     if(e.state==="published"){const r=byHost[e.root]||(byHost[e.root]={h:e.root,rooted:[],def:[]});
       r.rooted.push(v); if(e.default_election===true){r.def.push(v);defVlans.add(v);}}
     else if(e.state==="ambiguous")ambV.push(v);}
   const rows=Object.values(byHost);
   rows.sort((a,b)=>b.rooted.length-a.rooted.length);
   let b=`<h4>STP root placement</h4>`;
-  if(!Object.keys(sr).length)return {html:b+`<div class="ab-note">No STP root data in this snapshot.</div>`,acts:[]};
+  if(!Object.keys(el).length)return {html:b+`<div class="ab-note">No STP root data in this snapshot.</div>`,acts:[]};
   b+=abKv("Switches holding a root",String(rows.length));
-  b+=abKv("Default-priority roots",defVlans.size?`<span class="pill pl-watch">${defVlans.size} VLAN(s)</span> won by default election (32768 + VLAN id) — root placement is accidental, not engineered`:`<span class="pill pl-ok">none</span> — priorities look engineered`);
+  let defaultSummary=defVlans.size?`<span class="pill pl-watch">${defVlans.size} VLAN(s)</span> won by default election (32768 + VLAN id) — root placement is accidental, not engineered`:
+    undetermined.size?"no default election established":`<span class="pill pl-ok">none</span> — published priorities look engineered`;
+  if(undetermined.size)defaultSummary+=`; <span class="pill pl-watch">undetermined for ${undetermined.size} VLAN(s)</span> — usable root priority or ownership was not established`;
+  b+=abKv("Default-priority roots",defaultSummary);
   if(ambV.length)b+=abKv("Ambiguous roots",`<span class="pill pl-watch">${ambV.length} VLAN(s)</span> claimed by several collected bridges (${esc(ambV.slice(0,8).join(", "))}) — no single root is provable; reconcile before cutover`);
   if(rows.length){b+=`<table><tr><th>Switch</th><th>Root for</th><th>By default election</th></tr>`+
     rows.slice(0,8).map(r=>`<tr><td>${abHostLink(r.h)}</td><td><b>${r.rooted.length}</b> VLAN(s)</td><td>${r.def.length?`<span class="pill pl-watch">${r.def.length}</span>`:"0"}</td></tr>`).join("")+`</table>`;
@@ -13169,10 +13199,10 @@ function abqCensus(obj,unit,keyLabel,notAssessedKey){
 }
 /* evidence auto-answer rules: question text → a one-line proof from THIS snapshot (or null) */
 const ABQ_AUTO=[
- [/spanning[- ]?tree|stp\b|root (bridge|placement)/i,()=>{const sr=(SNAP||{}).stp_roots||{};if(!Object.keys(sr).length)return null;
-   const el=stpRootElection(sr),rh=new Set(),dv=new Set(),amb=[];
-   for(const [v,e] of Object.entries(el)){if(e.state==="published"){rh.add(e.root);if(e.default_election===true)dv.add(v);}else if(e.state==="ambiguous")amb.push(v);}
-   return `${rh.size} in-scan switch(es) hold a root; ${dv.size} VLAN(s) rooted by default election (32768 + VLAN id)`+(amb.length?`; ${amb.length} VLAN(s) with an AMBIGUOUS root (several bridges claim it)`:"");}],
+ [/spanning[- ]?tree|stp\b|root (bridge|placement)/i,()=>{const el=stpRootElection();if(!Object.keys(el).length)return null;
+   const rh=new Set(),dv=new Set(),amb=[];let undetermined=0;
+   for(const [v,e] of Object.entries(el)){if(e.default_election===null)undetermined++;if(e.state==="published"){rh.add(e.root);if(e.default_election===true)dv.add(v);}else if(e.state==="ambiguous")amb.push(v);}
+   return `${rh.size} in-scan switch(es) hold a root; ${dv.size} VLAN(s) rooted by default election (32768 + VLAN id)`+(amb.length?`; ${amb.length} VLAN(s) with an AMBIGUOUS root (several bridges claim it)`:"")+(undetermined?`; default election undetermined for ${undetermined} VLAN(s)`:"");}],
  [/fhrp|hsrp|vrrp|first[- ]?hop|standby gateway|gateway redundan/i,()=>{let s=0,c=0,h=0;for(const v of MODEL.vlans){const g=MODEL.gateways.get(v);if(!g||!g.size)continue;if(g.size===1)s++;else if(MODEL.fhrp.get(v))c++;else h++;}
    /* audit-5 FH#5: a VLAN with 2+ gateways but NO FHRP is the first-hop-redundancy HAZARD (the abH_fhrpgaps chat
       surface flags it) -- the old summary counted only c/s and silently dropped these, reading as 'all fine'. */

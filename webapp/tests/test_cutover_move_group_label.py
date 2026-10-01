@@ -29,3 +29,8 @@ def test_unlabelled_legacy_snapshot_still_joins_by_switch_overlap():
     }
     wave = cutover.build_plan(snap)["waves"][0]
     assert wave["endpoints"] == 7
+
+
+def test_written_label_mismatch_never_borrows_endpoints_by_overlap():
+    groups = [{"group": "Group 1", "switches": ["a"], "endpoints": 5}]
+    assert cutover._match_move_group({"a"}, groups, "Group 99") == {}

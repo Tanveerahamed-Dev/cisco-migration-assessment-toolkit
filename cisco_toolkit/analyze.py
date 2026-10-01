@@ -32,7 +32,7 @@ from cisco_toolkit.cmdio import (
     cmd_not_running_banner,
 )
 from cisco_toolkit.model import DevicePhysical, InterfaceData
-from cisco_toolkit.stp_topology import classify_stp_root_election
+from cisco_toolkit.stp_topology import _election_priority, classify_stp_root_election
 from cisco_toolkit.parse import (
     _parse_fhrp, _is_physical_port, parse_spanning_tree_blockedports,
     parse_spanning_tree_root, parse_spanning_tree_states,
@@ -1611,10 +1611,12 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
     # not VLAN ids -- excluded, mirroring stp_root_findings. WHO the root is comes from the one owner
     # (G15): a VLAN several bridges claim is ambiguous, never "first sorted claimant wins".
     for host in sorted(stp_roots or {}):
-        for vlan, rec in (stp_roots[host] or {}).items():
-            if not str(vlan).isdigit() or not isinstance(rec, dict) or rec.get("is_mst"):
+        per_host = stp_roots[host]
+        for vlan, rec in (per_host.items() if isinstance(per_host, dict) else []):
+            number = _election_priority(vlan)
+            if number is None or number < 0 or (isinstance(rec, dict) and rec.get("is_mst")):
                 continue
-            vlan_hosts.setdefault(int(vlan), set()).add(host)
+            vlan_hosts.setdefault(number, set()).add(host)
     election = classify_stp_root_election(stp_roots)["pvst_vlan"]
 
     # ---- join indexes over the precomputed axes ------------------------------------------------
@@ -8321,7 +8323,7 @@ def compute_migration_punchlist(cross_layer: List[dict],
         # float, a non-list) must degrade to "no device", never raise (unhashable / non-iterable).
         devs = sorted({d for d in (devices if isinstance(devices, (list, tuple, set)) else [])
                        if isinstance(d, str) and d})
-        waves = _ordered_group_labels((wave_of.get(d, "") for d in devs), wave_ordinal)
+        waves = _ordered_group_labels((wave_of.get(d, MOVE_GROUP_UNSCHEDULED) for d in devs), wave_ordinal)
         it = {"severity": severity, "rank": _PUNCH_RANK.get(severity, 0),
               "category": category, "devices": devs, "wave": ", ".join(waves),
               "title": title, "detail": _clip(detail), "remediation": remediation}
@@ -9527,7 +9529,8 @@ def compute_remediation_plan(devices: Optional[dict] = None,
         items.append({"device": device, "platform": _plat(device), "category": category,
                       "severity": severity, "title": title, "why": (why or "")[:300],
                       "commands": [c for c in commands if c is not None], "verify": verify,
-                      "caution": caution, "source": source, "wave": wave_of.get(device, "")})
+                      "caution": caution, "source": source,
+                      "wave": wave_of.get(device, MOVE_GROUP_UNSCHEDULED) if device else ""})
 
     sf = stp_findings or {}
     for a in sf.get("accidental", []):                                    # STP accidental root (default priority)
@@ -9668,7 +9671,8 @@ _VALIDATION_BANNER = ("Run these AFTER each wave's cutover. The 'Observed baseli
 def _validation_wave_key(w: str):
     """Sort 'Group 2' before 'Group 10' (numeric), numbered waves before any non-numbered label."""
     m = re.search(r"(\d+)", w or "")
-    return (0, int(m.group(1))) if m else (1, w or "")
+    number = _election_priority(m.group(1)) if m else None
+    return (0, number) if number is not None else (1, w or "")
 
 
 def _bgp_configured_peer_acceptance(row: Any) -> str:
@@ -10370,9 +10374,10 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         for vlan, info in sorted((stp.get(host) or {}).items(), key=lambda kv: _validation_wave_key(str(kv[0]))):
             if not (isinstance(info, dict) and info.get("is_root")):
                 continue
-            token = str(vlan).strip()
-            erec = (stp_election["mst_instance" if info.get("is_mst") else "pvst_vlan"].get(str(int(token)))
-                    if token.isdigit() else None) or {}
+            number = _election_priority(vlan)
+            if number is None or number < 0:
+                continue
+            erec = stp_election["mst_instance" if info.get("is_mst") else "pvst_vlan"].get(str(number)) or {}
             if erec.get("state") == "ambiguous":
                 others = len(erec.get("claimants") or []) - 1
                 add(host, "STP", "High",
@@ -12410,6 +12415,53 @@ _DOSSIER_BAND_RANK = {b: i for i, b in enumerate(_DOSSIER_BANDS)}
 # risk_index thresholds (impact 1-10 x exposure 0-10 -> 0-100)
 _DOSSIER_SEVERE, _DOSSIER_ELEVATED, _DOSSIER_GUARDED = 50, 25, 10
 
+# Closed denominator and input custody for the dossier's eleven exposure axes.
+# Config consumers read the canonical software capture record, falling back to QoS.
+DOSSIER_AXIS_INPUTS = {
+    "Health": ("health_scores",),
+    "Hardware EoL": ("lifecycle_risk",),
+    "Software risk": ("software_risk",),
+    "Control plane": ("platform_health",),
+    "Operational logs": ("syslog_intelligence",),
+    "Security posture": ("security", "software_risk", "qos_audit"),
+    "Config hygiene": ("config_hygiene", "software_risk", "qos_audit", "parse_yield"),
+    "Golden drift": ("golden_drift", "software_risk", "qos_audit"),
+    "QoS posture": ("qos_audit", "software_risk"),
+    "Physical": ("physical_health", "health_scores"),
+    "Protocol": ("protocol_health", "protocol_assessability"),
+}
+DOSSIER_EMPTY_IS_CLEAN = frozenset({"Config hygiene", "Physical"})
+
+
+def _dossier_hygiene_screened_empty(parse_yield: Any, host: str, hosts: list) -> bool:
+    """Positive parser custody only; a missing/ambiguous/malformed receipt cannot license clean."""
+    from cisco_toolkit.textutils import safe_fs_name
+    from typing import cast
+
+    receipts = parse_yield.get("receipts") if isinstance(parse_yield, dict) else None
+    if not isinstance(receipts, list):
+        return False
+    candidates = [r for r in receipts if isinstance(r, dict)
+                  and r.get("parser") == "parse_config_hygiene"
+                  and r.get("cmd") == "show running-config"]
+    mapped = safe_fs_name(host)
+    # Even an exact spelling is a directory-safe name: another raw host can map to it.
+    if sum(safe_fs_name(h) == mapped for h in hosts) != 1:
+        return False
+    exact = [r for r in candidates if r.get("device") == host]
+    if exact:
+        matches = exact
+    else:
+        matches = [r for r in candidates if r.get("device") == mapped]
+    if len(matches) != 1:
+        return False
+    receipt = matches[0]
+    counts = tuple(receipt.get(key) for key in ("calls", "with_entities", "zero_yield", "errors"))
+    if any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in counts):
+        return False
+    calls, with_entities, zero_yield, errors = cast(Tuple[int, int, int, int], counts)
+    return calls >= 1 and zero_yield >= 1 and errors == 0 and calls == with_entities + zero_yield + errors
+
 
 def compute_device_dossiers(health_scores: Optional[list] = None,
                             failure_impact: Optional[list] = None,
@@ -12425,7 +12477,10 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
                             vpc: Optional[Dict[str, dict]] = None,
                             physical_health: Optional[list] = None,
                             protocol_health: Optional[list] = None,
-                            move_groups: Optional[list] = None) -> dict:
+                            move_groups: Optional[list] = None, *,
+                            protocol_assessability: Optional[dict] = None,
+                            parse_yield: Optional[dict] = None,
+                            input_failures: Optional[Tuple[frozenset, bool]] = None) -> dict:
     """NEW-V3.23.172: per-device 360-degree dossier + compound-risk ranking.
     Joins the 11 per-device-capable axes (health / hardware EoL / software risk /
     control-plane capacity / operational logs / CIS posture / config hygiene /
@@ -12434,85 +12489,156 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
     root / gateway roles), and emits named compound patterns where independent
     risks coincide on one box. Deterministic; tolerant of empty/oddly-typed
     input; absence of evidence is state 'na' (not assessed) and NEVER counts
-    toward exposure. Returns {per_device, summary, note}."""
-    hs_by = {r.get("switch"): r for r in (health_scores or []) if isinstance(r, dict)}
-    fi_by = {r.get("host"): r for r in (failure_impact or []) if isinstance(r, dict)}
-    lc_by = {r.get("host"): r for r in ((lifecycle_risk or {}).get("per_device") or [])
-             if isinstance(r, dict)}
-    sw = software_risk or {}
-    sw_by = {r.get("host"): r for r in (sw.get("per_device") or []) if isinstance(r, dict)}
-    sw_find: Dict[str, list] = {}
-    for f in (sw.get("findings") or []):
-        if isinstance(f, dict):
-            sw_find.setdefault(f.get("host", ""), []).append(f)
-    ph_by = {r.get("host"): r for r in ((platform_health or {}).get("per_device") or [])
-             if isinstance(r, dict)}
-    si = syslog_intelligence or {}
-    si_by = {r.get("host"): r for r in (si.get("per_device") or []) if isinstance(r, dict)}
-    si_det: Dict[str, list] = {}
-    for d in (si.get("detections") or []):
-        if isinstance(d, dict):
-            si_det.setdefault(d.get("host", ""), []).append(d)
-    qa = qos_audit or {}
-    qa_by = {r.get("host"): r for r in (qa.get("per_device") or []) if isinstance(r, dict)}
-    qa_find: Dict[str, list] = {}
-    for f in (qa.get("findings") or []):
-        if isinstance(f, dict):
-            qa_find.setdefault(f.get("host", ""), []).append(f)
-    gd_by = {r.get("host"): r for r in ((golden_drift or {}).get("per_device") or [])
-             if isinstance(r, dict)}
+    toward exposure. Each axis's input_state is custody, independent of its risk state.
+    Missing protocol receipts fail closed; only a successful parse receipt proves a sparse
+    hygiene result was screened. Returns {per_device, summary, note}."""
+    from cisco_toolkit.ssot import _is_deep_empty
+
+    def d(value):
+        return value if isinstance(value, dict) else {}
+
+    def rows(value):
+        return value if isinstance(value, list) else []
+
+    def by_host(value, key="host"):
+        return {r[key]: r for r in rows(value) if isinstance(r, dict)
+                and isinstance(r.get(key), str) and r[key]}
+
+    malformed_sections: set = set()
+    malformed_hosts: Dict[str, set] = {}
+
+    def finding_index(value, key, section, *, physical=False):
+        index: Dict[str, list] = {}
+        if value is not None and not isinstance(value, list):
+            malformed_sections.add(section)
+            return index
+        for record in rows(value):
+            host = record.get(key) if isinstance(record, dict) else None
+            if not isinstance(host, str) or not host:
+                malformed_sections.add(section)
+                continue
+            severity = record.get("severity")
+            if (severity not in (None, "", "High", "Medium", "Low", "Info", "OK")
+                    or (physical and not isinstance(record.get("risk", ""), str))):
+                malformed_hosts.setdefault(section, set()).add(host)
+                continue
+            index.setdefault(host, []).append(record)
+        return index
+
+    def valid_number(value, low=0, high=None):
+        import math
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return False
+        try:
+            return math.isfinite(value) and value >= low and (high is None or value <= high)
+        except OverflowError:
+            return False
+
+    # Retain raw section values for the same deep-empty failure rule the SSOT owner uses.
+    inputs = {key: value for key, value in locals().items()
+              if key in {s for sections in DOSSIER_AXIS_INPUTS.values() for s in sections}}
+    direct, unattributed = input_failures if input_failures is not None else (frozenset(), False)
+    failed_axes = {axis for axis, sections in DOSSIER_AXIS_INPUTS.items()
+                   if any(s in direct or (unattributed and _is_deep_empty(inputs.get(s)))
+                          for s in sections)}
+    hs_by = by_host(health_scores, "switch")
+    fi_by = by_host(failure_impact)
+    lc_by = by_host(d(lifecycle_risk).get("per_device"))
+    sw = d(software_risk)
+    sw_by = by_host(sw.get("per_device"))
+    sw_find = finding_index(sw.get("findings"), "host", "software_risk")
+    ph_by = by_host(d(platform_health).get("per_device"))
+    si = d(syslog_intelligence)
+    si_by = by_host(si.get("per_device"))
+    si_det = finding_index(si.get("detections"), "host", "syslog_intelligence")
+    qa = d(qos_audit)
+    qa_by = by_host(qa.get("per_device"))
+    qa_find = finding_index(qa.get("findings"), "host", "qos_audit")
+    gd_by = by_host(d(golden_drift).get("per_device"))
     # When fewer than 3 comparable configs exist (majority mode), compute_golden_drift derives NO baseline
     # (summary.n_baseline == 0) yet still emits per_device rows with n_missing 0 / compliance 100. Those must
     # read 'na -- no baseline', not 'ok / matches the config baseline' (asserting conformance to a baseline
     # that was never derived = false-health).
-    _gd_has_baseline = bool((((golden_drift or {}).get("summary")) or {}).get("n_baseline"))
-    sec = security or {}
-    hyg = config_hygiene or {}
-    roots = stp_roots or {}
+    gd_baseline_size = d(d(golden_drift).get("summary")).get("n_baseline")
+    _gd_has_baseline = isinstance(gd_baseline_size, int) and not isinstance(gd_baseline_size, bool) and gd_baseline_size > 0
+    sec = d(security)
+    hyg = d(config_hygiene)
+    roots = d(stp_roots)
     _el = classify_stp_root_election(roots)          # the one root-election owner (G15), both namespaces
     stp_election = list(_el["pvst_vlan"].values()) + list(_el["mst_instance"].values())
-    vpc = vpc or {}
-    phy_by: Dict[str, list] = {}
-    for r in (physical_health or []):
-        if isinstance(r, dict):
-            phy_by.setdefault(r.get("switch", ""), []).append(r)
-    proto_by: Dict[str, list] = {}
-    for r in (protocol_health or []):
-        if isinstance(r, dict):
-            proto_by.setdefault(r.get("switch", ""), []).append(r)
+    vpc = d(vpc)
+    phy_by = finding_index(physical_health, "switch", "physical_health", physical=True)
+    proto_by = finding_index(protocol_health, "switch", "protocol_health")
     wave_of, _wave_ordinal = move_group_host_index(move_groups)   # the owner's labels (G13)
+
+    try:
+        protocol_receipt = _validate_protocol_assessability_receipt(protocol_assessability)
+    except (TypeError, ValueError):
+        # Imported hostile snapshots may carry unhashable values in otherwise-valid dictionaries.
+        protocol_receipt = {"valid": False, "index": {}, "reason": "malformed protocol receipt"}
 
     hosts = sorted({h for h in (set(hs_by) | set(fi_by) | set(lc_by) | set(sw_by)
                                 | set(ph_by) | set(si_by) | set(qa_by) | set(gd_by)
-                                | set(sec) | set(hyg)) if h})
+                                | set(sec) | set(hyg) | set(phy_by) | set(proto_by)
+                                | {h for h, _ in protocol_receipt["index"]}) if isinstance(h, str) and h})
     per_device: List[dict] = []
     for host in hosts:
         exposures: List[dict] = []
 
-        def ax(axis: str, state: str, label: str) -> None:
-            exposures.append({"axis": axis, "state": state, "label": label})
+        def ax(axis: str, state: str, label: str, input_state: str = "published") -> None:
+            if axis in failed_axes:
+                state, input_state, label = "na", "analysis_unavailable", "analysis unavailable — input phase failed"
+            elif any(s in malformed_sections or host in malformed_hosts.get(s, ())
+                     for s in DOSSIER_AXIS_INPUTS[axis]):
+                state, input_state, label = "na", "analysis_unavailable", "analysis unavailable — malformed input record"
+            elif input_state not in ("published", "collected_but_empty"):
+                state = "na"
+            elif state == "ok" and input_state == "collected_but_empty" and axis not in DOSSIER_EMPTY_IS_CLEAN:
+                state = "na"
+            exposures.append({"axis": axis, "state": state, "label": label, "input_state": input_state})
+
+        swr = sw_by.get(host)
+        qar = qa_by.get(host)
+        # Exact boolean records only. A present canonical record dominates its fallback even False.
+        capture = swr.get("config_assessable") if swr is not None else (qar or {}).get("assessable")
+        if not isinstance(capture, bool):
+            capture = None
+
+        def config_gap(axis: str, record: Any) -> bool:
+            if capture is False:
+                ax(axis, "na", "no captured running-config", "not_collected")
+                return True
+            if capture is None:
+                ax(axis, "na", "analysis unavailable — running-config capture record missing or malformed", "analysis_unavailable")
+                return True
+            if not isinstance(record, dict) or not record:
+                ax(axis, "na", "analysis unavailable — running-config assessment missing", "analysis_unavailable")
+                return True
+            return False
 
         # -- the 11 exposure axes (state: risk / watch / ok / na) ------------
         hsr = hs_by.get(host)
         band = (hsr or {}).get("band", "")
         if hsr is None:
-            ax("Health", "na", "not scored")
+            ax("Health", "na", "not scored", "not_collected")
         elif band == "Insufficient Data":
-            ax("Health", "na", "not scored — collection gap")
+            ax("Health", "na", "not scored — collection gap", "not_collected")
         elif band == "Critical":
             ax("Health", "risk", f"health Critical ({hsr.get('score', '')}/100)")
         elif band == "Poor":
             ax("Health", "watch", f"health Poor ({hsr.get('score', '')}/100)")
-        else:
+        elif band in ("Excellent", "Good", "Fair"):
             ax("Health", "ok", f"health {band or '—'} ({hsr.get('score', '')}/100)")
+        else:
+            ax("Health", "na", f"unrecognized health band {band!r}", "analysis_unavailable")
 
         lcr = lc_by.get(host)
         lcb = (lcr or {}).get("band", "Unknown")
         if lcr is None:
-            ax("Hardware EoL", "na", "not lifecycle-assessed — no lifecycle row was produced")
+            ax("Hardware EoL", "na", "not lifecycle-assessed — no lifecycle row was produced", "not_collected")
         elif lcb == "Unknown":
             ax("Hardware EoL", "na", "no authoritative lifecycle band — either no exact EoX row "
-               "matched or the matched row's source/date authority was withheld")
+               "matched or the matched row's source/date authority was withheld", "collected_but_empty")
         elif lcb in ("Past-LDoS", "Near-LDoS"):
             ax("Hardware EoL", "risk", f"hardware {lcb.replace('-', ' ')}")
         elif lcb == "Past-EoS":
@@ -12521,14 +12647,14 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             ax("Hardware EoL", "ok", "pre-EoS date position (schema: Active; support entitlement "
                "not assessed)")
         else:
-            ax("Hardware EoL", "na", f"unrecognized lifecycle band {lcb!r} — not assessed")
+            ax("Hardware EoL", "na", f"unrecognized lifecycle band {lcb!r} — not assessed", "analysis_unavailable")
 
         swr = sw_by.get(host)
         sw_sevs = {f.get("severity") for f in sw_find.get(host, [])}
         swb = (swr or {}).get("train_band", "Unknown")
         if swr is None or (not swr.get("config_assessable")
                            and str(swr.get("sw_version", "")).startswith("(not")):
-            ax("Software risk", "na", "not assessable — no config or version evidence")
+            ax("Software risk", "na", "not assessable — no config or version evidence", "not_collected")
         elif "High" in sw_sevs or swb == "Replace/Upgrade":
             ax("Software risk", "risk",
                "open advisory surface" if "High" in sw_sevs else "software train end-of-era")
@@ -12545,9 +12671,11 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             # gap, not an absence of exposed surface.
             ax("Software risk", "na",
                "advisory surface not screened — no captured running-config"
-               + (f" (software train {swb})" if swb and swb != "Unknown" else ""))
-        else:
+               + (f" (software train {swb})" if swb and swb != "Unknown" else ""), "not_collected")
+        elif swr.get("config_assessable") is True and swb in ("Unknown", "Current-era"):
             ax("Software risk", "ok", "no exposed advisory surface flagged")
+        else:
+            ax("Software risk", "na", "analysis unavailable — unrecognized software assessment", "analysis_unavailable")
 
         phr = ph_by.get(host)
         phb = (phr or {}).get("band", "Unknown")
@@ -12559,8 +12687,15 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         ph_parts = ([f"CPU {_cpu5}%"] if _cpu5 is not None else []) \
             + ([f"memory {_memf}% free"] if _memf is not None else [])
         ph_why = " · ".join(ph_parts) or "see sample"
-        if phr is None or not phr.get("collected"):
-            ax("Control plane", "na", "capacity output not collected")
+        if phr is None or phr.get("collected") is False:
+            ax("Control plane", "na", "capacity output not collected", "not_collected")
+        elif phr.get("collected") is not True or phb not in ("Hot", "Elevated", "OK", "Unknown"):
+            ax("Control plane", "na", "analysis unavailable — unrecognized capacity assessment", "analysis_unavailable")
+        elif phb == "Unknown":
+            ax("Control plane", "na", "capacity output collected but no figures recognized", "collected_but_empty")
+        elif ((all(value is None for value in (_cpu5, _memf)))
+              or any(value is not None and not valid_number(value, high=100) for value in (_cpu5, _memf))):
+            ax("Control plane", "na", "analysis unavailable — malformed capacity figures", "analysis_unavailable")
         elif phb == "Hot":
             ax("Control plane", "risk", f"control plane Hot ({ph_why})")
         elif phb == "Elevated":
@@ -12570,31 +12705,48 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
 
         sir = si_by.get(host)
         si_sevs = {d.get("severity") for d in si_det.get(host, [])}
-        if sir is None or not sir.get("collected"):
-            ax("Operational logs", "na", "log evidence not collected")
+        if sir is None or sir.get("collected") is False:
+            ax("Operational logs", "na", "log evidence not collected", "not_collected")
+        elif sir.get("collected") is not True:
+            ax("Operational logs", "na", "analysis unavailable — unrecognized log collection record", "analysis_unavailable")
         elif "High" in si_sevs:
             ax("Operational logs", "risk", "high-severity operational events in the device's own logs")
         elif "Medium" in si_sevs:
             ax("Operational logs", "watch", "operational events to review in the logs")
+        elif sir.get("events") == 0:
+            ax("Operational logs", "na", "log captured but no events recognized", "collected_but_empty")
+        elif not isinstance(sir.get("events"), int) or isinstance(sir.get("events"), bool) or sir["events"] < 0:
+            ax("Operational logs", "na", "analysis unavailable — unrecognized event count", "analysis_unavailable")
         else:
             ax("Operational logs", "ok", "no flagged operational events")
 
         s = sec.get(host)
-        fails = [f for f in ((s or {}).get("findings") or [])
+        findings = rows(d(s).get("findings"))
+        fails = [f for f in findings
                  if isinstance(f, dict) and f.get("status") == "fail"]
-        if s is None:
-            ax("Security posture", "na", "no captured running-config")
+        if config_gap("Security posture", s):
+            pass
         elif any(str(f.get("severity", "")).lower() == "high" for f in fails):
             ax("Security posture", "risk", f"{len(fails)} CIS check(s) failing (incl. high)")
         elif fails:
             ax("Security posture", "watch", f"{len(fails)} CIS check(s) failing")
-        else:
+        elif any(isinstance(f, dict) and f.get("status") == "pass" for f in findings):
             ax("Security posture", "ok", "CIS checks pass")
+        elif isinstance(d(s).get("findings"), list):
+            ax("Security posture", "na", "security screened but no pass/fail checks evaluated", "collected_but_empty")
+        else:
+            ax("Security posture", "na", "analysis unavailable — malformed security findings", "analysis_unavailable")
 
         hg = hyg.get(host)
-        n_undef = len((hg or {}).get("undefined") or [])
-        if hg is None:
-            ax("Config hygiene", "na", "no captured running-config")
+        n_undef = len(rows(d(hg).get("undefined")))
+        if capture is False:
+            ax("Config hygiene", "na", "no captured running-config", "not_collected")
+        elif capture is None:
+            ax("Config hygiene", "na", "analysis unavailable — running-config capture record missing or malformed", "analysis_unavailable")
+        elif hg is None and capture is True and _dossier_hygiene_screened_empty(parse_yield, host, hosts):
+            ax("Config hygiene", "ok", "screened — no named structure to dangle", "collected_but_empty")
+        elif not isinstance(hg, dict) or not isinstance(hg.get("undefined"), list):
+            ax("Config hygiene", "na", "analysis unavailable — config-hygiene screening missing", "analysis_unavailable")
         elif n_undef >= 5:
             ax("Config hygiene", "risk", f"{n_undef} undefined reference(s)")
         elif n_undef:
@@ -12603,10 +12755,16 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             ax("Config hygiene", "ok", "no dangling references")
 
         gdr = gd_by.get(host)
-        if gdr is None:
-            ax("Golden drift", "na", "not in the drift baseline")
+        if config_gap("Golden drift", gdr):
+            pass
+        elif (not isinstance(gd_baseline_size, int) or isinstance(gd_baseline_size, bool) or gd_baseline_size < 0):
+            ax("Golden drift", "na", "analysis unavailable — malformed baseline count", "analysis_unavailable")
         elif not _gd_has_baseline:
-            ax("Golden drift", "na", "no config baseline derived (need 3+ comparable configs)")
+            ax("Golden drift", "na", "no config baseline derived (need 3+ comparable configs)", "collected_but_empty")
+        elif (not isinstance(gdr.get("n_missing"), int) or isinstance(gdr.get("n_missing"), bool)
+              or not valid_number(gdr.get("n_missing"), high=gd_baseline_size)
+              or not valid_number(gdr.get("compliance_pct"), high=100)):
+            ax("Golden drift", "na", "analysis unavailable — malformed drift counts", "analysis_unavailable")
         elif _as_num(gdr.get("n_missing")) >= 5 or _as_num(gdr.get("compliance_pct"), 100) < 70:
             ax("Golden drift", "risk",
                f"{gdr.get('n_missing', 0)} required directive(s) missing "
@@ -12614,12 +12772,14 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         elif gdr.get("n_missing", 0):
             ax("Golden drift", "watch", f"{gdr.get('n_missing', 0)} required directive(s) missing")
         else:
-            ax("Golden drift", "ok", "matches the config baseline")
+            ax("Golden drift", "ok", f"matches the {gd_baseline_size}-directive {d(golden_drift).get('mode', 'unknown')} baseline")
 
         qar = qa_by.get(host)
         qa_sevs = {f.get("severity") for f in qa_find.get(host, [])}
-        if qar is None or not qar.get("assessable"):
-            ax("QoS posture", "na", "not assessable — full running-config not captured")
+        if config_gap("QoS posture", qar):
+            pass
+        elif qar.get("assessable") is not True:
+            ax("QoS posture", "na", "analysis unavailable — contradictory QoS capture record", "analysis_unavailable")
         elif qa_sevs & {"High", "Medium"}:
             # QoS doctrine gaps gate the DESIGN, not the asset's survival -> capped at watch.
             ax("QoS posture", "watch", "QoS doctrine finding(s) on this device")
@@ -12628,14 +12788,9 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         else:
             ax("QoS posture", "ok", "QoS posture consistent")
 
-        # physical/protocol findings derive from the interface scan -- a host the scorer never
-        # saw (in the roster only via EoL / software / log evidence) is 'na', not silently clean.
-        # `hsr is not None` alone was INERT for the case it targets: a host banded 'Insufficient
-        # Data' still HAS a health-score row, so it read scanned=True and rendered "ok - no L1
-        # findings" / "protocol health clean" right beside its own "Health: na - collection gap"
-        # (#16). Only a genuinely scored host licenses an 'ok' by silence; a host that produced
-        # actual physical/protocol rows still does so through the `host in *_by` arm below.
-        scanned = hsr is not None and band != "Insufficient Data"
+        # A recognized health-score record proves the physical interface scan ran. Protocol
+        # conclusions use their separate seven-family receipt below.
+        scanned = hsr is not None and band in ("Excellent", "Good", "Fair", "Poor", "Critical")
         phys = [r for r in phy_by.get(host, [])
                 if r.get("severity") not in (None, "", "Info", "OK")]
         hard_phy = [r for r in phys
@@ -12645,9 +12800,10 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         elif phys:
             ax("Physical", "watch", f"{len(phys)} port(s) with L1 findings")
         elif scanned or host in phy_by:
-            ax("Physical", "ok", "no L1 findings")
+            ax("Physical", "ok", "no L1 findings", "published" if host in phy_by else "collected_but_empty")
         else:
-            ax("Physical", "na", "device not interface-scanned / collection gap")
+            ax("Physical", "na", "device not interface-scanned / collection gap",
+               "analysis_unavailable" if hsr is not None and band != "Insufficient Data" else "not_collected")
 
         protos = proto_by.get(host, [])
         p_sevs = {r.get("severity") for r in protos}
@@ -12655,10 +12811,21 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             ax("Protocol", "risk", "high-severity protocol-health finding")
         elif "Medium" in p_sevs:
             ax("Protocol", "watch", "protocol-health finding(s) to review")
-        elif scanned or host in proto_by:
-            ax("Protocol", "ok", "protocol health clean")
+        elif not protocol_receipt["valid"]:
+            ax("Protocol", "na", "analysis unavailable — missing or malformed protocol receipt", "analysis_unavailable")
         else:
-            ax("Protocol", "na", "device not interface-scanned / collection gap")
+            cells = [protocol_receipt["index"].get((host, family["protocol"]))
+                     for family in PROTOCOL_ASSESSABILITY_FAMILIES]
+            observed = [cell["protocol"] for cell in cells if cell is not None
+                        and cell["state"] in PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES]
+            if observed:
+                ax("Protocol", "ok", f"clean where observed — {len(observed)} of {len(cells)} families assessed ({', '.join(observed)})")
+            elif any(cell is None or cell["state"] == "analysis_unavailable" for cell in cells):
+                ax("Protocol", "na", "analysis unavailable — protocol family analysis missing", "analysis_unavailable")
+            elif any(cell["state"] in ("captured_empty", "captured_no_record", "not_running") for cell in cells):
+                ax("Protocol", "na", "protocol captures contain no assessable health records", "collected_but_empty")
+            else:
+                ax("Protocol", "na", "no assessable protocol captures (missing or capture error)", "not_collected")
 
         n_risk = sum(1 for e in exposures if e["state"] == "risk")
         n_watch = sum(1 for e in exposures if e["state"] == "watch")
@@ -12791,7 +12958,7 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             "host": host,
             "model": (lcr or {}).get("model", ""), "platform": (lcr or {}).get("platform", ""),
             "sw_version": (lcr or {}).get("sw_version", "") or (swr or {}).get("sw_version", ""),
-            "role": (hsr or {}).get("role", ""), "wave": wave_of.get(host, ""),
+            "role": (hsr or {}).get("role", ""), "wave": wave_of.get(host, MOVE_GROUP_UNSCHEDULED),
             "health_score": (hsr or {}).get("score"), "health_band": band,
             "eol_band": lcb if lcr else "Unknown", "train_band": swb if swr else "Unknown",
             "platform_band": phb if phr else "Unknown",

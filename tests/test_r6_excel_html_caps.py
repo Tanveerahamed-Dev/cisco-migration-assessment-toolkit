@@ -242,7 +242,7 @@ def test_l2_1_stp_root_sentence_discloses_the_switches_it_did_not_name():
     must re-pin, so a display cap was sizing an LLD task list."""
     hosts = [f"acc{i:02d}" for i in range(14)]
     snap = {"devices": {h: {"hostname": h} for h in hosts},
-            "stp_roots": {h: {"10": {"is_root": True}} for h in hosts}}
+            "stp_roots": {h: {str(10 + i): {"is_root": True}} for i, h in enumerate(hosts)}}
     obs = next(c for c in compute_architecture_review(snap)["checks"]
                if c["id"] == "L2-1")["observed"]
     assert obs.count(" roots ") == 6                                   # 6 named of 14 rooted
@@ -269,7 +269,7 @@ def test_summary_statement_discloses_further_affected_domains():
     snap = {
         "devices": {h: {"hostname": h, "num_power_supplies": 1} for h in hosts},
         "l3_forwarding": [{"switch": hosts[0], "vlan": 10}],                    # D2 (single-PSU L3)
-        "stp_roots": {h: {"10": {"is_root": True}} for h in hosts[1:]},         # D3
+        "stp_roots": {h: {str(10 + i): {"is_root": True}} for i, h in enumerate(hosts[1:])},  # D3
         "operational_drift": [{"severity": "Critical", "title": "drift"}],      # D6
         "security": {h: {"summary": {"grade": "weak"}} for h in hosts},         # D7
         "lifecycle_risk": {"summary": {"n_past_ldos": 2},
@@ -371,33 +371,9 @@ def test_priority_queue_unmarked_when_the_whole_queue_fits(tmp_path):
 # U1-2 — the Device Risk Register banded an EoL-Unknown asset GREEN
 # --------------------------------------------------------------------------- #
 def _dossiers(*, blind: bool):
-    """Three healthy access switches from the REAL producer (compute_device_dossiers), differing only in
-    how much evidence was collected. `blind=True` collects health + an unmatched EoX platform and nothing
-    else, which is the Meridian shape: every other axis ABSTAINS ('na'), abstention weighs ZERO exposure,
-    so risk_index is 0 and the engine bands the asset 'Low'."""
-    from cisco_toolkit.analyze import compute_device_dossiers
-    hosts = ["sw0", "sw1", "sw2"]
-    hs = [{"switch": h, "band": "Good", "score": 88, "role": "access"} for h in hosts]
-    if blind:
-        return compute_device_dossiers(
-            health_scores=hs,
-            lifecycle_risk={"per_device": [{"host": h, "band": "Unknown", "model": "WS-XYZ",
-                                            "platform": "cat", "sw_version": "16.9.1"} for h in hosts]})
-    return compute_device_dossiers(
-        health_scores=hs,
-        lifecycle_risk={"per_device": [{"host": h, "band": "Active", "model": "C9300-48P",
-                                        "platform": "C9300", "sw_version": "17.9.4"} for h in hosts]},
-        software_risk={"per_device": [{"host": h, "band": "Current", "sw_version": "17.9.4"} for h in hosts],
-                       "findings": []},
-        platform_health={"per_device": [{"host": h, "collected": True, "cpu_5min": 12,
-                                         "mem_free_pct": 55, "band": "Healthy"} for h in hosts],
-                         "findings": []},
-        syslog_intelligence={"per_device": [{"host": h, "n_events": 4} for h in hosts], "detections": []},
-        qos_audit={"per_device": [{"host": h, "policies": 1} for h in hosts], "findings": []},
-        golden_drift={"per_device": [{"host": h, "compliance_pct": 100, "n_missing": 0} for h in hosts],
-                      "summary": {"n_baseline": 20}},
-        security={h: {"findings": [{"status": "pass", "id": "x"}]} for h in hosts},
-        config_hygiene={h: {"undefined_refs": [], "scanned": True, "findings": []} for h in hosts})
+    """Real software/security/protocol producers keep the measured coverage fixtures valid."""
+    from dossier_fixtures import coverage_dossiers
+    return coverage_dossiers(not blind, ("sw0", "sw1", "sw2"))
 
 
 def test_device_risk_sheet_discloses_axes_that_were_never_assessed(tmp_path):
@@ -419,7 +395,7 @@ def test_device_risk_sheet_discloses_axes_that_were_never_assessed(tmp_path):
 
     assert ws.cell(4, 17).value == "Not-assessed axes", "the n_na column is still dropped"
     cell = str(ws.cell(5, 17).value)
-    assert "8 of 11 NOT ASSESSED" in cell, cell
+    assert "9 of 11 NOT ASSESSED" in cell, cell
     assert "absent evidence" in cell, cell
 
     # the band cell still carries the ENGINE's band (never re-derived here) but MUST NOT wear the

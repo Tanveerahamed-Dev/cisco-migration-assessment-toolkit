@@ -1008,15 +1008,20 @@ _DEFAULT_BRIDGE_PRIORITY = 32768
 
 
 def _election_priority(value: Any) -> Any:
-    """A bridge priority is accepted only as a real integer (never a bool) or a plain digit string;
+    """A bridge priority is accepted only as an exact browser-safe integer (never a bool) or an ASCII digit string;
     anything else (inf, nan, a dict, a signed/decorated string) is ``None`` -- the one rule every
     consumer shares instead of an integer-only test in one place and an ``int()`` coercion in another."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value.strip())
+        return value if abs(value) <= 2 ** 53 - 1 else None
+    if isinstance(value, str):
+        token = value.strip()
+        # Bound conversion before int(): host integer-string limits differ, and the explorer mirror
+        # requires exact JavaScript integers. Real STP priorities and instance IDs fit comfortably.
+        if len(token) <= 16 and token.isascii() and token.isdigit():
+            parsed = int(token)
+            return parsed if parsed <= 2 ** 53 - 1 else None
     return None
 
 
@@ -1026,10 +1031,10 @@ def stp_default_priority(vid: Any, priority: Any) -> Any:
     priority or the VLAN id is not a usable integer. MST instance numbers are not VLAN ids: callers pass
     PVST VLANs only."""
     prio = _election_priority(priority)
-    token = str(vid).strip() if isinstance(vid, (str, int)) and not isinstance(vid, bool) else ""
-    if prio is None or not token.isdigit():
+    vlan = _election_priority(vid)
+    if prio is None or vlan is None or vlan < 0:
         return None
-    return prio in (_DEFAULT_BRIDGE_PRIORITY, _DEFAULT_BRIDGE_PRIORITY + int(token))
+    return prio in (_DEFAULT_BRIDGE_PRIORITY, _DEFAULT_BRIDGE_PRIORITY + vlan)
 
 
 def classify_stp_root_election(stp_roots: Any) -> Dict[str, Dict[str, dict]]:
@@ -1063,15 +1068,16 @@ def classify_stp_root_election(stp_roots: Any) -> Dict[str, Dict[str, dict]]:
         if not isinstance(per, Mapping):
             continue
         for key, rec in per.items():
-            token = str(key).strip() if isinstance(key, (str, int)) and not isinstance(key, bool) else ""
-            if not token.isdigit() or not isinstance(rec, Mapping):
+            number = _election_priority(key)
+            if number is None or number < 0:
                 continue
-            namespace = "mst_instance" if rec.get("is_mst") else "pvst_vlan"
-            entry = work[namespace].setdefault(str(int(token)), {"malformed": [], "claimants": [], "ids": {}})
+            namespace = "mst_instance" if isinstance(rec, Mapping) and rec.get("is_mst") else "pvst_vlan"
+            entry = work[namespace].setdefault(str(number), {"malformed": [], "claimants": [], "ids": {}})
+            if not isinstance(rec, Mapping):
+                entry["malformed"].append(host)
+                continue
             flag = rec.get("is_root", False)
             addr = rec.get("root_address", "")
-            if addr is None:
-                addr = ""
             if not isinstance(flag, bool) or not isinstance(addr, str):
                 entry["malformed"].append(host)
                 continue

@@ -964,38 +964,15 @@ process.stdout.write(JSON.stringify({blind,clean}));
 
 
 def _dossiers_for_explorer(blind: bool) -> dict:
-    """From the REAL producer (analyze.compute_device_dossiers), not a hand-shaped stub: a hand-written
-    dossier in the shape the renderer expects would make the fixture agree with whatever the renderer
-    does. `blind=True` = health score collected, platform unmatched in the EoX KB, nothing else."""
-    from cisco_toolkit.analyze import compute_device_dossiers
-    hosts = ["sw0", "sw1", "sw2"]
-    hs = [{"switch": h, "band": "Good", "score": 88, "role": "access"} for h in hosts]
-    if blind:
-        return compute_device_dossiers(
-            health_scores=hs,
-            lifecycle_risk={"per_device": [{"host": h, "band": "Unknown", "model": "WS-XYZ",
-                                            "platform": "cat", "sw_version": "16.9.1"} for h in hosts]})
-    return compute_device_dossiers(
-        health_scores=hs,
-        lifecycle_risk={"per_device": [{"host": h, "band": "Active", "model": "C9300-48P",
-                                        "platform": "C9300", "sw_version": "17.9.4"} for h in hosts]},
-        software_risk={"per_device": [{"host": h, "band": "Current", "sw_version": "17.9.4"} for h in hosts],
-                       "findings": []},
-        platform_health={"per_device": [{"host": h, "collected": True, "cpu_5min": 12,
-                                         "mem_free_pct": 55, "band": "Healthy"} for h in hosts],
-                         "findings": []},
-        syslog_intelligence={"per_device": [{"host": h, "n_events": 4} for h in hosts], "detections": []},
-        qos_audit={"per_device": [{"host": h, "policies": 1} for h in hosts], "findings": []},
-        golden_drift={"per_device": [{"host": h, "compliance_pct": 100, "n_missing": 0} for h in hosts],
-                      "summary": {"n_baseline": 20}},
-        security={h: {"findings": [{"status": "pass", "id": "x"}]} for h in hosts},
-        config_hygiene={h: {"undefined_refs": [], "scanned": True, "findings": []} for h in hosts})
+    """Real software/security/protocol producer inputs establish the axis coverage denominator."""
+    from dossier_fixtures import coverage_dossiers
+    return coverage_dossiers(not blind, ("sw0", "sw1", "sw2"))
 
 
 def test_risk_register_does_not_paint_an_unassessed_asset_green(tmp_path):
     """[U1-2 false-health] Measured pre-fix, blind fixture: the card rendered `b-ok` "no stacked risk",
     `pill pl-ok` on every row and a `var(--ok)` green bar -- indistinguishable from the fully-assessed
-    fleet, on assets where 8 of 11 risk axes were never collected."""
+    fleet, on assets where 9 of 11 risk axes were never collected."""
     if not NODE:
         pytest.skip("node absent — executed render-safety gate skipped")
     out = _run(_RR_DRIVER, tmp_path,
@@ -1004,7 +981,7 @@ def test_risk_register_does_not_paint_an_unassessed_asset_green(tmp_path):
     assert blind["len"] > 0 and clean["len"] > 0, "the card rendered nothing — the probe proved nothing"
 
     assert not blind["green_badge"], (
-        "the asset risk register still badges a fleet with 8-of-11 un-collected axes 'no stacked risk' "
+        "the asset risk register still badges a fleet with 9-of-11 un-collected axes 'no stacked risk' "
         "in the clean-green tone — that is a collection gap read as a clean bill of health")
     assert not blind["green_pill"] and not blind["green_bar"], (
         "the band pill / risk bar are still green for an asset banded on absent evidence")
@@ -1209,7 +1186,7 @@ def test_assistant_dossier_exits_all_qualify_a_band_computed_on_absent_evidence(
             "abH_%s rendered no dossier cell at all - the probe proved nothing" % exit_name)
         assert clean[exit_name]["found"], "abH_%s (clean fixture) rendered no dossier cell" % exit_name
         assert blind[exit_name]["gap"], (
-            "abH_%s renders the dossier risk band of an asset whose axes were 8-of-11 un-collected "
+            "abH_%s renders the dossier risk band of an asset whose axes were 9-of-11 un-collected "
             "with NO coverage qualification - a collection gap answered as a result" % exit_name)
         # NON-VACUITY: the fully-assessed fleet must NOT acquire the disclosure, or it is unconditional
         # and means nothing.

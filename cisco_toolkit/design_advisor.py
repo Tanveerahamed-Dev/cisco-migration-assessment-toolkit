@@ -1607,7 +1607,8 @@ def _signals(snap):
     sig["stp_accidental_hosts"] = sorted(acc_hosts)[:12]
     sig["stp_ambiguous_root_vlans"] = len(amb_vids)
     sig["stp_ambiguous_root_vids"] = sorted(amb_vids, key=int)[:8]
-    sig["stp_ambiguous_root_claimants"] = sorted({h for v in amb_vids for h in _election[v]["claimants"]})[:12]
+    # Keep the full denominator; only the display's device list is capped below.
+    sig["stp_ambiguous_root_claimants"] = sorted({h for v in amb_vids for h in _election[v]["claimants"]})
 
     # #3 reserved-range VLAN carrying a production SVI: Nexus reserves 3968-4095 for internal use -> the target
     #    refuses the SVI and the L3 link breaks silently at cutover unless renumbered into the user range.
@@ -3710,7 +3711,7 @@ def _d_stp_root_determinism(snap, sig):
         vids = ", ".join(sig.get("stp_ambiguous_root_vids") or [])
         text = (text + (" " if text else "")
                 + f"The root is AMBIGUOUS for {n_amb} VLAN(s) ({vids}{' ...' if n_amb > 8 else ''}): "
-                f"{len(sig.get('stp_ambiguous_root_claimants') or [])} collected bridge(s) claim it, so no root is "
+                f"{len(sig.get('stp_ambiguous_root_claimants') or [])} collected bridge(s) claim roots across those VLANs, so no root is "
                 f"provable -- reconcile each claimant's own bridge ID, then place root primary/secondary deliberately.")
     devices = sorted(set(sig["stp_accidental_hosts"]) | set(sig.get("stp_ambiguous_root_claimants") or []))[:12]
     return _decision(

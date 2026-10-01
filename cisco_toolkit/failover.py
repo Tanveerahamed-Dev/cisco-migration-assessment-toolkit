@@ -24,7 +24,7 @@ import math
 from typing import Any, Dict, List, Optional
 
 from . import whatif
-from .stp_topology import classify_stp_root_election
+from .stp_topology import _election_priority, classify_stp_root_election
 
 # Cisco default bridge priority (32768). A root that only wins because every candidate sits at (or above) the
 # default is an UNMANAGED election, not an engineered backup — flagged, per the explorer's existing smell.
@@ -71,7 +71,7 @@ def _int_or(v: Any, default: Optional[int]) -> Optional[int]:
     if isinstance(v, str):
         token = v.strip()
         unsigned = token[1:] if token[:1] in ("+", "-") else token
-        if not unsigned.isdigit():
+        if len(unsigned) > 16 or not unsigned.isascii() or not unsigned.isdigit():
             return default
         parsed = int(token)
         return parsed if parsed >= 0 else default
@@ -80,11 +80,11 @@ def _int_or(v: Any, default: Optional[int]) -> Optional[int]:
 
 # ---------------------------------------------------------------------- STP failover ---
 
-def _vlan_bridges(snap: Dict[str, Any]) -> Dict[str, Dict[str, dict]]:
-    """Invert snap['stp_roots'] to {vlan: {host: bridge_record}} — every bridge observed to participate in each
+def _vlan_bridges(snap: Dict[str, Any]) -> Dict[tuple, Dict[str, dict]]:
+    """Invert snap['stp_roots'] to {(vlan, is_mst): {host: bridge_record}} — every bridge observed in each
     VLAN, so a re-election can enumerate the surviving candidates. Coverage-honest: only bridges actually
     collected appear (a VLAN with one collected bridge yields one candidate -> the caller abstains)."""
-    out: Dict[str, Dict[str, dict]] = {}
+    out: Dict[tuple, Dict[str, dict]] = {}
     stp = (snap or {}).get("stp_roots")
     if not isinstance(stp, dict):
         return out
@@ -92,16 +92,19 @@ def _vlan_bridges(snap: Dict[str, Any]) -> Dict[str, Dict[str, dict]]:
         if not isinstance(per_vlan, dict):
             continue
         for vlan, rec in per_vlan.items():
-            if not isinstance(rec, dict):
+            number = _election_priority(vlan)
+            if number is None or number < 0:
                 continue
-            out.setdefault(str(vlan), {})[host] = rec
+            # Preserve malformed rows: dropping one would let the remaining claimant certify a root.
+            is_mst = bool(rec.get("is_mst")) if isinstance(rec, dict) else False
+            out.setdefault((str(number), is_mst), {})[host] = rec
     return out
 
 
 def _election(vlan: str, bridges: Dict[str, dict]) -> Dict[str, Any]:
     """The one STP root-election owner's verdict (stp_topology.classify_stp_root_election, G15) for the
-    bridges collected under one ``stp_roots`` key. ``_vlan_bridges`` merges a PVST VLAN and an MST instance
-    that share a number; such a namespace collision names no provable root, so it is reported ambiguous."""
+    bridges collected under one ``stp_roots`` key and namespace. ``_vlan_bridges`` keeps PVST VLANs
+    separate from MST instances even when they share a number. A mixed direct-call input abstains."""
     el = classify_stp_root_election({str(h): {str(vlan): r} for h, r in bridges.items()})
     pvst, mst = el["pvst_vlan"], el["mst_instance"]
     if pvst and mst:
@@ -145,7 +148,8 @@ def compute_stp_failover(snap: Dict[str, Any], failed_hosts: List[str]) -> List[
     full topology port scan the snapshot does not carry)."""
     failed = {str(h) for h in (failed_hosts or [])}
     rows: List[Dict[str, Any]] = []
-    for vlan, bridges in sorted(_vlan_bridges(snap).items(), key=lambda kv: _vlan_sort_key(kv[0])):
+    for (vlan, is_mst), bridges in sorted(_vlan_bridges(snap).items(),
+                                         key=lambda kv: (_vlan_sort_key(kv[0][0]), kv[0][1])):
         old_root = _current_root(bridges, vlan)
         if old_root is None:
             if failed.intersection(bridges):
@@ -157,7 +161,7 @@ def compute_stp_failover(snap: Dict[str, Any], failed_hosts: List[str]) -> List[
                               + ", ".join(flagged) if erec.get("state") == "ambiguous" else
                               "INDETERMINATE — no collected bridge uniquely proves the current root"
                           )
-                rows.append(_stp_indeterminate(vlan, None, False, reason))
+                rows.append(_stp_indeterminate(vlan, None, is_mst, reason))
             continue
         if old_root not in failed:
             continue                                    # this VLAN's proven root survives
@@ -224,7 +228,8 @@ def _stp_indeterminate(vlan: str, old_root: Optional[str], is_mst: bool, reason:
 def _vlan_sort_key(vlan: str):
     """Numeric VLANs sort numerically, then any non-numeric labels (e.g. an MST instance name) lexically."""
     s = str(vlan)
-    return (0, int(s)) if s.isdigit() else (1, s)
+    number = _election_priority(vlan)
+    return (0, number) if number is not None else (1, s)
 
 
 # --------------------------------------------------------------------- FHRP failover ---
@@ -439,16 +444,16 @@ def compute_failover_readiness(snap: Dict[str, Any]) -> Dict[str, Any]:
     at_risk:[…]} where at_risk names each root/active whose single failure has no proven clean backup."""
     stp_roots_hosts: set = set()
     ambiguous: List[Dict[str, Any]] = []
-    for vlan, bridges in _vlan_bridges(snap).items():
+    for (vlan, is_mst), bridges in _vlan_bridges(snap).items():
         r = _current_root(bridges, vlan)
         if r is not None:
-            stp_roots_hosts.add((vlan, r))
+            stp_roots_hosts.add((vlan, is_mst, r))
         else:
             erec = _election(vlan, bridges)
             if erec.get("state") == "ambiguous":
                 # G15: several collected bridges claim this VLAN's root -- a root subject whose backup
                 # cannot be proven, so it is COUNTED as indeterminate rather than silently dropped.
-                ambiguous.append({"kind": "stp", "vlan": vlan, "host": None,
+                ambiguous.append({"kind": "stp", "vlan": vlan, "is_mst": is_mst, "host": None,
                                   "claimants": list(erec.get("claimants") or []),
                                   "reason": f"INDETERMINATE — STP root ambiguous ({erec.get('reason')})"})
     fhrp_actives: List[dict] = []
@@ -461,16 +466,16 @@ def compute_failover_readiness(snap: Dict[str, Any]) -> Dict[str, Any]:
     stp_backup = stp_default = 0
     stp_indet = len(ambiguous)
     at_risk: List[Dict[str, Any]] = sorted(ambiguous, key=lambda a: _vlan_sort_key(a["vlan"]))
-    for vlan, host in sorted(stp_roots_hosts, key=lambda t: (_vlan_sort_key(t[0]), t[1])):
+    for vlan, is_mst, host in sorted(stp_roots_hosts, key=lambda t: (_vlan_sort_key(t[0]), t[1], t[2])):
         rows = compute_stp_failover(snap, [host])
-        row = next((x for x in rows if x["vlan"] == vlan), None)
+        row = next((x for x in rows if x["vlan"] == vlan and x["is_mst"] == is_mst), None)
         if row is None or row["indeterminate"]:
             stp_indet += 1
-            at_risk.append({"kind": "stp", "vlan": vlan, "host": host,
+            at_risk.append({"kind": "stp", "vlan": vlan, "is_mst": is_mst, "host": host,
                             "reason": (row or {}).get("reason") or "no re-election row produced"})
         elif row.get("is_default_election"):
             stp_default += 1
-            at_risk.append({"kind": "stp", "vlan": vlan, "host": host,
+            at_risk.append({"kind": "stp", "vlan": vlan, "is_mst": is_mst, "host": host,
                             "reason": "backup wins only by default bridge priority (>=32768) — unmanaged election"})
         else:
             stp_backup += 1

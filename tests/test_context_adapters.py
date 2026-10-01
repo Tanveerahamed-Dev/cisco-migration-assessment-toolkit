@@ -40,7 +40,9 @@ def test_device_dossiers_adapter_maps_ctx_to_explicit_kwargs(monkeypatch):
         software_risk={"sw": 1}, platform_health={"pl": 1}, syslog_intelligence={"si": 1},
         qos_audit={"qa": 1}, golden_drift={"gd": 1}, all_security={"sec": 1},
         all_config_hygiene={"cfg": 1}, all_stp_roots={"stp": 1}, all_vpc={"vpc": 1},
-        physical_health=["ph"], protocol_health=["pr"], move_groups=["mg"])
+        physical_health=["ph"], protocol_health=["pr"], move_groups=["mg"],
+        protocol_assessability={"pa": 1}, parse_yield={"py": 1},
+        input_failures=(frozenset({"qos_audit"}), True))
     out = cp._device_dossiers(ctx)
     assert out is rec["ret"]                 # the adapter returns the compute result verbatim
     assert rec["args"] == ()                 # everything forwarded by keyword -> reorder-proof
@@ -51,6 +53,8 @@ def test_device_dossiers_adapter_maps_ctx_to_explicit_kwargs(monkeypatch):
         "security": {"sec": 1}, "config_hygiene": {"cfg": 1},        # main-local -> param renames
         "stp_roots": {"stp": 1}, "vpc": {"vpc": 1},
         "physical_health": ["ph"], "protocol_health": ["pr"], "move_groups": ["mg"],
+        "protocol_assessability": {"pa": 1}, "parse_yield": {"py": 1},
+        "input_failures": (frozenset({"qos_audit"}), True),
     }
 
 

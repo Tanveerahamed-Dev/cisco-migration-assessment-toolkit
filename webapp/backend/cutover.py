@@ -149,6 +149,8 @@ def _match_move_group(switches: Set[str], move_groups: List[Dict[str, Any]], gro
         for mg in move_groups:
             if isinstance(mg.get("group"), str) and mg.get("group") == group:
                 return mg
+    if any(isinstance(mg.get("group"), str) and mg["group"].strip() for mg in move_groups):
+        return {}  # Written identities cannot be replaced by an overlap guess.
     best: Dict[str, Any] = {}
     best_overlap = 0
     for mg in move_groups:
