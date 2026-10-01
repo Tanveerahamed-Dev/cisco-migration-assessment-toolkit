@@ -140,8 +140,15 @@ def _wave_switches(seq: Dict[str, Any], readiness: Optional[Dict[str, Any]]) -> 
     return sorted(sw)
 
 
-def _match_move_group(switches: Set[str], move_groups: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """``move_groups`` rows carry no name — match the one whose switch-set overlaps this wave most."""
+def _match_move_group(switches: Set[str], move_groups: List[Dict[str, Any]], group: str = "") -> Dict[str, Any]:
+    """The move group this wave is. ``compute_move_groups`` owns the group label (G13), so join on the exact
+    label first -- a wave whose switches are all 'homing unknown' and has no readiness row has an EMPTY switch
+    set and matched nothing by overlap, reporting 0 endpoints. Only a snapshot written before the owner
+    labelled its rows falls back to the row whose switch-set overlaps this wave most."""
+    if group:
+        for mg in move_groups:
+            if isinstance(mg.get("group"), str) and mg.get("group") == group:
+                return mg
     best: Dict[str, Any] = {}
     best_overlap = 0
     for mg in move_groups:
@@ -512,7 +519,7 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
         hard = sorted(_as_hosts(seq.get("hard_cutover")))
         switches = set(_wave_switches(seq, readiness))
         wblind = sorted(switches & blind_hosts)
-        mg = _match_move_group(switches, move_groups)
+        mg = _match_move_group(switches, move_groups, group)
 
         hard_ep = _int(seq.get("hard_cutover_endpoints"))
         # PRESENCE, not truthiness: a move group that genuinely reports 0 endpoints is a real count, and

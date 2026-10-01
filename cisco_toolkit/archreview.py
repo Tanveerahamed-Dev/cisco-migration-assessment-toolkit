@@ -40,6 +40,7 @@ from cisco_toolkit.docmeta import as_dict as _docmeta_as_dict
 from cisco_toolkit.docmeta import as_list as _docmeta_as_list
 from cisco_toolkit.textutils import (   # entry deep-sanitize of device text (audit-5) + fail-soft numeric
     NATIVE1_CFG_BASIS, _as_num, bpduguard_state, is_trunk_mode, xml_safe, xml_safe_deep)   # coercion + shared token owners
+from cisco_toolkit.stp_topology import classify_stp_root_election   # the one STP root-election owner (G15)
 from cisco_toolkit import ssot as _ssot_mod   # Law 1 accessors (canonical facts + segmentation posture)
 
 logger = logging.getLogger(__name__)
@@ -471,13 +472,28 @@ def compute_architecture_review(snap: dict) -> dict:
     # ---------------- D3 · Layer-2 design ----------------
     D3 = "Layer-2 design"
     stp_roots = _as_dict(snap.get("stp_roots"))
+    # G15: count only the roots the election owner PUBLISHES (one claimant of one identity), in both
+    # namespaces; a VLAN several collected bridges claim is ambiguous -- disclosed, never credited to a host.
+    _election = classify_stp_root_election(stp_roots)
     roots_by_host = {}
-    for h, vmap in stp_roots.items():
-        n = sum(1 for v, info in _as_dict(vmap).items() if _as_dict(info).get("is_root"))
-        if n:
-            roots_by_host[h] = n
+    for _ns in ("pvst_vlan", "mst_instance"):
+        for _erec in _election[_ns].values():
+            if _erec["state"] == "published":
+                roots_by_host[_erec["root"]] = roots_by_host.get(_erec["root"], 0) + 1
+    ambiguous_roots = sorted((v for v, e in _election["pvst_vlan"].items() if e["state"] == "ambiguous"), key=int)
+    ambiguous_claimants = sorted({h for v in ambiguous_roots for h in _election["pvst_vlan"][v]["claimants"]})
+    ambiguity_note = (
+        f" Root ambiguous (several collected bridges claim it — reconcile before relying on root placement) "
+        f"for {len(ambiguous_roots)} VLAN(s): {_ev(ambiguous_roots, 10)}; claimants: "
+        f"{_ev(ambiguous_claimants, 8)}." if ambiguous_roots else "")
     access_roots = sorted(h for h in roots_by_host if h in l2_hosts)
-    if not roots_by_host:
+    if not roots_by_host and ambiguous_roots:
+        add("L2-1", D3, "Deterministic STP root at the distribution tier", "not-assessable",
+            "No uniquely-identified root bridge was observed." + ambiguity_note, "—",
+            "Reconcile the claimed roots (each claimant's own bridge ID), then re-review.",
+            "Cisco campus design — pin the STP root (priority) at the distribution layer",
+            evidence=ambiguous_claimants)
+    elif not roots_by_host:
         add("L2-1", D3, "Deterministic STP root at the distribution tier", "not-assessable",
             "No explicit root bridge was observed in the collected spanning-tree output.", "—",
             "Include 'show spanning-tree' in collection, then re-review.",
@@ -491,13 +507,23 @@ def compute_architecture_review(snap: dict) -> dict:
             + "; ".join(f"{h} roots {roots_by_host[h]} VLAN(s)" for h in access_roots[:6])
             + (f"; and {len(access_roots) - 6} further access switch(es) rooting "
                f"{sum(roots_by_host[h] for h in access_roots[6:])} VLAN(s) between them"
-               if len(access_roots) > 6 else "") + ".",
+               if len(access_roots) > 6 else "") + "." + ambiguity_note,
             "A root on an access closet means the L2 tree converges around the smallest box in the "
             "fabric — default (un-pinned) priorities usually caused it, and any new switch can "
             "silently steal the root.",
             "Pin root primary/secondary priorities on the distribution pair for every VLAN.",
             "Cisco campus design — pin the STP root (priority) at the distribution layer",
             evidence=access_roots)
+    elif ambiguous_roots:
+        # every uniquely-identified root is on L3, but the ambiguous VLANs' roots are unknown: a clean
+        # 'conforms' over an unassessable subset would be false health.
+        add("L2-1", D3, "Deterministic STP root at the distribution tier", "advisory",
+            "Every uniquely-identified root bridge sits on an L3 (distribution/core) node: "
+            + _ev(roots_by_host) + "." + ambiguity_note,
+            "Root placement cannot be confirmed for the ambiguous VLAN(s) until their root is reconciled.",
+            "Reconcile the claimed roots, then pin root primary/secondary on the distribution pair.",
+            "Cisco campus design — pin the STP root (priority) at the distribution layer",
+            evidence=ambiguous_claimants)
     else:
         add("L2-1", D3, "Deterministic STP root at the distribution tier", "conforms",
             "Every observed root bridge sits on an L3 (distribution/core) node: "
@@ -795,11 +821,8 @@ def compute_architecture_review(snap: dict) -> dict:
 
     misaligned = []
     align_data = False
-    root_host_by_vlan = {}
-    for h, vmap in stp_roots.items():
-        for v, info in _as_dict(vmap).items():
-            if _as_dict(info).get("is_root"):
-                root_host_by_vlan.setdefault(str(v), h)
+    # G15: only a PUBLISHED PVST root can be compared with the VLAN's FHRP active gateway.
+    root_host_by_vlan = {v: e["root"] for v, e in _election["pvst_vlan"].items() if e["state"] == "published"}
     for r in l3f:
         v = str(r.get("vlan") or "")
         if "active" in str(r.get("fhrp") or "").lower() and v in root_host_by_vlan:

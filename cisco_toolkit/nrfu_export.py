@@ -44,6 +44,7 @@ from collections import Counter
 from typing import Dict, List, Optional
 
 from cisco_toolkit.analyze import (
+    MOVE_GROUP_UNSCHEDULED,
     _bgp_configured_peer_acceptance,
     _fhrp_redundancy_domain_consumer_view,
     _fhrp_configured_group_acceptance,
@@ -51,6 +52,7 @@ from cisco_toolkit.analyze import (
     _ipv6_routing_consumer_view,
     _uncovered_fhrp_election_blockers,
     _is_nxos,
+    move_group_host_index,
     summarize_etherchannel_baseline,
     summarize_fhrp_elections,
     summarize_routing_baseline,
@@ -61,6 +63,7 @@ from cisco_toolkit.analyze import (
 from cisco_toolkit.bgp_intent import validate_bgp_configured_peer_baseline
 from cisco_toolkit.fhrp_intent import validate_fhrp_configured_group_baseline
 from cisco_toolkit.parse import _parse_fhrp
+from cisco_toolkit.stp_topology import classify_stp_root_election
 
 NRFU_SCHEMA = "nrfu_commands/1"
 
@@ -68,7 +71,7 @@ NRFU_SCHEMA = "nrfu_commands/1"
 # execution time by the engineer — never pre-filled with a guess.
 NOT_OBSERVED = "[NOT OBSERVED — record baseline at execution]"
 
-UNSCHEDULED_WAVE = "(unscheduled)"
+UNSCHEDULED_WAVE = MOVE_GROUP_UNSCHEDULED   # one owner: analyze.MOVE_GROUP_UNSCHEDULED
 
 NRFU_BANNER = ("Four-phase NRFU certification pack: run each READ-ONLY command and evaluate the output "
                "against the pre-filled observed baseline / acceptance text; the source key cites the embedded "
@@ -383,6 +386,7 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
     interfaces = _as_dict(s.get("interfaces"))
     move_groups = s.get("move_groups") if isinstance(s.get("move_groups"), list) else []
     stp_roots = _as_dict(s.get("stp_roots"))
+    stp_election = classify_stp_root_election(stp_roots)    # the one root-election owner (G15)
     rn = _as_dict(s.get("routing_neighbors"))
     fhrp_detail = _as_dict(s.get("fhrp_detail"))
     app = _as_dict(s.get("application_intelligence"))
@@ -652,17 +656,15 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
     else:
         fhrp_fallback_subjects = set()
 
-    # host -> wave label ("Group N", enumerated exactly like compute_validation_plan /
-    # compute_migration_readiness). A host in no multi-switch group still gets its certification
+    # host -> the owner's move-group label (G13: compute_move_groups writes it; the same join the
+    # validation plan and readiness use). A host in no multi-switch group still gets its certification
     # cases under "(unscheduled)" so nothing is silently skipped (coverage-honesty).
-    wave_of: Dict[str, str] = {}
-    for gi, g in enumerate(move_groups, 1):
-        for h in _as_list(g.get("switches")) if isinstance(g, dict) else []:
-            wave_of.setdefault(str(h), f"Group {gi}")
+    wave_of, wave_ordinal = move_group_host_index(move_groups)
     wave_hosts: Dict[str, List[str]] = {}
     for h in hosts:
         wave_hosts.setdefault(wave_of.get(h, UNSCHEDULED_WAVE), []).append(h)
-    ordered = [f"Group {gi}" for gi in range(1, len(move_groups) + 1) if f"Group {gi}" in wave_hosts]
+    ordered = sorted((w for w in wave_hosts if w != UNSCHEDULED_WAVE and w in wave_ordinal),
+                     key=wave_ordinal.get)
     if UNSCHEDULED_WAVE in wave_hosts:
         ordered.append(UNSCHEDULED_WAVE)
 
@@ -856,6 +858,22 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
                     continue
                 prio = info.get("root_priority")
                 root = str(info.get("root_address") or "").strip()
+                token = str(vlan).strip()
+                erec = (stp_election["mst_instance" if info.get("is_mst") else "pvst_vlan"].get(str(int(token)))
+                        if token.isdigit() else None) or {}
+                vtok = re.sub(r"[^\w.-]", "", str(vlan))
+                if info.get("is_root") and erec.get("state") == "ambiguous":
+                    # G15: this bridge is ONE of several collected claimants -- certifying "this bridge is
+                    # the root" would bless whichever claimant happened to be read; hold it for review.
+                    # Family "STP Root", NOT "STP": the "STP" family is the consistency-baseline owner's,
+                    # and its summary counts reconcile 1:1 to that owner's rows.
+                    if vtok and vtok == str(vlan):
+                        others = max(0, len(erec.get("claimants") or []) - 1)
+                        case(h, 2, "per-site", f"show spanning-tree vlan {vtok}",
+                             f"AMBIGUOUS — this bridge and {others} other collected bridge(s) report being root "
+                             f"for VLAN {vtok} ({erec.get('reason')}); reconcile before accepting",
+                             f"stp_roots.{h}.{vtok}", evidence_family="STP Root", evidence_state="review")
+                    continue
                 if info.get("is_root"):
                     exp = (f"This bridge is the root for VLAN {vlan}"
                            + (f" (priority {prio})" if prio not in (None, "") else ""))
@@ -866,7 +884,6 @@ def compute_nrfu_commands(snap: Optional[dict] = None) -> dict:
                     exp = NOT_OBSERVED
                 # the VLAN token rides a COMMAND template: restrict it to identifier characters (a
                 # key that sanitizes differently is snapshot corruption, not a VLAN — skip, don't guess)
-                vtok = re.sub(r"[^\w.-]", "", str(vlan))
                 if not vtok or vtok != str(vlan):
                     continue
                 case(h, 2, "per-site", f"show spanning-tree vlan {vtok}", exp, f"stp_roots.{h}.{vtok}")

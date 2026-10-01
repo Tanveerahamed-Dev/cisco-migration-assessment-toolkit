@@ -1593,23 +1593,21 @@ def _signals(snap):
 
     # #2 STP root determinism: a VLAN whose root won at the DEFAULT priority (32768 + vid) -> accidental root, not
     #    engineered (won on the MAC tiebreak). Same stp_roots evidence analyze.stp_root_findings feeds the punch-list.
-    acc, acc_hosts = 0, set()
-    for host, vmap in _as_dict(snap.get("stp_roots")).items():
-        for vid, row in _as_dict(vmap).items():
-            row = _as_dict(row)
-            if not row.get("is_root"):
-                continue
-            try:
-                # default priority won on a MAC tiebreak: 32768 + sys-id-ext(=vid) with extended-system-id ON,
-                # or a BARE 32768 with 'no spanning-tree extend system-id' (legacy IOS) -- accept both (audit-3 #14).
-                if int(row.get("root_priority")) in (32768, 32768 + int(vid)):
-                    acc += 1
-                    acc_hosts.add(host)
-            except (TypeError, ValueError, OverflowError):   # OverflowError: a JSON Infinity root_priority/vid
-                continue
-    sig["stp_accidental_roots"] = acc
+    # G15: counted per VLAN from the one election owner (stp_topology.classify_stp_root_election), never per
+    #    claiming host: only a PUBLISHED root at the default priority (32768 + vid, or a bare 32768 with
+    #    'no spanning-tree extend system-id' -- audit-3 #14) is accidental. A VLAN several collected bridges
+    #    claim is AMBIGUOUS: counted separately, its claimants named, and no claimant credited as the root.
+    from cisco_toolkit.stp_topology import classify_stp_root_election
+    _election = classify_stp_root_election(_as_dict(snap.get("stp_roots")))["pvst_vlan"]
+    acc_vids = [v for v, e in _election.items() if e["state"] == "published" and e["default_election"] is True]
+    acc_hosts = {_election[v]["root"] for v in acc_vids}
+    amb_vids = [v for v, e in _election.items() if e["state"] == "ambiguous"]
+    sig["stp_accidental_roots"] = len(acc_vids)
     sig["stp_accidental_nsw"] = len(acc_hosts)
     sig["stp_accidental_hosts"] = sorted(acc_hosts)[:12]
+    sig["stp_ambiguous_root_vlans"] = len(amb_vids)
+    sig["stp_ambiguous_root_vids"] = sorted(amb_vids, key=int)[:8]
+    sig["stp_ambiguous_root_claimants"] = sorted({h for v in amb_vids for h in _election[v]["claimants"]})[:12]
 
     # #3 reserved-range VLAN carrying a production SVI: Nexus reserves 3968-4095 for internal use -> the target
     #    refuses the SVI and the L3 link breaks silently at cutover unless renumbered into the user range.
@@ -3697,19 +3695,32 @@ def _d_vlan_subnet_integrity(snap, sig):
 
 
 def _d_stp_root_determinism(snap, sig):
-    if sig["stp_accidental_roots"] <= 0:
+    n_acc = sig["stp_accidental_roots"]
+    n_amb = sig.get("stp_ambiguous_root_vlans", 0)
+    if n_acc <= 0 and n_amb <= 0:
         return None
+    # the accidental sentence is byte-identical to the pre-G15 text when nothing is ambiguous; an ambiguity
+    # clause is appended (or stands alone) when several collected bridges claim a VLAN's root.
+    text = (f"{n_acc} spanning-tree root election(s) across {sig['stp_accidental_nsw']} "
+            f"switch(es) were won at the DEFAULT bridge priority (32768 + VLAN id) on the MAC tiebreak -- the root is "
+            f"accidental, not engineered, so a newly-introduced switch with a lower MAC can silently steal the root at "
+            f"cutover and move the L2 topology. Set explicit 'root primary/secondary' co-located with the active gateway."
+            if n_acc > 0 else "")
+    if n_amb > 0:
+        vids = ", ".join(sig.get("stp_ambiguous_root_vids") or [])
+        text = (text + (" " if text else "")
+                + f"The root is AMBIGUOUS for {n_amb} VLAN(s) ({vids}{' ...' if n_amb > 8 else ''}): "
+                f"{len(sig.get('stp_ambiguous_root_claimants') or [])} collected bridge(s) claim it, so no root is "
+                f"provable -- reconcile each claimant's own bridge ID, then place root primary/secondary deliberately.")
+    devices = sorted(set(sig["stp_accidental_hosts"]) | set(sig.get("stp_ambiguous_root_claimants") or []))[:12]
     return _decision(
         "dc-stp-root-determinism",
-        f"{sig['stp_accidental_roots']} spanning-tree root election(s) across {sig['stp_accidental_nsw']} "
-        f"switch(es) were won at the DEFAULT bridge priority (32768 + VLAN id) on the MAC tiebreak -- the root is "
-        f"accidental, not engineered, so a newly-introduced switch with a lower MAC can silently steal the root at "
-        f"cutover and move the L2 topology. Set explicit 'root primary/secondary' co-located with the active gateway.",
-        sig["stp_accidental_roots"], ["availability", "convergence", "manageability"],
+        text,
+        n_acc + n_amb, ["availability", "convergence", "manageability"],
         ["stp_roots[].is_root", "stp_roots[].root_priority"],
         priority="High",
         driver="Deterministic L2: the STP root must be explicitly placed, never left to a MAC-address tiebreak.",
-        devices=sig["stp_accidental_hosts"])
+        devices=devices if n_amb > 0 else sig["stp_accidental_hosts"])
 
 
 def _d_reserved_vlan(snap, sig):
@@ -4621,8 +4632,15 @@ def _wave_plan(snap, cap=_WAVE_CAP):
     VLANs must be coordinated across sub-waves); independent small groups are bin-packed into combined
     waves (parallelizable). Additive -- compute_move_groups (the coupling) is unchanged; every switch is
     placed exactly once."""
-    groups = [g for g in _as_list(snap.get("move_groups"))
-              if isinstance(g, dict) and any(_scalar(s) for s in _as_list(g.get("switches")))]
+    from cisco_toolkit.analyze import move_group_labels
+    raw_groups = _as_list(snap.get("move_groups"))
+    # the owner's move-group labels (G13), index-aligned with the RAW list and carried through the filter
+    # below, so a wave names its source groups by label (`source_move_groups`) -- `source_groups` stays the
+    # legacy 0-based index into the FILTERED list for existing readers.
+    kept = [(label, g) for label, g in zip(move_group_labels(raw_groups), raw_groups)
+            if isinstance(g, dict) and any(_scalar(s) for s in _as_list(g.get("switches")))]
+    groups = [g for _label, g in kept]
+    label_of = [label for label, _g in kept]
     big_subwaves, small = [], []
     n_subdivided = 0
     for gi, g in enumerate(groups):
@@ -4632,7 +4650,8 @@ def _wave_plan(snap, cap=_WAVE_CAP):
         if len(sw) > cap:
             n_subdivided += 1
             for i in range(0, len(sw), cap):
-                big_subwaves.append({"switches": sw[i:i + cap], "kind": "coupled-subwave", "source_groups": [gi]})
+                big_subwaves.append({"switches": sw[i:i + cap], "kind": "coupled-subwave", "source_groups": [gi],
+                                     "source_move_groups": [label_of[gi]]})
         else:
             small.append((gi, sw))
     packed, cur, cur_n = [], [], 0                                   # bin-pack independent small groups
@@ -4648,7 +4667,8 @@ def _wave_plan(snap, cap=_WAVE_CAP):
     if cur:
         packed.append(cur)
     small_waves = [{"switches": [h for _, s in grp for h in s], "kind": "independent-batch",
-                    "source_groups": [gi for gi, _ in grp]} for grp in packed]
+                    "source_groups": [gi for gi, _ in grp],
+                    "source_move_groups": [label_of[gi] for gi, _ in grp]} for grp in packed]
     waves = big_subwaves + small_waves
     for n, w in enumerate(waves, 1):
         w["wave"] = n

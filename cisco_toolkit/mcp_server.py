@@ -327,9 +327,13 @@ def get_move_groups(snap: Dict[str, Any]) -> Dict[str, Any]:
     seq_by = {str(r.get("group")): r for r in _as_list(snap.get("wave_sequencing")) if isinstance(r, dict)}
     ms = _as_dict(snap.get("migration_scenarios"))
     scen_by = {str(r.get("group")): r for r in _as_list(ms.get("per_group")) if isinstance(r, dict)}
+    from cisco_toolkit.analyze import move_group_labels
+    # the owner's label (compute_move_groups writes `group`); a pre-label snapshot falls back to the
+    # owner formula over the RAW list position, which is exact because a snapshot keeps the owner's order.
+    all_rows = _as_list(snap.get("move_groups"))
+    labels = [lb for lb, g in zip(move_group_labels(all_rows), all_rows) if isinstance(g, dict)]
     groups = []
-    for i, g in enumerate(raw):
-        name = f"Group {i + 1}"     # move_groups rows are anonymous; downstream sections name them by index
+    for name, g in zip(labels, raw):
         rdy, seq, scen = readiness_by.get(name), seq_by.get(name), scen_by.get(name)
         groups.append({
             "group": name,
