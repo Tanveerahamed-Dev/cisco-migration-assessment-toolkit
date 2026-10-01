@@ -185,7 +185,21 @@ LANGUAGE_BY_EXTENSION = {
 # comments reader, so comments and trailing commas are legal there.  The name,
 # not a list of paths, is what makes such a file JSONC; strict JSON parsing of
 # one that happens to carry no comment is coincidence, not its format.
-JSONC_CONFIG_NAME_RE = re.compile(r"^[jt]sconfig(?:[._-][^/]*)?\.json$")
+#
+# The rule is exactly TypeScript's project-config names: ``tsconfig.json`` and
+# ``jsconfig.json`` (the literal names its config discovery searches for) and
+# ``tsconfig.<name>.json`` / ``jsconfig.<name>.json``, where ``<name>`` is one or
+# more nonempty dot-separated segments of letters, digits, ``_`` or ``-`` and no
+# segment is itself ``json`` (``tsconfig.json.json`` is a doubled extension, not
+# a role).  ``tsconfig_base.json``, ``tsconfig-base.json`` and ``tsconfig..json``
+# are not TypeScript config names.  It is matched CASE-SENSITIVELY against the
+# exact tracked basename: TypeScript's discovery literal is lowercase, so on a
+# case-sensitive host (Linux CI, and Git's own tree on every platform)
+# ``TSCONFIG.JSON`` is never found as a project config; only a case-folding
+# filesystem would resolve it.  The compiler censuses a Git tree whose paths are
+# case-sensitive everywhere, and one commit must classify identically on every
+# host, so the case-sensitive answer is the only platform-independent one.
+JSONC_CONFIG_NAME_RE = re.compile(r"(?:ts|js)config(?:\.(?!(?i:json)(?:\.|$))[A-Za-z0-9_-]+)*\.json")
 
 SOURCE_LANGUAGES = frozenset(
     {
@@ -443,7 +457,8 @@ def classify_file(path: str, git_mode: str) -> dict[str, Any]:
         language = "config"
     elif _is_license_name(name):
         language = "text"
-    elif JSONC_CONFIG_NAME_RE.match(name):
+    elif JSONC_CONFIG_NAME_RE.fullmatch(PurePosixPath(path).name):
+        # Case-sensitive on the exact tracked basename (see the rule's owner).
         language = "jsonc"
 
     roles: set[str] = set()

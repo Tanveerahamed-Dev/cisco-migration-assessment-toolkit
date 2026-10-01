@@ -821,7 +821,8 @@
         "name": {"type": "string", "minLength": 1},
         "passed": {"type": "boolean"},
         "expected": {"$ref": "#/$defs/gateValue"},
-        "actual": {"$ref": "#/$defs/gateValue"}
+        "actual": {"$ref": "#/$defs/gateValue"},
+        "denominator_scope": {"const": "full_depth_census_identity_depth_files_excluded"}
       },
       "additionalProperties": false
     },

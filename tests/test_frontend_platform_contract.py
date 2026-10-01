@@ -142,9 +142,10 @@ def test_self_hosted_frontend_jobs_fail_before_install_on_an_unsupported_node():
 def test_dependency_audit_is_ordinary_strict_npm_audit_without_an_exception_wrapper():
     workflow = ROOT / ".github" / "workflows" / "ci.yml"
     dependency_audit = _job(workflow, "dependency-audit")
-    audit_lines = [line.strip() for line in dependency_audit.splitlines() if "npm audit" in line]
+    audit_lines = [line.strip() for line in dependency_audit.splitlines() if "npm audit" in line.split("#", 1)[0]]
 
-    assert audit_lines == ["npm audit --audit-level=high"]
+    # One ordinary audit invocation per tracked npm package, never a wrapper.
+    assert audit_lines == ["npm audit --audit-level=high"] * len(_tracked_npm_package_dirs())
     assert "--registry=https://registry.npmjs.org/" in dependency_audit
     assert "--offline=false" in dependency_audit
     assert "--include=prod --include=dev --include=optional --include=peer" in dependency_audit
@@ -157,3 +158,78 @@ def test_dependency_audit_is_ordinary_strict_npm_audit_without_an_exception_wrap
     assert "GHSA-qwww-vcr4-c8h2" not in dependency_audit
     assert not (ROOT / ".github" / "scripts" / "verify_frontend_npm_audit.py").exists()
     assert not (ROOT / "tests" / "test_frontend_npm_audit.py").exists()
+
+
+NPM_LOCKFILE_NAMES = frozenset({"package-lock.json", "npm-shrinkwrap.json"})
+AUDIT_COMMAND = (
+    "npm audit --audit-level=high --registry=https://registry.npmjs.org/ --offline=false "
+    "--include=prod --include=dev --include=optional --include=peer"
+)
+
+
+def _tracked_npm_package_dirs():
+    """Every directory holding a tracked npm lockfile, derived from ``git ls-files``."""
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        timeout=120,
+    ).stdout.decode("utf-8")
+    lockfiles = [path for path in listed.split("\0") if path and path.rsplit("/", 1)[-1] in NPM_LOCKFILE_NAMES]
+    return sorted({path.rsplit("/", 1)[0] if "/" in path else "." for path in lockfiles})
+
+
+def _job_steps(job):
+    """Split one job into its steps: name, working directory, env and run text."""
+    steps = []
+    current = None
+    for line in job.splitlines():
+        if line.startswith("      - "):
+            current = {"lines": [line[8:]]}
+            steps.append(current)
+        elif current is not None and (line.startswith("        ") or not line.strip()):
+            current["lines"].append(line[8:])
+    parsed = []
+    for step in steps:
+        text = "\n".join(step["lines"])
+        directory = re.search(r"^working-directory:\s*(\S+)\s*$", text, re.MULTILINE)
+        run = re.search(r"^run:\s*(?:[|>]-?)?\s*\n?(.*?)(?=^\S|\Z)", text, re.MULTILINE | re.DOTALL)
+        parsed.append(
+            {
+                "text": text,
+                "directory": directory.group(1) if directory else ".",
+                "run": run.group(1) if run else "",
+            }
+        )
+    return parsed
+
+
+def test_dependency_audit_audits_every_tracked_npm_lockfile_with_the_same_flags():
+    # A required check that audits one hand-picked package leaves every other
+    # tracked dependency graph (atlas-scope/ ships in the Atlas bundle) unaudited.
+    # The denominator is derived from git, never from this workflow.
+    directories = _tracked_npm_package_dirs()
+    assert directories, "git ls-files found no tracked npm lockfile"
+    steps = _job_steps(_job(ROOT / ".github" / "workflows" / "ci.yml", "dependency-audit"))
+    audit_steps = [step for step in steps if "npm audit" in step["run"]]
+    audited = sorted(step["directory"] for step in audit_steps)
+    assert audited == directories, f"audited {audited} but git tracks npm lockfiles in {directories}"
+
+    for step in audit_steps:
+        directory = step["directory"]
+        assert " ".join(step["run"].split()) == AUDIT_COMMAND, directory
+        assert "NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-userconfig" in step["text"], directory
+        assert "NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/npm-globalconfig" in step["text"], directory
+        position = steps.index(step)
+        installs = [
+            candidate
+            for candidate in steps[:position]
+            if candidate["directory"] == directory and "npm ci --ignore-scripts" in candidate["run"]
+        ]
+        assert len(installs) == 1, f"{directory} is audited without exactly one locked install before it"
+        manifest = _json(ROOT / directory / "package.json")
+        if "verify:node" in manifest.get("scripts", {}):
+            install_run = installs[0]["run"]
+            guard = install_run.find("npm run verify:node")
+            assert 0 <= guard < install_run.find("npm ci"), f"{directory} installs before its Node guard"

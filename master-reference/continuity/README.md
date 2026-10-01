@@ -17,6 +17,14 @@ python -m continuity validate-completion --repo-root .. --compiler-output .atlas
 
 All output is canonical, sorted JSON. A missing query result returns `status: "abstained"`; the tool never invents an answer. Impact traversal is one-hop structural evidence and is not runtime truth.
 
+Every `query` or `enhance` answer about a path censused at identity depth carries a `census_depth`
+object read from the exact bundle's census-depth receipt: the depth, the declaration's reason and
+release BLOCK category, the retained and deferred record groups, and the file's real line count. Such
+a path has file and import records only, so a thin answer is deferred coverage, never an empty file.
+A line within its line count abstains as `census_depth_identity_line_not_projected`; a line past the
+end abstains as `line_not_present_in_exact_source`. An identity-depth file record without a matching
+bundle declaration fails closed.
+
 ## Deterministic enhancement package
 
 `enhance` accepts exactly one seed:

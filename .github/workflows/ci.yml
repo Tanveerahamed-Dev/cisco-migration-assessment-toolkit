@@ -141,7 +141,7 @@ jobs:
         with:
           node-version: "24.19.0"
           cache: npm
-          cache-dependency-path: webapp/frontend/package-lock.json
+          cache-dependency-path: "**/package-lock.json"
       - run: python -m pip install --upgrade pip
       - name: Install audited Python environment
         run: python -m pip install -e ".[dev]" "pip-audit>=2.9,<3"
@@ -169,6 +169,10 @@ jobs:
         run: |
           python -m pip uninstall --yes cisco-migration-assessment-toolkit
           python -m pip_audit --strict --ignore-vuln PYSEC-2026-2858
+      # EVERY tracked npm lockfile is audited with the same flags: a required check that audits one
+      # hand-picked package leaves the others' production and development graphs unaudited (the
+      # atlas-scope/ hub build ships in the Atlas bundle). tests/test_frontend_platform_contract.py
+      # derives the tracked lockfiles from `git ls-files` and fails when one has no audit step here.
       - name: Install locked frontend dependencies
         working-directory: webapp/frontend
         run: |
@@ -179,6 +183,32 @@ jobs:
         env:
           # npm 11 rejects one path being loaded as both user and global
           # configuration. Keep both layers isolated without aliasing them.
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-userconfig
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/npm-globalconfig
+        run: >-
+          npm audit --audit-level=high
+          --registry=https://registry.npmjs.org/
+          --offline=false
+          --include=prod --include=dev --include=optional --include=peer
+      - name: Install locked Atlas Scope dependencies
+        working-directory: atlas-scope
+        run: npm ci --ignore-scripts
+      - name: Audit Atlas Scope dependencies
+        working-directory: atlas-scope
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-userconfig
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/npm-globalconfig
+        run: >-
+          npm audit --audit-level=high
+          --registry=https://registry.npmjs.org/
+          --offline=false
+          --include=prod --include=dev --include=optional --include=peer
+      - name: Install locked master reference dependencies
+        working-directory: master-reference
+        run: npm ci --ignore-scripts
+      - name: Audit master reference dependencies
+        working-directory: master-reference
+        env:
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-userconfig
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/npm-globalconfig
         run: >-

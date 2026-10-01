@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { proofCardCoverageNote } from "./CoverageNotes.mjs";
 import { humanBytes, loadProjection, shortDigest, sourceHref } from "./SourceExplorerData";
 import type { ProjectionLoadState, SourceFileRecord } from "./SourceExplorerTypes";
 import styles from "./SourceExplorer.module.css";
@@ -138,18 +139,12 @@ export function SourceExplorer({
         <article className={styles.proofCard}>
           <strong>{recordCounts.lines?.toLocaleString() ?? "—"}</strong>
           <span>Nonblank lines mapped</span>
-          <small>
-            {censusDepth === undefined
-              ? "Census depth not reported — line coverage unproven"
-              : censusDepth.identity_depth_files > 0
-                ? `Full-depth files only · ${censusDepth.identity_depth_nonblank_lines_deferred.toLocaleString()} lines in ${censusDepth.identity_depth_files.toLocaleString()} identity-only files deferred`
-                : "Exact denominator from completeness ledger"}
-          </small>
+          <small>{proofCardCoverageNote("lines", censusDepth, recordCounts)}</small>
         </article>
         <article className={styles.proofCard}>
           <strong>{recordCounts.symbols?.toLocaleString() ?? "—"}</strong>
           <span>Symbols</span>
-          <small>{recordCounts.tests?.toLocaleString() ?? "—"} declared tests</small>
+          <small>{proofCardCoverageNote("symbols", censusDepth, recordCounts)}</small>
         </article>
         <article className={styles.proofCard}>
           <strong>{projection.completeness.invariants.filter((item) => item.passed).length}</strong>
