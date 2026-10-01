@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout; [PR #583](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/583) | Codex | Pushed through `087b00c8` after both privacy gates passed. Single LF-only regeneration, all local integration gates and independent source/data/test reviews complete. Hosted PR checks are running; see [validation](engine-defects-validation-2026-10-01.md). (2026-10-01) | Wait for all applicable hosted gates on the final #583 head, then use the authorized exact-head merge commit. Verify merged-tree equality before starting W2c. Do not regenerate fixtures again. |
+| W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout; [PR #583](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/583) | Codex | Pushed through `20fb8b3b` after both privacy gates passed. Engine/UI local gates and independent reviews complete. Hosted Master Reference failed; exact-tree local reproduction exceeds its 248 MiB deployment limit. Other hosted checks continue. See [validation](engine-defects-validation-2026-10-01.md). (2026-10-01) | Owner approval requested to add lossless Master Reference projection compaction to W2b, or await that owner's fix. Preserve every source record and the existing privacy/size gates. Then finish exact-head CI and the authorized merge; W2c waits. Do not regenerate golden/sample fixtures again. |
 | W2c | Backend endpoint and first core screens | planned `codex/core-screens`; reuse existing `.claude/worktrees/ui-projection-2` checkout after W2b merges; branch not created | Codex | API and visual-reference preflights complete; implementation waits for W2b | After W2b merges, create the listed branch from current main in the clean existing checkout. Add the paged, declared-response-model endpoint, then Overview / Trust / Inventory + device / Findings screens using only contract envelopes. |
 
 ## Owner decisions
@@ -97,6 +97,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-01, Codex (W2b Master Reference capacity gate):
+  - The final-head Master Reference run `36918999658` passed compiler/schema validation and 264 contract tests, then failed deployment finalization. Its public error is intentionally redacted; there were no retained CI artifacts.
+  - Reproduced from the same tracked tree and compiler census locally. The compressed deployment is 260,473,519 bytes before its outer receipt, exceeding the unchanged 260,046,848-byte limit by 426,671. The private existing diagnostic confirms the aggregate-size rejection. No tracked source or fixture changed during reproduction.
+  - Requested owner approval for lossless projection compaction because the earlier board assigns that follow-up to its owner and the current W2 queue does not list it. No compaction edits, budget increase or coverage reduction have been made. Remaining CI is allowed to finish; the PR is held.
 
 - 2026-10-01, Codex (W2b PR publication):
   - Repository privacy passed; the complete marker scan passed across all ten new commits and 2,104,617 patch/message bytes. Pushed `087b00c8` and opened #583 against main `8000adce`.

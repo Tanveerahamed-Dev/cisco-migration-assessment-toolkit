@@ -1,6 +1,6 @@
 # W2b engine defects: validation and integration handoff (2026-10-01)
 
-**Partial: local integration gates and independent reviews complete; exact-head hosted gates and merge remain.**
+**Partial: engine/UI integration and reviews complete; the Master Reference deployment-size gate blocks merge.**
 Branch: `fix/engine-contract-defects`, continuing interrupted checkpoint `3cb8891d`.
 Design owner: `docs/engine-defects-design-2026-10-01.md`. Queue owner: `docs/NOW.md`.
 
@@ -297,3 +297,33 @@ The marker scan covered all ten commits outside main, including intermediate cha
 2,104,617 bytes of messages/patches with no matches. PR #583 is open against main `8000adce`.
 Hosted checks are running; the final head, including this board/receipt update, requires fresh
 successful privacy gates before its push and successful applicable hosted checks before merge.
+
+### Hosted Master Reference failure and exact-tree reproduction
+
+Run `36918999658` on head `20fb8b3b` failed after its compiler/governance tests, compiler-envelope
+schema validation, TypeScript and **264 contract tests** passed. The production build completed,
+then deployment finalization emitted the deliberately redacted `deployment manifest build failed`.
+Rendered-HTML tests and subsequent release-family checks did not run. No diagnostic artifact was
+retained by that workflow. This is a failed gate, not an environmental exception or a waiver.
+
+Local reproduction used the same Node version, tracked tree and compiler counts as CI:
+1,577 files, 687,015 line records, 34,089 symbols, 14,296 tests and 4,038 source modules.
+Both compiler runs reported source-tree digest
+`3e05d52969de9e0b3b28ccdf12e1d011e4703e900df39cebd2bac210f32a5172`.
+CI compiled its synthetic merge commit; local compilation used the identical head tree.
+All generated reproduction files are ignored or private; no tracked source/fixture changed.
+
+The local compressed deployment contains **14,525 files / 260,473,519 bytes**, before the outer
+receipt. Its existing **248 MiB / 260,046,848-byte** bound is exceeded by **426,671 bytes**.
+The existing private test-only diagnostic independently reached `digestPayload` and reported
+`deployment member aggregate exceeds the Sites expanded limit`. Public error redaction and all
+limits remain unchanged. Largest families: metadata 118,757,907 bytes; source 73,633,560;
+fragments 30,100,948; search 22,457,007. JSON serialization is already compact and gzip is
+already level 9; a whitespace-only fix has not been established.
+
+The proposed next step is lossless factoring of repeated source-line metadata, restoring the
+same existing records at the read boundary and retaining source text, terminators, identities,
+digests and all census denominators. It requires measured savings, round-trip/refutation tests
+and a fresh exact-head hosted pass. Owner scope approval was requested because the board names
+this as an owner follow-up outside the listed W2 work. No compaction implementation, budget
+increase, dropped source coverage or fixture regeneration has been performed.
