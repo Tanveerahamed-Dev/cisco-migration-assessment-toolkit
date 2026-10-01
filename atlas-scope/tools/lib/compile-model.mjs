@@ -86,7 +86,7 @@ export function readEngineContract(c) {
   const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
   if (!isObj(c)) bad("is not a JSON object");
   const top = /** @type {Record<string, unknown>} */ (c);
-  const topKeys = ["schema", "owner", "punch_evidence", "protocol_assessability_states"];
+  const topKeys = ["schema", "owner", "punch_evidence", "protocol_assessability_states", "severities", "health_bands", "node_kinds"];
   const extraTop = Object.keys(top).filter((k) => !topKeys.includes(k));
   if (extraTop.length > 0) bad(`carries key(s) this compiler does not know: ${extraTop.join(", ")}`);
   if (top.schema !== ENGINE_CONTRACT_SCHEMA) bad(`has schema ${JSON.stringify(top.schema)}, not ${ENGINE_CONTRACT_SCHEMA}`);
@@ -117,6 +117,25 @@ export function readEngineContract(c) {
     rules[k] = /** @type {boolean} */ (pe[k]);
   }
   const states = names(top.protocol_assessability_states, "protocol_assessability_states");
+  /* The closed display vocabularies (severity, health band, node kind). This compiler carries such a term VERBATIM
+     (`term`), so it does not use them — the app's recognisers do (src/core/vocab.ts reads the same file). They are
+     still validated here, because an accepted-but-unchecked key is exactly what the unknown-key refusal above exists
+     to prevent: a malformed vocabulary stops the build here as well as in the app. */
+  names(top.severities, "severities");
+  if (!isObj(top.health_bands)) bad("has no health_bands object");
+  const hb = /** @type {Record<string, unknown>} */ (top.health_bands);
+  const extraHb = Object.keys(hb).filter((k) => k !== "scored" && k !== "not_measured");
+  if (extraHb.length > 0) bad(`states health_bands key(s) this compiler does not know: ${extraHb.join(", ")}`);
+  const scored = names(hb.scored, "health_bands.scored");
+  if (typeof hb.not_measured !== "string" || hb.not_measured === "") bad("health_bands.not_measured is not a name");
+  if (scored.includes(/** @type {string} */ (hb.not_measured))) bad("health_bands.not_measured is also a scored band");
+  if (!isObj(top.node_kinds)) bad("has no node_kinds object");
+  const nk = /** @type {Record<string, unknown>} */ (top.node_kinds);
+  const extraNk = Object.keys(nk).filter((k) => k !== "collected" && k !== "classified");
+  if (extraNk.length > 0) bad(`states node_kinds key(s) this compiler does not know: ${extraNk.join(", ")}`);
+  const classified = names(nk.classified, "node_kinds.classified");
+  if (typeof nk.collected !== "string" || nk.collected === "") bad("node_kinds.collected is not a name");
+  if (classified.includes(/** @type {string} */ (nk.collected))) bad("node_kinds.collected is also a classified kind");
   return Object.freeze({
     schema: ENGINE_CONTRACT_SCHEMA,
     owner: /** @type {string} */ (top.owner),
@@ -955,7 +974,11 @@ export function compileFabric(snap, binding, opts = {}) {
       host,
       collected: d ? true : Boolean(n?.collected),
       inventoried: Boolean(d),
-      kind: term(n?.kind, `cable_map.nodes[host=${host}].kind`) ?? (d ? "switch" : "unknown"),
+      /* null = NOT STATED. The engine writes a kind only on a cable-map node (cisco_toolkit/analyze.py
+         compute_cable_map: CABLE_MAP_COLLECTED_KIND for a collected host, a _KIND_RANK member for a classified
+         neighbour) and documents no default for a host it did not map, so none is invented here: this used to be
+         `?? (d ? "switch" : "unknown")`, an uncited kind no record supports (src/core/compile-kind-absence.test.ts). */
+      kind: term(n?.kind, `cable_map.nodes[host=${host}].kind`),
       role: val(h?.role) ?? val(n?.role),
       tier: Number.isFinite(n?.tier) ? n.tier : null,
       order: Number.isFinite(n?.order) ? n.order : 0,

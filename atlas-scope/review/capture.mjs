@@ -177,35 +177,195 @@ function appPlan() {
   if (problems.length) throw new Error(problems.join("; "));
   return { viewports: vp.viewports, states: st.states };
 }
-/** Overlays a reference page puts over the product, dismissed by ACCESSIBLE ROLE AND NAME: a button
-    whose name starts with "Close" or "Dismiss" (Grafana's is "Close alert", which the old exact
-    [aria-label="Close"] missed) but not one that closes a menu or a panel of the product itself, and
-    the consent buttons. Returns the names it clicked. */
-export const REF_DISMISS = [/^(close|dismiss)\b(?!.*\b(menu|panel|sidebar|navigation)\b)/i, /^(accept|allow)( all)?\b/i, /^got it\b/i];
-export async function dismissRefOverlays(page) {
-  const clicked = [];
-  for (const name of REF_DISMISS) {
-    const loc = page.getByRole("button", { name });
-    const n = await loc.count().catch(() => 0);
-    for (let i = 0; i < n; i++) {
-      const el = loc.nth(i);
-      const label = (await el.getAttribute("aria-label").catch(() => null)) ?? (await el.innerText().catch(() => "")).trim();
-      if (await el.isVisible().catch(() => false)) {
-        await el.click({ timeout: 1500 }).then(() => clicked.push(label), () => {});
-      }
+/** Overlays a reference page puts over the product, dismissed so the capture shows the product.
+    NAME — never narrower than the pre-O70 selectors (`button:has-text("Accept")`, `button:has-text("Got
+    it")`: case-insensitive SUBSTRINGS of the text, so "I accept" and "OK, got it" match; and the exact
+    `[aria-label="Close"]` on ANY element): a control whose name starts with "Close" or "Dismiss"
+    (Grafana's is "Close alert"), or contains "accept", "got it" or the word "allow". Its name is read as
+    the accessibility tree names it, not from one attribute (SQG-V1): aria-label, aria-labelledby, its
+    text, its value, its title, and the alt of an image inside it (a close button that is only an <img
+    alt="Close">).
+    WHERE — every candidate in the document AND in every open shadow root (a consent widget mounted in a
+    shadow root is invisible to document.querySelectorAll; Playwright's locators pierce it, so the
+    pre-O70 selectors and the W5 base both found it: SQG-V1).
+    STRUCTURE — which matching control is an overlay's dismiss and not the product's own (W5-X6: no list
+    of product words such as "menu" or "panel" decides it). The control must sit in one of:
+      1. an OVERLAY ROLE: the control or an ancestor (across shadow boundaries) is a dialog,
+         alertdialog, alert, a <dialog> or aria-modal — an authored declaration, decisive wherever it is;
+      2. a LAYERED box: an ancestor taken OUT of the page flow (position fixed or absolute; sticky stays
+         in the flow, so a sticky toolbar is the product's) that is MEASURED painting over the page's
+         CONTENT — some visible text or replaced element (img, svg, canvas, video, iframe, a form field)
+         outside the box, whose overlap with the box is hit-tested to the box — and that carries content
+         of its own beside the control (a message: "cookies", "promo"). Measuring against painted
+         content, not any box beneath, is what keeps a product's fixed header or nav over a padded
+         layout wrapper out (SQG-V2: the wrapper's padding paints nothing); a page-chrome landmark
+         (<header>, <nav>, role banner or navigation) is never itself such a box, so a transparent fixed
+         header over a hero is the product's chrome; a fixed box holding only its control (a lone
+         "Allow editing" toolbar) is not a message with a dismiss;
+      3. a CONSENT box, in the flow or out of it (SQG-V1: the pre-O70 selector closed an in-flow cookie
+         bar): the nearest ancestors holding at most CONSENT_TEXT_MAX characters of text, one of which
+         SAYS consent outside the control's own name (REF_CONSENT_TEXT: cookies, consent, GDPR, CCPA,
+         privacy, tracking — the words that make a box a consent box, not a list of products).
+    What this cannot separate, and so leaves to review of the captured frame: a product's own out-of-flow
+    popover that layers a message and a "Close" over content (an overlay by every structural measure, and
+    closing it shows the product); a product control inside a small box that itself talks about privacy
+    or cookies; consent rendered inside an iframe (no version of this harness reached into frames); and
+    an in-flow "Accept"/"Got it" in no consent box — the one deliberate narrowing of the pre-O70 selector,
+    which clicked the FIRST such button anywhere, the product's own included.
+    ONE AT A TIME: each click can mutate the page (an overlay removes itself, or opens another), so the
+    page is re-queried after every click; a control already tried is not tried again, and at most
+    `max` clicks are made. Returns the names it clicked. */
+export const REF_DISMISS = [/^\s*(close|dismiss)\b/i, /accept/i, /got it/i, /\ballow\b/i];
+export const REF_CONSENT_TEXT = /\b(cookies?|consent|gdpr|ccpa|privacy|tracking)\b/i;
+const CONSENT_TEXT_MAX = 1500;
+const DISMISS_MARK = "data-atlas-dismiss";
+/* Runs IN the page (serialised by page.evaluate): self-contained. Marks the first untried control that
+   meets NAME and STRUCTURE and returns its name, or null. */
+function findDismissControl({ patterns, consent, consentMax, mark }) {
+  const res = patterns.map(([s, f]) => new RegExp(s, f));
+  const consentRe = new RegExp(consent[0], consent[1]);
+  const tried = (window.__atlasDismissTried ??= new WeakSet());
+  const isTop = (k) => k === document.body || k === document.documentElement;
+  const parentOf = (k) => k.parentElement ?? (k.parentNode instanceof ShadowRoot ? k.parentNode.host : null);
+  const inside = (box, node) => {
+    for (let x = node; x; x = parentOf(x)) if (x === box) return true;
+    return false;
+  };
+  const all = [];
+  const collect = (root) => {
+    for (const el of root.querySelectorAll("*")) {
+      all.push(el);
+      if (el.shadowRoot) collect(el.shadowRoot);
     }
+  };
+  collect(document);
+  const shown = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && (el.checkVisibility?.({ visibilityProperty: true, opacityProperty: true }) ?? true);
+  };
+  const role = (k) => (k.getAttribute("role") ?? "").trim().toLowerCase();
+  const overlayRole = (k) => ["dialog", "alertdialog", "alert"].includes(role(k)) || k.getAttribute("aria-modal") === "true" || k.tagName === "DIALOG";
+  const landmark = (k) => k.tagName === "HEADER" || k.tagName === "NAV" || role(k) === "banner" || role(k) === "navigation";
+  /* The deepest element painted at a point, across open shadow roots. */
+  const hitAt = (x, y) => {
+    let e = document.elementFromPoint(x, y);
+    while (e?.shadowRoot) {
+      const d = e.shadowRoot.elementFromPoint(x, y);
+      if (!d || d === e) break;
+      e = d;
+    }
+    return e;
+  };
+  /* Painted content in the viewport: every visible text run and replaced element, with its owner. */
+  let content = null;
+  const contentRects = () => {
+    if (content) return content;
+    content = [];
+    const seen = new Map();
+    const visible = (el) => {
+      if (!seen.has(el)) seen.set(el, el.checkVisibility?.({ visibilityProperty: true, opacityProperty: true }) ?? true);
+      return seen.get(el);
+    };
+    const add = (owner, r) => {
+      if (r.width >= 1 && r.height >= 1 && r.right > 0 && r.bottom > 0 && r.left < innerWidth && r.top < innerHeight && visible(owner)) content.push({ owner, r });
+    };
+    const texts = (root) => {
+      const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let t = tw.nextNode(); t; t = tw.nextNode()) {
+        const owner = t.parentElement;
+        if (!owner || !t.data.trim() || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(owner.tagName)) continue;
+        const range = document.createRange();
+        range.selectNodeContents(t);
+        for (const r of range.getClientRects()) add(owner, r);
+      }
+    };
+    texts(document.body);
+    for (const el of all) if (el.shadowRoot) texts(el.shadowRoot);
+    for (const el of all) if (/^(img|svg|canvas|video|picture|iframe|input|textarea|select)$/i.test(el.tagName)) add(el, el.getBoundingClientRect());
+    return content;
+  };
+  const layered = (k, control) => {
+    const pos = getComputedStyle(k).position;
+    if ((pos !== "fixed" && pos !== "absolute") || landmark(k)) return false;
+    const R = k.getBoundingClientRect();
+    const own = contentRects().some((c) => inside(k, c.owner) && !inside(control, c.owner));
+    if (!own) return false;
+    for (const { owner, r } of contentRects()) {
+      if (inside(k, owner)) continue;
+      const x0 = Math.max(R.left, r.left, 0);
+      const x1 = Math.min(R.right, r.right, innerWidth);
+      const y0 = Math.max(R.top, r.top, 0);
+      const y1 = Math.min(R.bottom, r.bottom, innerHeight);
+      if (x1 - x0 < 1 || y1 - y0 < 1) continue;
+      const top = hitAt((x0 + x1) / 2, (y0 + y1) / 2);
+      if (top && inside(k, top)) return true;
+    }
+    return false;
+  };
+  const textOf = (k, cap) => {
+    let s = "";
+    const visit = (root) => {
+      const tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+      for (let n = tw.currentNode; n && s.length <= cap; n = tw.nextNode()) {
+        if (n.nodeType === 3) {
+          if (!/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(n.parentElement?.tagName ?? "")) s += ` ${n.data}`;
+        } else if (n.shadowRoot) visit(n.shadowRoot);
+      }
+    };
+    visit(k);
+    return s.replace(/\s+/g, " ").trim();
+  };
+  const consentBox = (control, name) => {
+    for (let k = parentOf(control); k && !isTop(k); k = parentOf(k)) {
+      const t = textOf(k, consentMax);
+      if (t.length > consentMax) return false;
+      if (consentRe.test(t.split(name).join(" "))) return true;
+    }
+    return false;
+  };
+  const namesOf = (el) => {
+    const out = [el.getAttribute("aria-label"), el.getAttribute("title"), typeof el.value === "string" ? el.value : null, el.innerText];
+    for (const id of (el.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean)) out.push(el.getRootNode().getElementById?.(id)?.textContent ?? null);
+    for (const img of el.querySelectorAll("img[alt], [role=img][aria-label]")) out.push(img.getAttribute("alt") ?? img.getAttribute("aria-label"));
+    return out.filter((x) => typeof x === "string").map((x) => x.replace(/\s+/g, " ").trim()).filter(Boolean);
+  };
+  for (const el of all) {
+    if (tried.has(el) || !el.matches("button, [role=button], input[type=button], input[type=submit], [aria-label], [title]") || overlayRole(el)) continue;
+    const name = namesOf(el).find((n) => res.some((re) => re.test(n)));
+    if (!name || !shown(el)) continue;
+    const chain = [];
+    for (let k = el; k && !isTop(k); k = parentOf(k)) chain.push(k);
+    if (!(chain.some(overlayRole) || chain.some((k) => layered(k, el)) || consentBox(el, name))) continue;
+    tried.add(el);
+    el.setAttribute(mark, "");
+    return name.slice(0, 60);
   }
-  /* The old exact [aria-label="Close"] matched ANY element, not only buttons: a close control that is a
-     <div> or <span> with an aria-label and no button role is still an overlay's dismiss. So every other
-     visible element whose aria-label carries a dismiss name (the same patterns, the same exclusions)
-     is clicked too — a superset of the old selector (W5 round 2). */
-  const labelled = page.locator("[aria-label]:not(button):not([role=button])");
-  const m = await labelled.count().catch(() => 0);
-  for (let i = 0; i < m; i++) {
-    const el = labelled.nth(i);
-    const label = ((await el.getAttribute("aria-label").catch(() => null)) ?? "").trim();
-    if (!REF_DISMISS.some((re) => re.test(label))) continue;
-    if (await el.isVisible().catch(() => false)) await el.click({ timeout: 1500 }).then(() => clicked.push(label), () => {});
+  return null;
+}
+export async function dismissRefOverlays(page, { max = 12 } = {}) {
+  const clicked = [];
+  const args = { patterns: REF_DISMISS.map((re) => [re.source, re.flags]), consent: [REF_CONSENT_TEXT.source, REF_CONSENT_TEXT.flags], consentMax: CONSENT_TEXT_MAX, mark: DISMISS_MARK };
+  for (let n = 0; n < max; n++) {
+    const hit = await page.evaluate(findDismissControl, args).catch(() => null);
+    if (!hit) break;
+    /* Playwright's CSS locators pierce open shadow roots, so the marked control is found wherever it is. */
+    await page
+      .locator(`[${DISMISS_MARK}]`)
+      .first()
+      .click({ timeout: 1500 })
+      .then(() => clicked.push(hit), () => {});
+    await page
+      .evaluate((mark) => {
+        const strip = (root) => {
+          for (const e of root.querySelectorAll("*")) {
+            e.removeAttribute(mark);
+            if (e.shadowRoot) strip(e.shadowRoot);
+          }
+        };
+        strip(document);
+      }, DISMISS_MARK)
+      .catch(() => {});
+    await page.waitForTimeout(100);
   }
   return clicked;
 }
@@ -1132,6 +1292,8 @@ async function readScrollEdgeScript() {
  * out is a failure too, never a skipped check.
  */
 const GUARD_EXTENT_FUNCTIONS = ["onScreenExtent", "paintedBox", "uncovered"];
+/** What those functions import from src/app/focus-return.ts, cut from there (the one owner) and run beside them. */
+const GUARD_EXTENT_IMPORTS = ["containsFixedBoxes"];
 let guardExtentJs = null;
 /** The guard's own functions, cut from src/panels/DataGrid.tsx and stripped of their types (cached). */
 async function guardExtentSource() {
@@ -1144,6 +1306,16 @@ async function guardExtentSource() {
       return src.slice(start, end + 3);
     });
     const { default: ts } = await import("typescript");
+    /* paintedBox decides which ancestor contains a fixed box with the app's ONE statement of that CSS class,
+       `containsFixedBoxes` (src/app/focus-return.ts, imported by DataGrid.tsx): it is cut from its owner and run
+       here too, never restated, so the guard measured in the page is the guard the product runs (W5b). */
+    const owner = readFileSync(resolve(HERE, "..", "src", "app", "focus-return.ts"), "utf8");
+    const sf = ts.createSourceFile("focus-return.ts", owner, ts.ScriptTarget.Latest, true);
+    for (const name of GUARD_EXTENT_IMPORTS) {
+      const decl = sf.statements.find((st) => ts.isFunctionDeclaration(st) && st.name?.text === name);
+      if (decl === undefined) throw new Error(`nav-extent: function ${name} not found in src/app/focus-return.ts`);
+      parts.push(decl.getText(sf).replace(/^export\s+/, ""));
+    }
     guardExtentJs = ts.transpileModule(parts.join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
   }
   return guardExtentJs;
@@ -1959,7 +2131,7 @@ async function captureRefs() {
     try {
       await page.goto(r.url, { waitUntil: "domcontentloaded", timeout: 60000 });
       await page.waitForTimeout(r.wait);
-      // Dismiss the overlays so the capture shows the product, not a banner: by role and name (O70).
+      // Dismiss the overlays so the capture shows the product, not a banner: by name and overlay STRUCTURE, one at a time (O70, W5b).
       await dismissRefOverlays(page);
       await page.waitForTimeout(1200);
       const file = resolve(SHOTS, "refs", `${r.id}.png`);
@@ -2482,10 +2654,149 @@ const SELFTEST_NAV_EXTENT_CASES = [
      to "the disagreement is reported", which passed with the guard still blind (independent verifier QH-V1-3);
      a check that is green whether or not the requirement holds pins nothing, so it was put back. */
   { name: "the guard trims a tab strip under a pointer-events:none bar (a hit-test-invisible cover)", html: edgeFixture(/pointer-events:none translucent fixed bar/), label: "Mode", px: 12 },
+  /* W5b (S-D3 needsFromOthers): which ancestor CONTAINS a fixed strip is the CSS class `containsFixedBoxes`
+     (src/app/focus-return.ts) states once, measured against Chromium by review/audit-d3-focus.mjs — not a hand
+     list. Each case below holds a fixed toolbar (top:80px, 40 px tall) in a 100 px clipping wrapper whose one
+     declaration does or does not make it the toolbar's containing block. Contained, the toolbar sits at 88-128
+     and the wrapper clips it to 20 px; not contained, it escapes to 80-120 and paints whole. The members the old
+     `holdsFixed` list missed (translate, rotate, scale, backdrop-filter, preserve-3d, a will-change naming one
+     of them or a -webkit- alias) read 40 px there while the browser painted 20; `will-change: opacity` and
+     `contain: style` contain nothing, so the class must not be widened past them either. */
+  ...[
+    ["translate: 0px", 20],
+    ["rotate: 0deg", 20],
+    ["scale: 1", 20],
+    ["backdrop-filter: blur(0px)", 20],
+    ["transform-style: preserve-3d", 20],
+    ["will-change: translate", 20],
+    ["will-change: -webkit-transform", 20],
+    ["transform: translateX(0px)", 20],
+    ["will-change: opacity", 40],
+    ["contain: style", 40],
+  ].map(([decl, px]) => ({
+    name: `the guard reads a fixed toolbar in a clipping wrapper with \`${decl}\` as ${px} px (${px === 20 ? "contained and clipped" : "not contained: it escapes the clip"})`,
+    html: `<div style="height:100px;overflow:hidden;${decl}"><div role="toolbar" aria-label="Pinned" style="position:fixed;top:80px;left:0;width:300px;height:40px;background:#ccc">Pinned</div></div>`,
+    label: "Pinned",
+    px,
+  })),
 ];
 
 /* Stylesheets and modules with a known set of licences. Each BAD marker is a line the scan must
    name; everything else must pass. */
+/* The refs overlay-dismissal pages (O70, W5b QG3-4 / W5-X6, W5b round 2 SQG-V1 / SQG-V2). Each page lists
+   the overlays that must CLOSE (`gone`: element ids) and the product's own controls that must stay
+   UNTOUCHED (`product`: window flags their onclick sets). The first page is the original combined one: a
+   role=alert banner, a fixed consent and promo layered over content, a role=dialog tip whose "OK, got it"
+   opens a SECOND overlay (one click at a time, re-queried after each), and in-flow product controls
+   carrying every dismiss name. The rest are the verifier's narrowing cases (consent the pre-O70 selectors
+   and the W5 base both closed: in an open shadow root, absolutely positioned with no role, in the page
+   flow; a dialog close named by an img alt or a title) and its product-chrome cases (a fixed header or
+   nav over a padded wrapper, a sticky toolbar over scrolled text, a lone fixed toolbar, a transparent
+   fixed <header> over text). */
+const DISMISS_FILLER = `<p>${"Product content, routes and hops. ".repeat(160)}</p>`;
+const SELFTEST_DISMISS_CASES = [
+  {
+    name: "the combined page: banner, fixed consent and promo, a dialog tip that opens a second overlay; in-flow product controls",
+    html:
+      `<style>body{margin:0} .page{height:1400px;padding:8px} .ov{position:fixed;left:0;right:0;background:#fff;border:1px solid #000;z-index:10}</style>` +
+      `<div id="banner" role="alert">Create a free account <button aria-label="Close alert" onclick="banner.remove()">x</button></div>` +
+      `<div class="page">${DISMISS_FILLER}` +
+      `<button aria-label="Close menu" onclick="window.__menu=1">x</button><span aria-label="Close panel" onclick="window.__panel=1">x</span>` +
+      `<button onclick="window.__tab=1">Close tab</button><div aria-label="Dismiss filter" onclick="window.__filter=1">x</div>` +
+      `<button onclick="window.__accept=1">Accept changes</button><button onclick="window.__gotit=1">Got it, show next tip</button></div>` +
+      `<div id="consent" class="ov" style="bottom:0;height:90px">cookies <button onclick="consent.remove()">I accept</button></div>` +
+      `<div id="promo" class="ov" style="top:200px;height:60px">promo <div aria-label="Close" onclick="promo.remove()">x</div></div>` +
+      `<div id="tip" role="dialog" style="position:absolute;top:320px;left:40px;background:#fff">tip <button onclick="tip.remove();document.body.insertAdjacentHTML('beforeend','<div id=tip2 class=ov style=top:420px;height:50px>more <button onclick=tip2.remove()>Accept all</button></div>')">OK, got it</button></div>`,
+    gone: ["banner", "consent", "promo", "tip", "tip2"],
+    product: ["__menu", "__panel", "__tab", "__filter", "__accept", "__gotit"],
+  },
+  {
+    name: "a fixed consent inside an OPEN SHADOW ROOT closes (SQG-V1)",
+    html: `<div id="host"></div>${DISMISS_FILLER}<script>host.attachShadow({mode:"open"}).innerHTML='<div style="position:fixed;bottom:0;left:0;right:0;height:80px;background:#fff;z-index:9">cookies <button onclick="this.getRootNode().host.remove()">Accept all</button></div>'</script>`,
+    gone: ["host"],
+    product: [],
+  },
+  {
+    name: "an absolutely positioned cookie box with no role closes (SQG-V1)",
+    html: `<div style="position:relative">${DISMISS_FILLER}<div id="cb" style="position:absolute;top:50px;left:50px;width:400px;height:80px;background:#fff">cookies <button onclick="cb.remove()">Accept all</button></div></div>`,
+    gone: ["cb"],
+    product: [],
+  },
+  {
+    name: "an absolutely positioned promo with no role and no consent words, layered over text, closes (the absolute branch on its own)",
+    html: `<div style="position:relative">${DISMISS_FILLER}<div id="pr" style="position:absolute;top:120px;left:60px;width:360px;height:70px;background:#fff">Webinar tomorrow <button onclick="pr.remove()">Close</button></div></div>`,
+    gone: ["pr"],
+    product: [],
+  },
+  {
+    name: "an in-flow consent bar (no role, not positioned) closes: its box SAYS consent (SQG-V1)",
+    html: `<div id="cb">We use cookies to improve this site. <button onclick="cb.remove()">Accept</button></div>${DISMISS_FILLER}`,
+    gone: ["cb"],
+    product: [],
+  },
+  {
+    name: "a dialog whose close is named only by an img alt closes (SQG-V1)",
+    html: `${DISMISS_FILLER}<div id="dlg" role="dialog" style="position:fixed;top:100px;left:100px;width:300px;height:100px;background:#fff">promo <button onclick="dlg.remove()"><img alt="Close" width="10" height="10" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></button></div>`,
+    gone: ["dlg"],
+    product: [],
+  },
+  {
+    name: "a dialog whose close is named only by its title closes (SQG-V1)",
+    html: `${DISMISS_FILLER}<div id="dlg" role="dialog" style="position:fixed;top:100px;left:100px;width:300px;height:100px;background:#fff">promo <button title="Close" onclick="dlg.remove()">×</button></div>`,
+    gone: ["dlg"],
+    product: [],
+  },
+  {
+    name: "a product's fixed header over a padded wrapper: 'Close sidebar' is never clicked (SQG-V2)",
+    html: `<header style="position:fixed;top:0;left:0;right:0;height:50px;background:#eee;z-index:5">App <button onclick="window.__p=1">Close sidebar</button></header><div style="padding-top:50px;min-height:100vh">${DISMISS_FILLER}</div>`,
+    gone: [],
+    product: ["__p"],
+  },
+  {
+    name: "a product's fixed div bar (no landmark) over a padded wrapper: 'Dismiss tips' is never clicked (SQG-V2)",
+    html: `<div style="position:fixed;top:0;left:0;right:0;height:44px;background:#eee;z-index:5">Workspace <button onclick="window.__p=1">Dismiss tips</button></div><div style="padding-top:52px">${DISMISS_FILLER}</div>`,
+    gone: [],
+    product: ["__p"],
+  },
+  {
+    name: "a product's fixed left nav over a padded wrapper: 'Dismiss all notifications' is never clicked (SQG-V2)",
+    html: `<nav style="position:fixed;top:0;bottom:0;left:0;width:200px;background:#eee;z-index:5">Menu <button onclick="window.__p=1">Dismiss all notifications</button></nav><main style="padding-left:200px">${DISMISS_FILLER}</main>`,
+    gone: [],
+    product: ["__p"],
+  },
+  {
+    name: "a product's sticky toolbar over scrolled text: 'Accept suggestion' is never clicked (sticky is in the page flow) (SQG-V2)",
+    html: `${DISMISS_FILLER}<div style="position:sticky;top:0;background:#eee;z-index:5">Editor <button onclick="window.__p=1">Accept suggestion</button></div>${DISMISS_FILLER}${DISMISS_FILLER}`,
+    scroll: 900,
+    gone: [],
+    product: ["__p"],
+  },
+  {
+    name: "an in-flow 'Accept changes' in a long page region that mentions privacy elsewhere is the product's: the consent box is the NEAREST small box, not the page",
+    html: `<main><p>Read our privacy notice for how routes are stored.</p>${DISMISS_FILLER}<div><button onclick="window.__p=1">Accept changes</button></div></main>`,
+    gone: [],
+    product: ["__p"],
+  },
+  {
+    name: "a fixed box painted BENEATH the page's content (an opaque layer above it) is not layered over it: its 'Close' is never clicked (the hit test)",
+    html: `<div style="position:relative;z-index:10;background:#fff;width:300px">${DISMISS_FILLER}</div><div style="position:fixed;top:100px;left:0;width:420px;height:80px;z-index:1;background:#ddd">Backdrop note <button style="position:absolute;right:4px;top:4px" onclick="window.__p=1">Close</button></div>`,
+    gone: [],
+    product: ["__p"],
+  },
+  {
+    name: "a lone fixed toolbar layered over text, carrying nothing but its control: 'Allow editing' is never clicked (SQG-V2)",
+    html: `${DISMISS_FILLER}<div style="position:fixed;bottom:0;right:0;width:200px;height:40px;background:#eee"><button onclick="window.__p=1">Allow editing</button></div>`,
+    gone: [],
+    product: ["__p"],
+  },
+  {
+    name: "a product's transparent fixed <header> layered over text (page chrome, a landmark): 'Close sidebar' is never clicked (SQG-V2)",
+    html: `<header style="position:fixed;top:0;left:0;right:0;height:50px;z-index:5">App <button onclick="window.__p=1">Close sidebar</button></header>${DISMISS_FILLER}`,
+    gone: [],
+    product: ["__p"],
+  },
+];
+
 const SELFTEST_WRAP_FIXTURES = {
   "fixture.css": [
     ".bare { overflow-wrap: anywhere; } /* BAD */",
@@ -2513,16 +2824,26 @@ async function selfTest() {
   let ran = 0;
   const browser = await chromium.launch({ args: GPU_ARGS });
   const page = await (await browser.newContext({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 })).newPage();
-  /* O70 (W5): refs dismiss overlays by ACCESSIBLE ROLE AND NAME, not the exact [aria-label="Close"]
-     (Grafana's control is "Close alert"); a "Close menu" control is not an overlay's dismiss. */
-  {
-    await page.setContent(`<div id="banner" role="alert">Create a free account <button aria-label="Close alert" onclick="banner.remove()">x</button></div><button aria-label="Close menu" onclick="window.__menu=1">x</button><div id="consent">cookies <button onclick="consent.remove()">Accept all</button></div><div id="promo">promo <div aria-label="Close" onclick="promo.remove()">x</div></div><span aria-label="Close panel" onclick="window.__panel=1">x</span>`);
-    const clicked = await dismissRefOverlays(page);
+  /* O70 (W5), W5b (QG3-4, W5-X6), W5b round 2 (SQG-V1, SQG-V2): WHICH control is an overlay's dismiss is
+     decided by STRUCTURE, never by a list of product words — see dismissRefOverlays. Each page of
+     SELFTEST_DISMISS_CASES runs in a fresh page: every overlay it lists must close, and no product
+     control it lists may be clicked. */
+  for (const c of SELFTEST_DISMISS_CASES) {
     ran++;
-    /* W5 round 2: the old exact [aria-label="Close"] matched ANY element; a role-only match would
-       regress on a non-button close control (a <div aria-label="Close">), so that must close too. */
-    const left = await page.evaluate(() => ({ banner: !!document.getElementById("banner"), consent: !!document.getElementById("consent"), promo: !!document.getElementById("promo"), menu: window.__menu === 1, panel: window.__panel === 1 }));
-    if (left.banner || left.consent || left.promo || left.menu || left.panel) problems.push(`refs overlay dismissal: expected the "Close alert" banner, the consent and the non-button "Close" promo closed and "Close menu"/"Close panel" untouched, got ${JSON.stringify(left)} (clicked ${clicked.join(", ") || "nothing"})`);
+    const p = await page.context().newPage();
+    try {
+      await p.setContent(c.html);
+      if (c.scroll) await p.evaluate((y) => scrollTo(0, y), c.scroll);
+      const clicked = await dismissRefOverlays(p);
+      const left = await p.evaluate(
+        ({ gone, product }) => ({ overlaysLeft: gone.filter((id) => document.getElementById(id)), productClicked: product.filter((k) => window[k] === 1) }),
+        { gone: c.gone, product: c.product },
+      );
+      if (left.overlaysLeft.length || left.productClicked.length)
+        problems.push(`refs overlay dismissal — ${c.name}: expected ${JSON.stringify(c.gone)} closed and ${JSON.stringify(c.product)} untouched, got ${JSON.stringify(left)} (clicked ${clicked.join(", ") || "nothing"})`);
+    } finally {
+      await p.close();
+    }
   }
   /* O70 D5: a capture viewport list from ATLAS_VIEWPORTS, and a state list from ATLAS_STATES, both
      refusing what they cannot honour rather than capturing something else. */

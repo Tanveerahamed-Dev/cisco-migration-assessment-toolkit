@@ -224,10 +224,15 @@ def scope_shell_gap(status: int, content_type: str, body: bytes, bundled_shell: 
         return f"GET /scope/ answered {content_type!r}, not an HTML document"
     if len(body) > SCOPE_SHELL_READ_LIMIT:
         return f"GET /scope/ answered more than {SCOPE_SHELL_READ_LIMIT} bytes"
-    if app_module._scope_shell_reading(body) is None:
-        return (f"GET /scope/ did not serve a runtime-source hub shell: AssessHub's reader finds no "
-                f"single <meta name=\"{app_module._SCOPE_RUNTIME_SOURCE_META}\" "
-                f"content=\"{app_module._SCOPE_RUNTIME_SOURCE_VALUE}\"> in it")
+    # The reader's own reason (VQF-2): it refuses a shell for more than a missing runtime-source
+    # meta (RQF-V2-1: markup in a raw-text element, an element that never ends, not UTF-8), so a
+    # fixed wording would name the wrong cause for a shell that carries the meta.
+    reason = app_module._scope_shell_tokens(body)
+    if isinstance(reason, str):
+        return (f"GET /scope/ did not serve a runtime-source hub shell: AssessHub's reader refuses "
+                f"it ({reason}; the hub shell declares <meta "
+                f"name=\"{app_module._SCOPE_RUNTIME_SOURCE_META}\" "
+                f"content=\"{app_module._SCOPE_RUNTIME_SOURCE_VALUE}\"> exactly once)")
     if body != bundled_shell:
         return (f"GET /scope/ served a shell that is not the bundled "
                 f"{SCOPE_DIST_DEST}/index.html byte for byte")
@@ -327,7 +332,12 @@ def build_refusal(root: Path) -> str:
               if not any(Path(path) == root / output or Path(path).is_relative_to(root / output)
                          for output in BUILD_OUTPUTS)]
     if others:
-        reasons.append(f"tracked bundle assets are missing from this checkout: {others}")
+        # one checkout path per line, as a person would act on it (never a list repr whose doubled
+        # backslashes cannot be pasted)
+        named = [Path(path).relative_to(root).as_posix() if Path(path).is_relative_to(root) else str(path)
+                 for path in others]
+        reasons.append("tracked bundle assets are missing from this checkout:\n"
+                       + "\n".join(f"    {path}" for path in named))
     if SCOPE_DIST_SOURCE not in outputs_missing:
         from webapp.backend import app as app_module  # lazy: pulls fastapi
 

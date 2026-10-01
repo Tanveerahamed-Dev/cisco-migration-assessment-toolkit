@@ -5,6 +5,313 @@ evidence exists, because an issue asserted without evidence is a rumour.
 
 ## Resolved
 
+> **W5b of the Atlas Scope program — the follow-up of the W5 repair wave (recorded 2026-10-01; an
+> UNCOMMITTED working tree on top of `22373163`, the merge that brought W5's commit `2145187a` onto this
+> branch).** Six clusters, each followed by an independent verifier: **S-CI** (the successor-package test
+> and the CI fetch-depth guard; upheld), **S-QF** (the /scope reader; closed PARTIAL with no code change in
+> this round; verifier: two findings, both outside its files), **S-QG** (C1's KEY validator and the
+> reference capture's overlay dismissal, round 2; verifier: defects, one major), **S-D3** (the focus audit's
+> harness and the focus owner; upheld), **S-PB** (the portable release contract; upheld) and **S-VOCAB**
+> (the engine-contract vocabularies; closed PARTIAL, verifier: defects, two major). Several reports carry
+> work from an earlier W5b pass that was not recorded separately; the entries below include it as those
+> reports state it. Entries R135–R141 record what the round closed, each with the test or bounded run that
+> pins it; O68, O69, O70, O71 and O77 carry dated status notes on what stays open. **Not a re-grade:** no
+> acceptance criterion moves, and every "PASS" or "exit 0" below is a test or harness result, not a grade.
+> **C1 stays UNPROVEN** (no critic panel ran) and **D3 stays UNPROVEN** (no complete `--sweep`, `--vp=390`
+> or default audit run on any tree). **The wave's gates (reported):** the engine gate DID NOT RETURN, so
+> there is no full `pytest` result for this tree. The app gate reported one red,
+> `src/core/tracked-sources.test.ts` ("no file the build loads or the compilers import is missing from
+> HEAD") on `src/core/vocab.ts`; it turns green only when the orchestrator commits `vocab.ts` and the
+> wave's other new files (`src/core/compile-kind-absence.test.ts`, `src/core/vocab.contract.test.ts`,
+> `src/app/focus-return.sight.test.ts`, `tests/pytest_invocation_reader.py` and
+> `tests/test_engine_contract_vocabularies.py`), a git write the gate may not make. **Applied in the
+> working tree after the cluster reports (read from the diff by the record step; no cluster report names
+> them and no verifier has read them):** S-VOCAB's ready absent-kind patch (`query.ts` indexes
+> `d.kind ?? ""`; `Fabric3D.tsx` uses `kindWords`; `DevicePane.tsx` renders the kind through
+> `orNotObserved`; `FabricLegend.tsx`, `scene.ts` and `query.test.ts` also change); `DataGrid.tsx`
+> `paintedBox` now calls `containsFixedBoxes` in place of its own hand list, and
+> `focus-return.sight.test.ts`'s `KNOWN_COPIES` is empty (SD3V-5's owed half); `portable/build_atlas.py`
+> `scope_shell_gap` now names the reader's own refusal reason (VQF-2), and lists missing tracked assets one
+> path per line; and `tests/pytest_invocation_reader.py` is the one pytest-invocation reader, imported by
+> both `tests/test_ssot_registry.py` and `webapp/tests/test_scope_mount.py` (S-CI-V2), with
+> `tests/test_webapp_ci_scope.py` counting it as a shared helper. **What the record step itself
+> re-ran** is stated at the end of R141. **Reported, not re-run by the record step:** every cluster's
+> red-before-fix, mutation and census claim, every bounded audit and browser run, both gates, and every
+> Python test.
+
+### R135. The CI history checks — the successor-package test built its subject from whatever checkout ran the suite, and the fetch-depth guard read only `ci.yml` — FIXED IN THE TESTS (W5b S-CI; verifier upheld, with two minors, O69) (closes W5-X1 and W5-X4; removes one of O71's eight expected linked-worktree reds)
+**What was fixed (reported).**
+- **W5-X1 — a wrong environment assumption, not a builder defect.**
+  `tools/build_atlas_r2_authority_candidate.py` `_read_subject` accepts only a release-custody
+  repository: a standalone `.git` (not a linked worktree), full history, LF-exact
+  `autocrlf`/`eol`/`safecrlf`, and a clean tree.
+  `tests/test_atlas_r2_authority_decision_binding.py::test_successor_package_binds_and_exercises_this_exact_binder_source`
+  handed it whatever checkout ran the suite: before the fix, at `22373163`, a full scratch clone failed
+  `LF_EXACT_GIT_CONFIG_MISSING:core.eol` and this linked worktree failed on its standalone-`.git`
+  requirement. The test now builds its subject by fetching the checkout's HEAD, with full ancestry, into a
+  fresh LF-exact repository. It passes in a linked worktree, in a full clone, and in a clone with
+  `autocrlf=true` and a detached HEAD; on a shallow checkout it still skips visibly, because the builder
+  needs full history.
+- **W5-X4 — the fetch-depth guard is derived on both axes.**
+  `tests/test_ssot_registry.py::test_every_ci_leg_that_runs_a_history_needing_test_fetches_the_full_history`
+  replaces the `ci.yml`-only guard. The tests: `_tests_that_decline_a_shallow_history()` walks the AST of
+  every test module under `pytest.ini`'s testpaths for a `pytest.skip` whose reason names "shallow" (today
+  `test_ssot_registry`, `test_atlas_r2_authority_decision_binding` and
+  `test_atlas_r2_authority_candidate`). The legs: `_workflow_legs_collecting()` parses every
+  `.github/workflows/*.yml` and finds each job whose pytest collects one of them. Two legs fetched a
+  shallow history and now use `fetch-depth: 0`: `main-selfhosted.yml` `suite` (default depth) and
+  `portable-release.yml` `gate` (explicit depth 1).
+**Pinned by** those two tests. Final check `python -m pytest -q -p no:cacheprovider
+tests/test_ssot_registry.py tests/test_atlas_r2_authority_decision_binding.py`: exit 0 in this linked
+worktree and in a full scratch clone (`core.autocrlf=false`), each with only the symlink test skipped on
+this Windows host; exit 0 in a depth-1 scratch clone, with three visible skips (the renamed-away citation
+check, the successor integration and the symlink test). No workflow has run on a hosted runner.
+**Not closed (the verifier's minors):** S-CI-V1 — the guard finds history-needing tests by the word
+"shallow" in a `pytest.skip(...)` reason, not structurally, so a `pytest.mark.skipif(..., reason=...)`, a
+`from pytest import skip` alias, a skip inside a helper or `conftest.py`, or a reason that never says
+"shallow" escapes it; S-CI-V2 — the pytest-invocation reader was a near-copy in `tests/test_ssot_registry.py`
+and `webapp/tests/test_scope_mount.py` (the working tree now holds one shared reader; see the banner).
+**Lesson (S-CI, bridge-candidate, for `docs/log.md`):** `git fetch <shallow-repo> HEAD` into a fresh
+repository rejects the HEAD ("shallow roots are not allowed to be updated"), still exits 0 and writes no
+`FETCH_HEAD`; pass `--update-shallow` and check that the fetched commit equals the source's HEAD instead of
+trusting the exit code.
+
+### R136. The /scope reader — a shell whose only icon link sat inside `<title>` was served ready: the shell is now read as one browser-tokenized stream, and a raw-text element left open or holding markup is refused before any presence check — FIXED IN CODE (W5b S-QF, closed PARTIAL; verifier: two findings, both outside the cluster's files, O69) (closes RQF-V2-1)
+**What was fixed (reported; the fix predates this round and was re-read, not changed, in it).** In
+`webapp/backend/app.py`, `_scope_html_tokens` is the ONE parse of a shell (start tags, end tags, character
+data). `_scope_shell_tokens` refuses any shell in which a `_SCOPE_HTML_RAW_TEXT_ELEMENTS` member (script,
+style, title, textarea, xmp, iframe, noembed, noframes, noscript, plaintext) is not closed by its own end
+tag, holds a `<`, or is PLAINTEXT (`_scope_raw_text_misread`), before anything is judged present.
+`_scope_shell_declares_an_icon_in_its_head` walks those same tokens, so an icon link that the browser reads
+as `<title>` text no longer counts as an icon.
+**Pinned by** `ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE=1 python -m pytest -q -p no:cacheprovider
+webapp/tests/test_scope_mount.py webapp/tests/test_snapshot_raw.py` (exit 0, no skips, `cisco_toolkit`
+resolved to this worktree). **Hub-build equivalence (reported):** a scratch `vite build --mode hub` of the
+current source, written outside the worktree, matches the tested `dist-hub` byte for byte in every CSS file;
+its shell differs only in the module-entry hash, and both shells read exactly and declare a head icon. The
+cluster deliberately did not build into `atlas-scope/dist-hub` itself, which would have baked another
+cluster's in-progress source into the tracked hub build.
+**Not closed:** VQF-1 / VQF-R2-1 — the `dist-hub` the oracle tested was not produced by `npm run build:hub`,
+and that command could not pass when the cluster ran: `npx tsc -p tsconfig.json` exited 2 on seven errors in
+S-VOCAB's absent-kind types (`tsconfig.config.json` exit 0). VQF-2 — `scope_shell_gap` named the wrong reason
+for a refused shell that carries the runtime-source meta (an S-PB file; applied in the working tree after
+the reports, see the banner). VQF-R2-2 — the `atlas-scope/README.md` reading claim is slightly inaccurate on
+two points the verifier names. All in O69.
+
+### R137. C1's KEY validator — RULE v8: prose read whenever nothing is filed, picks carried as object keys, `recognizedAs` read for recognition only under `recognized: true`, and the "proves" wording withdrawn — FIXED IN THE HARNESS (W5b S-QG, round 2; verifier: defects, one major, O70); no critic panel has run (closes SQG-V3 to SQG-V7 and O70's QG3-3; QG3-1 is still not closed by class)
+**What was fixed (reported).** `review/blind-pair.mjs` RULE v8, ruleSha `6066a0400b1a`:
+- **SQG-V3 — prose is read on any line with nothing FILED under the dimension.** `pickValues` used to read
+  prose only when no value at all was found, so a misfiled "A" or a stray token hid "Panel B is much
+  better". "Nothing filed" means no non-null value; a filed empty string is unreadable through `pickOf`,
+  never nothing.
+- **SQG-V7 — a pick carried as an object KEY is read.** Every `perDimension` key and every top-level key is
+  read through `typedString`, the same reader the values use, and `leavesOf` gained an `onKey` hook, so a
+  nested key is read too: `perDimension {B: null}`, top-level `{B: null}`, `{winner: {B: {}}}`,
+  `{"Panel B": null}` and a key that disagrees with the values are possible losses. Schema and dimension
+  keys never hold a pick token or word, so valid lines are unaffected.
+- **SQG-V6 — under `recognized: true`, `recognizedAs` answers the recognition question.**
+  `RECOGNITION_QUESTION` asks the critic which panel the product is in, so reading that answer as a pick
+  turned a cooperating recogniser's "B" into a permanent loss. A well-typed `recognizedAs` is now read for
+  recognition only (`namesOnLine`) when `recognized === true`; a malformed one is still read leaf by leaf;
+  and a `recognizedAs` that names nothing but a panel is a new INVALID shape in `verdictShapeProblems`,
+  beside the empty-`recognizedAs` rule. An earlier W5b row that read a recogniser's "(B)" as a loss was
+  reversed on this reasoning and kept with its justification, not dropped.
+- **SQG-V4 — the free-string reader's class claims pinned beyond one instance:** the whole-word class
+  ("the layout of B is cramped"), NFKC (fullwidth "Ｂ"), invisible-character stripping ("ti" + U+00AD +
+  "e") and the "tie" token ("tie." beside a filed A) each have a row that the verifier's surviving mutant
+  turns red.
+- **SQG-V5 (QG3-3's residual) — wording.** The `TASK_KINDS` doc no longer says the self-check proves the
+  task: it confirms the working surface is there but cannot show the task state, which rests on the
+  declared, reviewed `taskState` inside the crop. `review/capture-refs-clean.mjs`'s failure prefix is the
+  neutral "declared task state problem:", and two self-check lines say a reference "declares", not "shows",
+  its task kind.
+RULE's text, `review/REFERENCES.md` and the `blind-pair.mjs` header ("W5b round 2 (SQG-V3..V7) — RULE v8")
+state the four reading changes; the self-check list still reads 1–10 in order (W5-X7 holds).
+**Pinned by** `node review/blind-pair.mjs --selftest` (166 checks, all pass; the SQG-V3 and SQG-V7 rows red
+before the fix). **Sheets.** `node review/blind-pair.mjs` exited 2, the defined BLOCKED code: 8 sheets for
+4 of 5 pairings, byte-identical to before, and a KEY regenerated under ruleSha `6066a0400b1a`;
+`c1-network-visualisation` is still BLOCKED (`08-path-indeterminate` at tier "balanced", not recaptured).
+**Not closed:** SQG-R2-1 (major) — a field whose key is an `Object.prototype` name is never read, through
+the prototype-chain `FIELD_TYPE_OK` lookup in `pickValues`: `constructor` or `toString` with a non-string
+value is taken as well-typed and its pick vanishes, and `__proto__`, `hasOwnProperty`, `valueOf` or
+`isPrototypeOf` makes `evaluate()` throw a `TypeError`, crashing `--validate` on real `verdicts.jsonl`
+input (true at `22373163` too, but inside the class the brief names). SQG-R2-4 — the punctuation-boundary
+half of the whole-word class is pinned by no row. SQG-R2-5 — the SQG-V6 exemption covers all pick reading
+of `recognizedAs`, not only a panel location, so "B is better" written there on a line with nothing filed
+reads as no answer. All in O70. **C1 stays UNPROVEN.**
+
+### R138. Reference capture — `capture.mjs refs` decides overlay dismissal by structure: consent and close controls in shadow roots, absolute boxes, in-flow bars, image alt text and titles are dismissed again, and product controls in fixed app chrome are left alone — FIXED IN THE HARNESS (W5b S-QG, round 2; verifier: defects, O70) (closes SQG-V1 and SQG-V2; QG3-4 is NOT met)
+**Before the fix (reported):** the verifier's four narrowing cases and a dialog with a title-only close
+were all BAD (`node review/capture.mjs selftest` 59 of 70, exit 3), and six product controls were clicked:
+"Close sidebar" in a fixed `<header>` over a padded wrapper and in a transparent fixed `<header>` over
+text, "Dismiss tips" in a fixed landmark-less bar, "Dismiss all notifications" in a fixed `<nav>`,
+"Accept suggestion" in a sticky toolbar and "Allow editing" in a lone fixed toolbar.
+**What was fixed (reported).** `dismissRefOverlays` is rebuilt around a self-contained in-page
+`findDismissControl`. A control is clicked only in one of three places: an element with an overlay role;
+a fixed or absolute box that is not a page-chrome landmark, carries a message of its own beside the
+control, and is hit-tested painting over visible text or replaced content outside it; or the nearest small
+box (at most 1,500 characters of text) that talks about consent. Candidates come from the document and
+every open shadow root, walked recursively, with hit tests that descend through `shadowRoot`; names come
+from `aria-label`, `aria-labelledby`, text, value, `title` and `img` alt. The decisions behind it: sticky
+counts as in the page flow and never as layered; header, nav and the banner/navigation roles are never
+themselves a layered box, though an overlay role anywhere in the chain is decisive; a lone fixed control is
+not a message with a dismiss; the 1,500-character bound stops a whole page that mentions privacy from
+qualifying; `[title]` joins the candidate selectors, and a role-marked overlay is never its own dismiss
+control. **Residuals left to frame review:** a product's own out-of-flow popover with a message and a
+Close, a product control inside a small box that talks about privacy, and consent inside iframes.
+**Pinned by** `node review/capture.mjs selftest` (73 cases, all pass; 11 structural mutants killed) —
+synthetic pages only; the real references were not recaptured.
+**Not closed:** SQG-R2-2 — a regression introduced by this round: the candidate set takes ANY `[title]` or
+`[aria-label]` element and reads its full `innerText` as a name, so a container or row whose text contains
+"allow", "accept" or "got it" (everyday words in ACL and policy rows of the network products referenced)
+becomes a dismiss control inside a layered box or a dialog, which neither the pre-O70 code nor `22373163`
+did, against `REFERENCES.md`'s and `capture.mjs`'s claim that product controls are never clicked.
+SQG-R2-3 — QG3-4 is still not met: a box over a CSS-background hero is not "layered" (only text and
+replaced elements count as content), the consent test strips the control's own name and stops at 1,500
+characters, and in-flow announcement bars with `aria-label="Close"`, which the pre-O70 exact selector
+closed, are no longer dismissed, so the doc's "the one deliberate narrowing" is inaccurate. Both in O70.
+
+### R139. D3 — the focus audit numbered occurrence keys over one list and resolved them over another, read a one-frame pointer as a render-mode difference, timed its watchdog on a hand-picked clock and censused containing blocks without aliases — FIXED IN THE HARNESS AND CODE (W5b S-D3; verifier upheld, with five minors, O68); render-mode equivalence shown in two page states (closes SD3V-1 to SD3V-4 and SD3V-6, and W5's V2-1 for "a finding selected"; SD3V-5 scoped)
+**Carried from W5b's earlier pass (reported; confirmed by the verifier's mutations):** W5's V2-2 (the
+crossing path's `releaseFocusLeftUnseen` call; mutations A and A2), V2-3 (`returnFocus`'s outward walk,
+O77; B and B2, and B3 now pinned), V2-4 (`sightOf`'s containing-block rule for absolutely positioned
+elements; C1 and C2), and the extraction mechanics of W5-X3 (one containing-block definition). V2-5 is
+extended by SD3V-3 below.
+**What was fixed this round (reported).**
+- **SD3V-1 (major) — one definition of an opener's own stops.** `crossDiscover` numbered its keys over
+  `own(revealed)` while `crossSurfaceJob` resolved them over the whole read, so a re-shown clean-page stop
+  of the same name could take the key. `review/audit-d3-focus.mjs` now has `ownOf`, `ownKeyed` and
+  `ownStopByKey`, used by the discovery (its record, its stable test and its keys) and by the surface job
+  (`opened.list`, the late-mount wait and the fresh read); a moved stop is logged on an INFO line and counted
+  in the render-check and crossing summaries. `keyRuleSelfCheck` runs in every mode: red on the old
+  resolution, green on the new.
+- **SD3V-2 (major) / W5's V2-1 — the 768 px "off view" difference was a harness race (reported cause).**
+  Opening the Inspector from "Open the source record for F001 at punch" shows the fabric's off-view pointer
+  for one animation frame in both render modes (per-frame probe under `.local-data/`); the fixed 400 ms
+  read caught it only when frames were slow, as they are when every frame is drawn on a loaded host. Every
+  activation is now read from a page whose signature holds across two frames (`crossAfterKey` /
+  `crossFrameStill`), pinned by `frameStillSelfCheck`. **Bounded render checks on the current shared tree:**
+  "a finding selected" EXIT=0, 549 compared, 0 differ (41.3 min); idle EXIT=0, 425 compared, 0 differ
+  (30.3 min).
+- **SD3V-3 — the watchdog's progress clock is every completed Playwright call.** `installRoundTripClock`
+  wraps the client's one dispatch point (`_wrapApiCall` on the shared `ChannelOwner` base) and moves the
+  calling job's clock through `AsyncLocalStorage`; `roundTripClockSelfCheck` fails the run if a
+  `page.evaluate` inside a job does not move it. `sweepState` and `sweepJourney` note their steps so a stall
+  report names them. Longest quiet stretch on the final runs: 31–40 s against a 5 min bound; a frozen page
+  is still stopped (EXIT=1, NOT DRIVEN lines).
+- **SD3V-4 — both halves of `returnFocus`'s outward walk pinned.** Two portal-layout tests in
+  `src/app/focus-return.rule4-doors.test.ts`: with everything around the target and the menu hidden, focus
+  lands on the context's outer region "Overlays", never `<body>`; with an outer region of each chain shown,
+  the context's comes first (13 of 13 pass).
+- **SD3V-6 — the containing-block census measures every name Chromium accepts:** 711 names (151 `-webkit-`
+  aliases), each also in capitals. Widening it found `will-change: offset` (a shorthand) contains a fixed
+  box; `containsFixedBoxes` is now case-insensitive, alias-aware and shorthand-aware. Census: 0 disagree
+  over accepted names.
+- **SD3V-5 — scoped.** `containsFixedBoxes` is the one definition for `sightOf` and the audit.
+  `DataGrid.tsx` `paintedBox` held a third hand list owed by its owner (replaced in the working tree after
+  the reports; see the banner). A new test in `src/app/focus-return.sight.test.ts` scans every non-test
+  module under `src` and fails on a module other than `app/focus-return.ts` that reads `will-change` and is
+  not on `KNOWN_COPIES` — a NEW copy that reads `will-change`, not every new copy (SD3R2-2).
+**Not closed (the verifier's minors, all in O68):** SD3R2-1 — `containsFixedBoxes` treats any `-webkit-`
+ident in `will-change` as its unprefixed member, wider than Chromium's real aliases, and the census cannot
+see it because it probes only accepted property names; SD3R2-2 — the SD3V-5 guard is a proxy (a
+`will-change` read) for the class (any containing-block decision); SD3R2-3 — the V2-1 normalisation (an
+opener's own stops filtered before the "revealed nothing" check) is pinned by nothing, and its INFO line
+does not name the render mode, so a one-mode difference there is invisible to the render check; SD3R2-4 —
+the preserved evidence does not support the "one animation frame in both modes, 4 of 4 probes" attribution;
+SD3R2-5 — the watchdog's stop path is unbounded (`Promise.all` over `context.close()`), so a wedged browser
+still hangs the run after its FAIL line, and the stopped job keeps running and changes the counters.
+
+### R140. The portable release contract — one schema id names one shape for every versioned document it writes or reads, every W5-X5 attribution guard has a refusal test that reaches it, and a relative root no longer crashes the module recorder — FIXED IN CODE (W5b S-PB; verifier upheld, with three minors, O69) (closes V-SPB-1 to V-SPB-3)
+**Carried from W5b's earlier pass (reported):** the `toolchain/2` and `qualification/2` bump (W5-X2), the
+build attribution and its tests (W5-X5), and tests for W5's R-PB minors PB-V1-H, -E, -J, -Q and -B.
+**What was fixed this round (reported).**
+- **V-SPB-1 (major) — every versioned document, not a typed pair.** W5 (`2145187a`) added the namespaced
+  npm notice field `npm_project` under `atlas.portable-third-party-notices/1`, and
+  `receipt_schema_shapes()` covered two ids. In `portable/release_contract.py`, `NOTICES_SCHEMA` is now
+  `/2`; `/1` is in `_SUPERSEDED_SCHEMAS`, refused rather than migrated, because the Scope inventory exists
+  only on the build host, and it is read before any shape check. Every key set that any of the 12 current
+  ids is written with or checked against is declared once in `_SCHEMA_SHAPES`; validators read it through
+  `_has_shape`, writers and expected dicts pass through `_shaped`, and `receipt_schema_shapes()`
+  fingerprints the whole registry. The tests derive the id denominator from every `atlas.portable-*/N`
+  literal in the module's source (AST), pin one fingerprint per id, and refuse any inline string-set key
+  comparison (AST guard). The SBOM's exemption is stated in code: it follows the external CycloneDX schema,
+  and its Atlas properties are recomputed from the notices. Toolchain materials are one ordered tuple,
+  `_TOOLCHAIN_MATERIALS`, shared by writer and validator. The `toolchain/2` and `qualification/2`
+  fingerprints were re-pinned under the same ids; neither `/2` id has ever been committed (HEAD still writes
+  `/1`), so no issued document changed shape under them. The `/1` ids that stay current are unchanged.
+- **V-SPB-2 — the ten unexercised W5-X5 guards (A, B, C, D, E, F, H, J, L, O)** each have a refusal test in
+  `tests/test_portable_release_contract.py` that reaches it; the real-runtime verifier now checks the
+  reviewed npm contract before the pinned-toolchain checks, so a self-consistent receipt that drops the
+  bundler runtime is refused (all checks still run). Census: 18 of 18 mutants killed, each restored from a
+  saved copy.
+- **V-SPB-3 — a relative repository root.** `_record_build_modules` resolves the project root and scratch
+  directory itself; `test_the_module_recorder_is_handed_absolute_paths_for_a_relative_root` was red before
+  the fix (argv held the relative `atlas-scope`).
+**Pinned by** `python -m pytest -q -p no:cacheprovider tests/test_portable_release_contract.py
+tests/test_portable_release_workflow.py tests/test_atlas_bundle.py` (exit 0; 155 tests, 0 failures, 2
+platform skips that predate the round: the POSIX FIFO test and directory symlinks without the privilege).
+**Not closed (the verifier's minors, all in O69):** V2-SPB-1 — the `qualification/2` fingerprint leaves out
+its second closed id set, `REQUIRED_EXTERNAL_GATES` (`external_pending`), so adding or removing an external
+gate changes what `/2` accepts without moving a fingerprint (the W5-X2 shape again); V2-SPB-2 — the stated
+reasons for refusing the superseded `/1` ids describe only the pre-W5 shape and are false for the `/1`
+documents `2145187a` wrote; V2-SPB-3 — no test reaches the verifier-side `_check_attribution_members` in
+`verify_portable_release` on its own (every such test fails first at the build-side copy). No report states
+a PyInstaller run or a frozen `Atlas.exe`.
+**Lesson (S-PB, bridge-candidate, for `docs/log.md`):** an id bump fixes the instance; a fingerprint over a
+hand-picked subset of ids, or one that skips key sets validators write inline, repeats the defect. Derive
+the id denominator from the source, keep every key set in one registry that readers and writers both use,
+and refuse inline key-set comparisons with an AST guard.
+
+### R141. Engine-contract vocabularies — the TypeScript unions are pinned to the contract inside `vitest`, and every value under a `severity` key in the golden snapshot and the engine-owned sample is pinned to the published severities — FIXED IN THE TESTS (W5b S-VOCAB, closed PARTIAL; verifier: defects, two major) (closes S-VOCAB's V4 and V5; the absent-kind repair, V1–V3, waits on files outside the cluster)
+**What was fixed (reported).**
+- **V4 — the union-to-contract direction inside the test runner.** With "Superb" added to the `Band` union
+  and "camera" to `DeviceKind` in `core/types.ts` only, `vocab.contract.test.ts` still passed (21 of 21):
+  the `Record<Union, true>` witness pinned that direction only under `tsc -p tsconfig.json`.
+  `atlas-scope/src/core/vocab.contract.test.ts` now reads the `Severity`, `Band`, `NotMeasuredBand` and
+  `DeviceKind` aliases with the TypeScript parser (`declaredUnion`) and compares them with
+  `contracts/engine-contract.v1.json`; it refuses any alias that is not a plain union of string literals,
+  and a liveness test checks that it sees an added member and refuses `| string` and `(typeof X)[number]`.
+- **V5 — severities pinned against what the producers write.**
+  `tests/test_engine_contract_vocabularies.py::test_every_severity_the_engine_writes_is_a_published_severity`
+  walks the whole of `tests/golden/snapshot.json` (pinned to a real pipeline run by
+  `test_pipeline_golden`) and `webapp/sample_data/sample_fleet.snapshot.json` (kept fresh by
+  `build_sample.py --check`). Every `severity` string at any depth must be a published severity, except two
+  declared foreign vocabularies, each pinned to its own set and disjoint from the contract: `security`
+  (`parse.py` `_SEC_CHECKS` severities lower-cased, plus "info") and `aci` (the APIC `faultInst` severity,
+  verbatim). A new section is inside the check by default. This corrects the earlier claim that severities
+  were producer-pinned: they had been compared only with constants (verifier V5).
+**Pinned by** those two tests; R1, R2, R4 and R6 re-verified after the last edit (the engine-contract,
+pipeline-golden and protocol-assessability tests exit 0 with `cisco_toolkit` resolved to the worktree;
+`build_sample.py --check` exit 0, FRESH; `compile-all` into a scratch directory, with `fabric.json`,
+`acl-bindings.json`, `rib-evidence.json` and `producer-emission.json` identical).
+**Not closed:** D1 (major) / V1–V2 — making `Device.kind` nullable left `npm run typecheck` red (exit 2,
+seven errors, all outside the cluster: `query.test.ts:124`, `Fabric3D.tsx:521`, `FabricLegend.tsx:217`
+twice, `scene.ts:876`, `DevicePane.tsx:618` and `:2289`), and on the UI paths an absent kind still showed as
+"unrecognised kind null" and indexed the text "null" (the tracked sample never triggers it: all 26
+cable-map nodes state a kind); the cluster's ready patch was applied in the working tree after the reports
+(see the banner) and no verifier or report has typechecked it. D2 (major) / V3 — `npx vitest run
+--maxWorkers=2 src/core` is red on `tracked-sources.test.ts` until `src/core/vocab.ts` is committed (the
+cluster counted 58 files and 2,825 tests, 2,824 passed; the verifier's 1,637 over 57 files came from another
+tree or file set). D3 — the suite pins the exported ORDER arrays, not the membership tests, so a recogniser
+that ignores the contract survives. D4 / V6 — `compute_health_scores` and `compute_cable_map` in
+`cisco_toolkit/analyze.py` still write the literals "Insufficient Data" and "device", and the band literal
+recurs at more than ten read sites outside the cluster's slice; drift is caught by the producer tests, not
+prevented by one owner. D5 — the V5 walk matches only the exact key `severity`, and the `aci` exception set
+is hand-kept with no engine owner, so "every severity the engine writes" overstates. D6 — a docstring typo
+in `tests/test_engine_contract_projection.py`.
+**Lessons (S-VOCAB, bridge-candidate, for `docs/log.md`):** a typecheck-only witness pins its direction
+only where the typecheck gate runs, and a gate red for unrelated reasons silences it, so restate the check
+inside the test runner by parsing the declaration; to pin an enum against its producers, walk the
+producers' whole output for the field and name the exceptions, never a list of sections to include.
+**What the record step itself re-ran (2026-10-01, after its edits):** the 14 test files that read these
+documents (the set the phase-3.5 banner names) in one `npx vitest run --maxWorkers=2` invocation, 1,584
+passed, exit 0; `python -m pytest -q -p no:cacheprovider tests/test_ssot_registry.py` with the real
+interpreter, exit 0; and the repository's client-marker scan
+(`cisco_toolkit.distribution_verify._client_marker_patterns()`, imported from this worktree) over this
+document, 0 hits. It also read the working tree's diff, which holds the four post-report edits the W5b
+banner names. It ran none of the other pins these entries cite and did not run either gate.
+
 > **W5 of the Atlas Scope program — the preview-scope repairs after phase 3.5 (recorded 2026-09-30; an
 > UNCOMMITTED working tree on top of `3509b73c`).** Not the earlier "wave 5" (W5-K1…K4, R67–R80). Four
 > clusters, each followed by an independent verifier: **R-D3** (the D3 focus owner and the focus audit's
@@ -5890,6 +6197,27 @@ From R-D3's two rounds and its verifier (reported; the record step did not run t
   **D3 stays UNPROVEN** and no criterion moves. The bounded runs above were made in W5 after the owner
   instruction of 2026-09-29; whether the owner authorised them is not stated in the reports the record
   step received, and the owner should say whether they stand as evidence.
+**Status at W5b (2026-10-01), the follow-up of the W5 repair wave — narrowed again, still UNPROVEN.** From
+S-D3 and its verifier (upheld, five minors; reported; the record step did not run the audit).
+- **Closed in the harness and code (R139):** V2-1 for "a finding selected" (a harness race on a one-frame
+  pointer; activations are now read from a page still across two frames); V2-2, V2-3 and V2-4, confirmed by
+  the verifier's mutations; V2-5's silent failure, now that the watchdog's clock is every completed
+  Playwright call and a stall report names its step; SD3V-1 (keys numbered and resolved over one list) and
+  SD3V-6 (the containing-block census over every accepted name and alias).
+- **QH-V2-3 (render-mode equivalence) — narrowed, still OPEN.** Bounded `--render-check` runs on the
+  current shared tree: "a finding selected" EXIT=0, 549 compared, 0 differ (41.3 min); idle EXIT=0, 425
+  compared, 0 differ (30.3 min). No W5b report states a render check for "a device selected" or "a traced
+  flow", and the sweep's Tab walk and hit tests are still unproved under suspended draws.
+- **New minors (SD3R2-1 to SD3R2-5, R139):** the blanket `-webkit-` stripping in `containsFixedBoxes`; the
+  SD3V-5 guard is a `will-change` proxy for the class; the V2-1 normalisation is pinned by nothing and its
+  INFO line does not name the render mode; the one-frame attribution is not supported by the preserved
+  evidence; and the watchdog's stop path is unbounded and leaves the stopped job running.
+- **The two `PENDING_ROUTING` entries** (`main.tsx`, `core/dataset/refusal.ts`): no W5b report names them;
+  they stay as stated above.
+- **Unchanged:** QH-V2-1 (TRACT) — no complete `--sweep`, `--vp=390` or default run exists on any tree, so
+  **D3 stays UNPROVEN** and no criterion moves. The two render checks were made after the owner instruction
+  of 2026-09-29, like W5's; the owner's answer on whether such bounded runs stand as evidence is still
+  pending.
 
 ### O69. The /scope reader — the XML path still reads an XHTML page differently from the browser, and four more residuals — OPEN (owners: `webapp/backend/app.py`, `webapp/tests/test_scope_mount.py`, `tests/test_ssot_registry.py`, `.github/`, `portable/`)
 From Q-F's second independent verifier (reported; not re-verified by the record step).
@@ -5963,6 +6291,33 @@ three routed portable items FIXED IN CODE; one major and the final check's red s
 - **Also open:** `tests/test_transition_schema_assets.py::test_byte_bound_checkout_owners_are_lf_exactly_attributed`
   is red in the engine gate until R-QF's `webapp/backend/app.py` edit is committed (the W5 banner).
 - **Unchanged:** no report states a run of these legs on GitHub-hosted runners.
+**Status at W5b (2026-10-01), the follow-up of the W5 repair wave — RQF-V2-1 and the R-PB minors FIXED IN
+CODE; the hub build is still not produced by its own command.** From S-QF (closed PARTIAL), S-PB (upheld),
+S-CI (upheld) and their verifiers (reported).
+- **Closed:** RQF-V2-1, the icon link inside `<title>` (R136); W5's R-PB minors PB-V1-H, -E, -J, -Q and -B,
+  each with a test (carried from W5b's earlier pass, R140); V-SPB-1 to V-SPB-3 — one schema id per shape for
+  every versioned release document, a refusal test for every W5-X5 guard, and the relative-root recorder
+  crash (R140); W5-X4 — every workflow leg that collects a history-needing test now fetches the full
+  history, including `main-selfhosted.yml` `suite` and `portable-release.yml` `gate` (R135).
+- **VQF-1 / VQF-R2-1 (BUILD-HUB-ONCE) — OPEN.** The tracked `dist-hub` the oracle tested was not produced
+  by `npm run build:hub`, and when S-QF ran, that command's `tsc` step exited 2 on S-VOCAB's absent-kind
+  types. A scratch hub build of the current source matched it in every CSS file and differed in the shell
+  only by the module-entry hash. The absent-kind patch is now in the working tree (W5b banner), but no
+  report states a `build:hub` run since.
+- **VQF-2 — applied in the working tree after the reports (read from the diff; not verified):**
+  `scope_shell_gap` in `portable/build_atlas.py` now names the reader's own refusal reason.
+- **Still open:** VQF-R2-2 (two inaccuracies in `atlas-scope/README.md`'s reading claim); V2-SPB-1 (the
+  `qualification/2` fingerprint leaves out `REQUIRED_EXTERNAL_GATES`), V2-SPB-2 (the superseded `/1`
+  reasons are false for the W5-era `/1` documents) and V2-SPB-3 (the verifier-side attribution-member check
+  is never reached on its own); S-CI-V1 (the history-needing tests are found by the word "shallow" in a
+  `pytest.skip` reason, not structurally). S-CI-V2 (two copies of the pytest-invocation reader) has one
+  shared reader in the working tree, `tests/pytest_invocation_reader.py`, read from the tree and not yet
+  verified; it is uncommitted with the wave's other new files (the W5b banner).
+- **Not covered by any W5b report:** `test_transition_schema_assets`'s red until R-QF's `app.py` edit is
+  committed; the `test_make_stick` deep-path timeout. The engine gate did not return, so neither has a
+  W5b result.
+- **Unchanged:** PyInstaller was not run and nothing ran against a frozen `Atlas.exe`; no leg has run on
+  GitHub-hosted runners.
 
 ### O70. C1 — the KEY validator still lets a loss vanish in three ways, and the protocol's other residuals — OPEN (owner: `review/blind-pair.mjs`, `review/capture-refs-clean.mjs`, `review/capture.mjs`); the critic panel was NOT run (owner instruction)
 From Q-G's second independent verifier (reported; its probes imported the worktree's `evaluate()`). RULE v4
@@ -6029,6 +6384,37 @@ round and its verifier (reported).
   measure it on a truly idle host with `measure-fps.mjs`.
 - **Unchanged:** D5 and D7 as carried; the third-party imagery policy. No critic panel ran, so **C1 stays
   UNPROVEN** and no criterion moves.
+**Status at W5b (2026-10-01), the follow-up of the W5 repair wave — RULE v8 and structural overlay
+dismissal FIXED IN THE HARNESS; QG3-1 and QG3-4 stay OPEN, with one new regression; C1 stays
+UNPROVEN.** From S-QG's round 2 and its verifier (defects, one major; reported).
+- **Closed:** QG3-3, the "proves" wording and the misleading self-check prefix (R137); SQG-V3 to SQG-V7 —
+  prose read when nothing is filed, picks carried as object keys, `recognizedAs` read for recognition only
+  under `recognized: true` (a panel-only `recognizedAs` is now INVALID), and the free-string reader's class
+  claims pinned (R137); SQG-V1 and SQG-V2 — dismissal decided by structure, restoring shadow, absolute,
+  in-flow, image-alt and title-only consent and close controls and leaving fixed app chrome alone (R138).
+  RULE v8, ruleSha `6066a0400b1a`; the KEY was regenerated, and the 8 sheets for 4 of 5 pairings are
+  byte-identical to before.
+- **QG3-1 (major) — still not closed by class (SQG-R2-1).** A field keyed by an `Object.prototype` name is
+  never read, through the prototype-chain `FIELD_TYPE_OK` lookup in `pickValues`: under `constructor` or
+  `toString` a pick vanishes and the pairing passes, and under `__proto__`, `hasOwnProperty`, `valueOf` or
+  `isPrototypeOf` `evaluate()` throws a `TypeError`, so `--validate` crashes on real input. True at
+  `22373163` too.
+- **QG3-4 — still not met (SQG-R2-3).** The structural rule still narrows the old consent matching (a box
+  over a CSS-background hero is not layered; the consent box stops at 1,500 characters and ignores the
+  control's own name; in-flow announcement bars with `aria-label="Close"` are no longer dismissed), and the
+  doc's "the one deliberate narrowing" is inaccurate.
+- **New, introduced by this round — SQG-R2-2 (minor regression of W5-X6).** Any `[title]` or `[aria-label]`
+  element whose text contains "allow", "accept" or "got it" can be clicked as a dismiss control inside a
+  layered box or a dialog — an ACL or policy row in a referenced network product among them — against the
+  docs' claim that product controls are never clicked.
+- **Other new minors:** SQG-R2-4 (the punctuation-boundary half of the whole-word class has no row) and
+  SQG-R2-5 (the SQG-V6 exemption also hides sheet-question prose written in `recognizedAs`).
+- **Not named by any W5b report:** QG3-2 (four RULE v6 behaviours pinned by no row) stays as stated.
+- **Owner decisions:** the pending D2 question (requirement 3 over D2's first-line reading) is unchanged;
+  the owner may also want to confirm the SQG-V6 reading, which reversed an earlier W5b row from a loss to an
+  invalid or no-answer line.
+- **Unchanged:** the network-visualisation sheet is BLOCKED (`08-path-indeterminate` at tier "balanced",
+  not recaptured); `node review/blind-pair.mjs` exits 2. No critic panel ran, so **C1 stays UNPROVEN**.
 
 ### O71. The engine gate's `pytest` is red on one real test and eight expected linked-worktree reds — OPEN (owners: the owner, for a test-only module boundary; `webapp/tests/test_scope_mount.py`; `atlas-scope/src/forwarding/`)
 From the phase-3.5 engine gate (reported), confirmed by Q-F's verifier and the gate's targeted and full
@@ -6047,6 +6433,16 @@ runs (the record step read the logs' summary lines).
   (`graph_report_summary_partition_mismatch` among them); `tests/test_graphify_guarded.py` ×4 (`guard.main`
   returns 2). They are red because this is a linked worktree, not because of phases 3 and 3.5; a clean
   checkout of the committed tree must still show them green before anything merges.
+**Status at W5b (2026-10-01), the follow-up of the W5 repair wave — one of the eight expected reds removed;
+the real red and the other seven unchanged by any report.** From S-CI and its verifier (upheld; reported).
+- **Fixed in the test (R135, W5-X1):** `test_successor_package_binds_and_exercises_this_exact_binder_source`
+  was a wrong environment assumption, not a layout red: it now fetches the checkout's HEAD with full
+  ancestry into a fresh LF-exact repository and passes in a linked worktree, a full clone and an
+  `autocrlf=true` detached-HEAD clone (skipping visibly on a shallow checkout).
+- **Still open:** the seven remaining expected reds (`tests/test_graph_invariants.py` ×3,
+  `tests/test_graphify_guarded.py` ×4) and `test_no_module_a_runtime_build_can_bundle_reads_as_snapshot_evidence`
+  on `golden-expectations.ts`, which no W5b report names. The W5b engine gate did not return, so none of
+  them has a W5b result.
 
 ### O72. Q-A1's residuals — A1's header design fails at 1280×720, its App-path case is slow, and the geometry proof is a scratch harness — OPEN (owners: `src/panels/EvidencePane.tsx`, `src/app/App.tsx`, a `review/` owner)
 From Q-A1's verifier (upheld with three minors) and Q-A1's own record (reported).
@@ -6169,6 +6565,19 @@ the outward walk and part of R129's verification stay OPEN.** From R-D3 and its 
 - **Not covered by any W5 report:** R129's `DataGrid.tsx` hit-all probe sheet still has no independent
   verifier. R129's repairs are now committed (`363e865e`, "close phase 3.5"); W5's own edits are
   uncommitted in this working tree.
+**Status at W5b (2026-10-01), the follow-up of the W5 repair wave — V2-3 FIXED IN CODE; the `DataGrid.tsx`
+probe sheet is still unverified.** From S-D3 and its verifier (upheld; reported). W5's edits are now
+committed (`2145187a`); W5b's are uncommitted on top of `22373163`.
+- **Closed:** V2-3 — `returnFocus` walks outward (W5b's earlier pass), and both halves of the walk, around
+  the context and around the recorded target, are pinned by two portal-layout tests in
+  `src/app/focus-return.rule4-doors.test.ts` (13 of 13; the verifier's mutations B, B2 and B3 fail them)
+  (R139).
+- **`DataGrid.tsx`:** `paintedBox`'s own containing-block hand list (SD3V-5) is replaced in the working tree
+  by `containsFixedBoxes`, and `focus-return.sight.test.ts`'s `KNOWN_COPIES` is empty (read from the diff;
+  no report names the edit). The guard that holds it catches only a copy that reads `will-change`
+  (SD3R2-2, O68).
+- **Still not covered by any report:** R129's `DataGrid.tsx` hit-all probe sheet has no independent
+  verifier.
 
 ### O23. Clean-clone evidence — the re-grade of `78bdba5` ran F1, F2, F4 and F5 from a fresh clone of that commit (F1, F4, F5 PASS; F2 red, R85); the re-grade of `8eac055` ran F5 from a fresh clone of it (PASS); the re-grade of `34bd435` ran F1 in part, F4, F5 and F6 from a fresh clone of it; nothing has been run from a clone of `7f67013` — OPEN for A–E, F2, F3 and the scripts `tsc` project at `34bd435`, and for everything at `7f67013` (owner: the re-grade of `7f67013`)
 **Status at `7f67013` (wave 8).** The heading's old claim — "nothing has been run from a clone of

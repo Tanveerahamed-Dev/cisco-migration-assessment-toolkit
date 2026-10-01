@@ -343,58 +343,108 @@ def test_a_citation_of_a_top_level_name_the_repository_renamed_away_is_checked()
     assert checked == 1 and doctored == ["traffic-intents.example.json does not exist"], doctored
 
 
-def _ci_jobs(text: str) -> dict[str, str]:
-    """ci.yml's jobs, each name to its block, read by indentation (two spaces under `jobs:`)."""
-    body = text.split("\njobs:\n", 1)[1]
-    jobs: dict[str, str] = {}
-    name = None
-    for line in body.splitlines():
-        head = re.fullmatch(r"  ([A-Za-z0-9_-]+):\s*", line)
-        if head:
-            name = head.group(1)
-            jobs[name] = ""
-        elif name is not None:
-            jobs[name] += line + "\n"
-    return jobs
+# The ONE reader of a step's pytest invocations, shared with webapp/tests/test_scope_mount.py (W5b, S-CI-V2).
+from pytest_invocation_reader import (  # noqa: E402  (tests/ is on sys.path: root conftest.py)
+    default_testpaths as _default_testpaths,
+    pytest_invocations as _pytest_invocations,
+)
 
 
-def _runs_the_default_suite(job: str) -> bool:
-    """A job runs the whole default suite when some `python -m pytest` in it names no test path:
-    every word after it (on its line, or on the folded lines that continue it) is an option."""
-    lines = job.splitlines()
-    for i, line in enumerate(lines):
-        match = re.search(r"python -m pytest\b(.*)$", line)
-        if not match:
-            continue
-        words = match.group(1).split()
-        indent = len(line) - len(line.lstrip())
-        for more in lines[i + 1:]:
-            if not more.strip() or len(more) - len(more.lstrip()) != indent:
-                break
-            words += more.split()
-        if all(w.startswith("-") for w in words):
-            return True
-    return False
+def _collects(paths: list[str], test_file: str) -> bool:
+    return any(path == "." or test_file == path.rstrip("/")
+               or test_file.startswith(path.rstrip("/") + "/") for path in paths)
 
 
-def test_every_ci_leg_that_runs_the_default_suite_fetches_the_history_the_citation_check_needs():
-    """RQF-V1-1: at actions/checkout's default depth 1 the renamed-away citation check above
-    skips (visibly), so on that leg a registry citation of a renamed or deleted top-level owner is
-    not caught. Every ci.yml job that runs the whole default suite -- found by what it runs, not by
-    name -- checks out the full history."""
-    jobs = _ci_jobs((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
-    suite = sorted(name for name, job in jobs.items() if _runs_the_default_suite(job))
-    assert {"test", "coverage"} <= set(suite), suite  # not vacuous: the two known full-suite legs
-    shallow = []
-    for name in suite:
-        checkout = re.search(r"- uses: actions/checkout@\S+[^\n]*\n((?:\s{8,}\S[^\n]*\n)*)", jobs[name])
-        assert checkout, f"{name} has no actions/checkout step"
-        if not re.search(r"^\s+fetch-depth:\s*0\s*$", checkout.group(1), re.M):
-            shallow.append(name)
-    assert not shallow, f"these default-suite legs check out a shallow history: {shallow}"
-    # The reader is not blind: a path-scoped run is not the default suite.
-    assert not _runs_the_default_suite("      - run: python -m pytest webapp/tests -q\n")
-    assert _runs_the_default_suite("        run: >-\n          python -m pytest\n          --cov=x\n")
+def _tests_that_decline_a_shallow_history() -> frozenset[str]:
+    """Every test module under the default testpaths that DECLINES on a shallow checkout -- found by
+    what it does (a `pytest.skip` whose reason names a shallow checkout or repository), not by a
+    hand-kept list. These are the tests a depth-1 leg silently stops exercising."""
+    import ast
+    import warnings
+
+    found = set()
+    for testpath in _default_testpaths():
+        for module in sorted((ROOT / testpath).rglob("test_*.py")):
+            with warnings.catch_warnings():  # another module's own escape warnings are not ours
+                warnings.simplefilter("ignore", SyntaxWarning)
+                tree = ast.parse(module.read_text(encoding="utf-8"), str(module))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "skip" and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "pytest"):
+                    continue
+                reasons = list(node.args[:1]) + [k.value for k in node.keywords
+                                                 if k.arg in ("reason", "msg")]
+                text = " ".join(piece.value for reason in reasons for piece in ast.walk(reason)
+                                if isinstance(piece, ast.Constant) and isinstance(piece.value, str))
+                if "shallow" in text.lower():
+                    found.add(module.relative_to(ROOT).as_posix())
+    return frozenset(found)
+
+
+def _workflow_legs_collecting(test_files: frozenset[str]) -> dict[str, object]:
+    """Every job, in EVERY workflow, with a step whose pytest collects one of `test_files` -- mapped to
+    the `with:` of the actions/checkout step that materialized the tree it runs in (the latest
+    workspace-root checkout before that step), or None when there is none. Read with PyYAML (it ships
+    with netmiko, a base dependency), so a folded `run: >-` script arrives joined."""
+    import os
+
+    import yaml
+
+    legs: dict[str, object] = {}
+    for workflow in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+        document = yaml.safe_load(workflow.read_text(encoding="utf-8")) or {}
+        for job_id, job in (document.get("jobs") or {}).items():
+            default_wd = (((job.get("defaults") or {}).get("run") or {}).get("working-directory")
+                          or ".")
+            checkout = None
+            for step in job.get("steps") or []:
+                if (str(step.get("uses") or "").startswith("actions/checkout@")
+                        and not (step.get("with") or {}).get("path")):
+                    checkout = dict(step.get("with") or {})
+                    continue
+                wd = os.path.normpath(step.get("working-directory") or default_wd).replace("\\", "/")
+                if any(_collects(paths, test_file)
+                       for paths in _pytest_invocations(str(step.get("run") or ""), wd)
+                       for test_file in test_files):
+                    legs.setdefault(f"{workflow.name}:{job_id}", checkout)
+    return legs
+
+
+def test_every_ci_leg_that_runs_a_history_needing_test_fetches_the_full_history():
+    """RQF-V1-1 / W5-X4: at actions/checkout's default (or an explicit) depth 1 every test that needs
+    git history skips (visibly) -- the renamed-away citation check above, the exact successor-package
+    integration, the legacy 8c package pin -- so on that leg none of them is exercised. The class is
+    derived on both axes, never listed: the tests are the ones that decline on a shallow checkout,
+    and the legs are every job in every workflow whose pytest collects one of them (a bare default
+    suite included, whatever the interpreter spelling). Each must check out the full history."""
+    history_tests = _tests_that_decline_a_shallow_history()
+    assert {"tests/test_ssot_registry.py", "tests/test_atlas_r2_authority_decision_binding.py",
+            "tests/test_atlas_r2_authority_candidate.py"} <= history_tests, sorted(history_tests)
+    legs = _workflow_legs_collecting(history_tests)
+    # not vacuous: every known default-suite leg is found, across five workflow files
+    assert {"ci.yml:test", "ci.yml:coverage", "main-selfhosted.yml:suite", "portable-release.yml:gate",
+            "release.yml:release", "release-selfhosted.yml:release"} <= set(legs), sorted(legs)
+    shallow = sorted(leg for leg, checkout in legs.items()
+                     if checkout is None or str(checkout.get("fetch-depth")) != "0")
+    assert not shallow, f"these legs run a history-needing test on a shallow (or no) checkout: {shallow}"
+
+
+def test_the_history_leg_reader_recognises_every_way_a_step_collects_the_suite():
+    """The reader is not blind in either direction: a value-taking option's value is not a path, every
+    interpreter spelling counts, and a path-scoped run collects only what it names."""
+    for run, expected in [
+            ("python -m pytest", True), ("python -m pytest -q -p no:cacheprovider", True),
+            ('& "$env:RUNNER_TEMP\\ci-venv\\Scripts\\python.exe" -m pytest', True),
+            ("python -m pytest --cov=cisco_toolkit --cov-report=term-missing:skip-covered", True),
+            ("python -m pytest --cov cisco_toolkit -n 4", True),
+            ("python -m pytest tests/test_ssot_registry.py::test_x", True), ("pytest tests", True),
+            ("python -m pytest \\\n  tests -q", True),
+            ("python -m pytest webapp/tests -q", False), ("python -m pytest master-reference/tests", False),
+            ("python -m pytest tests/test_other.py", False), ("python -m pip install pytest-xdist", False)]:
+        collected = any(_collects(paths, "tests/test_ssot_registry.py")
+                        for paths in _pytest_invocations(run))
+        assert collected is expected, (run, collected)
 
 
 def test_the_history_roots_are_gits_and_a_shallow_history_is_declared_incomplete(tmp_path):

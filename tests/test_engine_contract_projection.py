@@ -1,7 +1,8 @@
 """ONE contract, ONE owner: the engine vocabularies the Atlas Scope compiler validates against.
 
-The owner is ``cisco_toolkit/analyze.py`` (the PUNCH_EVIDENCE_* constants, PUNCH_EVIDENCE_RULES and the
-protocol-assessability state vocabulary). ``atlas-scope/contracts/engine-contract.v1.json`` is a GENERATED
+The owner is ``cisco_toolkit/analyze.py`` (the PUNCH_EVIDENCE_* constants, PUNCH_EVIDENCE_RULES, the
+protocol-assessability state vocabulary, and -- pinned against their producers by
+tests/test_engine_contract_vocabularies.py -- the severity, health-band and node-kind vocabularies).``atlas-scope/contracts/engine-contract.v1.json`` is a GENERATED
 projection of those constants for the app -- never hand-edited. This test fails when the committed file
 differs from what the constants produce, byte for byte (LF, 2-space indent, trailing newline).
 
@@ -37,7 +38,8 @@ def test_projection_has_exactly_the_agreed_shape_and_mirrors_every_owner_constan
     """The shape cluster R3's compiler imports: fixed keys, sorted arrays, every value read from its owner
     (a constant added to an owner tuple appears here; nothing is hand-listed in the projection)."""
     doc = json.loads(analyze.render_engine_contract())
-    assert list(doc) == ["schema", "owner", "punch_evidence", "protocol_assessability_states"]
+    assert list(doc) == ["schema", "owner", "punch_evidence", "protocol_assessability_states",
+                         "severities", "health_bands", "node_kinds"]
     assert doc["schema"] == "atlas-engine-contract/1"
     assert doc["owner"] == "cisco_toolkit/analyze.py"
     pe = doc["punch_evidence"]

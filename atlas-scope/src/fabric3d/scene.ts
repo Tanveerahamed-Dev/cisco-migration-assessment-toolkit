@@ -873,7 +873,7 @@ export function buildFabricGraph(opts: BuildGraphOptions): FabricGraph {
   const placed = devices.filter((d) => layout.byId.has(d.id));
 
   for (const device of placed) {
-    const kind = normaliseKind(device.kind);
+    const kind = normaliseKind(device.kind ?? "");
     let group = groups.get(kind);
     if (group === undefined) {
       const parts = buildChassis(kind, {

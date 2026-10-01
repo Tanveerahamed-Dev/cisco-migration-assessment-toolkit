@@ -38,7 +38,7 @@ import {
 } from "react";
 import { IconChevronDown, IconChevronRight, IconSortAsc, IconSortDesc, IconSortNone } from "../ui/icons";
 import { LiveRegion, NotObserved } from "../ui/primitives";
-import { returnFocus } from "../app/focus-return";
+import { containsFixedBoxes, returnFocus } from "../app/focus-return";
 import "./DataGrid.css";
 import { own } from "../core/own";
 
@@ -668,7 +668,8 @@ function onScreenExtent(el: HTMLElement): number {
  * <body> whose overflow the root does not claim propagates to the viewport too, as in `clippedBand`).
  * Only ancestors on its CONTAINING-BLOCK chain clip it: an absolutely positioned box escapes the clip
  * of a static ancestor between it and its positioned container, and a fixed one every ancestor up to
- * one that contains fixed descendants (a transform, filter, perspective or paint/layout containment).
+ * one that contains fixed descendants (`containsFixedBoxes`, src/app/focus-return.ts: the CSS class stated
+ * once and measured against Chromium, never a hand list here; review/capture.mjs runs it in the page too).
  * So a fixed bar inside a scrolling rail is not trimmed by the rail it floats over. May be empty
  * (bottom <= top): the element paints nothing on screen. jsdom lays out nothing (0-height boxes are
  * not clips there).
@@ -684,12 +685,6 @@ function paintedBox(el: Element): { top: number; bottom: number } {
     top = Math.max(top, 0);
     bottom = Math.min(bottom, view.innerHeight);
   }
-  const holdsFixed = (cs: CSSStyleDeclaration): boolean =>
-    (cs.transform !== "" && cs.transform !== "none") ||
-    (cs.filter !== "" && cs.filter !== "none") ||
-    (cs.perspective !== "" && cs.perspective !== "none") ||
-    /\b(?:paint|layout|strict|content)\b/.test(cs.contain) ||
-    /\b(?:transform|perspective|filter)\b/.test(cs.willChange);
   const escapeOf = (cs: CSSStyleDeclaration): "fixed" | "absolute" | "flow" =>
     cs.position === "fixed" ? "fixed" : cs.position === "absolute" ? "absolute" : "flow";
   const rootOy = view.getComputedStyle(doc.documentElement).overflowY;
@@ -698,7 +693,7 @@ function paintedBox(el: Element): { top: number; bottom: number } {
     if (a === doc.documentElement) break;
     const cs = view.getComputedStyle(a);
     const contains =
-      escape === "flow" || holdsFixed(cs) || (escape === "absolute" && cs.position !== "" && cs.position !== "static");
+      escape === "flow" || containsFixedBoxes(cs) || (escape === "absolute" && cs.position !== "" && cs.position !== "static");
     if (!contains) continue;
     escape = escapeOf(cs);
     if (a === doc.body && (rootOy === "visible" || rootOy === "")) continue;

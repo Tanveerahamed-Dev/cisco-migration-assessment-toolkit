@@ -936,7 +936,7 @@ const findingHaystack = (f: Finding): string =>
   `${f.id} ${f.title} ${f.detail ?? ""} ${f.remediation ?? ""} ${f.category ?? ""} ${f.devices.join(" ")}`.toLowerCase();
 
 const deviceHaystack = (d: Device): string =>
-  `${d.id} ${d.host} ${d.role ?? ""} ${d.kind} ${d.model ?? ""} ${d.serial ?? ""} ${d.swVersion ?? ""} ${d.platform ?? ""} ${d.badges.join(" ")} ${d.deductions.join(" ")}`.toLowerCase();
+  `${d.id} ${d.host} ${d.role ?? ""} ${d.kind ?? ""} ${d.model ?? ""} ${d.serial ?? ""} ${d.swVersion ?? ""} ${d.platform ?? ""} ${d.badges.join(" ")} ${d.deductions.join(" ")}`.toLowerCase();
 
 const crossHaystack = (c: CrossLayerFinding): string =>
   `${c.id} ${c.title} ${c.detail ?? ""} ${c.recommendation ?? ""} ${c.layers ?? ""} ${c.hosts.join(" ")}`.toLowerCase();

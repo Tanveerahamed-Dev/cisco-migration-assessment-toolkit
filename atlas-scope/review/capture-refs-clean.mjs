@@ -51,6 +51,11 @@
  *   8. Control frames ARE flagged (a detector that passes its control is broken).
  *   9. Every frame whose identity marks were not measured in its DOM (identityRects) declares its identity slots — logo glyph, workspace chip, user menu — as
  *      geometry measured on that frame, or an empty list with a reason; blind-pair.mjs masks them.
+ *  10. Every paired reference DECLARES its task's result (`taskState`), legible in its pixels and on no
+ *      frame of the same product whose task kind cannot show the task. That contrast is a SANITY
+ *      screen, reported UNCALIBRATED (contrastCalibration): it does not prove the text is content
+ *      rather than chrome; the task state rests on the declared, reviewed text (O70 R2-5, QG3-3).
+ *  11. No identity glyph beside a masked identity word escapes the masks (O70 R2-6).
  *
  * Output lives under review/shots/refs-clean/, which .gitignore excludes (review/shots/): vendor
  * demo and documentation imagery is NEVER tracked and never goes into anything published.
@@ -835,8 +840,8 @@ export function undeclaredIdentitySlots(frames, targets) {
     .map(({ f }) => f.id);
 }
 
-/* ── The reference's TASK STATE, proven by content, not chrome (O70 R2-5) ──────────────────────────
-   A TARGET's `expect` proves the working surface is there; it cannot prove the TASK state: toolbar
+/* ── The reference's TASK STATE: DECLARED result text, screened against chrome (O70 R2-5) ───────────
+   A TARGET's `expect` shows the working surface is there; it cannot show the TASK state: toolbar
    labels ("Query inspector", "Query history") and panel titles ("Physical topology") hold whatever the
    screen shows. So every paired TARGET declares `taskState`: text only the task's result shows (a data
    row, a traced path's source and transit, a hop's decision rows) — DECLARED, reviewed result text —
@@ -844,23 +849,23 @@ export function undeclaredIdentitySlots(frames, targets) {
    CONTRAST screen: each phrase must be legible on this frame and on NO frame of the same product whose
    task kind cannot show the task (the kind's `ref.contrast` in blind-pair.mjs :: TASK_KINDS: a network
    at rest, a query form before its result). A phrase also on a contrast frame is chrome; a target with
-   no contrast frame is unproven. The screen is a SANITY screen, not a proof that the text is content:
+   no contrast frame cannot be screened. The screen is a SANITY screen, not a proof that the text is content:
    on the real set it would also accept every paired target's chrome labels (contrastCalibration,
    reported as info; W5 round 2, QG-V3). */
-/** Problems with a target's task-state proof. `textOf(id)` -> OCR text of a frame (null = unreadable);
+/** Problems with a target's DECLARED task state under the contrast sanity screen (never a proof). `textOf(id)` -> OCR text of a frame (null = unreadable);
     `frames` -> [{id, product}] of the set; `targets` the TARGETS; `kinds` blind-pair.mjs TASK_KINDS. */
 export function refTaskProblems(target, { textOf, frames, targets, kinds }) {
   const out = [];
   const phrases = Array.isArray(target.taskState) ? target.taskState.filter((x) => typeof x === "string" && x.trim()) : [];
   if (!phrases.length) return [`${target.id}: declares no taskState (text only its task's result shows), so its task state rests on chrome labels`];
   const own = textOf(target.id);
-  if (own === null) return [`${target.id}: its pixels could not be read, so its task state is unproven`];
+  if (own === null) return [`${target.id}: its pixels could not be read, so its declared task state cannot be checked`];
   const missing = phrases.filter((ph) => !phrasesIn(own, [ph]).length);
   if (missing.length) out.push(`${target.id}: task-state text not in its pixels: ${missing.join(", ")}`);
   const contrastKinds = kinds?.[target.taskKind]?.ref?.contrast ?? [];
   if (!contrastKinds.length) out.push(`${target.id}: its task kind ${JSON.stringify(target.taskKind)} names no contrast kind (a state that cannot show it), so chrome cannot be told from content`);
   const contrasts = targets.filter((t) => t.id !== target.id && t.product === target.product && contrastKinds.includes(t.taskKind) && frames.some((f) => f.id === t.id));
-  if (contrastKinds.length && !contrasts.length) out.push(`${target.id}: no frame of ${target.product} shows a contrast kind (${contrastKinds.join(", ")}), so its task-state text is not proven to be content rather than chrome`);
+  if (contrastKinds.length && !contrasts.length) out.push(`${target.id}: no frame of ${target.product} shows a contrast kind (${contrastKinds.join(", ")}), so its task-state text cannot be screened against chrome`);
   for (const c of contrasts) {
     const text = textOf(c.id);
     if (text === null) {
@@ -1221,10 +1226,10 @@ export async function selfCheck({ pairings } = {}) {
   const badKinds = TARGETS.filter((t) => !Object.hasOwn(bp.TASK_KINDS, t.taskKind)).map((t) => `${t.id} (${JSON.stringify(t.taskKind)})`);
   line(badKinds.length === 0, `every reference target names a task kind from the vocabulary${badKinds.length ? ` — not: ${badKinds.join(", ")}` : ` (${TARGETS.length})`}`);
   const control = bp.taskKindProblems([{ id: "control", task: "path-hop-decision", ref: "forward-vulnerability-table" }], TARGETS);
-  line(control.length === 1, `task-match check: flags a pairing whose reference shows another task (control) — ${control.join("; ") || "NOT flagged"}`);
+  line(control.length === 1, `task-match check: flags a pairing whose reference declares another task kind (control) — ${control.join("; ") || "NOT flagged"}`);
   const mismatched = bp.taskKindProblems(ps, TARGETS);
   for (const m of mismatched) line(false, `pairing not matched by task: ${m}`);
-  if (!mismatched.length) line(true, `every pairing's reference shows the pairing's task kind (${ps.map((p) => `${p.id}: ${p.task}`).join(", ")})`);
+  if (!mismatched.length) line(true, `every pairing's reference declares the pairing's task kind (${ps.map((p) => `${p.id}: ${p.task}`).join(", ")})`);
   const shaOf = (id) => frames.find((f) => f.id === id)?.sha256;
   const unknown = ps.filter((p) => !shaOf(p.ref)).map((p) => `${p.id} -> ${p.ref}`);
   line(unknown.length === 0, `every pairing's reference is in the set${unknown.length ? ` — missing: ${unknown.join(", ")}` : ` (${ps.length} pairings)`}`);
@@ -1262,8 +1267,9 @@ export async function selfCheck({ pairings } = {}) {
   const stale = staleIdentitySlots(frames, TARGETS);
   line(stale.length === 0, `every declared identity slot was measured on the frame on disk${stale.length ? ` — stale: ${stale.join("; ")}` : ` (${frames.filter((f) => !Array.isArray(f.census?.identityRects)).length} frame(s))`}`);
 
-  /* O70 R2-5: every paired reference proves its TASK STATE by content, contrasted with the product's
-     frames that cannot show the task. */
+  /* O70 R2-5: every paired reference's DECLARED task state is legible on its frame and passes the
+     contrast SANITY screen against the product's frames that cannot show the task. The screen is
+     UNCALIBRATED (contrastCalibration, below): it supports the declaration, it proves nothing (QG3-3). */
   const textOf = (id) => {
     const f = frames.find((x) => x.id === id);
     const o = f ? ocr.get(resolve(fromRel(f.file))) : null;
@@ -1271,7 +1277,7 @@ export async function selfCheck({ pairings } = {}) {
   };
   const pairedTargets = [...new Set(ps.map((p) => p.ref))].map((id) => TARGETS.find((t) => t.id === id)).filter(Boolean);
   const taskProblems = pairedTargets.flatMap((t) => refTaskProblems(t, { textOf, frames, targets: TARGETS, kinds: bp.TASK_KINDS }));
-  for (const m of taskProblems) line(false, `task state not proven by content: ${m}`);
+  for (const m of taskProblems) line(false, `declared task state problem: ${m}`);
   /* (W5 round 2, QG-V3: this line used to say the references "show their task's RESULT, not only
      their chrome"; the contrast screen cannot establish that — see contrastCalibration.) */
   if (!taskProblems.length) line(true, `every paired reference's DECLARED task-state text is legible on its frame and absent from its product's contrast frames: ${pairedTargets.map((t) => t.id).join(", ")}`);

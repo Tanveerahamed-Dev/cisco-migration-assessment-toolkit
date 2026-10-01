@@ -446,7 +446,11 @@ export function App(): ReactElement {
        audit-d3-focus.mjs, every recorded run, 768 -> 390 px in four page states): the Inspector's "Copy the citation
        path" stayed focused right of the viewport under `.app`'s `overflow-x: clip` — a clip is not a scroll
        container, so scrollIntoView did nothing and nothing noticed. Checked once the settle is over (400 ms), when
-       the layout it judges is the one the reader is left with. */
+       the layout it judges is the one the reader is left with.
+       NOT REDUNDANT WITH THE RESIZE LISTENER BELOW (independent verifier V2-2): the ladder is in rem, so a rung is
+       crossed with NO resize event when the reader's default font size changes — then this settle is the only owner
+       that runs. Each path is pinned on its own (focus-return.unseen.test.tsx: a crossing by the media queries alone,
+       and a resize inside one rung). */
     const keep = (settled: boolean): void => {
       const now = document.activeElement;
       if (!(now instanceof HTMLElement) || now === document.body || !now.isConnected) return;

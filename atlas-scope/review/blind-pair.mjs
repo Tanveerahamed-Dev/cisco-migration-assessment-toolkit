@@ -89,6 +89,29 @@
  *   - QG-V4: the CLI's evaluate options come from one tested helper (cliEvaluateOptions), and
  *     `--selftest` FAILS when the R2-4 real-data check cannot run.
  *
+ * W5b (verifier QG3-1..4) — RULE v7:
+ *   - QG3-1: the pick-token rule was scoped to a hand-kept field list (reasons, faults) and normalised
+ *     less than pickOf: recognizedAs "B" under recognized:false, criticModel "B", reasons ["B."] or
+ *     ["Panel B"] on a line with no answer read as "no answer" and the loss vanished. Now EVERY string
+ *     a line carries, whatever its key, is read with pickOf's normalisation (pickTokenOf / pickLike);
+ *   - QG3-2: the frames tie, the unknown-side rule, the 8+-hex prefix branch and the recognized:true +
+ *     empty recognizedAs shape rule each have a VALIDATOR_CASES row their mutant turns red (the last
+ *     through the new `want.invalid` expectation: a classification no status or count can show);
+ *   - QG3-3: the reference task state rests on its DECLARED, reviewed `taskState`; the contrast screen
+ *     is an uncalibrated sanity screen, not a proof (wording only).
+ *
+ * W5b round 2 (verifier SQG-V3..V7) — RULE v8:
+ *   - SQG-V3: the pick-word prose rule fired only on a line yielding NO value anywhere, so a misfiled
+ *     "A" (perDimension {colour: "A"}) or a stray token (criticModel "A") hid "Panel B is much better";
+ *     it now fires on any line with nothing FILED under the dimension;
+ *   - SQG-V7: object KEYS are strings too: perDimension {B: null}, a top-level {B: null} and
+ *     {winner: {B: {}}} are read as picks, whatever the value carries;
+ *   - SQG-V6: under recognized:true, recognizedAs answers the recognition question ("which panel it
+ *     is in"), so a panel there is where the recognised thing is, never a pick (a v7 reading made a
+ *     cooperating recogniser's "B" a permanent loss); a recognizedAs that is only a panel is invalid;
+ *   - SQG-V4: the whole-word class, the NFKC / invisible normalisation and the "tie" token each have
+ *     a row their mutant turns red.
+ *
  * The KEY (blind/KEY.json) maps sheets back to sources and is NEVER given to a critic; the critic
  * manifest (blind/sheets.json) carries only slot, sheet file, and the neutral questions. Verdicts
  * are appended, one JSON object per line, to blind/verdicts.jsonl by the critic-panel step (this
@@ -139,8 +162,10 @@ export const RECOGNITION_QUESTION =
 
 /** THE TASK VOCABULARY — the one definition of what a task state IS, used on BOTH sides of a pairing
     (phase 3.5, owner: "pairings genuinely matched by task"). A pairing names a kind; the reference
-    TARGET it uses must declare the same `taskKind` (capture-refs-clean.mjs, whose self-check also
-    proves the reference shows it: its `expect` phrases are in its pixels), and OUR frame must meet the
+    TARGET it uses must declare the same `taskKind` (capture-refs-clean.mjs, whose self-check confirms
+    the working surface is there — its `expect` phrases are in its pixels — but cannot show the TASK
+    state: that rests on the TARGET's declared, reviewed `taskState`, required inside the crop, with
+    only an uncalibrated contrast screen beside it — see `ref` below), and OUR frame must meet the
     kind's `ours` specification, checked against our capture record and the OCR of our frame before a
     sheet is built. A pairing therefore cannot carry a hand-written requirement of its own that drifts
     from what its reference shows — the verifier found exactly that twice: the path surface before any
@@ -160,12 +185,14 @@ export const RECOGNITION_QUESTION =
     `ours: null` means no state of ours has been specified for that task yet: such a kind is unpairable.
     Each spec must name what only the TASK's surface shows — URL parameters alone name a state that may
     not be the visible one (`tab=raw` on the findings surface leaves the Finding tab showing: verifier V1). */
-/* `ref` (O70 R2-5): the REFERENCE side's proof. `contrast` names the kinds that cannot show the task (a
-   network at rest, a query form before its result). The reference TARGET declares `taskState` — text
-   only the task's RESULT shows — which capture-refs-clean.mjs proves is content, not chrome (absent from
-   every frame of the product whose kind is a contrast kind), and which must be legible INSIDE the crop
-   the critic sees (refRequirementProblems). Chrome labels ("Query history", "Physical topology") hold
-   whatever the screen shows, so they never prove the task. */
+/* `ref` (O70 R2-5): the REFERENCE side's task state. `contrast` names the kinds that cannot show the task
+   (a network at rest, a query form before its result). The reference TARGET declares `taskState` — text
+   a reviewer read as the task's RESULT — and that DECLARED, reviewed text must be legible INSIDE the crop
+   the critic sees (refRequirementProblems). capture-refs-clean.mjs also screens it against the product's
+   contrast-kind frames (absent there), but that screen is UNCALIBRATED — its own self-check reports that
+   it would also pass each target's chrome labels — so it is a sanity screen, never a proof that the
+   text is content rather than chrome (QG3-3). Chrome labels ("Query history", "Physical topology") hold
+   whatever the screen shows, so they are never declared as the task state. */
 export const TASK_KINDS = {
   "path-blocked": {
     ref: { contrast: ["network-at-rest", "path-query-form"] },
@@ -368,12 +395,12 @@ const findPhraseIn = (text, phrase) => {
 };
 
 /* ── The pre-registered rule ─────────────────────────────────────────────────────────────── */
-export const RULE = `C1 blind-verdict rule v6 (pre-registered; changing it changes ruleSha, recorded in every KEY).
+export const RULE = `C1 blind-verdict rule v8 (pre-registered; changing it changes ruleSha, recorded in every KEY).
 SHEETS. A verdict line's sheet reference (its sheetSha) is resolved against the CURRENT sheets through one resolver, tolerant of form: the full sha, the sheet's file name (with or without a path or ".png"), or a unique prefix of at least 8 hex characters of the sha, after Unicode form, invisible (default-ignorable) characters, case and surrounding space are normalised. A line so resolved BELONGS to that sheet's pairing P. A line whose reference resolves only to a sheet an EARLIER build's KEY lists (blind/_superseded/*/KEY.json) is STALE: an earlier build's pixels; it never counts and uses up nothing. Any other line is UNBOUND and keeps C1 UNPROVEN (as an unparseable line does); it also BELONGS, with its side UNKNOWN, to every pairing it can be tied to — the one pairing whose frames its oursSha and refSha name, and every pairing whose dimension it files an answer under (key normalised as below) — so it is an invalid verdict there whose A or B is a possible loss, and it is that critic's first line there. An unbound line is never read as stale.
 A CRITIC is its criticId with Unicode form, invisible characters, case and spacing normalised ("k1", " K1 " and "k1" with a zero-width space are one critic); the result must be plain ASCII letters, digits, '.', '_' or '-'. A line without such an id is UNATTRIBUTABLE: it never counts.
-A PICK is read from EVERY pick-bearing shape on the line, because each sheet asks exactly one question: every value in perDimension under any key, a perDimension that is not an object (a bare string is read as a pick), every leaf (objects and arrays recursed) of a field outside the verdict schema or of a schema field whose type is wrong (a shape the validator cannot interpret may hold a pick), and every reason or fault that is nothing but "A", "B" or "tie". Each value is normalised as a critic id is: "A"/"a", "B"/" b " or "tie" (mapped to ours/reference through the sheet's recorded side); a value that is not A, B or tie — or any value that is not a string — is UNREADABLE and is treated as a possible loss, never as a win. Values that disagree are unreadable when any of them may pick the reference. An answer not filed under the key P.dimension (case, Unicode form, invisible characters and separators normalised) makes the verdict invalid, but its value is still read: a win filed elsewhere never counts; a loss filed elsewhere is still a loss. A line with no value at all is no answer.
+A PICK is read from EVERY pick-bearing shape on the line, because each sheet asks exactly one question: every value in perDimension under any key, a perDimension that is not an object (a bare string is read as a pick), every leaf (objects and arrays recursed) of a field outside the verdict schema or of a schema field whose type is wrong (a shape the validator cannot interpret may hold a pick), and every other string the line carries, in any field whatever its key (recognizedAs, criticModel, an id, a reason, a fault), and every object KEY on the line (of perDimension, of the line, and inside any field read leaf by leaf, whatever its value), that is "A", "B" or "tie" once its surrounding punctuation, quotes and brackets are stripped ("B.", "(B)", a key "B" holding null). On a line with no value filed under the key P.dimension (a value filed under another key, or found anywhere else, does not count as filed), every such string or key that holds "A", "B" or "tie" as a whole word ("Panel B") is UNREADABLE, a possible loss: a line that does not answer the sheet's question and whose text may name a panel is never "no answer". One field is read by what it answers: under recognized === true, a string recognizedAs answers the recognition question ("name what you recognise and which panel it is in"), so a panel named there is WHERE the recognised thing is, not a pick; it is read for recognition only, and a recognizedAs that is nothing but a panel ("B", "(B)") is a recognition that names nothing. Each value is normalised as a critic id is: "A"/"a", "B"/" b " or "tie" (mapped to ours/reference through the sheet's recorded side); a value that is not A, B or tie — or any value that is not a string — is UNREADABLE and is treated as a possible loss, never as a win. Values that disagree are unreadable when any of them may pick the reference. An answer not filed under the key P.dimension (case, Unicode form, invisible characters and separators normalised) makes the verdict invalid, but its value is still read: a win filed elsewhere never counts; a loss filed elsewhere is still a loss. A line with no value at all is no answer.
 ONE VERDICT PER CRITIC PER PAIRING AND DIMENSION: the FIRST line from a critic that belongs to P is that critic's verdict for P, whatever its outcome (counted, recognised or invalid). Every later line from that critic for P is a DUPLICATE and never counts, so neither a recognition nor an invalid verdict can be re-asked away.
-RECOGNITION DROPS A WIN BUT NEVER ERASES A LOSS. A line discloses recognition when it says recognized === true, or when its recognizedAs, reasons, faults or any field outside the schema NAME a product or identity string: any string in the KEY's identityMasked or any reference product REFERENCES.md lists, matched as whole words (joined or possessive forms included), whatever recognized says. A critic who discloses recognition on ANY line for P, first or later, is excluded from counting for P and reported; every loss on its record STANDS. A line that says recognized === true with an empty recognizedAs is invalid, and so is recognized === false with a non-empty recognizedAs.
+RECOGNITION DROPS A WIN BUT NEVER ERASES A LOSS. A line discloses recognition when it says recognized === true, or when its recognizedAs, reasons, faults or any field outside the schema NAME a product or identity string: any string in the KEY's identityMasked or any reference product REFERENCES.md lists, matched as whole words (joined or possessive forms included), whatever recognized says. A critic who discloses recognition on ANY line for P, first or later, is excluded from counting for P and reported; every loss on its record STANDS. A line that says recognized === true with an empty recognizedAs, or one that is nothing but a panel, is invalid, and so is recognized === false with a non-empty recognizedAs.
 A critic's verdict for P COUNTS only if ALL hold:
   1. it has every field {sheetSha, oursSha, refSha, commit, criticId, criticModel, recognized, recognizedAs, perDimension, reasons, faults} with the right type (reasons and faults arrays of strings), and no other field;
   2. its sheet reference resolves to one of P's current sheets, and oursSha, refSha and commit equal P's KEY values;
@@ -757,6 +784,92 @@ export const VALIDATOR_CASES = [
     verdicts: [{ recognized: false, recognizedAs: "Kibana in B" }, { criticId: "k2" }],
     want: { status: "UNPROVEN", counted: ["k2"] },
   },
+  /* ── W5b (verifier QG3-1): a pick held in a WELL-TYPED string field outside reasons/faults, or in a
+     reason that is a pick with surrounding punctuation, vanished as "no answer". Now EVERY string a line
+     carries (whatever its key) is read with pickOf's normalisation: a value that is a pick once its
+     surrounding punctuation is stripped is read as that pick on any line, and on a line with no answer
+     at all any string holding a pick-like word ("Panel B") is a possible loss. ── */
+  { name: "recognized:false with recognizedAs 'B' and no answer is a possible loss, never 'no answer' (QG3-1)", verdicts: [{ recognized: false, recognizedAs: "B", perDimension: {} }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "criticModel 'B' with no answer is a possible loss (QG3-1)", verdicts: [{ criticModel: "B", perDimension: {} }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "a reason 'B.' (a pick with punctuation) with no answer is a possible loss (QG3-1)", verdicts: [{ reasons: ["B."], perDimension: {} }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "a reason 'Panel B' with no answer is a possible loss (QG3-1)", verdicts: [{ reasons: ["Panel B"], perDimension: {} }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "a fault '\"B\"' (quoted) with no answer is a possible loss (QG3-1)", verdicts: [{ faults: ['"B"'], perDimension: {} }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  /* (W5b round 2, SQG-V6: this row first wanted UNPROVEN, reading the recogniser's "(B)" as a pick. Under
+     recognized:true, recognizedAs answers RECOGNITION_QUESTION — "name what you recognise and which panel
+     it is in" — so a panel letter there is where the recognised thing is, not a pick; naming ONLY a panel
+     is a recognition that names nothing: an invalid line, never counted, and no answer is no loss.) */
+  {
+    name: "recognized:true with recognizedAs '(B)' and no answer: a recognition naming only a panel is INVALID, not a pick (QG3-1, SQG-V6)",
+    verdicts: [{ recognized: true, recognizedAs: "(B)", perDimension: {} }, { criticId: "k2" }, { criticId: "k3" }],
+    want: { status: "PASS", counted: ["k2", "k3"], invalid: { k1: /names nothing but a panel/ } },
+  },
+  { name: "an identifier field holding 'panel b' on a line with no answer is a possible loss (QG3-1, any key)", verdicts: [{ commit: "panel b", perDimension: {} }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "a reason 'B.' beside a filed 'A' disagrees with it: a possible loss (QG3-1)", verdicts: [{ reasons: ["B."] }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "criticModel 'B' beside a filed 'A' disagrees with it: a possible loss (QG3-1)", verdicts: [{ criticModel: "B" }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "a reason 'A.' beside a filed 'A' is no loss, but a pick outside perDimension never counts (QG3-1 precision)", verdicts: [{ reasons: ["A."] }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "PASS", counted: ["k2", "k3"] } },
+  { name: "prose naming panel B beside a filed answer is a reason, not a pick (QG3-1 precision)", verdicts: [{ reasons: ["B's header is cramped; A's hop list reads first"] }, { criticId: "k2" }], want: { status: "PASS", counted: ["k1", "k2"] } },
+  /* ── W5b (verifier QG3-2): four RULE v6 behaviours no row pinned (each mutant left --selftest at 0). ── */
+  {
+    name: "an unbound line tied ONLY by its frames (filed under no dimension key) is a possible loss there, and its re-ask never counts (QG3-2 frames tie)",
+    verdicts: [{ sheetSha: "zz", perDimension: { colour: "A" } }, {}, { criticId: "k2" }],
+    want: { status: "UNPROVEN", counted: ["k2"], overall: "UNPROVEN" },
+  },
+  {
+    name: "an unbound line's 'A' is unreadable (its side is unknown): a possible loss, never a win (QG3-2 unknown side)",
+    verdicts: [{ sheetSha: "zz", oursSha: "X", refSha: "Y", perDimension: { composition: "A" } }, { criticId: "k2" }, { criticId: "k3" }],
+    want: { status: "UNPROVEN", counted: ["k2", "k3"], overall: "UNPROVEN" },
+  },
+  {
+    name: "a loss bound by a 10-hex sha prefix (no sheet name has that form) is a counted loss (QG3-2 prefix branch)",
+    key: "hex",
+    verdicts: [{ sheetSha: "78c6277c8c", perDimension: { composition: "B" } }, { criticId: "k2", sheetSha: HEX_SHEETS[0] }, { criticId: "k3", sheetSha: HEX_SHEETS[0] }],
+    want: { status: "UNPROVEN", counted: ["k1", "k2", "k3"] },
+  },
+  {
+    name: "recognized:true with an empty recognizedAs is an INVALID verdict (a recognition that names nothing), not merely a recognised one (QG3-2 shape rule)",
+    verdicts: [{ recognized: true, recognizedAs: "" }, { criticId: "k2" }],
+    want: { status: "UNPROVEN", counted: ["k2"], invalid: { k1: /recognition that names nothing/ } },
+  },
+  /* ── W5b round 2 (verifier SQG-V3): the prose rule read pick-like words only on a line that yielded NO
+     value anywhere, so a misfiled answer or a stray token hid a no-answer line's "Panel B …". The gate is
+     now "nothing FILED under the dimension". ── */
+  {
+    name: "a misfiled 'A' (under another dimension) does not hide 'Panel B …' prose on a line with nothing filed: a possible loss (SQG-V3)",
+    verdicts: [{ perDimension: { colour: "A" }, reasons: ["Panel B is much better"] }, { criticId: "k2" }, { criticId: "k3" }],
+    want: { status: "UNPROVEN", counted: ["k2", "k3"] },
+  },
+  {
+    name: "criticModel 'A' does not hide 'Panel B …' prose on a line with nothing filed: a possible loss (SQG-V3)",
+    verdicts: [{ perDimension: {}, criticModel: "A", reasons: ["Panel B is much better"] }, { criticId: "k2" }, { criticId: "k3" }],
+    want: { status: "UNPROVEN", counted: ["k2", "k3"] },
+  },
+  /* ── SQG-V4: each class claim of the free-string reader pinned beyond one instance. ── */
+  { name: "a pick word anywhere in a reason ('the layout of B is cramped') on a no-answer line is a possible loss (SQG-V4 whole-word class)", verdicts: [{ perDimension: {}, reasons: ["the layout of B is cramped"] }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "a fullwidth 'Ｂ' reason on a no-answer line is B after NFKC: a possible loss (SQG-V4 normalisation)", verdicts: [{ perDimension: {}, reasons: ["Ｂ"] }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "a soft hyphen inside 'tie' in a reason beside a filed A still reads 'tie': the line conflicts and never counts (SQG-V4 invisibles)", verdicts: [{ reasons: ["ti­e"] }, { criticId: "k2" }], want: { status: "UNPROVEN", counted: ["k2"] } },
+  { name: "a reason 'tie.' beside a filed A conflicts with it: never counted (SQG-V4 tie token)", verdicts: [{ reasons: ["tie."] }, { criticId: "k2" }], want: { status: "UNPROVEN", counted: ["k2"] } },
+  /* ── SQG-V6: under recognized:true, recognizedAs answers the recognition question, never the sheet's. ── */
+  {
+    name: "recognized:true with recognizedAs 'B' (where the recognised thing is) beside a filed A is no loss: recognition, never a pick (SQG-V6)",
+    verdicts: [{ recognized: true, recognizedAs: "B" }, { criticId: "k2" }, { criticId: "k3" }],
+    want: { status: "PASS", counted: ["k2", "k3"] },
+  },
+  {
+    name: "recognized:true with recognizedAs 'Grafana in B' and nothing filed is no loss (the panel is where, not which is better) (SQG-V6)",
+    verdicts: [{ recognized: true, recognizedAs: "Grafana in B", perDimension: {} }, { criticId: "k2" }, { criticId: "k3" }],
+    want: { status: "PASS", counted: ["k2", "k3"] },
+  },
+  {
+    name: "a recogniser's 'B' filed under the dimension is still a loss (SQG-V6 precision)",
+    verdicts: [{ recognized: true, recognizedAs: "Grafana in A", perDimension: { composition: "B" } }, { criticId: "k2" }, { criticId: "k3" }],
+    want: { status: "UNPROVEN", counted: ["k2", "k3"] },
+  },
+  /* ── SQG-V7: a pick carried as an object KEY (its value null or empty) vanished as "no answer". ── */
+  { name: "a perDimension key 'B' with a null value is a possible loss (SQG-V7)", verdicts: [{ perDimension: { B: null } }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "a top-level key 'B' with a null value is a possible loss (SQG-V7)", verdicts: [{ perDimension: {}, B: null }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "a nested key 'B' in a field outside the schema is a possible loss (SQG-V7)", verdicts: [{ perDimension: {}, winner: { B: {} } }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "a perDimension key 'Panel B' with a null value on a no-answer line is a possible loss (SQG-V7 prose keys)", verdicts: [{ perDimension: { "Panel B": null } }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
+  { name: "a perDimension key 'B' holding 'A' disagrees with itself: a possible loss (SQG-V7)", verdicts: [{ perDimension: { composition: "A", B: "A" } }, { criticId: "k2" }, { criticId: "k3" }], want: { status: "UNPROVEN", counted: ["k2", "k3"] } },
 ];
 export const VERDICT_FIELDS = ["sheetSha", "oursSha", "refSha", "commit", "criticId", "criticModel", "recognized", "recognizedAs", "perDimension", "reasons", "faults"];
 
@@ -775,6 +888,9 @@ export function verdictShapeProblems(v) {
   /* A recognition must name what it recognised, and a non-recognition must name nothing: either
      mismatch is an inconsistent verdict (R2-7, R2-3). Blank-by-invisibles is blank. */
   if (v.recognized === true && !nonBlank(v.recognizedAs)) p.push("recognized without recognizedAs (a recognition that names nothing)");
+  /* Under recognized:true a recognizedAs that is only a panel ("B", "(B)") answers "which panel" but
+     not "what": a recognition that names nothing but a panel (SQG-V6; pickValues never reads it as a pick). */
+  else if (v.recognized === true && typeof v.recognizedAs === "string" && pickTokenOf(v.recognizedAs)) p.push("recognizedAs names nothing but a panel (a recognition that names nothing)");
   if (v.recognized === false && nonBlank(v.recognizedAs)) p.push("recognized is false but recognizedAs names something");
   if ("perDimension" in v && (typeof v.perDimension !== "object" || v.perDimension === null || Array.isArray(v.perDimension))) p.push("perDimension must be an object");
   if ("reasons" in v && (!Array.isArray(v.reasons) || !v.reasons.some((r) => typeof r === "string" && r.trim()))) p.push("reasons must hold at least one non-empty string");
@@ -840,49 +956,100 @@ const FIELD_TYPE_OK = {
   faults: (x) => Array.isArray(x) && x.every((r) => typeof r === "string"),
 };
 /** Every carrying LEAF of a value (objects and arrays recursed; a leaf past a depth of 16 is the
-    remaining value itself), each with where it was found. */
-function leavesOf(x, where, depth = 0, out = []) {
+    remaining value itself), each with where it was found. Every object KEY on the way is handed to
+    `onKey(key, where)`, whatever its value carries (SQG-V7: {B: null} names a pick by its key). */
+function leavesOf(x, where, depth = 0, out = [], onKey = null) {
   if (!carries(x)) return out;
   if (typeof x === "object" && depth < 16) {
-    for (const [k, y] of Array.isArray(x) ? x.entries() : Object.entries(x)) leavesOf(y, `${where}${Array.isArray(x) ? `[${k}]` : `.${k}`}`, depth + 1, out);
+    for (const [k, y] of Array.isArray(x) ? x.entries() : Object.entries(x)) {
+      const at = `${where}${Array.isArray(x) ? `[${k}]` : `.${k}`}`;
+      if (!Array.isArray(x)) onKey?.(k, `key of ${at}`);
+      leavesOf(y, at, depth + 1, out, onKey);
+    }
     return out;
   }
   out.push({ where, raw: x });
   return out;
 }
-/** A string that normalises to nothing but a pick token ("B", " b ", "tie"). */
-const isPickToken = (x) => typeof x === "string" && ["a", "b", "tie"].includes(stripInvisible(x).trim().toLowerCase());
-/** EVERY pick-bearing value on a line (R2-1, closed by class in W5 round 2: QG-V2). Each sheet asks
-    exactly one question, so any answer on the line answers it:
+/** PICK TOKENS IN FREE STRINGS (W5b, QG3-1), with pickOf's own normalisation (Unicode form, invisible
+    characters, surrounding space, case) and nothing else added but word boundaries:
+    - `pickTokenOf(s)`: the pick a string IS once its surrounding punctuation, quotes and brackets are
+      stripped ("B", " b ", "B.", "(B)", "\"B\"", "**tie**") — "a" | "b" | "tie", else null;
+    - `pickLike(s)`: the string holds "a", "b" or "tie" as a WHOLE WORD anywhere ("Panel B", "B is
+      cramped", "it's a tie" — and the article "a": on a line with no answer that reads as a possible
+      loss, by design, since the validator cannot tell an article from a panel). */
+const pickNorm = (x) => stripInvisible(x).trim().toLowerCase();
+const PICK_TOKENS = ["a", "b", "tie"];
+const pickTokenOf = (x) => {
+  if (typeof x !== "string") return null;
+  const s = pickNorm(x).replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  return PICK_TOKENS.includes(s) ? s : null;
+};
+const pickLike = (x) => typeof x === "string" && pickNorm(x).split(/[^\p{L}\p{N}]+/u).some((w) => PICK_TOKENS.includes(w));
+/** EVERY pick-bearing value on a line (R2-1, closed by class in W5 round 2: QG-V2, and over EVERY
+    string field in W5b: QG3-1). Each sheet asks exactly one question, so any answer on the line
+    answers it:
     - every value in perDimension under ANY key (`filed` = under the sheet's dimension), and a
       perDimension that is not an object (a bare "B" is an answer, not "no answer");
     - every carrying LEAF of a field outside the verdict schema, and of a SCHEMA field whose type the
       schema rejects (faults as an object keyed by the dimension, recognized: "B", reasons: "B", a
       non-string reason or fault): a shape the validator cannot interpret may hold a pick, so it is
       read, leaf by leaf, and a leaf that is not A, B or tie is unreadable — a possible loss;
-    - a reason or fault that is nothing but a pick token (reasons: ["B"]): a pick written in the wrong
-      place is still a pick.
-    None of these is ever `filed`, so none counts as a win. */
+    - every WELL-TYPED string the line carries, whatever its key (recognizedAs, criticModel, an id, a
+      reason, a fault — no field list), that IS a pick once surrounding punctuation is stripped
+      (`pickTokenOf`: recognizedAs "B", criticModel "B", reasons ["B."]): read as that pick on any line;
+    - every object KEY on the line — of perDimension, of the line itself, and of every object inside a
+      field read leaf by leaf — read as a string is (SQG-V7: perDimension {B: null}, {B: null},
+      {winner: {B: {}}} name a pick by their key, whatever the value carries);
+    - on a line with nothing FILED under the dimension (SQG-V3: a misfiled answer or a stray token does
+      not count as filed), every well-typed string or key that holds a pick as a whole word
+      (`pickLike`: reasons ["Panel B"]) is a possible loss (unreadable): a line that does not answer
+      the sheet's question and whose text may name a panel is never read as "no answer". On a line
+      that files an answer, such prose is a reason ("B's header is cramped"), not a pick.
+    ONE EXCEPTION, by what the field answers (SQG-V6): under recognized === true, a well-typed
+    recognizedAs answers RECOGNITION_QUESTION ("name what you recognise and which panel it is in"), so
+    a panel letter there says WHERE the recognised thing is, not which panel is better: it is read for
+    recognition (namesOnLine) and never as a pick; naming only a panel there is an invalid verdict
+    (verdictShapeProblems). Under any other recognized value it is read as every other string is.
+    None of these but a perDimension value under the dimension is ever `filed`, so none counts as a win. */
 export function pickValues(v, dimension) {
   const out = [];
+  const prose = [];
+  /* A well-typed string (or a key): a pick token is read as its (stripped) pick; anything else holding
+     a pick-like word is kept aside for a line that files nothing under the dimension. */
+  const typedString = (s, where) => {
+    const tok = pickTokenOf(s);
+    if (tok) out.push({ where, raw: tok, filed: false });
+    else if (pickLike(s)) prose.push({ where, raw: s, filed: false });
+  };
+  const leaves = (x, where) => {
+    for (const leaf of leavesOf(x, where, 0, [], typedString)) out.push({ ...leaf, filed: false });
+  };
   const pd = v?.perDimension;
   if (pd !== undefined && pd !== null) {
-    if (typeof pd === "object" && !Array.isArray(pd)) for (const [k, raw] of Object.entries(pd)) out.push({ where: `perDimension[${JSON.stringify(k)}]`, raw, filed: keyForm(k) === keyForm(dimension) });
+    if (typeof pd === "object" && !Array.isArray(pd))
+      for (const [k, raw] of Object.entries(pd)) {
+        typedString(k, `key perDimension[${JSON.stringify(k)}]`);
+        out.push({ where: `perDimension[${JSON.stringify(k)}]`, raw, filed: keyForm(k) === keyForm(dimension) });
+      }
     else out.push({ where: "perDimension itself", raw: pd, filed: false });
   }
   for (const k of Object.keys(v ?? {})) {
+    typedString(k, `key ${JSON.stringify(k)}`);
     if (k === "perDimension") continue;
     const typed = FIELD_TYPE_OK[k];
     const list = (k === "reasons" || k === "faults") && Array.isArray(v[k]);
     if (list) {
       /* In a reasons or faults ARRAY only the non-string elements are the uninterpretable shape; its
-         string elements are reasons, read as picks only when they are nothing but a pick. */
+         string elements are well-typed strings. */
       v[k].forEach((r, i) => {
-        if (typeof r !== "string") for (const leaf of leavesOf(r, `field ${JSON.stringify(k)}[${i}]`)) out.push({ ...leaf, filed: false });
-        else if (isPickToken(r)) out.push({ where: `${k}[${i}]`, raw: r, filed: false });
+        if (typeof r !== "string") leaves(r, `field ${JSON.stringify(k)}[${i}]`);
+        else typedString(r, `${k}[${i}]`);
       });
-    } else if (!typed || !typed(v[k])) for (const leaf of leavesOf(v[k], `field ${JSON.stringify(k)}`)) out.push({ ...leaf, filed: false });
+    } else if (!typed || !typed(v[k])) leaves(v[k], `field ${JSON.stringify(k)}`);
+    else if (typeof v[k] === "string" && !(k === "recognizedAs" && v.recognized === true)) typedString(v[k], `field ${JSON.stringify(k)}`);
   }
+  if (!out.some((x) => x.filed && x.raw !== undefined && x.raw !== null)) out.push(...prose);
   return out;
 }
 /** The line's pick for a pairing's dimension, read from every pick-bearing value: { pick, problem }.
@@ -1045,7 +1212,7 @@ export function evaluate(key, verdicts, opts = {}) {
       out.push(res);
       continue;
     }
-    /* RULE v6. The lines that belong to P, each attributed to a NORMALISED critic id (null =
+    /* RULE v8. The lines that belong to P, each attributed to a NORMALISED critic id (null =
        unattributable), read to a pick from every pick-bearing shape, and screened for any product it
        names. */
     const lines = [];
@@ -2170,12 +2337,15 @@ export async function selfTest(opts = {}) {
     const got = safe(() => {
       const ev = evaluate(keys[c.key ?? "default"], c.verdicts.map((o) => (o === null ? { unparseable: "{" } : v(o))), { referenceProducts: REFERENCE_PRODUCTS, superseded: c.superseded ?? [] });
       const r = ev.pairings[0];
-      return { status: r.status, counted: r.counted.map((x) => x.criticId).sort().join(","), overall: ev.overall };
+      /* `want.invalid` ({critic: RegExp}): that critic's verdict is classed INVALID with a problem the
+         expression matches (a classification no status or count can show). */
+      const invalidOk = Object.entries(c.want.invalid ?? {}).every(([cid, re]) => r.invalid.some((x) => x.criticId === cid && x.problems.some((p) => re.test(p))));
+      return { status: r.status, counted: r.counted.map((x) => x.criticId).sort().join(","), overall: ev.overall, invalidOk };
     });
     const want = { status: c.want.status, counted: [...c.want.counted].sort().join(","), ...(c.want.overall ? { overall: c.want.overall } : {}) };
     t(
       `validator: ${c.name}`,
-      typeof got === "object" && got.status === want.status && got.counted === want.counted && (!want.overall || got.overall === want.overall),
+      typeof got === "object" && got.status === want.status && got.counted === want.counted && (!want.overall || got.overall === want.overall) && got.invalidOk === true,
       JSON.stringify({ got, want }),
     );
   }
@@ -2204,7 +2374,7 @@ export async function selfTest(opts = {}) {
     const none = refRequirementProblems({ id: "r" }, at(900, 700), crop, 1);
     return inside.length === 0 && cut.length === 1 && none.length === 1;
   }) === true);
-  t("a pairing whose reference shows another task is refused",safe(() => taskKindProblems([{ id: "p", task: "path-hop-decision", ref: "r" }], [{ id: "r", taskKind: "finding-list" }]).length === 1) === true);
+  t("a pairing whose reference declares another task kind is refused", safe(() => taskKindProblems([{ id: "p", task: "path-hop-decision", ref: "r" }], [{ id: "r", taskKind: "finding-list" }]).length === 1) === true);
   /* ── phase 3.5 (owner): OUR identity is masked by its DOM geometry, not by what OCR can read. ── */
   t("our identity geometry: an OCR identity hit outside every DOM rect is reported", safe(() => {
     const rects = [{ x: 90, y: 4, w: 260, h: 40 }];

@@ -768,6 +768,36 @@ def test_the_smoke_refuses_a_scope_200_without_the_runtime_source_meta(tmp_path,
         harness.run()
 
 
+def test_the_scope_shell_gap_names_the_readers_own_reason_not_a_fixed_one():
+    """VQF-2: AssessHub's shell reader refuses for more than one reason (RQF-V2-1: a raw-text element
+    holding markup or never ending, a shell that is not UTF-8, the runtime source not declared
+    exactly once). The smoke's refusal names THAT reason -- the reader's own words -- so a shell that
+    carries the runtime-source meta is never reported as lacking it."""
+    from portable.build_atlas import scope_shell_gap
+    from webapp.backend import app as app_module
+
+    meta = (f'<meta name="{app_module._SCOPE_RUNTIME_SOURCE_META}" '
+            f'content="{app_module._SCOPE_RUNTIME_SOURCE_VALUE}">')
+    shells = {
+        "markup in a title": f"<!doctype html><html><head>{meta}<title><b>x</b></title></head><body></body></html>".encode(),
+        "a title that never ends": f"<!doctype html><html><head>{meta}<title>x</head><body></body></html>".encode(),
+        "not UTF-8": b"\xff\xfe" + meta.encode(),
+        "no runtime source": b"<!doctype html><html><head><title>x</title></head><body></body></html>",
+        "the runtime source twice": f"<!doctype html><html><head>{meta}{meta}<title>x</title></head><body></body></html>".encode(),
+    }
+    for case, body in shells.items():
+        reason = app_module._scope_shell_tokens(body)
+        assert isinstance(reason, str), case  # the reader refuses every one of these
+        gap = scope_shell_gap(200, "text/html; charset=utf-8", body, b"<bundled/>")
+        assert gap.startswith("GET /scope/ did not serve a runtime-source hub shell"), (case, gap)
+        assert reason in gap, (case, gap)
+    # the meta-carrying refusals no longer claim the meta is missing
+    for case in ("markup in a title", "a title that never ends", "not UTF-8"):
+        gap = scope_shell_gap(200, "text/html", shells[case], b"<bundled/>")
+        assert "finds no single <meta" not in gap, (case, gap)
+        assert "does not declare the runtime snapshot source" not in gap, (case, gap)
+
+
 def test_the_smoke_refuses_a_scope_shell_that_is_not_the_bundled_member(tmp_path, monkeypatch):
     """A runtime-source shell that is not the byte-exact bundled atlas_scope_dist/index.html (for
     example a build served from somewhere else) is not proof that the stick serves its own view."""
@@ -786,3 +816,46 @@ def test_the_smoke_scope_proof_is_a_required_release_qualification_check():
     from portable import release_contract
 
     assert "loopback_http_scope_runtime_shell" in release_contract.REQUIRED_AUTOMATED_CHECKS
+
+
+# ── S-PB: the build's tracked-asset refusal branch, the /scope Content-Type proof, smoke evidence ──
+def test_build_refuses_a_missing_tracked_asset_beside_a_valid_scope_hub_build(monkeypatch, tmp_path):
+    """PB-V1-H: with every build output valid, a TRACKED bundle asset that is absent (here the
+    lifecycle fixture) still refuses the build before PyInstaller, naming the path. The refusal for
+    tracked assets lives in its own branch of build_refusal; a valid hub build must not mask it."""
+    _tracked_sources(tmp_path)
+    _write_scope_hub_build(tmp_path / atlas_bundle.SCOPE_DIST_SOURCE, with_maps=False)
+    victim = tmp_path / "cisco_toolkit" / "data" / "eol-bulletins.json"
+    assert victim.is_file()
+    victim.unlink()
+    assert atlas_bundle.missing_data_sources(tmp_path) == [str(victim)]
+    message = _refused_build(monkeypatch, tmp_path)
+    assert "tracked bundle assets are missing" in message, message
+    # named as the checkout path a person can act on, one per line (not a Python list repr whose
+    # doubled backslashes nobody can paste)
+    assert "cisco_toolkit/data/eol-bulletins.json" in [line.strip() for line in message.splitlines()], message
+    assert "atlas-scope" not in message  # the valid hub build is not what is refused
+
+
+def test_the_smoke_refuses_a_scope_200_that_is_not_an_html_document(tmp_path, monkeypatch):
+    """PB-V1-B: the byte-exact bundled runtime shell served as text/plain is not the stick serving
+    its own view (a browser would not render it). Every other part of the proof holds here, so only
+    the Content-Type check can refuse it."""
+    harness = _SmokeHarness(tmp_path, monkeypatch)
+    shell = (harness.dist / "_internal" / atlas_bundle.SCOPE_DIST_DEST / "index.html").read_bytes()
+    harness.scope_answer = (200, shell, "text/plain; charset=utf-8")
+    with pytest.raises(SystemExit, match="not an HTML document"):
+        harness.run()
+
+
+def test_every_smoke_check_is_an_evidence_free_release_qualification_check(tmp_path, monkeypatch):
+    """PB-V1-Q, from the producer's side: every check the smoke REPORTS (its real return value, not
+    a list typed here) is a required qualification check that the release contract declares
+    evidence-free, so a smoke row carrying unowned evidence is refused for every smoke check,
+    including the /scope proof added after the original set."""
+    from portable import release_contract
+
+    result = _SmokeHarness(tmp_path, monkeypatch).run()
+    assert set(result) <= release_contract.REQUIRED_AUTOMATED_CHECKS, result
+    assert {name: release_contract.AUTOMATED_CHECK_EVIDENCE[name] for name in result} == {
+        name: None for name in result}

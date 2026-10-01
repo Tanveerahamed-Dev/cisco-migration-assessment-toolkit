@@ -137,6 +137,10 @@ It fails closed on each of these; a missing reference set is UNPROVEN, never "cl
 8. **Every reference names its task kind** from the one vocabulary (`blind-pair.mjs :: TASK_KINDS`),
    and every pairing's reference declares the pairing's kind; a control pairing whose reference shows
    another task must be flagged.
+9. A live undismissed Grafana control frame is captured too. It must be flagged **when the banner
+   was actually served** to that session (its "Close alert" control is in the DOM); when the banner
+   was not served, the self-check says so instead of counting the control as passed, and real-banner
+   detection rests on the synthetic control.
 10. **No identity glyph beside a masked identity word escapes the masks** (O70 R2-6). OCR reads
    words, never glyphs, and widens an identity word's mask left by a fixed 2.5 line heights; a nav
    entry's icon can sit further out (the "Forward AI" sparkle survived on the composition sheet).
@@ -145,10 +149,6 @@ It fails closed on each of these; a missing reference set is UNPROVEN, never "cl
    digits) is not a glyph, and any other run must lie inside the masks the sheet will paint. A
    synthetic sparkle is its positive control. The Forward nav entry is now a declared slot, measured
    on each Forward frame.
-9. A live undismissed Grafana control frame is captured too. It must be flagged **when the banner
-   was actually served** to that session (its "Close alert" control is in the DOM); when the banner
-   was not served, the self-check says so instead of counting the control as passed, and real-banner
-   detection rests on the synthetic control.
 
 ## How a sheet is built (`node review/blind-pair.mjs`)
 
@@ -163,8 +163,8 @@ It fails closed on each of these; a missing reference set is UNPROVEN, never "cl
   | network visualisation | `path-drawn` | `08-path-indeterminate` | `forward-topology-path` |
 
   **Matched by task on both sides, through one definition.** Each pairing names a kind from
-  `blind-pair.mjs :: TASK_KINDS`. The reference TARGET must declare that kind (and proves it shows it
-  by its expected text, above); our frame must meet the kind's `ours` specification: the captured URL
+  `blind-pair.mjs :: TASK_KINDS`. The reference TARGET must declare that kind (its expected text shows
+  the working surface, and its DECLARED `taskState` must be legible inside the crop, above); our frame must meet the kind's `ours` specification: the captured URL
   (the investigation state), text legible in our frame, and, for `path-drawn`, a hop count of at
   least 2 on the header's Path badge; for `path-hop-decision`, the hop's evidence list recorded OPEN
   with a row on screen. Every one of these is checked **inside the crop the critic sees**, not on the
@@ -252,10 +252,16 @@ It fails closed on each of these; a missing reference set is UNPROVEN, never "cl
 
 ### The pre-registered rule (verbatim in `blind-pair.mjs :: RULE`; its sha is in every KEY)
 
-Rule v6 (O70. v5, verifier round 2: v4 could still lose a loss through the key it was filed under, the
+Rule v8 (O70. v5, verifier round 2: v4 could still lose a loss through the key it was filed under, the
 sheet reference it named, or a product named outside the `recognized` flag. v6, W5 round 2: v5 could
 still lose one through a first-line "recognition" naming an ordinary identity string such as "Sign in",
-a pick held in a malformed schema field, or an unbound line whose frames named no pairing). **A line is bound to its
+a pick held in a malformed schema field, or an unbound line whose frames named no pairing. v7, W5b:
+v6 read a pick token only in `reasons` and `faults`, and only when it was the bare letter, so
+`recognizedAs: "B"`, `criticModel: "B"`, a reason "B." or "Panel B" on a line with no answer read as
+"no answer". v8, W5b round 2: v7 read pick-like prose only on a line yielding no value anywhere, so a
+misfiled "A" hid "Panel B …"; it read no object key, so `perDimension: {"B": null}` vanished; and it read
+a recogniser's `recognizedAs: "B"` — the panel the recognition question asks for — as a permanent loss).
+**A line is bound to its
 sheet through one resolver, tolerant of form:** the full sha, the sheet's file name (with or without a
 path or ".png"), or a unique hex prefix of at least 8 characters, after Unicode form, invisible
 characters, case and surrounding space are normalised. A line on a sheet only an EARLIER build's KEY
@@ -269,7 +275,18 @@ the line **unattributable**: never counted, and its loss still blocks. **A pick 
 pick-bearing shape on the line**, since each sheet asks one question: every value in `perDimension`
 under any key, a `perDimension` that is not an object (a bare "B"), every leaf of a field outside the
 schema or of a schema field of the wrong type (`faults` as an object, `recognized: "B"`, `reasons: "B"`,
-a non-string reason or fault), and a reason or fault that is nothing but "A", "B" or "tie".
+a non-string reason or fault), and every other string the line carries, in any field whatever its
+key (`recognizedAs`, `criticModel`, an id, a reason, a fault), that is "A", "B" or "tie" once its
+surrounding punctuation, quotes and brackets are stripped ("B.", "(B)"), and every object **key** on the
+line read the same way, whatever its value (`{"B": null}` in `perDimension`, on the line, or nested in
+a field read leaf by leaf). On a line with nothing **filed** under the sheet's dimension (an answer under
+another key, or anywhere else, is not filed), every such string or key holding "A", "B" or "tie" as a
+whole word ("Panel B") is **unreadable**, a possible loss: a line that does not answer the sheet's
+question and whose text may name a panel is never "no answer" (the article "a" reads the same way
+there — the validator cannot tell it from a panel, so it errs toward UNPROVEN). On a line that files an
+answer, such prose is a reason, not a pick. One field is read by what it answers: under
+`recognized: true`, `recognizedAs` answers the recognition question, which asks "which panel it is in",
+so a panel named there is where the recognised thing is — read for recognition only, never as a pick.
 Each value is normalised as an id is ("b" and " B " are B); a value that is not A, B or tie is
 **unreadable** and is treated as a possible loss, never as a win, as are disagreeing values that may
 pick the reference. An answer not filed under the sheet's own dimension (case, Unicode form and
@@ -284,8 +301,8 @@ and "Grafana's" count, "forwarding" does not name Forward) whatever the flag say
 discloses recognition on any line, first or later, is excluded from counting, and **every loss on its
 record stands** — including a first-line recognition that names a product (v5 set that loss aside, and
 decided "names a product" against a vocabulary that holds ordinary words, so "a Sign in form" erased a
-loss). `recognized: true` with an empty `recognizedAs`, and `recognized: false` with a non-empty one,
-are invalid. A verdict counts only if it is
+loss). `recognized: true` with an empty `recognizedAs` or one that is nothing but a panel ("B"), and
+`recognized: false` with a non-empty one, are invalid. A verdict counts only if it is
 complete (and has no other field), bound to a current sheet, the current frames and the commit,
 attributable, from a critic that disclosed no recognition, filed under the dimension, and reasoned.
 **A loss is never ignored:** any line that picks the reference or whose pick is unreadable — counted,
@@ -324,9 +341,21 @@ is not evidence for C1** and is superseded, for reasons now known precisely:
    comparing a clean application with a screenshot blocked by a modal judged the wrapper.
 2. **The Grafana banner stayed up** because both scripts looked for `aria-label="Close"` exactly;
    its control is "Close alert". (`capture-deep.mjs` matches every aria-label starting "Close";
-   `capture.mjs refs` now dismisses by accessible role and name — a button named "Close …" or
-   "Dismiss …" that does not close a menu, panel, sidebar or navigation, plus the consent buttons — and
-   any other element whose aria-label carries such a name, so it stays a superset of the old selector.)
+   `capture.mjs refs` now dismisses by name AND structure (`dismissRefOverlays`). NAME: a control
+   whose accessible name — aria-label, aria-labelledby, text, value, title or an inner image's alt —
+   starts with "Close" or "Dismiss", or contains "accept", "got it" or the word "allow", found in the
+   document and in every open shadow root; never narrower than the old selectors, whose consent
+   matches were case-insensitive substrings. STRUCTURE: it is clicked only inside (1) an overlay role
+   (dialog, alertdialog, alert, aria-modal); (2) a box taken out of the page flow (fixed or absolute,
+   never a page-chrome landmark such as a header or nav) that is measured painting over the page's
+   CONTENT — visible text or images outside it, hit-tested — and carries a message of its own; or (3)
+   the nearest small box (at most 1,500 characters) that says consent (cookies, consent, GDPR, CCPA,
+   privacy, tracking), in the flow or out of it. No list of product words decides it: a product
+   control in the page flow ("Close tab", "Accept changes"), in a fixed header or nav over a padded
+   layout wrapper, or in a sticky toolbar is never clicked. Controls are clicked one at a time,
+   re-querying the page after each click. What structure cannot separate stays a review item: a
+   product's own out-of-flow popover with a message and a "Close", a product control inside a small
+   box that talks about privacy, and consent inside an iframe, which no version reached.)
 3. **The critics could identify the reference**, and the "-craft" crop (4 % of panel width) left
    "Forward AI" and our own wordmark legible.
 4. **The side was a fixed hash of the pair id**, which put the reference on the left in every

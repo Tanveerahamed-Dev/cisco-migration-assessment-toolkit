@@ -1538,9 +1538,19 @@ def _frontend_file_index(dist_root: Path) -> tuple[Path, dict[str, _FrontendFile
 # other), its raw text ends exactly at one of the reader's end tags, or never: the browser can only
 # read LESS markup than this reader, never more. The reader therefore reads NO element as raw text,
 # which also makes foreign content (svg/math, where those names do not switch the tokenizer) read
-# the same. Every element and attribute a browser builds from such a document is one the reader
-# read — proven differentially in real Chromium over a generated family (webapp/tests/
+# the same. Every attribute a browser puts on an element it builds from such a document is one the
+# reader read — proven differentially in real Chromium over a generated family (webapp/tests/
 # test_scope_mount.py, "the browser is the oracle").
+#
+# That superset reading is sound ONLY for what must be ABSENT (a referrer declaration, a construct
+# off the shell's accept-list): markup the browser reads as text cannot declare or load anything.
+# It is unsound for what must be PRESENT — an icon in the shell's head, a module entry, the
+# runtime-source declaration — since it would count an icon inside a <title>, which the browser
+# reads as text and then requests /favicon.ico outside /scope (RQF-V2-1). So the shell is judged on
+# ONE parse (_scope_shell_tokens) and only where that parse IS the browser's: every element the
+# browser reads as raw text or RCDATA (_SCOPE_HTML_RAW_TEXT_ELEMENTS) closed by its own end tag with
+# no `<` inside, no PLAINTEXT, and token lists and names read with the browser's ASCII rules
+# (_scope_html_token_list, _scope_html_ascii_lower). No second tokenizer judges any of it.
 #
 # Which refusals carry that argument was MEASURED clause by clause (QF-R1-2): removing any one of the
 # abrupt `<!-->` / `<!--->` openings, a `--!>` or `</` inside a comment, the control characters, a `<`
@@ -1574,13 +1584,17 @@ def _frontend_file_index(dist_root: Path) -> tuple[Path, dict[str, _FrontendFile
 # declarations cannot name a resource, `<script type=module src>` / `<link rel=stylesheet|
 # modulepreload|icon href>` naming a startup-indexed asset (an icon may be a `data:image/` URL), and
 # the one inline classic script whose exact text is pinned (_SCOPE_SHELL_INLINE_SCRIPTS). Because
-# the browser reads no more markup than the reader does (above), every element and attribute a
-# browser builds from an accepted shell is one this list admitted. The shell must also declare an
-# icon IN ITS HEAD: without one -- or with one the browser meets only after the head has ended --
-# the browser requests the origin's /favicon.ico, a load no attribute names (RQF-V1-4). The stylesheets it links are held to the /scope CSS accept-list (_scope_css_refusal,
-# RQF-V1-3), so they name no resource either. Proven in real Chromium with request interception
-# and a recording proxy -- which also sees the browser's own favicon request -- over a generated
-# family of every URL-bearing construct enumerated there, in markup and in CSS.
+# the browser reads no more markup than the reader does (above), every attributed element a browser
+# builds from an accepted shell is one this list admitted. The shell must also declare an icon IN
+# ITS HEAD: without one -- or with one the browser meets only after the head has ended, or never
+# builds at all (inside a title, behind a non-ASCII blank in its `rel`) -- the browser requests the
+# origin's /favicon.ico, a load no attribute names (RQF-V1-4, RQF-V2-1); that presence is judged on
+# the shell's exact reading above. The stylesheets it links are held to the /scope CSS accept-list
+# (_scope_css_refusal, RQF-V1-3), so they name no resource either. Proven in real Chromium with
+# request interception and a recording proxy -- which also sees the browser's own favicon request
+# -- over a generated family of every URL-bearing construct enumerated there, in markup and in CSS,
+# and of icons in every position the browser builds none; and every element the shell reading of a
+# served-ready shell holds is shown to be one Chromium built.
 #
 # The shell is the ONLY HTML page served under /scope: any other HTML member is refused, whatever it
 # holds (_SCOPE_REFUSED_HTML_PAGE, RQF-V1-6) -- the hub build ships none, and a page not held to the
@@ -1598,6 +1612,29 @@ class _ScopeMarkupElement:
     attributes: tuple[tuple[str, str], ...]
     text: str = field(default="", compare=False)
     closed: bool = field(default=False, compare=False)
+
+
+@dataclass(frozen=True)
+class _ScopeMarkupEndTag:
+    """One end tag as the reader reads it: its lower-cased name."""
+    name: str
+
+
+#: One token of the restricted language, in source order: a start tag (an element), an end tag, or
+#: a run of character data (a str). Comments and the doctype are read and dropped.
+_ScopeMarkupToken = "_ScopeMarkupElement | _ScopeMarkupEndTag | str"
+
+#: The elements the WHATWG tree builder switches the tokenizer out of the data state for, so that a
+#: browser reads their content as TEXT, not markup: RCDATA (title, textarea), RAWTEXT (style, xmp,
+#: iframe, noembed, noframes, and noscript where scripting is enabled), script data (script) and
+#: PLAINTEXT (plaintext, which never ends). The reader reads markup inside them -- a superset of the
+#: browser's reading, sound for what must be ABSENT -- so a POSITIVE requirement is judged only on a
+#: shell where each one is closed with no `<` inside (_scope_raw_text_misread, RQF-V2-1). Measured,
+#: not trusted: over every element name parse5 knows, every element the shell may carry under which
+#: Chromium hides markup must be one of these
+#: (test_every_element_the_shell_may_carry_that_hides_markup_in_chromium_is_read_exactly).
+_SCOPE_HTML_RAW_TEXT_ELEMENTS = frozenset({"script", "style", "title", "textarea", "xmp", "iframe",
+                                           "noembed", "noframes", "noscript", "plaintext"})
 
 
 _SCOPE_HTML_FORBIDDEN_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0e-\x1f]")
@@ -1644,23 +1681,43 @@ def _scope_html_comment_end(text: str, start: int) -> int | None:
 def _scope_html_reading(text: str) -> tuple[_ScopeMarkupElement, ...] | None:
     """Every element (start tag) of an HTML document in source order, read as a browser reads it —
     or None when the document is not in the restricted language above, which is refused."""
+    tokens = _scope_html_tokens(text)
+    return None if tokens is None else _scope_markup_elements(tokens)
+
+
+def _scope_markup_elements(tokens) -> tuple[_ScopeMarkupElement, ...]:
+    return tuple(token for token in tokens if isinstance(token, _ScopeMarkupElement))
+
+
+def _scope_html_tokens(text: str) -> "tuple[_ScopeMarkupToken, ...] | None":
+    """Every token of an HTML document in source order as the reader reads it -- start tags
+    (elements), end tags and character data, the ONE parse every /scope markup judgement is made
+    on -- or None when the document is not in the restricted language above, which is refused."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     if _SCOPE_HTML_FORBIDDEN_CHARACTERS.search(text):
         return None
-    elements: list[_ScopeMarkupElement] = []
+    tokens: list = []
     position, length = 0, len(text)
     while position < length:
         opening = text.find("<", position)
         if opening < 0:
+            tokens.append(text[position:])
             break
+        if opening > position:
+            tokens.append(text[position:opening])
         if text.startswith("<!--", opening):
             end = _scope_html_comment_end(text, opening)
             if end is None:
                 return None
             position = end
             continue
-        token = _SCOPE_HTML_DOCTYPE.match(text, opening) or _SCOPE_HTML_END_TAG.match(text, opening)
+        token = _SCOPE_HTML_DOCTYPE.match(text, opening)
         if token is not None:
+            position = token.end()
+            continue
+        token = _SCOPE_HTML_END_TAG.match(text, opening)
+        if token is not None:
+            tokens.append(_ScopeMarkupEndTag(token.group(1).lower()))
             position = token.end()
             continue
         match = _SCOPE_HTML_START_TAG.match(text, opening)
@@ -1679,11 +1736,11 @@ def _scope_html_reading(text: str) -> tuple[_ScopeMarkupElement, ...] | None:
         following = text.find("<", match.end())
         following = length if following < 0 else following
         end_tag = _SCOPE_HTML_END_TAG.match(text, following)
-        elements.append(_ScopeMarkupElement(
+        tokens.append(_ScopeMarkupElement(
             name, tuple(attributes), text=text[match.end():following],
             closed=end_tag is not None and end_tag.group(1).lower() == name))
         position = match.end()
-    return tuple(elements)
+    return tuple(tokens)
 
 
 #: Why a /scope member or shell is refused. Every refusal carries its reason (tests hold each
@@ -1927,24 +1984,81 @@ def _scope_document_refusal(content: bytes, media_type: str) -> str | None:
     return _SCOPE_REFUSED_XML if kind == "xml" else _SCOPE_REFUSED_HTML_PAGE
 
 
-def _scope_shell_reading(content: bytes) -> tuple[_ScopeMarkupElement, ...] | None:
-    """The shell's elements when it is readable, declares no referrer policy, no <base> and no
-    http-equiv pragma, and declares the runtime snapshot source exactly once; else None."""
+_SCOPE_HTML_ASCII_WHITESPACE = re.compile(r"[\t\n\f\r ]+")
+_SCOPE_HTML_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _scope_html_ascii_lower(value: str) -> str:
+    """``value`` lower-cased the way a browser compares ASCII case-insensitively: ASCII letters
+    only (Python's lower()/casefold() also fold U+212A KELVIN SIGN to `k` and U+017F LONG S to `s`,
+    which a browser never matches)."""
+    return value.translate(_SCOPE_HTML_ASCII_LOWER)
+
+
+def _scope_html_token_list(value: str) -> list[str]:
+    """A token-list attribute (`rel`) as a browser reads it: split on ASCII whitespace ONLY, each
+    token ASCII-lower-cased. Python's str.split() also splits on U+00A0, U+3000, U+0085 and every
+    other Unicode blank, so `rel="icon&#xA0;"` read that way is an icon a browser never sees
+    (measured in Chromium: it requests /favicon.ico; RQF-V2-1)."""
+    return [token for token in _SCOPE_HTML_ASCII_WHITESPACE.split(_scope_html_ascii_lower(value))
+            if token]
+
+
+def _scope_raw_text_misread(elements: tuple[_ScopeMarkupElement, ...]) -> str | None:
+    """The first element the browser reads as raw text or RCDATA whose content the reader would
+    read differently (RQF-V2-1), or None. The reader reads markup inside such an element; the
+    browser reads text up to the element's own end tag (PLAINTEXT: to the end of the document). So
+    the reading is the browser's EXACTLY only when each such element is closed by its own end tag
+    with no `<` before it -- in this language that end tag is where the browser's raw text ends too
+    -- and no PLAINTEXT element occurs."""
+    for element in elements:
+        if element.name in _SCOPE_HTML_RAW_TEXT_ELEMENTS and (
+                element.name == "plaintext" or not element.closed):
+            return element.name
+    return None
+
+
+def _scope_shell_tokens(content: bytes) -> "tuple[_ScopeMarkupToken, ...] | str":
+    """The shell's tokens, read EXACTLY as a browser reads them, or why it cannot be (a str).
+
+    The shell's requirements are not only absences: an icon in the head, a module entry and the
+    runtime-source declaration must be PRESENT, and a reading that holds more markup than the
+    browser's (the reader's, by design) would count an icon inside a <title> that the browser reads
+    as text -- served ready while the browser requests /favicon.ico outside /scope (RQF-V2-1). So
+    the shell is judged only where the two readings are one: readable, every raw-text/RCDATA
+    element closed with no `<` inside (_scope_raw_text_misread), no referrer policy, no <base>, no
+    http-equiv pragma, and the runtime snapshot source declared exactly once."""
     try:
-        elements = _scope_html_reading(content.decode("utf-8", errors="strict"))
+        tokens = _scope_html_tokens(content.decode("utf-8", errors="strict"))
     except UnicodeDecodeError:
-        return None
-    if elements is None or _scope_reading_declares_referrer_policy(elements):
-        return None
+        return "the shell is not UTF-8"
+    if tokens is None:
+        return "the shell is not markup in the restricted language the reader reads exactly"
+    elements = _scope_markup_elements(tokens)
+    misread = _scope_raw_text_misread(elements)
+    if misread is not None:
+        return (f"a <{misread}> holds markup a browser reads as raw text (or never ends), so the "
+                "shell is not read as the browser reads it")
+    if _scope_reading_declares_referrer_policy(elements):
+        return "the shell declares its own referrer policy"
     runtime_sources = []
     for element in elements:
         attributes = dict(element.attributes)
         if element.name == "base" or (element.name == "meta" and "http-equiv" in attributes):
-            return None
+            return "the shell declares a <base> or an http-equiv pragma"
         if (element.name == "meta"
-                and attributes.get("name", "").casefold() == _SCOPE_RUNTIME_SOURCE_META):
+                and _scope_html_ascii_lower(attributes.get("name", "")) == _SCOPE_RUNTIME_SOURCE_META):
             runtime_sources.append(attributes.get("content", ""))
-    return elements if runtime_sources == [_SCOPE_RUNTIME_SOURCE_VALUE] else None
+    if runtime_sources != [_SCOPE_RUNTIME_SOURCE_VALUE]:
+        return "the shell does not declare the runtime snapshot source exactly once"
+    return tokens
+
+
+def _scope_shell_reading(content: bytes) -> tuple[_ScopeMarkupElement, ...] | None:
+    """The shell's elements, read exactly as a browser reads them, when it can be judged at all
+    (_scope_shell_tokens); else None."""
+    tokens = _scope_shell_tokens(content)
+    return None if isinstance(tokens, str) else _scope_markup_elements(tokens)
 
 
 #: The shell's closed ACCEPT-list (QF-V2-3): the only elements it may carry, each with the
@@ -2001,54 +2115,34 @@ def _scope_shell_style_is_inert(value: str) -> bool:
 _SCOPE_SHELL_HEAD_ELEMENTS = frozenset({"html", "head", "title", "meta", "link", "script"})
 
 
-def _scope_shell_declares_an_icon_in_its_head(content: bytes) -> bool:
+def _scope_shell_declares_an_icon_in_its_head(tokens: "tuple[_ScopeMarkupToken, ...]") -> bool:
     """Whether the shell's first `<link rel=icon>` comes before anything that ends the head.
 
     RQF-V1-4, measured in Chromium (full headless, per-case origins): with no icon, and also with an
     icon declared only AFTER the head has ended (behind body text, a <p>, a </head><body>), the
     browser requests the origin's /favicon.ico -- outside /scope -- before it sees the late icon.
-    The shell has already been read in the restricted language (_scope_html_reading), so its tokens
-    here are exactly the reader's; the head ends at the first construct the list above does not keep
-    in it, which only makes this rule refuse MORE than the browser needs."""
-    text = content.decode("utf-8", errors="strict").replace("\r\n", "\n").replace("\r", "\n")
-    position, open_raw_text = 0, None
-    while True:
-        opening = text.find("<", position)
-        data = text[position:opening if opening >= 0 else len(text)]
-        if open_raw_text is None and data.strip("\t\n\f "):
-            return False  # character data in the head starts the body
-        if opening < 0:
-            return False
-        if text.startswith("<!--", opening):
-            end = _scope_html_comment_end(text, opening)
-            if end is None:
+    ``tokens`` is the shell's ONE parse (_scope_shell_tokens), which is the browser's reading
+    exactly: no raw-text or RCDATA element in it holds a `<` (RQF-V2-1 -- an icon inside a <title>
+    is text to the browser, and was counted here by a second tokenizer that read it as markup). The
+    head ends at the first token the list above does not keep in it, which only makes this rule
+    refuse MORE than the browser needs."""
+    open_raw_text = None
+    for token in tokens:
+        if isinstance(token, str):
+            if open_raw_text is None and token.strip("\t\n\f "):
+                return False  # character data in the head starts the body
+        elif isinstance(token, _ScopeMarkupEndTag):
+            if token.name != open_raw_text:
                 return False
-            position = end
-            continue
-        token = _SCOPE_HTML_DOCTYPE.match(text, opening)
-        if token is not None:
-            position = token.end()
-            continue
-        token = _SCOPE_HTML_END_TAG.match(text, opening)
-        if token is not None:
-            if token.group(1).lower() != open_raw_text:
+            open_raw_text = None
+        else:
+            if open_raw_text is not None or token.name not in _SCOPE_SHELL_HEAD_ELEMENTS:
                 return False
-            open_raw_text, position = None, token.end()
-            continue
-        match = _SCOPE_HTML_START_TAG.match(text, opening)
-        if match is None:
-            return False
-        name = match.group(1).lower()
-        attributes = {}
-        for attribute in _SCOPE_HTML_ATTRIBUTE_RE.finditer(match.group(2)):
-            raw = next((v for v in attribute.group(2, 3, 4) if v is not None), "")
-            attributes.setdefault(attribute.group(1).lower(), _scope_html_attribute_value(raw) or "")
-        if name == "link" and attributes.get("rel", "").casefold().split() == ["icon"]:
-            return True
-        if name not in _SCOPE_SHELL_HEAD_ELEMENTS or open_raw_text is not None:
-            return False
-        open_raw_text = name if name in ("title", "script") else None
-        position = match.end()
+            if token.name == "link" and _scope_html_token_list(
+                    dict(token.attributes).get("rel", "")) == ["icon"]:
+                return True
+            open_raw_text = token.name if token.name in _SCOPE_HTML_RAW_TEXT_ELEMENTS else None
+    return False
 
 
 def _scope_shell_asset(reference: str, indexed: dict[str, _FrontendFile],
@@ -2071,10 +2165,10 @@ def _scope_shell_refusal(indexed: dict[str, _FrontendFile]) -> str | None:
     index_file = indexed.get("index.html")
     if index_file is None or not index_file.content:
         return "the build has no index.html"
-    elements = _scope_shell_reading(index_file.content)
-    if elements is None:
-        return ("the shell is not readable markup, declares its own referrer policy, a <base> or an "
-                "http-equiv pragma, or does not declare the runtime snapshot source exactly once")
+    tokens = _scope_shell_tokens(index_file.content)
+    if isinstance(tokens, str):
+        return tokens
+    elements = _scope_markup_elements(tokens)
     module_entries = icons = 0
     for element in elements:
         allowed = _SCOPE_SHELL_ELEMENTS.get(element.name)
@@ -2088,7 +2182,7 @@ def _scope_shell_refusal(indexed: dict[str, _FrontendFile]) -> str | None:
         if "style" in attributes and not _scope_shell_style_is_inert(attributes["style"]):
             return f"<{element.name} style> can name a resource"
         if element.name == "link":
-            relations = attributes.get("rel", "").casefold().split()
+            relations = _scope_html_token_list(attributes.get("rel", ""))
             if len(relations) != 1 or relations[0] not in _SCOPE_SHELL_LINK_RELATIONS:
                 return f"<link rel={attributes.get('rel', '')!r}> is not a relation the shell may declare"
             href = attributes.get("href", "")
@@ -2098,7 +2192,7 @@ def _scope_shell_refusal(indexed: dict[str, _FrontendFile]) -> str | None:
             icons += relations[0] == "icon"
         elif element.name == "script":
             if "src" in attributes:
-                if attributes.get("type", "").casefold() != "module":
+                if _scope_html_ascii_lower(attributes.get("type", "")) != "module":
                     return "a <script src> that is not a module entry"
                 if not element.closed or element.text.strip():
                     return "a <script src> with content of its own"
@@ -2108,7 +2202,7 @@ def _scope_shell_refusal(indexed: dict[str, _FrontendFile]) -> str | None:
             elif attributes or not element.closed or hashlib.sha256(
                     element.text.encode("utf-8")).hexdigest() not in _SCOPE_SHELL_INLINE_SCRIPTS:
                 return "an inline <script> other than the one whose exact text the reader pins"
-    if not icons or not _scope_shell_declares_an_icon_in_its_head(index_file.content):
+    if not icons or not _scope_shell_declares_an_icon_in_its_head(tokens):
         # RQF-V1-4: with no icon in the head, a browser requests the origin's /favicon.ico by
         # default -- outside /scope, a load no attribute names (measured in Chromium)
         return "the shell declares no <link rel=icon> in its head, so a browser requests /favicon.ico"

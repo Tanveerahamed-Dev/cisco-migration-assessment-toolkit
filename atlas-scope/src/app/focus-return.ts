@@ -23,7 +23,10 @@
  *   3. Otherwise to any explicit fallbacks the caller names, in order.
  *   4. Otherwise to the region landmark around the element giving focus up — its labelling heading
  *      when it is `aria-labelledby` one, else the labelled region itself — made programmatically
- *      focusable (`tabindex=-1`, never a Tab stop) for as long as it holds focus.
+ *      focusable (`tabindex=-1`, never a Tab stop) for as long as it holds focus; and when that region is
+ *      no longer rendered, the next named region OUTWARD, and so on (every door walks outward: the first
+ *      door once tried only the nearest region and the recorded one, and left focus on <body> with an
+ *      outer region still shown — independent verifier V2-3, focus-return.rule4-doors.test.ts).
  *   5. Otherwise leave focus exactly where it is.
  * Never blur, and never land on <body>.
  *
@@ -128,6 +131,12 @@ export interface ReturnRecord {
    * Inspector close whose citation had re-rendered, and whose stage fallback was display:none).
    */
   readonly region: HTMLElement | null;
+  /**
+   * EVERY named region the target sat in, nearest first, captured with it: rule 4's outward walk from where the
+   * reader was, which must still be possible once the target's own subtree (and so its path to the outer regions)
+   * has been removed (independent verifier V2-3).
+   */
+  readonly regions: readonly HTMLElement[];
 }
 
 type Candidate = HTMLElement | null | undefined;
@@ -214,7 +223,7 @@ function openerOf(el: HTMLElement): HTMLElement | null {
 export function recordReturn(from: EventTarget | null | undefined, self?: Element | null): ReturnRecord | null {
   if (typeof HTMLElement === "undefined" || !(from instanceof HTMLElement)) return null;
   if (from === self || from === document.body) return null;
-  return { target: from, opener: openerOf(from), region: landmarkOf(from) };
+  return { target: from, opener: openerOf(from), region: landmarkOf(from), regions: namedRegionsAround(from) };
 }
 
 const takesFocus = (el: HTMLElement): boolean =>
@@ -259,9 +268,11 @@ function focusLandmark(el: HTMLElement): boolean {
 /**
  * Return focus. `record` is what `recordReturn` captured (or a plain element); `context` is the
  * element giving focus up, used to find the region landmark; `fallbacks` are the caller's explicit
- * next choices. Order: the target, its opener, the fallbacks, the landmark around `context`, and
- * last the landmark the target sat in when it was recorded (`ReturnRecord.region`). Returns the
- * element that now holds focus, or null when focus was left in place.
+ * next choices. Order: the target, its opener, the fallbacks, the landmark around `context`, the
+ * landmark the target sat in when it was recorded (`ReturnRecord.region`), and then rule 4's OUTWARD walk:
+ * every further named region around `context`, then every further one the target sat in, nearest first —
+ * each as its heading, else itself. Returns the element that now holds focus, or null when focus was left
+ * in place (no candidate and no named region around either is rendered).
  */
 export function returnFocus(
   record: ReturnRecord | HTMLElement | null | undefined,
@@ -272,21 +283,32 @@ export function returnFocus(
   const target = record instanceof HTMLElement ? record : (record?.target ?? null);
   const opener = record instanceof HTMLElement ? null : (record?.opener ?? null);
   for (const c of [target, opener, ...fallbacks]) if (c && tryFocus(c)) return c;
-  const around = namedRegionsAround(context)[0];
-  const marks = around === undefined ? [] : placesOf(around);
-  for (const m of marks) if (focusLandmark(m)) return m;
+  const around = namedRegionsAround(context);
+  const tried = new Set<HTMLElement>();
+  const tryPlace = (m: HTMLElement): boolean => {
+    if (tried.has(m)) return false;
+    tried.add(m);
+    return focusLandmark(m);
+  };
+  const nearest = around[0];
+  if (nearest !== undefined) for (const m of placesOf(nearest)) if (tryPlace(m)) return m;
   const region = record instanceof HTMLElement ? null : (record?.region ?? null);
-  if (region !== null && !marks.includes(region)) {
+  if (region !== null) {
     /* The region's first heading that can take focus names the same place and is small enough for
        its ring to be seen whole; a ring round a tall, rail-clipped region measured under half its
        perimeter (focus-return.region.test.ts). Headings in a hidden sub-pane refuse focus and are
        passed over; the region itself is the last resort — and a recorded HEADING that no longer
        renders stands for the region it labels (rule 4). */
-    if (!/^H[1-6]$/.test(region.tagName)) {
-      for (const h of region.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")) if (focusLandmark(h)) return h;
+    if (!tried.has(region) && !/^H[1-6]$/.test(region.tagName)) {
+      for (const h of region.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")) if (tryPlace(h)) return h;
     }
-    for (const m of recordedPlaces(region)) if (!marks.includes(m) && focusLandmark(m)) return m;
+    for (const m of recordedPlaces(region)) if (tryPlace(m)) return m;
   }
+  /* Rule 4 OUTWARD (independent verifier V2-3): past every region that is no longer rendered, the next one out —
+     around the element giving focus up, then around where the target was (captured with it, so a removed subtree
+     does not cut the walk short). */
+  const recorded = record instanceof HTMLElement ? namedRegionsAround(record) : (record?.regions ?? []);
+  for (const n of [...around.slice(1), ...recorded]) for (const m of placesOf(n)) if (tryPlace(m)) return m;
   return null;
 }
 
@@ -615,57 +637,132 @@ function landOn(el: Element | null | undefined): HTMLElement | null {
 /** Whether a reader can see any part of an element: "unmeasured" when it has no box to measure. */
 type Sight = "seen" | "unseen" | "unmeasured";
 
-/** A computed property that is set to something (jsdom reports "" for what it does not compute). */
-const setTo = (v: string | undefined): boolean => v !== undefined && v !== "" && v !== "none";
+/**
+ * THE CONTAINING-BLOCK RULE FOR A FIXED BOX, stated ONCE (independent refuter W5-X3): does the element whose computed
+ * style is `cs` establish the containing block of its `position: fixed` descendants? CSS Position 3 defers the answer
+ * to the specifications of the properties that do it, and this is that class, not a sample of it: every property
+ * whose non-initial value makes the element a fixed box's containing block (CSS Transforms 1/2, Motion Path — the
+ * offset path and its position — Filter Effects 1/2, CSS Containment 2 — layout or paint containment, which `contain`
+ * and `content-visibility` apply), and `will-change` naming one of them (CSS Will Change: a property that WOULD
+ * create one creates one when it is announced) — derived from the same table, never listed a second time. The two
+ * hand lists it replaces (here and in the audit) named four of these and missed, among others, `will-change:
+ * transform`, which this codebase's own stylesheets use and say makes a containing block (shell.css, DataGrid.css).
+ *
+ * MEASURED, NOT ASSUMED: `review/audit-d3-focus.mjs --containing-blocks` (every audit mode runs it first) sets each
+ * literal declaration the app's stylesheets write, `will-change` naming every property Chromium knows,
+ * and every property with a vocabulary of values on a real element, measures whether a fixed box inside it still
+ * covers the viewport, and fails on any disagreement with this function. Its first run corrected this table three
+ * ways (R-D3 follow-up, Chromium 2026-10): `container-type` does NOT make a containing block (CSS Containment 3 no
+ * longer has it apply layout containment, so `PathTrace.css`'s `container-type: inline-size`, which the refuter
+ * listed, is no gap); `offset-position` other than `normal`/`auto` does, and so does `will-change` naming it; and
+ * `will-change: content-visibility` does not, although `content-visibility: auto | hidden` itself does.
+ *
+ * SELF-CONTAINED BY CONTRACT: it names nothing outside its own body, because the audit runs THIS source in the page
+ * (focus-return.sight.test.ts evaluates it alone). A computed value of "" (a DOM that computes nothing) states nothing.
+ */
+export function containsFixedBoxes(cs: Pick<CSSStyleDeclaration, "getPropertyValue">): boolean {
+  const notNone = (v: string): boolean => v !== "none";
+  /* [property, the values that make the element a fixed box's containing block, whether `will-change` naming it does,
+     the shorthands that set it — naming one of those names it (the census measures every shorthand Chromium has)] */
+  const members: readonly (readonly [string, (v: string) => boolean, boolean, (readonly string[])?])[] = [
+    ["transform", notNone, true],
+    ["translate", notNone, true],
+    ["rotate", notNone, true],
+    ["scale", notNone, true],
+    ["offset-path", notNone, true, ["offset"]],
+    ["offset-position", (v) => v !== "normal" && v !== "auto", true, ["offset"]],
+    ["perspective", notNone, true],
+    ["transform-style", (v) => v === "preserve-3d", true],
+    ["filter", notNone, true],
+    ["backdrop-filter", notNone, true],
+    ["contain", (v) => /(?:^|\s)(?:layout|paint|strict|content)(?:\s|$)/.test(v), true],
+    ["content-visibility", (v) => v === "auto" || v === "hidden", false],
+  ];
+  const valueOf = (p: string): string => (cs.getPropertyValue(p) ?? "").trim();
+  for (const [p, holds] of members) {
+    const v = valueOf(p);
+    if (v !== "" && holds(v)) return true;
+  }
+  /* `will-change` names a property by any name the engine accepts for it: an ALIAS too (independent verifier SD3V-6,
+     MEASURED in Chromium: `will-change: -webkit-transform` contains a fixed box, and the computed value keeps the
+     alias as written). Every `-webkit-` alias of a member is that member, so each named ident is read without the
+     prefix, and property names are ASCII case-insensitive. A SHORTHAND that sets a member names it as well (MEASURED:
+     `will-change: offset`). The census measures every name Chromium accepts — longhand, shorthand and alias. */
+  const announced = valueOf("will-change")
+    .split(",")
+    .map((x) => x.trim().toLowerCase().replace(/^-webkit-/, ""));
+  return members.some(([p, , byWillChange, shorthands = []]) => byWillChange && [p, ...shorthands].some((n) => announced.includes(n)));
+}
+
+/** The part of an element a reader can see, in viewport px, and the ancestors that clipped it (`tag.class`). */
+export interface VisiblePart {
+  readonly l: number;
+  readonly t: number;
+  readonly r: number;
+  readonly b: number;
+  readonly clippers: readonly string[];
+}
 
 /**
- * Can the reader see ANY part of `el`? Its border box, intersected with the viewport and with every ancestor that
- * clips it — on each axis whose `overflow` is not `visible` (`clip` included: no scroll can undo a clip) — following
- * the containing-block chain: a fixed box escapes every ancestor that does not contain fixed boxes, an absolute box
- * every static one. The same walk `review/audit-d3-focus.mjs` measures ("no part of it is on screen (clipped by
- * …)"). An element with no box — zero area, as everything in a DOM nothing lays out — is UNMEASURED: unknown, never
- * "unseen", so this owner never moves focus on a guess.
+ * THE ONE WALK of "what part of `el` can the reader see": its border box, met with the viewport and with every
+ * ancestor that clips it — on each axis whose computed `overflow` is not `visible` (`clip` included: no scroll can
+ * undo a clip; the computed value already carries CSS's pairing rule, so `overflow-x: clip` beside a visible y clips
+ * x alone) — following the containing-block chain: a fixed box escapes every ancestor that does not contain fixed
+ * boxes (`containsFixedBoxes`), an absolute box every static one that does not. Null when the element has no box to
+ * measure (zero area, as everything in a DOM nothing lays out): unknown, never "unseen". The owner's sight
+ * (`sightOf`) is this answer, and `review/audit-d3-focus.mjs` runs this very source in the page for its "no part of it
+ * is on screen (clipped by …)" verdict — one definition, not two walks that agree by hand (refuter W5-X3: the audit
+ * clipped both axes where this clipped one). Self-contained apart from `containsFixedBoxes`, for the same reason.
  */
-function sightOf(el: Element): Sight {
-  const r = el.getBoundingClientRect();
-  if (!(r.width > 0 && r.height > 0)) return "unmeasured";
+export function visiblePartOf(el: Element): VisiblePart | null {
+  const box = el.getBoundingClientRect();
+  if (!(box.width > 0 && box.height > 0)) return null;
   const root = document.documentElement;
-  let l = r.left;
-  let t = r.top;
-  let rr = r.right;
-  let b = r.bottom;
   const vw = root.clientWidth > 0 ? root.clientWidth : window.innerWidth;
   const vh = root.clientHeight > 0 ? root.clientHeight : window.innerHeight;
-  l = Math.max(l, 0);
-  t = Math.max(t, 0);
-  rr = Math.min(rr, vw);
-  b = Math.min(b, vh);
-  const containsFixed = (cs: CSSStyleDeclaration): boolean =>
-    setTo(cs.transform) || setTo(cs.filter) || setTo(cs.perspective) || /paint|layout|strict|content/.test(cs.contain ?? "");
+  let l = Math.max(box.left, 0);
+  let t = Math.max(box.top, 0);
+  let r = Math.min(box.right, vw);
+  let b = Math.min(box.bottom, vh);
+  const clippers: string[] = [];
+  /* "" is a value a DOM that computes nothing reports: it states no clip and no position. */
+  const clips = (v: string): boolean => v !== "" && v !== "visible";
+  const positioned = (p: string): boolean => p !== "" && p !== "static";
   let pos = getComputedStyle(el).position;
   for (let n = el.parentElement; n !== null && n !== document.body && n !== root; n = n.parentElement) {
     const cs = getComputedStyle(n);
-    const applies = pos === "fixed" ? containsFixed(cs) : pos === "absolute" ? cs.position !== "static" || containsFixed(cs) : true;
-    if (applies) {
-      const clipX = setTo(cs.overflowX) && cs.overflowX !== "visible";
-      const clipY = setTo(cs.overflowY) && cs.overflowY !== "visible";
-      if (clipX || clipY) {
-        const nr = n.getBoundingClientRect();
-        const nl = nr.left + n.clientLeft;
-        const nt = nr.top + n.clientTop;
-        if (clipX) {
-          l = Math.max(l, nl);
-          rr = Math.min(rr, nl + n.clientWidth);
-        }
-        if (clipY) {
-          t = Math.max(t, nt);
-          b = Math.min(b, nt + n.clientHeight);
-        }
+    const applies = pos === "fixed" ? containsFixedBoxes(cs) : pos === "absolute" ? positioned(cs.position) || containsFixedBoxes(cs) : true;
+    if (!applies) continue;
+    const clipX = clips(cs.getPropertyValue("overflow-x"));
+    const clipY = clips(cs.getPropertyValue("overflow-y"));
+    if (clipX || clipY) {
+      const nr = n.getBoundingClientRect();
+      const nl = nr.left + n.clientLeft;
+      const nt = nr.top + n.clientTop;
+      if (clipX) {
+        l = Math.max(l, nl);
+        r = Math.min(r, nl + n.clientWidth);
       }
-      pos = cs.position;
+      if (clipY) {
+        t = Math.max(t, nt);
+        b = Math.min(b, nt + n.clientHeight);
+      }
+      const cls = typeof n.className === "string" ? n.className.split(" ")[0] : "";
+      clippers.push(`${n.tagName.toLowerCase()}${cls ? `.${cls}` : ""}`);
     }
+    pos = cs.position;
   }
-  return rr - l >= 1 && b - t >= 1 ? "seen" : "unseen";
+  return { l, t, r, b, clippers };
+}
+
+/**
+ * Can the reader see ANY part of `el`? `visiblePartOf`'s answer: "seen" when at least 1 px on each axis is left,
+ * "unseen" when nothing is, "unmeasured" when there is no box — so this owner never moves focus on a guess.
+ */
+function sightOf(el: Element): Sight {
+  const part = visiblePartOf(el);
+  if (part === null) return "unmeasured";
+  return part.r - part.l >= 1 && part.b - part.t >= 1 ? "seen" : "unseen";
 }
 
 /**

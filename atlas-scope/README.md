@@ -102,10 +102,17 @@ a resource, `<script type="module" src>` and `<link rel="stylesheet|modulepreloa
 built `/scope/assets/` file (an icon may be a `data:image/` URL), an icon declared in the head
 (without one there, a browser requests `/favicon.ico`, outside `/scope`), and the one inline theme-boot script whose exact
 text AssessHub pins (`_SCOPE_SHELL_INLINE_SCRIPTS` — change it together with that script here).
+What the shell must CONTAIN (that icon, a module entry, the runtime-source meta) is judged on the
+browser's own reading of it, never on a reader that sees more markup than the browser does: every
+element a browser reads as text (`<title>`, `<script>`, `<style>`, `<textarea>`, `<noscript>` and
+the other raw-text elements) must close with nothing but text inside, and a `rel` is split on ASCII
+whitespace only (`_scope_shell_tokens`) — an icon inside a `<title>` is no icon to a browser.
 Every stylesheet a build ships must name no resource either (`_scope_css_refusal`: no `@import`,
 `url()`, `image-set()` or other resource function, no at-rule but `@media`, `@supports`,
 `@container`, `@keyframes`, `@layer` and `@property`), so a page AssessHub serves as ready loads
-nothing outside `/scope` through its markup or its CSS. Anything else is refused as
+nothing outside `/scope` through its markup or its CSS (held in real Chromium, with a recording
+proxy that also sees the browser's own favicon request, over generated families of every construct
+`webapp/tests/test_scope_mount.py` enumerates — not a proof over every possible document). Anything else is refused as
 `invalid_build`, never guessed at. The portable Atlas bundle ships the same hub build as its own member
 (`portable/atlas_bundle.py` `SCOPE_DIST_SOURCE`), and its build refuses to proceed without it.
 

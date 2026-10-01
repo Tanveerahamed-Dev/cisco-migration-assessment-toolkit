@@ -391,3 +391,64 @@ def test_signing_machinery_requires_explicit_identity_sha256_and_rfc3161() -> No
     ):
         assert token in verify
     assert "BEGIN PRIVATE KEY" not in sign + verify
+
+
+def _project_output(field: str) -> tuple[str, str]:
+    from portable import atlas_bundle
+
+    project = release_contract._NPM_INVENTORIES[field][0]
+    outputs = [output for output in atlas_bundle.BUILD_OUTPUTS
+               if output.rsplit("/", 1)[0] == project]
+    assert len(outputs) == 1, outputs
+    return project, outputs[0]
+
+
+@pytest.mark.parametrize("field", sorted(release_contract._NPM_INVENTORIES))
+def test_the_real_built_output_carries_bundler_runtime_packages_and_they_are_inventoried(
+        field: str, tmp_path: Path) -> None:
+    """W5-X5 against the REAL frontends: build each shipped output the way its npm script does
+    (into a scratch tree that mirrors the repository layout), then derive the shipped-package set
+    from a module-recording rebuild bound byte-for-byte to it. Vite's preload helper and Rolldown's
+    runtime are in BOTH real builds although both packages are dev-only; the derived set beyond the
+    production graph must be exactly the reviewed one (a new bundler-injected package must be
+    reviewed before a release, as a production lock change already is)."""
+    import shutil
+
+    project, output = _project_output(field)
+    project_root = ROOT.joinpath(*project.split("/"))
+    vite = project_root / "node_modules" / "vite" / "bin" / "vite.js"
+    node = shutil.which("node")
+    if node is None or not vite.is_file():
+        pytest.skip(f"{project}: node or its installed toolchain is absent (run npm ci there); the "
+                    "built-output proof needs the real bundler, and nothing else can stand in for it")
+    mirror = tmp_path / "mirror"
+    shipped = mirror.joinpath(*output.split("/"))
+    arguments = release_contract._vite_build_arguments(ROOT, output)
+    built = subprocess.run(
+        [node, str(vite), "build", *arguments, "--outDir", str(shipped), "--emptyOutDir",
+         "--logLevel", "error"],
+        cwd=project_root, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=900, check=False,
+    )
+    assert built.returncode == 0, built.stderr[-4000:]
+    attribution = release_contract._npm_build_attribution(
+        ROOT, field, build_root=mirror, required=True)
+    assert attribution["status"] == "built_module_graph_bound"
+    assert attribution["output"] == output
+    # every shipped file is accounted for by the graph: chunks by their modules, emitted assets
+    # (the HTML shell, stylesheets) by the files they were made from; none is attributed by default
+    assert attribution["files_without_modules"] == [], attribution["files_without_modules"]
+    names = {row["name"] for row in attribution["additional_rows"]}
+    assert {"vite", "rolldown"} <= names, attribution["additional_rows"]
+    virtual = {
+        module for package in attribution["packages"] for module in package["virtual_modules"]}
+    assert {"vite/preload-helper.js", "rolldown/runtime.js"} <= virtual, virtual
+    assert tuple(
+        f"{row['install_path']}@{row['version']}" for row in attribution["additional_rows"]
+    ) == release_contract.EXPECTED_BUILD_ONLY_NPM_PACKAGES[field]
+    # every production package whose modules ship is in the production graph already
+    production = {row["install_path"] for row in release_contract._npm_production_packages(ROOT, project)}
+    attributed = {package["install_path"] for package in attribution["packages"]}
+    assert attributed - production == {row["install_path"] for row in attribution["additional_rows"]}
+    # the derivation never records a path outside the project (no home directory in a receipt)
+    assert str(ROOT).replace("\\", "/").casefold() not in json.dumps(attribution).casefold()

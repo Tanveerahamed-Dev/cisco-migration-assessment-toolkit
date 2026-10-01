@@ -168,7 +168,14 @@ draft-only until a separate reviewed signed-candidate/promotion contract exists.
 - Windows-only, x64-only (build host = target architecture). Updates are operator-initiated and
   staged; there is no unattended network updater.
 - The production (non-dev) `package-lock.json` graphs of BOTH bundled frontends — `webapp/frontend`
-  and `atlas-scope` — are inventoried against reviewed counts and digests. Python/npm package license
+  and `atlas-scope` — are inventoried against reviewed counts and digests, together with the
+  build-attributed packages: those beyond the production graph whose code a shipped build carries
+  (today the bundler's runtime modules), derived from the built module graph and reviewed against
+  `release_contract.EXPECTED_BUILD_ONLY_NPM_PACKAGES`. Release metadata carries
+  `atlas.portable-third-party-notices/2` alongside `atlas.portable-toolchain-receipt/2` and
+  `atlas.portable-qualification/2`. A package carrying a `/1` document of any of these is refused as
+  superseded, with the stated reason, never migrated: verify it with the checkout that built it, or
+  rebuild it. Python/npm package license
   texts are embedded when installed packages omit them through two source-pinned fallbacks. IANA/IEEE/Cisco dataset source/hash notices are also embedded, but IEEE
   OUI and Cisco-fact public redistribution authority remains an explicit legal-review gate; a draft
   candidate does not close it.

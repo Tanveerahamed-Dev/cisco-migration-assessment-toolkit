@@ -21,7 +21,7 @@ import {
 } from "react";
 
 import { bandToken, isFavourableBand, NOT_MEASURED_LABEL, PARTIAL_MARK, presentBand, QUALIFIED_BAND_TOKEN } from "../core/band-qualification";
-import { recognisedKind, unrecognisedPhrase, type Device, type DeviceKind, type Link } from "../core/types";
+import { BAND_ORDER, kindWords, recognisedKind, unrecognisedPhrase, type Device, type DeviceKind, type Link } from "../core/types";
 import { roleGlyphClass } from "../core/roles";
 
 const STORAGE_KEY = "atlas-scope.fabric-legend.open";
@@ -47,9 +47,10 @@ const KIND_LABEL: Readonly<Record<DeviceKind, string>> = {
   endpoint: "Endpoint",
   unknown: "Kind not identified by the engine",
 };
-const kindLabel = (kind: string): string => (recognisedKind(kind) ? KIND_LABEL[kind] : unrecognisedPhrase("kind", kind));
+const kindLabel = (kind: string | null): string => (kind === null ? kindWords(null) : recognisedKind(kind) ? KIND_LABEL[kind] : unrecognisedPhrase("kind", kind));
 
-const BANDS = ["Excellent", "Good", "Fair", "Poor", "Critical"] as const;
+/* The scored bands, highest first, as the engine contract publishes them (core/types BAND_ORDER), never a copy. */
+const BANDS = BAND_ORDER;
 
 
 const tokenStyle = (token: string): CSSProperties =>
@@ -213,7 +214,7 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
     (open ? closeRef.current : showRef.current)?.focus();
   }, [open]);
 
-  const kinds = new Map<string, number>();
+  const kinds = new Map<string | null, number>();
   for (const d of devices) kinds.set(d.kind, (kinds.get(d.kind) ?? 0) + 1);
   const orderedKinds = [
     ...KIND_ORDER.filter((k) => kinds.has(k)),

@@ -97,6 +97,15 @@
  *                                                        # bounded run); the proof is every state passing
  *   node review/audit-d3-focus.mjs --sweep --render=full # the geometry passes with every frame drawn
  *                                                        # (the reference; hours on a software renderer)
+ *   node review/audit-d3-focus.mjs --containing-blocks   # ONLY the harness checks (seconds; every mode runs
+ *                                                        # them first): the census of the owner's
+ *                                                        # containing-block rule against Chromium, the
+ *                                                        # opener key rule, the activation read's frame
+ *                                                        # rule and the watchdog's round-trip clock
+ *
+ * Every pool job runs under a WATCHDOG (JOB_STALL_MS, env ATLAS_JOB_STALL_MS): a job that makes no progress for
+ * that long is reported NOT DRIVEN with the step it stalled in, its pages are closed, and the run goes on (and
+ * fails). The pool's memory back-pressure says when it holds jobs back, and the POOL line totals it.
  *
  * TRACTABLE BY CONSTRUCTION (phase 3.5): the geometry passes run with the fabric's WebGL draw calls
  * suspended (RENDER, proved by --render-check), the rung crossing runs as (crossing x state) units
@@ -119,7 +128,8 @@
  * BODY or did not run, a focus stop was not visible, or a required kind was never driven or never
  * checked for visibility. Exit 2: nothing was driven at all.
  */
-import { readFileSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { readFileSync, readdirSync } from "node:fs";
 import { freemem } from "node:os";
 import { chromium } from "@playwright/test";
 import ts from "typescript";
@@ -214,6 +224,113 @@ async function timed(name, fn) {
   }
 }
 const RUN_T0 = Date.now();
+
+/* ── a pool job that stops making progress is REPORTED, never waited for (independent verifier V2-5) ──────────
+ * MEASURED (verifier, R-D3, three bounded `--crossings --vp=390 --state="a device selected"` runs on a busy host):
+ * one crashed on a Playwright protocol error, and two were killed by the external `timeout 2700` after the log had
+ * been silent for ~22 minutes, every headless renderer at 0.0 CPU and free memory under POOL_MIN_FREE_BYTES — a
+ * stall that ended in nothing but the outer timeout, with no word on which job, which case or which step. Every pool
+ * job now runs under a WATCHDOG: the job's progress clock is reset by every step it notes (`jobNote`: a load, a
+ * resize, a case, an activation, a settle) and every line it prints; a job whose clock stands still for
+ * JOB_STALL_MS (ATLAS_JOB_STALL_MS, default 5 min — the longest bounded step is a 90 s load, retried once) is
+ * reported NOT DRIVEN with the step it was in and its last line, its page contexts are closed (freeing the pages
+ * and failing whatever it still awaits), and the pool moves on. The run then fails on that line like any other
+ * NOT DRIVEN. Contexts are the job's because the browser's `newContext` records them (`watchContexts`).
+ *
+ * PROGRESS IS EVERY COMPLETED ROUND TRIP, not a hand-picked set of steps (independent verifier SD3V-3): the noted
+ * steps never reached the sweep's own lanes (sweepState, sweepJourney call page.goto / evaluate / keyboard directly),
+ * which MEASURED 56-66 s with nothing noted or printed on an unloaded host — under the ~11x load this file measures
+ * elsewhere, a healthy lane stopped as "stalled". So every Playwright call a job makes that COMPLETES (resolved or
+ * rejected) resets its clock (`installRoundTripClock`: the client's one dispatch point, every API call of every
+ * object), and the steps a job notes only NAME where it is. A job that waits on a page that answers nothing — the
+ * stall this watchdog exists for — completes no call, and is stopped. Whether the clock is installed is CHECKED by
+ * every mode before anything is driven (`roundTripClockSelfCheck`: a call made inside a job must move its clock); a
+ * Playwright whose client no longer has that dispatch point fails the run there, instead of silently falling back
+ * to the noted steps. Each job's LONGEST quiet stretch is kept, and the POOL line prints the longest of the run — the
+ * measured margin under JOB_STALL_MS, not an assumed one.
+ */
+const jobScope = new AsyncLocalStorage();
+const JOB_STALL_MS = (() => {
+  const v = Number(process.env["ATLAS_JOB_STALL_MS"] ?? "");
+  return Number.isFinite(v) && v >= 10000 ? v : 5 * 60 * 1000;
+})();
+/** The current pool job is at `what` now (its watchdog's progress clock, and what its report names). */
+/** The longest quiet stretch any job had (ms), and where: what the POOL line reports. */
+const poolQuiet = { ms: 0, label: "", note: "" };
+/** Job `j` made progress now: its clock moves, and the quiet stretch that ends here is measured. */
+const progressed = (j) => {
+  /* A job its watchdog stopped is over: what its closed pages still reject is not progress, nor a quiet stretch. */
+  if (j.stalled) return;
+  const now = Date.now();
+  if (now - j.at > j.maxQuiet) j.maxQuiet = now - j.at;
+  if (now - j.at > poolQuiet.ms) Object.assign(poolQuiet, { ms: now - j.at, label: j.label, note: j.note });
+  j.at = now;
+};
+const jobNote = (what) => {
+  const j = jobScope.getStore();
+  if (j !== undefined) {
+    progressed(j);
+    j.note = what;
+  }
+};
+{
+  /* A line a job prints is progress too, and the last one is named if it stalls. */
+  const print = console.log.bind(console);
+  console.log = (...args) => {
+    const j = jobScope.getStore();
+    if (j !== undefined) {
+      progressed(j);
+      j.line = String(args[0] ?? "").split(String.fromCharCode(10))[0].slice(0, 200);
+    }
+    print(...args);
+  };
+}
+/**
+ * Make every COMPLETED Playwright call progress for the job that made it (see the watchdog's header). Playwright's
+ * client routes every API call of every object (browser, context, page, frame, locator, keyboard, …) through one
+ * method of their common base, `_wrapApiCall`; it is wrapped once, on that base, so every object shares it. The call's
+ * caller is in its job's async context (AsyncLocalStorage follows the await), so the job is the one that asked.
+ * Returns whether the dispatch point was found (roundTripClockSelfCheck makes the run fail when it was not).
+ */
+let roundTripClock = false;
+function installRoundTripClock(owner) {
+  let proto = Object.getPrototypeOf(owner);
+  while (proto !== null && !Object.prototype.hasOwnProperty.call(proto, "_wrapApiCall")) proto = Object.getPrototypeOf(proto);
+  if (proto === null || typeof proto._wrapApiCall !== "function") return false;
+  if (proto._wrapApiCall.d3RoundTrips !== true) {
+    const dispatch = proto._wrapApiCall;
+    const timed = async function (...args) {
+      try {
+        return await dispatch.apply(this, args);
+      } finally {
+        const j = jobScope.getStore();
+        if (j !== undefined) {
+          j.trips += 1;
+          progressed(j);
+        }
+      }
+    };
+    timed.d3RoundTrips = true;
+    proto._wrapApiCall = timed;
+  }
+  return true;
+}
+/** Every context opened inside a pool job belongs to it: the watchdog closes them when it stops the job. */
+function watchContexts(browser) {
+  roundTripClock = installRoundTripClock(browser) || roundTripClock;
+  const open = browser.newContext.bind(browser);
+  browser.newContext = async (...args) => {
+    const j = jobScope.getStore();
+    if (j?.stalled) throw new Error("the job was stopped by its watchdog");
+    const ctx = await open(...args);
+    if (j !== undefined) j.contexts.add(ctx);
+    return ctx;
+  };
+  return browser;
+}
+/** The memory back-pressure's own account: how often, and how long, the pool held new jobs back. */
+const poolHold = { episodes: 0, ms: 0 };
+const gbFree = () => (freemem() / 2 ** 30).toFixed(2);
 
 /* ── the viewport ladder, READ from its one owner ──────────────────────────────
  * MEASURED (acceptance report D3, overturned PASS -> FAIL, 2026-09-26): every width list in this file
@@ -321,6 +438,7 @@ const notDriven = (surface, scenario, why) => {
  * #stage.
  */
 async function focusOn(page, loc, surface, scenario) {
+  jobNote(`focus the element of ${surface} :: ${scenario}`);
   await loc.focus().catch(() => {});
   const ok = await loc.evaluate((el) => el === document.activeElement || el.contains(document.activeElement)).catch(() => false);
   if (!ok) notDriven(surface, scenario, "focus never reached the element under test");
@@ -396,14 +514,39 @@ const visibleDialogs = () =>
 /* ── focus visibility (serialised into the browser) ────────────────────────── */
 
 /**
+ * WHAT PART OF AN ELEMENT THE READER CAN SEE IS THE APP'S DEFINITION, RUN HERE (independent refuter W5-X3). This
+ * file once walked the containing-block chain with its own hand list of what makes an ancestor contain a fixed box
+ * (transform, filter, perspective, contain — the owner had the same four, and both missed `will-change: transform`,
+ * which the app's own stylesheets use and say makes one) and clipped BOTH axes when either overflow was not visible,
+ * where the owner clipped per axis. Two walks that agree by hand let the audit miss exactly what the owner misses.
+ * So the owner's declarations — `containsFixedBoxes` (the CSS class, stated once) and `visiblePartOf` (the walk) —
+ * are read from src/app/focus-return.ts by name, stripped of their types, and run in the page (`withSight`); a
+ * missing one stops the run. Chromium's answer for every declaration the app writes is checked against that same
+ * source by the census (`containingBlockCensus`), which every mode runs first.
+ */
+const SIGHT_FUNCTIONS = ["containsFixedBoxes", "visiblePartOf"];
+const SIGHT_SOURCE = (() => {
+  const file = new URL("../src/app/focus-return.ts", import.meta.url);
+  const sf = ts.createSourceFile("focus-return.ts", readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+  return SIGHT_FUNCTIONS.map((name) => {
+    const decl = sf.statements.find((st) => ts.isFunctionDeclaration(st) && st.name?.text === name);
+    if (decl === undefined) throw new Error(`src/app/focus-return.ts declares no function ${name}: the audit's sight is the owner's, and it is missing`);
+    const text = decl.getText(sf).replace(/^export\s+/, "");
+    return ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022, removeComments: true } }).outputText;
+  }).join("\n");
+})();
+/** An in-page function whose body may call the owner's sight functions (SIGHT_SOURCE) by name. */
+const withSight = (body) => new Function(`${SIGHT_SOURCE}\nreturn (${body.toString()}).apply(this, arguments);`);
+
+/**
  * Where the focused element can be seen. Its box is intersected with the viewport and with the
- * padding box of every ancestor that CLIPS it — an ancestor whose overflow is not `visible`, taken
+ * padding box of every ancestor that CLIPS it — on each axis whose overflow is not `visible`, taken
  * along the containing-block chain, so a `position: fixed` popover portalled under <body> is not
- * "clipped" by a scroller it merely follows in the DOM. Returns the visible rect, the hit test at
+ * "clipped" by a scroller it merely follows in the DOM (`visiblePartOf`, the owner's walk). Returns the visible rect, the hit test at
  * its centre, and the region the indicator can occupy (the element's box and that of any ancestor
  * drawing an outline for it, grown by the outline's reach), clamped to the viewport.
  */
-const focusGeometry = () => {
+const focusGeometry = withSight(() => {
   const a = document.activeElement;
   if (a === null || a === document.body || a === document.documentElement) return null;
   const name = (a.getAttribute("aria-label") ?? (a.textContent ?? "")).trim().replace(/\s+/g, " ").slice(0, 40);
@@ -412,29 +555,14 @@ const focusGeometry = () => {
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
   const meet = (p, q) => ({ l: Math.max(p.l, q.l), t: Math.max(p.t, q.t), r: Math.min(p.r, q.r), b: Math.min(p.b, q.b) });
-  const box = (r) => ({ l: r.left, t: r.top, r: r.right, b: r.bottom });
-  let clip = { l: 0, t: 0, r: vw, b: vh };
-  const clippers = [];
-  /* The containing-block walk: a fixed box escapes every ancestor that does not establish a
-     containing block for it; an absolute box escapes every static ancestor. */
-  const containsFixed = (cs) =>
-    cs.transform !== "none" || cs.filter !== "none" || cs.perspective !== "none" || /paint|layout|strict|content/.test(cs.contain);
-  let pos = getComputedStyle(a).position;
-  for (let el = a.parentElement; el !== null && el !== document.body && el !== document.documentElement; el = el.parentElement) {
-    const cs = getComputedStyle(el);
-    const applies = pos === "fixed" ? containsFixed(cs) : pos === "absolute" ? cs.position !== "static" || containsFixed(cs) : true;
-    if (!applies) continue;
-    if (cs.overflowX !== "visible" || cs.overflowY !== "visible") {
-      const r = el.getBoundingClientRect();
-      const l = r.left + el.clientLeft;
-      const t = r.top + el.clientTop;
-      clip = meet(clip, { l, t, r: l + el.clientWidth, b: t + el.clientHeight });
-      const c = typeof el.className === "string" ? el.className.split(" ")[0] : "";
-      clippers.push(`${el.tagName.toLowerCase()}${c ? `.${c}` : ""}`);
-    }
-    pos = cs.position;
-  }
-  const vis = meet(box(a.getBoundingClientRect()), clip);
+  /* The containing-block walk and the clip, per axis: the APP'S OWN definition (`visiblePartOf`, with
+     `containsFixedBoxes`, read from src/app/focus-return.ts and run here — SIGHT_SOURCE), so the owner that moves
+     focus off an unseen element and this audit that fails on one judge "seen" by one statement. No box: not visible. */
+  // eslint-disable-next-line no-undef
+  const part = visiblePartOf(a);
+  if (part === null) return { desc, visible: false, clippers: [], perimeter: 0 };
+  const clippers = [...part.clippers];
+  const vis = { l: part.l, t: part.t, r: part.r, b: part.b };
   const w = vis.r - vis.l;
   const h = vis.b - vis.t;
   if (w < 1 || h < 1) return { desc, visible: false, clippers, perimeter: 0 };
@@ -480,7 +608,7 @@ const focusGeometry = () => {
     hitDesc,
     zone: { x, y, width: Math.ceil(zone.r) - x, height: Math.ceil(zone.b) - y },
   };
-};
+});
 
 /** Remove (on=true) or restore (on=false) the focus indicator, by inline `!important` style. */
 const suppressIndicator = (on) => {
@@ -555,6 +683,7 @@ const INDICATOR_CONTRAST = 3;
  * pixels at >= 3:1 against the same pixels unfocused. Records one visibility result for `stop`.
  */
 async function checkVisible(page, stop, surface, scenario) {
+  jobNote(`measure the ring of ${surface} :: ${scenario}`);
   await page.keyboard.press("Shift");
   await page.waitForTimeout(50);
   const geo = await page.evaluate(focusGeometry);
@@ -588,6 +717,7 @@ async function checkVisible(page, stop, surface, scenario) {
 }
 
 async function settled(page) {
+  jobNote("the 1 s settle before reading where focus is");
   await page.waitForTimeout(SETTLE_MS);
   return page.evaluate(describeActive);
 }
@@ -612,6 +742,7 @@ async function pick(page, sel, item) {
 }
 
 async function load(page, url) {
+  jobNote(`load ${url}`);
   await page.goto(url, { waitUntil: "load" });
   await page.waitForSelector("#rail-queue .ag__row--data", { timeout: 30000 }).catch(() => {});
   await page.waitForTimeout(2000);
@@ -1209,10 +1340,202 @@ async function srAudit(browser, [w, h, vp], key) {
   return out;
 }
 
-async function runSelfRemoving() {
-  const browser = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
-  let outs;
+/**
+ * The watchdog's progress clock, CHECKED (SD3V-3): a Playwright call made inside a job must move that job's clock and
+ * count as a round trip. A run whose clock is not installed fails here, before anything is driven.
+ */
+async function roundTripClockSelfCheck(browser) {
+  const job = { label: "the round-trip clock's self-check", note: "starting", line: "", at: 0, t0: Date.now(), contexts: new Set(), stalled: false, trips: 0, maxQuiet: 0 };
+  let ok = false;
   try {
+    await jobScope.run(job, async () => {
+      const ctx = await browser.newContext();
+      try {
+        const page = await ctx.newPage();
+        job.at = 0;
+        const trips = job.trips;
+        await page.evaluate(() => 1);
+        ok = roundTripClock && job.trips > trips && job.at > 0;
+      } finally {
+        await ctx.close();
+      }
+    });
+  } finally {
+    /* The self-check's own stretch (from the epoch) is not a job's: it never enters the POOL line. */
+    Object.assign(poolQuiet, { ms: 0, label: "", note: "" });
+  }
+  if (!ok) sweepFail("harness self-check / watchdog", `the round-trip clock is not installed (Playwright's client has no _wrapApiCall the audit can wrap): the watchdog would see only noted steps, and stop a healthy lane`);
+  else console.log(`INFO  harness self-check: a Playwright call inside a job moves its watchdog clock (${job.trips} round trip(s) counted)`);
+  return ok;
+}
+
+/**
+ * The activation read's FRAME rule, CHECKED (SD3V-2): a page whose frames are slow (each one 700 ms apart, its main
+ * thread free between them — what software rendering on a loaded host does) shows a control for exactly ONE frame,
+ * the second after the key, as the fabric's off-view pointer does when the Inspector opens. What `crossAfterKey`
+ * leaves to be read must not hold it. And the flash must have happened, or the check proved nothing.
+ */
+async function frameStillSelfCheck(browser) {
+  const ctx = await browser.newContext();
+  let verdict = null;
+  try {
+    const page = await ctx.newPage();
+    await page.setContent(
+      `<!doctype html><html><body><button id="opener">Open</button><button id="flash" hidden>Flash</button><script>
+        window.requestAnimationFrame = (cb) => setTimeout(() => cb(performance.now()), 700);
+        document.getElementById("opener").addEventListener("keydown", (e) => {
+          if (e.key !== "Enter") return;
+          const f = document.getElementById("flash");
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            f.hidden = false;
+            window.__flashed = (window.__flashed ?? 0) + 1;
+            requestAnimationFrame(() => { f.hidden = true; });
+          }));
+        });
+      </script></body></html>`,
+    );
+    await page.focus("#opener");
+    await page.keyboard.press("Enter");
+    await crossAfterKey(page);
+    verdict = await page.evaluate(() => ({ flashed: window.__flashed ?? 0, held: !document.getElementById("flash").hidden }));
+  } finally {
+    await ctx.close();
+  }
+  const ok = verdict !== null && verdict.flashed === 1 && !verdict.held;
+  if (verdict === null || verdict.flashed !== 1) sweepFail("harness self-check / frame rule", `NEVER EXERCISED: the one-frame control flashed ${verdict?.flashed ?? 0} time(s), not once`);
+  else if (verdict.held) sweepFail("harness self-check / frame rule", "an activation is read while a control that exists for ONE slow frame is still shown: the discovery would take it for a candidate in one render mode only");
+  else console.log("INFO  harness self-check: a control shown for one slow frame after an activation is gone before what it revealed is read");
+  return ok;
+}
+
+/** The checks every mode runs before anything is driven: the containing-block census, the opener key rule, the
+ *  activation read's frame rule, and the watchdog's clock. Each reports its own failure; the result is whether all hold. */
+async function harnessChecks(browser) {
+  const census = await containingBlockCensus(browser);
+  const keys = keyRuleSelfCheck();
+  const frames = await frameStillSelfCheck(browser);
+  const clock = await roundTripClockSelfCheck(browser);
+  return census && keys && frames && clock;
+}
+
+/**
+ * THE CONTAINING-BLOCK CENSUS (`--containing-blocks`; every other mode runs it first). The owner's
+ * `containsFixedBoxes` (run here from its own source, SIGHT_SOURCE) is checked against CHROMIUM'S OWN ANSWER — not
+ * against a list kept beside it — for:
+ *   - EVERY DECLARATION THE APP'S STYLESHEETS WRITE (src/**\/*.css, each `property: value` once; a value that needs a
+ *     custom property is reported, not guessed),
+ *   - `will-change` naming EVERY property Chromium knows (the derived half of the rule, over its whole domain), and
+ *   - every property Chromium knows, with each of a vocabulary of values that commonly change what an element
+ *     establishes (`none`, `auto`, `paint`, `preserve-3d`, a length, a transform, a filter, a path, …) — whichever of
+ *     them the property accepts.
+ * Each is MEASURED: an element carrying the declaration, and inside it a `position: fixed` box sized 100% x 100% at
+ * 0,0. The box covers the viewport exactly when the element does NOT contain it; anything else is the element's
+ * containing block at work. A declaration that leaves nothing to measure (the box not rendered, or the element itself
+ * covering the viewport) is counted UNMEASURED and named — never as an agreement. Any declaration on which Chromium
+ * and `containsFixedBoxes` disagree fails the run: the walk the owner moves focus by, and this audit fails by, would
+ * misjudge an ancestor carrying it (independent refuter W5-X3).
+ */
+async function containingBlockCensus(browser) {
+  const SRC = new URL("../src/", import.meta.url);
+  const declarations = new Map();
+  let withCustom = 0;
+  for (const f of readdirSync(SRC, { recursive: true }).map(String).filter((f) => f.endsWith(".css")).sort()) {
+    const css = readFileSync(new URL(f.split("\\").join("/"), SRC), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const m of css.matchAll(/(?<=[{;]\s*)([a-z-]+)\s*:\s*([^;{}]+?)\s*(?=[;}])/g)) {
+      const [, prop, raw] = m;
+      const value = raw.replace(/\s*!important$/, "").trim();
+      if (/var\(/.test(value)) {
+        withCustom += 1;
+        continue;
+      }
+      if (!declarations.has(`${prop}: ${value}`)) declarations.set(`${prop}: ${value}`, [prop, value, f.split("\\").join("/")]);
+    }
+  }
+  const VOCABULARY = [
+    "none", "auto", "normal", "initial", "hidden", "visible", "clip", "scroll", "paint", "layout", "strict", "content",
+    "size", "inline-size", "style", "preserve-3d", "flat", "isolate", "multiply", "1px", "2", "0.5", "1deg",
+    "translateX(1px)", "matrix(1, 0, 0, 1, 1, 0)", "blur(1px)", 'path("M 0 0 L 10 10")', "inset(0px)", "url(#none)",
+    "linear-gradient(black, black)", "fixed", "absolute", "relative", "sticky", "contents", "block", "flex", "grid",
+  ];
+  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 } });
+  try {
+    const page = await ctx.newPage();
+    await page.setContent("<!doctype html><html><body style='margin:0'></body></html>");
+    const result = await page.evaluate(
+      withSight(({ codebase, vocabulary }) => {
+        const host = document.createElement("div");
+        const box = document.createElement("div");
+        host.append(box);
+        document.body.append(host);
+        const BASE = "position:absolute;left:37px;top:53px;width:101px;height:67px;margin:0;padding:0;border:0;";
+        box.style.cssText = "position:fixed;left:0;top:0;width:100%;height:100%;margin:0;padding:0;border:0;";
+        const vw = document.documentElement.clientWidth;
+        const vh = document.documentElement.clientHeight;
+        const near = (p, q) => Math.abs(p.left - q.left) < 0.5 && Math.abs(p.top - q.top) < 0.5 && Math.abs(p.right - q.right) < 0.5 && Math.abs(p.bottom - q.bottom) < 0.5;
+        const VIEW = { left: 0, top: 0, right: vw, bottom: vh };
+        const out = { tried: 0, measured: 0, contains: 0, unmeasured: [], disagree: [] };
+        const seen = new Set();
+        const probe = (prop, value, from) => {
+          if (seen.has(`${prop}: ${value}`)) return;
+          seen.add(`${prop}: ${value}`);
+          host.style.cssText = BASE;
+          host.style.setProperty(prop, value);
+          if (host.style.getPropertyValue(prop) === "") return; /* not a value this property accepts */
+          out.tried += 1;
+          const b = box.getBoundingClientRect();
+          const h = host.getBoundingClientRect();
+          if (!(b.width > 0 && b.height > 0) || near(h, VIEW)) {
+            out.unmeasured.push(`${prop}: ${value}`);
+            return;
+          }
+          out.measured += 1;
+          const contains = !near(b, VIEW);
+          if (contains) out.contains += 1;
+          // eslint-disable-next-line no-undef
+          const said = containsFixedBoxes(getComputedStyle(host));
+          if (said !== contains) {
+            out.disagree.push(`${prop}: ${value} (${from}) — Chromium: ${contains ? "CONTAINS" : "does not contain"} a fixed box; containsFixedBoxes says it ${said ? "does" : "does not"}`);
+          }
+        };
+        for (const [prop, value, file] of codebase) probe(prop, value, file);
+        /* EVERY NAME Chromium accepts for a property, not only the longhands a computed style lists (independent
+           verifier SD3V-6: that list holds no alias, and `will-change: -webkit-transform` contains a fixed box): the
+           computed style's longhands, and every name its style declaration answers to — shorthands and aliases
+           (`webkitTransform` is the alias `-webkit-transform`) — that CSS.supports as a property. */
+        const longhands = [...getComputedStyle(document.documentElement)].filter((p) => !p.startsWith("--"));
+        const declared = [];
+        for (const k in document.body.style) if (/^[a-zA-Z]+$/.test(k) && typeof document.body.style[k] === "string") declared.push(k);
+        const dashed = declared.map((k) => k.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`).replace(/^webkit-/, "-webkit-"));
+        const properties = [...new Set([...longhands, ...dashed.filter((n) => CSS.supports(n, "initial"))])];
+        out.aliases = properties.filter((p) => p.startsWith("-webkit-")).length;
+        /* will-change names a property case-insensitively: each name is also announced in capitals. */
+        for (const p of properties) for (const named of [p, p.toUpperCase()]) probe("will-change", named, "will-change over every property name");
+        for (const p of properties) for (const v of vocabulary) probe(p, v, "the vocabulary");
+        out.properties = properties.length;
+        return out;
+      }),
+      { codebase: [...declarations.values()], vocabulary: VOCABULARY },
+    );
+    console.log(
+      `INFO  containing-block census: ${declarations.size} declaration(s) from the app's stylesheets (${withCustom} more need a custom property and were not measured as written; each such property is still probed through the vocabulary), ` +
+        `will-change over ${result.properties} property name(s) (${result.aliases} of them -webkit- aliases; each also in capitals), and the vocabulary over each: ${result.tried} accepted, ${result.measured} measured ` +
+        `(${result.contains} contain a fixed box), ${result.unmeasured.length} UNMEASURED, ${result.disagree.length} disagree with containsFixedBoxes`,
+    );
+    if (result.unmeasured.length > 0) console.log(`INFO  containing-block census, unmeasured (not counted as agreeing): ${result.unmeasured.slice(0, 40).join("; ")}${result.unmeasured.length > 40 ? `; … ${result.unmeasured.length - 40} more` : ""}`);
+    for (const d of result.disagree) sweepFail("containing-block census", d);
+    if (result.measured === 0 || result.contains === 0) sweepFail("containing-block census", `NEVER EXERCISED: ${result.measured} declaration(s) measured, ${result.contains} of them containing a fixed box`);
+    return result.disagree.length === 0 && result.measured > 0 && result.contains > 0;
+  } finally {
+    await ctx.close();
+  }
+}
+
+async function runSelfRemoving() {
+  const browser = watchContexts(await chromium.launch({ args: ["--enable-unsafe-swiftshader"] }));
+  let outs;
+  let censusOk = false;
+  try {
+    censusOk = await harnessChecks(browser);
     /* One page per width AND key: most of a case is waiting (the load, the one-second settle), so
        six pages in parallel keep the pass near the time of one. */
     outs = await Promise.all(SR_VIEWPORTS.flatMap((v) => ["Enter", "Space"].map((key) => srAudit(browser, v, key))));
@@ -1229,7 +1552,8 @@ async function runSelfRemoving() {
   console.log(`${visResults.length} successor(s) checked for visibility, ${visFailed.length} not visible.`);
   for (const f of visFailed) console.log(`  NOT VISIBLE [${f.stop}] ${f.surface} :: ${f.scenario} (${f.why})`);
   if (empty.length > 0) console.log(`NO SELF-REMOVING CONTROL FOUND at ${empty.join(", ")}: the seed did not reach the screen.`);
-  process.exit(failed.length === 0 && visFailed.length === 0 && empty.length === 0 ? 0 : 1);
+  for (const f of sweepFails) console.log(`  FAIL ${f.where} :: ${f.what}`);
+  process.exit(censusOk && failed.length === 0 && visFailed.length === 0 && empty.length === 0 ? 0 : 1);
 }
 
 if (process.argv.includes("--self-removing")) await runSelfRemoving();
@@ -1499,6 +1823,7 @@ const sweepFail = (where, what) => {
 
 async function sweepState(page, vp, state, query, prep) {
   const where = `${vp}/${state}`;
+  jobNote(`the sweep's Tab walk of ${where}: load`);
   await page.goto(`${APP}/${query === "" ? "" : `?${query}`}`, { waitUntil: "load" });
   await page.waitForSelector("#rail-queue .ag__row--data", { timeout: 30000 }).catch(() => {});
   await page.waitForTimeout(1500);
@@ -1515,6 +1840,7 @@ async function sweepState(page, vp, state, query, prep) {
   const seenStops = new Set();
   let lapClosed = false;
   for (let i = 0; i < 400; i += 1) {
+    if (i % 25 === 0) jobNote(`the sweep's Tab walk of ${where}: Tab ${i + 1}`);
     await page.keyboard.press("Tab");
     const id = await page.evaluate(srIdentify);
     if (id === null) continue; /* focus left the document for the browser chrome; the next Tab re-enters */
@@ -1569,6 +1895,7 @@ async function sweepState(page, vp, state, query, prep) {
 /** More -> Path with real keys, then Tab / Shift+Tab must reach the pane switch's radios. */
 async function sweepJourney(page, vp) {
   const where = `${vp}/journey More -> Path`;
+  jobNote(`the sweep's journey ${where}`);
   await page.goto(`${APP}/`, { waitUntil: "load" });
   await page.waitForSelector("#rail-queue .ag__row--data", { timeout: 30000 }).catch(() => {});
   await page.waitForTimeout(1500);
@@ -1889,7 +2216,7 @@ async function drawerReenter(page, w, how, motion = "") {
  * reported the drawer "reopened by itself". A case must judge the state it drove, not a race.
  */
 const framesSettled = (page) =>
-  page.evaluate(
+  (jobNote("wait two frames"), page).evaluate(
     () =>
       new Promise((resolve) => {
         const t = setTimeout(resolve, 10000);
@@ -1967,7 +2294,7 @@ async function runDrawer(browser, only, push = null) {
         await ctx.close();
       }
     });
-  if (push !== null) for (const lane of lanes) push(lane, true);
+  if (push !== null) for (const [i, lane] of lanes.entries()) push(lane, true, `the drawer pass at ${plan[i][0]}px${plan[i][2] === "reduce" ? " (reduced motion)" : ""}`);
   else await Promise.all(lanes.map((lane) => lane()));
   return plan.length > 0;
 }
@@ -2036,7 +2363,7 @@ async function runDrawer(browser, only, push = null) {
 const CROSS_SETTLE_MS = 500;
 /** The settle of a return to a start width (crossSession's `ensure`): see there. */
 const RETURN_SETTLE_MS = 100;
-const crossCount = { cases: 0, crossings: 0, openersFound: 0, openersTried: 0, surfaces: 0, unstable: 0, landings: 0, lost: 0, recovered: 0, reloads: 0, undone: 0, reused: 0, sameSurface: 0, representedStops: 0, warmTimeouts: 0, unreadChords: [] };
+const crossCount = { cases: 0, crossings: 0, openersFound: 0, openersTried: 0, surfaces: 0, unstable: 0, landings: 0, lost: 0, recovered: 0, reloads: 0, undone: 0, reused: 0, sameSurface: 0, representedStops: 0, warmTimeouts: 0, keyMoved: 0, neverStill: 0, unreadChords: [] };
 /** The candidate openers by family (crossOpeners: state / collection / stateless, the keyed commands, and the nested
  *  ones a surface revealed): candidates activated, the members they stand for, how many revealed a surface, and how
  *  many navigated to another page state instead. */
@@ -2588,6 +2915,7 @@ const crossSignature = () => {
  */
 const CROSS_WARM_WAIT_MS = 15000;
 async function crossWarmSettled(page) {
+  jobNote("wait for the palette pre-warm");
   await page
     .waitForFunction(
       (terminal) => {
@@ -2604,6 +2932,41 @@ async function crossWarmSettled(page) {
 }
 
 /**
+ * Wait (bounded) until the page's SIGNATURE holds across two animation frames: what an activation revealed is read
+ * from a page at rest in FRAMES, never only in milliseconds. MEASURED (independent verifier SD3V-2, then a per-frame
+ * probe, R-D3 follow-up): at 768 px in "a finding selected", opening the Inspector from "Open the source record for
+ * F001 …" shows the fabric's off-view pointer "→◆ F001 core1 off view" for EXACTLY ONE animation frame, in both render
+ * modes (frame 2 of the activation; hidden again on frame 3, 4 of 4 probes) — the stage resize met with the previous
+ * frame's projection. The activation's fixed 400 ms wait spans dozens of fast frames with draws suspended, and less
+ * than one slow frame with every frame drawn on a loaded host, so the discovery read that one frame's pointer as a
+ * candidate inside the surface in one mode only, and the render check failed on a difference of the harness's clock,
+ * not of the render mode. A stop that exists for one frame is no surface's: the read waits until two frames go by
+ * with the signature unchanged (at most CROSS_STILL_TRIES times; a page that never holds is counted, and read as it is).
+ */
+const CROSS_STILL_TRIES = 6;
+/** What follows an activation's key, before what it revealed is read: two frames and 400 ms; a fabric it mounted
+ *  (crossFabricSettled: immediate when none is pending); and a page that holds still across FRAMES (crossFrameStill).
+ *  ONE sequence for every activation step, and the one the harness self-check drives (frameStillSelfCheck). */
+async function crossAfterKey(page) {
+  await framesSettled(page);
+  await page.waitForTimeout(400);
+  await crossFabricSettled(page);
+  await crossFrameStill(page);
+}
+async function crossFrameStill(page) {
+  jobNote("wait for the signature to hold across two frames");
+  let sig = await page.evaluate(crossSignature);
+  for (let i = 0; i < CROSS_STILL_TRIES; i += 1) {
+    await framesSettled(page);
+    const next = await page.evaluate(crossSignature);
+    if (next === sig) return true;
+    sig = next;
+  }
+  crossCount.neverStill += 1;
+  return false;
+}
+
+/**
  * Load a state and wait until it has SETTLED: the lazy fabric (and its canvas, a tab stop) mounts an
  * idle period after the load, later still on a busy host. MEASURED (this pass, first run): a "clean"
  * tab-stop signature taken before the canvas mounted made every later case reload the page, and the
@@ -2614,13 +2977,17 @@ async function crossLoad(page, query) {
   /* A load can take longer than Playwright's 30 s default on a saturated host (MEASURED: this pass's
      first full run died on one); one retry, then the error reaches the case that asked for it. */
   const url = `${APP}/${query === "" ? "" : `?${query}`}`;
+  jobNote(`load ${url}`);
   try {
     await page.goto(url, { waitUntil: "load", timeout: 90000 });
   } catch {
+    jobNote(`load ${url} (the second attempt)`);
     await page.goto(url, { waitUntil: "load", timeout: 90000 });
   }
+  jobNote(`wait for the queue's rows at ${url}`);
   await page.waitForSelector("#rail-queue .ag__row--data", { timeout: 30000 }).catch(() => {});
   await crossFabricSettled(page);
+  jobNote(`wait for a settled signature at ${url}`);
   /* Settled: the signature unchanged over a 700 ms window, sampled every 350 ms (it was read twice, 700 ms
      apart, after a first 700 ms wait: the same quiet window, sampled more finely, from the first moment it can
      hold — MEASURED, phase 3.5: a reload is the commonest step of this pass, and that wait was half of it). */
@@ -2642,6 +3009,7 @@ async function crossLoad(page, query) {
  * nothing of the kind, and the case was NOT DRIVEN.
  */
 async function crossFabricSettled(page) {
+  jobNote("wait for the fabric to mount and report a frame");
   await page
     .waitForFunction(
       () => {
@@ -2675,8 +3043,10 @@ async function crossFabricSettled(page) {
  * MAIN#stage" with draws suspended, for one case: a difference of the harness's clock, not of the render mode.
  */
 async function crossResize(page, width, height, settle = CROSS_SETTLE_MS) {
+  jobNote(`resize to ${width}x${height}`);
   await page.setViewportSize({ width, height });
   await framesSettled(page);
+  jobNote(`resize to ${width}x${height}: wait ${settle} ms on the page's own clock`);
   await page.evaluate((ms) => new Promise((done) => setTimeout(done, ms)), settle).catch(() => page.waitForTimeout(settle));
 }
 
@@ -2693,6 +3063,7 @@ async function crossResize(page, width, height, settle = CROSS_SETTLE_MS) {
  */
 async function crossCase(page, where, label, from, to, height, sink = null) {
   const scenario = `${label} focused at ${from}px (${rungOf(from)}) → resize to ${to}px (${rungOf(to)})`;
+  jobNote(`case ${where} :: ${scenario}`);
   const loc = page.locator("[data-d3-cross]").first();
   await loc.focus().catch(() => {});
   const on = await loc.evaluate((el) => el === document.activeElement).catch(() => false);
@@ -2750,6 +3121,51 @@ const occurrenceKeys = (list) => {
     return `${s.label}#${n}`;
   });
 };
+
+/**
+ * THE OPENER'S OWN STOPS — ONE definition for the discovery that keys them and the surface job that finds them again
+ * (independent verifier SD3V-1). `onClean` is the clean page's own stops (`path|label`, crossEnumerate); `own(list)` is
+ * what an activation's read holds that the clean page does not. An occurrence key (`BUTTON.ui-btn#1`) is a position
+ * among a LIST, so it means something only against the list it was numbered over: the discovery numbers the opener's
+ * own stops, and `ownStopByKey` finds a key among the opener's own stops of a later read — never among the whole
+ * read, where a re-shown clean-page stop with the same name, earlier in document order, takes the number and the job
+ * drives the clean page's control in the opener's place (MEASURED by the verifier: 6 cases, all reported OK).
+ */
+const ownOf = (onClean) => (list) => list.filter((x) => !onClean.has(`${x.path}|${x.label}`));
+/** The opener's own stops of `list`, each with its key: what the discovery records and the surface job resolves. */
+const ownKeyed = (own, list) => {
+  const mine = own(list);
+  const keys = occurrenceKeys(mine);
+  return mine.map((s, i) => ({ s, key: keys[i] }));
+};
+/** The stop of `list` that `key` names, numbered as the discovery numbered it (`ownKeyed`); null when none. */
+const ownStopByKey = (own, list, key) => ownKeyed(own, list).find((x) => x.key === key)?.s ?? null;
+
+/**
+ * The key rule's own check, run by every mode before anything is driven (a rule a run relies on is executed, not
+ * assumed): a re-shown clean-page stop that shares its name with, and comes before, the opener's own stop must not
+ * be what the opener's key finds — the shape SD3V-1 measured. Returns whether it holds (a failure is reported).
+ */
+function keyRuleSelfCheck() {
+  const clean = { label: "BUTTON.ui-btn", path: "DIV:0/HEADER:0/BUTTON:0" };
+  const mine = { label: "BUTTON.ui-btn", path: "DIV:0/SECTION:1/LI:2/BUTTON:0" };
+  const other = { label: "A.ui-cite", path: "DIV:0/SECTION:1/LI:2/A:0" };
+  const own = ownOf(new Set([`${clean.path}|${clean.label}`]));
+  /* The discovery's read: the clean stop re-shown first, then the opener's own. */
+  const discovered = ownKeyed(own, [clean, other, mine]);
+  const key = discovered.find((x) => x.s === mine)?.key;
+  const problems = [];
+  if (key === undefined) problems.push("the discovery did not key the opener's own stop");
+  if (discovered.some((x) => x.s === clean)) problems.push("the discovery keyed a stop the clean page already has");
+  /* A later activation's read, with and without the clean stop re-shown: the same key finds the same stop. */
+  for (const read of [[clean, other, mine], [other, mine], [mine, clean]]) {
+    const found = ownStopByKey(own, read, key);
+    if (found !== mine) problems.push(`the key ${key} found ${found === null ? "nothing" : found.path} in a read of ${read.map((x) => x.path).join(", ")}`);
+  }
+  if (problems.length > 0) sweepFail("harness self-check / occurrence keys", `the opener's key rule does not hold: ${problems.join("; ")}`);
+  else console.log(`INFO  harness self-check: an opener's key finds its own stop past a re-shown clean-page stop of the same name (3 reads)`);
+  return problems.length === 0;
+}
 
 /* THE GRAIN OF THE WORK (phase 3.5: tractable). MEASURED (a full --sweep with (crossing x state) units, eight at
    once, 2026-09-29): after 37 minutes 9 of 40 units had started — a traced flow's unit alone held ~450 cases
@@ -2918,6 +3334,7 @@ async function crossSession(browser, width0, stateRow, { mode, sink, where, clea
   };
   /* Run one case; on a crashed renderer, renew the page, reload the state and run it once more. */
   const guarded = async (label, run, at = where) => {
+    jobNote(`${at} :: ${label}`);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         if (attempt > 0) {
@@ -2970,11 +3387,7 @@ async function crossSession(browser, width0, stateRow, { mode, sink, where, clea
       await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
       for (const k of o.presses) await page.keyboard.press(k);
     }
-    await framesSettled(page);
-    await page.waitForTimeout(400);
-    /* A step that shows the fabric mounts the scene, whose controls arrive later: what it revealed is judged once
-       they have (crossFabricSettled; immediate when no fabric is pending). */
-    await crossFabricSettled(page);
+    await crossAfterKey(page);
     return true;
   };
   /** Activate an opener — or a CHAIN (a control inside the surface another opener revealed: the discovery's one
@@ -2982,6 +3395,7 @@ async function crossSession(browser, width0, stateRow, { mode, sink, where, clea
    *  that step reveals is judged. Returns false when a step could not be found, else whether the activation
    *  NAVIGATED (changed the URL: a move to another page state, which the page states own, not a surface). */
   const activate = async (o, w) => {
+    jobNote(`activate ${o.label} at ${w}px / ${stateName}`);
     const steps = o.kind === "chain" ? o.steps : [o];
     const run = async () => {
       const before = await page.evaluate(() => location.pathname + location.search);
@@ -3138,7 +3552,11 @@ async function crossEnumerate(browser, from, stateRow, tos, env) {
              MEASURED (phase 3.5 repair, full --sweep): with surface jobs queued last, the final ten minutes ran a few
              device-view surface jobs at 768 px, each case a reload. */
           for (let k = 0; k < stable.length; k += SURFACE_JOB_CASES) {
-            push(() => crossSurfaceJob(browser, from, to, stateRow, surface.o, stable.slice(k, k + SURFACE_JOB_CASES), env), true);
+            push(
+              () => crossSurfaceJob(browser, from, to, stateRow, surface.o, stable.slice(k, k + SURFACE_JOB_CASES), env),
+              true,
+              `surface job: what ${surface.o.label} reveals, ${from}px -> ${to}px / ${stateRow[0]}`,
+            );
           }
         }
       }
@@ -3161,7 +3579,7 @@ async function crossEnumerate(browser, from, stateRow, tos, env) {
           remaining -= 1;
           if (remaining === 0) scheduleSurfaces();
         }
-      }, true);
+      }, true, `the discovery of ${batch.length} opener(s) at ${from}px / ${stateRow[0]}`);
     };
     for (const o of openers) o.seq = (seq += 1);
     for (let k = 0; k < openers.length; k += DISCOVERY_BATCH) runBatch(openers.slice(k, k + DISCOVERY_BATCH));
@@ -3191,7 +3609,7 @@ function pairDeposit(browser, env, stateRow, from, to, items) {
   for (let i = 0; i < Math.max(...sides.map((x) => x.length)); i += 1) for (const side of sides) if (i < side.length) cases.push(side[i]);
   for (let k = 0; k < cases.length; k += JOB_CASES) {
     const chunk = cases.slice(k, k + JOB_CASES);
-    env.push(() => crossStopsJob(browser, stateRow, chunk, env));
+    env.push(() => crossStopsJob(browser, stateRow, chunk, env), false, `tab-stop job of ${chunk.length} case(s), ${a}px <-> ${b}px / ${state}`);
   }
 }
 
@@ -3235,6 +3653,26 @@ async function crossDiscover(browser, from, stateRow, batch, env, where) {
          its UI state in the URL (the device pane's tabs, the Inspector), so a URL change is not "another page".
          MEASURED (phase 3.5 repair): excluding those dropped the device pane's tab surfaces phase 3 cased. */
       if (activated.navigated && sink === null) crossFamilies[o.family].navigated += 1;
+      /* THE OPENER'S OUTCOME IS ONE DEFINITION: what it revealed that the CLEAN page does not already have. A stop the
+         clean page already has is family 1's, whatever made it re-appear: closing a modal dialog makes the whole page
+         under it live again (MEASURED, phase 3.5 repair: "the keyboard reference → Close dialog" and "the palette →
+         Close dialog" "revealed" the page's own stops, 4,508 duplicate cases in one full run). That rule used to be
+         applied only AFTER an empty first read had been recorded as "revealed nothing" — so one outcome had two
+         spellings, and the render check read them as a difference (independent verifier V2-1, R-D3: a grid cell and a
+         row inside the 1152 px drawer, "a finding selected": "revealed 0: " with every frame drawn, "revealed nothing"
+         with draws suspended — in the first, the activation had re-shown clean-page stops whose re-appearance the rule
+         already discards). Both activations' reads are now taken through the rule before anything is judged or
+         recorded: the record, the stability test and the occurrence keys see the opener's own stops only, and an
+         activation that re-showed clean-page stops says which (INFO), without that entering the record. */
+      const onClean = env.cleanStops.get(`${from}|${state}`) ?? new Set();
+      const own = ownOf(onClean);
+      const reshown = revealed.length - own(revealed).length;
+      if (reshown > 0) {
+        const names = revealed.filter((x) => onClean.has(`${x.path}|${x.label}`)).map((x) => x.label);
+        console.log(`INFO  ${from}px / ${state}: ${named(o)}: the activation re-showed ${reshown} stop(s) the clean page already has (family 1's, not the opener's; not recorded): ${[...new Set(names)].slice(0, 6).join(", ")}${new Set(names).size > 6 ? ", …" : ""}`);
+      }
+      const keyed = ownKeyed(own, revealed);
+      revealed = keyed.map((x) => x.s);
       if (revealed.length === 0) {
         noteDiscovery("revealed nothing");
         continue;
@@ -3258,16 +3696,11 @@ async function crossDiscover(browser, from, stateRow, batch, env, where) {
           if (o.kind !== "chain" && !activated.navigated) inside = await s.page().evaluate(crossOpeners, { root: null, unseenOnly: true });
         }
       });
-      const againKeys = new Set(occurrenceKeys(again));
-      const keys = occurrenceKeys(revealed);
-      /* A stop the CLEAN page already has is family 1's, whatever made it re-appear: closing a modal dialog makes the
-         whole page under it live again (MEASURED, phase 3.5 repair: "the keyboard reference → Close dialog" and "the
-         palette → Close dialog" "revealed" the page's own stops, 4,508 duplicate cases in one full run). */
-      const onClean = env.cleanStops.get(`${from}|${state}`) ?? new Set();
-      const stable = revealed
-        .map((x, i) => ({ s: x, key: keys[i] }))
-        .filter((x) => againKeys.has(x.key) && !onClean.has(`${x.s.path}|${x.s.label}`));
-      const unstable = keys.filter((k) => !againKeys.has(k));
+      /* Both reads through the same rule (see above): the keys number the opener's own stops in each — and the surface
+         job finds a key again by that same numbering (ownStopByKey), never over a whole read (SD3V-1). */
+      const againKeys = new Set(ownKeyed(own, again).map((x) => x.key));
+      const stable = keyed.filter((x) => againKeys.has(x.key));
+      const unstable = keyed.map((x) => x.key).filter((k) => !againKeys.has(k));
       noteDiscovery(unstable.length > 0 ? `UNSTABLE (${stable.length} reliably, ${unstable.length} once)` : `revealed ${stable.length}: ${stable.map((x) => x.key).join(", ")}`);
       if (unstable.length > 0) {
         if (sink === null) crossCount.unstable += unstable.length;
@@ -3395,6 +3828,8 @@ async function crossSurfaceJob(browser, from, to, stateRow, o, stable, env) {
   const s = await crossSession(browser, from, stateRow, { mode, sink, where: at, clean: env.clean });
   /* renderCheck records a chain under the candidate it stands for (crossDiscover's `record`). */
   const opener = sink !== null && o.record !== undefined ? o.record : o.label;
+  /* A key is found among the opener's OWN stops of each read, as the discovery numbered it (ownStopByKey, SD3V-1). */
+  const own = ownOf(env.cleanStops.get(`${from}|${state}`) ?? new Set());
   try {
     if (!s.ok || s.absent) {
       for (const { s: stop } of stable) s.fail(`revealed by ${opener}: ${stop.label} at ${from}px → ${to}px: NOT DRIVEN (the state ${s.ok ? "was not present" : "did not load"} on this job's page)`);
@@ -3410,8 +3845,8 @@ async function crossSurfaceJob(browser, from, to, stateRow, o, stable, env) {
             const page = s.page();
             await crossWarmSettled(page);
             if ((resized ? await s.settledSig((x) => x === opened.sig) : await page.evaluate(crossSignature)) === opened.sig) {
-              const i = occurrenceKeys(opened.list).indexOf(key);
-              if (i >= 0 && (await page.evaluate(crossMarkIfLabel, [opened.list[i].path, opened.list[i].label]))) {
+              const was = ownStopByKey(own, opened.list, key);
+              if (was !== null && (await page.evaluate(crossMarkIfLabel, [was.path, was.label]))) {
                 if (sink === null) crossCount.reused += 1;
                 return true;
               }
@@ -3422,13 +3857,17 @@ async function crossSurfaceJob(browser, from, to, stateRow, o, stable, env) {
           /* A stop that mounts after its surface (the fabric's controls, once the lazily mounted scene has a frame) is
              waited for, bounded, as a chain's later step is (activate). */
           let now = await s.revealedNow();
-          for (let t = 0; !occurrenceKeys(now).includes(key) && t < 24; t += 1) {
+          for (let t = 0; ownStopByKey(own, now, key) === null && t < 24; t += 1) {
             await s.page().waitForTimeout(250);
             now = await s.revealedNow();
           }
           opened = { sig: await s.page().evaluate(crossSignature), list: now };
-          const i = occurrenceKeys(now).indexOf(key);
-          return i >= 0 && (await s.page().evaluate(crossMark, now[i].path));
+          const found = ownStopByKey(own, now, key);
+          if (found !== null && found.path !== stop.path) {
+            crossCount.keyMoved += 1;
+            console.log(`INFO  ${at}: ${label}: found by its key ${key} at ${found.path}, not at ${stop.path} where the discovery read it`);
+          }
+          return found !== null && (await s.page().evaluate(crossMark, found.path));
         };
         await crossDrive(s.page(), at, label, from, to, CROSS_HEIGHT, mark, () => s.reloadAt(from), sink);
       });
@@ -3442,12 +3881,15 @@ async function crossSurfaceJob(browser, from, to, stateRow, o, stable, env) {
  * A pool of `n` workers over a queue that TASKS MAY GROW while it runs (an enumeration queues its jobs). The
  * pool drains when the queue is empty and no task is running. A task's uncaught error is reported, never lost.
  */
-const POOL_MIN_FREE_BYTES = 700 * 1024 * 1024;
+/* ATLAS_POOL_MIN_FREE_MB overrides the floor (a diagnostic: it is how the hold-back lines below were exercised). */
+const POOL_MIN_FREE_BYTES = (Number(process.env["ATLAS_POOL_MIN_FREE_MB"] ?? "") || 700) * 1024 * 1024;
 const POOL_MIN_ACTIVE = 4;
 function taskPool(n) {
   const queue = [];
   const waiters = [];
   let active = 0;
+  /** The current memory hold, while the pool is holding new jobs back. */
+  let held = null;
   const notify = () => {
     while (waiters.length > 0) waiters.shift()();
   };
@@ -3455,7 +3897,9 @@ function taskPool(n) {
      early and the pool's width stays full to the end. MEASURED (phase 3.5 repair, full --crossings, 60.0 min): with
      one FIFO queue the discovery batches waited behind the tab-stop jobs, their surfaces' jobs were made last, and
      the final ~11 minutes ran two or three jobs at once on a host at 16% CPU. */
-  const push = (task, first = false) => {
+  /* `label`: what the watchdog's report calls the job. */
+  const push = (task, first = false, label = "a pool task") => {
+    task.label ??= label;
     if (first) queue.unshift(task);
     else queue.push(task);
     notify();
@@ -3467,15 +3911,60 @@ function taskPool(n) {
            fourteenth page pages the whole machine out. MEASURED (phase 3.5 repair): a full --sweep that ran at ~290
            cases a minute fell to ~25 once another process took 2.7 GB and free memory read 0.3 GB. So while free
            memory is under POOL_MIN_FREE_BYTES and at least POOL_MIN_ACTIVE tasks run, no new task starts. */
-        while (queue.length > 0 && active >= POOL_MIN_ACTIVE && freemem() < POOL_MIN_FREE_BYTES) await new Promise((r) => setTimeout(r, 1000));
+        /* And it SAYS SO (independent verifier V2-5: a stall under memory pressure printed nothing): when the hold
+           begins, every minute it lasts, and when it ends; the totals are in the POOL line after WALL TIME. */
+        const holding = () => queue.length > 0 && active >= POOL_MIN_ACTIVE && freemem() < POOL_MIN_FREE_BYTES;
+        if (holding() && held === null) {
+          held = { since: Date.now(), said: Date.now() };
+          poolHold.episodes += 1;
+          console.log(
+            `INFO  pool: holding back ${queue.length} queued job(s): free memory ${gbFree()} GB is under ${POOL_MIN_FREE_BYTES / 2 ** 20} MB with ${active} running (POOL_MIN_ACTIVE ${POOL_MIN_ACTIVE})`,
+          );
+        }
+        while (holding()) {
+          if (held !== null && Date.now() - held.said >= 60000) {
+            held.said = Date.now();
+            console.log(`INFO  pool: still holding back after ${((Date.now() - held.since) / 60000).toFixed(1)} min: free memory ${gbFree()} GB, ${active} running, ${queue.length} queued`);
+          }
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        if (held !== null) {
+          const ms = Date.now() - held.since;
+          held = null;
+          poolHold.ms += ms;
+          console.log(`INFO  pool: resumed after holding back ${(ms / 1000).toFixed(0)} s (free memory ${gbFree()} GB, ${active} running)`);
+        }
         const task = queue.shift();
         if (task !== undefined) {
           active += 1;
+          const job = { label: task.label ?? "a pool task", note: "starting", line: "", at: Date.now(), t0: Date.now(), contexts: new Set(), stalled: false, trips: 0, maxQuiet: 0 };
+          const run = jobScope.run(job, () => Promise.resolve().then(task));
+          let timer = null;
+          const every = Math.min(15000, JOB_STALL_MS / 4);
+          const watchdog = new Promise((resolve) => {
+            const tick = () => {
+              if (Date.now() - job.at >= JOB_STALL_MS) resolve("stalled");
+              else timer = setTimeout(tick, every);
+            };
+            timer = setTimeout(tick, every);
+          });
           try {
-            await task();
+            if ((await Promise.race([run.then(() => "done"), watchdog])) === "stalled") {
+              job.stalled = true;
+              run.catch(() => {}); /* what it still awaits fails once its contexts close; that is not news */
+              const quiet = Date.now() - job.at;
+              sweepFail(
+                "pool watchdog",
+                `${job.label}: NOT DRIVEN (stalled: no progress for ${(quiet / 60000).toFixed(1)} min, the bound being ${(JOB_STALL_MS / 60000).toFixed(1)} min; ` +
+                  `its last step: ${job.note}; its last line: ${job.line === "" ? "none" : job.line}; ` +
+                  `${((Date.now() - job.t0) / 60000).toFixed(1)} min since it started; free memory ${gbFree()} GB; ${job.contexts.size} page context(s) closed)`,
+              );
+              await Promise.all([...job.contexts].map((c) => c.close().catch(() => {})));
+            }
           } catch (err) {
-            sweepFail("rung crossing", `a task threw: NOT DRIVEN (${String(err).split(String.fromCharCode(10))[0]})`);
+            sweepFail("rung crossing", `${job.label}: a task threw: NOT DRIVEN (${String(err).split(String.fromCharCode(10))[0]})`);
           } finally {
+            clearTimeout(timer);
             active -= 1;
             notify();
           }
@@ -3524,7 +4013,7 @@ async function runCrossTasks(browser, plan, states, { mode = RENDER, sample = fa
   /* One enumeration per start width and state, serving every crossing that leaves that width. */
   const byFrom = new Map();
   for (const [from, to] of plan) byFrom.set(from, [...(byFrom.get(from) ?? []), to]);
-  for (const s of states) for (const [from, tos] of byFrom) p.push(() => crossEnumerate(browser, from, s, tos, env));
+  for (const s of states) for (const [from, tos] of byFrom) p.push(() => crossEnumerate(browser, from, s, tos, env), false, `the enumeration of ${from}px / ${s[0]}`);
   await p.drain();
 }
 
@@ -3688,7 +4177,8 @@ async function renderCheck(browser) {
   console.log(
     `\nRENDER CHECK: ${[...outcomes.full.keys()].filter((k) => !discoveryKey(k)).length} case(s) with every frame drawn, ${[...outcomes.suspended.keys()].filter((k) => !discoveryKey(k)).length} with draws suspended, ` +
       `${keys.filter(discoveryKey).length} opener discovery record(s); ${keys.length} compared, ${renamed.size / 2} pair(s) named differently by the mode with the same outcome, ${differ.length} differ, ${excused.length} excused (an opener unstable in a mode), ` +
-      `${notDriven} not driven in a mode; ${renderCount.pages} suspended page(s) suppressed ${renderCount.suppressed} draw call(s)` +
+      `${notDriven} not driven in a mode; ${crossCount.neverStill} activation(s) read from a page that never held still across two frames, ` +
+      `${crossCount.keyMoved} surface stop(s) found by their key at another place than the discovery read; ${renderCount.pages} suspended page(s) suppressed ${renderCount.suppressed} draw call(s)` +
       `${renderCount.pagesNotSuspended > 0 ? `, ${renderCount.pagesNotSuspended} WITHOUT the suspension installed` : ""}.`,
   );
   for (const d of differ) console.log(`  DIFFER ${d}`);
@@ -3731,7 +4221,7 @@ async function runSweep(browser, extraLanes = []) {
      at most six pages of a fourteen-page budget. Each pass keeps its own pages, its own order within a page, and
      its own verdict. */
   const shared = taskPool(CROSS_PARALLEL);
-  for (const lane of extraLanes) shared.push(lane, true);
+  for (const lane of extraLanes) shared.push(lane, true, lane.label ?? "a surface-pass lane");
   const sweepLanes = SWEEP_VIEWPORTS.filter(([w]) => !only || only.includes(w)).map(([w, h, vp]) => async () => {
         const ctx = await geometryContext(browser, { viewport: { width: w, height: h } });
         await ctx.addInitScript(() => {
@@ -3751,7 +4241,7 @@ async function runSweep(browser, extraLanes = []) {
           await ctx.close();
         }
       });
-  for (const lane of sweepLanes) shared.push(lane, true);
+  for (const [i, lane] of sweepLanes.entries()) shared.push(lane, true, `the sweep at ${SWEEP_VIEWPORTS.filter(([w]) => !only || only.includes(w))[i].slice(0, 2).join("x")}`);
   /* The evidence drawer: its own widths (derived from LADDER_REM) and its own resize targets. A
      `--state` narrowing that does not name it leaves it out, and says so. It measures indicator PIXELS
      (checkVisible), so it draws every frame whatever the render mode. */
@@ -3797,34 +4287,60 @@ const crossingLine = () =>
   `${[...crossSurfaces.values()].reduce((s, n) => s + n, 0)} surface case-set(s) driven, ${crossCount.landings} programmatic landing(s), ` +
   `${crossStates().length} page state(s), ${crossDialogsOpened.size} of ${SOURCE_DIALOGS.length} modal dialog owner(s) opened); ` +
   `${crossCount.lost} landed on <body> or out of sight; ${crossCount.recovered} crashed renderer(s) replaced; ` +
-  `between cases ${crossCount.undone} page(s) restored by an undo or Escape, ${crossCount.reloads} reloaded, ${crossCount.reused} surface stop(s) reached with the surface still open; ` +
-  `${crossCount.warmTimeouts} wait(s) for the palette pre-warm ran out (CROSS_WARM_WAIT_MS).`;
+  `between cases ${crossCount.undone} page(s) restored by an undo or Escape, ${crossCount.reloads} reloaded, ${crossCount.reused} surface stop(s) reached with the surface still open, ${crossCount.keyMoved} surface stop(s) found by their key at a place other than the one the discovery read; ` +
+  `${crossCount.warmTimeouts} wait(s) for the palette pre-warm ran out (CROSS_WARM_WAIT_MS), ${crossCount.neverStill} activation(s) read from a page whose signature never held across two frames (CROSS_STILL_TRIES).`;
 
 /** The whole run's wall time, and each timed phase's. */
 function timeSummary() {
   console.log(`\nWALL TIME: ${((Date.now() - RUN_T0) / 60000).toFixed(1)} min (${phaseTimes.map(([n, ms]) => `${n} ${(ms / 60000).toFixed(1)}`).join("; ")})`);
+  console.log(
+    `POOL: held new jobs back for memory ${poolHold.episodes} time(s), ${(poolHold.ms / 60000).toFixed(1)} min in all; ` +
+      `${sweepFails.filter((f) => f.where === "pool watchdog").length} job(s) stopped by the watchdog (no progress for ${(JOB_STALL_MS / 60000).toFixed(1)} min); ` +
+      `the longest quiet stretch of any job: ${(poolQuiet.ms / 1000).toFixed(1)} s${poolQuiet.label === "" ? "" : ` (${poolQuiet.label}, after: ${poolQuiet.note})`}; ` +
+      `progress = every completed Playwright call${roundTripClock ? "" : " — NOT INSTALLED, noted steps only"}.`,
+  );
 }
 
-/* `--render-check`: ONLY the render mode's proof (renderCheck). */
-if (process.argv.includes("--render-check")) {
-  const b = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
+/* `--containing-blocks`: ONLY the harness checks (harnessChecks: the census, the key rule, the frame rule, the clock). */
+if (process.argv.includes("--containing-blocks")) {
+  const b = watchContexts(await chromium.launch({ args: ["--enable-unsafe-swiftshader"] }));
   let ok = false;
   try {
-    ok = await timed("render check", () => renderCheck(b));
+    ok = await timed("harness checks", () => harnessChecks(b));
   } finally {
     await b.close();
   }
+  for (const f of sweepFails) console.log(`  FAIL ${f.where} :: ${f.what}`);
   timeSummary();
   process.exit(ok ? 0 : 1);
 }
 
+/* `--render-check`: ONLY the render mode's proof (renderCheck). Its verdict includes every failure the run reported
+   outside the comparison — the census, a job the watchdog stopped, a task that threw: a check whose jobs did not
+   run proves nothing about them. */
+if (process.argv.includes("--render-check")) {
+  const b = watchContexts(await chromium.launch({ args: ["--enable-unsafe-swiftshader"] }));
+  let ok = false;
+  try {
+    const censusOk = await timed("harness checks", () => harnessChecks(b));
+    ok = (await timed("render check", () => renderCheck(b))) && censusOk;
+  } finally {
+    await b.close();
+  }
+  if (sweepFails.length > 0) console.log(`\nRENDER CHECK RUN FAILURES outside the comparison: ${sweepFails.length}`);
+  for (const f of sweepFails) console.log(`  FAIL ${f.where} :: ${f.what}`);
+  timeSummary();
+  process.exit(ok && sweepFails.length === 0 ? 0 : 1);
+}
+
 /* `--crossings`: ONLY the rung-crossing pass (diagnostic; the sweep and the default run include it). */
 if (process.argv.includes("--crossings")) {
-  const b = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
+  const b = watchContexts(await chromium.launch({ args: ["--enable-unsafe-swiftshader"] }));
   let inScope = false;
   try {
     const only = process.argv.find((a) => a.startsWith("--vp="))?.slice(5).split(",").map(Number);
     const onlyState = process.argv.find((a) => a.startsWith("--state="))?.slice(8);
+    await timed("harness checks", () => harnessChecks(b));
     inScope = await timed("rung crossing", () => runCrossings(b, only, onlyState));
   } finally {
     await b.close();
@@ -3838,9 +4354,10 @@ if (process.argv.includes("--crossings")) {
 }
 
 if (process.argv.includes("--sweep")) {
-  const b = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
+  const b = watchContexts(await chromium.launch({ args: ["--enable-unsafe-swiftshader"] }));
   let ok = false;
   try {
+    await timed("harness checks", () => harnessChecks(b));
     ok = await runSweep(b);
   } finally {
     await b.close();
@@ -3851,7 +4368,7 @@ if (process.argv.includes("--sweep")) {
 
 /* ── run ───────────────────────────────────────────────────────────────────── */
 
-const browser = await chromium.launch({ args: ["--enable-unsafe-swiftshader"] });
+const browser = watchContexts(await chromium.launch({ args: ["--enable-unsafe-swiftshader"] }));
 /** The rendered D1 legs (dark, light) and what each read; part of this run's exit code. */
 const dialogStack = [];
 /* The sweep (the composite-widget census, the whole tab order hit-tested at nine points, the drawer pass and
@@ -3892,7 +4409,8 @@ try {
      side by side: the default run is the sweep's time, not the sum (the tractability budget, phase 3.5). */
   /* The surface passes are lanes of the sweep's one pool (runSweep), at its front: one page per width, each keeping
      its own order; the pool's width is CROSS_PARALLEL. */
-  const surfaceLanes = VIEWPORTS.filter(([vw]) => !onlyVp || onlyVp.includes(Number(vw))).map((v) => () => surfaceWidth(v));
+  await timed("harness checks", () => harnessChecks(browser));
+  const surfaceLanes = VIEWPORTS.filter(([vw]) => !onlyVp || onlyVp.includes(Number(vw))).map((v) => Object.assign(() => surfaceWidth(v), { label: `the surface passes at ${v[0]}x${v[1]}` }));
   sweepOk = await runSweep(browser, surfaceLanes);
   /* D1, RENDERED: the dialog stack's paint order at 1280x800, dark and light, each on a fresh page after
      the app has loaded (review/palette-warm.mjs owns the procedure; it waits out the parked pre-warm and

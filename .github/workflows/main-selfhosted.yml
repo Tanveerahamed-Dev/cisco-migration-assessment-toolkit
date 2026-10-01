@@ -45,6 +45,10 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # The full history: the default suite's history-needing tests skip on a depth-1 checkout
+        # (guarded by tests/test_ssot_registry.py for every workflow leg that collects them).
+        with:
+          fetch-depth: 0
       # The venv lives in RUNNER_TEMP, never inside the checkout: the privacy gate scans the
       # working tree, and a venv inside it fails the gate on its own scaffolding (churning
       # Scripts/*.exe stubs, and pyvenv.cfg embeds the machine's user-name path, which the

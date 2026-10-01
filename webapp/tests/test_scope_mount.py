@@ -647,7 +647,49 @@ def _shell_family() -> dict[str, tuple[str, bool]]:
     family["refused:icon-after-a-closed-head"] = (_WITHOUT_ICON + "</head>" + _SHELL_ICON, True)
     family["refused:icon-after-a-br-end-tag"] = (_WITHOUT_ICON + "</br>" + _SHELL_ICON, True)
     family["inert:body-content-after-the-icon"] = ("<p>x</p><div>y</div>", False)
+    # RQF-V2-1: an icon link the markup reader reads but the BROWSER does not build is no icon, and
+    # the browser requests /favicon.ico. The reader reads no element as raw text (a superset of the
+    # browser's reading, safe only for what must be ABSENT), so the shell's positive requirements
+    # must be judged on the browser's own reading. Measured in Chromium (2 of 2 runs each): an icon
+    # inside every element the browser reads as raw text or RCDATA -- with its end tag and without
+    # -- inside a comment, a template or foreign content, and an icon whose `rel` carries a
+    # non-ASCII blank (the browser splits a token list on ASCII whitespace only) all request it;
+    # an icon after a CLOSED title, a `rel` in upper case or padded with ASCII blanks, and an icon
+    # whose data: URL or indexed asset Chromium cannot decode do not (it falls back to no default).
+    for element in _RAW_TEXT_ELEMENTS:
+        family[f"load:icon-inside-{element}"] = (
+            _WITHOUT_ICON + f"<{element}>{_SHELL_ICON}</{element}>", True)
+        family[f"load:icon-inside-an-unclosed-{element}"] = (
+            _WITHOUT_ICON + f"<{element}>{_SHELL_ICON}", True)
+    family["load:icon-inside-an-upper-case-title"] = (_WITHOUT_ICON + f"<TITLE>{_SHELL_ICON}</TITLE>", True)
+    family["load:icon-inside-a-title-closed-with-a-blank"] = (
+        _WITHOUT_ICON + f"<title>{_SHELL_ICON}</title >", True)
+    family["load:icon-inside-a-title-after-its-text"] = (
+        _WITHOUT_ICON + f"<title>x {_SHELL_ICON}</title>", True)
+    family["load:icon-inside-a-comment"] = (_WITHOUT_ICON + f"<!--{_SHELL_ICON}-->", True)
+    family["load:icon-inside-a-template"] = (_WITHOUT_ICON + f"<template>{_SHELL_ICON}</template>", True)
+    family["load:icon-inside-svg"] = (_WITHOUT_ICON + f"<svg>{_SHELL_ICON}</svg>", True)
+    for name, blank in _NON_ASCII_BLANKS.items():
+        family[f"load:icon-rel-ending-in-{name}"] = (
+            _WITHOUT_ICON + _SHELL_ICON.replace('rel="icon"', f'rel="icon{blank}"'), True)
+    family["inert:icon-after-a-closed-title"] = (_WITHOUT_ICON + "<title>x</title>" + _SHELL_ICON, False)
+    family["inert:icon-rel-in-upper-case"] = (
+        _WITHOUT_ICON + _SHELL_ICON.replace('rel="icon"', 'rel="ICON"'), False)
+    family["inert:icon-rel-padded-with-ascii-blanks"] = (
+        _WITHOUT_ICON + _SHELL_ICON.replace('rel="icon"', 'rel=" icon\t"'), False)
+    for name, href in (("data-url-without-a-comma", "data:image/png"),
+                       ("data-url-with-bad-base64", "data:image/png;base64,%%%"),
+                       ("data-url-that-is-no-image", "data:image/png,notanimage"),
+                       ("indexed-asset-that-is-no-image", "/scope/assets/index-789.css")):
+        family[f"inert:icon-href-{name}"] = (
+            _WITHOUT_ICON + f'<link rel="icon" href="{href}">', False)
     return family
+
+
+#: Blanks Python's str.split() splits on but the browser does not: HTML splits a token list (`rel`)
+#: on ASCII whitespace only, so `rel="icon<blank>"` names no icon to a browser (measured).
+_NON_ASCII_BLANKS = {"no-break-space": " ", "ideographic-space": "　", "em-space": " ",
+                     "next-line": "\x85", "line-separator": " "}
 
 
 #: A fragment starting with this REPLACES the template shell's icon link (see _shell_with).
@@ -808,6 +850,64 @@ def test_a_scope_shell_is_ready_only_in_the_constructs_the_reader_accepts(tmp_pa
         (dist / "index.html").write_bytes(_shell_with(family[case_id][0], files))
         expected = "invalid_build" if family[case_id][1] else "ready"
         assert app_mod._scope_file_index(dist)[0] == expected, case_id
+
+
+def _shell_moving_into_a_title(template: dict[str, bytes], construct: bytes) -> bytes:
+    """The template shell with ``construct`` moved from its place into a <title> of its own."""
+    shell = template["index.html"]
+    assert shell.count(construct) == 1, construct
+    return shell.replace(construct, b"", 1).replace(b"</head>", b"<title>" + construct + b"</title></head>", 1)
+
+
+def test_a_shell_is_judged_on_the_browsers_reading_never_a_superset(tmp_path):
+    """RQF-V2-1 as a class, without a browser: every POSITIVE shell requirement -- an icon in the
+    head, a module entry, the runtime-source declaration -- counts elements, so the shell must be
+    read exactly as the browser reads it. An element the browser reads as raw text or RCDATA must
+    end at its own end tag with no `<` in it (plaintext never ends), and every requirement moved
+    into one is refused; the generic markup reader (a superset, used for what must be absent) still
+    reads the moved element, which is exactly the reading the shell may no longer be judged on."""
+    template = write_scope_dist(tmp_path / "template")
+    assert app_mod._scope_shell_refusal(_scope_members(template)) is None
+    constructs = {
+        "icon": _SHELL_ICON.encode("utf-8"),
+        "module-entry": b'<script type="module" crossorigin src="/scope/assets/index-abc123.js"></script>',
+        "runtime-source": (b'<meta name="atlas-scope-snapshot-source" '
+                           b'content="assesshub-api-runtime">'),
+    }
+    for name, construct in constructs.items():
+        shell = _shell_moving_into_a_title(template, construct)
+        generic = app_mod._scope_document_reading(shell, "text/html")
+        assert generic is not None and len(generic) == len(app_mod._scope_document_reading(
+            template["index.html"], "text/html")) + 1, name  # the superset reads the moved element
+        assert app_mod._scope_shell_reading(shell) is None, name
+        refusal = app_mod._scope_shell_refusal(_scope_members({**template, "index.html": shell}))
+        assert refusal is not None and "raw text" in refusal, (name, refusal)
+    # an element the browser reads as raw text, closed with nothing but text in it, is read exactly
+    titled = template["index.html"].replace(b"<title>Atlas Scope</title>",
+                                            b"<title>Atlas Scope &amp; x > y</title>", 1)
+    assert app_mod._scope_shell_refusal(_scope_members({**template, "index.html": titled})) is None
+    # PLAINTEXT never ends in a browser, whatever end tag the reader would read
+    for element in app_mod._SCOPE_HTML_RAW_TEXT_ELEMENTS:
+        wrapped = template["index.html"].replace(
+            b"</head>", f"<{element}>x</{element}></head>".encode("ascii"), 1)
+        reading = app_mod._scope_shell_reading(wrapped)
+        if element == "plaintext":
+            assert reading is None
+        else:
+            assert reading is not None, element
+    assert set(_RAW_TEXT_ELEMENTS) == set(app_mod._SCOPE_HTML_RAW_TEXT_ELEMENTS)
+
+
+def test_the_shell_reads_token_lists_and_names_as_the_browser_does():
+    """RQF-V2-1, attribute half: a `rel`, a script `type` and a meta `name` are read with the
+    browser's own rules -- split on ASCII whitespace only, compared ASCII case-insensitively -- not
+    Python's Unicode-wide str.split()/casefold(), which read an icon (or a stylesheet, via the long
+    s U+017F that casefolds to `s`) where the browser reads none."""
+    assert app_mod._scope_html_token_list(" ICON\tStyleSheet\n") == ["icon", "stylesheet"]
+    for blank in _NON_ASCII_BLANKS.values():
+        assert app_mod._scope_html_token_list(f"icon{blank}") == [f"icon{blank}"], repr(blank)
+    assert app_mod._scope_html_ascii_lower("ſtylesheet") == "ſtylesheet"
+    assert app_mod._scope_html_ascii_lower("MODULE") == "module"
 
 
 def test_the_shell_may_carry_only_the_inline_script_the_reader_pins(tmp_path):
@@ -1805,44 +1905,8 @@ def test_the_source_shell_the_hub_build_is_made_from_is_markup_the_reader_reads(
 
 
 _SCOPE_PINS = "webapp/tests/test_scope_mount.py"
-#: pytest options whose value is the NEXT token (so it is not read as a collected path)
-_PYTEST_VALUE_OPTIONS = frozenset({"-p", "-k", "-m", "-o", "-c", "-W", "-n", "--ignore", "--deselect",
-                                   "--rootdir", "--basetemp", "--confcutdir", "--junitxml",
-                                   "--maxfail", "--durations", "--tb", "--ignore-glob"})
-
-
-def _default_testpaths() -> list[str]:
-    """What a bare `pytest` collects here: pytest.ini's testpaths (or, without one, the root)."""
-    import configparser
-
-    config = configparser.ConfigParser()
-    config.read(_REPO / "pytest.ini", encoding="utf-8")
-    return config.get("pytest", "testpaths", fallback=".").split()
-
-
-def _pytest_invocations(run: str, working_directory: str) -> list[list[str]]:
-    """Every pytest invocation in one step's script, as the repository paths it collects. A line
-    continuation is joined first, exactly as the shell joins it, so an invocation whose paths sit on
-    the next line is read whole (QF-V2-4): bash DELETES an unescaped backslash that is the last
-    character before a line feed, together with the line feed; PowerShell reads an unescaped
-    backtick directly before a line feed as a blank. Anything between the escape and the line feed
-    -- a blank, a CR -- makes it no continuation at all (RQF-V1-5, measured in both shells)."""
-    run = re.sub(r"(?<!\\)((?:\\\\)*)\\\n", r"\1", run)
-    run = re.sub(r"(?<!`)((?:``)*)`\n", r"\1 ", run)
-    invocations = []
-    for match in re.finditer(r"(?:-m\s+pytest|(?:^|[\s;&|(])pytest)(?=[\s'\"]|$)([^\n;&|'\"]*)",
-                             run, re.MULTILINE):
-        paths, value_next = [], False
-        for token in match.group(1).split():
-            if value_next:
-                value_next = False
-            elif token in _PYTEST_VALUE_OPTIONS:
-                value_next = True
-            elif not token.startswith("-"):
-                paths.append(token.split("::", 1)[0])
-        invocations.append([os.path.normpath(os.path.join(working_directory, path)).replace("\\", "/")
-                            for path in (paths or _default_testpaths())])
-    return invocations
+# The ONE reader of a step's pytest invocations, shared with tests/test_ssot_registry.py (W5b, S-CI-V2).
+from pytest_invocation_reader import pytest_invocations as _pytest_invocations  # noqa: E402
 
 
 def _collects_the_scope_pins(paths: list[str]) -> bool:
@@ -1944,7 +2008,12 @@ def test_the_ci_leg_reader_recognises_every_way_a_step_collects_these_pins():
             ("python -m pytest master-reference/tests -q `\r\n  webapp/tests", ".", False),
             # bash deletes the backslash-newline pair outright, so `webapp\<LF>/tests` is ONE word
             ("python -m pytest webapp\\\n/tests -q", ".", True),
-            ("python -m pytest master-reference\\\n/tests -q", ".", False)]:
+            ("python -m pytest master-reference\\\n/tests -q", ".", False),
+            # W5b (S-CI-V2): a coverage option's value is not a collected path -- the ONE shared
+            # reader (tests/pytest_invocation_reader.py) knows the --cov* options the CI legs pass
+            ("python -m pytest --cov webapp master-reference/tests", ".", False),
+            ("python -m pytest --cov-config webapp/.coveragerc master-reference/tests", ".", False),
+            ("python -m pytest --cov-report term --cov webapp webapp/tests", ".", True)]:
         found = any(_collects_the_scope_pins(p) for p in _pytest_invocations(run, wd))
         assert found is expected, (run, wd)
 
@@ -2047,11 +2116,17 @@ const load = createRequire(path.join(atlasScopeRoot, 'package.json'));
           try { await page.goto(c.origin + c.path, { waitUntil: 'load', timeout: 15000 }); }
           catch (error) { rendered = false; }
           await page.waitForTimeout(1200);
+          // RQF-V2-1: the elements the browser BUILT, to hold the shell's own reading to
+          let dom = null;
+          try {
+            dom = await page.evaluate(() => Array.from(document.querySelectorAll('*'), (e) => [
+              e.localName, Array.from(e.attributes, (a) => [a.name, a.value])]));
+          } catch (error) { dom = null; }
           await context.close();
           last = state;
           current = null;
           await new Promise((resolve) => setTimeout(resolve, 150));
-          results[c.id] = { rendered, page: state.page, proxy: state.proxy };
+          results[c.id] = { rendered, page: state.page, proxy: state.proxy, dom };
         }
       } finally {
         await browser.close();
@@ -2447,6 +2522,34 @@ def test_every_scope_document_the_reader_accepts_is_read_as_chromium_reads_it(sc
     assert checked >= 150, checked
 
 
+def test_every_element_the_shell_may_carry_that_hides_markup_in_chromium_is_read_exactly(
+        scope_markup_oracle):
+    """RQF-V2-1, the raw-text set measured rather than trusted: over EVERY element name parse5
+    knows, Chromium shows which ones hide the markup inside them (`<t><meta name=referrer ...></t>`
+    builds no meta). Every such element the shell's accept-list admits must be one the shell reads
+    exactly -- closed at its own end tag with no `<` inside (app._SCOPE_HTML_RAW_TEXT_ELEMENTS) --
+    so no positive shell requirement can be met by markup the browser reads as text."""
+    cases, _media, results = scope_markup_oracle
+    hiding, measured = set(), 0
+    for case in cases:
+        match = re.fullmatch(r"asset\|element-(.+):0", case["id"])
+        if match is None:
+            continue
+        seen = results[case["id"]]
+        assert seen["rendered"], case["id"]
+        measured += 1
+        if not any(element == "meta" and any(name == "name" and value == "referrer"
+                                             for name, _local, value, _ns in attributes)
+                   for element, attributes in seen["dom"] or []):
+            hiding.add(match.group(1))
+    assert measured >= 100, measured
+    assert set(_RAW_TEXT_ELEMENTS) <= hiding, sorted(set(_RAW_TEXT_ELEMENTS) - hiding)
+    admitted_hiding = hiding & set(app_mod._SCOPE_SHELL_ELEMENTS)
+    assert {"title", "script"} <= admitted_hiding, sorted(admitted_hiding)
+    assert admitted_hiding <= app_mod._SCOPE_HTML_RAW_TEXT_ELEMENTS, sorted(
+        admitted_hiding - app_mod._SCOPE_HTML_RAW_TEXT_ELEMENTS)
+
+
 def _chromium_attributes(dom) -> set:
     return {(element.lower(), (local or name).lower(), value)
             for element, attributes in dom or [] for name, local, value, _namespace in attributes}
@@ -2590,8 +2693,17 @@ def test_no_scope_shell_served_ready_makes_a_request_outside_scope(scope_shell_r
                       if _requests_outside_scope(results[case["id"]], case["origin"])}
     for measured in ("load:table-background:third-party", "load:svg-image-xlink-href:third-party",
                      "load:style-url:third-party", "css-load:import-url:third-party",
-                     "css-load:url:third-party", "load:icon-absent"):
+                     "css-load:url:third-party", "load:icon-absent", "load:icon-inside-title",
+                     "load:icon-inside-an-unclosed-title"):
         assert measured in loaded_outside, (measured, results[measured])
+    # RQF-V2-1: every icon the reader could read where the browser builds none -- inside each element
+    # the browser reads as raw text or RCDATA, a comment, a template, foreign content, or behind a
+    # non-ASCII blank in its `rel` -- really makes Chromium request the default favicon, so the
+    # family exercises the class rather than asserting it
+    unread_icons = {case["id"] for case in cases
+                    if case["id"].startswith(("load:icon-inside-", "load:icon-rel-ending-in-"))}
+    assert len(unread_icons) >= 2 * len(_RAW_TEXT_ELEMENTS) + len(_NON_ASCII_BLANKS), len(unread_icons)
+    assert not sorted(unread_icons - loaded_outside), sorted(unread_icons - loaded_outside)
     # the default favicon is a request the BROWSER makes: only the proxy sees it
     absent = next(case for case in cases if case["id"] == "load:icon-absent")
     assert f"{absent['origin']}/favicon.ico" in results["load:icon-absent"]["proxy"]
@@ -2600,6 +2712,56 @@ def test_no_scope_shell_served_ready_makes_a_request_outside_scope(scope_shell_r
     css_loads = {case_id for case_id in loaded_outside if case_id.startswith("css-load:")}
     assert len(shell_loads) >= 150, len(shell_loads)
     assert len(css_loads) >= 60, len(css_loads)
+
+
+def _unbuilt_elements(reading, dom) -> list:
+    """The elements of ``reading`` (the reader's) that Chromium did not build: each must match a
+    DISTINCT element the browser built, of the same name, carrying every attribute the reader read
+    with the same value (the browser may add elements -- an implied one, `</p>` -- and attributes --
+    a script's -- but never drop one the reader counted)."""
+    built = [(name, dict(attributes)) for name, attributes in dom]
+    used: set[int] = set()
+    missing = []
+    for element in sorted(reading, key=lambda e: -len(e.attributes)):
+        match = next((index for index, (name, attributes) in enumerate(built)
+                      if index not in used and name == element.name
+                      and all(attributes.get(a) == v for a, v in element.attributes)), None)
+        if match is None:
+            missing.append((element.name, element.attributes))
+        else:
+            used.add(match)
+    return missing
+
+
+def test_every_element_a_ready_shell_is_judged_on_is_one_chromium_built(scope_shell_request_oracle):
+    """RQF-V2-1 as a class, in the browser: the shell's positive requirements count elements, so
+    the shell reading (app._scope_shell_reading) of EVERY shell served ready -- the generated shell
+    and stylesheet families, the fixture and the repository hub shell -- holds no element Chromium
+    did not build. The generic markup reader (a superset, sound only for what must be absent) is
+    shown to read an icon Chromium never built in the measured RQF-V2-1 shell, which this
+    containment would catch had the shell been judged on that reading."""
+    cases, results = scope_shell_request_oracle
+    checked, violations = 0, []
+    for case in cases:
+        if case["status"] != "ready":
+            continue
+        seen = results[case["id"]]
+        reading = app_mod._scope_shell_reading(base64.b64decode(case["body"]))
+        assert reading is not None and seen["dom"] is not None, case["id"]
+        missing = _unbuilt_elements(reading, seen["dom"])
+        if missing:
+            violations.append((case["id"], missing[:3]))
+        checked += 1
+    assert not violations, f"{len(violations)} ready shell(s) read elements Chromium did not build: " \
+                           f"{violations[:6]}"
+    # every inert shell and stylesheet construct and the fixture control at least (measured: 31 with
+    # the hub build present)
+    assert checked >= 1 + len(_SHELL_INERT) + len(_CSS_INERT), checked
+    titled = next(case for case in cases if case["id"] == "load:icon-inside-title")
+    superset = app_mod._scope_document_reading(base64.b64decode(titled["body"]), "text/html")
+    missing = _unbuilt_elements(superset, results[titled["id"]]["dom"])
+    assert [name for name, _attributes in missing] == ["link"], missing
+    assert ("rel", "icon") in missing[0][1], missing
 
 
 def test_every_media_type_chromium_renders_as_markup_is_read_as_markup(scope_markup_oracle):

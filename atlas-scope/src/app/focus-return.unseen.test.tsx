@@ -436,3 +436,97 @@ describe("the frame: a crossing that leaves the focused control wholly off scree
     expect(a).toBe(inspector);
   });
 });
+
+/* ── the crossing path, pinned ON ITS OWN (independent verifier V2-2) ──────────
+   The frame has two callers of the owner's "focus is seen" step: the rung crossing's settle (App.tsx, the rung
+   effect: `releaseFocusLeftUnseen` 400 ms after a crossing) and the resize listener's `keepFocusSeen`. The verifier
+   deleted the first and every test stayed green, because each test crossed a rung BY a resize, which also fires the
+   listener at the same 400 ms. They are not one case: the ladder is in rem, so a rung is crossed WITHOUT any resize
+   when the reader's default font size changes (the media queries re-evaluate; `useRungIndex` listens to them), and
+   then the crossing's settle is the only owner that runs. This case crosses by the media queries alone. */
+describe("a crossing made by the media queries alone (no resize event) still hands unseen focus on", () => {
+  const listeners = new Set<() => void>();
+  function answerMediaLive(): void {
+    window.matchMedia = ((q: string) => {
+      let matches = true;
+      for (const m of q.matchAll(/\((min|max)-width:\s*([\d.]+)rem\)/g)) {
+        const bound = Number.parseFloat(m[2] as string) * 16;
+        matches &&= m[1] === "min" ? width >= bound : width <= bound;
+      }
+      if (/prefers-reduced-motion/.test(q)) matches = false;
+      return {
+        matches,
+        media: q,
+        onchange: null,
+        addEventListener: (_t: string, cb: () => void) => void listeners.add(cb),
+        removeEventListener: (_t: string, cb: () => void) => void listeners.delete(cb),
+        addListener: (cb: () => void) => void listeners.add(cb),
+        removeListener: (cb: () => void) => void listeners.delete(cb),
+        dispatchEvent: () => false,
+      } as unknown as MediaQueryList;
+    }) as typeof window.matchMedia;
+  }
+  afterEach(() => {
+    for (const m of mounted.splice(0)) {
+      act(() => {
+        m.root.unmount();
+      });
+      m.container.remove();
+    }
+    listeners.clear();
+    window.matchMedia = realMatchMedia;
+    window.history.replaceState(null, "", "/");
+    act(() => {
+      useInvestigation.setState(useInvestigation.getInitialState(), true);
+    });
+  });
+
+  it("768 -> 390 by a font-size change: no resize fires, and focus still leaves the clipped 'Copy the citation path' for the Inspector", async () => {
+    act(() => {
+      useInvestigation.setState(useInvestigation.getInitialState(), true);
+    });
+    width = 768;
+    answerMediaLive();
+    let resizes = 0;
+    const countResize = (): void => void (resizes += 1);
+    window.addEventListener("resize", countResize);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(<App />);
+    });
+    mounted.push({ root, container });
+    await flushTurns(20, 8);
+    act(() => {
+      openInspector(fabric.findings[0]!.cite);
+    });
+    await flushTurns(20, 8);
+    const copy = document.querySelector<HTMLElement>('#inspector button[aria-label="Copy the citation path"]');
+    const inspector = document.getElementById("inspector");
+    expect(copy, "precondition: the Inspector shows a citation and its copy control").not.toBeNull();
+    act(() => {
+      copy!.focus();
+    });
+    expect(listeners.size, "precondition: the frame listens to the ladder's media queries").toBeGreaterThan(0);
+
+    stateGeometry();
+    viewport = { w: 390, h: 800 };
+    place(inspector, { x: 0, y: 152, w: 390, h: 316 });
+    place(copy, { x: 429, y: 182, w: 24, h: 24 });
+
+    /* The media queries change — and nothing else does. */
+    width = 390;
+    act(() => {
+      for (const cb of [...listeners]) cb();
+    });
+    await flushTurns(450, 1);
+    await flushTurns(20, 8);
+    window.removeEventListener("resize", countResize);
+    expect(resizes, "precondition: the crossing came from the media queries alone").toBe(0);
+    const a = document.activeElement;
+    expect(a, "a crossing with no resize event left focus on a control no part of which is on screen").not.toBe(copy);
+    expect(a).not.toBe(document.body);
+    expect(a).toBe(inspector);
+  });
+});

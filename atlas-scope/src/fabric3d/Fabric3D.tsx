@@ -21,7 +21,7 @@ import { bandOfHopIn, bandOfTrace } from "../core/claims";
 import { deviceById, fabric, findingsByHost, linkById, linksByHost } from "../core/data";
 import { applyToDevices, parseQuery } from "../core/query";
 import { useInvestigation, useReducedMotion } from "../core/store";
-import { recognisedKind, recognisedSeverity, unrecognisedPhrase, type Device, type Link, type Trace } from "../core/types";
+import { kindWords, recognisedSeverity, type Device, type Link, type Trace } from "../core/types";
 
 import type { FabricScene, HighlightState, PickResult, QualityTier, SceneEvent } from "./contract";
 import { FabricA11yTree, linkCutSentence } from "./FabricA11yTree";
@@ -518,7 +518,7 @@ export function describeDevice(id: string): string {
     : "Finding count not observed — this device was never collected, so a tally would count an empty search rather than an assessed device.";
   return [
     `${d.host} selected.`,
-    `${recognisedKind(d.kind) ? d.kind : unrecognisedPhrase("kind", d.kind)}.`,
+    `${kindWords(d.kind)}.`,
     d.collected ? "Collected." : "Topology only: this device was never collected.",
     /* The band as the ONE owner presents it: a favourable band on a host with unassessed scoring
        domains is announced as partial with the gaps named, exactly as DevicePane draws it (B1). */
