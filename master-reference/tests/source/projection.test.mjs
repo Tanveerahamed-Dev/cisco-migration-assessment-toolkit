@@ -4141,3 +4141,37 @@ test("projection refuses line or source records for an identity-depth file", asy
     });
   }
 });
+
+test("source explorer symbol and line coverage cards both disclose identity-depth deferral", async () => {
+  // Refuter counterexample: the Lines card said "full-depth files only" while
+  // the Symbols card showed a bare total that silently excluded every
+  // identity-depth file's symbols and declared tests.
+  const { proofCardCoverageNote } = await import("../../app/atlas/CoverageNotes.mjs");
+  const deferred = {
+    identity_depth_files: 400,
+    identity_depth_nonblank_lines_deferred: 1234,
+  };
+  const full = { identity_depth_files: 0, identity_depth_nonblank_lines_deferred: 0 };
+  const counts = { tests: 12 };
+
+  const lines = proofCardCoverageNote("lines", deferred, counts);
+  const symbols = proofCardCoverageNote("symbols", deferred, counts);
+  for (const note of [lines, symbols]) {
+    assert.match(note, /Full-depth files only/);
+    assert.match(note, /400 identity-only files/);
+    assert.match(note, /deferred/);
+  }
+  assert.match(lines, /1,234 lines/);
+  assert.match(symbols, /symbols and tests/);
+  assert.match(symbols, /12 declared tests/);
+
+  assert.equal(proofCardCoverageNote("lines", full, counts), "Exact denominator from completeness ledger");
+  assert.equal(proofCardCoverageNote("symbols", full, counts), "12 declared tests");
+  assert.match(proofCardCoverageNote("lines", undefined, counts), /line coverage unproven/);
+  assert.match(proofCardCoverageNote("symbols", undefined, counts), /symbol coverage unproven/);
+  assert.throws(() => proofCardCoverageNote("calls", full, counts), /unknown coverage card/);
+
+  const explorer = await readFile(new URL("../../app/atlas/SourceExplorer.tsx", import.meta.url), "utf8");
+  assert.match(explorer, /proofCardCoverageNote\("lines", censusDepth, recordCounts\)/);
+  assert.match(explorer, /proofCardCoverageNote\("symbols", censusDepth, recordCounts\)/);
+});

@@ -320,6 +320,32 @@ class CensusDepthCompilerTests(unittest.TestCase):
             row for row in group_records(output, "claims") if row["predicate"] == "repository.nonblank_line_record_count"
         )
         self.assertIn(CENSUS_DEPTH_BLOCK_CODE, line_claim["unresolved_reasons"])
+        # The count is exact over the full-depth census only; the claim's
+        # denominator says so instead of standing over every tracked path.
+        self.assertEqual(line_claim["denominator"]["value"], len(files) - 5)
+        self.assertEqual(line_claim["denominator"]["unit"], "full_depth_git_tracked_paths")
+        self.assertIn("identity_depth_files_excluded", line_claim["denominator"]["basis"])
+        # Every gate whose denominator is drawn from a record group an
+        # identity-depth file never emits states that scope; the others do not.
+        deferred = set(DEFERRED_GROUPS)
+        scoped = set()
+        for row in [*ledger["invariants"], *ledger["acceptance_gates"]]:
+            groups = set(compiler_module.GATE_DENOMINATOR_GROUPS[row["name"]])
+            with self.subTest(gate=row["name"]):
+                if groups & deferred:
+                    self.assertEqual(row["denominator_scope"], "full_depth_census_identity_depth_files_excluded")
+                    scoped.add(row["name"])
+                else:
+                    self.assertNotIn("denominator_scope", row)
+        self.assertTrue(
+            {
+                "every_symbol_has_dossier_fields",
+                "every_gui_surface_has_standardized_evidence_honest_dossier",
+                "every_safe_line_behaviorally_explained",
+                "every_nonblank_text_line_has_one_record",
+            }
+            <= scoped
+        )
 
         architecture = json.loads((output / "architecture-conformance.json").read_text(encoding="utf-8"))
         self.assertEqual(architecture["status"], "passed")
@@ -353,6 +379,10 @@ class CensusDepthCompilerTests(unittest.TestCase):
         self.assertEqual(ledger["census_depth"]["declarations"][0]["tracked_files"], 0)
         gate = next(row for row in ledger["acceptance_gates"] if row["name"] == "every_tracked_text_file_line_censused")
         self.assertTrue(gate["passed"])
+        # With nothing deferred, no denominator is qualified.
+        for row in [*ledger["invariants"], *ledger["acceptance_gates"]]:
+            with self.subTest(gate=row["name"]):
+                self.assertNotIn("denominator_scope", row)
         architecture = json.loads((output / "architecture-conformance.json").read_text(encoding="utf-8"))
         self.assertEqual(architecture["unexamined_static_edges"], [])
 
@@ -492,6 +522,17 @@ class CensusDepthCompilerTests(unittest.TestCase):
 
 
 class CensusDepthSchemaTests(unittest.TestCase):
+    def test_every_ledger_gate_must_declare_its_denominator_groups(self) -> None:
+        gates = [{"name": "an_undeclared_gate", "passed": True, "expected": 1, "actual": 1}]
+        with self.assertRaisesRegex(RuntimeError, "an_undeclared_gate"):
+            compiler_module._scope_gate_denominators(gates, identity_depth_files=0)
+        self.assertTrue(
+            set(compiler_module.GATE_DENOMINATOR_GROUPS.values()) and all(
+                set(groups) <= set(compiler_module.RECORD_GROUPS)
+                for groups in compiler_module.GATE_DENOMINATOR_GROUPS.values()
+            )
+        )
+
     def test_file_record_schema_binds_depth_reason_and_parse_status(self) -> None:
         schema = json.loads((MASTER_REFERENCE / "schema" / "atlas-records.schema.json").read_text(encoding="utf-8"))
         fence = set(schema["$defs"]["filesRecordKeyFence"]["propertyNames"]["enum"])

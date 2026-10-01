@@ -52,7 +52,7 @@ from .model import (
     write_bytes,
 )
 from .provenance import provenance_statement
-from .sbom import NPM_LOCKFILES, PYTHON_DECLARATIONS, build_cyclonedx
+from .sbom import PYTHON_DECLARATIONS, build_cyclonedx, npm_lockfiles
 from .schema_validation import validate_release_object
 from .source_binding import read_bound_source_blob, validate_exact_source
 
@@ -705,6 +705,46 @@ def census_depth_release_gate(completeness: dict[str, Any]) -> tuple[str, list[s
     return "BLOCK:" + ",".join(categories), limits
 
 
+def _identity_depth_exception(completeness: dict[str, Any]) -> str:
+    """Name every active identity-depth prefix that a projection claim excludes."""
+
+    receipt = completeness.get("census_depth")
+    declarations = receipt.get("declarations") if isinstance(receipt, dict) else None
+    active = sorted(
+        (row for row in declarations or [] if isinstance(row, dict) and row.get("tracked_files")),
+        key=lambda item: str(item.get("prefix")),
+    )
+    if not active:
+        return ""
+    listed = "; ".join(
+        f"{row.get('tracked_files')} files under `{row.get('prefix')}` (release BLOCK {row.get('block_category')})"
+        for row in active
+    )
+    return (
+        " Files censused at identity depth carry only file, import and privacy records, and their lines, "
+        f"symbols and source text are deferred, not projected: {listed}."
+    )
+
+
+def offline_readme_projection_sentence(completeness: dict[str, Any]) -> str:
+    """The OFFLINE-README projection sentence, qualified by the census depth."""
+
+    return (
+        "The machine line/source/symbol projection of every full-depth file is under `compiler/`; use "
+        "`source-symbol-index.json` to locate records." + _identity_depth_exception(completeness)
+    )
+
+
+def self_contained_html_limit(completeness: dict[str, Any]) -> str:
+    """The manifest limit for the self-contained HTML, qualified by the census depth."""
+
+    return (
+        "The self-contained HTML is an executive navigation view; the safe source and line records of every "
+        "full-depth file are carried in the offline ZIP compiler projection, not embedded in the page."
+        + _identity_depth_exception(completeness)
+    )
+
+
 def _artifact(root: Path, relative: str, value: bytes, role: str) -> dict[str, Any]:
     suffix = PurePosixPath(relative).suffix
     if suffix in TEXT_SCAN_SUFFIXES:
@@ -759,9 +799,16 @@ def _validate_output_contract(content: Any, *, pdf_included: bool) -> set[str]:
 
 
 def _dependency_sources(repo_root: Path, bundle: CompilerBundle) -> dict[str, bytes]:
+    # Every npm lockfile in the compiled Git tree, by npm's own file names: the
+    # SBOM and its vulnerability gate never depend on a hand-kept lockfile list.
+    tracked_lockfiles = npm_lockfiles(
+        str(item["path"])
+        for item in bundle.records["files"]
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    )
     sources = {
         relative: read_bound_source_blob(repo_root, bundle, relative)
-        for relative in sorted(set(NPM_LOCKFILES + PYTHON_DECLARATIONS))
+        for relative in sorted(set(tracked_lockfiles) | set(PYTHON_DECLARATIONS))
     }
     try:
         lock = json.loads(sources[_BOUNDED_IMAGE_LOCKFILE].decode("utf-8", errors="strict"))
@@ -1542,7 +1589,7 @@ def build_release(
         offline_entries["OFFLINE-README.md"] = (
             "# Atlas Master Reference offline bundle\n\n"
             f"Exact source: `{bundle.source_commit}`. Open `master-reference.html` locally for the executive navigation view. "
-            "The complete machine line/source/symbol projection is under `compiler/`; use `source-symbol-index.json` to locate records. "
+            f"{offline_readme_projection_sentence(bundle.completeness)} "
             "Verify entries with `bundle-receipt.json`. The artifact inventory, outer release manifest, and optional detached "
             "owner signature are sibling family members and are not embedded in this ZIP. No network connection is required.\n"
         ).encode("utf-8")
@@ -1688,7 +1735,7 @@ def build_release(
                 "The generated-output scanner covers high-confidence credential forms; privacy review remains required for contextual or encoded sensitive data.",
                 "PDF and ZIP compressed binary containers are not treated as UTF-8 privacy-scan proof; external PDF privacy coverage is explicitly blocked.",
                 "Preservation caches, installers, recovery keys, and exercise receipts are missing or externally custodied as detailed in preservation-coverage.json.",
-                "The self-contained HTML is an executive navigation view; complete safe source and line records are carried in the offline ZIP compiler projection, not embedded in the page.",
+                self_contained_html_limit(bundle.completeness),
                 "Cryptographic verification does not grant publication authority.",
             ],
             "manifest_self_exclusion": "A manifest cannot contain its own digest; sign these exact canonical bytes externally.",

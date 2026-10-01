@@ -194,3 +194,32 @@ def test_release_registries_require_the_census_depth_gate_and_invariant() -> Non
         "every_identity_depth_file_declared_privacy_scanned_and_unprojected"
         in compiler_bundle.REQUIRED_STRUCTURAL_INVARIANTS
     )
+
+
+def test_offline_readme_and_manifest_limit_qualify_completeness_by_census_depth() -> None:
+    # "The complete machine line/source/symbol projection" and "complete safe
+    # source and line records" were unqualified while identity-depth files
+    # carry no line, symbol or source-text records at all.
+    from release import pipeline  # noqa: PLC0415
+
+    declaration = census_depth_declaration_receipts()[0]
+    active = {**declaration, "tracked_files": 400, "deferred_nonblank_lines": 1234}
+    receipt = {"census_depth": {"declarations": [active], "block_categories": [CENSUS_DEPTH_BLOCK_CODE]}}
+    readme = pipeline.offline_readme_projection_sentence(receipt)
+    limit = pipeline.self_contained_html_limit(receipt)
+    for text in (readme, limit):
+        assert "full-depth" in text
+        assert declaration["prefix"] in text
+        assert CENSUS_DEPTH_BLOCK_CODE in text
+        assert "identity depth" in text
+        assert "complete" not in text.lower()
+
+    idle = {"census_depth": {"declarations": [{**declaration, "tracked_files": 0}], "block_categories": []}}
+    assert declaration["prefix"] not in pipeline.offline_readme_projection_sentence(idle)
+    assert "full-depth" in pipeline.self_contained_html_limit(idle)
+
+    source = " ".join((MASTER_REFERENCE / "release" / "pipeline.py").read_text(encoding="utf-8").split())
+    assert "The complete machine line/source/symbol projection" not in source
+    assert "complete safe source and line records" not in source
+    assert "offline_readme_projection_sentence(bundle.completeness)" in source
+    assert "self_contained_html_limit(bundle.completeness)" in source

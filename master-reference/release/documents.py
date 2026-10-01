@@ -30,6 +30,27 @@ def _line(value: object) -> str:
     return " ".join(str(value if value is not None else "").replace("|", "\\|").split())
 
 
+def npm_supply_chain_statement(sbom: dict[str, Any]) -> str:
+    """State the npm lockfile set the SBOM actually inventoried.
+
+    The set is read from the SBOM's own ``atlas:npmLockfiles`` metadata, which
+    the builder derives from the compiled Git tree by npm's lockfile names, so
+    the prose can never restate a stale hand count.
+    """
+
+    properties = {
+        str(item.get("name")): str(item.get("value"))
+        for item in sbom.get("metadata", {}).get("properties", [])
+        if isinstance(item, dict)
+    }
+    lockfiles = [item for item in properties.get("atlas:npmLockfiles", "").split(",") if item]
+    listed = ", ".join(f"`{_line(item)}`" for item in lockfiles) or "none"
+    return (
+        f"NPM direct and transitive components come from the {len(lockfiles)} tracked npm lockfiles "
+        f"derived from the compiled Git tree by npm's lockfile names: {listed}."
+    )
+
+
 def _bullets(values: Iterable[object]) -> str:
     rows = [f"- {_line(value)}" for value in values]
     return "\n".join(rows) if rows else "- None declared."
@@ -261,8 +282,8 @@ before relying on edge completeness.
 ## Supply chain
 
 The CycloneDX 1.5 BOM contains **{len(sbom['components'])}** component records.
-NPM direct and transitive components come from the two repository package-lock
-v3 files. Python components are exact declarations from `pyproject.toml` and
+{npm_supply_chain_statement(sbom)}
+Python components are exact declarations from `pyproject.toml` and
 requirements files, explicitly labelled `declared-unlocked`; no transitive
 Python resolution or vulnerability result is fabricated.
 

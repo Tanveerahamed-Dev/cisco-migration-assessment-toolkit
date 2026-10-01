@@ -164,6 +164,60 @@ if (
     raise RuntimeError("census-depth record-group partition differs from the compiler record groups")
 
 
+# The record groups each completeness gate draws its denominator from.  Every
+# gate the ledger emits must be declared here -- ``_scope_gate_denominators``
+# refuses an undeclared one -- so the census-depth scope of a denominator is
+# derived from its groups, never from a hand list of gate names: a gate drawn
+# from a group an identity-depth file never emits states that its denominator
+# is the full-depth census while any file is censused at identity depth.
+GATE_DENOMINATOR_GROUPS: dict[str, tuple[str, ...]] = {
+    # Structural invariants.
+    "every_tracked_file_classified": ("files",),
+    "every_nonblank_text_line_has_one_record": ("lines",),
+    "every_safe_parsed_source_has_one_structural_root": ("structural_entities",),
+    "every_safe_line_structurally_mapped": ("lines",),
+    "no_silent_parser_failure": ("files",),
+    "graphify_receipt_exact_source_bound": (),
+    "every_safe_text_file_has_exact_source_record": ("source_text",),
+    "publication_has_no_fatal_error": (),
+    "every_published_record_has_entity_type": RECORD_GROUPS,
+    "every_documentation_record_has_authority_classification": ("markdown",),
+    "every_gui_surface_has_standardized_evidence_honest_dossier": ("components", "routes"),
+    "every_identity_depth_file_declared_privacy_scanned_and_unprojected": ("files",),
+    # Semantic acceptance gates.
+    "architecture_contract_declared_and_conformant": (),
+    "runtime_architecture_edges_observed_and_reconciled": (),
+    "every_symbol_has_dossier_fields": ("symbols",),
+    "every_tracked_text_file_line_censused": ("files",),
+    "every_safe_line_behaviorally_explained": ("lines",),
+    "every_critical_or_public_symbol_level_four_reviewed": ("symbols",),
+    "exact_clean_commit_binding": (),
+    "every_binary_has_format_aware_privacy_review": ("binaries",),
+    "runtime_trace_evidence_joined_to_source_records": ("lines",),
+    "consequential_claim_denominator_closed": ("consequential_claim_facets",),
+    "bitemporal_event_ledger_populated_and_replayable": (),
+    "release_lifecycle_transitions_integrated_and_receipted": (),
+}
+FULL_DEPTH_DENOMINATOR_SCOPE = "full_depth_census_identity_depth_files_excluded"
+
+
+def _scope_gate_denominators(gates: list[dict[str, Any]], *, identity_depth_files: int) -> list[dict[str, Any]]:
+    """Mark every gate whose denominator excludes identity-depth files."""
+
+    undeclared = sorted({str(gate["name"]) for gate in gates} - set(GATE_DENOMINATOR_GROUPS))
+    if undeclared:
+        raise RuntimeError(f"completeness gates declare no denominator record groups: {', '.join(undeclared)}")
+    if identity_depth_files <= 0:
+        return gates
+    deferred = set(IDENTITY_DEPTH_DEFERRED_GROUPS)
+    return [
+        {**gate, "denominator_scope": FULL_DEPTH_DENOMINATOR_SCOPE}
+        if deferred & set(GATE_DENOMINATOR_GROUPS[str(gate["name"])])
+        else gate
+        for gate in gates
+    ]
+
+
 class CompilationError(RuntimeError):
     """The compiler refused to publish an incomplete or unsafe projection."""
 
@@ -844,6 +898,7 @@ def _claims(
         }
 
     full_files = [row for row in files if row["privacy_exposure"] == "full"]
+    full_depth_files = [row for row in files if row.get("census_depth") == CENSUS_DEPTH_FULL]
     graph_freshness = (
         "unknown"
         if dirty or graphify.get("stale") is None
@@ -884,9 +939,14 @@ def _claims(
                 line_count,
                 "nonblank_safe_text_lines",
                 [completeness_id],
-                denominator(len(files), "git_tracked_paths", "safe_text_line_mapping_over_tracked_tree"),
                 # An identity-depth prefix is censused but not line-mapped; the
-                # count is exact for the full-depth census and says so.
+                # count is exact over the full-depth census, and its
+                # denominator is that census, not every tracked path.
+                denominator(
+                    len(full_depth_files) or None,
+                    "full_depth_git_tracked_paths",
+                    "safe_text_line_mapping_over_full_depth_census_identity_depth_files_excluded",
+                ),
                 sorted(set(census_depth_block_categories)),
             ),
             claim(
@@ -2147,7 +2207,7 @@ def _ledger(
     if forbidden_content_scanned_files != safe_text_scan_eligible:
         forbidden_content_scan_unresolved.add("eligible_text_scan_incomplete")
 
-    return {
+    ledger = {
         "id": completeness_id,
         "schema_version": SCHEMA_VERSION,
         "source_commit": source_commit,
@@ -2348,6 +2408,11 @@ def _ledger(
             },
         ],
     }
+    for kind in ("invariants", "acceptance_gates"):
+        ledger[kind] = _scope_gate_denominators(
+            ledger[kind], identity_depth_files=census_depth["identity_depth_files"]
+        )
+    return ledger
 
 
 def _write_bytes(path: Path, value: bytes) -> dict[str, Any]:

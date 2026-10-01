@@ -3317,13 +3317,19 @@ class CompilerTests(unittest.TestCase):
     def test_typescript_project_config_files_are_jsonc_by_name_rule(self) -> None:
         # TypeScript reads every project configuration file with its JSON-with-
         # comments reader, so the classification is a name rule, not a path list.
+        # Exactly TypeScript's project-config names: ``tsconfig.json`` /
+        # ``jsconfig.json`` (the literal names its discovery searches for) and
+        # ``tsconfig.<name>.json`` / ``jsconfig.<name>.json`` (the role files a
+        # project hands to ``-p``/``extends``).  Matched case-sensitively: the
+        # census is of a Git tree, whose paths are case-sensitive on every
+        # host, so one commit must classify identically on Windows and Linux.
         for path in (
             "atlas-scope/tsconfig.json",
             "atlas-scope/tsconfig.config.json",
             "atlas-scope/tsconfig.scripts.json",
             "webapp/frontend/tsconfig.visual.json",
-            "tools/TSConfig-base.json",
-            "tools/tsconfig_node.json",
+            "tools/tsconfig.build.esm.json",
+            "tools/tsconfig.App_2-x.json",
             "tools/jsconfig.json",
             "tools/jsconfig.app.json",
         ):
@@ -3338,6 +3344,17 @@ class CompilerTests(unittest.TestCase):
             ("tools/mytsconfig.json", "json"),
             ("tools/tsconfigs/settings.json", "json"),
             ("tools/package.json", "json"),
+            # Refuter counterexamples: not TypeScript configuration names.
+            ("tools/tsconfig_base.json", "json"),
+            ("tools/TSConfig-base.json", "json"),
+            ("tools/tsconfig-base.json", "json"),
+            ("tools/tsconfig..json", "json"),
+            ("tools/tsconfig.json.json", "json"),
+            ("tools/tsconfig.JSON.json", "json"),
+            ("tools/tsconfig.app..json", "json"),
+            ("tools/TSCONFIG.JSON", "json"),
+            ("tools/Tsconfig.json", "json"),
+            ("tools/jsconfig.app.JSON", "json"),
         ):
             with self.subTest(path=path):
                 self.assertEqual(classify_file(path, "100644")["language"], language)
