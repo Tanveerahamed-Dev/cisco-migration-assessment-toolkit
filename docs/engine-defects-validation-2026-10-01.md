@@ -106,6 +106,21 @@ W1 has advanced to `0345eb1d`, but #579 remains open; W2a and final W2b integrat
 
 ## Exact next action
 
+Read-only W2a preflight found the clean listed checkout at `d0a9737a`. No W2a edits or
+tests ran before #579. These are concrete integration checks for the existing W2a/W2b rows:
+
+- In `ui_projection.py`, `_finding_row` / `_findings` and their closed schema must carry
+  `evidence_refs`, `evidence_basis`, and optional `evidence_refs_total`. The I23 tripwire also
+  names that total. Remove the no-pointers limitation only when the producer supplies evidence.
+- `_device_page` / `DeviceHealth` must carry `deduction_refs` as the producer's ordered
+  subsequence, never positionally zip it with deduction text.
+- During W2b integration, `_RECORD_SLOTS["exposure"]` must preserve `input_state`; the slice-2
+  version currently drops it. VLAN projection/schema and election preconditions must consume
+  the new owner verdict instead of the old first-claimant/integer-only reconstruction.
+- The slice-2 source assertion that move groups have no labels needs a legacy-aware replacement.
+  Inventory `DeviceRow` currently has no `move_group` field; complete that G13 consumer when
+  the new producer is integrated. These omissions are source observations, not runtime results.
+
 1. The owner authorizes publishing `fix/engine-contract-defects`. Rerun the privacy verifier,
    scan every `origin/main..HEAD` commit message and patch with `_client_marker_patterns()`,
    and gate the push on both exit codes. Keep local hook configuration untracked.
