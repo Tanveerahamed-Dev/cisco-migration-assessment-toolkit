@@ -6247,6 +6247,23 @@ S-D3 and its verifier (upheld, five minors; reported; the record step did not ru
   of 2026-09-29, like W5's; the owner's answer on whether such bounded runs stand as evidence is still
   pending.
 
+**Status 2026-10-01 (W5, the orchestrator): two attempts at a complete audit on this host; still UNPROVEN, with the
+tractability measured.** Both runs served a production build of W5's head on a host where other applications held all
+but 0.6–1.9 GB of memory.
+- **Default run** (`node review/audit-d3-focus.mjs`, crossing parallelism capped at 4): stopped by its 2-hour bound
+  with 6,143 PASS, 0 FAIL, 0 NOT DRIVEN and no phase complete. This was the wrong mode for the acceptance question,
+  and the cap was too low.
+- **`--sweep`** (the acceptance mode, crossing parallelism 6): stopped deliberately after 76 minutes with 3,593 PASS,
+  0 FAIL and 0 NOT DRIVEN.
+  - 202 of those are sweep, drawer and self-removing cases. The other 3,391 are rung-crossing cases over all eight
+    directed crossings and three page states. Among them are 211 cases of 768 → 390 px with a finding selected,
+    the transition where "Copy the citation path" used to be left clipped. All pass.
+  - The pool held new work back 58 times for memory. The crossing rate fell from about 54 to 10 cases a minute
+    once free memory sat at the pool's 0.7 GB floor. With about 11,000 crossing cases in a full run, that is
+    over 18 hours, so a complete run is not tractable on this host under this load.
+- **The path:** run `--sweep` once on a machine with several GB free (or a hosted runner) and record its exit
+  code. No failure has appeared in any W5 run, but a partial run is not the complete audit D3 requires.
+
 ### O69. The /scope reader — the XML path still reads an XHTML page differently from the browser, and four more residuals — OPEN (owners: `webapp/backend/app.py`, `webapp/tests/test_scope_mount.py`, `tests/test_ssot_registry.py`, `.github/`, `portable/`)
 From Q-F's second independent verifier (reported; not re-verified by the record step).
 - **QF-V2-1 (major) — the parser-differential class is still open on the XML path.** AssessHub reads an
