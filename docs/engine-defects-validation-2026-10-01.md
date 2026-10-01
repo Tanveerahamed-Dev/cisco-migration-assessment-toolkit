@@ -68,6 +68,38 @@ invented input shapes; the coverage and rendering assertions are retained.
   approval because the board does not list that tooling change. `.agents/` and `.codex/` remain
   preserved and excluded from staging.
 
+### Read-only preparation of the pending hook-path repair
+
+The configuration has six absolute script paths (the initial approval question said seven):
+`vault-guard.sh`, `vault-guard-bash.sh`, `session-brief.sh`, `scorecard-append.sh`,
+`verify-green.sh`, and `graph-refresh.sh`. Git Bash resolved this worktree's root from both
+the root folder and `docs/`; all six targets are readable and byte-identical to their existing
+`.claude/hooks/` counterparts. No hook was executed.
+
+The proposed replacement for each command is the following, with `SCRIPT` replaced by its
+existing filename. Root/path resolution failures remain nonzero for every hook; the script's
+own exit code propagates. No matcher, timeout, status message, script bytes, or working
+directory changes. A backup and exact JSON comparison are required before applying it.
+
+```sh
+_atlas_hook_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 2
+[ -f "$_atlas_hook_root/.codex/hooks/SCRIPT" ] && [ -r "$_atlas_hook_root/.codex/hooks/SCRIPT" ] || exit 2
+bash "$_atlas_hook_root/.codex/hooks/SCRIPT"
+```
+
+This preserves the existing `bash` dependency. Bare `bash` was absent from the PowerShell
+probe's PATH; actual hook-runner resolution is not verified. The scripts' existing internal
+fail-open conditions are not changed or represented as closed. In particular, do not execute
+`session-brief.sh` for validation because it reads the vault log. Static inspection confirms
+the graph-refresh hook stops at this linked worktree's `.git` file before graph mutation.
+
+### Post-merge verification still in progress
+
+On merged #581 commit `497e26b6`, hosted run `36858426410` is still executing its Windows
+test job and run `36858426344` is still building the Master Reference artifact family. Other
+CI jobs have passed. These are verified live waits, not terminal passes. #579 remains open
+and behind main, and local commit `ebb5a368` remains unpushed pending the privacy-gate repair.
+
 ## Exact next action
 
 1. If authorized, repair only the local hook script paths with a backup and prove equivalent
