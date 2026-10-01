@@ -35,7 +35,7 @@ import time
 import pytest
 from jsonschema import Draft202012Validator
 
-from cisco_toolkit import analyze, nrfu_export, ssot
+from cisco_toolkit import analyze, nrfu_export, ssot, stp_topology
 from cisco_toolkit import parse as parse_mod
 from cisco_toolkit import ui_projection as uip
 from cisco_toolkit.model import DevicePhysical, InterfaceData
@@ -295,7 +295,17 @@ def _blind_existing(sample):
 def _labelled_groups(sample):
     snap = copy.deepcopy(sample)
     for i, g in enumerate(snap["move_groups"], 1):
-        g["group"] = f"Group {i}"
+        g["group"] = analyze.move_group_label(i)
+    # A labelled control must carry the same derived joins as the real current producers. The legacy
+    # sample can have empty waves; merely adding labels would now create contradictory source records.
+    host_groups, ordinal = analyze.move_group_host_index(snap["move_groups"])
+    for finding in snap["punchlist"]:
+        labels = analyze._ordered_group_labels(
+            (host_groups.get(h, analyze.MOVE_GROUP_UNSCHEDULED) for h in finding["devices"]), ordinal)
+        finding["wave"] = ", ".join(labels)
+    for host, rows in snap["remediation_plan"]["by_device"].items():
+        for row in rows:
+            row["wave"] = host_groups.get(host, analyze.MOVE_GROUP_UNSCHEDULED)
     snap["endpoint_dependencies"] = analyze.compute_endpoint_dependencies(snap["endpoint_identity"],
                                                                            snap["move_groups"])
     return snap
@@ -836,12 +846,17 @@ def test_i4_sparse_interfaces_markers_and_human_fields(snaps, payloads, docs):
     vlans = {r["vlan"]["value"]: r for r in p["inventory"]["vlans"]["rows"]["items"]}
     raw = {r["vlan"]: r for r in snap["vlan_cutover"]}
     for vid, row in vlans.items():
-        if raw[vid]["stp_root"] == uip.NOT_OBSERVED_SENTINEL:
+        state = raw[vid].get("stp_root_state")
+        if state is None or state == "not_observed":
             assert _sv(row["stp_root"]) == (NC, None)
-            assert _sv(row["stp_root_default_election"]) == (NC, None)       # a False over no root
+            assert _sv(row["stp_root_default_election"]) == (NC, None)
+        elif state == "ambiguous":
+            assert _sv(row["stp_root"]) == _sv(row["stp_root_default_election"]) == (UV, None)
         else:
+            assert state == "published"
             assert _sv(row["stp_root"]) == (PUB, raw[vid]["stp_root"])
-            assert _sv(row["stp_root_default_election"]) == (PUB, raw[vid]["stp_root_default_election"])
+            default = raw[vid]["stp_root_default_election"]
+            assert _sv(row["stp_root_default_election"]) == ((PUB, default) if default is not None else (NC, None))
         if raw[vid]["endpoint_mix"] == uip.NOT_OBSERVED_SENTINEL:
             assert _sv(row["endpoint_mix"]) == (NC, None)
             if raw[vid]["endpoint_count"] == 0:
@@ -1021,14 +1036,17 @@ def test_i7_a_basis_ref_to_a_failed_section_is_unavailable(name, snaps, payloads
 # I8 -- the move-group label gate
 # --------------------------------------------------------------------------------------------------
 def test_i8_move_group_values_over_no_labels_are_withheld(snaps, payloads, docs):
-    p = payloads["a"]
-    assert not any(isinstance(g, dict) and g.get("group") for g in snaps["a"]["move_groups"])
+    legacy = copy.deepcopy(snaps["a"])
+    for group in legacy["move_groups"]:
+        group.pop("group", None)
+    p = uip.project(legacy)
+    assert not any(isinstance(g, dict) and g.get("group") for g in legacy["move_groups"])
     for row in p["findings"]["rows"]["items"]:
         assert _sv(row["wave"]) == (NC, None) and "no 'group' label" in row["wave"]["reason"]
     for row in p["inventory"]["endpoints"]["dual_homed"]["items"]:
         for f in ("move_groups", "split_across_groups"):
             assert _sv(row[f]) == (NC, None) and "no 'group' label" in row[f]["reason"], f
-    items = _doc(docs, "a", "core1")["device"]["remediation"]["items"]["items"]
+    items = uip.project_device(legacy, "core1")["device"]["remediation"]["items"]["items"]
     assert items and all(it["wave"]["state"] == NC for it in items)
     q = payloads["mg"]
     split = [row for row in q["inventory"]["endpoints"]["dual_homed"]["items"]]
@@ -1395,15 +1413,16 @@ def test_i12_caps_and_move_group_label_are_held_against_the_producer_source():
     for fn in (analyze.compute_migration_punchlist, analyze.compute_remediation_plan,
                analyze.compute_device_dossiers, analyze.compute_endpoint_dependencies):
         reads = [node for node in ast.walk(_function_ast(fn))
-                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get"
-                 and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == uip.MOVE_GROUP_LABEL]
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                 and node.func.id == "move_group_host_index"]
         assert reads, fn.__name__
     keys = set()
     for node in ast.walk(_function_ast(analyze.compute_move_groups)):
         if isinstance(node, ast.Dict):
             keys |= {k.value for k in node.keys if isinstance(k, ast.Constant)}
-    # the engine gap this projection gates on: when compute_move_groups writes a label, remove the gate
-    assert "switches" in keys and uip.MOVE_GROUP_LABEL not in keys
+    assert "switches" in keys and uip.MOVE_GROUP_LABEL in keys
+    groups = analyze.compute_move_groups({"a": {}, "b": {}})
+    assert [g[uip.MOVE_GROUP_LABEL] for g in groups] == ["Group 1", "Group 2"]
 
 
 def test_i12_tables_are_held_against_the_producer_signatures():
@@ -1491,7 +1510,8 @@ def test_i14_selections_follow_the_owners_key_rules(name, snaps, payloads, docs)
         assert sel["gateways"] == ([i for i, r in enumerate(l3) if _digit(r.get("vlan")) == vid]
                                    if readable("l3_forwarding") else None)
         want = sorted(_ptr("stp_roots", h, k) for h in roots for k, rec in roots[h].items()
-                      if k.isdigit() and int(k) == vid and isinstance(rec, dict) and not rec.get("is_mst"))
+                      if stp_topology._election_priority(k) == vid
+                      and not (isinstance(rec, dict) and rec.get("is_mst")))
         assert sel["stp_roots"] == (want if readable("stp_roots") else None)
     deps = snap.get("endpoint_dependencies") or {}
     shared = deps.get("shared_ip") or []
@@ -1774,17 +1794,17 @@ def _vlan_item(inv, vid):
 
 
 def test_i18_default_election_over_an_unparsed_root_priority_is_withheld(snaps, payloads):
-    assert _sv(_vlan_item(payloads["a"]["inventory"], 10)["stp_root_default_election"])[0] == PUB
-    snap = copy.deepcopy(snaps["a"])
-    roots = snap["stp_roots"]
-    # the owner's root: the first sorted host whose non-MST record claims root (compute_vlan_cutover_matrix)
-    host = next(h for h in sorted(roots) if isinstance(roots[h].get("10"), dict) and roots[h]["10"].get("is_root")
-                and not roots[h]["10"].get("is_mst"))
-    roots[host]["10"]["root_priority"] = None
-    next(r for r in snap["vlan_cutover"] if r["vlan"] == 10)["stp_root_default_election"] = False   # what it writes
-    fact = _vlan_item(uip.project_inventory(snap), 10)["stp_root_default_election"]
-    assert _sv(fact) == (NC, None) and "root_priority" in fact["reason"]
-    assert {"pointer": _ptr("stp_roots", host, "10", "root_priority"), "role": "witness"} in fact["refs"]
+    roots = {"a": {"10": {"is_root": True, "root_address": "aaaa.0000.0001", "root_priority": 32778}}}
+    snap = {"stp_roots": roots, "vlan_cutover": analyze.compute_vlan_cutover_matrix({}, roots)}
+    assert _sv(_vlan_item(uip.project_inventory(snap), 10)["stp_root_default_election"]) == (PUB, True)
+    roots["a"]["10"]["root_priority"] = None
+    snap["vlan_cutover"] = analyze.compute_vlan_cutover_matrix({}, roots)
+    projected = _vlan_item(uip.project_inventory(snap), 10)
+    fact = projected["stp_root_default_election"]
+    assert _sv(fact) == (NC, None) and "priority" in fact["reason"]
+    assert _sv(projected["stp_root"]) == (PUB, "a")
+    assert projected["stp_root_identities"]["value"][0]["root_priority"] is None
+    assert fact["subject"] == "/vlan_cutover/0/stp_root_default_election"
 
 
 def test_i18_empty_dependencies_need_every_gateway_config(snaps, payloads):

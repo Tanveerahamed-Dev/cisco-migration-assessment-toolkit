@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout | Codex | Engine fixes/refutation pushed through `f950f888`. Main after #580 is merged for consumer integration; no W2b fixture regeneration yet. Earlier full-run failures remain in [validation](engine-defects-validation-2026-10-01.md). (2026-10-01) | Reconcile projection and Scope consumers test-first, independently refute, regenerate golden/sheet schema/sample and Scope derivatives ONCE with LF bytes, run all gates, pass both privacy checks, open the PR and merge when green. |
+| W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout | Codex | Main after #580 merged as `60d97d26`. Engine/projection/Scope consumer fixes independently reviewed; focused gates pass. No W2b fixture regeneration yet. Earlier negative receipts remain in [validation](engine-defects-validation-2026-10-01.md). (2026-10-01) | Regenerate golden/sheet schema/sample and Scope derivatives ONCE with LF bytes, review measured deltas, run all gates, pass both privacy checks, push/open the PR and merge when green. |
 | W2c | Backend endpoint and first core screens | planned `codex/core-screens`; reuse existing `.claude/worktrees/ui-projection-2` checkout after W2b merges; branch not created | Codex | API and visual-reference preflights complete; implementation waits for W2b | After W2b merges, create the listed branch from current main in the clean existing checkout. Add the paged, declared-response-model endpoint, then Overview / Trust / Inventory + device / Findings screens using only contract envelopes. |
 
 ## Owner decisions
@@ -97,6 +97,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-01, Codex (W2b consumer source freeze):
+  - Closed the projection's G13 labels, G15 owner metadata/pointers/readiness scope and G49 input-state handling test-first. Independent final-source refutation found no residual actionable defects.
+  - Engine selection: 178 passed. Projection selection: 307 passed with one sample-signature check deferred until regeneration; independent regression replay: 70 passed. Scope synthetic absence controls: 162 passed, zero skipped.
+  - Consumer integration is committed locally before the one regeneration pass; no protected fixture has been regenerated. Fresh privacy gates are required before the next push.
 
 - 2026-10-01, Codex (W2a merged / W2b integration):
   - Marked #580 ready after all 15 required checks passed on `1e6268f3`; the applicable webapp and CodeQL checks also passed. Merged with the authorized merge-commit command as `8000adce`. Its tree `3a99bc64d24b5892d4880810ab59a2da3c0280ab` equals the tested head's tree. Removed W2a's active row under rule 8.

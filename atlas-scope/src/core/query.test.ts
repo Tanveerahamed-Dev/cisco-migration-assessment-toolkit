@@ -1,10 +1,10 @@
 /**
  * query.test.ts — the query engine measured against the REAL compiled fabric.
  *
- * Every expectation below is derived from the loaded fabric by INDEPENDENT inspection (raw traversal of
+ * Expectations over the loaded fabric are derived by INDEPENDENT inspection (raw traversal of
  * `fabric.devices` / `fabric.findings` / ..., with predicates written here), not by re-running the engine's own
  * code paths. A test that recomputes an answer with the implementation's logic agrees with the implementation's
- * bugs.
+ * bugs. Explicit synthetic absent-wave controls exercise absence even when the loaded fabric has wave labels.
  *
  * TWO TIERS (src/test-support/golden-sample.ts). The invariant tests hold on ANY compiled fabric: their subjects
  * (a host, a severity, a category, a search term) are chosen by PROPERTY from the loaded data, and their counts are
@@ -17,8 +17,9 @@
  * that the invariant blocks used to read are gone; each of those figures is now a raw count here and a golden pin
  * there.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fabric } from "./data";
+import { dataset } from "./dataset";
 import { unassessedScoringDomains } from "./band-qualification";
 import { describeGolden } from "../test-support/golden-sample";
 import type { Device, Finding } from "./types";
@@ -169,7 +170,6 @@ const HAS = {
   "a kind of device never collected": DARK_KIND !== undefined,
   "a tier both collected and not": MIXED_TIER !== undefined,
   "an absent legal severity and band": ABSENT_SEV !== undefined && ABSENT_BAND !== undefined,
-  "no finding with a wave": fabric.findings.every((f) => f.wave === null),
   "a cross-layer layers value": LAYERS !== undefined,
   "an endpoint address": EP_IP !== undefined,
   "a finding naming the host in its devices and title": DOUBLE_NAMED !== undefined,
@@ -191,6 +191,28 @@ const need = <V>(v: V | undefined): V => {
 };
 
 const ids = <T extends { id: string }>(xs: readonly T[]): string[] => xs.map((x) => x.id);
+
+/** Explicit absence controls: the reference sample may legitimately label every finding's wave. */
+const ABSENT_WAVE_FINDINGS: Finding[] = ["synthetic-absent-wave-1", "synthetic-absent-wave-2"].map((id) => ({
+  id, severity: "Medium", rank: null, priority: null, category: "Synthetic absence control",
+  devices: [], wave: null, title: id, detail: null, remediation: null, cite: `synthetic.${id}`,
+}));
+
+/** Query vocabulary is memoized at module load: install an isolated synthetic dataset before importing it. */
+async function absentWaveQuery(): Promise<typeof import("./query")> {
+  vi.resetModules();
+  const set = structuredClone(dataset);
+  set.fabric.findings = structuredClone(ABSENT_WAVE_FINDINGS);
+  try {
+    (await import("./dataset/slot")).installDataset({
+      set,
+      origin: { kind: "opened-file", fileName: "synthetic-absent-wave.json", fileBytes: set.fabric.meta.sourceBytes, warnings: [] },
+    });
+    return await import("./query");
+  } finally {
+    vi.resetModules();
+  }
+}
 
 /** Independent restatement of the required tie-break, so the test does not borrow the engine's
  *  own comparator to check the engine's own comparator. `cite` is in the tuple because `id` is not
@@ -267,10 +289,11 @@ describe("parseQuery — grammar", () => {
     expect(p.unmatchableValues.map((u) => `${u.key}:${u.value}`)).toEqual([`severity:${ABSENT_SEV}`, `band:${ABSENT_BAND}`]);
   });
 
-  it.runIf(has("no finding with a wave"))(titled("reports a key for which the snapshot observed no values at all", "no finding with a wave"), () => {
+  it("reports a key for which the snapshot observed no values at all", async () => {
     // Every finding has wave === null. That is NOT 'no waves exist'; it is 'migration waves were never observed',
     // and the UI must be able to say so.
-    const p = parseQuery("wave:2");
+    const q = await absentWaveQuery();
+    const p = q.parseQuery("wave:2");
     expect(p.unobservedKeys).toContain("wave");
   });
 });
@@ -394,10 +417,11 @@ describe("an unrecognised key never silently passes everything through", () => {
 });
 
 describe("unobserved fields stay unobserved", () => {
-  it.runIf(has("no finding with a wave"))(titled("reports every finding as undetermined for wave, never as excluded", "no finding with a wave"), () => {
-    const r = applyToFindings(fabric.findings, parseQuery("wave:2"));
+  it("reports every finding as undetermined for wave, never as excluded", async () => {
+    const q = await absentWaveQuery();
+    const r = q.applyToFindings(ABSENT_WAVE_FINDINGS, q.parseQuery("wave:2"));
     expect(r.items).toHaveLength(0);
-    expect(r.clauses[0]!.undetermined).toBe(RAW.findings);
+    expect(r.clauses[0]!.undetermined).toBe(ABSENT_WAVE_FINDINGS.length);
     expect(r.clauses[0]!.excluded).toBe(0);
     expect(r.clauses[0]!.note).toMatch(/not observed/i);
   });
@@ -533,8 +557,9 @@ describe("suggest — completions drawn from the data, never invented", () => {
     expect(s.replace).toEqual({ start: 5, end: 5 + typed.length });
   });
 
-  it.runIf(has("no finding with a wave"))(titled("says plainly when a key has no observed values rather than showing an empty menu", "no finding with a wave"), () => {
-    const s = suggest("wave:", 5);
+  it("says plainly when a key has no observed values rather than showing an empty menu", async () => {
+    const q = await absentWaveQuery();
+    const s = q.suggest("wave:", 5);
     expect(s.suggestions).toHaveLength(0);
     expect(s.note).toMatch(/not observed/i);
   });
@@ -650,12 +675,12 @@ describe("grouping and ordering", () => {
     for (const g of groups) expect(g.items, g.key).toHaveLength(RAW.sev(g.key));
   });
 
-  it.runIf(has("no finding with a wave"))(titled("keeps an unobserved bucket separate and labelled, never folded into a value", "no finding with a wave"), () => {
-    const groups = groupBy(fabric.findings, "wave");
+  it("keeps an unobserved bucket separate and labelled, never folded into a value", () => {
+    const groups = groupBy(ABSENT_WAVE_FINDINGS, "wave");
     expect(groups).toHaveLength(1);
     expect(groups[0]!.observed).toBe(false);
     expect(groups[0]!.label).toMatch(/not observed/i);
-    expect(groups[0]!.items).toHaveLength(RAW.findings);
+    expect(groups[0]!.items).toHaveLength(ABSENT_WAVE_FINDINGS.length);
   });
 
   it("groups devices by band in band order with the unobserved bucket last", () => {

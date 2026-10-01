@@ -1,6 +1,6 @@
 # W2b engine defects: validation and integration handoff (2026-10-01)
 
-**Partial: implementation and related validation complete; integration waits for W1 and W2a.**
+**Partial: engine and projection fixes independently reviewed; integration regeneration and final gates remain.**
 Branch: `fix/engine-contract-defects`, continuing interrupted checkpoint `3cb8891d`.
 Design owner: `docs/engine-defects-design-2026-10-01.md`. Queue owner: `docs/NOW.md`.
 
@@ -132,7 +132,7 @@ On merged #581 commit `497e26b653d2053aaefc8ab8381c921c68ba7321`, hosted CI run
 These results apply to that docs-only merged-main source, not the unmerged W2b implementation.
 W1 has advanced to `0345eb1d`, but #579 remains open; W2a and final W2b integration still wait.
 
-## Exact next action
+## Earlier integration sequence (superseded by the board)
 
 Read-only W2a preflight found the clean listed checkout at `d0a9737a`. No W2a edits or
 tests ran before #579. These are concrete integration checks for the existing W2a/W2b rows:
@@ -165,3 +165,48 @@ tests ran before #579. These are concrete integration checks for the existing W2
 Docs-only #581 was independently scope-checked and merged after all required checks passed:
 head `6a817777c7e2e1b4aacde937c68994ee9d306ea3`, merge
 `497e26b653d2053aaefc8ab8381c921c68ba7321`. The merged tree equals the tested head tree.
+
+## Integration after W2a merge (2026-10-01)
+
+#579 and #580 are merged. W2a's final head `1e6268f3` passed all required hosted gates and
+merged as `8000adce`, with exact tree equality. W2b merged that main revision in merge commit
+`60d97d26`, preserving `f950f888` as its other parent. Only `docs/NOW.md` conflicted; every
+handoff line from both parents was retained and the completed W2a active row was removed.
+
+The merge-relative whitespace check reported the imported `tests/test_ssot_owner_robustness.py`
+file's 838 CRLF lines. Its indexed bytes equal main exactly; the staged W2b diff against main
+passed `git diff --check`. The imported file was preserved rather than normalized as unrelated
+work. This is separate from the required LF-only regeneration of generated fixtures.
+
+Before the single regeneration pass, reconcile all three producer changes in the projection:
+exact move-group identity, published STP election/metadata with honest legacy/default states,
+and exposure input-state preservation. Independent refutation follows. Scope's absence controls
+must remain exercised when real findings gain wave labels. The golden source digest and measured
+expectations are updated only after regenerated data has been reviewed; a digest-only refresh
+is insufficient. No W2b golden/sample/Scope regeneration has run at this integration checkpoint.
+
+The board reserves `codex/core-screens` in the existing UI-projection checkout for W2c after W2b
+merges. That branch has not been created. Backend typing/pagination and reference-source notes
+are retained in `docs/one-app-w2-integration-preflight-2026-10-01.md`.
+
+### Reviewed consumer source before regeneration
+
+The projection now preserves exact move-group labels/membership, consumes the STP owner's
+tri-state verdict and metadata, and carries dossier exposure input states. It withholds
+contradictory or ambiguous pointers instead of choosing a claimant or correcting a risk state.
+Readiness retains its engine-owned scope: an ambiguous cross-switch root can coexist with a
+valid published readiness verdict. Closed schemas and producer-vocabulary parity remain enforced.
+
+- Post-merge engine selection: **178 passed**, exit 0.
+- Final projection author selection: **307 passed, 1 deselected**, exit 0. The deselected
+  producer-signature/sample comparison must run after the sample acquires the four STP fields.
+- Independent final-source review: no actionable residuals; **70 regression tests passed**,
+  plus 186 exposure-state/legacy controls, six label/membership controls, nine numeric/null/
+  serialization-pointer controls, and duplicate-row/readiness/phase-precedence probes.
+- Scope absence controls now use explicit synthetic inputs; **162 passed, zero skipped**.
+  No generated fixture or golden digest was changed in this source-freeze step.
+- Ruff and diff checks pass. Reviewed `ui_projection.py` SHA-256:
+  `79e64599f78e168dd0f3a2b83b5570c166510f69aed77fc780699f5920cd8639`.
+
+These focused passes do not replace the pending regeneration, all applicable integration gates,
+hosted full matrix/coverage/distribution checks, or exact-head merge verification.

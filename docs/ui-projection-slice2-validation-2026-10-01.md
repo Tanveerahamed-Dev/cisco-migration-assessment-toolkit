@@ -105,10 +105,19 @@ The existing receipt-reader census remains mandatory. The original hosted runs a
 runs; their many passing tests do not make that head eligible to merge. Complete hosted gates
 must pass again on the follow-up commit.
 
-## Remaining gates and handoff
+## Closure
 
-Before push, both public-repository privacy gates must pass on the final commit history.
-Then require all hosted checks on the exact PR head, mark #580 ready, and merge with a merge
-commit under the owner's authorization. CI conclusions and the tested head are authoritative
-on the PR, not inferred from this local record. W2b integration and its single LF-preserving
-fixture regeneration follow W2a's merge; its validation record stays on its own branch.
+All 15 required checks passed on final head `1e6268f3603c3d6efb882558c9da2522f6146ff7`.
+The applicable webapp and CodeQL checks also passed. A PR-description update had cancelled one
+webapp scope job; its dependent jobs failed closed. The replacement run passed, and a complete
+rerun of the cancelled workflow also passed, closing those failure records without changing
+workflow policy. The final full source/frontend gate passed after 1h17m28s. Its inline Windows
+source gate runs dependency installation, full default pytest, frontend unit tests/build, and
+the tracked-distribution reproducibility check; separate required jobs cover lint, types,
+coverage and distribution/runtime contracts.
+
+Marked #580 ready and merged with `--merge --admin --match-head-commit` on 2026-10-01.
+Merge commit: `8000adcecf8850d810d26c52a9fbdcc1affc5bbf`.
+Both tested head and merged main have tree `3a99bc64d24b5892d4880810ab59a2da3c0280ab`.
+The earlier incomplete local run and failed hosted head remain recorded above; the final gates
+prove the corrected head. W2b integration now follows on its existing branch.
