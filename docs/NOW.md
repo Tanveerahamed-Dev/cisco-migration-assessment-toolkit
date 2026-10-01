@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-10-01** (Codex). Reasoning behind the current direction:
+Last reconciled: **2026-10-02** (Codex). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout; [PR #583](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/583) | Codex | Pushed through `20fb8b3b` after both privacy gates passed. Engine/UI local gates and independent reviews complete. Hosted Master Reference failed; exact-tree local reproduction exceeds its 248 MiB deployment limit. Other hosted checks continue. See [validation](engine-defects-validation-2026-10-01.md). (2026-10-01) | Owner approval requested to add lossless Master Reference projection compaction to W2b, or await that owner's fix. Preserve every source record and the existing privacy/size gates. Then finish exact-head CI and the authorized merge; W2c waits. Do not regenerate golden/sample fixtures again. |
+| W2b | Engine defects G13 / G15 / G49 + approved Master Reference compaction | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout; [PR #583](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/583) | Codex | Handoff pushed as `7448cafd`. Owner approved bounded lossless projection compaction on 2026-10-02 to close the reproduced 248 MiB deployment-size failure. Engine/UI gates and earlier reviews are retained in [validation](engine-defects-validation-2026-10-01.md). | Implement source-chunk metadata factoring test-first, independently refute, and measure the complete rebuilt deployment including decoder/receipts. Preserve public records, every source line, decoded-size bounds and privacy/size gates. Then pass exact-head CI and merge; W2c waits. Do not regenerate golden/sample fixtures again. |
 | W2c | Backend endpoint and first core screens | planned `codex/core-screens`; reuse existing `.claude/worktrees/ui-projection-2` checkout after W2b merges; branch not created | Codex | API and visual-reference preflights complete; implementation waits for W2b | After W2b merges, create the listed branch from current main in the clean existing checkout. Add the paged, declared-response-model endpoint, then Overview / Trust / Inventory + device / Findings screens using only contract envelopes. |
 
 ## Owner decisions
@@ -97,6 +97,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-02, Codex (approved W2b compaction):
+  - Owner approved the pending bounded lossless Master Reference compaction request. It is now part of W2b on the existing branch and checkout.
+  - Scope: existing projection encoder/generated decoder, round-trip and hostile-input tests, documentation and exact-source rebuild validation. Public payloads, all source records/text/digests/terminators/census denominators, the decoded 256 KiB ceiling and the existing deployment/privacy gates stay intact. Net savings must be measured after decoder and receipt overhead.
+  - No additional golden/sample regeneration, W1 changes, new branch/worktree, release publication or qualification authority is included. W2c follows the already reserved route after #583 merges.
 
 - 2026-10-01, Codex (W2b Master Reference capacity gate):
   - The final-head Master Reference run `36918999658` passed compiler/schema validation and 264 contract tests, then failed deployment finalization. Its public error is intentionally redacted; there were no retained CI artifacts.

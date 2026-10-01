@@ -327,3 +327,69 @@ digests and all census denominators. It requires measured savings, round-trip/re
 and a fresh exact-head hosted pass. Owner scope approval was requested because the board names
 this as an owner follow-up outside the listed W2 work. No compaction implementation, budget
 increase, dropped source coverage or fixture regeneration has been performed.
+
+### Owner approval and bounded repair (2026-10-02)
+
+The owner approved the pending compaction request. W2b now includes lossless factoring of
+repeated metadata within the existing source chunks and reconstruction of the unchanged public
+records at the generated loader boundary. The approval covers the encoder/decoder, meaningful
+round-trip and hostile-input tests, documentation and measured exact-source rebuilds. It does
+not authorize raising limits, removing records, weakening privacy or changing compiler schemas.
+
+Implementation and independent refutation are in progress. The full deployment, including
+decoder and receipt overhead, must fit the existing limit with measured headroom before this
+failure is called resolved. The golden/sample/Scope data stays at its single reviewed generation.
+
+The complete hosted baseline at `7448cafd` is now terminal: **14 of 15 required checks passed**;
+only Master Reference failed again at deployment finalization. CI run `36925328998` and portable
+run `36925329006` succeeded, including distribution/source binding and installed-runtime checks.
+The two inapplicable draft-publication jobs were skipped; no release was published.
+
+| Full Python suite | Passed | Skipped | Expected failures |
+|---|---:|---:|---:|
+| Linux 3.10 | 9,940 | 283 | 1 |
+| Linux 3.11 | 9,949 | 274 | 1 |
+| Linux 3.12 | 10,084 | 139 | 1 |
+| Linux 3.13 | 10,073 | 150 | 1 |
+| Linux 3.14 | 10,072 | 151 | 1 |
+| Windows 3.12 | 10,183 | 40 | 1 |
+
+Coverage passed at **86.29%** against the unchanged 85% gate (10,071 passed / 152 skipped /
+one expected failure). These results bind `7448cafd`; the compaction commit still requires its
+own exact-head validation. The earlier `20fb8b3b` CI run was superseded by the handoff update:
+five Linux suites passed, while Windows/coverage were cancelled. Those cancellations do not
+become passes retroactively; the complete `7448cafd` results above are separate evidence.
+
+### Compaction implementation and corpus comparison
+
+The encoder factors complete repeated metadata only within existing source chunks. It retains
+the original partition and falls back to the original bytes unless both raw size and the actual
+packaging deflate policy improve. The generated loader reconstructs independent metadata
+containers and checks the original expanded UTF-8 budget before expansion. A review probe found
+that parsed metadata text could contain overflowing JSON numbers; direct/nested `+/-1e400`
+counterexamples were observed failing first and now reject before byte accounting or cloning.
+
+On encoder SHA-256 `6c0e176e38d69b4f30fa3a7b1650e5e328951265be644df85ea63cf8d133e5c9`, a separate
+whole-corpus comparison checked all **4,038 saved source chunks / 737,592 segments** against their
+original complete payloads and retained gzip bytes. Every comparison passed. **3,629 chunks**
+use the compact form; **409** retain their original bytes. Compressed source-chunk bytes decrease
+from **73,214,989 to 67,443,039**, a measured **5,771,950-byte saving**. No chunk grows. This is a
+source-chunk measurement on the saved prior corpus, not the final deployment size: a clean
+current-source build must include the new code/tests, decoder index and receipt overhead.
+
+Independent review also exposed an existing edge case in unencoded JavaScript object literals:
+a schema-valid nested own `__proto__` key can become that subobject's prototype rather than an
+own property. It is not global prototype mutation. The compact format preserves such keys;
+the byte-identical fallback retains the pre-existing behavior. The current compiler constructs
+those metadata dictionaries with fixed keys, and the saved-corpus scan found **zero** such own
+keys. No universal claim about arbitrary legacy metadata or a global module-encoding repair is
+made here; that adjacent limitation remains explicit.
+
+Independent review closed on the same encoder hash: **33 malformed-input cases** rejected with
+static errors and no data-hook invocations. It verified nested independence, UTF-8/CRLF and
+fragment handling, unchanged partition over multiple chunks, the encoded/decoded ceilings,
+unchanged singleton fallback bytes and safe compact own-key preservation. No remaining new
+codec defect was found. Author checks: initial test-first RED, then 89 projection tests passed /
+one existing POSIX-only skip; after the one-line finite-value repair, all five focused codec and
+loader cases, TypeScript, lint and diff checks passed. The complete rebuilt bundle remains the
+next acceptance gate.

@@ -20,6 +20,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { constants as zlibConstants, deflateRawSync } from "node:zlib";
 
 const GENERATED_MARKER = ".atlas-projection-generated";
 const COMPILER_SCHEMA_VERSION = "1.2.0";
@@ -3242,14 +3243,120 @@ function splitUtf8(value, maximumBytes) {
   return parts;
 }
 
-function sourceChunkBytes(header, segments) {
+function expandedSourceChunkBytes(header, segments) {
   return Buffer.from(moduleText("sourceChunk", { ...header, segments }), "utf8");
 }
 
-function packSourceSegments(header, segments) {
+// This function is also emitted once in the lazy source index. Keep it browser
+// native and self-contained: no Node globals or closures from the build host.
+export function decodeSourceChunk(encoded) {
+  try {
+    const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value)
+      && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+    const dense = (value) => Array.isArray(value)
+      && Object.getPrototypeOf(value) === Array.prototype
+      && Reflect.ownKeys(value).length === value.length + 1
+      && Object.keys(value).length === value.length
+      && Object.keys(value).every((key, index) => key === String(index));
+    const sameKeys = (value, keys) => record(value) && Reflect.ownKeys(value).length === keys.length
+      && keys.every((key) => Object.hasOwn(value, key));
+    const jsonData = (value) => {
+      if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+      if (typeof value === "number") return Number.isFinite(value);
+      if (!record(value) && !dense(value)) return false;
+      return Reflect.ownKeys(value).every((key) => {
+        if (Array.isArray(value) && key === "length") return true;
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        return typeof key === "string" && descriptor.enumerable && Object.hasOwn(descriptor, "value")
+          && jsonData(descriptor.value);
+      });
+    };
+    const headerKeys = ["id", "fileId", "path", "encoding", "byteCount", "contentDigest", "lineCount", "derivation", "verification"];
+    const lineKeys = ["number", "text", "terminator", "fragmentIndex", "fragmentCount", "lineDigest", "recordId"];
+    const metadataKeys = [
+      "syntaxKind", "structuralMappingBasis", "containingSymbol", "containingSymbolId",
+      "syntaxDepth", "explanationDepth", "semanticEntity", "owner", "behaviorGroup",
+      "inputsAndOutputs", "claimsInfluenced", "callersAndDependencies", "testsCoveringIt",
+      "testCoverageState", "runtimeTraceState", "guiOrArtifactConsumers",
+      "securityAndPrivacyEffect", "currentOrHistorical", "unresolvedReasons",
+    ];
+    if (!jsonData(encoded) || !dense(encoded) || encoded.length !== 3) throw new Error();
+    const [header, metadata, rows] = encoded;
+    if (!sameKeys(header, headerKeys) || !dense(metadata) || !dense(rows)) throw new Error();
+    const utf8 = new TextEncoder();
+    const bytes = (value) => utf8.encode(JSON.stringify(value)).byteLength;
+    const metadataBytes = metadata.map((text) => {
+      if (typeof text !== "string") throw new Error();
+      const value = JSON.parse(text);
+      if (!jsonData(value) || !sameKeys(value, metadataKeys)) throw new Error();
+      return bytes(value);
+    });
+    // Count the original module representation before expanding repeated
+    // metadata. Small encoded inputs must not defeat the existing 256 KiB cap.
+    let expandedBytes = bytes({ ...header, segments: [] })
+      + "export const sourceChunk = ;\nexport default sourceChunk;\n".length;
+    const referenced = new Set();
+    for (const [index, row] of rows.entries()) {
+      if (!dense(row) || row.length !== 2) throw new Error();
+      const [ordinal, line] = row;
+      if (!Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal >= metadata.length
+        || !sameKeys(line, Object.hasOwn(line ?? {}, "fragmentDigest") ? [...lineKeys, "fragmentDigest"] : lineKeys)) throw new Error();
+      referenced.add(ordinal);
+      // Merge two nonempty JSON objects: replace their two adjoining braces
+      // with one comma, then account for the segment-list comma.
+      expandedBytes += metadataBytes[ordinal] + bytes(line) - 1 + (index ? 1 : 0);
+      if (expandedBytes > 256 * 1024) throw new Error();
+    }
+    if (referenced.size !== metadata.length || expandedBytes > 256 * 1024) throw new Error();
+    return {
+      ...JSON.parse(JSON.stringify(header)),
+      segments: rows.map(([ordinal, line]) => ({
+        ...JSON.parse(metadata[ordinal]), ...JSON.parse(JSON.stringify(line)),
+      })),
+    };
+  } catch {
+    // Compiler/source payloads must never escape through parser diagnostics.
+    throw new Error("invalid compact source chunk");
+  }
+}
+
+export function sourceChunkBytes(header, segments) {
+  const expanded = expandedSourceChunkBytes(header, segments);
+  if (expanded.byteLength > SOURCE_CHUNK_MAX_BYTES) throw new Error("source chunk accounting exceeded byte ceiling");
+  const lineKeys = new Set(["number", "text", "terminator", "fragmentIndex", "fragmentCount", "fragmentDigest", "lineDigest", "recordId"]);
+  const metadataOrdinals = new Map();
+  const metadata = [];
+  const rows = segments.map((segment) => {
+    const values = Object.entries(segment);
+    const semantic = stableJson(Object.fromEntries(values.filter(([key]) => !lineKeys.has(key))));
+    if (!metadataOrdinals.has(semantic)) {
+      metadataOrdinals.set(semantic, metadata.length);
+      metadata.push(semantic);
+    }
+    return [metadataOrdinals.get(semantic), Object.fromEntries(values.filter(([key]) => lineKeys.has(key)))];
+  });
+  if (metadata.length >= segments.length) return expanded;
+  const encoded = [header, metadata, rows];
+  const compact = Buffer.from(moduleText("compactSourceChunk", encoded), "utf8");
+  if (compact.byteLength >= expanded.byteLength) return expanded;
+  // Packaging uses this exact raw-deflate policy inside its deterministic gzip
+  // envelope. Retain the original representation when a dictionary costs more.
+  const compressedBytes = (value) => deflateRawSync(value, {
+    level: zlibConstants.Z_BEST_COMPRESSION, memLevel: 8, strategy: zlibConstants.Z_FILTERED,
+  }).byteLength;
+  if (compressedBytes(compact) >= compressedBytes(expanded)) return expanded;
+  if (stableJson(decodeSourceChunk(encoded)) !== stableJson({ ...header, segments })) {
+    throw new Error("source chunk metadata round-trip differs");
+  }
+  return compact;
+}
+
+export function packSourceSegments(header, segments) {
   const chunks = [];
   let current = [];
-  const emptyBytes = sourceChunkBytes(header, []).byteLength;
+  // Keep the exact pre-compaction partition. Both encoded and decoded chunks
+  // remain bounded; a smaller dictionary must never absorb additional lines.
+  const emptyBytes = expandedSourceChunkBytes(header, []).byteLength;
   let currentBytes = emptyBytes;
   for (const segment of segments) {
     const segmentBytes = Buffer.byteLength(stableJson(segment), "utf8");
@@ -3633,13 +3740,14 @@ async function writeSourceProjection({
       `const sourceChunkLoaders = Object.freeze([\n${loaderLines}\n]);\n` +
       "if (sourceChunkLoaders.length !== sourceFilePaths.length || sourceChunkLoaders.some((loaders, index) => { const descriptor = sourceFiles[sourceFilePaths[index]]; return descriptor?.path !== sourceFilePaths[index] || !Number.isSafeInteger(descriptor.chunkCount) || descriptor.chunkCount !== descriptor.chunks.length || loaders.length !== descriptor.chunks.length || loaders.some((loader) => typeof loader !== \"function\") || descriptor.chunks.some((chunk, chunkIndex) => chunk.chunkIndex !== chunkIndex); })) throw new Error(\"source chunk loader route is absent or inconsistent\");\n" +
       "const sourceFileOrdinals = new Map(sourceFilePaths.map((path, index) => [path, index]));\n" +
+      `${decodeSourceChunk.toString()}\n` +
       "export function getSourceFile(path) { return Object.hasOwn(sourceFiles, path) ? sourceFiles[path] : null; }\n" +
       "export async function loadSourceChunk(path, chunkIndex) {\n" +
       "  const ordinal = typeof path === \"string\" ? sourceFileOrdinals.get(path) : undefined;\n" +
       "  const loader = ordinal === undefined || !Number.isSafeInteger(chunkIndex) || chunkIndex < 0 ? null : sourceChunkLoaders[ordinal]?.[chunkIndex];\n" +
       "  if (!loader) return null;\n" +
       "  const module = await loader();\n" +
-      "  return module.sourceChunk ?? module.default;\n" +
+      "  return Object.hasOwn(module, \"compactSourceChunk\") ? decodeSourceChunk(module.compactSourceChunk) : module.sourceChunk ?? module.default;\n" +
       "}\n" +
       "export async function loadSourceWindow(path, line) {\n" +
       "  const descriptor = getSourceFile(path);\n" +
