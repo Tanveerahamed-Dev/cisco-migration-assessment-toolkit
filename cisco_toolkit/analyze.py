@@ -12822,7 +12822,8 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
                 ax("Protocol", "ok", f"clean where observed — {len(observed)} of {len(cells)} families assessed ({', '.join(observed)})")
             elif any(cell is None or cell["state"] == "analysis_unavailable" for cell in cells):
                 ax("Protocol", "na", "analysis unavailable — protocol family analysis missing", "analysis_unavailable")
-            elif any(cell["state"] in ("captured_empty", "captured_no_record", "not_running") for cell in cells):
+            elif any(_protocol_assessability_conclusion(cell["state"]) in ("abstained", "not_running")
+                     for cell in cells):
                 ax("Protocol", "na", "protocol captures contain no assessable health records", "collected_but_empty")
             else:
                 ax("Protocol", "na", "no assessable protocol captures (missing or capture error)", "not_collected")

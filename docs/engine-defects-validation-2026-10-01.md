@@ -26,7 +26,7 @@ invented input shapes; the coverage and rendering assertions are retained.
 
 ## Decisive verification
 
-- Final related Python/Node-backed/backend selection: **1,022 passed**, one Starlette deprecation
+- Initial related Python/Node-backed/backend selection: **1,022 passed**, one Starlette deprecation
   warning, exit 0. It covers the four new/checkpoint defect suites, VLAN/failover, endpoint/subnet/
   application intelligence, decisions, NRFU/MOP/design/architecture, workbook/explorer/STP,
   evidence pointers, dossiers/adapters/absence, SSOT, crash safety, review-round-two, deck,
@@ -42,6 +42,34 @@ invented input shapes; the coverage and rendering assertions are retained.
 - `git diff --check`: pass. No changes to `tests/golden/snapshot.json` or `webapp/sample_data/*`.
 
 ## Negative evidence and limits
+
+### Additional full-suite check while waiting for W1
+
+At source `e74a4c42`, the full default selection ran with four workers, `--dist loadfile`,
+and `UPDATE_GOLDEN` unset. The completed JUnit report records **9,744 tests: 9,684 passed,
+40 skipped, 20 failed, 0 errors**, in 1,892 seconds. Its SHA-256 is
+`68a4802fb904e2d15dc0d03c1223626650cbce8840fb61fee697108e7445c536`.
+The original XML and partial text log are preserved privately outside the repository.
+
+The wrapper failed with `UnicodeEncodeError` while printing the completed failure tracebacks;
+the child's terminal exit code was not captured. The child was no longer running and the XML
+was complete. Counts above come from that XML, not from an inferred successful shell exit.
+Subsequent focused commands explicitly use UTF-8 output. The golden, sheet schema, sample
+builder and sample snapshot were separately verified byte-identical to their HEAD blobs.
+
+| Failure group | Count | Disposition |
+|---|---:|---|
+| Listed worktree/graph context failures | 8 | Four guarded-Graphify receipt failures (`G017`), three graph-invariant failures, one `STANDALONE_GIT_DIRECTORY_REQUIRED`. Preserved; no guard or graph was changed. |
+| Deferred golden/sample comparisons | 9 | Four pipeline golden tests, all three injected-registry-clock dossier comparisons, and sample detector-schema / architecture-review comparisons. Refresh remains held for #579 and W2a. |
+| G49 duplicated protocol vocabulary | 1 | Fixed by consuming `_protocol_assessability_conclusion` rather than repeating receipt states. Seven real-capture/future-consumer cases added; the existing vocabulary ratchet is unchanged. |
+| Invalid cutover-simulator STP fixtures | 2 | Non-root rows wrongly advertised a different incumbent. Corrected those two `root_address` values while retaining every assertion. Conflicting identities still abstain. No simulator production change. |
+
+Independent verification after those repairs: **146 focused tests passed**, repository-wide
+ruff passed, and `git diff --check` passed. The future-state tests isolate the already-validated
+receipt boundary; they do not claim future producer/validator support. The full suite has not
+been rerun after these small repairs, and no all-green full-suite result is claimed.
+
+### Earlier evidence retained
 
 - The inherited checkpoint's passing G13/G15 tests did not establish completion: G49 was absent
   and owner registration, malformed-input, namespace and renderer defects remained.
@@ -59,8 +87,8 @@ invented input shapes; the coverage and rendering assertions are retained.
 - A separate expanded, report-only mypy invocation produced **328 diagnostics in 10 files**.
   The new helper's narrowing error was repaired; the wider report remains untriaged and is not
   represented as a green gate. CI deliberately gates eight other modules.
-- The full suite, archive build, final hosted W2b checks and merge are **not verified**. The board's
-  eight linked-worktree environmental failures were not rerun or silently counted as passes.
+- An all-green full suite, archive build, final hosted W2b checks and merge are **not verified**.
+  The additional full-suite run above preserves the board's eight context failures as failures.
 - Graph navigation used the canonical checkout as a lead. No graph/vault refresh, W1 branch,
   W1 folder, device, release, qualification, signing or publication action was performed.
 - Initial mandatory privacy verifier: **failed** on pre-existing untracked `.codex/hooks.json`

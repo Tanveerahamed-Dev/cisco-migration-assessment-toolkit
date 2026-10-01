@@ -124,14 +124,17 @@ def test_worst_step_selection_picks_max_loss_earliest_on_tie():
 # ------------------------------------------------------------------ L2 integration ---
 
 def _l2_snap():
-    """core1 is the VLAN-10 root and the group-10 Active; dist1 is the alternate/standby with preempt on."""
+    """core1 is the VLAN-10 root and the group-10 Active; dist1 is the alternate/standby with preempt on.
+
+    Both bridges observe core1's root_address; bridge_priority is each bridge's own election priority.
+    """
     return {
         "routes": {"core1": [{"prefix": "10.0.10.0/24", "source": "connected", "out_intf": "Vlan10"}],
                    "dist1": [{"prefix": "10.0.10.0/24", "source": "connected", "out_intf": "Vlan10"}]},
         "stp_roots": {
             "core1": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": True,
                              "bridge_priority": 4096}},
-            "dist1": {"10": {"root_priority": 4096, "root_address": "bbbb.0000.0002", "is_root": False,
+            "dist1": {"10": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": False,
                              "bridge_priority": 8192}},
         },
         "fhrp_detail": {
@@ -306,12 +309,13 @@ def test_nested_fhrp_group_step_parameter_is_rejected_without_stringification_or
 
 
 def test_fail_site_removes_by_substring_across_l2_and_l3():
+    # Both sites observe the NYC root; the surviving LAX bridge has its own higher bridge_priority.
     snap = {
         "routes": {"SW-NYC-1": [{"prefix": "10.0.1.0/24", "source": "connected"}],
                    "SW-LAX-1": [{"prefix": "10.0.2.0/24", "source": "connected"}]},
         "stp_roots": {"SW-NYC-1": {"5": {"root_priority": 4096, "root_address": "aaaa.0000.0001",
                                          "is_root": True, "bridge_priority": 4096}},
-                      "SW-LAX-1": {"5": {"root_priority": 4096, "root_address": "bbbb.0000.0002",
+                      "SW-LAX-1": {"5": {"root_priority": 4096, "root_address": "aaaa.0000.0001",
                                          "is_root": False, "bridge_priority": 8192}}},
     }
     res = cutover_sim.simulate_cutover(snap, [{"action": "fail_site", "id": "NYC"}], pairs=[])

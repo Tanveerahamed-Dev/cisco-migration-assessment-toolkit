@@ -141,6 +141,46 @@ def test_protocol_requires_valid_receipt_and_names_the_bounded_denominator(tmp_p
     assert result["state"] == "na" and result["input_state"] == "analysis_unavailable"
 
 
+@pytest.mark.parametrize("capture,state,input_state", [
+    ("", "captured_empty", "collected_but_empty"),
+    ("BGP router identifier 192.0.2.1, local AS number 65000\n",
+     "captured_no_record", "collected_but_empty"),
+    ("% BGP not active\n", "not_running", "collected_but_empty"),
+    ("% Invalid input detected at '^' marker.\n", "capture_error", "not_collected"),
+])
+def test_protocol_capture_without_health_records_stays_unassessed(tmp_path, capture, state, input_state):
+    path = tmp_path / "bgp.txt"
+    path.write_text(capture, encoding="utf-8")
+    receipt = A.compute_protocol_assessability(
+        ["h"], {"h": {}}, {"h": {"show ip bgp summary": str(path)}}, [])
+    assert next(r for r in receipt["rows"] if r["protocol"] == "BGP")["state"] == state
+    assert A._validate_protocol_assessability_receipt(receipt)["valid"] is True
+    result = axes(protocol_assessability=receipt)["Protocol"]
+    assert result["state"] == "na"
+    assert result["input_state"] == input_state
+
+
+@pytest.mark.parametrize("conclusion,input_state", [
+    ("abstained", "collected_but_empty"),
+    ("not_running", "collected_but_empty"),
+    ("blind", "not_collected"),
+])
+def test_protocol_future_state_uses_owner_conclusion(monkeypatch, conclusion, input_state):
+    receipt = A.compute_protocol_assessability(["h"], {"h": {}}, {"h": {}}, [])
+    view = A._validate_protocol_assessability_receipt(receipt)
+    assert view["valid"] is True
+    # Model a future producer/validator delivering a new state at the validated boundary.
+    # The dossier must project its owner traits without adding another local state list.
+    future_state = "future_no_health_record"
+    view["index"][("h", "BGP")]["state"] = future_state
+    monkeypatch.setitem(A._PROTOCOL_ASSESSABILITY_STATE_TRAITS, future_state,
+                        {"health_row": "none", "conclusion": conclusion})
+    monkeypatch.setattr(A, "_validate_protocol_assessability_receipt", lambda value: view)
+    result = axes(protocol_assessability=receipt)["Protocol"]
+    assert result["state"] == "na"
+    assert result["input_state"] == input_state
+
+
 def test_golden_drift_names_baseline_and_missing_capture():
     configs = {h: "service timestamps log datetime msec\nno ip http server\n" for h in ("h", "b", "c")}
     inputs = {"software_risk": A.compute_software_risk(configs, all_hosts=["h", "b", "c", "d"]),
