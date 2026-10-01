@@ -35,6 +35,12 @@ from compiler.graphify import (  # noqa: E402
     OPAQUE_IDENTIFIER_POLICY,
 )
 from compiler.schema_validation import FORBIDDEN_CONTENT_SCAN_RULES  # noqa: E402
+from compiler.policy import (  # noqa: E402
+    CENSUS_DEPTH_POLICY_OWNER,
+    IDENTITY_DEPTH_DEFERRED_GROUPS,
+    IDENTITY_DEPTH_RETAINED_GROUPS,
+    census_depth_declaration_receipts,
+)
 from compiler.binary_review import unavailable_summary as unavailable_binary_review_summary  # noqa: E402
 from governance.consequential_claims import (  # noqa: E402
     CONTENT_PATHS as CONSEQUENTIAL_CLAIM_CONTENT_PATHS,
@@ -510,6 +516,37 @@ def _declared_claim_repository(tmp_path: Path) -> Path:
     return repo
 
 
+def _full_depth_census_receipt(file_count: int) -> dict[str, object]:
+    """A census-depth receipt for a fixture with no file under a declared prefix."""
+
+    return {
+        "policy_owner": CENSUS_DEPTH_POLICY_OWNER,
+        "status": "full_depth",
+        "full_depth_files": file_count,
+        "identity_depth_files": 0,
+        "identity_depth_text_files": 0,
+        "identity_depth_nonblank_lines_deferred": 0,
+        "retained_record_groups": list(IDENTITY_DEPTH_RETAINED_GROUPS),
+        "deferred_record_groups": list(IDENTITY_DEPTH_DEFERRED_GROUPS),
+        "declarations": [
+            {
+                **row,
+                "tracked_files": 0,
+                "text_files": 0,
+                "privacy_scanned_text_files": 0,
+                "metadata_only_files": 0,
+                "content_bytes": 0,
+                "deferred_physical_lines": 0,
+                "deferred_nonblank_lines": 0,
+                "retained_import_records": 0,
+            }
+            for row in census_depth_declaration_receipts()
+        ],
+        "block_categories": [],
+        "claim": "Synthetic fixture has no identity-depth file.",
+    }
+
+
 def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     repo = tmp_path / "repo"
     content_root = repo / "master-reference" / "content"
@@ -720,6 +757,8 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
                 "language": "json" if relative.endswith(".json") else "text",
                 "roles": ["dataset"] if "/content/" in relative else ["manifest"],
                 "privacy_exposure": "full",
+                "census_depth": "full",
+                "census_depth_reason": None,
                 "parse_status": "parsed",
                 "parser": "fixture",
                 "parser_mode": "structured",
@@ -873,6 +912,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "hard_failure": False,
         "fatal_errors": [],
         "parsing": {"status_counts": {"parsed": len(files)}, "lines_with_explicit_unresolved_reasons": 0},
+        "census_depth": _full_depth_census_receipt(len(files)),
         "graphify": {
             "available": True,
             "status": "current",
@@ -951,6 +991,12 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
             },
             {
                 "name": "every_gui_surface_has_standardized_evidence_honest_dossier",
+                "passed": True,
+                "expected": 0,
+                "actual": 0,
+            },
+            {
+                "name": "every_identity_depth_file_declared_privacy_scanned_and_unprojected",
                 "passed": True,
                 "expected": 0,
                 "actual": 0,
@@ -1433,6 +1479,9 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
     assert manifest_a["publication_status"] == "not_authorized"
     assert manifest_a["gates"]["pdf"] == "pending_external_renderer"
     assert manifest_a["gates"]["semantic_acceptance"] == "blocked"
+    # This fixture tracks no file under a declared census-depth prefix.
+    assert manifest_a["gates"]["line_census_depth"] == "passed_full_depth"
+    assert not any("Census depth BLOCK" in limit for limit in manifest_a["honest_limits"])
     assert manifest_a["compiler"]["all_semantic_acceptance_gates_passed"] is False
     assert manifest_a["independent_verification_verdict"] == "BLOCK"
     assert manifest_a["gates"]["ed25519_signature"] == "pending_external_owner_key"

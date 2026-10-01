@@ -37,6 +37,7 @@
  * reported, but as ONE contributing figure with its own name, never as the headline.
  */
 import { fabric } from "./data";
+import { own } from "./own";
 import type { AclLine, Cite, Fabric } from "./types";
 import { lineEvaluability } from "../forwarding/engine";
 
@@ -81,10 +82,10 @@ const SOURCE_ORDER: readonly UndecidableSource[] = ["engine", "producer", "snaps
 export function allAclLines(f: Fabric = fabric): { host: string; acl: string; line: AclLine }[] {
   const out: { host: string; acl: string; line: AclLine }[] = [];
   for (const host of Object.keys(f.acls).sort()) {
-    const named = f.acls[host];
+    const named = own(f.acls, host);
     if (named === undefined) continue;
     for (const acl of Object.keys(named).sort()) {
-      for (const line of named[acl] ?? []) out.push({ host, acl, line });
+      for (const line of own(named, acl) ?? []) out.push({ host, acl, line });
     }
   }
   return out;

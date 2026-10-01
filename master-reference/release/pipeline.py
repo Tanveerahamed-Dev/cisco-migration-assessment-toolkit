@@ -674,6 +674,37 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
     return "blocked_external_current_advisory_applicability_review_required", limits
 
 
+def census_depth_release_gate(completeness: dict[str, Any]) -> tuple[str, list[str]]:
+    """Carry every active census-depth BLOCK category into the release gates.
+
+    The compiler bundle has already rejoined the receipt to the single policy
+    owner (``compiler.policy.CENSUS_DEPTH_DECLARATIONS``), so each declaration
+    here is a reviewed deferral.  While any file is censused at identity depth
+    the gate names its category and the honest limits say what is not covered.
+    """
+
+    receipt = completeness.get("census_depth")
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("declarations"), list):
+        raise ReleaseInputError("compiler census-depth receipt is absent")
+    active = [row for row in receipt["declarations"] if isinstance(row, dict) and row.get("tracked_files")]
+    categories = sorted({str(row["block_category"]) for row in active})
+    if categories != receipt.get("block_categories"):
+        raise ReleaseInputError("compiler census-depth BLOCK categories differ from their declarations")
+    if not categories:
+        return "passed_full_depth", []
+    limits = [
+        (
+            f"Census depth BLOCK {row['block_category']}: {row['tracked_files']} files under {row['prefix']} are "
+            f"censused at identity depth only ({row['reason']}); their {row['deferred_nonblank_lines']} nonblank "
+            "lines, symbols, calls, structured values, source text and dossiers are not projected, and "
+            "import-bound call candidates from them are unexamined. Follow-up owner: "
+            f"{row['follow_up_owner']}."
+        )
+        for row in sorted(active, key=lambda item: str(item["prefix"]))
+    ]
+    return "BLOCK:" + ",".join(categories), limits
+
+
 def _artifact(root: Path, relative: str, value: bytes, role: str) -> dict[str, Any]:
     suffix = PurePosixPath(relative).suffix
     if suffix in TEXT_SCAN_SUFFIXES:
@@ -1587,6 +1618,7 @@ def build_release(
             else "passed_text_outputs_binary_containers_not_content_scanned"
         )
         dependency_vulnerability_gate, dependency_vulnerability_limits = _dependency_vulnerability_assessment(sbom)
+        census_depth_gate, census_depth_limits = census_depth_release_gate(bundle.completeness)
         manifest = {
             "schema_version": "1.0.0",
             "id": stable_id("release-manifest", bundle.source_commit, bundle.source_tree_digest),
@@ -1614,6 +1646,7 @@ def build_release(
             },
             "gates": {
                 "whole_repository_compiler": "passed",
+                "line_census_depth": census_depth_gate,
                 "architecture_conformance": "passed",
                 "semantic_acceptance": semantic_gate,
                 "self_contained_complete_viewer": "blocked_executive_navigation_only",
@@ -1648,6 +1681,7 @@ def build_release(
                 "Unsigned previews are not verified releases.",
                 "PDF remains incomplete or independently unreviewed according to pdf-gate.json.",
                 *dependency_vulnerability_limits,
+                *census_depth_limits,
                 "Python dependency declarations are not a transitive resolution lock.",
                 "Static and Graphify edges are not runtime truth.",
                 "Structural line mapping is not behavioral or Level 4 understanding; failed semantic acceptance gates remain explicit.",

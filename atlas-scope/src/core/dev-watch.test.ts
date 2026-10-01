@@ -19,7 +19,7 @@
  *      under an ignored directory, so an edit to real source still reloads.
  * The restart is what cleared the measured load; this file stops the apparatus from re-heating it.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -45,9 +45,10 @@ const ignoredDirNames = (): Set<string> =>
 function appSpecifiers(): { file: string; spec: string }[] {
   const out: { file: string; spec: string }[] = [];
   const walk = (dir: string): void => {
-    for (const name of readdirSync(dir)) {
-      const p = join(dir, name);
-      if (statSync(p).isDirectory()) walk(p);
+    /* The entry's type comes from the directory read itself — no second stat of the path before it is read. */
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, entry.name);
+      if (entry.isDirectory()) walk(p);
       else if ([".ts", ".tsx", ".css"].includes(extname(p))) {
         const text = readFileSync(p, "utf8");
         for (const m of text.matchAll(/(?:from\s+|import\s*\(\s*|import\s+|@import\s+)["']([^"']+)["']/g)) {

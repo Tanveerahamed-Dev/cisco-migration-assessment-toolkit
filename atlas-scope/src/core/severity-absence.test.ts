@@ -1,19 +1,23 @@
 /**
- * severity-absence.test.ts — a missing severity must never be graded "Info".
+ * severity-absence.test.ts — a missing severity is never graded "Info".
  *
- * `tools/compile-snapshot.mjs` maps a punchlist or cross_layer entry with no severity to "Info"
- * (`severity: val(p.severity) ?? "Info"`). The shipped snapshot never reaches that default — every
- * entry carries a severity — so no screen shows it today. But the moment a producer emits an
- * ungraded entry it would render as a GRADED Info finding: absence laundered into a low-risk grade.
+ * HISTORY. The compiler mapped a punchlist or cross_layer entry with no severity to "Info"
+ * (`severity: val(p.severity) ?? "Info"`): the moment a producer emitted an ungraded entry it would render as a
+ * GRADED Info finding — absence laundered into a low-risk grade (2026-09-21 auditor, B1). The compiler and the
+ * `Finding.severity` type were frozen for that repair pass, so this file was only a RATCHET keeping the default
+ * unreachable on the shipped snapshot, and it named the fix: emit `null` and render "not graded". That fix is now
+ * made (2026-10-01): tools/lib/compile-model.mjs emits null for an absent severity, `Finding.severity` and
+ * `CrossLayerFinding.severity` carry `| null`, and every surface renders it "severity not stated" (core/types.ts
+ * SEVERITY_NOT_STATED) — grouped under Not observed, counted in a tally slot of its own, sorted after every graded
+ * record. closed-vocabulary-accounting.test.tsx exercises that on a sample whose records state none.
  *
- * The compiler and the `Finding.severity: Severity` type are frozen for this repair pass (another
- * cluster owns them), so the default cannot be removed here. This is the ratchet that keeps it
- * unreachable: joined against the REAL source bytes, it fails the first time any compiled severity
- * was not stated by the source. The fix, when it fires, is to emit `null` and render "not graded".
- * Found by the 2026-09-21 auditor (B1).
+ * WHAT THIS FILE STILL PINS, joined against the REAL source bytes the loaded model was compiled from: every compiled
+ * severity is the severity the source STATED (as the compiler reads it), or null where the source stated none —
+ * never a value the source did not write. The ratchet is kept, not deleted: it is the one such check that runs
+ * against whatever dataset the phase legs load, not against a fixture.
  */
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -40,8 +44,14 @@ function sourceSnapshotPath(): string {
   const sha = (b: Buffer): string => createHash("sha256").update(b).digest("hex");
   const exact = fabric.meta.sourceExactSha256.replace(/^sha256:/, "");
   const carries = (p: string): boolean => {
-    if (!existsSync(p) || !statSync(p).isFile()) return false;
-    const b = readFileSync(p);
+    /* One read, no exists/stat check first (CodeQL js/file-system-race): nothing there, or a directory, carries nothing. */
+    let b: Buffer;
+    try {
+      b = readFileSync(p);
+    } catch (e) {
+      if (["ENOENT", "ENOTDIR", "EISDIR"].includes((e as NodeJS.ErrnoException).code ?? "")) return false;
+      throw e;
+    }
     return sha(b) === exact || sha(Buffer.from(b.toString("utf8").replace(/\r\n/g, "\n"), "utf8")) === fabric.meta.sourceSha256;
   };
   const named = basename(fabric.meta.source);
@@ -69,7 +79,14 @@ function sourceSnapshotPath(): string {
 const SNAPSHOT = sourceSnapshotPath();
 const source = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as SourceSnapshot;
 
-const stated = (v: unknown): boolean => typeof v === "string" && v.trim() !== "" && !/^\s*(N\/A|unknown|\[NOT OBSERVED\]|-)\s*$/i.test(v);
+/** The severity the compiler reads a source value as (tools/lib/compile-model.mjs `val` + `term`): trimmed text, or
+ *  null for an absent, empty, "-", "N/A" or [NOT OBSERVED] value; a number or boolean as its text. */
+const asCompiled = (v: unknown): string | null => {
+  if (v === undefined || v === null) return null;
+  if (typeof v === "number" && !Number.isFinite(v)) return null;
+  const t = String(v).trim();
+  return t === "" || t === "-" || t === "N/A" || /^\[NOT OBSERVED\]/i.test(t) ? null : t;
+};
 
 describe("no compiled severity is a default standing in for an absent grade", () => {
   it("has both sides to compare — an empty join is not a pass", () => {
@@ -78,17 +95,21 @@ describe("no compiled severity is a default standing in for an absent grade", ()
     expect(fabric.findings.length).toBeGreaterThan(0);
   });
 
-  it("every punchlist severity the model carries was stated by the source", () => {
+  it("every punchlist severity the model carries is the one the source stated, or null where it stated none", () => {
     const offenders = (source.punchlist ?? []).flatMap((p, i) =>
-      stated(p.severity) ? [] : [`punchlist[${i}] severity=${JSON.stringify(p.severity)} compiled to ${JSON.stringify(fabric.findings[i]?.severity)}`],
+      asCompiled(p.severity) === fabric.findings[i]?.severity
+        ? []
+        : [`punchlist[${i}] severity=${JSON.stringify(p.severity)} compiled to ${JSON.stringify(fabric.findings[i]?.severity)}`],
     );
-    expect(offenders, "an ungraded finding would render as a graded Info finding").toEqual([]);
+    expect(offenders, "a compiled severity the source did not state (an ungraded finding rendered as graded)").toEqual([]);
   });
 
-  it("every cross_layer severity the model carries was stated by the source", () => {
+  it("every cross_layer severity the model carries is the one the source stated, or null where it stated none", () => {
     const offenders = (source.cross_layer ?? []).flatMap((c, i) =>
-      stated(c.severity) ? [] : [`cross_layer[${i}] severity=${JSON.stringify(c.severity)} compiled to ${JSON.stringify(fabric.crossLayer[i]?.severity)}`],
+      asCompiled(c.severity) === fabric.crossLayer[i]?.severity
+        ? []
+        : [`cross_layer[${i}] severity=${JSON.stringify(c.severity)} compiled to ${JSON.stringify(fabric.crossLayer[i]?.severity)}`],
     );
-    expect(offenders, "an ungraded cross-layer finding would render as a graded Info finding").toEqual([]);
+    expect(offenders, "a compiled cross-layer severity the source did not state").toEqual([]);
   });
 });

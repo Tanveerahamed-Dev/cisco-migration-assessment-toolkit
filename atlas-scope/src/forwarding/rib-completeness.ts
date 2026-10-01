@@ -60,7 +60,8 @@ import engineContract from "../../contracts/engine-contract.v1.json";
 import { ribEvidence as evidenceJson } from "../core/dataset";
 import { fabric, routesOf } from "../core/data";
 import { listPhrase } from "../core/phrases";
-import { sameSourceBinding, type Cite, type SourceBinding } from "../core/types";
+import { own } from "../core/own";
+import { sameSourceBinding, type Cite, type NameKeyed, type SourceBinding } from "../core/types";
 import { parseIpv4, parsePrefix, prefixContains } from "./ip";
 
 interface ProtocolRow {
@@ -95,10 +96,12 @@ interface HostEvidence {
 }
 interface EvidenceFile {
   meta: SourceBinding & { routingProtocols: string[]; routingProtocolsFrom: string };
-  hosts: Record<string, HostEvidence>;
+  hosts: NameKeyed<HostEvidence>;
 }
 
-const FILE = evidenceJson as unknown as EvidenceFile;
+/* Assigned, not asserted: the compiler's contract must satisfy this reader's shape, and a cast here is how a
+   reader drops the NameKeyed brand (core/own.ts, own-read.guard.test.ts). */
+const FILE: EvidenceFile = evidenceJson;
 
 /** The engine's own protocol-assessability state vocabulary, read from the contract generated from
  *  cisco_toolkit (`contracts/engine-contract.v1.json`; `tests/test_engine_contract_projection.py` pins it to
@@ -304,7 +307,7 @@ function computeReasons(host: string): Reason[] {
     });
     return out;
   }
-  const ev = FILE.hosts[host];
+  const ev = own(FILE.hosts, host);
   const routes = routesOf(host);
   /** The first route of `family` in the table, or undefined. */
   const routeOf = (family: string) => routes.find((r) => ofFamily(r.source, family));
@@ -391,7 +394,7 @@ export interface RibCompletenessBasis {
 export function ribCompletenessBasis(host: string): RibCompletenessBasis[] {
   if (!RIB_EVIDENCE_TRUSTED) return [];
   const vocab = FILE.meta.routingProtocols;
-  const ev = FILE.hosts[host];
+  const ev = own(FILE.hosts, host);
   const reasons = reasonsOf(host);
   if (reasons.some((r) => r.family === null)) return [];
   /* A family is vouched for only when NO reason concerns it — its row, its adjacencies' routes or

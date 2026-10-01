@@ -2423,7 +2423,8 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     const built = await buildSheets();
     key = built.key;
     mkdirSync(OUT, { recursive: true });
-    const prior = existsSync(keyFile) ? (() => { try { return JSON.parse(readFileSync(keyFile, "utf8")); } catch { return null; } })() : null;
+    /* One read, no exists-check first (CodeQL js/file-system-race): no KEY.json, or an unreadable one, is no prior. */
+    const prior = (() => { try { return JSON.parse(readFileSync(keyFile, "utf8")); } catch { return null; } })();
     if (prior && keySubstance(prior) === keySubstance(key) && orphanSheets(prior).orphans.length === 0 && orphanSheets(prior).missing.length === 0) {
       /* Same rule, commit, frames, masks and sheet bytes: the same build. Keep its KEY and slots, so a
          critic panel already working from its sheets.json is not disturbed (verifier round 1, D8). */
@@ -2448,10 +2449,14 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
   /* The append-only tripwire: the verdict bytes validated last time must still be the file's prefix. */
   const vbuf = existsSync(verdictsFile) ? readFileSync(verdictsFile) : null;
   let receipt = null;
-  try {
-    receipt = existsSync(receiptFile) && verdictsFile === resolve(OUT, "verdicts.jsonl") ? JSON.parse(readFileSync(receiptFile, "utf8")) : null;
-  } catch {
-    receipt = { bytes: 1, sha256: "unreadable receipt" };
+  /* One read, no exists-check first (CodeQL js/file-system-race): no receipt yet is the empty history (null); a
+     receipt that is there but cannot be read or parsed is reported as one. */
+  if (verdictsFile === resolve(OUT, "verdicts.jsonl")) {
+    try {
+      receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
+    } catch (e) {
+      receipt = e?.code === "ENOENT" ? null : { bytes: 1, sha256: "unreadable receipt" };
+    }
   }
   const tamper = appendOnlyProblem(receipt, vbuf);
   const verdicts = readVerdicts(verdictsFile);

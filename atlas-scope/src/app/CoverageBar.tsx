@@ -24,8 +24,9 @@
  */
 import { useMemo, type ReactElement } from "react";
 import { aclUndecidability, undecidableAclSentence } from "../core/acl-coverage";
-import { bandObserved } from "../core/band-qualification";
+import { bandScored } from "../core/band-qualification";
 import { fabric, hasRib } from "../core/data";
+import { own } from "../core/own";
 import { missingInventoryFields } from "../core/claims";
 import { ribCountQualifier, ribHostsShownIncomplete } from "../forwarding/rib-completeness";
 import type { Cite, Device } from "../core/types";
@@ -152,7 +153,9 @@ export function coverageRows(): CoverageRow[] {
       "interfaces",
       "Interface table",
       "the interface list was collected",
-      (d) => (fabric.interfaces[d.host]?.length ?? 0) > 0,
+      /* The host's OWN table (core/own.ts): `fabric.interfaces[host]` counted a host named "constructor", which has
+         none, as collected — the Object function has a length. */
+      (d) => (own(fabric.interfaces, d.host)?.length ?? 0) > 0,
       c.hostsWithInterfaces,
       "coverage.hostsWithInterfaces",
     ),
@@ -178,7 +181,9 @@ export function coverageRows(): CoverageRow[] {
       "band",
       "Health score and band",
       "the engine scored this device and placed it in a band",
-      bandObserved,
+      /* Scored into one of the five bands: not the engine's "Insufficient Data" (it says it could not score), and not
+         a band Atlas Scope does not recognise. */
+      bandScored,
       null,
       null,
     ),

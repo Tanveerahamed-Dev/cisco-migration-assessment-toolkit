@@ -15,7 +15,30 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 CONTRACT_PATH = Path(__file__).with_name("architecture.json")
+# Suffixes TypeScript itself treats as a module file extension (``extensionsToRemove``
+# in the TypeScript compiler).  Any other final dotted segment -- ``vite.config``,
+# ``chart.worker`` -- is part of the basename, so the specifier is still
+# extensionless and TypeScript goes on to append extensions to the whole name.
+_TS_MODULE_EXTENSIONS = frozenset(
+    (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json")
+)
+# Extensions probed for an extensionless specifier.  The set is the union of
+# what the supported toolchains may pick (TypeScript, Vite's default
+# ``resolve.extensions``, Node's CommonJS ``require``), because a static
+# dependency is only reported when exactly one tracked candidate survives; two
+# survivors are reported as ambiguous rather than silently ranked.
 _TS_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json")
+# TypeScript never resolves an extensionless specifier to a JSON module: its
+# extension probe for an extensionless candidate is .ts, .tsx, .d.ts, .js, .jsx,
+# and it adds .json only for a tsconfig ``extends`` lookup (``isConfigLookup``);
+# a JSON module import has to spell ``.json`` even under ``resolveJsonModule``.
+# Every import in a TypeScript source must resolve for it to type-check, so for
+# those sources a sibling ``name.json`` is not a candidate at all -- the import
+# means the code module.  (Vite agrees whenever a code candidate exists: its
+# default extension order puts ``.json`` last.)  JavaScript sources keep the
+# ``.json`` probe because CommonJS ``require`` does append ``.json``.
+_TS_SOURCE_LANGUAGES = frozenset({"typescript", "tsx"})
+_TYPESCRIPT_EXTENSIONLESS_EXTENSIONS = tuple(suffix for suffix in _TS_EXTENSIONS if suffix != ".json")
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -254,12 +277,19 @@ def _normal_path(value: str) -> str | None:
     return normalized
 
 
-def _candidate_modules(base: str, *, typescript: bool) -> tuple[str, ...]:
+def _has_module_extension(base: str) -> bool:
+    return PurePosixPath(base).suffix.lower() in _TS_MODULE_EXTENSIONS
+
+
+def _candidate_modules(base: str, *, typescript: bool, language: str = "") -> tuple[str, ...]:
     if typescript:
         candidates = [base]
-        if not PurePosixPath(base).suffix:
-            candidates.extend(f"{base}{suffix}" for suffix in _TS_EXTENSIONS)
-            candidates.extend(f"{base}/index{suffix}" for suffix in _TS_EXTENSIONS)
+        if not _has_module_extension(base):
+            probes = (
+                _TYPESCRIPT_EXTENSIONLESS_EXTENSIONS if language in _TS_SOURCE_LANGUAGES else _TS_EXTENSIONS
+            )
+            candidates.extend(f"{base}{suffix}" for suffix in probes)
+            candidates.extend(f"{base}/index{suffix}" for suffix in probes)
         return tuple(candidates)
     return (f"{base}.py", f"{base}/__init__.py")
 
@@ -310,7 +340,7 @@ def _resolve_import(
     candidates = {
         candidate
         for base in bases
-        for candidate in _candidate_modules(base, typescript=typescript)
+        for candidate in _candidate_modules(base, typescript=typescript, language=language)
         if candidate in tracked_paths
     }
     if not candidates:
@@ -345,8 +375,15 @@ def build_architecture_conformance(
     contract: Mapping[str, Any],
     source_commit: str,
     source_tree_digest: str,
+    call_records_deferred: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Build a deterministic, source-bound conformance receipt."""
+    """Build a deterministic, source-bound conformance receipt.
+
+    ``call_records_deferred`` maps a tracked path to the reason its call records
+    were not emitted (a declared identity-depth census).  Import edges from such
+    a path are still resolved; its import-bound call candidates are reported as
+    unexamined rather than silently counted as absent.
+    """
 
     contract_errors = list(validate_contract(contract))
     disposition_errors, disposition_rows = validate_path_dispositions(paths, contract)
@@ -480,6 +517,31 @@ def build_architecture_conformance(
     ownership_counts = {"component": 0, "exclusion": 0}
     for row in disposition_rows:
         ownership_counts[row["kind"]] += 1
+    deferred_sources: dict[str, list[str]] = {}
+    for path, reason in sorted((call_records_deferred or {}).items()):
+        disposition = disposition_by_path.get(path)
+        if path in tracked_paths and disposition is not None and disposition["kind"] == "component":
+            deferred_sources.setdefault(str(reason), []).append(str(disposition["id"]))
+    unexamined_static_edges = [
+        {
+            "edge_kind": "import_bound_static_call_candidate",
+            "state": "unexamined",
+            "reason": reason,
+            "source_file_count": len(components),
+            "source_components": sorted(set(components)),
+        }
+        for reason, components in sorted(deferred_sources.items())
+    ]
+    limitations = [
+        "Resolved imports establish static dependency candidates, not runtime execution.",
+        "Import-bound call candidates are name-based and do not assert dynamic dispatch.",
+        "Synthetic phase traces validate contract behavior, not a production run.",
+    ]
+    if unexamined_static_edges:
+        limitations.append(
+            "Import-bound call candidates from identity-depth sources are unexamined because their call "
+            "records are deferred; their absence is not evidence that no such call exists."
+        )
     core = {
         "schema_version": "1.0.0",
         "source_commit": source_commit,
@@ -495,12 +557,9 @@ def build_architecture_conformance(
         "static_edge_count": len(static_edges),
         "static_edges_digest": _digest(static_edges),
         "static_edges": static_edges,
+        "unexamined_static_edges": unexamined_static_edges,
         "synthetic_runtime_traces": trace_receipts,
         "errors": unique_errors,
-        "limitations": [
-            "Resolved imports establish static dependency candidates, not runtime execution.",
-            "Import-bound call candidates are name-based and do not assert dynamic dispatch.",
-            "Synthetic phase traces validate contract behavior, not a production run.",
-        ],
+        "limitations": limitations,
     }
     return {**core, "receipt_digest": _digest(core)}

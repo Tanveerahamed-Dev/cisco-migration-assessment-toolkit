@@ -34,19 +34,22 @@
  * not shift between JS engines or between calls.
  */
 import {
+  BAND_GROUP_ORDER,
   BAND_KEY_ORDER,
   bandDegraded,
+  bandGroupKey,
   bandHealthy,
   bandKey,
   bandKeyDetail,
   bandKeyLabel,
   bandMatches,
   bandRank,
+  measuredScore,
   presentBand,
 } from "./band-qualification";
-import { fabric, findingsByHost, hasRib, linksByHost, severityRank } from "./data";
-import type { Band, Cite, CrossLayerFinding, Device, Finding, Severity } from "./types";
-import { SEVERITY_ORDER } from "./types";
+import { fabric, findingsByHost, gradedSeverityRank, hasRib, linksByHost } from "./data";
+import type { Band, Cite, CrossLayerFinding, Device, Finding, Severity, VocabularyName } from "./types";
+import { recognisedKind, recognisedSeverity, SEVERITY_ORDER, unrecognisedPhrase } from "./types";
 
 /* ── tri-state logic ────────────────────────────────────────────────────────── */
 
@@ -163,9 +166,18 @@ const memo = <T>(fn: () => T): (() => T) => {
   return () => (cached === null ? (cached = fn()) : cached);
 };
 
-const severityDomain = memo(() =>
-  orderedDomain(tally(fabric.findings, (f) => f.severity), SEVERITY_ORDER, "findings"),
-);
+/* The graded severities in order, then each severity the vocabulary does not name that the snapshot holds — offered,
+   counted and described as unrecognised, never left out of the vocabulary a reader is shown (`severity:` matches it). */
+const severityDomain = memo(() => {
+  const counts = tally(fabric.findings, (f) => f.severity);
+  return [
+    ...orderedDomain(counts, SEVERITY_ORDER, "findings"),
+    ...[...counts.entries()]
+      .filter(([value]) => !recognisedSeverity(value))
+      .sort((a, b) => cmpStr(a[0], b[0]))
+      .map(([value, count]) => ({ value, count, source: "findings", detail: unrecognisedPhrase("severity", value) })),
+  ];
+});
 const categoryDomain = memo(() => rankedDomain(tally(fabric.findings, (f) => f.category), "findings"));
 const waveDomain = memo(() => rankedDomain(tally(fabric.findings, (f) => f.wave), "findings"));
 /* Band values are the band owner's KEYS (core/band-qualification.ts), so a favourable band that
@@ -178,7 +190,12 @@ const bandDomain = memo(() =>
   })),
 );
 const roleDomain = memo(() => rankedDomain(tally(fabric.devices, (d) => d.role), "devices"));
-const kindDomain = memo(() => rankedDomain(tally(fabric.devices, (d) => d.kind), "devices"));
+/* A kind the vocabulary does not name is offered like any other (`kind:` matches it) and described as unrecognised. */
+const kindDomain = memo(() =>
+  rankedDomain(tally(fabric.devices, (d) => d.kind), "devices").map((v) =>
+    recognisedKind(v.value) ? v : { ...v, detail: unrecognisedPhrase("kind", v.value) },
+  ),
+);
 const platformDomain = memo(() => rankedDomain(tally(fabric.devices, (d) => d.platform), "devices"));
 const tierDomain = memo(() =>
   [...tally(fabric.devices, (d) => d.tier).entries()]
@@ -203,7 +220,7 @@ const hostDomain = memo((): DomainValue[] =>
       count: null,
       source: "devices",
       detail: d.collected
-        ? nonEmpty([d.role, bandKey(d) === null ? null : `band ${presentBand(d).short}`]).join(" · ") || "collected"
+        ? nonEmpty([d.role, bandKey(d) !== null || presentBand(d).notMeasured ? `band ${presentBand(d).short}` : presentBand(d).legendKey === "unrecognised" ? presentBand(d).short : null]).join(" · ") || "collected"
         : "not collected — findings unknown",
     }))
     .sort((a, b) => cmpStr(a.value, b.value)),
@@ -288,7 +305,8 @@ const HAS_FIELDS: Record<string, HasDef> = {
   model: { help: "a hardware model was read", device: (d) => d.model !== null },
   serial: { help: "a serial number was read", device: (d) => d.serial !== null },
   software: { help: "a software version was read", device: (d) => d.swVersion !== null },
-  score: { help: "a health score was computed", device: (d) => d.score !== null },
+  /* Not for a device the engine banded not-measured: the number beside that band is not a measurement. */
+  score: { help: "a health score was computed", device: (d) => measuredScore(d) !== null },
   impact: { help: "a failure-impact model exists", device: (d) => d.impact !== null },
   rib: { help: "a routing table was collected", device: (d) => hasRib(d.host) },
   deductions: { help: "score deductions are itemised", device: (d) => d.deductions.length > 0 },
@@ -1800,18 +1818,48 @@ export interface Group<T> {
   label: string;
   /** false = these rows have no observed value for the grouping key. */
   observed: boolean;
+  /** Set on a group of rows whose value a CLOSED vocabulary does not name: the producer's text, exactly. */
+  unrecognised?: string;
   items: T[];
 }
 
 export const UNOBSERVED_GROUP = "__unobserved__";
+/** The key prefix of a group of unrecognised values; no vocabulary member and no other group key starts with it. */
+export const UNRECOGNISED_GROUP_PREFIX = "__unrecognised__:";
 
-const buildGroups = <T>(
+/** A row's grouping value: text, or text a CLOSED vocabulary does not name, tagged so it can never pass for a member. */
+export type GroupValue = string | { readonly unrecognised: string };
+
+/** A closed vocabulary's grouping values, as `keysOf` should hand them to `groupItems`: a member as itself, anything
+ *  else tagged unrecognised, and no value as null (the Not-observed group). */
+export const vocabularyValue = (value: string | null, recognised: (v: string) => boolean): GroupValue[] | null =>
+  value === null ? null : [recognised(value) ? value : { unrecognised: value }];
+
+/**
+ * THE ONE GROUPER. Every row is placed — the property a grouping over a closed vocabulary lost when this kept only the
+ * keys `order` lists: the queue grouped by severity showed 128 of 146 findings once 18 carried a severity the
+ * vocabulary does not name, though this comment already said rows are "never dropped" (2026-10-01 refuter). Now:
+ *   - a value `order` lists, in that order;
+ *   - any other plain value, after them, most rows first (ties by name) — never dropped;
+ *   - an UNRECOGNISED value (tagged by `keysOf`), in a group of its own after those, keyed apart from every member
+ *     and labelled `unrecognised <what> "<text>"` (core/types.ts `unrecognisedPhrase`), ordered by its text;
+ *   - no value at all, in the Not-observed group, last.
+ * `what` names the vocabulary for that label; a grouping with no vocabulary never tags a value.
+ */
+export const groupItems = <T>(
   items: readonly T[],
-  keysOf: (t: T) => string[] | null,
+  keysOf: (t: T) => readonly GroupValue[] | null,
   order: readonly string[] | null,
+  what: VocabularyName | null = null,
 ): Group<T>[] => {
   const buckets = new Map<string, T[]>();
+  const strange = new Map<string, T[]>();
   const unobserved: T[] = [];
+  const add = (m: Map<string, T[]>, k: string, it: T): void => {
+    const list = m.get(k);
+    if (list) list.push(it);
+    else m.set(k, [it]);
+  };
   for (const it of items) {
     const ks = keysOf(it);
     if (ks === null || ks.length === 0) {
@@ -1819,20 +1867,23 @@ const buildGroups = <T>(
       continue;
     }
     for (const k of ks) {
-      const list = buckets.get(k);
-      if (list) list.push(it);
-      else buckets.set(k, [it]);
+      if (typeof k === "string") add(buckets, k, it);
+      else add(strange, k.unrecognised, it);
     }
   }
-  const observedKeys = order
-    ? order.filter((k) => buckets.has(k))
-    : [...buckets.keys()].sort((a, b) => (buckets.get(b)?.length ?? 0) - (buckets.get(a)?.length ?? 0) || cmpStr(a, b));
-  const groups: Group<T>[] = observedKeys.map((k) => ({
-    key: k,
-    label: k,
-    observed: true,
-    items: buckets.get(k) ?? [],
-  }));
+  const bySize = (m: Map<string, T[]>) => (a: string, b: string): number => (m.get(b)?.length ?? 0) - (m.get(a)?.length ?? 0) || cmpStr(a, b);
+  const listed = order ? order.filter((k) => buckets.has(k)) : [];
+  const rest = [...buckets.keys()].filter((k) => !listed.includes(k)).sort(bySize(buckets));
+  const groups: Group<T>[] = [...listed, ...rest].map((k) => ({ key: k, label: k, observed: true, items: buckets.get(k) ?? [] }));
+  for (const text of [...strange.keys()].sort(cmpStr)) {
+    groups.push({
+      key: `${UNRECOGNISED_GROUP_PREFIX}${text}`,
+      label: what === null ? JSON.stringify(text) : unrecognisedPhrase(what, text),
+      observed: true,
+      unrecognised: text,
+      items: strange.get(text) ?? [],
+    });
+  }
   // Never folded into a value bucket and never dropped: "not observed" is a finding in itself.
   if (unobserved.length > 0)
     groups.push({ key: UNOBSERVED_GROUP, label: "Not observed", observed: false, items: unobserved });
@@ -1845,25 +1896,26 @@ const buildGroups = <T>(
 export function groupBy(findings: readonly Finding[], key: FindingGroupKey): Group<Finding>[] {
   switch (key) {
     case "severity":
-      return buildGroups(findings, (f) => [f.severity], SEVERITY_ORDER);
+      return groupItems(findings, (f) => vocabularyValue(f.severity, recognisedSeverity), SEVERITY_ORDER, "severity");
     case "category":
-      return buildGroups(findings, (f) => (f.category === null ? null : [f.category]), null);
+      return groupItems(findings, (f) => (f.category === null ? null : [f.category]), null);
     case "wave":
-      return buildGroups(findings, (f) => (f.wave === null ? null : [f.wave]), null);
+      return groupItems(findings, (f) => (f.wave === null ? null : [f.wave]), null);
     case "host":
-      return buildGroups(findings, (f) => (f.devices.length === 0 ? null : [...f.devices]), null);
+      return groupItems(findings, (f) => (f.devices.length === 0 ? null : [...f.devices]), null);
     case "band":
-      return bandLabelled(buildGroups(findings, (f) => deviceDerived(f.devices, bandKey), BAND_KEY_ORDER));
+      return bandLabelled(groupItems(findings, (f) => deviceBandValues(f.devices), BAND_GROUP_ORDER, "band"));
     case "role":
-      return buildGroups(findings, (f) => deviceDerived(f.devices, (d) => d.role), null);
+      return groupItems(findings, (f) => deviceDerived(f.devices, (d) => d.role), null);
     case "none":
       return [{ key: "all", label: "All findings", observed: true, items: [...findings] }];
   }
 }
 
-/** Band groups are keyed by the band owner's keys; their labels say "Excellent (partial)" in words. */
+/** Band groups are keyed by the band owner's keys; their labels say "Excellent (partial)" / "not measured" in words.
+ *  An unrecognised band's group keeps the label `groupItems` gave it. */
 const bandLabelled = <T>(groups: Group<T>[]): Group<T>[] =>
-  groups.map((g) => (g.observed ? { ...g, label: bandKeyLabel(g.key) } : g));
+  groups.map((g) => (g.observed && g.unrecognised === undefined ? { ...g, label: bandKeyLabel(g.key) } : g));
 
 /** Distinct observed values of a device attribute across a finding's devices; null when nothing
  *  about those devices was observed, so the row lands in the Not-observed bucket rather than a
@@ -1878,20 +1930,36 @@ const deviceDerived = (hosts: readonly string[], pick: (d: Device) => string | n
   return vals.size === 0 ? null : [...vals].sort(cmpStr);
 };
 
+/** The band groups a finding's devices fall in (core/band-qualification.ts `bandGroupKey`), distinct: a scored
+ *  band's key, the not-measured group, an unrecognised band (tagged); null when no device of it has a band. */
+const deviceBandValues = (hosts: readonly string[]): GroupValue[] | null => {
+  const plain = new Set<string>();
+  const strange = new Set<string>();
+  for (const h of hosts) {
+    const d = deviceByHost.get(h);
+    const k = d ? bandGroupKey(d) : null;
+    if (k === null) continue;
+    if (typeof k === "string") plain.add(k);
+    else strange.add(k.unrecognised);
+  }
+  const out: GroupValue[] = [...[...plain].sort(cmpStr), ...[...strange].sort(cmpStr).map((unrecognised) => ({ unrecognised }))];
+  return out.length === 0 ? null : out;
+};
+
 export function groupDevicesBy(devices: readonly Device[], key: DeviceGroupKey): Group<Device>[] {
   switch (key) {
     case "band":
-      return bandLabelled(buildGroups(devices, (d) => { const k = bandKey(d); return k === null ? null : [k]; }, BAND_KEY_ORDER));
+      return bandLabelled(groupItems(devices, (d) => { const k = bandGroupKey(d); return k === null ? null : [k]; }, BAND_GROUP_ORDER, "band"));
     case "role":
-      return buildGroups(devices, (d) => (d.role === null ? null : [d.role]), null);
+      return groupItems(devices, (d) => (d.role === null ? null : [d.role]), null);
     case "tier":
-      return buildGroups(devices, (d) => (d.tier === null ? null : [String(d.tier)]), null);
+      return groupItems(devices, (d) => (d.tier === null ? null : [String(d.tier)]), null);
     case "kind":
-      return buildGroups(devices, (d) => [d.kind], null);
+      return groupItems(devices, (d) => vocabularyValue(d.kind, recognisedKind), null, "kind");
     case "platform":
-      return buildGroups(devices, (d) => (d.platform === null ? null : [d.platform]), null);
+      return groupItems(devices, (d) => (d.platform === null ? null : [d.platform]), null);
     case "collected":
-      return buildGroups(devices, (d) => [d.collected ? "Collected" : "Not collected"], [
+      return groupItems(devices, (d) => [d.collected ? "Collected" : "Not collected"], [
         "Collected",
         "Not collected",
       ]);
@@ -1955,7 +2023,9 @@ const cmpCell = (a: Cell, b: Cell, dir: "asc" | "desc"): number => {
 const findingCell = (f: Finding, field: FindingSortField): Cell => {
   switch (field) {
     case "severity":
-      return severityRank(f.severity);
+      /* The graded rank; an unrecognised or unstated severity is not a point on the scale, so it sinks in either
+         direction like any unobserved cell (core/data.ts `severityRank` states the position). */
+      return gradedSeverityRank(f.severity);
     case "priority":
       return f.priority;
     case "rank":
@@ -1978,7 +2048,8 @@ const deviceCell = (d: Device, field: DeviceSortField): Cell => {
     case "host":
       return d.host.toLowerCase();
     case "score":
-      return d.score;
+      // A score the engine banded not-measured is not a measurement: it sinks, never ranks as the healthiest.
+      return measuredScore(d);
     case "band":
       // The owner's rank keeps the qualification: a partial band never ties with the plain one.
       return bandRank(d);

@@ -9,12 +9,85 @@
 /** A dotted path back into the source snapshot, e.g. `punchlist[12]` or `acls.core1.MGMT_IN[3]`. */
 export type Cite = string;
 
+declare const NAME_KEYED: unique symbol;
+/**
+ * A dictionary keyed by names the SNAPSHOT supplies (hosts, ACL and object-group names, severities, producer
+ * fields). Such a name is untrusted text, and `dict[name]` answers one the dictionary does not hold from the
+ * prototype chain — so a host named "constructor" read the Object function as its routing table. Read one ONLY
+ * through `own` / `holds` (core/own.ts). The optional brand member costs nothing at run time; it is what lets
+ * `own-read.guard.test.ts` find every such dictionary by TYPE, and that guard also requires every string-keyed
+ * dictionary the compiled documents carry to be one of these.
+ */
+export type NameKeyed<T> = Record<string, T> & { readonly [NAME_KEYED]?: never };
+
+declare const UNRECOGNISED: unique symbol;
+/**
+ * Text the snapshot supplied for a CLOSED vocabulary — a finding's severity, a device's health band, a device's
+ * kind — that the vocabulary below does not name. The compiler carries it VERBATIM (tools/lib/compile-model.mjs
+ * `term`): never coerced to a member, never dropped, never typed as one. A compiled field that can hold one is
+ * typed `<Member> | Unrecognised`, so a surface cannot use it AS a member — a key into a table typed by the union,
+ * a prop typed by it — without first asking the vocabulary's recogniser (`recognisedSeverity`, `recognisedBand`,
+ * `recognisedKind`), and what it shows for one is `unrecognisedPhrase` ("unrecognised severity "Bogus""): never a
+ * crash, never a member's colour or glyph, never a neutral state that hides it. The brand exists only in the
+ * type; at run time the value is the producer's string, so a stored compile is re-classified by the vocabulary of
+ * the build that reads it, never by the one that wrote it.
+ */
+export type Unrecognised = string & { readonly [UNRECOGNISED]: true };
+
+/*
+ * THE CLOSED VOCABULARIES, owned here for Atlas Scope. Each mirrors an ENGINE constant that the engine contract
+ * (contracts/engine-contract.v1.json) does not yet project, so none can be read from it: severity mirrors
+ * cisco_toolkit/analyze.py `_APP_SEV_RANK`; band mirrors `_HEALTH_BANDS` (the five SCORED bands) plus the engine's
+ * own not-measured band, NOT_MEASURED_BAND below; kind mirrors `_KIND_RANK` plus the "device" every collected host is
+ * given. Membership is decided by the recognisers below and nowhere else.
+ *
+ * A grouping, tally or ordering over one of these places EVERY record (2026-10-01 refuter: the queue grouped by
+ * severity dropped every finding whose severity the vocabulary does not name, and the device pane's tally read
+ * `C0 H0 M0 L0 I0` above a list of them): a member under its member, a value the vocabulary does not name under its
+ * own "unrecognised" entry, an absent value under an explicit not-observed / not-stated entry — so the counts sum to
+ * the records. core/query.ts `groupItems` and core/data.ts `tallySeverities` are the owners that do it.
+ */
 export type Severity = "Critical" | "High" | "Medium" | "Low" | "Info";
 export type Band = "Excellent" | "Good" | "Fair" | "Poor" | "Critical";
 export type OpStatus = "up" | "down" | "unknown" | string;
 
 export const SEVERITY_ORDER: readonly Severity[] = ["Critical", "High", "Medium", "Low", "Info"];
 export const BAND_ORDER: readonly Band[] = ["Excellent", "Good", "Fair", "Poor", "Critical"];
+/**
+ * The ENGINE'S OWN NOT-MEASURED BAND. cisco_toolkit/analyze.py `compute_health_scores` writes it for a host whose data
+ * quality was never measured, fell below the threshold, or whose interface parse yielded nothing ("collection gap /
+ * unparseable != healthy"), and `_APP_BAND_RANK` / `_CRIT_WEIGHTS` name it beside the five scored bands; the engine
+ * excludes such rows from its own score statistics. It is a STATED ABSENCE of a measurement, not a health verdict and
+ * not an unknown word: it is shown as "not measured" — indeterminate, never healthy, never scored (the number the
+ * engine publishes beside it is not a measurement: core/band-qualification.ts `measuredScore`), never a band colour.
+ */
+export const NOT_MEASURED_BAND = "Insufficient Data";
+export type NotMeasuredBand = typeof NOT_MEASURED_BAND;
+export const DEVICE_KINDS = ["device", "switch", "router", "firewall", "ap", "phone", "endpoint", "unknown"] as const;
+export type DeviceKind = (typeof DEVICE_KINDS)[number];
+/** The closed vocabularies, by the name every surface uses for them. */
+export type VocabularyName = "severity" | "band" | "kind";
+
+/** Whether `value` is exactly a member of `terms` (an array test: no prototype member can answer). */
+const member = <T extends string>(terms: readonly T[], value: string | null | undefined): value is T =>
+  typeof value === "string" && (terms as readonly string[]).includes(value);
+/** Is this a severity Atlas Scope knows? The one test a surface narrows a snapshot severity by. */
+export const recognisedSeverity = (value: string | null | undefined): value is Severity => member(SEVERITY_ORDER, value);
+/** Is this one of the five SCORED health bands? (The engine's not-measured band is not one: see `notMeasuredBand`.) */
+export const recognisedBand = (value: string | null | undefined): value is Band => member(BAND_ORDER, value);
+/** Is this the engine's own not-measured band — a stated absence of a measurement, never an unrecognised band? */
+export const notMeasuredBand = (value: string | null | undefined): value is NotMeasuredBand => value === NOT_MEASURED_BAND;
+/** Is this a device kind Atlas Scope knows? */
+export const recognisedKind = (value: string | null | undefined): value is DeviceKind => member(DEVICE_KINDS, value);
+/** How every surface names an unrecognised value: the vocabulary, then the producer's text exactly (JSON-quoted, so
+ *  an empty, padded or odd string stays visible). */
+export const unrecognisedPhrase = (vocabulary: VocabularyName, value: string): string =>
+  `unrecognised ${vocabulary} ${JSON.stringify(value)}`;
+/** How every surface names a record that states NO severity: not graded — never Info, never "not observed" alone. */
+export const SEVERITY_NOT_STATED = "severity not stated";
+/** A compiled severity in words: the member itself, `unrecognised severity "…"`, or "severity not stated". */
+export const severityWords = (severity: string | null): string =>
+  severity === null ? SEVERITY_NOT_STATED : recognisedSeverity(severity) ? severity : unrecognisedPhrase("severity", severity);
 
 export interface FailureImpact {
   severity: string | null;
@@ -34,7 +107,8 @@ export interface Device {
   collected: boolean;
   /** Is there an inventory record (model/serial/software) for it? */
   inventoried: boolean;
-  kind: string;
+  /** The engine node kind (`cable_map.nodes[host=…].kind`), or an Unrecognised value it wrote (see `recognisedKind`). */
+  kind: DeviceKind | Unrecognised;
   role: string | null;
   tier: number | null;
   order: number;
@@ -48,7 +122,9 @@ export interface Device {
   powerSupplies: number | null;
   modules: number | null;
   score: number | null;
-  band: Band | null;
+  /** null = no band computed; NOT_MEASURED_BAND = the engine states it could not measure this device; an Unrecognised
+   *  value = a band the snapshot states that Atlas Scope does not know. Read only by core/band-qualification.ts. */
+  band: Band | NotMeasuredBand | Unrecognised | null;
   criticality: number | null;
   dataQuality: number | null;
   deductions: string[];
@@ -129,7 +205,9 @@ export interface CableMapNode {
 
 export interface Finding {
   id: string;
-  severity: Severity;
+  /** The producer's severity, an Unrecognised value it wrote (see `recognisedSeverity`), or null when it states
+   *  none — NOT STATED, which is never Info (tools/lib/compile-model.mjs; `severityWords`, SEVERITY_NOT_STATED). */
+  severity: Severity | Unrecognised | null;
   rank: number | null;
   priority: number | null;
   category: string | null;
@@ -234,9 +312,9 @@ export interface EvidenceRecord {
   type: EvidenceValueType;
   /** Length of the whole record, as compact JSON, in the source. */
   jsonChars: number;
-  value: EvidenceScalar | Record<string, EvidenceScalar> | EvidenceScalar[];
+  value: EvidenceScalar | NameKeyed<EvidenceScalar> | EvidenceScalar[];
   nested: string[];
-  cut: Record<string, number>;
+  cut: NameKeyed<number>;
   fieldsTotal: number;
   withheld: boolean;
 }
@@ -276,7 +354,8 @@ export interface EvidenceProjection {
 
 export interface CrossLayerFinding {
   id: string;
-  severity: Severity;
+  /** As `Finding.severity`: a member, an Unrecognised value, or null when the record states none (never Info). */
+  severity: Severity | Unrecognised | null;
   layers: string | null;
   title: string;
   detail: string | null;
@@ -452,7 +531,7 @@ export interface Coverage {
   routableHosts: string[];
   aclHosts: string[];
   linksWithCentrality: number;
-  aclSummary: Record<string, number>;
+  aclSummary: NameKeyed<number>;
   cite: Cite;
 }
 
@@ -546,13 +625,13 @@ export interface Fabric {
   links: Link[];
   findings: Finding[];
   crossLayer: CrossLayerFinding[];
-  routes: Record<string, RouteEntry[]>;
-  acls: Record<string, Record<string, AclLine[]>>;
+  routes: NameKeyed<RouteEntry[]>;
+  acls: NameKeyed<NameKeyed<AclLine[]>>;
   /** Object groups an ACL match field may reference, keyed by host then group name. */
-  objectGroups: Record<string, Record<string, ObjectGroup>>;
+  objectGroups: NameKeyed<NameKeyed<ObjectGroup>>;
   aclFindings: AclFinding[];
   l3: L3Interface[];
-  interfaces: Record<string, InterfaceRecord[]>;
+  interfaces: NameKeyed<InterfaceRecord[]>;
   physical: PhysicalHealth[];
   protocols: ProtocolHealth[];
   endpoints: Endpoint[];

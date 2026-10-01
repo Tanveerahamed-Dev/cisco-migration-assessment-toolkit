@@ -1485,7 +1485,9 @@ describe("every act() scope in src/ that can be asynchronous goes through src/te
      `any`) cannot stand in for the one it is meant to prove. */
   const PREAMBLE = 'import * as React from "react";\nimport { act } from "react";\n';
   const SLEEP = "const sleep = (ms: number): Promise<void> => new Promise<void>((r) => setTimeout(r, ms));\n";
-  const withPreamble = (t: string): string => `${/^import |require\(/m.test(t) ? "" : PREAMBLE}${t}\nexport {};\n`;
+  /* A text brings its own imports when a line STARTS with `import `, or when it calls `require(` anywhere. Two tests,
+     not one alternation, so the line anchor visibly applies to `import ` alone. */
+  const withPreamble = (t: string): string => `${/^import /m.test(t) || /require\(/.test(t) ? "" : PREAMBLE}${t}\nexport {};\n`;
   const ASYNC = /async callback/;
   const THENABLE = /not proved to be a non-thenable/;
   /* R7-V1: a `void` that is not a proof, reported as such (not as `any`, not as a Promise type). */

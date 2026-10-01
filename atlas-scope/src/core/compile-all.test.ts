@@ -281,6 +281,119 @@ describe("either the whole set lands or none of it does", () => {
   });
 });
 
+/* A failed OPEN means what the check it replaced meant (2026-09-30 refuter). The source and every sibling are read
+   with one open (compile-io.mjs `readRegularFile`, CodeQL js/file-system-race); that open's errnos were mapped only
+   for ENOENT/ENOTDIR/EISDIR, so on POSIX a symbolic-link loop, a directory on the way that refuses, a socket or an
+   over-long name escaped as a RAW error with a stack where `existsSync`/`isFile` had answered "no snapshot file",
+   and a looping sibling became a mixed-set refusal where the exists-check had skipped it. This host cannot make
+   most of those errnos, so each is INJECTED through the `beforeOpen` seam (a throw there is the open failing with
+   it, as `beforeRestoreStep`'s throw is a file lock). */
+const errno = (code: string): Error => Object.assign(new Error(`injected ${code}`), { code });
+const openFailsWith = (code: string, only: (path: string) => boolean = () => true) => (path: string): void => {
+  if (only(path)) throw errno(code);
+};
+const codeOf = (run: () => unknown): string => {
+  try {
+    run();
+  } catch (e) {
+    return e instanceof CompileError ? e.code : `RAW ${String((e as { code?: unknown }).code ?? e)}`;
+  }
+  return "no error";
+};
+
+describe("a failed open of the source means what the replaced exists/isFile check meant", () => {
+  /** An external source file with the sample's bytes, and an output directory nothing may be written to. */
+  const external = (): { source: string; out: string } => {
+    const dir = tmp("atlas-open-source-");
+    const source = join(dir, "snapshot.json");
+    writeFileSync(source, readFileSync(resolve(REPO, SAMPLE_REL)));
+    return { source, out: tmp("atlas-open-out-") };
+  };
+
+  it.each([["ENOENT"], ["ENOTDIR"], ["ELOOP"], ["ENAMETOOLONG"], ["EISDIR"], ["ENXIO"], ["EOPNOTSUPP"], ["ENODEV"]])(
+    "%s: coded E_SOURCE_MISSING, never a raw error",
+    (code) => {
+      const { source, out } = external();
+      expect(codeOf(() => compileToDisk({ toolsDir: TOOLS, source, out, hooks: { beforeOpen: openFailsWith(code) } }))).toBe("E_SOURCE_MISSING");
+      expect(readdirSync(out), "nothing was written").toEqual([]);
+    },
+  );
+
+  it("EACCES / EPERM on a directory on the way (the path cannot be reached): E_SOURCE_MISSING, as existsSync answered", () => {
+    const out = tmp("atlas-open-out-");
+    const source = join(tmp("atlas-open-source-"), "unreachable", "snapshot.json");
+    for (const code of ["EACCES", "EPERM"]) {
+      expect(codeOf(() => compileToDisk({ toolsDir: TOOLS, source, out, hooks: { beforeOpen: openFailsWith(code) } })), code).toBe("E_SOURCE_MISSING");
+    }
+  });
+
+  it("EACCES / EPERM on a regular file that is there: its own code, E_SOURCE_UNREADABLE — distinguishable from no file", () => {
+    const { source, out } = external();
+    for (const code of ["EACCES", "EPERM"]) {
+      expect(codeOf(() => compileToDisk({ toolsDir: TOOLS, source, out, hooks: { beforeOpen: openFailsWith(code) } })), code).toBe("E_SOURCE_UNREADABLE");
+    }
+    // The CLI prints it as a refusal (exit 1), not a stack: compile refused — <message>.
+    expect(readdirSync(out)).toEqual([]);
+  });
+
+  it("an I/O failure that is none of those is thrown as it is (as the replaced read threw it)", () => {
+    const { source, out } = external();
+    expect(codeOf(() => compileToDisk({ toolsDir: TOOLS, source, out, hooks: { beforeOpen: openFailsWith("EIO") } }))).toBe("RAW EIO");
+  });
+
+  it("control: the same source with no injection compiles", () => {
+    const { source, out } = external();
+    let opened = 0;
+    expect(codeOf(() => compileToDisk({ toolsDir: TOOLS, source, out, hooks: { beforeOpen: () => void (opened += 1) } }))).toBe("no error");
+    expect(opened, "the seam sits on the source's open").toBeGreaterThan(0);
+  });
+});
+
+describe("a failed open of a sibling output means what the replaced exists-check meant", () => {
+  /* The per-file command writes aclBindings; its siblings are the other three files. The source was changed, so the
+     shipped siblings on disk are bound to OTHER bytes: read, they refuse the write (E_MIXED_SET). */
+  const SIBLING_FILES = new Set(OUTPUTS.filter((o) => o.key !== "aclBindings").map((o) => o.file));
+  const isSibling = (p: string): boolean => SIBLING_FILES.has(p.split(/[\\/]/).pop() ?? "");
+  const mixed = () => {
+    const sb = sandbox({ withShipped: true });
+    const src = join(sb.root, SAMPLE_REL);
+    const s = JSON.parse(readFileSync(src, "utf8")) as { script_version: string };
+    s.script_version = "V0.0.0-sibling-open";
+    writeFileSync(src, JSON.stringify(s));
+    return sb;
+  };
+
+  it("control: a readable sibling bound elsewhere refuses the write (E_MIXED_SET)", () => {
+    const { tools } = mixed();
+    let siblingsOpened = 0;
+    const beforeOpen = (p: string): void => void (siblingsOpened += isSibling(p) ? 1 : 0);
+    expect(codeOf(() => compileToDisk({ toolsDir: tools, only: "aclBindings", hooks: { beforeOpen } }))).toBe("E_MIXED_SET");
+    expect(siblingsOpened, "the seam sits on the siblings' open").toBeGreaterThan(0);
+  });
+
+  it.each([["ELOOP"], ["ENAMETOOLONG"], ["ENOTDIR"]])("%s: no sibling reachable there, so it is skipped — not a mixed set", (code) => {
+    const { pkg, tools } = mixed();
+    const before = snapshotOf(pkg);
+    expect(codeOf(() => compileToDisk({ toolsDir: tools, only: "aclBindings", hooks: { beforeOpen: openFailsWith(code, isSibling) } }))).toBe("no error");
+    const after = snapshotOf(pkg);
+    for (const o of OUTPUTS) {
+      if (o.key === "aclBindings") expect(after.get(o.trackedPath), "its own file was written").not.toBe(before.get(o.trackedPath));
+      else expect(after.get(o.trackedPath), `${o.trackedPath} was touched`).toBe(before.get(o.trackedPath));
+    }
+  });
+
+  it("EACCES on a directory on the way to a sibling that is not there: skipped, as the exists-check skipped it", () => {
+    const { pkg, tools } = sandbox(); // no shipped files: no sibling is there
+    expect(codeOf(() => compileToDisk({ toolsDir: tools, only: "aclBindings", hooks: { beforeOpen: openFailsWith("EACCES", isSibling) } }))).toBe("no error");
+    expect(existsSync(join(pkg, "src/forwarding/acl-bindings.json"))).toBe(true);
+  });
+
+  it.each([["EACCES"], ["EISDIR"], ["ENXIO"], ["EIO"]])("%s on a sibling that IS there: a sibling of unknown binding, so the write is refused", (code) => {
+    const { tools } = mixed();
+    expect(codeOf(() => compileToDisk({ toolsDir: tools, only: "aclBindings", hooks: { beforeOpen: openFailsWith(code, isSibling) } }))).toBe("E_MIXED_SET");
+  });
+});
+
 describe("client data never reaches the tracked files", () => {
   const external = (): { dir: string; file: string } => {
     const dir = tmp("atlas-external-");
@@ -342,7 +455,31 @@ describe("client data never reaches the tracked files", () => {
     expect(readdirSync(join(pkg, "src")).sort(), "nothing new was created under src/").toEqual(srcBefore);
   });
 
-  it.each([["src/..data"], ["src./data"], ["src /data"], ["SRC/data"], ["src/panels"]])(
+  it("SRC/data for the SAMPLE is refused exactly where it IS src/data: on a case-insensitive file system (S1-V2)", () => {
+    /* The rule is identity, not spelling. Where the file system folds case (Windows, default macOS), "SRC" is
+       the src/ directory and the sample must be refused like any other spelling of it. Where it does not
+       (Linux CI), "SRC" is a different, new directory outside src/ — the sample is public, so compiling there
+       is allowed, and src/ must still be untouched. Which branch runs is measured, never assumed from the
+       platform name; both branches assert. */
+    const { pkg, tools } = sandbox({ withShipped: true });
+    const foldsCase = existsSync(join(pkg, "SRC"));
+    const before = snapshotOf(pkg);
+    const srcBefore = readdirSync(join(pkg, "src")).sort();
+    const dataBefore = readdirSync(join(pkg, "src", "data")).sort();
+    const r = cli(tools, ["--out", join(pkg, "SRC", "data")]);
+    if (foldsCase) {
+      expect(r.status, r.stderr).toBe(2);
+      expect(r.stderr).toMatch(/E_OUT_REFUSED/);
+      expect(snapshotOf(pkg)).toEqual(before);
+    } else {
+      expect(r.status, r.stderr).toBe(0);
+      expect(existsSync(join(pkg, "SRC", "data", "fabric.json")), "it compiled to the separate SRC/ directory").toBe(true);
+    }
+    expect(readdirSync(join(pkg, "src")).sort(), "nothing new was created under src/").toEqual(srcBefore);
+    expect(readdirSync(join(pkg, "src", "data")).sort(), "src/data was not written").toEqual(dataBefore);
+  });
+
+  it.each([["src/..data"], ["src./data"], ["src /data"], ["src/panels"]])(
     "refuses --out %s even for the SAMPLE — the src/ rule alone, with no repository rule behind it (S1-V2)",
     (out) => {
       /* For a non-sample source the repository rule (S1-V4) would refuse these as well, so the cases above

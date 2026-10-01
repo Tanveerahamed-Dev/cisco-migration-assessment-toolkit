@@ -9,7 +9,7 @@
  * binding check would then turn every answer "unknown" with no error anywhere. So the census below is
  * derived from the compiler's own OUTPUTS (every document it writes), not from a list of today's readers.
  */
-import { existsSync, globSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, globSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import ts from "typescript";
@@ -222,10 +222,12 @@ describe("one door: no application module but dataset/bundled.ts reaches a compi
   const importers: { file: string; doc: string; via: string }[] = [];
   let scanned = 0;
   const walk = (dir: string): void => {
-    for (const name of readdirSync(dir)) {
+    /* The entry's type comes from the directory read itself — no second stat of the path before it is read. */
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const name = entry.name;
       if (name.startsWith("_") || name === "node_modules") continue;
       const p = join(dir, name);
-      if (statSync(p).isDirectory()) {
+      if (entry.isDirectory()) {
         walk(p);
         continue;
       }

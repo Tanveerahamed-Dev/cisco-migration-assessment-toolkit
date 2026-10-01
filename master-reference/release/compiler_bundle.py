@@ -38,8 +38,11 @@ from compiler.binary_review import (
     receipt_set_digest as binary_review_receipt_set_digest,
 )
 from compiler.compiler import RECORD_GROUPS
+from compiler.policy import CENSUS_DEPTH_IDENTITY
 from compiler.schema_validation import (
+    CensusDepthValidationError,
     ForbiddenContentScanValidationError,
+    validate_census_depth_receipt,
     validate_passed_forbidden_content_scan,
 )
 from governance.consequential_claims import (
@@ -66,10 +69,12 @@ REQUIRED_STRUCTURAL_INVARIANTS = frozenset(
         "every_safe_parsed_source_has_one_structural_root",
         "every_safe_line_structurally_mapped",
         "every_gui_surface_has_standardized_evidence_honest_dossier",
+        "every_identity_depth_file_declared_privacy_scanned_and_unprojected",
     }
 )
 REQUIRED_ACCEPTANCE_GATES = frozenset(
     {
+        "every_tracked_text_file_line_censused",
         "architecture_contract_declared_and_conformant",
         "runtime_architecture_edges_observed_and_reconciled",
         "every_symbol_has_dossier_fields",
@@ -252,7 +257,7 @@ _RECORD_KEY_TEXT_BY_GROUP = {
     "datasets": "content_digest entity_type file_id format id path size_bytes structured_record_count",
     "dependencies": "constraint ecosystem entity_type file_id id name path resolved_version scope",
     "documents": "entity_type file_id id line_count path status status_reasons title",
-    "files": "classification_errors content_digest content_source documentation_status documentation_status_reasons entity_type git_blob_oid git_mode git_stage id language line_count media_type nonblank_line_count parse_status parser parser_mode parser_version path privacy_exposure privacy_reasons roles size_bytes unresolved_reasons",
+    "files": "census_depth census_depth_reason classification_errors content_digest content_source documentation_status documentation_status_reasons entity_type git_blob_oid git_mode git_stage id language line_count media_type nonblank_line_count parse_status parser parser_mode parser_version path privacy_exposure privacy_reasons roles size_bytes unresolved_reasons",
     "graph_edges": "confidence coordinate_occurrence entity_type extraction_mode id relation source source_file source_location target unresolved_reasons",
     "graph_nodes": "community coordinate_occurrence entity_type extraction_mode file_id file_type graphify_id id kind label language origin source_file source_location unresolved_reasons",
     "imports": "alias containing_symbol entity_type file_id id kind module names path range unresolved_reasons",
@@ -448,6 +453,69 @@ def _scan_generated_local_identities(
                 raise ReleaseInputError(f"compiler Graphify local-identity scan byte budget exceeded: path={location}")
             if rule is not None:
                 raise ReleaseInputError(f"compiler Graphify local-identity scan failed: rule={rule}; path={location}")
+
+
+def _scan_identity_depth_sources(
+    repository_root: Path,
+    files: list[dict[str, Any]],
+    contract: dict[str, tuple[str, ...]],
+    scanned_bytes: int,
+) -> int:
+    """Give identity-depth sources the local-identity scan their chunks would get.
+
+    A full-depth text file's exact bytes reach the chunk scan through its
+    ``source_text`` record.  An identity-depth file has no such record, so its
+    exact selected-commit Git blob is read here and the same rule is applied
+    to the same bytes, inside the same bounded scan budget.  A deferred census
+    therefore never narrows the release privacy scan.
+    """
+
+    candidates = [
+        item
+        for item in files
+        if item.get("census_depth") == CENSUS_DEPTH_IDENTITY
+        and item.get("privacy_exposure") == "full"
+        and item.get("language") != "binary"
+        and isinstance(item.get("content_digest"), str)
+    ]
+    if not candidates:
+        return scanned_bytes
+    try:
+        # Local import avoids the compiler-bundle/source-binding type cycle.
+        from .source_binding import GitEntry, _read_git_blobs
+
+        entries = [
+            GitEntry(
+                mode=str(item.get("git_mode") or ""),
+                blob_oid=str(item.get("git_blob_oid") or ""),
+                stage=int(item.get("git_stage") or 0),
+                path=str(item["path"]),
+            )
+            for item in candidates
+        ]
+        blobs = _read_git_blobs(repository_root.resolve(strict=True), entries)
+    except ReleaseInputError:
+        raise
+    except Exception:
+        raise ReleaseInputError("compiler identity-depth source bytes could not be read from Git") from None
+    for item in candidates:
+        raw = blobs.get(str(item["path"]))
+        if raw is None or len(raw) != item.get("size_bytes") or sha256_bytes(raw) != item.get("content_digest"):
+            raise ReleaseInputError(f"compiler identity-depth source differs from its file record: {item.get('id')}")
+        scanned_bytes += len(raw)
+        if scanned_bytes > _MAX_COMPILER_CHUNK_BYTES:
+            raise ReleaseInputError("compiler chunk byte census exceeds its bounded privacy-scan limit")
+        try:
+            rule = _current_local_identity_rule(raw.decode("utf-8", errors="strict"), contract)
+        except (UnicodeError, ValueError):
+            raise ReleaseInputError(
+                f"compiler identity-depth source privacy scan found invalid text: file={item.get('id')}"
+            ) from None
+        if rule is not None:
+            raise ReleaseInputError(
+                f"compiler identity-depth source privacy scan failed: rule={rule}; file={item.get('id')}"
+            )
+    return scanned_bytes
 
 
 def _validate_graph_projection(
@@ -1697,6 +1765,17 @@ def load_compiler_bundle(
             validate_passed_forbidden_content_scan(completeness, files)
         except ForbiddenContentScanValidationError as exc:
             raise ReleaseInputError(str(exc)) from None
+        try:
+            validate_census_depth_receipt(completeness, files)
+        except CensusDepthValidationError as exc:
+            raise ReleaseInputError(str(exc)) from None
+        if current_identity_contract is not None and repository_root is not None:
+            scanned_chunk_bytes = _scan_identity_depth_sources(
+                repository_root,
+                files,
+                current_identity_contract,
+                scanned_chunk_bytes,
+            )
 
         for item in records.get("source_text", []):
             path = item.get("path")

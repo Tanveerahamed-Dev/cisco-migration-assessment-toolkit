@@ -95,7 +95,7 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
-    "filesRecordKeyFence": {"propertyNames": {"enum": ["classification_errors", "content_digest", "content_source", "documentation_status", "documentation_status_reasons", "entity_type", "git_blob_oid", "git_mode", "git_stage", "id", "language", "line_count", "media_type", "nonblank_line_count", "parse_status", "parser", "parser_mode", "parser_version", "path", "privacy_exposure", "privacy_reasons", "roles", "size_bytes", "unresolved_reasons"]}},
+    "filesRecordKeyFence": {"propertyNames": {"enum": ["census_depth", "census_depth_reason", "classification_errors", "content_digest", "content_source", "documentation_status", "documentation_status_reasons", "entity_type", "git_blob_oid", "git_mode", "git_stage", "id", "language", "line_count", "media_type", "nonblank_line_count", "parse_status", "parser", "parser_mode", "parser_version", "path", "privacy_exposure", "privacy_reasons", "roles", "size_bytes", "unresolved_reasons"]}},
     "linesRecordKeyFence": {"propertyNames": {"enum": ["GUI_or_artifact_consumers", "behavior_group", "callers_and_dependencies", "claims_influenced", "containing_symbol", "current_or_historical", "depth", "entity_type", "explanation_depth", "file_id", "id", "inputs_and_outputs", "language", "line", "line_digest", "line_number", "owner", "path", "runtime_trace_state", "security_and_privacy_effect", "semantic_entity", "source_commit", "structural_mapping_basis", "syntax_depth", "syntax_kind", "test_coverage_state", "tests_covering_it", "text_bytes", "text_digest", "text_preview", "unresolved_reasons"]}},
     "sourceTextRecordKeyFence": {"propertyNames": {"enum": ["byte_count", "content_digest", "encoding", "entity_type", "file_id", "git_blob_oid", "id", "line_count", "lines", "path", "source_basis"]}},
     "symbolsRecordKeyFence": {"propertyNames": {"enum": ["abstention_behavior", "callees", "caller_resolution", "callers", "claims_produced_or_consumed", "constant_basis", "constant_candidate", "criticality", "data_dependencies", "declaration_kind", "decorators", "depth", "digest", "documentation", "downstream_surfaces", "entity_type", "explanation_depth", "exported", "external_effects", "extraction_disposition", "failure_and_exception_behavior", "file_id", "framework_candidate", "history", "id", "kind", "known_impact_if_changed", "language", "limitations", "name", "parameters", "parameters_and_types", "path", "path_and_range", "performance_characteristics", "purpose", "purpose_basis", "qualified_name", "range", "responsibility", "return_annotation", "return_or_output", "review_state", "runtime_trace_evidence", "runtime_trace_state", "security_boundary", "stable_urn", "state_read", "state_written", "target", "test_linkage", "tests", "unresolved_reasons"]}},
@@ -247,8 +247,10 @@
             "size_bytes": {"type": ["integer", "null"], "minimum": 0},
             "content_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
             "parse_status": {
-              "enum": ["pending", "parsed", "binary_inventory", "metadata_only", "classification_error", "parser_error"]
+              "enum": ["pending", "parsed", "identity_census", "binary_inventory", "metadata_only", "classification_error", "parser_error"]
             },
+            "census_depth": {"enum": ["full", "identity"]},
+            "census_depth_reason": {"type": ["string", "null"], "pattern": "^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$"},
             "parser": {"type": ["string", "null"]},
             "parser_mode": {"type": ["string", "null"]},
             "parser_version": {"type": ["string", "null"]},
@@ -257,6 +259,22 @@
             "documentation_status": {"type": ["string", "null"]},
             "documentation_status_reasons": {"type": "array", "items": {"type": "string"}},
             "unresolved_reasons": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        {
+          "required": ["census_depth", "census_depth_reason"],
+          "if": {"properties": {"census_depth": {"const": "identity"}}},
+          "then": {
+            "properties": {
+              "census_depth_reason": {"type": "string"},
+              "parse_status": {"not": {"const": "parsed"}}
+            }
+          },
+          "else": {
+            "properties": {
+              "census_depth_reason": {"type": "null"},
+              "parse_status": {"not": {"const": "identity_census"}}
+            }
           }
         }
       ]

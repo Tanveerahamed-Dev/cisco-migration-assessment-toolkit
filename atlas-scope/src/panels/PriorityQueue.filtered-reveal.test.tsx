@@ -415,7 +415,7 @@ describe("A4 under a filter: the scope chips the store carries", () => {
   it("a severity chip: named, pinned, and the control removes the chip", async (ctx) => {
     const subject = need(ctx, farHidden(), "finding far down the list");
     const other = (["Critical", "High", "Medium", "Low", "Info"] as const).find((s) => s !== String(subject.severity))!;
-    act(() => { useInvestigation.getState().toggleSeverity(other as Finding["severity"]); });
+    act(() => { useInvestigation.getState().toggleSeverity(other); });
     const c = mount(<PriorityQueue debounceMs={0} />);
     const grid = installLayout(c);
     await expectRevealedThenWidened({

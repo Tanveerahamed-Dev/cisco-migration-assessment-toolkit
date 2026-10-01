@@ -40,6 +40,7 @@ import {
   deviceById,
   fabric,
   findingById,
+  gradedSeverityRank,
   linkById,
   severityRank,
 } from "../core/data";
@@ -47,11 +48,13 @@ import {
   applyToCrossLayer,
   applyToFindings,
   groupBy,
+  groupItems,
   parseQuery,
   sortBy,
   suggest,
   UNOBSERVED_GROUP,
   valueDomain,
+  vocabularyValue,
   type Clause,
   type ClauseOutcome,
   type FilterResult,
@@ -66,7 +69,7 @@ import { handOffFocus, useReleaseFocusOnHide, useReleaseFocusOnLayoutChange } fr
 import { bandKey, bandKeyLabel } from "../core/band-qualification";
 import { useInvestigation } from "../core/store";
 import type { Cite, CrossLayerFinding, Finding } from "../core/types";
-import { SEVERITY_ORDER } from "../core/types";
+import { recognisedSeverity, SEVERITY_ORDER, severityWords } from "../core/types";
 import { IconChevronDown, IconChevronUp, IconCite, IconClose, IconInfo, IconSearch } from "../ui/icons";
 import {
   Button,
@@ -84,6 +87,7 @@ import {
 import { DataGrid, type GridColumn, type GridNode, type GridSort } from "./DataGrid";
 import { deferPastPaint } from "./deferPastPaint";
 import "./PriorityQueue.css";
+import { own } from "../core/own";
 
 /* One shared empty set, so "nothing is related" is reference-stable and cannot re-render the grid
    on every keystroke. */
@@ -231,7 +235,7 @@ const DEVICE_ATTRIBUTE: Readonly<Record<string, (d: (typeof fabric.devices)[numb
  *  name a device. For a device-keyed bucket, true only when at least one COLLECTED device carries
  *  the value: a bucket whose every device was never collected is silence, not a zero. */
 export function searchedByCollection(key: string, value: string): boolean {
-  const pick = DEVICE_ATTRIBUTE[key];
+  const pick = own(DEVICE_ATTRIBUTE, key);
   if (!pick) return true;
   const want = value.toLowerCase();
   return fabric.devices.some((d) => d.collected && (pick(d) ?? "").toLowerCase() === want);
@@ -309,8 +313,8 @@ function TitleCell({ title, hosts }: { title: string; hosts: readonly string[] }
    and is accepted ONLY when it is unique: a one-to-many join would silently re-aim every other
    surface at the wrong evidence, which is worse than offering no link at all. */
 const crossLayerBridge: ReadonlyMap<string, string> = (() => {
-  const key = (sev: string, title: string, detail: string | null): string =>
-    `${sev}\u0000${title}\u0000${detail ?? ""}`;
+  const key = (sev: string | null, title: string, detail: string | null): string =>
+    `${severityWords(sev)}\u0000${title}\u0000${detail ?? ""}`;
   const byKey = new Map<string, string[]>();
   for (const f of fabric.findings) {
     const k = key(f.severity, f.title, f.detail);
@@ -329,48 +333,17 @@ const crossLayerBridge: ReadonlyMap<string, string> = (() => {
 const crossRowId = (c: CrossLayerFinding): string => `${c.id}\u0000${c.cite}`;
 
 /* ── grouping for the cross-layer corpus ────────────────────────────────────────
-   query.ts groups Findings; its grouper is not exported and cross-layer records carry different
-   fields, so the same three rules are restated here: a row with no observed value for the key
-   lands in an explicit Not-observed bucket, a multi-valued key produces multi-membership, and the
-   bucket order follows a fixed vocabulary where one exists. */
+   Cross-layer records carry different fields from findings, so the KEYS are read here — and the grouping is the ONE
+   grouper's (core/query.ts `groupItems`). This used to restate that grouper, and with it the defect: a severity the
+   vocabulary does not name matched no SEVERITY_ORDER key and its record was dropped from every group. */
 function groupCross(rows: readonly CrossLayerFinding[], key: string): Group<CrossLayerFinding>[] {
-  const keysOf = (c: CrossLayerFinding): string[] | null => {
-    if (key === "severity") return [c.severity];
-    if (key === "layer") return c.layers === null ? null : [c.layers];
-    if (key === "host") return c.hosts.length === 0 ? null : [...c.hosts];
-    return ["all"];
-  };
   if (key === "none") {
     return [{ key: "all", label: "All cross-layer records", observed: true, items: [...rows] }];
   }
-  const buckets = new Map<string, CrossLayerFinding[]>();
-  const unobserved: CrossLayerFinding[] = [];
-  for (const c of rows) {
-    const ks = keysOf(c);
-    if (ks === null || ks.length === 0) {
-      unobserved.push(c);
-      continue;
-    }
-    for (const k of ks) {
-      const list = buckets.get(k);
-      if (list) list.push(c);
-      else buckets.set(k, [c]);
-    }
-  }
-  const ordered =
-    key === "severity"
-      ? SEVERITY_ORDER.filter((s) => buckets.has(s)).map(String)
-      : [...buckets.keys()].sort((a, b) => (buckets.get(b)?.length ?? 0) - (buckets.get(a)?.length ?? 0) || cmpStr(a, b));
-  const groups: Group<CrossLayerFinding>[] = ordered.map((k) => ({
-    key: k,
-    label: k,
-    observed: true,
-    items: buckets.get(k) ?? [],
-  }));
-  if (unobserved.length > 0) {
-    groups.push({ key: UNOBSERVED_GROUP, label: "Not observed", observed: false, items: unobserved });
-  }
-  return groups;
+  if (key === "severity") return groupItems(rows, (c) => vocabularyValue(c.severity, recognisedSeverity), SEVERITY_ORDER, "severity");
+  if (key === "layer") return groupItems(rows, (c) => (c.layers === null ? null : [c.layers]), null);
+  if (key === "host") return groupItems(rows, (c) => (c.hosts.length === 0 ? null : [...c.hosts]), null);
+  return groupItems(rows, () => ["all"], null);
 }
 
 /* ── corpora ────────────────────────────────────────────────────────────────── */
@@ -568,7 +541,8 @@ const CROSS_SORT_OF: Readonly<Record<string, string>> = {
 const crossCell = (c: CrossLayerFinding, field: string): string | number | null => {
   switch (field) {
     case "severity":
-      return severityRank(c.severity);
+      // As core/query.ts findingCell: an ungraded severity is not a point on the scale, so it sinks either way.
+      return gradedSeverityRank(c.severity);
     case "id":
       return c.id;
     case "title":
@@ -1056,7 +1030,7 @@ export function PriorityQueue({
       rows: fabric.findings,
       idOf: (f) => f.id,
       citeOf: (f) => f.cite,
-      lineOf: (f) => `${f.severity}	${f.id}	${f.title}	${f.category ?? "category not observed"}	${f.devices.length > 0 ? f.devices.join(" ") : "no device named"}	${f.cite}`,
+      lineOf: (f) => `${severityWords(f.severity)}	${f.id}	${f.title}	${f.category ?? "category not observed"}	${f.devices.length > 0 ? f.devices.join(" ") : "no device named"}	${f.cite}`,
       columns: findingColumns,
       groupKeys: [
         { value: "severity", label: "Severity", vocabulary: () => SEVERITY_ORDER.map(String) },
@@ -1068,7 +1042,7 @@ export function PriorityQueue({
         { value: "none", label: "No grouping", vocabulary: () => [] },
       ],
       group: (rows, key) => groupBy(rows, key as FindingGroupKey),
-      sortFieldOf: (columnId) => FINDING_SORT_OF[columnId] ?? null,
+      sortFieldOf: (columnId) => own(FINDING_SORT_OF, columnId) ?? null,
       order: (rows, o) =>
         o.kind === "ranked"
           ? [...rows].sort(bySeverityThenRank)
@@ -1086,7 +1060,7 @@ export function PriorityQueue({
       rows: fabric.crossLayer,
       idOf: crossRowId,
       citeOf: (c) => c.cite,
-      lineOf: (c) => `${c.severity}	${c.id}	${c.title}	${c.layers ?? "layers not observed"}	${c.hosts.length > 0 ? c.hosts.join(" ") : "no host named"}	${c.cite}`,
+      lineOf: (c) => `${severityWords(c.severity)}	${c.id}	${c.title}	${c.layers ?? "layers not observed"}	${c.hosts.length > 0 ? c.hosts.join(" ") : "no host named"}	${c.cite}`,
       columns: crossColumns,
       groupKeys: [
         { value: "severity", label: "Severity", vocabulary: () => SEVERITY_ORDER.map(String) },
@@ -1095,7 +1069,7 @@ export function PriorityQueue({
         { value: "none", label: "No grouping", vocabulary: () => [] },
       ],
       group: groupCross,
-      sortFieldOf: (columnId) => CROSS_SORT_OF[columnId] ?? null,
+      sortFieldOf: (columnId) => own(CROSS_SORT_OF, columnId) ?? null,
       order: (rows, o) =>
         o.kind === "ranked"
           ? [...rows].sort(
@@ -1342,12 +1316,15 @@ export function PriorityQueue({
        populated ones, sorted, so the list order never depends on which values happened to survive
        the filter. */
     if (key === "severity") {
+      /* The graded severities in their order (populated or empty), then every other group the grouper built — the
+         unrecognised severities — then Not observed. Re-ordering by SEVERITY_ORDER alone dropped those groups here too. */
       const byKey = new Map([...built, ...missing].map((g) => [g.key, g]));
       const ordered = SEVERITY_ORDER.map(String)
         .map((s) => byKey.get(s))
         .filter((g): g is Group<Finding | CrossLayerFinding> => g !== undefined);
+      const others = built.filter((g) => g.key !== UNOBSERVED_GROUP && !(SEVERITY_ORDER as readonly string[]).includes(g.key));
       const unobserved = built.find((g) => g.key === UNOBSERVED_GROUP);
-      return unobserved ? [...ordered, unobserved] : ordered;
+      return unobserved ? [...ordered, ...others, unobserved] : [...ordered, ...others];
     }
     const unobserved = built.find((g) => g.key === UNOBSERVED_GROUP);
     const populated = built.filter((g) => g.key !== UNOBSERVED_GROUP);
@@ -2216,7 +2193,7 @@ export function PriorityQueue({
                   .filter((c) => c.resizable && !hidden.has(c.id))
                   .map((c) => {
                     const name = c.headerLabel ?? c.header;
-                    const px = columnWidths[c.id];
+                    const px = own(columnWidths, c.id);
                     const stepBy = (delta: number): void => {
                       const measured = rootRef.current
                         ?.querySelector<HTMLElement>(`[role="columnheader"][data-col="${c.id}"]`)

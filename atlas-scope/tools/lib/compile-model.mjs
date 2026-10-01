@@ -364,6 +364,29 @@ const val = (v) => {
   return v;
 };
 /**
+ * A value of a CLOSED vocabulary — a finding's severity, a device's health band, a node's kind — as the snapshot
+ * wrote it. Absent or unobserved is null (as `val`). Text is kept VERBATIM, member or not: a value the vocabulary
+ * does not name is carried as the producer wrote it and typed `Unrecognised` (src/core/types.ts, where each
+ * vocabulary and its recogniser live), so it is never coerced to a member, never dropped, and never typed as one — a
+ * surface cannot use it as a member without first asking the recogniser. A number or boolean is carried as its text
+ * (no vocabulary names one, so it reads as unrecognised: `val` used to pass it through as a number, which every
+ * string reader then threw on). Anything else is refused: stringifying it would emit "[object Object]".
+ * @param {unknown} v @param {string} where
+ * @returns {string | null}
+ */
+const term = (v, where) => {
+  if (v !== null && typeof v === "object") {
+    throw new CompileError(
+      "E_NON_PRIMITIVE",
+      `${where} is ${JSON.stringify(v).slice(0, 120)}, not a name. Stringifying it would emit "[object Object]"; this compiler ` +
+        `does not know how to show it, so it refuses rather than guess.`,
+      where,
+    );
+  }
+  const t = val(v);
+  return t === null ? null : String(t);
+};
+/**
  * Keep the engine's own unobserved prose when it carries a REASON worth showing.
  * @param {unknown} v
  */
@@ -416,6 +439,20 @@ const strs = (v, where) =>
  * @returns {Record<string, any>}
  */
 const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+/**
+ * A snapshot object's member by an ENGINE-SUPPLIED name (a host, an ACL, a port), or undefined: only an OWN member
+ * answers. `o[name]` answers a name the object does not hold from Object.prototype, so a cable-map node named
+ * "constructor" read as inventoried, with the Object function as its inventory record.
+ *
+ * THE DICTIONARY RULE (CodeQL js/remote-property-injection). Every name a snapshot supplies is untrusted text, and
+ * this module never assigns through one (`dict[name] = …`, `dict[name] ??= …`): a host named "__proto__" replaced
+ * such a dictionary's prototype (so that host vanished from the model) or, through `??=`, handed back
+ * Object.prototype itself. Dictionaries keyed by snapshot names are built with `Object.fromEntries` (which DEFINES
+ * each member, so "__proto__" is an ordinary member) or accumulated in a Map, and read through `own`.
+ * src/core/compile-reserved-names.test.ts compiles the sample with hosts renamed to such names.
+ * @param {Record<string, any>} o @param {string} name
+ */
+const own = (o, name) => (Object.hasOwn(o, name) ? o[name] : undefined);
 /**
  * A producer PROSE field (a disclosure the producer writes about its own finding): absent (or null) is
  * null — "not emitted" — and a string is kept VERBATIM, whatever it says. It deliberately does not go
@@ -568,6 +605,17 @@ const cutText = (s, cap) => {
 };
 /** Code-unit order, which does not depend on a runtime's locale. @param {string} a @param {string} b */
 const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+/**
+ * The characters `"key":member` takes as a member of a written object: exactly `JSON.stringify({ [key]: member })`
+ * less its two braces, computed from the key's and the member's own JSON text. No object is keyed by the name —
+ * the name is an ENGINE-SUPPLIED string (a host, an ACL, a port), so it is only ever text here. A member JSON
+ * writes nothing for (undefined) costs nothing, as it did in the object form.
+ * @param {string} key @param {unknown} member
+ */
+const memberChars = (key, member) => {
+  const m = JSON.stringify(member);
+  return m === undefined ? 0 : JSON.stringify(key).length + 1 + m.length;
+};
 
 /**
  * Project every record the findings' evidence pointers name (see EVIDENCE_PROJECTION_CAPS). One record per
@@ -633,11 +681,12 @@ export function compileEvidenceRecords(findings, snap, caps = EVIDENCE_PROJECTIO
         const whole = isNested ? JSON.stringify(x) : x;
         const member = typeof whole === "string" ? cutText(whole, caps.fieldTextChars) : whole;
         const wasCut = typeof whole === "string" && typeof member === "string" && member.length < whole.length;
+        /* A cut member's `cut` entry is measured as `{"key":0}` (its braces included), as it always was. */
         const add =
-          (Array.isArray(v) ? JSON.stringify(member).length : JSON.stringify({ [key]: member }).length - 2) +
+          (Array.isArray(v) ? JSON.stringify(member).length : memberChars(key, member)) +
           (kept.length === 0 ? 0 : 1) +
           (isNested ? JSON.stringify(key).length + 1 : 0) +
-          (wasCut ? JSON.stringify({ [key]: 0 }).length : 0);
+          (wasCut ? memberChars(key, 0) + 2 : 0);
         if (size + add > caps.recordChars) break;
         kept.push([key, member]);
         if (isNested) nested.push(key);
@@ -895,8 +944,9 @@ export function compileFabric(snap, binding, opts = {}) {
     return out;
   };
 
+  const inventory = obj(snap.devices);
   const devices = hosts.map((host) => {
-    const d = obj(snap.devices)[host];
+    const d = own(inventory, host);
     const n = nodeByHost.get(host);
     const h = healthByHost.get(host);
     const fi = impactByHost.get(host);
@@ -905,7 +955,7 @@ export function compileFabric(snap, binding, opts = {}) {
       host,
       collected: d ? true : Boolean(n?.collected),
       inventoried: Boolean(d),
-      kind: val(n?.kind) ?? (d ? "switch" : "unknown"),
+      kind: term(n?.kind, `cable_map.nodes[host=${host}].kind`) ?? (d ? "switch" : "unknown"),
       role: val(h?.role) ?? val(n?.role),
       tier: Number.isFinite(n?.tier) ? n.tier : null,
       order: Number.isFinite(n?.order) ? n.order : 0,
@@ -919,7 +969,7 @@ export function compileFabric(snap, binding, opts = {}) {
       powerSupplies: num(d?.num_power_supplies),
       modules: num(d?.num_modules),
       score: Number.isFinite(h?.score) ? h.score : null,
-      band: val(h?.band),
+      band: term(h?.band, `health_scores[switch=${host}].band`),
       criticality: Number.isFinite(h?.criticality) ? h.criticality : null,
       dataQuality: Number.isFinite(h?.data_quality) ? h.data_quality : null,
       deductions: strs(h?.deductions, `health_scores[switch=${host}].deductions`),
@@ -1039,7 +1089,9 @@ export function compileFabric(snap, binding, opts = {}) {
     const ev = compileEvidence(obj(p), i, snap);
     return {
       id: `F${String(i + 1).padStart(3, "0")}`,
-      severity: val(p.severity) ?? "Info",
+      /* null = the producer states NO severity (absent, "", "-", "N/A", [NOT OBSERVED]): NOT STATED, never a member.
+         This read used to end `?? "Info"` — absence compiled to a low-risk grade (src/core/severity-absence.test.ts). */
+      severity: term(p.severity, `punchlist[${i}].severity`),
       rank: num(p.rank),
       priority: num(p.priority),
       category: val(p.category),
@@ -1067,7 +1119,7 @@ export function compileFabric(snap, binding, opts = {}) {
 
   const crossLayer = arr(snap.cross_layer).map((c, i) => ({
     id: val(c.id) ?? `CL-${i}`,
-    severity: val(c.severity) ?? "Info",
+    severity: term(c.severity, `cross_layer[${i}].severity`), // null = not stated, never Info (as punchlist above)
     layers: val(c.layers),
     title: val(c.title) ?? "",
     detail: val(c.detail),
@@ -1077,66 +1129,77 @@ export function compileFabric(snap, binding, opts = {}) {
   }));
 
   /* forwarding substrate: routes, ACLs, SVIs -------------------------------- */
+  /* Keyed by snapshot names, so built by Object.fromEntries (see `own`, THE DICTIONARY RULE). */
   /** @type {Record<string, object[]>} */
-  const routes = {};
-  for (const [host, rs] of Object.entries(obj(snap.routes))) {
-    routes[host] = arr(rs)
-      .map((r, i) => ({
-        prefix: val(r.prefix),
-        source: val(r.source),
-        nextHop: val(r.next_hop),
-        outIntf: val(r.out_intf),
-        adminDistance: num(r.admin_distance),
-        cite: `routes.${host}[${i}]`,
-      }))
-      .filter((r) => r.prefix);
-  }
+  const routes = Object.fromEntries(
+    Object.entries(obj(snap.routes)).map(([host, rs]) => [
+      host,
+      arr(rs)
+        .map((r, i) => ({
+          prefix: val(r.prefix),
+          source: val(r.source),
+          nextHop: val(r.next_hop),
+          outIntf: val(r.out_intf),
+          adminDistance: num(r.admin_distance),
+          cite: `routes.${host}[${i}]`,
+        }))
+        .filter((r) => r.prefix),
+    ]),
+  );
   /* A match field may name an OBJECT-GROUP instead of an address/wildcard pair; dropping it made the
      application report a model gap as a collection gap. */
   /** @param {any} f  one `src`/`dst` match field from the snapshot, or nothing */
   const matchField = (f) => (f ? { ip: val(f.ip), wild: val(f.wild), group: val(f.group) } : null);
 
   /** @type {Record<string, Record<string, Array<{ unevaluable: boolean }>>>} */
-  const acls = {};
-  for (const [host, named] of Object.entries(obj(snap.acls))) {
-    acls[host] = {};
-    for (const [name, lines] of Object.entries(obj(named))) {
-      acls[host][name] = arr(lines).map((l, i) => ({
-        index: i,
-        action: val(l.action),
-        raw: val(l.raw),
-        proto: val(l.proto),
-        src: matchField(l.src),
-        dst: matchField(l.dst),
-        sport: l.sport ?? null,
-        dport: l.dport ?? null,
-        /* The producer's OWN verdict on whether it could model this line, plus the qualifiers that
-           defeated it — ground truth, never re-derived from the raw text. */
-        unevaluable: l.unevaluable === true,
-        unmodeledQualifiers: strs(l.unmodeled_qualifiers, `acls.${host}.${name}[${i}].unmodeled_qualifiers`),
-        /* established — stateful; icmpType — an unimplemented ICMP qualifier; timeRange — any verdict
-           is conditional on a named window. */
-        established: l.established === true,
-        icmpType: val(l.icmp_type),
-        timeRange: val(l.time_range),
-        cite: `acls.${host}.${name}[${i}]`,
-      }));
-    }
-  }
+  const acls = Object.fromEntries(
+    Object.entries(obj(snap.acls)).map(([host, named]) => [
+      host,
+      Object.fromEntries(
+        Object.entries(obj(named)).map(([name, lines]) => [
+          name,
+          arr(lines).map((l, i) => ({
+            index: i,
+            action: val(l.action),
+            raw: val(l.raw),
+            proto: val(l.proto),
+            src: matchField(l.src),
+            dst: matchField(l.dst),
+            sport: l.sport ?? null,
+            dport: l.dport ?? null,
+            /* The producer's OWN verdict on whether it could model this line, plus the qualifiers that
+               defeated it — ground truth, never re-derived from the raw text. */
+            unevaluable: l.unevaluable === true,
+            unmodeledQualifiers: strs(l.unmodeled_qualifiers, `acls.${host}.${name}[${i}].unmodeled_qualifiers`),
+            /* established — stateful; icmpType — an unimplemented ICMP qualifier; timeRange — any verdict
+               is conditional on a named window. */
+            established: l.established === true,
+            icmpType: val(l.icmp_type),
+            timeRange: val(l.time_range),
+            cite: `acls.${host}.${name}[${i}]`,
+          })),
+        ]),
+      ),
+    ]),
+  );
 
   /** Object groups referenced by ACL match fields. */
   /** @type {Record<string, Record<string, object>>} */
-  const objectGroups = {};
-  for (const [host, groups] of Object.entries(obj(snap.object_groups))) {
-    objectGroups[host] = {};
-    for (const [name, g] of Object.entries(obj(groups))) {
-      objectGroups[host][name] = {
-        kind: val(g.kind),
-        members: arr(g.members).map((m) => ({ ip: val(m.ip), wild: val(m.wild) })),
-        cite: `object_groups.${host}.${name}`,
-      };
-    }
-  }
+  const objectGroups = Object.fromEntries(
+    Object.entries(obj(snap.object_groups)).map(([host, groups]) => [
+      host,
+      Object.fromEntries(
+        Object.entries(obj(groups)).map(([name, g]) => [
+          name,
+          {
+            kind: val(g.kind),
+            members: arr(g.members).map((m) => ({ ip: val(m.ip), wild: val(m.wild) })),
+            cite: `object_groups.${host}.${name}`,
+          },
+        ]),
+      ),
+    ]),
+  );
   const aclFindings = arr(snap.acl_line_reachability?.findings).map((f, i) => ({
     host: val(f.host),
     acl: val(f.acl),
@@ -1172,22 +1235,24 @@ export function compileFabric(snap, binding, opts = {}) {
 
   /* per-port and per-protocol evidence -------------------------------------- */
   /** @type {Record<string, object[]>} */
-  const interfaces = {};
-  for (const [host, ports] of Object.entries(obj(snap.interfaces))) {
-    interfaces[host] = Object.entries(obj(ports)).map(([port, p]) => ({
-      port,
-      status: val(p.status),
-      duplex: val(p.duplex),
-      speed: val(p.speed),
-      portType: val(p.port_type),
-      linkType: val(p.link_type),
-      description: val(p.description),
-      portChannel: val(p.port_channel),
-      pcProtocol: val(p.port_channel_protocol),
-      runConfigObserved: Boolean(p.run_config_observed),
-      cite: `interfaces.${host}.${port}`,
-    }));
-  }
+  const interfaces = Object.fromEntries(
+    Object.entries(obj(snap.interfaces)).map(([host, ports]) => [
+      host,
+      Object.entries(obj(ports)).map(([port, p]) => ({
+        port,
+        status: val(p.status),
+        duplex: val(p.duplex),
+        speed: val(p.speed),
+        portType: val(p.port_type),
+        linkType: val(p.link_type),
+        description: val(p.description),
+        portChannel: val(p.port_channel),
+        pcProtocol: val(p.port_channel_protocol),
+        runConfigObserved: Boolean(p.run_config_observed),
+        cite: `interfaces.${host}.${port}`,
+      })),
+    ]),
+  );
   const physical = arr(snap.physical_health).map((p, i) => ({
     host: val(p.switch),
     port: val(p.port),
@@ -1305,21 +1370,26 @@ export function compileAclBindings(snap, binding) {
   };
   /** @param {unknown} v @returns {string[]} */
   const list = (v) => (sval(v) ?? "").split(",").map((s) => s.trim()).filter((s) => s !== "");
+  /* Keyed by snapshot names, so built by Object.fromEntries (see `own`, THE DICTIONARY RULE). */
   /** @type {Record<string, Array<Record<string, unknown>>>} */
-  const hosts = {};
-  for (const [host, ports] of Object.entries(obj(snap.interfaces)).sort(([a], [b]) => byName(a, b))) {
-    hosts[host] = Object.entries(obj(ports)).map(([port, p]) => ({
-      port,
-      vlan: sval(p.vlan),
-      switchportMode: sval(p.switchport_mode),
-      aclIn: sval(p.acl_in),
-      aclOut: sval(p.acl_out),
-      gateCandidates: list(p.forwarding_gate_candidates),
-      gateUnmodeled: list(p.forwarding_gate_unmodeled),
-      runConfigObserved: p.run_config_observed === true,
-      cite: `interfaces.${host}.${port}`,
-    }));
-  }
+  const hosts = Object.fromEntries(
+    Object.entries(obj(snap.interfaces))
+      .sort(([a], [b]) => byName(a, b))
+      .map(([host, ports]) => [
+        host,
+        Object.entries(obj(ports)).map(([port, p]) => ({
+          port,
+          vlan: sval(p.vlan),
+          switchportMode: sval(p.switchport_mode),
+          aclIn: sval(p.acl_in),
+          aclOut: sval(p.acl_out),
+          gateCandidates: list(p.forwarding_gate_candidates),
+          gateUnmodeled: list(p.forwarding_gate_unmodeled),
+          runConfigObserved: p.run_config_observed === true,
+          cite: `interfaces.${host}.${port}`,
+        })),
+      ]),
+  );
   return { meta: bindingMeta(binding), hosts };
 }
 
@@ -1347,10 +1417,19 @@ export function compileRibEvidence(snap, binding) {
    * @typedef {{ kind: string; neighbor: string | null; state: string | null; prefixes: number | null; cite: string }} OverlayPeer
    * @typedef {{ protocols: ProtocolRow[]; adjacencies: Adjacency[]; overlay: OverlayPeer[] }} HostEvidence
    */
-  /** @type {Record<string, HostEvidence>} */
-  const hosts = {};
+  /* Accumulated per snapshot host name, so in a Map (see `own`, THE DICTIONARY RULE): `hosts[h] ??= …` on a plain
+     object handed back Object.prototype for a host named "__proto__" (and the Object function for "constructor"). */
+  /** @type {Map<string, HostEvidence>} */
+  const hosts = new Map();
   /** @param {string} h @returns {HostEvidence} */
-  const at = (h) => (hosts[h] ??= { protocols: [], adjacencies: [], overlay: [] });
+  const at = (h) => {
+    let e = hosts.get(h);
+    if (e === undefined) {
+      e = { protocols: [], adjacencies: [], overlay: [] };
+      hosts.set(h, e);
+    }
+    return e;
+  };
 
   /* Every protocol_assessability row's state is one the engine contract names (the engine grows this set —
      e.g. "not_running" — and a state this compiler has never heard of must not pass as a string it renders
@@ -1402,7 +1481,7 @@ export function compileRibEvidence(snap, binding) {
     });
   }
 
-  const sorted = Object.fromEntries(Object.entries(hosts).sort(([a], [b]) => byName(a, b)));
+  const sorted = Object.fromEntries([...hosts].sort(([a], [b]) => byName(a, b)));
   return {
     meta: { ...bindingMeta(binding), routingProtocols, routingProtocolsFrom: "routing_neighbors" },
     hosts: sorted,
@@ -1421,8 +1500,9 @@ export function compileProducerEmission(snap, binding) {
   const ACL_LINE_FIELDS = { unevaluable: "unevaluable", unmodeledQualifiers: "unmodeled_qualifiers", established: "established" };
   const DEVICE_HEALTH_FIELDS = { deductions: "deductions" };
 
-  /** @type {Record<string, string[]>} cite -> compiled fields whose source key was NOT emitted */
-  const aclLineAbsent = {};
+  /* Both tables are keyed by snapshot names, so accumulated in Maps (see `own`, THE DICTIONARY RULE). */
+  /** @type {Map<string, string[]>} cite -> compiled fields whose source key was NOT emitted */
+  const aclLineAbsent = new Map();
   for (const [host, lists] of Object.entries(obj(snap.acls))) {
     for (const [name, lines] of Object.entries(obj(lists))) {
       arr(lines).forEach((l, i) => {
@@ -1431,13 +1511,13 @@ export function compileProducerEmission(snap, binding) {
           .filter(([, key]) => !Object.prototype.hasOwnProperty.call(rec, key))
           .map(([field]) => field)
           .sort();
-        if (missing.length > 0) aclLineAbsent[`acls.${host}.${name}[${i}]`] = missing;
+        if (missing.length > 0) aclLineAbsent.set(`acls.${host}.${name}[${i}]`, missing);
       });
     }
   }
 
-  /** @type {Record<string, string[]>} host -> compiled device fields whose source was NOT emitted */
-  const deviceAbsent = {};
+  /** @type {Map<string, string[]>} host -> compiled device fields whose source was NOT emitted */
+  const deviceAbsent = new Map();
   const health = new Map();
   for (const h of arr(snap.health_scores)) if (typeof obj(h).switch === "string") health.set(h.switch, obj(h));
   const hosts = new Set([
@@ -1450,11 +1530,11 @@ export function compileProducerEmission(snap, binding) {
       .filter(([, key]) => h === undefined || !Object.prototype.hasOwnProperty.call(h, key))
       .map(([field]) => field)
       .sort();
-    if (missing.length > 0) deviceAbsent[host] = missing;
+    if (missing.length > 0) deviceAbsent.set(host, missing);
   }
 
-  /** @param {Record<string, string[]>} o */
-  const sortObj = (o) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  /** @param {Map<string, string[]>} m */
+  const sortObj = (m) => Object.fromEntries([...m].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   return {
     meta: { ...bindingMeta(binding), aclLineFields: ACL_LINE_FIELDS, deviceHealthFields: DEVICE_HEALTH_FIELDS },
     aclLineAbsent: sortObj(aclLineAbsent),

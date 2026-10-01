@@ -238,8 +238,16 @@ def test_lifecycle_rollup_without_a_coverage_count_is_not_complete():
 def test_scored_rows_with_no_recognised_band_publish_no_worst_band():
     b = compute_executive_brief(health_scores=[{"switch": "a", "band": "Mystery", "score": 90}])
     assert b["posture"]["avg_health"] == 90 and b["posture"]["worst_band"] is None
-    assert ssot.reconcile({"health_scores": [{"switch": "a", "band": "Mystery", "score": 90}],
-                           "executive_brief": b}) == []
+    # reconcile never reads the unrecognised band as an OBSERVED band (no "withheld while observed"
+    # violation), but it no longer certifies the band facts over a row nobody can read either: the row could
+    # be any band (tests/test_ssot_owner_robustness.py, round 2). The mean is still verified.
+    got = ssot.reconcile({"health_scores": [{"switch": "a", "band": "Mystery", "score": 90}],
+                          "executive_brief": b})
+    assert [v.split("=", 1)[0] for v in got] == ["executive_brief.posture.n_critical",
+                                                 "executive_brief.posture.n_poor",
+                                                 "executive_brief.posture.worst_band"], got
+    assert all("1 health row(s) carry no recognised band" in v for v in got), got
+    assert not any("most-severe band present=" in v for v in got), got
 
 
 def test_segmentation_share_over_zero_gateways_is_not_a_percentage():
@@ -381,7 +389,8 @@ _LEGACY_ZERO = {"health_scores": _insufficient(3), "devices": {f"sw{i}": {} for 
     ({"health_scores": _insufficient(2),
       "executive_brief": {"posture": {"avg_health": None, "n_scored": 0}}}, "not_assessed", None),
     (_LEGACY_ZERO, "not_assessed", None),                     # pre-G15 hard 0 over zero scored rows
-    ({"executive_brief": {"posture": {"avg_health": 0}}}, "measured", 0),   # no raw basis -> trust it
+    # no scored-row basis -> not a measurement (tests/test_ssot_owner_robustness.py, defect 4)
+    ({"executive_brief": {"posture": {"avg_health": 0}}}, "unverified", None),
     ({"health_scores": [{"band": "Good", "score": 80}],
       "executive_brief": {"posture": {"avg_health": "abc"}}}, "unverified", None),
     ({"health_scores": [{"band": "Good", "score": 80}]}, "unpublished", None),

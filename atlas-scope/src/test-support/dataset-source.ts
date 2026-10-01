@@ -13,7 +13,7 @@
  * Imported by tests only (it reads files with node:fs), never by the application.
  */
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,8 +31,14 @@ export function datasetSourcePath(meta: BoundSource): string {
   const sha = (b: Buffer): string => createHash("sha256").update(b).digest("hex");
   const exact = meta.sourceExactSha256.replace(/^sha256:/, "");
   const carries = (p: string): boolean => {
-    if (!existsSync(p) || !statSync(p).isFile()) return false;
-    const b = readFileSync(p);
+    /* One read, no exists/stat check first (CodeQL js/file-system-race): nothing there, or a directory, carries nothing. */
+    let b: Buffer;
+    try {
+      b = readFileSync(p);
+    } catch (e) {
+      if (["ENOENT", "ENOTDIR", "EISDIR"].includes((e as NodeJS.ErrnoException).code ?? "")) return false;
+      throw e;
+    }
     return sha(b) === exact || sha(Buffer.from(b.toString("latin1").split("\r\n").join("\n"), "latin1")) === meta.sourceSha256;
   };
   const named = basename(meta.source);

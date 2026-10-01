@@ -40,8 +40,10 @@ import {
   deviceById,
   routesOf,
   severityRank,
+  tallySeverities,
 } from "../core/data";
-import { presentBand, unassessedScoringDomains } from "../core/band-qualification";
+import { holds, own } from "../core/own";
+import { measuredScore, presentBand, unassessedScoringDomains } from "../core/band-qualification";
 import { aclUndecidability } from "../core/acl-coverage";
 import { ribIncompleteness } from "../forwarding/rib-completeness";
 import { placeholderZero } from "../core/placeholders";
@@ -60,7 +62,7 @@ import type {
   PhysicalHealth,
   Severity,
 } from "../core/types";
-import { SEVERITY_ORDER } from "../core/types";
+import { recognisedKind, recognisedSeverity } from "../core/types";
 
 /**
  * Fields `tools/compile-snapshot.mjs` emits that `PhysicalHealth` in `core/types.ts` does not yet
@@ -113,6 +115,7 @@ import {
   SeverityBadge,
   StateDot,
   Tabs,
+  UnrecognisedValue,
   TabPanel,
   orNotObserved,
   type TabItem,
@@ -151,11 +154,19 @@ export function useOpenCite(handler?: (cite: Cite) => void): (cite: Cite) => voi
 
 const cx = (...parts: (string | false | null | undefined)[]): string => parts.filter(Boolean).join(" ");
 
-const SEVERITY_SET = new Set<string>(SEVERITY_ORDER);
+/** The model types several severity fields as a bare string. Anything off the vocabulary is not a severity
+ *  (core/types.ts `recognisedSeverity`, the one test). */
+export const asSeverity = (s: string | null | undefined): Severity | null => (recognisedSeverity(s) ? s : null);
 
-/** The model types several severity fields as a bare string. Anything off the enum is not a severity. */
-export const asSeverity = (s: string | null | undefined): Severity | null =>
-  typeof s === "string" && SEVERITY_SET.has(s) ? (s as Severity) : null;
+/**
+ * A severity field typed as a bare string, as a mark: a severity the vocabulary names as its badge; text it does not
+ * name as UNRECOGNISED, quoted — never "not observed", because the producer DID write it; nothing written as not
+ * observed.
+ */
+function SeverityMark({ severity, compact = true, what = "severity" }: { severity: string | null | undefined; compact?: boolean; what?: string }): ReactElement {
+  if (typeof severity !== "string" || severity.trim() === "") return <NotObserved what={what} compact />;
+  return recognisedSeverity(severity) ? <SeverityBadge severity={severity} compact={compact} /> : <UnrecognisedValue what="severity" value={severity} compact={compact} />;
+}
 
 /**
  * The severity of a row whose producer ALSO says the row was not assessed.
@@ -181,15 +192,13 @@ function GradedSeverity({ severity, unassessed }: { severity: string | null | un
       </span>
     );
   }
-  const sev = asSeverity(severity);
-  return sev ? <SeverityBadge severity={sev} compact /> : <NotObserved what="severity" compact />;
+  return <SeverityMark severity={severity} />;
 }
 
 /** `interfacesOf`/`physicalByHost` flatten "no records" and "host never collected" into an empty
  *  array. The difference decides whether an empty table means zero or means unknown, so the
  *  presence of the host KEY is read directly rather than the length of what it returns. */
-const hasInterfaceRecords = (host: string): boolean =>
-  Object.prototype.hasOwnProperty.call(fabric.interfaces, host);
+const hasInterfaceRecords = (host: string): boolean => holds(fabric.interfaces, host);
 
 const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
 
@@ -549,7 +558,7 @@ export const FLEET_CONSTANTS: ReadonlyMap<string, number> = (() => {
   for (const d of INVENTORIED_DEVICES) for (const k of Object.keys(d)) keys.add(k);
   for (const k of keys) {
     if (NOT_PRODUCER_FIELDS.has(k)) continue;
-    const vals = INVENTORIED_DEVICES.map((d) => (d as unknown as Record<string, unknown>)[k]);
+    const vals = INVENTORIED_DEVICES.map((d) => own(d as unknown as Record<string, unknown>, k));
     if (!vals.every((v) => typeof v === "number" && Number.isFinite(v))) continue;
     if (new Set(vals).size === 1) out.set(k, vals[0] as number);
   }
@@ -606,7 +615,7 @@ function IdentitySection({ device, onOpenCite }: { device: Device; onOpenCite: (
   const ev = (field: keyof Device): { cite: Cite } | { derived: string } => deviceFieldEvidence(device, field);
   const rows: EvidenceRow[] = [
     { k: "Host", v: <span className="dp-mono">{device.host}</span>, ...ev("host") },
-    { k: "Kind", v: device.kind, ...ev("kind") },
+    { k: "Kind", v: recognisedKind(device.kind) ? device.kind : <UnrecognisedValue what="kind" value={device.kind} compact />, ...ev("kind") },
     {
       k: "Role",
       v: orNotObserved(device.role, (s) => s, {
@@ -738,10 +747,17 @@ function HealthSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
             ...deviceFieldEvidence(device, "score"),
             v: (
               <>
-                <Meter label="Health score" value={device.score} max={100} tone={tone} />
+                {/* The score as a MEASUREMENT: none where the engine banded the device not-measured, whose published
+                    number is not one (core/band-qualification.ts measuredScore) — the band beside it says why. */}
+                <Meter label="Health score" value={measuredScore(device)} max={100} tone={tone} />
                 {/* The band's own citation names the record the band was READ from (health_scores),
                     not the inventory record, which holds no band and no score (B6). */}
                 <Band band={presentation} cite={device.fieldCites?.band ?? device.cite} onOpenCite={onOpenCite} {...(qualified ? { className: "dp-band--partial" } : {})} />
+                {presentation.notMeasured && device.score !== null ? (
+                  <span className="dp-score-gap" data-score-not-measured="">
+                    {`the engine publishes ${device.score} beside its not-measured band, so that number is not a health measurement`}
+                  </span>
+                ) : null}
                 {unassessed.length > 0 ? (
                   <span className="dp-score-gap" data-score-unassessed={unassessed.length}>
                     {`score does not reflect: ${unassessed.join(", ")} — never assessed on ${device.host}, so nothing there could deduct`}
@@ -933,12 +949,7 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
               rows={[
                 {
                   k: "Severity",
-                  v:
-                    asSeverity(theirs.severity) !== null ? (
-                      <SeverityBadge severity={asSeverity(theirs.severity) as Severity} />
-                    ) : (
-                      orNotObserved(theirs.severity, (s) => s, { what: "impact severity", compact: true })
-                    ),
+                  v: <SeverityMark severity={theirs.severity} compact={false} what="impact severity" />,
                   cite: theirs.cite,
                 },
                 { k: "Endpoints stranded", v: orNotObserved(theirs.stranded, (n) => n.toLocaleString("en-GB"), { what: "stranded endpoints", compact: true }), cite: theirs.cite },
@@ -1105,11 +1116,10 @@ function ProtocolSection({ device, onOpenCite }: { device: Device; onOpenCite: (
     <Section title="Protocol health">
       <ul className="dp-list">
         {rows.map((p) => {
-          const sev = asSeverity(p.severity);
           return (
             <li key={p.cite} className="dp-list__row">
               <span className="dp-list__lead">
-                {sev ? <SeverityBadge severity={sev} compact /> : <NotObserved what="severity" compact />}
+                <SeverityMark severity={p.severity} />
                 <span className="dp-mono">{orNotObserved(p.protocol, (s) => s, { what: "protocol", compact: true })}</span>
               </span>
               <span className="dp-list__main">
@@ -1592,7 +1602,9 @@ function RoutingPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: 
 /* ══ device: ACL ═══════════════════════════════════════════════════════════ */
 
 function AclPanel({ device, onOpenCite }: { device: Device; onOpenCite: (c: Cite) => void }): ReactElement {
-  const named = fabric.acls[device.host];
+  /* The host's OWN table, or undefined — "no ACL collected" (core/own.ts): `fabric.acls[host]` handed a host named
+     "constructor" the Object function, and the pane listed "0 access lists collected" for a table never collected. */
+  const named = own(fabric.acls, device.host);
   const findings = fabric.aclFindings.filter((f) => f.host === device.host);
   const cov = fabric.coverage;
   /* The union of the three undecidability sets, not the producer's flag alone — see
@@ -1748,7 +1760,11 @@ function FindingsPanel({ hosts, onOpenCite }: { hosts: readonly string[]; onOpen
     return [...seen.values()].sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || a.id.localeCompare(b.id));
   }, [hosts]);
 
-  const counts = SEVERITY_ORDER.map((s) => ({ s, n: findings.filter((f) => f.severity === s).length }));
+  /* The tally accounts for EVERY listed finding (core/data.ts `tallySeverities`): the five graded severities, then each
+     severity the vocabulary does not name and the findings that state none, each in a slot of its own — so the slots
+     sum to the list below. Over the five alone it read `C0 H0 M0 L0 I0` above a list of findings whose severity it
+     does not name (2026-10-01 refuter): an all-zero readout over a non-empty list. */
+  const tally = tallySeverities(findings);
   /* "C 0 H 0 M 0 L 0 I 0" is a positive statement about a search, and it may only be made where a
      search was possible. On a host the collection never visited it is a clean all-zero readout on
      a device nobody looked at — the false-health class this pane exists to refuse. */
@@ -1773,12 +1789,24 @@ function FindingsPanel({ hosts, onOpenCite }: { hosts: readonly string[]; onOpen
       {searchable ? (
         <>
           <ul className="dp-sevcounts" aria-label={`Severity tally over ${collectedHosts.join(", ")}`}>
-            {counts.map(({ s, n }) => (
+            {tally.graded.map(({ severity: s, n }) => (
               <li key={s} className="dp-sevcounts__item">
                 <SeverityBadge severity={s} compact />
                 <span className="dp-sevcounts__n">{n}</span>
               </li>
             ))}
+            {tally.unrecognised.map(({ value, n }) => (
+              <li key={`unrecognised:${value}`} className="dp-sevcounts__item" data-sevcount="unrecognised">
+                <UnrecognisedValue what="severity" value={value} compact />
+                <span className="dp-sevcounts__n">{n}</span>
+              </li>
+            ))}
+            {tally.notStated > 0 ? (
+              <li className="dp-sevcounts__item" data-sevcount="not-stated">
+                <SeverityBadge severity={null} compact />
+                <span className="dp-sevcounts__n">{tally.notStated}</span>
+              </li>
+            ) : null}
           </ul>
           {partial ? (
             <NotObserved
@@ -2142,7 +2170,7 @@ export function DevicePane({ onOpenCite, className }: DevicePaneProps): ReactEle
     if (subject === "device" && device) {
       const collected = device.collected;
       const ports = joinPorts(device.host);
-      const acls = fabric.acls[device.host];
+      const acls = own(fabric.acls, device.host);
       const aclLines = acls ? Object.values(acls).reduce((a, ls) => a + ls.length, 0) : null;
       return [
         {
@@ -2258,7 +2286,7 @@ export function DevicePane({ onOpenCite, className }: DevicePaneProps): ReactEle
         <p className="dp__sub">
           {subject === "device" && device ? (
             <>
-              {device.kind} ·{" "}
+              {recognisedKind(device.kind) ? device.kind : <UnrecognisedValue what="kind" value={device.kind} compact />} ·{" "}
               {orNotObserved(device.role, (s) => s, { what: "role", compact: true })} ·{" "}
               {device.collected ? "assessed" : "topology only"}
             </>

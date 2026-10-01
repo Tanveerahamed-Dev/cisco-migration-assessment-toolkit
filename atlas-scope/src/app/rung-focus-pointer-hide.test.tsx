@@ -72,7 +72,7 @@ function mount(canvasInert: boolean): Harness {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root: Root = createRoot(container);
-  const finding = { id: FINDING.id, severity: FINDING.severity.toLowerCase(), hosts: new Set(FINDING.devices) };
+  const finding = { id: FINDING.id, severity: String(FINDING.severity).toLowerCase(), hosts: new Set(FINDING.devices) };
 
   function Stage(): ReactElement {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);

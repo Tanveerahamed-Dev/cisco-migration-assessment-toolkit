@@ -22,7 +22,7 @@
  * either" — rather than the implementation of a helper.
  */
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -64,8 +64,14 @@ function sourceSnapshotPath(): string {
   const sha = (b: Buffer): string => createHash("sha256").update(b).digest("hex");
   const exact = fabric.meta.sourceExactSha256.replace(/^sha256:/, "");
   const carries = (p: string): boolean => {
-    if (!existsSync(p) || !statSync(p).isFile()) return false;
-    const b = readFileSync(p);
+    /* One read, no exists/stat check first (CodeQL js/file-system-race): nothing there, or a directory, carries nothing. */
+    let b: Buffer;
+    try {
+      b = readFileSync(p);
+    } catch (e) {
+      if (["ENOENT", "ENOTDIR", "EISDIR"].includes((e as NodeJS.ErrnoException).code ?? "")) return false;
+      throw e;
+    }
     return sha(b) === exact || sha(Buffer.from(b.toString("utf8").replace(/\r\n/g, "\n"), "utf8")) === fabric.meta.sourceSha256;
   };
   const named = basename(fabric.meta.source);

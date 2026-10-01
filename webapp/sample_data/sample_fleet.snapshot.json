@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-09-28T16:14:57.412471",
+  "generated_at": "2026-09-30T23:06:00.604227",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -59151,7 +59151,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-09-28T13:14:57.256004+00:00",
+    "generated_at": "2026-09-30T20:06:00.350910+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
@@ -59163,7 +59163,7 @@
         "id": "no_egress_import_graph",
         "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
         "result": "HOLDS",
-        "detail": "0 unexplained network-library imports across 99 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
+        "detail": "0 unexplained network-library imports across 100 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
       },
       {
         "id": "rest_collect_get_only",
@@ -59175,7 +59175,7 @@
         "id": "no_llm_runtime",
         "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
         "result": "HOLDS",
-        "detail": "0 LLM/GenAI SDK imports across 101 modules (analysis package + collector entry)"
+        "detail": "0 LLM/GenAI SDK imports across 102 modules (analysis package + collector entry)"
       }
     ]
   },
