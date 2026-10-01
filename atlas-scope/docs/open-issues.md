@@ -38,6 +38,34 @@ evidence exists, because an issue asserted without evidence is a rumour.
 > re-ran** is stated at the end of R141. **Reported, not re-run by the record step:** every cluster's
 > red-before-fix, mutation and census claim, every bounded audit and browser run, both gates, and every
 > Python test.
+>
+> **Update, later on 2026-10-01 (the orchestrator, after this record was written).**
+> - **Committed:** the working tree above is commit `77edcaef`, with every listed new file, so
+>   `tracked-sources.test.ts` is green.
+> - **`57020223` closed QG3-1 by class at its last site (SQG-R2-1).** The KEY validator typed a verdict
+>   field through `Object.prototype`:
+>   - a pick under `constructor` or `toString` was never read;
+>   - `__proto__`, `hasOwnProperty` and `valueOf` made `evaluate()` throw on real `verdicts.jsonl` input.
+>
+>   The type table now has no prototype and is read only through an own entry. Five `VALIDATOR_CASES`
+>   rows are built from JSON text, as `readVerdicts` builds lines; they were red before the fix and the
+>   self-test now passes 171 rows. The same commit registered the display vocabularies in
+>   `docs/ssot.md` (W5b-R1).
+> - **`52c7b8bd`** merged PR #579's later commits.
+> - **The engine gate was re-run on `52c7b8bd`:**
+>   - `build_sample.py --check`: FRESH.
+>   - The six tests the lost gate saw red: all pass.
+>   - The /scope and contract set with the markup oracle required: green.
+>   - The full default `pytest`: green except the seven linked-worktree-layout reds. The R2 binder test now
+>     passes in a worktree.
+>   - `master-reference/tests`: green. The privacy verifier: passed.
+>   - AssessHub end to end rendered the stored snapshot: 26 devices, 146 findings, its digest recomputed
+>     in the browser and equal to the store's, zero console errors. A real cross-site read was refused
+>     with 403.
+>   - One AssessHub cold start in seven refused with `bounded_startup_index_failed` (fail-closed) and did
+>     not reproduce (O78).
+> - **A whole-branch refuter then found no blocker or major.** Its five minors are fixed (the legend's
+>   "device" label, the atlas-scope-ci header comment, this update) or recorded in O78.
 
 ### R135. The CI history checks — the successor-package test built its subject from whatever checkout ran the suite, and the fetch-depth guard read only `ci.yml` — FIXED IN THE TESTS (W5b S-CI; verifier upheld, with two minors, O69) (closes W5-X1 and W5-X4; removes one of O71's eight expected linked-worktree reds)
 **What was fixed (reported).**
@@ -6578,6 +6606,48 @@ committed (`2145187a`); W5b's are uncommitted on top of `22373163`.
   (SD3R2-2, O68).
 - **Still not covered by any report:** R129's `DataGrid.tsx` hit-all probe sheet has no independent
   verifier.
+
+### O78. W5's pre-push residuals: the not-measured band spelled outside its owner, untested null-kind surfaces, receipt-id copies, one unreproduced AssessHub start refusal — OPEN (owners as named; recorded 2026-10-01 from W5b's refuter and the whole-branch refuter of `52c7b8bd`, none a blocker or major)
+- **WB1-1 — the band's single owner holds only inside `cisco_toolkit/analyze.py`.** The new
+  `tests/test_engine_contract_vocabularies.py` guard is scoped to that one file. Measured by the orchestrator
+  with `git grep` on `52c7b8bd`, "Insufficient Data" is still spelled as a functional literal at:
+  - 11 engine sites: `deck.py` 2, `excel.py` 3, `html.py` 4, `self_healing.py` 1 and `ssot.py` 1;
+  - `webapp/backend/app.py` (1 site) and the AssessHub frontend's `TopologyGraph.tsx`.
+
+  `ssot.py` defines a second constant for the same band, `_HEALTH_BAND_NOT_SCORED`, so the band has two
+  owners. A change to `HEALTH_BAND_NOT_MEASURED` could therefore make never-collected devices read as
+  scored on those surfaces.
+  - The fix must respect the engine's layering: `ssot` (canonical snapshot) sits below `analyze`, so the
+    single owner belongs in the lower module and the guard must cover every module, not one file.
+  - Owner: the engine.
+- **W5b-R2 — a null node kind ("kind not stated") reaches six render surfaces, but no test renders any of
+  them with a null kind,** and they do not word it identically.
+  - Owner: `src/fabric3d/FabricLegend.tsx` and the other kind surfaces, with one shared wording.
+- **W5b-R3 — a `FabricLegend.tsx` comment cites engine source that no longer exists in that form.**
+- **W5b-R5 — the schema-id count `portable/` derives by AST covers `release_contract.py` only.** Readers in
+  other files, `package_signed_release.py` among them, still hard-code their own copies of ids that now
+  have named constants.
+  - Owner: `portable/`.
+- **W5b-R6 — the stated reason for refusing every `/1` qualification receipt is true for packages built
+  from `main`, but false for packages built from W5's own checkpoint `2145187a`.**
+  - Owner: `portable/release_contract.py`, to state the reason by provenance, not by version alone.
+- **W5b-R7 — attribution.** Seven product files, `DataGrid.tsx` among them, were edited in W5b outside
+  every cluster's declared file list, so no cluster verifier was scoped to them.
+  - The whole-branch refuter of `52c7b8bd` has since read the whole diff, these included, and found
+    nothing blocking.
+  - R129's `DataGrid.tsx` hit-all probe sheet still has no dedicated verifier (O77).
+- **AssessHub cold start.** One cold start in seven (`python -m webapp.backend.serve`, on `52c7b8bd`,
+  2026-10-01) refused with `bounded_startup_index_failed`, which is fail-closed with no traceback. It did
+  not reproduce:
+  - `--selftest` passed 11 of 11;
+  - 40 instrumented index passes were clean;
+  - six further cold starts came up, with the distribution's bytes unchanged.
+
+  The startup census identity (`dev`, `ino`, `size`, `mtime_ns`, `ctime_ns`, `nlink`, `mode`,
+  `st_file_attributes`) excludes `atime`. So a transient attribute or link-count change by an external
+  scanner during the read window is the likely class, but that is unproven.
+  - If it recurs, capture the before and after census diff before calling it a defect.
+  - Owner: `webapp/backend/app.py`'s startup index, which this branch does not change.
 
 ### O23. Clean-clone evidence — the re-grade of `78bdba5` ran F1, F2, F4 and F5 from a fresh clone of that commit (F1, F4, F5 PASS; F2 red, R85); the re-grade of `8eac055` ran F5 from a fresh clone of it (PASS); the re-grade of `34bd435` ran F1 in part, F4, F5 and F6 from a fresh clone of it; nothing has been run from a clone of `7f67013` — OPEN for A–E, F2, F3 and the scripts `tsc` project at `34bd435`, and for everything at `7f67013` (owner: the re-grade of `7f67013`)
 **Status at `7f67013` (wave 8).** The heading's old claim — "nothing has been run from a clone of

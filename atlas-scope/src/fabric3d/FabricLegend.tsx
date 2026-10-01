@@ -39,7 +39,9 @@ const KIND_ORDER = ["router", "device", "ap"] as const;
    function). */
 const KIND_LABEL: Readonly<Record<DeviceKind, string>> = {
   router: "Router",
-  device: "Collected device (kind not stated)",
+  /* The engine's CABLE_MAP_COLLECTED_KIND: a host it COLLECTED but whose kind its classifier did not decide. That is a
+     stated kind ("device"), distinct from a node no record gives a kind at all (KIND_NOT_STATED, "kind not stated"). */
+  device: "Collected device (kind not classified)",
   ap: "Access point",
   switch: "Switch",
   firewall: "Firewall",
