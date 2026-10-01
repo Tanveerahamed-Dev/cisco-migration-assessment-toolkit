@@ -6444,6 +6444,28 @@ UNPROVEN.** From S-QG's round 2 and its verifier (defects, one major; reported).
 - **Unchanged:** the network-visualisation sheet is BLOCKED (`08-path-indeterminate` at tier "balanced",
   not recaptured); `node review/blind-pair.mjs` exits 2. No critic panel ran, so **C1 stays UNPROVEN**.
 
+**Status 2026-10-01 (W5, the orchestrator): the critic panel RAN, and C1 stays UNPROVEN for a reason the rule
+handles correctly.** Sheets were rebuilt on the clean commit `14f81dc4` (dirty tree false; all five pairings built,
+the network-visualisation frame rendering at tier high on a quiet host). Twenty fresh critics ran, one per KEY slot
+(Explore-type agents: no repository access, the sheet image and the neutral questions only; `criticModel` recorded
+as the builder's own model family, which REFERENCES.md already names as weakening independence). `node
+review/blind-pair.mjs --validate` (exit 0): **every pairing UNPROVEN; C1 overall UNPROVEN**.
+- **All 20 critics recognised the reference product** from its navigation vocabulary alone: Forward Enterprise by
+  "Network Maps / Verify > NQE, Predefined, Intent / Security > Blast Radius, Exposure"; Grafana Explore by its
+  query toolbar ("Outline, Split, Add, Run query"). Under RULE v8 a recognising critic is excluded wholesale and its
+  loss still blocks, so no verdict counted. The masks cover wordmarks, logos and identity strings, not STRUCTURE: a
+  model-family critic that knows these products is unblinded by their layout. **Protocol limit:** closing it means
+  either human critics unfamiliar with the reference products, or masking the navigation labels, which removes
+  content the critic is asked to judge. Owner decision.
+- **Reported, never counted:** raw picks were ours 3-1 on network visualisation, the reference 3-1 on information
+  density, and 2-2 on composition, typographic craft and colour discipline. These are recognising critics'
+  opinions and carry no weight under the rule; they are listed so the fault lists (every line carries a `faults`
+  array for both panels) can be read as design input.
+- **Plumbing defect found by the validator, fixed in the orchestrator's panel script:** the first panel wrote
+  `reasons`/`faults` as strings where the schema requires arrays, so every line was also classed invalid ("an answer
+  filed outside perDimension") — the SQG-R2-1 rule reading a pick token in a string field. The 20 lines stand in
+  `review/blind/verdicts.jsonl` (git-ignored) as written; the receipt is append-only.
+
 ### O71. The engine gate's `pytest` is red on one real test and eight expected linked-worktree reds — OPEN (owners: the owner, for a test-only module boundary; `webapp/tests/test_scope_mount.py`; `atlas-scope/src/forwarding/`)
 From the phase-3.5 engine gate (reported), confirmed by Q-F's verifier and the gate's targeted and full
 runs (the record step read the logs' summary lines).
