@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-09-30** (Claude Code). Reasoning behind the current direction:
+Last reconciled: **2026-10-01** (Claude Code). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot` (pushed) | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | PR #579 open for review (2026-09-30). The owner confirmed D11 in that session. Phase 3.5 is committed, `main` is merged in, the rule-7 checks pass, and the remaining FAIL/UNPROVEN items are listed in the PR as preview scope. | Owner reviews and merges #579, preserving merge commits. Then delete this row (rule 8). D9 and D10 follow-ups start after the merge (ADR 0007). |
+| W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot` (pushed) | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | PR #579 green on every hosted check (2026-10-01; the master-reference job included) and waiting only for review. Its first hosted run was red on five checks; each is fixed in the PR. A snapshot-name defect class is closed by structure. `atlas-scope/` is in the master reference at identity depth: an owner-reversible decision, described in the PR. `main` (#578) is merged in. | Owner reviews and merges #579, preserving merge commits. Then delete this row (rule 8) and retarget W5's PR to `main`. D9 and D10 follow-ups start after the merge (ADR 0007). |
 | W2 | One-application UI consolidation (AssessHub + Scope + explorer) | engine slices on short branches off `main` (now: `feat/ui-projection-slice1`); UI slices after W1 merges | Claude Code | Engine honesty (#575) merged. `ui_projection/1` slice 1 (Overview + Trust) is PR #577. Prototype published privately to the owner; backlog in `docs/one-app-feature-backlog-2026-09-30.md` (2026-09-30). | Merge #577. Owner runs the prototype's 2-D vs 2.5-D task test on the reference laptop. After W1 merges: backend endpoint serving the projection with response models, then the first core screens. |
 
 ## Owner decisions
@@ -97,6 +97,20 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-01, Claude Code (W1):
+  - Made #579's CI honest. Each red check was fixed at its root, with a test that fails without the fix:
+    - a cross-drive `relpath` in a test helper;
+    - a case-folding test that assumed the file system;
+    - CodeQL;
+    - the master-reference contract, its allowlist, its TypeScript resolution and its size bounds.
+  - The CodeQL finding led to a snapshot-name defect class that three independent refuters widened until it was
+    closed by structure.
+  - `atlas-scope/` is censused at identity depth in the master reference, with a named BLOCK category. The
+    reference's deployment bundle is at 256 of 260 MB. Compact per-line encoding is urgent for its owner.
+  - The required dependency audit now covers every tracked npm lockfile.
+  - Merged #578. Regenerated the demo fleet and re-bound Atlas Scope to it.
+  - Pushed. The owner lifted "finish 3.5 only" in chat; that preview-scope work is row W5, stacked on this branch.
 
 - 2026-09-30, Claude Code (W1):
   - The owner confirmed D11 in the W1 session. Phase 3.5 is committed, and `main` is merged in (#573, #574,
