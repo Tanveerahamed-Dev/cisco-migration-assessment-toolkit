@@ -138,6 +138,77 @@ const VIEWPORTS = [
   { id: "1920", width: 1920, height: 1080 },
   { id: "1440", width: 1440, height: 900 },
 ];
+/** ATLAS_VIEWPORTS ("1920x1080,1920x869,1692x943") replaces VIEWPORTS for `app`, so a state can be
+    captured at another product's own CSS viewport and compared WHOLE, not as a crop (C1 blind pairing,
+    O70 D5; review/blind-pair.mjs --capture-ours sets it). 1920x1080 keeps its canonical id "1920";
+    any other size is filed under "WxH". A width under 1440 is refused, not captured: every APP_STATE
+    is defined at a viewport that shows the fabric (see captureApp). */
+export function parseViewports(spec) {
+  const problems = [];
+  const viewports = [];
+  const parts = String(spec ?? "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+  if (!parts.length) problems.push("no viewport given");
+  for (const p of parts) {
+    const m = /^(\d{3,5})x(\d{3,5})$/.exec(p);
+    if (!m) problems.push(`"${p}" is not WIDTHxHEIGHT`);
+    else if (Number(m[1]) < 1440) problems.push(`"${p}" is narrower than 1440 px, where the fabric is not shown`);
+    else {
+      const width = Number(m[1]);
+      const height = Number(m[2]);
+      const id = width === 1920 && height === 1080 ? "1920" : `${width}x${height}`;
+      if (!viewports.some((v) => v.id === id)) viewports.push({ id, width, height });
+    }
+  }
+  return { viewports, problems };
+}
+/** ATLAS_STATES ("06-path-blocked,07-evidence-raw") limits `app` to those APP_STATES; an unknown id is
+    refused, never skipped. */
+export function selectStates(spec, states) {
+  const ids = String(spec ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+  const unknown = ids.filter((id) => !states.some((st) => st.id === id));
+  const problems = [...(ids.length ? [] : ["no state given"]), ...unknown.map((id) => `unknown state "${id}"`)];
+  return { states: states.filter((st) => ids.includes(st.id)), problems };
+}
+/** The viewports and states `app` captures: the defaults, or the env overrides (a bad override throws). */
+function appPlan() {
+  const vp = process.env.ATLAS_VIEWPORTS ? parseViewports(process.env.ATLAS_VIEWPORTS) : { viewports: VIEWPORTS, problems: [] };
+  const st = process.env.ATLAS_STATES ? selectStates(process.env.ATLAS_STATES, APP_STATES) : { states: APP_STATES, problems: [] };
+  const problems = [...vp.problems.map((p) => `ATLAS_VIEWPORTS: ${p}`), ...st.problems.map((p) => `ATLAS_STATES: ${p}`)];
+  if (problems.length) throw new Error(problems.join("; "));
+  return { viewports: vp.viewports, states: st.states };
+}
+/** Overlays a reference page puts over the product, dismissed by ACCESSIBLE ROLE AND NAME: a button
+    whose name starts with "Close" or "Dismiss" (Grafana's is "Close alert", which the old exact
+    [aria-label="Close"] missed) but not one that closes a menu or a panel of the product itself, and
+    the consent buttons. Returns the names it clicked. */
+export const REF_DISMISS = [/^(close|dismiss)\b(?!.*\b(menu|panel|sidebar|navigation)\b)/i, /^(accept|allow)( all)?\b/i, /^got it\b/i];
+export async function dismissRefOverlays(page) {
+  const clicked = [];
+  for (const name of REF_DISMISS) {
+    const loc = page.getByRole("button", { name });
+    const n = await loc.count().catch(() => 0);
+    for (let i = 0; i < n; i++) {
+      const el = loc.nth(i);
+      const label = (await el.getAttribute("aria-label").catch(() => null)) ?? (await el.innerText().catch(() => "")).trim();
+      if (await el.isVisible().catch(() => false)) {
+        await el.click({ timeout: 1500 }).then(() => clicked.push(label), () => {});
+      }
+    }
+  }
+  /* The old exact [aria-label="Close"] matched ANY element, not only buttons: a close control that is a
+     <div> or <span> with an aria-label and no button role is still an overlay's dismiss. So every other
+     visible element whose aria-label carries a dismiss name (the same patterns, the same exclusions)
+     is clicked too — a superset of the old selector (W5 round 2). */
+  const labelled = page.locator("[aria-label]:not(button):not([role=button])");
+  const m = await labelled.count().catch(() => 0);
+  for (let i = 0; i < m; i++) {
+    const el = labelled.nth(i);
+    const label = ((await el.getAttribute("aria-label").catch(() => null)) ?? "").trim();
+    if (!REF_DISMISS.some((re) => re.test(label))) continue;
+    if (await el.isVisible().catch(() => false)) await el.click({ timeout: 1500 }).then(() => clicked.push(label), () => {});
+  }
+  return clicked;
+}
 
 const THEMES = ["dark", "light"];
 
@@ -1554,6 +1625,9 @@ async function awaitSettledOnScreen(page, t0) {
 }
 
 async function captureApp(outRoot = resolve(SHOTS, "app")) {
+  /* The viewports and states to capture (ATLAS_VIEWPORTS / ATLAS_STATES); a bad override stops the run. */
+  const plan = appPlan();
+  if (process.env.ATLAS_VIEWPORTS || process.env.ATLAS_STATES) console.log(`plan: ${plan.states.length} state(s) at ${plan.viewports.map((v) => `${v.width}x${v.height}`).join(", ")}`);
   const server = await serverIdentity();
   announceServer(server);
   /* The queries are the golden sample's; a frame of any other compiled fabric is not the state its name says. */
@@ -1563,7 +1637,7 @@ async function captureApp(outRoot = resolve(SHOTS, "app")) {
   const written = [];
   const failures = [];
   for (const theme of THEMES) {
-    for (const vp of VIEWPORTS) {
+    for (const vp of plan.viewports) {
       const ctx = await browser.newContext({
         viewport: { width: vp.width, height: vp.height },
         deviceScaleFactor: 2,
@@ -1578,7 +1652,7 @@ async function captureApp(outRoot = resolve(SHOTS, "app")) {
       });
       page.on("pageerror", (e) => consoleErrors.push(String(e).slice(0, 200)));
 
-      for (const st of APP_STATES) {
+      for (const st of plan.states) {
         const url = `${APP}/${st.q ? "?" + st.q : ""}`;
 
         /* PREPARE, with a bounded retry on a navigation that happened UNDER us.
@@ -1885,11 +1959,8 @@ async function captureRefs() {
     try {
       await page.goto(r.url, { waitUntil: "domcontentloaded", timeout: 60000 });
       await page.waitForTimeout(r.wait);
-      // Dismiss the obvious consent overlays so the capture shows the product, not a banner.
-      for (const sel of ['button:has-text("Accept")', 'button:has-text("Got it")', '[aria-label="Close"]']) {
-        const el = page.locator(sel).first();
-        if (await el.count().catch(() => 0)) await el.click({ timeout: 1500 }).catch(() => {});
-      }
+      // Dismiss the overlays so the capture shows the product, not a banner: by role and name (O70).
+      await dismissRefOverlays(page);
       await page.waitForTimeout(1200);
       const file = resolve(SHOTS, "refs", `${r.id}.png`);
       await shoot(page, file);
@@ -2442,6 +2513,42 @@ async function selfTest() {
   let ran = 0;
   const browser = await chromium.launch({ args: GPU_ARGS });
   const page = await (await browser.newContext({ viewport: { width: 800, height: 600 }, deviceScaleFactor: 1 })).newPage();
+  /* O70 (W5): refs dismiss overlays by ACCESSIBLE ROLE AND NAME, not the exact [aria-label="Close"]
+     (Grafana's control is "Close alert"); a "Close menu" control is not an overlay's dismiss. */
+  {
+    await page.setContent(`<div id="banner" role="alert">Create a free account <button aria-label="Close alert" onclick="banner.remove()">x</button></div><button aria-label="Close menu" onclick="window.__menu=1">x</button><div id="consent">cookies <button onclick="consent.remove()">Accept all</button></div><div id="promo">promo <div aria-label="Close" onclick="promo.remove()">x</div></div><span aria-label="Close panel" onclick="window.__panel=1">x</span>`);
+    const clicked = await dismissRefOverlays(page);
+    ran++;
+    /* W5 round 2: the old exact [aria-label="Close"] matched ANY element; a role-only match would
+       regress on a non-button close control (a <div aria-label="Close">), so that must close too. */
+    const left = await page.evaluate(() => ({ banner: !!document.getElementById("banner"), consent: !!document.getElementById("consent"), promo: !!document.getElementById("promo"), menu: window.__menu === 1, panel: window.__panel === 1 }));
+    if (left.banner || left.consent || left.promo || left.menu || left.panel) problems.push(`refs overlay dismissal: expected the "Close alert" banner, the consent and the non-button "Close" promo closed and "Close menu"/"Close panel" untouched, got ${JSON.stringify(left)} (clicked ${clicked.join(", ") || "nothing"})`);
+  }
+  /* O70 D5: a capture viewport list from ATLAS_VIEWPORTS, and a state list from ATLAS_STATES, both
+     refusing what they cannot honour rather than capturing something else. */
+  for (const c of [
+    { spec: "1920x1080,1920x869,1692x943", want: "1920:1920x1080,1920x869:1920x869,1692x943:1692x943" },
+    { spec: " 1920X869 ", want: "1920x869:1920x869" },
+    { spec: "1920x869,1920x869", want: "1920x869:1920x869" },
+    { spec: "1200x800", want: null },
+    { spec: "wide", want: null },
+    { spec: "", want: null },
+  ]) {
+    ran++;
+    const r = parseViewports(c.spec);
+    const got = r.problems.length ? null : r.viewports.map((v) => `${v.id}:${v.width}x${v.height}`).join(",");
+    if (got !== c.want) problems.push(`ATLAS_VIEWPORTS ${JSON.stringify(c.spec)}: expected ${c.want ?? "a refusal"}, got ${got ?? "a refusal: " + r.problems.join("; ")}`);
+  }
+  for (const c of [
+    { spec: "06-path-blocked,07-evidence-raw", want: "06-path-blocked,07-evidence-raw" },
+    { spec: "06-path-blocked,99-nope", want: null },
+    { spec: "", want: null },
+  ]) {
+    ran++;
+    const r = selectStates(c.spec, APP_STATES);
+    const got = r.problems.length ? null : r.states.map((st) => st.id).join(",");
+    if (got !== c.want) problems.push(`ATLAS_STATES ${JSON.stringify(c.spec)}: expected ${c.want ?? "a refusal"}, got ${got ?? "a refusal: " + r.problems.join("; ")}`);
+  }
   const shell = (body) =>
     `<!doctype html><html lang="en"><head><style>body{margin:8px} .box{margin:0 0 16px;font:16px/20px monospace;overflow-wrap:anywhere;word-break:normal;hyphens:manual}</style></head><body>${body}</body></html>`;
   for (const c of SELFTEST_TEXT_CASES) {
@@ -2556,8 +2663,13 @@ async function selfTest() {
   return verdict === "PASS";
 }
 
-const mode = process.argv[2];
-if (mode === "app") await captureApp();
+/* The CLI runs only when this file is the entry point, so review/blind-pair.mjs can import its pure
+   helpers (parseViewports, selectStates, dismissRefOverlays) without starting a capture. */
+const IS_MAIN = Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const mode = IS_MAIN ? process.argv[2] : null;
+if (!IS_MAIN) {
+  /* imported as a library */
+} else if (mode === "app") await captureApp();
 else if (mode === "text") await checkText();
 else if (mode === "selftest") {
   if (!(await selfTest())) process.exitCode = 3;

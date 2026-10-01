@@ -12,6 +12,7 @@ that actually exists, checked in CI. It bites the moment a refactor moves an own
 the map. It is deliberately structural -- it asserts on stable anchors (paths, symbol names, snapshot
 keys, cross-links), never on prose that legitimately changes.
 """
+import functools
 import pathlib
 import re
 
@@ -87,8 +88,9 @@ def test_registry_owner_files_all_exist():
     assert not not_cited, f"owner files exist but are not cited in the registry: {not_cited}"
 
 
-#: Every backticked citation the registry roots at a top-level directory of THIS repository (derived
-#: from the tree on disk, not a list of roots) must resolve: a directory citation to a directory, a
+#: Every backticked citation the registry roots at a top-level directory or FILE of THIS repository
+#: (derived from the tree on disk and the top-level names git history renamed or deleted away -- not
+#: a list of roots; _repository_roots) must resolve: a directory citation to a directory, a
 #: file or glob to at least one file, and every `path :: symbol` pointer to a DEFINITION of that
 #: symbol in that file (Python: a def, class or assignment read from the AST, or an SQL table the
 #: module creates; other sources: a declaration, an exported name or an object key) -- never merely a
@@ -139,9 +141,16 @@ def _defines(path: pathlib.Path, symbol: str) -> bool:
     if path.suffix == ".py":
         return symbol in _python_definitions(text)
     name = re.escape(symbol.rsplit(".", 1)[-1])
+    # A line starting with `name(` is a definition only when it OPENS A BODY on that line (a method,
+    # accessor or generator: `name(args) {`, `static async name(a): T {`); otherwise it is a call
+    # (QF-V2-2). `name:` / `name =` at the start of a line stay definitions: an object or type key,
+    # a class field, a TOML/INI/YAML key.
     return re.search(
         rf"\b(?:function\*?|class|const|let|var|interface|type|enum|def)\s+{name}\b"
-        rf"|\bexport\s*\{{[^}}]*\b{name}\b|^[ \t]*(?:async\s+)?{name}\s*[:(=]|[\"']{name}[\"']\s*:",
+        rf"|\bexport\s*\{{[^}}]*\b{name}\b|^[ \t]*(?:async\s+)?{name}\s*[:=]"
+        rf"|^[ \t]*(?:(?:static|async|get|set|public|private|protected|override)\s+)*\*?{name}"
+        rf"\s*(?:<[^>\n]*>)?\([^()\n]*\)\s*(?::\s*[^{{}};=\n]+)?\{{"
+        rf"|[\"']{name}[\"']\s*:",
         text, re.MULTILINE) is not None
 
 
@@ -157,14 +166,68 @@ def _git_ignored(path: str) -> bool | None:
     return {0: True, 1: False}.get(proc.returncode)
 
 
+@functools.lru_cache(maxsize=None)
+def _repository_history(root: pathlib.Path = ROOT) -> tuple[frozenset[str], bool]:
+    """(every top-level name git history shows was tracked and then deleted or renamed away, whether
+    that history is COMPLETE). A shallow checkout -- actions/checkout's default fetch-depth 1 --
+    holds no deletion at all, so its answer is declared incomplete rather than read as "nothing was
+    ever renamed" (RQF-V1-1): absence of history is not evidence of absence."""
+    import subprocess
+
+    def git(*args: str) -> str:
+        proc = subprocess.run(["git", "-c", "core.quotepath=off", "-C", str(root), *args],
+                              capture_output=True, text=True, encoding="utf-8", timeout=120)
+        assert proc.returncode == 0, f"git {args[0]} could not answer: {proc.stderr}"
+        return proc.stdout
+
+    shallow = git("rev-parse", "--is-shallow-repository").strip()
+    assert shallow in ("true", "false"), f"git could not say whether the history is shallow: {shallow!r}"
+    names = set()
+    for path in git("log", "--format=", "--name-only", "-z", "--no-renames", "--diff-filter=D",
+                    "HEAD").split("\0"):
+        path = path.strip("\n")
+        if path:
+            head, separator, _rest = path.partition("/")
+            names.add(head + ("/" if separator else ""))
+    return frozenset(names), shallow == "false"
+
+
+@functools.lru_cache(maxsize=None)
+def _repository_roots(root: pathlib.Path = ROOT) -> frozenset[str]:
+    """Every top-level entry a registry citation can be rooted at: each file and directory on disk
+    (a directory spelt `name/`), plus every top-level name git history shows was tracked and then
+    deleted or renamed away -- so a citation of a renamed owner is still checked (and fails)
+    instead of silently falling out of scope with its name (QF-V2-2). On a shallow checkout the
+    historical half is empty and _repository_history says so; the one test that depends on it
+    declines visibly there. `.git` is git's own metadata (a directory in a checkout, a FILE in a
+    linked worktree), never a repository path."""
+    names = {entry.name + ("/" if entry.is_dir() else "") for entry in root.iterdir()}
+    return frozenset((names | _repository_history(root)[0]) - {".git", ".git/"})
+
+
+def _rooted(span: str) -> bool:
+    """Whether a backticked span is a repository path: it starts at a top-level directory (`dir/`),
+    or IS a top-level file, optionally followed by a ` :: symbol` or `:line` part."""
+    return any(span.startswith(root) if root.endswith("/")
+               else re.match(re.escape(root) + r"(?=$|\s|:)", span) is not None
+               for root in _repository_roots())
+
+
+_LINE_CITATION = re.compile(r"^[A-Za-z0-9_.*/%-]+:\d+(?:[/,-]\d+)*$")
+
+
+def _line_citations(text: str) -> list[str]:
+    """Every rooted `path:line` citation (test_no_registry_citation_pins_a_line_number)."""
+    return [span.strip() for span in re.findall(r"`([^`\n]+)`", text)
+            if _rooted(span.strip()) and _LINE_CITATION.match(span.strip())]
+
+
 def _cited_source_problems(text: str) -> tuple[list[str], int]:
-    roots = tuple(f"{entry.name}/" for entry in ROOT.iterdir()
-                  if entry.is_dir() and entry.name != ".git")
     problems, checked = [], 0
     for span in re.findall(r"`([^`\n]+)`", text):
         span = span.strip()
-        if not span.startswith(roots):
-            continue
+        if not _rooted(span) or _LINE_CITATION.match(span):
+            continue  # a `path:line` citation is refused by its own test, never passed here
         match = _CITATION.match(span)
         if not match:
             problems.append(f"unreadable citation {span!r}")
@@ -226,6 +289,157 @@ def test_the_citation_checker_bites_on_every_root_and_on_mentions_that_are_not_d
                       "const OUTPUTS = [];\nexport { OUTPUTS };\n", encoding="utf-8")
     assert _defines(script, "compileAll") and _defines(script, "OUTPUTS")
     assert not _defines(script, "ghost")
+
+
+def test_a_call_at_the_start_of_a_line_is_not_a_definition(tmp_path):
+    """QF-V2-2: for a non-Python source, a line that starts with ``name(`` is a CALL unless it opens
+    a method body -- ``compileAll(a);`` mentions compileAll, it does not define it."""
+    calls = tmp_path / "calls.mjs"
+    calls.write_text("import { compileAll, run } from './x.mjs';\ncompileAll(a);\n"
+                     "  run(() => {\n  });\n  describeThing('x', () => {});\n", encoding="utf-8")
+    for called in ("compileAll", "run", "describeThing"):
+        assert not _defines(calls, called), called
+    methods = tmp_path / "methods.ts"
+    methods.write_text("class Owner {\n  compileAll(a: string): void {\n  }\n"
+                       "  static async run(x) {\n  }\n  get size() { return 1; }\n}\n"
+                       "const table = {\n  key: 1,\n  method(a) { return a; },\n};\n",
+                       encoding="utf-8")
+    for defined in ("compileAll", "run", "size", "key", "method"):
+        assert _defines(methods, defined), defined
+
+
+def test_citations_rooted_at_a_top_level_file_are_checked():
+    """QF-V2-2: a top-level FILE is a root too (`COLLECT_PARSE_V3_23_0.py :: ...`,
+    `pyproject.toml :: ...`, `AGENTS.md`, ...). Needs no history: it holds on a shallow checkout."""
+    doctored, checked = _cited_source_problems(
+        "`COLLECT_PARSE_V3_23_0.py :: _no_such_stage` `pyproject.toml :: no_such_key` "
+        "`ollama_recall.py :: no_such_recall`")
+    assert checked == 3 and len(doctored) == 3, doctored
+    clean, checked = _cited_source_problems(
+        "`COLLECT_PARSE_V3_23_0.py :: _stage_finalize` `pyproject.toml :: version` `AGENTS.md` "
+        "`RELEASING.md` `CHANGELOG.md` `CLAUDE.md` `ollama_recall.py`")
+    assert checked == 7 and not clean, clean
+    # `.git` is git's own metadata (a directory in a checkout, a file in a linked worktree)
+    assert ".git" not in _repository_roots()
+
+
+def test_a_citation_of_a_top_level_name_the_repository_renamed_away_is_checked():
+    """QF-V2-2: a top-level name the repository tracked and has since renamed or deleted is a root
+    too -- a citation of it must fail, not fall out of scope because the name is no longer on disk.
+    The historical roots are read from git, so this needs the history: on a shallow checkout
+    (actions/checkout's default fetch-depth 1) it DECLINES VISIBLY instead of asserting a name only
+    deep history holds (RQF-V1-1) -- and the whole-tree check there covers the disk roots only."""
+    import pytest
+
+    deleted, complete = _repository_history()
+    if not complete:
+        pytest.skip("shallow checkout: git holds no deleted top-level name here, so a citation of a "
+                    "renamed-away owner cannot be told from prose (fetch the full history, e.g. "
+                    "actions/checkout fetch-depth: 0, to run this half of the citation check)")
+    assert "traffic-intents.example.json" in deleted and "traffic-intents.example.json" in \
+        _repository_roots()
+    assert not (ROOT / "traffic-intents.example.json").exists()
+    doctored, checked = _cited_source_problems("`traffic-intents.example.json`")
+    assert checked == 1 and doctored == ["traffic-intents.example.json does not exist"], doctored
+
+
+def _ci_jobs(text: str) -> dict[str, str]:
+    """ci.yml's jobs, each name to its block, read by indentation (two spaces under `jobs:`)."""
+    body = text.split("\njobs:\n", 1)[1]
+    jobs: dict[str, str] = {}
+    name = None
+    for line in body.splitlines():
+        head = re.fullmatch(r"  ([A-Za-z0-9_-]+):\s*", line)
+        if head:
+            name = head.group(1)
+            jobs[name] = ""
+        elif name is not None:
+            jobs[name] += line + "\n"
+    return jobs
+
+
+def _runs_the_default_suite(job: str) -> bool:
+    """A job runs the whole default suite when some `python -m pytest` in it names no test path:
+    every word after it (on its line, or on the folded lines that continue it) is an option."""
+    lines = job.splitlines()
+    for i, line in enumerate(lines):
+        match = re.search(r"python -m pytest\b(.*)$", line)
+        if not match:
+            continue
+        words = match.group(1).split()
+        indent = len(line) - len(line.lstrip())
+        for more in lines[i + 1:]:
+            if not more.strip() or len(more) - len(more.lstrip()) != indent:
+                break
+            words += more.split()
+        if all(w.startswith("-") for w in words):
+            return True
+    return False
+
+
+def test_every_ci_leg_that_runs_the_default_suite_fetches_the_history_the_citation_check_needs():
+    """RQF-V1-1: at actions/checkout's default depth 1 the renamed-away citation check above
+    skips (visibly), so on that leg a registry citation of a renamed or deleted top-level owner is
+    not caught. Every ci.yml job that runs the whole default suite -- found by what it runs, not by
+    name -- checks out the full history."""
+    jobs = _ci_jobs((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    suite = sorted(name for name, job in jobs.items() if _runs_the_default_suite(job))
+    assert {"test", "coverage"} <= set(suite), suite  # not vacuous: the two known full-suite legs
+    shallow = []
+    for name in suite:
+        checkout = re.search(r"- uses: actions/checkout@\S+[^\n]*\n((?:\s{8,}\S[^\n]*\n)*)", jobs[name])
+        assert checkout, f"{name} has no actions/checkout step"
+        if not re.search(r"^\s+fetch-depth:\s*0\s*$", checkout.group(1), re.M):
+            shallow.append(name)
+    assert not shallow, f"these default-suite legs check out a shallow history: {shallow}"
+    # The reader is not blind: a path-scoped run is not the default suite.
+    assert not _runs_the_default_suite("      - run: python -m pytest webapp/tests -q\n")
+    assert _runs_the_default_suite("        run: >-\n          python -m pytest\n          --cov=x\n")
+
+
+def test_the_history_roots_are_gits_and_a_shallow_history_is_declared_incomplete(tmp_path):
+    """RQF-V1-1, measured on a real repository and a real shallow clone of it: the full history
+    names the top-level file it deleted, and the depth-1 clone -- which holds no deletion -- says
+    its history is incomplete instead of answering "nothing was ever renamed"."""
+    import subprocess
+
+    def git(cwd, *args):
+        proc = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                               "-c", "commit.gpgsign=false", *args], cwd=cwd, capture_output=True,
+                              text=True, timeout=120)
+        assert proc.returncode == 0, (args, proc.stderr)
+
+    full = tmp_path / "full"
+    full.mkdir()
+    git(full, "init", "-q")
+    (full / "kept.md").write_text("kept\n", encoding="utf-8")
+    (full / "gone.json").write_text("{}\n", encoding="utf-8")
+    (full / "pkg").mkdir()
+    (full / "pkg" / "owner.py").write_text("X = 1\n", encoding="utf-8")
+    git(full, "add", "-A")
+    git(full, "commit", "-q", "-m", "one")
+    git(full, "rm", "-q", "gone.json")
+    git(full, "mv", "pkg", "moved")
+    git(full, "commit", "-q", "-m", "two")
+    assert _repository_history(full) == (frozenset({"gone.json", "pkg/"}), True)
+    assert {"gone.json", "pkg/", "kept.md", "moved/"} <= _repository_roots(full)
+    shallow = tmp_path / "shallow"
+    git(tmp_path, "clone", "-q", "--depth", "1", full.as_uri(), str(shallow))
+    assert _repository_history(shallow) == (frozenset(), False)
+    assert "gone.json" not in _repository_roots(shallow)
+
+
+def test_no_registry_citation_pins_a_line_number():
+    """A `path:line` citation cannot be checked: the line moves on every edit above it, and nothing
+    says what it should hold, so a bound check would pass a line that now holds something else.
+    Measured: `COLLECT_PARSE_V3_23_0.py:2485/2624/2629` was meant to be where the engine publishes
+    cable_map, architecture_coverage and coverage_matrix; line 2485 is now blank and they are
+    assigned in `main` near 5178/5421/5426. A registry row cites the owning SYMBOL instead
+    (`path :: name`), which the checker above resolves to a definition."""
+    pinned = sorted(set(_line_citations(_registry_text())))
+    assert not pinned, pinned
+    assert _line_citations("`COLLECT_PARSE_V3_23_0.py:2485/2624/2629` `webapp/backend/app.py:12`") \
+        == ["COLLECT_PARSE_V3_23_0.py:2485/2624/2629", "webapp/backend/app.py:12"]
 
 
 def test_a_missing_citation_is_admitted_as_ignored_only_when_git_says_so(monkeypatch):

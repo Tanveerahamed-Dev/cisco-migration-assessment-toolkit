@@ -24,7 +24,7 @@ import { OPEN_CITE_EVENT } from "../panels/DevicePane";
 import { openInspector, setInspectorCite } from "../panels/Inspector";
 import { flowKey } from "../panels/PathTrace";
 import { Chip } from "../ui/primitives";
-import { handOffFocus, returnFocus, useReleaseFocusOnLayoutChange } from "./focus-return";
+import { handOffFocus, keepFocusSeen, releaseFocusLeftUnseen, returnFocus, useReleaseFocusOnLayoutChange } from "./focus-return";
 import { CommandPalette } from "./CommandPalette";
 import {
   announce,
@@ -432,22 +432,54 @@ export function App(): ReactElement {
     if (lastRung.current === rung) return;
     lastRung.current = rung;
     const a = document.activeElement;
-    if (!(a instanceof HTMLElement) || a === document.body) return;
-    a.scrollIntoView?.({ block: "center", inline: "nearest" });
+    if (a instanceof HTMLElement && a !== document.body) a.scrollIntoView?.({ block: "center", inline: "nearest" });
     /* AND ONCE THE NEW LAYOUT HAS SETTLED. The crossing's commit is not its last re-flow: MEASURED
        (review/audit-d3-focus.mjs rung-crossing pass, 390 -> 768 px with a trace open), a focused
        citation in the path panel was centred in this commit, then the path panel's measured form
        floor (a ResizeObserver, RailA) re-laid the rail and left it outside the rail's scroller — "no
        part of it is on screen". So it is checked again two frames later and after the settle the
        owner allows a slow step (the drawer's 240 ms), and brought back only if it drifted out of view
-       ("nearest": a control still in view does not move under the reader). */
-    const keep = (): void => {
-      if (document.activeElement === a && a.isConnected) a.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+       ("nearest": a control still in view does not move under the reader).
+       WHATEVER holds focus then, not only the element that held it at the commit: the fourth door may have handed
+       focus to a successor in this crossing, and that successor is owed the same.
+       AND IF NO SCROLL CAN REVEAL IT, focus moves (focus-return.ts, `releaseFocusLeftUnseen`). MEASURED (review/
+       audit-d3-focus.mjs, every recorded run, 768 -> 390 px in four page states): the Inspector's "Copy the citation
+       path" stayed focused right of the viewport under `.app`'s `overflow-x: clip` — a clip is not a scroll
+       container, so scrollIntoView did nothing and nothing noticed. Checked once the settle is over (400 ms), when
+       the layout it judges is the one the reader is left with. */
+    const keep = (settled: boolean): void => {
+      const now = document.activeElement;
+      if (!(now instanceof HTMLElement) || now === document.body || !now.isConnected) return;
+      now.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      if (settled) releaseFocusLeftUnseen(railFallbacks());
     };
     const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (cb: FrameRequestCallback) => setTimeout(() => cb(0), 16);
-    raf(() => raf(keep));
-    setTimeout(keep, 400);
-  }, [rung]);
+    raf(() => raf(() => keep(false)));
+    setTimeout(() => keep(true), 400);
+  }, [rung, railFallbacks]);
+
+  /* AND AFTER EVERY RESIZE, not only one that crosses a rung (independent verifier V1-4). A resize inside one rung
+     re-flows the same layout at another width, and can leave the focused control wholly off screen just as a
+     crossing can: MEASURED with an injected offset inside the stacked rung, 700 -> 390 px, focus stayed on a button
+     at x = 782..810 for 1.35 s and nothing ran. Once the resizing has stopped for the same 400 ms settle, the owner
+     scrolls an unseen focused element into view, and moves focus only if no scroll can reveal it (focus-return.ts,
+     `keepFocusSeen`). Focus that is seen is not touched, so a reader who resizes a window around a visible focus
+     sees nothing move. */
+  useEffect(() => {
+    let settle: ReturnType<typeof setTimeout> | null = null;
+    const onResize = (): void => {
+      if (settle !== null) clearTimeout(settle);
+      settle = setTimeout(() => {
+        settle = null;
+        keepFocusSeen(railFallbacks());
+      }, 400);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (settle !== null) clearTimeout(settle);
+    };
+  }, [railFallbacks]);
 
   useEffect(() => {
     const release = [

@@ -19,6 +19,10 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* A grid item of the stage: without this its automatic minimum is its content's min-content width, and one
+     wide descendant made the whole panel wider than the stage it docks in (397 px in 390, see
+     `.inspector__cite`). The panel is as wide as its stage; what does not fit is its parts' to wrap or scroll. */
+  min-inline-size: 0;
   background: var(--overlay);
   border-top: var(--hairline) solid var(--border);
   /* --shadow-2 is reserved for the inspector and the config overlay (design brief §3.4). It is
@@ -66,6 +70,53 @@
   padding-block: var(--sp-1);
   min-block-size: var(--row-tab);
   border-bottom: var(--hairline) solid var(--border);
+}
+
+/* THE CITATION GROUP SHRINKS; NOTHING IN THE HEADER PUSHES THE PANEL WIDER THAN ITS STAGE (acceptance D3, C2).
+   A chip is a token and does not shrink in a row of chips (primitives.css `.ui-chip`): here it is the whole
+   panel's citation, so its GROUP is what gives way. The group may shrink to nothing (`min-inline-size: 0`) and
+   wraps inside itself, so the chip takes the group's full width on a line of its own (up to 100% of it, where
+   an identifier breaks only at its `/` and spaces) and the copy control follows it rather than being pushed
+   past the edge. MEASURED before (release build, 390x800): the header's min-content was 397 px, the Inspector
+   397 px in a 390 px stage, and "Copy the citation path" at x = 429..453 — clipped whole by the frame's
+   `overflow-x: clip`, which no scroll can undo (review/audit-d3-focus.mjs, 768 -> 390 in four page states). */
+.inspector__cite {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* ...AND THE CITATION'S OWN TEXT IS NEVER CUT (independent verifier V1-5). The chip stops at the group's width
+   (`max-inline-size: 100%`) and hides what overflows it (`overflow: hidden`, no ellipsis): MEASURED at 320 px — the
+   WCAG 1.4.10 reflow width — "collection_completeness / coverage_matrix" needed 222 px of text in a 184 px chip, and
+   38 px of the identifier were simply not shown. So the chip's body wraps: the "citation" caption (one word, never
+   broken) and the path are two items, and the path takes a line of its own below the caption when its longest token
+   does not fit beside it. A wrapped citation takes the body line height (a chip's own `line-height: 1` clipped 2 px
+   of a third line's descenders, measured the same way); one line still sits in the chip's 24 px floor. */
+.inspector__cite .ui-chip__body {
+  min-inline-size: 0;
+  flex-wrap: wrap;
+  line-height: var(--lh-0);
+}
+
+.inspector__cite .inspector__citelabel {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* UNBREAKABLE-TOKEN CONTAINER (see "wrapping" in src/ui/primitives.css): a citation path is one token that can be
+   longer than its column, as `.ui-cite__path` says for the same paths. The path is placed by its LONGEST TOKEN
+   (`flex-basis: min-content`, which `break-word` leaves at the token's own width), so it moves below the caption
+   before any token would have to split, and breaks at its spaces first; `break-word` breaks inside a token only
+   when that token is wider than the whole chip — the last resort that keeps it inside the pane, where the only
+   alternative was cutting it off. `min-inline-size: 0` lets it shrink to the chip for that last resort. */
+.inspector__cite .inspector__citetext {
+  flex: 1 1 min-content;
+  min-inline-size: 0;
+  overflow-wrap: break-word;
 }
 
 .inspector__title {

@@ -1191,8 +1191,8 @@ describe("C5: the render loop feeds the history and tier-fade rules their real i
        page and nothing else, the release hands the slot the new tier's composed frame, and frame()
        drives it on every frame. */
     const lent = source.slice(source.indexOf("const tierFade = createTierFadeSlot<HTMLCanvasElement>({"), source.indexOf("\n  });", source.indexOf("const tierFade = createTierFadeSlot<HTMLCanvasElement>({")));
-    expect(lent.replace(/\s+/g, " "), "the page the slot is lent: mount over the canvas, unmount, write the opacity — nothing else").toBe(
-      "const tierFade = createTierFadeSlot<HTMLCanvasElement>({ mount: (el) => { canvas.parentElement?.appendChild(el); }, unmount: (el) => { el.remove(); }, write: (el, opacity) => { el.style.opacity = String(opacity); },",
+    expect(lent.replace(/\s+/g, " "), "the page the slot is lent: mount over the canvas, unmount (focus released through the third door first), write the opacity — nothing else").toBe(
+      "const tierFade = createTierFadeSlot<HTMLCanvasElement>({ mount: (el) => { canvas.parentElement?.appendChild(el); }, unmount: (el) => { releaseFocusFrom(el, null); el.remove(); }, write: (el, opacity) => { el.style.opacity = String(opacity); },",
     );
     expect(release).toMatch(/const handle = tierFade\.presented\(reducedMotion\);\s*if \(handle === null\) return;/);
     expect(release.match(/handle\.start\(\)/g) ?? [], "the fade starts only through the hold's handle: once calm (or its backstop), or at once without rAF").toHaveLength(2);
@@ -1279,7 +1279,8 @@ describe("C5: the render loop feeds the history and tier-fade rules their real i
       "arg createSceneImpl > copyFrameForTierFade :: ctx -> tierFadeCopy<HTMLCanvasElement>(el, ctx, w, h)": "the NEW element's own 2-D context, for that compose; executed in emphasis.test.ts",
       "call createSceneImpl > mount :: canvas.parentElement?.appendChild(el)": "the page the slot is lent: mounts a `new`/`composed` overlay, which already shows the picture on screen, in the task the one it replaces leaves (emphasis.test.ts)",
       "arg createSceneImpl > mount :: el -> canvas.parentElement?.appendChild(el)": "the overlay being mounted (see the line above)",
-      "call createSceneImpl > unmount :: el.remove()": "the page the slot is lent: its one DOM removal, reached only for a replaced overlay, the driver's removal at exactly 0, the reduced-motion swap at exactly 1 of an overlay up under reduced motion throughout, and teardown (emphasis.test.ts)",
+      "arg createSceneImpl > unmount :: el -> releaseFocusFrom(el, null)": "releases focus from the tier-fade overlay before its one removal, through focus-return.ts's third door (a no-op: the overlay is a <canvas> with no tabindex, so it never holds focus); it neither removes nor changes what the overlay shows",
+      "call createSceneImpl > unmount :: el.remove()":"the page the slot is lent: its one DOM removal, reached only for a replaced overlay, the driver's removal at exactly 0, the reduced-motion swap at exactly 1 of an overlay up under reduced motion throughout, and teardown (emphasis.test.ts)",
       "write createSceneImpl > write :: el.style.opacity = String(opacity)": "the page the slot is lent: the driver's per-frame write, capped at FADE_MAX_STEP (emphasis.test.ts)",
       'call createSceneImpl > snapshotForTierFade :: tierFade.tierChange(copyFrameForTierFade, !compiled)': "a tier change handed to the slot (handOverTierFade's plan); `deferred` is honoured by applyQuality (positions pinned below)",
       "call createSceneImpl > releaseTierFade :: tierFade.presented(reducedMotion)": "the new tier's composed frame handed to the slot: a HELD overlay starts its hold; under reduced motion it is swapped at exactly 1 only if it has been up under reduced motion throughout (§4.8), and otherwise finished at the cap (R4-VR2-4, emphasis.test.ts)",

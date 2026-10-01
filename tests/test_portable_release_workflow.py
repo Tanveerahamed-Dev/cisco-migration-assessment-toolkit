@@ -147,6 +147,10 @@ def test_hash_lock_and_toolchain_contract_reconcile() -> None:
     frontend = release_contract._bundled_frontend_packages(ROOT)
     assert len(frontend) == release_contract.EXPECTED_BUNDLED_FRONTEND_COUNT
     assert release_contract.digest_object(frontend) == release_contract.EXPECTED_BUNDLED_FRONTEND_DIGEST
+    scope = release_contract._bundled_scope_frontend_packages(ROOT)
+    assert len(scope) == release_contract.EXPECTED_BUNDLED_SCOPE_FRONTEND_COUNT
+    assert release_contract.digest_object(scope) == (
+        release_contract.EXPECTED_BUNDLED_SCOPE_FRONTEND_DIGEST)
     assert f"pyinstaller=={contract['pyinstaller']} " in lock
     assert "setuptools==84.0.0 " in lock
     assert "cyclonedx-python-lib==11.12.0 " in lock
@@ -154,6 +158,58 @@ def test_hash_lock_and_toolchain_contract_reconcile() -> None:
     assert "jsonschema-specifications==2025.9.1 " in lock
     assert "--hash=sha256:" in lock
     assert "\r" not in lock
+
+
+def _npm_resolve(packages: dict, dependent: str, name: str) -> str | None:
+    """Node's resolution over a v3 lock: the nearest ``node_modules/<name>`` walking up from the
+    dependent's install path."""
+    base = dependent
+    while True:
+        candidate = f"{base}/node_modules/{name}" if base else f"node_modules/{name}"
+        if candidate in packages:
+            return candidate
+        if not base:
+            return None
+        head, sep, _tail = base.rpartition("/node_modules/")
+        base = head if sep else ""
+
+
+def test_scope_inventory_covers_the_real_production_closure_of_the_atlas_scope_lock() -> None:
+    """Requirement R-PB 3, against the real lock and an INDEPENDENT oracle: walk atlas-scope's
+    runtime dependency graph from its root `dependencies` (dependencies, optional dependencies and
+    required peers, resolved the way Node resolves them) and require every package reached to be in
+    the release inventory. Every inventoried package the walk does not reach must be one the lock
+    itself flags devOptional (disclosed over-inclusion of the same lock-derived rule the AssessHub
+    SPA uses), never an unexplained extra."""
+    lock = json.loads((ROOT / "atlas-scope" / "package-lock.json").read_text(encoding="utf-8"))
+    packages = lock["packages"]
+    root_dependencies = packages[""].get("dependencies", {})
+    assert {"three", "postprocessing", "react", "react-dom", "zustand"} <= set(root_dependencies)
+    reached: set[str] = set()
+    pending = [("", name) for name in root_dependencies]
+    while pending:
+        dependent, name = pending.pop()
+        resolved = _npm_resolve(packages, dependent, name)
+        assert resolved is not None, (dependent, name)
+        if resolved in reached:
+            continue
+        reached.add(resolved)
+        package = packages[resolved]
+        optional_peers = {peer for peer, meta in (package.get("peerDependenciesMeta") or {}).items()
+                          if meta.get("optional")}
+        for field in ("dependencies", "optionalDependencies", "peerDependencies"):
+            for child in package.get(field) or {}:
+                if field == "peerDependencies" and child in optional_peers:
+                    continue
+                if field == "optionalDependencies" and _npm_resolve(packages, resolved, child) is None:
+                    continue
+                pending.append((resolved, child))
+    inventory = {row["install_path"]: row for row in release_contract._bundled_scope_frontend_packages(ROOT)}
+    assert reached <= set(inventory), sorted(reached - set(inventory))
+    for install_path in set(inventory) - reached:
+        assert packages[install_path].get("devOptional") is True, install_path
+    for install_path in reached:
+        assert inventory[install_path]["version"] == packages[install_path]["version"]
 
 
 @pytest.mark.parametrize(

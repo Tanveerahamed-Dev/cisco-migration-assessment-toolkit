@@ -70,8 +70,9 @@
  * later focus() can walk back into it while a closing slide still paints it (measured by the
  * independent verifier: seven fast Tabs after `e` re-entered the sliding drawer and ended on <body>);
  * every candidate INSIDE the container is passed over (it is still rendered, and so still accepts
- * focus, for as long as the container's closing transition runs), and so is every candidate inside a
- * `hidden` subtree. `src/app/drawer-focus-return.test.tsx` drives the drawer's three close paths, a
+ * focus, for as long as the container's closing transition runs), and so is every candidate that is not
+ * rendered (`isRendered`: a `hidden` subtree, `display: none` however set, `visibility: hidden`) — the one
+ * test every door's `tryFocus` applies. `src/app/drawer-focus-return.test.tsx` drives the drawer's three close paths, a
  * lost opener and a resize; `review/audit-d3-focus.mjs --sweep` drives them in Chromium at every
  * drawer width derived from the ladder, with the real 240 ms step.
  *
@@ -166,6 +167,30 @@ function statedRegion(n: HTMLElement): HTMLElement {
   return heading instanceof HTMLElement && n.contains(heading) ? heading : n;
 }
 
+/** Every named region around `from` (excluding `from` itself), nearest first. */
+function namedRegionsAround(from: Element | null | undefined): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  for (let n = from?.parentElement?.closest<HTMLElement>(REGION_SELECTOR) ?? null; n !== null; n = n.parentElement?.closest<HTMLElement>(REGION_SELECTOR) ?? null) {
+    if (isNamed(n)) out.push(n);
+  }
+  return out;
+}
+
+/** RULE 4's places for ONE named region, in order: its labelling heading (`statedRegion`), else the region itself. The
+ *  ONE statement of "else the labelled region itself" — every door tries both, so a region whose heading sits in a
+ *  part of it that is not rendered is still a place (focus-return.rule4-doors.test.ts, independent verifier V1-1). */
+const placesOf = (n: HTMLElement): HTMLElement[] => {
+  const h = statedRegion(n);
+  return h === n ? [n] : [h, n];
+};
+
+/** The places a RECORDED region (`ReturnRecord.region`, stated as `landmarkOf` states it) stands for: itself, and —
+ *  when it is a labelling heading — the region it labels. */
+function recordedPlaces(stated: HTMLElement): HTMLElement[] {
+  for (const n of namedRegionsAround(stated)) if (statedRegion(n) === stated) return [stated, n];
+  return [stated];
+}
+
 /** The element whose `aria-controls` names `el` or one of its ancestors: the surface's opener. */
 function openerOf(el: HTMLElement): HTMLElement | null {
   if (typeof document === "undefined") return null;
@@ -199,18 +224,23 @@ const takesFocus = (el: HTMLElement): boolean =>
   el.closest("[aria-hidden='true']") === null &&
   !(el as HTMLButtonElement).disabled;
 
-/** Focus `el` and report whether it actually took focus. */
+/**
+ * Focus `el` and report whether it actually took focus. Only a RENDERED element is tried (`isRendered`): a browser
+ * refuses focus() on an element in a `hidden` or `display: none` subtree, and jsdom does not, so without this every
+ * door's answer depended on the engine running it (the first door focused a heading in a hidden subtree and a target
+ * in a pane a stylesheet hides — independent verifier V1-1, focus-return.rule4-doors.test.ts). One statement for every
+ * door, not one filter per door.
+ */
 function tryFocus(el: Candidate): boolean {
-  if (!el || !takesFocus(el)) return false;
+  if (!el || !takesFocus(el) || !isRendered(el)) return false;
   el.focus({ preventScroll: false });
   return document.activeElement === el;
 }
 
 /** The labelled region around `from` (or its labelling heading), excluding `from` itself. */
 function landmarkOf(from: Element | null | undefined): HTMLElement | null {
-  let n = from?.parentElement?.closest<HTMLElement>(REGION_SELECTOR) ?? null;
-  while (n !== null && !isNamed(n)) n = n.parentElement?.closest<HTMLElement>(REGION_SELECTOR) ?? null;
-  return n === null ? null : statedRegion(n);
+  const n = namedRegionsAround(from)[0];
+  return n === undefined ? null : statedRegion(n);
 }
 
 /** Make a landmark programmatically focusable for exactly as long as it holds focus. */
@@ -242,18 +272,20 @@ export function returnFocus(
   const target = record instanceof HTMLElement ? record : (record?.target ?? null);
   const opener = record instanceof HTMLElement ? null : (record?.opener ?? null);
   for (const c of [target, opener, ...fallbacks]) if (c && tryFocus(c)) return c;
-  const mark = landmarkOf(context);
-  if (mark !== null && focusLandmark(mark)) return mark;
+  const around = namedRegionsAround(context)[0];
+  const marks = around === undefined ? [] : placesOf(around);
+  for (const m of marks) if (focusLandmark(m)) return m;
   const region = record instanceof HTMLElement ? null : (record?.region ?? null);
-  if (region !== null && region !== mark) {
+  if (region !== null && !marks.includes(region)) {
     /* The region's first heading that can take focus names the same place and is small enough for
        its ring to be seen whole; a ring round a tall, rail-clipped region measured under half its
        perimeter (focus-return.region.test.ts). Headings in a hidden sub-pane refuse focus and are
-       passed over; the region itself is the last resort. */
+       passed over; the region itself is the last resort — and a recorded HEADING that no longer
+       renders stands for the region it labels (rule 4). */
     if (!/^H[1-6]$/.test(region.tagName)) {
       for (const h of region.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")) if (focusLandmark(h)) return h;
     }
-    if (focusLandmark(region)) return region;
+    for (const m of recordedPlaces(region)) if (!marks.includes(m) && focusLandmark(m)) return m;
   }
   return null;
 }
@@ -281,18 +313,23 @@ export function releaseFocusFrom(
   if (typeof document === "undefined" || !container) return null;
   const active = document.activeElement;
   if (active === null || !container.contains(active)) return null;
-  const usable = (el: Candidate): el is HTMLElement =>
-    el instanceof HTMLElement && !container.contains(el) && el.closest("[hidden]") === null;
+  /* Outside the container, and RENDERED — the owner's one statement of it (`isRendered`: no `hidden` subtree, a box,
+     not `visibility: hidden`), not the `hidden` attribute alone, which stood in for the class and let a candidate a
+     stylesheet hides through (focus-return.handoff-hidden.test.ts). */
+  const usable = (el: Candidate): el is HTMLElement => el instanceof HTMLElement && !container.contains(el) && isRendered(el);
   const attempt = (el: Candidate): boolean => usable(el) && tryFocus(el);
 
   const target = record instanceof HTMLElement ? record : (record?.target ?? null);
   const opener = record instanceof HTMLElement ? null : (record?.opener ?? null);
   for (const c of [target, opener, ...fallbacks]) if (attempt(c)) return c as HTMLElement;
 
-  const mark = landmarkOf(container);
-  if (usable(mark) && focusLandmark(mark)) return mark;
+  /* Rule 4, as every door states it: the region around the container as its heading, else itself; then the target's
+     recorded region the same way (placesOf / recordedPlaces). */
+  const around = namedRegionsAround(container)[0];
+  const marks = around === undefined ? [] : placesOf(around);
+  for (const m of marks) if (usable(m) && focusLandmark(m)) return m;
   const region = record instanceof HTMLElement ? null : (record?.region ?? null);
-  if (usable(region) && region !== mark && focusLandmark(region)) return region;
+  if (region !== null) for (const m of recordedPlaces(region)) if (!marks.includes(m) && usable(m) && focusLandmark(m)) return m;
 
   /* The nearest tab stop outside, by document position relative to the container. */
   const stops = tabStopsOf(document).filter((s) => usable(s));
@@ -403,10 +440,12 @@ interface HandOffPlan {
   readonly siblings: readonly HTMLElement[];
   /** The set's labelling element, when it is `aria-labelledby` one that lies outside the set. */
   readonly label: HTMLElement | null;
-  /** The region landmark around the control (rule 4). */
-  readonly landmark: HTMLElement | null;
-  /** Every named region landmark further out, nearest first: where rule 4 goes when the nearest one was hidden. */
-  readonly outer: readonly HTMLElement[];
+  /**
+   * Rule 4's places, nearest first: every named region around the control, each as its labelling heading (when it
+   * is `aria-labelledby` one inside it) and then as the region itself. The first is `landmarkOf`'s answer; the rest
+   * are where rule 4 goes when that one is no longer rendered — including the region itself when its heading is not.
+   */
+  readonly regions: readonly HTMLElement[];
 }
 
 /** Everything the hand-off may need, captured while the control and its surroundings still exist. */
@@ -420,20 +459,16 @@ function planHandOff(control: HTMLElement): HandOffPlan {
   const before = stops.filter((s) => (control.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_PRECEDING) !== 0).reverse();
   const by = set === null ? undefined : idRefs(set, "aria-labelledby")[0];
   const labelEl = by === undefined ? null : document.getElementById(by);
-  /* Every named region around the control, nearest first, each as landmarkOf states it (its labelling heading, else
-     itself); the nearest is rule 4's landmark, the rest are `outer`. Walked by REGION, not by the stated element, so a
-     region labelled by a heading inside it does not stop the walk at that heading. */
-  const around: HTMLElement[] = [];
-  for (let n = control.parentElement?.closest<HTMLElement>(REGION_SELECTOR) ?? null; n !== null; n = n.parentElement?.closest<HTMLElement>(REGION_SELECTOR) ?? null) {
-    if (isNamed(n)) around.push(statedRegion(n));
-  }
-  const landmark = landmarkOf(control);
-  const outer = around.filter((m) => m !== landmark);
+  /* Every named region around the control, nearest first, each as landmarkOf states it (its labelling heading) and
+     then as itself — rule 4's "else the labelled region itself", which a heading in a hidden part of the region
+     needs (focus-return.handoff-hidden.test.ts). Walked by REGION, not by the stated element, so a region labelled
+     by a heading inside it does not stop the walk at that heading. */
+  const regions: HTMLElement[] = [];
+  for (const n of namedRegionsAround(control)) for (const m of placesOf(n)) if (!regions.includes(m)) regions.push(m);
   return {
     siblings: [...after, ...before],
     label: labelEl instanceof HTMLElement && set !== null && !set.contains(labelEl) ? labelEl : null,
-    landmark,
-    outer,
+    regions,
   };
 }
 
@@ -476,15 +511,18 @@ export function handOffFocus(control: EventTarget | null | undefined, action: ()
        device, and the rail switches to the Device pane and hides the Finding pane with every sibling the plan captured
        (phase 3.5 close, 2026-09-30). A browser refuses focus() there; jsdom does not, so without this the owner's answer
        depended on the engine running it. With the siblings, the label and the nearest landmark all hidden, the next
-       SHOWN landmark further out is where focus goes (the Evidence rail around both panes) — never <body>. */
-    const shown = (el: Candidate): boolean => el instanceof HTMLElement && el.closest("[hidden]") === null;
+       SHOWN landmark further out is where focus goes (the Evidence rail around both panes) — never <body>.
+       "Hidden" is the owner's one statement of it (`isRendered`), not the `hidden` attribute alone: a pane a
+       stylesheet hides (every rung of the ladder hides panes that way) is just as unrendered, and jsdom would focus
+       into it where a browser refuses (independent verification of R129, focus-return.handoff-hidden.test.ts). */
+    const shown = (el: Candidate): el is HTMLElement => el instanceof HTMLElement && isRendered(el);
     for (const c of plan.siblings) if (shown(c) && tryFocus(c)) return;
     for (const s of stated) {
       const c = typeof s === "function" ? s() : s;
       if (shown(c) && tryFocus(c)) return;
     }
     if (plan.label !== null && shown(plan.label) && focusLandmark(plan.label)) return;
-    for (const m of plan.landmark === null ? [] : [plan.landmark, ...plan.outer]) if (shown(m) && focusLandmark(m)) return;
+    for (const m of plan.regions) if (shown(m) && focusLandmark(m)) return;
   };
   queueMicrotask(attempt);
   if (typeof setTimeout === "function") for (const ms of HANDOFF_DELAYS_MS) setTimeout(attempt, ms);
@@ -570,6 +608,156 @@ function landOn(el: Element | null | undefined): HTMLElement | null {
   if (el.matches(TAB_STOP_SELECTOR) && tryFocus(el)) return el;
   for (const s of tabStopsOf(el)) if (isRendered(s) && tryFocus(s)) return s;
   return focusLandmark(el) ? el : null;
+}
+
+/* ══ a layout change that leaves focus where the reader cannot see it ══════════ */
+
+/** Whether a reader can see any part of an element: "unmeasured" when it has no box to measure. */
+type Sight = "seen" | "unseen" | "unmeasured";
+
+/** A computed property that is set to something (jsdom reports "" for what it does not compute). */
+const setTo = (v: string | undefined): boolean => v !== undefined && v !== "" && v !== "none";
+
+/**
+ * Can the reader see ANY part of `el`? Its border box, intersected with the viewport and with every ancestor that
+ * clips it — on each axis whose `overflow` is not `visible` (`clip` included: no scroll can undo a clip) — following
+ * the containing-block chain: a fixed box escapes every ancestor that does not contain fixed boxes, an absolute box
+ * every static one. The same walk `review/audit-d3-focus.mjs` measures ("no part of it is on screen (clipped by
+ * …)"). An element with no box — zero area, as everything in a DOM nothing lays out — is UNMEASURED: unknown, never
+ * "unseen", so this owner never moves focus on a guess.
+ */
+function sightOf(el: Element): Sight {
+  const r = el.getBoundingClientRect();
+  if (!(r.width > 0 && r.height > 0)) return "unmeasured";
+  const root = document.documentElement;
+  let l = r.left;
+  let t = r.top;
+  let rr = r.right;
+  let b = r.bottom;
+  const vw = root.clientWidth > 0 ? root.clientWidth : window.innerWidth;
+  const vh = root.clientHeight > 0 ? root.clientHeight : window.innerHeight;
+  l = Math.max(l, 0);
+  t = Math.max(t, 0);
+  rr = Math.min(rr, vw);
+  b = Math.min(b, vh);
+  const containsFixed = (cs: CSSStyleDeclaration): boolean =>
+    setTo(cs.transform) || setTo(cs.filter) || setTo(cs.perspective) || /paint|layout|strict|content/.test(cs.contain ?? "");
+  let pos = getComputedStyle(el).position;
+  for (let n = el.parentElement; n !== null && n !== document.body && n !== root; n = n.parentElement) {
+    const cs = getComputedStyle(n);
+    const applies = pos === "fixed" ? containsFixed(cs) : pos === "absolute" ? cs.position !== "static" || containsFixed(cs) : true;
+    if (applies) {
+      const clipX = setTo(cs.overflowX) && cs.overflowX !== "visible";
+      const clipY = setTo(cs.overflowY) && cs.overflowY !== "visible";
+      if (clipX || clipY) {
+        const nr = n.getBoundingClientRect();
+        const nl = nr.left + n.clientLeft;
+        const nt = nr.top + n.clientTop;
+        if (clipX) {
+          l = Math.max(l, nl);
+          rr = Math.min(rr, nl + n.clientWidth);
+        }
+        if (clipY) {
+          t = Math.max(t, nt);
+          b = Math.min(b, nt + n.clientHeight);
+        }
+      }
+      pos = cs.position;
+    }
+  }
+  return rr - l >= 1 && b - t >= 1 ? "seen" : "unseen";
+}
+
+/**
+ * The running, FINITE animations and transitions on `el` or any ancestor: what is moving it right now. An element is
+ * judged where it comes to REST, never mid-flight: MEASURED (release build, draws suspended, R-D3 render check and
+ * probe), a crossing's settle look at focus fired 80 ms after the reader focused the skip link, which slides in from
+ * above the viewport on `:focus-visible` (`transition: top`, shell.css); at that instant it was still at top = -56,
+ * "unseen", and focus was moved to the stage — away from a control on its way into view. An infinite animation never
+ * comes to rest and is not waited for. Without `getAnimations` (a DOM that animates nothing) nothing moves.
+ */
+function movingNow(el: Element): Animation[] {
+  const out: Animation[] = [];
+  for (let n: Element | null = el; n !== null; n = n.parentElement) {
+    const get = (n as Element & { getAnimations?: () => Animation[] }).getAnimations;
+    if (typeof get !== "function") continue;
+    for (const x of get.call(n)) {
+      if (x.playState !== "running") continue;
+      const end = x.effect?.getComputedTiming().endTime;
+      if (typeof end === "number" && Number.isFinite(end)) out.push(x);
+    }
+  }
+  return out;
+}
+
+/** If `el` is moving, run `again` once everything moving it has finished (or been cancelled) — while `el` still holds
+ *  focus — and report true: the caller judges nothing now. */
+function judgeAtRest(el: HTMLElement, again: () => void): boolean {
+  const moving = movingNow(el);
+  if (moving.length === 0) return false;
+  void Promise.all(moving.map((x) => x.finished.catch(() => undefined))).then(() => {
+    if (document.activeElement === el) again();
+  });
+  return true;
+}
+
+/**
+ * The FOURTH DOOR's last step, for an element the layout did NOT take away but left where no part of it can be seen
+ * (acceptance D3; independent verifier QH-V2-2). A rung crossing re-flows every region, and the frame scrolls the
+ * focused element into view — but a scroll cannot reveal what a CLIP hides: MEASURED (release build, 768 -> 390 px)
+ * the Inspector's "Copy the citation path" sat right of the viewport under `.app`'s `overflow-x: clip`, still
+ * rendered, still connected, still focused, "no part of it on screen". Call this AFTER the new layout has settled and
+ * focus has been scrolled into view. If the element holding focus has a box and no visible part, focus goes to the
+ * nearest place the reader can see — judged where it comes to REST (`movingNow`: an element mid-transition is judged
+ * once the transition ends, if it still holds focus then) — in order:
+ *   a. the named regions around it, nearest first, each as its labelling heading and then as itself (rule 4), each
+ *      accepted only if it is SEEN once focused (focusing scrolls it into view);
+ *   b. the caller's fallbacks, landed as the fourth door lands them, each accepted only if seen;
+ * and if nothing is seen, focus goes back to where it was — never <body>. Returns the element that now holds focus
+ * when it moved, else null (focus was seen, unmeasured, or had nowhere better to go).
+ */
+export function releaseFocusLeftUnseen(fallbacks: readonly Candidate[] = []): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  const a = document.activeElement;
+  if (!(a instanceof HTMLElement) || a === document.body || a === document.documentElement || !a.isConnected) return null;
+  if (judgeAtRest(a, () => void releaseFocusLeftUnseen(fallbacks))) return null;
+  if (sightOf(a) !== "unseen") return null;
+  const tried = new Set<HTMLElement>();
+  const seenOnce = (landed: HTMLElement | null): landed is HTMLElement => landed !== null && document.activeElement === landed && sightOf(landed) === "seen";
+  for (const n of namedRegionsAround(a)) {
+    for (const m of placesOf(n)) {
+      if (tried.has(m) || m === a) continue;
+      tried.add(m);
+      if (focusLandmark(m) && seenOnce(m)) return m;
+    }
+  }
+  for (const c of fallbacks) {
+    if (!(c instanceof HTMLElement) || tried.has(c) || c === a) continue;
+    tried.add(c);
+    const landed = landOn(c);
+    if (landed !== a && seenOnce(landed)) return landed;
+  }
+  /* Nowhere better: back where it was (a landmark tried above gives up its temporary tabindex on blur). */
+  if (document.activeElement !== a) tryFocus(a);
+  return null;
+}
+
+/**
+ * "Focus is always seen" after ANY resize, not only one that crosses a rung (independent verifier V1-4: an injected
+ * offset inside the stacked rung, 700 -> 390 px, left the focused control wholly off screen and nothing ran). If the
+ * element holding focus has a box and no visible part: first scroll it into view (a scroller CAN reveal what it has
+ * scrolled away; centred, as the frame's crossing does, so a sticky bar does not cover it), and only if that did not
+ * reveal it, `releaseFocusLeftUnseen` (a clip cannot be scrolled). A seen or unmeasured element is not touched — no
+ * scroll moves content under a reader whose focus is already in view. Returns the element focus moved to, else null.
+ */
+export function keepFocusSeen(fallbacks: readonly Candidate[] = []): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  const a = document.activeElement;
+  if (!(a instanceof HTMLElement) || a === document.body || a === document.documentElement || !a.isConnected) return null;
+  if (judgeAtRest(a, () => void keepFocusSeen(fallbacks))) return null;
+  if (sightOf(a) !== "unseen") return null;
+  a.scrollIntoView?.({ block: "center", inline: "nearest" });
+  return releaseFocusLeftUnseen(fallbacks);
 }
 
 /**

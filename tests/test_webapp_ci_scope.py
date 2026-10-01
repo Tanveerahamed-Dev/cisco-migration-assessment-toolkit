@@ -76,6 +76,10 @@ def test_push_filter_and_classifier_share_the_exact_path_policy():
     "path",
     [
         "webapp/frontend/src/App.tsx",
+        # AssessHub serves the Atlas Scope hub build at /scope, and webapp-ci's backend leg builds
+        # it and runs the /scope pins against it: an atlas-scope change engages webapp CI too.
+        "atlas-scope/src/main.tsx",
+        "atlas-scope/index.html",
         ".design-sync/config.json",
         "cisco_toolkit/model.py",
         "reference-data/official-sources/registry.json",
@@ -107,6 +111,7 @@ def test_every_policy_arm_has_a_relevant_witness(path: str):
         "docs/design.md",
         ".github/workflows/ci.yml",
         "webapp-neighbour/file.ts",
+        "atlas-scope-neighbour/file.ts",
         "design-sync/config.json",
         "webapp\\frontend\\src\\App.tsx",
     ],

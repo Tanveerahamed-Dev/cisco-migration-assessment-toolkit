@@ -94,6 +94,33 @@ EXPECTED_BUNDLED_FRONTEND_COUNT = 49
 EXPECTED_BUNDLED_FRONTEND_DIGEST = (
     "c4f69366b66de816e6cc779041c42ff51c9f055f71b35c116dccbf0a5b2669a3"
 )
+#: The reviewed Atlas Scope production lock graph (atlas-scope/package-lock.json, derived by
+#: _bundled_scope_frontend_packages). Like the SPA's, a lock change must be reviewed here before a
+#: release: tests/test_portable_release_workflow.py pins both to the real lock.
+EXPECTED_BUNDLED_SCOPE_FRONTEND_COUNT = 8
+EXPECTED_BUNDLED_SCOPE_FRONTEND_DIGEST = (
+    "4c32e63ee3fd4e3791a5af85c20de09e6715cd39b8531af87da1d317a3b43736"
+)
+#: The toolchain receipt's npm inventories: field -> (npm project, notice-key namespace). Every
+#: project whose build output ships in the bundle must appear here (bundled_npm_inventories checks
+#: that against portable.atlas_bundle.BUILD_OUTPUTS at build time). The AssessHub SPA keeps its
+#: original un-namespaced keys ("npm:node_modules/react@..."); every other project's keys carry the
+#: project, so same-named packages of two projects remain distinct notices and SBOM components.
+_NPM_INVENTORIES = {
+    "bundled_frontend": ("webapp/frontend", ""),
+    "bundled_scope_frontend": ("atlas-scope", "atlas-scope/"),
+}
+
+
+def _reviewed_npm_inventory(field: str) -> tuple[int, str]:
+    """The reviewed (count, digest) of one npm inventory of a real release."""
+    if field == "bundled_frontend":
+        return EXPECTED_BUNDLED_FRONTEND_COUNT, EXPECTED_BUNDLED_FRONTEND_DIGEST
+    if field == "bundled_scope_frontend":
+        return EXPECTED_BUNDLED_SCOPE_FRONTEND_COUNT, EXPECTED_BUNDLED_SCOPE_FRONTEND_DIGEST
+    raise PortableReleaseError(f"npm inventory {field} has no reviewed contract")
+
+
 MANIFEST_SCHEMA = "atlas.portable-member-manifest/1"
 TOOLCHAIN_SCHEMA = "atlas.portable-toolchain-receipt/1"
 SIGNING_SCHEMA = "atlas.portable-signing/1"
@@ -123,6 +150,8 @@ REQUIRED_AUTOMATED_CHECKS = frozenset({
     "version",
     "engine_help",
     "loopback_http_api_spa",
+    # build_atlas.smoke: GET /scope/ answers 200 with the bundled Atlas Scope runtime-source shell.
+    "loopback_http_scope_runtime_shell",
     "python_tools_absent_from_path",
     "non_ascii_profile_and_install_path",
     "drive_letter_replay",
@@ -188,12 +217,15 @@ INTERNET_ABSENCE_BOUNDARY = (
     "Winsock, _socket, _overlapped, ctypes, subprocess, injected, or other hostile native code"
 )
 NOTICES_SCOPE = (
-    "CPython and PyInstaller runtime, Analysis-inferred Python distributions, production frontend "
-    "lock graph, and the three bundled network-reference datasets"
+    "CPython and PyInstaller runtime, Analysis-inferred Python distributions, the production lock "
+    "graphs of the bundled AssessHub and Atlas Scope frontends, and the three bundled "
+    "network-reference datasets"
 )
 NOTICES_INFERENCE_BOUNDARY = (
     "Python ownership is inferred from the exact PyInstaller Analysis TOC and installed "
-    "distribution metadata; frontend ownership is the non-dev package-lock graph. CPython and "
+    "distribution metadata; frontend ownership is the non-dev package-lock graph of each bundled "
+    "frontend project (webapp/frontend and atlas-scope), which may include devOptional type-only "
+    "packages a bundler does not emit. CPython and "
     "PyInstaller are explicit runtime components. Dataset rows bind exact shipped bytes and source "
     "provenance while redistribution review remains external. The exact file manifest remains the "
     "shipped-byte denominator."
@@ -976,17 +1008,54 @@ def _bundled_python_distributions(
     }
 
 
+def bundled_npm_inventories() -> tuple[tuple[str, str], ...]:
+    """(toolchain-receipt field, npm project) for every npm project whose build output ships in the
+    bundle, DERIVED from the bundle manifest (``portable.atlas_bundle.BUILD_OUTPUTS``: each build
+    output is ``<project>/<outdir>``). The receipt schema (:data:`_NPM_INVENTORIES`) names a field
+    per project; a build output whose project has no field refuses the release, so a third shipped
+    frontend cannot reach a stick without its production graph in the SBOM and notices."""
+    from portable import atlas_bundle  # lazy: the build host only; verification stays stdlib-only
+
+    shipped = {PurePosixPath(output).parent.as_posix() for output in atlas_bundle.BUILD_OUTPUTS}
+    declared = {project for project, _namespace in _NPM_INVENTORIES.values()}
+    if shipped != declared:
+        raise PortableReleaseError(
+            "bundled npm projects differ from the SBOM/notice inventory schema: shipped "
+            f"{sorted(shipped)}, inventoried {sorted(declared)} — every shipped frontend's "
+            "production lock graph must be inventoried"
+        )
+    return tuple((field, project) for field, (project, _namespace) in _NPM_INVENTORIES.items())
+
+
+def _npm_notice_key(field: str, install_path: str, version: str) -> str:
+    _project, namespace = _NPM_INVENTORIES[field]
+    return f"npm:{namespace}{install_path}@{version}"
+
+
 def _bundled_frontend_packages(root: Path) -> list[dict[str, Any]]:
-    lock_path = root / "webapp" / "frontend" / "package-lock.json"
+    """The AssessHub SPA's production lock graph (``webapp/frontend``)."""
+    return _npm_production_packages(root, _NPM_INVENTORIES["bundled_frontend"][0])
+
+
+def _bundled_scope_frontend_packages(root: Path) -> list[dict[str, Any]]:
+    """Atlas Scope's production lock graph (``atlas-scope``; the hub build ships as
+    ``atlas_scope_dist``)."""
+    return _npm_production_packages(root, _NPM_INVENTORIES["bundled_scope_frontend"][0])
+
+
+def _npm_production_packages(root: Path, project: str) -> list[dict[str, Any]]:
+    """Every non-dev package of ``<project>/package-lock.json`` — the production graph, derived from
+    the lock, never a list of names. Rows carry the install path relative to the project."""
+    lock_path = root.joinpath(*PurePosixPath(project).parts, "package-lock.json")
     if not lock_path.is_file():
         return []
     try:
         lock = json.loads(lock_path.read_text(encoding="utf-8", errors="strict"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PortableReleaseError("frontend package lock is invalid") from exc
+        raise PortableReleaseError(f"{project} package lock is invalid") from exc
     packages = lock.get("packages", {})
     if not isinstance(packages, Mapping):
-        raise PortableReleaseError("frontend package lock has no packages mapping")
+        raise PortableReleaseError(f"{project} package lock has no packages mapping")
     result: list[dict[str, Any]] = []
     for install_path, package in packages.items():
         if not install_path or not isinstance(install_path, str) or not isinstance(package, Mapping):
@@ -1149,6 +1218,7 @@ def toolchain_receipt(repository_root: str | Path) -> dict[str, Any]:
     for relative in (
         "pyproject.toml",
         "webapp/frontend/package-lock.json",
+        "atlas-scope/package-lock.json",
         "portable/windows-x64-requirements.lock",
         "portable/toolchain.json",
         "portable/third-party-license-fallbacks.json",
@@ -1163,18 +1233,23 @@ def toolchain_receipt(repository_root: str | Path) -> dict[str, Any]:
             value, _ = _same_read(path)
             materials.append({"path": relative, "bytes": len(value), "sha256": hashlib.sha256(value).hexdigest()})
     bundled_python = _bundled_python_distributions(root, distributions)
-    bundled_frontend = _bundled_frontend_packages(root)
+    npm_inventories = {
+        field: _npm_production_packages(root, project)
+        for field, project in bundled_npm_inventories()
+    }
     if bundled_python["status"] == "analysis_bound":
         observed_bundled = {
             item["name"]: item["version"] for item in bundled_python["distributions"]
         }
         if observed_bundled != EXPECTED_BUNDLED_PYTHON:
             raise PortableReleaseError("PyInstaller bundled dependency set differs from reviewed contract")
-        if (
-            len(bundled_frontend) != EXPECTED_BUNDLED_FRONTEND_COUNT
-            or digest_object(bundled_frontend) != EXPECTED_BUNDLED_FRONTEND_DIGEST
-        ):
-            raise PortableReleaseError("frontend production dependency set differs from reviewed contract")
+        for field, rows in npm_inventories.items():
+            count, digest = _reviewed_npm_inventory(field)
+            if len(rows) != count or digest_object(rows) != digest:
+                raise PortableReleaseError(
+                    f"{_NPM_INVENTORIES[field][0]} production dependency set differs from "
+                    "reviewed contract"
+                )
     return {
         "schema": TOOLCHAIN_SCHEMA,
         "platform": PLATFORM_ID,
@@ -1201,7 +1276,7 @@ def toolchain_receipt(repository_root: str | Path) -> dict[str, Any]:
         "npm_distribution": _npm_distribution_receipt(root),
         "python_distributions": distributions,
         "bundled_python": bundled_python,
-        "bundled_frontend": bundled_frontend,
+        **npm_inventories,
         "materials": materials,
     }
 
@@ -1219,13 +1294,51 @@ def _valid_file_receipt(value: object) -> bool:
     )
 
 
+def _validate_npm_inventory_rows(rows: object, field: str) -> None:
+    """Shape of one npm production inventory of the toolchain receipt (any receipt, synthetic or
+    real): exact row keys, identities present, install paths safe and under a node_modules
+    directory, no forbidden runtime, sorted."""
+    project = _NPM_INVENTORIES[field][0]
+    if not isinstance(rows, list):
+        raise PortableReleaseError(f"portable {project} dependency denominator is invalid")
+    keys = []
+    for item in rows:
+        if not isinstance(item, Mapping) or set(item) != {
+            "name", "version", "install_path", "license_declared", "integrity"
+        } or (
+            not isinstance(item.get("name"), str)
+            or not item["name"]
+            or not isinstance(item.get("version"), str)
+            or not item["version"]
+            or not isinstance(item.get("install_path"), str)
+            or not item["install_path"]
+            or "node_modules/" not in item["install_path"]
+            or not (
+                item.get("license_declared") is None
+                or isinstance(item.get("license_declared"), str)
+            )
+            or not (
+                item.get("integrity") is None or isinstance(item.get("integrity"), str)
+            )
+        ):
+            raise PortableReleaseError(f"portable {project} dependency row is invalid")
+        if _distribution_name(item.get("name")) in _FORBIDDEN_PACKAGE_PARTS:
+            raise PortableReleaseError(f"portable {project} dependency contains a forbidden runtime")
+        safe_relative(item["install_path"])
+        keys.append((item.get("name"), item.get("version"), item.get("install_path")))
+    if keys != sorted(keys, key=lambda row: (str(row[0]).casefold(), row[1], row[2])):
+        raise PortableReleaseError(f"portable {project} dependencies are unsorted")
+
+
 def _validate_toolchain_receipt(value: object, runtime_names: list[str]) -> Mapping[str, Any]:
     if not isinstance(value, Mapping) or set(value) != {
         "schema", "platform", "python", "pyinstaller", "pip", "node", "node_executable",
         "npm", "npm_executable", "npm_cli", "npm_distribution", "python_distributions",
-        "bundled_python", "bundled_frontend", "materials",
+        "bundled_python", "materials", *_NPM_INVENTORIES,
     }:
         raise PortableReleaseError("portable toolchain receipt shape is invalid")
+    for field in _NPM_INVENTORIES:
+        _validate_npm_inventory_rows(value.get(field), field)
     real_runtime = any(name.casefold() == "_internal/python312.dll" for name in runtime_names)
     synthetic_bundled = {
         "status": "not_applicable_synthetic_bundle",
@@ -1356,44 +1469,19 @@ def _validate_toolchain_receipt(value: object, runtime_names: list[str]) -> Mapp
         or bundled_versions != EXPECTED_BUNDLED_PYTHON
     ):
         raise PortableReleaseError("bundled Python dependency denominator differs from reviewed set")
-    frontend = value.get("bundled_frontend")
-    if not isinstance(frontend, list):
-        raise PortableReleaseError("portable frontend dependency denominator is invalid")
-    frontend_keys = []
-    for item in frontend:
-        if not isinstance(item, Mapping) or set(item) != {
-            "name", "version", "install_path", "license_declared", "integrity"
-        } or (
-            not isinstance(item.get("name"), str)
-            or not item["name"]
-            or not isinstance(item.get("version"), str)
-            or not item["version"]
-            or not isinstance(item.get("install_path"), str)
-            or not item["install_path"]
-            or not (
-                item.get("license_declared") is None
-                or isinstance(item.get("license_declared"), str)
+    for field in _NPM_INVENTORIES:
+        count, digest = _reviewed_npm_inventory(field)
+        rows = value[field]
+        if len(rows) != count or digest_object(rows) != digest:
+            raise PortableReleaseError(
+                f"portable {_NPM_INVENTORIES[field][0]} dependency denominator differs from "
+                "reviewed lock"
             )
-            or not (
-                item.get("integrity") is None or isinstance(item.get("integrity"), str)
-            )
-        ):
-            raise PortableReleaseError("portable frontend dependency row is invalid")
-        if _distribution_name(item.get("name")) in _FORBIDDEN_PACKAGE_PARTS:
-            raise PortableReleaseError("portable frontend dependency contains a forbidden runtime")
-        safe_relative(item["install_path"])
-        frontend_keys.append((item.get("name"), item.get("version"), item.get("install_path")))
-    if frontend_keys != sorted(frontend_keys, key=lambda row: (str(row[0]).casefold(), row[1], row[2])):
-        raise PortableReleaseError("portable frontend dependencies are unsorted")
-    if (
-        len(frontend) != EXPECTED_BUNDLED_FRONTEND_COUNT
-        or digest_object(frontend) != EXPECTED_BUNDLED_FRONTEND_DIGEST
-    ):
-        raise PortableReleaseError("portable frontend dependency denominator differs from reviewed lock")
     materials = value.get("materials")
     expected_material_paths = {
         "pyproject.toml",
         "webapp/frontend/package-lock.json",
+        "atlas-scope/package-lock.json",
         "portable/windows-x64-requirements.lock",
         "portable/toolchain.json",
         "portable/third-party-license-fallbacks.json",
@@ -1653,44 +1741,53 @@ def third_party_notices(root: Path, toolchain: Mapping[str, Any]) -> dict[str, A
             "license_files": files,
             "evidence_status": "license_files_embedded" if files else "metadata_only_or_unavailable",
         })
-    frontend_root = root / "webapp" / "frontend"
-    for item in toolchain.get("bundled_frontend", []):
-        package_root = frontend_root.joinpath(*PurePosixPath(item["install_path"]).parts)
-        if not package_root.is_dir():
-            raise PortableReleaseError(f"production frontend package directory is missing: {item['install_path']}")
-        cursor = frontend_root
-        for part in PurePosixPath(item["install_path"]).parts:
-            cursor = cursor / part
-            cursor_metadata = cursor.lstat()
-            if cursor.is_symlink() or _is_reparse(cursor_metadata):
+    # Every shipped frontend's production lock graph, each package's license text read from its
+    # installed package directory (or a tracked reviewed fallback) — one sourcing for every project.
+    for field, (project, namespace) in _NPM_INVENTORIES.items():
+        frontend_root = root.joinpath(*PurePosixPath(project).parts)
+        for item in toolchain.get(field, []):
+            where = f"{namespace}{item['install_path']}"
+            package_root = frontend_root.joinpath(*PurePosixPath(item["install_path"]).parts)
+            if not package_root.is_dir():
                 raise PortableReleaseError(
-                    f"production frontend package crosses a reparse point: {item['install_path']}"
+                    f"production frontend package directory is missing: {project}/{item['install_path']}"
                 )
-        package_root_resolved = package_root.resolve(strict=True)
-        frontend_resolved = frontend_root.resolve(strict=True)
-        if frontend_resolved not in package_root_resolved.parents:
-            raise PortableReleaseError(f"production frontend package escapes node_modules: {item['install_path']}")
-        files = [
-            _license_payload(path, path.name, package_root_resolved)
-            for path in sorted(package_root.iterdir(), key=lambda candidate: candidate.name.casefold())
-            if path.is_file() and _license_filename(path.name)
-        ]
-        for payload in files:
-            payload["origin"] = "installed_package"
-        key = f"npm:{item['install_path']}@{item['version']}"
-        if not files and key in fallbacks:
-            files = [fallbacks.pop(key)]
-        entries.append({
-            "key": key,
-            "ecosystem": "npm",
-            "name": item["name"],
-            "version": item["version"],
-            "install_path": item["install_path"],
-            "lock_integrity": item.get("integrity"),
-            "license_declared": item["license_declared"],
-            "license_files": files,
-            "evidence_status": "license_files_embedded" if files else "lock_metadata_only_or_unavailable",
-        })
+            cursor = frontend_root
+            for part in PurePosixPath(item["install_path"]).parts:
+                cursor = cursor / part
+                cursor_metadata = cursor.lstat()
+                if cursor.is_symlink() or _is_reparse(cursor_metadata):
+                    raise PortableReleaseError(
+                        f"production frontend package crosses a reparse point: {where}"
+                    )
+            package_root_resolved = package_root.resolve(strict=True)
+            frontend_resolved = frontend_root.resolve(strict=True)
+            if frontend_resolved not in package_root_resolved.parents:
+                raise PortableReleaseError(f"production frontend package escapes node_modules: {where}")
+            files = [
+                _license_payload(path, path.name, package_root_resolved)
+                for path in sorted(package_root.iterdir(), key=lambda candidate: candidate.name.casefold())
+                if path.is_file() and _license_filename(path.name)
+            ]
+            for payload in files:
+                payload["origin"] = "installed_package"
+            key = _npm_notice_key(field, item["install_path"], item["version"])
+            if not files and key in fallbacks:
+                files = [fallbacks.pop(key)]
+            entry = {
+                "key": key,
+                "ecosystem": "npm",
+                "name": item["name"],
+                "version": item["version"],
+                "install_path": item["install_path"],
+                "lock_integrity": item.get("integrity"),
+                "license_declared": item["license_declared"],
+                "license_files": files,
+                "evidence_status": "license_files_embedded" if files else "lock_metadata_only_or_unavailable",
+            }
+            if namespace:
+                entry["npm_project"] = project
+            entries.append(entry)
     if fallbacks:
         raise PortableReleaseError(
             "unused third-party license fallbacks differ from the bundled dependency set: "
@@ -1856,6 +1953,8 @@ def _sbom(
         properties = [{"name": "atlas:third_party_notice_key", "value": item["key"]}]
         if item.get("install_path"):
             properties.append({"name": "atlas:frontend_install_path", "value": item["install_path"]})
+        if item.get("npm_project"):
+            properties.append({"name": "atlas:npm_project", "value": item["npm_project"]})
         component = {
             "type": "data" if item["ecosystem"] == "data" else "library",
             "bom-ref": "urn:atlas:portable-library:"
@@ -3144,8 +3243,9 @@ def verify_portable_release(
             for item in toolchain.get("bundled_python", {}).get("distributions", [])
         ]
         + [
-            f"npm:{item['install_path']}@{item['version']}"
-            for item in toolchain.get("bundled_frontend", [])
+            _npm_notice_key(field, item["install_path"], item["version"])
+            for field in _NPM_INVENTORIES
+            for item in toolchain.get(field, [])
         ]
         + (
             list(_DATASET_NOTICE_KEYS)
@@ -3172,22 +3272,27 @@ def verify_portable_release(
             or notice.get("license_declared") != dependency.get("license_declared")
         ):
             raise PortableReleaseError("portable Python notice differs from toolchain inventory")
-    for dependency in toolchain.get("bundled_frontend", []):
-        key = f"npm:{dependency['install_path']}@{dependency['version']}"
-        notice = notice_by_key[key]
-        if (
-            set(notice) != {
+    for field, (project, namespace) in _NPM_INVENTORIES.items():
+        for dependency in toolchain.get(field, []):
+            key = _npm_notice_key(field, dependency["install_path"], dependency["version"])
+            notice = notice_by_key[key]
+            expected_fields = {
                 "key", "ecosystem", "name", "version", "install_path", "lock_integrity",
                 "license_declared", "license_files", "evidence_status",
-            }
-            or notice.get("ecosystem") != "npm"
-            or notice.get("name") != dependency["name"]
-            or notice.get("version") != dependency["version"]
-            or notice.get("install_path") != dependency["install_path"]
-            or notice.get("lock_integrity") != dependency.get("integrity")
-            or notice.get("license_declared") != dependency.get("license_declared")
-        ):
-            raise PortableReleaseError("portable frontend notice differs from toolchain inventory")
+            } | ({"npm_project"} if namespace else set())
+            if (
+                set(notice) != expected_fields
+                or notice.get("ecosystem") != "npm"
+                or notice.get("name") != dependency["name"]
+                or notice.get("version") != dependency["version"]
+                or notice.get("install_path") != dependency["install_path"]
+                or notice.get("lock_integrity") != dependency.get("integrity")
+                or notice.get("license_declared") != dependency.get("license_declared")
+                or (namespace and notice.get("npm_project") != project)
+            ):
+                raise PortableReleaseError(
+                    f"portable {project} notice differs from toolchain inventory"
+                )
     if toolchain.get("bundled_python", {}).get("status") == "analysis_bound":
         runtime_expected = {
             f"runtime:cpython@{PYTHON_VERSION}": ("CPython", PYTHON_VERSION, "Python-2.0"),

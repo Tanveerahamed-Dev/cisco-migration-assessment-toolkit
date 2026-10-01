@@ -93,6 +93,8 @@
  *   node review/audit-d3-focus.mjs --crossings           # ONLY the rung-crossing pass (diagnostic)
  *   node review/audit-d3-focus.mjs --render-check        # ONLY the proof that the geometry passes'
  *                                                        # render mode changes no focus outcome (RENDER)
+ *   node review/audit-d3-focus.mjs --render-check --state=idle   # that proof for one of its two states (a
+ *                                                        # bounded run); the proof is every state passing
  *   node review/audit-d3-focus.mjs --sweep --render=full # the geometry passes with every frame drawn
  *                                                        # (the reference; hours on a software renderer)
  *
@@ -2663,11 +2665,19 @@ async function crossFabricSettled(page) {
   await crossWarmSettled(page);
 }
 
-/** Resize, and wait until the page has processed it (framesSettled) and the slowest step has landed. */
+/**
+ * Resize, and wait until the page has processed it (framesSettled) and the slowest step has landed — the settle is
+ * waited ON THE PAGE'S OWN CLOCK (a timer the page runs), not the harness's. The app's own settle steps are page
+ * timers queued while it processed the resize (the frame's 400 ms look at focus after a crossing, App.tsx), so a page
+ * timer queued after that, for longer, fires after them however late the page's timers run. MEASURED (render check,
+ * R-D3): with every frame drawn the software renderer holds the page's main thread, its timers run late, and a
+ * harness-clock 500 ms read came BEFORE the app's 400 ms step — "OK -> A.skip-link" with every frame drawn, "OK ->
+ * MAIN#stage" with draws suspended, for one case: a difference of the harness's clock, not of the render mode.
+ */
 async function crossResize(page, width, height, settle = CROSS_SETTLE_MS) {
   await page.setViewportSize({ width, height });
   await framesSettled(page);
-  await page.waitForTimeout(settle);
+  await page.evaluate((ms) => new Promise((done) => setTimeout(done, ms)), settle).catch(() => page.waitForTimeout(settle));
 }
 
 /**
@@ -3190,12 +3200,15 @@ function pairDeposit(browser, env, stateRow, from, to, items) {
 async function crossDiscover(browser, from, stateRow, batch, env, where) {
   const { mode, sink } = env;
   const [state] = stateRow;
+  /* What an opener is RECORDED under in renderCheck (a chain: the candidate it stands for, see its `record`); the
+     human name everywhere else. */
+  const named = (o) => (sink !== null && o.record !== undefined ? o.record : o.label);
   const s = await crossSession(browser, from, stateRow, { mode, sink, where, clean: env.clean });
   const found = [];
   const nested = [];
   try {
     if (!s.ok || s.absent) {
-      for (const o of batch) s.fail(`the opener ${o.label}: NOT DRIVEN (the state did not load for its discovery)`);
+      for (const o of batch) s.fail(`the opener ${named(o)}: NOT DRIVEN (the state did not load for its discovery)`);
       return { found, nested };
     }
     for (const o of batch) {
@@ -3210,10 +3223,10 @@ async function crossDiscover(browser, from, stateRow, batch, env, where) {
       });
       /* renderCheck compares what each opener revealed in each mode, not only the cases. */
       const noteDiscovery = (what) => {
-        if (sink !== null) sink.set(`${from}px / ${state} :: discovery :: ${o.label}`, what);
+        if (sink !== null) sink.set(`${from}px / ${state} :: discovery :: ${named(o)}`, what);
       };
       if (!activated) {
-        s.fail(`the opener ${o.label}: NOT DRIVEN (not found again on a clean page of this state)`);
+        s.fail(`the opener ${named(o)}: NOT DRIVEN (not found again on a clean page of this state)`);
         continue;
       }
       /* An activation that changed the URL moved to another PAGE STATE (a finding or a device selected, a record
@@ -3275,6 +3288,13 @@ async function crossDiscover(browser, from, stateRow, batch, env, where) {
           steps: [o, child],
           ident: `${o.ident} → ${child.ident}`,
           label: `${o.label} → ${c.label}`,
+          /* renderCheck's RECORD of it: the candidate it stands for, never the opener through which it was found. A
+             candidate two openers reveal is one candidate, under the opener whose discovery batch FINISHED first —
+             an order the render mode itself changes. MEASURED (render check, R-D3): "BUTTON "23/26 collected" →
+             BUTTON "Open source record …"" with draws suspended and "BUTTON "claim strength" → …" with every frame
+             drawn, the same control in the same page state — most of the 47 differences were such pairs of keys.
+             Its place is written without ":" so the record's own separators stay unambiguous. */
+          record: `(inside a surface) ${c.label} at ${c.path.replace(/:/g, ".")}`,
           family: `nested ${c.family}`,
           members: c.members,
           /* One candidate however many openers reveal it: where it is, and what it is. */
@@ -3373,14 +3393,16 @@ async function crossSurfaceJob(browser, from, to, stateRow, o, stable, env) {
   const [state] = stateRow;
   const at = crossAt(from, to, state);
   const s = await crossSession(browser, from, stateRow, { mode, sink, where: at, clean: env.clean });
+  /* renderCheck records a chain under the candidate it stands for (crossDiscover's `record`). */
+  const opener = sink !== null && o.record !== undefined ? o.record : o.label;
   try {
     if (!s.ok || s.absent) {
-      for (const { s: stop } of stable) s.fail(`revealed by ${o.label}: ${stop.label} at ${from}px → ${to}px: NOT DRIVEN (the state ${s.ok ? "was not present" : "did not load"} on this job's page)`);
+      for (const { s: stop } of stable) s.fail(`revealed by ${opener}: ${stop.label} at ${from}px → ${to}px: NOT DRIVEN (the state ${s.ok ? "was not present" : "did not load"} on this job's page)`);
       return;
     }
     let opened = null;
     for (const { s: stop, key } of stable) {
-      const label = `revealed by ${o.label}: ${stop.label}`;
+      const label = `revealed by ${opener}: ${stop.label}`;
       await s.guarded(label, async () => {
         const mark = async () => {
           if (opened !== null) {
@@ -3588,7 +3610,17 @@ async function renderCheck(browser) {
   ]
     .map(([a, b]) => [w(a), w(b)])
     .filter(([a, b]) => a !== undefined && b !== undefined);
-  const states = crossStates().filter(([name]) => name === "idle" || name === "a finding selected");
+  /* `--state=<text>` narrows the check to those of its two states whose name contains the text, so the proof can be
+     taken one state per run inside a bounded wall time (R-D3: both states together needed ~45 min on a shared host).
+     A narrowed check proves only the states it names; the proof is every state's run passing. */
+  const onlyState = process.argv.find((a) => a.startsWith("--state="))?.slice(8);
+  const states = crossStates()
+    .filter(([name]) => name === "idle" || name === "a finding selected")
+    .filter(([name]) => !onlyState || name.includes(onlyState));
+  if (states.length === 0) {
+    console.log(`RENDER CHECK NEVER EXERCISED: --state="${onlyState}" names neither "idle" nor "a finding selected"`);
+    return false;
+  }
   const outcomes = { full: new Map(), suspended: new Map() };
   const half = Math.max(1, Math.floor(CROSS_PARALLEL / 2));
   console.log(`INFO  render check: ${pairs.map(([f, t]) => `${f}->${t}`).join(", ")} in ${states.map(([n]) => `"${n}"`).join(", ")}, both render modes, ${half} at once each`);
@@ -3608,7 +3640,37 @@ async function renderCheck(browser) {
   };
   const differ = [];
   const excused = [];
+  /* A CONTROL NAMED BY THE RENDER MODE ITSELF. A record's key carries the accessible names of what it drove, and one
+     control's name is a function of the frame rate: the status bar's scene control reads "tier low · reduced ·
+     refining" or "… settled" or "… below frame-rate bar" from this host's measured frames (StatusBar.tsx: words
+     derived from rAF frame times, which the capture harness refuses for the same reason). With every frame drawn the
+     frames are slow; with draws suspended they are fast — so the same control, driven the same way, is recorded
+     under a different key in each mode (MEASURED, R-D3: 11 of 47 differences). Such a record is present in ONE mode
+     only; it is paired with the ONE record present only in the other mode whose key is identical once every quoted
+     name is folded out (the same page state, crossing, kind, class, role and place), and the pair must then carry
+     the SAME outcome, byte for byte. A folded key shared by more than one record of either mode pairs nothing: a
+     name then distinguishes controls, and each record stays a difference. */
+  const fold = (k) => k.replace(/"[^"]*"/g, '"…"');
+  const onlyIn = (m, other) => keys.filter((k) => outcomes[m].has(k) && !outcomes[other].has(k));
+  const byFold = (list) => {
+    const g = new Map();
+    for (const k of list) g.set(fold(k), [...(g.get(fold(k)) ?? []), k]);
+    return g;
+  };
+  const fullOnly = byFold(onlyIn("full", "suspended"));
+  const suspOnly = byFold(onlyIn("suspended", "full"));
+  const renamed = new Set();
+  for (const [f, fk] of fullOnly) {
+    const sk = suspOnly.get(f);
+    if (fk.length !== 1 || sk === undefined || sk.length !== 1) continue;
+    const a = outcomes.full.get(fk[0]);
+    const b = outcomes.suspended.get(sk[0]);
+    if (a !== b) continue;
+    renamed.add(fk[0]).add(sk[0]);
+    console.log(`SAME  (named differently in each mode) ${fk[0]}  ~  ${sk[0]} -> ${a}`);
+  }
   for (const k of keys) {
+    if (renamed.has(k)) continue;
     const a = outcomes.full.get(k);
     const b = outcomes.suspended.get(k);
     if (a === b) {
@@ -3625,12 +3687,14 @@ async function renderCheck(browser) {
   const notDriven = keys.filter((k) => outcomes.full.get(k) === "NOT DRIVEN" || outcomes.suspended.get(k) === "NOT DRIVEN").length;
   console.log(
     `\nRENDER CHECK: ${[...outcomes.full.keys()].filter((k) => !discoveryKey(k)).length} case(s) with every frame drawn, ${[...outcomes.suspended.keys()].filter((k) => !discoveryKey(k)).length} with draws suspended, ` +
-      `${keys.filter(discoveryKey).length} opener discovery record(s); ${keys.length} compared, ${differ.length} differ, ${excused.length} excused (an opener unstable in a mode), ` +
+      `${keys.filter(discoveryKey).length} opener discovery record(s); ${keys.length} compared, ${renamed.size / 2} pair(s) named differently by the mode with the same outcome, ${differ.length} differ, ${excused.length} excused (an opener unstable in a mode), ` +
       `${notDriven} not driven in a mode; ${renderCount.pages} suspended page(s) suppressed ${renderCount.suppressed} draw call(s)` +
       `${renderCount.pagesNotSuspended > 0 ? `, ${renderCount.pagesNotSuspended} WITHOUT the suspension installed` : ""}.`,
   );
   for (const d of differ) console.log(`  DIFFER ${d}`);
-  const sameCases = keys.filter((k) => !discoveryKey(k) && outcomes.full.get(k) !== undefined && outcomes.full.get(k) === outcomes.suspended.get(k)).length;
+  const sameCases =
+    keys.filter((k) => !discoveryKey(k) && outcomes.full.get(k) !== undefined && outcomes.full.get(k) === outcomes.suspended.get(k)).length +
+    [...renamed].filter((k) => !discoveryKey(k) && outcomes.full.has(k)).length;
   const tooFew = sameCases < RENDER_CHECK_MIN;
   if (tooFew) console.log(`RENDER CHECK NEVER EXERCISED: ${sameCases} case(s) compared in both modes, fewer than ${RENDER_CHECK_MIN}`);
   return differ.length === 0 && notDriven === 0 && !tooFew && renderCount.suppressed > 0 && renderCount.pagesNotSuspended === 0;

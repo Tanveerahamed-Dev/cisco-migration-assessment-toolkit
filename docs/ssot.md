@@ -149,7 +149,7 @@ guard is a latent drift bug (this is Law 1 of the Deliverable Excellence Standar
 
 > **Snapshot-vintage note (coverage-honest):** the three newest evidence blocks — `cable_map`,
 > `architecture_coverage`, `coverage_matrix` — are published by the *current* engine
-> (`COLLECT_PARSE_V3_23_0.py:2485/2624/2629`) but are **absent from the on-disk 20260613 snapshot**,
+> (`COLLECT_PARSE_V3_23_0.py :: main`) but are **absent from the on-disk 20260613 snapshot**,
 > which predates them. Regenerate the snapshot to populate them; the owner paths above are the
 > contract regardless of that file's vintage.
 

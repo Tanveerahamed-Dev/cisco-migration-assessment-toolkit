@@ -22,6 +22,7 @@ from pathlib import Path
 
 RELEVANT_PATH_FILTERS = (
     "webapp/**",
+    "atlas-scope/**",
     ".design-sync/**",
     "cisco_toolkit/**",
     "reference-data/official-sources/**",

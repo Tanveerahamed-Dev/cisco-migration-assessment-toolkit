@@ -5,6 +5,191 @@ evidence exists, because an issue asserted without evidence is a rumour.
 
 ## Resolved
 
+> **W5 of the Atlas Scope program — the preview-scope repairs after phase 3.5 (recorded 2026-09-30; an
+> UNCOMMITTED working tree on top of `3509b73c`).** Not the earlier "wave 5" (W5-K1…K4, R67–R80). Four
+> clusters, each followed by an independent verifier: **R-D3** (the D3 focus owner and the focus audit's
+> render check; verifier: defects), **R-QF** (the /scope reader; closed PARTIAL, verifier: defects),
+> **R-QG** (C1's KEY validator and reference capture; verifier: defects) and **R-PB** (the portable
+> bundle's /scope build, smoke and SBOM; verifier upheld). Entries R130–R134 below record what they
+> closed, each with the test or bounded run that pins it; O68, O69, O70 and O77 carry dated status notes
+> on what stays open. **Not a re-grade:** no acceptance criterion moves, and every "PASS" or "exit 0"
+> below is a test or harness result, not a grade. **C1 stays UNPROVEN** (no critic panel ran) and **D3
+> stays UNPROVEN** (no complete sweep, `--vp=390` or default audit run on the committed tree).
+> **The wave's gates (reported):** the engine gate's full `pytest` had 11 reds — the 8 expected
+> linked-worktree reds (O71), two load flakes that pass alone
+> (`test_transition_runtime_inventory::test_windows_venv_redirector_pid…` and
+> `test_make_stick::…[rollback_prepared]`, "A file is IN USE"), and
+> `tests/test_transition_schema_assets.py::test_byte_bound_checkout_owners_are_lf_exactly_attributed`,
+> red because R-QF's `webapp/backend/app.py` edit is uncommitted (it compares HEAD's blob with the
+> working tree; the gate measured 0 CR bytes and filter-neutral hashes, and expects green after the
+> commit — unconfirmed). `python webapp/sample_data/build_sample.py --check` exits 2 on attestation
+> drift that predates this wave: `cisco_toolkit/ui_projection.py` arrived with the #577 merge after the
+> sample was last regenerated (`74275919`), so the engine counts 100 analysis and 102 LLM-scan modules
+> where the committed sample says 99 and 101. Regenerating it changes the sample's sha256, which
+> cascades through `src/test-support/golden-sample.ts`'s `GOLDEN_SHA`, every golden expectation and the
+> compiled documents, so it is routed to the base branch or the engine lane (`build_sample.py`, then
+> `npm run compile:data`, then the golden re-derivation); no `pytest` or CI workflow runs `--check`. The
+> app gate's last `node review/capture.mjs app` run was 32 of 32; its frame-rate flag is intermittent
+> (O70). The hub build still carries the label-schema key NAMES `sourceDigestForm` and `sourceGitBlob` in
+> 4 files and no compiled dataset value (O76's first decision, unchanged). **What the record step
+> itself re-ran** (after its edits): the 14 test files that read these documents (the set the
+> phase-3.5 banner names) in one `vitest` invocation, 1,548 passed, exit 0; `tests/test_ssot_registry.py`,
+> exit 0; and the repository's client-marker scan over this document, 0 hits. It also read the working
+> tree's diff, which holds edits no cluster report names (O68, O69). **Reported, not re-run by the record
+> step:** every cluster's red-before-fix and mutation claim, the bounded audit and browser runs, both gates
+> and every other Python test.
+
+### R130. D3 — after 768 → 390 px the Inspector's "Copy the citation path" button held focus with no part of it on screen, a resize within one rung could leave focus unseen, and a crossing's settle step judged a still-moving skip link — FIXED IN CODE (W5 R-D3, two rounds; verifier: defects, O68) (closes QH-V2-2)
+**What was fixed (reported).** The failure every recorded audit log carried (O68): focus on "Copy the
+citation path", clipped by `div.app`, in all four page states. Round 1 added the owner step
+`releaseFocusLeftUnseen`, run at the 400 ms settle of every rung crossing, and a shrinking
+`.inspector__cite` group; the before-fix build gave EXIT=1 with that one FAIL per state. Round 2:
+- **V1-5 — the citation chip no longer cuts its text.** The "citation" caption and the path (a new
+  `.inspector__citetext` span) wrap as two items; the path is placed by its longest token (`flex-basis:
+  min-content` with `overflow-wrap: break-word`), justified as an UNBREAKABLE-TOKEN CONTAINER under the
+  `primitives.css` wrapping doctrine, like `.ui-cite__path`. A browser probe measured the chip's scroll
+  width equal to its client width at 280, 320, 360, 390 and 768 px (the verifier had measured 222 against
+  184 at 320). `node review/capture.mjs wrap` passes; R-D3 did not run `review/capture.mjs text`.
+- **V1-4 — a resize inside one rung.** `App.tsx` calls the new owner function `keepFocusSeen` 400 ms after
+  the last window resize of any kind. It scrolls an unseen focused element into view first and hands focus
+  on only when no scroll reveals it; focus that is already seen is never touched.
+- **Judged at rest (a new defect, found through the render check).** A crossing's pending 400 ms settle
+  could fire while a newly focused element was still moving: the skip link slides in on `:focus-visible`,
+  was judged unseen at top −56 px, and focus went to `MAIN#stage`. Reproduced with draws suspended in a
+  scratch probe under `.local-data/`. The settle step now waits for finite running transitions and
+  animations on the element or its ancestors (`movingNow` / `judgeAtRest`).
+**Pinned by** `src/app/focus-return.unseen.test.tsx` (the within-rung App case and three decision cases
+for `keepFocusSeen`, each mutation-killed; two judged-at-rest tests, red first and mutation-killed).
+**Not closed:** the crossing path's own `releaseFocusLeftUnseen` call in `App.tsx` is pinned by no test —
+`keepFocusSeen` fires at the same settle and masks its removal (V2-2, O68); `sightOf`'s containing-block
+rule for absolutely positioned elements is unpinned (V2-4). No complete audit run has confirmed the fix
+in the browser on the committed tree (O68).
+
+### R131. D3 — the focus-return doors stated rule 4 separately and drifted, the third-door guard bound a release per file instead of per call site, and `aria-labelledby` was split on the letter "s" — FIXED IN CODE (W5 R-D3, two rounds; verifier: defects); the first door's outward walk is OPEN (O77) (closes O77's regex defect and V1-1, V1-2, V1-3)
+**What was fixed (reported).**
+- **O77's regex.** `idRefs` in `src/app/focus-return.ts` is now the only split of an ID-reference list and
+  uses `/\s+/`. Pinned by `src/app/focus-return.labelledby.test.ts` (green in R-D3's final `src/app` run,
+  86 files).
+- **V1-1 — rule 4 ("its labelling heading, else the labelled region itself") is stated once,** in
+  `namedRegionsAround`, `placesOf` and `recordedPlaces`, and used by `returnFocus`, `handOffFocus` (through
+  `planHandOff`), `releaseFocusFrom` and `releaseFocusLeftUnseen`. `tryFocus` refuses any element that is
+  not rendered (the owner's `isRendered`), replacing per-door filters that had drifted because jsdom
+  focuses hidden elements. Pinned by `src/app/focus-return.rule4-doors.test.ts` (red 6 of 7 before the
+  fix; three mutations checked).
+- **V1-3 — the guard per call site.** `src/app/focus-return.guard.test.ts` shape 6 now needs a release at
+  each call site: a third-door call counts only on the same access path or an ancestor's, in the site's own
+  function, and before the site. Planted case `imperativeDoorPerSite` (red first: a release in another
+  function, and a release after the removal); the verifier's Fabric3D/preview cleanup mutation is now
+  caught; the guard is 150 of 150 on the real sources. Stated limit: this is statement order within a
+  function, not a control-flow proof.
+- **V1-2.** The fixed-box escape test in `focus-return.unseen.test.tsx` now depends on the escape; the
+  verifier's M3 mutation fails it.
+- **The `PENDING_ROUTING` debt (O68):** 9 of its 12 entries were released through the third door and
+  deleted (round 1); a tenth, `scene.ts`'s, is recorded in the working tree's guard file as released by
+  the W5 engine gate.
+**Not closed:** the verifier found rule 4's outward walk is NOT one statement for every door (V2-3):
+`handOffFocus` and `releaseFocusLeftUnseen` walk every named region outward, but `returnFocus` tries only
+the nearest region's places and then the recorded region, so when those are unrendered and an outer
+named region is shown it returns null with focus on `<body>`. The cluster's "every door uses it"
+therefore overstates (O77). Two `PENDING_ROUTING` entries stay (O68).
+
+### R132. The /scope reader — XML and every non-shell HTML page refused, a closed CSS accept-list, an icon required in the shell's head, shell-exact continuation joins, and a history check that does not break on a shallow checkout — FIXED IN CODE (W5 R-QF, two rounds, closed PARTIAL; verifier: defects); an icon link inside `<title>` is still served ready (O69) (closes QF-V2-1, QF-V2-2, QF-V2-3, QF-V2-4)
+**Round 1 (the implementer, rechecked by round 2; reported).** XML-typed members are refused outright
+(QF-V2-1; the 756-member family and its Chromium test pass in the final run); the shell is read on a
+closed construct accept-list rather than a hand-kept URL-attribute list (QF-V2-3); top-level files are
+citation roots for `tests/test_ssot_registry.py` (QF-V2-2); the CI-leg reader joins continuation lines
+(QF-V2-4). `_vite_build` in `webapp/tests/test_scope_mount.py` now writes an icon, so the real-Vite pins
+stay ready.
+**Round 2 (RQF-V1-1, -3, -4, -5, -6; reported).**
+- **Shallow history.** `tests/test_ssot_registry.py` `_repository_history` asks `git rev-parse
+  --is-shallow-repository`, fails closed if git cannot answer, and on a shallow checkout declares the
+  historical roots incomplete; the renamed-away citation test then skips visibly instead of failing
+  `3 == 4` (reproduced first in a scratch `git clone --depth 1`). Pinned by a real-repository plus
+  real-depth-1-clone test.
+- **CSS.** Every `text/css` member of a /scope build, linked or not, is held to a closed accept-list
+  (`webapp/backend/app.py` `_scope_css_refusal`): strict UTF-8, closed comments, tokenizer-exact strings
+  with escapes decoded, six at-rules, a closed non-fetching function list, and the word `url` refused. A
+  generated family of 36 resource-naming constructs × 3 URLs, with the hub build's own stylesheets as inert
+  controls, runs in full Chromium behind a recording proxy: on the old reader 87 of 99 CSS loads were
+  served ready and fetched outside /scope; after the fix, 0 violations.
+- **The default icon request.** The shell must declare an icon IN ITS HEAD
+  (`_scope_shell_declares_an_icon_in_its_head`): measured in full Chromium with one origin per case, an
+  absent icon, or one met only after the head has ended, makes the browser request `/favicon.ico` outside
+  /scope — a request only a recording proxy sees, not Playwright's page events. The request oracle now runs
+  full Chromium behind a per-lane recording proxy (340 cases).
+- **Continuations.** Joined exactly as each shell joins them (bash deletes an unescaped backslash before
+  LF; PowerShell 5.1 reads an unescaped backtick before LF as a blank); a trailing blank or a CR breaks the
+  continuation, measured in both shells, and those cases are negatives.
+- **Non-shell HTML.** `index.html` is the only HTML page served under /scope; every other HTML member is
+  refused (`_SCOPE_REFUSED_HTML_PAGE`), as XML is. The markup reader's own verdict, `_scope_html_refusal`,
+  is still proved against Chromium over the generated markup family, because the shell is read with it.
+**Pinned by** `webapp/tests/test_scope_mount.py` (run with `ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE=1`, every
+Chromium oracle required and passing), `tests/test_ssot_registry.py` and `tests/test_webapp_ci_scope.py`
+(the `atlas-scope/**` pair, reported unchanged). **Not closed:** the cluster's claim that a build served
+ready requests nothing outside /scope "by construction" is refuted — a shell whose only icon link sits
+inside `<title>` is served ready and Chromium then requests `/favicon.ico` (RQF-V2-1, major, O69). The
+final check `ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE=1 python -m pytest webapp/tests tests/test_ssot_registry.py
+tests/test_readme_field.py` was PYTEST_EXIT=1 on one test outside the cluster's files (RQF-V1-2), a stale
+`docs/ssot.md` line citation since corrected in the working tree (O69).
+The admitted module entry's run-time behaviour is a stated residual (`atlas-scope/README.md`).
+
+### R133. The portable bundle and /scope — the build refused a missing or unready hub build without naming the commands, the frozen smoke never asked for /scope, and the SBOM and notices omitted atlas-scope's production graph — FIXED IN CODE (W5 R-PB; verifier upheld, with five minors, O69); not run against a frozen `Atlas.exe`
+**What was fixed (reported).**
+- **The build refusal.** `portable/build_atlas.py` `build_refusal(root)` refuses, before PyInstaller, an
+  absent `atlas-scope/dist-hub` and a present one that AssessHub's own `_scope_file_index` does not judge
+  ready, naming `cd atlas-scope`, `npm ci` and `npm run build:hub` one per line (no `&&`, so each pastes
+  into PowerShell 5.1); the commands are keyed by `atlas_bundle.BUILD_OUTPUTS`.
+- **The frozen smoke.** `smoke()` requires the exact selftest lines (`REQUIRED_SELFTEST_LINES`, including
+  `[ ok ] atlas-scope-dist`) and `GET /scope/` 200 `text/html` whose body AssessHub's
+  `_scope_shell_reading` accepts and that equals `_internal/atlas_scope_dist/index.html` byte for byte. It
+  reports the new qualification check `loopback_http_scope_runtime_shell`, now in
+  `release_contract.REQUIRED_AUTOMATED_CHECKS`.
+- **SBOM and notices.** A lock-derived inventory `bundled_scope_frontend` (8 packages: three,
+  postprocessing, react, react-dom, zustand, scheduler, and the devOptional `@types/react` and `csstype`)
+  with namespaced notice keys `npm:atlas-scope/…` and license text from the installed package; the class
+  guard `bundled_npm_inventories()` derives the shipped projects from `BUILD_OUTPUTS` and refuses any
+  uninventoried one; a reviewed count/digest pin applies to real releases. The two type-only packages are
+  over-included and disclosed in `NOTICES_INFERENCE_BOUNDARY`.
+**Pinned by** `tests/test_atlas_bundle.py` (a `_SmokeHarness` driving the real `smoke()` end to end; the
+`build_refuses` tests), `tests/test_portable_release_contract.py` and
+`tests/test_portable_release_workflow.py` (the real-lock pin and an independent Node-resolution closure
+oracle), each red before the fix and mutation-checked; `tests/test_readme_field.py` exit 0 (the
+README-FIELD section needed no edit). **Not closed:** PyInstaller was not run, so the live evidence is an
+unfrozen loopback serve; the verifier's five minors and two residuals stay open (O69).
+
+### R134. C1's KEY validator — RULE v6: no recognition erases a loss on any line, a pick in a malformed field is a possible loss, an unbound line is tied to every pairing it can be, and the contrast screen's claim withdrawn — FIXED IN THE HARNESS (W5 R-QG, fix round; verifier: defects, one major, O70); no critic panel has run (closes QG-V1 to QG-V5 and O70's R2-2, R2-3, R2-4, R2-6 and R2-7; R2-5's claim is withdrawn; R2-1 is not closed by class, QG3-1)
+**What was fixed (reported).** `review/blind-pair.mjs` RULE v6, ruleSha `49aa61e0b431`:
+- **QG-V1 / requirement 3.** Recognition drops a WIN but never erases a LOSS, on any line, first or later;
+  v5 had let a first-line `recognizedAs` naming an ordinary identity string ("a Sign in form") erase one.
+  Two rows that expected PASS under the earlier D2 reading now expect UNPROVEN and are annotated; the
+  owner is asked to confirm that requirement 3 supersedes D2 here (O70).
+- **QG-V2 (R2-1 by class).** The leaves of a field whose type is wrong are read as possible picks, never as
+  "no answer": objects and arrays recursed, the non-string elements of `reasons` and `faults`, and a reason
+  or fault that is nothing but A, B or tie.
+- **QG-V5.** An unbound line is tied, side unknown, to every pairing its frames name or whose dimension it
+  files an answer under; its loss stands there and its re-ask never counts. A line tied to nothing still
+  blocks C1 overall.
+- **QG-V4.** The CLI's evaluate options come from the tested `cliEvaluateOptions()`; `--selftest` fails
+  when the R2-4 real-data check cannot run (the build and `--capture-ours` print NOT RUN instead, so a
+  first capture can start); the `recognized: false` + `recognizedAs` shape rule has a pinning row.
+- **QG-V3 (R2-5's claim corrected).** The reference task state rests on each target's DECLARED
+  `taskState`, which blind-pair requires inside the crop. `review/capture-refs-clean.mjs`'s contrast
+  screen is a sanity screen only, and its self-check now reports it UNCALIBRATED for all 5 paired
+  references (`contrastCalibration`). The earlier wording "proves it is content, not chrome" is withdrawn.
+- **The refs close control.** `review/capture.mjs` dismissal by role and name had regressed on
+  non-button close controls such as `<div aria-label="Close">`; a second pass over visible aria-labelled
+  elements restores a superset of the old exact selector, with the same exclusions. Checked against the
+  synthetic control page only.
+**Pinned by** `node review/blind-pair.mjs --selftest` (exit 0, 137 ok, 0 FAIL; 18 new or changed checks
+red on the verifier-reviewed file; 15 mutants, run one at a time, all killed with each file restored
+sha-equal) and `node review/capture.mjs selftest` (59 of 59; 58 of 59 before the close-control fix).
+**Sheets.** `node review/blind-pair.mjs` exited 2 (a BLOCKED pairing): 8 sheets for 4 of 5 pairings at
+`3509b73c` (dirty tree), byte-identical names, a new KEY (`blind-key/4`, ruleSha `49aa61e0b431`);
+`c1-network-visualisation` is still BLOCKED (`08-path-indeterminate` at tier "balanced", not recaptured).
+**Not closed:** a pick token in a WELL-TYPED string field other than `reasons` and `faults` is never read —
+`recognizedAs: "B"` under `recognized: false` with no filed answer still loses the loss (QG3-1, major,
+O70). **C1 stays UNPROVEN.**
+
 > **Phases 3 and 3.5 of the single-source-of-truth program — the regenerated fleet, rendered (recorded
 > 2026-09-30).** Phase 3 began with its precursor `74275919` (the sample fleet regenerated by
 > `webapp/sample_data/build_sample.py` from this branch's engine and the four compiled documents
@@ -5620,7 +5805,7 @@ to build member rows from an ordered tuple, and adds `tests/test_fhrp_member_key
 record step ran: 2 of 2 passed); no cluster report the record step received describes either, so this
 entry stays OPEN until one does and its verifier upholds it.
 
-### O68. D3 — the focus audit `review/audit-d3-focus.mjs` is UNPROVEN at the current tree: no recorded run completed on it, every recorded run shows failures, and by owner instruction it gets no more runs — OPEN (owners: the Inspector owner for the citation-path failure; `review/audit-d3-focus.mjs`; the owner for any further run)
+### O68. D3 — the focus audit `review/audit-d3-focus.mjs` is UNPROVEN at the current tree: no recorded run completed on it, every recorded run shows failures, and by owner instruction it gets no more runs — OPEN; the citation-path failure FIXED IN CODE in W5 (R130), render-mode equivalence still unproved (owners: `review/audit-d3-focus.mjs`; `src/app/focus-return.ts` / `App.tsx`; the owner for any further run)
 From the recorded logs of phase 3.5 (read by the record step; the audit was NOT run by it) and Q-H's
 second independent verification (HEAD `f24b9ccb`). **Owner instruction of 2026-09-29:** the focus audit
 gets no more runs in any mode (`--sweep`, `--vp=390`, default, `--crossings` or any other); the logs
@@ -5677,6 +5862,34 @@ released through the third door and its entry deleted. **Status: D3 is UNPROVEN 
 no complete run exists and the partial runs show known failures. It is not PASS by inference from the
 PASS lines, and it does not move until the owner authorises a run of the committed harness on the
 committed tree.
+**Status at W5 (2026-09-30), the preview-scope repairs after phase 3.5 — narrowed, still UNPROVEN.**
+From R-D3's two rounds and its verifier (reported; the record step did not run the audit).
+- **Closed in code:** QH-V2-2, the "Copy the citation path" failure, with the within-rung resize case and
+  the skip-link settle race it led to (R130); the doors' rule-4 drift, the guard's per-file release and
+  V1-2 (R131). The `PENDING_ROUTING` debt is down from 12 entries to 2: R-D3 released 9 and routed
+  `scene.ts`'s tier-fade overlay unmount, which the working tree's guard file now records as released by
+  the W5 engine gate together with a `scene.test.ts` change (read from the tree; the gate summary does not
+  mention it). The two left are `main.tsx` and `core/dataset/refusal.ts`: the boot line lives in the
+  entry chunk, which imports no React, so the door needs a React-free module or an owner decision.
+- **QH-V2-3 (render-mode equivalence) — OPEN, contested.** R-D3 fixed three harness defects behind the
+  earlier 47 differences (record keys that depended on which opener's batch finished first, a scene
+  control named from the frame rate, and a settle timed on the harness's clock instead of the page's),
+  made `--render-check` honour `--state=`, and ran it bounded once per state with
+  `ATLAS_URL=http://localhost:4191 timeout 2700 node review/audit-d3-focus.mjs --render-check
+  --state=<s>`: idle EXIT=0 in 19.1 min (421 compared, 0 differ, 2 excused, 2 pairs named differently by
+  the mode with the same outcome); "a finding selected" EXIT=0 in 23.9 min (543 compared, 0 differ). Both
+  ran on the build made before the final chip change. The verifier's rerun on the FINAL build did not
+  reproduce that result for "a finding selected" (V2-1, major), so the cluster's "CLOSED" is not recorded
+  here. The sweep's Tab walk and hit tests are still unproved under suspended draws.
+- **Still open from the verifier:** V2-2 (the crossing path's `releaseFocusLeftUnseen` call in `App.tsx`
+  is unpinned, masked by `keepFocusSeen`), V2-3 (`returnFocus` does not walk outward, O77), V2-4
+  (`sightOf`'s containing-block rule for absolutely positioned elements is unpinned) and V2-5 (the bounded
+  crossing run for "a device selected" could not be reproduced to completion; the harness failed without
+  saying why).
+- **Unchanged:** QH-V2-1 (TRACT) — no complete `--sweep`, `--vp=390` or default run exists on any tree, so
+  **D3 stays UNPROVEN** and no criterion moves. The bounded runs above were made in W5 after the owner
+  instruction of 2026-09-29; whether the owner authorised them is not stated in the reports the record
+  step received, and the owner should say whether they stand as evidence.
 
 ### O69. The /scope reader — the XML path still reads an XHTML page differently from the browser, and four more residuals — OPEN (owners: `webapp/backend/app.py`, `webapp/tests/test_scope_mount.py`, `tests/test_ssot_registry.py`, `.github/`, `portable/`)
 From Q-F's second independent verifier (reported; not re-verified by the record step).
@@ -5712,6 +5925,44 @@ From Q-F's second independent verifier (reported; not re-verified by the record 
   on GitHub-hosted runners** (first run = findings), and whether webapp-ci's backend leg is a required check
   is a branch-protection decision. Stated residual of the referrer rule: a hostile script setting a policy
   at run time; the primary control remains that the viewer has no write code.
+**Status at W5 (2026-09-30), the preview-scope repairs after phase 3.5 — the four QF-V2 items and the
+three routed portable items FIXED IN CODE; one major and the final check's red stay OPEN.** From R-QF
+(closed PARTIAL), R-PB (upheld) and their verifiers (reported).
+- **Closed:** QF-V2-1 (XML is refused outright), QF-V2-2 (top-level files are citation roots), QF-V2-3
+  (a closed construct accept-list for the shell) and QF-V2-4 (shell-exact continuation joins), with
+  round 2's shallow-history skip, CSS accept-list, icon-in-head rule and non-shell HTML refusal (R132).
+  The three routed portable items — the build refusal naming its commands, the frozen smoke's
+  `GET /scope/` proof with `[ ok ] atlas-scope-dist`, and the SBOM and notices for atlas-scope's
+  production graph — are fixed (R133). R-QF reports the `atlas-scope/**` pair unchanged and pinned by
+  `tests/test_webapp_ci_scope.py`.
+- **RQF-V2-1 (major) — OPEN.** A shell whose only icon link sits inside `<title>` is served ready, and
+  Chromium then requests the origin's `/favicon.ico`, outside /scope. This refutes the cluster's "by
+  construction" claim that a build served ready requests nothing outside /scope, and its statement that
+  the icon-in-head rule only refuses more than the browser needs; the 340-case request oracle has no such
+  member.
+- **RQF-V1-2 / RQF-V2-2 — FIXED IN THE WORKING TREE after the cluster reports.** R-QF's final check was
+  PYTEST_EXIT=1 on one test outside its files,
+  `tests/test_ssot_registry.py::test_no_registry_citation_pins_a_line_number`, because `docs/ssot.md:152`
+  cited `COLLECT_PARSE_V3_23_0.py:2485/2624/2629` (one pre-existing skip, `test_security_hardening.py:1059`,
+  WinError 1314). The working tree now cites `COLLECT_PARSE_V3_23_0.py :: main` there (read from the diff
+  by the record step; no cluster report names the edit), and the record step's own run of
+  `tests/test_ssot_registry.py` exited 0 on this full-history checkout.
+- **Routed items, applied in the working tree after the cluster reports (read from the diff; no report
+  names them):** both `actions/checkout` steps in `.github/workflows/ci.yml` now set `fetch-depth: 0`, so
+  the renamed-owner half of the history check can run there (no hosted run yet); `portable/README.md`'s
+  build-refusal and smoke prose now names the Atlas Scope hub build, `/scope/` and the atlas-scope
+  inventory.
+- **R-PB's open minors and residuals:** PB-V1-H (the build refusal's missing-tracked-assets branch is
+  unpinned), PB-V1-E (no test pins that a scope notice's `npm_project` is `atlas-scope`), PB-V1-J (the
+  `BUILD_OUTPUTS`-to-inventory guard is tested only standalone, not through `toolchain_receipt`), PB-V1-Q
+  (`loopback_http_scope_runtime_shell` is missing from `release_contract`'s `no_evidence` set, so a row
+  for it with arbitrary evidence is accepted — the hand-kept-list shape again) and PB-V1-B (the
+  Content-Type check in `scope_shell_gap` is unpinned). PyInstaller was not run, so nothing ran against a
+  frozen `Atlas.exe`. `tests/test_make_stick.py::test_release_package_longest_member_verifies_at_deep_updater_path`
+  timed out (`make_stick.ps1` over 120 s) under host contention and was not re-run on an idle host.
+- **Also open:** `tests/test_transition_schema_assets.py::test_byte_bound_checkout_owners_are_lf_exactly_attributed`
+  is red in the engine gate until R-QF's `webapp/backend/app.py` edit is committed (the W5 banner).
+- **Unchanged:** no report states a run of these legs on GitHub-hosted runners.
 
 ### O70. C1 — the KEY validator still lets a loss vanish in three ways, and the protocol's other residuals — OPEN (owner: `review/blind-pair.mjs`, `review/capture-refs-clean.mjs`, `review/capture.mjs`); the critic panel was NOT run (owner instruction)
 From Q-G's second independent verifier (reported; its probes imported the worktree's `evaluate()`). RULE v4
@@ -5747,6 +5998,37 @@ and `review/REFERENCES.md` both say "A LOSS IS NEVER IGNORED"; these three contr
   artefact or any published bundle.
 **C1 stays UNPROVEN:** the owner instruction of 2026-09-29 defers the critic panel, and a panel run
 against a validator with these three holes would not be C1 evidence.
+**Status at W5 (2026-09-30), the preview-scope repairs after phase 3.5 — the three holes and four of the
+minors FIXED IN THE HARNESS under RULE v6; one major stays OPEN; C1 stays UNPROVEN.** From R-QG's fix
+round and its verifier (reported).
+- **Closed (R134):** R2-2, R2-3 (no recognition erases a loss, on any line), R2-4, R2-6 and R2-7, and the
+  verifier's QG-V1 to QG-V5. R2-5's claim is withdrawn and corrected: the reference task state rests on
+  each target's declared `taskState`, and the contrast screen reports itself UNCALIBRATED for all 5 paired
+  references. The carried `capture.mjs refs` exact `[aria-label="Close"]` item is replaced by a role and
+  name match plus a second pass that restores a superset (synthetic control page only).
+- **QG3-1 (major) — R2-1 is not closed by class.** A pick token held in a WELL-TYPED string field is never
+  read, except in `reasons` and `faults`: `recognizedAs: "B"` under `recognized: false` — a shape the
+  validator itself flags as uninterpretable — on a line with no filed answer is read as "no answer", and
+  the loss vanishes. The pick-token rule is scoped to a hand-kept list (`{reasons, faults}`) standing in
+  for the class, and that list normalises less than `pickOf` ("B." is a possible loss in `perDimension`
+  but is not read as a reason).
+- **Minors still open:** QG3-2 — four RULE v6 behaviours pinned by no row (tying an unbound line to the
+  pairing its frames name; the unknown-side rule; the 8+-hex unique-prefix resolver branch; the
+  `recognized: true` + empty `recognizedAs` shape rule), each failing safe at C1-overall level; QG3-3 —
+  code comments still say the contrast screen PROVES task-state text is content, not chrome; QG3-4 —
+  `capture.mjs refs` narrows the old consent matching (anchored `^(accept|allow)( all)?\b` and
+  `^got it\b` no longer dismiss "I accept" or "OK, got it", which the old substring match clicked) and
+  now clicks every visible matching control, not the first.
+- **Owner decision:** confirm that requirement 3 (no recognition erases a loss) supersedes D2's
+  first-line reading; two validator rows were changed from PASS to UNPROVEN on that reading.
+- **The network-visualisation sheet** is still BLOCKED (`08-path-indeterminate` at tier "balanced", not
+  recaptured; the quiet-host `--capture-ours` step is pending). The app gate found `capture.mjs app`'s
+  frame-rate flag intermittent on that state at 1440 (light in one wave run, dark in another: 2 of 3 wave
+  runs, 0 of 2 base runs; the last wave run 32 of 32), and it recurred with the host at 19 % load, so the
+  carried "only if it reproduces on an idle host" condition is partly met; the fabric owners should
+  measure it on a truly idle host with `measure-fps.mjs`.
+- **Unchanged:** D5 and D7 as carried; the third-party imagery policy. No critic panel ran, so **C1 stays
+  UNPROVEN** and no criterion moves.
 
 ### O71. The engine gate's `pytest` is red on one real test and eight expected linked-worktree reds — OPEN (owners: the owner, for a test-only module boundary; `webapp/tests/test_scope_mount.py`; `atlas-scope/src/forwarding/`)
 From the phase-3.5 engine gate (reported), confirmed by Q-F's verifier and the gate's targeted and full
@@ -5873,6 +6155,20 @@ More generally, R129's product changes — this walk and the `hidden`-subtree ch
 "Select <host>" hand-off, and `DataGrid.tsx`'s hit-all probe sheet — have had no independent verifier and,
 by the owner instruction, no focus-audit run; the gate's full suite ran after all of them (file times
 against the gate's logs), which is the only evidence they have.
+**Status at W5 (2026-09-30), the preview-scope repairs after phase 3.5 — the regex defect FIXED IN CODE;
+the outward walk and part of R129's verification stay OPEN.** From R-D3 and its verifier (reported).
+- **Closed:** `idRefs` in `src/app/focus-return.ts` is the only split of an ID-reference list and uses
+  `/\s+/`, pinned by `src/app/focus-return.labelledby.test.ts` (R131). R-D3 checked R129's
+  `focus-return.ts` changes — including the `handOffFocus` walk that the Evidence pane's "Select <host>"
+  hand-off uses — against rule 4, and restated rule 4 once for every door, with a rendered check in
+  `tryFocus` (R131).
+- **V2-3 — OPEN.** The outward walk is not one statement for every door: `returnFocus` tries only the
+  nearest region's places and then the recorded region, so when those are unrendered and an outer named
+  region is shown it returns null with focus on `<body>`, against the module's own "never land on
+  `<body>`".
+- **Not covered by any W5 report:** R129's `DataGrid.tsx` hit-all probe sheet still has no independent
+  verifier. R129's repairs are now committed (`363e865e`, "close phase 3.5"); W5's own edits are
+  uncommitted in this working tree.
 
 ### O23. Clean-clone evidence — the re-grade of `78bdba5` ran F1, F2, F4 and F5 from a fresh clone of that commit (F1, F4, F5 PASS; F2 red, R85); the re-grade of `8eac055` ran F5 from a fresh clone of it (PASS); the re-grade of `34bd435` ran F1 in part, F4, F5 and F6 from a fresh clone of it; nothing has been run from a clone of `7f67013` — OPEN for A–E, F2, F3 and the scripts `tsc` project at `34bd435`, and for everything at `7f67013` (owner: the re-grade of `7f67013`)
 **Status at `7f67013` (wave 8).** The heading's old claim — "nothing has been run from a clone of

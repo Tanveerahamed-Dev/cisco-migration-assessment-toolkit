@@ -37,6 +37,7 @@ import { prepareProceduralMaps, proceduralMapsReady } from "./materials";
 import { ALL_CHASSIS_KINDS, chassisPrepared, prepareChassis, type ChassisBuildOptions } from "./geometry/chassis";
 import { SCENE_DETAIL } from "./quality";
 import { deferPastPresentation } from "../panels/deferPastPaint";
+import { releaseFocusFrom } from "../app/focus-return";
 
 import "./Fabric3D.css";
 
@@ -852,7 +853,9 @@ export function Fabric3D({
     } catch (err) {
       // No WebGL, a lost context, or a driver that refuses the request. The fabric is still fully
       // available through the tree, and saying so is the honest answer; throwing here would take
-      // the whole investigation down with the renderer.
+      // the whole investigation down with the renderer. The canvas is a tab stop, so focus leaves it
+      // through the owner before it goes (focus-return.ts, third door; a no-op when it is elsewhere).
+      releaseFocusFrom(canvas, null);
       canvas.remove();
       canvasRef.current = null;
       setSceneError(err instanceof Error ? err.message : String(err));
@@ -1103,6 +1106,9 @@ export function Fabric3D({
       sceneRef.current = null;
       canvasRef.current = null;
       scene.dispose();
+      /* A rebuild (new maps, a new hover channel) removes the focusable canvas the reader may be on: focus goes
+         to the fabric's region first (focus-return.ts, third door), never to <body>. */
+      releaseFocusFrom(canvas, null);
       canvas.remove();
     };
   }, [onEvent, hover, helpId, mapsReady, layoutReady]);

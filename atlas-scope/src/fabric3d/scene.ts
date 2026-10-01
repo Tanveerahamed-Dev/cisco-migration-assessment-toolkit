@@ -50,6 +50,7 @@ import type { Camera } from "three";
 import type { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
+import { releaseFocusFrom } from "../app/focus-return";
 import { presentBand } from "../core/band-qualification";
 import type { Device, Link, Trace } from "../core/types";
 import { roleGlyphClass } from "../core/roles";
@@ -2588,12 +2589,15 @@ const createSceneImpl = (
    * ./emphasis (`TIER_FADE_MS`, `TIER_FADE_EASE`), held by `src/core/motion-inventory.test.ts`
    * against its §4.8 row. */
   /* The overlay itself: ./emphasis `createTierFadeSlot` owns its life (mount, hand-over, hold, fade,
-     removal) and is executed in emphasis.test.ts. This is the page it is lent, and all of it. */
+     removal) and is executed in emphasis.test.ts. This is the page it is lent, and all of it. Before its one removal,
+     focus leaves the overlay through focus-return.ts's third door (a no-op: the overlay is a <canvas> with no tabindex,
+     so it never holds focus). */
   const tierFade = createTierFadeSlot<HTMLCanvasElement>({
     mount: (el) => {
       canvas.parentElement?.appendChild(el);
     },
     unmount: (el) => {
+      releaseFocusFrom(el, null);
       el.remove();
     },
     write: (el, opacity) => {

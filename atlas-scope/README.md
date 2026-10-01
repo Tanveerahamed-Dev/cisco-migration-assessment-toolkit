@@ -89,11 +89,24 @@ time). AssessHub serves that directory at `/scope` by default (`webapp/backend/a
 every AssessHub access guard — and compiles them in the browser. AssessHub refuses to serve a /scope
 build that is not a runtime build or that carries any snapshot evidence, and says why instead of
 linking it (`webapp/backend/app.py` `_scope_file_index`; its self-test prints the verdict on its
-`atlas-scope-dist` line). It also reads `index.html` — and any other HTML or XML page a build ships —
-only the way a browser reads it, so the shell must stay plain markup: every `<` opens a tag, an end
+`atlas-scope-dist` line). `index.html` must be the build's ONLY page: AssessHub serves no other HTML
+page and no XML-typed page at all (SVG, XHTML, any `*/xml` or `*+xml` type) — the hub build ships
+none, so a build carrying one is refused whatever it holds (`_SCOPE_REFUSED_HTML_PAGE`,
+`_SCOPE_REFUSED_XML`). It reads `index.html` only in a restricted markup language whose reading is
+the browser's by construction, so the shell must stay plain markup: every `<` opens a tag, an end
 tag `</name>` or a well-formed comment (never `a < b` in an inline script, `</script x>`, `<!-->` or
-`<![CDATA[`), no comment contains `</`, and no page declares its own referrer policy
-(`_scope_html_reading`; anything else is refused as `invalid_build`, never guessed at). The portable Atlas bundle ships the same hub build as its own member
+`<![CDATA[`), no comment contains `</`, and it declares no referrer policy of its own
+(`_scope_html_reading`). The shell is also held to a closed accept-list of constructs
+(`_scope_shell_refusal`): only elements and attributes that load nothing, a `style` that cannot name
+a resource, `<script type="module" src>` and `<link rel="stylesheet|modulepreload|icon">` naming a
+built `/scope/assets/` file (an icon may be a `data:image/` URL), an icon declared in the head
+(without one there, a browser requests `/favicon.ico`, outside `/scope`), and the one inline theme-boot script whose exact
+text AssessHub pins (`_SCOPE_SHELL_INLINE_SCRIPTS` — change it together with that script here).
+Every stylesheet a build ships must name no resource either (`_scope_css_refusal`: no `@import`,
+`url()`, `image-set()` or other resource function, no at-rule but `@media`, `@supports`,
+`@container`, `@keyframes`, `@layer` and `@property`), so a page AssessHub serves as ready loads
+nothing outside `/scope` through its markup or its CSS. Anything else is refused as
+`invalid_build`, never guessed at. The portable Atlas bundle ships the same hub build as its own member
 (`portable/atlas_bundle.py` `SCOPE_DIST_SOURCE`), and its build refuses to proceed without it.
 
 **Digest forms.** A digest is shown with its form, because the same snapshot has several: the

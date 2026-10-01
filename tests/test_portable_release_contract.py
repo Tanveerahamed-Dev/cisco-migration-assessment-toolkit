@@ -810,6 +810,152 @@ def test_frontend_runtime_dependency_has_sbom_and_full_notice_binding(tmp_path: 
     assert libraries[0]["properties"][0]["value"] == notice["key"]
 
 
+def _npm_package(project: Path, install_path: str, license_text: str) -> None:
+    package = project.joinpath(*install_path.split("/"))
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "LICENSE").write_bytes(license_text.encode("utf-8"))  # exact bytes, no CRLF
+
+
+def _scope_repository(tmp_path: Path, scope_packages: dict[str, dict]) -> Path:
+    """A synthetic repository whose Atlas Scope project (atlas-scope/, the npm project of the
+    bundle's hub build) has ``scope_packages`` in its lock, each production one installed with a
+    LICENSE, and whose AssessHub SPA project ships a same-named ``react`` (so the two projects'
+    notices must not collide)."""
+    repository = _repository(tmp_path)
+    frontend = repository / "webapp" / "frontend"
+    _npm_package(frontend, "node_modules/react", "AssessHub react terms.\n")
+    (frontend / "package-lock.json").write_text(json.dumps({
+        "lockfileVersion": 3,
+        "packages": {
+            "": {"name": "frontend"},
+            "node_modules/react": {"version": "19.2.8", "license": "MIT", "integrity": "sha512-web"},
+        },
+    }), encoding="utf-8")
+    scope = repository / "atlas-scope"
+    for install_path, package in scope_packages.items():
+        if package.get("dev") is not True:
+            _npm_package(scope, install_path, f"{install_path} terms.\n")
+    (scope / "package-lock.json").write_text(json.dumps({
+        "lockfileVersion": 3,
+        "packages": {"": {"name": "atlas-scope"}, **scope_packages},
+    }), encoding="utf-8")
+    # installed packages are untracked build-host state, as in the real repository
+    (repository / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-qm", "scope dependency fixture")
+    return repository
+
+
+def _released_notices_and_sbom(tmp_path: Path, repository: Path) -> tuple[dict, dict]:
+    bundle = _bundle(tmp_path)
+    source = subject.source_identity(repository)
+    output = tmp_path / "out"
+    index = subject.build_portable_release(repository, bundle, output, _qualification(source, bundle))
+    archive = output / index["zip"]["name"]
+    assert subject.verify_portable_release(archive, expected_source=source)["status"] == (
+        "SELF_CONSISTENCY_PASS")
+    with zipfile.ZipFile(archive) as package:
+        prefix = f"Atlas/{subject.METADATA_DIR}/"
+        notices = json.loads(package.read(prefix + subject.THIRD_PARTY_NOTICES_NAME))
+        sbom = json.loads(package.read(prefix + subject.SBOM_NAME))
+    return notices, sbom
+
+
+_SCOPE_FIXTURE_PACKAGES = {
+    "node_modules/three": {"version": "0.186.0", "license": "MIT", "integrity": "sha512-three"},
+    "node_modules/react": {"version": "19.2.8", "license": "MIT", "integrity": "sha512-scope"},
+    "node_modules/zustand": {"version": "5.0.15", "license": "MIT", "integrity": "sha512-z"},
+    # a transitive production package, installed nested under its dependent
+    "node_modules/zustand/node_modules/scheduler": {"version": "0.27.0", "license": "MIT"},
+    "node_modules/vite": {"version": "8.2.1", "license": "MIT", "dev": True},
+}
+
+
+def test_scope_hub_production_graph_has_sbom_and_full_notice_binding(tmp_path: Path) -> None:
+    """Requirement R-PB 3: atlas-scope's production lock graph is in the notices and the SBOM, each
+    package with the license text of its installed package directory (the same sourcing as the
+    AssessHub SPA's), dev packages excluded, and the two projects' same-named packages distinct."""
+    repository = _scope_repository(tmp_path, _SCOPE_FIXTURE_PACKAGES)
+    notices, sbom = _released_notices_and_sbom(tmp_path, repository)
+    by_key = {item["key"]: item for item in notices["components"]}
+    scope_keys = {key for key in by_key if key.startswith("npm:atlas-scope/")}
+    assert scope_keys == {
+        "npm:atlas-scope/node_modules/three@0.186.0",
+        "npm:atlas-scope/node_modules/react@19.2.8",
+        "npm:atlas-scope/node_modules/zustand@5.0.15",
+        "npm:atlas-scope/node_modules/zustand/node_modules/scheduler@0.27.0",
+    }
+    assert "npm:node_modules/react@19.2.8" in by_key  # AssessHub's own react, unchanged key
+    for key in scope_keys:
+        notice = by_key[key]
+        install_path = key[len("npm:atlas-scope/"):].rsplit("@", 1)[0]
+        assert notice["npm_project"] == "atlas-scope"
+        assert notice["install_path"] == install_path
+        assert [row["content"] for row in notice["license_files"]] == [f"{install_path} terms.\n"]
+        assert notice["license_files"][0]["origin"] == "installed_package"
+    assert by_key["npm:node_modules/react@19.2.8"]["license_files"][0]["content"] == (
+        "AssessHub react terms.\n")
+    assert not [key for key in by_key if "vite" in key]  # dev-only: not in the production graph
+    properties = {
+        prop["value"]
+        for component in sbom["components"] if component["type"] == "library"
+        for prop in component["properties"] if prop["name"] == "atlas:third_party_notice_key"
+    }
+    assert scope_keys <= properties
+    scope_components = [
+        component for component in sbom["components"]
+        if {"name": "atlas:npm_project", "value": "atlas-scope"} in component.get("properties", [])
+    ]
+    assert sorted(component["name"] for component in scope_components) == [
+        "react", "scheduler", "three", "zustand"]
+
+
+def test_a_production_package_added_to_the_scope_lock_reaches_sbom_and_notices(tmp_path: Path) -> None:
+    """Requirement R-PB 3: the scope inventory is DERIVED from atlas-scope/package-lock.json. A
+    production package planted in that lock (never named anywhere in the release code) must appear
+    in the notices and the SBOM with its license text; a hand-kept list would miss it."""
+    planted = {**_SCOPE_FIXTURE_PACKAGES,
+               "node_modules/planted-runtime-probe": {"version": "0.0.1", "license": "ISC"}}
+    repository = _scope_repository(tmp_path, planted)
+    notices, sbom = _released_notices_and_sbom(tmp_path, repository)
+    key = "npm:atlas-scope/node_modules/planted-runtime-probe@0.0.1"
+    notice = {item["key"]: item for item in notices["components"]}.get(key)
+    assert notice is not None, sorted(item["key"] for item in notices["components"])
+    assert notice["license_files"][0]["content"] == "node_modules/planted-runtime-probe terms.\n"
+    assert any(
+        {"name": "atlas:third_party_notice_key", "value": key} in component["properties"]
+        and component.get("licenses") == [{"license": {"name": "ISC"}}]
+        for component in sbom["components"] if component["type"] == "library"
+    )
+
+
+def test_a_scope_production_package_without_installed_license_evidence_refuses(tmp_path: Path) -> None:
+    """Absence is never health: a production package in the scope lock whose installed directory is
+    missing (npm ci not run in atlas-scope) refuses the release rather than shipping a gap."""
+    repository = _scope_repository(tmp_path, _SCOPE_FIXTURE_PACKAGES)
+    import shutil
+
+    shutil.rmtree(repository / "atlas-scope" / "node_modules" / "three")
+    bundle = _bundle(tmp_path)
+    source = subject.source_identity(repository)
+    with pytest.raises(subject.PortableReleaseError, match="atlas-scope/node_modules/three"):
+        subject.build_portable_release(repository, bundle, tmp_path / "out", _qualification(source, bundle))
+
+
+def test_every_bundled_build_output_has_an_npm_inventory(monkeypatch) -> None:
+    """The npm projects inventoried are exactly the projects of the bundle manifest's BUILD_OUTPUTS:
+    a new build output shipped in the bundle refuses the release until its production graph is
+    inventoried (the class, not a list of the two projects known today)."""
+    from portable import atlas_bundle
+
+    assert {project for _field, project in subject.bundled_npm_inventories()} == {
+        "webapp/frontend", "atlas-scope"}
+    monkeypatch.setattr(atlas_bundle, "BUILD_OUTPUTS",
+                        (*atlas_bundle.BUILD_OUTPUTS, "another-app/dist"))
+    with pytest.raises(subject.PortableReleaseError, match="another-app"):
+        subject.bundled_npm_inventories()
+
+
 def test_signed_receipt_requires_exact_independent_authenticode_policy_evidence(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     bundle = _bundle(tmp_path)
