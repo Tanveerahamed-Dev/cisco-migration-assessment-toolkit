@@ -289,3 +289,11 @@ generated-file hashes are checked again before commit. Repository privacy and th
 new-commit marker scan must pass immediately before publication. Hosted full Python matrix,
 coverage, distribution/portable and Master Reference gates still bind the eventual PR head;
 local results do not stand in for those checks.
+
+### Publication
+
+Repository privacy and the complete new-commit marker scan passed before pushing `087b00c8`.
+The marker scan covered all ten commits outside main, including intermediate changes, and
+2,104,617 bytes of messages/patches with no matches. PR #583 is open against main `8000adce`.
+Hosted checks are running; the final head, including this board/receipt update, requires fresh
+successful privacy gates before its push and successful applicable hosted checks before merge.

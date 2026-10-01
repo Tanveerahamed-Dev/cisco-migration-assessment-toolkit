@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout | Codex | Main after #580 merged as `60d97d26`; consumer source frozen at `e4be15f1`. Single LF-only regeneration, all local integration gates and independent source/data/test reviews complete. Preserved negative receipts and final results are in [validation](engine-defects-validation-2026-10-01.md). (2026-10-01) | Pass both privacy checks, push/open the PR, then wait for all applicable exact-head hosted gates and merge only when green. Do not regenerate fixtures again. |
+| W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout; [PR #583](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/583) | Codex | Pushed through `087b00c8` after both privacy gates passed. Single LF-only regeneration, all local integration gates and independent source/data/test reviews complete. Hosted PR checks are running; see [validation](engine-defects-validation-2026-10-01.md). (2026-10-01) | Wait for all applicable hosted gates on the final #583 head, then use the authorized exact-head merge commit. Verify merged-tree equality before starting W2c. Do not regenerate fixtures again. |
 | W2c | Backend endpoint and first core screens | planned `codex/core-screens`; reuse existing `.claude/worktrees/ui-projection-2` checkout after W2b merges; branch not created | Codex | API and visual-reference preflights complete; implementation waits for W2b | After W2b merges, create the listed branch from current main in the clean existing checkout. Add the paged, declared-response-model endpoint, then Overview / Trust / Inventory + device / Findings screens using only contract envelopes. |
 
 ## Owner decisions
@@ -97,6 +97,10 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-01, Codex (W2b PR publication):
+  - Repository privacy passed; the complete marker scan passed across all ten new commits and 2,104,617 patch/message bytes. Pushed `087b00c8` and opened #583 against main `8000adce`.
+  - Hosted Python, coverage, distribution, portable, Master Reference and UI checks are in progress. This board update records the publication; its final head must receive its own successful checks before the authorized merge. W2c remains held until that merge.
 
 - 2026-10-01, Codex (W2b single regeneration):
   - Regenerated golden, sample and four Scope bindings once from reviewed source `e4be15f1`, preserving LF. Independent review reconciled the finding/risk changes and all 807 sample evidence references.
