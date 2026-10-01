@@ -71,7 +71,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
 | W1 | Atlas Scope 3-D module program (phase 3.5) | `claude/atlas-scope-engine-sot` (pushed) | Claude Code session in the `.claude/worktrees/atlas-scope-engine` checkout | PR #579 green on every hosted check (2026-10-01; the master-reference job included) and waiting only for review. Its first hosted run was red on five checks; each is fixed in the PR. A snapshot-name defect class is closed by structure. `atlas-scope/` is in the master reference at identity depth: an owner-reversible decision, described in the PR. `main` (#578) is merged in. | Owner reviews and merges #579, preserving merge commits. Then delete this row (rule 8) and retarget W5's PR to `main`. D9 and D10 follow-ups start after the merge (ADR 0007). |
-| W5 | Atlas Scope preview-scope repairs: the D3 citation-path clipping, the `/scope` XML reader, the C1 KEY validator and bundle notices, then the C1 critic panel and an independent 39-criterion re-grade | `claude/scope-preview-fixes`, stacked on W1's branch (local until the owner's push authority for it) | Claude Code session in the `.claude/worktrees/scope-preview` checkout | Started 2026-09-30 after the owner lifted "finish 3.5 only" in the W1 session | Repair wave with independent verification, then the critic panel and the re-grade. Open the PR against W1's branch, and retarget it to `main` while it is open once #579 merges. |
+| W5 | Atlas Scope preview-scope repairs: the D3 citation-path clipping, the `/scope` reader, the C1 KEY validator, engine-owned display vocabularies and bundle receipts, then the C1 critic panel and an independent 39-criterion re-grade | `claude/scope-preview-fixes` (pushed), stacked on W1's branch | Claude Code session in the `.claude/worktrees/scope-preview` checkout | PR #582 open against W1's branch (2026-10-01). Two repair waves, each independently verified. The engine gate re-ran, and a whole-branch refuter found no blocker or major. D3 and C1 stay UNPROVEN, and no re-grade has run. Residuals are in `atlas-scope/docs/open-issues.md` O78. | On a quiet host: run the full focus audit, rebuild the C1 sheets, run the critic panel, then the re-grade. When #579 merges, retarget #582 to `main` while it is open. |
 | W2 | One-application UI consolidation (AssessHub + Scope + explorer) | engine slices on short branches off `main` (now: `feat/ui-projection-slice1`); UI slices after W1 merges | Claude Code | Engine honesty (#575) merged. `ui_projection/1` slice 1 (Overview + Trust) is PR #577. Prototype published privately to the owner; backlog in `docs/one-app-feature-backlog-2026-09-30.md` (2026-09-30). | Merge #577. Owner runs the prototype's 2-D vs 2.5-D task test on the reference laptop. After W1 merges: backend endpoint serving the projection with response models, then the first core screens. |
 
 ## Owner decisions
@@ -98,6 +98,12 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-01, Claude Code (W5):
+  - Ran the W5 repair wave and its W5b follow-up, each with independent verifiers and refuters.
+  - Re-ran the engine gate after a network drop killed it mid-wave.
+  - A whole-branch refuter found no blocker or major; its minors are fixed or recorded in O78.
+  - Pushed after the rule-7 checks passed (0 hits over 50 commits since `main`) and opened #582, stacked on #579.
 
 - 2026-10-01, Claude Code (W1):
   - Made #579's CI honest. Each red check was fixed at its root, with a test that fails without the fix:
