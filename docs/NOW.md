@@ -98,6 +98,11 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
 
 ## Handoff log (newest first)
 
+- 2026-10-01, Codex (W2 blocked audit):
+  - The same hook-repair approval and W1 merge dependency remain after three consecutive goal turns. #579 is still open/behind; the local hook marker is still present. Goal marked blocked, not complete.
+  - The fixes and handoff are committed locally; no push is permitted until the mandatory privacy verifier passes. The existing approval request remains pending.
+  - Stopped only the two local `gh run watch` clients. Hosted #581 main runs `36858426410` and `36858426344` remain live; query their terminal verdicts on resume. No W1 or fixture changes.
+
 - 2026-10-01, Codex (W2 continuation):
   - Re-fetched and confirmed #579 remains open/behind; #581 is merged, with exact-main CI run `36858426410` and Master Reference run `36858426344` still live.
   - Prepared and independently reviewed the six-command hook-path repair read-only; approval remains pending. No hooks were executed or modified. Concrete replacement and limits are in the W2b validation record.
@@ -145,7 +150,7 @@ board edits. **W2 is now held by Codex.** Claude Code has stopped all W2 work, s
 | Item | Branch / PR | Folder to open (Codex: Local mode, that folder) | State (2026-10-01) | Next step |
 |---|---|---|---|---|
 | W2a: `ui_projection` slice 2 (Inventory, device page, Findings) | `feat/ui-projection-slice2`, draft PR #580 | `.claude/worktrees/ui-projection-2` | Built, refuted, gates green. HELD until #579 merges: its tripwire test fails once #579's `evidence_refs` / `evidence_basis` / `deduction_refs` fields land. | After #579 merges: merge `origin/main` (merge commit), project those three fields so the tripwire passes, run every gate, mark ready, merge. |
-| W2b: engine defects G13 (move-group label), G15 (STP root uniqueness), G49 (dossier absence semantics) | `fix/engine-contract-defects`, new fixes local, no PR yet | `.claude/worktrees/engine-defects` | Codex completed the checkpoint and independent refutation; final related suite **1,022 passed**, ruff / CI mypy / frontend type check pass. Golden run: **4 failed, 17 passed**, refresh deliberately deferred. **Push blocked:** mandatory privacy verifier rejects pre-existing untracked `.codex/hooks.json`; path-only repair approval requested. See `docs/engine-defects-validation-2026-10-01.md`. | Approve the local hook-path repair, rerun both public-repo gates and push. After W1 merges #579: finish/merge W2a first, merge `origin/main` here with a merge commit, regenerate golden + sheet schema + sample ONCE with LF bytes, run all gates, open and merge W2b when CI is green. |
+| W2b: engine defects G13 (move-group label), G15 (STP root uniqueness), G49 (dossier absence semantics) | `fix/engine-contract-defects`, new fixes local, no PR yet | `.claude/worktrees/engine-defects` | **BLOCKED pending owner hook-path approval and W1 merge.** Codex completed the checkpoint and independent refutation; final related suite **1,022 passed**, ruff / CI mypy / frontend type check pass. Golden run: **4 failed, 17 passed**, refresh deliberately deferred. **Push blocked:** mandatory privacy verifier rejects pre-existing untracked `.codex/hooks.json`; path-only repair approval requested. See `docs/engine-defects-validation-2026-10-01.md`. | Approve the local hook-path repair, rerun both public-repo gates and push. After W1 merges #579: finish/merge W2a first, merge `origin/main` here with a merge commit, regenerate golden + sheet schema + sample ONCE with LF bytes, run all gates, open and merge W2b when CI is green. |
 | W2c: backend endpoint + first real screens | not started | none yet | Waits for W2a | A FastAPI endpoint serving `ui_projection` (paged, declared response models), then the AssessHub Overview / Trust / Inventory + device / Findings screens rendering only contract envelopes. The private prototype (v2) is the visual reference, and `docs/one-app-contract-gaps-2026-09-30.md` ranks the engine gaps. |
 
 **Not W2's (do not touch):** W1 / PR #579 (Atlas Scope) belongs to its own Claude Code session. It is green on
