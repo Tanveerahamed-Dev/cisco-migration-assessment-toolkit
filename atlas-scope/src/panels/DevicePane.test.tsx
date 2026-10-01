@@ -475,7 +475,7 @@ describe("configEvidenceFor", () => {
       expect(configEvidenceFor(f)).toEqual([]);
     }
     const named = fabric.findings.filter((x) => configEvidenceFor(x).length > 0).map((x) => x.id);
-    expect(named.sort()).toEqual(["F002", "F136", "F137", "F138", "F139", "F140"]);
+    expect(named.sort()).toEqual(["F002", "F131", "F132", "F133", "F134", "F135"]);
   });
   });
 });

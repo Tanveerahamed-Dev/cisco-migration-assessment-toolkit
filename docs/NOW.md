@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout | Codex | Main after #580 merged as `60d97d26`. Engine/projection/Scope consumer fixes independently reviewed; focused gates pass. No W2b fixture regeneration yet. Earlier negative receipts remain in [validation](engine-defects-validation-2026-10-01.md). (2026-10-01) | Regenerate golden/sheet schema/sample and Scope derivatives ONCE with LF bytes, review measured deltas, run all gates, pass both privacy checks, push/open the PR and merge when green. |
+| W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout | Codex | Main after #580 merged as `60d97d26`; consumer source frozen at `e4be15f1`. Single LF-only regeneration, all local integration gates and independent source/data/test reviews complete. Preserved negative receipts and final results are in [validation](engine-defects-validation-2026-10-01.md). (2026-10-01) | Pass both privacy checks, push/open the PR, then wait for all applicable exact-head hosted gates and merge only when green. Do not regenerate fixtures again. |
 | W2c | Backend endpoint and first core screens | planned `codex/core-screens`; reuse existing `.claude/worktrees/ui-projection-2` checkout after W2b merges; branch not created | Codex | API and visual-reference preflights complete; implementation waits for W2b | After W2b merges, create the listed branch from current main in the clean existing checkout. Add the paged, declared-response-model endpoint, then Overview / Trust / Inventory + device / Findings screens using only contract envelopes. |
 
 ## Owner decisions
@@ -97,6 +97,12 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-01, Codex (W2b single regeneration):
+  - Regenerated golden, sample and four Scope bindings once from reviewed source `e4be15f1`, preserving LF. Independent review reconciled the finding/risk changes and all 807 sample evidence references.
+  - The sheet guard initially rejected a summary-banner count change. Review proved all 74 sheets and columns unchanged; accepted the exact saved candidate through the documented reviewed-change path without rerunning the pipeline. The initial failure is retained.
+  - Projection/sample 665 tests, golden 22 tests, frontend 274 unit tests, five E2E tests and 22 visual checks pass. Backend: 1,224 passed / one Windows privilege skip. Final Scope: 6,992 passed / one sample-inapplicable skip; independent review verified every remapped assertion without weakening coverage. Earlier failures are preserved. No hosted W2b or merge pass is claimed.
+  - Integration is committed on this branch for publication, gated by fresh repository privacy and complete new-commit marker checks. Next: open W2b's PR and await the exact-head hosted gates before the authorized merge.
 
 - 2026-10-01, Codex (W2b consumer source freeze):
   - Closed the projection's G13 labels, G15 owner metadata/pointers/readiness scope and G49 input-state handling test-first. Independent final-source refutation found no residual actionable defects.

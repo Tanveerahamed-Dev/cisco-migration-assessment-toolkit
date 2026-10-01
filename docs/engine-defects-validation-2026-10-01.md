@@ -1,6 +1,6 @@
 # W2b engine defects: validation and integration handoff (2026-10-01)
 
-**Partial: engine and projection fixes independently reviewed; integration regeneration and final gates remain.**
+**Partial: local integration gates and independent reviews complete; exact-head hosted gates and merge remain.**
 Branch: `fix/engine-contract-defects`, continuing interrupted checkpoint `3cb8891d`.
 Design owner: `docs/engine-defects-design-2026-10-01.md`. Queue owner: `docs/NOW.md`.
 
@@ -210,3 +210,82 @@ valid published readiness verdict. Closed schemas and producer-vocabulary parity
 
 These focused passes do not replace the pending regeneration, all applicable integration gates,
 hosted full matrix/coverage/distribution checks, or exact-head merge verification.
+
+### Single regeneration and reviewed content
+
+Source was frozen as `e4be15f1`. The two selected golden writers shared one offline pipeline;
+the sample builder ran once with its pipeline return code checked; Scope's atomic compiler ran
+once against that sample. All seven generated files retain LF bytes. No top-level golden or
+sample sections were removed. Sample SHA-256:
+`e63d7facd9a6b6e937a2c13ecb8e04692eb955ec66573d39928a5f372eff9dd7`.
+
+The golden writer initially returned **1 passed / 1 failed**: its shrink guard classified the
+Risk Register's changed summary banner as a removed header. Independent review verified the
+saved workbook and exact schema candidate: all 74 sheets, order, row widths and 17 Risk Register
+columns remain. Only `COVERAGE: 11 of 33` becomes `10 of 33`, because access1's successful empty
+hygiene parser receipt now supports `ok / collected_but_empty`. The exact saved candidate
+(`5b9d597ec3d7eb01e03108da6795cca2db47cfd8dec2232df0c66cc91c3e03ac`) was accepted through the
+existing documented `ALLOW_GOLDEN_SHRINK=1` review path. No second pipeline generation or guard
+change occurred. The original failed receipt remains preserved.
+
+Independent golden review found 49 expected additions: 33 input states, 12 STP metadata fields,
+three ambiguity counts and one move-group label. Golden risk/compound summaries and 41 finding
+rows remain. Sample findings change from 146 to 140: five unsupported root-on-degraded-hardware
+compound findings disappear; two conflicting VLAN-root findings are replaced by one ambiguity
+finding carrying all 17 claimants. Scope's measured golden assertions are updated with that
+content, not only a digest. Earlier Scope acceptance reports remain historical measurements;
+their old finding IDs/counts do not establish current visual acceptance.
+
+Independent sample review reconciled all 17 changed sections: all 118 sections and 23 devices
+remain; 807 evidence references (587 finding references) resolve, and `ssot.reconcile()` reports
+no discrepancies. Removing unsupported root impact bonuses changes Severe/Elevated counts from
+14/4 to 4/14 and average risk from 44 to 40; health and exposure scores remain unchanged. All
+253 exposure records gain input custody. Validation retains 164 cases and NRFU retains 317,
+replacing 17 unsupported root expectations with explicit ambiguity/review disclosure. The
+unchanged pod access-switch narrative still says routine handling with 9/11 unassessed axes;
+that carried limitation is outside this repair's exposure-state scope and is not claimed fixed.
+
+Current local integration evidence:
+
+- Projection, protocol guard, golden guard/drift and sample selection: **665 passed**, no skips
+  or deselections, exit 0. This includes the formerly deferred producer-signature comparison.
+- Full sample freshness rebuild/check: **pass**, with mandatory pipeline return-code validation;
+  tracked sample bytes were not rewritten by the check.
+- Full pipeline golden suite with update mode unset: **22 passed**, no skips, exit 0, including
+  schema equality and injected future-clock checks.
+- Repository-wide Ruff and the eight-module mypy gate: **pass**.
+- AssessHub frontend: **274 unit tests passed**, build passed, and all tracked distribution
+  bytes remain identical. Browser E2E: **5 passed, 1 existing opt-in performance skip**.
+  Visual TypeScript passed; **22 visual browser tests passed** without baseline updates.
+  Scope standalone and hub builds passed.
+- Backend selection with all three `ATLAS_SCOPE_REQUIRE_*` switches enabled: **1,224 passed,
+  1 skipped**, exit 0. The skipped out-of-root file-symlink test needs a Windows privilege absent
+  on this host; the Linux hosted gate must execute it. One existing Starlette deprecation warning.
+
+Scope's final complete unit suite: **6,992 passed, 1 skipped, 0 failed** across all **224 files**,
+exit 0. The JSON report identifies the skip as the sample-inapplicable no-route preset case
+described below. Exact-head hosted checks and merge remain pending. Prior full-suite failures
+are retained above.
+
+The first post-regeneration Scope run is also retained as negative evidence: **6,984 passed,
+8 failed, 1 skipped**, exit 1 (219 passing / five failing files). All eight failures are stale
+sample-count/ID assertions across DevicePane, PriorityQueue and EvidencePane tests. They are
+being reconciled by matching the old and new finding content; behavioral assertions and
+synthetic absence controls remain required. This initial run is not a passing verdict.
+After the measured updates, all **759 tests in 11 affected files passed**, without skips, and
+Scope typecheck passed. The final full run also passed as recorded above. Its existing no-route suggestion skip is
+inapplicable to this sample, which offers no such preset; a separate counterfactual suite
+exercises that branch.
+
+Independent review of the frozen 12-file Scope test/support set found no actionable issue.
+It remeasured every changed count and matched 21 changed finding-ID pins by severity, category,
+title and device membership. No skip/only/todo was added and no behavior assertion relaxed.
+The four former conditional absent-wave query tests now always run on isolated synthetic data;
+Inspector continues to exercise actual null rendering. Sample bytes, `GOLDEN_SHA` and all four
+compiled binding envelopes agree, and the fail-closed digest guard remains intact.
+
+After all local gates, the reviewed source, all 12 Scope test/support hashes and all seven
+generated-file hashes are checked again before commit. Repository privacy and the complete
+new-commit marker scan must pass immediately before publication. Hosted full Python matrix,
+coverage, distribution/portable and Master Reference gates still bind the eventual PR head;
+local results do not stand in for those checks.

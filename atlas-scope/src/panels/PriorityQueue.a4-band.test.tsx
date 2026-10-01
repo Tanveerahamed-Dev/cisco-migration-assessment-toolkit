@@ -394,21 +394,21 @@ describe("A4: the whole band — a naming row visible when the reader acted keep
   });
 
   describeGolden("the report's exact case", () => {
-  it("1920x1080: the report's exact case — F099 13 px above the port's bottom edge, access13 picked: scrollTop does not fall to 0", async () => {
+  it("1920x1080: the report's exact case — F094 13 px above the port's bottom edge, access13 picked: scrollTop does not fall to 0", async () => {
     const g = GEOMETRIES[0]!;
     const c = mount(<PriorityQueue debounceMs={0} />);
     const { grid, portTop } = installLayout(c, g);
     const rows = dataRows(c);
-    const n = rows.findIndex((r) => idOf(r) === "F099");
+    const n = rows.findIndex((r) => idOf(r) === "F094");
     expect(n).toBeGreaterThan(-1);
     const start = scrollFor(n, bandNow(portTop, g) - 13 - g.row, g);
     readerScrollsTo(grid, start);
-    expect(namingIndices(c, "access13").filter((i) => inView(rows[i]!, portTop, g)), "F099 is the only naming row visible").toEqual([n]);
+    expect(namingIndices(c, "access13").filter((i) => inView(rows[i]!, portTop, g)), "F094 is the only naming row visible").toEqual([n]);
     act(() => { pickDevice("access13"); });
     await flush();
     expect(grid.scrollTop, `scrollTop ${start} -> ${grid.scrollTop}`).not.toBe(0);
     expect(Math.abs(grid.scrollTop - start)).toBeLessThanOrEqual(38);
-    expect(inView(dataRows(c)[n]!, portTop, g), "F099 stays fully visible").toBe(true);
+    expect(inView(dataRows(c)[n]!, portTop, g), "F094 stays fully visible").toBe(true);
   });
   });
 
@@ -512,4 +512,3 @@ describe("A4: browser Back onto a device selection keeps the reader's place", ()
     expect(inView(dataRows(c)[n!]!, portTop, g)).toBe(true);
   });
 });
-

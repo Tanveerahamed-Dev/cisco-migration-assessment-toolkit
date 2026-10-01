@@ -3802,7 +3802,7 @@
     "verify": "show running-config | include 7",
     "caution": "Decide define-vs-remove from intent; a wrong 'no' can drop a security/routing control.",
     "source": "hygiene-undefined",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "core1",
@@ -3820,7 +3820,7 @@
     "verify": "show running-config | include OSPF_TO_BGP",
     "caution": "Decide define-vs-remove from intent; a wrong 'no' can drop a security/routing control.",
     "source": "hygiene-undefined",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "core1",
@@ -3835,7 +3835,7 @@
     "verify": "show running-config | include weak-user-pw",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "core1",
@@ -3850,7 +3850,7 @@
     "verify": "show running-config | include insecure-snmp",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "core1",
@@ -3865,7 +3865,7 @@
     "verify": "show running-config | include telnet-enabled",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "access1",
@@ -3880,7 +3880,7 @@
     "verify": "show running-config | include no-aaa",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "access1",
@@ -3895,7 +3895,7 @@
     "verify": "show running-config | include password-encryption",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "access1",
@@ -3910,7 +3910,7 @@
     "verify": "show running-config | include vty-hardening",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "core1",
@@ -3926,7 +3926,7 @@
     "verify": "show spanning-tree vlan 30 root",
     "caution": "Align the root with the active gateway; do not move the root during traffic hours.",
     "source": "stp-misaligned",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "core1",
@@ -3941,7 +3941,7 @@
     "verify": "show running-config | include risky-services",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "core1",
@@ -3956,7 +3956,7 @@
     "verify": "show running-config | include vty-hardening",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "access1",
@@ -3972,7 +3972,7 @@
     "verify": "show spanning-tree vlan 30",
     "caution": "Set a DELIBERATE priority on the INTENDED root only; verify the topology before and after.",
     "source": "stp-accidental",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "access1",
@@ -3987,7 +3987,7 @@
     "verify": "show running-config | include no-logging",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "access1",
@@ -4002,7 +4002,7 @@
     "verify": "show running-config | include no-banner",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "access1",
@@ -4017,7 +4017,7 @@
     "verify": "show running-config | include no-ntp",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    },
    {
     "device": "core1",
@@ -4032,7 +4032,7 @@
     "verify": "show running-config | include no-banner",
     "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
     "source": "cis-security",
-    "wave": ""
+    "wave": "Group 1"
    }
   ],
   "by_device": {
@@ -4053,7 +4053,7 @@
      "verify": "show running-config | include 7",
      "caution": "Decide define-vs-remove from intent; a wrong 'no' can drop a security/routing control.",
      "source": "hygiene-undefined",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "core1",
@@ -4071,7 +4071,7 @@
      "verify": "show running-config | include OSPF_TO_BGP",
      "caution": "Decide define-vs-remove from intent; a wrong 'no' can drop a security/routing control.",
      "source": "hygiene-undefined",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "core1",
@@ -4086,7 +4086,7 @@
      "verify": "show running-config | include weak-user-pw",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "core1",
@@ -4101,7 +4101,7 @@
      "verify": "show running-config | include insecure-snmp",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "core1",
@@ -4116,7 +4116,7 @@
      "verify": "show running-config | include telnet-enabled",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "core1",
@@ -4132,7 +4132,7 @@
      "verify": "show spanning-tree vlan 30 root",
      "caution": "Align the root with the active gateway; do not move the root during traffic hours.",
      "source": "stp-misaligned",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "core1",
@@ -4147,7 +4147,7 @@
      "verify": "show running-config | include risky-services",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "core1",
@@ -4162,7 +4162,7 @@
      "verify": "show running-config | include vty-hardening",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "core1",
@@ -4177,7 +4177,7 @@
      "verify": "show running-config | include no-banner",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     }
    ],
    "access1": [
@@ -4194,7 +4194,7 @@
      "verify": "show running-config | include no-aaa",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "access1",
@@ -4209,7 +4209,7 @@
      "verify": "show running-config | include password-encryption",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "access1",
@@ -4224,7 +4224,7 @@
      "verify": "show running-config | include vty-hardening",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "access1",
@@ -4240,7 +4240,7 @@
      "verify": "show spanning-tree vlan 30",
      "caution": "Set a DELIBERATE priority on the INTENDED root only; verify the topology before and after.",
      "source": "stp-accidental",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "access1",
@@ -4255,7 +4255,7 @@
      "verify": "show running-config | include no-logging",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "access1",
@@ -4270,7 +4270,7 @@
      "verify": "show running-config | include no-banner",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     },
     {
      "device": "access1",
@@ -4285,7 +4285,7 @@
      "verify": "show running-config | include no-ntp",
      "caution": "CIS hardening \u2014 confirm the control suits this device's role before applying.",
      "source": "cis-security",
-     "wave": ""
+     "wave": "Group 1"
     }
    ]
   },
@@ -8059,7 +8059,7 @@
      "stp_roots.<host>.<vlan>.root_priority",
      "stp_roots.<host>.<vlan>.is_root"
     ],
-    "abstains_when": "the root switch for the VLAN was not collected, or spanning-tree output not captured (MST instances are out of scope)",
+    "abstains_when": "the root switch for the VLAN was not collected, or spanning-tree output not captured (MST instances are out of scope), or root ownership is ambiguous (several collected bridges claim the VLAN's root, or they disagree about its identity -- stp_topology.classify_stp_root_election)",
     "evidence_gated": true,
     "source_command": "show spanning-tree"
    },
@@ -8074,7 +8074,7 @@
      "stp_roots.<host>.<vlan>.is_root",
      "l3_forwarding[].svi_ip"
     ],
-    "abstains_when": "the root switch or the VLAN's gateway switch was not collected",
+    "abstains_when": "the root switch or the VLAN's gateway switch was not collected, or root ownership is ambiguous (several collected bridges claim the VLAN's root, or they disagree about its identity -- stp_topology.classify_stp_root_election)",
     "evidence_gated": true,
     "source_command": "show spanning-tree"
    },
@@ -10404,7 +10404,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "CR-01: End-of-support keystone",
    "detail": "Hardware is past last-day-of-support AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 an unsupportable box the network cannot lose.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
@@ -10435,7 +10435,7 @@
     "access1",
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "VLAN 30: single-fiber uplink to a sole gateway",
    "detail": "VLAN 30's only L3 gateway is core1 (no FHRP); access1 Gi0/1 reach the fabric over a single non-redundant fiber.",
    "remediation": "",
@@ -10472,7 +10472,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "core1: stacked single point of failure across L1, L3",
    "detail": "core1 is implicated at multiple layers at once (L1, L3) - its loss compounds physical, switching, and/or routing failure.",
    "remediation": "",
@@ -10509,7 +10509,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "CR-02: Failing hardware past support",
    "detail": "Critical health score on hardware that is past last-day-of-support \u2014 no standard TAC escalation path when it degrades further.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
@@ -10539,7 +10539,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "CR-03: Root bridge on degraded hardware",
    "detail": "STP root for 1 VLAN(s) on a device with Critical health \u2014 a root failure reconverges every VLAN it anchors.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
@@ -10569,7 +10569,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "CR-04: Open advisory surface on a high-impact asset",
    "detail": "Config-evidenced advisory surface is open AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 validate with the Cisco PSIRT Software Checker before the window.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
@@ -10599,7 +10599,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Undefined acl '7'",
    "detail": "Referenced (ip nat inside source list 7 pool MIGRATE_POOL overload) but never defined -- it silently does nothing.",
    "remediation": "Define the referenced structure, or remove the dangling reference.",
@@ -10630,7 +10630,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Undefined route-map 'OSPF_TO_BGP'",
    "detail": "Referenced (router bgp 65001) but never defined -- it silently does nothing.",
    "remediation": "Define the referenced structure, or remove the dangling reference.",
@@ -10661,7 +10661,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "VLAN 30: sole gateway core1 with no FHRP",
    "detail": "core1 is the only in-scan L3 gateway for VLAN 30; loss drops the default gateway for every VLAN 30 host.",
    "remediation": "",
@@ -10691,7 +10691,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Critical-health switch",
    "detail": "Health score 3 (Critical band).",
    "remediation": "Resolve the deductions above before migrating this device.",
@@ -10770,7 +10770,7 @@
    "devices": [
     "access1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "BGPv6 2001:db8:0:9::9 state Active degraded before cutover",
    "detail": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed BGPv6 runtime adjacency on access1: peer 2001:db8:0:9::9, state Active, remote AS 65009. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
    "remediation": "",
@@ -10793,7 +10793,7 @@
    "devices": [
     "access1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "OSPFv3 10.0.0.9 state EXSTART/- degraded before cutover",
    "detail": "PRE-CUTOVER DEGRADED \u2014 BLOCKER: Observed OSPFv3 runtime adjacency on access1: peer 10.0.0.9, state EXSTART/-, interface GigabitEthernet0/1. Matching this degraded observation after cutover is NOT ACCEPTANCE; resolve or explicitly disposition it before the window.",
    "remediation": "",
@@ -10816,7 +10816,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "err disabled",
    "detail": "L1 risk 'err-disabled' on 1 switch(es).",
    "remediation": "",
@@ -10840,7 +10840,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "single gateway",
    "detail": "L3 forwarding risk 'single-gateway' on 1 switch(es).",
    "remediation": "Add gateway / FHRP redundancy.",
@@ -10871,7 +10871,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "MAC address flapping",
    "detail": "2 event(s) in the collected log window.",
    "remediation": "The same MAC is being learned on two ports -- usually an L2 loop or a dual-homed host. Verify STP state on both ports and resolve before this domain's cutover window.",
@@ -10895,7 +10895,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Port err-disabled",
    "detail": "1 event(s) in the collected log window.",
    "remediation": "Find the err-disable cause ('show interfaces status err-disabled') and fix the root cause -- do not blindly re-enable the port.",
@@ -10919,7 +10919,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "OSPF high",
    "detail": "10.0.99.9 EXSTART/DROTHER",
    "remediation": "",
@@ -10942,7 +10942,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Local user password storage",
    "detail": "1 local user(s) use a reversible / cleartext password: legacy (hashes redacted).",
    "remediation": "Store local users with 'secret' (Type-8/9); remove Type-0/7 'password' entries.",
@@ -10966,7 +10966,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "SNMP access",
    "detail": "a default community (public/private); 1 v1/v2c community string(s) '<redacted>' -- v1/v2c carry the community in cleartext.",
    "remediation": "Remove SNMPv1/v2c communities; use SNMPv3 with auth+priv (SHA/AES).",
@@ -10990,7 +10990,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "VTY transport (telnet)",
    "detail": "a VTY line permits telnet (cleartext management).",
    "remediation": "Set 'transport input ssh' on every VTY line; disable telnet.",
@@ -11014,7 +11014,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Device web UI (ip http server / secure-server)",
    "detail": "The IOS XE web UI was mass-exploited in 2023-24 (tens of thousands of devices implanted); any HTTP(S) server on a network device is standing attack surface.",
    "remediation": "Disable 'ip http server' / 'ip http secure-server', or restrict them to the management network with an ACL; validate the running release with the Cisco Software Checker.",
@@ -11045,7 +11045,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "CR-06: Layered config debt on a critical asset",
    "detail": "2 config-truth axes are off-baseline AND removal strands 3 endpoint(s) across 2 VLAN(s) \u2014 drift on the box you can least afford to misjudge.",
    "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
@@ -11075,7 +11075,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "core1: L1 fault on an L3 gateway switch",
    "detail": "core1 hosts L3 gateway SVIs and has an err-disabled or high-error port - physical instability at a routing aggregation point.",
    "remediation": "",
@@ -11106,7 +11106,7 @@
     "core1",
     "core2"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "FHRP redundancy domain not verified (VLAN 10)",
    "detail": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: source or domain evidence could not be verified. Re-collect before acceptance.",
    "remediation": "Re-collect and validate the domain receipt before deciding intended membership or remediation.",
@@ -11159,7 +11159,7 @@
     "core1",
     "core2"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "FHRP redundancy domain not verified (VLAN 20)",
    "detail": "FHRP REDUNDANCY DOMAIN NOT VERIFIED \u2014 BLOCKER: source or domain evidence could not be verified. Re-collect before acceptance.",
    "remediation": "Re-collect and validate the domain receipt before deciding intended membership or remediation.",
@@ -11211,7 +11211,7 @@
    "devices": [
     "access1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "single fiber uplink",
    "detail": "L1 risk 'single-fiber-uplink' on 1 switch(es).",
    "remediation": "",
@@ -11235,7 +11235,7 @@
    "devices": [
     "access1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Duplex mismatch",
    "detail": "1 event(s) in the collected log window.",
    "remediation": "CDP detected a duplex mismatch with the neighbor. Set both ends to auto (or pin both); late collisions silently throttle throughput.",
@@ -11259,7 +11259,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Interface flapping",
    "detail": "1 interface(s) with >= 3 down transitions: GigabitEthernet1/0/9 (3x).",
    "remediation": "Repeated up/down transitions point at physical-layer instability (cable / optic / negotiation). Fix the media -- flapping links invalidate pre-cutover baselines.",
@@ -11283,7 +11283,7 @@
    "devices": [
     "access1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Repeated login failures",
    "detail": "6 failed login(s) in the collected log window.",
    "remediation": "Multiple failed logins recorded. Confirm AAA health and check for unauthorized access attempts before the migration window.",
@@ -11307,7 +11307,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Control-plane CPU elevated",
    "detail": "CPU 63% (show processes cpu (5-min avg)).",
    "remediation": "A 5-minute CPU at/above 60% is workable but worth explaining before the cutover adds protocol churn. Identify the top processes and confirm the level is expected for this role.",
@@ -11331,7 +11331,7 @@
     "access1",
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "STP root != gateway (VLAN 30)",
    "detail": "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
    "remediation": "Align the STP root priority with the active gateway switch.",
@@ -11362,7 +11362,7 @@
    "devices": [
     "access1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "AAA new-model",
    "detail": "no central AAA ('aaa new-model' / 'aaa authentication login default group') -- authentication is local-only / line-based.",
    "remediation": "Enable 'aaa new-model' for centralized authentication / authorization / accounting.",
@@ -11386,7 +11386,7 @@
    "devices": [
     "access1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Password encryption service",
    "detail": "no 'service password-encryption' -- passwords can be stored in cleartext (Type-0).",
    "remediation": "Configure 'service password-encryption' and migrate Type-7 secrets to Type-8/9.",
@@ -11410,7 +11410,7 @@
    "devices": [
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Unused / risky services",
    "detail": "enabled: HTTP server (cleartext).",
    "remediation": "Disable HTTP server, Smart Install, source-route, bootp, finger and 'service config'.",
@@ -11435,7 +11435,7 @@
     "access1",
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "VTY line hardening",
    "detail": "a VTY line is missing an 'access-class' ACL or never times out (exec-timeout 0 / 0 0).",
    "remediation": "Apply an 'access-class' ACL and a non-zero 'exec-timeout' on every VTY line.",
@@ -11468,7 +11468,7 @@
     "core1",
     "core2"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Native VLAN 1 on 4 operationally-trunking port(s)",
    "detail": "4 operationally-trunking port(s) (live trunk status) across 3 live-trunking switch(es) carry the default VLAN 1 as the native (untagged) VLAN -- a hygiene and VLAN-hopping exposure. (The design gap counts trunk-mode port(s) -- switchport-mode basis, administrative or negotiated -- so the two figures can differ.)",
    "remediation": "Set a dedicated, unused native VLAN on every 802.1Q trunk.",
@@ -11555,7 +11555,7 @@
    "devices": [
     "access1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Accidental root (VLAN 30)",
    "detail": "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
    "remediation": "Set a deliberate root-bridge priority on the intended switch.",
@@ -11579,7 +11579,7 @@
    "devices": [
     "access1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Logging / audit trail",
    "detail": "no syslog / buffered logging -- no audit trail across the migration.",
    "remediation": "Configure 'logging host' / 'logging buffered' to retain an audit trail.",
@@ -11604,7 +11604,7 @@
     "access1",
     "core1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "Login banner",
    "detail": "no login / MOTD legal-notice banner.",
    "remediation": "Configure a 'banner login' / 'banner motd' legal-notice banner.",
@@ -11635,7 +11635,7 @@
    "devices": [
     "access1"
    ],
-   "wave": "",
+   "wave": "Group 1",
    "title": "NTP time synchronization",
    "detail": "no NTP server -- clock drift makes logs and certificate validity untrustworthy.",
    "remediation": "Configure an authenticated 'ntp server' so logs and certificate validity are trustworthy.",
@@ -14734,6 +14734,7 @@
  "link_phy": [],
  "move_groups": [
   {
+   "group": "Group 1",
    "switches": [
     "access1",
     "core1",
@@ -14949,7 +14950,7 @@
   ],
   "move_groups": [
    {
-    "group": "",
+    "group": "Group 1",
     "switches": 3,
     "local_subnets": [
      "10.0.10.0/24",
@@ -15018,7 +15019,9 @@
      "n_critical": 0,
      "n_poor": 0
     },
-    "waves": [],
+    "waves": [
+     "Group 1"
+    ],
     "spans_waves": false,
     "evidence": "no application-specific signal x2",
     "validation": [
@@ -15072,7 +15075,9 @@
      "n_critical": 1,
      "n_poor": 0
     },
-    "waves": [],
+    "waves": [
+     "Group 1"
+    ],
     "spans_waves": false,
     "evidence": "dominant endpoint class 'Server'",
     "validation": [
@@ -15247,6 +15252,26 @@
    "name": "USERS",
    "stp_root": "core1",
    "stp_root_default_election": false,
+   "stp_root_state": "published",
+   "stp_root_reason": "single_claimant",
+   "stp_root_claimants": [
+    "core1"
+   ],
+   "stp_root_identities": [
+    {
+     "root_address": "aaaa.0001.0001",
+     "root_priority": 24586,
+     "root_priorities": [
+      24586
+     ],
+     "claimants": [
+      "core1"
+     ],
+     "observers": [
+      "access1"
+     ]
+    }
+   ],
    "fhrp": {
     "proto": "HSRP",
     "group": "10",
@@ -15295,7 +15320,11 @@
    "vlan": 20,
    "name": "VOICE",
    "stp_root": "[NOT OBSERVED]",
-   "stp_root_default_election": false,
+   "stp_root_default_election": null,
+   "stp_root_state": "not_observed",
+   "stp_root_reason": "no_root_evidence",
+   "stp_root_claimants": [],
+   "stp_root_identities": [],
    "fhrp": {
     "proto": "HSRP",
     "group": "20",
@@ -15343,6 +15372,26 @@
    "name": "SERVERS",
    "stp_root": "access1",
    "stp_root_default_election": true,
+   "stp_root_state": "published",
+   "stp_root_reason": "single_claimant",
+   "stp_root_claimants": [
+    "access1"
+   ],
+   "stp_root_identities": [
+    {
+     "root_address": "cccc.0003.0003",
+     "root_priority": 32798,
+     "root_priorities": [
+      32798
+     ],
+     "claimants": [
+      "access1"
+     ],
+     "observers": [
+      "core1"
+     ]
+    }
+   ],
    "fhrp": "sole gateway on core1 (no FHRP)",
    "gateway_svi_hosts": [
     "core1"
@@ -15462,7 +15511,7 @@
     "platform": "Catalyst 3850",
     "sw_version": "16.12.4",
     "role": "distribution",
-    "wave": "",
+    "wave": "Group 1",
     "health_score": 3,
     "health_band": "Critical",
     "eol_band": "Past-LDoS",
@@ -15470,6 +15519,7 @@
     "platform_band": "Elevated",
     "vpc_role": "",
     "stp_root_vlans": 1,
+    "stp_root_ambiguous_vlans": 0,
     "impact_score": 10,
     "impact_severity": "High",
     "stranded": 3,
@@ -15479,57 +15529,68 @@
      {
       "axis": "Health",
       "state": "risk",
-      "label": "health Critical (3/100)"
+      "label": "health Critical (3/100)",
+      "input_state": "published"
      },
      {
       "axis": "Hardware EoL",
       "state": "risk",
-      "label": "hardware Past LDoS"
+      "label": "hardware Past LDoS",
+      "input_state": "published"
      },
      {
       "axis": "Software risk",
       "state": "risk",
-      "label": "open advisory surface"
+      "label": "open advisory surface",
+      "input_state": "published"
      },
      {
       "axis": "Control plane",
       "state": "watch",
-      "label": "control plane Elevated (CPU 63% \u00b7 memory 75.7% free)"
+      "label": "control plane Elevated (CPU 63% \u00b7 memory 75.7% free)",
+      "input_state": "published"
      },
      {
       "axis": "Operational logs",
       "state": "risk",
-      "label": "high-severity operational events in the device's own logs"
+      "label": "high-severity operational events in the device's own logs",
+      "input_state": "published"
      },
      {
       "axis": "Security posture",
       "state": "risk",
-      "label": "6 CIS check(s) failing (incl. high)"
+      "label": "6 CIS check(s) failing (incl. high)",
+      "input_state": "published"
      },
      {
       "axis": "Config hygiene",
       "state": "watch",
-      "label": "2 undefined reference(s)"
+      "label": "2 undefined reference(s)",
+      "input_state": "published"
      },
      {
       "axis": "Golden drift",
       "state": "na",
-      "label": "no config baseline derived (need 3+ comparable configs)"
+      "label": "no config baseline derived (need 3+ comparable configs)",
+      "input_state": "collected_but_empty"
      },
      {
       "axis": "QoS posture",
       "state": "ok",
-      "label": "QoS posture consistent"
+      "label": "QoS posture consistent",
+      "input_state": "published"
      },
      {
       "axis": "Physical",
       "state": "risk",
-      "label": "1 port(s) err-disabled / high error rate"
+      "label": "1 port(s) err-disabled / high error rate",
+      "input_state": "published"
      },
      {
       "axis": "Protocol",
       "state": "risk",
-      "label": "high-severity protocol-health finding"
+      "label": "high-severity protocol-health finding",
+      "input_state": "published"
      }
     ],
     "n_risk": 7,
@@ -15577,7 +15638,7 @@
     "platform": "Catalyst 2960-X",
     "sw_version": "15.2(7)E3",
     "role": "access",
-    "wave": "",
+    "wave": "Group 1",
     "health_score": 60,
     "health_band": "Fair",
     "eol_band": "Past-EoS",
@@ -15585,6 +15646,7 @@
     "platform_band": "Unknown",
     "vpc_role": "",
     "stp_root_vlans": 1,
+    "stp_root_ambiguous_vlans": 0,
     "impact_score": 2,
     "impact_severity": "Info",
     "stranded": 0,
@@ -15594,62 +15656,73 @@
      {
       "axis": "Health",
       "state": "ok",
-      "label": "health Fair (60/100)"
+      "label": "health Fair (60/100)",
+      "input_state": "published"
      },
      {
       "axis": "Hardware EoL",
       "state": "watch",
-      "label": "hardware past end-of-sale"
+      "label": "hardware past end-of-sale",
+      "input_state": "published"
      },
      {
       "axis": "Software risk",
       "state": "watch",
-      "label": "advisory surface to validate (PSIRT checker)"
+      "label": "advisory surface to validate (PSIRT checker)",
+      "input_state": "published"
      },
      {
       "axis": "Control plane",
       "state": "na",
-      "label": "capacity output not collected"
+      "label": "capacity output not collected",
+      "input_state": "not_collected"
      },
      {
       "axis": "Operational logs",
       "state": "watch",
-      "label": "operational events to review in the logs"
+      "label": "operational events to review in the logs",
+      "input_state": "published"
      },
      {
       "axis": "Security posture",
       "state": "watch",
-      "label": "6 CIS check(s) failing"
+      "label": "6 CIS check(s) failing",
+      "input_state": "published"
      },
      {
       "axis": "Config hygiene",
-      "state": "na",
-      "label": "no captured running-config"
+      "state": "ok",
+      "label": "screened \u2014 no named structure to dangle",
+      "input_state": "collected_but_empty"
      },
      {
       "axis": "Golden drift",
       "state": "na",
-      "label": "no config baseline derived (need 3+ comparable configs)"
+      "label": "no config baseline derived (need 3+ comparable configs)",
+      "input_state": "collected_but_empty"
      },
      {
       "axis": "QoS posture",
       "state": "ok",
-      "label": "QoS posture consistent"
+      "label": "QoS posture consistent",
+      "input_state": "published"
      },
      {
       "axis": "Physical",
       "state": "watch",
-      "label": "1 port(s) with L1 findings"
+      "label": "1 port(s) with L1 findings",
+      "input_state": "published"
      },
      {
       "axis": "Protocol",
       "state": "ok",
-      "label": "protocol health clean"
+      "label": "clean where observed \u2014 1 of 7 families assessed (STP)",
+      "input_state": "published"
      }
     ],
     "n_risk": 0,
     "n_watch": 5,
-    "n_na": 3,
+    "n_na": 2,
     "compound": [],
     "risk_index": 10,
     "risk_band": "Guarded",
@@ -15661,7 +15734,7 @@
     "platform": "",
     "sw_version": "(not captured)",
     "role": "distribution",
-    "wave": "",
+    "wave": "Group 1",
     "health_score": 100,
     "health_band": "Excellent",
     "eol_band": "Unknown",
@@ -15669,6 +15742,7 @@
     "platform_band": "OK",
     "vpc_role": "",
     "stp_root_vlans": 0,
+    "stp_root_ambiguous_vlans": 0,
     "impact_score": 4,
     "impact_severity": "Low",
     "stranded": 0,
@@ -15678,57 +15752,68 @@
      {
       "axis": "Health",
       "state": "ok",
-      "label": "health Excellent (100/100)"
+      "label": "health Excellent (100/100)",
+      "input_state": "published"
      },
      {
       "axis": "Hardware EoL",
       "state": "na",
-      "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld"
+      "label": "no authoritative lifecycle band \u2014 either no exact EoX row matched or the matched row's source/date authority was withheld",
+      "input_state": "collected_but_empty"
      },
      {
       "axis": "Software risk",
       "state": "na",
-      "label": "not assessable \u2014 no config or version evidence"
+      "label": "not assessable \u2014 no config or version evidence",
+      "input_state": "not_collected"
      },
      {
       "axis": "Control plane",
       "state": "ok",
-      "label": "control-plane capacity OK"
+      "label": "control-plane capacity OK",
+      "input_state": "published"
      },
      {
       "axis": "Operational logs",
       "state": "na",
-      "label": "log evidence not collected"
+      "label": "log evidence not collected",
+      "input_state": "not_collected"
      },
      {
       "axis": "Security posture",
       "state": "na",
-      "label": "no captured running-config"
+      "label": "no captured running-config",
+      "input_state": "not_collected"
      },
      {
       "axis": "Config hygiene",
       "state": "na",
-      "label": "no captured running-config"
+      "label": "no captured running-config",
+      "input_state": "not_collected"
      },
      {
       "axis": "Golden drift",
       "state": "na",
-      "label": "not in the drift baseline"
+      "label": "no captured running-config",
+      "input_state": "not_collected"
      },
      {
       "axis": "QoS posture",
       "state": "na",
-      "label": "not assessable \u2014 full running-config not captured"
+      "label": "no captured running-config",
+      "input_state": "not_collected"
      },
      {
       "axis": "Physical",
       "state": "ok",
-      "label": "no L1 findings"
+      "label": "no L1 findings",
+      "input_state": "published"
      },
      {
       "axis": "Protocol",
       "state": "ok",
-      "label": "protocol health clean"
+      "label": "clean where observed \u2014 3 of 7 families assessed (STP, EtherChannel, FHRP)",
+      "input_state": "published"
      }
     ],
     "n_risk": 0,

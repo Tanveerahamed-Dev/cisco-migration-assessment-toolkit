@@ -11,7 +11,7 @@
  * raw traversals, so the rename leg and the golden-snapshot leg run them unchanged. A test whose subject the loaded
  * dataset does not have at all (no uncollected device, no endpoint with an address, ...) is skipped BY NAME there,
  * and the golden block proves that on the reference sample every one of them runs. The numbers and names that are
- * facts about the tracked sample alone — 146 findings, core1's 32, "gateway" in 27 — are the contract between that
+ * facts about the tracked sample alone — 140 findings, core1's 31, "gateway" in 26 — are the contract between that
  * sample and the UI, and they live in the golden blocks at the foot of this file, where they still fail loudly if
  * the sample changes. RE-EXPRESSED 2026-09-29 (P3C-V2-3): the module constants TOTAL_FINDINGS, CORE1_FINDINGS, ...
  * that the invariant blocks used to read are gone; each of those figures is now a raw count here and a golden pin
@@ -1236,14 +1236,14 @@ describe("free text on devices is tri-state: an unobserved field never decides a
 describeGolden("query counts on the reference sample", () => {
   /* The contract between the tracked sample and the UI, formerly module constants every block read. */
   const GOLDEN = {
-    findings: 146,
+    findings: 140,
     devices: 26,
-    sev: { Critical: 3, High: 104, Medium: 33, Low: 6 },
-    compoundRisk: 15,
-    core1: 32,
-    accessRole: 116,
-    poorBand: 76,
-    withRemediation: 66,
+    sev: { Critical: 3, High: 99, Medium: 33, Low: 5 },
+    compoundRisk: 10,
+    core1: 31,
+    accessRole: 110,
+    poorBand: 75,
+    withRemediation: 60,
     uncollected: 3,
     bridge: { yes: 19, no: 4, unknown: 3 },
     poorBandDevices: 12,
@@ -1283,35 +1283,35 @@ describeGolden("query counts on the reference sample", () => {
     expect(EP_IP).toBe("10.0.10.50");
     expect(DOUBLE_NAMED?.id).toBe("F003");
     expect(FIRST_FINDING?.id).toBe("F001");
-    expect(fabric.findings.find((f) => f.devices.length === 0)?.id).toBe("F142");
+    expect(fabric.findings.find((f) => f.devices.length === 0)?.id).toBe("F137");
   });
 
   it("the engine's answers on the sample", () => {
     const all = fabric.findings;
     const n = (q: string): number => applyToFindings(all, parseQuery(q)).items.length;
     expect(n("severity:Critical")).toBe(3);
-    expect(n("severity:High")).toBe(104);
-    expect(n("severity:Critical,High")).toBe(107);
+    expect(n("severity:High")).toBe(99);
+    expect(n("severity:Critical,High")).toBe(102);
     expect(n('category:"Compound risk"')).toBe(GOLDEN.compoundRisk);
     expect(n("host:core1")).toBe(GOLDEN.core1);
     expect(n("role:access")).toBe(GOLDEN.accessRole);
     expect(n("band:Poor")).toBe(GOLDEN.poorBand);
     expect(n("-has:remediation")).toBe(80);
-    expect(n("gateway")).toBe(27);
-    expect(n("severity:High -core1")).toBe(88);
-    expect(n("-core1")).toBe(146 - 32);
+    expect(n("gateway")).toBe(26);
+    expect(n("severity:High -core1")).toBe(83);
+    expect(n("-core1")).toBe(140 - 31);
     const role = applyToFindings(all, parseQuery("role:access"));
     expect(role.clauses[0]!.undetermined).toBe(1);
-    expect(ids(role.items)).not.toContain("F142");
+    expect(ids(role.items)).not.toContain("F137");
     const hostSplit = applyToFindings(all, parseQuery("host:core1")).clauses[0]!;
-    expect([hostSplit.matched, hostSplit.excluded, hostSplit.undetermined]).toEqual([32, 113, 1]);
+    expect([hostSplit.matched, hostSplit.excluded, hostSplit.undetermined]).toEqual([31, 108, 1]);
     const dev = (q: string): number => applyToDevices(fabric.devices, parseQuery(q)).items.length;
     expect(dev("severity:Critical")).toBe(GOLDEN.devicesWithCritical);
     expect(dev("band:Poor")).toBe(GOLDEN.poorBandDevices);
     expect(dev("tier:1")).toBe(17);
     expect(dev("platform:ios")).toBe(22);
     expect(dev("host:access*")).toBe(17);
-    expect(applyToFindings(all, parseQuery("host:AP-floor1")).excludedTotal).toBe(145);
+    expect(applyToFindings(all, parseQuery("host:AP-floor1")).excludedTotal).toBe(139);
     expect(applyToCrossLayer(fabric.crossLayer, parseQuery("layer:L1+L3")).items).toHaveLength(3);
     const tier3 = applyToFindings(all, parseQuery("tier:3"));
     expect(tier3.items).toHaveLength(5);
