@@ -32,8 +32,9 @@ the owner's device scope, its row join by exact key (two rows naming a key are `
 between), then its own not-observed rule and type check. Engine defaults that mean "not observed" (the
 DevicePhysical ``""`` and ``0``, the ``[NOT OBSERVED]`` markers, sparse interface fields, empty routing
 neighbour lists) are withheld, never published as values. A list the engine caps says so, and its total
-is never computed. Nothing is aggregated here: the engine publishes no per-device finding counts, no
-severity facets and no evidence pointers behind a punch-list row, so none appears.
+is never computed. Nothing is aggregated here: the engine publishes no per-device finding counts or
+severity facets, so neither appears. Published finding evidence pointers, their basis and capped totals,
+and the separate health deduction-reference subsequence retain the engine's values and ordering.
 
 Every fact travels in one envelope::
 
@@ -206,6 +207,21 @@ NRFU_NOT_OBSERVED = "[NOT OBSERVED — record baseline at execution]"        # n
 PUNCH_BASIS_UNPUBLISHED = ("severity basis NOT published by this snapshot — check the finding's own "
                            "detail for what it rests on")                        # analyze.PUNCH_BASIS_UNPUBLISHED
 PUNCH_CONFIDENCE_UNPUBLISHED = "evidence confidence NOT published by this snapshot"
+# analyze.PUNCH_EVIDENCE_* owns these values. As with the other engine vocabularies above, this
+# lightweight module imports only ssot; tests/test_ui_projection_evidence.py pins every copy to its owner.
+PUNCH_EVIDENCE_BASES: Tuple[str, ...] = ("record", "row", "absence")
+PUNCH_EVIDENCE_REF_KINDS: Tuple[str, ...] = ("interface", "acl_line", "route", "config_text",
+                                          "device_fact", "analysis_row", "adjacency", "absence_witness")
+PUNCH_EVIDENCE_RECORD_KINDS: FrozenSet[str] = frozenset({"interface", "acl_line", "route", "config_text"})
+PUNCH_EVIDENCE_ROLES: Tuple[str, ...] = ("subject", "derived_from", "witness")
+PUNCH_EVIDENCE_REFS_CAP = 64
+PUNCH_EVIDENCE_RULES: Mapping[str, bool] = MappingProxyType({
+    "total_only_when_capped": True,
+    "absence_forbids_record_kinds": True,
+    "record_requires_record_kind": True,
+    "row_requires_ref": True,
+    "host_must_be_row_device_or_null": True,
+})
 HEALTH_BAND_NOT_SCORED = "Insufficient Data"                                    # the ssot not-scored band
 #: model.DevicePhysical ints that default to 0 with no "not observed" state (active_ports has one: None).
 DEVICE_PHYSICAL_ZERO_DEFAULTS: Tuple[str, ...] = ("num_power_supplies", "num_modules", "total_ports")
@@ -227,6 +243,7 @@ IF_COLUMNS: Tuple[str, ...] = (
 #: walks every producer this module names and holds each prefix slice it reaches to this table or a reviewed exemption.
 ENGINE_LIST_CAPS: Mapping[str, int] = MappingProxyType({
     "health_scores[].deductions": 8,                      # analyze.compute_health_scores
+    "health_scores[].deduction_refs": 8,                  # same prefix, with unaddressable refs omitted
     "endpoint_dependencies.dual_homed[].ports": 8,        # analyze.compute_endpoint_dependencies
     "remediation_plan[].why": 300,                        # analyze.compute_remediation_plan
     "vlan_cutover[].app_domain": 3,                       # analyze.compute_vlan_cutover_matrix (domains joined " + ")
@@ -385,7 +402,10 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "The engine cuts some lists and texts and publishes no total: health deductions after 8, dual-homed ports "
         "after 8, remediation 'why' text after 300 characters, a VLAN's application domains after 3, and a "
         "punch-list detail near 400 characters (the engine marks that cut with ' …'). A list at its cap means "
-        "'at least this many'; the projection never computes the missing total.",
+        "'at least this many'; the projection never computes the missing total. Finding evidence references are "
+        "capped separately at the engine's evidence cap; only their producer-published evidence_refs_total can "
+        "state the uncapped count. Health reference truncation follows the deduction prefix before missing refs "
+        "are removed, so its shorter subsequence may also be capped.",
         ["/inventory/vlans", "/inventory/endpoints/dual_homed", "/findings/rows"]),
     _limitation(
         "move_group_label_absent", "analyze.compute_move_groups",
@@ -407,9 +427,8 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         ["/inventory/vlans"]),
     _limitation(
         "punch_rows_carry_no_evidence_pointers", "analyze.compute_migration_punchlist",
-        "A punch-list row carries no pointer to the findings it folds, and names a show command only for "
-        "single-command categories. The engine publishes no totals by severity, category or device (only prose in "
-        "the brief's axis headline), so none is computed here.",
+        "A legacy punch-list row has neither evidence_refs nor evidence_basis. That snapshot publishes no "
+        "per-finding evidence pointers; a show command alone does not locate a supporting record.",
         ["/findings/rows", "/findings/total"]),
     _limitation(
         "row_selection_by_exact_key", "cisco_toolkit.ui_projection",
@@ -437,6 +456,13 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
 )
 #: What a device document cannot claim; addressed inside a ``DeviceDocument``.
 DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
+    _limitation(
+        "deduction_refs_are_subsequence", "analyze.compute_health_scores",
+        "deduction_refs preserves an ordered subsequence of the published deductions. A deduction whose source "
+        "has no addressable record contributes no ref. References retain their own citation and pointer and must "
+        "never be paired with deduction text by index. Both lists are cut after the same first eight deductions, "
+        "so even fewer than eight references can omit later deductions; no uncapped total is published.",
+        ["/device/health/deduction_refs", "/device/health/deduction_refs_cap"]),
     _limitation(
         "routes_in_scope_only", "build.scope_routes",
         "The embedded routes are the in-scope subset of the routing table, not the whole table. A device with no "
@@ -466,7 +492,7 @@ DEVICE_CITED_LIMITATIONS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "health_scored_without_security": ("/device/health",),
     "health_scored_over_partial_collection": ("/device/health",),
     "dossier_band_over_unassessed_axes": ("/device/dossier/risk_band",),
-    "engine_list_capped": ("/device/health/deductions", "/device/remediation/items"),
+    "engine_list_capped": ("/device/health/deductions", "/device/health/deduction_refs", "/device/remediation/items"),
     "move_group_label_absent": ("/device/remediation/items",),
     "row_selection_by_exact_key": ("/device/links", "/device/native_vlan_mismatches", "/device/findings",
                                    "/device/endpoints"),
@@ -505,6 +531,7 @@ _SLOT_RULE = {
     "cable_ends": "an {a, a_port, b, b_port, is_pc} record",
     "coverage_cell": "a coverage state of its closed vocabulary",
     "shared_ip": "an {ip, switches, macs} record",
+    "evidence_ref": "a closed {kind, host, ref, role, cite} record using the engine's evidence vocabulary",
 }
 
 # Slice 2 reasons (a reason that is not collected_but_empty never says "not a blind spot").
@@ -1001,6 +1028,17 @@ def _typed(raw: Any, slot: str, vocab: Sequence[str] = ()) -> Tuple[bool, Any]:
         return ok, (raw if ok else None)
     if not isinstance(raw, dict):
         return False, None
+    if slot == "evidence_ref":
+        keys = ("kind", "host", "ref", "role", "cite")
+        host = raw.get("host")
+        ok = (set(raw) == set(keys) and _is_text(raw.get("kind"))
+              and raw["kind"] in PUNCH_EVIDENCE_REF_KINDS and _is_text(raw.get("role"))
+              and raw["role"] in PUNCH_EVIDENCE_ROLES
+              and (host is None or (_is_text(host) and bool(host.strip())))
+              and _is_text(raw.get("ref")) and bool(raw["ref"])
+              and re.fullmatch(r"(/([^~/]|~[01])*)+", raw["ref"]) is not None
+              and _is_text(raw.get("cite")))
+        return ok, ({key: raw[key] for key in keys} if ok else None)
     if slot in _RECORD_SLOTS:
         return _record(raw, slot)
     if slot == "axis":
@@ -2718,6 +2756,146 @@ _CONF_PRE = _unpublished_marker(PUNCH_CONFIDENCE_UNPUBLISHED, "evidence confiden
 _R_FOLDED_ONLY = "not collected: the engine publishes {what} only for the multicast / media risks it folds"
 
 
+def _evidence_target(snap: Dict[str, Any], pointer: str) -> Any:
+    """Resolve an already syntax-checked RFC 6901 pointer, including pre-JSON integer map keys.
+
+    Array indexes are canonical ASCII decimals; bound their length before integer conversion. A null
+    target is not observed evidence. Decoding happens once, preserving a literal '~1' from '~01'.
+    """
+    cur: Any = snap
+    for token in pointer[1:].split("/"):
+        token = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(cur, dict):
+            matches = [cur[token]] if token in cur else []
+            for key, value in cur.items():
+                if type(key) is int:
+                    try:
+                        if str(key) == token:
+                            matches.append(value)
+                    except ValueError:  # poisoned integers can exceed Python's string-conversion limit
+                        continue
+            if len(matches) != 1:  # JSON-serialization collisions cannot identify one observed node
+                return _MISSING
+            cur = matches[0]
+        elif (isinstance(cur, list) and re.fullmatch(r"0|[1-9][0-9]*", token)
+              and len(token) <= len(str(len(cur)))):
+            index = int(token)
+            if index >= len(cur):
+                return _MISSING
+            cur = cur[index]
+        else:
+            return _MISSING
+    return cur if cur is not None else _MISSING
+
+
+def _evidence_problem(ctx: _Ctx, row: _Row, raw: List[Any], *, health: bool
+                      ) -> Tuple[Optional[str], Tuple[str, ...]]:
+    """Validate the producer's evidence contract without reconstructing or repairing a reference."""
+    rec = row.raw if isinstance(row.raw, dict) else {}
+    limit = ENGINE_LIST_CAPS["health_scores[].deduction_refs"] if health else PUNCH_EVIDENCE_REFS_CAP
+    if len(raw) > limit:
+        return "the evidence list exceeds its producer's cap", ()
+    hosts = [rec.get("switch")] if health else rec.get("devices")
+    targets: List[str] = []
+    for ref in raw:
+        ok, value = _typed(ref, "evidence_ref")
+        if not ok:
+            return "a reference fails the closed engine evidence shape or vocabulary", ()
+        if (PUNCH_EVIDENCE_RULES["host_must_be_row_device_or_null"] and value["host"] is not None
+                and (not isinstance(hosts, list) or value["host"] not in hosts)):
+            return "a reference names a device outside its producer row", ()
+        if _evidence_target(ctx.s, value["ref"]) is _MISSING:
+            return "an evidence pointer does not resolve to an observed value in this snapshot", ()
+        section = value["ref"][1:].split("/", 1)[0].replace("~1", "/").replace("~0", "~")
+        if section not in targets:
+            targets.append(section)
+    if health:
+        deductions = rec.get("deductions")
+        if not isinstance(deductions, list) or len(raw) > len(deductions):
+            return "deduction_refs cannot be an ordered subsequence of the published deductions", tuple(targets)
+    else:
+        basis = rec.get("evidence_basis")
+        if not _is_text(basis) or basis not in PUNCH_EVIDENCE_BASES:
+            return "evidence_refs has no valid paired evidence_basis", tuple(targets)
+        record = any(r["kind"] in PUNCH_EVIDENCE_RECORD_KINDS for r in raw)
+        if ((PUNCH_EVIDENCE_RULES["absence_forbids_record_kinds"] and basis == "absence" and record)
+                or (PUNCH_EVIDENCE_RULES["record_requires_record_kind"] and basis != "absence"
+                    and (basis == "record") != record)
+                or (PUNCH_EVIDENCE_RULES["row_requires_ref"] and basis == "row" and not raw)):
+            return "evidence_basis contradicts the producer's reference rules", tuple(targets)
+        if "evidence_refs_total" in rec and PUNCH_EVIDENCE_RULES["total_only_when_capped"]:
+            ok, total = _count(rec["evidence_refs_total"])
+            if type(rec["evidence_refs_total"]) is not int or not ok or len(raw) != limit or total <= limit:
+                return "evidence_refs_total is valid only for a capped list with a larger integer total", tuple(targets)
+    return None, tuple(targets)
+
+
+def _evidence_list(ctx: _Ctx, row: _Row, *, health: bool = False,
+                   capped: bool = False) -> Tuple[Dict[str, Any], Any]:
+    field = "deduction_refs" if health else "evidence_refs"
+    basis = (_B_HEALTH if health else _B_PUNCH) + field
+    state, reason, toks, raw = _sub_list(
+        ctx, row, field, pre_state=_not_scored(None, row) if health else None,
+        empty=(_CBE, "collected but empty: the engine explicitly publishes no reference here; this does not "
+                     "prove that no deduction or finding exists (not a blind spot)"))
+    if (not health and state == _NC and isinstance(row.raw, dict) and "evidence_refs_total" in row.raw
+            and "evidence_refs" not in row.raw):
+        state, reason = _UV, "unverified: a reference total without its evidence list is malformed"
+    targets = _evidence_sections(raw)
+    if state in (_PUB, _CBE):
+        hit = _secs_fail(ctx, targets)
+        if hit:
+            state, reason = hit
+        else:
+            problem, _ = _evidence_problem(ctx, row, raw, health=health)
+            if problem:
+                state, reason = _UV, "unverified: " + problem
+    secs = tuple(dict.fromkeys(row.sections + targets))
+    caveats = ("deduction_refs_are_subsequence",) if health else ()
+    if capped or (not health and isinstance(raw, list) and len(raw) == PUNCH_EVIDENCE_REFS_CAP):
+        caveats += ("engine_list_capped",)
+    items = _items(ctx, toks, raw, "evidence_ref", basis + "[]", secs,
+                   hold=(state, reason) if state not in (_PUB, _CBE) else None)
+    return _listing(ctx, state, reason, toks, basis, items, sections=secs, extra=row.extra,
+                    bare=row.bare, caveats=caveats), raw
+
+
+def _evidence_sections(raw: Any) -> Tuple[str, ...]:
+    """Section names from closed, syntactically valid refs, before failed producers' empty fallbacks resolve."""
+    return tuple(dict.fromkeys(ref["ref"][1:].split("/", 1)[0].replace("~1", "/").replace("~0", "~")
+                               for ref in (raw if isinstance(raw, list) else ())
+                               if _typed(ref, "evidence_ref")[0]))
+
+
+def _finding_evidence(ctx: _Ctx, row: _Row) -> Dict[str, Any]:
+    listing, raw = _evidence_list(ctx, row)
+    targets = _evidence_sections(raw)
+    sections = tuple(dict.fromkeys(row.sections + targets))
+
+    def basis_gate(_ctx: _Ctx, _typed: Any, _row: _Row):
+        if listing["state"] not in (_PUB, _CBE):
+            state = AU if listing["state"] == AU else _UV
+            return state, listing.get("reason", "unverified: evidence_basis has no valid paired evidence_refs"), []
+        return None
+
+    basis = _cell(ctx, row, "evidence_basis", "enum", _B_PUNCH + "evidence_basis",
+                  vocab=PUNCH_EVIDENCE_BASES, gate=basis_gate, sections=sections)
+
+    def total_gate(_ctx: _Ctx, _typed: Any, _row: _Row):
+        if listing["state"] not in (_PUB, _CBE):
+            return listing["state"], listing.get("reason", _R_CBE), []
+        return None
+
+    total = _cell(ctx, row, "evidence_refs_total", "count", _B_PUNCH + "evidence_refs_total", gate=total_gate,
+                  sections=sections,
+                  missing="not collected: the engine publishes an uncapped reference total only when capped")
+    readable = listing["state"] in (_PUB, _CBE)
+    cap = {"limit": PUNCH_EVIDENCE_REFS_CAP,
+           "reached": len(raw) == PUNCH_EVIDENCE_REFS_CAP if readable else None, "total": dict(total)}
+    return {"evidence_basis": basis, "evidence_refs": listing, "evidence_refs_total": total,
+            "evidence_refs_cap": cap}
+
+
 def _finding_row(ctx: _Ctx, i: int, rec: Any, cav: Tuple[str, ...]) -> Dict[str, Any]:
     toks = ("punchlist", i)
     row = _list_row(toks, rec, ("punchlist",))
@@ -2750,6 +2928,7 @@ def _finding_row(ctx: _Ctx, i: int, rec: Any, cav: Tuple[str, ...]) -> Dict[str,
                                         published_caveats=cav)
     item["source_command"] = _cell(ctx, row, "source_command", "text", _B_PUNCH + "source_command",
                                    missing=_R_NO_SOURCE_CMD, published_caveats=cav)
+    item.update(_finding_evidence(ctx, row))
     return item
 
 
@@ -2760,11 +2939,14 @@ def _findings(ctx: _Ctx) -> Dict[str, Any]:
     items = [_finding_row(ctx, i, rec, cav) for i, rec in enumerate(raw if isinstance(raw, list) else ())]
     mg = () if ctx.mg_labelled else ("move_group_label_absent",)
     qualify = _fleet_qualify(ctx, config=True)
+    legacy = ("punch_rows_carry_no_evidence_pointers",) if any(
+        isinstance(rec, dict) and not {"evidence_refs", "evidence_basis", "evidence_refs_total"}.intersection(rec)
+        for rec in (raw if isinstance(raw, list) else ())) else ()
     listing = _listing(ctx, base, reason, toks, "analyze.compute_migration_punchlist:punchlist", items, sections=toks,
-                       rollup=PUNCHLIST_INPUTS, caveats=("punch_rows_carry_no_evidence_pointers",) + mg + cav,
+                       rollup=PUNCHLIST_INPUTS, caveats=legacy + mg + cav,
                        qualify=qualify)
     total = _total(ctx, "punchlist", listing, sections=toks + PUNCHLIST_INPUTS,
-                   caveats=("punch_rows_carry_no_evidence_pointers",), qualify=qualify)
+                   caveats=legacy, qualify=qualify)
     axes = _get(ctx.s, ("executive_brief", "axes"))
     heads = [k for k, ax in enumerate(axes) if isinstance(ax, dict) and ax.get("axis") == "Migration punch-list"] \
         if isinstance(axes, list) else []
@@ -3039,6 +3221,11 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
                                  hold=(dstate, dreason) if dstate == _NA else None),
                           sections=("health_scores",), extra=hrow.extra, bare=hrow.bare,
                           caveats=("engine_list_capped",) if ded_capped else ())
+    deduction_refs, _ = _evidence_list(ctx, hrow, health=True, capped=ded_capped)
+    # The cap bounds the deduction prefix BEFORE unaddressable refs are removed. Reaching it is
+    # determined from deductions, never from the shorter reference subsequence.
+    deduction_refs_cap = _cap(ded_cap, draw, "analyze.compute_health_scores",
+                              ded_readable and deduction_refs["state"] in (_PUB, _CBE))
     lc = j["lifecycle"]
     dated = _blank("not collected: the engine publishes no date here (it withholds the EoS / LDoS dates when no "
                    "retained bulletin matches the model)")
@@ -3069,6 +3256,7 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
                        "data_quality": _cell(ctx, cc, "data_quality", "score", _B_CC + "data_quality"),
                        "missing": _cell(ctx, cc, "missing", "text_list", _B_CC + "missing")},
         "health": {**health, "deductions": deductions,
+                   "deduction_refs": deduction_refs, "deduction_refs_cap": deduction_refs_cap,
                    "deductions_cap": _cap(ded_cap, draw, "analyze.compute_health_scores", ded_readable)},
         "lifecycle": {
             "band": _cell(ctx, lc, "band", "enum", _B_LIFECYCLE + "band", vocab=LIFECYCLE_BAND_ORDER),
@@ -3273,7 +3461,9 @@ _ENDPOINT_ROW_CELLS = (("host", _TEXT), ("port", _TEXT), ("mac", _TEXT), ("vlan"
 _FINDING_ROW_CELLS = (("priority", "CountFact"), ("rank", "CountFact"), ("severity", "SeverityFact"),
                       ("category", _TEXT), ("title", _TEXT), ("detail", _TEXT), ("devices", "TextListFact"),
                       ("wave", _TEXT), ("remediation", _TEXT), ("severity_basis", _TEXT),
-                      ("evidence_confidence", _TEXT), ("source_command", _TEXT))
+                      ("evidence_confidence", _TEXT), ("source_command", _TEXT),
+                      ("evidence_basis", "EvidenceBasisFact"), ("evidence_refs", "EvidenceRefList"),
+                      ("evidence_refs_total", "CountFact"), ("evidence_refs_cap", "EvidenceCap"))
 
 
 def _slice2_defs(defs: Dict[str, Any]) -> None:
@@ -3281,8 +3471,17 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     for name, vocab in (("LifecycleBandFact", LIFECYCLE_BAND_ORDER), ("RiskBandFact", DOSSIER_BANDS),
                         ("SeverityFact", SEVERITIES), ("ReadinessFact", VLAN_READINESS),
                         ("EndpointConfidenceFact", ENDPOINT_CONFIDENCES), ("CollectionStatusFact", CC_STATUSES),
-                        ("OpStatusFact", OP_STATUSES)):
+                        ("OpStatusFact", OP_STATUSES), ("EvidenceBasisFact", PUNCH_EVIDENCE_BASES)):
         defs[name] = _fact_def(name, _enum(vocab))
+    defs["EvidenceRefValue"] = _closed("EvidenceRefValue", ("kind", "host", "ref", "role", "cite"),
+                                       {"kind": _enum(PUNCH_EVIDENCE_REF_KINDS), "host": _nullable(_str()),
+                                        "ref": _ref("Pointer"), "role": _enum(PUNCH_EVIDENCE_ROLES), "cite": _str()})
+    defs["EvidenceRefFact"] = _fact_def("EvidenceRefFact", _ref("EvidenceRefValue"))
+    defs["EvidenceRefItem"] = _item_def("EvidenceRefItem", "EvidenceRefFact")
+    defs["EvidenceRefList"] = _list_def("EvidenceRefList", _ref("EvidenceRefItem"))
+    defs["EvidenceCap"] = _closed("EvidenceCap", ("limit", "reached", "total"),
+                                  {"limit": {"const": PUNCH_EVIDENCE_REFS_CAP},
+                                   "reached": _nullable(_bool()), "total": _ref("CountFact")})
     defs["TextListFact"] = _fact_def("TextListFact", {"type": "array", "items": _str()})
     defs["FhrpMember"] = _closed("FhrpMember", ("host", "proto", "group", "vip", "role", "priority", "preempt", "vmac"),
                                  {**{k: _nullable(_str()) for k in _FHRP_MEMBER_TEXT},
@@ -3416,9 +3615,11 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
         "collection": _closed("DeviceCollection", ("status", "data_quality", "missing"),
                               {"status": _ref("CollectionStatusFact"), "data_quality": _ref("ScoreFact"),
                                "missing": _ref("TextListFact")}),
-        "health": _closed("DeviceHealth", ("score", "band", "role", "deductions", "deductions_cap"),
+        "health": _closed("DeviceHealth", ("score", "band", "role", "deductions", "deductions_cap",
+                                            "deduction_refs", "deduction_refs_cap"),
                           {"score": _ref("ScoreFact"), "band": _ref("BandFact"), "role": _ref(_TEXT),
-                           "deductions": _ref("TextItemList"), "deductions_cap": _ref("Cap")}),
+                           "deductions": _ref("TextItemList"), "deductions_cap": _ref("Cap"),
+                           "deduction_refs": _ref("EvidenceRefList"), "deduction_refs_cap": _ref("Cap")}),
         "lifecycle": _closed("DeviceLifecycle", ("band", "status", "eos", "ldos", "source", "conf", "citation_status"),
                              {"band": _ref("LifecycleBandFact"),
                               **{f: _ref(_TEXT) for f in ("status", "eos", "ldos", "source", "conf",

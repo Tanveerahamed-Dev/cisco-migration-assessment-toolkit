@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2a | `ui_projection` slice 2: Inventory, device page, Findings | `feat/ui-projection-slice2`, draft PR #580; existing `.claude/worktrees/ui-projection-2` checkout | Codex | Main merged after #579; evidence projection and validation in progress (2026-10-01) | Project `evidence_refs`, `evidence_basis`, `evidence_refs_total` and `deduction_refs`; refute, run all gates, pass both privacy checks before push, mark ready and merge the green exact head. |
+| W2a | `ui_projection` slice 2: Inventory, device page, Findings | `feat/ui-projection-slice2`, draft PR #580; existing `.claude/worktrees/ui-projection-2` checkout | Codex | Evidence projection implemented and independently reviewed after the main merge; local focused/frontend gates passed. Full local coverage run cancelled incomplete; [validation record](ui-projection-slice2-validation-2026-10-01.md). (2026-10-01) | Pass both privacy gates before push; require complete hosted gates on the exact head, then mark ready and merge. Keep the incomplete local run visible. |
 | W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`, pushed through `f950f888`; existing `.claude/worktrees/engine-defects` checkout | Codex | Engine fixes/refutation committed. Full run: 9,684 passed / 40 skipped / 20 failed; eight context and nine deferred fixture failures preserved, three actionable failures repaired with 146 focused tests passing. [Validation on its branch](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/blob/f950f888/docs/engine-defects-validation-2026-10-01.md). | After W2a merges: merge main with a merge commit, reconcile its projection consumers, regenerate golden/sheet schema/sample ONCE with LF bytes, run all gates, open the PR and merge when green. |
 | W2c | Backend endpoint and first core screens | not started; no branch or folder yet | Codex | Read-only API and static prototype-source preflights complete on the W2b branch; implementation waits for W2a/W2b | Add the paged, declared-response-model endpoint and Overview / Trust / Inventory + device / Findings screens using only contract envelopes. List the concrete branch/folder before creating either. |
 
@@ -98,6 +98,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-01, Codex (W2a evidence integration):
+  - Projected finding evidence and health deduction references with closed schemas, owner-vocabulary parity, cap disclosure, source-failure precedence and legacy handling. Independent review closed the refutations; final focused and frontend results are in the validation record.
+  - The instrumented full local suite was cancelled incomplete at about 38% after 1,628.78 seconds. Seven reported failures remain unclassified; no full-suite or coverage pass is claimed. Required hosted CI must close those gates before #580 is ready or merged.
+  - Golden, sample-data and frontend distribution bytes were preserved. W2b remains pushed through `f950f888`; its consumer repairs and regeneration wait for #580.
 
 - 2026-10-01, Codex (W2a):
   - Verified #579 merged as `d92fcb1f`; its tree equals tested head `0345eb1d`. Removed W1's active row under rule 8; its branch, checkout and follow-ups remain with their owner.

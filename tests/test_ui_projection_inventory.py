@@ -1118,7 +1118,7 @@ def test_i9_unknown_and_non_text_hosts_claim_nothing(docs):
         facts = list(_walk_facts(page))
         assert len(facts) > 40
         for where, fact in facts:
-            if where.endswith("/deductions_cap/total"):
+            if where.endswith(("/deductions_cap/total", "/deduction_refs_cap/total")):
                 assert fact["state"] == NC and fact["refs"] == []    # host-independent: no owner publishes it
                 continue
             assert fact["state"] == want and fact["refs"] == [], (host, where, fact)
@@ -1292,6 +1292,11 @@ def test_i12_literal_vocabularies_are_held_against_the_producer_source():
 #: it is, or why it is no cap of a projected value. Keyed by (function, the slice's source text).
 CAP_SITES = {
     ("analyze.compute_health_scores", "reasons[:8]"): "health_scores[].deductions",
+    ("analyze.compute_health_scores", "reason_refs[:8]"): "health_scores[].deduction_refs",
+    ("analyze._normalize_evidence_refs", "ordered[:cap]"):
+        "exempt: evidence_refs uses the source-owned cap and publishes evidence_refs_total when truncated",
+    ("analyze._evidence_ref", "text[:_EVIDENCE_CITE_MAX]"):
+        "exempt: the bounded citation is preserved verbatim inside the typed reference",
     ("analyze.compute_endpoint_dependencies", "sorted(m['ports'])[:8]"): "endpoint_dependencies.dual_homed[].ports",
     ("analyze.compute_remediation_plan", "(why or '')[:300]"): "remediation_plan[].why",
     ("analyze.compute_vlan_cutover_matrix", "doms[:3]"): "vlan_cutover[].app_domain",
@@ -1316,6 +1321,8 @@ CAP_SITES = {
     ("excel._xls_cell_value", "v[:_XLSX_MAX_CELL - len(note)]"): "exempt: the workbook cell writer, not the snapshot",
     ("analyze.compute_lifecycle_risk", "str(x or '')[:10]"): "exempt: the ISO date part of a timestamp",
     ("analyze.compute_lifecycle_risk", "str(s)[:10]"): "exempt: the ISO date part of a timestamp",
+    ("analyze.compute_lifecycle_risk", "_retrieved_at[:10]"):
+        "exempt: the retained registry retrieval date used to judge lifecycle freshness, not a projected list",
     ("parse.parse_security", "raw[:1]"): "exempt: a first-character test, not a value",
     ("analyze.compute_cable_map", "badges[:3]"): "exempt: badges are not projected",
     ("analyze.compute_device_dossiers",
@@ -1680,7 +1687,9 @@ def test_i16_a_partial_device_says_which_capture_its_lists_miss(snaps, docs, pay
 
 def test_i16_device_findings_without_running_config_are_incomplete(snaps, docs):
     snap = snaps["a"]
-    lacking = 0
+    expected_lacking = sorted(set(snap["devices"]) - set(snap["security"]))
+    assert expected_lacking                         # this fixture must exercise missing running-config
+    lacking = []
     for host in sorted(snap["devices"]):
         page = _doc(docs, "a", host)["device"]
         sel = [i for i, r in enumerate(snap["punchlist"]) if host in r["devices"]]
@@ -1690,10 +1699,10 @@ def test_i16_device_findings_without_running_config_are_incomplete(snaps, docs):
             assert page["findings"]["state"] == (PUB if sel else CBE), host
             assert rem["state"] in (PUB, CBE), host
         else:
-            lacking += 1
+            lacking.append(host)
             for fact in (page["findings"], rem):
                 assert fact["state"] == NC and "security carries no row" in fact["reason"], host
-    assert lacking == 5
+    assert lacking == expected_lacking
     edit = copy.deepcopy(snap)
     edit["punchlist"] = [r for r in edit["punchlist"] if "podacc1" not in r["devices"]]
     fact = uip.project_device(edit, "podacc1")["device"]["findings"]
@@ -2017,18 +2026,28 @@ def test_i22_project_devices_equals_one_page_at_a_time(snaps, monkeypatch):
 
 
 # --------------------------------------------------------------------------------------------------
-# I23 -- tripwire: the engine starts publishing evidence pointers (a sibling branch adds them)
+# I23 -- every engine-published evidence field survives the typed projection
 # --------------------------------------------------------------------------------------------------
 _EVIDENCE_KEYS = ("evidence_refs", "evidence_refs_total", "evidence_basis", "deduction_refs")
 
 
-def test_i23_tripwire_engine_publishes_no_row_evidence_pointers_yet():
-    """This projection states that a punch-list row carries no evidence pointer and a health deduction no ref
-    (punch_rows_carry_no_evidence_pointers). The moment the engine writes those keys that limitation is false and
-    the pointers are dropped: project them (a closed list, each pointer resolved, the basis held to the producer's
-    vocabulary), apply the limitation only where the key is absent, then retire this tripwire."""
+def test_i23_engine_row_evidence_is_projected_without_loss():
+    """The former deliberate-absence tripwire now requires parity for every source-owned evidence field.
+    Adversarial, capped, legacy and real-producer subsequence cases live in test_ui_projection_evidence.py.
+    """
     consts = _str_constants(ast.parse(inspect.getsource(analyze)))
-    assert not consts & set(_EVIDENCE_KEYS), sorted(consts & set(_EVIDENCE_KEYS))
+    assert set(_EVIDENCE_KEYS) <= consts
     sample = _sample()
-    assert not any(k in r for r in sample["punchlist"] for k in _EVIDENCE_KEYS)
-    assert not any(k in r for r in sample["health_scores"] for k in _EVIDENCE_KEYS)
+    findings = uip.project_findings(sample)
+    assert "punch_rows_carry_no_evidence_pointers" not in findings["rows"].get("caveats", ())
+    assert sample["punchlist"] and sample["health_scores"]
+    for raw, row in zip(sample["punchlist"], findings["rows"]["items"]):
+        assert _sv(row["evidence_basis"]) == (PUB, raw["evidence_basis"])
+        refs = [item["fact"]["value"] for item in row["evidence_refs"]["items"]]
+        assert refs == raw["evidence_refs"]
+        assert all(_resolve(sample, ref["ref"]) is not _MISSING for ref in refs)
+        assert _sv(row["evidence_refs_total"]) == (
+            (PUB, raw["evidence_refs_total"]) if "evidence_refs_total" in raw else (NC, None))
+    for raw in sample["health_scores"]:
+        health = uip.project_device(sample, raw["switch"])["device"]["health"]
+        assert [item["fact"]["value"] for item in health["deduction_refs"]["items"]] == raw["deduction_refs"]
