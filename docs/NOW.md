@@ -144,3 +144,40 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
   - Removed idle worktrees, fully merged local branches and empty orphan directories, preserving
     all uncommitted work.
   - W1 continues in its own session. W2 waits on the owner decisions above.
+
+## W2 handoff to Codex (2026-10-01) -- supersedes the W2 row above
+
+The W2 row above is stale. #577 and #578 are merged. Until the board is reconciled after PR #579 merges,
+**this section is the current state of W2**. It is appended here so that it cannot conflict with #579's own
+board edits. **W2 is now held by Codex.** Claude Code has stopped all W2 work, so there is one writer.
+
+| Item | Branch / PR | Folder to open (Codex: Local mode, that folder) | State (2026-10-01) | Next step |
+|---|---|---|---|---|
+| W2a: `ui_projection` slice 2 (Inventory, device page, Findings) | `feat/ui-projection-slice2`, draft PR #580 | `.claude/worktrees/ui-projection-2` | Built, refuted, gates green. HELD until #579 merges: its tripwire test fails once #579's `evidence_refs` / `evidence_basis` / `deduction_refs` fields land. | After #579 merges: merge `origin/main` (merge commit), project those three fields so the tripwire passes, run every gate, mark ready, merge. |
+| W2b: engine defects G13 (move-group label), G15 (STP root uniqueness), G49 (dossier absence semantics) | `fix/engine-contract-defects`, pushed, no PR yet | `.claude/worktrees/engine-defects` | Read-only designs DONE (`docs/engine-defects-design-2026-10-01.md` on that branch). The implementation run was interrupted; its edits are commit `3cb8891d`, marked **wip(unverified)**. The branch is based on #579's head, so it can proceed before #579 merges. | Verify the WIP against the designs, finish test-first, run an independent refutation pass. After #579 merges: merge `origin/main`, regenerate the golden and sample snapshots ONCE (see the notes below), open the PR, merge. |
+| W2c: backend endpoint + first real screens | not started | none yet | Waits for W2a | A FastAPI endpoint serving `ui_projection` (paged, declared response models), then the AssessHub Overview / Trust / Inventory + device / Findings screens rendering only contract envelopes. The private prototype (v2) is the visual reference, and `docs/one-app-contract-gaps-2026-09-30.md` ranks the engine gaps. |
+
+**Not W2's (do not touch):** W1 / PR #579 (Atlas Scope) belongs to its own Claude Code session. It is green on
+every hosted check and waits only for the owner's merge decision.
+
+**Notes for the W2 holder (verified on this host):**
+- **Linked worktrees always show 8 test failures:** `test_graphify_guarded` (4), `test_graph_invariants` (3) and
+  `test_atlas_r2_authority_decision_binding` (1). They fail identically on an unchanged `main` in a linked
+  worktree, so they are environment failures. A rare `make_stick` / venv-redirector failure under load
+  passes when re-run alone.
+- **Adding a `cisco_toolkit` module moves two zero-egress attestation strings in the golden snapshot** ("across N
+  modules"). RUN `tests/test_pipeline_golden.py`; a byte-identical golden file proves nothing.
+- **Do not run a full `UPDATE_GOLDEN=1` regeneration on Windows:** it rewrites every line ending to CRLF (tens of
+  thousands of churned lines). Regenerate, then compare with `git diff --ignore-cr-at-eol`, and commit LF bytes
+  that change only the real content.
+- **Merges:**
+  - Use merge commits (never squash or rebase) and `gh pr merge <n> --merge --admin --match-head-commit <tested sha>`.
+  - Only do this after every required check is green and with the owner's standing merge authority: branch
+    protection needs one review, and authors cannot self-approve.
+  - Merging one PR puts the others behind `main` (the strict rule), so merge `main` in again.
+  - A clean 3-way merge of the same two commits always gives the same tree. Confirm it after merging:
+    `git rev-parse origin/main^{tree}` must equal the tested merge's tree.
+- **Before every push (public repo):**
+  - `py -3.12 -I -B .github/scripts/verify_repository_privacy.py --root .`
+  - a scan of `git log -p origin/main..HEAD` with `cisco_toolkit.distribution_verify._client_marker_patterns()`
+  - Gate each step on its exit code; never chain gates with `;`.
