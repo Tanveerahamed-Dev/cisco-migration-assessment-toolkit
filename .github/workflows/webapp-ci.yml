@@ -95,7 +95,35 @@ jobs:
       - run: python -m pip install --upgrade pip
       - name: Install complete application and test dependencies
         run: python -m pip install -e ".[dev]"
+      # The /scope pins in webapp/tests/test_scope_mount.py run the REAL Atlas Scope compiler and bundler.
+      # Without node and atlas-scope's locked dependencies they skip; with ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN=1
+      # a missing prerequisite fails the leg instead, so it cannot report green on pins it never executed.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: atlas-scope/package-lock.json
+      - name: Install Atlas Scope's locked toolchain
+        working-directory: atlas-scope
+        run: npm ci
+      # The hub build is what AssessHub serves at /scope by default (app._REPO_ATLAS_SCOPE_DIST ->
+      # atlas-scope/dist-hub). Building it here makes test_scope_mount's real-artifact pin run instead
+      # of skip (ATLAS_SCOPE_REQUIRE_HUB_BUILD=1 below): the repository's own hub build must pass every
+      # /scope refusal and be linked.
+      - name: Build Atlas Scope's hub build (the /scope artifact)
+        working-directory: atlas-scope
+        run: npm run build:hub
+      # test_scope_mount's markup oracle loads every generated /scope document in real Chromium
+      # (atlas-scope's own Playwright) and requires AssessHub's verdict to hold in the browser; with
+      # ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE=1 a missing browser fails the leg instead of skipping.
+      - name: Install Atlas Scope's Playwright Chromium (the /scope markup oracle)
+        working-directory: atlas-scope
+        run: npx playwright install --with-deps chromium
       - name: Backend tests
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+          ATLAS_SCOPE_REQUIRE_HUB_BUILD: "1"
+          ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "1"
         run: python -m pytest webapp/tests -q
 
   frontend:

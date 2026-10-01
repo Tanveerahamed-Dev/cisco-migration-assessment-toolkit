@@ -29,6 +29,17 @@ from datetime import datetime
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_protocol_assurance_receipt, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list   # shared snapshot-section coercers (ops.py uses the same): a truthy non-dict/non-list section must degrade, not crash
 from cisco_toolkit.textutils import _as_num   # fail-soft numeric coercion of device-derived leaf counts
+from cisco_toolkit.analyze import _protocol_assessability_conclusion
+
+
+def _pa_conclusion(state) -> str:
+    """The engine-owned conclusion class of a protocol_assessability row state. A state outside the vocabulary
+    (a malformed or foreign receipt) is "blind": never assessed, never not-running, never healthy."""
+    try:
+        return _protocol_assessability_conclusion(str(state or ""))
+    except KeyError:
+        return "blind"
+
 
 logger = logging.getLogger(__name__)
 
@@ -1592,18 +1603,25 @@ def write_runbook_docx(
         )
 
     if pa_valid:
-        pa_states = Counter(str(row.get("state") or "unknown") for row in pa_rows)
+        # Every state is read through the engine's ONE vocabulary owner (analyze): its conclusion class, never
+        # a binary `!= "assessed"` split, which would file a cited vendor no-process banner (not_running) as
+        # a collection gap. A state outside the vocabulary is not assessable (fail closed, never healthy).
+        pa_classes = Counter(_pa_conclusion(row.get("state")) for row in pa_rows)
         n_cells = len(pa_rows)
-        n_assessed = pa_states["assessed"]
-        n_partial = pa_states["partial"]
-        n_not_assessed = max(0, n_cells - n_assessed - n_partial)
+        n_assessed = pa_classes["assessed"]
+        n_partial = pa_classes["partial"]
+        n_not_running = pa_classes["not_running"]
+        n_not_assessed = max(0, n_cells - n_assessed - n_partial - n_not_running)
         n_health_rows = sum(bool(row.get("health_row_emitted")) for row in pa_rows)
+        not_running_clause = (f"{n_not_running} not running (vendor no-process banner cited), "
+                              if n_not_running else "")
         doc.add_paragraph(
             f"Runtime assessability: {n_health_rows} of {n_cells} device × protocol-family cells "
-            f"emitted a bounded health row; {n_assessed} assessed, {n_partial} partial, and "
-            f"{n_not_assessed} not assessable. Missing rows are never interpreted as healthy or as "
-            "proof that the protocol is absent. This receipt reports current-run collection/parser "
-            "reachability, not an expected-neighbor or configured-protocol denominator.")
+            f"emitted a bounded health row; {n_assessed} assessed, {n_partial} partial, "
+            f"{not_running_clause}and {n_not_assessed} not assessable. Missing rows are never interpreted "
+            "as healthy or as proof that the protocol is absent; only a not-running cell, whose capture is "
+            "the vendor's own no-process banner, is that proof for its host. This receipt reports current-run "
+            "collection/parser reachability, not an expected-neighbor or configured-protocol denominator.")
 
         family_order = [str(family.get("protocol") or "")
                         for family in _R(passess.get("families"))]
@@ -1612,21 +1630,38 @@ def write_runbook_docx(
         family_rows = []
         for protocol in family_order:
             cells = [row for row in pa_rows if row.get("protocol") == protocol]
-            states = Counter(str(row.get("state") or "unknown") for row in cells)
-            partial = states["partial"]
-            assessed = states["assessed"]
-            not_assessed = max(0, len(cells) - assessed - partial)
+            classes = Counter(_pa_conclusion(row.get("state")) for row in cells)
+            partial = classes["partial"]
+            assessed = classes["assessed"]
+            not_running = classes["not_running"]
+            not_assessed = max(0, len(cells) - assessed - partial - not_running)
             family_rows.append([
                 protocol,
                 assessed,
                 partial,
+                not_running,
                 not_assessed,
                 sum(bool(row.get("health_row_emitted")) for row in cells),
             ])
-        table(["Protocol family", "Assessed", "Partial", "Not assessable", "Health rows"],
-              family_rows, widths=[1.5, 0.9, 0.9, 1.2, 1.0])
+        table(["Protocol family", "Assessed", "Partial", "Not running", "Not assessable", "Health rows"],
+              family_rows, widths=[1.5, 0.9, 0.9, 1.0, 1.2, 1.0])
 
-        gaps = [row for row in pa_rows if row.get("state") != "assessed"]
+        running_off = [row for row in pa_rows if _pa_conclusion(row.get("state")) == "not_running"]
+        if running_off:
+            doc.add_paragraph("Protocols not running (the capture is the vendor no-process banner; positive "
+                              "evidence the protocol contributes nothing on that host — not a collection gap, "
+                              "not a health verdict):")
+            table(["Switch", "Protocol", "Cited banner"],
+                  [[row.get("switch", ""), row.get("protocol", ""),
+                    "; ".join(f"{_as_dict(item).get('command', '')}: {_as_dict(item).get('banner', '')}"
+                              for item in _R(row.get("banner_evidence")))]
+                   for row in running_off[:18]], widths=[1.8, 1.2, 5.2])
+            _disclose(doc, len(running_off), 18, "not-running cell(s)",
+                      "Collection Completeness",
+                      "Use its Protocol assessability block; each omitted cell cites its banner there.")
+
+        gaps = [row for row in pa_rows
+                if _pa_conclusion(row.get("state")) not in ("assessed", "not_running")]
         if gaps:
             doc.add_paragraph("Current-run protocol evidence gaps requiring collection or parser review:")
             table(["State", "Switch", "Protocol", "Capture / input states"],

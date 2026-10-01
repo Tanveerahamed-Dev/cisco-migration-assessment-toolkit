@@ -14,7 +14,11 @@ from copy import deepcopy
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-def test_sample_freshness_filter_ignores_only_derived_source_age_without_mutation():
+def test_sample_freshness_filter_compares_the_pinned_registry_age_without_mutation():
+    """Since 2026-09-28 build_sample judges registry health at the demo's evidence date (the golden
+    harness's seam and rule), so source_age_days is a pure function of the pin: it is COMPARED, and a
+    drift in it is staleness, not noise. (It used to be stripped because it advanced with the wall
+    clock.) Neither input is mutated."""
     from webapp.sample_data.build_sample import _strip_volatile
 
     left = {
@@ -31,14 +35,27 @@ def test_sample_freshness_filter_ignores_only_derived_source_age_without_mutatio
     right["data_authorities"]["eol"]["source_age_days"] = 7.6
     before_left, before_right = deepcopy(left), deepcopy(right)
 
-    assert _strip_volatile(left) == _strip_volatile(right)
+    assert _strip_volatile(left) != _strip_volatile(right)
     assert left == before_left
     assert right == before_right
-    assert _strip_volatile(left)["data_authorities"]["eol"] == {
-        "source_retrieved_at": "2026-07-30T13:48:46Z",
-        "source_fresh": True,
-        "authoritative": True,
-    }
+    assert _strip_volatile(left)["data_authorities"]["eol"] == left["data_authorities"]["eol"]
+
+
+def test_committed_registry_health_is_judged_at_the_demo_evidence_date():
+    """The committed demo states every registry's health AT ITS OWN EVIDENCE DATE (build_sample's pinned
+    registry clock): each age is exactly the arithmetic from the published retrieval time to that date, and
+    every authority is fresh there. A demo regenerated against the wall clock fails this."""
+    from datetime import datetime, timezone
+    from webapp.sample_data.build_sample import _SAMPLE_COLLECTION_STAMP as stamp
+
+    evidence = datetime(int(stamp[0:4]), int(stamp[4:6]), int(stamp[6:8]), tzinfo=timezone.utc)
+    authorities = _sample()["data_authorities"]
+    assert authorities, "the demo publishes no data authorities"
+    for name, health in authorities.items():
+        retrieved = datetime.fromisoformat(health["source_retrieved_at"].replace("Z", "+00:00"))
+        age = round((evidence - retrieved).total_seconds() / 86_400, 6)
+        assert health["source_age_days"] == age, (name, health["source_age_days"], age)
+        assert health["freshness_status"] == "fresh", (name, health["freshness_status"])
 
 
 def test_sample_freshness_keeps_lifecycle_and_design_sections_and_detects_wording_drift(tmp_path):

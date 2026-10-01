@@ -35,6 +35,12 @@ from compiler.graphify import (  # noqa: E402
     OPAQUE_IDENTIFIER_POLICY,
 )
 from compiler.schema_validation import FORBIDDEN_CONTENT_SCAN_RULES  # noqa: E402
+from compiler.policy import (  # noqa: E402
+    CENSUS_DEPTH_POLICY_OWNER,
+    IDENTITY_DEPTH_DEFERRED_GROUPS,
+    IDENTITY_DEPTH_RETAINED_GROUPS,
+    census_depth_declaration_receipts,
+)
 from compiler.binary_review import unavailable_summary as unavailable_binary_review_summary  # noqa: E402
 from governance.consequential_claims import (  # noqa: E402
     CONTENT_PATHS as CONSEQUENTIAL_CLAIM_CONTENT_PATHS,
@@ -52,7 +58,7 @@ import release.compiler_bundle as compiler_bundle  # noqa: E402
 from release.pipeline import ReleaseError, build_release  # noqa: E402
 import release.pdf_review as pdf_review_module  # noqa: E402
 from release.pdf_review import PdfReviewError, load_pdf_review_subject  # noqa: E402
-from release.sbom import NPM_LOCKFILES, PYTHON_DECLARATIONS, build_cyclonedx  # noqa: E402
+from release.sbom import PYTHON_DECLARATIONS, build_cyclonedx  # noqa: E402
 from release.signing import sign_manifest, verify_artifact_family, verify_manifest  # noqa: E402
 from release.schema_validation import validate_release_object  # noqa: E402
 
@@ -510,6 +516,37 @@ def _declared_claim_repository(tmp_path: Path) -> Path:
     return repo
 
 
+def _full_depth_census_receipt(file_count: int) -> dict[str, object]:
+    """A census-depth receipt for a fixture with no file under a declared prefix."""
+
+    return {
+        "policy_owner": CENSUS_DEPTH_POLICY_OWNER,
+        "status": "full_depth",
+        "full_depth_files": file_count,
+        "identity_depth_files": 0,
+        "identity_depth_text_files": 0,
+        "identity_depth_nonblank_lines_deferred": 0,
+        "retained_record_groups": list(IDENTITY_DEPTH_RETAINED_GROUPS),
+        "deferred_record_groups": list(IDENTITY_DEPTH_DEFERRED_GROUPS),
+        "declarations": [
+            {
+                **row,
+                "tracked_files": 0,
+                "text_files": 0,
+                "privacy_scanned_text_files": 0,
+                "metadata_only_files": 0,
+                "content_bytes": 0,
+                "deferred_physical_lines": 0,
+                "deferred_nonblank_lines": 0,
+                "retained_import_records": 0,
+            }
+            for row in census_depth_declaration_receipts()
+        ],
+        "block_categories": [],
+        "claim": "Synthetic fixture has no identity-depth file.",
+    }
+
+
 def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
     repo = tmp_path / "repo"
     content_root = repo / "master-reference" / "content"
@@ -720,6 +757,8 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
                 "language": "json" if relative.endswith(".json") else "text",
                 "roles": ["dataset"] if "/content/" in relative else ["manifest"],
                 "privacy_exposure": "full",
+                "census_depth": "full",
+                "census_depth_reason": None,
                 "parse_status": "parsed",
                 "parser": "fixture",
                 "parser_mode": "structured",
@@ -873,6 +912,7 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
         "hard_failure": False,
         "fatal_errors": [],
         "parsing": {"status_counts": {"parsed": len(files)}, "lines_with_explicit_unresolved_reasons": 0},
+        "census_depth": _full_depth_census_receipt(len(files)),
         "graphify": {
             "available": True,
             "status": "current",
@@ -951,6 +991,12 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path]:
             },
             {
                 "name": "every_gui_surface_has_standardized_evidence_honest_dossier",
+                "passed": True,
+                "expected": 0,
+                "actual": 0,
+            },
+            {
+                "name": "every_identity_depth_file_declared_privacy_scanned_and_unprojected",
                 "passed": True,
                 "expected": 0,
                 "actual": 0,
@@ -1433,6 +1479,9 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
     assert manifest_a["publication_status"] == "not_authorized"
     assert manifest_a["gates"]["pdf"] == "pending_external_renderer"
     assert manifest_a["gates"]["semantic_acceptance"] == "blocked"
+    # This fixture tracks no file under a declared census-depth prefix.
+    assert manifest_a["gates"]["line_census_depth"] == "passed_full_depth"
+    assert not any("Census depth BLOCK" in limit for limit in manifest_a["honest_limits"])
     assert manifest_a["compiler"]["all_semantic_acceptance_gates_passed"] is False
     assert manifest_a["independent_verification_verdict"] == "BLOCK"
     assert manifest_a["gates"]["ed25519_signature"] == "pending_external_owner_key"
@@ -2191,7 +2240,7 @@ def _tracked_dependency_sbom() -> dict[str, object]:
     repo = MASTER_REFERENCE.parent
     sources = {
         relative: (repo / relative).read_bytes()
-        for relative in (*NPM_LOCKFILES, *PYTHON_DECLARATIONS)
+        for relative in (*_tracked_npm_lockfiles(repo), *PYTHON_DECLARATIONS)
     }
     vendor_root = MASTER_REFERENCE / "vendor" / "bounded-image-size"
     for source_path in sorted(path for path in vendor_root.rglob("*") if path.is_file()):
@@ -2242,7 +2291,9 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
     )
     assert component_rows["node-html-parser"][0]["version"] == "9.0.3"
     assert component_rows["node-html-parser"][1]["atlas:developmentOnly"] == "true"
+    # Every tracked lockfile is inventoried, including atlas-scope/'s.
     assert fflate_rows == {
+        ("atlas-scope/package-lock.json", "0.8.3"),
         ("master-reference/package-lock.json", "0.7.5"),
         ("webapp/frontend/package-lock.json", "0.8.3"),
     }
@@ -2326,7 +2377,7 @@ def test_dependency_sources_preserve_the_scoped_override_and_full_local_package(
         for path in (MASTER_REFERENCE / "vendor" / "bounded-image-size").rglob("*")
         if path.is_file()
     )
-    expected = set(NPM_LOCKFILES + PYTHON_DECLARATIONS) | {
+    expected = set(_tracked_npm_lockfiles(repo)) | set(PYTHON_DECLARATIONS) | {
         "master-reference/package.json",
         *vendor_paths,
     }
@@ -2353,7 +2404,7 @@ def test_dependency_sources_reject_an_unscoped_override_even_when_the_lock_alias
         for path in (MASTER_REFERENCE / "vendor" / "bounded-image-size").rglob("*")
         if path.is_file()
     )
-    source_paths = set(NPM_LOCKFILES + PYTHON_DECLARATIONS) | {
+    source_paths = set(_tracked_npm_lockfiles(repo)) | set(PYTHON_DECLARATIONS) | {
         "master-reference/package.json",
         *vendor_paths,
     }
@@ -2800,7 +2851,9 @@ def test_sbom_has_locked_npm_transitives_and_honest_python_declarations(tmp_path
 
 
 def _sbom_source_bytes(repo: Path) -> dict[str, bytes]:
-    return {relative: (repo / relative).read_bytes() for relative in (*NPM_LOCKFILES, *PYTHON_DECLARATIONS)}
+    return {
+        relative: (repo / relative).read_bytes() for relative in (*FIXTURE_NPM_LOCKFILES, *PYTHON_DECLARATIONS)
+    }
 
 
 def test_sbom_rejects_duplicate_component_refs(tmp_path: Path) -> None:
@@ -2815,7 +2868,7 @@ def test_sbom_rejects_duplicate_component_refs(tmp_path: Path) -> None:
 def test_sbom_rejects_disconnected_locked_components(tmp_path: Path) -> None:
     repo, _ = _fixture_repo(tmp_path)
     sources = _sbom_source_bytes(repo)
-    lockfile = NPM_LOCKFILES[0]
+    lockfile = FIXTURE_NPM_LOCKFILES[0]
     lock = json.loads(sources[lockfile].decode("utf-8"))
     lock["packages"]["node_modules/orphan"] = {"version": "9.0.0", "dev": True}
     sources[lockfile] = canonical_json(lock)
@@ -2827,7 +2880,7 @@ def test_sbom_rejects_disconnected_locked_components(tmp_path: Path) -> None:
 def test_sbom_rejects_unresolved_required_npm_dependencies(tmp_path: Path) -> None:
     repo, _ = _fixture_repo(tmp_path)
     sources = _sbom_source_bytes(repo)
-    lockfile = NPM_LOCKFILES[0]
+    lockfile = FIXTURE_NPM_LOCKFILES[0]
     lock = json.loads(sources[lockfile].decode("utf-8"))
     lock["packages"][""]["dependencies"]["missing-required"] = "1.0.0"
     sources[lockfile] = canonical_json(lock)
@@ -4947,3 +5000,55 @@ def test_sbom_and_preservation_denominators_are_explicit(tmp_path: Path) -> None
     assert set(attestation["output_contract"]["expected_members"]) == {
         path.name for path in release_dir.iterdir() if path.is_file()
     }
+
+
+# The synthetic fixture repository tracks exactly these two npm lockfiles.
+FIXTURE_NPM_LOCKFILES = ("master-reference/package-lock.json", "webapp/frontend/package-lock.json")
+
+
+def _tracked_npm_lockfiles(repo: Path) -> list[str]:
+    """Every tracked npm lockfile, derived independently of the builder's rule."""
+
+    return [
+        path
+        for path in _git_tracked_paths(repo)
+        if path.rsplit("/", 1)[-1] in {"package-lock.json", "npm-shrinkwrap.json"}
+    ]
+
+
+def _git_tracked_paths(repo: Path) -> list[str]:
+    listed = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "-z"],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    ).stdout
+    return sorted(path for path in listed.decode("utf-8").split("\0") if path)
+
+
+def test_release_sbom_inventories_every_tracked_npm_lockfile(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The lockfile set is derived from the compiled Git tree, so a tracked
+    # lockfile can never be missing from the SBOM or its vulnerability gate.
+    # The expectation is derived independently here from ``git ls-files``.
+    repo = MASTER_REFERENCE.parent
+    tracked = _git_tracked_paths(repo)
+    lockfiles = _tracked_npm_lockfiles(repo)
+    assert lockfiles, "the repository tracks npm lockfiles; an empty derivation is itself a failure"
+    bundle = SimpleNamespace(records={"files": [{"path": path} for path in tracked]})
+
+    def working_tree_blob(_repo: Path, _bundle: object, relative: str) -> bytes:
+        return (repo / relative).read_bytes()
+
+    monkeypatch.setattr(release_pipeline, "read_bound_source_blob", working_tree_blob)
+    sources = release_pipeline._dependency_sources(repo, bundle)
+    assert set(lockfiles) <= set(sources)
+    sbom = build_cyclonedx(sources, "a" * 40, "b" * 64)
+    metadata = {item["name"]: item["value"] for item in sbom["metadata"]["properties"]}
+    assert metadata["atlas:npmLockfiles"].split(",") == lockfiles
+    roots = {
+        properties["atlas:lockfile"]
+        for component in sbom["components"]
+        for properties in [{item["name"]: item["value"] for item in component.get("properties", [])}]
+        if properties.get("atlas:lockfilePath") == "<root>"
+    }
+    assert roots == set(lockfiles)

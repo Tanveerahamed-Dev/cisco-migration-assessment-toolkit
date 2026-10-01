@@ -59,7 +59,24 @@ jobs:
       - name: Require the reviewed Graphify version, extractor bytes, and alias topology
         if: matrix.python-version == '3.12'
         run: python -I -B tools/graphify_guarded.py --probe
+      # The default suite includes webapp/tests, whose /scope pins run the REAL Atlas Scope compiler and
+      # bundler; ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN=1 makes a missing node/npm ci fail those pins, never skip.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: atlas-scope/package-lock.json
+      - name: Install Atlas Scope's locked toolchain
+        working-directory: atlas-scope
+        run: npm ci
+      # The /scope markup oracle (webapp/tests/test_scope_mount.py, "the browser is the oracle") needs a
+      # real Chromium this matrix does not install. It is required on the legs that install one: webapp-ci's
+      # backend leg (webapp/** changes) and atlas-scope-ci (atlas-scope/** changes). Here it is declined
+      # EXPLICITLY, so it skips visibly; with the real-toolchain switch alone a missing browser fails.
       - name: Run the complete default suite
+        env:
+          ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
+          ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
         run: python -m pytest
 
   typecheck:
@@ -114,7 +131,7 @@ jobs:
         with:
           node-version: "24.19.0"
           cache: npm
-          cache-dependency-path: webapp/frontend/package-lock.json
+          cache-dependency-path: "**/package-lock.json"
       - run: python -m pip install --upgrade pip
       - name: Install audited Python environment
         run: python -m pip install -e ".[dev]" "pip-audit>=2.9,<3"
@@ -142,6 +159,10 @@ jobs:
         run: |
           python -m pip uninstall --yes cisco-migration-assessment-toolkit
           python -m pip_audit --strict --ignore-vuln PYSEC-2026-2858
+      # EVERY tracked npm lockfile is audited with the same flags: a required check that audits one
+      # hand-picked package leaves the others' production and development graphs unaudited (the
+      # atlas-scope/ hub build ships in the Atlas bundle). tests/test_frontend_platform_contract.py
+      # derives the tracked lockfiles from `git ls-files` and fails when one has no audit step here.
       - name: Install locked frontend dependencies
         working-directory: webapp/frontend
         run: |
@@ -152,6 +173,32 @@ jobs:
         env:
           # npm 11 rejects one path being loaded as both user and global
           # configuration. Keep both layers isolated without aliasing them.
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-userconfig
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/npm-globalconfig
+        run: >-
+          npm audit --audit-level=high
+          --registry=https://registry.npmjs.org/
+          --offline=false
+          --include=prod --include=dev --include=optional --include=peer
+      - name: Install locked Atlas Scope dependencies
+        working-directory: atlas-scope
+        run: npm ci --ignore-scripts
+      - name: Audit Atlas Scope dependencies
+        working-directory: atlas-scope
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-userconfig
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/npm-globalconfig
+        run: >-
+          npm audit --audit-level=high
+          --registry=https://registry.npmjs.org/
+          --offline=false
+          --include=prod --include=dev --include=optional --include=peer
+      - name: Install locked master reference dependencies
+        working-directory: master-reference
+        run: npm ci --ignore-scripts
+      - name: Audit master reference dependencies
+        working-directory: master-reference
+        env:
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-userconfig
           NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/npm-globalconfig
         run: >-

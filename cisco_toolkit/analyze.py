@@ -9,6 +9,7 @@ The `compute_*` functions themselves follow in later steps (they entangle with t
 fill-colour maps (`_READY_FILL`/`_STATUS_FILL`) and sheet-name constants stay
 behind too - they belong to the excel layer, not the data analysis."""
 import ipaddress
+import json
 import re
 from functools import lru_cache
 from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a common loop var elsewhere (avoids F402 shadowing)
@@ -21,9 +22,15 @@ from cisco_toolkit.fhrp_redundancy import (
     scope_fhrp_redundancy_domains,
     validate_fhrp_redundancy_domain_baseline,
 )
-from cisco_toolkit.vtp_safety import validate_vtp_safety_baseline
-from cisco_toolkit.ipv6_routing import validate_ipv6_routing_adjacency_baseline
-from cisco_toolkit.cmdio import TRUNK_TABLE_CMD_VARIANTS, _load_cmd_output, cmd_capture_state
+from cisco_toolkit.vtp_safety import embedded_vtp_safety_baseline, validate_vtp_safety_baseline
+from cisco_toolkit.ipv6_routing import (
+    embedded_ipv6_routing_adjacency_baseline,
+    validate_ipv6_routing_adjacency_baseline,
+)
+from cisco_toolkit.cmdio import (
+    PROTOCOL_NOT_RUNNING_BANNERS, TRUNK_TABLE_CMD_VARIANTS, _load_cmd_output, cmd_capture_state,
+    cmd_not_running_banner,
+)
 from cisco_toolkit.model import DevicePhysical, InterfaceData
 from cisco_toolkit.parse import (
     _parse_fhrp, _is_physical_port, parse_spanning_tree_blockedports,
@@ -686,6 +693,7 @@ def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Lis
     access_vlans: Dict[int, set] = {}
     svi_hosts: Dict[int, set] = {}
     svi_fhrp: Dict[int, List[str]] = {}
+    svi_addresses: Dict[int, List[str]] = {}
     for host, ifaces in all_interfaces.items():
         for port, d in ifaces.items():
             if (d.switchport_mode or "") == "Access" and d.vlan.isdigit():
@@ -695,6 +703,7 @@ def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Lis
                 vid = int(m.group(1))
                 svi_hosts.setdefault(vid, set()).add(host)
                 svi_fhrp.setdefault(vid, []).append(d.hsrp_behavior or "")
+                svi_addresses.setdefault(vid, []).append(getattr(d, "svi_ip", "") or "")
 
     # (1) Access VLAN with no SVI anywhere in scan = no L3 gateway found.
     for vid, hosts in sorted(access_vlans.items()):
@@ -705,9 +714,12 @@ def compute_findings(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> Lis
                 f"Access ports on {len(hosts)} switch(es) but no SVI in scan "
                 f"(L2-only, or its gateway is off-scan)."))
 
-    # (2) VLAN with SVIs on >=2 switches but no FHRP = gateway redundancy gap.
+    # (2) VLAN with SVIs on >=2 switches but no FHRP = gateway redundancy gap -- unless the SVIs fill every
+    #     usable address of their one subnet (a /30 or /31 router-to-router transit): no host can use a
+    #     gateway there, so neither FHRP nor a split gateway applies.
     for vid, hosts in sorted(svi_hosts.items()):
-        if len(hosts) >= 2 and not any((f or "").strip() for f in svi_fhrp.get(vid, [])):
+        if (len(hosts) >= 2 and not any((f or "").strip() for f in svi_fhrp.get(vid, []))
+                and not svi_subnet_leaves_no_host_address(svi_addresses.get(vid, []))):
             findings.append(("High", "Gateway redundancy", f"VLAN {vid}",
                 f"SVIs on {len(hosts)} switches but no FHRP (HSRP/VRRP/GLBP) detected "
                 f"- duplicate-IP / split-gateway risk."))
@@ -1614,6 +1626,11 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
         elif len(gwl) == 1:
             # positively-observed sole gateway -- compute_migration_readiness's wording
             fhrp = f"sole gateway on {gwl[0][0]} (no FHRP)"
+        elif gwl and svi_subnet_leaves_no_host_address(
+                [getattr(d, "svi_ip", "") or "" for _host, d in gwl]):
+            # every usable address of the one subnet is a collected gateway address: a router transit
+            fhrp = (f"{len(gwl)} gateways fill every usable address of their subnet (transit) — "
+                    "no host address, so FHRP does not apply")
         elif gwl:
             # >=2 observed gateways, none running FHRP -- compute_fhrp_consistency's wording
             fhrp = f"{len(gwl)} gateways but no FHRP — no first-hop redundancy"
@@ -1793,46 +1810,63 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     # Keeping it here made len(health_scores) exceed the inventory count, and ssot.reconcile then false-fired an
     # assessment_integrity DRIFT alarm on a benign data-entry artifact rather than a real published-fact conflict.
     hosts = sorted(h for h in all_interfaces if str(h).strip())
-    ded: Dict[str, Dict[str, List[Tuple[str, int]]]] = {
+    # Each deduction carries its structured evidence ref ALONGSIDE its prose, so the refs published on
+    # the row (`deduction_refs`) are cut by the SAME ordering and [:8] as `deductions` -- pointers and
+    # prose always name the same deductions (Atlas Scope SSOT program, A1). `deduction_refs` is an
+    # ORDER-PRESERVING SUBSEQUENCE of the published deductions, NOT index-aligned with them: a
+    # deduction whose source names no usable record (an L1 row whose port is not a string) contributes
+    # no ref rather than a null or a guessed one, so a consumer pairs a ref with its deduction by the
+    # ref's own cite/pointer, never by position.
+    ded: Dict[str, Dict[str, List[Tuple[str, int, Optional[dict]]]]] = {
         h: {"L1": [], "L3": [], "XL": [], "PROTO": [], "SEC": []} for h in hosts}
 
     L1W = config.l1_weights
-    for rec in (physical_health or []):
+    for k, rec in enumerate(physical_health or []):
         h = rec.get("switch")
         if h not in ded:
             continue
         for flag, pts in L1W.items():
             if flag in rec.get("risk", ""):
-                ded[h]["L1"].append((f"{flag} @ {rec.get('port','')}", pts))
+                # physical_health rows are built per (host, port) of the interface map: a real key.
+                ded[h]["L1"].append((f"{flag} @ {rec.get('port','')}", pts,
+                                     _iface_ref(h, rec.get("port"), f"{h} {rec.get('port', '')} ({flag})")))
     L3W = config.l3_weights
-    for rec in (l3_forwarding or []):
+    for k, rec in enumerate(l3_forwarding or []):
         h = rec.get("switch")
         if h not in ded:
             continue
         for flag, pts in L3W.items():
             if flag in rec.get("risk", ""):
-                ded[h]["L3"].append((f"{flag} (VLAN {rec.get('vlan','')})", pts))
+                ded[h]["L3"].append((f"{flag} (VLAN {rec.get('vlan','')})", pts,
+                                     _evidence_ref("analysis_row", h, ("l3_forwarding", k), "derived_from",
+                                                   f"{h} L3 forwarding row VLAN {rec.get('vlan', '')} ({flag})")))
     XLW = config.xl_weights
-    for f in (cross_layer or []):
+    for k, f in enumerate(cross_layer or []):
         pts = XLW.get(f.get("severity"), 0)
         for h in f.get("hosts", []):
             if h in ded:
-                ded[h]["XL"].append((f"{f['id']} {f['severity']}", pts))
+                ded[h]["XL"].append((f"{f['id']} {f['severity']}", pts,
+                                     _evidence_ref("analysis_row", h, ("cross_layer", k), "derived_from",
+                                                   f"cross-layer rule {f.get('id', '')} row")))
     PW = config.proto_weights
-    for rec in (protocol_health or []):
+    for k, rec in enumerate(protocol_health or []):
         h = rec.get("switch")
         if h in ded and rec.get("severity") in PW:
-            ded[h]["PROTO"].append((f"{rec['protocol']} {rec['severity']}", PW[rec["severity"]]))
+            ded[h]["PROTO"].append((f"{rec['protocol']} {rec['severity']}", PW[rec["severity"]],
+                                    _evidence_ref("analysis_row", h, ("protocol_health", k), "derived_from",
+                                                  f"{h} {rec.get('protocol', '')} protocol-health row")))
     SECW = config.sec_weights                                    # NEW-V3.23.60 (CIS config-hardening posture)
     for h, sec in (security or {}).items():
         if h not in ded:
             continue
-        for f in (sec.get("findings") or []):
+        for j, f in enumerate(sec.get("findings") or []):
             if f.get("status") != "fail":
                 continue
             pts = SECW.get(f.get("severity"), 0)
             if pts:
-                ded[h]["SEC"].append((f"{f.get('id', '')} {f.get('severity', '')}", pts))
+                ded[h]["SEC"].append((f"{f.get('id', '')} {f.get('severity', '')}", pts,
+                                      _evidence_ref("device_fact", h, ("security", h, "findings", j),
+                                                    "derived_from", f"{h} security check {f.get('id', '')} (fail)")))
 
     CAP = config.caps
     records: List[dict] = []
@@ -1844,17 +1878,20 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         factor = config.criticality_factors.get(role, 1.0)
         total = 0
         reasons: List[str] = []
+        reason_refs: List[Optional[dict]] = []
         for cat, items in ded[h].items():
             if cat not in CAP:                                  # NEW-V3.23.60: a custom ScoringConfig whose
                 continue                                        # caps dict predates a category (e.g. SEC) just skips it
-            csum = min(round(sum(p for _r, p in items) * factor), CAP[cat])
+            csum = min(round(sum(p for _r, p, _ref in items) * factor), CAP[cat])
             total += csum
-            for r, p in sorted(items, key=lambda x: -x[1]):
+            for r, p, ref in sorted(items, key=lambda x: -x[1]):
                 reasons.append(f"{r} (-{p})")
+                reason_refs.append(ref)
         score = max(0, 100 - total)
         band, _fill = _health_band(score, config.bands)
         rec = {"switch": h, "score": score, "band": band,
-               "role": role, "criticality": factor, "deductions": reasons[:8]}
+               "role": role, "criticality": factor, "deductions": reasons[:8],
+               "deduction_refs": [r for r in reason_refs[:8] if r is not None]}
         if data_quality is not None:                          # NEW-V3.23.7 (audit C3)
             # A host ABSENT from the map was never measured -- compute_data_quality keys off
             # all_cmd_to_files, so a host present in all_interfaces but with no capture record (and
@@ -4245,15 +4282,81 @@ def compute_protocol_health(all_interfaces: Dict[str, Dict[str, InterfaceData]],
 # not extra pseudo-health rows.  Several consumers use the presence of a health
 # row as a parsed-evidence witness; inserting NOT ASSESSED rows into that list
 # would silently turn missing evidence into "collected" in readiness/scoring.
-PROTOCOL_ASSESSABILITY_STATES = (
-    "assessed",
-    "partial",
-    "captured_no_record",
-    "captured_empty",
-    "capture_error",
-    "not_collected",
-    "analysis_unavailable",
-)
+#
+# ONE owner of the state vocabulary AND of what each state means to a consumer. Every consumer set/map
+# (the receipt-gated feature owners below, excel's colour map, the published engine contract) is DERIVED
+# from this table, never hand-listed, so a new state cannot ship half-threaded
+# (tests/test_protocol_assessability.py fails when a consumer does not cover every state).
+#   health_row -- "emitted": the state requires an emitted health row; "none": the state requires that
+#                 no health row was emitted; "either": either (partial / analysis_unavailable).
+#   conclusion -- "assessed" | "partial" authorize a bounded receipt-gated conclusion; "abstained" (usable
+#                 or empty capture, nothing parsed), "not_running" (the capture IS a vendor no-process
+#                 banner: positive evidence that the protocol contributes nothing on this host -- neither
+#                 assessed nor healthy) and "blind" (no usable evidence) never do.
+#   added_after_v1 -- "yes" for a state added to protocol_assessability/1 after receipts were already
+#                 published: an older receipt may omit its by_state counter (valid only while no row
+#                 carries the state), so stored/compared snapshots keep validating.
+_PROTOCOL_ASSESSABILITY_STATE_TRAITS: Dict[str, Dict[str, str]] = {
+    "assessed": {"health_row": "emitted", "conclusion": "assessed"},
+    "partial": {"health_row": "either", "conclusion": "partial"},
+    "captured_no_record": {"health_row": "none", "conclusion": "abstained"},
+    "captured_empty": {"health_row": "none", "conclusion": "abstained"},
+    "not_running": {"health_row": "none", "conclusion": "not_running", "added_after_v1": "yes"},
+    "capture_error": {"health_row": "none", "conclusion": "blind"},
+    "not_collected": {"health_row": "none", "conclusion": "blind"},
+    "analysis_unavailable": {"health_row": "either", "conclusion": "blind"},
+}
+PROTOCOL_ASSESSABILITY_STATES = tuple(_PROTOCOL_ASSESSABILITY_STATE_TRAITS)
+PROTOCOL_ASSESSABILITY_CONCLUSIONS = ("assessed", "partial", "abstained", "not_running", "blind")
+#: States that authorize a bounded receipt-gated conclusion (the feature owners' "assessed/partial").
+PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES = frozenset(
+    state for state, traits in _PROTOCOL_ASSESSABILITY_STATE_TRAITS.items()
+    if traits["conclusion"] in ("assessed", "partial"))
+#: States whose producer rule requires that NO health row was emitted -- a projection that nevertheless
+#: carries observed records for such a cell contradicts the receipt.
+PROTOCOL_ASSESSABILITY_NO_HEALTH_ROW_STATES = frozenset(
+    state for state, traits in _PROTOCOL_ASSESSABILITY_STATE_TRAITS.items()
+    if traits["health_row"] == "none")
+
+
+def svi_subnet_leaves_no_host_address(svi_addresses) -> bool:
+    """True when the collected SVI addresses of ONE VLAN occupy every usable address of their one shared
+    subnet (a /30's two hosts, a /31's two addresses): no host address is left free, so no host can use a
+    gateway there -- a structural transit segment, for which a missing FHRP is not a finding.
+
+    Derived only from the subnet size and the collected addresses (never from a VLAN name or number). Any
+    address that does not parse, addresses on different subnets, or fewer collected addresses than the
+    subnet's usable ones all answer False: an unproven transit keeps the ordinary FHRP judgement."""
+    import ipaddress
+
+    interfaces = []
+    for raw in svi_addresses:
+        text = str(raw or "").strip()
+        if not text:
+            return False
+        parts = text.split()
+        spelled = f"{parts[0]}/{parts[1]}" if len(parts) == 2 else text
+        try:
+            interfaces.append(ipaddress.ip_interface(spelled))
+        except ValueError:
+            return False
+    if len(interfaces) < 2:
+        return False
+    networks = {iface.network for iface in interfaces}
+    if len(networks) != 1:
+        return False
+    (network,) = networks
+    usable = ({network.network_address, network.broadcast_address} if network.num_addresses == 2
+              else set(network.hosts()) if network.num_addresses <= 256 else None)
+    if not usable:
+        return False
+    return usable <= {iface.ip for iface in interfaces}
+
+
+def _protocol_assessability_conclusion(state: str) -> str:
+    """The conclusion class (PROTOCOL_ASSESSABILITY_CONCLUSIONS) of a receipt state; KeyError for a state
+    outside the vocabulary -- a consumer deriving its map from this must fail loudly, never default."""
+    return _PROTOCOL_ASSESSABILITY_STATE_TRAITS[state]["conclusion"]
 
 PROTOCOL_ASSESSABILITY_FAMILIES = (
     {
@@ -4415,6 +4518,19 @@ def compute_protocol_assessability(inventory_hosts: List[str],
             health_row_emitted = (host, protocol) in emitted
             incomplete = [name for name, value in required_input_states.items()
                           if value != "usable"]
+            # A vendor no-process banner (cmdio.PROTOCOL_NOT_RUNNING_BANNERS) as the WHOLE resolved capture
+            # of EVERY required input is positive evidence that the protocol has no process here. Any
+            # input that is not exactly a registered banner leaves the cell in its ordinary state.
+            banner_evidence: List[dict] = []
+            if not incomplete and not health_row_emitted:
+                for item in family["inputs"]:
+                    if not item["required"]:
+                        continue
+                    command, banner = cmd_not_running_banner(c2f, *item["commands"])
+                    if not banner:
+                        banner_evidence = []
+                        break
+                    banner_evidence.append({"input": item["id"], "command": command, "banner": banner})
 
             if not analysis_available:
                 state = "analysis_unavailable"
@@ -4437,6 +4553,13 @@ def compute_protocol_assessability(inventory_hosts: List[str],
                           f"{', '.join(incomplete)} evidence was not usable (missing, empty, or errored) "
                           "and no health row "
                           "was emitted. No complete protocol verdict is asserted.")
+            elif capture_state == "usable" and banner_evidence:
+                state = "not_running"
+                cited = "; ".join(f"`{item['command']}` printed exactly '{item['banner']}'"
+                                  for item in banner_evidence)
+                reason = (f"{cited} -- the vendor no-process banner: {protocol} is not running on this "
+                          f"host, so it contributes no {protocol} state here. This is neither an assessment "
+                          "nor a health verdict.")
             elif capture_state == "usable":
                 state = "captured_no_record"
                 reason = ("Usable command output was captured, but no assessable protocol state was parsed. "
@@ -4455,7 +4578,7 @@ def compute_protocol_assessability(inventory_hosts: List[str],
                           "health conclusion.")
 
             by_state[state] += 1
-            rows.append({
+            cell = {
                 "switch": host,
                 "protocol": protocol,
                 "input_states": input_states,
@@ -4463,7 +4586,12 @@ def compute_protocol_assessability(inventory_hosts: List[str],
                 "health_row_emitted": health_row_emitted,
                 "state": state,
                 "reason": reason,
-            })
+            }
+            if state == "not_running":
+                # The vendor constant from the banner registry (never device text beyond it), so the
+                # receipt still publishes no raw body or path.
+                cell["banner_evidence"] = banner_evidence
+            rows.append(cell)
 
     complete_devices = sum(
         1 for host in hosts
@@ -4598,6 +4726,31 @@ def _validate_protocol_assessability_receipt(value: Any) -> dict:
         if capture_state != expected_capture:
             return invalid("protocol assessability capture state does not reconcile to its inputs",
                            safely_claimed)
+        # not_running must cite, for EVERY required input and nothing else, a registered vendor banner of
+        # one of that input's own commands; no other state may carry banner evidence.
+        banner_evidence = row.get("banner_evidence", None)
+        banner_cited = False
+        if "banner_evidence" in row:
+            family_commands = {
+                item["id"]: item["commands"]
+                for family in PROTOCOL_ASSESSABILITY_FAMILIES if family["protocol"] == protocol
+                for item in family["inputs"]
+            }
+            banner_cited = (
+                state == "not_running"
+                and isinstance(banner_evidence, list)
+                and len(banner_evidence) == len(required_inputs[protocol])
+                and [item.get("input") if isinstance(item, dict) else None for item in banner_evidence]
+                == list(required_inputs[protocol])
+                and all(
+                    isinstance(item, dict) and set(item) == {"input", "command", "banner"}
+                    and item["command"] in family_commands.get(item["input"], ())
+                    and item["banner"] in PROTOCOL_NOT_RUNNING_BANNERS.get(item["command"], ())
+                    for item in banner_evidence)
+            )
+            if not banner_cited:
+                return invalid("protocol assessability banner evidence is malformed or on a state that "
+                               "cannot carry it", safely_claimed)
         state_consistent = (
             state == "analysis_unavailable"
             or (state == "assessed" and emitted and not incomplete)
@@ -4605,6 +4758,8 @@ def _validate_protocol_assessability_receipt(value: Any) -> dict:
             or (state == "captured_no_record" and not emitted and not incomplete
                 and capture_state == "usable")
             or (state == "captured_empty" and not emitted and capture_state == "empty")
+            or (state == "not_running" and not emitted and not incomplete
+                and capture_state == "usable" and banner_cited)
             or (state == "capture_error" and not emitted and capture_state == "error")
             or (state == "not_collected" and not emitted and capture_state == "missing")
         )
@@ -4625,16 +4780,21 @@ def _validate_protocol_assessability_receipt(value: Any) -> dict:
                for protocol in family_names)
     )
     by_state = summary.get("by_state")
+    # A receipt written before an ADDITIVE state existed (same protocol_assessability/1 schema) has no
+    # counter for it; that is exact only while no row carries the state, so the omitted counter is 0.
+    omissible = {state for state, traits in _PROTOCOL_ASSESSABILITY_STATE_TRAITS.items()
+                 if traits.get("added_after_v1") == "yes" and actual_by_state[state] == 0}
     by_state_valid = (
         isinstance(by_state, dict)
-        and set(by_state) == set(PROTOCOL_ASSESSABILITY_STATES)
+        and set(PROTOCOL_ASSESSABILITY_STATES) - omissible <= set(by_state) <= set(PROTOCOL_ASSESSABILITY_STATES)
         and all(isinstance(count, int) and not isinstance(count, bool) and count >= 0
                 for count in by_state.values())
     )
     if (len(hosts) != n_devices or len(index) != len(rows)
             or summary["n_health_rows"] != sum(row["health_row_emitted"] for row in rows)
             or summary["n_complete_devices"] != complete_devices
-            or not by_state_valid or by_state != actual_by_state):
+            or not by_state_valid
+            or {**{state: 0 for state in omissible}, **by_state} != actual_by_state):
         return invalid("protocol assessability rows do not reconcile to the summary", safely_claimed)
     return {
         "present": True, "valid": True, "reason": "", "index": index,
@@ -4808,19 +4968,18 @@ def summarize_stp_consistency_baseline(
             if receipt_state == "partial" and not claim_prerequisites_usable:
                 finding("review", "claim_prerequisite_partial",
                         "Usable current-run state and inconsistent-port captures are both required for this claim.")
-            elif receipt_state in {
-                    "captured_no_record", "captured_empty", "capture_error",
-                    "not_collected", "analysis_unavailable"}:
+            elif (receipt_state in PROTOCOL_ASSESSABILITY_STATES
+                  and receipt_state not in PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES):
                 finding("not_verified", "receipt_not_assessed",
                         "The current-run receipt does not authorize an STP consistency conclusion.")
-            elif receipt_state not in {"assessed", "partial"}:
+            elif receipt_state not in PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES:
                 finding("review", "receipt_state_unusable",
                         "The STP receipt state is outside the bounded consistency-owner contract.")
 
         health_severity = valid_health[0]["severity"] if len(candidates) == 1 and len(valid_health) == 1 else ""
         if (receipt_row is not None and emitted is True and len(candidates) == 1
                 and len(valid_health) == 1 and claim_prerequisites_usable
-                and receipt_state in {"assessed", "partial"} and health_severity == "High"):
+                and receipt_state in PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES and health_severity == "High"):
             finding("degraded", "inconsistent_ports_observed",
                     "The reconciled STP health row reports a High inconsistent-port condition.")
 
@@ -4832,7 +4991,7 @@ def summarize_stp_consistency_baseline(
             status = "degraded"
         elif (receipt_row is not None and emitted is True and len(candidates) == 1
               and len(valid_health) == 1 and claim_prerequisites_usable
-              and receipt_state in {"assessed", "partial"} and health_severity == "Info"):
+              and receipt_state in PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES and health_severity == "Info"):
             status = "assessed"
         else:
             status = "not_verified"
@@ -5277,8 +5436,7 @@ def summarize_etherchannel_baseline(projection: Any,
                 finding("review", "projection_receipt_contradiction",
                         "Structured projection capture state does not reconcile to the receipt membership input.")
             if receipt_state != "assessed":
-                if groups and receipt_state in {
-                        "captured_no_record", "captured_empty", "capture_error", "not_collected"}:
+                if groups and receipt_state in PROTOCOL_ASSESSABILITY_NO_HEALTH_ROW_STATES:
                     finding("review", "projection_receipt_contradiction",
                             "Observed group rows exist even though the receipt says no EtherChannel health row was emitted.")
                 else:
@@ -5687,8 +5845,7 @@ def summarize_routing_baseline(routing_neighbors: Any,
             True if (host, protocol) in receipt["claimed_subjects"] else None
         )
         if receipt_row is not None and receipt_state != "assessed":
-            if pair["records"] and receipt_state in {
-                    "captured_no_record", "captured_empty", "capture_error", "not_collected"}:
+            if pair["records"] and receipt_state in PROTOCOL_ASSESSABILITY_NO_HEALTH_ROW_STATES:
                 finding("review", "projection_receipt_contradiction",
                         "Routing peers are present even though the receipt says no assessable peer record was emitted.")
             else:
@@ -6108,20 +6265,24 @@ def compute_ptp_readiness(service_map: dict) -> List[dict]:
     ptp_mcast = [g.get("group") for g in (mc.get("classified_groups") or [])
                  if "PTP" in (g.get("name") or "")]
     out: List[dict] = []
+    # Evidence pointers (A1): each dormant switch's published clock record under the service map.
+    ptp_refs = _upstream_evidence_fields(
+        [_evidence_ref("device_fact", h, ("service_map", "multicast", "ptp", h), "subject",
+                       f"{h} PTP clock state (dormant)") for h in dormant])
     if dormant and not oper:
         detail = (f"PTP is configured on {len(ptp)} switch(es) but NONE are active boundary/transparent "
                   "clocks (Device Type Unknown / 0 active ports / no parent clock). "
                   + (f"PTP multicast ({', '.join(ptp_mcast)}) IS flowing in the fabric, so timing is "
                      "distributed as plain multicast, not boundary-clocked. " if ptp_mcast else "")
                   + "SMPTE ST 2110 / AES67 / Dante typically require boundary-clock mode on the media path.")
-        out.append({"severity": "Medium", "category": "Timing/PTP", "devices": dormant,
+        out.append({"severity": "Medium", "category": "Timing/PTP", "devices": dormant, **ptp_refs,
                     "title": "PTP enabled but not boundary-clocked (media timing at risk)",
                     "detail": detail,
                     "remediation": "Confirm whether the media fabric requires PTP boundary/transparent-clock "
                                    "mode; if so, enable it on the media-path switches and verify clock lock "
                                    "(offset within spec) before the cutover."})
     elif dormant and oper:
-        out.append({"severity": "Low", "category": "Timing/PTP", "devices": dormant,
+        out.append({"severity": "Low", "category": "Timing/PTP", "devices": dormant, **ptp_refs,
                     "title": f"PTP dormant on {len(dormant)} switch(es) ({len(oper)} active boundary clock(s))",
                     "detail": (f"{len(oper)} switch(es) act as PTP boundary/transparent clocks; "
                                f"{len(dormant)} have PTP configured but dormant (Device Type Unknown / "
@@ -6229,7 +6390,7 @@ def compute_multicast_intelligence(service_map: Optional[dict] = None,
                 "grandmasters": gms, "operational": oper, "dormant": dormant}
 
     risks: List[dict] = []
-    for a in mac_aliases:
+    for ai, a in enumerate(mac_aliases):
         # The OVERLAP itself is arithmetic on the observed group addresses -- Confirmed, and the
         # sole reason this is a finding at all. The Broadcast-AV promotion from Medium to High is
         # NOT: it rests on the offline registry's curated media semantics, which carry no
@@ -6257,14 +6418,22 @@ def compute_multicast_intelligence(service_map: Optional[dict] = None,
                           if a["has_av"] else ".")),
             "remediation": "Re-address one overlapping group so the low-23-bit MAC differs (avoid 224.x/225.x… "
                            "239.x families that alias), or use IGMPv3 source-specific forwarding end-to-end.",
-            "standard": "RFC 4541 / RFC 1112"})
+            "standard": "RFC 4541 / RFC 1112",
+            # Evidence pointer (A1): the published MAC-alias analysis row this risk was raised from.
+            **_upstream_evidence_fields([_evidence_ref(
+                "analysis_row", None, ("multicast_intelligence", "mac_aliases", ai), "derived_from",
+                "multicast MAC-alias analysis row")])})
     if gap_vlans:
         risks.append({"kind": "querier-gap", "severity": "High",
             "title": f"{len(gap_vlans)} multicast VLAN(s) without an IGMP querier",
             "detail": (f"VLAN(s) {', '.join(gap_vlans)} carry multicast (PIM/mroute on the SVI) but no IGMP "
                        "querier was seen — membership times out and the switch floods or blackholes the group."),
             "remediation": "Configure exactly one IGMP (snooping) querier per multicast VLAN (lowest IP wins).",
-            "standard": "RFC 4541"})
+            "standard": "RFC 4541",
+            # Evidence pointer (A1): the published querier-coverage row listing the gap VLANs.
+            **_upstream_evidence_fields([_evidence_ref(
+                "analysis_row", None, ("multicast_intelligence", "querier", "gap_vlans"), "derived_from",
+                "IGMP querier-coverage gap VLAN list")])})
     if ptp and not oper:
         risks.append({"kind": "ptp-dormant", "severity": "Medium",
             "title": f"PTP present on {len(ptp)} switch(es) but no active boundary clock",
@@ -6423,11 +6592,28 @@ def build_dependency_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                 articulation.add((host, vid))
 
     pc_members: Dict[Tuple[str, str], int] = {}
+    pc_member_ports: Dict[Tuple[str, str], List[str]] = {}
     for host in all_interfaces:
         for port, d in all_interfaces[host].items():
             if _is_physical_port(port) and d.port_channel:
                 pc_members[(host, d.port_channel)] = pc_members.get((host, d.port_channel), 0) + 1
+                pc_member_ports.setdefault((host, d.port_channel), []).append(port)
     single_member_pc = {k for k, c in pc_members.items() if c == 1}
+
+    # Evidence-pointer indexes (Atlas Scope SSOT program, A1): the EXACT interface keys the correlation
+    # rules may point at. A rule only ever names a (host, port) that is in `iface_keys`, so a published
+    # CL ref can never dangle; `svi_port` maps a gateway (host, vid) to its real SVI key (case as
+    # collected), `access_ports` lists each VLAN's access ports.
+    iface_keys = {(h, p) for h, ports in all_interfaces.items() for p in ports}
+    svi_port: Dict[Tuple[str, int], str] = {}
+    access_ports: Dict[int, List[Tuple[str, str]]] = {}
+    for host in sorted(all_interfaces):
+        for port, d in sorted(all_interfaces[host].items()):
+            m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
+            if m and (d.svi_ip or "").strip():
+                svi_port.setdefault((host, int(m.group(1))), port)
+            if (d.switchport_mode or "") == "Access" and d.vlan.isdigit():
+                access_ports.setdefault(int(d.vlan), []).append((host, port))
 
     return {"model": model, "uplink_ports": uplink_ports, "single_fiber": single_fiber,
             "errored_up": errored_up, "halfdup_up": halfdup_up, "errdis": errdis,
@@ -6435,17 +6621,45 @@ def build_dependency_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             "tracked_down_vlans": tracked_down_vlans,
             "fhrp_hosts": fhrp_hosts, "fhrp_vlans": fhrp_vlans, "gw_switches": gw_switches,
             "access_by_vlan": access_by_vlan, "orphan": orphan,
-            "articulation": articulation, "single_member_pc": single_member_pc}
+            "articulation": articulation, "single_member_pc": single_member_pc,
+            "iface_keys": iface_keys, "svi_port": svi_port, "access_ports": access_ports,
+            "pc_member_ports": {k: sorted(v) for k, v in pc_member_ports.items()}}
 
 def compute_cross_layer_correlations(dep: dict) -> List[dict]:
     """Apply CL-01..CL-10 to the dependency map. Returns finding dicts sorted by severity."""
     F: List[dict] = []
     sf = dep["single_fiber"]
     up = dep["uplink_ports"]
+    # Evidence pointers (A1): only (host, port) pairs the dependency map PROVES are interface keys are
+    # ever pointed at; a foreign / older dep map without the index yields no interface refs at all.
+    _keys = dep.get("iface_keys")
+    iface_keys = _keys if isinstance(_keys, (set, frozenset)) else set()
+    _svi = dep.get("svi_port")
+    svi_port = _svi if isinstance(_svi, dict) else {}
 
-    def add(cid, sev, layers, title, detail, rec, hosts=None):
+    def _port_refs(pairs, why: str, role: str = "subject") -> List[dict]:
+        out = []
+        for (h, p) in sorted(pairs, key=lambda x: (str(x[0]), str(x[1]))):
+            if (h, p) in iface_keys:
+                r = _iface_ref(h, p, f"{h} {p} ({why})", role)
+                if r:
+                    out.append(r)
+        return out
+
+    def _svi_refs(host_vids, why: str) -> List[dict]:
+        out = []
+        for (h, vid) in sorted(host_vids, key=lambda x: (str(x[0]), str(x[1]))):
+            p = svi_port.get((h, vid))
+            if p and (h, p) in iface_keys:
+                r = _iface_ref(h, p, f"{h} {p} ({why})")
+                if r:
+                    out.append(r)
+        return out
+
+    def add(cid, sev, layers, title, detail, rec, hosts=None, refs=None):
         F.append({"id": cid, "severity": sev, "layers": layers, "title": title,
-                  "detail": detail, "recommendation": rec, "hosts": sorted(set(hosts or []))})
+                  "detail": detail, "recommendation": rec, "hosts": sorted(set(hosts or [])),
+                  **_upstream_evidence_fields(refs or [])})
 
     # CL-01 (L1+L3): single-fiber uplink fronting a sole-gateway VLAN
     for vid, gw in sorted(dep["sole_gw"].items()):
@@ -6458,7 +6672,9 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
                 f"VLAN {vid}'s only L3 gateway is {gw} (no FHRP); {', '.join(culprits)} reach the "
                 f"fabric over a single non-redundant fiber.",
                 "A single fiber cut isolates the VLAN with no L1 path and no L3 backup - add a "
-                "redundant uplink AND an FHRP peer.", [gw] + [h for (h, _p) in cset])
+                "redundant uplink AND an FHRP peer.", [gw] + [h for (h, _p) in cset],
+                refs=_port_refs(cset, "single-fiber uplink")
+                + _svi_refs([(gw, vid)], f"sole gateway SVI, VLAN {vid}"))
 
     # CL-02 (L2+L3): transit articulation between endpoints and their gateway. AGGREGATED per host
     # (NEW-V3.23.90): dep["articulation"] is a set of (host, vid); the old per-pair emission produced
@@ -6470,13 +6686,25 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
     art_by_host: Dict[str, set] = {}
     for (h, vid) in dep["articulation"]:
         art_by_host.setdefault(h, set()).add(vid)
+    _model = _evdict(dep.get("model"))
+    _links = _evlist(_model.get("links"))
     for h in sorted(art_by_host):
         vl = sorted(art_by_host[h])
+        # CL-02 is a GRAPH CUT, not a configuration finding: its pointers are this host's OWN ends of the
+        # forwarding links the cut was computed over (role=derived_from), never a claimed config line.
+        cut_ports = set()
+        for link in _links:
+            if not isinstance(link, dict) or h not in (link.get("a"), link.get("b")):
+                continue
+            if any(_carry(_model, link, vid) == "fwd" for vid in vl):
+                cut_ports.add((h, link.get("ap") if link.get("a") == h else link.get("bp")))
         add("CL-02", "High", "L2+L3",
             f"{h}: only L2 transit to the gateway for {len(vl)} VLAN(s)",
             f"Removing {h} partitions endpoints in {len(vl)} VLAN(s) ({_vlan_list_summary(vl)}) "
             f"from their L3 gateway over forwarding links.",
-            "Add a redundant path, or migrate this switch in the same wave as its dependents.", [h])
+            "Add a redundant path, or migrate this switch in the same wave as its dependents.", [h],
+            refs=_port_refs(cut_ports, "a forwarding link the graph cut was computed over, not a config line",
+                            role="derived_from"))
 
     # CL-03 (L2+L3): sole gateway, no FHRP (structural L3 SPOF)
     for vid, gw in sorted(dep["sole_gw"].items()):
@@ -6484,7 +6712,8 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
             f"VLAN {vid}: sole gateway {gw} with no FHRP",
             f"{gw} is the only in-scan L3 gateway for VLAN {vid}; loss drops the default gateway "
             f"for every VLAN {vid} host.",
-            "Add an FHRP peer (HSRP/VRRP/GLBP) or confirm a redundant off-scan gateway.", [gw])
+            "Add an FHRP peer (HSRP/VRRP/GLBP) or confirm a redundant off-scan gateway.", [gw],
+            refs=_svi_refs([(gw, vid)], f"sole gateway SVI, VLAN {vid}, no FHRP"))
 
     # CL-04 (L3): FHRP gateway with a down tracked object. JOINED ON VLAN (#51): the fleet-wide
     # `tracked_down` host set carries no VLAN dimension, so pairing it with every FHRP VLAN turned
@@ -6501,7 +6730,9 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
                 f"VLAN {vid}: FHRP failover with a down tracked object",
                 f"VLAN {vid} runs FHRP, but a tracked object is DOWN on {', '.join(down_hosts)} - "
                 f"the object that drives failover/decrement is in a failed state.",
-                "Verify the tracked IP-SLA / interface and the standby track/decrement config.", down_hosts)
+                "Verify the tracked IP-SLA / interface and the standby track/decrement config.", down_hosts,
+                refs=_svi_refs([(dh, vid) for dh in down_hosts],
+                               f"FHRP gateway SVI with a down tracked object, VLAN {vid}"))
 
     # CL-05 (L1+L2): single-fiber uplink that is also errored or half-duplex
     for (h, p) in sorted(sf):
@@ -6510,7 +6741,8 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
             add("CL-05", "High", "L1+L2",
                 f"{h} {p}: degraded sole uplink",
                 f"{h} {p} is the switch's only forwarding uplink AND is unhealthy ({why}).",
-                "The single path is also failing - replace optic/cable and add a second uplink.", [h])
+                "The single path is also failing - replace optic/cable and add a second uplink.", [h],
+                refs=_port_refs([(h, p)], f"degraded sole uplink: {why}"))
 
     # CL-06 (L1+L2): single-member port-channel on an uplink. AGGREGATED per host (NEW-V3.23.90):
     # one row per switch listing its single-member port-channels, not one row per port-channel
@@ -6520,13 +6752,17 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
     for (h, po) in dep["single_member_pc"]:
         if h in up_hosts:
             smpc_by_host.setdefault(h, set()).add(po)
+    _pcm = dep.get("pc_member_ports")
+    pc_member_ports = _pcm if isinstance(_pcm, dict) else {}
     for h in sorted(smpc_by_host):
         pos = sorted(smpc_by_host[h])
         shown = ", ".join(pos[:12]) + (f" (+{len(pos) - 12} more)" if len(pos) > 12 else "")
         add("CL-06", "Medium", "L1+L2",
             f"{h}: {len(pos)} single-member port-channel(s)",
             f"{shown} on {h} bundle only one physical link each - the aggregation provides no L1 redundancy.",
-            "Add a second member, or do not rely on the port-channel for resilience.", [h])
+            "Add a second member, or do not rely on the port-channel for resilience.", [h],
+            refs=_port_refs([(h, m) for po in pos for m in (pc_member_ports.get((h, po)) or [])],
+                            "sole member of a single-member port-channel"))
 
     # CL-07 (L1+L3): err-disabled / high-error port on a switch that hosts an L3 gateway
     gw_hosts = dep["gw_switches"]
@@ -6536,7 +6772,9 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
             f"{h}: L1 fault on an L3 gateway switch",
             f"{h} hosts L3 gateway SVIs and has an err-disabled or high-error port - physical "
             f"instability at a routing aggregation point.",
-            "Investigate the affected port; instability here affects every VLAN gatewayed by this switch.", [h])
+            "Investigate the affected port; instability here affects every VLAN gatewayed by this switch.", [h],
+            refs=_port_refs([(bh, bp) for (bh, bp) in (dep["errdis"] | dep["errored_up"]) if bh == h],
+                            "err-disabled / high-error port on a gateway switch"))
 
     # CL-08 (L1+L2): half-duplex on an inter-switch trunk/uplink
     for (h, p) in sorted(dep["halfdup_up"]):
@@ -6545,7 +6783,8 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
                 f"{h} {p}: half-duplex inter-switch link",
                 f"{h} {p} is a trunk/uplink negotiated to half-duplex - collisions and throughput "
                 f"collapse on a transit path.",
-                "Hard-set speed/duplex on both ends or replace the media.", [h])
+                "Hard-set speed/duplex on both ends or replace the media.", [h],
+                refs=_port_refs([(h, p)], "half-duplex inter-switch link"))
 
     # CL-09 (L1+L2+L3): stacked - one switch implicated across multiple layers
     l1_hosts = {h for (h, _p) in (sf | dep["errored_up"] | dep["halfdup_up"] | dep["errdis"])}
@@ -6555,11 +6794,16 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
         hits = [lyr for lyr, s in (("L1", l1_hosts), ("L2", l2_hosts), ("L3", l3_hosts)) if h in s]
         if len(hits) >= 2 and ("L3" in hits or "L1" in hits):
             sev = "Critical" if "L3" in hits and "L1" in hits else "High"
+            l1_ports = [(ph, pp) for (ph, pp) in (sf | dep["errored_up"] | dep["halfdup_up"] | dep["errdis"])
+                        if ph == h] if "L1" in hits else []
+            l3_svis = [(h, vid) for vid, g in dep["sole_gw"].items() if g == h] if "L3" in hits else []
             add("CL-09", sev, "+".join(hits),
                 f"{h}: stacked single point of failure across {', '.join(hits)}",
                 f"{h} is implicated at multiple layers at once ({', '.join(hits)}) - "
                 f"its loss compounds physical, switching, and/or routing failure.",
-                "Treat as a top migration risk: stage redundancy at every implicated layer before cutover.", [h])
+                "Treat as a top migration risk: stage redundancy at every implicated layer before cutover.", [h],
+                refs=_port_refs(l1_ports, "L1 leg of the stacked SPOF")
+                + _svi_refs(l3_svis, "L3 leg of the stacked SPOF"))
 
     # CL-10 (L2+L3): orphan VLAN - endpoints present but no in-scan gateway
     for vid in sorted(dep["orphan"]):
@@ -6568,7 +6812,10 @@ def compute_cross_layer_correlations(dep: dict) -> List[dict]:
             f"VLAN {vid} has active endpoints but no L3 gateway in the scanned set - its default "
             f"gateway is off-scan/undiscovered.",
             f"Confirm where VLAN {vid} is gatewayed; ensure that device is in scope before migration.",
-            sorted(dep["access_by_vlan"].get(vid, set())))
+            sorted(dep["access_by_vlan"].get(vid, set())),
+            refs=_port_refs([hp for hp in ((dep.get("access_ports") or {}).get(vid) or [])
+                             if hp[0] in dep["access_by_vlan"].get(vid, set())],
+                            f"access port in orphan VLAN {vid}"))
 
     F.sort(key=lambda x: (_CL_RANK.get(x["severity"], 9), x["id"]))
     return F
@@ -7414,15 +7661,22 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
     out: List[dict] = []
 
     # 1. Temporary L2 bridges on infra/trunk ports -- broadcast/STP-domain blast radius.
+    # Each row carries the interface / device records it was computed from (evidence pointers, A1):
+    # every (host, port) below is a key of the interface map being iterated, so no ref can dangle.
     temp_by_host: Dict[str, list] = {}
+    temp_ports: Dict[str, list] = {}
     for host, ports in all_interfaces.items():
         for p, d in ports.items():
             desc = (d.description or "").strip()
             is_infra = bool((d.cdp_neighbor or "").strip()) or is_live_trunk_status(d.trunk_status)
             if desc and is_infra and TEMP.search(desc):
                 temp_by_host.setdefault(host, []).append(f"{p} ({desc[:40]})")
+                temp_ports.setdefault(host, []).append(p)
     for host, ports in sorted(temp_by_host.items()):
         out.append({"severity": "High", "category": "False-health", "devices": [host],
+                    **_upstream_evidence_fields(
+                        [_iface_ref(host, p, f"{host} {p} (infra port described as temporary)")
+                         for p in temp_ports.get(host, [])]),
                     "title": f"Temporary L2 bridge on {host}",
                     "detail": f"{len(ports)} infra port(s) described as a temporary bridge: "
                               f"{', '.join(ports[:6])}. A temporary L2 bridge enlarges the broadcast / "
@@ -7442,6 +7696,8 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
         powered = [it for it in items if it[3]]
         shown = [f"{p} ({(desc[:30] + ': ') if desc else ''}{ps})" for p, desc, ps, _ in items[:6]]
         out.append({"severity": "High" if powered else "Medium", "category": "False-health", "devices": [host],
+                    **_upstream_evidence_fields(
+                        [_iface_ref(host, p, f"{host} {p} (PoE fault state)") for p, _d, _s, _pw in items]),
                     "title": f"PoE fault on {host}" + (" (powered endpoint affected)" if powered else ""),
                     "detail": f"{len(items)} port(s) in a PoE fault state"
                               + (f", {len(powered)} on a powered-endpoint description (endpoint likely dark)" if powered else "")
@@ -7464,8 +7720,12 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
     nat1_count = sum(1 for host, ports in all_interfaces.items() for d in ports.values()
                      if is_live_trunk_status(d.trunk_status)
                      and (d.trunk_native_vlan or "").strip() == "1")
+    nat1_ports = [(host, p) for host, ports in all_interfaces.items() for p, d in ports.items()
+                  if is_live_trunk_status(d.trunk_status) and (d.trunk_native_vlan or "").strip() == "1"]
     if nat1_hosts:
         out.append({"severity": "Low", "category": "False-health", "devices": sorted(nat1_hosts),
+                    **_upstream_evidence_fields(
+                        [_iface_ref(h, p, f"{h} {p} (live trunk, native VLAN 1)") for h, p in nat1_ports]),
                     "title": f"Native VLAN 1 on {nat1_count} {NATIVE1_OPS_UNIT}",
                     "detail": f"{nat1_count} {NATIVE1_OPS_UNIT} ({NATIVE1_OPS_BASIS}) across "
                               f"{len(nat1_hosts)} {NATIVE1_OPS_SWITCH_UNIT} carry the default VLAN 1 "
@@ -7484,7 +7744,14 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
         _gaps = sorted({str(h) for h in trunk_not_captured if h})
         if _gaps:
             shown = ", ".join(_gaps[:6]) + ("..." if len(_gaps) > 6 else "")
+            # ABSENCE: the finding is that trunk evidence is MISSING. Its witnesses are the devices'
+            # interface maps (the device WAS collected), never a record of the missing trunk table.
             out.append({"severity": "Info", "category": "Coverage", "devices": _gaps,
+                        "evidence_basis": "absence",
+                        **_upstream_evidence_fields(
+                            [_evidence_ref("absence_witness", h, ("interfaces", h), "witness",
+                                           f"{h} collected; no usable trunk-table capture")
+                             for h in _gaps if h in all_interfaces]),
                         "title": f"Native-VLAN-1 check not assessable on {len(_gaps)} device(s)",
                         "detail": f"{len(_gaps)} collected switchport-bearing device(s) have no usable "
                                   "trunk-table capture ('show interface trunk' missing or errored), so "
@@ -7505,6 +7772,9 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
         longup.sort(key=lambda t: -t[1])
         top = ", ".join(f"{h} ({y}y)" for h, y in longup[:6])
         out.append({"severity": "Low", "category": "False-health", "devices": [h for h, _ in longup],
+                    **_upstream_evidence_fields(
+                        [_evidence_ref("device_fact", h, ("devices", h), "subject",
+                                       f"{h} device record ({y}y uptime)") for h, y in longup]),
                     "title": f"Multi-year uptime on {len(longup)} device(s) (max {longup[0][1]} years)",
                     "detail": f"{len(longup)} device(s) have not reloaded in 3+ years (e.g. {top}). "
                               "STP / control-plane convergence has not been exercised recently -- latent "
@@ -7590,6 +7860,306 @@ def compute_framework_coverage(security: Dict[str, dict]) -> dict:
             "scope": "config-only (show running-config); management-plane hardening controls"}
 
 
+# =============================================================================
+# Per-finding EVIDENCE POINTERS (Atlas Scope SSOT program, A1 at the source).
+#
+# Every punch-list row carries `evidence_basis` + `evidence_refs`: POINTERS (RFC 6901 JSON Pointers into
+# the PUBLISHED snapshot), never copies. A ref names a record the producer already held when it built
+# the row; the pointed-to value stays owned by its own producer (docs/ssot.md "per-finding evidence
+# pointers"). Honesty rules, binding (see the critic constraint above _PUNCH_SOURCE_COMMAND):
+#   * `evidence_basis` says WHAT KIND of evidence the row reaches -- "record" (>=1 configuration/device
+#     record: an interface, ACL line, route or literal config text), "row" (only the device fact /
+#     analysis row it was derived from) or "absence" (the finding is about something MISSING; its refs
+#     are witnesses that the thing was looked for, never a record of the missing thing). It is ALWAYS
+#     written, so a consumer can tell "older snapshot, key absent" from "producer has no record".
+#   * This is NOT "every finding traced to config": row/absence rows say so through their basis, and a
+#     graph-cut finding (CL-02) points at the links the cut was computed over with role=derived_from.
+#   * Pointers use RFC 6901, NOT a dotted `a.b[3]` grammar: hostnames can be dotted FQDNs and interface
+#     names carry '/' and '.' (subinterfaces), so a dotted grammar would only work for simple names.
+# =============================================================================
+PUNCH_EVIDENCE_BASES = ("record", "row", "absence")
+PUNCH_EVIDENCE_REF_KINDS = ("interface", "acl_line", "route", "config_text",
+                            "device_fact", "analysis_row", "adjacency", "absence_witness")
+PUNCH_EVIDENCE_RECORD_KINDS = frozenset({"interface", "acl_line", "route", "config_text"})
+PUNCH_EVIDENCE_ROLES = ("subject", "derived_from", "witness")
+PUNCH_EVIDENCE_REFS_CAP = 64
+_EVIDENCE_ROLE_ORDER = {r: i for i, r in enumerate(PUNCH_EVIDENCE_ROLES)}
+_EVIDENCE_KIND_ORDER = {k: i for i, k in enumerate(PUNCH_EVIDENCE_REF_KINDS)}
+_EVIDENCE_CITE_MAX = 160
+_JSON_SAFE_INT = 2 ** 53 - 1
+# The row-level rules compute_migration_punchlist's one row constructor (`add`) enforces, published in the
+# engine contract so a consumer validates against the producer's rules instead of re-deriving them:
+#   total_only_when_capped         -- `evidence_refs_total` is written only when the list was capped;
+#   absence_forbids_record_kinds   -- an `absence` row never carries a record-kind ref;
+#   record_requires_record_kind    -- `record` iff >=1 ref is a record kind (_evidence_basis_for);
+#   row_requires_ref               -- a `row` row carries >=1 ref naming what it was derived from: its row
+#                                     (every real-producer fold emits one) or, when no row is addressable,
+#                                     the published section it was folded from (_PUNCH_CATEGORY_SECTION),
+#                                     cited as a section -- enforced by construction in `add`;
+#   host_must_be_row_device_or_null -- a ref about a device the row does not name is dropped.
+PUNCH_EVIDENCE_RULES: Dict[str, bool] = {
+    "total_only_when_capped": True,
+    "absence_forbids_record_kinds": True,
+    "record_requires_record_kind": True,
+    "row_requires_ref": True,
+    "host_must_be_row_device_or_null": True,
+}
+ENGINE_CONTRACT_SCHEMA = "atlas-engine-contract/1"
+ENGINE_CONTRACT_PATH = "atlas-scope/contracts/engine-contract.v1.json"   # repo-relative projection
+
+
+def engine_contract_projection() -> dict:
+    """The engine-owned vocabularies a consumer (the Atlas Scope compiler) validates against, projected
+    from THIS module's constants -- the owner stays here; the JSON file is a generated projection
+    (tests/test_engine_contract_projection.py fails when the committed file drifts)."""
+    return {
+        "schema": ENGINE_CONTRACT_SCHEMA,
+        "owner": "cisco_toolkit/analyze.py",
+        "punch_evidence": {
+            "kinds": sorted(PUNCH_EVIDENCE_REF_KINDS),
+            "record_kinds": sorted(PUNCH_EVIDENCE_RECORD_KINDS),
+            "roles": sorted(PUNCH_EVIDENCE_ROLES),
+            "bases": sorted(PUNCH_EVIDENCE_BASES),
+            "cap": PUNCH_EVIDENCE_REFS_CAP,
+            **PUNCH_EVIDENCE_RULES,
+        },
+        "protocol_assessability_states": sorted(PROTOCOL_ASSESSABILITY_STATES),
+    }
+
+
+def render_engine_contract() -> str:
+    """The exact bytes of the projection file: 2-space indent, LF, trailing newline."""
+    return json.dumps(engine_contract_projection(), indent=2, ensure_ascii=False) + "\n"
+
+# The ONE engine-owned map of which evidence bases each punch-list category may legitimately carry.
+# tests/test_punchlist_evidence_refs.py derives the set of categories the producer CAN emit from the
+# producer's own AST (add()/_fold_axis call sites + the category literals of the folded upstream
+# producers) and fails when any is missing here -- so a new fold cannot ship without an evidence policy.
+_PUNCH_EVIDENCE_POLICY: Dict[str, frozenset] = {
+    "Cross-layer": frozenset({"record", "row"}),
+    "Security": frozenset({"row", "absence"}),
+    "Config hygiene": frozenset({"record", "row"}),
+    "L3": frozenset({"record", "row"}),
+    "L1": frozenset({"record", "row"}),
+    "Protocol": frozenset({"row"}),
+    "VTP": frozenset({"row", "absence"}),
+    "IPv6 Routing": frozenset({"record", "row", "absence"}),
+    "STP": frozenset({"record", "row"}),
+    "Health": frozenset({"record", "row"}),
+    "Addressing": frozenset({"record", "row"}),
+    "FHRP": frozenset({"record", "row"}),
+    "Trunk": frozenset({"record", "row"}),
+    "Link L1": frozenset({"record", "row"}),
+    "Inventory": frozenset({"row"}),
+    "False-health": frozenset({"record", "row"}),
+    "Coverage": frozenset({"absence"}),
+    "Timing/PTP": frozenset({"row"}),
+    "Multicast/Media": frozenset({"row"}),
+    "Operational logs": frozenset({"row"}),
+    "QoS": frozenset({"row", "absence"}),
+    "Software exposure": frozenset({"record", "row"}),
+    "Platform capacity": frozenset({"row"}),
+    "Compound risk": frozenset({"row"}),
+}
+
+# The PUBLISHED snapshot section each category's fold reads its input rows from (top-level snapshot key).
+# It backs the `row_requires_ref` rule BY CONSTRUCTION: when a non-absence row ends with no addressable ref
+# (its input row's host / port is not a name -- direct-call or poisoned input; every real-producer fold
+# emits a row ref), the one row constructor points at this SECTION with role derived_from and a cite that
+# says it is a section, not the row. tests/test_engine_contract_projection.py pins coverage against
+# _PUNCH_EVIDENCE_POLICY and publication against a real pipeline snapshot.
+_PUNCH_CATEGORY_SECTION: Dict[str, str] = {
+    "Cross-layer": "cross_layer",
+    "Security": "security",
+    "Config hygiene": "config_hygiene",
+    "L3": "l3_forwarding",
+    "L1": "physical_health",
+    "Protocol": "protocol_health",
+    "VTP": "vtp_safety_baseline",
+    "IPv6 Routing": "ipv6_routing_adjacency_baseline",
+    "STP": "stp_roots",
+    "Health": "health_scores",
+    "Addressing": "addressing_conflicts",
+    "FHRP": "fhrp",
+    "Trunk": "trunk_native",
+    "Link L1": "link_phy",
+    "Inventory": "devices",
+    "False-health": "operational_drift",
+    "Timing/PTP": "service_map",
+    "Multicast/Media": "multicast_intelligence",
+    "Operational logs": "syslog_intelligence",
+    "QoS": "qos_audit",
+    "Software exposure": "software_risk",
+    "Platform capacity": "platform_health",
+    "Compound risk": "device_dossiers",
+}
+
+# parse_security check ids whose FAIL means a hardening line is MISSING (parse.py: "Absence-of-a-control
+# -> fail"). Their per-host security record is a WITNESS that the config was read and the line was not
+# there -- basis=absence. Every other check fails on the PRESENCE of a bad pattern the snapshot does not
+# retain the line for, so its record is the row it was derived from -- basis=row. Completeness against
+# parse._SEC_CHECKS (the check registry) is enforced by tests/test_punchlist_evidence_refs.py; an id
+# missing from this map falls to "row", which never overclaims.
+_SECURITY_CHECK_EVIDENCE_BASIS: Dict[str, str] = {
+    "password-encryption": "absence",
+    "no-aaa": "absence",
+    "no-ntp": "absence",
+    "no-logging": "absence",
+    "no-banner": "absence",
+    "weak-enable": "row",
+    "weak-user-pw": "row",
+    "insecure-snmp": "row",
+    "telnet-enabled": "row",
+    "risky-services": "row",
+    "vty-hardening": "row",
+}
+
+
+def _json_pointer(*tokens) -> Optional[str]:
+    """RFC 6901 pointer from reference tokens, or None when any token is not a usable key.
+
+    Only a non-empty str or a real (non-bool) int can name a snapshot member; a float / dict / None /
+    bool token (a poisoned or foreign field) yields NO pointer rather than a pointer to nowhere."""
+    parts = []
+    for t in tokens:
+        if isinstance(t, bool):
+            return None
+        if isinstance(t, int):
+            parts.append(str(t))
+        elif isinstance(t, str) and t != "":
+            parts.append(t.replace("~", "~0").replace("/", "~1"))
+        else:
+            return None
+    return "/" + "/".join(parts) if parts else None
+
+
+def _evidence_ref(kind: str, host, tokens, role: str, cite) -> Optional[dict]:
+    """One well-formed evidence ref, or None (never a half-formed one). `host` is a hostname or None
+    (fabric-wide); `tokens` are the RFC 6901 reference tokens from the snapshot root."""
+    if kind not in _EVIDENCE_KIND_ORDER or role not in _EVIDENCE_ROLE_ORDER:
+        return None
+    if host is not None and not (isinstance(host, str) and host.strip()):
+        return None
+    ptr = _json_pointer(*tokens)
+    if ptr is None:
+        return None
+    text = cite if isinstance(cite, str) else ""
+    text = " ".join(text.split())
+    if len(text) > _EVIDENCE_CITE_MAX:
+        text = text[:_EVIDENCE_CITE_MAX].rsplit(" ", 1)[0] + " …"
+    return {"kind": kind, "host": host, "ref": ptr, "role": role, "cite": text}
+
+
+def _iface_ref(host, port, cite: str, role: str = "subject") -> Optional[dict]:
+    """A ref to an interface RECORD (`/interfaces/<host>/<port>`). Callers pass only (host, port) pairs
+    that came from the interface map itself -- never a reconstructed name (see `_interface_key`)."""
+    if not (isinstance(port, str) and port):
+        return None
+    return _evidence_ref("interface", host, ("interfaces", host, port), role, cite)
+
+
+def _interface_key(interface_index, host, candidate) -> Optional[str]:
+    """The EXACT interface key under `host` that `candidate` names, or None.
+
+    Folds that only hold a RECONSTRUCTED name (an SVI 'Vlan10' rebuilt from a VLAN id, a receipt's
+    normalized member interface) must not point at it blindly -- a key the snapshot does not carry is a
+    dangling pointer. With an interface index (host -> iterable of port keys) the candidate is matched
+    exactly, then case-insensitively; without one, nothing is emitted (the fold keeps its row ref)."""
+    if not isinstance(interface_index, dict) or not isinstance(host, str) or not isinstance(candidate, str):
+        return None
+    ports = interface_index.get(host)
+    if isinstance(ports, dict):
+        keys = [k for k in ports if isinstance(k, str)]
+    elif isinstance(ports, (list, tuple, set, frozenset)):
+        keys = [k for k in ports if isinstance(k, str)]
+    else:
+        return None
+    if candidate in keys:
+        return candidate
+    folded = [k for k in keys if k.casefold() == candidate.casefold()]
+    return folded[0] if len(folded) == 1 else None
+
+
+def _evlist(value) -> list:
+    """`value` when it is a list, else [] (a truthy non-list never reaches an iteration)."""
+    return value if isinstance(value, list) else []
+
+
+def _evdict(value) -> dict:
+    """`value` when it is a dict, else {}."""
+    return value if isinstance(value, dict) else {}
+
+
+def _carried_refs(value) -> List[dict]:
+    """Sanitize refs an UPSTREAM row carries (cross_layer / health / drift / media / PTP rows) back into
+    well-formed refs; anything malformed is dropped, never repaired into a guess."""
+    out: List[dict] = []
+    for r in (value if isinstance(value, list) else []):
+        if not isinstance(r, dict):
+            continue
+        ref = r.get("ref")
+        if not (isinstance(ref, str) and ref.startswith("/")):
+            continue
+        kind, role, host = r.get("kind"), r.get("role"), r.get("host")
+        if kind not in _EVIDENCE_KIND_ORDER or role not in _EVIDENCE_ROLE_ORDER:
+            continue
+        if host is not None and not (isinstance(host, str) and host.strip()):
+            continue
+        cite = r.get("cite") if isinstance(r.get("cite"), str) else ""
+        out.append({"kind": kind, "host": host, "ref": ref, "role": role, "cite": cite})
+    return out
+
+
+def _upstream_evidence_fields(refs) -> dict:
+    """The `evidence_refs` (+ `evidence_refs_total` only when capped) an UPSTREAM finding row publishes
+    (cross_layer / operational_drift / multicast risks): the same dedupe, order and cap as a punch row."""
+    capped, total = _normalize_evidence_refs(refs)
+    out: dict = {"evidence_refs": capped}
+    if total > len(capped):
+        out["evidence_refs_total"] = total
+    return out
+
+
+def _carried_hidden_count(row) -> int:
+    """How many refs an upstream row counted but did not publish (its cap), so a fold's own
+    `evidence_refs_total` still equals the UNCAPPED count."""
+    if not isinstance(row, dict):
+        return 0
+    total, refs = row.get("evidence_refs_total"), row.get("evidence_refs")
+    # Only a capped list can legitimately publish a total, and only a JSON-safe integer is a count
+    # (a poisoned 10**400 must not become the punch row's published total).
+    if (isinstance(total, bool) or not isinstance(total, int) or not isinstance(refs, list)
+            or len(refs) != PUNCH_EVIDENCE_REFS_CAP or not len(refs) < total <= _JSON_SAFE_INT):
+        return 0
+    return total - len(refs)
+
+
+def _normalize_evidence_refs(refs, cap: int = PUNCH_EVIDENCE_REFS_CAP) -> Tuple[List[dict], int]:
+    """De-duplicate (first cite wins), stable-sort (role, kind, host, pointer) and cap. Returns the
+    (capped list, uncapped count). Subjects sort first, so a cap keeps the records a finding is ABOUT."""
+    seen: Dict[tuple, dict] = {}
+    for r in (refs or []):
+        if not isinstance(r, dict):
+            continue
+        key = (r.get("kind"), r.get("host"), r.get("ref"), r.get("role"))
+        if key not in seen:
+            seen[key] = r
+    ordered = sorted(seen.values(), key=lambda r: (_EVIDENCE_ROLE_ORDER.get(r["role"], 9),
+                                                    _EVIDENCE_KIND_ORDER.get(r["kind"], 99),
+                                                    r["host"] or "", r["ref"]))
+    return ordered[:cap], len(ordered)
+
+
+def _evidence_basis_for(refs: List[dict], requested: str = "") -> str:
+    """`absence` only when the fold says the finding is about something missing; otherwise `record` iff
+    at least one ref is a configuration/device record, else `row`."""
+    if requested == "absence":
+        return "absence"
+    if any(r.get("kind") in PUNCH_EVIDENCE_RECORD_KINDS for r in refs):
+        return "record"
+    return "row"
+
+
 # W1-3 (SmartyMe teardown -- per-claim provenance): the single `show` command whose output BACKS each punch-list
 # category's evidence, so a finding can cite 'from: <show cmd>'. Grounded -- every value is a command in the
 # engine's COMMANDS_IOS/NXOS registry (asserted in tests). COMPOSITE / multi-source / meta categories (Cross-layer,
@@ -7663,14 +8233,21 @@ def compute_migration_punchlist(cross_layer: List[dict],
                                 vtp_safety_baseline: Optional[dict] = None,
                                 vtp_safety_subject_scope: Any = None,
                                 ipv6_routing_adjacency_baseline: Optional[dict] = None,
-                                ipv6_routing_subject_scope: Any = None) -> List[dict]:
+                                ipv6_routing_subject_scope: Any = None,
+                                interface_index: Optional[dict] = None) -> List[dict]:
     """NEW-V3.23.63: the consolidated, severity-ranked migration PUNCH-LIST -- one prioritized,
     de-duplicated, per-device, per-wave table that rolls up EVERY actionable finding the run
     produced (cross-layer SPOFs, security gaps, config hygiene, L1/L3 risks, protocol health,
     STP design, device health) so a migration lead reads one 'fix-this-first, in this order'
     list instead of cross-referencing ~25 sheets. Pure synthesis of already-computed records;
     no new collection. Sorted Critical->Low; like findings are grouped (one row + a device list,
-    not one row per port) so it does not 'cry wolf'."""
+    not one row per port) so it does not 'cry wolf'.
+
+    Every row also carries `evidence_basis` + `evidence_refs` (RFC 6901 pointers into the published
+    snapshot; see _PUNCH_EVIDENCE_POLICY). `interface_index` (optional, host -> iterable of interface
+    keys) lets folds that only hold a RECONSTRUCTED interface name (an L3/STP gateway SVI rebuilt from a
+    VLAN id, an FHRP receipt member, an IPv6 adjacency interface) point at the exact snapshot key; without
+    it those folds keep their row refs and never emit an unproven interface pointer."""
     wave_of: Dict[str, str] = {}
     for g in (move_groups or []):
         for h in (g.get("switches") or []):          # tolerate switches=None, not just a missing key
@@ -7685,8 +8262,12 @@ def compute_migration_punchlist(cross_layer: List[dict],
         return s if len(s) <= n else s[:n].rsplit(" ", 1)[0] + " …"
 
     def add(severity: str, category: str, devices, title: str, detail: str, remediation: str = "",
-            basis: str = "", confidence: str = "") -> None:
-        devs = sorted({d for d in devices if d})
+            basis: str = "", confidence: str = "", *, refs=None, ev_basis: str = "",
+            hidden_refs: int = 0) -> None:
+        # Only a non-empty hostname string is a device. A poisoned / foreign devices value (a dict, a
+        # float, a non-list) must degrade to "no device", never raise (unhashable / non-iterable).
+        devs = sorted({d for d in (devices if isinstance(devices, (list, tuple, set)) else [])
+                       if isinstance(d, str) and d})
         waves = sorted({wave_of.get(d, "") for d in devs} - {""})
         it = {"severity": severity, "rank": _PUNCH_RANK.get(severity, 0),
               "category": category, "devices": devs, "wave": ", ".join(waves),
@@ -7714,57 +8295,187 @@ def compute_migration_punchlist(cross_layer: List[dict],
         cmd = _PUNCH_SOURCE_COMMAND.get(category)   # W1-3: cite the backing show-command (absent for composite cats)
         if cmd:
             it["source_command"] = cmd
+        # Per-finding evidence pointers (see the block above _PUNCH_EVIDENCE_POLICY). Enforced HERE, at
+        # the one row constructor, for every fold: a ref about a device the row does not name is not
+        # this row's evidence, and an absence row never carries a configuration record.
+        devset = set(devs)
+        kept = [r for r in (refs or []) if isinstance(r, dict)
+                and (r.get("host") is None or r.get("host") in devset)]
+        if ev_basis == "absence":
+            kept = [r for r in kept if r.get("kind") not in PUNCH_EVIDENCE_RECORD_KINDS]
+        capped, total = _normalize_evidence_refs(kept)
+        total += hidden_refs if isinstance(hidden_refs, int) and hidden_refs > 0 else 0
+        if not capped and ev_basis != "absence" and category in _PUNCH_CATEGORY_SECTION:
+            # row_requires_ref, by construction: nothing addressable survived, so name the SECTION the fold
+            # read -- honestly cited as a section, never passed off as the row itself.
+            section = _PUNCH_CATEGORY_SECTION[category]
+            fallback = _evidence_ref(
+                "analysis_row", None, (section,), "derived_from",
+                f"{section} section this finding was folded from (its input row has no addressable "
+                "host/port, so no row pointer is claimed)")
+            if fallback is not None:
+                capped, total = [fallback], total + 1
+        it["evidence_basis"] = _evidence_basis_for(capped, ev_basis)
+        it["evidence_refs"] = capped
+        if total > len(capped):
+            it["evidence_refs_total"] = total
         items.append(it)
 
-    for f in (cross_layer or []):                                   # already severity + hosts + title
+    def _row_ref(section: str, *tokens, host=None, cite: str = "", kind: str = "analysis_row",
+                 role: str = "derived_from") -> Optional[dict]:
+        return _evidence_ref(kind, host, (section,) + tokens, role, cite)
+
+    def _refs(*groups) -> List[dict]:
+        out: List[dict] = []
+        for g in groups:
+            if isinstance(g, dict):
+                out.append(g)
+            elif isinstance(g, list):
+                out.extend(r for r in g if isinstance(r, dict))
+        return out
+
+    for k, f in enumerate(cross_layer if isinstance(cross_layer, list) else []):   # severity + hosts + title
+        if not isinstance(f, dict):
+            continue
+        cid = f.get("id") if isinstance(f.get("id"), str) else ""
         add(f.get("severity", "Medium"), "Cross-layer", f.get("hosts", []),
-            f.get("title", f.get("id", "")), f.get("detail", ""), "")
+            f.get("title", f.get("id", "")), f.get("detail", ""), "",
+            refs=_refs(_row_ref("cross_layer", k, cite=f"cross-layer rule {cid} row".strip()),
+                       _carried_refs(f.get("evidence_refs"))),
+            hidden_refs=_carried_hidden_count(f))
 
     secgrp: Dict[str, dict] = {}                                    # group a security check across the devices it fails on
-    for host, s in (security or {}).items():
-        for f in (s.get("findings") or []):
-            if f.get("status") == "fail":
-                e = secgrp.setdefault(f.get("id", ""), {
+    for host, s in (security if isinstance(security, dict) else {}).items():
+        if not isinstance(s, dict):
+            continue
+        for j, f in enumerate(_evlist(s.get("findings"))):
+            if isinstance(f, dict) and f.get("status") == "fail":
+                fid = f.get("id", "")
+                e = secgrp.setdefault(fid if isinstance(fid, str) else str(fid), {
                     "sev": f.get("severity", "medium"), "title": f.get("title", ""),
-                    "rem": f.get("remediation", ""), "detail": f.get("detail", ""), "devs": []})
+                    "rem": f.get("remediation", ""), "detail": f.get("detail", ""), "devs": [],
+                    "hits": []})
                 e["devs"].append(host)
-    for e in secgrp.values():
-        add(str(e["sev"]).capitalize(), "Security", e["devs"], e["title"], e["detail"], e["rem"])
+                e["hits"].append((host, j))
+    for cid, e in secgrp.items():
+        absent = _SECURITY_CHECK_EVIDENCE_BASIS.get(cid) == "absence"
+        refs = [_evidence_ref("absence_witness" if absent else "device_fact", h,
+                              ("security", h, "findings", j), "witness" if absent else "derived_from",
+                              f"{h} security check {cid} (fail"
+                              + (": line looked for and not present)" if absent
+                                 else "; matched line not retained in the snapshot)"))
+                for h, j in e["hits"]]
+        add(str(e["sev"]).capitalize(), "Security", e["devs"], e["title"], e["detail"], e["rem"],
+            refs=_refs(refs), ev_basis="absence" if absent else "")
 
-    for host, h in (config_hygiene or {}).items():
-        for u in (h.get("undefined") or []):
+    for host, h in (config_hygiene if isinstance(config_hygiene, dict) else {}).items():
+        if not isinstance(h, dict):
+            continue
+        for i, u in enumerate(_evlist(h.get("undefined"))):
+            if not isinstance(u, dict):
+                continue
+            ctx = u.get("context")
             add("High", "Config hygiene", [host],
                 f"Undefined {u.get('kind', '')} '{u.get('name', '')}'",
                 f"Referenced ({u.get('context', '')}) but never defined -- it silently does nothing.",
-                "Define the referenced structure, or remove the dangling reference.")
+                "Define the referenced structure, or remove the dangling reference.",
+                # parse_config_hygiene's `context` is the ENCLOSING column-0 stanza header (cut to 60
+                # characters) of the line that holds the reference -- the referencing line itself only when
+                # that line is at column 0. The cite says exactly that, and the role is derived_from: it is
+                # the stanza the reference sits in, not a copy of the referencing line.
+                refs=_refs(
+                    _row_ref("config_hygiene", host, "undefined", i, host=host,
+                             cite=f"{host} config-hygiene undefined reference #{i}"),
+                    _evidence_ref("config_text", host, ("config_hygiene", host, "undefined", i, "context"),
+                                  "derived_from",
+                                  f"{host} enclosing column-0 stanza header (first 60 chars; the "
+                                  "referencing line only if at column 0)")
+                    if isinstance(ctx, str) and ctx.strip() else None))
 
     L3SEV = {"single-gateway": "High", "tracked-object-down": "High", "no-FHRP": "Medium"}
     l3grp: Dict[tuple, list] = {}
-    for r in (l3_forwarding or []):
+    l3refs: Dict[tuple, list] = {}
+    for k, r in enumerate(l3_forwarding if isinstance(l3_forwarding, list) else []):
+        if not isinstance(r, dict):
+            continue
         for flag, sev in L3SEV.items():
-            if flag in r.get("risk", ""):
-                l3grp.setdefault((flag, sev), []).append(r.get("switch"))
+            if flag in str(r.get("risk", "")):
+                sw = r.get("switch")
+                l3grp.setdefault((flag, sev), []).append(sw)
+                vid = r.get("vlan")
+                svi = _interface_key(interface_index, sw, f"Vlan{vid}") if isinstance(vid, int) else None
+                l3refs.setdefault((flag, sev), []).extend(_refs(
+                    _row_ref("l3_forwarding", k, host=sw if isinstance(sw, str) else None,
+                             cite=f"{sw} L3 forwarding row VLAN {vid} ({flag})"),
+                    _iface_ref(sw, svi, f"{sw} {svi} (gateway SVI, {flag})") if svi else None))
     for (flag, sev), devs in l3grp.items():
         add(sev, "L3", devs, flag.replace("-", " "),
-            f"L3 forwarding risk '{flag}' on {len(set(devs))} switch(es).",
+            f"L3 forwarding risk '{flag}' on {len(set(d for d in devs if isinstance(d, str)))} switch(es).",
             "Add gateway / FHRP redundancy." if ("gateway" in flag or "FHRP" in flag)
-            else "Investigate the tracked object / SLA.")
+            else "Investigate the tracked object / SLA.", refs=l3refs.get((flag, sev)))
 
     L1SEV = {"err-disabled": "High", "single-fiber-uplink": "Medium",
              "half-duplex": "Medium", "error-rate-high": "Medium"}
     l1grp: Dict[tuple, list] = {}
-    for r in (physical_health or []):
+    l1refs: Dict[tuple, list] = {}
+    for r in (physical_health if isinstance(physical_health, list) else []):
+        if not isinstance(r, dict):
+            continue
         for flag, sev in L1SEV.items():
-            if flag in r.get("risk", ""):
-                l1grp.setdefault((flag, sev), []).append(r.get("switch"))
+            if flag in str(r.get("risk", "")):
+                sw, port = r.get("switch"), r.get("port")
+                l1grp.setdefault((flag, sev), []).append(sw)
+                # physical_health rows are built one per (host, port) of the interface map itself, so
+                # the port is a real interface key -- the record the L1 risk is ABOUT. Deliberately NO
+                # `/physical_health/<k>` index ref: a published consumer RE-FILTERS that list (the
+                # explorer embed, html._slim_for_embed, drops its Info/OK rows), so an index into it
+                # dangles or silently names ANOTHER device's row there. The key-addressed interface
+                # record is the stable pointer and is what makes this row basis=record.
+                l1refs.setdefault((flag, sev), []).extend(_refs(
+                    _iface_ref(sw, port, f"{sw} {port} ({flag})")))
     for (flag, sev), devs in l1grp.items():
         add(sev, "L1", devs, flag.replace("-", " "),
-            f"L1 risk '{flag}' on {len(set(devs))} switch(es).", "")
+            f"L1 risk '{flag}' on {len(set(d for d in devs if isinstance(d, str)))} switch(es).", "",
+            refs=l1refs.get((flag, sev)))
 
-    for r in (protocol_health or []):
-        if r.get("severity") in ("High", "Medium"):
-            add(r["severity"], "Protocol", [r.get("switch")],
-                f"{r.get('protocol', '')} {r['severity'].lower()}", r.get("detail", ""), "")
+    for k, r in enumerate(protocol_health if isinstance(protocol_health, list) else []):
+        if isinstance(r, dict) and r.get("severity") in ("High", "Medium"):
+            sw = r.get("switch")
+            add(r["severity"], "Protocol", [sw],
+                f"{r.get('protocol', '')} {r['severity'].lower()}", r.get("detail", ""), "",
+                refs=_refs(_row_ref("protocol_health", k, host=sw if isinstance(sw, str) else None,
+                                    cite=f"{sw} {r.get('protocol', '')} protocol-health row")))
+
+    def _sans_custody(value) -> dict:
+        return {k: v for k, v in value.items() if k != "projection_custody"} if isinstance(value, dict) else {}
+
+    def _receipt_refs(section: str, published, row: dict, host: str, label: str, match_protocol: bool):
+        """Refs for a VTP / IPv6 owner row: the published receipt row it IS (matched by value), else --
+        for a synthetic abstention row -- the receipt's coverage cells for the host as ABSENCE witnesses
+        (the evidence was looked for and not verified). Returns (refs, requested_basis).
+
+        `published` is the EMBEDDED projection the pipeline actually writes under `section`
+        (embedded_vtp_safety_baseline / embedded_ipv6_routing_adjacency_baseline), never the raw
+        current-run receipt: an invalid receipt publishes as the empty unavailable projection, so an
+        index into the raw receipt's rows/coverage would dangle. Row match ignores only the
+        `projection_custody` stamp the embedding rewrites."""
+        b = published if isinstance(published, dict) else {}
+        rows = _evlist(b.get("rows"))
+        target = _sans_custody(row)
+        for i, cand in enumerate(rows):
+            if isinstance(cand, dict) and _sans_custody(cand) == target:
+                return _refs(_row_ref(section, "rows", i, host=host,
+                                      kind="adjacency" if section.startswith("ipv6") else "analysis_row",
+                                      role="subject" if section.startswith("ipv6") else "derived_from",
+                                      cite=f"{host} {label} receipt row")), ""
+        cells = _evlist(b.get("coverage"))
+        proto = _strict_protocol_text(row.get("protocol"))
+        wit = [_row_ref(section, "coverage", j, host=host, kind="absence_witness", role="witness",
+                        cite=f"{host} {label} coverage cell (evidence not verified)")
+               for j, c in enumerate(cells)
+               if isinstance(c, dict) and _strict_protocol_text(c.get("switch")) == host
+               and (not match_protocol or not proto or _strict_protocol_text(c.get("protocol")) == proto)]
+        return _refs(wit), "absence"
 
     # VTP's sparse protocol-health row is intentionally Info: a high revision is an exposure, not a
     # present outage.  Fold the separate source-bound safety owner so that distinction does not erase
@@ -7773,6 +8484,8 @@ def compute_migration_punchlist(cross_layer: List[dict],
         vtp_view = _vtp_safety_consumer_view(
             vtp_safety_baseline, protocol_health, protocol_assessability,
             vtp_safety_subject_scope)
+        # Refs index the projection the pipeline PUBLISHES under snap['vtp_safety_baseline'].
+        vtp_published = embedded_vtp_safety_baseline(vtp_safety_baseline)
         for row in vtp_view["rows"]:
             if not isinstance(row, dict) or row.get("status") not in {"review", "not_verified"}:
                 continue
@@ -7781,6 +8494,8 @@ def compute_migration_punchlist(cross_layer: List[dict],
                 continue
             status = _strict_protocol_text(row.get("status"))
             high_revision = "high_revision_server" in _vtp_safety_finding_codes(row)
+            vrefs, vbasis = _receipt_refs("vtp_safety_baseline", vtp_published, row, host,
+                                          "VTP safety", False)
             add(
                 "Medium",
                 "VTP",
@@ -7793,6 +8508,7 @@ def compute_migration_punchlist(cross_layer: List[dict],
                 _strict_protocol_text(row.get("acceptance")),
                 ("Re-run show vtp status, back up the VLAN database, and explicitly disposition "
                  "the candidate switch's domain/version/revision exposure before connection."),
+                refs=vrefs, ev_basis=vbasis,
             )
 
     # The IPv6 routing owner is blocker-only in the consolidated punch-list:
@@ -7803,6 +8519,8 @@ def compute_migration_punchlist(cross_layer: List[dict],
     if ipv6_routing_adjacency_baseline is not None:
         ipv6_view = _ipv6_routing_consumer_view(
             ipv6_routing_adjacency_baseline, ipv6_routing_subject_scope)
+        # Refs index the projection the pipeline PUBLISHES under snap['ipv6_routing_adjacency_baseline'].
+        ipv6_published = embedded_ipv6_routing_adjacency_baseline(ipv6_routing_adjacency_baseline)
         for row in ipv6_view["rows"]:
             if not isinstance(row, dict):
                 continue
@@ -7821,6 +8539,13 @@ def compute_migration_punchlist(cross_layer: List[dict],
             identity = f"{protocol} {peer or 'subject'}"
             if state:
                 identity += f" state {state}"
+            irefs, ibasis = _receipt_refs("ipv6_routing_adjacency_baseline",
+                                          ipv6_published, row, host,
+                                          f"{protocol} adjacency", True)
+            if ibasis != "absence":
+                ifk = _interface_key(interface_index, host, _strict_protocol_text(row.get("interface")))
+                if ifk:
+                    irefs.extend(_refs(_iface_ref(host, ifk, f"{host} {ifk} (adjacency interface)")))
             add(
                 "High" if status == "degraded" else "Medium",
                 "IPv6 Routing",
@@ -7832,106 +8557,200 @@ def compute_migration_punchlist(cross_layer: List[dict],
                 }[status],
                 acceptance,
                 "",
+                refs=irefs, ev_basis=ibasis,
             )
 
-    sf = stp_findings or {}
-    for m in sf.get("misaligned", []):
-        add("Medium", "STP", [m.get("root")] + list(m.get("gateways", [])),
+    sf = stp_findings if isinstance(stp_findings, dict) else {}
+    for m in (_evlist(sf.get("misaligned"))):
+        if not isinstance(m, dict):
+            continue
+        root, vlan = m.get("root"), m.get("vlan")
+        gws = [g for g in (_evlist(m.get("gateways")))]
+        srefs = _refs(_row_ref("stp_roots", root, vlan, host=root if isinstance(root, str) else None,
+                               kind="device_fact", role="subject",
+                               cite=f"{root} STP root record VLAN {vlan}")
+                      if isinstance(vlan, (str, int)) and not isinstance(vlan, bool) else None)
+        for g in gws:
+            svi = _interface_key(interface_index, g, f"Vlan{vlan}")
+            srefs.extend(_refs(_iface_ref(g, svi, f"{g} {svi} (VLAN {vlan} gateway SVI)") if svi else None))
+        add("Medium", "STP", [root] + gws,
             f"STP root != gateway (VLAN {m.get('vlan')})",
             "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
-            "Align the STP root priority with the active gateway switch.")
-    for a in sf.get("accidental", []):
-        add("Low", "STP", [a.get("host")], f"Accidental root (VLAN {a.get('vlan')})",
+            "Align the STP root priority with the active gateway switch.", refs=srefs)
+    for a in (_evlist(sf.get("accidental"))):
+        if not isinstance(a, dict):
+            continue
+        ah, vlan = a.get("host"), a.get("vlan")
+        add("Low", "STP", [ah], f"Accidental root (VLAN {a.get('vlan')})",
             "Rooted on the default priority -- elected on a MAC tiebreak, so it can move on a cutover.",
-            "Set a deliberate root-bridge priority on the intended switch.")
+            "Set a deliberate root-bridge priority on the intended switch.",
+            refs=_refs(_row_ref("stp_roots", ah, vlan, host=ah if isinstance(ah, str) else None,
+                                kind="device_fact", role="subject",
+                                cite=f"{ah} STP root record VLAN {vlan} (default priority)")
+                       if isinstance(vlan, (str, int)) and not isinstance(vlan, bool) else None))
 
-    for r in (health_scores or []):
-        if r.get("band") in ("Critical", "Poor"):
-            add("High" if r["band"] == "Critical" else "Medium", "Health", [r.get("switch")],
+    for k, r in enumerate(health_scores if isinstance(health_scores, list) else []):
+        if isinstance(r, dict) and r.get("band") in ("Critical", "Poor"):
+            sw = r.get("switch")
+            add("High" if r["band"] == "Critical" else "Medium", "Health", [sw],
                 f"{r['band']}-health switch", f"Health score {r.get('score', '')} ({r['band']} band).",
-                "Resolve the deductions above before migrating this device.")
+                "Resolve the deductions above before migrating this device.",
+                refs=_refs(_row_ref("health_scores", k, host=sw if isinstance(sw, str) else None,
+                                    cite=f"{sw} health score row"),
+                           _carried_refs(r.get("deduction_refs"))))
 
     # NEW-V3.23.64: fold in the cross-switch L2 checks that previously lived only in the explorer
     # (addressing conflicts, FHRP consistency, trunk native-VLAN, link duplex/speed) -- passed in as
     # `l2` (computed by the excel layer in main()) so the punch-list is genuinely complete.
-    ll = l2 or {}
-    for d in (ll.get("addressing") or {}).get("dup_ip", []):
-        add("High", "Addressing", [w[0] for w in d.get("where", [])],
+    # Published as snap['addressing_conflicts'] / ['fhrp'] / ['trunk_native'] / ['link_phy'].
+    ll = l2 if isinstance(l2, dict) else {}
+    addressing = _evdict(ll.get("addressing"))
+
+    def _where_refs(kind_key: str, k: int, where, what: str) -> List[dict]:
+        out = _refs(_row_ref("addressing_conflicts", kind_key, k, cite=f"addressing conflict row ({what})"))
+        for w in (where if isinstance(where, list) else []):
+            if isinstance(w, (list, tuple)) and len(w) >= 2:
+                # `where` is built by iterating the interface map, so (host, port) is a real key.
+                out.extend(_refs(_iface_ref(w[0], w[1], f"{w[0]} {w[1]} ({what})")))
+        return out
+
+    for k, d in enumerate(_evlist(addressing.get("dup_ip"))):
+        if not isinstance(d, dict):
+            continue
+        where = d.get("where", [])
+        add("High", "Addressing", [w[0] for w in where if isinstance(w, (list, tuple)) and w],
             f"Duplicate L3 IP {d.get('ip', '')}",
             "The same physical IP is configured on >=2 interfaces -- an L3 address clash.",
-            "Re-IP one of the interfaces before the merge / cutover.")
-    for d in (ll.get("addressing") or {}).get("dup_subnet", []):
+            "Re-IP one of the interfaces before the merge / cutover.",
+            refs=_where_refs("dup_ip", k, where, "duplicate address"))
+    for k, d in enumerate(_evlist(addressing.get("dup_subnet"))):
+        if not isinstance(d, dict):
+            continue
         vrf = f" (VRF {d['vrf']})" if d.get("vrf") else ""
-        add("Medium", "Addressing", [w[0] for w in d.get("where", [])],
+        where = d.get("where", [])
+        add("Medium", "Addressing", [w[0] for w in where if isinstance(w, (list, tuple)) and w],
             f"Overlapping subnet {d.get('net', '')}",
             f"One subnet sits behind multiple VLANs{vrf} -- ambiguous routing.",
-            "Consolidate or re-subnet before cutover.")
-    for fr in (ll.get("fhrp") or []):
-        state = fr.get("status")
-        hosts = [m.get("host") for m in fr.get("members", [])]
-        issues = "; ".join(fr.get("issues", []))
-        if state == "review":
+            "Consolidate or re-subnet before cutover.",
+            refs=_where_refs("dup_subnet", k, where, "overlapping subnet"))
+    for k, fr in enumerate(_evlist(ll.get("fhrp"))):
+        if not isinstance(fr, dict):
+            continue
+        fstate = fr.get("status")
+        members = [m for m in (_evlist(fr.get("members")))
+                   if isinstance(m, dict)]
+        hosts = [m.get("host") for m in members]
+        issues = "; ".join(str(i) for i in (_evlist(fr.get("issues"))))
+        frefs = _refs(_row_ref("fhrp", k, cite=f"FHRP domain row VLAN {fr.get('vid')}"))
+        for j, m in enumerate(_evlist(fr.get("members"))):
+            if not isinstance(m, dict):
+                continue
+            mh = m.get("host")
+            frefs.extend(_refs(_row_ref("fhrp", k, "members", j, host=mh if isinstance(mh, str) else None,
+                                        cite=f"{mh} FHRP member row VLAN {fr.get('vid')}")))
+            # The member interface is a receipt-NORMALIZED name, not proof of the snapshot's key.
+            ifk = _interface_key(interface_index, mh, m.get("interface"))
+            if ifk:
+                frefs.extend(_refs(_iface_ref(mh, ifk, f"{mh} {ifk} (FHRP member SVI)")))
+        if fstate == "review":
             add(
                 "Medium", "FHRP", hosts,
                 f"FHRP domain composition review (VLAN {fr.get('vid')})",
                 "Intended FHRP membership is unresolved. " + issues,
                 "Verify intended members and simultaneous roles, then explicitly disposition the "
                 "domain-composition review before cutover; do not auto-configure gateways from this evidence.",
+                refs=frefs,
             )
-        elif state == "not_verified":
+        elif fstate == "not_verified":
             add(
                 "Medium", "FHRP", hosts,
                 f"FHRP redundancy domain not verified (VLAN {fr.get('vid')})",
                 issues or "The authoritative FHRP redundancy-domain receipt was not verified.",
                 "Re-collect and validate the domain receipt before deciding intended membership or remediation.",
+                refs=frefs,
             )
-        elif state == "degraded":
+        elif fstate == "degraded":
             add(
                 "High", "FHRP", hosts,
                 f"FHRP redundancy degraded (VLAN {fr.get('vid')})",
                 issues,
                 "Restore or explicitly disposition the definite source-bound local FHRP fault before cutover.",
+                refs=frefs,
             )
         else:
             # Backward compatibility for direct callers still carrying the pre-typed legacy row shape.
             add("High", "FHRP", hosts,
                 f"Fake FHRP redundancy (VLAN {fr.get('vid')})", issues,
-                "Standardize the FHRP protocol / group / virtual IP across the VLAN's gateways.")
-    for t in (ll.get("trunk_native") or []):
+                "Standardize the FHRP protocol / group / virtual IP across the VLAN's gateways.",
+                refs=frefs)
+
+    def _link_refs(section: str, k: int, t: dict, what: str) -> List[dict]:
+        # trunk_native / link_phy rows exist only when BOTH ends resolved to an interface record
+        # (excel._trunk_link_ends), so (a_host, a_port) and (b_host, b_port) are real keys.
+        return _refs(_row_ref(section, k, cite=f"inter-switch link row ({what})"),
+                     _iface_ref(t.get("a_host"), t.get("a_port"),
+                                f"{t.get('a_host')} {t.get('a_port')} ({what}, end A)"),
+                     _iface_ref(t.get("b_host"), t.get("b_port"),
+                                f"{t.get('b_host')} {t.get('b_port')} ({what}, end B)"))
+
+    for k, t in enumerate(_evlist(ll.get("trunk_native"))):
+        if not isinstance(t, dict):
+            continue
         add("Medium", "Trunk", [t.get("a_host"), t.get("b_host")],
             f"Native-VLAN mismatch ({t.get('a_native')} vs {t.get('b_native')})",
             f"{t.get('a_host')} {t.get('a_port')} (native {t.get('a_native')}) <-> "
             f"{t.get('b_host')} {t.get('b_port')} (native {t.get('b_native')}) -- untagged L2 leak / VLAN-hopping exposure.",
-            "Set a consistent native VLAN on both trunk ends.")
-    for lp in (ll.get("link_phy") or []):
+            "Set a consistent native VLAN on both trunk ends.",
+            refs=_link_refs("trunk_native", k, t, "native-VLAN mismatch"))
+    for k, lp in enumerate(_evlist(ll.get("link_phy"))):
+        if not isinstance(lp, dict):
+            continue
         what = "duplex" if lp.get("duplex") else "speed"
         add("Medium", "Link L1", [lp.get("a_host"), lp.get("b_host")],
             f"{what.capitalize()} mismatch on inter-switch link",
             f"{lp.get('a_host')} {lp.get('a_port')} <-> {lp.get('b_host')} {lp.get('b_port')} -- "
             f"{what} differs (late collisions / CRC errors, link up but degraded).",
-            "Set matching duplex/speed (or autoneg) on both ends.")
+            "Set matching duplex/speed (or autoneg) on both ends.",
+            refs=_link_refs("link_phy", k, lp, f"{what} mismatch"))
 
     # NEW-V3.23.68: inventory/identity data quality -- a device collected under a name that differs
     # from its own configured hostname reconciles wrong in the topology (phantom split node) and
     # breaks any hostname-keyed cutover scripting.
-    for hm in (hostname_mismatches or []):
-        add("Medium", "Inventory", [hm.get("inventory")],
+    for hm in (hostname_mismatches if isinstance(hostname_mismatches, list) else []):
+        if not isinstance(hm, dict):
+            continue
+        inv = hm.get("inventory")
+        add("Medium", "Inventory", [inv],
             f"Inventory name != device hostname ({hm.get('inventory')} vs {hm.get('reported')})",
             f"Collected as '{hm.get('inventory')}' but the device reports its hostname as "
             f"'{hm.get('reported')}' -- it reconciles as a duplicate/phantom node in the topology.",
-            "Correct the inventory/devices.json name to match the device's configured hostname.")
+            "Correct the inventory/devices.json name to match the device's configured hostname.",
+            refs=_refs(_row_ref("devices", inv, host=inv if isinstance(inv, str) else None,
+                                kind="device_fact", role="subject",
+                                cite=f"{inv} device record (reported hostname differs)")))
 
     # NEW-V3.23.93: fold in the false-health / operational-drift findings (compute_operational_drift)
     # so the executive punch-list also carries the traps a green control plane hides.
-    for d in (drift or []):
+    # Published as snap['operational_drift']; each row carries its own producer-held refs.
+    for k, d in enumerate(drift if isinstance(drift, list) else []):
+        if not isinstance(d, dict):
+            continue
         add(d.get("severity", "Medium"), d.get("category", "False-health"), d.get("devices", []),
-            d.get("title", ""), d.get("detail", ""), d.get("remediation", ""))
+            d.get("title", ""), d.get("detail", ""), d.get("remediation", ""),
+            refs=_refs(_row_ref("operational_drift", k, cite="operational-drift finding row"),
+                       _carried_refs(d.get("evidence_refs"))),
+            ev_basis="absence" if d.get("evidence_basis") == "absence" else "",
+            hidden_refs=_carried_hidden_count(d))
 
     # NEW-V3.23.108: fold in PTP / media-timing readiness (compute_ptp_readiness) so the broadcast
     # timing gap (PTP enabled but not boundary-clocked) is in the prioritized action list.
-    for d in (ptp_readiness or []):
+    # The readiness rows are not published on their own; their refs point at the service-map clocks.
+    for d in (ptp_readiness if isinstance(ptp_readiness, list) else []):
+        if not isinstance(d, dict):
+            continue
         add(d.get("severity", "Medium"), d.get("category", "Timing/PTP"), d.get("devices", []),
-            d.get("title", ""), d.get("detail", ""), d.get("remediation", ""))
+            d.get("title", ""), d.get("detail", ""), d.get("remediation", ""),
+            refs=_carried_refs(d.get("evidence_refs")), hidden_refs=_carried_hidden_count(d))
 
     # NEW-V3.23.115: fold in multicast/media-fabric findings (MAC-aliasing / IGMP querier gaps from
     # compute_multicast_intelligence) so the broadcast-fabric risks are in the prioritized action list.
@@ -7946,66 +8765,109 @@ def compute_migration_punchlist(cross_layer: List[dict],
     # (older snapshot, or a null/non-string value) is rendered basis-NOT-published, never as though
     # the severity had been measured. Applied to EVERY media risk, not a hand-picked kind list --
     # querier-gap genuinely publishes no basis today, and saying so is honest rather than noisy.
-    for d in (media_risks or []):
+    for d in (media_risks if isinstance(media_risks, list) else []):
+        if not isinstance(d, dict):
+            continue
         add(d.get("severity", "Medium"), "Multicast/Media", d.get("devices", []),
             d.get("title", ""), d.get("detail", ""), d.get("remediation", ""),
             basis=_usable_text(d.get("severity_basis")) or PUNCH_BASIS_UNPUBLISHED,
-            confidence=_usable_text(d.get("evidence_confidence")) or PUNCH_CONFIDENCE_UNPUBLISHED)
+            confidence=_usable_text(d.get("evidence_confidence")) or PUNCH_CONFIDENCE_UNPUBLISHED,
+            refs=_carried_refs(d.get("evidence_refs")), hidden_refs=_carried_hidden_count(d))
 
     # NEW-V3.23.169: fold in the V3.23.164-.167 axes so they reach the decision layer. Each axis
     # already aggregates per host; here like findings are GROUPED by kind across devices (the same
     # cry-wolf rule the security fold uses) -- one row + a device list, never one row per device.
     # Fleet-level rows (host '(fleet)') carry no device so they never pollute per-device wave maps.
-    def _fold_axis(findings, category):
+    # Evidence: each grouped finding points at its own published row (`/<section>/<list>/<index>`, the
+    # index in the UNFILTERED published list); a software-risk row's literal `evidence` line is
+    # configuration text; a '(fleet)' row points at the axis' per-device posture rows -- WITNESSES with
+    # basis=absence when the producer marks the finding as an absence, device facts otherwise.
+    def _fold_axis(axis, list_key, category, section, skip_kinds=()):
         # V3.23.171: every axis now emits the common {label, detail} shape (software_risk
         # aliases its surface/why into them), so the fold needs no per-axis adapter.
+        ax = axis if isinstance(axis, dict) else {}
+        findings = ax.get(list_key)
+        per_device = _evlist(ax.get("per_device"))
         bykind: Dict[str, dict] = {}
-        for f in (findings or []):
-            if not isinstance(f, dict):
+        for i, f in enumerate(findings if isinstance(findings, list) else []):
+            if not isinstance(f, dict) or f.get("kind") in skip_kinds:
                 continue
             k = f.get("kind") or f.get("label") or ""
+            k = k if isinstance(k, str) else str(k)
             g = bykind.setdefault(k, {"severity": f.get("severity", "Medium"),
                                       "title": f.get("label") or k,
                                       "devices": [], "details": [],
-                                      "remediation": f.get("recommendation", "")})
-            host = (f.get("host") or "").strip()
-            if host and host != "(fleet)":
+                                      "remediation": f.get("recommendation", ""),
+                                      "refs": [], "absence": False})
+            raw_host = f.get("host")
+            host = raw_host.strip() if isinstance(raw_host, str) else ""
+            fleet = host == "(fleet)"
+            if host and not fleet:
                 g["devices"].append(host)
             d = f.get("detail")
             if d:
                 g["details"].append(str(d))
+            rhost = host if host and not fleet else None
+            g["refs"].extend(_refs(_row_ref(section, list_key, i, host=rhost,
+                                            cite=f"{host or 'fleet'} {category} finding row ({k})")))
+            ev = f.get("evidence")
+            # Only a VERBATIM configuration line is a config_text record (the producer says which through
+            # `evidence_verbatim`); a synthesized evidence description stays on the row ref above.
+            if isinstance(ev, str) and ev.strip() and rhost and f.get("evidence_verbatim") is True:
+                g["refs"].extend(_refs(_evidence_ref("config_text", rhost, (section, list_key, i, "evidence"),
+                                                     "subject", f"{rhost} configuration line ({k})")))
+            if fleet:
+                absent = f.get("evidence_basis") == "absence"
+                g["absence"] = g["absence"] or absent
+                for j, p in enumerate(per_device):
+                    if not isinstance(p, dict) or p.get("assessable") is False:
+                        continue
+                    ph = p.get("host")
+                    g["refs"].extend(_refs(_row_ref(
+                        section, "per_device", j, host=None,
+                        kind="absence_witness" if absent else "device_fact",
+                        role="witness" if absent else "derived_from",
+                        cite=(f"{ph} assessed" + (" -- none found" if absent else " posture")))))
         for k in sorted(bykind):
             g = bykind[k]
             n_dev = len(set(g["devices"]))
             detail = (f"{n_dev} device(s). " if n_dev > 1 else "") + (g["details"][0] if g["details"] else "")
-            add(g["severity"], category, g["devices"], g["title"], detail, g["remediation"])
+            add(g["severity"], category, g["devices"], g["title"], detail, g["remediation"],
+                refs=g["refs"], ev_basis="absence" if g["absence"] and not g["devices"] else "")
 
-    _fold_axis((syslog_intelligence or {}).get("detections"), "Operational logs")
-    _fold_axis((qos_audit or {}).get("findings"), "QoS")
+    _fold_axis(syslog_intelligence, "detections", "Operational logs", "syslog_intelligence")
+    _fold_axis(qos_audit, "findings", "QoS", "qos_audit")
     # V3.23.170: the CIS Security fold above already carries rows for telnet-on-vty and v1/v2c
     # SNMP from the same config lines -- folding software_risk's twins gave one issue two
     # prioritized rows at two severities (the de-dup contract violation the max review caught).
     # Those kinds stay on the Software Risk sheet / brief (where the advisory context lives);
     # the punch-list keeps the single CIS action row.
     _SWRISK_CIS_TWINS = ("telnet-vty", "snmp-v2c-rw", "snmp-v2c-ro")
-    _fold_axis([f for f in ((software_risk or {}).get("findings") or [])
-                if isinstance(f, dict) and f.get("kind") not in _SWRISK_CIS_TWINS],
-               "Software exposure")
-    _fold_axis((platform_health or {}).get("findings"), "Platform capacity")
+    _fold_axis(software_risk, "findings", "Software exposure", "software_risk",
+               skip_kinds=_SWRISK_CIS_TWINS)
+    _fold_axis(platform_health, "findings", "Platform capacity", "platform_health")
 
     # NEW-V3.23.172: compound-risk patterns from the Device Risk Register. These are NOT
     # duplicates of the per-axis rows above -- the finding IS the coincidence (independent
     # risks stacked on one asset), which no single-axis row carries. CR-coded titles keep
     # them recognizably distinct from their contributing legs.
-    for d in ((device_dossiers or {}).get("per_device") or []):
+    dd = device_dossiers if isinstance(device_dossiers, dict) else {}
+    for i, d in enumerate(_evlist(dd.get("per_device"))):
         if not isinstance(d, dict):
             continue
-        for c in (d.get("compound") or []):
+        dh = d.get("host")
+        for j, c in enumerate(_evlist(d.get("compound"))):
             if isinstance(c, dict):
-                add(c.get("severity", "Medium"), "Compound risk", [d.get("host")],
+                add(c.get("severity", "Medium"), "Compound risk", [dh],
                     f"{c.get('code', '')}: {c.get('title', '')}", c.get("basis", ""),
                     "Stacked independent risks on one asset — clear at least one leg "
-                    "before this device's migration window.")
+                    "before this device's migration window.",
+                    refs=_refs(_row_ref("device_dossiers", "per_device", i, "compound", j,
+                                        host=dh if isinstance(dh, str) else None,
+                                        cite=f"{dh} compound-risk pattern {c.get('code', '')}"),
+                               _row_ref("device_dossiers", "per_device", i,
+                                        host=dh if isinstance(dh, str) else None,
+                                        cite=f"{dh} device risk dossier")))
 
     items.sort(key=lambda x: (-x["rank"], x["category"], x["title"]))
     for i, it in enumerate(items, 1):
@@ -10288,6 +11150,9 @@ def compute_qos_audit(run_configs: Optional[Dict[str, str]] = None,
         _find("(fleet)", "best-effort-fleet",
               f"None of the {len(assessable)} assessable device(s) has any active QoS "
               "configuration (policies attached, trust, or auto-QoS).")
+        # The finding is an ABSENCE (no active QoS anywhere): its evidence is the assessed per-device
+        # posture rows as WITNESSES, never a configuration record (evidence pointers, A1).
+        findings[-1]["evidence_basis"] = "absence"
 
     findings.sort(key=lambda f: (_SEV_RANK.get(f["severity"], 9), f["host"], f["kind"]))
     not_assessable = [d["host"] for d in per_device if not d["assessable"]]
@@ -10447,7 +11312,10 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
     findings: List[dict] = []
 
     def _surface_status(text: str) -> Dict[str, tuple]:
-        """kind -> (status, evidence). status: exposed / closed / verify."""
+        """kind -> (status, evidence). status: exposed / closed / verify. `evidence` is the VERBATIM
+        matched configuration line exactly when it is a `has()` return; every other evidence value is a
+        synthesized description (a redacted community, an explanation) -- the caller publishes which one it is as
+        `evidence_verbatim` (true iff the evidence is one of the device's own stripped config lines)."""
         lines = [ln.strip() for ln in text.splitlines()]
         def has(pat):
             rx = re.compile(pat, re.I)
@@ -10484,10 +11352,12 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
         tl = has(r"^transport input .*\b(?:telnet|all)\b")
         if tl:
             out["telnet-vty"] = ("exposed", tl)
-        if has(r"^ip ssh version 1$"):
-            out["ssh-v1"] = ("exposed", "ip ssh version 1")
-        if has(r"^crypto isakmp policy"):
-            out["ikev1"] = ("exposed", "crypto isakmp policy ...")
+        ssh1 = has(r"^ip ssh version 1$")
+        if ssh1:
+            out["ssh-v1"] = ("exposed", ssh1)
+        ike = has(r"^crypto isakmp policy")
+        if ike:
+            out["ikev1"] = ("exposed", ike)
         sm = has(r"^service finger$") or has(r"^ip rcmd") or has(r"^service (tcp|udp)-small-servers$")
         if sm:
             out["small-services"] = ("exposed", sm)
@@ -10502,6 +11372,10 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
         surfaces: Dict[str, str] = {}
         if text:
             st = _surface_status(text)
+            # A published `evidence` is a configuration LINE only when it is literally one of the device's
+            # own (stripped) config lines; otherwise it is a synthesized description and says so through
+            # `evidence_verbatim: False` (the punch-list types only verbatim evidence as config_text).
+            config_lines = {ln.strip() for ln in text.splitlines()}
             for kind, (status, evidence) in sorted(st.items()):
                 surfaces[kind] = status
                 if status != "exposed":
@@ -10514,6 +11388,7 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
                     # fold, any future findings surface) need no per-axis adapter.
                     "label": label, "detail": why,
                     "evidence": evidence,
+                    "evidence_verbatim": evidence in config_lines,
                     "advisories": [{"id": a, "cve": c, "note": n} for a, c, n in advs],
                     "why": why, "recommendation": fix})
         per_device.append({
@@ -10704,7 +11579,7 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
     window). Pure read; deterministic; tolerant of empty input. Returns {per_device, summary, risks, asof,
     note}."""
     from collections import Counter
-    from datetime import date, datetime
+    from datetime import date, datetime, timezone
     from cisco_toolkit import eoldb
 
     def _to_date(x):
@@ -10723,6 +11598,58 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
             return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
         except (ValueError, TypeError):
             return None
+
+    # R1V-1: the retained EoX registry's authority is judged at the EVIDENCE date, never at the day this runs.
+    # eoldb.lifecycle_for() answers "is the registry verified AND fresh NOW" (registry_integrity.source_freshness
+    # defaults to the wall clock), which made a re-analysis of the same evidence -- and the golden's
+    # device_dossiers -- flip every matched band to Unknown once the registry aged past SOURCE_MAX_AGE_DAYS,
+    # although nothing about the evidence changed. The band is a claim AS OF `today` (the evidence date), so the
+    # question the freshness policy guards is "was the registry too old to vouch for that date?":
+    #   * stale  -- the evidence date is more than SOURCE_MAX_AGE_DAYS after the registry's retrieval: WITHHELD
+    #               (fail closed; bulletins issued in between may be missing), whatever the wall clock says;
+    #   * a registry retrieved AFTER the evidence date is newer than the evidence, never too old for it;
+    #   * integrity is time-independent and never bypassed. eoldb reports ONE state ("primary-url-unverified")
+    #     for "failed integrity" and "too old right now"; only the second is the evidence date's to excuse. So
+    #     a row eoldb could not verify is re-verified byte/semantically at the registry's own retrieval instant
+    #     (where age is zero) ONLY when the registry is not fresh at the wall clock -- i.e. only when age can
+    #     be the cause. While the registry is fresh now, eoldb's refusal can only be integrity and stands. The
+    #     band therefore never depends on the wall clock: an intact chain bands either way (eoldb verifies it
+    #     now, or the re-verification does), and a tampered/missing fixture is withheld either way.
+    from cisco_toolkit import registry_integrity
+    _retrieved_at = eoldb._EOL_FIXTURE_RETRIEVED_AT
+    _evidence_instant = datetime(today.year, today.month, today.day, 23, 59, 59, tzinfo=timezone.utc)
+    _stale_at_evidence = bool(
+        registry_integrity.source_freshness(_retrieved_at, now=_evidence_instant)["source_stale"])
+    _chain_verified: Dict[str, bool] = {}
+
+    def _registry_fresh_at_wall_clock() -> bool:
+        # Diagnostic only (see above): it decides whether eoldb's refusal COULD be age, never the band.
+        return bool(registry_integrity.source_freshness(_retrieved_at)["source_fresh"])
+
+    def _integrity_verified_at_retrieval() -> bool:
+        if "ok" not in _chain_verified:
+            try:
+                eoldb.verify_retained_eol_source_chain(
+                    now=datetime.fromisoformat(_retrieved_at.replace("Z", "+00:00")))
+                _chain_verified["ok"] = True
+            except (registry_integrity.PackIntegrityError, OSError, ValueError):
+                _chain_verified["ok"] = False
+        return _chain_verified["ok"]
+
+    def _authority_at_evidence_date(rec: dict) -> Tuple[bool, str]:
+        """(authoritative as of the evidence date, published citation_status)."""
+        citation = rec.get("citation_status")
+        if rec.get("source_authoritative") is True:
+            chain_ok = True                                  # eoldb verified bytes + binding just now
+        elif citation == "primary-url-unverified" and not _registry_fresh_at_wall_clock():
+            chain_ok = _integrity_verified_at_retrieval()    # failed NOW, and age can be why: re-verify bytes
+        else:
+            chain_ok = False                                 # unresolved citation / explicitly withheld
+        if chain_ok and not _stale_at_evidence:
+            return True, "retained-primary-fixture"
+        if _stale_at_evidence and citation in ("retained-primary-fixture", "primary-url-unverified"):
+            return False, "primary-url-unverified"
+        return False, str(citation or "")
 
     per_device: List[dict] = []
     for host in sorted(devices or {}):
@@ -10745,7 +11672,17 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
         # deliberately returns the inline record with source_authoritative=False when the fixture is
         # missing, stale, or fails integrity, but those unverified dates must not drive a band. This also
         # prevents a future malformed/legacy row from turning a missing date into "no EoL announced".
-        if rec.get("source_authoritative") is not True:
+        authoritative, citation_status = _authority_at_evidence_date(rec)
+        if not authoritative and _stale_at_evidence and citation_status == "primary-url-unverified":
+            band = "Unknown"
+            status = (
+                f"The retained Cisco EoX registry (retrieved {_retrieved_at[:10]}) is more than "
+                f"{registry_integrity.SOURCE_MAX_AGE_DAYS} days older than the evidence date "
+                f"{today.isoformat()}; lifecycle band withheld - refresh the retained EoX evidence and "
+                "verify the exact PID on Cisco's EoX portal"
+            )
+            yrs = None
+        elif not authoritative:
             band = "Unknown"
             status = (
                 "Retained primary-source proof was not verified for the matched Cisco EoX row; "
@@ -10788,7 +11725,7 @@ def compute_lifecycle_risk(devices: Optional[dict] = None, asof: Optional[object
                            "eos": published_eos, "ldos": published_ldos, "band": band, "years_to_ldos": yrs,
                            "status": status, "source": rec["source"], "conf": rec["conf"],
                            "matched_pattern": rec["matched_pattern"], "match_kind": rec["match_kind"],
-                           "reviewed_at": rec["reviewed_at"], "citation_status": rec["citation_status"]})
+                           "reviewed_at": rec["reviewed_at"], "citation_status": citation_status})
 
     by_band = Counter(d["band"] for d in per_device)
     pcount: "Counter" = Counter(); pband: Dict[str, str] = {}; pldos: Dict[str, str] = {}

@@ -70,6 +70,14 @@ def test_registry_owner_files_all_exist():
         "cisco_toolkit/transition_runtime_discovery.py",
         "cisco_toolkit/_transition_runtime_debug.py",
         "cisco_toolkit/transition_workload_review.py",
+        # Atlas Scope (tracked in this repository since 2026-09-26): the compiled-fabric row's one
+        # compiler and run guide, and the /scope enforcement suites the fabric and digest rows cite.
+        "atlas-scope/tools/lib/compile-model.mjs",
+        "atlas-scope/tools/compile-all.mjs",
+        "atlas-scope/README.md",
+        "atlas-scope/contracts/engine-contract.v1.json",
+        "webapp/tests/test_snapshot_raw.py",
+        "webapp/tests/test_scope_mount.py",
     ]
     cited_by_name = [p for p in must_exist if not p.endswith("__init__.py")]
     txt = _registry_text()
@@ -77,6 +85,175 @@ def test_registry_owner_files_all_exist():
     assert not missing_on_disk, f"registry names owners that do not exist on disk: {missing_on_disk}"
     not_cited = [p for p in cited_by_name if p.rsplit("/", 1)[-1] not in txt]
     assert not not_cited, f"owner files exist but are not cited in the registry: {not_cited}"
+
+
+#: Every backticked citation the registry roots at a top-level directory of THIS repository (derived
+#: from the tree on disk, not a list of roots) must resolve: a directory citation to a directory, a
+#: file or glob to at least one file, and every `path :: symbol` pointer to a DEFINITION of that
+#: symbol in that file (Python: a def, class or assignment read from the AST, or an SQL table the
+#: module creates; other sources: a declaration, an exported name or an object key) -- never merely a
+#: word that appears in a comment. A new row citing a renamed file or a vanished symbol fails here.
+#:
+#: Paths the registry cites that are not checked in BY DESIGN are admitted in exactly two ways:
+#: git itself ignores them (derived: `git check-ignore`), or they are one of the run-time artefacts
+#: below -- each still cited, and proven not tracked, so this list can only ever hold what really is
+#: created at run time or lives outside the repository.
+_RUNTIME_ARTIFACT_CITATIONS = {
+    ".claude/.../memory/*.md": "machine-local Claude memory cache, outside the repository",
+    "docs/engagement-state.json": "per-engagement gate ledger, created by the first approve under "
+                                  "--gate-root",
+    "docs/quality/holdout_access.jsonl": "append-only holdout access log, created on first read",
+}
+_CITATION = re.compile(r"^([A-Za-z0-9_.*/%-]+?)\s*(?:::\s*(.+))?$")
+_SYMBOL = re.compile(r"^([A-Za-z_]\w*(?:(?:\.|::)[A-Za-z_]\w*)*)(?:\(.*\))?$")
+
+
+def _python_definitions(source: str) -> set[str]:
+    """Every name a Python module DEFINES -- functions, classes (qualified through their nesting),
+    module/class/conditional-block assignments -- plus the SQL tables it creates."""
+    import ast
+
+    names: set[str] = set()
+
+    def walk(node, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.update({child.name, prefix + child.name})
+                walk(child, f"{prefix}{child.name}.")
+            elif isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+                for target in targets:
+                    for leaf in ast.walk(target):
+                        if isinstance(leaf, ast.Name):
+                            names.update({leaf.id, prefix + leaf.id})
+            elif isinstance(child, (ast.If, ast.Try, ast.With, ast.For, ast.While)):
+                walk(child, prefix)
+    walk(ast.parse(source), "")
+    names.update(re.findall(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_]\w*)", source,
+                            re.IGNORECASE))
+    return names
+
+
+def _defines(path: pathlib.Path, symbol: str) -> bool:
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".py":
+        return symbol in _python_definitions(text)
+    name = re.escape(symbol.rsplit(".", 1)[-1])
+    return re.search(
+        rf"\b(?:function\*?|class|const|let|var|interface|type|enum|def)\s+{name}\b"
+        rf"|\bexport\s*\{{[^}}]*\b{name}\b|^[ \t]*(?:async\s+)?{name}\s*[:(=]|[\"']{name}[\"']\s*:",
+        text, re.MULTILINE) is not None
+
+
+def _git_ignored(path: str) -> bool | None:
+    """Whether git's ignore rules exclude ``path`` (None: git could not answer -- never 'ignored')."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(["git", "-C", str(ROOT), "check-ignore", "-q", "--no-index", path],
+                              capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {0: True, 1: False}.get(proc.returncode)
+
+
+def _cited_source_problems(text: str) -> tuple[list[str], int]:
+    roots = tuple(f"{entry.name}/" for entry in ROOT.iterdir()
+                  if entry.is_dir() and entry.name != ".git")
+    problems, checked = [], 0
+    for span in re.findall(r"`([^`\n]+)`", text):
+        span = span.strip()
+        if not span.startswith(roots):
+            continue
+        match = _CITATION.match(span)
+        if not match:
+            problems.append(f"unreadable citation {span!r}")
+            continue
+        checked += 1
+        path, symbols = match.groups()
+        if path in _RUNTIME_ARTIFACT_CITATIONS:
+            continue
+        if path.endswith("/"):
+            if not (ROOT / path).is_dir():
+                problems.append(f"{path} is not a directory")
+            continue
+        found = [p for p in (sorted(ROOT.glob(path)) if "*" in path else [ROOT / path])
+                 if p.is_file()]
+        if not found:
+            ignored = _git_ignored(path)
+            if ignored is not True:
+                problems.append(f"{path} does not exist" + (
+                    " (git could not say whether it is ignored)" if ignored is None else ""))
+            continue
+        for raw in re.split(r"\s*/\s*", symbols or ""):
+            if not raw:
+                continue
+            symbol = _SYMBOL.match(raw.strip())
+            if symbol is None:
+                problems.append(f"unreadable symbol {raw!r} in {span!r}")
+            elif not any(_defines(p, symbol.group(1).replace("::", ".")) for p in found):
+                problems.append(f"{path} defines no {symbol.group(1)}")
+    return problems, checked
+
+
+def test_every_cited_repository_path_and_symbol_resolves():
+    problems, checked = _cited_source_problems(_registry_text())
+    assert not problems, problems
+    assert checked >= 300, checked
+
+
+def test_the_citation_checker_bites_on_every_root_and_on_mentions_that_are_not_definitions(
+        tmp_path):
+    """QF-R1-3: the checker is not scoped to a hand-picked pair of roots, and a symbol that survives
+    only as a word in a comment or docstring is reported as vanished."""
+    doctored, checked = _cited_source_problems(
+        "`atlas-scope/tools/lib/compile-model-renamed.mjs` `cisco_toolkit/ssot_renamed.py` "
+        "`portable/atlas_bundle_renamed.py` `tools/no_such_tool.py` `webapp/no-such-dir/` "
+        "`webapp/backend/app.py :: _no_such_scope_symbol` "
+        "`cisco_toolkit/ssot.py :: reconcile / no_such_reconcile`")
+    assert checked == 7 and len(doctored) == 7, doctored
+    module = tmp_path / "owner.py"
+    module.write_text('"""ghost is only mentioned here."""\n# ghost_too, in a comment\n'
+                      "class Real:\n    def method(self):\n        return 'ghost'\n"
+                      "CONSTANT = 1\nif True:\n    GUARDED = 2\n"
+                      'SQL = "CREATE TABLE IF NOT EXISTS rows (id INTEGER)"\n', encoding="utf-8")
+    for defined in ("Real", "Real.method", "CONSTANT", "GUARDED", "rows"):
+        assert _defines(module, defined), defined
+    for mentioned in ("ghost", "ghost_too", "method.Real"):
+        assert not _defines(module, mentioned), mentioned
+    script = tmp_path / "owner.mjs"
+    script.write_text("// ghost lives in a comment\nexport function compileAll() {}\n"
+                      "const OUTPUTS = [];\nexport { OUTPUTS };\n", encoding="utf-8")
+    assert _defines(script, "compileAll") and _defines(script, "OUTPUTS")
+    assert not _defines(script, "ghost")
+
+
+def test_a_missing_citation_is_admitted_as_ignored_only_when_git_says_so(monkeypatch):
+    """Absence is never admitted on silence: a cited path that is not on disk passes only when git
+    positively reports it ignored — not when git says no, and not when git cannot answer."""
+    import sys
+
+    module = sys.modules[__name__]
+    for answer, admitted in ((True, True), (False, False), (None, False)):
+        monkeypatch.setattr(module, "_git_ignored", lambda _path, _answer=answer: _answer)
+        problems, checked = _cited_source_problems("`docs/quality/query_log.jsonl`")
+        assert checked == 1 and (not problems) is admitted, (answer, problems)
+    monkeypatch.undo()
+    assert _git_ignored("docs/quality/query_log.jsonl") is True  # what git itself answers here
+
+
+def test_every_runtime_artifact_citation_is_cited_and_not_tracked():
+    """The admitted run-time artefacts stay honest: each is still cited by the registry and git
+    tracks nothing at that path (a tracked one belongs under the existence check instead)."""
+    import subprocess
+
+    text = _registry_text()
+    for path in _RUNTIME_ARTIFACT_CITATIONS:
+        assert f"`{path}`" in text, path
+        proc = subprocess.run(["git", "-C", str(ROOT), "ls-files", "--", path],
+                              capture_output=True, text=True, timeout=60)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == "", (path, proc.stdout)
 
 
 def test_registry_owner_symbols_are_real():

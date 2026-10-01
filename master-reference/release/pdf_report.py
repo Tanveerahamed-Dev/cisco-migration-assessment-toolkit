@@ -2000,6 +2000,7 @@ def _completeness(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) -> 
     census = ledger.get("census", {}) if isinstance(ledger.get("census"), dict) else {}
     parsing = ledger.get("parsing", {}) if isinstance(ledger.get("parsing"), dict) else {}
     semantic = ledger.get("semantic_accounting", {}) if isinstance(ledger.get("semantic_accounting"), dict) else {}
+    census_depth = ledger.get("census_depth", {}) if isinstance(ledger.get("census_depth"), dict) else {}
     graph = ledger.get("graphify", {}) if isinstance(ledger.get("graphify"), dict) else {}
     privacy = ledger.get("privacy", {}) if isinstance(ledger.get("privacy"), dict) else {}
     story: list[Flowable] = [
@@ -2020,8 +2021,17 @@ def _completeness(bundle: CompilerBundle, styles: dict[str, ParagraphStyle]) -> 
                 ("Classified files", census.get("classified_files", "unknown")),
                 ("Safe full-exposure files", census.get("full_exposure_files", "unknown")),
                 ("Metadata-only files", census.get("metadata_only_files", "unknown")),
-                ("Expected nonblank safe lines", parsing.get("expected_nonblank_lines", "unknown")),
+                ("Expected nonblank safe lines (full-depth census)", parsing.get("expected_nonblank_lines", "unknown")),
                 ("Source line records", parsing.get("line_records", len(bundle.records.get("lines", [])))),
+                (
+                    "Identity-depth files (not line-mapped)",
+                    census_depth.get("identity_depth_files", "unknown"),
+                ),
+                (
+                    "Nonblank lines deferred at identity depth",
+                    census_depth.get("identity_depth_nonblank_lines_deferred", "unknown"),
+                ),
+                ("Census-depth BLOCK categories", ", ".join(census_depth.get("block_categories") or []) or "none"),
                 ("Lines with explicit uncertainty", parsing.get("lines_with_explicit_unresolved_reasons", "unknown")),
                 ("Symbol dossiers", semantic.get("symbol_dossiers", "unknown")),
                 ("Critical/public symbols", semantic.get("critical_or_public_symbols", "unknown")),

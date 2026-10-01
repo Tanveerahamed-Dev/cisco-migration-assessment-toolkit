@@ -18,6 +18,7 @@ from html.parser import HTMLParser
 import json
 import mimetypes
 import os
+import posixpath
 import re
 import sqlite3
 import stat
@@ -26,7 +27,7 @@ import tempfile
 import threading
 import urllib.parse
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, BinaryIO, Dict, List, Literal
+from typing import Annotated, Any, BinaryIO, Callable, Dict, List, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi import Path as PathParam
@@ -84,6 +85,149 @@ def _default_db_path() -> str:
 
 
 FRONTEND_DIST = _WEBAPP / "frontend" / "dist"
+# Atlas Scope (the 3-D investigation app, `atlas-scope/` in this repository) is served same-origin at
+# /scope when its /scope build exists: the HUB build, which atlas-scope's `npm run build:hub` writes to
+# atlas-scope/dist-hub (base /scope/, no compiled dataset, the runtime-source declaration below). The
+# standalone sample build (atlas-scope/dist, `npm run build`) is a different artifact that declares no
+# runtime source and is refused here (invalid_build), so it is never the default. Absent in an
+# installed wheel (the parent is site-packages), in which case /scope answers honestly that it is not
+# built. A frozen Atlas bundle passes its bundled copy explicitly (webapp/backend/serve.py
+# `_resolve_scope_dist`); `create_app(scope_dist_dir=...)` overrides.
+_ATLAS_SCOPE_HUB_BUILD_DIR = "dist-hub"
+_REPO_ATLAS_SCOPE_DIST = _WEBAPP.parent / "atlas-scope" / _ATLAS_SCOPE_HUB_BUILD_DIR
+ATLAS_SCOPE_DIST = _REPO_ATLAS_SCOPE_DIST
+_SCOPE_MOUNT = "/scope/"
+# The build contract a scope build must declare to be linked from a stored snapshot: it reads that
+# snapshot at RUN TIME from /api (GET /api/snapshots/{id}/raw), rather than showing whatever evidence
+# was compiled into it. Without it, /scope/snapshots/{id}/ could render the bundled sample fleet under
+# a client snapshot's URL — a view of the wrong data presented as the right one.
+_SCOPE_RUNTIME_SOURCE_META = "atlas-scope-snapshot-source"
+_SCOPE_RUNTIME_SOURCE_VALUE = "assesshub-api-runtime"
+_SCOPE_DIST_DEFAULT: Any = object()
+_SHA256_HEX_TOKEN_RE = re.compile(rb"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
+_SCOPE_UNAVAILABLE_DETAIL = {
+    "not_built": "Atlas Scope is not built in this installation. AssessHub serves it at /scope only "
+                 "when a /scope build of atlas-scope is present.",
+    "invalid_build": "Atlas Scope is not built in this installation for AssessHub: the build found is "
+                     "not a /scope runtime-snapshot build (every asset must load from /scope/assets/ "
+                     f"and index.html must declare <meta name=\"{_SCOPE_RUNTIME_SOURCE_META}\" "
+                     f"content=\"{_SCOPE_RUNTIME_SOURCE_VALUE}\">; every HTML or XML document in "
+                     "it must be markup this server reads exactly as a browser does, and none may "
+                     "declare its own referrer policy, which would override the same-origin policy "
+                     "AssessHub's write containment relies on), so it is not served.",
+    "refused_compiled_evidence": "Atlas Scope is withheld: its static build carries snapshot "
+                                 "evidence (a compiled snapshot model — a compiled source binding "
+                                 "or a compiled record's snapshot citation — or an engine snapshot "
+                                 "itself), so it would show that evidence instead of the snapshot "
+                                 "it is opened for. AssessHub serves only a build that carries no "
+                                 "compiled dataset at all and reads every snapshot at run time "
+                                 "from /api.",
+    "refused_uninspectable": "Atlas Scope is withheld: its static build carries content this "
+                             "server cannot inspect for snapshot evidence (a content encoding it "
+                             "does not decode, such as Brotli; a compressed stream that does not "
+                             "decode completely within the per-file bound; or a payload nested "
+                             "beyond the scan bound), so it cannot establish that the build "
+                             "carries no compiled dataset. Rebuild Atlas Scope without "
+                             "precompressed copies.",
+    "refused_embeds_stored_snapshot": "Atlas Scope is withheld: its static build embeds the digest of "
+                                      "a stored snapshot. Rebuild Atlas Scope without compiling "
+                                      "client evidence into it; it must read snapshots at run time "
+                                      "from /api.",
+}
+# What 'ready' establishes, and no more: the build DECLARES the runtime snapshot source and no file
+# in it carries a form of snapshot evidence this server recognises (_scope_file_carries_compiled_model).
+_SCOPE_READY_DETAIL = ("Atlas Scope is built for this installation: the build declares that it reads "
+                       "the snapshot at run time from the guarded /api, and no file in it carries a "
+                       "recognised compiled snapshot model or engine snapshot.")
+# PRIVACY BY CONSTRUCTION. /scope files are served outside the /api guard, so a servable build
+# carries NO compiled dataset: it reads every snapshot at run time from /api. The Atlas Scope
+# compiler (atlas-scope/tools/lib/compile-model.mjs, whose exported BINDING_KEYS lists every key a
+# source binding carries) writes the binding into the `meta` of EVERY file it emits, and these two
+# keys always carry literal values there — the digest form's name and the Git blob id. A file in
+# which BOTH are bound to string literals is a compiled model, whatever snapshot it came from and
+# whichever digest form it uses (the bundled sample included). The keys' mere NAMES are not the
+# signature: a runtime build bundles the compiler, which names every key, and labels its own
+# binding with a literal `sourceDigestForm`; only a compiled record binds `sourceGitBlob` to a
+# literal. webapp/tests/test_scope_mount.py pins the pair to BINDING_KEYS and to the compiler's
+# real output, so a rename there fails the suite instead of silently reopening the gap.
+_SCOPE_COMPILED_MODEL_SIGNATURE_KEYS = ("sourceDigestForm", "sourceGitBlob")
+# Whitespace between JSON tokens in every form a build ships a document: literal whitespace (JSON, a
+# bundler's object literal) or its escape (\n \r \t) when the document is itself a string — escaped
+# inside a JS string, or once more inside a sourcemap's sourcesContent (\\n). Every signature below
+# uses it wherever JSON allows whitespace, so a PRETTY-printed document escaped inside a string is
+# recognised exactly like a compact one (R8-V2-2: a pretty, escaped citation-keyed map was not).
+_JS_WS = rb"(?:\s|\\+[nrt])*"
+# A key bound to a string literal in any form a build ships it: JSON ("k": "v"), a JSON document
+# escaped inside a JS string or a sourcemap (\"k\":\"v\"), or a bundler's object literal (k:`v`).
+_SCOPE_COMPILED_MODEL_SIGNATURE = tuple(
+    re.compile(rb"(?<![A-Za-z0-9_$])" + re.escape(key.encode("ascii"))
+               + rb"(?![A-Za-z0-9_$])\\*[\"'`]?" + _JS_WS + rb":" + _JS_WS + rb"\\*[\"'`]")
+    for key in _SCOPE_COMPILED_MODEL_SIGNATURE_KEYS)
+# The binding lives only in each compiled file's `meta` ENVELOPE, which a bundler drops: Vite's JSON
+# plugin turns every top-level member into a named export, so `import { devices } from
+# "./fabric.json"` ships the device records with no `meta` at all (measured: a real Vite 8 build
+# carried compiled records and neither signature key). The compiler's per-RECORD contract survives
+# that: "Every record carries `cite`: a dotted path back into the snapshot" (compile-model.mjs), and
+# a citation is rooted at one of the snapshot sections the compiler reads (its exported
+# SECTIONS_READ). A compiled record is therefore recognised by a snapshot citation bound as DATA —
+# the value of a `cite`-named key (`cite`, `centralityCite`, ...) or an object key (the cite-keyed
+# maps) — as a complete string literal. The compiler's own code builds citations from template
+# literals (`interfaces.${host}.${port}`), which never match. Pinned to SECTIONS_READ and to the
+# compiler's real output, member by member, by webapp/tests/test_scope_mount.py.
+_SCOPE_SNAPSHOT_SECTIONS = (
+    "acl_line_reachability", "acls", "cable_map", "cross_layer", "devices", "endpoint_identity",
+    "failure_impact", "health_scores", "interfaces", "l3_forwarding", "link_centrality",
+    "object_groups", "overlay", "physical_health", "protocol_assessability", "protocol_health",
+    "punchlist", "routes", "routing_neighbors",
+)
+# An engine snapshot itself (the very file a client uploads) is evidence too: it binds `schema` to
+# the engine's snapshot schema family (the compiler's exported SUPPORTED_SCHEMAS, versions dropped).
+_SCOPE_SNAPSHOT_SCHEMA_FAMILIES = ("collect_parse_snapshot/",)
+# One string literal in any quoting a build ships (JSON "..", an escaped JSON document inside a JS
+# string \"..\", a bundler's `..` or '..'), whose body has no template substitution.
+_JS_QUOTE = rb"""\\*["'`]"""
+_JS_LITERAL_BODY = rb"""(?:[^"'`\\\r\n$]|\$(?!\{))+"""
+# A citation takes one of the two forms a snapshot address is written in: the compiler's dotted path
+# rooted at a section it reads (`interfaces.core1.Gi1/0/1`), or the ENGINE's own form — an RFC 6901
+# JSON Pointer into the same snapshot (`/interfaces/core1/Gi1~10~11`, the form of every punch-list
+# `evidence_refs` pointer, docs/ssot.md "Per-finding evidence pointers"), which a compiled record
+# carries when it projects a pointed-to engine record. A pointer may root at ANY published section
+# (the engine publishes more sections than the compiler reads), so its root is bounded by shape — a
+# lowercase snake-case section name followed by at least one more reference token — not by
+# SECTIONS_READ.
+_SNAPSHOT_CITATION = (
+    _JS_QUOTE + rb"(?:(?:" + b"|".join(re.escape(s.encode("ascii")) for s in _SCOPE_SNAPSHOT_SECTIONS)
+    + rb")[.\[]|/[a-z][a-z0-9_]*/)" + _JS_LITERAL_BODY + _JS_QUOTE)
+_SCOPE_RECORD_CITATION_SIGNATURE = (
+    # a citation bound to a `cite`-named key
+    re.compile(rb"(?<![A-Za-z0-9_$])(?:[A-Za-z_$][A-Za-z0-9_$]*)?[Cc]ite" + _JS_QUOTE
+               + rb"?" + _JS_WS + rb":" + _JS_WS + _SNAPSHOT_CITATION),
+    # a citation used as an object key (a map keyed by citation)
+    re.compile(rb"[{,]" + _JS_WS + _SNAPSHOT_CITATION + _JS_WS + rb":"),
+)
+_SCOPE_RAW_SNAPSHOT_SIGNATURE = re.compile(
+    rb"(?<![A-Za-z0-9_$])schema" + _JS_QUOTE + rb"?" + _JS_WS + rb":" + _JS_WS + _JS_QUOTE + rb"(?:"
+    + b"|".join(re.escape(f.encode("ascii")) for f in _SCOPE_SNAPSHOT_SCHEMA_FAMILIES)
+    + rb")[0-9]+" + _JS_QUOTE)
+# A base64 `data:` URI: how a bundler inlines a small asset or an inline sourcemap (whose
+# sourcesContent carries the compiled JSON verbatim). Its payload is inspected like a file, and so
+# is the decompressed content of every stream a standard-library codec decodes (gzip, bzip2, xz) —
+# a precompressed copy a compression plugin emits, or a compressed payload inside a data: URI —
+# recognised by its magic whatever the file is called.
+_BASE64_DATA_URI_RE = re.compile(rb"data:[A-Za-z0-9.+/-]*(?:;[A-Za-z0-9.+/=-]*)*;base64,"
+                                 rb"([A-Za-z0-9+/_-]{16,}={0,2})")
+_GZIP_MAGIC = b"\x1f\x8b\x08"
+_BZIP2_MAGIC_RE = re.compile(rb"BZh[1-9]1AY&SY")
+_XZ_MAGIC = b"\xfd7zXZ\x00"
+_SCOPE_DATA_URI_DEPTH = 3
+# The census-keyed startup index of recently seen scope builds (see _scope_file_index).
+_SCOPE_INDEX_CACHE: "dict[tuple[str, tuple], tuple[str, dict, frozenset[str]]]" = {}
+_SCOPE_INDEX_CACHE_MAX = 4
+_SCOPE_INDEX_CACHE_LOCK = threading.Lock()
+# Same-origin write containment for the first-party read-only viewer (see _referred_from_scope).
+_SCOPE_WRITE_REFUSED_DETAIL = ("State-changing request refused: it was referred from an Atlas "
+                               "Scope page (/scope/), and Atlas Scope is a read-only viewer that "
+                               "never writes.")
 _FRONTEND_MAX_FILES = 4_096
 _FRONTEND_MAX_ENTRIES = 8_192
 _FRONTEND_MAX_FILE_BYTES = 64 * 1024 * 1024
@@ -1280,7 +1424,10 @@ def _frontend_tree_census(
     return tuple(sorted(records)), tuple(sorted(files))
 
 
-def _frontend_reference_key(value: str) -> str | None:
+def _frontend_reference_key(value: str, mount: str = "/") -> str | None:
+    """The startup-index key (``assets/...``) a shell reference names, or None when the reference is
+    not a plain local asset under ``<mount>assets/``. ``mount`` is "/" for AssessHub's own SPA and
+    ``_SCOPE_MOUNT`` for Atlas Scope."""
     if (
         not value
         or len(value) > 2_048
@@ -1296,11 +1443,11 @@ def _frontend_reference_key(value: str) -> str | None:
     if (
         parsed.scheme
         or parsed.netloc
-        or not parsed.path.startswith("/assets/")
+        or not parsed.path.startswith(mount + "assets/")
         or parsed.path.startswith("//")
     ):
         return None
-    raw_path = parsed.path[1:]
+    raw_path = parsed.path[len(mount):]
     segments = raw_path.split("/")
     if not segments or any(segment in ("", ".", "..") for segment in segments):
         return None
@@ -1362,6 +1509,577 @@ def _frontend_file_index(dist_root: Path) -> tuple[Path, dict[str, _FrontendFile
     Request text never enters filesystem handling. Enumeration rejects links, junctions, hard
     links, path escapes, races, partial walks, oversized members, and aggregate/file-count excess.
     """
+    return _indexed_dist_tree(dist_root, _frontend_shell_valid)
+
+
+# -- /scope markup: read the way a browser reads it, by construction ---------------------------------
+# A /scope document is judged by the reading a BROWSER makes of it, never by a tokenizer that
+# differs from the browser's (P3F-V2-1): the standard library's HTMLParser closes comments, raw-text
+# elements and markup declarations differently from the WHATWG tokenizer (and differently again
+# across Python releases), so a `<!-->` or a `</script x>` hid a `<meta name="referrer">` that a
+# browser applies. Instead of modelling every error-recovery path of the WHATWG tokenizer, AssessHub
+# accepts only markup in a RESTRICTED language on which its tokenization is the browser's by
+# construction, and refuses everything else (`invalid_build`, never passed):
+#
+# * the text is UTF-8 with no NUL and no C0 control but TAB/LF/FF/CR (CR and CRLF become LF first,
+#   as the browser's input-stream preprocessing does);
+# * every `<` begins a complete token — `<!doctype html>`, a start tag, an end tag `</name>`, or a
+#   conforming comment — never text; attribute values contain no `<` and only the character
+#   references `&amp; &lt; &gt; &quot; &apos; &#39;`; comments contain no `</` and follow the HTML
+#   standard's comment syntax (no leading `>`/`->`, no `<!--`, `-->` or `--!>` inside, no trailing
+#   `<!-`); ASCII names; whitespace-separated attributes; no attribute twice (a browser keeps the
+#   first); no `<![CDATA[`, `<?`, bogus comment or other markup declaration.
+#
+# In that language every `</` is an end-tag token, so whatever element a browser reads as raw text
+# (script, style, title, textarea, xmp, iframe, noembed, noframes, noscript, plaintext, or any
+# other), its raw text ends exactly at one of the reader's end tags, or never: the browser can only
+# read LESS markup than this reader, never more. The reader therefore reads NO element as raw text,
+# which also makes foreign content (svg/math, where those names do not switch the tokenizer) read
+# the same. Every element and attribute a browser builds from such a document is one the reader
+# read — proven differentially in real Chromium over a generated family (webapp/tests/
+# test_scope_mount.py, "the browser is the oracle").
+#
+# Which refusals carry that argument was MEASURED clause by clause (QF-R1-2): removing any one of the
+# abrupt `<!-->` / `<!--->` openings, a `--!>` or `</` inside a comment, the control characters, a `<`
+# inside a quoted value, an unknown character reference, a missing space between attributes, a
+# repeated attribute, a non-ASCII-letter tag name or the CR normalisation lets a document through
+# that a unit pin or the Chromium family shows is read differently. The rest are conformance, kept
+# only to keep the language small — removing one changes no reading a browser makes: a comment that
+# contains `<!--` or ends in `<!-` still ends at the same `-->` (the WHATWG nested-comment states
+# reconsume into the comment-end state); every DOCTYPE and end-tag state ends at the first `>`
+# outside quotes, so a laxer doctype or end tag can only let the BROWSER hide more; an `&` in an
+# unquoted value still meets the character-reference rule; and in XML an entity declaration can only
+# sit in the (refused) internal subset, and a UTF-16 document is decoded by its BOM alike by expat
+# and a browser.
+#
+# XML documents (SVG, XHTML, any */xml or *+xml type) are read by the standard library's XML parser
+# (expat), a conforming XML 1.0 + Namespaces processor as a browser's is, restricted to what every
+# conforming processor reads identically: well-formed UTF-8, version 1.0, no DTD internal subset (its
+# entities and attribute defaults are DTD processing, where readers differ; an external subset is
+# loaded by neither), no processing instruction (a browser runs an XSLT stylesheet).
+
+@dataclass(frozen=True)
+class _ScopeMarkupElement:
+    """One element as a browser reads it: its lower-cased (local) name and its attributes, each a
+    lower-cased (local) name and its decoded value, in source order."""
+    name: str
+    attributes: tuple[tuple[str, str], ...]
+
+
+_SCOPE_HTML_FORBIDDEN_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0e-\x1f]")
+_SCOPE_HTML_DOCTYPE = re.compile(r"<!doctype[\t\n\f ]+html[\t\n\f ]*>", re.IGNORECASE)
+_SCOPE_HTML_END_TAG = re.compile(r"</([A-Za-z][A-Za-z0-9-]*)[\t\n\f ]*>")
+_SCOPE_HTML_ATTRIBUTE_RE = re.compile(
+    r"[\t\n\f ]+([A-Za-z_:][A-Za-z0-9_:.-]*)"
+    r"(?:[\t\n\f ]*=[\t\n\f ]*(?:\"([^\"<]*)\"|'([^'<]*)'|([^\t\n\f \"'=<>`&]+)))?")
+_SCOPE_HTML_START_TAG = re.compile(
+    r"<([A-Za-z][A-Za-z0-9-]*)"
+    r"((?:[\t\n\f ]+[A-Za-z_:][A-Za-z0-9_:.-]*"
+    r"(?:[\t\n\f ]*=[\t\n\f ]*(?:\"[^\"<]*\"|'[^'<]*'|[^\t\n\f \"'=<>`&]+))?)*)"
+    r"[\t\n\f ]*/?>")
+_SCOPE_HTML_REFERENCE = re.compile(r"&(?:(amp|lt|gt|quot|apos);|#39;)?")
+_SCOPE_HTML_REFERENCE_TEXT = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'"}
+
+
+def _scope_html_attribute_value(raw: str) -> str | None:
+    """The value a browser decodes from ``raw``, or None when ``raw`` carries a character reference
+    outside the few this reader decodes exactly as the WHATWG tokenizer does."""
+    decoded, position = [], 0
+    for match in _SCOPE_HTML_REFERENCE.finditer(raw):
+        if match.group(0) == "&":
+            return None
+        decoded.append(raw[position:match.start()])
+        decoded.append(_SCOPE_HTML_REFERENCE_TEXT[match.group(1)] if match.group(1) else "'")
+        position = match.end()
+    decoded.append(raw[position:])
+    return "".join(decoded)
+
+
+def _scope_html_comment_end(text: str, start: int) -> int | None:
+    """The index after the conforming comment opening at ``start`` (``<!--``), or None."""
+    end = text.find("-->", start + 4)
+    if end < 0:
+        return None
+    data = text[start + 4:end]
+    if (data.startswith((">", "->")) or data.endswith("<!-")
+            or any(forbidden in data for forbidden in ("<!--", "--!>", "</"))):
+        return None
+    return end + 3
+
+
+def _scope_html_reading(text: str) -> tuple[_ScopeMarkupElement, ...] | None:
+    """Every element (start tag) of an HTML document in source order, read as a browser reads it —
+    or None when the document is not in the restricted language above, which is refused."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if _SCOPE_HTML_FORBIDDEN_CHARACTERS.search(text):
+        return None
+    elements: list[_ScopeMarkupElement] = []
+    position, length = 0, len(text)
+    while position < length:
+        opening = text.find("<", position)
+        if opening < 0:
+            break
+        if text.startswith("<!--", opening):
+            end = _scope_html_comment_end(text, opening)
+            if end is None:
+                return None
+            position = end
+            continue
+        token = _SCOPE_HTML_DOCTYPE.match(text, opening) or _SCOPE_HTML_END_TAG.match(text, opening)
+        if token is not None:
+            position = token.end()
+            continue
+        match = _SCOPE_HTML_START_TAG.match(text, opening)
+        if match is None:
+            return None
+        attributes = []
+        for attribute in _SCOPE_HTML_ATTRIBUTE_RE.finditer(match.group(2)):
+            raw = next((v for v in attribute.group(2, 3, 4) if v is not None), "")
+            value = _scope_html_attribute_value(raw)
+            if value is None:
+                return None
+            attributes.append((attribute.group(1).lower(), value))
+        if len({name for name, _value in attributes}) != len(attributes):
+            return None  # a browser keeps the FIRST of a repeated attribute
+        elements.append(_ScopeMarkupElement(match.group(1).lower(), tuple(attributes)))
+        position = match.end()
+    return tuple(elements)
+
+
+class _ScopeXmlRefused(Exception):
+    """An XML construct this reader does not read the way every conforming browser does."""
+
+
+def _scope_xml_reading(content: bytes) -> tuple[_ScopeMarkupElement, ...] | None:
+    """Every element of an XML document in source order (local names, lower-cased; namespace
+    declarations are not attributes), or None when it is not well-formed, not UTF-8, carries a DTD
+    internal subset or a processing instruction, or declares another version or encoding."""
+    import xml.parsers.expat
+
+    try:
+        content.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    elements: list[_ScopeMarkupElement] = []
+
+    def refuse(*_args):
+        raise _ScopeXmlRefused
+
+    def doctype(_name, _system_id, _public_id, has_internal_subset):
+        if has_internal_subset:
+            raise _ScopeXmlRefused
+
+    def declaration(version, encoding, _standalone):
+        if version != "1.0" or (encoding is not None and encoding.strip().lower() != "utf-8"):
+            raise _ScopeXmlRefused
+
+    def start(name, attributes):
+        elements.append(_ScopeMarkupElement(
+            name.rsplit(" ", 1)[-1].lower(),
+            tuple((key.rsplit(" ", 1)[-1].lower(), value) for key, value in attributes.items())))
+
+    parser = xml.parsers.expat.ParserCreate(namespace_separator=" ")
+    parser.XmlDeclHandler = declaration
+    parser.StartDoctypeDeclHandler = doctype
+    parser.EntityDeclHandler = refuse
+    parser.ProcessingInstructionHandler = refuse
+    parser.ExternalEntityRefHandler = refuse
+    parser.StartElementHandler = start
+    try:
+        parser.Parse(content, True)
+    except (_ScopeXmlRefused, xml.parsers.expat.ExpatError, ValueError, RecursionError):
+        return None
+    return tuple(elements)
+
+
+def _scope_markup_kind(media_type: str) -> Literal["html", "xml"] | None:
+    """How a browser renders a member served as ``media_type``: as HTML (text/html), as XML (the
+    MIME Sniffing standard's XML MIME types — any */xml or *+xml — plus text/xsl, which Blink also
+    renders as XML), or not as markup at all. Measured against Chromium over every media type the
+    served registry assigns (test_every_media_type_chromium_renders_as_markup_is_read_as_markup)."""
+    essence = media_type.split(";", 1)[0].strip().lower()
+    if essence == "text/html":
+        return "html"
+    subtype = essence.partition("/")[2]
+    if subtype == "xml" or subtype.endswith("+xml") or essence == "text/xsl":
+        return "xml"
+    return None
+
+
+def _scope_document_reading(content: bytes,
+                            media_type: str) -> tuple[_ScopeMarkupElement, ...] | None:
+    """A served member's elements as a browser reads them: ``()`` for a member a browser does not
+    render as markup, the elements of an HTML or XML document, or None when the document cannot be
+    read here the way a browser reads it — which is refused, never passed."""
+    kind = _scope_markup_kind(media_type)
+    if kind is None:
+        return ()
+    if kind == "xml":
+        return _scope_xml_reading(content)
+    try:
+        return _scope_html_reading(content.decode("utf-8", errors="strict"))
+    except UnicodeDecodeError:
+        return None
+
+
+def _scope_reading_declares_referrer_policy(elements: tuple[_ScopeMarkupElement, ...]) -> bool:
+    """Whether a document declares its OWN referrer policy (R8-V2-1). Every /scope response carries
+    `Referrer-Policy: same-origin`, which the /api guard's same-origin write containment
+    (_referred_from_scope) relies on; a document-level declaration overrides it. The server's header
+    is the one owner of the policy, so ANY declaration is refused, whatever its value: a
+    `<meta name="referrer">`, a `referrerpolicy` attribute on any element, the `noreferrer` link type
+    on any element (a form or followed link carrying it sends NO Referer), and a nested document the
+    page declares itself (`srcdoc`, whose own markup the server serves no header for)."""
+    for element in elements:
+        for name, value in element.attributes:
+            if (name in ("referrerpolicy", "srcdoc")
+                    or (name == "rel" and "noreferrer" in value.casefold().split())
+                    or (element.name == "meta" and name == "name"
+                        and value.strip(" \t\n\f\r").casefold() == "referrer")):
+                return True
+    return False
+
+
+def _scope_shell_reading(content: bytes) -> tuple[_ScopeMarkupElement, ...] | None:
+    """The shell's elements when it is readable, declares no referrer policy, no <base> and no
+    http-equiv pragma, and declares the runtime snapshot source exactly once; else None."""
+    try:
+        elements = _scope_html_reading(content.decode("utf-8", errors="strict"))
+    except UnicodeDecodeError:
+        return None
+    if elements is None or _scope_reading_declares_referrer_policy(elements):
+        return None
+    runtime_sources = []
+    for element in elements:
+        attributes = dict(element.attributes)
+        if element.name == "base" or (element.name == "meta" and "http-equiv" in attributes):
+            return None
+        if (element.name == "meta"
+                and attributes.get("name", "").casefold() == _SCOPE_RUNTIME_SOURCE_META):
+            runtime_sources.append(attributes.get("content", ""))
+    return elements if runtime_sources == [_SCOPE_RUNTIME_SOURCE_VALUE] else None
+
+
+def _scope_shell_valid(indexed: dict[str, _FrontendFile]) -> bool:
+    """A scope shell is servable only when it was built FOR the /scope mount and declares the
+    runtime-snapshot source contract. A Vite build with the default base loads ``/assets/...`` —
+    AssessHub's own asset namespace — and would render as a broken page; a build without the
+    declaration may show compiled-in evidence under a snapshot URL it does not belong to. Atlas
+    Scope's shell legitimately carries an inline classic script (its theme boot), so the AssessHub
+    shell grammar does not apply; what must hold instead is that every URL it loads is a
+    startup-indexed asset under /scope/assets/ (or an inline ``data:`` icon)."""
+    index_file = indexed.get("index.html")
+    if index_file is None or not index_file.content:
+        return False
+    elements = _scope_shell_reading(index_file.content)
+    if elements is None:
+        return False
+    module_entries = 0
+    for element in elements:
+        attributes = dict(element.attributes)
+        kind = (attributes.get("type") if element.name == "script" else attributes.get("rel")) or ""
+        for attribute in ("src", "href", "srcset", "poster", "data", "action", "formaction"):
+            if attribute not in attributes:
+                continue
+            reference = attributes[attribute]
+            if (element.name == "link" and kind.casefold().split() == ["icon"]
+                    and reference.startswith("data:image/")):
+                continue
+            key = _frontend_reference_key(reference, _SCOPE_MOUNT)
+            if key is None or key not in indexed or not indexed[key].content.strip():
+                return False
+            if element.name == "script":
+                if kind.casefold() != "module" or indexed[key].media_type != "text/javascript":
+                    return False
+                module_entries += 1
+    return module_entries >= 1
+
+
+def _scope_member_declares_referrer_policy(entry: _FrontendFile) -> bool:
+    """Whether one served member is a document a browser renders as markup (_scope_markup_kind) that
+    declares its own referrer policy — or that cannot be read here the way a browser reads it, which
+    counts as declaring one: what was not read is refused, never passed."""
+    elements = _scope_document_reading(entry.content, entry.media_type)
+    return elements is None or _scope_reading_declares_referrer_policy(elements)
+
+
+def _scope_markup_refused(files: dict[str, _FrontendFile]) -> bool:
+    """The index's one markup verdict over a build's members: refused when the shell is not a valid
+    /scope shell (_scope_shell_valid), or when any other document the mount serves that a browser
+    renders as markup (HTML or XML) — a page under /scope too — cannot be read here the way a
+    browser reads it or declares its own referrer policy."""
+    return not _scope_shell_valid(files) or any(
+        _scope_member_declares_referrer_policy(entry)
+        for relative, entry in files.items() if relative != "index.html")
+
+
+class _ScopeUninspectable(Exception):
+    """A build file, or a payload inside it, that the privacy scan cannot read completely. What was
+    not read is not clean: the build is refused (``refused_uninspectable``), never served."""
+
+
+def _scope_stream_kind(content: bytes) -> str | None:
+    """The standard-library codec whose stream ``content`` is (by magic, whatever its name)."""
+    if content.startswith(_GZIP_MAGIC):
+        return "gzip"
+    if _BZIP2_MAGIC_RE.match(content):
+        return "bzip2"
+    if content.startswith(_XZ_MAGIC):
+        return "xz"
+    return None
+
+
+def _scope_declared_encoding(relative: str) -> str | None:
+    """The content encoding a member's NAME declares, read from the standard library's own registry
+    (mimetypes.suffix_map aliases such as .svgz, then mimetypes.encodings_map: gzip, compress,
+    bzip2, xz, br), case-insensitively — so the set of recognised encodings is the stdlib's, not a
+    hand list here."""
+    import mimetypes
+
+    aliases = {k.casefold(): v for k, v in mimetypes.suffix_map.items()}
+    encodings = {k.casefold(): v for k, v in mimetypes.encodings_map.items()}
+    suffix = PurePosixPath(relative).suffix.casefold()
+    for _hop in range(4):
+        if suffix not in aliases:
+            break
+        suffix = PurePosixPath(aliases[suffix]).suffix.casefold()
+    return encodings.get(suffix)
+
+
+def _scope_inflate_bounded(content: bytes, kind: str) -> tuple[bytes, bytes]:
+    """(decompressed bytes of every concatenated ``kind`` member, trailing bytes after them).
+    Raises _ScopeUninspectable when the stream does not decode COMPLETELY within the per-file
+    ceiling, or this interpreter lacks the codec: the cap is a bound on work, never a pass for the
+    unread remainder."""
+    try:
+        if kind == "gzip":
+            import zlib
+
+            def make():
+                return zlib.decompressobj(16 + zlib.MAX_WBITS)
+            errors: tuple[type[BaseException], ...] = (zlib.error,)
+        elif kind == "bzip2":
+            import bz2
+            make = bz2.BZ2Decompressor
+            errors = (OSError, ValueError, EOFError)
+        else:
+            import lzma
+            make = lzma.LZMADecompressor
+            errors = (lzma.LZMAError, EOFError)
+    except ImportError as exc:
+        raise _ScopeUninspectable(f"this interpreter has no {kind} decoder") from exc
+    out = bytearray()
+    data = content
+    try:
+        while data and _scope_stream_kind(data) == kind:
+            decoder = make()
+            out += decoder.decompress(data, _FRONTEND_MAX_FILE_BYTES - len(out) + 1)
+            if len(out) > _FRONTEND_MAX_FILE_BYTES:
+                raise _ScopeUninspectable(f"a {kind} stream inflates beyond the per-file bound")
+            if not decoder.eof:
+                raise _ScopeUninspectable(f"a {kind} stream that does not decode completely")
+            data = decoder.unused_data
+    except errors as exc:
+        raise _ScopeUninspectable(f"a {kind} stream that does not decode") from exc
+    return bytes(out), data
+
+
+def _scope_scan_views(content: bytes, depth: int = _SCOPE_DATA_URI_DEPTH):
+    """The bytes a privacy scan must read for one build file: the file itself, then (bounded) the
+    decompressed content of every standard-library stream and the decoded payload of every base64
+    ``data:`` URI in it — a precompressed copy, an inlined asset or an inline sourcemap, whose
+    sourcesContent carries a compiled document verbatim. Raises _ScopeUninspectable for anything
+    it meets but cannot read completely, including a payload still encoded at the depth bound."""
+    yield content
+    kind = _scope_stream_kind(content)
+    uris = _BASE64_DATA_URI_RE.finditer(content)
+    if depth <= 0:
+        if kind is not None or next(uris, None) is not None:
+            raise _ScopeUninspectable("a payload nested beyond the scan bound")
+        return
+    if kind is not None:
+        inflated, trailing = _scope_inflate_bounded(content, kind)
+        yield from _scope_scan_views(inflated, depth - 1)
+        if trailing.strip(b"\0"):
+            yield from _scope_scan_views(trailing, depth - 1)
+    budget = _FRONTEND_MAX_FILE_BYTES
+    for match in uris:
+        encoded = match.group(1)
+        if len(encoded) > budget:
+            raise _ScopeUninspectable("data: URI payloads beyond the per-file bound")
+        budget -= len(encoded)
+        padded = encoded + b"=" * (-len(encoded.rstrip(b"=")) % 4)
+        try:
+            decoded = base64.b64decode(padded.replace(b"-", b"+").replace(b"_", b"/"))
+        except (binascii.Error, ValueError):
+            continue  # not a payload a browser decodes either
+        yield from _scope_scan_views(decoded, depth - 1)
+
+
+def _scope_view_carries_snapshot_evidence(view: bytes) -> bool:
+    return (all(pattern.search(view) for pattern in _SCOPE_COMPILED_MODEL_SIGNATURE)
+            or any(pattern.search(view) for pattern in _SCOPE_RECORD_CITATION_SIGNATURE)
+            or _SCOPE_RAW_SNAPSHOT_SIGNATURE.search(view) is not None)
+
+
+def _scope_file_verdict(relative: str,
+                        content: bytes) -> Literal["clean", "evidence", "uninspectable"]:
+    """What the privacy scan establishes for one build file: ``evidence`` when it (or a stream or
+    data: URI payload inside it) carries a recognised form of snapshot evidence (see
+    _scope_file_carries_compiled_model); ``uninspectable`` when its name declares a content
+    encoding its bytes are not a decodable stream of, or anything in it cannot be read completely;
+    ``clean`` only when every byte the scan had to read was read and none of it was evidence."""
+    if _scope_declared_encoding(relative) is not None and _scope_stream_kind(content) is None:
+        return "uninspectable"
+    try:
+        for view in _scope_scan_views(content):
+            if _scope_view_carries_snapshot_evidence(view):
+                return "evidence"
+    except _ScopeUninspectable:
+        return "uninspectable"
+    return "clean"
+
+
+def _scope_file_carries_compiled_model(content: bytes) -> bool:
+    """Whether one build file (or a stream / data: URI payload inside it) carries RECOGNISED
+    snapshot evidence: a compiled file's binding envelope (every _SCOPE_COMPILED_MODEL_SIGNATURE key
+    bound to a string literal), a compiled RECORD — which survives the bundler dropping that
+    envelope — recognised by its snapshot citation (_SCOPE_RECORD_CITATION_SIGNATURE), or an engine
+    snapshot itself (_SCOPE_RAW_SNAPSHOT_SIGNATURE). False is NOT "clean": content the scan cannot
+    read is a separate verdict (_scope_file_verdict), and the index refuses it too."""
+    return _scope_file_verdict("", content) == "evidence"
+
+
+def _scope_file_index(
+        dist_root: Path | None) -> tuple[str, dict[str, _FrontendFile], frozenset[str]]:
+    """(status, files, embedded 64-hex tokens) for the Atlas Scope build: ``ready`` with its
+    startup-indexed bytes, ``not_built`` when there is no build directory, ``invalid_build`` when
+    one exists but is not a servable /scope runtime build, ``refused_compiled_evidence`` when any
+    file in it carries recognised snapshot evidence, ``refused_uninspectable`` when the scan cannot
+    read some file in it completely (see _scope_file_verdict). Never raises: a broken scope build
+    must not stop AssessHub.
+
+    A build is indexed ONCE per content census: the result is cached under the build's canonical
+    path plus the census `_indexed_dist_tree` already takes (every member's path, type, size,
+    mtime/ctime, inode and link count), so a later app over an unchanged build does not re-read and
+    re-hash ~10 MB, while any change to any member (or a member added/removed) re-validates it. A
+    rewrite that restores the same size AND the same timestamps on a platform whose ctime is the
+    creation time is the stated limit of a stat census."""
+    if dist_root is None:
+        return "not_built", {}, frozenset()
+    root = Path(dist_root)
+    try:
+        if not root.is_dir():
+            return "not_built", {}, frozenset()
+        dist = root.resolve(strict=True)
+        if _is_filesystem_link(root):
+            return "invalid_build", {}, frozenset()
+    except (OSError, OverflowError, RuntimeError, ValueError):
+        return "not_built", {}, frozenset()
+    census = _frontend_tree_census(dist)
+    if census is None:
+        return "invalid_build", {}, frozenset()
+    key = (str(dist), census[0])
+    with _SCOPE_INDEX_CACHE_LOCK:
+        cached = _SCOPE_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+    result = _scope_file_index_uncached(root, dist, census[1])
+    # Cache only what was validated against THIS census: if the tree moved while it was read, the
+    # result stands for this start but is not remembered.
+    if _frontend_tree_census(dist) == census:
+        with _SCOPE_INDEX_CACHE_LOCK:
+            _SCOPE_INDEX_CACHE[key] = result
+            while len(_SCOPE_INDEX_CACHE) > _SCOPE_INDEX_CACHE_MAX:
+                del _SCOPE_INDEX_CACHE[next(iter(_SCOPE_INDEX_CACHE))]
+    return result
+
+
+def _scope_file_index_uncached(
+        root: Path, dist: Path, members: tuple[tuple[str, Path], ...],
+) -> tuple[str, dict[str, _FrontendFile], frozenset[str]]:
+    # Cheap refusal first: a build whose shell does not declare the runtime snapshot source (the
+    # standalone sample build, today's repository atlas-scope/dist) is refused after reading ONLY
+    # index.html, instead of reading and hashing every member.
+    shell = dict(members).get("index.html")
+    shell_bytes = _read_frontend_file(shell, dist) if shell is not None else None
+    if not shell_bytes:
+        return "invalid_build", {}, frozenset()
+    if _scope_shell_reading(shell_bytes) is None:
+        return "invalid_build", {}, frozenset()
+    index = _indexed_dist_tree(root, _scope_shell_valid)
+    if index is None:
+        return "invalid_build", {}, frozenset()
+    files = index[1]
+    # Precedence, most specific finding first: evidence, then content the scan cannot read, then
+    # markup a browser would read differently (a member whose name declares an encoding its bytes
+    # are not is uninspectable first; a browser, given no Content-Encoding, could not render it).
+    uninspectable = False
+    for relative, entry in files.items():
+        verdict = _scope_file_verdict(relative, entry.content)
+        if verdict == "evidence":
+            return "refused_compiled_evidence", {}, frozenset()
+        uninspectable = uninspectable or verdict == "uninspectable"
+    if uninspectable:
+        return "refused_uninspectable", {}, frozenset()
+    if _scope_markup_refused(files):
+        return "invalid_build", {}, frozenset()
+    return "ready", files, _embedded_sha256_tokens(files)
+
+
+def _embedded_sha256_tokens(indexed: dict[str, _FrontendFile]) -> frozenset[str]:
+    """Every 64-hex-digit token in the indexed files (and their base64 data: URI payloads),
+    lower-cased — the form a snapshot binding digest takes when a compiler embeds it (with or
+    without a ``sha256:`` prefix)."""
+    tokens: set[str] = set()
+    for entry in indexed.values():
+        try:
+            for view in _scope_scan_views(entry.content):
+                tokens.update(match.decode("ascii").lower()
+                              for match in _SHA256_HEX_TOKEN_RE.findall(view))
+        except _ScopeUninspectable:
+            continue  # unreachable for a `ready` build: its every file was read completely
+    return frozenset(tokens)
+
+
+def _is_scope_path(path: str) -> bool:
+    return path == _SCOPE_MOUNT.rstrip("/") or path.startswith(_SCOPE_MOUNT)
+
+
+def _referred_from_scope(request: Request) -> bool:
+    """Whether the request's Referer names a page under /scope/ (any origin). A page is under
+    /scope when EITHER reading of its path says so: the router's (percent-decoded, dot segments
+    NOT collapsed — ``/scope/..%2fx`` is served the Atlas Scope shell, and a browser keeps
+    ``..%2f`` verbatim in the page URL it sends as Referer) or the normalised one (dot segments,
+    repeated slashes and backslashes collapsed). Both are case-folded. This rule only ever refuses
+    writes, so the union is the safe reading; an unparsable Referer counts as one, since a browser
+    never sends one."""
+    referer = request.headers.get("referer")
+    if not referer:
+        return False
+    try:
+        path = urllib.parse.urlsplit(referer.strip()).path
+    except ValueError:
+        return True
+    decoded = urllib.parse.unquote(path)
+    routed = ("/" + decoded.lstrip("/")).casefold()
+    normalised = posixpath.normpath("/" + decoded.replace("\\", "/").lstrip("/")).casefold()
+    return _is_scope_path(routed) or _is_scope_path(normalised)
+
+
+def _scope_unavailable_response(status: str) -> Response:
+    return Response(
+        content=_SCOPE_UNAVAILABLE_DETAIL[status] + "\n",
+        status_code=503,
+        media_type="text/plain; charset=utf-8",
+        headers={"cache-control": "no-store"},
+    )
+
+
+def _indexed_dist_tree(
+        dist_root: Path,
+        shell_valid: Callable[[dict[str, _FrontendFile]], bool],
+) -> tuple[Path, dict[str, _FrontendFile]] | None:
     try:
         dist = dist_root.resolve(strict=True)
         if not dist.is_dir() or _is_filesystem_link(dist_root):
@@ -1392,7 +2110,7 @@ def _frontend_file_index(dist_root: Path) -> tuple[Path, dict[str, _FrontendFile
     after = _frontend_tree_census(dist)
     if after is None or after[0] != before_records or after[1] != members:
         return None
-    if not _frontend_shell_valid(indexed):
+    if not shell_valid(indexed):
         return None
     return dist, indexed
 
@@ -1488,15 +2206,28 @@ def is_guarded_api_path(path: str, doc_paths) -> bool:
     on some future `/v2` / `/internal` prefix. Those are unguarded BY CONSTRUCTION, which is correct
     for static assets and would be a hole for anything that reads client data;
     `tests/test_expensive_get_hardening.py` enumerates every registered route against this predicate
-    so a new one outside the surface fails the suite instead of opening the gap silently."""
-    return path.startswith("/api/") or path in doc_paths
+    so a new one outside the surface fails the suite instead of opening the gap silently.
+
+    Atlas Scope (``/scope`` and everything under ``/scope/``) is ON the surface. Its files are
+    static, but whether a static build carries client evidence is decided by a content scan
+    (_scope_file_carries_compiled_model), and a scan recognises only the forms it knows — a bundler
+    can drop a compiled file's envelope, a member can carry no citation, bytes can be re-encoded.
+    Guarding the mount makes the exposure independent of that scan: whatever a build carries is
+    readable exactly by whoever may read the same snapshot through /api/snapshots/{id}/raw. The
+    viewer loses nothing: it is opened by same-origin navigation, and its own fetches carry the
+    session cookie (path "/")."""
+    return path.startswith("/api/") or path in doc_paths or _is_scope_path(path)
 
 
 def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = None,
-               boot_hardening: bool = False) -> FastAPI:
+               boot_hardening: bool = False,
+               scope_dist_dir: str | os.PathLike | None = _SCOPE_DIST_DEFAULT) -> FastAPI:
     """``dist_dir`` overrides where the built SPA is served from (default: the checkout's
     webapp/frontend/dist) — the hook the Atlas entry module uses to point at the bundled copy
-    inside a frozen build (webapp/backend/serve.py, ADR-0004 P1). ``boot_hardening`` threads the
+    inside a frozen build (webapp/backend/serve.py, ADR-0004 P1). ``scope_dist_dir`` is the Atlas
+    Scope build served at /scope (default: the repository's hub build, atlas-scope/dist-hub from
+    atlas-scope's ``npm run build:hub``, when it exists, else none; ``None`` disables it
+    explicitly). ``boot_hardening`` threads the
     P3 unplug-safety boot (integrity check + backup — see storage.Store) and may raise
     StoreCorruptError; only the production entry turns it on. The returned ASGI object owns one
     Store for one application lifespan; create a new app object for a later independent run."""
@@ -1566,6 +2297,15 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         (DNS-rebinding guard, see _request_host_allowed). Health/liveness stays open."""
         path = request.url.path
         guarded = is_guarded_api_path(path, _doc_paths)
+        # Same-origin write containment for Atlas Scope (defence in depth). /scope is first-party,
+        # read-only code served same-origin, so the cross-site and CSRF refusals below pass its
+        # requests; a read-only viewer never writes. /scope responses set Referrer-Policy:
+        # same-origin (the rest of AssessHub sends no Referer), and any non-GET request referred
+        # from a /scope/ page is refused here — first, in token and no-token modes alike. A hostile
+        # script can suppress or rewrite its Referer, so this backs up, and never replaces, the
+        # viewer having no write code.
+        if guarded and request.method not in ("GET", "HEAD") and _referred_from_scope(request):
+            return JSONResponse({"detail": _SCOPE_WRITE_REFUSED_DETAIL}, status_code=403)
         if (request.method == "OPTIONS" or not guarded
                 or path == _API_LIVENESS_PATH):
             return await call_next(request)
@@ -1629,10 +2369,64 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'self'")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if _is_scope_path(request.url.path):
+            # Every /scope response (shell, asset, 404/405/503): the viewer's own requests carry a
+            # same-origin Referer, which the /api guard uses to refuse any write it makes.
+            response.headers["Referrer-Policy"] = "same-origin"
+        else:
+            response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response
 
     app.state.store = store
+
+    # Atlas Scope build state, fixed at startup except for one transition: a build that embeds the
+    # digest of a stored snapshot is withdrawn. Atlas Scope must fetch evidence at run time from
+    # /api/snapshots/{id}/raw; a static build that carries it instead would show that evidence
+    # under whatever snapshot URL it is opened at. (The /scope mount sits behind the same access
+    # guard as /api — is_guarded_api_path — so its files are never readable cross-site, by a
+    # non-loopback peer without a token, or without the token in token mode.)
+    # Checked for every snapshot already stored, and — via the store's one insert path — for every
+    # snapshot stored later, BEFORE its commit. The scope routes then read only this in-memory state.
+    #
+    # The PRIMARY control is privacy by construction: a build is `ready` only when it declares the
+    # runtime snapshot source AND no file in it carries snapshot evidence — a compiled snapshot
+    # model or an engine snapshot (_scope_file_index). The digest check below is defence in depth for a build that embeds a
+    # stored blob digest some other way. It runs at startup, before the commit of every insert
+    # through THIS Store (the observer), and — because another Store or process on the same
+    # database never reaches this Store's observer — again on every scope request and capability
+    # read, over the rows inserted since the last check (_current_scope_status). A withdrawal is
+    # permanent for the app's lifetime.
+    scope_status, scope_files, scope_digest_tokens = _scope_file_index(
+        ATLAS_SCOPE_DIST if scope_dist_dir is _SCOPE_DIST_DEFAULT
+        else (Path(scope_dist_dir) if scope_dist_dir is not None else None))
+    app.state.scope_status = scope_status
+    scope_recheck_lock = threading.Lock()
+    scope_digest_watermark = [0]
+    if scope_status == "ready" and scope_digest_tokens:
+        scope_digest_watermark[0], stored_digests = store.snapshot_blob_digests_after(0)
+        if stored_digests & scope_digest_tokens:
+            app.state.scope_status = "refused_embeds_stored_snapshot"
+
+        def _withdraw_scope_embedding(blob_digest: str) -> None:
+            if blob_digest in scope_digest_tokens:
+                app.state.scope_status = "refused_embeds_stored_snapshot"
+
+        store.add_snapshot_digest_observer(_withdraw_scope_embedding)
+
+    def _current_scope_status() -> str:
+        """The scope status as of THIS request. A build with no 64-hex token cannot embed a
+        stored digest, so it needs (and makes) no store access at all; otherwise the only store
+        access is a digest-only read of rows newer than the last check (SQLite serialises writers
+        and AUTOINCREMENT never reuses an id, so a watermark over ids sees every committed insert)."""
+        if app.state.scope_status != "ready" or not scope_digest_tokens:
+            return app.state.scope_status
+        with scope_recheck_lock:
+            watermark, new_digests = store.snapshot_blob_digests_after(scope_digest_watermark[0])
+            scope_digest_watermark[0] = max(scope_digest_watermark[0], watermark)
+            if new_digests & scope_digest_tokens:
+                app.state.scope_status = "refused_embeds_stored_snapshot"
+        return app.state.scope_status
+
     # Bound concurrent heavy deliverable/explorer generations for this app (see _generation_slot).
     app.state.generation_semaphore = generation_semaphore
 
@@ -1956,6 +2750,48 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         if not meta:
             raise HTTPException(404, "Snapshot not found")
         return _summary_freshened(snapshot_id, meta)
+
+    @app.get("/api/snapshots/{snapshot_id}/raw")
+    def get_snapshot_raw(snapshot_id: RowId) -> Response:
+        """The persisted snapshot bytes, UNCHANGED, with the store's binding of those bytes.
+
+        This is the runtime evidence source for Atlas Scope (/scope): client evidence is fetched
+        here, under every /api guard, and never compiled into a static bundle. The body is the
+        exact ``snapshots.snapshot_json`` blob — not a re-serialisation — so a consumer can verify
+        ``sha256(body) == X-Snapshot-Sha256``. That digest is the store's blob form
+        (``X-Snapshot-Digest-Form: assesshub-store-blob``), which is NOT the digest of the file that
+        was uploaded (uploads are parsed, provenance-stamped and stored compact)."""
+        blob = store.get_snapshot_blob(snapshot_id)
+        if blob is None:
+            raise HTTPException(404, "Snapshot not found")
+        raw, binding = blob
+        return Response(
+            content=raw,
+            media_type="application/json",
+            headers={
+                "cache-control": "no-store",
+                "x-snapshot-sha256": str(binding["sha256"]).removeprefix("sha256:"),
+                "x-snapshot-bytes": str(binding["bytes"]),
+                "x-snapshot-digest-form": "assesshub-store-blob",
+            },
+        )
+
+    @app.get("/api/snapshots/{snapshot_id}/scope-view")
+    def get_snapshot_scope_view(snapshot_id: RowId) -> Dict[str, Any]:
+        """Whether this installation can show the snapshot in Atlas Scope, and the link to do it.
+
+        The SPA renders its "Open in Atlas Scope" link only from ``href`` here, so the link target
+        has one owner and an absent, invalid or withdrawn scope build never yields a dead link."""
+        if not store.get_snapshot_meta(snapshot_id):
+            raise HTTPException(404, "Snapshot not found")
+        status = _current_scope_status()
+        available = status == "ready"
+        return {
+            "available": available,
+            "status": status,
+            "href": f"{_SCOPE_MOUNT}snapshots/{snapshot_id}/" if available else None,
+            "detail": _SCOPE_READY_DETAIL if available else _SCOPE_UNAVAILABLE_DETAIL[status],
+        }
 
     # full-snapshot parse per call
     @app.get("/api/snapshots/{snapshot_id}/section/{name}")
@@ -2800,6 +3636,31 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         s = store.add_snapshot(c["id"], "Baseline collection", snap, summary.summarize(snap))
         return {"campaign": store.get_campaign(c["id"]), "snapshot": s}
 
+    # -- Atlas Scope (/scope) ---------------------------------------------
+    # Registered BEFORE the SPA catch-all below, and ALWAYS (built or not), so a /scope URL never
+    # falls through to AssessHub's own shell. GET only: Atlas Scope is first-party read-only code
+    # served same-origin, which is exactly why it must never grow a write surface here. These sit
+    # on the guarded surface (is_guarded_api_path), so the access guard answers before them. They
+    # read no snapshot content and touch no filesystem at request time: an exact key selects bytes
+    # captured at startup, so traversal/UNC-shaped input cannot name a file.
+    @app.get("/scope/assets/{asset_path:path}", include_in_schema=False)
+    def scope_asset(request: Request, asset_path: str):
+        status = _current_scope_status()
+        if status != "ready":
+            return _scope_unavailable_response(status)
+        selected = scope_files.get("assets/" + asset_path)
+        if selected is None:
+            raise HTTPException(404, "Not found")
+        return _frontend_response(selected, request)
+
+    @app.get("/scope", include_in_schema=False)
+    @app.get("/scope/{rest:path}", include_in_schema=False)
+    def scope_shell(request: Request, rest: str = ""):
+        status = _current_scope_status()
+        if status != "ready":
+            return _scope_unavailable_response(status)
+        return _frontend_response(scope_files["index.html"], request)
+
     # -- frontend (production) --------------------------------------------
     # Serve the built SPA with a history-fallback: hashed assets are served directly, every other
     # non-API path returns index.html so client-side deep links survive a hard refresh. The /api
@@ -2819,6 +3680,10 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         def spa(request: Request, full_path: str):
             if full_path.startswith("api/"):
                 raise HTTPException(404, "Not found")
+            if full_path == _SCOPE_MOUNT.strip("/") or full_path.startswith(_SCOPE_MOUNT[1:]):
+                # Only a non-GET (HEAD) method reaches here for /scope — the GET-only scope routes
+                # above answer every GET. Refuse it rather than answering with AssessHub's shell.
+                raise HTTPException(405, "Method Not Allowed", headers={"Allow": "GET"})
             # This unguarded catch-all accepts no request-time filesystem operation. Only an
             # exact key can select bounded immutable bytes captured under ``dist`` at startup;
             # missing assets stay 404 while non-asset deep links receive the SPA shell.

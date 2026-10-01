@@ -1,0 +1,41 @@
+{
+  "name": "atlas-scope",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Atlas Scope — 3D network investigation cockpit over the Cisco assessment engine's evidence snapshot.",
+  "engines": { "node": ">=24.18.0" },
+  "scripts": {
+    "compile:data": "node tools/compile-all.mjs",
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.config.json && vite build",
+    "build:hub": "tsc -p tsconfig.json && tsc -p tsconfig.config.json && vite build --mode hub",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit --noImplicitAny && tsc -p tsconfig.config.json --noEmit",
+    "preview": "vite preview --port 4181",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "rename:snapshot": "node review/rename-snapshot.mjs",
+    "capture": "node review/capture.mjs app",
+    "capture:refs": "node review/capture.mjs refs"
+  },
+  "dependencies": {
+    "postprocessing": "6.39.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "three": "0.186.0",
+    "zustand": "5.0.15"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@types/three": "0.186.0",
+    "@vitejs/plugin-react": "6.0.5",
+    "jsdom": "^29.1.1",
+    "typescript": "5.9.3",
+    "vite": "8.2.1",
+    "vitest": "^4.1.10"
+  },
+  "overrides": { "nanoid": "3.3.18" }
+}

@@ -79,11 +79,15 @@ _DOMAIN_KEYS = {
     "participant_count", "leader_count", "backup_count", "protocol", "group",
     "virtual_ip", "members", "findings", "acceptance",
 }
-_MEMBER_KEYS = {
+# The published member-row field ORDER (the snapshot is written with sort_keys=False, so key order is part of
+# the written bytes). Rows are built by iterating this tuple, never the validation set below: iterating a set
+# made the order depend on PYTHONHASHSEED (tests/test_fhrp_member_key_order.py).
+_MEMBER_FIELD_ORDER = (
     "switch", "interface", "svi_ip", "participation", "protocol", "group",
     "virtual_ip", "role", "local_status", "source_group_key",
     "projection_custody", "findings",
-}
+)
+_MEMBER_KEYS = set(_MEMBER_FIELD_ORDER)
 _FINDING_KEYS = {"kind", "code", "issue"}
 _TOP_FINDING_KEYS = _FINDING_KEYS | {"domain_key"}
 _SUMMARY_KEYS = {
@@ -802,7 +806,7 @@ def compute_fhrp_redundancy_domain_baseline(
         )):
             findings = [dict(finding) for finding in domain_findings]
             nested_members.append({
-                key: copy.deepcopy(local[key]) for key in _MEMBER_KEYS
+                key: copy.deepcopy(local[key]) for key in _MEMBER_FIELD_ORDER
             } | {"findings": findings})
             flat_rows.append({
                 "switch": local["switch"],

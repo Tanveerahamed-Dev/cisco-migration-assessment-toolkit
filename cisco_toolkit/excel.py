@@ -17,8 +17,9 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from cisco_toolkit.analyze import (
-    _UNCLASSIFIED_OVERLAY_STATUS, _health_band, _physical_uplink_index, _poe_device_util,
-    build_network_model, compute_findings, compute_move_groups, compute_topology_links,
+    PROTOCOL_ASSESSABILITY_STATES, _UNCLASSIFIED_OVERLAY_STATUS, _health_band, _physical_uplink_index,
+    _poe_device_util, _protocol_assessability_conclusion, build_network_model, compute_findings,
+    compute_move_groups, compute_topology_links, svi_subnet_leaves_no_host_address,
 )
 from cisco_toolkit.brand_tokens import DOC_NAVY_HEX, WORKBOOK_NAVY_HEX
 from cisco_toolkit.cmdio import _load_cmd_output
@@ -3041,28 +3042,32 @@ def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict
                             "Absence of health rows is not healthy.").font = Font(italic=True)
         else:
             by_state = pa_summary.get("by_state") if isinstance(pa_summary.get("by_state"), dict) else {}
-            n_assessed = by_state.get("assessed", 0)
-            n_partial = by_state.get("partial", 0)
+
+            def _by_class(conclusion: str) -> int:
+                # Counted through the engine's conclusion classes, never a hand-picked subset of states.
+                return sum(n for state, n in by_state.items()
+                           if state in PROTOCOL_ASSESSABILITY_STATES and isinstance(n, int)
+                           and not isinstance(n, bool)
+                           and _protocol_assessability_conclusion(state) == conclusion)
+
+            n_assessed = _by_class("assessed")
+            n_partial = _by_class("partial")
+            n_not_running = _by_class("not_running")
             n_cells = pa_summary.get("n_cells", len(pa_rows))
-            n_unassessed = max(0, n_cells - n_assessed - n_partial)
+            n_cells = n_cells if isinstance(n_cells, int) and not isinstance(n_cells, bool) else len(pa_rows)
+            n_unassessed = max(0, n_cells - n_assessed - n_partial - n_not_running)
+            not_running_part = f"{n_not_running} not running (banner cited) · " if n_not_running else ""
             ws.cell(pa0, 3, f"health row emitted for {pa_summary.get('n_health_rows', 0)} of {n_cells} "
                             f"host-family cells · {n_assessed} assessed · {n_partial} partial · "
-                            f"{n_unassessed} abstained/unassessed — missing is never healthy").font = Font(italic=True)
+                            f"{not_running_part}{n_unassessed} abstained/unassessed — missing is never "
+                            "healthy").font = Font(italic=True)
         pa_headers = ["Assessment", "Device", "Protocol", "Capture / input states", "Boundary and next action"]
         for col, header in enumerate(pa_headers, 1):
             cell = ws.cell(pa0 + 1, col, header)
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill("solid", fgColor="434343")
             cell.alignment = Alignment(horizontal="center")
-        pa_fill = {
-            "assessed": "D9EAD3",
-            "partial": "FFF2CC",
-            "captured_no_record": "FCE5CD",
-            "captured_empty": "FCE5CD",
-            "capture_error": "F4CCCC",
-            "not_collected": "F4CCCC",
-            "analysis_unavailable": "F4CCCC",
-        }
+        pa_fill = PROTOCOL_ASSESSABILITY_FILL
         for row_number, record in enumerate(pa_rows, pa0 + 2):
             state = str(record.get("state", ""))
             input_states = record.get("input_states") if isinstance(record.get("input_states"), dict) else {}
@@ -3071,6 +3076,11 @@ def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict
             contract = contract_by_protocol.get(record.get("protocol"), {})
             next_action = str(contract.get("recollect", "") or "") if isinstance(contract, dict) else ""
             reason = str(record.get("reason", "") or "")
+            # A not_running cell's capture IS the positive evidence (the cited vendor banner): re-collecting
+            # it is not an action, so it carries no recollect step.
+            if (state in PROTOCOL_ASSESSABILITY_STATES
+                    and _protocol_assessability_conclusion(state) == "not_running"):
+                next_action = ""
             vals = [state.replace("_", " ").upper(), record.get("switch", ""),
                     record.get("protocol", ""), f"{capture} · {state_text}".rstrip(" ·"),
                     reason + (f" Next: {next_action}" if next_action else "")]
@@ -3087,6 +3097,24 @@ def write_collection_completeness_sheet(wb, cc: dict, parse_yield: Optional[dict
     logger.info(f"  [OK] '{COLLECTION_COMPLETENESS_SHEET_NAME}' sheet: {len(rows)} blind spot(s) "
                 f"of {s.get('inventory', 0)} inventory device(s); parse-yield suspects: "
                 f"{ps.get('zero_yield_suspect', 0)}; protocol assessability rows: {len(pa_rows)}")
+
+
+#: Collection Completeness sheet: the Assessment-cell fill for each runtime protocol-assessability state.
+#: DERIVED from the engine's one state vocabulary through each state's conclusion class, so a new state
+#: is coloured by what it means (a state whose conclusion has no tone fails at import, never silently
+#: renders uncoloured). "not_running" is positive evidence of no process -- neither assessed (green) nor
+#: a blind spot (red): a neutral grey.
+_PA_CONCLUSION_FILL = {
+    "assessed": "D9EAD3",       # green  -- bounded conclusion from usable evidence
+    "partial": "FFF2CC",        # amber  -- part of the family usable
+    "abstained": "FCE5CD",      # peach  -- captured, nothing assessable parsed
+    "not_running": "E7E6E6",    # grey   -- vendor no-process banner: contributes nothing here
+    "blind": "F4CCCC",          # red    -- no usable evidence
+}
+PROTOCOL_ASSESSABILITY_FILL = {
+    state: _PA_CONCLUSION_FILL[_protocol_assessability_conclusion(state)]
+    for state in PROTOCOL_ASSESSABILITY_STATES
+}
 
 
 HEALTH_SCORES_SHEET_NAME = "Health Scores"
@@ -6688,11 +6716,17 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
 
     # gateways per VLAN across all scanned switches (for the redundancy signal)
     vlan_gw: Dict[int, set] = {}
+    vlan_gw_addresses: Dict[int, List[str]] = {}
     for host in all_interfaces:
         for port, d in all_interfaces[host].items():
             m = re.match(r"^Vlan(\d+)$", port, re.IGNORECASE)
             if m and (d.svi_ip or d.hsrp_behavior or d.subnet_primary_route):
                 vlan_gw.setdefault(int(m.group(1)), set()).add(host)
+                vlan_gw_addresses.setdefault(int(m.group(1)), []).append(d.svi_ip or "")
+    # A VLAN whose collected gateway addresses fill every usable address of their one subnet (a /30 or /31
+    # transit between two routers) leaves no host that could use a gateway: no-FHRP does not apply there.
+    transit_vlans = {vid for vid, addresses in vlan_gw_addresses.items()
+                     if svi_subnet_leaves_no_host_address(addresses)}
 
     # per-device object tracking (best effort)
     track_by_host: Dict[str, dict] = {}
@@ -6731,7 +6765,7 @@ def write_l3_forwarding_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceD
                 flags.append("single-gateway")
                 if sev != "High":
                     sev = "Medium"
-            elif not proto:
+            elif not proto and vid not in transit_vlans:
                 flags.append("no-FHRP")
                 if sev == "Info":
                     sev = "Low"

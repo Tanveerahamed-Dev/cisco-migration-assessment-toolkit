@@ -1,0 +1,109 @@
+{
+ "meta": {
+  "source": "webapp/sample_data/sample_fleet.snapshot.json",
+  "sourceOrigin": "repository-file",
+  "sourceDigestForm": "lf-normalised",
+  "sourceSha256": "3934281bb44cb7a1154c00d088c7c7805c569823ae8fc4099c1eba7adeee1e54",
+  "sourceBytes": 3306850,
+  "sourceExactSha256": "sha256:3934281bb44cb7a1154c00d088c7c7805c569823ae8fc4099c1eba7adeee1e54",
+  "sourceGitBlob": "f4572e88151045e26617e6bc74b0baaf586348fe",
+  "aclLineFields": {
+   "unevaluable": "unevaluable",
+   "unmodeledQualifiers": "unmodeled_qualifiers",
+   "established": "established"
+  },
+  "deviceHealthFields": {
+   "deductions": "deductions"
+  }
+ },
+ "aclLineAbsent": {
+  "acls.core1.INET_RETURN[0]": [
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.INET_RETURN[1]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.INET_RETURN[2]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.MGMT_IN[0]": [
+   "established",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.MGMT_IN[1]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.PROTECT_SERVERS[0]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.PROTECT_SERVERS[1]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.PROTECT_SERVERS[2]": [
+   "established",
+   "unevaluable"
+  ],
+  "acls.core1.PROTECT_SERVERS[3]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.VOICE_FILTER[0]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.VOICE_FILTER[1]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.core1.VOICE_FILTER[2]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.dist1.VTY_ACCESS[0]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.dist1.VTY_ACCESS[1]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.dist2.VTY_ACCESS[0]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ],
+  "acls.dist2.VTY_ACCESS[1]": [
+   "established",
+   "unevaluable",
+   "unmodeledQualifiers"
+  ]
+ },
+ "deviceAbsent": {
+  "AP-floor1": [
+   "deductions"
+  ],
+  "AP-floor3-01": [
+   "deductions"
+  ],
+  "wan-edge-rtr1.lab": [
+   "deductions"
+  ]
+ }
+}

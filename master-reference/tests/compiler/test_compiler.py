@@ -3314,6 +3314,85 @@ class CompilerTests(unittest.TestCase):
         self.assertEqual(license_file["media_type"], "text/plain")
         self.assertEqual(license_file["roles"], ["documentation"])
 
+    def test_typescript_project_config_files_are_jsonc_by_name_rule(self) -> None:
+        # TypeScript reads every project configuration file with its JSON-with-
+        # comments reader, so the classification is a name rule, not a path list.
+        # Exactly TypeScript's project-config names: ``tsconfig.json`` /
+        # ``jsconfig.json`` (the literal names its discovery searches for) and
+        # ``tsconfig.<name>.json`` / ``jsconfig.<name>.json`` (the role files a
+        # project hands to ``-p``/``extends``).  Matched case-sensitively: the
+        # census is of a Git tree, whose paths are case-sensitive on every
+        # host, so one commit must classify identically on Windows and Linux.
+        for path in (
+            "atlas-scope/tsconfig.json",
+            "atlas-scope/tsconfig.config.json",
+            "atlas-scope/tsconfig.scripts.json",
+            "webapp/frontend/tsconfig.visual.json",
+            "tools/tsconfig.build.esm.json",
+            "tools/tsconfig.App_2-x.json",
+            "tools/jsconfig.json",
+            "tools/jsconfig.app.json",
+        ):
+            with self.subTest(path=path):
+                classification = classify_file(path, "100644")
+                self.assertEqual(classification["classification_errors"], [])
+                self.assertEqual(classification["language"], "jsonc")
+                self.assertEqual(classification["roles"], ["structured_data"])
+        for path, language in (
+            ("tools/tsconfig.ts", "typescript"),
+            ("tools/not-tsconfig.json", "json"),
+            ("tools/mytsconfig.json", "json"),
+            ("tools/tsconfigs/settings.json", "json"),
+            ("tools/package.json", "json"),
+            # Refuter counterexamples: not TypeScript configuration names.
+            ("tools/tsconfig_base.json", "json"),
+            ("tools/TSConfig-base.json", "json"),
+            ("tools/tsconfig-base.json", "json"),
+            ("tools/tsconfig..json", "json"),
+            ("tools/tsconfig.json.json", "json"),
+            ("tools/tsconfig.JSON.json", "json"),
+            ("tools/tsconfig.app..json", "json"),
+            ("tools/TSCONFIG.JSON", "json"),
+            ("tools/Tsconfig.json", "json"),
+            ("tools/jsconfig.app.JSON", "json"),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(classify_file(path, "100644")["language"], language)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            repository = base / "repo"
+            initialize_repository(
+                repository,
+                {
+                    "tools/tsconfig.app.json": (
+                        "{\n"
+                        "  // TypeScript accepts comments here\n"
+                        '  "compilerOptions": {\n'
+                        '    "strict": true, /* and block comments */\n'
+                        '    "noEmit": true,\n'
+                        "  },\n"
+                        "}\n"
+                    )
+                },
+            )
+            output = base / "output"
+            compile_repository(repository, output)
+            validate_compiler_output(output)
+
+            file_record = group_records(output, "files")[0]
+            self.assertEqual(file_record["path"], "tools/tsconfig.app.json")
+            self.assertEqual(file_record["language"], "jsonc")
+            self.assertEqual(file_record["roles"], ["structured_data"])
+            structural_root = group_records(output, "structural_entities")[0]
+            self.assertEqual(structural_root["kind"], "configuration_document")
+            keys = {
+                row["pointer"].rsplit("/", 1)[-1]
+                for row in group_records(output, "structured")
+                if row["entity_type"] == "configuration_key"
+            }
+            self.assertTrue({"compilerOptions", "strict", "noEmit"}.issubset(keys))
+
 
 if __name__ == "__main__":
     unittest.main()

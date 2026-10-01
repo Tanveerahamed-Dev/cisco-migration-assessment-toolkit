@@ -19,6 +19,9 @@ export type SourceFileRecord = {
   contentSource: string | null;
   privacyExposure: string;
   privacyReasons: string[];
+  /** Compiler census depth: `identity` files are censused and privacy-scanned but never line-projected. */
+  censusDepth: "full" | "identity";
+  censusDepthReason: string | null;
   parseStatus: string;
   parser: string | null;
   parserMode: string | null;
@@ -267,6 +270,28 @@ export type SourceDigestPolicy = {
   fragmentDigest: "retained_sha256_fragment_text_only_when_fragment_count_gt_1";
 };
 
+export type CensusDepthDeclaration = {
+  prefix: string;
+  census_depth: "identity";
+  reason: string;
+  block_category: string;
+  follow_up_owner: string;
+  tracked_files: number;
+  text_files: number;
+  privacy_scanned_text_files: number;
+  deferred_nonblank_lines: number;
+};
+
+export type CensusDepthReceipt = {
+  status: "full_depth" | "identity_depth_deferred";
+  full_depth_files: number;
+  identity_depth_files: number;
+  identity_depth_text_files: number;
+  identity_depth_nonblank_lines_deferred: number;
+  declarations: CensusDepthDeclaration[];
+  block_categories: string[];
+};
+
 export type ProjectionIndex = {
   schemaVersion: string;
   status: string;
@@ -281,6 +306,7 @@ export type ProjectionIndex = {
     hard_failure: boolean;
     fatal_errors: string[];
     census: Record<string, number>;
+    census_depth?: CensusDepthReceipt;
     parsing: Record<string, unknown>;
     privacy: Record<string, unknown>;
     record_counts: Record<string, number>;

@@ -1,0 +1,458 @@
+/*
+ * tokens.css — the single source of colour, type, space, elevation and motion.
+ *
+ * THE FIVE RULES THIS FILE EXISTS TO ENFORCE
+ *
+ * 1. A hex literal, a px font-size or a magic duration inside a component is a defect. Every one
+ *    of them is a token here.
+ * 2. Light is defined on bare `:root`. Dark overrides ONLY what differs, and is emitted twice —
+ *    once under `prefers-color-scheme: dark` guarded by `:root:not([data-theme="light"])`, once
+ *    under `[data-theme="dark"]` — so an explicit user choice wins in both directions and the OS
+ *    preference is still honoured when there is no choice.
+ * 3. Colour carries meaning for exactly four things: severity, operational state, forwarding
+ *    verdict, health band. Everything else is achromatic. A UI that tints its own furniture cannot
+ *    make a Critical finding louder than its furniture.
+ * 4. Every ratio quoted in a comment below is COMPUTED, not estimated — and that is now a fact
+ *    rather than a promise. The audit is `src/core/contrast.test.ts`: it parses both theme blocks
+ *    out of this file, enumerates every pairing the UI uses, and fails the suite if any falls
+ *    below its floor — text 4.5:1 (WCAG 1.4.3), non-text UI / state indicator 3:1 (WCAG 1.4.11).
+ *    It also RE-DERIVES every `N.NN:1` written in the comments below and fails if a quoted number
+ *    has drifted from the value it describes, because documentation that lies is worse than none.
+ *    (This header originally pointed at a script under `tools/` that was never written. A claim of
+ *    verification with no verifier is the exact defect this product exists to prevent, so the
+ *    audit was built and the pointer corrected.)
+ * 5. `null` is not a value. The `--unobserved-*` family is the canonical treatment for a datum we
+ *    did not collect, and it is a THIRD visual state — not a paler good, not a quieter bad. It is
+ *    the most important token group in this system.
+ *
+ * SEMANTIC RAMPS AND GREYSCALE (acceptance D8)
+ *
+ * Severity, band, state and claim-strength are each a five- or three-member ramp. Hue alone does
+ * not survive a greyscale capture, so every ramp also steps in LUMINANCE: adjacent members differ
+ * by >= 1.12:1 and NO two members of a ramp are closer than 1.124:1, measured. Desaturated, the
+ * light severity ramp reads #454545 #4d4d4d #555555 #5d5d5d #666666 and the dark severity ramp
+ * reads #9b9b9b #a5a5a5 #b0b0b0 #bbbbbb #c8c8c8 — eight to thirteen sRGB levels apart at every
+ * step. Direction differs per theme because the physics of the ground differs:
+ *   light — urgency UP means DARKER, so the heaviest block on a white page is the worst news;
+ *   dark  — urgency UP means DEEPER/more saturated, because no red exists above the luminance of
+ *           amber or pale slate, and a washed-out pink "Critical" is worse than a saturated one.
+ * Colour is never the only channel regardless: SeverityBadge and StateDot in primitives.tsx carry
+ * a distinct glyph SHAPE and the literal word as well.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* ── type ─────────────────────────────────────────────────────────────────
+     Six steps; working views use only --fs-0 … --fs-2. Hierarchy inside a row is carried by
+     weight and ink colour, never by size — that is what fits forty findings on a 1440 screen.
+     11px is the floor anywhere in the product, canvas labels included. */
+  --font-ui:
+    "Inter var", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono:
+    "JetBrains Mono", "SF Mono", "Cascadia Mono", ui-monospace, "Menlo", "Consolas", monospace;
+
+  --fs-0: 0.6875rem; /* 11px — status bar, key labels, keycaps, units, citation strings */
+  --fs-1: 0.75rem; /*    12px — dense grid rows, hop sub-lines, chip text, column headers */
+  --fs-2: 0.8125rem; /*  13px — body, finding titles, evidence prose, panel rows */
+  --fs-3: 0.9375rem; /*  15px — panel titles, tab labels, section headers */
+  --fs-4: 1.25rem; /*     20px — surface titles, empty-state headlines */
+  --fs-5: 1.75rem; /*     28px — headline numerals only */
+
+  --lh-0: 1.35;
+  --lh-1: 1.4;
+  --lh-2: 1.5;
+  --lh-3: 1.35;
+  --lh-4: 1.25;
+  --lh-5: 1.2;
+  --lh-tight: 1.25;
+  --lh-body: 1.5;
+  /* A list-row title sits on a 20px line (13/20), so a title row lands on the 4px lattice and the
+     title's x-height centres on the 24px severity glyph beside it. 1.5 gave 19.5px. */
+  --lh-row-title: 1.25rem;
+
+  --ls-0: 0.01em;
+  /* Uppercase labels (group headers, field labels, legends) are tracked open. Set in capitals at
+     the 11px floor with the body's 0.01em they read as a smudge the same weight as the metadata
+     beside them; +0.06em is what makes a CRITICAL group header a landmark rather than a row. */
+  --ls-caps: 0.06em;
+  --ls-1: 0;
+  --ls-2: -0.006em;
+  --ls-3: -0.01em;
+  --ls-4: -0.015em;
+  --ls-5: -0.02em;
+
+  /* Exactly three weights. No 700 anywhere. */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  /* ── space: a 4px lattice, used exclusively ─────────────────────────────── */
+  --sp-1: 0.25rem; /*  4px */
+  --sp-2: 0.5rem; /*   8px */
+  --sp-3: 0.75rem; /* 12px */
+  --sp-4: 1rem; /*    16px */
+  --sp-5: 1.5rem; /*  24px */
+  --sp-6: 2rem; /*    32px */
+  --sp-7: 3rem; /*    48px */
+
+  --radius-sm: 3px; /* severity chips, badges, state pills */
+  --radius-md: 5px; /* buttons, inputs, menus, query tokens */
+  --radius-lg: 8px; /* overlay panels, palette, inspector */
+  --radius-pill: 999px; /* coverage chip and claim-strength badge ONLY */
+
+  /* ── row heights ───────────────────────────────────────────────────────────
+     Fixed and non-negotiable: they are what makes a dense list scannable and what keeps every
+     target at or above 24px (WCAG 2.5.8). Expressed in rem against a 16px root; the px figure in
+     the comment is the computed result, not a value to hardcode. */
+  --row-grid: 2rem; /*        32px — findings grid row; fits a 24px target with 4px padding */
+  --row-grid-max: 3.5rem; /*  56px — multi-device row ceiling before the "+N more" affordance */
+  --row-hop: 1.75rem; /*      28px — hop row; the whole row is one target */
+  --row-hop-sub: 1.125rem; /* 18px — hop sub-line, non-interactive, exempt from 2.5.8 */
+  --row-kv: 1.375rem; /*      22px — evidence key:value row, non-interactive */
+  --row-tab: 2rem; /*         32px — tab height, min width 3rem */
+  --row-colhead: 1.75rem; /*  28px — sortable column header, min width 3.5rem */
+  --row-inspect: 1.625rem; /* 26px — inspector data-table row */
+  --target-min: 1.5rem; /*    24px — the WCAG 2.5.8 floor for every interactive target */
+
+  /* ── application frame ─────────────────────────────────────────────────────
+     The reference layout is 1280–1599px. shell.css steps these at the breakpoints. */
+  --header-h: 2.75rem; /*    44px */
+  --querybar-h: 2.5rem; /*   40px */
+  --statusbar-h: 1.625rem; /* 26px */
+  --rail-left: 18.75rem; /*  300px */
+  --rail-right: 23.75rem; /* 380px */
+  --hairline: 1px;
+  --inspector-h: 40%; /* of the body height; draggable 200–632px, see the splitter contract */
+  --inspector-min: 12.5rem; /* 200px */
+  --inspector-max: 39.5rem; /* 632px */
+  --config-overlay-w: 48vw; /* the config-evidence panel: over the Stage, never modal */
+
+  /* ── neutral surfaces — light ─────────────────────────────────────────────
+     Light separates panels with a --border hairline on a white ground; dark separates with the
+     surface ladder. That difference is deliberate (acceptance C4: light is not dark inverted). */
+  --bg: #ffffff;
+  --surface-1: #f7f8fa;
+  --surface-2: #eef0f4; /* also the row-hover fill: a fill change, never a border or a lift */
+  --surface-3: #e4e7ec;
+  --overlay: #ffffff;
+  --stage-bg: #eef1f5; /* the 3-D ground; one step off surface-2 so the canvas reads as a
+                          surface and not as a hole punched in the page */
+
+  /* ── ink — light. Ratios on surface-1 · surface-3, the best and worst grounds ink sits on. */
+  --text: #11151c; /*       17.22:1 · 14.76:1  (18.29:1 on bg) */
+  --text-muted: #4e5768; /*  6.84:1 ·  5.87:1 */
+  --text-faint: #5f6775; /*  5.36:1 ·  4.60:1  — the floor of the neutral ladder */
+
+  /* ── borders — light ──────────────────────────────────────────────────────
+     --border is STRUCTURAL DECORATION and may sit below 3:1. --border-strong is the only token
+     permitted as a control boundary (input outline, button edge, splitter, checkbox). */
+  --border: #d7dce4; /*        1.38:1 on bg — hairline only, never a control edge */
+  --border-strong: #747e91; /* 4.09:1 bg · 3.85:1 s1 · 3.58:1 s2 · 3.30:1 s3 — control edges */
+
+  /* ── the single non-semantic accent — light.
+     Spent on: the brand mark, the primary action in a dialog, link emphasis, the active tab
+     underline, and the ON state of a switch. (The switch is one use beyond the design brief's
+     list; it is declared here rather than taken silently, and the switch still carries its state
+     in the knob position and a check glyph, so the accent is not the only channel.)
+     There is no second accent, no gradient, no tinted panel. */
+  --accent: #0b6f68; /*      5.67:1 s1 · 4.86:1 s3 · 6.02:1 bg */
+  --accent-text: #ffffff; /* 6.02:1 on --accent */
+  --focus: #0b6bd3; /*       4.87:1 s1 · 4.17:1 s3 · 4.57:1 on --stage-bg (floor 3:1, non-text) */
+  --chip-ink: #ffffff; /*    the ink on every filled semantic chip; see the per-fill ratios below */
+
+  /* ── severity — light. Urgency up means darker. Filled chip, --chip-ink text.
+     Columns: on surface-1 · on surface-3 · --chip-ink on the fill. */
+  --sev-critical: #8c1111; /* 8.97 · 7.69 · 9.53 */
+  --sev-high: #803804; /*     7.95 · 6.82 · 8.45 */
+  --sev-medium: #6e5000; /*   7.03 · 6.03 · 7.47 */
+  --sev-low: #246190; /*      6.20 · 5.31 · 6.59 */
+  --sev-info: #58677c; /*     5.42 · 4.65 · 5.76 */
+
+  /* ── operational state — light. `unknown` is a THIRD thing, neither green nor red, and it is
+     never rendered as grey-as-disabled. StateDot also changes SHAPE per state. */
+  --state-up: #1b7352; /*      5.46 · 4.68 · 5.80 */
+  --state-down: #8c1111; /*    8.97 · 7.69 · 9.53  — tracks --sev-critical by design */
+  --state-unknown: #63488c; /* 6.97 · 5.97 · 7.40 */
+
+  /* ── health bands — light. Shares three values with the severity ramp so a Critical band and a
+     Critical finding cannot read as two different reds. */
+  --band-excellent: #1b7352; /* 5.46 · 4.68 · 5.80 */
+  --band-good: #40681d; /*      6.15 · 5.27 · 6.53 */
+  --band-fair: #6e5000; /*      7.03 · 6.03 · 7.47 */
+  --band-poor: #803804; /*      7.95 · 6.82 · 8.45 */
+  --band-critical: #8c1111; /*  8.97 · 7.69 · 9.53 */
+
+  /* ── claim strength — light. Deliberately NOT on the severity ramp: a bounded claim is not a
+     mild problem. --claim-indeterminate means the model could not decide, and it must never be
+     rendered as grey-as-disabled. */
+  --claim-observed: #58677c; /*      5.42 · 4.65 — a complete traversal over partial evidence */
+  --claim-scoped: #246190; /*        6.20 · 5.31 — bounded and complete within its scope */
+  --claim-indeterminate: #63488c; /* 6.97 · 5.97 — the model could not decide */
+  --claim-out-of-scope: #747e91; /*  3.85 s1 · 3.30 s3 — NON-TEXT only (rules, hatching), and
+                                       always accompanied by the word */
+
+  /* ── LINK TOPOLOGY ROLE — its own hue family, deliberately NOT a severity token. A bridge cable
+     (cutting it partitions the graph) was drawn in --sev-high, so one orange meant both "High
+     severity finding" on badges and "cut-edge" on cables. Magenta is the one hue no severity,
+     state, band or claim token uses. */
+  --link-bridge: #9c1f8f; /*         6.57 s1 · 5.64 s3 */
+
+  /* ── NOT OBSERVED — light. The canonical absence treatment. ────────────────
+     Rendering rule, enforced by <NotObserved> in src/ui/primitives.tsx and by nothing else:
+       ink        --unobserved
+       edge       1px DASHED --unobserved-edge  (the shape channel: no other chip is dashed)
+       fill       --unobserved-hatch, a 45-degree hatch (the texture channel)
+       content    the literal words "not observed", plus the collector's reason when we have one
+     Three independent channels — colour, dash, hatch — plus the words. It can survive greyscale,
+     it can survive a colour-blind reader, and it can survive a screen reader. It is distinct from
+     --state-unknown by 1.24:1 in luminance so "we did not look" and "the device said it did not
+     know" do not collapse into one another. */
+  --unobserved: #68557e; /*      6.20:1 s1 · 5.31:1 s3 */
+  --unobserved-edge: #7c7396; /* 4.16:1 s1 · 3.57:1 s3 — non-text floor is 3:1 */
+  /* The STRIPE is OPAQUE — a fixed mix of the ink into the page ground — not a translucent wash.
+     A translucent stripe compounds: a not-observed chip inside a hatched hop painted two layers,
+     and the doubled stripe took .ui-notobs__text to 3.90:1 and --text-faint captions to 4.36:1 in
+     light, 4.32:1 in dark (A11Y critic 2026-09-21, D4, measured on rendered pixels). An opaque
+     stripe is the same colour however many hatched boxes nest, and it is the same colour on every
+     surface, so the worst case is ONE number per theme: --text-faint against the stripe, 4.75
+     light and 5.14 dark at 12% (src/ui/hatch-contrast.test.ts pins it). On the darker
+     surfaces the stripe is LIGHTER than the ground in light theme, which raises contrast; the
+     hatch stays visible as texture either way, and it is one of four channels, not the only one. */
+  --unobserved-hatch: repeating-linear-gradient(
+    45deg,
+    transparent 0 3px,
+    color-mix(in oklab, var(--unobserved) 12%, var(--bg)) 3px 4px
+  );
+
+  /* ── elevation — light: a 1px --border plus at most --shadow-1. --shadow-2 is reserved for the
+     inspector and the config overlay; --shadow-3 for the command palette alone.
+     --scrim is its own token rather than a color-mix of --text, because a mix of the ink token
+     inverts with the theme and would LIGHTEN the page behind a dark-theme dialog. */
+  --scrim: rgb(16 22 32 / 44%);
+  /* The 4px scroll-edge shadow (shell.css "THE CUT-ROW SCRIM", and Inspector.css's opt-in copy).
+     Text scrolls UNDER it, so in light — where it darkens the ground under dark ink — its darkest
+     row must still leave --text-faint at 4.5:1 on --surface-1 and --bg. It was 22%, which took
+     edge-clipped text to 3.92:1 (5th percentile) and an Inspector key to 3.62:1 (acceptance D4,
+     2026-09-24). contrast.test.ts computes the floor from this value, in both themes. */
+  --scroll-scrim-ink: rgb(0 0 0 / 7%);
+  --shadow-1: 0 1px 2px rgb(16 22 32 / 8%);
+  --shadow-2: 0 4px 12px rgb(16 22 32 / 10%);
+  --shadow-3: 0 12px 32px rgb(16 22 32 / 16%);
+
+  /* ── motion ───────────────────────────────────────────────────────────────
+     Nothing exceeds 300ms except the one deliberate camera move. Every duration below is attached
+     to a justification in the motion inventory (design brief section 4.8). */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-instant: 80ms; /*  hover — must feel like a cursor property, not a transition */
+  --dur-fast: 140ms; /*    acknowledgement of a click; palette open */
+  --dur-medium: 240ms; /*  dim/undim on filter change; panel and inspector open */
+  --dur-camera: 620ms; /*  the one exception: a cut between camera poses destroys the spatial
+                            model, and 620ms is followable without being waited on */
+
+  /* ── focus ring, one treatment for the whole app ───────────────────────────
+     `outline` and not `box-shadow`, because outline survives forced-colors / Windows High
+     Contrast and box-shadow does not. The inner ring keeps the indicator legible on both the
+     panel ground and the row-hover fill. */
+  --focus-ring-w: 2px;
+  --focus-ring-offset: 2px;
+
+  /* ── layering ─────────────────────────────────────────────────────────────── */
+  --z-stage: 0;
+  --z-rail: 10;
+  --z-inspector: 20;
+  --z-overlay: 30;
+  --z-popover: 40;
+  --z-tooltip: 50;
+  --z-dialog: 60;
+  --z-skiplink: 70;
+}
+
+/* An explicit theme also pins the UA colour scheme. `light dark` above lets the browser paint its
+   own parts (scrollbars, form controls, the Canvas colour the boot line falls back to before these
+   tokens load in `vite` dev) by the OS preference; with a chosen theme opposite to the OS they would
+   keep following the OS. The dark half is the first declaration of the explicit dark block below
+   (one block per selector: contrast.test.ts reads each theme from its single block). Same
+   specificity as `:root`, so the print block at the end still wins. */
+[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* ── dark theme ─────────────────────────────────────────────────────────────
+   Emitted twice with identical bodies. The OS preference applies only when the user has not
+   chosen; an explicit [data-theme] wins in both directions. Keep the two blocks in sync — a
+   divergence here is invisible until someone toggles the theme. */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #080a0e;
+    --surface-1: #0d1117;
+    --surface-2: #131923;
+    --surface-3: #1b2330;
+    --overlay: #161d28;
+    --stage-bg: #0a0d13;
+
+    --text: #e8ecf2; /*       15.96:1 s1 · 13.32:1 s3 */
+    --text-muted: #96a1b2; /*  7.24:1 s1 ·  6.04:1 s3 */
+    --text-faint: #828da0; /*  5.65:1 s1 ·  4.71:1 s3 */
+
+    --border: #28323f; /*        1.46:1 s1 — hairline only */
+    --border-strong: #61728f; /* 4.07:1 bg · 3.89:1 s1 · 3.62:1 s2 · 3.24:1 s3 */
+
+    --accent: #3fd0c9; /*      9.98:1 s1 */
+    --accent-text: #04201f; /* 8.99:1 on --accent */
+    --focus: #5aa8ff; /*       7.64:1 s1 · 7.85:1 on --stage-bg */
+    --chip-ink: #0d1117; /*    dark ink on a light fill — the light theme is the other way up */
+
+    /* Severity: urgency up means deeper and more saturated. Ratios s1 · s3 · chip-ink on fill. */
+    --sev-critical: #ff6b6b; /*  6.82 ·  5.69 ·  6.82 */
+    --sev-high: #ff8317; /*      7.67 ·  6.40 ·  7.67 */
+    --sev-medium: #dca80c; /*    8.70 ·  7.26 ·  8.70 */
+    --sev-low: #89c1f3; /*       9.90 ·  8.26 ·  9.90 */
+    --sev-info: #c0c9d4; /*     11.31 ·  9.44 · 11.31 */
+
+    --state-up: #4de0a5; /*     11.28 ·  9.42 · 11.28 */
+    --state-down: #ff6b6b; /*    6.82 ·  5.69 ·  6.82 */
+    --state-unknown: #bea5e7; /* 8.76 ·  7.31 ·  8.76 */
+
+    --band-excellent: #4de0a5; /* 11.28 · 9.42 · 11.28 */
+    --band-good: #7bd12f; /*       9.92 · 8.28 ·  9.92 */
+    --band-fair: #dca80c; /*       8.70 · 7.26 ·  8.70 */
+    --band-poor: #ff8317; /*       7.67 · 6.40 ·  7.67 */
+    --band-critical: #ff6b6b; /*   6.82 · 5.69 ·  6.82 */
+
+    --claim-observed: #c0c9d4; /*     11.31 · 9.44 */
+    --claim-scoped: #89c1f3; /*        9.90 · 8.26 */
+    --claim-indeterminate: #bea5e7; /* 8.76 · 7.31 */
+    --claim-out-of-scope: #61728f; /*  3.89 · 3.24 — non-text only */
+    --link-bridge: #e879dc; /*         7.39 · 6.17 */
+
+    --unobserved: #c4b6d7; /*      9.93:1 s1 · 8.29:1 s3 */
+    --unobserved-edge: #8079a0; /* 4.65:1 s1 · 3.88:1 s3 */
+
+    /* Depth on dark is the surface ladder plus a hairline, never a drop shadow: a shadow on
+       #0d1117 is invisible. These exist only for elements that float over the Stage. */
+    --scrim: rgb(2 4 8 / 66%);
+    /* On dark the shadow darkens the ground under LIGHT ink, which raises contrast. */
+    --scroll-scrim-ink: rgb(0 0 0 / 52%);
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow-2: 0 6px 18px rgb(0 0 0 / 48%);
+    --shadow-3: 0 18px 44px rgb(0 0 0 / 58%);
+  }
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #080a0e;
+  --surface-1: #0d1117;
+  --surface-2: #131923;
+  --surface-3: #1b2330;
+  --overlay: #161d28;
+  --stage-bg: #0a0d13;
+
+  --text: #e8ecf2;
+  --text-muted: #96a1b2;
+  --text-faint: #828da0;
+
+  --border: #28323f;
+  --border-strong: #61728f;
+
+  --accent: #3fd0c9;
+  --accent-text: #04201f;
+  --focus: #5aa8ff;
+  --chip-ink: #0d1117;
+
+  --sev-critical: #ff6b6b;
+  --sev-high: #ff8317;
+  --sev-medium: #dca80c;
+  --sev-low: #89c1f3;
+  --sev-info: #c0c9d4;
+
+  --state-up: #4de0a5;
+  --state-down: #ff6b6b;
+  --state-unknown: #bea5e7;
+
+  --band-excellent: #4de0a5;
+  --band-good: #7bd12f;
+  --band-fair: #dca80c;
+  --band-poor: #ff8317;
+  --band-critical: #ff6b6b;
+
+  --claim-observed: #c0c9d4;
+  --claim-scoped: #89c1f3;
+  --claim-indeterminate: #bea5e7;
+  --claim-out-of-scope: #61728f;
+  --link-bridge: #e879dc;
+
+  --unobserved: #c4b6d7;
+  --unobserved-edge: #8079a0;
+
+  --scrim: rgb(2 4 8 / 66%);
+  --scroll-scrim-ink: rgb(0 0 0 / 52%);
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-2: 0 6px 18px rgb(0 0 0 / 48%);
+  --shadow-3: 0 18px 44px rgb(0 0 0 / 58%);
+}
+
+/* ── reduced motion ─────────────────────────────────────────────────────────
+   Durations collapse to 1ms rather than 0 so transitionend still fires and any code that waits
+   for it does not hang. The end state is byte-identical to the animated end state: the
+   reduced-motion path shows LESS MOVEMENT, never less information. The packet marker and camera
+   tween are suppressed in code, not here — a duration token cannot express "do not run". */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-instant: 1ms;
+    --dur-fast: 1ms;
+    --dur-medium: 1ms;
+    --dur-camera: 1ms;
+  }
+}
+
+/* ── print ──────────────────────────────────────────────────────────────────
+   Paper is a light ground whatever the screen was set to. Only the surfaces and ink are
+   re-pointed; the semantic ramps already read correctly on white because that is the surface
+   they were measured against. */
+@media print {
+  :root {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface-1: #ffffff;
+    --surface-2: #f2f4f7;
+    --surface-3: #e4e7ec;
+    --overlay: #ffffff;
+    --text: #11151c;
+    --text-muted: #4e5768;
+    --text-faint: #5f6775;
+    --border: #d7dce4;
+    --border-strong: #747e91;
+    --chip-ink: #ffffff;
+    --sev-critical: #8c1111;
+    --sev-high: #803804;
+    --sev-medium: #6e5000;
+    --sev-low: #246190;
+    --sev-info: #58677c;
+    --link-bridge: #9c1f8f;
+    --unobserved: #68557e;
+    --unobserved-edge: #7c7396;
+  }
+}
+
+/* ── forced colours / Windows High Contrast ─────────────────────────────────
+   The system palette replaces ours. We keep the SHAPE channels (dashes, hatching, glyphs) doing
+   the work and re-point the semantic tokens at system colours so nothing renders as an invisible
+   fill. The hatch is dropped: a system-coloured hatch is noise, and the dashed edge plus the
+   literal words still carry "not observed". */
+@media (forced-colors: active) {
+  :root {
+    --border: CanvasText;
+    --border-strong: CanvasText;
+    --focus: Highlight;
+    --accent: LinkText;
+    --accent-text: Canvas;
+    --chip-ink: Canvas;
+    --unobserved: CanvasText;
+    --unobserved-edge: CanvasText;
+    --unobserved-hatch: none;
+  }
+}

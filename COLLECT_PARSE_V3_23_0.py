@@ -955,9 +955,11 @@ def setup_logging(level=logging.INFO):
     # i.e. import_module("COLLECT_PARSE_V3_23_0") (cited by SYMBOL: the line number this named until the
     # 2026-07-28 review, `attestation.py:122`, had rotted to an unrelated function); under
     # `python COLLECT_PARSE_V3_23_0.py` this module's identity is __main__, so that import RE-EXECUTES
-    # the body -- including `logger = setup_logging()` at the bottom -- and a fresh mode="w" handler
-    # TRUNCATED the log near the end of every script-path run, discarding most of what it had already
-    # recorded. (A module-level "already configured" flag cannot fix this: the re-executed copy gets
+    # the body -- which, while the module still called `logger = setup_logging()` at import, reached a
+    # fresh mode="w" handler that TRUNCATED the log near the end of every script-path run, discarding
+    # most of what it had already recorded. (Since 2026-09-30 import installs nothing and only main()
+    # calls this, so a re-import no longer reaches it; the reuse below still guards a process that runs
+    # main() more than once, as in-process pipeline tests and build_sample.py do.) (A module-level "already configured" flag cannot fix this: the re-executed copy gets
     # its own globals. The logging registry is process-global, so the open handler is the reliable
     # witness.) Console-script runs (`cisco-assess`, Atlas's --run-engine) import by real name and were
     # never affected -- which is why this cost the log file its tail without failing anything.
@@ -1032,7 +1034,14 @@ def setup_logging(level=logging.INFO):
     _attach_package_logging(fh, ch, level)   # the cisco_toolkit.* tree shares this run's handlers
     return logger
 
-logger = setup_logging()
+# IMPORT IS SIDE-EFFECT-FREE: the run's audit log is installed by main() (setup_logging above), never at
+# import. Importing used to open -- and truncate -- the per-working-directory log in EVERY importing
+# process: pytest collection imports this module from many test files, and under pytest-xdist several
+# workers doing so at once in one working directory intermittently failed collection with
+# PermissionError (the repository's own -n auto Stop hook); an importer that is not a run (AssessHub
+# helpers, the attestation re-import, a test module) has no audit log to write. Module functions log
+# through this same named logger object, which main() configures.
+logger = logging.getLogger("CiscoMigrationAutofillV3_14_6")
 
 # DATA MODEL - InterfaceData / DevicePhysical moved to cisco_toolkit.model
 # (PHASE 2.7 step 9); imported back near the top of this file. ScoringConfig
@@ -3419,6 +3428,7 @@ def _run_per_device_axes(stores: Dict[str, dict], hostname: str, cmd_to_file: Di
 
 
 def main():
+    setup_logging()   # the run's audit log, in the run's working directory (import installs nothing)
     ap = argparse.ArgumentParser(description=f"Cisco Migration Extractor V{__version__}")
     ap.add_argument("--devices-file",   default=None,
                     help="Devices JSON (required unless --compare is used)")
@@ -4876,6 +4886,9 @@ def main():
     _actx.drift = _drift
     _actx.ptp_readiness = _ptp_readiness
     _actx.media_risks = _media_risks
+    # The interface index lets the L3 / STP / FHRP / IPv6 folds point at a reconstructed SVI key only
+    # when the collected interfaces prove it (analyze._interface_key); without it they keep row refs.
+    _actx.all_interfaces = all_interfaces
     punchlist = _run_phase("Migration Punch-List", _punchlist, _actx, _default=[])
     _run_phase("Migration Punch-List sheet", write_punchlist_sheet, wb, punchlist)
     _run_phase("Device Risk Register sheet", write_device_risk_sheet, wb, device_dossiers)
@@ -6253,7 +6266,8 @@ def _punchlist(ctx: "AnalysisContext") -> list:
         vtp_safety_baseline=ctx.vtp_safety_baseline,
         vtp_safety_subject_scope=ctx.vtp_safety_subject_scope,
         ipv6_routing_adjacency_baseline=ctx.ipv6_routing_adjacency_baseline,
-        ipv6_routing_subject_scope=ctx.ipv6_routing_subject_scope)
+        ipv6_routing_subject_scope=ctx.ipv6_routing_subject_scope,
+        interface_index=ctx.all_interfaces or None)
 
 
 def _executive_brief(ctx: "AnalysisContext") -> dict:

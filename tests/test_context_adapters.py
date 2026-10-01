@@ -62,7 +62,8 @@ def test_punchlist_adapter_maps_ctx_to_explicit_kwargs(monkeypatch):
         stp_findings={"stp": 1}, health_scores=["hs"], move_groups=["mg"],
         l2={"l2": 1}, hostname_mismatches=["hm"], drift=["dr"], ptp_readiness=["ptp"],
         media_risks=["mr"], syslog_intelligence={"si": 1}, qos_audit={"qa": 1},
-        software_risk={"sw": 1}, platform_health={"pl": 1}, device_dossiers={"dd": 1})
+        software_risk={"sw": 1}, platform_health={"pl": 1}, device_dossiers={"dd": 1},
+        all_interfaces={"sw1": {"Vlan10": "iface"}})
     out = cp._punchlist(ctx)
     assert out is rec["ret"]
     assert rec["args"] == ()
@@ -78,7 +79,12 @@ def test_punchlist_adapter_maps_ctx_to_explicit_kwargs(monkeypatch):
             "vtp_safety_subject_scope": [],
             "ipv6_routing_adjacency_baseline": {},
             "ipv6_routing_subject_scope": {},
+            # the collected interfaces are the index the SVI folds prove reconstructed keys against
+            "interface_index": {"sw1": {"Vlan10": "iface"}},
         }
+    # no collected interfaces -> no index: the folds keep their row refs, never an unproven pointer
+    cp._punchlist(AnalysisContext())
+    assert rec["kwargs"]["interface_index"] is None
 
 
 def test_executive_brief_adapter_maps_ctx_to_explicit_kwargs(monkeypatch):

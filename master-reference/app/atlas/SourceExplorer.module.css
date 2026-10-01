@@ -227,7 +227,8 @@
 }
 
 .badge[data-state="metadata_only"],
-.badge[data-state="binary_inventory"] {
+.badge[data-state="binary_inventory"],
+.badge[data-state="identity"] {
   border-color: color-mix(in srgb, #f7c873 50%, var(--line, #27354b));
   color: #f7c873;
 }

@@ -539,3 +539,23 @@ def test_document_renderer_rejects_a_tampered_portfolio_sidecar(client, tmp_path
 def test_protocol_assurance_export_404s_for_unknown_snapshot(client):
     assert client.get("/api/snapshots/999999/section/protocol_assurance").status_code == 404
     assert client.get("/api/snapshots/999999/protocol-assurance/export").status_code == 404
+
+
+def test_portfolio_state_sets_follow_the_engine_vocabulary_including_not_running():
+    """R1V-5: a receipt state outside a hand-kept set counted as OBSERVED. Both sets now derive from
+    analyze's conclusion classes, so every receipt state is classified and a cited not_running cell is
+    unavailable evidence for a family (never observed health)."""
+    from cisco_toolkit.analyze import PROTOCOL_ASSESSABILITY_STATES, _protocol_assessability_conclusion
+    from backend import protocol_portfolio as portfolio
+
+    for state in PROTOCOL_ASSESSABILITY_STATES:
+        cls = _protocol_assessability_conclusion(state)
+        if cls == "assessed":
+            assert state not in portfolio._UNAVAILABLE_STATES | portfolio._REVIEW_STATES
+        elif cls == "partial":
+            assert state in portfolio._REVIEW_STATES
+        else:
+            assert state in portfolio._UNAVAILABLE_STATES, state
+    status = portfolio._evidence_status(
+        valid=True, subjects=[{"evidence_state": "observed"}], coverage={"not_running": 1})
+    assert status == "partial"

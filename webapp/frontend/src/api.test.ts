@@ -209,3 +209,14 @@ describe("ApiError (status-aware failures)", () => {
     expect(err!.message).toBe("Request body exceeds the 1024 KB limit for this endpoint");
   });
 });
+
+describe("api.scopeView", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("reads the guarded scope-view capability for exactly that snapshot", async () => {
+    const view = { available: true, status: "ready", href: "/scope/snapshots/7/", detail: "ok" };
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(view), { status: 200 }));
+    await expect(api.scopeView(7)).resolves.toEqual(view);
+    expect(spy).toHaveBeenCalledWith("/api/snapshots/7/scope-view");
+  });
+});

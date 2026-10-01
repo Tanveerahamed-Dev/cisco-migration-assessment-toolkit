@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import mimetypes
 import re
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -19,6 +20,7 @@ ALLOWED_TOP_LEVEL_DIRECTORIES = frozenset(
         ".claude",
         ".design-sync",
         ".github",
+        "atlas-scope",
         "cisco_toolkit",
         "docs",
         "master-reference",
@@ -177,6 +179,28 @@ LANGUAGE_BY_EXTENSION = {
     ".yml": "yaml",
 }
 
+# TypeScript reads every project configuration file (``tsconfig.json`` and the
+# ``tsconfig.<role>.json`` / ``jsconfig*.json`` files a project splits it into,
+# referenced through ``extends``/``references``/``-p``) with its JSON-with-
+# comments reader, so comments and trailing commas are legal there.  The name,
+# not a list of paths, is what makes such a file JSONC; strict JSON parsing of
+# one that happens to carry no comment is coincidence, not its format.
+#
+# The rule is exactly TypeScript's project-config names: ``tsconfig.json`` and
+# ``jsconfig.json`` (the literal names its config discovery searches for) and
+# ``tsconfig.<name>.json`` / ``jsconfig.<name>.json``, where ``<name>`` is one or
+# more nonempty dot-separated segments of letters, digits, ``_`` or ``-`` and no
+# segment is itself ``json`` (``tsconfig.json.json`` is a doubled extension, not
+# a role).  ``tsconfig_base.json``, ``tsconfig-base.json`` and ``tsconfig..json``
+# are not TypeScript config names.  It is matched CASE-SENSITIVELY against the
+# exact tracked basename: TypeScript's discovery literal is lowercase, so on a
+# case-sensitive host (Linux CI, and Git's own tree on every platform)
+# ``TSCONFIG.JSON`` is never found as a project config; only a case-folding
+# filesystem would resolve it.  The compiler censuses a Git tree whose paths are
+# case-sensitive everywhere, and one commit must classify identically on every
+# host, so the case-sensitive answer is the only platform-independent one.
+JSONC_CONFIG_NAME_RE = re.compile(r"(?:ts|js)config(?:\.(?!(?i:json)(?:\.|$))[A-Za-z0-9_-]+)*\.json")
+
 SOURCE_LANGUAGES = frozenset(
     {
         "css",
@@ -223,6 +247,153 @@ SAFE_DATA_PREFIXES = (
     "webapp/sample_data/",
 )
 SAFE_ROOT_DATA = frozenset({"devices.example.json", "questionnaire.json", "requirements.sample.json"})
+
+
+CENSUS_DEPTH_FULL = "full"
+CENSUS_DEPTH_IDENTITY = "identity"
+CENSUS_DEPTHS = (CENSUS_DEPTH_FULL, CENSUS_DEPTH_IDENTITY)
+CENSUS_DEPTH_POLICY_OWNER = "master-reference/compiler/policy.py::CENSUS_DEPTH_DECLARATIONS"
+# Record groups an identity-depth file still emits.  ``binaries`` only applies
+# to a binary path, which is metadata-only at every depth.
+IDENTITY_DEPTH_RETAINED_GROUPS = ("binaries", "files", "imports")
+# Record groups the compiler's line/parse pipeline withholds for an
+# identity-depth file.  Together with the retained groups, the Graphify
+# secondary projection, and the path-free claim groups this is the whole
+# compiler record-group universe (reconciled by the compiler at import time).
+IDENTITY_DEPTH_DEFERRED_GROUPS = (
+    "calls",
+    "components",
+    "configs",
+    "datasets",
+    "dependencies",
+    "documents",
+    "lines",
+    "manifests",
+    "markdown",
+    "routes",
+    "source_text",
+    "structural_entities",
+    "structured",
+    "symbols",
+    "tests",
+    "workflows",
+)
+
+
+@dataclass(frozen=True)
+class CensusDepthDeclaration:
+    """One reviewed path prefix whose census is deliberately shallower than full."""
+
+    prefix: str
+    census_depth: str
+    reason: str
+    block_category: str
+    follow_up_owner: str
+
+
+# CENSUS DEPTH -- the ONE owner of every deferred prefix.
+#
+# Every tracked file is censused at ``full`` depth (file record, exact source
+# text, one record per nonblank line, symbols, calls, structured values, GUI
+# dossiers) unless its path starts with a prefix declared here.  A declared
+# prefix is censused at ``identity`` depth: the file record (path, Git blob
+# OID, content digest, size, language/role classification, architecture
+# disposition) and its static import edges are still emitted, and the full
+# privacy decision -- strict UTF-8/NUL/control-density text safety plus the
+# forbidden-content scan -- still reads the file's complete bytes.  Only the
+# per-line, per-symbol, call, structured-value, source-text and dossier
+# projections are withheld.
+#
+# Why this exists: admitting the 400-file ``atlas-scope/`` application took
+# the compiler output from roughly 1.87 GB to 2.74 GB (atlas-scope alone about
+# 868 MB of per-line, symbol, source-text, call and dossier records).  That
+# breaks the 32 MiB compiler-chunk bound, the 2 GiB expanded-projection and
+# bounded privacy-scan budgets, and the 248 MiB Sites deployment ceiling -- all
+# safety gates or an external platform limit that must not be raised.  The
+# owner recorded the decision to defer line projection for this prefix until a
+# compact per-line record encoding exists (the follow-up owner below).
+#
+# Deferral is never presented as coverage: each declaration names a release
+# BLOCK category that the compiler ledger, the failed
+# ``every_tracked_text_file_line_censused`` acceptance gate, the release
+# manifest and every rendered coverage surface carry while any file is
+# censused at identity depth.  ``tests/compiler/test_census_depth.py`` pins
+# this tuple: growing it without a reviewed receipt fails that test.
+CENSUS_DEPTH_DECLARATIONS: tuple[CensusDepthDeclaration, ...] = (
+    CensusDepthDeclaration(
+        prefix="atlas-scope/",
+        census_depth=CENSUS_DEPTH_IDENTITY,
+        reason="line_projection_deferred:size_ceiling",
+        block_category="census_depth_identity_line_projection_deferred",
+        follow_up_owner="master-reference/compiler: compact per-line record encoding",
+    ),
+)
+
+
+def validate_census_depth_declarations(
+    declarations: tuple[CensusDepthDeclaration, ...] = CENSUS_DEPTH_DECLARATIONS,
+) -> list[str]:
+    """Return every reason a declaration cannot stand as a reviewed deferral."""
+
+    errors: list[str] = []
+    seen: set[str] = set()
+    for declaration in declarations:
+        prefix = declaration.prefix
+        path = PurePosixPath(prefix.rstrip("/")) if prefix.endswith("/") else None
+        if (
+            path is None
+            or not path.parts
+            or path.is_absolute()
+            or ".." in path.parts
+            or path.as_posix() + "/" != prefix
+            or path.parts[0] not in ALLOWED_TOP_LEVEL_DIRECTORIES
+        ):
+            errors.append(f"census_depth_prefix_invalid:{prefix}")
+        if any(prefix.startswith(other) or other.startswith(prefix) for other in seen):
+            errors.append(f"census_depth_prefix_overlaps:{prefix}")
+        seen.add(prefix)
+        if declaration.census_depth != CENSUS_DEPTH_IDENTITY:
+            errors.append(f"census_depth_value_invalid:{prefix}")
+        if not re.fullmatch(r"[a-z][a-z0-9_]*:[a-z][a-z0-9_]*", declaration.reason):
+            errors.append(f"census_depth_reason_invalid:{prefix}")
+        if not re.fullmatch(r"census_depth_[a-z0-9_]+", declaration.block_category):
+            errors.append(f"census_depth_block_category_invalid:{prefix}")
+        if not declaration.follow_up_owner.strip():
+            errors.append(f"census_depth_follow_up_owner_missing:{prefix}")
+    return errors
+
+
+def census_depth_declaration(path: str) -> CensusDepthDeclaration | None:
+    """Return the declaration that defers ``path``, or ``None`` for full depth."""
+
+    matches = [item for item in CENSUS_DEPTH_DECLARATIONS if path.startswith(item.prefix)]
+    if len(matches) > 1:
+        raise ValueError(f"census depth declarations overlap for {path}")
+    return matches[0] if matches else None
+
+
+def census_depth_decision(path: str) -> tuple[str, str | None]:
+    """Return ``(census_depth, reason)`` for one tracked path."""
+
+    declaration = census_depth_declaration(path)
+    if declaration is None:
+        return CENSUS_DEPTH_FULL, None
+    return declaration.census_depth, declaration.reason
+
+
+def census_depth_declaration_receipts() -> list[dict[str, Any]]:
+    """Serializable declarations, in prefix order, for ledgers and validators."""
+
+    return [
+        {
+            "prefix": item.prefix,
+            "census_depth": item.census_depth,
+            "reason": item.reason,
+            "block_category": item.block_category,
+            "follow_up_owner": item.follow_up_owner,
+        }
+        for item in sorted(CENSUS_DEPTH_DECLARATIONS, key=lambda row: row.prefix)
+    ]
 
 
 def _components(path: str) -> tuple[str, ...]:
@@ -286,13 +457,17 @@ def classify_file(path: str, git_mode: str) -> dict[str, Any]:
         language = "config"
     elif _is_license_name(name):
         language = "text"
+    elif JSONC_CONFIG_NAME_RE.fullmatch(PurePosixPath(path).name):
+        # Case-sensitive on the exact tracked basename (see the rule's owner).
+        language = "jsonc"
 
     roles: set[str] = set()
     if language in SOURCE_LANGUAGES:
         roles.add("source")
     if language == "markdown" or _is_license_name(name):
         roles.add("documentation")
-    if language in {"json", "jsonl", "toml", "yaml", "csv", "ini", "config"}:
+    # JSONC is JSON with comments: structured data, never executable source.
+    if language in {"json", "jsonc", "jsonl", "toml", "yaml", "csv", "ini", "config"}:
         roles.add("structured_data")
     if path.startswith(WORKFLOW_PREFIX):
         roles.add("workflow")

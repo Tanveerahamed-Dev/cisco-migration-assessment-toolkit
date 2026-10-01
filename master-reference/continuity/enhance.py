@@ -20,6 +20,7 @@ from governance.architecture import path_dispositions, validate_contract
 from .corpus import COMPILER_SCHEMA_VERSION, _validate_gate_contract
 from .git_state import _git, _tree, observe_git_state
 from .model import ContinuityInputError, digest_object, safe_relative, sha256_bytes
+from .query import census_depth_disclosure
 
 
 DEFAULT_MAX_DEPTH = 4
@@ -1013,6 +1014,23 @@ def _unresolved_categories(
         buckets[str(item["category"])].append(item)
     for identifier in sorted(distances):
         group, record = closure_records[identifier]
+        record_path = record.get("path") or record.get("source_path")
+        disclosure = census_depth_disclosure(
+            bundle, record_path if isinstance(record_path, str) else None, record if group == "files" else None
+        )
+        if disclosure is not None:
+            # An identity-depth path contributes no line, symbol or call
+            # records, so a thin closure around it is deferred, not empty.
+            buckets["census_depth_identity_projection_deferred"].append(
+                {
+                    "record_id": identifier,
+                    "record_type": group,
+                    "path": record_path,
+                    "depth": disclosure["depth"],
+                    "reason": disclosure["reason"],
+                    "block_category": disclosure["block_category"],
+                }
+            )
         reasons = record.get("unresolved_reasons")
         if isinstance(reasons, list):
             for reason in reasons:
@@ -1317,6 +1335,7 @@ def build_enhancement_package(
     blocking_categories = {
         "architecture_owner_unresolved",
         "bounded_closure_truncated",
+        "census_depth_identity_projection_deferred",
         "no_gui_or_artifact_surface_linked",
         "no_test_record_linked",
     }
@@ -1331,6 +1350,10 @@ def build_enhancement_package(
         "corpus_scan": corpus_scan,
         "construction_model": "seed_directed_streaming_no_global_record_graph",
     }
+    seed_path = seed_record.get("path")
+    seed_disclosure = census_depth_disclosure(
+        bundle, seed_path if isinstance(seed_path, str) else None, seed_record if seed_group == "files" else None
+    )
     core = {
         "schema_version": ENHANCEMENT_SCHEMA_VERSION,
         "package_type": "atlas_enhancement_package",
@@ -1348,6 +1371,7 @@ def build_enhancement_package(
             "record_type": seed_group,
             "record": seed_record,
             "citation": current_citation,
+            **({"census_depth": seed_disclosure} if seed_disclosure is not None else {}),
         },
         "current_behavior": _current_behavior(seed_group, seed_record, current_citation),
         "dependency_and_impact_closure": {

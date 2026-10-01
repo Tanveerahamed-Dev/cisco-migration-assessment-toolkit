@@ -90,6 +90,11 @@ portable/*.lock text eol=lf
 portable/third-party-licenses/** text eol=lf
 tests/fixtures/*.sql text eol=lf
 
+# Atlas Scope compiles its tracked data from the engine sample fleet's bytes AS READ (sourceExactSha256), and
+# its compiler refuses a CRLF sample for the tracked compile (E_TRACKED_SOURCE_FORM). Pin LF so a clone under
+# core.autocrlf=true checks out the committed form instead of tripping that refusal.
+webapp/sample_data/*.json text eol=lf
+
 # Cloudflare parses this tracked deployment contract byte-for-byte. Pin LF so
 # Windows and Linux builds feed the same header rules into the Sites archive.
 master-reference/public/_headers text eol=lf

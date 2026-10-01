@@ -1,0 +1,1172 @@
+/*
+ * PathTrace.css — the path-trace surface: the form, the hop list and the claim card.
+ *
+ * Every value resolves to a token in src/core/tokens.css. There is no hex literal, no px font
+ * size and no bare duration in this file.
+ *
+ * The surface has to work at two very different widths: Rail A is 300px at the reference viewport,
+ * and the same components are legible at 900px when the shell gives the path its own column. That
+ * is done with a CONTAINER query, not a viewport query — the panel's own width is what decides its
+ * layout, so the components stay correct wherever the shell chooses to put them.
+ *
+ * Three rules carry the visual argument here:
+ *   1. The deciding evidence is the loudest thing inside a hop. Everything else on the row is
+ *      quieter ink at the same size — hierarchy by weight and colour, never by size.
+ *   2. UNDETERMINED is a third state with its own visual language (the --unobserved dashed edge
+ *      and hatch), never a paler REFUTED and never grey-as-disabled.
+ *   3. Chrome is achromatic. Colour appears on a verdict, a band or a citation and nowhere else,
+ *      so the blocked hop is the loudest thing on the panel.
+ */
+
+.pathtrace {
+  container-type: inline-size;
+  container-name: pathtrace;
+  display: flex;
+  flex-direction: column;
+  /* Fills whatever the shell gives it. Without the basis, a flex parent sizes this panel to its
+     min-content and the whole surface collapses to a sliver — silently, since nothing errors. */
+  flex: 1 1 auto;
+  inline-size: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg);
+}
+
+/* The tab strip is fixed; the panel below it is the scroller. Without these two declarations the
+   flex column shrinks EVERY child to fit, and a long result silently squashes the tab strip to a
+   few pixels — a layout defect that throws no error and passes a text-only check. */
+.pathtrace > .ui-tabs {
+  flex: none;
+}
+
+.pt-panel {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-padding-block: var(--sp-2);
+  min-height: 0;
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+/* A hidden tab panel must take no space: `hidden` is set by the primitive and the reset honours
+   it, but the flex parent would still lay it out if it were only visually hidden. */
+.pt-panel[hidden] {
+  display: none;
+}
+
+/* ══ the flow form ═════════════════════════════════════════════════════════ */
+
+.pt-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.pt-form__addresses {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-2);
+  align-items: end;
+}
+
+/* The swap control sits between the two addresses it exchanges, so the gesture and the meaning
+   are in the same place. It is a 28px target, above the 24px floor. */
+.pt-form__swap {
+  justify-self: start;
+}
+
+.pt-form__service {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-2);
+}
+
+.pt-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* The scope of the answer, stated on the control that asks for it rather than only on the result.
+   A reader who never runs a trace still learns what this tool can and cannot model. */
+.pt-form__scope {
+  flex: 1 1 24ch;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-0);
+}
+
+.pt-form__errors {
+  border: var(--hairline) solid var(--sev-critical);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+.pt-form__errors p {
+  font-weight: var(--fw-medium);
+  color: var(--sev-critical);
+}
+
+.pt-form__errors ul {
+  margin-top: var(--sp-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.pt-form__errors li::before {
+  content: "—";
+  margin-right: var(--sp-1);
+  color: var(--text-faint);
+}
+
+@container pathtrace (min-width: 34rem) {
+  .pt-form__addresses {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  /* Horizontal layout, horizontal exchange: the same glyph, turned to point at the two fields it
+     actually swaps. */
+  .pt-form__swap {
+    rotate: 90deg;
+    margin-bottom: var(--sp-1);
+  }
+
+  .pt-form__service {
+    grid-template-columns: 12rem minmax(0, 1fr);
+  }
+}
+
+/* The citation's target floor, its width and its wrap-never-truncate rule are owned by the
+   primitive (src/ui/primitives.css, `.ui-cite` / `.ui-cite__path`) for every surface. They used to
+   be restated here for `.pathtrace` only, which is how every other surface kept the ellipsis
+   (acceptance C2, 2026-09-22). */
+
+/* ══ presets ═══════════════════════════════════════════════════════════════ */
+
+.pt-presets__title,
+.pt-result__title {
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+  color: var(--text);
+  margin-bottom: var(--sp-2);
+}
+
+.pt-presets__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+/* THE CARD IS NOT THE BUTTON (acceptance B6, wave 7). The whole card used to be one run button, so
+   the citations its rationale and provenance note print were inert text inside a control that re-ran
+   the flow. The card is now a list item holding ONE run control (the question: title and flow) and,
+   beside it, what the card says about that question — the verdict with its records, its bounds, the
+   rationale and the provenance — each citation in them a control of its own. The card's own edge is a
+   hairline: it is a grouping, not a control; the run button keeps the control edge (D4). */
+.pt-preset {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: 2px;
+  padding-bottom: var(--sp-2);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.pt-preset:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.pt-preset__btn {
+  display: grid;
+  /* An implicit `auto` track has a min-content floor, so ONE unbreakable run inside a preset set the
+     whole column wider than the rail (measured 707px in a 305px column, clipped by the panel's
+     overflow-x:hidden and leaving the panel scrolled 42px left after a scroll-into-view). A
+     zero-floored track makes every child wrap inside the column instead. */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: var(--sp-2);
+  border: var(--hairline) solid var(--border-strong); /* a control edge: >= 3:1 (D4) */
+  border-radius: var(--radius-md);
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--dur-instant) linear;
+}
+
+.pt-preset__btn:hover {
+  background: var(--surface-2);
+}
+
+.pt-preset__btn > *,
+.pt-preset__verdict,
+.pt-preset__bounds,
+.pt-preset__why,
+.pt-preset__prov {
+  min-width: 0;
+}
+
+/* What the card says about its question, set under the run button on the button's own text inset. */
+.pt-preset__verdict,
+.pt-preset__bounds,
+.pt-preset__why,
+.pt-preset__prov {
+  margin: 0;
+  padding-inline: var(--sp-2);
+}
+
+.pt-preset__title {
+  font-size: var(--fs-2);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+}
+
+.pt-preset__verdict {
+  line-height: var(--lh-1);
+}
+
+.pt-preset__outcome {
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-0);
+  text-transform: lowercase;
+  /* Was nowrap, written for a one-word outcome. The outcome now carries its own qualification
+     ("delivered by routing — not decided: …"), and a nowrap sentence is what widened the preset. */
+  white-space: normal;
+  color: var(--claim-observed);
+}
+
+.pt-preset__outcome[data-outcome="delivered"] {
+  color: var(--state-up);
+}
+.pt-preset__outcome[data-outcome="denied"],
+.pt-preset__outcome[data-outcome="dropped"] {
+  color: var(--sev-critical);
+}
+.pt-preset__outcome[data-outcome="indeterminate"],
+.pt-preset__outcome[data-outcome="out-of-scope"],
+/* The band wins over the outcome word: an undecided delivery or refusal is drawn as undecided,
+   exactly as the card it opens draws it (claims.ts `bandOfTrace`). */
+.pt-preset__outcome[data-band="UNDETERMINED"] {
+  color: var(--claim-indeterminate);
+}
+
+.pt-preset__flow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+}
+
+/* The bounds of the preset's verdict — the trace's own scope clause, badge and caveat count
+   (ClaimCard `verdictStatement`). Drawn directly under the word it bounds and never truncated: a
+   verdict stated without them is a stronger claim than the one the engine made (acceptance B2). */
+.pt-preset__bounds {
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text);
+}
+
+.pt-preset__why {
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text-muted);
+}
+
+/* A derived source address is marked as derived wherever it appears. An unlabelled address reads
+   as observed, and "we saw this host" is a far stronger claim than "this address is inside a
+   subnet we saw". */
+.pt-preset__prov {
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-0);
+  color: var(--text-faint);
+}
+
+.pt-preset__prov[data-kind="derived-from-observed-subnet"],
+.pt-preset__prov[data-kind="outside-every-observed-subnet"] {
+  color: var(--unobserved);
+}
+
+/* ══ the hop list ══════════════════════════════════════════════════════════ */
+
+.hoplist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.hoplist__none {
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text-muted);
+  border-left: 3px solid var(--unobserved-edge);
+  padding-left: var(--sp-2);
+}
+
+.hop {
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  /* The band is carried on the left edge at 3px so a blocked hop is findable by shape at a glance,
+     down a list, without tinting the panel it sits in. */
+  border-left: 3px solid var(--claim-observed);
+  background: var(--bg);
+}
+
+.hop[data-band="REFUTED"] {
+  border-left-color: var(--sev-critical);
+}
+
+.hop[data-band="RESOLVED"] {
+  border-left-color: var(--state-up);
+}
+
+/* UNDETERMINED takes the not-observed language: dashed edge, hatch fill. It is neither a pass nor
+   a failure and it must not be able to be mistaken for either. */
+.hop[data-band="UNDETERMINED"] {
+  border-left-color: var(--unobserved-edge);
+  border-left-style: dashed;
+  background-image: var(--unobserved-hatch);
+}
+
+/* The active hop: the three edges the band does not own turn to --text (>= 11:1 against the off
+   hairline, --border). `border-color` here used to set all four sides: --border-strong was 2.97:1
+   light / 2.91:1 dark against --border, and it repainted the band edge, so an active REFUTED or
+   UNDETERMINED hop lost its band (2.66:1 dark) (D4, WCAG 1.4.11). The left edge stays the band's. */
+.hop[data-active] {
+  border-top-color: var(--text);
+  border-right-color: var(--text);
+  border-bottom-color: var(--text);
+  background-color: var(--surface-1);
+}
+
+/* The header WRAPS rather than squeezing. The verdict badge carries a sentence-length word on an
+   undecided hop ("denied by ACL PROTECT_SERVERS — reached by routing from an incomplete table"), and
+   as a `flex: none; nowrap` item it took the whole row: `.hop__host` was squeezed to 0 px — a verdict
+   with no place attached — and the row overflowed by 174-214 px (2026-09-23, A2). Now the host keeps
+   its name, and a badge that does not fit beside it moves to its own line and wraps at its spaces
+   there. Guarded by review/layout-guard.mjs invariant 4. */
+.hop__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  width: 100%;
+  min-height: var(--row-hop);
+  padding: var(--sp-1) var(--sp-2);
+  background: transparent;
+  border: 0;
+  border-bottom: var(--hairline) solid var(--border);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur-instant) linear;
+}
+
+.hop__head:hover {
+  background: var(--surface-2);
+}
+
+.hop__head[aria-current="true"] .hop__host {
+  font-weight: var(--fw-semibold);
+}
+
+.hop__num {
+  flex: none;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.hop__host {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2);
+  font-weight: var(--fw-medium);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Its own width first; it shrinks (and ellipsises) only when the host name alone is wider than
+     the whole header, never to make room for the badge — the badge wraps instead. */
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.hop__head .verdict {
+  margin-left: auto;
+  /* May shrink to the row and wrap its word at spaces on a line of its own; never wider than the
+     header. `white-space: normal` breaks at spaces only — an identifier inside the word is not split. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* ── the verdict badge: glyph + word + colour, three channels ─────────────── */
+
+.verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: none;
+  padding: 0 var(--sp-1);
+  min-height: 1.125rem;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-0);
+  white-space: nowrap;
+  color: var(--claim-observed);
+  border: var(--hairline) solid currentColor;
+}
+
+.verdict__glyph {
+  width: 0.85em;
+  height: 0.85em;
+}
+
+.verdict[data-band="RESOLVED"] {
+  color: var(--state-up);
+}
+
+.verdict[data-band="REFUTED"] {
+  color: var(--sev-critical);
+}
+
+.verdict[data-band="UNDETERMINED"] {
+  color: var(--unobserved);
+  border-style: dashed;
+  background-image: var(--unobserved-hatch);
+}
+
+/* ── the facts: one key:value row each, the deciding one elevated ─────────── */
+
+.hop__facts {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) 0;
+}
+
+/* Every row reserves the 2px rule so the deciding row can take it without shifting its
+   neighbours — and without a negative margin, which bleeds outside the scroll container and adds
+   phantom horizontal scroll at the 300px rail width. */
+.hop__fact {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: var(--sp-2);
+  align-items: baseline;
+  padding: 2px 0 2px var(--sp-2);
+  border-left: 2px solid transparent;
+  min-height: var(--row-hop-sub);
+}
+
+/* The key column wraps rather than clipping: 'Egress if permitted' is longer than the column,
+   and a key that silently overflows its track is what pushes a 300px rail into horizontal scroll. */
+.hop__key {
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.hop__val {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1);
+  min-width: 0;
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text);
+}
+
+/* The row that ended the hop. It is marked by a rule and a weight change rather than a fill: the
+   deciding evidence has to be findable at a glance without the panel acquiring a second colour. */
+.hop__fact[data-decided] {
+  border-left-color: var(--text);
+}
+
+.hop[data-band="REFUTED"] .hop__fact[data-decided] {
+  border-left-color: var(--sev-critical);
+}
+
+.hop[data-band="UNDETERMINED"] .hop__fact[data-decided] {
+  border-left-color: var(--unobserved-edge);
+  border-left-style: dashed;
+}
+
+.hop__fact[data-decided] .hop__key {
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+
+.hop__mono,
+.claim__mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.hop__host-inline {
+  font-family: var(--font-mono);
+  font-weight: var(--fw-medium);
+}
+
+.hop__sep,
+.hop__key-inline {
+  color: var(--text-faint);
+  font-size: var(--fs-0);
+}
+
+.hop__meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--fs-0);
+}
+
+.hop__note {
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+}
+
+/* A citation written INTO a claim, caveat or note (cited-text.tsx): the same control every surface
+   uses, set on the line of the clause it backs (acceptance B6). It keeps the primitive's hit-area
+   floor and wrapping; it only sits on the text's line instead of on its own. */
+.cited-text__cite {
+  vertical-align: middle;
+}
+
+/* The literal configuration line. It is the thing an engineer pastes into a change request, so it
+   is rendered verbatim, monospaced, wrapping rather than truncating. */
+.hop__raw {
+  display: block;
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--sp-1);
+  /* UNBREAKABLE-TOKEN CONTAINER: a verbatim config line can hold one token (an ACL or object-group
+     name) longer than the hop column, and it must stay inside the panel. */
+  overflow-wrap: anywhere;
+}
+
+.hop__flag {
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-0);
+  color: var(--unobserved);
+  border: var(--hairline) dashed var(--unobserved-edge);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-1);
+}
+
+/* A citation that does not resolve is a defect to surface, never a blank to leave. */
+.hop__unresolved,
+.hop__warn {
+  color: var(--sev-high);
+}
+
+.hop__why-none {
+  padding: 0 var(--sp-2) var(--sp-2);
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  color: var(--text-faint);
+}
+
+.hop__why-not,
+.hop__evidence {
+  padding: 0 var(--sp-2) var(--sp-1);
+}
+
+.hop__alts {
+  width: 100%;
+  min-width: 26rem;
+  font-size: var(--fs-1);
+  text-align: left;
+}
+
+/* Wide content scrolls inside its own region; the page body never scrolls in two dimensions. */
+.hop__why-not .ui-disclosure__region {
+  overflow-x: auto;
+  scroll-padding-inline: var(--sp-2);
+}
+
+.hop__alts th {
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) 0;
+  border-bottom: var(--hairline) solid var(--border);
+  white-space: nowrap;
+}
+
+.hop__alts td {
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) 0;
+  border-bottom: var(--hairline) solid var(--border);
+  color: var(--text);
+  vertical-align: top;
+}
+
+/* A NARROW RAIL STACKS the beaten routes instead of scrolling them sideways. MEASURED (audit A2,
+   1920x1080, 340 px rail): with a 26rem table the OUT column was clipped to "resolvec" and
+   "route el[" — the citations for the routes that lost could not be read, and nothing said the
+   region scrolled. Each route becomes a small labelled block; every cell wraps. */
+@container pathtrace (max-width: 30rem) {
+  .hop__alts {
+    min-width: 0;
+  }
+  .hop__alts,
+  .hop__alts tbody,
+  .hop__alts tr,
+  .hop__alts td {
+    display: block;
+  }
+  .hop__alts thead {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .hop__alts tr {
+    padding: var(--sp-1) 0;
+    border-bottom: var(--hairline) solid var(--border);
+  }
+  /* Flex, not a two-column grid: a cell can hold several nodes (the interface, "resolved", its
+     citation), and a grid would push the second one under the label. */
+  .hop__alts td {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--sp-1);
+    /* Hanging indent: a value that wraps (an interface, then its citation) continues under the
+       value, not under the label. */
+    padding: 1px 0 1px calc(5.5rem + var(--sp-1));
+    border-bottom: 0;
+  }
+  .hop__alts td::before {
+    content: attr(data-col);
+    flex: 0 0 5.5rem;
+    margin-inline-start: calc(-5.5rem - var(--sp-1));
+    font-size: var(--fs-0);
+    font-weight: var(--fw-medium);
+    letter-spacing: var(--ls-caps);
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+}
+
+.hop__evlist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.hop__ev {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text-muted);
+}
+
+.hop__ev-kind {
+  flex: none;
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  min-width: 4.5rem;
+}
+
+.hop__ev[data-kind="absence"] .hop__ev-kind {
+  color: var(--unobserved);
+}
+
+.hop__ev-label {
+  flex: 1 1 12rem;
+  min-width: 0;
+  color: var(--text);
+}
+
+/* ══ the claim card ════════════════════════════════════════════════════════ */
+
+.claim {
+  border: var(--hairline) solid var(--border);
+  border-left: 3px solid var(--claim-observed);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.claim[data-band="RESOLVED"] {
+  border-left-color: var(--state-up);
+}
+
+.claim[data-band="REFUTED"] {
+  border-left-color: var(--sev-critical);
+}
+
+/* An honest "I cannot tell you" is the product working. It gets the same card, the same weight and
+   its own colour — never a greyed-out one, which would read as "not applicable". */
+.claim[data-band="UNDETERMINED"] {
+  border-left-color: var(--claim-indeterminate);
+  border-left-style: dashed;
+}
+
+.claim__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.claim__badge {
+  font-size: var(--fs-0);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  padding: 0 var(--sp-2);
+  min-height: 1.125rem;
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-pill);
+  border: var(--hairline) solid currentColor;
+  color: var(--claim-observed);
+}
+
+.claim[data-badge="SCOPED"] .claim__badge {
+  color: var(--claim-scoped);
+}
+.claim[data-badge="INDETERMINATE"] .claim__badge,
+.claim[data-badge="OUT OF SCOPE"] .claim__badge {
+  color: var(--claim-indeterminate);
+  border-style: dashed;
+}
+
+.claim__outcome {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-3);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-3);
+  letter-spacing: var(--ls-3);
+  color: var(--text);
+}
+
+.claim__outcome-glyph {
+  width: 0.9em;
+  height: 0.9em;
+  color: var(--claim-observed);
+}
+
+.claim[data-band="RESOLVED"] .claim__outcome-glyph {
+  color: var(--state-up);
+}
+.claim[data-band="REFUTED"] .claim__outcome-glyph {
+  color: var(--sev-critical);
+}
+.claim[data-band="UNDETERMINED"] .claim__outcome-glyph {
+  color: var(--claim-indeterminate);
+}
+
+.claim__flow {
+  flex: 1 1 18ch;
+  min-width: 0;
+  font-size: var(--fs-1);
+  color: var(--text-muted);
+}
+
+.claim__sentence {
+  font-size: var(--fs-2);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-2);
+  color: var(--text);
+  max-width: 72ch;
+}
+
+.claim__undetermined {
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--claim-indeterminate);
+  border: var(--hairline) dashed var(--unobserved-edge);
+  background-image: var(--unobserved-hatch);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2);
+}
+
+.claim__sample {
+  font-size: var(--fs-0);
+  line-height: var(--lh-0);
+  letter-spacing: var(--ls-0);
+  color: var(--text-muted);
+  border-left: 2px solid var(--border-strong);
+  padding-left: var(--sp-2);
+}
+
+.claim__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.claim__section-title {
+  font-size: var(--fs-0);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.claim__scope-line {
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text);
+}
+
+.claim__scope-list,
+.claim__caveats,
+.claim__reasons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text-muted);
+}
+
+.claim__scope-list > li,
+.claim__reasons > li {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: var(--sp-2);
+  align-items: baseline;
+}
+
+.claim__scope-list > li[data-emphasis] {
+  color: var(--claim-indeterminate);
+}
+
+.claim__k,
+.claim__count {
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.claim__count {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--text);
+  font-weight: var(--fw-medium);
+}
+
+.claim__reasons > li {
+  grid-template-columns: 2.5rem minmax(0, 1fr);
+}
+
+.claim__caveats > li {
+  padding-left: var(--sp-3);
+  position: relative;
+}
+
+.claim__caveats > li::before {
+  content: "—";
+  position: absolute;
+  left: 0;
+  color: var(--text-faint);
+}
+
+.claim__counter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: start;
+}
+
+.claim__counter-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-2);
+  color: var(--text);
+}
+
+.claim__counter-outcome {
+  font-size: var(--fs-0);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--state-up);
+}
+/* The offered flow's colour follows its own band (claims.ts `bandOfTrace`), never the outcome word:
+   a green "delivered" over an undecided delivery is the overclaim this card exists to refuse. */
+.claim__counter-outcome[data-band="REFUTED"] {
+  color: var(--sev-critical);
+}
+.claim__counter-outcome[data-band="UNDETERMINED"] {
+  color: var(--claim-indeterminate);
+}
+
+.claim__counter-why,
+.claim__counter-none {
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text-muted);
+}
+
+/* The two halves of the change contract are two rows, at equal weight. Neither reads as the
+   conclusion of the other. */
+.claim__pair {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}
+
+.claim__pair dt {
+  font-size: var(--fs-0);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.claim__pair dd {
+  color: var(--text);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  align-items: baseline;
+}
+
+/* ══ intent mode ═══════════════════════════════════════════════════════════ */
+
+.pt-intent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.pt-intent__lead,
+.pt-intent__none {
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text-muted);
+  max-width: 72ch;
+}
+
+.pt-intent__plan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-3);
+  background: var(--surface-1);
+}
+
+.pt-intent__claim {
+  font-size: var(--fs-2);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-2);
+  color: var(--text);
+}
+
+.pt-intent__why {
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text-muted);
+}
+
+.pt-intent__facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+/* Stacked by default: at 300px the key column plus an address chip and its citation cannot share
+   a line without one of them overflowing the rail. The two-column form returns when there is room
+   for it. */
+.pt-intent__facts > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-1);
+}
+
+@container pathtrace (min-width: 30rem) {
+  .pt-intent__facts > div {
+    grid-template-columns: 5.5rem minmax(0, 1fr);
+    gap: var(--sp-2);
+    align-items: baseline;
+  }
+}
+
+.pt-intent__facts dt {
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.pt-intent__facts dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.pt-addr {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  max-inline-size: 100%;
+  gap: var(--sp-1);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--sp-1);
+}
+
+.pt-addr__ip {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.pt-addr__prov {
+  font-size: var(--fs-0);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* A derived address is never allowed to read as an observed one. */
+.pt-addr[data-prov="derived"] {
+  border-style: dashed;
+  border-color: var(--unobserved-edge);
+}
+
+.pt-addr[data-prov="derived"] .pt-addr__prov {
+  color: var(--unobserved);
+}
+
+.pt-intent__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+/* Real progress against a known denominator. The search can exceed the interaction budget, so it
+   is shown and cancellable rather than hidden behind a frozen panel. */
+.pt-progress {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 10rem;
+  height: 1.125rem;
+  flex: 1 1 10rem;
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.pt-progress__fill {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  background: var(--accent);
+  opacity: 0.32;
+  transition: inline-size var(--dur-instant) linear;
+}
+
+.pt-progress__text {
+  position: relative;
+  padding-inline: var(--sp-2);
+  font-size: var(--fs-0);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.pt-intent__cancelled {
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+  color: var(--unobserved);
+  border: var(--hairline) dashed var(--unobserved-edge);
+  background-image: var(--unobserved-hatch);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2);
+}
+
+.pt-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* ══ forced colours ════════════════════════════════════════════════════════
+   The system palette replaces ours. The SHAPE channels keep working: the dashed edges on the
+   UNDETERMINED treatments survive, and the border that marks the deciding row is re-pointed at
+   system ink so it does not vanish. */
+@media (forced-colors: active) {
+  .hop__fact[data-decided] {
+    border-left-color: CanvasText;
+  }
+
+  .pt-progress__fill {
+    background: Highlight;
+    opacity: 1;
+  }
+}
+
+/* What the fabric draws for this trace, stated beside the hop list it corresponds to. */
+.pt-result__fabric {
+  margin: 0 0 var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--fs-1);
+  line-height: var(--lh-1);
+}

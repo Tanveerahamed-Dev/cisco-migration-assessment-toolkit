@@ -1,0 +1,2020 @@
+/**
+ * capture-motion.mjs — frame-dense MOTION evidence for acceptance C5.
+ *
+ *     npm run build && npm run preview          # the release build on :4181 (see capture.mjs)
+ *     node review/capture-motion.mjs            # all four legs: {dark,light} x {high,low} @ 1440x900
+ *     node review/capture-motion.mjs --no-png   # analyse only, skip writing every frame to disk
+ *
+ * WHY THIS EXISTS. C5's static checklist passes at high and low, but four of its items are properties
+ * of MOTION and were never captured frame by frame: z-fighting on coplanar surfaces while the camera
+ * moves, LOD / effect / label popping, the ambient-occlusion drop and restore around a camera stop at
+ * the high tier, and the quality-tier cross-fade (TIER_FADE_MS, under C6's 300 ms). A screenshot taken every ~250 ms cannot see
+ * a one-frame pop (the tier-fade comment in scene.ts records exactly that mistake), so this harness
+ * captures EVERY animation frame the scene renders and judges the sequence numerically.
+ *
+ * HOW A FRAME IS CAPTURED (and the two harness-side interventions it needs, stated):
+ *
+ *   1. `preserveDrawingBuffer: true` is forced on every WebGL context the page creates (init script).
+ *      The default framebuffer is otherwise undefined after presentation, so the drawn frame could
+ *      not be copied reliably. It changes buffer retention, not what is drawn: the renderer clears
+ *      every frame itself (the composer's passes autoClear) — so pixels are the product's own.
+ *   2. `requestAnimationFrame` is wrapped by a pump that runs the page's callbacks in registration
+ *      order, exactly as the browser would, and THEN one harness hook. So the hook always runs after
+ *      the scene's render for that frame, and the scene state it reads (`stats()`, `project()`) is
+ *      the state that produced the pixels it copies. Without this, the hook's order relative to the
+ *      scene's callback depends on who re-registered first.
+ *
+ *   The hook copies the WebGL canvas into a GPU-backed 2-D canvas (a GPU→GPU blit, cheap enough to
+ *   keep the loop at display rate — the recorded rAF intervals prove it per sequence), composites the
+ *   scene's own tier-fade overlay on top at the opacity the page reports for that frame (so the
+ *   cross-fade is judged as SEEN, not as rendered underneath), and records per-frame metadata: the
+ *   projected screen position of every device anchor (the camera-change signal), the quality tier,
+ *   whether occlusion was suspended for that render, which DOM labels are visible, the hovered
+ *   device, and the fade overlay's opacity. After each recorded sequence the frames are read back to
+ *   Node as raw RGBA, written as PNG and analysed.
+ *
+ *   DOM labels are NOT in the canvas: their popping is judged from the per-frame visibility log.
+ *
+ * Reuses capture.mjs's GPU_ARGS, its server identification and its scene-handle opt-in (copied, not
+ * imported: importing capture.mjs runs its CLI). Exit code: 0 only when every check PASSES; 3 on any
+ * FAIL; 4 when a check could not be established (UNPROVEN) and nothing failed.
+ *
+ * A leg is graded only at the tier it declares, and it HOLDS that tier: at the start of every leg,
+ * at rest, the tier is PINNED through the product's own mechanism, `scene.setQuality(tier)` — a
+ * caller's tier is not auto and the adaptive step-down never moves it (src/fabric3d/quality.ts
+ * `pinQuality`; the pin reads as `stats().qualityAuto === false`). At 8e873d2 the HIGH legs took the
+ * auto-selected tier unpinned, and on a contended Intel iGPU both were stepped down to balanced
+ * mid-orbit — correct product behaviour, but evidence about a tier the leg did not name. The
+ * adaptive step-down itself is judged where it belongs, by the tier cross-fade item (the same
+ * rebuild path, driven explicitly). Every recorded motion frame's `stats().quality` AND
+ * `stats().qualityAuto` are then compared with the leg's pin, and a sequence with any frame at
+ * another tier, or not pinned, FAILS the "declared tier" item and is a leg problem, which leaves
+ * every other item UNPROVEN rather than graded on evidence about the wrong tier
+ * (`declaredTierFails`).
+ */
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { crc32, deflateSync } from "node:zlib";
+import { checkBuildFreshness } from "./build-freshness.mjs";
+import { awaitPaletteWarm } from "./palette-warm.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+/* Executed (`node review/capture-motion.mjs`), not imported: see `main` at the bottom. */
+const IS_MAIN = typeof process.argv[1] === "string" && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const OUT = resolve(HERE, "shots", "motion");
+const APP = process.env.ATLAS_URL || "http://localhost:4181";
+const WRITE_PNG = !process.argv.includes("--no-png");
+const VIEWPORT = { width: 1440, height: 900 };
+/* deviceScaleFactor 1: the canvas is then 760x790 at 1440x900 and a full-resolution frame can be
+   copied on every rAF without the copy itself costing frames. The DPR the scene renders at is
+   recorded in the report. */
+const DSF = 1;
+const THEMES = ["dark", "light"];
+const TIERS = ["high", "low"];
+
+/* ── copied from capture.mjs (see its comments for the reasoning) ─────────────────────────────── */
+const GPU_ARGS = ["--use-gl=angle", "--disable-gpu-rasterization", "--ignore-gpu-blocklist"];
+
+async function serverIdentity(url = APP) {
+  try {
+    const res = await fetch(url + "/");
+    const html = await res.text();
+    const mode = !res.ok ? "unknown" : html.includes("/@vite/client") ? "dev" : "build";
+    return { url, mode };
+  } catch (e) {
+    return { url, mode: "unknown", error: String(e).slice(0, 200) };
+  }
+}
+
+/* The tier cross-fade's duration and the eases' settle times are READ FROM THE SOURCE that owns
+   them, not copied: a copy here is how the harness kept judging a 300 ms fade against "300 ms"
+   after the question became "under 300 ms" (acceptance C6). */
+const SRC_DIR = resolve(HERE, "..", "src");
+function constFrom(file, name) {
+  const text = readFileSync(resolve(SRC_DIR, file), "utf8");
+  const m = new RegExp(`const\\s+${name}\\s*=\\s*(\\d+(?:\\.\\d+)?)\\s*;`).exec(text);
+  if (!m) throw new Error(`capture-motion: ${name} not found in src/${file} — the harness cannot state its bar`);
+  return Number(m[1]);
+}
+/* Since C5 2026-09-26 the tier fade's ease (duration, curve, per-frame cap) lives with the ease owner. */
+const TIER_FADE_MS = constFrom("fabric3d/emphasis.ts", "TIER_FADE_MS");
+const RECEDE_MS = constFrom("fabric3d/emphasis.ts", "RECEDE_MS");
+/** Acceptance C6: every animation except a deliberate camera move ends under this. */
+const C6_BAR_MS = 300;
+const FRAME_60_MS = 1000 / 60;
+
+/* ── THRESHOLDS — each one stated, and why ─────────────────────────────────────────────────────
+ *
+ * Luma is Rec.709 over 8-bit sRGB values (0-255). "Still" means the camera did not change between
+ * two frames: no device anchor moved by more than STILL_PX.
+ */
+export const T = {
+  /* EXACTLY zero. The first draft used 0.02 px, reasoning that no pixel can change for a smaller
+     move; the first run refuted it: OrbitControls' damping tail keeps moving the camera by 0.01 ->
+     0.0001 px per frame for ~1 s after a release, and those frames still changed hundreds of pixels
+     by up to 160/255. So "still" means the camera did not change AT ALL (every projected anchor equal
+     at full float precision), and sub-pixel tail frames are judged as motion (z-fighting/shimmer). */
+  STILL_PX: 0,
+  /* SEQUENCE DENSITY. The task requires at least 30 frames per second of motion; a sequence whose
+     median frame interval is above 33.4 ms, or where more than 10 % of intervals exceed 50 ms (a
+     dropped-frame gap long enough to hide a one-frame pop), is not dense evidence -> UNPROVEN. */
+  MAX_MEDIAN_DT_MS: 33.4,
+  MAX_GAP_MS: 50,
+  MAX_GAP_SHARE: 0.1,
+  /* LOST FRAMES (C5-R2-3, verifier round 2). The rules above read only the frames that WERE recorded,
+     so a recording that stopped getting frames part-way — measured: 63 frames over 1,183 ms of a
+     2.5 s sequence, then nothing for ~1.3 s — passed as dense, and its fade read "never started in
+     the recorded window". Density is now judged against the recording WINDOW (the in-page clock at
+     start and at stop): no stretch at either edge of the window may go without a frame for longer
+     than MAX_EDGE_GAP_MS, and no frame may be skipped or errored by the hook. An interval BETWEEN two
+     recorded frames is a real (long) host frame, which the items judge; a frameless edge is time the
+     recorder never saw. 250 ms is the longest single host frame the graded runs recorded
+     (2026-09-26), so a longer edge is not one frame in progress. A sequence without a window is
+     never dense. A lost-frame sequence is UNPROVEN, never ok. */
+  MAX_EDGE_GAP_MS: 250,
+  /* STILL-FRAME POP. With the camera still, no emphasis animating and no fade, the scene is
+     deterministic (acceptance F6: two captures are byte-identical), so two consecutive frames must
+     be the same picture. 4/255 tolerates 8-bit rounding in the copy; 60 px (~0.01 % of the canvas,
+     an 8x8 blob) is the smallest area we treat as a visible event. Anything above = a pop/flicker. */
+  POP_DELTA: 4,
+  POP_MAX_PIXELS: 60,
+  /* Frames after a hover change are excluded from the still-frame pop check (the hover rim / recede
+     easing is a designed transition: finite eases in emphasis.ts, the longest RECEDE_MS, whose end
+     state is on screen within one frame of it) and counted separately. Read from the source, plus
+     four frames of slack for a host that drops frames. */
+  HOVER_SETTLE_MS: Math.ceil(RECEDE_MS + 5 * FRAME_60_MS),
+  /* MOTION SPIKE. During motion every frame changes; a pop shows as ONE frame whose change is far
+     above its neighbours' at the same camera speed. Frame change is normalised by the camera change
+     (mean luma delta per px of anchor motion); a frame > 3x the median of its +-4 neighbours AND
+     at least 1.0/255 mean luma change above that median is a spike. 3x is a stated bar, not a fitted
+     one: each sequence reports the observed 99th percentile and maximum of this ratio
+     (spikeRatioP99 / spikeRatioMax) so the margin between smooth motion and the bar is visible. The
+     1.0/255 floor stops a near-still tail frame (mean change ~0.01) from reading as a spike. */
+  SPIKE_RATIO: 3,
+  SPIKE_MIN_EXCESS: 1.0,
+  /* THE REFERENCE RATE HAS A FLOOR (acceptance report 2026-09-23, item 15). The reference is the
+     median rate of the moving neighbours, and that median can be exactly 0: damping-tail frames move
+     the anchors by 0.0001-0.01 px and change no pixel (in the 2026-09-22 run, 20-30 % of the moving
+     frames of every orbit sequence). Divided by 0, every frame with any change became an infinite
+     spike — the "Infinityx" FAIL at light/high dolly frame 59 — so the item could fail on ordinary
+     motion. A neighbourhood that changed (almost) nothing says nothing about how much a frame at
+     THIS camera speed should change, so the reference is floored at a rate that ordinary motion
+     does not exceed a SPIKE_RATIO multiple of: across all 24 motion sequences of that run (2941
+     moving frames) the largest change rate a smooth frame produced was 4.53 levels per px of anchor
+     motion (p99 3.81), and 3 x 1.6 = 4.8 is above it. So a frame is a spike only when it changes
+     more than SPIKE_RATIO times max(neighbour median, 1.6) levels per px, AND by SPIKE_MIN_EXCESS
+     over its neighbours — a real pop among near-still frames still fails (src/fabric3d/
+     render-c5-repairs.test.ts, known-answer cases both ways). Stated cost: where the neighbours'
+     median is below 1.6 (dolly sequences run at ~0.7) the bar rises from 3x their rate to 4.8
+     levels/px; the printed ratio is taken against the floored reference, so it stays finite. */
+  SPIKE_NORM_FLOOR: 1.6,
+  /* Z-FIGHTING. On frames where the camera moves slowly (every anchor moved <= SLOW_PX this frame
+     AND last frame), real geometry cannot make a pixel go up-down-up: at <= 0.25 px/frame an edge,
+     a 2 px cable or a periodic pattern of period >= 3 px (dashes, lid louvers) needs >= 6 frames per
+     half-cycle, and its per-frame steps are small. (The first draft gated at 1.5 px/frame; the first
+     run showed dashed cables and louvers alternating legitimately at that speed.) A pixel whose luma reverses
+     direction (both steps >= FLIP_DELTA) FLIP_MIN_REVERSALS times within FLIP_WINDOW consecutive
+     frame steps is flip-flopping. Isolated single pixels are anti-aliasing sparkle on sub-pixel
+     edges (judged elsewhere in C5); z-fighting is a PATCH on a coplanar overlap, so the check fails
+     on any 4-connected cluster of >= ZF_CLUSTER flip-flopping pixels (a 4x4 patch), or when
+     flip-flopping pixels exceed ZF_MAX_SHARE of the canvas in total.
+     The two rules are REPORTED as two items (2026-09-22), with unchanged thresholds and the same
+     exit code, because they measure different things and the name was hiding which one failed. A
+     per-cluster raycast at the recorded camera pose (scratch probe, recorded in open-issues) found
+     no cluster ray that crossed two surfaces within 0.02 units — the clusters were a sub-pixel strip
+     of the faceplate frame and cable joints — and the SHARE rule is carried, after both were fixed,
+     by isolated single-pixel edge sparkle along cables (~60 %) and chassis edges (~30 %), which is
+     aliasing, not a depth tie. A failing share is therefore printed as what it is.
+     ATTRIBUTED (repair wave 2c, 2026-09-23): the sparkle is made by the SMAA stage, not by the
+     scene. This harness, run unchanged on the dev build with ONLY SMAAEffect's blend weights cleared
+     in-page after its weights pass, measured 7-65 flip px in all 8 orbit sequences (bar: 120 px of
+     the 760x790 canvas) and 0 clusters >= ZF_CLUSTER, every item PASS, exit 0 — against 300-732 px
+     with SMAA on. SMAA's per-frame edge/pattern decisions on 1-3 px features (analytically
+     anti-aliased cables, state-ring curbs, faceplate strips) toggle as the damped orbit creeps. The
+     intermittent 16x1 row on a near-horizontal cable (1 of 48 sequences) did not appear in that run
+     and has the shape of SMAA's orthogonal long-edge blend, but one clean run of an intermittent
+     cluster is not proof of its cause. The lever
+     is src/fabric3d/postfx.ts (SMAA configuration / temporal stability), not geometry. */
+  SLOW_PX: 0.25,
+  FLIP_DELTA: 12,
+  FLIP_MIN_REVERSALS: 3,
+  FLIP_WINDOW: 6,
+  ZF_CLUSTER: 16,
+  ZF_MAX_SHARE: 0.0002,
+  /* LABEL BLINK. Labels are shown/hidden, never faded (FabricLabels.tsx). A visibility run of
+     <= LABEL_BLINK_FRAMES (5 frames ~ 83 ms at 60 Hz) between two opposite states is a blink: under
+     ~100 ms a brief appearance registers as a flash rather than as a change of state. */
+  LABEL_BLINK_FRAMES: 5,
+  /* AO RESTORE (high tier). The scene suspends SSAO while the camera moves and restores it after it
+     has held still for MOTION_HOLD_MS = 140 ms (scene.ts). Checks:
+       - the drop must not happen on a still frame (it would be a pop with nothing to mask it);
+       - the restore must happen, within AO_RESTORE_MAX_MS of the camera's last change (140 ms plus
+         a generous 360 ms for a slow host) — a settled frame without AO is the wrong final frame;
+       - the restore JUMP must stay under the visible-pop bar. The precedent is the C5 audit's own
+         call on the tier swap: 3.61 % of the canvas changed in one frame was "a pop". The bar here is
+         an order of magnitude stricter: FAIL when more than AO_MAX_SHARE (0.5 %) of the canvas
+         changes by >= 8/255 in the restore frame, or more than AO_MAX_STRONG_SHARE (0.05 %) by
+         >= 32/255 (a hard dark crease appearing at once). */
+  AO_RESTORE_MAX_MS: 500,
+  /* The DROP is masked only by a real move: when the camera moved less than half a pixel in the drop
+     frame, the frame's geometry change is sub-pixel and its change is the effect itself, so the drop
+     is judged by the same pop bar as the restore. */
+  AO_MASK_PX: 0.5,
+  AO_DELTA: 8,
+  AO_MAX_SHARE: 0.005,
+  AO_STRONG_DELTA: 32,
+  AO_MAX_STRONG_SHARE: 0.0005,
+  /* TIER CROSS-FADE. emphasis.ts: TIER_FADE_MS (read above), ease-in-out, stepped once per frame by
+     the render loop, started once the new tier's frames are ordinary. The measured fade (the frame
+     before the overlay's opacity leaves 1 to the frame it is gone or <= 0.005) must be at least
+     TIER_FADE_MS - 50 ms (the tail below 0.005 of an ease-in-out, plus a frame of start slop) and
+     UNDER the C6 bar of 300 ms. The upper bound used to be 400 ms around a 300 ms fade, so a fade AT
+     the ceiling passed here while the grading measured 299.9-300.1 ms and failed C6 on it.
+     ONE FRAME'S STEP. No frame may move the overlay's opacity by more than FADE_MAX_STEP. It was 0.25
+     ("an ease-in-out over 18 frames peaks near 0.09/frame, so 0.25 allows a dropped frame"); the
+     2026-09-26 re-grade failed one fade at 0.36 across a 116.6 ms host frame, and the product now
+     CAPS every fade at 0.2 per frame (emphasis.ts FADE_MAX_STEP). The bar is that cap, stated HERE as
+     a number and not read from the product: a verifier that takes the product's constant as its bar
+     would pass a product that raised it. It is judged on the opacity at full precision as the page
+     reports it (getComputedStyle), plus FADE_STEP_EPS for the serialisation of that number; the
+     rounded figure is what is printed. The critic's earlier "cuts" were 0.92 -> 0.50 (0.42) and
+     0.94 -> 0.056.
+     THE COMPOSITED PICTURE must agree: no frame may carry more than FADE_MAX_PIXEL_SHARE (40 %) of
+     the total change from the old tier's picture to the new one — judged two ways, the whole-canvas
+     mean (as before) and MASKED to the pixels the tier change actually moves (|end - start| >=
+     FADE_MASK_DELTA). The whole-canvas SHARE is a ratio, so area alone does not dilute it. What
+     does dilute it is gradual change below FADE_MASK_DELTA spread over the rest of the canvas (AO or
+     history drift, grain). That change carries most of the whole-canvas total and can pull a
+     small-area cut's one-frame share under the bar. The masked share counts only the pixels the tiers
+     really change, so the drift cannot hide the cut (pinned by a known answer in
+     stepdown.fadehold.test.ts). Area DOES dilute the whole-canvas MEAN, which is what gates judging
+     below: the dark tiers differ over 1.3 % of the canvas, so their 0.58/255 mean is about 45 times
+     smaller than the change in those pixels (measured 2026-09-26). A composite is JUDGED only with pixels (the
+     copy-off control has none, by design) and only when the two tiers differ in at least
+     FADE_MIN_CHANGED_PX pixels (the light theme's tiers differed in ONE pixel at >= 8/255,
+     measured): otherwise it is "not applicable", published as a null share with the reason, never
+     as a number. */
+  FADE_MIN_MS: TIER_FADE_MS - 50,
+  /* exclusive: a fade that lasts 300 ms is not under 300 ms.
+     WHOSE DURATION (C5 verification, 2026-09-26). A duration measured on the wall clock belongs to the
+     HOST as much as to the product. An independent run on a contended host failed 2 of 24 fades at
+     316.6 / 316.7 ms, although every step was within the cap. One trace was 16.7 ms frames down to 0.25,
+     then an 83.3 ms frame (0.25 -> 0.05, the cap binding) and a 50 ms frame to removal. The offline
+     model of a 280 ms ease-in-out on 60 Hz frames with ONE long frame gives the same picture:
+     - One 50 ms frame among the last two frames takes even an UNCAPPED wall-clock fade (the old CSS
+       one) to 300 ms.
+     - An 83.3 ms frame there takes it to 300-333 ms, and a 116.6 ms frame to 300-367 ms.
+     - The 0.2 cap adds at most one 60 Hz frame of its own for an 83-100 ms stall, and two for a
+       116-133 ms stall. A frame of 33 ms or more can bind it.
+     So this bar judges the PRODUCT's duration on the fades the host presented ordinarily. A fade with a
+     host stall inside it (a frame longer than FADE_HOST_STALL_MS) may pass 300 ms under one condition:
+     every frame from 300 ms on either ENDS the fade or moves the full FADE_MAX_STEP. That is a delayed
+     fade catching up at the most the step bar allows, never one that dawdles. A fade over 300 ms with no
+     stall inside it fails as before. Stall-extended fades are listed in the verdict with their stall. */
+  FADE_MAX_MS: C6_BAR_MS,
+  /* A frame that missed at least one 60 Hz vsync: longer than 1.5 frames. At the 280 ms ease-in-out's
+     steepest point a frame of about 33 ms covers the 0.2 cap. */
+  FADE_HOST_STALL_MS: 1.5 * FRAME_60_MS,
+  FADE_MAX_STEP: 0.2,
+  FADE_STEP_EPS: 0.001,
+  FADE_MAX_PIXEL_SHARE: 0.4,
+  FADE_MIN_VISIBLE_DELTA: 0.1,
+  FADE_MASK_DELTA: 8,
+  /* the POP_MAX_PIXELS area: the smallest change this harness treats as a visible event */
+  FADE_MIN_CHANGED_PX: 60,
+  /* THE INJECTED STALL (the deterministic reproduction of the 2026-09-26 FAIL). One sequence per
+     direction and theme blocks the main thread for FADE_STALL_MS on the first frame the overlay's
+     opacity leaves 1 — so the frame after it is a ~130 ms frame, exactly where the graded cut came
+     from. A wall-clock fade steps >= 0.36 there (the model: 0.36-0.65 by where the stall lands); a
+     per-frame-capped one steps at most its cap. It turns a 1-in-24 host event into a certain test. */
+  FADE_STALL_MS: 120,
+  /* THE HANDOVER (C5-R2-1, verifier round 2; owner decision 2026-09-27: no path — a tier change
+     mid-fade, the tab-switch step-up, … — may remove, replace or reset a fade overlay faster than the
+     per-frame cap). Three sequences per theme, on the high leg: a tier change on the first frame the
+     overlay is up (mid-hold), one once the fade is under HANDOVER_MID_OPACITY (mid-fade), and a tab
+     hidden for HIDE_MS once the fade is under HANDOVER_HIDE_OPACITY, with the tier change landed on
+     the first frame back (the step-up a returning tab lands; the leg is pinned, so it is driven by
+     `setQuality` through the same `applyQuality` path). A hidden tab is EMULATED as the browser
+     specifies one: `document.visibilityState` reads "hidden" and `visibilitychange` fires, and the
+     harness's rAF pump runs no frame until the tab returns (timers keep running).
+     How it is JUDGED, without the product's word: whenever the overlay on screen last frame LEAVES
+     (replaced by another element, or removed) while above 0.005, the hook measures, at half
+     resolution in the page, the screen before (P: canvas + old overlay at its opacity), the screen now
+     (Q: canvas + whatever overlay is up), and what a plain removal would show now (R: the canvas
+     alone). Over the pixels a removal would visibly change (|R - P| >= FADE_MASK_DELTA), the screen
+     may move at most FADE_MAX_STEP of what the removal moves: share = sum|Q - P| / sum|R - P|. A
+     removal is share 1; a handover that shows the same picture is ~0. Under FADE_MIN_CHANGED_PX such
+     pixels (the light theme's tiers differ in about one) it is "not applicable", never a pass by
+     arithmetic — but a REMOVAL above FADE_MAX_STEP fails on its opacity alone. Within one overlay
+     element, every frame (the first one back from the hidden tab included) is held to FADE_MAX_STEP. */
+  HANDOVER_MID_OPACITY: 0.6,
+  HANDOVER_HIDE_OPACITY: 0.8,
+  /* Longer than THREE 1,200 ms windows: the old driver's watchdog removed the overlay after two
+     consecutive windows without a frame, and whatever their alignment to the hide, two whole idle
+     windows fit in 3,600 ms. (A first measurement at 2,600 ms did not reach them: the pre-fix build
+     then failed this item on the tier change alone.) */
+  HIDE_MS: 3800,
+};
+
+/* ── in-page instrumentation (init script; self-contained) ─────────────────────────────────── */
+function instrument() {
+  window.__atlasExposeScene = true;
+
+  const getContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+    if (typeof type === "string" && type.startsWith("webgl")) attrs = { ...(attrs || {}), preserveDrawingBuffer: true };
+    return getContext.call(this, type, attrs);
+  };
+
+  const nativeRAF = window.requestAnimationFrame.bind(window);
+  let queue = new Map();
+  let nextId = 1;
+  let scheduled = false;
+  const M = {
+    recording: false,
+    /* false = metadata only (no pixel copy): the control that separates a product stall from one the
+       copy itself could cause. */
+    copy: true,
+    /* FADE_STALL_MS: when > 0, busy-wait that long once, after the hook of the first frame whose
+       overlay opacity is below 1 (see T.FADE_STALL_MS). `stalledAt` records the frame. */
+    stallMs: 0,
+    stalledAt: null,
+    pool: [],
+    frames: [],
+    ids: null,
+    label: null,
+    hookErrors: 0,
+    /* the recording window on the page's clock, and frames the hook could not record (T.MAX_EDGE_GAP_MS) */
+    startedAt: null,
+    stoppedAt: null,
+    hookSkips: 0,
+    /* THE HANDOVER (T.HIDE_MS and after): a hidden tab, emulated; the trigger that lands a tier change
+       mid-hold / mid-fade / on the first frame back; the in-page measure of an overlay leaving. */
+    hidden: false,
+    suspendUntil: 0,
+    trigger: null,
+    maskDelta: 8,
+    lastFade: null,
+    small: {},
+    screenKey: "a",
+    havePrev: false,
+  };
+  window.__motion = M;
+
+  /* A HIDDEN TAB, as the browser specifies one: the document reads hidden, `visibilitychange` fires,
+     and no animation frame runs until it returns (the pump below holds them). Timers keep running. */
+  const visDesc = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+  const hidDesc = Object.getOwnPropertyDescriptor(Document.prototype, "hidden");
+  try {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get() { return M.hidden ? "hidden" : visDesc.get.call(this); } });
+    Object.defineProperty(document, "hidden", { configurable: true, get() { return M.hidden ? true : hidDesc.get.call(this); } });
+  } catch {
+    /* left native: a hidden-tab sequence then records that its trigger never returned */
+  }
+
+  /* Each overlay element gets a serial, so the trace can tell one overlay's fade from a replacement. */
+  const overlayIds = new WeakMap();
+  let overlaySerial = 0;
+  const overlayId = (el) => {
+    let v = overlayIds.get(el);
+    if (v === undefined) {
+      overlaySerial += 1;
+      v = overlaySerial;
+      overlayIds.set(el, v);
+    }
+    return v;
+  };
+  /* The screen at half resolution: the canvas, and an overlay over it at `alpha`. */
+  const SMALL = 2;
+  function small(key, c) {
+    const w = Math.max(1, Math.ceil(c.width / SMALL));
+    const h = Math.max(1, Math.ceil(c.height / SMALL));
+    let s = M.small[key];
+    if (!s || s.width !== w || s.height !== h) {
+      s = new OffscreenCanvas(w, h);
+      M.small[key] = s;
+    }
+    return s;
+  }
+  function paint(s, c, overlay, alpha) {
+    const g = s.getContext("2d");
+    g.globalAlpha = 1;
+    g.clearRect(0, 0, s.width, s.height);
+    g.drawImage(c, 0, 0, s.width, s.height);
+    if (overlay) {
+      g.globalAlpha = alpha;
+      g.drawImage(overlay, 0, 0, s.width, s.height);
+      g.globalAlpha = 1;
+    }
+  }
+  function lumaOf(s) {
+    const d = s.getContext("2d").getImageData(0, 0, s.width, s.height).data;
+    const L = new Float32Array(s.width * s.height);
+    for (let p = 0, q = 0; p < L.length; p++, q += 4) L[p] = d[q] * 0.2126 + d[q + 1] * 0.7152 + d[q + 2] * 0.0722;
+    return L;
+  }
+  /** P: the screen last frame; Q: the screen now; R: the canvas alone now (a plain removal). */
+  function leaveMeasure(P, Q, R) {
+    if (P.width !== Q.width || P.height !== Q.height) return { share: null, maskedPx: 0, why: "canvas resized" };
+    const lp = lumaOf(P);
+    const lq = lumaOf(Q);
+    const lr = lumaOf(R);
+    let px = 0;
+    let moved = 0;
+    let removal = 0;
+    for (let p = 0; p < lp.length; p++) {
+      const r = Math.abs(lr[p] - lp[p]);
+      if (r < M.maskDelta) continue;
+      px++;
+      removal += r;
+      moved += Math.abs(lq[p] - lp[p]);
+    }
+    return { share: removal > 0 ? Math.round((moved / removal) * 1000) / 1000 : null, maskedPx: px * SMALL * SMALL };
+  }
+
+  function hook(ts) {
+    if (!M.recording) return;
+    const h0 = performance.now();
+    try {
+      const scene = window.__atlasScene;
+      const c = document.querySelector(".fabric3d canvas, canvas");
+      if (!scene || !c) {
+        /* a frame the page presented and this recording lost (see T.MAX_EDGE_GAP_MS) */
+        M.hookSkips += 1;
+        return;
+      }
+      const i = M.frames.length;
+      let g = null;
+      let buf = null;
+      if (M.copy) {
+        buf = M.pool[i];
+        if (!buf || buf.width !== c.width || buf.height !== c.height) {
+          buf = new OffscreenCanvas(c.width, c.height);
+          M.pool[i] = buf;
+        }
+        g = buf.getContext("2d");
+        g.globalAlpha = 1;
+        g.clearRect(0, 0, buf.width, buf.height);
+        g.drawImage(c, 0, 0);
+      }
+      const fadeEl = c.parentElement?.querySelector(".fabric3d__tier-fade") ?? null;
+      let fade = null;
+      if (fadeEl) {
+        const op = Number(getComputedStyle(fadeEl).opacity);
+        fade = { opacity: op, transition: fadeEl.style.transition || "", id: overlayId(fadeEl) };
+        if (g) {
+          g.globalAlpha = op;
+          g.drawImage(fadeEl, 0, 0, buf.width, buf.height);
+          g.globalAlpha = 1;
+        }
+      }
+      /* THE OVERLAY LEAVING (T.HIDE_MS and after): the overlay on screen last frame is gone — replaced
+         or removed — while it was above 0.005. Measured against what a plain removal would show. */
+      const last = M.lastFade;
+      const left = last !== null && (fade === null || last.id !== fade.id) && last.opacity > 0.005;
+      let leave = null;
+      if (fade !== null || left) {
+        const curKey = M.screenKey === "a" ? "b" : "a";
+        const cur = small(curKey, c);
+        paint(cur, c, fadeEl, fade !== null ? fade.opacity : 0);
+        if (left) {
+          const kind = fade === null ? "removed" : "replaced";
+          if (M.havePrev) {
+            const alone = small("alone", c);
+            paint(alone, c, null, 0);
+            leave = { kind, fromOpacity: last.opacity, ...leaveMeasure(M.small[M.screenKey], cur, alone) };
+          } else leave = { kind, fromOpacity: last.opacity, share: null, maskedPx: 0, why: "no screen recorded for the frame before" };
+        }
+        M.screenKey = curKey;
+        M.havePrev = fade !== null;
+      } else M.havePrev = false;
+      M.lastFade = fade !== null ? { id: fade.id, opacity: fade.opacity } : null;
+      const s = scene.stats();
+      const cam = [];
+      for (const id of M.ids) {
+        const p = scene.project(id);
+        cam.push(p ? p.x : NaN, p ? p.y : NaN); /* full float precision: see STILL_PX */
+      }
+      let vis = "";
+      let hover = null;
+      for (const id of M.ids) {
+        const el = document.querySelector(`.fabric3d-label[data-device="${CSS.escape(id)}"]`);
+        vis += el && el.getAttribute("data-visible") !== "false" && el.getClientRects().length > 0 ? "1" : "0";
+        if (el && el.getAttribute("data-state") === "hover") hover = id;
+      }
+      M.frames.push({
+        i,
+        ts,
+        quality: s.quality,
+        qualityAuto: s.qualityAuto,
+        converged: s.converged,
+        aoSuspended: (s.qualityReasons || []).some((r) => /ambient occlusion is suspended/.test(r)),
+        framesTimed: s.framesTimed,
+        sceneFrameMs: s.frameMs,
+        hookMs: Math.round((performance.now() - h0) * 100) / 100,
+        labelsShown: s.labelsShown,
+        cam,
+        vis,
+        hover,
+        fade,
+        handover: leave,
+        w: c.width,
+        h: c.height,
+      });
+      /* The handover sequences' trigger: a tier change (or a hidden tab, then the tier change on the
+         first frame back) once the overlay is up and under `below`. After this frame is recorded, so
+         the next recorded frame is the first to show what the page did. */
+      const tr = M.trigger;
+      if (tr && tr.firedAt === null && fade && fade.opacity > 0.005 && fade.opacity < tr.below) {
+        tr.firedAt = i;
+        tr.firedOpacity = fade.opacity;
+        if (tr.hideMs > 0) {
+          M.hidden = true;
+          M.suspendUntil = performance.now() + tr.hideMs;
+          document.dispatchEvent(new Event("visibilitychange"));
+        } else {
+          scene.setQuality(tr.tier);
+          tr.appliedAt = i;
+        }
+      } else if (tr && tr.returnedAt !== null && tr.appliedAt === null) {
+        scene.setQuality(tr.tier);
+        tr.appliedAt = i;
+      }
+      if (M.stallMs > 0 && M.stalledAt === null && fade && fade.opacity < 1) {
+        M.stalledAt = i;
+        const until = performance.now() + M.stallMs;
+        while (performance.now() < until) {
+          /* a heavy host frame, on purpose */
+        }
+      }
+    } catch (e) {
+      M.hookErrors += 1;
+      M.lastHookError = String(e).slice(0, 200);
+    }
+  }
+
+  function pump(ts) {
+    scheduled = false;
+    /* A frame requested before the tab hid (the page re-requests at the top of its own callback) is
+       held, like every other, until the tab returns. */
+    if (M.hidden && performance.now() < M.suspendUntil) {
+      ensure();
+      return;
+    }
+    /* The emulated tab returns: visible again, `visibilitychange` first, then the frame. */
+    if (M.hidden && performance.now() >= M.suspendUntil) {
+      M.hidden = false;
+      if (M.trigger && M.trigger.returnedAt === null) M.trigger.returnedAt = M.frames.length;
+      document.dispatchEvent(new Event("visibilitychange"));
+    }
+    const q = queue;
+    queue = new Map();
+    for (const cb of q.values()) {
+      try {
+        cb(ts);
+      } catch (e) {
+        setTimeout(() => {
+          throw e;
+        });
+      }
+    }
+    hook(ts);
+    if (queue.size > 0 || M.recording) ensure();
+  }
+  function ensure() {
+    if (scheduled) return;
+    scheduled = true;
+    /* While the emulated tab is hidden no animation frame runs; the first one after it is the return. */
+    const wait = M.hidden ? M.suspendUntil - performance.now() : 0;
+    if (wait > 0) setTimeout(() => nativeRAF(pump), wait);
+    else nativeRAF(pump);
+  }
+  window.requestAnimationFrame = (cb) => {
+    const id = nextId++;
+    queue.set(id, cb);
+    ensure();
+    return id;
+  };
+  window.cancelAnimationFrame = (id) => {
+    queue.delete(id);
+  };
+
+  M.start = (label, ids) => {
+    M.frames = [];
+    M.stalledAt = null;
+    M.ids = ids;
+    M.label = label;
+    M.hookErrors = 0;
+    M.hookSkips = 0;
+    M.lastFade = null;
+    M.havePrev = false;
+    M.startedAt = performance.now();
+    M.stoppedAt = null;
+    M.recording = true;
+    ensure();
+  };
+  M.stop = () => {
+    M.recording = false;
+    M.stoppedAt = performance.now();
+    return M.frames.map((f) => ({ ...f }));
+  };
+  /** The recording window and what the hook could not record (see T.MAX_EDGE_GAP_MS). */
+  M.window = () => ({ startedAt: M.startedAt, stoppedAt: M.stoppedAt, skipped: M.hookSkips, hookErrors: M.hookErrors });
+  /** Raw RGBA of frame k as base64 (FileReader is native and fast for megabytes). */
+  M.read = (k) =>
+    new Promise((res, rej) => {
+      const buf = M.pool[k];
+      const f = M.frames[k];
+      const data = buf.getContext("2d").getImageData(0, 0, f.w, f.h).data;
+      const r = new FileReader();
+      r.onload = () => res(String(r.result).slice(String(r.result).indexOf(",") + 1));
+      r.onerror = () => rej(r.error);
+      r.readAsDataURL(new Blob([data]));
+    });
+  M.release = () => {
+    M.pool = [];
+    M.frames = [];
+  };
+}
+
+/* The settle condition from capture.mjs (readSettle), trimmed to what this harness needs. */
+function readSettle() {
+  const scene = window.__atlasScene;
+  const stats = scene?.stats?.();
+  const word = document.querySelector(".sb__converged")?.textContent ?? null;
+  const warm = document.querySelector(".stage-warmup");
+  const warmVisible = warm !== null && warm.getClientRects().length > 0;
+  return {
+    handle: Boolean(scene),
+    converged: stats?.converged ?? null,
+    quality: stats?.quality ?? null,
+    ok: Boolean(scene) && stats?.converged === true && word === "settled" && !warmVisible,
+  };
+}
+
+async function awaitSettled(page, capMs = 60000) {
+  const t0 = Date.now();
+  for (;;) {
+    const st = await page.evaluate(readSettle).catch(() => null);
+    if (st?.ok) {
+      /* ...and the palette's pre-warm frame is no longer drawn (review/palette-warm.mjs): a recording
+         inside that window would carry its raster and one-time program compile. Throws when bounded out. */
+      await awaitPaletteWarm(page);
+      return st;
+    }
+    if (Date.now() - t0 > capMs) throw new Error(`not settled within ${capMs} ms: ${JSON.stringify(st)}`);
+    await page.waitForTimeout(100);
+  }
+}
+
+/* ── PNG writer (no decoder/encoder dependency in this package) ───────────────────────────────── */
+function chunk(type, data) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const td = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(td) >>> 0);
+  return Buffer.concat([len, td, crc]);
+}
+function encodePng(w, h, rgba, channels = 4) {
+  const stride = w * channels;
+  const raw = Buffer.alloc((stride + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (stride + 1)] = 0;
+    rgba.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = channels === 4 ? 6 : 2;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw, { level: 3 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+const luma = (rgba, n) => {
+  const L = new Uint8Array(n);
+  for (let p = 0, q = 0; p < n; p++, q += 4) L[p] = (rgba[q] * 0.2126 + rgba[q + 1] * 0.7152 + rgba[q + 2] * 0.0722 + 0.5) | 0;
+  return L;
+};
+
+/* ── the recorded sequences, per leg ──────────────────────────────────────────────────────────── */
+const sleep = (page, ms) => page.waitForTimeout(ms);
+
+async function focusCanvas(page) {
+  await page.evaluate(() => document.querySelector(".fabric3d canvas, canvas")?.focus());
+}
+
+/** Each entry: { id, run(page, box) } — the motion is scripted in real time around the recorder. */
+const SEQUENCES = [
+  {
+    id: "orbit-drag",
+    what: "pointer-drag orbit through the canvas (the gesture a reader makes), release, pointer off canvas, then hold still",
+    async run(page, box) {
+      await sleep(page, 450);
+      const y = box.y + box.height * 0.82;
+      const x0 = box.x + box.width * 0.2;
+      await page.mouse.move(x0, y);
+      await page.mouse.down();
+      for (let k = 1; k <= 90; k++) {
+        await page.mouse.move(x0 + k * 4, y - k * 0.4);
+        await sleep(page, 16);
+      }
+      await page.mouse.up();
+      await page.mouse.move(5, VIEWPORT.height - 5);
+      /* 3 s, not 1.5: the first full run measured the damping tail still moving the camera
+         (0.0005 px/frame) 1.5 s after release, so the stop and the AO restore fell outside the window. */
+      await sleep(page, 3000);
+    },
+  },
+  {
+    id: "orbit-keys-slow",
+    what: "Shift+Arrow keyboard orbit (15 deg steps with OrbitControls damping; no pointer over the canvas, so no hover), then hold still — the damping tail is the slow-motion window for z-fighting",
+    async run(page) {
+      await focusCanvas(page);
+      await sleep(page, 450);
+      for (let k = 0; k < 3; k++) {
+        await page.keyboard.press("Shift+ArrowLeft");
+        await sleep(page, 380);
+      }
+      await sleep(page, 2500);
+    },
+  },
+  {
+    id: "dolly-in",
+    what: "keyboard '+' dolly-in (a wheel notch each), five notches 180 ms apart, then hold still",
+    async run(page) {
+      await focusCanvas(page);
+      await sleep(page, 450);
+      for (let k = 0; k < 5; k++) {
+        await page.keyboard.press("+");
+        await sleep(page, 180);
+      }
+      await sleep(page, 1400);
+    },
+  },
+  {
+    id: "dolly-out",
+    what: "keyboard '-' dolly-out, five notches 180 ms apart, then hold still",
+    async run(page) {
+      await focusCanvas(page);
+      await sleep(page, 450);
+      for (let k = 0; k < 5; k++) {
+        await page.keyboard.press("-");
+        await sleep(page, 180);
+      }
+      await sleep(page, 1400);
+    },
+  },
+  {
+    id: "focus-fly",
+    what: "focusDevice('core1') eased fly-to (the product's focus affordance), then the camera stops and holds",
+    async run(page) {
+      await sleep(page, 450);
+      await page.evaluate(() => window.__atlasScene.focusDevice("core1"));
+      await sleep(page, 2600);
+    },
+  },
+  {
+    id: "reset-fly",
+    what: "resetCamera() eased fly back to the whole fabric, then the camera stops and holds",
+    async run(page) {
+      await sleep(page, 450);
+      await page.evaluate(() => window.__atlasScene.resetCamera());
+      await sleep(page, 2600);
+    },
+  },
+];
+
+const FADE_REPEATS = Number(process.env.ATLAS_FADE_REPEATS || 3);
+/* ATLAS_MOTION_ONLY=handover records only the handover sequences (iteration; such a run can never
+   PASS: every other item is then UNPROVEN). */
+const ONLY_HANDOVER = process.env.ATLAS_MOTION_ONLY === "handover";
+const FADE_SEQUENCES = [
+  {
+    id: "tier-fade-high-to-low",
+    to: "low",
+    async run(page) {
+      await sleep(page, 300);
+      await page.evaluate(() => window.__atlasScene.setQuality("low"));
+      await sleep(page, 2200);
+    },
+  },
+  {
+    id: "tier-fade-low-to-high",
+    to: "high",
+    async run(page) {
+      await sleep(page, 300);
+      await page.evaluate(() => window.__atlasScene.setQuality("high"));
+      await sleep(page, 2800);
+    },
+  },
+];
+
+/* THE HANDOVER SEQUENCES (T.HIDE_MS and after). Each starts at the high leg's pinned tier, steps down
+   to low, lands a tier change back to high at its trigger, and so ends where it began. */
+const HANDOVER_SEQUENCES = [
+  {
+    id: "tier-change-mid-hold",
+    what: "setQuality('low'), then setQuality('high') on the first frame the overlay is up (held at 1, the low tier still warming up)",
+    trigger: { below: 1.01, hideMs: 0, tier: "high" },
+  },
+  {
+    id: "tier-change-mid-fade",
+    what: `setQuality('low'), then setQuality('high') on the first frame the fade is under ${T.HANDOVER_MID_OPACITY}`,
+    trigger: { below: T.HANDOVER_MID_OPACITY, hideMs: 0, tier: "high" },
+  },
+  {
+    id: "tab-hidden-mid-fade-then-tier-change",
+    what: `setQuality('low'); once the fade is under ${T.HANDOVER_HIDE_OPACITY} the tab is hidden for ${T.HIDE_MS} ms, and on the first frame back setQuality('high') (the step-up a returning tab lands)`,
+    trigger: { below: T.HANDOVER_HIDE_OPACITY, hideMs: T.HIDE_MS, tier: "high" },
+  },
+].map((s) => ({
+  ...s,
+  async run(page) {
+    await sleep(page, 300);
+    await page.evaluate(() => window.__atlasScene.setQuality("low"));
+    await sleep(page, 3200 + s.trigger.hideMs);
+  },
+}));
+
+/* ── recording ────────────────────────────────────────────────────────────────────────────────── */
+async function record(page, ids, seqId, run, box, dir, { copy = true, keepRgba = false, stallMs = 0, trigger = null } = {}) {
+  await page.evaluate((c) => (window.__motion.copy = c), copy);
+  await page.evaluate((ms) => (window.__motion.stallMs = ms), stallMs);
+  await page.evaluate(
+    ({ trigger, maskDelta }) => {
+      window.__motion.maskDelta = maskDelta;
+      window.__motion.trigger = trigger === null ? null : { ...trigger, firedAt: null, firedOpacity: null, returnedAt: null, appliedAt: null };
+    },
+    { trigger, maskDelta: T.FADE_MASK_DELTA },
+  );
+  await page.evaluate(({ l, ids }) => window.__motion.start(l, ids), { l: seqId, ids });
+  await run(page, box);
+  const meta = await page.evaluate(() => window.__motion.stop());
+  const win = await page.evaluate(() => window.__motion.window());
+  const trig = await page.evaluate(() => {
+    const t = window.__motion.trigger;
+    window.__motion.trigger = null;
+    return t;
+  });
+  const stalledAt = await page.evaluate(() => {
+    const at = window.__motion.stalledAt;
+    window.__motion.stallMs = 0;
+    return at;
+  });
+  const hookErrors = await page.evaluate(() => ({ n: window.__motion.hookErrors, last: window.__motion.lastHookError ?? null }));
+  const frames = [];
+  const rgbaFrames = [];
+  if (WRITE_PNG && copy) mkdirSync(dir, { recursive: true });
+  for (let k = 0; copy && k < meta.length; k += 6) {
+    const batch = await page.evaluate(
+      async ({ a, b }) => {
+        const out = [];
+        for (let j = a; j < b; j++) out.push(await window.__motion.read(j));
+        return out;
+      },
+      { a: k, b: Math.min(meta.length, k + 6) },
+    );
+    batch.forEach((b64, j) => {
+      const f = meta[k + j];
+      const rgba = Buffer.from(b64, "base64");
+      frames.push(luma(rgba, f.w * f.h));
+      if (keepRgba) rgbaFrames.push(rgba);
+      if (WRITE_PNG) writeFileSync(resolve(dir, `${String(k + j).padStart(4, "0")}.png`), encodePng(f.w, f.h, rgba));
+    });
+  }
+  await page.evaluate(() => window.__motion.release());
+  return { meta, frames, rgbaFrames, hookErrors, stalledAt, win, trig };
+}
+
+/* ── analysis ─────────────────────────────────────────────────────────────────────────────────── */
+export const median = (a) => {
+  if (!a.length) return null;
+  const s = [...a].sort((x, y) => x - y);
+  return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+};
+const r2 = (x) => (x === null || x === undefined || Number.isNaN(x) ? null : Math.round(x * 100) / 100);
+
+export function camDeltaSeries(meta) {
+  const d = [0];
+  for (let t = 1; t < meta.length; t++) {
+    let m = 0;
+    const a = meta[t - 1].cam;
+    const b = meta[t].cam;
+    for (let k = 0; k < a.length; k++) {
+      const u = a[k];
+      const v = b[k];
+      if (Number.isNaN(u) !== Number.isNaN(v)) m = Math.max(m, 999);
+      else if (!Number.isNaN(u)) m = Math.max(m, Math.abs(u - v));
+    }
+    d.push(m);
+  }
+  return d;
+}
+
+export function frameDiff(A, B, delta) {
+  let sum = 0;
+  let over = 0;
+  let strong = 0;
+  let max = 0;
+  for (let p = 0; p < A.length; p++) {
+    const d = Math.abs(A[p] - B[p]);
+    sum += d;
+    if (d >= delta) over++;
+    if (d >= T.AO_STRONG_DELTA) strong++;
+    if (d > max) max = d;
+  }
+  return { mean: sum / A.length, over, strong, max };
+}
+
+function diffBBox(A, B, w, delta) {
+  let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
+  for (let p = 0; p < A.length; p++) {
+    if (Math.abs(A[p] - B[p]) >= delta) {
+      const x = p % w, y = (p / w) | 0;
+      if (x < x0) x0 = x;
+      if (y < y0) y0 = y;
+      if (x > x1) x1 = x;
+      if (y > y1) y1 = y;
+    }
+  }
+  return x1 < 0 ? null : { x0, y0, x1, y1 };
+}
+
+/** Pure: is this recording dense evidence? Judged against its WINDOW (`win`: the page clock at start
+ *  and stop, and the frames the hook skipped or errored on): see T.MAX_EDGE_GAP_MS. Without a window
+ *  it is never ok — lost frames at its edges could not be ruled out. Pinned by known answers in
+ *  src/fabric3d/stepdown.fadehold.test.ts, on the verifier's lost-tail recording. */
+export function density(meta, win) {
+  const dts = [];
+  for (let t = 1; t < meta.length; t++) dts.push(meta[t].ts - meta[t - 1].ts);
+  const med = median(dts);
+  const gaps = dts.filter((d) => d > T.MAX_GAP_MS).length;
+  const renderedEvery = meta.slice(1).every((f, i) => f.framesTimed === meta[i].framesTimed + 1);
+  const rateOk = meta.length >= 30 && med !== null && med <= T.MAX_MEDIAN_DT_MS && gaps / Math.max(1, dts.length) <= T.MAX_GAP_SHARE;
+  const lost = [];
+  let headGapMs = null;
+  let tailGapMs = null;
+  if (!win || !Number.isFinite(win.startedAt) || !Number.isFinite(win.stoppedAt)) {
+    lost.push("no recording window: frames lost at its edges cannot be ruled out");
+  } else {
+    headGapMs = r2(meta.length ? meta[0].ts - win.startedAt : win.stoppedAt - win.startedAt);
+    tailGapMs = r2(meta.length ? win.stoppedAt - meta[meta.length - 1].ts : win.stoppedAt - win.startedAt);
+    if (headGapMs > T.MAX_EDGE_GAP_MS) lost.push(`no frame for the first ${headGapMs} ms of the recording`);
+    if (tailGapMs > T.MAX_EDGE_GAP_MS) lost.push(`no frame for the last ${tailGapMs} ms of the recording`);
+    if (win.skipped > 0) lost.push(`${win.skipped} frame(s) the hook could not record`);
+    if (win.hookErrors > 0) lost.push(`${win.hookErrors} hook error(s)`);
+  }
+  const ok = rateOk && lost.length === 0;
+  return {
+    frames: meta.length,
+    durationMs: r2(meta.length ? meta[meta.length - 1].ts - meta[0].ts : 0),
+    windowMs: win && Number.isFinite(win.startedAt) && Number.isFinite(win.stoppedAt) ? r2(win.stoppedAt - win.startedAt) : null,
+    headGapMs,
+    tailGapMs,
+    medianDtMs: r2(med),
+    maxDtMs: r2(dts.length ? Math.max(...dts) : null),
+    gapsOver50ms: gaps,
+    fps: r2(med ? 1000 / med : null),
+    oneSceneFramePerCapture: renderedEvery,
+    lost,
+    ok,
+    why: ok ? "" : [...(rateOk ? [] : [`below the frame-rate bar (${meta.length} frames, median ${r2(med)} ms, ${gaps} gaps over ${T.MAX_GAP_MS} ms)`]), ...lost].join("; "),
+  };
+}
+
+export function analyseMotion(seq, meta, L, w, h, tier, win) {
+  const n = w * h;
+  const cd = camDeltaSeries(meta);
+  const diffs = [null];
+  for (let t = 1; t < L.length; t++) diffs.push(frameDiff(L[t - 1], L[t], T.POP_DELTA));
+
+  /* Hover-change exclusion windows. */
+  const hoverChangedAt = [];
+  for (let t = 1; t < meta.length; t++) if (meta[t].hover !== meta[t - 1].hover) hoverChangedAt.push(meta[t].ts);
+  const nearHover = (ts) => hoverChangedAt.some((h0) => ts >= h0 - 20 && ts - h0 <= T.HOVER_SETTLE_MS);
+
+  /* 1. Still-frame pops. */
+  const stillPops = [];
+  let stillPairs = 0;
+  let hoverExcluded = 0;
+  let aoRestoreFrames = [];
+  for (let t = 1; t < meta.length; t++) {
+    if (cd[t] > T.STILL_PX) continue;
+    const aoEdge = meta[t - 1].aoSuspended !== meta[t].aoSuspended;
+    if (aoEdge) {
+      aoRestoreFrames.push(t);
+      continue;
+    }
+    if (meta[t].fade || meta[t - 1].fade) continue;
+    if (nearHover(meta[t].ts)) {
+      hoverExcluded++;
+      continue;
+    }
+    stillPairs++;
+    if (diffs[t].over > T.POP_MAX_PIXELS) {
+      stillPops.push({ frame: t, pixelsOver: diffs[t].over, maxDelta: diffs[t].max, mean: r2(diffs[t].mean), bbox: diffBBox(L[t - 1], L[t], w, T.POP_DELTA) });
+    }
+  }
+
+  /* 2. Motion spikes. */
+  const norm = diffs.map((d, t) => (t === 0 || cd[t] <= T.STILL_PX ? null : d.mean / Math.max(cd[t], 0.05)));
+  const spikes = [];
+  const ratios = [];
+  for (let t = 1; t < meta.length; t++) {
+    if (norm[t] === null) continue;
+    const nb = [];
+    for (let k = t - 4; k <= t + 4; k++) if (k !== t && k > 0 && k < meta.length && norm[k] !== null) nb.push(norm[k]);
+    if (nb.length < 4) continue;
+    /* The reference rate, floored (T.SPIKE_NORM_FLOOR): a neighbourhood that changed nothing is not
+       a rate this frame can be compared with. */
+    const nbRate = median(nb);
+    const m = Math.max(nbRate, T.SPIKE_NORM_FLOOR);
+    const nbMean = [];
+    for (let k = t - 4; k <= t + 4; k++) if (k !== t && k > 0 && k < meta.length && diffs[k] && cd[k] > T.STILL_PX) nbMean.push(diffs[k].mean);
+    const excess = diffs[t].mean - median(nbMean);
+    ratios.push(norm[t] / m);
+    const aoEdge = meta[t - 1].aoSuspended !== meta[t].aoSuspended;
+    if (norm[t] > T.SPIKE_RATIO * m && excess >= T.SPIKE_MIN_EXCESS) {
+      spikes.push({ frame: t, ratio: r2(norm[t] / m), rate: r2(norm[t]), neighbourRate: r2(nbRate), meanDiff: r2(diffs[t].mean), neighbourMedian: r2(median(nbMean)), camPx: r2(cd[t]), aoEdge, hoverNear: nearHover(meta[t].ts) });
+    }
+  }
+
+  /* 3. Z-fighting flip-flop on slow frames. */
+  const flipCount = new Uint8Array(n);
+  const lastFlagFrame = new Int16Array(n).fill(-1);
+  let slowSteps = 0;
+  {
+    const win = [];
+    for (let t = 2; t < L.length; t++) {
+      const slow = cd[t] > T.STILL_PX && cd[t - 1] > T.STILL_PX && cd[t] <= T.SLOW_PX && cd[t - 1] <= T.SLOW_PX;
+      let rev = null;
+      if (slow) {
+        slowSteps++;
+        rev = new Uint8Array(n);
+        const A = L[t - 2], B = L[t - 1], C = L[t];
+        for (let p = 0; p < n; p++) {
+          const d1 = B[p] - A[p];
+          const d2 = C[p] - B[p];
+          if ((d1 >= T.FLIP_DELTA && d2 <= -T.FLIP_DELTA) || (d1 <= -T.FLIP_DELTA && d2 >= T.FLIP_DELTA)) rev[p] = 1;
+        }
+      }
+      win.push(rev);
+      if (win.length > T.FLIP_WINDOW) win.shift();
+      if (rev) {
+        for (let p = 0; p < n; p++) {
+          if (!rev[p]) continue;
+          let c = 0;
+          for (const r of win) if (r && r[p]) c++;
+          if (c >= T.FLIP_MIN_REVERSALS) {
+            flipCount[p] = 1;
+            lastFlagFrame[p] = t;
+          }
+        }
+      }
+    }
+  }
+  let flipPixels = 0;
+  for (let p = 0; p < n; p++) flipPixels += flipCount[p];
+  const clusters = clustersOf(flipCount, w, h)
+    .filter((c) => c.size >= T.ZF_CLUSTER)
+    .map((c) => {
+      /* the frame at which this cluster was last seen flip-flopping, for the evidence strip */
+      let f = -1;
+      for (let y = c.bbox.y0; y <= c.bbox.y1; y++) for (let x = c.bbox.x0; x <= c.bbox.x1; x++) f = Math.max(f, lastFlagFrame[y * w + x]);
+      return { ...c, lastFlipFrame: f, camPxThen: f >= 0 ? Number(cd[f].toPrecision(3)) : null };
+    });
+
+  /* 4. Label blinks. */
+  const blinks = [];
+  if (meta.length) {
+    const k = meta[0].vis.length;
+    for (let j = 0; j < k; j++) {
+      let runStart = 0;
+      for (let t = 1; t <= meta.length; t++) {
+        if (t < meta.length && meta[t].vis[j] === meta[t - 1].vis[j]) continue;
+        const runLen = t - runStart;
+        if (runStart > 0 && t < meta.length && runLen <= T.LABEL_BLINK_FRAMES) {
+          blinks.push({ device: null, idx: j, state: meta[runStart].vis[j] === "1" ? "shown" : "hidden", fromFrame: runStart, frames: runLen });
+        }
+        runStart = t;
+      }
+    }
+  }
+  let labelToggles = 0;
+  let maxDropsPerFrame = 0;
+  for (let t = 1; t < meta.length; t++) {
+    let drops = 0;
+    for (let j = 0; j < meta[t].vis.length; j++) {
+      if (meta[t].vis[j] !== meta[t - 1].vis[j]) labelToggles++;
+      if (meta[t - 1].vis[j] === "1" && meta[t].vis[j] === "0") drops++;
+    }
+    maxDropsPerFrame = Math.max(maxDropsPerFrame, drops);
+  }
+
+  /* 5. AO drop / restore (only meaningful where the chain has SSAO: the high tier). */
+  const ao = [];
+  for (let t = 1; t < meta.length; t++) {
+    if (!meta[t - 1].aoSuspended && meta[t].aoSuspended) {
+      const d = frameDiff(L[t - 1], L[t], T.AO_DELTA);
+      ao.push({
+        kind: "drop",
+        frame: t,
+        cameraMovedThisFrame: cd[t] > T.STILL_PX,
+        camPx: Number(cd[t].toPrecision(3)),
+        maskedByMotion: cd[t] >= T.AO_MASK_PX,
+        jump: { meanLuma: r2(d.mean), maxDelta: d.max, shareOver8: Number((d.over / n).toFixed(5)), shareOver32: Number((d.strong / n).toFixed(5)), bbox: diffBBox(L[t - 1], L[t], w, T.AO_DELTA) },
+      });
+    }
+    if (meta[t - 1].aoSuspended && !meta[t].aoSuspended) {
+      let lastMove = t - 1;
+      while (lastMove > 0 && cd[lastMove] <= T.STILL_PX) lastMove--;
+      const d = frameDiff(L[t - 1], L[t], T.AO_DELTA);
+      let after = null;
+      if (t + 1 < L.length) after = frameDiff(L[t], L[t + 1], T.POP_DELTA);
+      ao.push({
+        kind: "restore",
+        frame: t,
+        lastCameraChangeFrame: lastMove,
+        stillFramesBeforeRestore: t - lastMove - 1,
+        msAfterLastCameraChange: r2(meta[t].ts - meta[lastMove].ts),
+        cameraMovedThisFrame: cd[t] > T.STILL_PX,
+        jump: {
+          meanLuma: r2(d.mean),
+          maxDelta: d.max,
+          shareOver8: Number((d.over / n).toFixed(5)),
+          shareOver32: Number((d.strong / n).toFixed(5)),
+          bbox: diffBBox(L[t - 1], L[t], w, T.AO_DELTA),
+        },
+        nextFrameChangePixels: after ? after.over : null,
+      });
+    }
+  }
+  const suspendedAtEnd = meta.length ? meta[meta.length - 1].aoSuspended : null;
+  let lastMoveOverall = -1;
+  for (let t = 1; t < meta.length; t++) if (cd[t] > T.STILL_PX) lastMoveOverall = t;
+
+  return {
+    sequence: seq.id,
+    tier,
+    what: seq.what,
+    density: density(meta, win),
+    tiersSeen: [...new Set(meta.map((f) => f.quality))],
+    tierHeld: tierHeldBy(meta, tier),
+    cameraFramesMoving: cd.filter((x) => x > T.STILL_PX).length,
+    maxCamPxPerFrame: r2(Math.max(...cd)),
+    stillPairsJudged: stillPairs,
+    stillPairsExcludedForHover: hoverExcluded,
+    hoverChanges: hoverChangedAt.length,
+    stillPops,
+    motionSpikes: spikes,
+    /* The observed spread of the spike statistic, so the margin under SPIKE_RATIO is visible. */
+    spikeRatioP99: r2(ratios.length ? [...ratios].sort((x, y) => x - y)[Math.floor(ratios.length * 0.99)] : null),
+    spikeRatioMax: r2(ratios.length ? Math.max(...ratios) : null),
+    zfight: { slowStepsJudged: slowSteps, flipPixels, flipShare: Number((flipPixels / n).toFixed(6)), clusters: clusters.slice(0, 10), clusterCount: clusters.length, flipClasses: flipPixels > 0 ? classifyFlipPixels(flipCount, lastFlagFrame, L, w, h) : null },
+    labels: { toggles: labelToggles, maxDropsInOneFrame: maxDropsPerFrame, blinks },
+    ao,
+    aoSuspendedAtEnd: suspendedAtEnd,
+    lastCameraChangeFrame: lastMoveOverall,
+    msStillAtEnd: meta.length && lastMoveOverall >= 0 ? r2(meta[meta.length - 1].ts - meta[lastMoveOverall].ts) : null,
+    _flipMap: flipCount,
+    _diffs: diffs.map((d) => (d ? { mean: r2(d.mean), over: d.over, max: d.max } : null)),
+    _cd: cd.map((x) => Number(x.toPrecision(3))),
+  };
+}
+
+/**
+ * WHICH TIER each recorded frame was actually rendered at, against the tier its leg DECLARES
+ * (acceptance report 2026-09-23, C5 harness defect). `tiersSeen` used to be recorded and read by no
+ * verdict, and the tier was checked once, at leg start — so the dark "high" reset-fly that failed on
+ * a history-blend pop had in fact been rendered at LOW after an automatic step-down, and a "high" leg
+ * that ran at low reported no leg problem. A frame whose `stats().quality` is not the declared tier
+ * (including a frame that reported none) is evidence about another tier. It is counted here, and
+ * `declaredTierFails` turns any such sequence into a FAIL and a leg problem, so no item is graded on
+ * evidence about a tier it does not name.
+ *
+ * ...and at the PINNED tier (C5 at 8e873d2: both HIGH legs stepped down mid-orbit, because the leg's
+ * tier was the auto-selected one and the adaptive rule was free to move it). Each leg now pins its
+ * tier with `setQuality`, and a frame whose `stats().qualityAuto` is not `false` (true, or not
+ * reported) is a frame the adaptive rule could have moved: counted in `framesUnpinned`.
+ */
+export function tierHeldBy(meta, declared) {
+  const q = meta.map((f) => (typeof f.quality === "string" && f.quality !== "" ? f.quality : "(none)"));
+  let off = 0;
+  let first = null;
+  let unpinned = 0;
+  let firstUnpinned = null;
+  q.forEach((x, t) => {
+    if (meta[t].qualityAuto !== false) {
+      unpinned++;
+      if (firstUnpinned === null) firstUnpinned = t;
+    }
+    if (x === declared) return;
+    off++;
+    if (first === null) first = t;
+  });
+  return {
+    declared,
+    tiersSeen: [...new Set(q)],
+    frames: q.length,
+    framesOffTier: off,
+    firstOffTierFrame: first,
+    framesUnpinned: unpinned,
+    firstUnpinnedFrame: firstUnpinned,
+  };
+}
+
+/** One FAIL line per analysed sequence that was not rendered wholly at its leg's declared, pinned tier. */
+export function declaredTierFails(leg, analysed) {
+  return analysed.flatMap((s) => {
+    const t = s.tierHeld;
+    if (!t || typeof t.framesOffTier !== "number") return [`${leg}/${s.sequence}: no per-frame tier record — the tier this sequence was rendered at is not established`];
+    if (typeof t.framesUnpinned !== "number") return [`${leg}/${s.sequence}: no per-frame pin record — whether the adaptive step-down could move this sequence's tier is not established`];
+    const why = [];
+    if (t.framesOffTier > 0) {
+      const others = t.tiersSeen.filter((x) => x !== t.declared);
+      why.push(`${t.framesOffTier} of ${t.frames} frames rendered at ${others.join(", ")}, not the declared ${t.declared} (first at frame ${t.firstOffTierFrame})`);
+    }
+    if (t.framesUnpinned > 0) {
+      why.push(`${t.framesUnpinned} of ${t.frames} frames rendered with the tier not pinned (stats().qualityAuto was not false; first at frame ${t.firstUnpinnedFrame})`);
+    }
+    return why.length ? [`${leg}/${s.sequence}: ${why.join("; ")}`] : [];
+  });
+}
+
+/**
+ * WHAT KIND OF PIXEL is flip-flopping — a DIAGNOSTIC, never a verdict (repair wave 3, 2026-09-23).
+ *
+ * Each class of flipping pixel has a different remedy (a thin stroke wants a width floor or its own
+ * anti-aliasing, a silhouette wants stable edge anti-aliasing, a highlight wants specular
+ * anti-aliasing, a flat-region flip is shading noise), so the count alone could not say what to fix.
+ * Every flagged pixel is classified on the luma frame in which it was LAST flagged (the camera then
+ * moved <= SLOW_PX per frame, so the neighbourhood is the one that flipped), by the shape of the
+ * image around it along the four principal directions, with CONTRAST (12 levels, FLIP_DELTA) as the
+ * only threshold:
+ *   thin-stroke  a ridge or valley at most 3 px wide: both samples 3 px away on one line lie on the
+ *                same side of the pixel's +-1 extremum by >= CONTRAST (a cable, a curb, a strip).
+ *   silhouette   a step: the samples 3 px away on some line differ from each other by >= 2 x
+ *                CONTRAST, and it is not a stroke (a chassis outline, a deck edge).
+ *   highlight    a local peak at least 2 x CONTRAST above the median of its 5x5 neighbourhood that is
+ *                not a stroke or a step (a specular glint, an LED).
+ *   flat         the 5x5 neighbourhood spans < CONTRAST: shading noise (AO, dither, lighting).
+ *   other        none of the above (textures, the port grille, mixed neighbourhoods).
+ */
+export function classifyFlipPixels(flipMap, lastFlagFrame, L, w, h, contrast = T.FLIP_DELTA) {
+  const out = { "thin-stroke": 0, silhouette: 0, highlight: 0, flat: 0, other: 0 };
+  const dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+  for (let p = 0; p < flipMap.length; p++) {
+    if (!flipMap[p]) continue;
+    const t = lastFlagFrame[p];
+    const F = L[t] ?? L[L.length - 1];
+    const x = p % w;
+    const y = (p / w) | 0;
+    if (x < 3 || y < 3 || x >= w - 3 || y >= h - 3) {
+      out.other++;
+      continue;
+    }
+    const at = (dx, dy) => F[(y + dy) * w + (x + dx)];
+    let lo = 255;
+    let hi = 0;
+    const win = [];
+    for (let dy = -2; dy <= 2; dy++)
+      for (let dx = -2; dx <= 2; dx++) {
+        const v = at(dx, dy);
+        win.push(v);
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+    if (hi - lo < contrast) {
+      out.flat++;
+      continue;
+    }
+    let stroke = false;
+    let step = false;
+    for (const [dx, dy] of dirs) {
+      const a = at(-3 * dx, -3 * dy);
+      const b = at(3 * dx, 3 * dy);
+      const ridgeMax = Math.max(at(-dx, -dy), at(0, 0), at(dx, dy));
+      const ridgeMin = Math.min(at(-dx, -dy), at(0, 0), at(dx, dy));
+      if ((ridgeMax - a >= contrast && ridgeMax - b >= contrast) || (a - ridgeMin >= contrast && b - ridgeMin >= contrast)) stroke = true;
+      if (Math.abs(a - b) >= 2 * contrast) step = true;
+    }
+    if (stroke) {
+      out["thin-stroke"]++;
+      continue;
+    }
+    if (step) {
+      out.silhouette++;
+      continue;
+    }
+    win.sort((m, n) => m - n);
+    if (at(0, 0) - win[12] >= 2 * contrast || hi - win[12] >= 2 * contrast) out.highlight++;
+    else out.other++;
+  }
+  return out;
+}
+
+export function clustersOf(mask, w, h) {
+  const seen = new Uint8Array(mask.length);
+  const out = [];
+  const stack = [];
+  for (let p = 0; p < mask.length; p++) {
+    if (!mask[p] || seen[p]) continue;
+    let size = 0, x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
+    stack.push(p);
+    seen[p] = 1;
+    while (stack.length) {
+      const q = stack.pop();
+      size++;
+      const x = q % w, y = (q / w) | 0;
+      if (x < x0) x0 = x;
+      if (y < y0) y0 = y;
+      if (x > x1) x1 = x;
+      if (y > y1) y1 = y;
+      for (const r of [x > 0 ? q - 1 : -1, x < w - 1 ? q + 1 : -1, y > 0 ? q - w : -1, y < h - 1 ? q + w : -1]) {
+        if (r >= 0 && mask[r] && !seen[r]) {
+          seen[r] = 1;
+          stack.push(r);
+        }
+      }
+    }
+    out.push({ size, bbox: { x0, y0, x1, y1 } });
+  }
+  return out.sort((a, b) => b.size - a.size);
+}
+
+/** One AO event as the progress log prints it. A DROP carries no `msAfterLastCameraChange` (only a
+ *  restore does), and the old one-template log printed every drop as "drop@34 undefinedms" — which
+ *  the 2026-09-26 grading then read as the tier fade's frame 34. Each kind now prints its own fields. */
+export function aoLogEntry(x) {
+  const share = x.jump ? ` ${x.jump.shareOver8}` : "";
+  if (x.kind === "restore") return `restore@${x.frame} ${x.msAfterLastCameraChange}ms${share}`;
+  if (x.kind === "drop") return `drop@${x.frame} cam ${x.camPx}px ${x.maskedByMotion ? "masked" : "UNMASKED"}${share}`;
+  return `${x.kind}@${x.frame}${share}`;
+}
+
+/** Pure: the fade in one recorded sequence. Exported so its rules are pinned by known answers
+ *  (src/fabric3d/stepdown.fadehold.test.ts), including on the recorded 2026-09-26 failure. */
+export function analyseFade(seq, meta, L, w, h, win) {
+  const n = w * h;
+  const firstPresent = meta.findIndex((f) => f.fade);
+  if (firstPresent < 0) return { sequence: seq.id, established: false, why: "the tier-fade overlay never appeared", density: density(meta, win) };
+  let start = -1;
+  for (let t = firstPresent; t < meta.length; t++) {
+    if (meta[t].fade && meta[t].fade.opacity < 0.995) {
+      start = t;
+      break;
+    }
+  }
+  let end = -1;
+  for (let t = Math.max(start, firstPresent); t < meta.length && start >= 0; t++) {
+    if (!meta[t].fade || meta[t].fade.opacity <= 0.005) {
+      end = t;
+      break;
+    }
+  }
+  const trace = meta.slice(Math.max(0, firstPresent - 1), end >= 0 ? end + 2 : meta.length).map((f) => ({
+    frame: f.i,
+    t: r2(f.ts - meta[firstPresent].ts),
+    opacity: f.fade ? r2(f.fade.opacity) : null,
+    quality: f.quality,
+  }));
+  if (start < 0 || end < 0) return { sequence: seq.id, established: false, why: `fade ${start < 0 ? "never started" : "never finished"} in the recorded window`, trace, density: density(meta, win) };
+  let maxStep = 0;
+  let maxStepFrame = -1;
+  const op = (t) => (meta[t].fade ? meta[t].fade.opacity : 0);
+  /* Host stalls inside the fade, and every frame from the C6 bar on (see T.FADE_MAX_MS). */
+  const hostStallFrames = [];
+  const pastBarFrames = [];
+  for (let t = start; t <= end; t++) {
+    const s = Math.abs(op(t - 1) - op(t));
+    if (s > maxStep) {
+      maxStep = s;
+      maxStepFrame = t;
+    }
+    const dt = meta[t].ts - meta[t - 1].ts;
+    if (dt > T.FADE_HOST_STALL_MS) hostStallFrames.push({ frame: t, dtMs: r2(dt) });
+    const elapsed = meta[t].ts - meta[start - 1].ts;
+    if (elapsed >= T.FADE_MAX_MS) pastBarFrames.push({ frame: t, elapsedMs: r2(elapsed), stepRaw: op(t - 1) - op(t), ended: t === end });
+  }
+  const fadeMs = r2(meta[end].ts - meta[start - 1].ts);
+  /* Composited pixel progress: total change from the last full-overlay frame to the first frame
+     without it, and the largest one-frame share of that — whole-canvas, and MASKED to the pixels the
+     tier change moves (see T). */
+  const hasPixels = L.length === meta.length && L.length > 0;
+  const total = hasPixels ? frameDiff(L[start - 1], L[end], 8).mean : 0;
+  let mask = null;
+  let changedPx = null;
+  let maskedTotal = 0;
+  if (hasPixels) {
+    mask = new Uint8Array(n);
+    changedPx = 0;
+    const A = L[start - 1];
+    const B = L[end];
+    for (let p = 0; p < n; p++) {
+      const d = Math.abs(A[p] - B[p]);
+      if (d >= T.FADE_MASK_DELTA) {
+        mask[p] = 1;
+        changedPx++;
+        maskedTotal += d;
+      }
+    }
+  }
+  /* Below FADE_MIN_VISIBLE_DELTA mean luma, or FADE_MIN_CHANGED_PX changed pixels, the two tiers'
+     pictures are the same picture (light theme: 0.02/255 mean, 1 px measured), and a one-frame
+     "share" of a near-zero total is rounding noise, not a cut. */
+  const judgeComposite = hasPixels && total >= T.FADE_MIN_VISIBLE_DELTA && changedPx >= T.FADE_MIN_CHANGED_PX;
+  const compositeWhy = !hasPixels
+    ? "no pixels recorded (the copy-off control): judged on the opacity trace only"
+    : judgeComposite
+      ? `judged on ${changedPx} changed px`
+      : `composite not applicable: the tiers differ in ${changedPx} px at >= ${T.FADE_MASK_DELTA}/255 (under ${T.FADE_MIN_CHANGED_PX}) and by ${r2(total)}/255 mean`;
+  let maxShare = null;
+  let maxShareFrame = -1;
+  let maskedMax = null;
+  let maskedMaxFrame = -1;
+  if (judgeComposite) {
+    maxShare = 0;
+    maskedMax = 0;
+    for (let t = start; t <= end; t++) {
+      const s = frameDiff(L[t - 1], L[t], 8).mean / total;
+      if (s > maxShare) {
+        maxShare = s;
+        maxShareFrame = t;
+      }
+      let step = 0;
+      const P = L[t - 1];
+      const Q = L[t];
+      for (let p = 0; p < n; p++) if (mask[p]) step += Math.abs(P[p] - Q[p]);
+      const m = maskedTotal > 0 ? step / maskedTotal : 0;
+      if (m > maskedMax) {
+        maskedMax = m;
+        maskedMaxFrame = t;
+      }
+    }
+  }
+  return {
+    sequence: seq.id,
+    established: true,
+    density: density(meta, win),
+    overlayAppearedFrame: firstPresent,
+    holdMs: r2(meta[start].ts - meta[firstPresent].ts),
+    fadeStartFrame: start,
+    fadeEndFrame: end,
+    fadeMs,
+    framesInFade: end - start + 1,
+    /* frames inside the fade longer than T.FADE_HOST_STALL_MS, and whether one of them is why the fade
+       passed the C6 bar (judged by fadeFailures' catch-up rule instead of the plain 300 ms bar) */
+    hostStallFrames,
+    stallExtended: fadeMs >= T.FADE_MAX_MS && hostStallFrames.length > 0,
+    pastBarFrames,
+    maxOpacityStep: r2(maxStep),
+    /* full precision: the verdict judges this one (see T.FADE_MAX_STEP) */
+    maxOpacityStepRaw: maxStep,
+    maxOpacityStepFrame: maxStepFrame,
+    /* the frame interval that ended on the largest step: a stall shows here */
+    maxOpacityStepDtMs: maxStepFrame > 0 ? r2(meta[maxStepFrame].ts - meta[maxStepFrame - 1].ts) : null,
+    compositeTotalMeanDelta: hasPixels ? r2(total) : null,
+    compositeChangedPixels: changedPx,
+    compositeJudged: judgeComposite,
+    compositeWhy,
+    compositeMaxOneFrameShare: r2(maxShare),
+    compositeMaxShareFrame: maxShareFrame,
+    compositeMaskedMaxShare: maskedMax === null ? null : Math.round(maskedMax * 1000) / 1000,
+    compositeMaskedMaxShareFrame: maskedMaxFrame,
+    tierAfter: meta[meta.length - 1].quality,
+    trace,
+  };
+}
+
+/** Pure: the verdict's failures for one established fade (pinned by known answers alongside analyseFade). */
+export function fadeFailures(tag, f) {
+  const out = [];
+  if (!f.established) return out;
+  if (f.fadeMs < T.FADE_MIN_MS) out.push(`${tag}: fade lasted ${f.fadeMs} ms (bar: at least ${T.FADE_MIN_MS}, under ${T.FADE_MAX_MS})`);
+  else if (f.fadeMs >= T.FADE_MAX_MS) {
+    /* See T.FADE_MAX_MS: over the bar with no host stall inside it is the product's own duration. With
+       one, every frame from the bar on must end the fade or move the full cap. */
+    if (!f.stallExtended) out.push(`${tag}: fade lasted ${f.fadeMs} ms (bar: at least ${T.FADE_MIN_MS}, under ${T.FADE_MAX_MS}; no host stall inside it)`);
+    else {
+      const longest = Math.max(...f.hostStallFrames.map((s) => s.dtMs));
+      for (const p of f.pastBarFrames ?? []) {
+        if (p.ended || p.stepRaw >= T.FADE_MAX_STEP - T.FADE_STEP_EPS) continue;
+        out.push(
+          `${tag}: fade lasted ${f.fadeMs} ms, extended by a host stall (longest frame ${longest} ms), but frame ${p.frame}, ${p.elapsedMs} ms in, moved only ${r2(p.stepRaw)} (from ${T.FADE_MAX_MS} ms on a stalled fade must end or move the full ${T.FADE_MAX_STEP} each frame)`,
+        );
+      }
+    }
+  }
+  if (f.maxOpacityStepRaw > T.FADE_MAX_STEP + T.FADE_STEP_EPS)
+    out.push(`${tag}: opacity fell ${f.maxOpacityStep} in one frame (frame ${f.maxOpacityStepFrame}${f.maxOpacityStepDtMs !== null && f.maxOpacityStepDtMs !== undefined ? `, a ${f.maxOpacityStepDtMs} ms frame` : ""}; bar ${T.FADE_MAX_STEP})`);
+  if (f.compositeJudged && f.compositeMaxOneFrameShare > T.FADE_MAX_PIXEL_SHARE)
+    out.push(`${tag}: one frame carried ${f.compositeMaxOneFrameShare} of the composited change (frame ${f.compositeMaxShareFrame}; bar ${T.FADE_MAX_PIXEL_SHARE})`);
+  if (f.compositeJudged && f.compositeMaskedMaxShare > T.FADE_MAX_PIXEL_SHARE)
+    out.push(`${tag}: one frame carried ${f.compositeMaskedMaxShare} of the masked composited change over ${f.compositeChangedPixels} px (frame ${f.compositeMaskedMaxShareFrame}; bar ${T.FADE_MAX_PIXEL_SHARE})`);
+  return out;
+}
+
+/** Pure: one injected-stall fade (T.FADE_STALL_MS). ESTABLISHED only when the stall was injected AND
+ *  produced a long frame: a busy-wait that the page never blocked on would otherwise pass vacuously.
+ *  An established one is held to every rule fadeFailures applies, including the catch-up duration rule. */
+export function stalledFadeVerdict(tag, f) {
+  if (!f.established) return { established: false, why: f.why, fails: [] };
+  if (f.stalledAtFrame === null || f.stalledAtFrame === undefined) return { established: false, why: "the stall was never injected", fails: [] };
+  const floor = r2(T.FADE_STALL_MS - FRAME_60_MS);
+  if (f.stallDtMs === null || f.stallDtMs === undefined || f.stallDtMs < floor)
+    return { established: false, why: `the frame after the injected stall lasted ${f.stallDtMs} ms (bar: at least ${floor}): no stall landed`, fails: [] };
+  return { established: true, why: "", fails: fadeFailures(tag, f) };
+}
+
+/** Pure: what one recorded fade contributes to its verdict item (C5-R2-3). A fade is evidence only if
+ *  its recording lost no frames (`density`, judged against the window): otherwise it is NOT
+ *  established — the item is UNPROVEN, never PASS — while any failure it did record still counts,
+ *  because a cut that was seen is a cut. `stalled` applies the injected-stall rule on top. */
+export function fadeEvidence(tag, f, { stalled = false } = {}) {
+  const base = stalled ? stalledFadeVerdict(tag, f) : { established: f.established, why: f.why ?? "", fails: fadeFailures(tag, f) };
+  if (!f.density || !f.density.ok) return { established: false, why: `frames lost or too sparse: ${f.density ? f.density.why : "no density recorded"}${base.established ? "" : `; ${base.why}`}`, fails: base.fails };
+  return base;
+}
+
+/** Pure: one handover sequence (T.HIDE_MS and after), from the recorded trace, its window and its
+ *  trigger. Pinned by known answers in src/fabric3d/stepdown.fadehold.test.ts. */
+export function analyseHandover(seq, meta, win, trig) {
+  const d = density(meta, win);
+  const out = { sequence: seq.id, established: false, notApplicable: false, why: "", density: d, trigger: trig, events: [], judgedEvents: 0, outcome: null, maxSameOverlayStep: 0, maxSameOverlayStepFrame: -1, returnStep: null, fails: [] };
+  const op = (t) => (meta[t].fade ? meta[t].fade.opacity : 0);
+  /* Every overlay that left while above 0.005 (the hook's in-page measure), and every frame within one
+     overlay element. Judged whether or not the sequence is established: a cut that was seen is a cut.
+     HOW each leave was judged (R4-VR1-3, verifier 2026-09-27: a sequence whose leave was never judged
+     counted as established): on pixels (`share` over at least FADE_MIN_CHANGED_PX); a REMOVAL on its
+     opacity too — a removal moves the screen by exactly its opacity's share of a removal, so one at or
+     under the cap passes and one above fails whatever the pixels; "not applicable" when a plain removal
+     would change fewer than FADE_MIN_CHANGED_PX pixels (no leave could show there); "unjudged" when the
+     hook could not measure it (it says why). Only a sequence whose every leave was judged is
+     established; one with a not-applicable leave is reported apart, never as a pass. */
+  const unjudged = [];
+  const inapplicable = [];
+  for (let t = 0; t < meta.length; t++) {
+    const h = meta[t].handover;
+    if (h) {
+      const judged = h.share !== null && h.share !== undefined && h.maskedPx >= T.FADE_MIN_CHANGED_PX;
+      const how = judged ? "pixels" : h.kind === "removed" ? "opacity" : h.why ? "unjudged" : "not applicable";
+      out.events.push({ frame: t, kind: h.kind, fromOpacity: r2(h.fromOpacity), share: h.share ?? null, maskedPx: h.maskedPx, judged, how, ...(h.why ? { why: h.why } : {}) });
+      if (how === "unjudged") unjudged.push(`frame ${t}: the overlay ${h.kind} at opacity ${r2(h.fromOpacity)} was not judged (${h.why})`);
+      if (how === "not applicable") inapplicable.push(`frame ${t}: ${h.kind} at opacity ${r2(h.fromOpacity)}, where a removal would change ${h.maskedPx} px (under ${T.FADE_MIN_CHANGED_PX})`);
+      if (judged) {
+        out.judgedEvents += 1;
+        if (h.share > T.FADE_MAX_STEP)
+          out.fails.push(`${seq.id}: frame ${t}, the running overlay (opacity ${r2(h.fromOpacity)}) was ${h.kind}: the screen moved ${h.share} of what removing it moves, over ${h.maskedPx} px (bar ${T.FADE_MAX_STEP})`);
+      }
+      if (h.kind === "removed" && h.fromOpacity > T.FADE_MAX_STEP + T.FADE_STEP_EPS)
+        out.fails.push(`${seq.id}: frame ${t}, the overlay was removed at opacity ${r2(h.fromOpacity)} (a removal above ${T.FADE_MAX_STEP} is a cut, whatever the pixels)`);
+    }
+    if (t > 0 && meta[t].fade && meta[t - 1].fade && meta[t].fade.id === meta[t - 1].fade.id) {
+      const s = Math.abs(op(t - 1) - op(t));
+      if (s > out.maxSameOverlayStep) {
+        out.maxSameOverlayStep = s;
+        out.maxSameOverlayStepFrame = t;
+      }
+      if (s > T.FADE_MAX_STEP + T.FADE_STEP_EPS) out.fails.push(`${seq.id}: frame ${t}, one overlay's opacity moved ${r2(s)} in one frame (a ${r2(meta[t].ts - meta[t - 1].ts)} ms frame; bar ${T.FADE_MAX_STEP})`);
+    }
+  }
+  out.maxSameOverlayStep = r2(out.maxSameOverlayStep);
+  if (trig && trig.returnedAt !== null && trig.returnedAt !== undefined && trig.returnedAt > 0 && trig.returnedAt < meta.length) {
+    const t = trig.returnedAt;
+    out.returnStep = { frame: t, dtMs: r2(meta[t].ts - meta[t - 1].ts), step: meta[t].fade && meta[t - 1].fade && meta[t].fade.id === meta[t - 1].fade.id ? r2(Math.abs(op(t - 1) - op(t))) : null };
+  }
+  const notEst = [];
+  if (!d.ok) notEst.push(`frames lost or too sparse: ${d.why}`);
+  if (!trig || trig.firedAt === null || trig.firedAt === undefined) notEst.push(`the trigger never fired (no overlay frame under ${trig ? trig.below : "?"})`);
+  else {
+    if (trig.hideMs > 0 && (trig.returnedAt === null || trig.returnedAt === undefined)) notEst.push("the hidden tab never returned in the recorded window");
+    if (trig.appliedAt === null || trig.appliedAt === undefined) notEst.push("the tier change was never applied");
+    else {
+      /* What the tier change did to the overlay on screen: replaced it (an event on the next frame),
+         removed it, or kept it (the same element carried on). */
+      const next = trig.appliedAt + 1;
+      const ev = out.events.find((e) => e.frame === next);
+      if (next >= meta.length) notEst.push("no frame was recorded after the tier change");
+      else if (ev) out.outcome = ev.kind;
+      else if (meta[next].fade && meta[trig.appliedAt].fade && meta[next].fade.id === meta[trig.appliedAt].fade.id) out.outcome = "kept";
+      else out.outcome = "none";
+    }
+  }
+  if (meta.length === 0 || meta[meta.length - 1].fade) notEst.push("the fade never finished in the recorded window");
+  notEst.push(...unjudged);
+  out.notApplicable = notEst.length === 0 && inapplicable.length > 0;
+  out.established = notEst.length === 0 && inapplicable.length === 0;
+  out.why = out.notApplicable ? `not applicable: ${inapplicable.join("; ")}` : notEst.join("; ");
+  return out;
+}
+
+/** Pure: the handover item's verdict over every leg (pinned by known answers alongside analyseHandover).
+ *  It is established only when every (theme x sequence) was recorded and is either established or not
+ *  applicable, and every sequence was established in at least one theme: a path judged nowhere is not
+ *  proven by the themes where nothing could show. */
+export function handoverItem(legs, themes, sequenceIds, legProblems) {
+  const fails = [];
+  const notEst = [];
+  const notApplicable = [];
+  const outcomes = [];
+  let judged = 0;
+  let judgedLeaves = 0;
+  const judgedIn = new Map(sequenceIds.map((id) => [id, []]));
+  for (const theme of themes) {
+    const leg = legs.find((l) => l.theme === theme && Array.isArray(l.handovers));
+    for (const id of sequenceIds) {
+      const hv = (leg?.handovers ?? []).find((h) => h.sequence === id);
+      if (!hv) {
+        notEst.push(`${theme}/${id}: not recorded`);
+        continue;
+      }
+      for (const m of hv.fails) fails.push(`${theme}/${m}`);
+      judgedLeaves += hv.events.filter((e) => e.how === "pixels" || e.how === "opacity").length;
+      outcomes.push(`${theme}/${id}: ${hv.outcome}`);
+      if (hv.established) {
+        judged++;
+        judgedIn.get(id).push(theme);
+      } else if (hv.notApplicable) notApplicable.push(`${theme}/${id}: ${hv.why}`);
+      else notEst.push(`${theme}/${id}: ${hv.why}`);
+    }
+  }
+  const nowhere = sequenceIds.filter((id) => judgedIn.get(id).length === 0);
+  const total = themes.length * sequenceIds.length;
+  const established = notEst.length === 0 && nowhere.length === 0 && legProblems.length === 0;
+  const why =
+    `judged ${judged} of ${total} handover sequences (${themes.length} themes x ${sequenceIds.length}); outcomes ${outcomes.join(", ")}; ${judgedLeaves} overlay leave(s) judged` +
+    `${notApplicable.length ? `; not applicable (no leave could show there): ${notApplicable.join("; ")}` : ""}` +
+    `${nowhere.length ? `; judged in no theme: ${nowhere.join(", ")}` : ""}` +
+    `${notEst.length ? `; not established: ${notEst.join("; ")}` : ""}`;
+  return { fails, established, why, judged, total };
+}
+
+/* ── evidence images for the worst frames ─────────────────────────────────────────────────────── */
+function writeHeat(file, A, B, w, h, gain = 8) {
+  const rgb = Buffer.alloc(w * h * 3);
+  for (let p = 0; p < w * h; p++) {
+    const d = Math.min(255, Math.abs(A[p] - B[p]) * gain);
+    rgb[p * 3] = d;
+    rgb[p * 3 + 1] = d >> 1;
+    rgb[p * 3 + 2] = 0;
+  }
+  writeFileSync(file, encodePng(w, h, rgb, 3));
+}
+/** Crop `bbox` (+pad) out of each listed RGBA frame, magnify by `scale` (nearest), lay them side by side. */
+function writeStrip(file, rgbaFrames, list, bbox, w, h, pad = 12, scale = 6) {
+  const x0 = Math.max(0, bbox.x0 - pad), y0 = Math.max(0, bbox.y0 - pad);
+  const x1 = Math.min(w - 1, bbox.x1 + pad), y1 = Math.min(h - 1, bbox.y1 + pad);
+  const cw = x1 - x0 + 1, ch = y1 - y0 + 1, gap = 4;
+  const frames = list.filter((t) => t >= 0 && t < rgbaFrames.length);
+  const W = frames.length * (cw * scale + gap), H = ch * scale;
+  const out = Buffer.alloc(W * H * 3, 128);
+  frames.forEach((t, k) => {
+    const src = rgbaFrames[t];
+    const ox = k * (cw * scale + gap);
+    for (let y = 0; y < H; y++) {
+      const sy = y0 + ((y / scale) | 0);
+      for (let x = 0; x < cw * scale; x++) {
+        const sx = x0 + ((x / scale) | 0);
+        const q = (sy * w + sx) * 4, o = (y * W + ox + x) * 3;
+        out[o] = src[q]; out[o + 1] = src[q + 1]; out[o + 2] = src[q + 2];
+      }
+    }
+  });
+  writeFileSync(file, encodePng(W, H, out, 3));
+}
+function writeMask(file, mask, w, h, base) {
+  const rgb = Buffer.alloc(w * h * 3);
+  for (let p = 0; p < w * h; p++) {
+    const v = base ? base[p] >> 2 : 0;
+    rgb[p * 3] = mask[p] ? 255 : v;
+    rgb[p * 3 + 1] = mask[p] ? 0 : v;
+    rgb[p * 3 + 2] = mask[p] ? 255 : v;
+  }
+  writeFileSync(file, encodePng(w, h, rgb, 3));
+}
+
+/* ── main ─────────────────────────────────────────────────────────────────────────────────────────
+   Runs only when this file is EXECUTED. Imported (src/fabric3d/render-c5-repairs.test.ts), it is a
+   module of thresholds and pure analysis functions, so the rules a verdict depends on can be pinned
+   by a known-answer test rather than trusted. */
+async function main() {
+  const { chromium } = await import("@playwright/test");
+  const server = await serverIdentity();
+  const freshness = await checkBuildFreshness(APP);
+  /* THE SERVER MUST NOT CHANGE UNDER THE RUN (2026-09-26). Freshness is established once, here; a
+     full run takes over an hour on a contended host, and in the C5 re-grade another lane restarted
+     :4181 on an isolated copy of an older tree between legs — the dark legs measured this build, the
+     light legs another program, and the report could not tell them apart. So the served page is
+     fingerprinted now and re-read before every leg; a leg served anything else is a leg problem
+     (every item it would feed is then UNPROVEN, never graded on a different program). */
+  const servedPage = async () => {
+    try {
+      return await (await fetch(APP + "/")).text();
+    } catch (e) {
+      return `unreachable: ${String(e).slice(0, 120)}`;
+    }
+  };
+  const servedAtStart = await servedPage();
+  console.log(`server: ${server.url} (${server.mode}); build fresh: ${freshness.fresh} — ${freshness.why}`);
+  rmSync(OUT, { recursive: true, force: true });
+  mkdirSync(OUT, { recursive: true });
+
+  const browser = await chromium.launch({ args: GPU_ARGS });
+  const legs = [];
+  for (const theme of THEMES) {
+    for (const tier of TIERS) {
+      /* ATLAS_MOTION_LEGS=dark/high,light/low restricts a run while iterating; a restricted run can
+         never PASS (the verdicts below require all four legs). */
+      if (process.env.ATLAS_MOTION_LEGS && !process.env.ATLAS_MOTION_LEGS.split(",").includes(`${theme}/${tier}`)) continue;
+      const leg = { theme, tier, problems: [], sequences: [], fades: [] };
+      if ((await servedPage()) !== servedAtStart) leg.problems.push(`the page served at ${APP} changed since the run began (another server or build replaced it): this leg measured a different program`);
+      legs.push(leg);
+      const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: DSF, colorScheme: theme, reducedMotion: "no-preference" });
+      await ctx.addInitScript(instrument);
+      const page = await ctx.newPage();
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
+      page.on("console", (m) => m.type() === "error" && errors.push(m.text().slice(0, 200)));
+      await page.goto(`${APP}/`, { waitUntil: "networkidle" });
+      await page.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+      await page.mouse.move(5, VIEWPORT.height - 5);
+      await awaitSettled(page);
+      const env = await page.evaluate(() => {
+        const c = document.querySelector(".fabric3d canvas, canvas");
+        const gl = document.createElement("canvas").getContext("webgl2");
+        const dbg = gl?.getExtension("WEBGL_debug_renderer_info");
+        return {
+          quality: window.__atlasScene.stats().quality,
+          renderer: gl && dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : null,
+          canvas: { w: c.width, h: c.height, cssW: c.clientWidth, cssH: c.clientHeight },
+          dpr: window.devicePixelRatio,
+          ids: [...document.querySelectorAll(".fabric3d-label[data-device]")].map((e) => e.dataset.device),
+        };
+      });
+      leg.env = env;
+      if (env.quality !== "high") leg.problems.push(`auto-selected tier was "${env.quality}", not high — the high tier is not established on this host`);
+      /* PIN the leg's tier, at rest, before the first sequence — for HIGH as well as LOW. A caller's
+         tier is outside the adaptive step-down (quality.ts `pinQuality`); at the tier already in force
+         the pin changes nothing drawn and re-warms nothing, so no rebuild lands in this leg's motion. */
+      await page.evaluate((t) => window.__atlasScene.setQuality(t), tier);
+      await awaitSettled(page);
+      leg.pin = await page.evaluate(() => {
+        const s = window.__atlasScene.stats();
+        return { quality: s.quality, qualityAuto: s.qualityAuto };
+      });
+      if (leg.pin.quality !== tier || leg.pin.qualityAuto !== false) {
+        leg.problems.push(`the leg's tier did not pin: stats() reads quality "${leg.pin.quality}", qualityAuto ${leg.pin.qualityAuto} after setQuality("${tier}")`);
+      }
+      const box = await page.locator(".fabric3d canvas, canvas").first().boundingBox();
+      const ids = env.ids;
+      console.log(`leg ${theme}/${tier}: tier ${leg.pin.quality} (pinned: ${leg.pin.qualityAuto === false}), canvas ${env.canvas.w}x${env.canvas.h}, ${ids.length} anchors, ${env.renderer}`);
+
+      for (const seq of ONLY_HANDOVER ? [] : SEQUENCES) {
+        await awaitSettled(page);
+        const dir = resolve(OUT, theme, tier, seq.id);
+        const { meta, frames, rgbaFrames, hookErrors, win } = await record(page, ids, seq.id, seq.run, box, dir, { keepRgba: true });
+        const w = meta[0]?.w, h = meta[0]?.h;
+        const a = analyseMotion(seq, meta, frames, w, h, tier, win);
+        a.hookErrors = hookErrors;
+        a.dir = dir;
+        a.labelIds = ids;
+        for (const b of a.labels.blinks) b.device = ids[b.idx];
+        /* evidence images */
+        const ev = resolve(OUT, "_evidence", theme, tier, seq.id);
+        mkdirSync(ev, { recursive: true });
+        for (const [k, c] of a.zfight.clusters.slice(0, 3).entries()) {
+          const t = c.lastFlipFrame;
+          writeStrip(resolve(ev, `flipflop-cluster${k + 1}-frames${t - 5}-${t}.png`), rgbaFrames, [t - 5, t - 4, t - 3, t - 2, t - 1, t], c.bbox, w, h);
+        }
+        for (const [k, sp] of a.stillPops.slice(0, 2).entries()) if (sp.bbox) writeStrip(resolve(ev, `still-pop${k + 1}-frames${sp.frame - 1}-${sp.frame}.png`), rgbaFrames, [sp.frame - 1, sp.frame], sp.bbox, w, h, 12, 2);
+        for (const e of a.ao) if (e.jump?.bbox) writeStrip(resolve(ev, `ao-${e.kind}-frames${e.frame - 1}-${e.frame}.png`), rgbaFrames, [e.frame - 1, e.frame], e.jump.bbox, w, h, 8, 2);
+        if (a.zfight.flipPixels > 0) writeMask(resolve(ev, "flipflop-map.png"), a._flipMap, w, h, frames[frames.length - 1]);
+        const worstStill = [...a.stillPops].sort((x, y) => y.pixelsOver - x.pixelsOver)[0];
+        if (worstStill) writeHeat(resolve(ev, `still-pop-${worstStill.frame}-heat.png`), frames[worstStill.frame - 1], frames[worstStill.frame], w, h);
+        for (const r of a.ao) writeHeat(resolve(ev, `ao-${r.kind}-${r.frame}-heat.png`), frames[r.frame - 1], frames[r.frame], w, h);
+        for (const s of a.motionSpikes.slice(0, 3)) writeHeat(resolve(ev, `spike-${s.frame}-heat.png`), frames[s.frame - 1], frames[s.frame], w, h, 4);
+        writeFileSync(resolve(ev, "series.json"), JSON.stringify({ camPx: a._cd, diff: a._diffs, meta: meta.map(({ cam, ...m }) => m) }));
+        delete a._flipMap;
+        delete a._diffs;
+        delete a._cd;
+        leg.sequences.push(a);
+        /* A sequence rendered (even partly) at another tier is not evidence about this leg's tier: a
+           leg problem (so no other item is established on it) and a FAIL of its own (below). */
+        for (const p of declaredTierFails(`${theme}/${tier}`, [a])) leg.problems.push(p);
+        console.log(
+          `  ${seq.id}: tiers ${JSON.stringify(a.tierHeld.tiersSeen)}${a.tierHeld.framesOffTier ? ` (${a.tierHeld.framesOffTier} frames off the declared ${tier}, first at ${a.tierHeld.firstOffTierFrame})` : ""}, pinned ${a.tierHeld.frames - a.tierHeld.framesUnpinned}/${a.tierHeld.frames}, ` +
+            `${a.density.frames} frames @ ${a.density.fps} fps (max dt ${a.density.maxDtMs} ms), moving ${a.cameraFramesMoving}, ` +
+            `still pops ${a.stillPops.length}/${a.stillPairsJudged}, spikes ${a.motionSpikes.length}, flip px ${a.zfight.flipPixels}${a.zfight.flipClasses ? " " + JSON.stringify(a.zfight.flipClasses) : ""} (clusters>=${T.ZF_CLUSTER}: ${a.zfight.clusterCount}), ` +
+            `label blinks ${a.labels.blinks.length}, ao ${JSON.stringify(a.ao.map(aoLogEntry))}`,
+        );
+      }
+
+      if (tier === "high") {
+        /* REPLICATED, and with a CONTROL. A single fade is one sample of a timing property, and the first
+           runs disagreed (one high->low fade ran 300 ms in 18 frames, the next was cut by a 517 ms stall).
+           Each direction is therefore recorded FADE_REPEATS times with the pixel copy ON (composite
+           evidence) and FADE_REPEATS times with it OFF (opacity trace only): a stall that appears with
+           the copy off is the product's, not the harness's. */
+        for (let rep = 0; rep < (ONLY_HANDOVER ? 0 : FADE_REPEATS); rep++) for (const copy of [true, false]) for (const seq of FADE_SEQUENCES) {
+          await awaitSettled(page);
+          const tag = `${seq.id}-r${rep + 1}-${copy ? "copy" : "nocopy"}`;
+          const dir = resolve(OUT, theme, "fade", tag);
+          const { meta, frames, win } = await record(page, ids, seq.id, seq.run, box, dir, { copy });
+          const f = analyseFade(seq, meta, frames, meta[0]?.w, meta[0]?.h, win);
+          f.dir = copy ? dir : null;
+          f.copy = copy;
+          f.rep = rep + 1;
+          f.tag = tag;
+          f.worstSceneFrameMs = r2(Math.max(...meta.map((m) => m.sceneFrameMs ?? 0)));
+          f.maxHookMs = r2(Math.max(...meta.map((m) => m.hookMs ?? 0)));
+          leg.fades.push(f);
+          console.log(`  ${tag}: max dt ${f.density.maxDtMs} ms, worst scene frame ${f.worstSceneFrameMs} ms, hook <= ${f.maxHookMs} ms; ${f.established ? `hold ${f.holdMs} ms, fade ${f.fadeMs} ms over ${f.framesInFade} frames${f.hostStallFrames.length ? ` (host frames ${f.hostStallFrames.map((x) => x.dtMs).join("/")} ms inside it${f.stallExtended ? ", stall-extended" : ""})` : ""}, max opacity step ${f.maxOpacityStep} @${f.maxOpacityStepFrame} (${f.maxOpacityStepDtMs} ms frame), composite ${f.compositeJudged ? `share ${f.compositeMaxOneFrameShare}, masked ${f.compositeMaskedMaxShare} over ${f.compositeChangedPixels} px` : f.compositeWhy}` : "NOT ESTABLISHED: " + f.why}`);
+        }
+        /* THE INJECTED STALL (T.FADE_STALL_MS): one fade per direction with a FADE_STALL_MS main-thread
+           block on the first frame the overlay leaves 1. Copy off (the opacity trace is the evidence).
+           Judged by the same per-frame bar, as its own item; not part of the 24 above. */
+        for (const seq of ONLY_HANDOVER ? [] : FADE_SEQUENCES) {
+          await awaitSettled(page);
+          const tag = `${seq.id}-stalled`;
+          const dir = resolve(OUT, theme, "fade", tag);
+          const { meta, frames, stalledAt, win } = await record(page, ids, seq.id, seq.run, box, dir, { copy: false, stallMs: T.FADE_STALL_MS });
+          const f = analyseFade(seq, meta, frames, meta[0]?.w, meta[0]?.h, win);
+          f.copy = false;
+          f.tag = tag;
+          f.stalledAtFrame = stalledAt;
+          f.stallDtMs = stalledAt !== null && stalledAt + 1 < meta.length ? r2(meta[stalledAt + 1].ts - meta[stalledAt].ts) : null;
+          leg.stalledFades = [...(leg.stalledFades ?? []), f];
+          console.log(`  ${tag}: stall injected after frame ${stalledAt} (next frame ${f.stallDtMs} ms); ${f.established ? `fade ${f.fadeMs} ms over ${f.framesInFade} frames, max opacity step ${f.maxOpacityStep} @${f.maxOpacityStepFrame} (${f.maxOpacityStepDtMs} ms frame)` : "NOT ESTABLISHED: " + f.why}`);
+        }
+        /* THE HANDOVER (T.HIDE_MS and after): a tier change mid-hold, mid-fade, and on the first frame
+           back from a hidden tab. Copy off: the in-page leave measure is the pixel evidence. */
+        for (const seq of HANDOVER_SEQUENCES) {
+          await awaitSettled(page);
+          const { meta, win, trig } = await record(page, ids, seq.id, seq.run, box, resolve(OUT, theme, "handover", seq.id), { copy: false, trigger: seq.trigger });
+          const hv = analyseHandover(seq, meta, win, trig);
+          leg.handovers = [...(leg.handovers ?? []), hv];
+          console.log(
+            `  ${seq.id}: trigger at frame ${trig?.firedAt} (opacity ${r2(trig?.firedOpacity)})${trig?.hideMs ? `, hidden ${trig.hideMs} ms, back at frame ${trig.returnedAt}` : ""}, tier change at frame ${trig?.appliedAt} -> ${hv.outcome}; ` +
+              `leaves ${JSON.stringify(hv.events.map((e) => `${e.kind}@${e.frame} from ${e.fromOpacity}: ${e.judged ? `share ${e.share} over ${e.maskedPx} px` : `${e.how} (${e.why ?? `${e.maskedPx} px`})`}`))}, ` +
+              `largest one-overlay step ${hv.maxSameOverlayStep} @${hv.maxSameOverlayStepFrame}${hv.returnStep ? `, first frame back ${hv.returnStep.dtMs} ms moved ${hv.returnStep.step}` : ""}${hv.established ? "" : hv.notApplicable ? "; NOT APPLICABLE: " + hv.why : "; NOT ESTABLISHED: " + hv.why}`,
+          );
+        }
+      }
+      leg.pageErrors = errors.slice(0, 5);
+      await ctx.close();
+    }
+  }
+  await browser.close();
+
+  /* ── verdicts per C5 motion item ──────────────────────────────────────────────────────────────── */
+  const all = legs.flatMap((l) => l.sequences.map((s) => ({ leg: `${l.theme}/${l.tier}`, ...s })));
+  const dense = all.filter((s) => s.density.ok);
+  const notDense = all.filter((s) => !s.density.ok).map((s) => `${s.leg}/${s.sequence} (${s.density.fps} fps, ${s.density.gapsOver50ms} gaps)`);
+  const legProblems = legs.flatMap((l) => l.problems.map((p) => `${l.theme}/${l.tier}: ${p}`));
+
+  function verdict(fails, established, why) {
+    return { verdict: fails.length ? "FAIL" : established ? "PASS" : "UNPROVEN", fails, why };
+  }
+
+  const zf = all.flatMap((s) =>
+    s.zfight.clusterCount > 0 ? [`${s.leg}/${s.sequence}: ${s.zfight.clusterCount} flip-flop clusters >= ${T.ZF_CLUSTER} px (largest ${s.zfight.clusters[0]?.size ?? 0} px at ${JSON.stringify(s.zfight.clusters[0]?.bbox ?? null)}), ${s.zfight.flipPixels} flip px (${s.zfight.flipShare})`] : [],
+  );
+  const sparkle = all.flatMap((s) =>
+    s.zfight.flipShare > T.ZF_MAX_SHARE ? [`${s.leg}/${s.sequence}: ${s.zfight.flipPixels} flip-flopping px, ${s.zfight.flipShare} of the canvas (bar ${T.ZF_MAX_SHARE}); ${s.zfight.clusterCount} clusters >= ${T.ZF_CLUSTER} px`] : [],
+  );
+  const zfSlowSteps = dense.reduce((a, s) => a + s.zfight.slowStepsJudged, 0);
+  const popFails = [
+    ...all.flatMap((s) => s.stillPops.map((p) => `${s.leg}/${s.sequence} still frame ${p.frame}: ${p.pixelsOver} px changed >= ${T.POP_DELTA}/255 (max ${p.maxDelta}) with the camera still, bbox ${JSON.stringify(p.bbox)}`)),
+    ...all.flatMap((s) => s.motionSpikes.map((p) => `${s.leg}/${s.sequence} motion frame ${p.frame}: change ${p.ratio}x its neighbours at the same camera speed (mean ${p.meanDiff} vs ${p.neighbourMedian}, cam ${p.camPx} px${p.aoEdge ? ", AO edge" : ""}${p.hoverNear ? ", hover change nearby" : ""})`)),
+    ...all.flatMap((s) => s.labels.blinks.map((b) => `${s.leg}/${s.sequence} label ${b.device} ${b.state} for only ${b.frames} frame(s) from frame ${b.fromFrame}`)),
+  ];
+  const popStill = dense.reduce((a, s) => a + s.stillPairsJudged, 0);
+  const aoFails = [];
+  const aoUnjudged = [];
+  let aoRestores = 0;
+  for (const s of all.filter((x) => x.tier === "high")) {
+    for (const e of s.ao) {
+      if (e.kind === "drop" && !e.maskedByMotion && (e.jump.shareOver8 > T.AO_MAX_SHARE || e.jump.shareOver32 > T.AO_MAX_STRONG_SHARE))
+        aoFails.push(`${s.leg}/${s.sequence}: AO drop frame ${e.frame} (camera moved ${e.camPx} px: not masked) jumps ${e.jump.shareOver8} of the canvas >= ${T.AO_DELTA}/255 and ${e.jump.shareOver32} >= ${T.AO_STRONG_DELTA}/255`);
+      if (e.kind === "restore") {
+        aoRestores++;
+        if (e.msAfterLastCameraChange > T.AO_RESTORE_MAX_MS) aoFails.push(`${s.leg}/${s.sequence}: AO restored ${e.msAfterLastCameraChange} ms after the camera stopped (> ${T.AO_RESTORE_MAX_MS})`);
+        if (e.jump.shareOver8 > T.AO_MAX_SHARE || e.jump.shareOver32 > T.AO_MAX_STRONG_SHARE)
+          aoFails.push(`${s.leg}/${s.sequence}: AO restore frame ${e.frame} jumps ${e.jump.shareOver8} of the canvas >= ${T.AO_DELTA}/255 and ${e.jump.shareOver32} >= ${T.AO_STRONG_DELTA}/255 (bars ${T.AO_MAX_SHARE} / ${T.AO_MAX_STRONG_SHARE})`);
+      }
+    }
+    /* Ending suspended is a FAIL only when the camera had been still for longer than the restore bar
+       before the recording ended; otherwise the window was too short to judge (recorded, not passed). */
+    if (s.aoSuspendedAtEnd) {
+      if (s.msStillAtEnd !== null && s.msStillAtEnd > T.AO_RESTORE_MAX_MS) aoFails.push(`${s.leg}/${s.sequence}: camera still for ${s.msStillAtEnd} ms at the end and AO never restored`);
+      else aoUnjudged.push(`${s.leg}/${s.sequence}: recording ended ${s.msStillAtEnd} ms after the last camera change, AO still suspended`);
+    }
+  }
+  const fadeFails = [];
+  let fadesEstablished = 0;
+  let maxStepSeen = 0;
+  const compositeJudgedTags = [];
+  const compositeNotJudged = new Map();
+  const fadeNotEst = [];
+  for (const l of legs) {
+    for (const f of l.fades) {
+      /* fadeEvidence: a fade whose recording lost frames is not established (UNPROVEN), and a failure
+         it did record still counts (C5-R2-3). */
+      const ev = fadeEvidence(`${l.theme}/${f.tag}`, f);
+      for (const m of ev.fails) fadeFails.push(m);
+      if (!ev.established) {
+        fadeNotEst.push(`${l.theme}/${f.tag}: ${ev.why}`);
+        continue;
+      }
+      fadesEstablished++;
+      maxStepSeen = Math.max(maxStepSeen, f.maxOpacityStepRaw);
+      if (f.compositeJudged) compositeJudgedTags.push(`${l.theme}/${f.tag}`);
+      else {
+        const why = f.copy ? `${l.theme}: ${f.compositeWhy}` : "copy-off control (no pixels by design)";
+        compositeNotJudged.set(why, (compositeNotJudged.get(why) ?? 0) + 1);
+      }
+    }
+  }
+  const stallFails = [];
+  let stallsEstablished = 0;
+  const stallNotEst = [];
+  for (const l of legs) {
+    for (const f of l.stalledFades ?? []) {
+      /* Established only if the recording lost no frames and the stall LANDED (a long frame followed
+         it), then held to every fade rule, the catch-up duration rule included (stalledFadeVerdict). */
+      const v = fadeEvidence(`${l.theme}/${f.tag}`, f, { stalled: true });
+      for (const m of v.fails) stallFails.push(`${m} (stall injected after frame ${f.stalledAtFrame}, next frame ${f.stallDtMs} ms)`);
+      if (!v.established) {
+        stallNotEst.push(`${l.theme}/${f.tag}: ${v.why}`);
+        continue;
+      }
+      stallsEstablished++;
+    }
+  }
+  /* THE HANDOVER (T.HIDE_MS and after): see handoverItem. */
+  const handover = handoverItem(
+    legs,
+    THEMES,
+    HANDOVER_SEQUENCES.map((h) => h.id),
+    legProblems,
+  );
+  const stallExtended = legs.flatMap((l) =>
+    l.fades.filter((f) => f.established && f.stallExtended).map((f) => `${l.theme}/${f.tag} ${f.fadeMs} ms (host frames ${f.hostStallFrames.map((s) => s.dtMs).join("/")} ms)`),
+  );
+  const compositeSummary = `composite judged on pixels for ${compositeJudgedTags.length} of ${fadesEstablished}${compositeNotJudged.size ? `; not judged: ${[...compositeNotJudged].map(([why, k]) => `${k} x ${why}`).join("; ")}` : ""}`;
+  const tierFails = legs.flatMap((l) => declaredTierFails(`${l.theme}/${l.tier}`, l.sequences));
+  const allLegsRan = legs.length === THEMES.length * TIERS.length && legs.every((l) => l.sequences.length === SEQUENCES.length);
+
+  const items = {
+    "every recorded motion frame rendered at its leg's declared tier": verdict(tierFails, allLegsRan, `${all.length} sequences across ${legs.length} of ${THEMES.length * TIERS.length} legs, tier and pin read from stats().quality and stats().qualityAuto on every recorded frame; each leg pinned by setQuality(tier) at rest before its first sequence`),
+    "z-fighting (flip-flop PATCHES >= ZF_CLUSTER px during camera moves)": verdict(zf, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `${zfSlowSteps} slow-motion frame steps judged across dense sequences`),
+    "edge sparkle (total flip-flopping share <= ZF_MAX_SHARE during camera moves)": verdict(sparkle, zfSlowSteps >= 60 && notDense.length === 0 && legProblems.length === 0, `same ${zfSlowSteps} slow-motion frame steps`),
+    "LOD / effect / label popping": verdict(popFails, popStill >= 100 && notDense.length === 0 && legProblems.length === 0, `${popStill} still frame pairs + every motion frame + per-frame label visibility judged`),
+    "AO drop and restore at camera stop (high tier)": verdict(aoFails, aoRestores >= 4 && aoUnjudged.length === 0 && notDense.length === 0 && legProblems.length === 0, `${aoRestores} restores observed at the high tier${aoUnjudged.length ? "; not judged: " + aoUnjudged.join("; ") : ""}`),
+    [`${TIER_FADE_MS} ms quality-tier cross-fade (under ${C6_BAR_MS} ms on ordinary host frames, a stalled one catching up at the cap; at most ${T.FADE_MAX_STEP} opacity per frame)`]: verdict(fadeFails, fadesEstablished === THEMES.length * 2 * 2 * FADE_REPEATS && fadeNotEst.length === 0 && legProblems.length === 0, `${fadesEstablished} of ${THEMES.length * 2 * 2 * FADE_REPEATS} fades (2 themes x 2 directions x ${FADE_REPEATS} repeats x copy on/off) established, per-frame opacity step measured on every one (largest ${r2(maxStepSeen)}); duration under ${C6_BAR_MS} ms on ${fadesEstablished - stallExtended.length}, stall-extended and judged on catch-up at the full cap: ${stallExtended.length}${stallExtended.length ? ` (${stallExtended.join("; ")})` : ""}; ${compositeSummary}${fadeNotEst.length ? "; " + fadeNotEst.join("; ") : ""}`),
+    [`a running tier cross-fade is handed over, never cut: a tier change mid-hold, mid-fade, and on the first frame back from a ${T.HIDE_MS} ms hidden tab (at most ${T.FADE_MAX_STEP} of a removal's change per frame)`]: verdict(
+      handover.fails,
+      handover.established,
+      handover.why,
+    ),
+    [`tier cross-fade under an injected ${T.FADE_STALL_MS} ms stall (at most ${T.FADE_MAX_STEP} opacity per frame)`]: verdict(stallFails, stallsEstablished === THEMES.length * 2 && stallNotEst.length === 0 && legProblems.length === 0, `${stallsEstablished} of ${THEMES.length * 2} stalled fades (2 themes x 2 directions) established (each stall landed: next frame at least ${r2(T.FADE_STALL_MS - FRAME_60_MS)} ms), held to the step bar and the catch-up duration rule${stallNotEst.length ? "; " + stallNotEst.join("; ") : ""}`),
+  };
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    server,
+    freshness,
+    viewport: VIEWPORT,
+    deviceScaleFactor: DSF,
+    thresholds: T,
+    notDense,
+    legProblems,
+    items,
+    legs,
+  };
+  writeFileSync(resolve(OUT, "report.json"), JSON.stringify(report, null, 1));
+  console.log("\nC5 motion items:");
+  for (const [k, v] of Object.entries(items)) {
+    console.log(`  ${v.verdict.padEnd(8)} ${k} — ${v.why}`);
+    for (const f of v.fails.slice(0, 12)) console.log(`           ${f}`);
+    if (v.fails.length > 12) console.log(`           ... ${v.fails.length - 12} more in report.json`);
+  }
+  if (notDense.length) console.log(`  sequences below the density bar: ${notDense.join("; ")}`);
+  if (legProblems.length) console.log(`  leg problems: ${legProblems.join("; ")}`);
+  if (!freshness.fresh || server.mode !== "build") console.log(`  WARNING: not evidence of what ships (server ${server.mode}, fresh ${freshness.fresh}).`);
+  console.log(`report: ${resolve(OUT, "report.json")}`);
+  const verdicts = Object.values(items).map((v) => v.verdict);
+  process.exitCode = verdicts.includes("FAIL") ? 3 : verdicts.includes("UNPROVEN") || !freshness.fresh ? 4 : 0;
+}
+
+if (IS_MAIN) await main();

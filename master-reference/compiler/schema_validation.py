@@ -13,6 +13,16 @@ from referencing import Registry, Resource
 
 from atlas_privacy import FORBIDDEN_CONTENT_RULES
 from .graphify import GraphifyFailure, validate_graphify_metadata
+from .policy import (
+    CENSUS_DEPTH_FULL,
+    CENSUS_DEPTH_IDENTITY,
+    CENSUS_DEPTH_POLICY_OWNER,
+    IDENTITY_DEPTH_DEFERRED_GROUPS,
+    IDENTITY_DEPTH_RETAINED_GROUPS,
+    census_depth_decision,
+    census_depth_declaration_receipts,
+    validate_census_depth_declarations,
+)
 
 
 class SchemaValidationError(RuntimeError):
@@ -21,6 +31,92 @@ class SchemaValidationError(RuntimeError):
 
 class ForbiddenContentScanValidationError(RuntimeError):
     """The compiler privacy scan cannot support a downstream pass claim."""
+
+
+class CensusDepthValidationError(RuntimeError):
+    """A file's census depth differs from the single tracked policy owner."""
+
+
+_CENSUS_DEPTH_STATIC_KEYS = ("prefix", "census_depth", "reason", "block_category", "follow_up_owner")
+
+
+def validate_census_depth_receipt(
+    completeness: dict[str, Any],
+    file_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Rejoin every file's census depth and the ledger receipt to the policy owner.
+
+    The policy (``compiler.policy.CENSUS_DEPTH_DECLARATIONS``) is the only
+    place a prefix can be censused below full depth.  A file whose recorded
+    depth or reason differs from it, a receipt whose declarations differ from
+    it, or counts that do not reconcile, is refused -- a downstream consumer
+    can therefore never present an identity-depth file as line-covered nor a
+    full-depth file as deferred.
+    """
+
+    message = "compiler census-depth receipt differs from the tracked policy owner"
+    if validate_census_depth_declarations():
+        raise CensusDepthValidationError(message)
+    receipt = completeness.get("census_depth")
+    if type(receipt) is not dict or type(file_records) is not list:
+        raise CensusDepthValidationError(message)
+    identity: list[dict[str, Any]] = []
+    full = 0
+    for record in file_records:
+        if type(record) is not dict or type(record.get("path")) is not str:
+            raise CensusDepthValidationError(message)
+        depth, reason = census_depth_decision(record["path"])
+        if record.get("census_depth") != depth or record.get("census_depth_reason") != reason:
+            raise CensusDepthValidationError(message)
+        if depth == CENSUS_DEPTH_IDENTITY:
+            identity.append(record)
+            if record.get("parse_status") == "parsed":
+                raise CensusDepthValidationError(message)
+        elif depth == CENSUS_DEPTH_FULL:
+            full += 1
+            if record.get("parse_status") == "identity_census":
+                raise CensusDepthValidationError(message)
+    declarations = receipt.get("declarations")
+    policy_rows = census_depth_declaration_receipts()
+    if (
+        receipt.get("policy_owner") != CENSUS_DEPTH_POLICY_OWNER
+        or type(declarations) is not list
+        or len(declarations) != len(policy_rows)
+        or any(
+            type(row) is not dict or {key: row.get(key) for key in _CENSUS_DEPTH_STATIC_KEYS} != policy
+            for row, policy in zip(declarations, policy_rows)
+        )
+        or receipt.get("identity_depth_files") != len(identity)
+        or receipt.get("full_depth_files") != full
+        or receipt.get("retained_record_groups") != list(IDENTITY_DEPTH_RETAINED_GROUPS)
+        or receipt.get("deferred_record_groups") != list(IDENTITY_DEPTH_DEFERRED_GROUPS)
+        or receipt.get("status") != ("identity_depth_deferred" if identity else "full_depth")
+    ):
+        raise CensusDepthValidationError(message)
+    active: set[str] = set()
+    for row in declarations:
+        members = [record for record in identity if str(record["path"]).startswith(str(row["prefix"]))]
+        if row.get("tracked_files") != len(members):
+            raise CensusDepthValidationError(message)
+        text_members = [
+            record
+            for record in members
+            if record.get("privacy_exposure") == "full"
+            and record.get("language") != "binary"
+            and type(record.get("content_digest")) is str
+        ]
+        if (
+            row.get("text_files") != len(text_members)
+            or row.get("privacy_scanned_text_files") != len(text_members)
+            or row.get("deferred_nonblank_lines")
+            != sum(int(record.get("nonblank_line_count") or 0) for record in text_members)
+        ):
+            raise CensusDepthValidationError(message)
+        if members:
+            active.add(str(row["block_category"]))
+    if receipt.get("block_categories") != sorted(active):
+        raise CensusDepthValidationError(message)
+    return receipt
 
 
 FORBIDDEN_CONTENT_SCAN_SCOPE = "allowlisted_utf8_text_payloads_only"
@@ -174,6 +270,10 @@ def validate_compiler_output(output: Path, schema_root: Path | None = None) -> d
     try:
         validate_passed_forbidden_content_scan(completeness, file_records)
     except ForbiddenContentScanValidationError as exc:
+        raise SchemaValidationError(str(exc)) from None
+    try:
+        validate_census_depth_receipt(completeness, file_records)
+    except CensusDepthValidationError as exc:
         raise SchemaValidationError(str(exc)) from None
     return {"manifest": 1, "completeness": 1, "graphify_metadata": 1, "chunks": chunks}
 

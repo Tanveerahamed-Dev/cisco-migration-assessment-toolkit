@@ -17,16 +17,25 @@ import json
 import re
 from collections import Counter
 from pathlib import PurePosixPath
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 from urllib.parse import quote, urlsplit
 
 from .model import ReleaseInputError, stable_id
 
 
-NPM_LOCKFILES = (
-    "master-reference/package-lock.json",
-    "webapp/frontend/package-lock.json",
-)
+# npm's own lockfile names.  The lockfile set is DERIVED from the compiled Git
+# tree by this name rule -- never a hand list -- so every tracked npm dependency
+# graph reaches the SBOM and its vulnerability gate (a hand list once omitted
+# the tracked ``atlas-scope/package-lock.json``).
+NPM_LOCKFILE_NAMES = frozenset({"npm-shrinkwrap.json", "package-lock.json"})
+
+
+def npm_lockfiles(paths: Iterable[str]) -> tuple[str, ...]:
+    """Every path in ``paths`` that npm reads as a lockfile, in sorted order."""
+
+    return tuple(sorted({path for path in paths if PurePosixPath(path).name in NPM_LOCKFILE_NAMES}))
+
+
 PYTHON_DECLARATIONS = (
     "pyproject.toml",
     "requirements.txt",
@@ -295,7 +304,10 @@ def _npm_components(
     roots: list[dict[str, Any]] = []
     unresolved_optional_declarations = 0
     evidence_counts: Counter[str] = Counter()
-    for relative in NPM_LOCKFILES:
+    lockfiles = npm_lockfiles(source_files)
+    if not lockfiles:
+        raise ReleaseInputError("no npm lockfile source bytes were supplied to the SBOM builder")
+    for relative in lockfiles:
         try:
             lock = json.loads(source_files[relative].decode("utf-8", errors="strict"))
         except KeyError as exc:
@@ -715,7 +727,7 @@ def build_cyclonedx(
                 ],
             },
             "properties": [
-                {"name": "atlas:npmLockfiles", "value": ",".join(NPM_LOCKFILES)},
+                {"name": "atlas:npmLockfiles", "value": ",".join(npm_lockfiles(source_files))},
                 {"name": "atlas:pythonDeclarations", "value": ",".join(PYTHON_DECLARATIONS)},
             ],
         },

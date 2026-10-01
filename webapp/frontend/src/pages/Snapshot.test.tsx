@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import SnapshotPage from "./Snapshot";
@@ -596,5 +596,86 @@ describe("Snapshot cockpit · Protocol Assurance portfolio", () => {
     expect(screen.getByText("authentication configured").nextElementSibling).toHaveTextContent("true");
     expect(family).not.toHaveTextContent("must-never-render");
     expect(family).not.toHaveTextContent(/password/i);
+  });
+});
+
+// "Open in Atlas Scope" — a plain, top-level, same-origin link, rendered ONLY from the server's
+// scope-view capability (GET /api/snapshots/{id}/scope-view owns the href). It must never be a dead
+// link (absent/withdrawn scope build, or an unreadable capability) and never a sandboxed iframe:
+// Atlas Scope's module scripts and its /api fetch need the real AssessHub origin.
+describe("Open in Atlas Scope", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function mockScope(view: unknown, status = 200) {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/api\/snapshots\/\d+\/scope-view$/.test(url)) return new Response(JSON.stringify(view), { status });
+      if (/\/api\/snapshots\/\d+\/graph\b/.test(url)) return new Response(JSON.stringify({ nodes: [], edges: [] }), { status: 200 });
+      if (/\/api\/snapshots\/\d+(\?.*)?$/.test(url)) return new Response(JSON.stringify(meta(72)), { status: 200 });
+      return new Response(JSON.stringify({ detail: "not mocked" }), { status: 404 });
+    });
+  }
+
+  it("renders a plain top-level link to the server-owned href when the scope view is available", async () => {
+    mockScope({ available: true, status: "ready", href: "/scope/snapshots/1/", detail: "ready" });
+    renderSnap();
+    const link = await screen.findByRole("link", { name: /Open in Atlas Scope/ });
+    expect(link).toHaveAttribute("href", "/scope/snapshots/1/");
+    // top-level navigation in this browsing context — not a new-window opener, not an iframe
+    expect(link).not.toHaveAttribute("target");
+    expect(document.querySelector('iframe[src^="/scope"]')).toBeNull();
+    expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view");
+  });
+
+  it("renders no link when the server reports the scope view unavailable", async () => {
+    mockScope({ available: false, status: "not_built", href: null, detail: "Atlas Scope is not built in this installation." });
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view"));
+    expect(screen.queryByRole("link", { name: /Atlas Scope/ })).toBeNull();
+  });
+
+  it("renders no link when the capability cannot be read (absence is not availability)", async () => {
+    mockScope({ detail: "Snapshot not found" }, 404);
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view"));
+    expect(screen.queryByRole("link", { name: /Atlas Scope/ })).toBeNull();
+  });
+
+  it("drops the previous snapshot's link when the next snapshot's capability fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/snapshots/1/scope-view")
+        return new Response(JSON.stringify({ available: true, status: "ready", href: "/scope/snapshots/1/", detail: "" }), { status: 200 });
+      if (url === "/api/snapshots/2/scope-view") return new Response(JSON.stringify({ detail: "boom" }), { status: 500 });
+      if (/\/api\/snapshots\/\d+\/graph\b/.test(url)) return new Response(JSON.stringify({ nodes: [], edges: [] }), { status: 200 });
+      if (/\/api\/snapshots\/\d+(\?.*)?$/.test(url)) return new Response(JSON.stringify(meta(72)), { status: 200 });
+      return new Response(JSON.stringify({ detail: "not mocked" }), { status: 404 });
+    });
+    function GoToTwo() {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate("/snapshots/2")}>go-two</button>;
+    }
+    render(
+      <MemoryRouter initialEntries={["/snapshots/1"]}>
+        <GoToTwo />
+        <Routes>
+          <Route path="/snapshots/:id" element={<SnapshotPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole("link", { name: /Open in Atlas Scope/ })).toHaveAttribute("href", "/scope/snapshots/1/");
+    fireEvent.click(screen.getByRole("button", { name: "go-two" }));
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/2/scope-view"));
+    await waitFor(() => expect(screen.queryByRole("link", { name: /Atlas Scope/ })).toBeNull());
+  });
+
+  it("renders no link for an href outside the /scope mount, even if flagged available", async () => {
+    mockScope({ available: true, status: "ready", href: "https://evil.example/scope/", detail: "" });
+    renderSnap();
+    await screen.findByRole("heading", { name: "Demo Fleet" });
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view"));
+    expect(screen.queryByRole("link", { name: /Atlas Scope/ })).toBeNull();
   });
 });

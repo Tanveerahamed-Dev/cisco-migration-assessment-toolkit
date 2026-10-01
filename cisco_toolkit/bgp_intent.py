@@ -19,6 +19,7 @@ import re
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from cisco_toolkit.cmdio import not_running_banner
 from cisco_toolkit.input_custody import read_text as read_custodied_text
 
 
@@ -481,6 +482,15 @@ def _runtime_scope_authorized(command: str, body: str, platform: str) -> bool:
 
 
 def _parse_runtime(body: str, command: str, platform: str) -> dict:
+    # The WHOLE capture is the vendor no-process banner (cmdio.PROTOCOL_NOT_RUNNING_BANNERS, the one owner
+    # protocol_assessability also classifies as "not_running"): BGP has no process, so the runtime peer
+    # denominator is positively EMPTY in every scope -- a complete zero-peer summary, not an unrecognized
+    # header. A configured-active peer is then "not observed in the complete summary" (degraded), and a
+    # complete peerless config stays not_applicable; nothing is read as Established.
+    if not_running_banner(command, body or ""):
+        return {"status": "complete", "rows": [], "findings": [],
+                "candidate_count": 0, "parsed_count": 0, "rejected_count": 0,
+                "local_as": "", "scope_authorized": True}
     lines = (body or "").splitlines()
     findings: List[dict] = []
     if len(lines) > _MAX_LINES:
@@ -968,14 +978,16 @@ def _structural_validation(value: Any) -> Tuple[bool, str]:
             return False, "baseline_coverage_subject_mismatch"
         host_statuses = Counter(row["status"] for row in host_rows)
         if not expected_subject:
-            if cell["config_capture_status"] != "ok" or cell["runtime_capture_status"] not in {
-                    "ok", "not_observed"}:
-                expected_status = "not_verified"
-            elif cell["config_parser_status"] not in {"complete"} or cell["runtime_parser_status"] not in {
-                    "complete", "not_verified"}:
-                expected_status = "review"
-            else:
+            # A complete, integrity-ok running-config is what establishes that the configured-peer
+            # denominator is empty, so it alone decides not_applicable, whatever the runtime summary
+            # capture was (empty, a no-process banner, or absent). Otherwise the producer's
+            # _coverage_status rule applies unchanged.
+            if cell["config_capture_status"] == "ok" and cell["config_parser_status"] == "complete":
                 expected_status = "not_applicable"
+            elif cell["config_capture_status"] != "ok" or cell["runtime_capture_status"] != "ok":
+                expected_status = "not_verified"
+            else:
+                expected_status = "review"
         elif host_statuses["degraded"]:
             expected_status = "degraded"
         elif host_statuses["review"] or cell["unsupported_relevant_count"]:

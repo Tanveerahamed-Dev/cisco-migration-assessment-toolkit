@@ -328,6 +328,7 @@ const GUI_DOSSIER_FIELD_NAMES = [
   "known_gaps",
 ];
 const REQUIRED_ACCEPTANCE_GATE_NAMES = [
+  "every_tracked_text_file_line_censused",
   "architecture_contract_declared_and_conformant",
   "runtime_architecture_edges_observed_and_reconciled",
   "every_symbol_has_dossier_fields",
@@ -636,6 +637,28 @@ function fnv1a(value) {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+// A fixture declaration shaped like the compiler receipt.  The projection
+// reconciles files against whatever receipt the (release-validated) compiler
+// emitted; it never owns the declaration itself.
+const FIXTURE_CENSUS_DEPTH_DECLARATION = Object.freeze({
+  policy_owner: "fixture-policy-owner",
+  row: Object.freeze({
+    prefix: "vendor-app/",
+    census_depth: "identity",
+    reason: "fixture_deferral:size_ceiling",
+    block_category: "census_depth_fixture_deferred",
+    follow_up_owner: "fixture follow-up owner",
+    tracked_files: 0,
+    text_files: 0,
+    privacy_scanned_text_files: 0,
+    metadata_only_files: 0,
+    content_bytes: 0,
+    deferred_physical_lines: 0,
+    deferred_nonblank_lines: 0,
+    retained_import_records: 0,
+  }),
+});
+
 async function makeCompilerFixture(root) {
   const input = join(root, "compiler");
   await mkdir(input, { recursive: true });
@@ -701,6 +724,8 @@ async function makeCompilerFixture(root) {
         content_source: "selected_commit_git_blob",
         privacy_exposure: "full",
         privacy_reasons: [],
+        census_depth: "full",
+        census_depth_reason: null,
         parse_status: "parsed",
         parser: "python_ast",
         parser_mode: "semantic",
@@ -720,6 +745,8 @@ async function makeCompilerFixture(root) {
         content_source: "metadata_only_git_object",
         privacy_exposure: "metadata_only",
         privacy_reasons: ["binary_content_opaque"],
+        census_depth: "full",
+        census_depth_reason: null,
         parse_status: "binary_inventory",
         parser: "binary_metadata",
         parser_mode: "metadata",
@@ -739,6 +766,8 @@ async function makeCompilerFixture(root) {
         content_source: "selected_commit_git_blob",
         privacy_exposure: "full",
         privacy_reasons: [],
+        census_depth: "full",
+        census_depth_reason: null,
         parse_status: "not_parsed",
         parser: "none",
         parser_mode: "metadata",
@@ -1222,6 +1251,19 @@ async function makeCompilerFixture(root) {
     hard_failure: false,
     fatal_errors: [],
     census: { tracked_files: 3, classified_files: 3, full_exposure_files: 2, metadata_only_files: 1 },
+    census_depth: {
+      policy_owner: FIXTURE_CENSUS_DEPTH_DECLARATION.policy_owner,
+      status: "full_depth",
+      full_depth_files: 3,
+      identity_depth_files: 0,
+      identity_depth_text_files: 0,
+      identity_depth_nonblank_lines_deferred: 0,
+      retained_record_groups: ["binaries", "files", "imports"],
+      deferred_record_groups: ["calls", "lines", "source_text", "symbols"],
+      declarations: [{ ...FIXTURE_CENSUS_DEPTH_DECLARATION.row }],
+      block_categories: [],
+      claim: "Identity-depth files are censused but never presented as line-covered.",
+    },
     parsing: { expected_nonblank_lines: 2, line_records: 2 },
     semantic_accounting: {
       safe_parsed_sources: 1,
@@ -1263,6 +1305,7 @@ async function makeCompilerFixture(root) {
       { name: "every_safe_text_file_has_exact_source_record", expected: 2, actual: 2, passed: true },
       { name: "every_safe_line_structurally_mapped", expected: 2, actual: 2, passed: true },
       { name: "every_safe_parsed_source_has_one_structural_root", expected: 1, actual: 1, passed: true },
+      { name: "every_identity_depth_file_declared_privacy_scanned_and_unprojected", expected: 0, actual: 0, passed: true },
       { name: "every_gui_surface_has_standardized_evidence_honest_dossier", expected: 2, actual: 2, passed: true },
       { name: "graphify_receipt_exact_source_bound", expected: 1, actual: 1, passed: true },
     ],
@@ -3926,4 +3969,209 @@ test("projection record-key registry is identical to the strict atlas-record sch
       `${group} projection keys must match the schema SSOT`,
     );
   }
+});
+
+async function addIdentityDepthFile(input, overrides = {}) {
+  const raw = Buffer.from("export const deferred = 1;\n", "utf8");
+  const declaration = FIXTURE_CENSUS_DEPTH_DECLARATION.row;
+  const record = {
+    id: fixtureStableId("urn:atlas:file:identity-depth"),
+    path: `${declaration.prefix}app.ts`,
+    language: "typescript",
+    media_type: "video/mp2t",
+    roles: ["source"],
+    size_bytes: raw.byteLength,
+    line_count: 1,
+    nonblank_line_count: 1,
+    content_digest: sha256(raw),
+    git_blob_oid: "1".repeat(40),
+    content_source: "selected_commit_git_blob",
+    privacy_exposure: "full",
+    privacy_reasons: [],
+    classification_errors: [],
+    census_depth: "identity",
+    census_depth_reason: declaration.reason,
+    parse_status: "identity_census",
+    parser: "typescript_compiler_api",
+    parser_mode: "syntax_ast",
+    unresolved_reasons: [declaration.reason],
+    ...overrides,
+  };
+  await mutateCompilerGroup(input, "files", (envelope) => {
+    envelope.records.push(record);
+  });
+  await mutateCompletenessReceipt(input, (completeness) => {
+    completeness.census.tracked_files += 1;
+    completeness.census.classified_files += 1;
+    completeness.census.full_exposure_files += 1;
+    completeness.privacy.forbidden_content_scan.eligible_text_files += 1;
+    completeness.privacy.forbidden_content_scan.scanned_text_files += 1;
+    Object.assign(completeness.census_depth, {
+      status: "identity_depth_deferred",
+      identity_depth_files: 1,
+      identity_depth_text_files: 1,
+      identity_depth_nonblank_lines_deferred: 1,
+      block_categories: [declaration.block_category],
+    });
+    Object.assign(completeness.census_depth.declarations[0], {
+      tracked_files: 1,
+      text_files: 1,
+      privacy_scanned_text_files: 1,
+      deferred_nonblank_lines: 1,
+      deferred_physical_lines: 1,
+      content_bytes: raw.byteLength,
+    });
+    const gate = completeness.acceptance_gates.find((item) => item.name === "every_tracked_text_file_line_censused");
+    Object.assign(gate, { passed: false, expected: 3, actual: 2 });
+  });
+  return record;
+}
+
+test("projection renders a declared identity-depth file as identity-only, never covered or missing", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-identity-"));
+  try {
+    const { input } = await makeCompilerFixture(scratch);
+    const record = await addIdentityDepthFile(input);
+    const output = join(scratch, "projection");
+    const manifest = await buildProjection({ input, output });
+    assert.equal(manifest.sourceFileCount, 2, "an identity-depth file must not gain a source descriptor");
+    const loaded = await import(`${pathToFileURL(join(output, "index.mjs")).href}?identity=1`);
+    const files = await loaded.loadMetadata("files");
+    const identity = files.find((file) => file.path === record.path);
+    assert.equal(identity.censusDepth, "identity");
+    assert.equal(identity.censusDepthReason, FIXTURE_CENSUS_DEPTH_DECLARATION.row.reason);
+    assert.equal(identity.nonblankLineCount, 1, "deferred lines stay counted, never zeroed");
+    assert.ok(files.filter((file) => file !== identity).every((file) => file.censusDepth === "full"));
+    assert.equal(await loaded.loadSource(record.path), null);
+    assert.equal(loaded.projection.completeness.census_depth.status, "identity_depth_deferred");
+    assert.equal(
+      loaded.projection.disclosure.identityDepthContent,
+      "identity_depth_files_are_privacy_scanned_and_censused_but_never_line_projected",
+    );
+    const loadedIdentity = await import(`${pathToFileURL(join(output, "identity.mjs")).href}?identity=1`);
+    assert.ok(
+      loadedIdentity.identity.failedAcceptanceGates.some((gate) => gate.name === "every_tracked_text_file_line_censused"),
+      "the landing identity must surface the census-depth BLOCK gate",
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("projection refuses a census depth that differs from the compiler receipt", async (context) => {
+  const cases = {
+    "file without an explicit census depth": async (input) => {
+      await mutateCompilerGroup(input, "files", (envelope) => {
+        delete envelope.records[0].census_depth;
+      });
+    },
+    "full-depth file presented as deferred": async (input) => {
+      await mutateCompilerGroup(input, "files", (envelope) => {
+        const row = envelope.records.find((item) => item.path === "app/example.py");
+        row.census_depth = "identity";
+        row.census_depth_reason = FIXTURE_CENSUS_DEPTH_DECLARATION.row.reason;
+      });
+    },
+    "identity file under an undeclared prefix": async (input) => {
+      await addIdentityDepthFile(input, { path: "undeclared/app.ts" });
+    },
+    "identity file presented as parsed": async (input) => {
+      await addIdentityDepthFile(input, { parse_status: "parsed" });
+    },
+    "hidden census-depth BLOCK category": async (input) => {
+      await addIdentityDepthFile(input);
+      await mutateCompletenessReceipt(input, (completeness) => {
+        completeness.census_depth.block_categories = [];
+      });
+    },
+    "passed line-census gate while a file is deferred": async (input) => {
+      await addIdentityDepthFile(input);
+      await mutateCompletenessReceipt(input, (completeness) => {
+        const gate = completeness.acceptance_gates.find((item) => item.name === "every_tracked_text_file_line_censused");
+        Object.assign(gate, { passed: true, expected: 3, actual: 3 });
+      });
+    },
+    "absent census-depth receipt": async (input) => {
+      await mutateCompletenessReceipt(input, (completeness) => {
+        delete completeness.census_depth;
+      });
+    },
+  };
+  for (const [label, mutate] of Object.entries(cases)) {
+    await context.test(label, async () => {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-census-depth-"));
+      try {
+        const { input } = await makeCompilerFixture(scratch);
+        await mutate(input);
+        await assert.rejects(
+          buildProjection({ input, output: join(scratch, "projection") }),
+          /^Error: compiler census-depth receipt is absent, malformed, or differs from the file census$/,
+        );
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("projection refuses line or source records for an identity-depth file", async (context) => {
+  const expectedErrors = {
+    lines: /^Error: line record is not exact, mapped, or file-bound: /,
+    source_text: /^Error: source text exists for an identity-depth file: vendor-app\/app\.ts$/,
+  };
+  for (const group of ["lines", "source_text"]) {
+    await context.test(group, async () => {
+      const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-identity-leak-"));
+      try {
+        const { input } = await makeCompilerFixture(scratch);
+        const record = await addIdentityDepthFile(input);
+        await mutateCompilerGroup(input, group, (envelope) => {
+          const template = envelope.records.find((item) => item.path === "app/example.py");
+          envelope.records.push({
+            ...structuredClone(template),
+            id: fixtureStableId(`urn:atlas:${group === "lines" ? "line" : "source-text"}:identity-leak`),
+            file_id: record.id,
+            path: record.path,
+          });
+        });
+        await assert.rejects(buildProjection({ input, output: join(scratch, "projection") }), expectedErrors[group]);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("source explorer symbol and line coverage cards both disclose identity-depth deferral", async () => {
+  // Refuter counterexample: the Lines card said "full-depth files only" while
+  // the Symbols card showed a bare total that silently excluded every
+  // identity-depth file's symbols and declared tests.
+  const { proofCardCoverageNote } = await import("../../app/atlas/CoverageNotes.mjs");
+  const deferred = {
+    identity_depth_files: 400,
+    identity_depth_nonblank_lines_deferred: 1234,
+  };
+  const full = { identity_depth_files: 0, identity_depth_nonblank_lines_deferred: 0 };
+  const counts = { tests: 12 };
+
+  const lines = proofCardCoverageNote("lines", deferred, counts);
+  const symbols = proofCardCoverageNote("symbols", deferred, counts);
+  for (const note of [lines, symbols]) {
+    assert.match(note, /Full-depth files only/);
+    assert.match(note, /400 identity-only files/);
+    assert.match(note, /deferred/);
+  }
+  assert.match(lines, /1,234 lines/);
+  assert.match(symbols, /symbols and tests/);
+  assert.match(symbols, /12 declared tests/);
+
+  assert.equal(proofCardCoverageNote("lines", full, counts), "Exact denominator from completeness ledger");
+  assert.equal(proofCardCoverageNote("symbols", full, counts), "12 declared tests");
+  assert.match(proofCardCoverageNote("lines", undefined, counts), /line coverage unproven/);
+  assert.match(proofCardCoverageNote("symbols", undefined, counts), /symbol coverage unproven/);
+  assert.throws(() => proofCardCoverageNote("calls", full, counts), /unknown coverage card/);
+
+  const explorer = await readFile(new URL("../../app/atlas/SourceExplorer.tsx", import.meta.url), "utf8");
+  assert.match(explorer, /proofCardCoverageNote\("lines", censusDepth, recordCounts\)/);
+  assert.match(explorer, /proofCardCoverageNote\("symbols", censusDepth, recordCounts\)/);
 });

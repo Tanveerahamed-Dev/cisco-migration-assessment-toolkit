@@ -51,6 +51,7 @@ REQUIRED_INVARIANTS = (
 )
 REQUIRED_ACCEPTANCE_GATES = frozenset(
     {
+        "every_tracked_text_file_line_censused",
         "architecture_contract_declared_and_conformant",
         "runtime_architecture_edges_observed_and_reconciled",
         "every_symbol_has_dossier_fields",
