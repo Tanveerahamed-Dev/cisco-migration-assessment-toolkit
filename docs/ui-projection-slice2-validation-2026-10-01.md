@@ -66,6 +66,45 @@ verdict on the pushed head; this PR stays draft until that gate is green.
 and frontend distribution bytes unchanged. The existing main merge carries five EOF-blank-line
 warnings in Scope files; each was verified byte-identical to main. W2a's own diff check is clean.
 
+## Hosted CI receipt on implementation head `c8a78732`
+
+CI run `36889899742` completed all five Linux matrix jobs with the same sole failure:
+`test_every_module_that_reads_the_receipt_is_classified_with_a_mechanical_proof` names
+`cisco_toolkit/ui_projection.py` as an unclassified receipt reader.
+
+| Python | Passed | Failed | Skipped | Expected failure |
+|---|---:|---:|---:|---:|
+| 3.10 | 9,733 | 1 | 283 | 1 |
+| 3.11 | 9,742 | 1 | 274 | 1 |
+| 3.12 | 9,877 | 1 | 139 | 1 |
+| 3.13 | 9,866 | 1 | 150 | 1 |
+| 3.14 | 9,865 | 1 | 151 | 1 |
+
+Source review locates the receipt name only in `PUNCHLIST_INPUTS`. The projection delegates
+section/census state to SSOT; its coverage and unknown-evidence vocabularies have separate owners.
+The missing classification is corrected by a scoped `section_dependency` proof in the guard.
+It permits only the literal dependency registry and its four existing SSOT-delegating argument
+forms, rejects ordinary named shadowing/binding and alias/index/iteration uses, and pins the
+two overlapping unknown-evidence vocabularies to their owners. Behavioral probes hold SSOT's
+answer fixed while varying every producer receipt row and all rows together across declared
+states plus a future unknown state. They check actual owner delegation and a published finding.
+
+Independent refutation found later-row and all-assessed aggregate survivors in the initial
+behavioral proof, then parameter shadowing in the initial structural check. All three were
+closed with failing-before/passing-after regressions. Fifteen independent ordinary binding/use
+mutations are rejected. These bounded probes do not claim exhaustive behavioral proof.
+
+Validation: the broader protocol plus all three projection test modules passed 536 tests before
+the final proof refinements. The final complete protocol file then passed 32 tests; the reviewer
+independently passed its three focused proof tests. Ruff and diff checks passed. Production
+source remains byte-identical to reviewed `c8a78732`; only the guard and this handoff changed.
+Final reviewed guard SHA-256:
+`db2d97a5b132dc1477438cd66ecc6e7cf99dd43adeb81a946e3e6e8351adfc89`.
+
+The existing receipt-reader census remains mandatory. The original hosted runs are failed
+runs; their many passing tests do not make that head eligible to merge. Complete hosted gates
+must pass again on the follow-up commit.
+
 ## Remaining gates and handoff
 
 Before push, both public-repository privacy gates must pass on the final commit history.
