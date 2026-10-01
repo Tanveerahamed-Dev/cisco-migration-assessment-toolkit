@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import urllib.parse
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 
 import anyio
@@ -59,7 +60,36 @@ def _source_shell_inline_scripts() -> list[str]:
     fixture exercises the reader's real accept-list, not a script only a test would write."""
     source = (Path(__file__).resolve().parents[2] / "atlas-scope" / "index.html").read_text(
         encoding="utf-8")
-    return re.findall(r"<script>([^<]*)</script>", source.replace("\r\n", "\n"))
+
+    class _InlineClassicScripts(HTMLParser):
+        """Collects the body of every <script> that has no ``src`` and no module ``type``. The
+        parser lower-cases tag names and reads a script's body as raw text, so an upper-case tag or a
+        ``<`` inside the body cannot make it miss a script the way a tag regex would (CodeQL
+        py/bad-tag-filter on the regex this replaces)."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.bodies: list[str] = []
+            self._open = False
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            attributes = dict(attrs)
+            classic = (attributes.get("type") or "").strip().lower() in ("", "text/javascript")
+            self._open = tag == "script" and "src" not in attributes and classic
+
+        def handle_data(self, data: str) -> None:
+            if self._open:
+                self.bodies.append(data)
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag == "script":
+                self._open = False
+
+    parser = _InlineClassicScripts()
+    parser.feed(source.replace("\r\n", "\n"))
+    parser.close()
+    assert parser.bodies, "atlas-scope/index.html carries no inline classic script for the fixture to copy"
+    return parser.bodies
 
 
 _THEME_BOOT = _source_shell_inline_scripts()[0]
