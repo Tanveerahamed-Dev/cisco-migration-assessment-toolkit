@@ -732,6 +732,12 @@ def main(argv: list = None) -> None:
                 for s in drift:
                     print(f"  - {s}")
                 print("regenerate: python webapp/sample_data/build_sample.py")
+                # The fleet's bytes are also the bound source of Atlas Scope's tracked projection: its four
+                # compiled documents carry the fleet's Git blob and digest, and its golden tier is pinned to
+                # that digest. A regenerated fleet leaves them stale until they are re-bound.
+                print("then re-bind Atlas Scope: cd atlas-scope, run `node tools/compile-all.mjs`, and set "
+                      "GOLDEN_SHA in atlas-scope/src/test-support/golden-sample.ts to the new sourceSha256 "
+                      "(re-derive any golden expectation whose section changed)")
                 raise SystemExit(2)
             print("sample_fleet.snapshot.json is FRESH — matches the current engine output "
                   "(only genuine wall-clock leaves excluded)")

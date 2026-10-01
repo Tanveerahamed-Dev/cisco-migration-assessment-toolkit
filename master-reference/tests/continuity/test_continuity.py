@@ -6,7 +6,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -16,7 +16,7 @@ MASTER_REFERENCE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(MASTER_REFERENCE))
 
 from continuity.git_state import observe_git_state  # noqa: E402
-from continuity.model import digest_object  # noqa: E402
+from continuity.model import ContinuityInputError, digest_object  # noqa: E402
 from continuity.query import query_by_id, query_by_path, query_impact  # noqa: E402
 from continuity.validation import (  # noqa: E402
     ENVELOPE_FIELDS,
@@ -36,6 +36,7 @@ class FakeBundle:
     source_tree_digest: str
     manifest: dict[str, Any]
     records: dict[str, list[dict[str, Any]]]
+    completeness: dict[str, Any] = field(default_factory=dict)
 
 
 def _bundle(commit: str = "a" * 40, tree: str = "b" * 40) -> FakeBundle:
@@ -196,6 +197,140 @@ def test_missing_queries_abstain_instead_of_inventing() -> None:
     code, result = query_by_path(bundle, "src/app.py", 2)
     assert code == 3
     assert result["reason"] == "line_not_present_or_blank_in_exact_bundle"
+
+
+_IDENTITY_BLOCK = "census_depth_fixture_line_projection_deferred"
+
+
+def _identity_bundle() -> FakeBundle:
+    """A bundle whose ``vendor-app/`` prefix is censused at identity depth.
+
+    The receipt mirrors the compiler's ``completeness.census_depth`` shape: the
+    declaration (not the file record) carries the BLOCK category.
+    """
+
+    bundle = _bundle()
+    bundle.records["files"].append(
+        {
+            "id": "urn:atlas:file:deferred",
+            "path": "vendor-app/app.ts",
+            "privacy_exposure": "full",
+            "census_depth": "identity",
+            "census_depth_reason": "fixture_deferral:size_ceiling",
+            "line_count": 3,
+            "nonblank_line_count": 2,
+            "unresolved_reasons": ["fixture_deferral:size_ceiling"],
+        }
+    )
+    bundle.records["imports"] = [
+        {
+            "id": "urn:atlas:import:deferred",
+            "path": "vendor-app/app.ts",
+            "file_id": "urn:atlas:file:deferred",
+            "name": "./util",
+        }
+    ]
+    bundle.completeness = {
+        "census_depth": {
+            "policy_owner": "master-reference/compiler/policy.py::CENSUS_DEPTH_DECLARATIONS",
+            "status": "identity_depth_deferred",
+            "identity_depth_files": 1,
+            "retained_record_groups": ["binaries", "files", "imports"],
+            "deferred_record_groups": ["calls", "lines", "source_text", "symbols"],
+            "block_categories": [_IDENTITY_BLOCK],
+            "declarations": [
+                {
+                    "prefix": "vendor-app/",
+                    "census_depth": "identity",
+                    "reason": "fixture_deferral:size_ceiling",
+                    "block_category": _IDENTITY_BLOCK,
+                    "follow_up_owner": "fixture: compact per-line record encoding",
+                    "tracked_files": 1,
+                }
+            ],
+        }
+    }
+    return bundle
+
+
+def _assert_identity_disclosure(result: dict[str, Any]) -> None:
+    disclosure = result["census_depth"]
+    assert disclosure["depth"] == "identity"
+    assert disclosure["reason"] == "fixture_deferral:size_ceiling"
+    assert disclosure["block_category"] == _IDENTITY_BLOCK
+    assert disclosure["declaration_prefix"] == "vendor-app/"
+    assert disclosure["deferred_record_groups"] == ["calls", "lines", "source_text", "symbols"]
+    assert "deferred" in disclosure["claim"] and "never" in disclosure["claim"]
+
+
+def test_identity_depth_line_query_abstains_as_deferred_not_blank() -> None:
+    bundle = _identity_bundle()
+    code, result = query_by_path(bundle, "vendor-app/app.ts", 1)
+    assert code == 3
+    assert result["status"] == "abstained"
+    assert result["reason"] == "census_depth_identity_line_not_projected"
+    assert result["census_depth_reason"] == "fixture_deferral:size_ceiling"
+    _assert_identity_disclosure(result)
+
+
+def test_identity_depth_path_answer_discloses_census_depth_instead_of_reading_as_empty() -> None:
+    # Refuter counterexample: a path query with no line returned exit 0
+    # "answered" with only the file and import records, so an agent read the
+    # file as one with no symbols and no lines.
+    bundle = _identity_bundle()
+    code, result = query_by_path(bundle, "vendor-app/app.ts")
+    assert code == 0
+    assert result["status"] == "answered"
+    assert sorted(row["record_type"] for row in result["records"]) == ["files", "imports"]
+    _assert_identity_disclosure(result)
+
+    # A full-depth path carries no census-depth disclosure at all.
+    code, full = query_by_path(bundle, "src/app.py")
+    assert code == 0
+    assert "census_depth" not in full
+
+
+def test_line_past_the_end_of_an_identity_depth_file_is_not_present_not_deferred() -> None:
+    bundle = _identity_bundle()
+    for line in (3, 1):  # within the real line_count: deferred, never "blank"
+        code, result = query_by_path(bundle, "vendor-app/app.ts", line)
+        assert (code, result["reason"]) == (3, "census_depth_identity_line_not_projected")
+    code, result = query_by_path(bundle, "vendor-app/app.ts", 4)
+    assert code == 3
+    assert result["status"] == "abstained"
+    assert result["reason"] == "line_not_present_in_exact_source"
+    assert result["line_count"] == 3
+    _assert_identity_disclosure(result)
+
+
+def test_identity_depth_id_and_impact_answers_carry_the_disclosure() -> None:
+    bundle = _identity_bundle()
+    for identifier in ("urn:atlas:file:deferred", "urn:atlas:import:deferred"):
+        code, result = query_by_id(bundle, identifier)
+        assert code == 0
+        _assert_identity_disclosure(result)
+    code, result = query_impact(bundle, "urn:atlas:file:deferred")
+    assert code == 0
+    _assert_identity_disclosure(result)
+    # Any impact traversal over a bundle with identity-depth files is partial:
+    # their calls and symbols can never appear as inbound references.
+    code, full = query_impact(bundle, "urn:atlas:symbol:one")
+    assert code == 0
+    assert "census_depth" not in full
+    assert any(_IDENTITY_BLOCK in limit for limit in full["limits"])
+    code, full_id = query_by_id(bundle, "urn:atlas:symbol:one")
+    assert "census_depth" not in full_id
+
+
+def test_identity_depth_record_without_a_bundle_declaration_fails_closed() -> None:
+    bundle = _identity_bundle()
+    bundle.completeness = {}
+    try:
+        query_by_path(bundle, "vendor-app/app.ts")
+    except ContinuityInputError as exc:
+        assert "census" in str(exc)
+    else:
+        raise AssertionError("an undeclared identity-depth record must not be answered")
 
 
 def test_task_envelope_binds_exact_baseline_authority_scope_and_constraints(tmp_path: Path) -> None:

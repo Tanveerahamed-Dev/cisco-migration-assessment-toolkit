@@ -23,6 +23,7 @@
  */
 import { useEffect, useSyncExternalStore } from "react";
 import { recordReturn, returnFocus, type ReturnRecord } from "./focus-return";
+import { own } from "../core/own";
 
 /* ══ types ═════════════════════════════════════════════════════════════════ */
 
@@ -113,7 +114,7 @@ const KEY_ALIAS: Readonly<Record<string, string>> = {
 
 const normalizeKeyName = (raw: string): string => {
   const k = raw.trim().toLowerCase();
-  return KEY_ALIAS[k] ?? k;
+  return own(KEY_ALIAS, k) ?? k;
 };
 
 /** A printable single character, i.e. something a text field would have received. */
@@ -289,7 +290,7 @@ const KEY_DISPLAY: Readonly<Record<string, string>> = {
 };
 
 const displayKey = (key: string): string =>
-  KEY_DISPLAY[key] ?? (key.length === 1 ? key.toUpperCase() : key.charAt(0).toUpperCase() + key.slice(1));
+  own(KEY_DISPLAY, key) ?? (key.length === 1 ? key.toUpperCase() : key.charAt(0).toUpperCase() + key.slice(1));
 
 /** Render tokens for one chord, platform-correct. */
 export function formatChord(c: Chord): ShortcutToken[] {

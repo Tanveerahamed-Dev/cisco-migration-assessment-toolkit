@@ -726,11 +726,89 @@ def _state_interpreting_lines_near_receipt(text):
     return out
 
 
+def _assert_section_dependency_reader(text):
+    """A section dependency delegates absence to SSOT; it cannot interpret receipt row states.
+
+    Only the two exact unknown-evidence owner vocabularies may account for the carrier scanner's
+    overlapping tokens. This does not exempt receipt access or any other declaration/comparison.
+    """
+    from cisco_toolkit import unknown_evidence
+
+    tree = ast.parse(text)
+    declarations = {n.target.id: n for n in tree.body
+                    if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)}
+    dependency = declarations["PUNCHLIST_INPUTS"].value
+    assert isinstance(dependency, ast.Tuple) and all(
+        isinstance(n, ast.Constant) and isinstance(n.value, str) for n in dependency.elts)
+    receipt_mentions = [n for n in ast.walk(tree)
+                        if (isinstance(n, ast.Constant) and isinstance(n.value, str)
+                            and _RECEIPT_NAME.search(n.value))
+                        or (isinstance(n, ast.Name) and _RECEIPT_NAME.search(n.id))
+                        or (isinstance(n, ast.Attribute) and _RECEIPT_NAME.search(n.attr))]
+    assert len(receipt_mentions) == 1 and receipt_mentions[0] in dependency.elts, (
+        "receipt access outside the literal section-dependency registry")
+    # The registry itself may only flow to these section/rollup arguments. Indexing it to hide a
+    # raw receipt read behind an alias, iterating it elsewhere, or adding another use fails here.
+    # These normal Python bindings keep their name in a string field, not a Name(Store) node.
+    binding_fields = {"arg": "arg", "FunctionDef": "name", "AsyncFunctionDef": "name", "ClassDef": "name",
+                      "ExceptHandler": "name", "MatchAs": "name", "MatchStar": "name", "MatchMapping": "rest",
+                      "TypeVar": "name", "ParamSpec": "name", "TypeVarTuple": "name"}
+    for node in ast.walk(tree):
+        field = binding_fields.get(type(node).__name__)
+        bound = getattr(node, field, None) if field else None
+        if isinstance(node, ast.alias):
+            bound = node.asname or node.name.split(".")[0]
+        assert bound != "PUNCHLIST_INPUTS", "dependency registry was shadowed or rebound"
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            assert "PUNCHLIST_INPUTS" not in node.names, "dependency registry scope was redirected"
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    uses = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Name) or node.id != "PUNCHLIST_INPUTS":
+            continue
+        if not isinstance(node.ctx, ast.Load):
+            assert node is declarations["PUNCHLIST_INPUTS"].target, "dependency registry was rebound"
+            continue
+        enclosing, call = node, None
+        while enclosing in parents:
+            enclosing = parents[enclosing]
+            if isinstance(enclosing, ast.Call) and call is None:
+                call = enclosing
+            if isinstance(enclosing, ast.FunctionDef):
+                break
+        assert (call is not None and isinstance(call.func, ast.Name)
+                and isinstance(enclosing, ast.FunctionDef)), "indirect dependency-registry use"
+        arguments = [(str(i), value) for i, value in enumerate(call.args)]
+        arguments += [(kw.arg, kw.value) for kw in call.keywords]
+        uses.extend((enclosing.name, call.func.id, slot, ast.unparse(value))
+                    for slot, value in arguments if node in ast.walk(value))
+    assert sorted(uses) == sorted([
+        ("_findings", "_listing", "rollup", "PUNCHLIST_INPUTS"),
+        ("_findings", "_total", "sections", "toks + PUNCHLIST_INPUTS"),
+        ("_device_page", "_rolled", "4", "PUNCHLIST_INPUTS"),
+        ("_device_page", "_selection_rows", "sections", "('punchlist',) + PUNCHLIST_INPUTS"),
+    ]), "dependency registry must only be forwarded to the declared section-state consumers"
+    owned = {"COVERAGE_STATES": unknown_evidence._COVERAGE_STATES,
+             "UE_SOURCE_STATES": unknown_evidence._SOURCE_STATES}
+    for name, vocabulary in owned.items():
+        copied = ast.literal_eval(declarations[name].value)
+        assert isinstance(copied, tuple) and len(copied) == len(vocabulary) and set(copied) == vocabulary, (
+            f"{name} must equal its unknown-evidence owner")
+    tree.body = [n for n in tree.body if n not in [declarations[name] for name in owned]]
+    foreign = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)
+               and isinstance(n.value, str) and n.value in _STATE_NAMES - set(_CENSUS_STATES)]
+    assert not foreign, f"section dependency interprets receipt-only tokens: {foreign}"
+    assert not _state_interpreting_lines_near_receipt(ast.unparse(tree)), (
+        "section dependency interprets receipt row states")
+
+
 # The owner (analyze.py) aside, every module that names the receipt, by class. The proofs:
 #   derives   -- imports one of analyze's derived names (its sets/maps are the owner's, not a copy);
 #   contract  -- reads protocol_assessability_states from atlas-scope/contracts/engine-contract.v1.json;
 #   validator -- hands the receipt to the owner's validator and reads only its index, never a row state;
 #   carrier   -- holds / forwards the receipt (to an owner function) and interprets no row state at all;
+#   section_dependency -- names the receipt only in its dependency registry, delegates section states
+#                to SSOT, and stays invariant across receipt row states (behavioral proof below);
 #   rendered  -- the engine-rendered explorer template: it holds NO vocabulary of its own, only the one slot
 #                html._render_engine_vocabulary fills from analyze at render time, and derives every state
 #                set / tone from that map;
@@ -754,6 +832,7 @@ _RECEIPT_READER_CLASS = {
     "cisco_toolkit/blast_radius_explorer.html": "rendered",
     "webapp/backend/protocol_portfolio.py": "derives",
     "cisco_toolkit/ssot.py": "census",
+    "cisco_toolkit/ui_projection.py": "section_dependency",
 }
 
 
@@ -796,8 +875,126 @@ def test_every_module_that_reads_the_receipt_is_classified_with_a_mechanical_pro
                 assert not _state_interpreting_lines_near_receipt(text), (
                     f"{rel} is classified 'carrier' but interprets receipt states itself at lines "
                     f"{_state_interpreting_lines_near_receipt(text)} -- derive from analyze and reclassify")
+        elif cls == "section_dependency":
+            _assert_section_dependency_reader(text)
         else:
             assert cls == "routed", (rel, cls)
+
+
+def test_section_dependency_proof_rejects_receipt_reads_and_owner_vocabulary_drift():
+    text = _receipt_readers()["cisco_toolkit/ui_projection.py"]
+    _assert_section_dependency_reader(text)
+    mutants = (
+        text + "\ndef bad(s):\n    return s['protocol_assessability']['rows']\n",
+        text + "\ndef bad(row):\n    return row.get('state') != 'assessed'\n",
+        text + "\nRECEIPT_STATE_ALIAS = 'not_running'\n",
+        text + "\ndef bad(s):\n    return s[PUNCHLIST_INPUTS[-3]]['rows'][-1]['state']\n",
+        text + "\nDEPENDENCY_ALIAS = PUNCHLIST_INPUTS\n",
+        text + "\ndef bad(s):\n    return [s[key] for key in PUNCHLIST_INPUTS]\n",
+        text.replace("def _findings(ctx: _Ctx)", "def _findings(ctx: _Ctx, PUNCHLIST_INPUTS=())"),
+        text + "\ndef PUNCHLIST_INPUTS():\n    pass\n",
+        text + "\nclass PUNCHLIST_INPUTS:\n    pass\n",
+        text + "\nfrom other_module import value as PUNCHLIST_INPUTS\n",
+        text + "\nimport PUNCHLIST_INPUTS\n",
+        text + "\ntry:\n    pass\nexcept Exception as PUNCHLIST_INPUTS:\n    pass\n",
+        text + "\nmatch value:\n    case PUNCHLIST_INPUTS:\n        pass\n",
+        text.replace('("covered", "not_collected", "partial",', '("covered", "not_collected", "wrong",'),
+        text.replace('("observed", "observed_empty", "partial",', '("observed", "observed_empty", "wrong",'),
+    )
+    for mutant in mutants:
+        assert mutant != text
+        with pytest.raises(AssertionError):
+            _assert_section_dependency_reader(mutant)
+
+
+def _assert_section_projection_delegates(project_findings, monkeypatch):
+    """Hold SSOT's answer fixed while varying every receipt token, including an unknown future token."""
+    from cisco_toolkit import ssot, ui_projection
+
+    snap = {name: [] for name in ui_projection.PUNCHLIST_INPUTS}
+    snap.update(devices={}, interfaces={}, punchlist=[{
+        "priority": 1, "rank": 1, "severity": "Low", "category": "Protocol",
+        "title": "existing engine finding", "detail": "kept", "devices": [], "wave": "",
+        "remediation": "", "evidence_basis": "absence", "evidence_refs": [],
+    }])
+    receipt = compute_protocol_assessability(["sw1"], {"sw1": {}}, {"sw1": {}}, [])
+    receipt["rows"][0]["state"] = "assessed"
+    snap["protocol_assessability"] = receipt
+    original = ssot.abstention_reason
+    assert project_findings(snap)["rows"]["state"] == "published"  # no unrelated gap can mask a mutant
+    for owner_state in ssot.ABSTENTION_STATES:
+        calls = []
+
+        def section_state(value, subject, *args, **kwargs):
+            if subject == "protocol_assessability":
+                calls.append(subject)
+                return owner_state
+            return original(value, subject, *args, **kwargs)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(ssot, "abstention_reason", section_state)
+            expected = None
+            probes = [(row,) for row in receipt["rows"]] + [tuple(receipt["rows"])]
+            for rows in probes:
+                baseline_states = [row["state"] for row in rows]
+                for receipt_state in (*PROTOCOL_ASSESSABILITY_STATES, "future_unknown_state"):
+                    for row in rows:
+                        row["state"] = receipt_state
+                    actual = project_findings(snap)
+                    assert calls, "the projection must consult the SSOT section owner"
+                    calls.clear()
+                    assert actual["rows"]["state"] == (
+                        "published" if owner_state == "collected_but_empty" else owner_state), (
+                            "projection ignored SSOT section state")
+                    if expected is None:
+                        expected = actual
+                    assert actual == expected, f"projection interpreted receipt row state {receipt_state}"
+                for row, baseline_state in zip(rows, baseline_states):
+                    row["state"] = baseline_state
+
+
+def test_section_dependency_projection_follows_ssot_not_receipt_states(monkeypatch):
+    from cisco_toolkit import ui_projection
+
+    _assert_section_projection_delegates(ui_projection.project_findings, monkeypatch)
+
+    # An alias avoids a second receipt literal and the existing same-line scanner. The behavioral
+    # proof must still reject a binary row-state split, so this new class is not an exemption.
+    def aliased_receipt_reader(snap):
+        result = ui_projection.project_findings(snap)
+        row = snap[ui_projection.PUNCHLIST_INPUTS[-3]]["rows"][0]
+        token = row["state"]
+        if token != "assessed":
+            result["rows"]["state"] = "unverified"
+        return result
+
+    with pytest.raises(AssertionError, match="projection ignored SSOT section state"):
+        _assert_section_projection_delegates(aliased_receipt_reader, monkeypatch)
+
+
+    # Varying only the first family would miss an equally indirect read of a later family.
+    def later_family_reader(snap):
+        result = ui_projection.project_findings(snap)
+        row = snap[ui_projection.PUNCHLIST_INPUTS[-3]]["rows"][-1]
+        token = row["state"]
+        if token == "assessed":
+            result["rows"]["state"] = "unverified"
+        return result
+
+    with pytest.raises(AssertionError, match="projection ignored SSOT section state"):
+        _assert_section_projection_delegates(later_family_reader, monkeypatch)
+
+
+    # Per-family probes alone cannot refute an aggregate comparison across the full receipt.
+    def aggregate_receipt_reader(snap):
+        result = ui_projection.project_findings(snap)
+        tokens = [row["state"] for row in snap[ui_projection.PUNCHLIST_INPUTS[-3]]["rows"]]
+        if all(token == "assessed" for token in tokens):
+            result["rows"]["state"] = "unverified"
+        return result
+
+    with pytest.raises(AssertionError, match="projection ignored SSOT section state"):
+        _assert_section_projection_delegates(aggregate_receipt_reader, monkeypatch)
 
 
 def test_the_census_vocabulary_is_told_apart_from_the_receipt_vocabulary(tmp_path):

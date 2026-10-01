@@ -37,6 +37,7 @@ import {
   type HopUndecided,
 } from "../core/claims";
 import { aclsOf, hasRib, resolveCite } from "../core/data";
+import { own } from "../core/own";
 import { ACL_LINE_NUMBERING_NOTE, aclLineName } from "../forwarding/acl-line";
 import { hopHasObservedBinding, hopUnobservedBindings } from "../forwarding/bindings";
 import { resolveEgress } from "../forwarding/engine";
@@ -545,7 +546,7 @@ function AclFact({
     );
   }
   const { host, acl, line } = decider;
-  const lineName = aclLineName(line.index, aclsOf(host)[acl]?.length ?? null);
+  const lineName = aclLineName(line.index, own(aclsOf(host), acl)?.length ?? null);
   /* What the engine said THIS line did for this flow — "denies this flow", "would match, but an
      earlier unevaluable line may fire first", "cannot be evaluated — …". The engine composes every
      ACL evidence label as `<host> ACL <name> <line> <qualifier>` from the same structured parts
@@ -759,9 +760,9 @@ export function HopList({ trace, activeIndex, onSelect, onOpenCite }: HopListPro
         const undecidedBy =
           hop.verdict === "unmodeled" && unmodelledCause(hop, route) === "route-decided"
             ? decider?.kind === "acl" && deciderIsHypothesis
-              ? `no observed filter binding on this hop — undecided: ${decider.acl} is bound to no interface observed here, and even as a hypothesis ACL ${decider.acl} ${aclLineName(decider.line.index, aclsOf(decider.host)[decider.acl]?.length ?? null)} on ${decider.host} cannot be evaluated for this flow`
+              ? `no observed filter binding on this hop — undecided: ${decider.acl} is bound to no interface observed here, and even as a hypothesis ACL ${decider.acl} ${aclLineName(decider.line.index, own(aclsOf(decider.host), decider.acl)?.length ?? null)} on ${decider.host} cannot be evaluated for this flow`
               : decider?.kind === "acl"
-              ? `ACL ${decider.acl} ${aclLineName(decider.line.index, aclsOf(decider.host)[decider.acl]?.length ?? null)} on ${decider.host} cannot be evaluated for this flow`
+              ? `ACL ${decider.acl} ${aclLineName(decider.line.index, own(aclsOf(decider.host), decider.acl)?.length ?? null)} on ${decider.host} cannot be evaluated for this flow`
               : "a condition this collection cannot settle (named under “Decided by”) keeps the outcome open"
             : null;
         const acl = actingAcl(hop);

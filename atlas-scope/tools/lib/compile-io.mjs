@@ -119,30 +119,70 @@ const posix = (/** @type {string} */ p) => p.split(sep).join("/");
 
 /** The Node error code of a failed file-system call, or undefined. @param {unknown} e */
 const errnoOf = (e) => (e !== null && typeof e === "object" && "code" in e && typeof e.code === "string" ? e.code : undefined);
-/** A failed open or read that means "no such file here": nothing at the path, a path through a non-directory, a directory. */
-const NOT_A_FILE = new Set(["ENOENT", "ENOTDIR", "EISDIR"]);
+/**
+ * A failed open that means NOTHING IS REACHABLE at the path: nothing there, a path through a non-directory, a
+ * symbolic-link loop, a name the file system cannot hold. The check this replaced (`existsSync`) answered false
+ * for every one of them, so each read as "no file here".
+ */
+const OPEN_ABSENT = new Set(["ENOENT", "ENOTDIR", "ELOOP", "ENAMETOOLONG"]);
+/**
+ * A failed open that means something IS there and it is not a regular file: a directory, a socket (ENXIO on
+ * Linux, EOPNOTSUPP on the BSDs), a device with no driver. The check this replaced (`statSync(p).isFile()`) answered
+ * false for every one of them.
+ */
+const OPEN_NOT_REGULAR = new Set(["EISDIR", "ENXIO", "EOPNOTSUPP", "ENODEV"]);
 
 /**
- * The bytes of the REGULAR file at `path`, or null when there is none (nothing there, a directory, a device or a
- * pipe). ONE open: the type is checked on the open descriptor and the same descriptor is read, so the file checked
- * is the file read. The earlier `existsSync(p) && statSync(p).isFile()` followed by `readFileSync(p)` named the
- * path twice, and another process could replace what it names between the check and the read (CodeQL
- * js/file-system-race). O_NONBLOCK, where the platform has it, keeps the open of a FIFO from waiting for a writer.
- * Any other failure (a permission refusal, an I/O error) is thrown as it is.
- * @param {string} path
- * @returns {Buffer | null}
+ * Why an open of `path` failed, in the terms the replaced check used, or null for a failure that is none of them
+ * (an I/O error, a descriptor limit) — which the replaced read threw as it is, and so does this.
+ *   - "absent": nothing reachable there (see OPEN_ABSENT);
+ *   - "not-regular": something there that is not a regular file (see OPEN_NOT_REGULAR);
+ *   - "unreadable": a regular file whose read was refused (EACCES / EPERM on the file itself).
+ * A permission refusal is ambiguous — the file refused, or a directory on the way to it — and only a stat of the
+ * path tells which: a path the stat cannot reach is absent (as `existsSync` answered), a regular file is
+ * unreadable, anything else is not regular. The stat reads nothing, so the one read stays the one read.
+ * @param {string} path @param {unknown} e
+ * @returns {"absent" | "not-regular" | "unreadable" | null}
  */
-function readRegularFile(path) {
+function openFailure(path, e) {
+  const code = errnoOf(e);
+  if (code === undefined) return null;
+  if (OPEN_ABSENT.has(code)) return "absent";
+  if (OPEN_NOT_REGULAR.has(code)) return "not-regular";
+  if (code === "EACCES" || code === "EPERM") {
+    try {
+      return statSync(path).isFile() ? "unreadable" : "not-regular";
+    } catch {
+      return "absent";
+    }
+  }
+  return null;
+}
+
+/**
+ * The bytes of the REGULAR file at `path` — or, when there is none, why (see `openFailure`; a directory, device or
+ * pipe that OPENS reads as "not-regular"). ONE open: the type is checked on the open descriptor and the same
+ * descriptor is read, so the file checked is the file read. The earlier `existsSync(p) && statSync(p).isFile()`
+ * followed by `readFileSync(p)` named the path twice, and another process could replace what it names between the
+ * check and the read (CodeQL js/file-system-race). O_NONBLOCK, where the platform has it, keeps the open of a FIFO
+ * from waiting for a writer. A failure `openFailure` does not classify is thrown as it is.
+ * @param {string} path
+ * @param {((path: string) => void) | undefined} beforeOpen  test seam: a throw here stands for the open failing with it
+ * @returns {{ bytes: Buffer } | { failure: "absent" | "not-regular" | "unreadable" }}
+ */
+function readRegularFile(path, beforeOpen) {
   /** @type {number} */
   let fd;
   try {
+    beforeOpen?.(path);
     fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
   } catch (e) {
-    if (NOT_A_FILE.has(errnoOf(e) ?? "")) return null;
-    throw e;
+    const failure = openFailure(path, e);
+    if (failure === null) throw e;
+    return { failure };
   }
   try {
-    return fstatSync(fd).isFile() ? readFileSync(fd) : null;
+    return fstatSync(fd).isFile() ? { bytes: readFileSync(fd) } : { failure: "not-regular" };
   } finally {
     closeSync(fd);
   }
@@ -354,7 +394,7 @@ function gitContext(repo) {
  *   label?: string;
  *   allowLegacy?: boolean;
  *   only?: OutputKey;
- *   hooks?: { beforeCommitStep?: (index: number, key: OutputKey) => void; beforeRestoreStep?: (index: number, key: OutputKey) => void };
+ *   hooks?: { beforeCommitStep?: (index: number, key: OutputKey) => void; beforeRestoreStep?: (index: number, key: OutputKey) => void; beforeOpen?: (path: string) => void };
  * }} CompileToDiskOptions
  */
 
@@ -459,10 +499,17 @@ export function compileToDisk(o) {
 
   /* ONE read of the bytes: everything below — validation, binding, compile — reads this buffer. It is also the one
      check that a regular file is there (readRegularFile), so what was checked is what was read. */
-  const bytes = readRegularFile(sourcePath);
-  if (bytes === null) {
-    throw new CompileError("E_SOURCE_MISSING", `there is no snapshot file at ${inRepo ? repoRel : label.source + " (outside the repository)"}.`);
+  const read = readRegularFile(sourcePath, o.hooks?.beforeOpen);
+  const where = inRepo ? repoRel : label.source + " (outside the repository)";
+  if ("failure" in read) {
+    /* A file that is there but refuses to be read is a different fact from no file, and says so (it used to escape
+       as the raw EACCES of the read that followed the check). */
+    if (read.failure === "unreadable") {
+      throw new CompileError("E_SOURCE_UNREADABLE", `the snapshot file at ${where} is there but could not be read (permission refused).`);
+    }
+    throw new CompileError("E_SOURCE_MISSING", `there is no snapshot file at ${where}.`);
   }
+  const bytes = read.bytes;
   const v = assertValidSnapshot(bytes, { allowLegacy: o.allowLegacy === true });
   const binding = bindSource(bytes, label);
   /* The TRACKED set is compiled from the committed form only (see the header, THE TRACKED SET): the bytes as
@@ -485,14 +532,17 @@ export function compileToDisk(o) {
   if (o.only !== undefined) {
     const mine = /** @type {{ file: string }} */ (allTargets.find((t) => t.key === o.only));
     for (const sib of allTargets.filter((t) => t.key !== o.only)) {
-      /* One read, no exists-check first (CodeQL js/file-system-race): no sibling there is no mixed set; one that is
-         there but cannot be read or parsed is a sibling of unknown binding. */
+      /* One read, no exists-check first (CodeQL js/file-system-race): no sibling reachable there is no mixed set (as
+         when an exists-check filtered the list: nothing there, a symbolic-link loop, a directory on the way that
+         refuses); one that is there but cannot be read or parsed is a sibling of unknown binding. */
       /** @type {string | null} */
       let text = null;
       try {
-        text = readFileSync(sib.path, "utf8");
-      } catch (e) {
-        if (errnoOf(e) === "ENOENT" || errnoOf(e) === "ENOTDIR") continue;
+        const sibling = readRegularFile(sib.path, o.hooks?.beforeOpen);
+        if ("failure" in sibling && sibling.failure === "absent") continue;
+        text = "bytes" in sibling ? sibling.bytes.toString("utf8") : null;
+      } catch {
+        text = null;
       }
       /** @type {Record<string, unknown> | null} */
       let meta = null;

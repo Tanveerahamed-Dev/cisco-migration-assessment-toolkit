@@ -14,6 +14,7 @@
  * the one that fires. Absence is absence.
  */
 import { aclsOf, fabric, hasRib, linksByHost, resolveCite, routesOf } from "../core/data";
+import { own } from "../core/own";
 import { listPhrase } from "../core/phrases";
 import { adminDistanceRank, routeFieldReading } from "../core/route-fields";
 import { aclLineName } from "./acl-line";
@@ -38,6 +39,7 @@ import type {
   Hop,
   HopEvidence,
   L3Interface,
+  NameKeyed,
   RouteEntry,
   Trace,
   TraceOutcome,
@@ -373,7 +375,8 @@ function fieldGroup(field: AclMatchField | null): string | null {
 
 export function resolveObjectGroup(host: string | null, name: string | null): ObjectGroup | null {
   if (host === null || name === null) return null;
-  return fabric.objectGroups[host]?.[name] ?? null;
+  /* Both names are the snapshot's: only the host's OWN table, and only a group it defines, answers (core/own.ts). */
+  return own(own(fabric.objectGroups, host), name) ?? null;
 }
 
 /**
@@ -813,11 +816,11 @@ function aclEvidence(host: string, name: string, line: AclLine, total: number, n
  * specifically, and the hop says which binding was unknown and why. The rule is deterministic and
  * stated out loud; it is not evidence that the ACL is applied on the path.
  */
-function selectAcls(named: Record<string, AclLine[]>, srcIp: Ipv4, dstIp: Ipv4): string[] {
+function selectAcls(named: NameKeyed<AclLine[]>, srcIp: Ipv4, dstIp: Ipv4): string[] {
   let best = 0;
   const scores = new Map<string, number>();
   for (const name of Object.keys(named).sort()) {
-    const lines = named[name] ?? [];
+    const lines = own(named, name) ?? [];
     let score = 0;
     for (const line of lines) {
       // Relevance is an ADDRESS question, not a protocol/port one. A list whose specific lines name
@@ -849,7 +852,7 @@ function selectAcls(named: Record<string, AclLine[]>, srcIp: Ipv4, dstIp: Ipv4):
  */
 function undecidableInUnappliedAcls(
   host: string,
-  named: Record<string, AclLine[]>,
+  named: NameKeyed<AclLine[]>,
   applied: readonly string[],
   flow: Flow,
   srcIp: Ipv4,
@@ -859,14 +862,14 @@ function undecidableInUnappliedAcls(
   const out: HopEvidence[] = [];
   for (const name of Object.keys(named).sort()) {
     if (applied.includes(name)) continue;
-    for (const line of named[name] ?? []) {
+    for (const line of own(named, name) ?? []) {
       if (matchTri(line, flow, srcIp, dstIp) === "no") continue;
       const ev = lineEvaluability(line);
       if (ev.evaluable) continue;
       out.push({
         kind: "absence",
         label:
-          `${host} ACL ${name} ${aclLineName(line.index, (named[name] ?? []).length)} could match this flow and cannot be evaluated ` +
+          `${host} ACL ${name} ${aclLineName(line.index, (own(named, name) ?? []).length)} could match this flow and cannot be evaluated ` +
           `(${ev.reason ?? "no reason recorded"}); the list was not applied by the specificity rule, ` +
           `and because ${gap}, that is not evidence it does not filter this flow`,
         raw: line.raw,
@@ -886,7 +889,7 @@ function undecidableInUnappliedAcls(
  */
 function notAppliedCaveat(
   host: string,
-  named: Record<string, AclLine[]>,
+  named: NameKeyed<AclLine[]>,
   applied: readonly string[],
   flow: Flow,
   srcIp: Ipv4,
@@ -905,7 +908,7 @@ function notAppliedCaveat(
   const unscoreable: string[] = [];
   const outscored: string[] = [];
   for (const name of rest) {
-    const lines = named[name] ?? [];
+    const lines = own(named, name) ?? [];
     const unresolved = lines.find((l) => !lineEvaluability(l).evaluable && hasUnresolvedAddressing(l));
     if (unresolved !== undefined) {
       unscoreable.push(`${name} (${unresolved.cite}: ${lineEvaluability(unresolved).reason ?? "cannot be evaluated"})`);
@@ -1028,7 +1031,7 @@ function runLists(
   flow: Flow,
   srcIp: Ipv4,
   dstIp: Ipv4,
-  named: Record<string, AclLine[]>,
+  named: NameKeyed<AclLine[]>,
   names: readonly string[],
   bindingOf: BindingOf,
 ): ListRun {
@@ -1040,7 +1043,7 @@ function runLists(
   let indeterminateDecision: AclEval["decision"] = null;
 
   for (const name of names) {
-    const lines = named[name] ?? [];
+    const lines = own(named, name) ?? [];
     let poisonedBy: { line: AclLine; why: string } | null = null;
     let decided = false;
     const setAside: string[] = [];
@@ -1162,7 +1165,7 @@ export function evaluateAcls(
   flow: Flow,
   srcIp: Ipv4,
   dstIp: Ipv4,
-  named: Record<string, AclLine[]> = aclsOf(host),
+  named: NameKeyed<AclLine[]> = aclsOf(host),
   path?: HopInterfaces,
 ): AclEval {
   const pb = path === undefined || Object.keys(named).length === 0 ? null : pathBindings(host, path.ingress, path.egress, srcIp, path.egressTarget === undefined ? dstIp : path.egressTarget);
@@ -1184,7 +1187,7 @@ function evaluateObservedBindings(
   flow: Flow,
   srcIp: Ipv4,
   dstIp: Ipv4,
-  named: Record<string, AclLine[]>,
+  named: NameKeyed<AclLine[]>,
   pb: PathBindings,
 ): AclEval {
   const caveats = [...pb.notes];
@@ -1209,8 +1212,8 @@ function evaluateObservedBindings(
   if (pb.bound.length === 0) {
     return { verdict: "not-applicable", decidedBy: null, evidence: pb.evidence, caveats, decision: null, bindingMode: "observed" };
   }
-  const missing = pb.bound.filter((b) => named[b.acl] === undefined);
-  const present = boundNames.filter((n) => named[n] !== undefined);
+  const missing = pb.bound.filter((b) => own(named, b.acl) === undefined);
+  const present = boundNames.filter((n) => own(named, n) !== undefined);
   const bindingOf: BindingOf = (name) => {
     const b = pb.bound.find((x) => x.acl === name);
     return b === undefined ? null : { intf: b.intf, dir: b.dir, cite: b.cite };
@@ -1249,11 +1252,11 @@ function evaluateBySpecificity(
   flow: Flow,
   srcIp: Ipv4,
   dstIp: Ipv4,
-  named: Record<string, AclLine[]>,
+  named: NameKeyed<AclLine[]>,
   pb: PathBindings | null,
 ): AclEval {
   const gap = bindingGapClause(pb);
-  const boundHere = (pb?.bound ?? []).map((b) => b.acl).filter((n) => named[n] !== undefined);
+  const boundHere = (pb?.bound ?? []).map((b) => b.acl).filter((n) => own(named, n) !== undefined);
   const names = [...new Set([...boundHere, ...selectAcls(named, srcIp, dstIp)])];
   const bindingOf: BindingOf = (name) => {
     const b = pb?.bound.find((x) => x.acl === name);

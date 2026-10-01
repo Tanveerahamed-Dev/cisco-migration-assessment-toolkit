@@ -17,18 +17,23 @@
    compiled with an AssessHub snapshot or an opened file — never a static copy of the sample's. */
 import { producerEmission as emissionJson } from "../core/dataset";
 import { fabric } from "../core/data";
-import { sameSourceBinding, type SourceBinding } from "../core/types";
+import { holds, own } from "../core/own";
+import { sameSourceBinding, type NameKeyed, type SourceBinding } from "../core/types";
 
 interface EmissionFile {
   meta: SourceBinding & {
-    aclLineFields: Record<string, string>;
-    deviceHealthFields: Record<string, string>;
+    aclLineFields: NameKeyed<string>;
+    deviceHealthFields: NameKeyed<string>;
   };
-  aclLineAbsent: Record<string, string[]>;
-  deviceAbsent: Record<string, string[]>;
+  aclLineAbsent: NameKeyed<string[]>;
+  deviceAbsent: NameKeyed<string[]>;
 }
 
-const FILE = emissionJson as unknown as EmissionFile;
+/* Assigned, not asserted: the compiler's contract must satisfy this reader's shape, and a cast here is how a
+   reader drops the NameKeyed brand. Every table below is keyed by snapshot names (a cite, a host) or asked about
+   a field a record carries, so each is read through core/own.ts: `FILE.deviceAbsent[host]` answered a host named
+   "toString" with a function, and `"constructor" in aclLineFields` was true. */
+const FILE: EmissionFile = emissionJson;
 
 /* Every binding field must agree — digest, its form, byte length and source (O15, `sameSourceBinding`). */
 export const PRODUCER_EMISSION_TRUSTED = sameSourceBinding(FILE.meta, fabric.meta);
@@ -41,18 +46,18 @@ const ACL_LINE_PATH = /^acls\.[^.[\]]+\.[^[\]]+\[\d+\]$/;
  * under more than one path.
  */
 export function producerFieldNotEmitted(path: string | null, record: unknown, field: string): string | null {
-  if (path !== null && ACL_LINE_PATH.test(path) && field in FILE.meta.aclLineFields) {
-    const key = FILE.meta.aclLineFields[field]!;
+  const key = own(FILE.meta.aclLineFields, field);
+  if (path !== null && ACL_LINE_PATH.test(path) && key !== undefined) {
     if (!PRODUCER_EMISSION_TRUSTED) return `whether the collector emitted \`${key}\` for this line is unknown — the emission record was compiled from other snapshot bytes; the value shown is the compiler's default`;
-    if ((FILE.aclLineAbsent[path] ?? []).includes(field))
+    if ((own(FILE.aclLineAbsent, path) ?? []).includes(field))
       return `not emitted by the collector — the source line carries no \`${key}\` key; the compiled value is the compiler's default, not the collector's testimony`;
     return null;
   }
-  if (field in FILE.meta.deviceHealthFields) {
+  if (holds(FILE.meta.deviceHealthFields, field)) {
     const device = fabric.devices.find((d) => d === record);
     if (device === undefined) return null;
     if (!PRODUCER_EMISSION_TRUSTED) return `whether the collector emitted a health record for ${device.host} is unknown — the emission record was compiled from other snapshot bytes`;
-    if ((FILE.deviceAbsent[device.host] ?? []).includes(field))
+    if ((own(FILE.deviceAbsent, device.host) ?? []).includes(field))
       return device.collected
         ? `the collector emitted no health_scores record for ${device.host}, so it was never scored; the empty list is the compiler's default`
         : `${device.host} was never reached, so it was never scored; the empty list is the compiler's default, not a finding of none`;

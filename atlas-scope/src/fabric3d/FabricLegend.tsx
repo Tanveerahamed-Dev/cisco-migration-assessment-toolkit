@@ -20,8 +20,8 @@ import {
   type ReactNode,
 } from "react";
 
-import { bandToken, isFavourableBand, PARTIAL_MARK, presentBand, QUALIFIED_BAND_TOKEN } from "../core/band-qualification";
-import type { Device, Link } from "../core/types";
+import { bandToken, isFavourableBand, NOT_MEASURED_LABEL, PARTIAL_MARK, presentBand, QUALIFIED_BAND_TOKEN } from "../core/band-qualification";
+import { recognisedKind, unrecognisedPhrase, type Device, type DeviceKind, type Link } from "../core/types";
 import { roleGlyphClass } from "../core/roles";
 
 const STORAGE_KEY = "atlas-scope.fabric-legend.open";
@@ -33,11 +33,21 @@ const KIND_ORDER = ["router", "device", "ap"] as const;
    (cisco_toolkit/analyze.py: `"kind": "device" if collected`), so it does not say "switch". It used
    to be labelled "Switch" here — an inference the snapshot never states, contradicted by the Device
    pane's own "Kind device" (independent audit B1). The label says what the field says. */
-const KIND_LABEL: Record<string, string> = {
+/* Every kind the vocabulary names (core/types.ts DEVICE_KINDS, the engine's `_KIND_RANK` plus "device") has a label, and
+   the table is read only with a kind `recognisedKind` admitted: a kind the snapshot wrote that the vocabulary does
+   not name is labelled as unrecognised, never looked up here (a kind "constructor" once named its row with the Object
+   function). */
+const KIND_LABEL: Readonly<Record<DeviceKind, string>> = {
   router: "Router",
   device: "Collected device (kind not stated)",
   ap: "Access point",
+  switch: "Switch",
+  firewall: "Firewall",
+  phone: "IP phone",
+  endpoint: "Endpoint",
+  unknown: "Kind not identified by the engine",
 };
+const kindLabel = (kind: string): string => (recognisedKind(kind) ? KIND_LABEL[kind] : unrecognisedPhrase("kind", kind));
 
 const BANDS = ["Excellent", "Good", "Fair", "Poor", "Critical"] as const;
 
@@ -218,6 +228,19 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
   const keyCount = (k: string) => legendKeys.filter((x) => x === k).length;
   const bandCount = (b: string) => keyCount(b);
   const bandUnobserved = keyCount("none");
+  /* The engine's own not-measured band ("Insufficient Data") is counted in a row of its own: it is neither a band nor an
+     unrecognised value, and a device counted in no row would be a chassis no row describes. */
+  const bandNotMeasured = keyCount("not-measured");
+  /* A band the snapshot states that the vocabulary does not name is counted in a row of its own, by the value it
+     carries (core/band-qualification.ts gives it the legend key "unrecognised"): dropped from every row, the device
+     would be counted nowhere and its chassis described by no row. */
+  const unrecognisedBands = [
+    ...new Set(devices.flatMap((d) => {
+      const p = presentBand(d);
+      return p.unrecognised === null ? [] : [p.unrecognised];
+    })),
+  ].sort();
+  const unrecognisedBandCount = (b: string) => devices.filter((d) => presentBand(d).unrecognised === b).length;
   /* Every device is counted in exactly ONE role row, by the class the role owner (core/roles.ts) assigns —
      the same function the scene draws its glyph from, so a row and the glyph it describes cannot disagree
      about case, whitespace or a blank role. */
@@ -289,7 +312,7 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
                   chassis()
                 )
               }
-              name={KIND_LABEL[k] ?? k}
+              name={kindLabel(k)}
               count={kinds.get(k) ?? 0}
             />
           ))}
@@ -316,6 +339,23 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
               count={keyCount(`${b}${PARTIAL_MARK}`)}
             />
           ))}
+          {unrecognisedBands.map((b) => (
+            <Row
+              key={`unrecognised:${b}`}
+              swatch={bandSwatch("?", undefined, "fabric3d-legend__chassis--wire")}
+              name={unrecognisedPhrase("band", b)}
+              meaning="The snapshot states a band Atlas Scope does not know. Drawn indeterminate; not a band."
+              count={unrecognisedBandCount(b)}
+            />
+          ))}
+          {bandNotMeasured > 0 ? (
+            <Row
+              swatch={bandSwatch("?", undefined, "fabric3d-legend__chassis--wire")}
+              name={NOT_MEASURED_LABEL}
+              meaning="The engine states it could not measure the device. Drawn indeterminate; not a band, not a score."
+              count={bandNotMeasured}
+            />
+          ) : null}
           <Row
             swatch={bandSwatch("?", undefined, "fabric3d-legend__chassis--wire")}
             name="Band not observed"

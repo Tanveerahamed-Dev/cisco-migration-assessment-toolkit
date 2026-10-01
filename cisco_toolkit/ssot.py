@@ -30,6 +30,8 @@ Read-only and side-effect free: this module derives, it never mutates the snapsh
 from __future__ import annotations
 
 import math
+import reprlib
+from fractions import Fraction
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 from .textutils import is_finite_num   # shared finite-number filter (rejects Infinity/NaN AND the huge int)
 
@@ -68,6 +70,11 @@ _HEALTH_BAND_POOR = "Poor"
 # as the worst health band, and the avg-health mean excludes it too.
 _HEALTH_BAND_ORDER = ("Critical", "Poor", "Fair", "Good", "Excellent")
 _HEALTH_BAND_NOT_SCORED = "Insufficient Data"
+# Every band a health row can carry (analyze._HEALTH_BANDS labels + the unscored band). A row whose band is
+# outside it -- a malformed or uploaded row, or a row that is not a record at all -- could be ANY band, so
+# no band count or worst band published over it can be confirmed (see reconcile). Held equal to the
+# producer's vocabulary by tests/test_ssot_owner_robustness.py.
+_HEALTH_BAND_VOCABULARY: FrozenSet[str] = frozenset(_HEALTH_BAND_ORDER + (_HEALTH_BAND_NOT_SCORED,))
 # EVERY band analyze.compute_lifecycle_risk can emit (analyze._LIFECYCLE_BAND_RANK is the producer's
 # vocabulary: Past-LDoS / Near-LDoS / Past-EoS / Active / Unknown) mapped to the summary field that
 # counts it. "Unknown" was the one omission, and it was the worst possible one: n_unknown is a
@@ -132,6 +139,31 @@ def _as_list(value: Any) -> List[Any]:
     return value if isinstance(value, list) else []
 
 
+# str() / repr() of a nested container recurse once per level, so a hostile upload (or any in-memory value)
+# nested past the interpreter's C recursion budget raised RecursionError out of a message or a name read --
+# the class _is_deep_empty was made iterative for. reprlib renders at most `maxlevel` (6) levels and bounded
+# runs, so the text of a short, shallow value is unchanged and the text of a hostile one is bounded.
+_BOUNDED = reprlib.Repr()
+_BOUNDED.maxstring = _BOUNDED.maxother = _BOUNDED.maxlong = 80
+
+
+def _shown(value: Any) -> str:
+    """``repr(value)`` for a violation message, bounded in depth and length (identical for a short, shallow
+    value: a band name, a count, the legacy ``0``)."""
+    return _BOUNDED.repr(value)
+
+
+def _text(value: Any) -> str:
+    """``str(value)`` for a name read from the snapshot: a string as it is, a scalar through ``str``, a
+    container through the bounded repr (``str`` of a short, shallow list IS its repr, so it reads as
+    before; only a value that is never a name -- a deep or very wide container -- reads differently)."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
+        return _BOUNDED.repr(value)
+    return str(value)
+
+
 def _dotted(snap: Dict[str, Any], path: str) -> Any:
     """Read a dotted snapshot path, returning None if any hop is missing/not a dict."""
     cur: Any = snap
@@ -167,22 +199,44 @@ def _scored_health_rows(health: Any) -> Optional[int]:
                and h.get("band") != _HEALTH_BAND_NOT_SCORED)
 
 
+#: Why :func:`fleet_avg_health` withholds a published average as ``unverified`` (its ``reason``).
+FLEET_AVG_UNVERIFIED_REASONS: Tuple[str, ...] = ("not_a_number", "no_scored_basis")
+
+
+def _count_or_none(value: Any) -> Optional[int]:
+    """A published count taken only as it is: a non-negative, non-bool int, else ``None`` (never coerced)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def fleet_avg_health(snap: Any) -> Dict[str, Any]:
     """THE reader of the canonical fleet health average (G15). Every surface renders from this rather
     than re-deriving a mean or trusting a stored number blindly. Returns
-    ``{state, value, n_scored, n_rows}`` where ``state`` is one of:
+    ``{state, value, n_scored, n_rows, reason}`` where ``state`` is one of:
 
-    * ``measured``     -- ``value`` is the published, finite ``executive_brief.posture.avg_health``.
+    * ``measured``     -- ``value`` is the published, finite ``executive_brief.posture.avg_health``,
+      over a scored-row basis of at least one row.
     * ``not_assessed`` -- no device was health-scored: the engine's published abstention (``None``),
       or a stored NUMBER over zero scored rows -- the pre-G15 producer's hard ``0`` (which
       :func:`reconcile` reports as a violation) is a measurement of nothing and never renders as one.
-    * ``unverified``   -- a value is published but it is not a finite number (a malformed upload).
+    * ``unverified``   -- a value is published but cannot be taken as a measurement; ``reason`` says why
+      (:data:`FLEET_AVG_UNVERIFIED_REASONS`): ``not_a_number`` (not a finite number, a malformed upload)
+      or ``no_scored_basis`` -- a finite number with NO scored-row basis at all (``health_scores`` absent
+      or not a list, and no abstention record ``posture.n_scored == 0``). The engine always writes the
+      ``health_scores`` list (even a failed phase's ``[]``) and publishes ``n_scored`` only on the
+      abstention, only as ``0``, so that shape is never a verbatim producer output; without the rows the
+      pre-G15 hard ``0`` over nothing is indistinguishable from a measurement, and :func:`reconcile` has
+      nothing to verify it against. A POSITIVE ``posture.n_scored`` is no basis either: the engine never
+      writes one, and a count vouching for its own average is not evidence that anything was scored.
+      (Not the producer's ``posture.not_assessed`` tokens -- ``no_health_rows`` / ``all_insufficient_data``
+      / ``no_scored_rows`` -- which explain an engine abstention over rows it HAD; ``reason`` is ``None``
+      for ``not_assessed``, whose cause, when the engine published one, is that ``posture.not_assessed``.)
     * ``unpublished``  -- no canonical value at all (brief absent, failed ``_unavailable``, or a
       pre-posture snapshot). A consumer may fall back to its OWN mean over SCORED rows only.
 
     ``n_rows`` / ``n_scored`` count the ``health_scores`` list (``None`` when it is not a list; the
-    posture's own ``n_scored`` stands in for the latter). ``value`` is ``None`` unless ``measured``.
-    Total on bad input; derives only, never mutates.
+    producer's abstention record -- ``posture.n_scored`` equal to the integer ``0``, never a bool or a
+    float -- stands in for the latter). ``value`` is ``None`` unless ``measured``; ``reason`` is ``None``
+    unless ``unverified``. Total on bad input; derives only, never mutates.
     """
     s = snap if isinstance(snap, dict) else {}
     health = s.get("health_scores")
@@ -190,22 +244,28 @@ def fleet_avg_health(snap: Any) -> Dict[str, Any]:
     n_scored = _scored_health_rows(health)
     eb = s.get("executive_brief")
     posture = eb.get("posture") if isinstance(eb, dict) and not eb.get("_unavailable") else None
-    if n_scored is None and isinstance(posture, dict) and isinstance(posture.get("n_scored"), int):
-        n_scored = posture["n_scored"]
-    out: Dict[str, Any] = {"state": "unpublished", "value": None, "n_scored": n_scored, "n_rows": n_rows}
+    # The producer's abstention record, taken only as it writes it: `False == 0` and `0.0 == 0` in Python.
+    abstained = isinstance(posture, dict) and _count_or_none(posture.get("n_scored")) == 0
+    if n_scored is None and abstained:
+        n_scored = 0
+    out: Dict[str, Any] = {"state": "unpublished", "value": None, "n_scored": n_scored, "n_rows": n_rows,
+                           "reason": None}
     if not isinstance(posture, dict) or "avg_health" not in posture:
         return out
     value = posture.get("avg_health")
-    if value is None or n_scored == 0 or posture.get("n_scored") == 0:
+    if value is None or n_scored == 0 or abstained:
         out["state"] = "not_assessed"
-    elif is_finite_num(value):
-        out.update(state="measured", value=value)
+    elif not is_finite_num(value):
+        out.update(state="unverified", reason="not_a_number")
+    elif n_scored is None:
+        out.update(state="unverified", reason="no_scored_basis")
     else:
-        out["state"] = "unverified"
+        out.update(state="measured", value=value)
     return out
 
 
 _MISSING = object()
+_DEEP_CONTAINERS = (dict, list, tuple, set)       # what _is_deep_empty descends into (all else is a leaf)
 
 
 def _is_deep_empty(val: Any) -> bool:
@@ -214,21 +274,49 @@ def _is_deep_empty(val: Any) -> bool:
     (adversarial-review finding, 2026-07-05): a section like ``{'dup_ip': [], 'dup_subnet': []}`` (a compute
     that ALWAYS returns its keys, here with zero conflicts found) is truthy, so a shallow ``not val`` check
     mislabels it 'published' — a green "seen" row for a genuinely-empty result, the exact Law-3 inversion this
-    module exists to prevent. Short-circuits on the first real leaf, so a populated section stays cheap."""
-    if isinstance(val, dict):
-        return all(_is_deep_empty(v) for v in val.values())
-    if isinstance(val, (list, tuple, set)):
-        return all(_is_deep_empty(v) for v in val)
-    return not val
+    module exists to prevent. Short-circuits on the first real leaf, so a populated section stays cheap.
+
+    Iterative (an explicit stack of iterators, depth-first in the recursive definition's order): the
+    recursive form spent two interpreter frames per nesting level, so ~500 levels of an uploaded section
+    raised RecursionError out of the abstention core and the census. Containers are dicts (their values)
+    and lists / tuples / sets (their elements); everything else -- a frozenset included -- is a leaf judged
+    by ``not leaf``. A container already on the walk is not re-entered: a shared subtree yields the same
+    verdict every time, and a self-referencing one (never JSON, but reachable in memory) terminates. The memo
+    HOLDS every container it entered, not just its id(): a container whose iteration builds new children
+    frees each one after the walk passes it, and an id-only memo then saw a later child at the reused id,
+    skipped it, and read a populated section as empty."""
+    if not isinstance(val, _DEEP_CONTAINERS):
+        return not val
+    stack = [iter(val.values() if isinstance(val, dict) else val)]
+    entered: Dict[int, Any] = {id(val): val}          # id -> the container itself, so no id can be reused
+    while stack:
+        for item in stack[-1]:
+            if isinstance(item, _DEEP_CONTAINERS):
+                if id(item) not in entered:
+                    entered[id(item)] = item
+                    stack.append(iter(item.values() if isinstance(item, dict) else item))
+                    break                       # descend first; this level resumes where it stopped
+            elif item:
+                return False
+        else:
+            stack.pop()                         # this level is exhausted: every leaf in it was empty
+    return True
 
 
 def _device_not_collected(snap: Dict[str, Any], device: str) -> bool:
     """True iff `device` is in the collection blind-spot list with status 'not collected' (a fully un-collected
-    device). A 'partial' device (some evidence collected) or a fully-collected one is NOT a blind spot."""
-    want = (device or "").strip().lower()                # device names vary in case (devices.json vs show-text)
+    device). A 'partial' device (some evidence collected) or a fully-collected one is NOT a blind spot.
+    Only strings name a device (every collected host is a string): a numeric host row, or a pack's
+    ``"device": 7``, raised AttributeError on ``.strip()`` and aborted assertions.evaluate_pack. A host row that
+    is not a string names no device; a DEVICE that is not a string names no host the evidence can confirm was
+    collected, so a fact scoped to it is a blind spot -- abstain, never a fleet-level verdict under its name."""
+    if not isinstance(device, str):
+        return True
+    want = device.strip().lower()                        # device names vary in case (devices.json vs show-text)
     for d in _as_list(_dotted(snap, "collection_completeness.devices")):   # _as_list, NOT `or []`: a truthy non-list would crash the `for`
-        if isinstance(d, dict) and (d.get("host") or "").strip().lower() == want:
-            return str(d.get("status", "")).strip().lower() == "not collected"
+        host = d.get("host") if isinstance(d, dict) else None
+        if isinstance(host, str) and host.strip().lower() == want:
+            return _text(d.get("status", "")).strip().lower() == "not collected"
     return False
 
 
@@ -258,8 +346,16 @@ ABSTENTION_STATES = ("published", "collected_but_empty", "not_collected", ANALYS
 # `assessment_integrity` values that mean "this block's computation failed" -- the same predicate the
 # renderers' fleet-level integrity views use (html._analysis_integrity and its copies).
 INTEGRITY_FAILURE_TOKENS: FrozenSet[str] = frozenset({"failed", "compute_failed", "unavailable", "error"})
-# `assessment_integrity` keys that are metadata about failures, never a section name.
-_INTEGRITY_META_KEYS: FrozenSet[str] = frozenset({"failed_phases", "phase_errors", "n_violations", "violations"})
+# The keys :func:`audit` discloses -- and the producer (COLLECT_PARSE_V3_23_0._record_ssot_integrity_failure)
+# and the webapp deliverable gate merge verbatim into `assessment_integrity`. The status key carries the
+# failure token "failed", so it MUST be classified as metadata: without it `failed_sections` reported a
+# reconciliation drift as a failed SECTION named `ssot_reconciliation`. audit() builds its dict from this
+# tuple, so the disclosure and its classification cannot drift apart.
+AUDIT_DISCLOSURE_KEYS: Tuple[str, ...] = ("ssot_reconciliation", "n_violations", "violations")
+# `assessment_integrity` keys that are metadata about failures, never a section name: the per-phase failure
+# record (COLLECT_PARSE_V3_23_0._record_phase_failure) plus the SSOT disclosure. Held complete against every
+# literal key the producer writes by tests/test_ssot_owner_robustness.py.
+_INTEGRITY_META_KEYS: FrozenSet[str] = frozenset({"failed_phases", "phase_errors", *AUDIT_DISCLOSURE_KEYS})
 
 # Phase label -> the snapshot sections its failure leaves as a fallback. Direct `_run_phase` edges from
 # `main()` (ratchet-verified), plus: compute phases whose only consumer is the embed phase that publishes
@@ -375,8 +471,12 @@ _NON_SECTION_PREFIXES = ("interface rows (",)       # per-host workbook row writ
 def phase_classification(label: Any) -> str:
     """Classify one failure label: ``sections`` (attributed through :data:`PHASE_SECTIONS`),
     ``intermediate`` (feeds several sections -> fails closed), ``non_section`` (leaves no section
-    fallback) or ``unknown`` (nobody classified it -> fails closed)."""
-    lab = str(label)
+    fallback) or ``unknown`` (nobody classified it -> fails closed). Every classified label is a string, so
+    anything else is ``unknown`` without being rendered: ``str()`` of a hostile nesting raised RecursionError
+    out of :func:`failed_sections`, and no ``str()`` of a JSON number, list or object spells a label."""
+    if not isinstance(label, str):
+        return "unknown"
+    lab = label
     if lab in PHASE_SECTIONS:
         return "sections"
     if lab in INTERMEDIATE_PHASES:
@@ -406,7 +506,7 @@ def failed_sections(snap: Any) -> Tuple[FrozenSet[str], bool]:
             for label in raw:
                 kind = phase_classification(label)
                 if kind == "sections":
-                    direct.update(PHASE_SECTIONS[str(label)])
+                    direct.update(PHASE_SECTIONS[label])        # "sections" is only ever a string label
                 elif kind != "non_section":
                     unattributed = True
         elif raw:
@@ -442,6 +542,19 @@ DERIVED_FACT_BASIS: Dict[str, Tuple[str, ...]] = {
 }
 
 
+_POSTURE = "executive_brief.posture"     # the health-row aggregates (DERIVED_FACT_BASIS: health_scores)
+
+
+def _is_posture_path(path: Any) -> bool:
+    return isinstance(path, str) and (path == _POSTURE or path.startswith(_POSTURE + "."))
+
+
+def _posture_unbacked(snap: Dict[str, Any]) -> bool:
+    """True when the snapshot carries no ``health_scores`` LIST: the posture facts aggregate over rows it
+    does not have (:func:`fleet_avg_health`'s ``no_scored_basis``). The engine always writes the list."""
+    return not isinstance(snap.get("health_scores"), list)
+
+
 def fact_basis(path: Any) -> Tuple[str, ...]:
     """The snapshot sections a (dotted) fact path is computed from: its own top-level section first,
     then the raw basis of the longest :data:`DERIVED_FACT_BASIS` prefix that covers it. ``()`` for a
@@ -469,6 +582,13 @@ def _abstention(snap: Dict[str, Any], subject: Any, device: Optional[str],
     # mislabelled a collection blind spot either.
     if any(section in direct for section in fact_basis(subject)):
         return ANALYSIS_UNAVAILABLE
+    # The posture facts are aggregates over the health rows, and fleet_avg_health withholds them when the
+    # snapshot carries no health_scores LIST (no_scored_basis). The same absence is a blind spot here: the
+    # core read an unbacked average as `published` and a stripped zero as `collected_but_empty` ("looked,
+    # found nothing"), so a user assertion `n_critical == 0` PASSED over no health evidence at all. The
+    # engine always writes the list (a failed phase's `[]` is attributed above), so its output is unchanged.
+    if _is_posture_path(subject) and _posture_unbacked(snap):
+        return "not_collected"
     if isinstance(subject, str) and "." in subject:
         val = _dotted(snap, subject)
     else:
@@ -704,17 +824,18 @@ def segmentation_facts(snap: Dict[str, Any]) -> Dict[str, Any]:
     all_vrfs: set = set()
     gw_buckets: set = set()
     n_gw_derived = n_acl_derived = 0
+    # _text, not str(): str() of a hostile nesting raised RecursionError; a shallow value reads as before.
     for _host, ports in _as_dict(snap.get("interfaces")).items():
         for pname, pdet in _as_dict(ports).items():
             pdet = _as_dict(pdet)
-            vrf = str(pdet.get("vrf") or "").strip()
+            vrf = _text(pdet.get("vrf") or "").strip()
             nondefault = _is_nondefault_vrf(vrf)
             if nondefault:
                 all_vrfs.add(vrf)
-            if _is_svi_port(pname) and str(pdet.get("svi_ip") or "").strip():
+            if _is_svi_port(pname) and _text(pdet.get("svi_ip") or "").strip():
                 n_gw_derived += 1
                 gw_buckets.add(vrf if nondefault else "(global)")
-                if str(pdet.get("acl_in") or "").strip() or str(pdet.get("acl_out") or "").strip():
+                if _text(pdet.get("acl_in") or "").strip() or _text(pdet.get("acl_out") or "").strip():
                     n_acl_derived += 1
 
     published = _as_int(gacl.get("n_gateways"))
@@ -728,8 +849,8 @@ def segmentation_facts(snap: Dict[str, Any]) -> Dict[str, Any]:
         n_with_acl = _as_int(gacl.get("n_with_acl"))
         n_gateway_vrfs = _as_int(ssum.get("n_vrfs"))
         # the owner's per-VRF gateway census; '(global)' is the unsegmented bucket, never a real VRF
-        gateway_vrfs = sorted({str(r.get("vrf")) for r in _as_list(seg.get("vrfs"))
-                               if isinstance(r, dict) and _is_nondefault_vrf(str(r.get("vrf") or "").strip())})
+        gateway_vrfs = sorted({_text(r.get("vrf")) for r in _as_list(seg.get("vrfs"))
+                               if isinstance(r, dict) and _is_nondefault_vrf(_text(r.get("vrf") or "").strip())})
         if not _as_list(seg.get("vrfs")):
             gateway_vrfs = sorted(b for b in gw_buckets if b != "(global)")
     else:
@@ -755,6 +876,22 @@ def segmentation_facts(snap: Dict[str, Any]) -> Dict[str, Any]:
             "other_vrfs": sorted(all_vrfs - set(gateway_vrfs)), "flat": flat, "source": source}
 
 
+def _rounded_mean(scored: List[Any]) -> int:
+    """``round(mean(scored))`` exactly as compute_executive_brief computes it (a float sum), falling back to
+    the EXACT rational mean only when that float arithmetic overflows. Every score is finite
+    (``is_finite_num``), but two of them near the float maximum -- 1.7e308 is a plain JSON number -- summed to
+    ``inf`` and ``round(inf)`` raised OverflowError, and an int too large for a float beside a float raised it
+    from the sum itself: out of reconcile / summary / audit and, through docmeta.add_excellence_front, every
+    DOCX. The engine never scores outside 0..100, so the normal path (and its half-way rounding) is untouched."""
+    try:
+        mean = sum(scored) / len(scored)
+    except OverflowError:
+        mean = math.inf
+    if math.isfinite(mean):
+        return round(mean)
+    return round(sum(Fraction(x) for x in scored) / len(scored))
+
+
 def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[str]:
     """Return human-readable SSOT violations: a published canonical value that disagrees with an
     independent derivation from the raw evidence. Empty list == every published fact reconciles.
@@ -771,7 +908,11 @@ def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[st
     closes that: pass a list and it receives the name of every check that ACTUALLY executed, so a
     caller can tell "verified, all clean" from "verified nothing". :func:`summary` uses it; nothing
     else needs to, which is why it stays private rather than changing the return type.
+
+    Total on bad input: a snapshot that is not a dict reconciles nothing, and a malformed value is
+    reported (bounded) or skipped, never raised on.
     """
+    snap = snap if isinstance(snap, dict) else {}
     violations: List[str] = []
     # Every published summary block is coerced via _as_dict, NOT `_dotted(...) or {}`: `or {}` keeps a
     # TRUTHY non-dict (a str/list from a poisoned or hand-edited --no-collect snapshot), and the many
@@ -853,6 +994,14 @@ def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[st
     scored = [h.get("score") for h in health
               if isinstance(h, dict) and is_finite_num(h.get("score"))
               and h.get("band") != _HEALTH_BAND_NOT_SCORED]
+    # A row whose band is outside the producer's vocabulary (a list / dict / number / unknown text -- never an
+    # engine output) or that is not a record at all could be ANY band. The counts below compare with ==, so
+    # such a row silently counted as "not Critical": `n_critical: 0` beside a row banded ["Critical"] was
+    # certified, and summary() said `verified: True` over rows nobody could read -- absence of a readable
+    # band rendered as health. A band fact that row could change is reported as unverifiable instead.
+    unreadable = sum(1 for h in health if not (isinstance(h, dict) and isinstance(h.get("band"), str)
+                                               and h["band"] in _HEALTH_BAND_VOCABULARY))
+    _unreadable_note = f"{unreadable} health row(s) carry no recognised band"
     if _health_basis and health:
         for field, band in (("n_critical", _HEALTH_BAND_CRITICAL), ("n_poor", _HEALTH_BAND_POOR)):
             if field not in posture:
@@ -860,6 +1009,17 @@ def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[st
             path = f"executive_brief.posture.{field}"
             cnt = sum(1 for h in health if isinstance(h, dict) and h.get("band") == band)
             published = posture.get(field)
+            pi = _as_int(published)
+            if published is not None and pi is None:
+                continue                # not a count: the coverage-honest skip check() applies
+            if unreadable and (cnt <= pi <= cnt + unreadable if pi is not None else not (cnt or scored)):
+                # consistent with SOME reading of the unreadable rows, so neither confirmed nor refuted (a
+                # value outside that range is refuted below exactly as before)
+                if _ran is not None:
+                    _ran.append(path)
+                violations.append(f"{path}={pi} but {_unreadable_note}, so "
+                                  f"count(health_scores.band=={band}) cannot be verified")
+                continue
             if published is not None:
                 check(path, published, cnt, f"count(health_scores.band=={band})")
                 continue
@@ -882,7 +1042,7 @@ def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[st
         published_avg = posture.get("avg_health")
         if scored and published_avg is not None:
             check("executive_brief.posture.avg_health", published_avg,
-                  round(sum(scored) / len(scored)), "round(mean(scored health_scores.score))")
+                  _rounded_mean(scored), "round(mean(scored health_scores.score))")
         else:
             if _ran is not None:
                 _ran.append("executive_brief.posture.avg_health")
@@ -891,18 +1051,28 @@ def reconcile(snap: Dict[str, Any], _ran: Optional[List[str]] = None) -> List[st
                     f"executive_brief.posture.avg_health=None (not assessed) but {len(scored)} "
                     f"health row(s) are scored")
             elif published_avg is not None:
-                violations.append(
-                    f"executive_brief.posture.avg_health={published_avg!r} but 0 of {len(health)} "
+                violations.append(   # _shown: a bounded repr (repr() of a hostile nesting raised)
+                    f"executive_brief.posture.avg_health={_shown(published_avg)} but 0 of {len(health)} "
                     f"health row(s) are scored (a number published for nothing; expected None)")
     if _health_basis and health:
         if "worst_band" in posture:
-            bands_present = {h.get("band") for h in health if isinstance(h, dict)}
+            # Only a string can be a band of the vocabulary, so only strings are collected: a list / dict
+            # band (a malformed or uploaded snapshot) is unhashable and raised TypeError here -- through
+            # summary() that aborted docmeta.add_excellence_front, i.e. every DOCX. Like "Unrecognised" or 7
+            # it is an unreadable band (counted in `unreadable` above), never read as the band it contains.
+            bands_present = {h["band"] for h in health if isinstance(h, dict) and isinstance(h.get("band"), str)}
             derived_worst = next((b for b in _HEALTH_BAND_ORDER if b in bands_present), "")
             published_worst = posture.get("worst_band")
-            if derived_worst and published_worst != derived_worst:
+            if unreadable and derived_worst != _HEALTH_BAND_ORDER[0]:
+                # an unreadable row could be worse than every band observed; only an observed Critical row
+                # (nothing is worse) still decides the most-severe band
+                violations.append(
+                    f"executive_brief.posture.worst_band={_shown(published_worst)} but {_unreadable_note}, "
+                    f"so the most-severe band present cannot be determined")
+            elif derived_worst and published_worst != derived_worst:
                 # a wrong band, OR (G15) a band withheld (None / "") while one is observed
                 violations.append(
-                    f"executive_brief.posture.worst_band={published_worst!r} but "
+                    f"executive_brief.posture.worst_band={_shown(published_worst)} but "
                     f"most-severe band present={derived_worst!r}")
 
     # --- lifecycle bands (per_device is the raw basis) ---------------------------------------
@@ -952,10 +1122,11 @@ def audit(snap: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     violations = reconcile(snap)
     if not violations:
         return None
+    status_key, count_key, list_key = AUDIT_DISCLOSURE_KEYS
     return {
-        "ssot_reconciliation": "failed",
-        "n_violations": len(violations),
-        "violations": violations[:20],  # bounded so a pathological snapshot can't bloat the disclosure
+        status_key: "failed",
+        count_key: len(violations),
+        list_key: violations[:20],  # bounded so a pathological snapshot can't bloat the disclosure
     }
 
 
@@ -981,8 +1152,21 @@ def summary(snap: Dict[str, Any]) -> Dict[str, Any]:
     DOCX deliverable, and the explorer renders the same badge. A self-verification layer asserting a
     reconciliation it never performed is the failure this whole module exists to prevent, sitting at
     the top of the trust chain.
+
+    A figure the owner itself withholds is not counted in ``n_facts`` either: every posture fact when
+    the snapshot carries no ``health_scores`` list (the abstention core calls them ``not_collected``),
+    and ``avg_health`` whenever :func:`fleet_avg_health` reports it ``unverified``. Counting them put
+    "N headline figures self-verified" on the same DOCX page that called the average UNVERIFIED. The
+    engine always writes the list and a finite average, so its ``executive_brief.ssot`` is unchanged.
     """
+    snap = snap if isinstance(snap, dict) else {}
     facts = canonical_facts(snap)
+    if _posture_unbacked(snap):
+        for name, (path, _concept) in CANONICAL_FACTS.items():
+            if _is_posture_path(path):
+                facts[name] = None
+    elif fleet_avg_health(snap)["state"] == "unverified":
+        facts["avg_health"] = None
     ran: List[str] = []
     violations = reconcile(snap, _ran=ran)
     return {

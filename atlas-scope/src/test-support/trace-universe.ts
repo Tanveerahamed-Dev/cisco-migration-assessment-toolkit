@@ -28,6 +28,7 @@
  */
 import { expect, type TestContext } from "vitest";
 import { fabric } from "../core/data";
+import { own } from "../core/own";
 import { isGoldenSample } from "./golden-sample";
 import type { Flow, RouteEntry, Trace } from "../core/types";
 import { suggestedFlows, traceFlow } from "../forwarding/engine";
@@ -116,7 +117,7 @@ export function ownedAddressesWithHostRoutes(): Set<string> {
 
 /** The route entry a host's table chooses for an address (longest match; the table's own order breaks ties). */
 export const longestMatchOn = (host: string, ip: Ipv4): RouteEntry | undefined =>
-  rankPrefixMatches(fabric.routes[host] ?? [], ip, (r) => r.prefix)[0]?.item;
+  rankPrefixMatches(own(fabric.routes, host) ?? [], ip, (r) => r.prefix)[0]?.item;
 
 /**
  * Every route entry an ordinary host address can be forwarded BY: a prefix of 1..31 bits on any host's table
@@ -128,7 +129,7 @@ export function exercisableRoutes(): { host: string; route: RouteEntry; witness:
   const owned = ownedAddressesWithHostRoutes();
   const out: { host: string; route: RouteEntry; witness: string }[] = [];
   for (const host of Object.keys(fabric.routes).sort())
-    for (const r of fabric.routes[host] ?? []) {
+    for (const r of own(fabric.routes, host) ?? []) {
       const p = parsePrefix(r.prefix);
       if (p === null || p.bits === 0 || p.bits === 32) continue;
       const witness = candidateHostsIn(p).find((ip) => !owned.has(formatIpv4(ip)) && longestMatchOn(host, ip) === r);

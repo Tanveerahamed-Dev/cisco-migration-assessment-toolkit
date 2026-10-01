@@ -22,13 +22,18 @@
 import { BUNDLED } from "./dataset/bundled";
 import { selectActiveDataset } from "./dataset/select";
 import { takeInstalledDataset } from "./dataset/slot";
+import { withoutPrototypes } from "./own";
 import type { CompiledDataset, DatasetNotice, DatasetOrigin } from "./dataset/types";
 
 export type { CompiledDataset, DatasetIssue, DatasetNotice, DatasetOrigin } from "./dataset/types";
 
 const { installed, notices } = takeInstalledDataset();
 
-const active: { set: CompiledDataset; origin: DatasetOrigin } = selectActiveDataset(installed, BUNDLED);
+const selected: { set: CompiledDataset; origin: DatasetOrigin } = selectActiveDataset(installed, BUNDLED);
+/* Every name-keyed dictionary of the ONE set this page shows loses its prototype here, before any module reads it —
+   the bundled sample and a runtime-opened snapshot alike — so no read shape can answer a snapshot name from
+   Object.prototype (core/own.ts, THE STRUCTURAL GUARANTEE). */
+const active: { set: CompiledDataset; origin: DatasetOrigin } = { set: withoutPrototypes(selected.set), origin: selected.origin };
 
 /** The four compiled documents of the one dataset this page shows. */
 export const dataset: CompiledDataset = active.set;

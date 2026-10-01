@@ -48,7 +48,18 @@ from .graphify import (
 )
 from .model import SCHEMA_VERSION, canonical_json, chunked, digest_object, sha256_bytes, stable_id
 from .parsers import ParseFailure, ParseResult, nonblank_line_records, parse_by_language, safe_decode_text
-from .policy import classify_file, documentation_status
+from .policy import (
+    CENSUS_DEPTH_FULL,
+    CENSUS_DEPTH_IDENTITY,
+    CENSUS_DEPTH_POLICY_OWNER,
+    IDENTITY_DEPTH_DEFERRED_GROUPS,
+    IDENTITY_DEPTH_RETAINED_GROUPS,
+    census_depth_decision,
+    census_depth_declaration_receipts,
+    classify_file,
+    documentation_status,
+    validate_census_depth_declarations,
+)
 
 
 MAX_BINARY_BYTES = 512 * 1024 * 1024
@@ -140,6 +151,71 @@ GUI_FIELD_GAPS = {
     "known_gaps": ("gap.accessibility-performance", "gap.white-label"),
 }
 _FORBIDDEN_CONTENT_RULE_NAMES = frozenset(name for name, _pattern in FORBIDDEN_CONTENT_RULES)
+# Parse status of a text file censused at identity depth: it passed the full
+# privacy decision and its owning parser, but only its file record and static
+# imports are published (see ``policy.CENSUS_DEPTH_DECLARATIONS``).
+IDENTITY_CENSUS_PARSE_STATUS = "identity_census"
+_PATH_FREE_OR_SECONDARY_GROUPS = frozenset({"claims", "consequential_claim_facets", "graph_edges", "graph_nodes"})
+if (
+    set(IDENTITY_DEPTH_RETAINED_GROUPS) & set(IDENTITY_DEPTH_DEFERRED_GROUPS)
+    or set(IDENTITY_DEPTH_RETAINED_GROUPS) | set(IDENTITY_DEPTH_DEFERRED_GROUPS) | _PATH_FREE_OR_SECONDARY_GROUPS
+    != set(RECORD_GROUPS)
+):
+    raise RuntimeError("census-depth record-group partition differs from the compiler record groups")
+
+
+# The record groups each completeness gate draws its denominator from.  Every
+# gate the ledger emits must be declared here -- ``_scope_gate_denominators``
+# refuses an undeclared one -- so the census-depth scope of a denominator is
+# derived from its groups, never from a hand list of gate names: a gate drawn
+# from a group an identity-depth file never emits states that its denominator
+# is the full-depth census while any file is censused at identity depth.
+GATE_DENOMINATOR_GROUPS: dict[str, tuple[str, ...]] = {
+    # Structural invariants.
+    "every_tracked_file_classified": ("files",),
+    "every_nonblank_text_line_has_one_record": ("lines",),
+    "every_safe_parsed_source_has_one_structural_root": ("structural_entities",),
+    "every_safe_line_structurally_mapped": ("lines",),
+    "no_silent_parser_failure": ("files",),
+    "graphify_receipt_exact_source_bound": (),
+    "every_safe_text_file_has_exact_source_record": ("source_text",),
+    "publication_has_no_fatal_error": (),
+    "every_published_record_has_entity_type": RECORD_GROUPS,
+    "every_documentation_record_has_authority_classification": ("markdown",),
+    "every_gui_surface_has_standardized_evidence_honest_dossier": ("components", "routes"),
+    "every_identity_depth_file_declared_privacy_scanned_and_unprojected": ("files",),
+    # Semantic acceptance gates.
+    "architecture_contract_declared_and_conformant": (),
+    "runtime_architecture_edges_observed_and_reconciled": (),
+    "every_symbol_has_dossier_fields": ("symbols",),
+    "every_tracked_text_file_line_censused": ("files",),
+    "every_safe_line_behaviorally_explained": ("lines",),
+    "every_critical_or_public_symbol_level_four_reviewed": ("symbols",),
+    "exact_clean_commit_binding": (),
+    "every_binary_has_format_aware_privacy_review": ("binaries",),
+    "runtime_trace_evidence_joined_to_source_records": ("lines",),
+    "consequential_claim_denominator_closed": ("consequential_claim_facets",),
+    "bitemporal_event_ledger_populated_and_replayable": (),
+    "release_lifecycle_transitions_integrated_and_receipted": (),
+}
+FULL_DEPTH_DENOMINATOR_SCOPE = "full_depth_census_identity_depth_files_excluded"
+
+
+def _scope_gate_denominators(gates: list[dict[str, Any]], *, identity_depth_files: int) -> list[dict[str, Any]]:
+    """Mark every gate whose denominator excludes identity-depth files."""
+
+    undeclared = sorted({str(gate["name"]) for gate in gates} - set(GATE_DENOMINATOR_GROUPS))
+    if undeclared:
+        raise RuntimeError(f"completeness gates declare no denominator record groups: {', '.join(undeclared)}")
+    if identity_depth_files <= 0:
+        return gates
+    deferred = set(IDENTITY_DEPTH_DEFERRED_GROUPS)
+    return [
+        {**gate, "denominator_scope": FULL_DEPTH_DENOMINATOR_SCOPE}
+        if deferred & set(GATE_DENOMINATOR_GROUPS[str(gate["name"])])
+        else gate
+        for gate in gates
+    ]
 
 
 class CompilationError(RuntimeError):
@@ -747,6 +823,7 @@ def _claims(
     graphify: dict[str, Any],
     completeness_id: str,
     dirty: bool,
+    census_depth_block_categories: Iterable[str] = (),
 ) -> list[dict[str, Any]]:
     source_id = _source_state_id(source_commit, source_tree_digest)
     owner_id = stable_id("owner", "atlas_repository_compiler")
@@ -821,6 +898,7 @@ def _claims(
         }
 
     full_files = [row for row in files if row["privacy_exposure"] == "full"]
+    full_depth_files = [row for row in files if row.get("census_depth") == CENSUS_DEPTH_FULL]
     graph_freshness = (
         "unknown"
         if dirty or graphify.get("stale") is None
@@ -861,7 +939,15 @@ def _claims(
                 line_count,
                 "nonblank_safe_text_lines",
                 [completeness_id],
-                denominator(len(files), "git_tracked_paths", "safe_text_line_mapping_over_tracked_tree"),
+                # An identity-depth prefix is censused but not line-mapped; the
+                # count is exact over the full-depth census, and its
+                # denominator is that census, not every tracked path.
+                denominator(
+                    len(full_depth_files) or None,
+                    "full_depth_git_tracked_paths",
+                    "safe_text_line_mapping_over_full_depth_census_identity_depth_files_excluded",
+                ),
+                sorted(set(census_depth_block_categories)),
             ),
             claim(
                 "repository.graphify_status",
@@ -1636,6 +1722,109 @@ def _enrich_semantic_records(
         )
 
 
+def _is_scannable_text(row: dict[str, Any]) -> bool:
+    return bool(
+        row.get("privacy_exposure") == "full"
+        and row.get("language") != "binary"
+        and row.get("content_digest") is not None
+    )
+
+
+def _census_depth_receipt(
+    file_records: list[dict[str, Any]],
+    records: dict[str, list[dict[str, Any]]],
+    scanned_paths: set[str] | frozenset[str],
+) -> dict[str, Any]:
+    """Account for every declared identity-depth file without implying coverage.
+
+    A file is a valid identity-depth member only when the single policy owner
+    declares its path, its full content passed the privacy decision (text
+    files), and no deferred record group carries a record for it.  Any file
+    whose recorded depth differs from the policy fails the invariant, so no
+    other code path can shallow the census.
+    """
+
+    identity_paths = {
+        str(row["path"]) for row in file_records if row.get("census_depth") == CENSUS_DEPTH_IDENTITY
+    }
+    projected_deferred_paths = {
+        str(record.get("path"))
+        for group in IDENTITY_DEPTH_DEFERRED_GROUPS
+        for record in records[group]
+        if str(record.get("path")) in identity_paths
+    }
+    declaration_errors = validate_census_depth_declarations()
+    policy_mismatches = 0
+    valid_identity = 0
+    identity_rows: list[dict[str, Any]] = []
+    for row in file_records:
+        path = str(row["path"])
+        expected_depth, expected_reason = census_depth_decision(path)
+        if row.get("census_depth") != expected_depth or row.get("census_depth_reason") != expected_reason:
+            policy_mismatches += 1
+            continue
+        if expected_depth != CENSUS_DEPTH_IDENTITY:
+            continue
+        identity_rows.append(row)
+        text = _is_scannable_text(row)
+        if (
+            path not in projected_deferred_paths
+            and (not text or (path in scanned_paths and row.get("parse_status") == IDENTITY_CENSUS_PARSE_STATUS))
+            and (text or row.get("privacy_exposure") == "metadata_only" or row.get("classification_errors"))
+        ):
+            valid_identity += 1
+    imports_by_path = Counter(str(record.get("path")) for record in records["imports"])
+    declarations: list[dict[str, Any]] = []
+    for declaration in census_depth_declaration_receipts():
+        members = [row for row in identity_rows if str(row["path"]).startswith(declaration["prefix"])]
+        text_members = [row for row in members if _is_scannable_text(row)]
+        declarations.append(
+            {
+                **declaration,
+                "tracked_files": len(members),
+                "text_files": len(text_members),
+                "privacy_scanned_text_files": sum(1 for row in text_members if str(row["path"]) in scanned_paths),
+                "metadata_only_files": sum(1 for row in members if row.get("privacy_exposure") == "metadata_only"),
+                "content_bytes": sum(int(row.get("size_bytes") or 0) for row in text_members),
+                "deferred_physical_lines": sum(int(row.get("line_count") or 0) for row in text_members),
+                "deferred_nonblank_lines": sum(int(row.get("nonblank_line_count") or 0) for row in text_members),
+                "retained_import_records": sum(imports_by_path[str(row["path"])] for row in members),
+            }
+        )
+    text_rows = [row for row in file_records if _is_scannable_text(row)]
+    identity_text = [row for row in identity_rows if _is_scannable_text(row)]
+    receipt = {
+        "policy_owner": CENSUS_DEPTH_POLICY_OWNER,
+        "status": "identity_depth_deferred" if identity_paths else "full_depth",
+        "full_depth_files": sum(1 for row in file_records if row.get("census_depth") == CENSUS_DEPTH_FULL),
+        "identity_depth_files": len(identity_paths),
+        "identity_depth_text_files": len(identity_text),
+        "identity_depth_nonblank_lines_deferred": sum(int(row.get("nonblank_line_count") or 0) for row in identity_text),
+        "retained_record_groups": list(IDENTITY_DEPTH_RETAINED_GROUPS),
+        "deferred_record_groups": list(IDENTITY_DEPTH_DEFERRED_GROUPS),
+        "declarations": declarations,
+        "block_categories": sorted({row["block_category"] for row in declarations if row["tracked_files"]}),
+        "claim": (
+            "Identity-depth files are censused by path, Git blob, content digest, size, classification, "
+            "architecture disposition, static imports and a full-content privacy decision only. Their lines, "
+            "symbols, calls, structured values, source text and dossiers are deferred, never covered."
+        ),
+    }
+    return {
+        "receipt": receipt,
+        "identity_depth_files": len(identity_paths),
+        "valid_identity_depth_files": valid_identity,
+        "invariant_passed": bool(
+            not declaration_errors
+            and policy_mismatches == 0
+            and not projected_deferred_paths
+            and valid_identity == len(identity_paths)
+        ),
+        "text_files": len(text_rows),
+        "full_depth_text_files": sum(1 for row in text_rows if row.get("census_depth") == CENSUS_DEPTH_FULL),
+    }
+
+
 def _ledger(
     *,
     source_commit: str | None,
@@ -1655,14 +1844,21 @@ def _ledger(
     forbidden_content_findings: list[dict[str, Any]],
     forbidden_content_scanned_files: int,
     forbidden_content_scan_failures: set[str],
+    forbidden_content_scanned_paths: set[str] | frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     parse_status = Counter(str(row.get("parse_status")) for row in file_records)
-    expected_lines = sum(int(row.get("nonblank_line_count") or 0) for row in file_records)
+    census_depth = _census_depth_receipt(file_records, records, forbidden_content_scanned_paths)
+    full_depth_records = [row for row in file_records if row.get("census_depth") == CENSUS_DEPTH_FULL]
+    # The line and source-text denominators are the full-depth census.  An
+    # identity-depth file keeps its real line counts on its file record, and
+    # its deferred lines are reported by ``census_depth`` and the failed
+    # ``every_tracked_text_file_line_censused`` acceptance gate instead.
+    expected_lines = sum(int(row.get("nonblank_line_count") or 0) for row in full_depth_records)
     actual_lines = len(records["lines"])
     unresolved_lines = sum(1 for row in records["lines"] if row.get("unresolved_reasons"))
     expected_source_text = sum(
         1
-        for row in file_records
+        for row in full_depth_records
         if row.get("privacy_exposure") == "full"
         and row.get("language") != "binary"
         and row.get("content_digest") is not None
@@ -1988,6 +2184,12 @@ def _ledger(
             "expected": len(gui_surfaces),
             "actual": gui_dossier_count,
         },
+        {
+            "name": "every_identity_depth_file_declared_privacy_scanned_and_unprojected",
+            "passed": census_depth["invariant_passed"],
+            "expected": census_depth["identity_depth_files"],
+            "actual": census_depth["valid_identity_depth_files"],
+        },
     ]
     completeness_id = stable_id("completeness", source_commit or "unknown", source_tree_digest or "unknown")
     forbidden_content_scan_complete = (
@@ -2005,7 +2207,7 @@ def _ledger(
     if forbidden_content_scanned_files != safe_text_scan_eligible:
         forbidden_content_scan_unresolved.add("eligible_text_scan_incomplete")
 
-    return {
+    ledger = {
         "id": completeness_id,
         "schema_version": SCHEMA_VERSION,
         "source_commit": source_commit,
@@ -2061,6 +2263,7 @@ def _ledger(
             **{f"gui_dossier_state::{key}": value for key, value in sorted(gui_dossier_states.items())},
             **{f"gui_dossier_field_state::{key}": value for key, value in sorted(gui_field_states.items())},
         },
+        "census_depth": census_depth["receipt"],
         "graphify": graphify,
         "architecture_conformance": architecture_conformance,
         "consequential_claim_denominator": consequential_claim_denominator,
@@ -2123,6 +2326,15 @@ def _ledger(
                 "passed": gui_dossier_count == len(gui_surfaces),
                 "expected": len(gui_surfaces),
                 "actual": gui_dossier_count,
+            },
+            {
+                # Closes only when no tracked text file is censused at identity
+                # depth; while one is, the release carries the declaration's
+                # named census-depth BLOCK category.
+                "name": "every_tracked_text_file_line_censused",
+                "passed": census_depth["text_files"] == census_depth["full_depth_text_files"],
+                "expected": census_depth["text_files"],
+                "actual": census_depth["full_depth_text_files"],
             },
             {
                 "name": "every_safe_line_behaviorally_explained",
@@ -2196,6 +2408,11 @@ def _ledger(
             },
         ],
     }
+    for kind in ("invariants", "acceptance_gates"):
+        ledger[kind] = _scope_gate_denominators(
+            ledger[kind], identity_depth_files=census_depth["identity_depth_files"]
+        )
+    return ledger
 
 
 def _write_bytes(path: Path, value: bytes) -> dict[str, Any]:
@@ -2352,6 +2569,7 @@ def compile_repository(
     ts_inputs: list[dict[str, str]] = []
     privacy_findings: list[dict[str, Any]] = []
     privacy_scanned_files = 0
+    privacy_scanned_paths: set[str] = set()
     privacy_scan_failures: set[str] = set()
     binary_review: dict[str, Any] = unavailable_binary_review_summary([], status="absent")
     consequential_claim_denominator = unavailable_bounded_curated_claim_summary()
@@ -2455,6 +2673,8 @@ def compile_repository(
         for entry in entries:
             classification = classifications[entry.path]
             file_id = stable_id("file", entry.path)
+            # The policy owner is the only source of a shallower census.
+            census_depth, census_depth_reason = census_depth_decision(entry.path)
             file_record: dict[str, Any] = {
                 "id": file_id,
                 "path": entry.path,
@@ -2474,6 +2694,8 @@ def compile_repository(
                 "privacy_exposure": classification["privacy_exposure"],
                 "privacy_reasons": classification["privacy_reasons"],
                 "classification_errors": classification["classification_errors"],
+                "census_depth": census_depth,
+                "census_depth_reason": census_depth_reason,
                 "size_bytes": None,
                 "content_digest": None,
                 "parse_status": "pending",
@@ -2589,6 +2811,7 @@ def compile_repository(
                 fatal_errors.append(f"{entry.path}: forbidden-content scanner output is invalid")
                 continue
             privacy_scanned_files += 1
+            privacy_scanned_paths.add(entry.path)
             if findings:
                 privacy_findings.extend(findings)
                 file_record["parse_status"] = "parser_error"
@@ -2596,6 +2819,26 @@ def compile_repository(
                 fatal_errors.extend(
                     f"{item['path']}:{item['line']}: forbidden-content rule {item['rule']}" for item in findings
                 )
+                continue
+            if census_depth == CENSUS_DEPTH_IDENTITY:
+                # The full privacy decision above has read every byte; only the
+                # line/source projections are withheld from here on.
+                _record_identity_text_facts(file_record, text, classification)
+                if classification["language"] in TYPESCRIPT_LANGUAGES:
+                    ts_inputs.append({"path": entry.path, "file_id": file_id, "text": text})
+                    continue
+                try:
+                    result = parse_by_language(entry.path, file_id, classification["language"], text)
+                    _accept_identity_parse_result(records, file_record, result, text)
+                    if any(ord(char) < 32 and char not in "\n\r\t\f" for char in text):
+                        file_record["unresolved_reasons"] = sorted(
+                            set(file_record["unresolved_reasons"] + ["sparse_non_nul_control_characters_preserved"])
+                        )
+                    parser_counts[result.parser] += 1
+                except ParseFailure as exc:
+                    file_record["parse_status"] = "parser_error"
+                    file_record["unresolved_reasons"] = ["owned_parser_failed"]
+                    fatal_errors.append(str(exc))
                 continue
             exact_lines = _exact_source_lines(exact_text)
             if "".join(str(line["text"]) + str(line["terminator"]) for line in exact_lines).encode("utf-8") != data:
@@ -2646,7 +2889,10 @@ def compile_repository(
                     file_record = next(row for row in file_records if row["path"] == item["path"])
                     result = ts_results[item["path"]]
                     file_record["parser_version"] = ts_version
-                    _accept_parse_result(records, file_record, result, item["text"])
+                    if file_record["census_depth"] == CENSUS_DEPTH_IDENTITY:
+                        _accept_identity_parse_result(records, file_record, result, item["text"])
+                    else:
+                        _accept_parse_result(records, file_record, result, item["text"])
                     if any(ord(char) < 32 and char not in "\n\r\t\f" for char in item["text"]):
                         file_record["unresolved_reasons"] = sorted(
                             set(file_record["unresolved_reasons"] + ["sparse_non_nul_control_characters_preserved"])
@@ -2660,6 +2906,11 @@ def compile_repository(
                     file_record["unresolved_reasons"] = ["typescript_batch_parser_failed"]
 
         for file_record in file_records:
+            if file_record["census_depth"] != CENSUS_DEPTH_FULL:
+                # Document/dataset/manifest/config summaries are derived from
+                # the deferred parse records; emitting them would render
+                # "0 records" for content that was simply not projected.
+                continue
             if "documentation" in file_record["roles"]:
                 first_heading = next(
                     (
@@ -2743,6 +2994,11 @@ def compile_repository(
                 contract=architecture_contract,
                 source_commit=source_commit,
                 source_tree_digest=source_tree_digest,
+                call_records_deferred={
+                    str(row["path"]): str(row["census_depth_reason"])
+                    for row in file_records
+                    if row["census_depth"] == CENSUS_DEPTH_IDENTITY
+                },
             )
             fatal_errors.extend(
                 f"architecture conformance: {error}" for error in architecture_conformance.get("errors", [])
@@ -2870,6 +3126,7 @@ def compile_repository(
             graphify_metadata,
             completeness_id,
             bool(dirty),
+            _census_depth_receipt(file_records, records, privacy_scanned_paths)["receipt"]["block_categories"],
         )
         consequential_claim_denominator = unavailable_bounded_curated_claim_summary(
             source_commit=source_commit,
@@ -2965,6 +3222,7 @@ def compile_repository(
         forbidden_content_findings=privacy_findings,
         forbidden_content_scanned_files=privacy_scanned_files,
         forbidden_content_scan_failures=privacy_scan_failures,
+        forbidden_content_scanned_paths=privacy_scanned_paths,
     )
     if sanitized_errors or not all(item["passed"] for item in ledger["invariants"]):
         if not sanitized_errors:
@@ -2973,6 +3231,42 @@ def compile_repository(
         _write_failure(output, ledger)
         raise CompilationError(ledger["fatal_errors"], output)
     return _write_success(output, records, ledger, chunk_size)
+
+
+def _record_identity_text_facts(
+    file_record: dict[str, Any],
+    text: str,
+    classification: dict[str, Any],
+) -> None:
+    """Keep file-level facts for a privacy-passed identity-depth text file.
+
+    Line counts stay real on the file record (they are deferred, not zero);
+    every line denominator excludes them by ``census_depth`` instead.
+    """
+
+    source_lines = text.splitlines()
+    file_record["line_count"] = len(source_lines)
+    file_record["nonblank_line_count"] = sum(1 for line in source_lines if line.strip())
+    if "documentation" in classification["roles"]:
+        status_name, reasons = documentation_status(file_record["path"], source_lines[:80])
+        file_record["documentation_status"] = status_name
+        file_record["documentation_status_reasons"] = reasons
+
+
+def _accept_identity_parse_result(
+    records: dict[str, list[dict[str, Any]]],
+    file_record: dict[str, Any],
+    result: ParseResult,
+    text: str,
+) -> None:
+    """Retain only static imports from an identity-depth file's owning parser."""
+
+    del text  # the owning parser has already consumed the exact decoded text
+    records["imports"].extend(result.imports)
+    file_record["parse_status"] = IDENTITY_CENSUS_PARSE_STATUS
+    file_record["parser"] = result.parser
+    file_record["parser_mode"] = result.parser_mode
+    file_record["unresolved_reasons"] = [str(file_record["census_depth_reason"])]
 
 
 def _accept_parse_result(

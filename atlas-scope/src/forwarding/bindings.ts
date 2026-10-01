@@ -26,7 +26,7 @@
    with no error anywhere (src/core/dataset.test.ts, the one-door census). */
 import { aclBindings as bindingsJson } from "../core/dataset";
 import { aclsOf, fabric, linksByHost, resolveCite, routesOf } from "../core/data";
-import { sameSourceBinding, type Cite, type Hop, type HopEvidence, type SourceBinding } from "../core/types";
+import { sameSourceBinding, type Cite, type Hop, type HopEvidence, type NameKeyed, type SourceBinding } from "../core/types";
 import { formatIpv4, parseInterfaceAddress, parseIpv4, prefixContains, rankPrefixMatches, type Ipv4 } from "./ip";
 
 export type Direction = "in" | "out";
@@ -45,10 +45,12 @@ interface BindingRecord {
 
 interface BindingsFile {
   meta: SourceBinding;
-  hosts: Record<string, BindingRecord[]>;
+  hosts: NameKeyed<BindingRecord[]>;
 }
 
-const FILE = bindingsJson as unknown as BindingsFile;
+/* Assigned, not asserted: the compiler's contract must satisfy this reader's shape, and a cast here is how a
+   reader drops the NameKeyed brand (core/own.ts, own-read.guard.test.ts). */
+const FILE: BindingsFile = bindingsJson;
 
 /** The sidecar is evidence only about the bytes it was compiled from — the same digest, over the same
     byte form (LF-normalised), of the same length. A sidecar stating no form is refused. */

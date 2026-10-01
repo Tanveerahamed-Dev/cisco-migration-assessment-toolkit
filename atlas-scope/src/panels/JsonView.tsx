@@ -37,6 +37,7 @@ import { citeShows, citesIn } from "./cited-text";
    importing here keeps the component usable standalone without a second stylesheet to keep in
    step with the first. */
 import "./Inspector.css";
+import { own } from "../core/own";
 
 /**
  * How many children of one container are materialised before the remainder is held behind an
@@ -77,7 +78,7 @@ function childEntries(value: unknown, parentId: string): Entry[] {
   if (isPlainObject(value)) {
     return Object.keys(value).map((k) => ({
       key: k,
-      value: value[k],
+      value: own(value, k),
       id: childPath(parentId, k, false),
       isIndex: false,
     }));
@@ -805,7 +806,7 @@ export function JsonView({
               {row.depth > 0 ? <span className="jsonview__colon">:</span> : null}
               <ValueCell row={row} needle={needle} expanded={open} />
               {isCited ? <span className="jsonview__citedmark">cited here</span> : null}
-              {annotations?.[row.id] !== undefined ? <span className="jsonview__note" title={annotations[row.id]}>{annotations[row.id]}</span> : null}
+              {own(annotations, row.id) !== undefined ? <span className="jsonview__note" title={own(annotations, row.id)}>{own(annotations, row.id)}</span> : null}
               <IconButton
                 label={`Copy path ${row.id === "" ? rootLabel : row.id}`}
                 icon={<IconCopy />}

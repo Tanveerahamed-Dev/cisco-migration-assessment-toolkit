@@ -1044,3 +1044,51 @@ def test_source_text_stable_id_seed_abstains_without_scanning_source_text(tmp_pa
     assert code == 3
     assert result["reason"] == "source_text_seed_is_unbounded_use_file_or_line_query"
     assert "source_text" not in result["corpus_scan"]["record_scans_by_group"]
+
+
+def test_identity_depth_file_seed_discloses_census_depth_and_blocks_the_slice(tmp_path: Path) -> None:
+    # An enhancement package about an identity-depth path must say that its
+    # lines, symbols and calls are deferred rather than let the thin closure
+    # read as "this file has no callers, symbols or tests".
+    repo, bundle = _fixture(tmp_path)
+    block = "census_depth_fixture_line_projection_deferred"
+    file_record = next(item for item in bundle.records["files"] if item["path"] == "tests/test_app.py")
+    file_record["census_depth"] = "identity"
+    file_record["census_depth_reason"] = "fixture_deferral:size_ceiling"
+    bundle.completeness["census_depth"] = {
+        "policy_owner": "master-reference/compiler/policy.py::CENSUS_DEPTH_DECLARATIONS",
+        "status": "identity_depth_deferred",
+        "retained_record_groups": ["binaries", "files", "imports"],
+        "deferred_record_groups": ["calls", "lines", "source_text", "symbols"],
+        "block_categories": [block],
+        "declarations": [
+            {
+                "prefix": "tests/",
+                "census_depth": "identity",
+                "reason": "fixture_deferral:size_ceiling",
+                "block_category": block,
+                "follow_up_owner": "fixture: compact per-line record encoding",
+                "tracked_files": 1,
+            }
+        ],
+    }
+    code, result = build_enhancement_package(bundle, repo, seed_kind="file", seed_value="tests/test_app.py")
+    assert code == 0
+    disclosure = result["current_record"]["census_depth"]
+    assert (disclosure["depth"], disclosure["reason"], disclosure["block_category"]) == (
+        "identity",
+        "fixture_deferral:size_ceiling",
+        block,
+    )
+    categories = {item["category"]: item for item in result["unresolved_impact_categories"]}
+    deferred = categories["census_depth_identity_projection_deferred"]
+    assert any(sample["path"] == "tests/test_app.py" for sample in deferred["samples"])
+    assert all(sample["block_category"] == block for sample in deferred["samples"])
+    slice_ = result["smallest_safe_vertical_slice"]
+    assert slice_["status"] == "blocked_pending_evidence"
+    assert "census_depth_identity_projection_deferred" in slice_["blocking_categories"]
+
+    # A full-depth seed in the same bundle carries no disclosure.
+    code, full = build_enhancement_package(bundle, repo, seed_kind="file", seed_value="src/dep.py")
+    assert code == 0
+    assert "census_depth" not in full["current_record"]

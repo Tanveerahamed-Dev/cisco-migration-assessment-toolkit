@@ -10,7 +10,12 @@ MASTER_REFERENCE = Path(__file__).resolve().parents[2]
 if str(MASTER_REFERENCE) not in sys.path:
     sys.path.insert(0, str(MASTER_REFERENCE))
 
-from release.sbom import NPM_LOCKFILES, PYTHON_DECLARATIONS, build_cyclonedx  # noqa: E402
+from release.sbom import PYTHON_DECLARATIONS, build_cyclonedx  # noqa: E402
+
+
+# The two fixture lockfiles every synthetic source set carries.  The builder
+# derives its lockfile set from the supplied paths; this is only fixture data.
+NPM_LOCKFILES = ("master-reference/package-lock.json", "webapp/frontend/package-lock.json")
 
 
 def _lock(
@@ -433,3 +438,55 @@ def test_zero_declarations_never_promotes_python_lock_status() -> None:
     assert properties["atlas:releaseGate"].startswith("BLOCK:")
     metadata_properties = _properties(sbom["metadata"]["component"])  # type: ignore[index]
     assert metadata_properties["atlas:pythonResolution"] == ("declarations-only-no-transitive-lock")
+
+
+def test_sbom_inventories_every_supplied_npm_lockfile_by_name_rule_not_a_hand_list() -> None:
+    # Refuter counterexample: a hand list of two lockfiles silently dropped the
+    # tracked atlas-scope/package-lock.json from the SBOM and its vulnerability
+    # gate.  Every supplied lockfile, found by npm's own file names, is inventoried.
+    sources = _sources()
+    extra = ("atlas-scope/package-lock.json", "tools/nested/npm-shrinkwrap.json")
+    for index, relative in enumerate(extra):
+        sources[relative] = _lock(f"extra-workspace-{index}", dependency="locked-leaf")
+    sbom = build_cyclonedx(sources, "a" * 40, "b" * 64)
+    metadata = _properties(sbom["metadata"])  # type: ignore[arg-type]
+    expected = sorted(
+        ["master-reference/package-lock.json", "webapp/frontend/package-lock.json", *extra]
+    )
+    assert metadata["atlas:npmLockfiles"].split(",") == expected
+    roots = {
+        properties.get("atlas:lockfile")
+        for _component, properties in _component_properties(sbom)
+        if properties.get("atlas:lockfilePath") == "<root>"
+    }
+    assert roots == set(expected)
+
+
+def test_sbom_refuses_a_dependency_source_set_without_any_npm_lockfile() -> None:
+    sources = {
+        relative: value
+        for relative, value in _sources().items()
+        if not relative.endswith(("package-lock.json", "npm-shrinkwrap.json"))
+    }
+    try:
+        build_cyclonedx(sources, "a" * 40, "b" * 64)
+    except Exception as exc:  # noqa: BLE001 - the exact type is asserted below
+        assert type(exc).__name__ == "ReleaseInputError"
+        assert "npm lockfile" in str(exc)
+    else:
+        raise AssertionError("an SBOM without any npm lockfile must fail closed")
+
+
+def test_engineering_dossier_states_the_derived_lockfile_set_not_a_hand_count() -> None:
+    from release import documents  # noqa: PLC0415 - imported where the prose owner is exercised
+
+    sources = _sources()
+    sources["atlas-scope/package-lock.json"] = _lock("third-workspace", dependency="locked-leaf")
+    sbom = build_cyclonedx(sources, "a" * 40, "b" * 64)
+    statement = documents.npm_supply_chain_statement(sbom)
+    assert "3 tracked npm lockfiles" in statement
+    for relative in ("atlas-scope/package-lock.json", *NPM_LOCKFILES):
+        assert f"`{relative}`" in statement
+    assert "two" not in statement
+    source = (MASTER_REFERENCE / "release" / "documents.py").read_text(encoding="utf-8")
+    assert "the two repository package-lock" not in " ".join(source.split())

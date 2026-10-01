@@ -364,6 +364,29 @@ const val = (v) => {
   return v;
 };
 /**
+ * A value of a CLOSED vocabulary — a finding's severity, a device's health band, a node's kind — as the snapshot
+ * wrote it. Absent or unobserved is null (as `val`). Text is kept VERBATIM, member or not: a value the vocabulary
+ * does not name is carried as the producer wrote it and typed `Unrecognised` (src/core/types.ts, where each
+ * vocabulary and its recogniser live), so it is never coerced to a member, never dropped, and never typed as one — a
+ * surface cannot use it as a member without first asking the recogniser. A number or boolean is carried as its text
+ * (no vocabulary names one, so it reads as unrecognised: `val` used to pass it through as a number, which every
+ * string reader then threw on). Anything else is refused: stringifying it would emit "[object Object]".
+ * @param {unknown} v @param {string} where
+ * @returns {string | null}
+ */
+const term = (v, where) => {
+  if (v !== null && typeof v === "object") {
+    throw new CompileError(
+      "E_NON_PRIMITIVE",
+      `${where} is ${JSON.stringify(v).slice(0, 120)}, not a name. Stringifying it would emit "[object Object]"; this compiler ` +
+        `does not know how to show it, so it refuses rather than guess.`,
+      where,
+    );
+  }
+  const t = val(v);
+  return t === null ? null : String(t);
+};
+/**
  * Keep the engine's own unobserved prose when it carries a REASON worth showing.
  * @param {unknown} v
  */
@@ -932,7 +955,7 @@ export function compileFabric(snap, binding, opts = {}) {
       host,
       collected: d ? true : Boolean(n?.collected),
       inventoried: Boolean(d),
-      kind: val(n?.kind) ?? (d ? "switch" : "unknown"),
+      kind: term(n?.kind, `cable_map.nodes[host=${host}].kind`) ?? (d ? "switch" : "unknown"),
       role: val(h?.role) ?? val(n?.role),
       tier: Number.isFinite(n?.tier) ? n.tier : null,
       order: Number.isFinite(n?.order) ? n.order : 0,
@@ -946,7 +969,7 @@ export function compileFabric(snap, binding, opts = {}) {
       powerSupplies: num(d?.num_power_supplies),
       modules: num(d?.num_modules),
       score: Number.isFinite(h?.score) ? h.score : null,
-      band: val(h?.band),
+      band: term(h?.band, `health_scores[switch=${host}].band`),
       criticality: Number.isFinite(h?.criticality) ? h.criticality : null,
       dataQuality: Number.isFinite(h?.data_quality) ? h.data_quality : null,
       deductions: strs(h?.deductions, `health_scores[switch=${host}].deductions`),
@@ -1066,7 +1089,9 @@ export function compileFabric(snap, binding, opts = {}) {
     const ev = compileEvidence(obj(p), i, snap);
     return {
       id: `F${String(i + 1).padStart(3, "0")}`,
-      severity: val(p.severity) ?? "Info",
+      /* null = the producer states NO severity (absent, "", "-", "N/A", [NOT OBSERVED]): NOT STATED, never a member.
+         This read used to end `?? "Info"` — absence compiled to a low-risk grade (src/core/severity-absence.test.ts). */
+      severity: term(p.severity, `punchlist[${i}].severity`),
       rank: num(p.rank),
       priority: num(p.priority),
       category: val(p.category),
@@ -1094,7 +1119,7 @@ export function compileFabric(snap, binding, opts = {}) {
 
   const crossLayer = arr(snap.cross_layer).map((c, i) => ({
     id: val(c.id) ?? `CL-${i}`,
-    severity: val(c.severity) ?? "Info",
+    severity: term(c.severity, `cross_layer[${i}].severity`), // null = not stated, never Info (as punchlist above)
     layers: val(c.layers),
     title: val(c.title) ?? "",
     detail: val(c.detail),

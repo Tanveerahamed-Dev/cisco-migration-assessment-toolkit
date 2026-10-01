@@ -23,6 +23,7 @@
  * divides a drag by the element's height, so the angle per press is the same at every canvas size:
  * 2π × rotateSpeed (0.75) × KEY_ORBIT_STEP = 15° per press.
  */
+import { own } from "../core/own";
 
 /** Drag distance per orbit key press, as a fraction of the canvas height (15° at rotateSpeed 0.75). */
 export const KEY_ORBIT_STEP = 1 / 18;
@@ -71,7 +72,7 @@ export function viewKeyMove(
   e: Pick<KeyboardEvent, "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey">,
   canvasHeightPx: number,
 ): { verb: "orbit" | "pan"; dx: number; dy: number } | null {
-  const d = ARROW_DELTA[e.key];
+  const d = own(ARROW_DELTA, e.key);
   if (!d || e.ctrlKey || e.metaKey || e.shiftKey === e.altKey) return null;
   const verb = e.shiftKey ? "orbit" : "pan";
   const step = Math.max(1, canvasHeightPx) * (verb === "orbit" ? KEY_ORBIT_STEP : KEY_PAN_STEP);
