@@ -156,3 +156,13 @@ def hidden_imports() -> List[str]:
         "uvicorn.lifespan.on",
         "uvicorn.lifespan.off",
     ]
+
+
+def package_data_modules() -> tuple[str, ...]:
+    """Installed runtime packages whose resources have no upstream PyInstaller hook.
+
+    jsonschema imports the installed IRI format checker even when the caller does not request
+    format validation. Its module reads syntax_rfc3987.lark during import; Python modules alone
+    therefore cannot start the frozen API. The spec collects package data through this owner.
+    """
+    return ("rfc3987_syntax",)

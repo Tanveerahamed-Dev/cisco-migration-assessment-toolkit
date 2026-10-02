@@ -4,6 +4,7 @@ import Landing from "./pages/Landing";
 import Dashboard from "./pages/Dashboard";
 import CampaignPage from "./pages/Campaign";
 import SnapshotPage from "./pages/Snapshot";
+import CoreSnapshot from "./pages/CoreSnapshot";
 import ExecutionPage from "./pages/Execution";
 import AboutPage from "./pages/About";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -130,7 +131,8 @@ export default function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/campaigns" element={<Dashboard />} />
           <Route path="/campaigns/:id" element={<CampaignPage />} />
-          <Route path="/snapshots/:id" element={<SnapshotPage />} />
+          <Route path="/snapshots/:id" element={<CoreSnapshot />} />
+          <Route path="/snapshots/:id/tools" element={<SnapshotPage />} />
           <Route path="/executions/:id" element={<ExecutionPage />} />
           <Route path="/about" element={<AboutPage />} />
           <Route path="*" element={<div className="container"><div className="empty">Not found. <Link to="/">Go home</Link></div></div>} />

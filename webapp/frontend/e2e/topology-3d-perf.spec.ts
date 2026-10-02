@@ -45,7 +45,7 @@ test("fleet-scale 3D render probe — renderer.info + sampled FPS at ~300 nodes"
     return route.fulfill({ status: 404, json: { detail: "not mocked" } });
   });
 
-  await page.goto("/snapshots/1");
+  await page.goto("/snapshots/1/tools");
   await page.getByRole("button", { name: "3D", exact: true }).click();
   await expect(page.locator("canvas").first()).toBeVisible({ timeout: 30_000 });
   // Sample STEADY-STATE render cost: wait past the engine's 14s cooldownTime so the d3-force

@@ -53,6 +53,7 @@ from . import (
     protocol_portfolio,
     serve,
     summary,
+    ui_projection_api,
 )
 from .storage import ExecutionReceiptAuthorityError, Store
 
@@ -2750,6 +2751,8 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         if not meta:
             raise HTTPException(404, "Snapshot not found")
         return _summary_freshened(snapshot_id, meta)
+
+    ui_projection_api.install_routes(app, store)
 
     @app.get("/api/snapshots/{snapshot_id}/raw")
     def get_snapshot_raw(snapshot_id: RowId) -> Response:
