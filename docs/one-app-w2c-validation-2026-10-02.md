@@ -184,3 +184,14 @@ The candidate is held locally while explicit, noncoercing JSON-native/finite che
 before whole-document schema validation and at the response boundary. Actual HTTP regression
 tests, independent replay, a fresh backend gate and a rebuilt frozen runtime must close this
 case. No schema widening, frontend fallback or fixture regeneration is allowed for this repair.
+
+The guard is now implemented on API SHA-256
+`235e83202f405b631dafc36fbacb1bc4058f307f572c84ad853da2090d945293`. Four actual-HTTP
+regressions were observed failing first, then passing. The expanded API/raw/access-guard
+selection passed **89 tests**. Validation walks the entire producer document before selection
+and the raw response before Pydantic conversion; it rejects nonfinite numbers, nonnative
+containers/keys and cycles without coercion, while allowing shared acyclic aliases. The actual
+OpenAPI bytes still equal `7c1240ee...c333`, so the reviewed frontend types and build stay frozen.
+The guard alone measured a 9.06 ms median over the 1,234,865-byte synthetic projection (50
+checks; no load or worst-case claim). Independent replay and fresh full-backend/frozen gates
+are still in progress at this checkpoint.

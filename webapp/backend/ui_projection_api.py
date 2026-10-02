@@ -6,6 +6,7 @@ selection or pagination; the engine is the sole owner of values, states and cave
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from typing import Annotated, Any, ClassVar, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -57,6 +58,44 @@ _IDENTITY = _closed({
 })
 
 
+def _require_json_native(value: Any) -> None:
+    """Reject non-JSON Python values without replacing or serializing any source value.
+
+    JSON Schema evaluates Python numbers, where NaN can pass numeric bounds. Some HTTP
+    response adapters can also serialize an accepted NaN to null. Check both boundaries
+    explicitly before schema validation, selection or Pydantic conversion.
+    """
+    active: set[int] = set()
+
+    def visit(node: Any) -> None:
+        kind = type(node)
+        if node is None or kind in (str, bool, int):
+            return
+        if kind is float:
+            if not math.isfinite(node):
+                raise ValueError("Projection contains a non-finite JSON number")
+            return
+        if kind not in (dict, list):
+            raise ValueError("Projection contains a non-JSON-native value")
+        identity = id(node)
+        if identity in active:
+            raise ValueError("Projection contains a cyclic value")
+        active.add(identity)
+        try:
+            if kind is dict:
+                for key, child in node.items():
+                    if type(key) is not str:
+                        raise ValueError("Projection contains a non-string JSON object key")
+                    visit(child)
+            else:
+                for child in node:
+                    visit(child)
+        finally:
+            active.remove(identity)
+
+    visit(value)
+
+
 def _source_document(store: Any, snapshot_id: int, view: View, host: str | None):
     if view == "device" and host is None:
         raise HTTPException(422, "The device view requires a host query parameter")
@@ -67,6 +106,7 @@ def _source_document(store: Any, snapshot_id: int, view: View, host: str | None)
         raise HTTPException(404, "Snapshot not found")
     snapshot, binding = bound
     document = engine.ui_projection(snapshot, host if view == "device" else None)
+    _require_json_native(document)
     (_DEVICE_VALIDATOR if view == "device" else _DOCUMENT_VALIDATOR).validate(document)
     registry = document["device"]["limitations"] if view == "device" else document["trust"]["limitations"]
     common = {
@@ -167,6 +207,12 @@ _VALIDATORS = {"view": Draft202012Validator(_VIEW_SCHEMA), "list": Draft202012Va
 class _ProjectionResponse(RootModel[dict[str, JsonValue]]):
     model_config = ConfigDict(strict=True, allow_inf_nan=False, revalidate_instances="always")
     kind: ClassVar[str]
+
+    @model_validator(mode="before")
+    @classmethod
+    def json_native_contract(cls, value: Any) -> Any:
+        _require_json_native(value.root if isinstance(value, cls) else value)
+        return value
 
     @model_validator(mode="after")
     def owner_transport_contract(self):

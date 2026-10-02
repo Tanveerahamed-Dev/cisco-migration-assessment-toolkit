@@ -332,3 +332,96 @@ def test_openapi_export_is_deterministic_offline_and_check_never_writes(tmp_path
     assert exporter.main(["--output", str(target), "--check"]) == 1
     assert target.read_bytes() == b"stale"
     assert not forbidden.parent.exists()
+
+
+@pytest.mark.parametrize("selection", ["other_view", "off_page", "selected_page"])
+def test_nonfinite_producer_score_is_rejected_before_any_selection(client, sample, monkeypatch, selection):
+    sid = seed(client, sample)
+    document = owner.project(sample)
+    final_index = len(document["inventory"]["devices"]["rows"]["items"]) - 1
+    document["inventory"]["devices"]["rows"]["items"][final_index]["health_score"]["value"] = float("nan")
+    # Python's JSON Schema number checks accept NaN. HTTP must still refuse the complete
+    # invalid JSON source, including a row not visible on this requested view/page.
+    Draft202012Validator(owner.ui_projection_schema()).validate(document)
+    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    path, params = (url(sid), {"limit": 1}) if selection == "other_view" else (
+        url(sid, "inventory") + "/lists",
+        {"pointer": "/devices/rows", "limit": 1, "offset": final_index if selection == "selected_page" else 0},
+    )
+    transport = TestClient(client.app, base_url="http://localhost", client=("127.0.0.1", 50000), raise_server_exceptions=False)
+    try:
+        response = transport.get(path, params=params)
+        assert response.status_code == 500
+        assert response.content == b"Internal Server Error"
+    finally:
+        transport.close()
+
+
+def test_http_response_boundary_rejects_forged_nan_before_serializing_it_to_null(client, sample, monkeypatch):
+    from backend import ui_projection_api
+    sid = seed(client, sample)
+    original = ui_projection_api._page_view
+    def forged(*args):
+        payload = original(*args)
+        payload["facts"]["avg_health"]["fact"]["value"] = float("nan")
+        return payload
+    monkeypatch.setattr(ui_projection_api, "_page_view", forged)
+    transport = TestClient(client.app, base_url="http://localhost", client=("127.0.0.1", 50000), raise_server_exceptions=False)
+    try:
+        response = transport.get(url(sid))
+        assert response.status_code == 500
+        assert response.content == b"Internal Server Error"
+    finally:
+        transport.close()
+
+
+@pytest.mark.parametrize("boundary", ["producer", "response"])
+@pytest.mark.parametrize("invalid", ["infinity", "negative_infinity", "tuple", "set", "decimal", "non_string_key", "cycle"])
+def test_json_native_boundary_rejects_invalid_python_values(client, sample, monkeypatch, boundary, invalid):
+    from backend import ui_projection_api
+    from decimal import Decimal
+    sid = seed(client, sample)
+    def corrupt(payload):
+        fact = payload["facts"]["avg_health"]["fact"]
+        if invalid == "non_string_key":
+            fact[1] = "not a JSON key"
+        elif invalid == "cycle":
+            value = []
+            value.append(value)
+            fact["value"] = value
+        else:
+            fact["value"] = {"infinity": float("inf"), "negative_infinity": float("-inf"),
+                             "tuple": (50,), "set": {50}, "decimal": Decimal("50.25")}[invalid]
+    if boundary == "producer":
+        document = owner.project(sample)
+        corrupt(document["overview"])
+        monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+        # The malformed overview must also block a different requested view.
+        path = url(sid, "trust")
+    else:
+        original = ui_projection_api._page_view
+        def forged(*args):
+            payload = original(*args)
+            corrupt(payload)
+            return payload
+        monkeypatch.setattr(ui_projection_api, "_page_view", forged)
+        path = url(sid)
+    transport = TestClient(client.app, base_url="http://localhost", client=("127.0.0.1", 50000), raise_server_exceptions=False)
+    try:
+        response = transport.get(path)
+        assert response.status_code == 500
+        assert response.content == b"Internal Server Error"
+    finally:
+        transport.close()
+
+
+def test_json_native_check_preserves_native_values_and_shared_aliases():
+    from backend.ui_projection_api import _require_json_native
+    shared = [None, False, True, 0, 2**100, -0.0, 1.25, "unchanged"]
+    value = {"second": shared, "first": shared}
+    before = json.dumps(value, allow_nan=False)
+    _require_json_native(value)
+    assert json.dumps(value, allow_nan=False) == before
+    assert value["second"] is value["first"] is shared
+    assert list(value) == ["second", "first"]
+    assert type(shared[3]) is int and type(shared[5]) is float
