@@ -70,14 +70,20 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W6 | Verified Sites size cap | `codex/sites-size-cap`; active `.claude/worktrees/ui-projection-2` checkout from main `db9d8534` | Codex | Blocked on owner decision / authoritative limit evidence (2026-10-02). Native tooling and official documentation expose no numeric ceiling; the R2 plan has been shown. The same condition persisted for three consecutive goal turns. | Owner: authorize the reviewed R2 source implementation under the unchanged repository cap despite the unknown platform maximum, or supply authoritative limit evidence. Any higher-cap change must retain at least 4 MiB of margin and a code citation. Preserve receipts/privacy gates; own PR and all required checks before merge. |
+| W6 | Internal reference size policy | `codex/sites-size-cap`; active `.claude/worktrees/ui-projection-2` checkout from main `db9d8534` | Codex | Implemented and independently reviewed (2026-10-02): removed the aggregate hosting quota from internal artifacts; retained integrity/resource safeguards. 150 focused contracts, lint and Python registry/census selection pass. Independent real 268,439,398-byte artifact and hostile probes pass. | Publish its own PR after fresh privacy gates; full reference/rendered and every required exact-head check must pass before merge. Hosting eligibility remains unassessed; no R2 or Site change is needed. |
 | W2d | Projection performance | `codex/ui-projection-performance`; [PR #586](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/586); checkout temporarily reassigned to W6 after handoff | Codex | Held for W6 by owner decision. Reviewed construction correction is committed locally at `bce1d47a` (99 API / 42 policy passes and independent refutations), not yet pushed. Measurement job changed to GitHub-hosted `windows-latest` as requested; new timing remains pending. [W2d PR](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/586). (2026-10-02) | After W6 merges, merge main into this branch, publish with fresh privacy gates, rerun measurement/CI, and merge only when every required check and performance requirement is satisfied. |
 | W2e | Topology & Paths | `codex/topology-paths`; reuse `.claude/worktrees/ui-projection-2` after W2d | Codex | Queued after W2d. Fifth core screen with contract-owned 2-D facts and embedded Atlas Scope 3-D hub in the bundle. (2026-10-02) | Start after W2d merges; independent review and exact-head required checks before its own merge commit. #582 remains with the Scope session. |
 | W7 | Atlas release candidate | `codex/atlas-release-candidate`; reuse `.claude/worktrees/ui-projection-2` after W2e | Codex | Queued after W6, W2d and W2e. Read-only preflight found the release dependency inventory/notices and material receipt omit the bundled Scope lock; bounded correction is required before the new candidate. (2026-10-02) | Reconcile both frontend dependency roots in `portable/release_contract.py`, prepare the pinned Node/npm toolchain, then build with `python -m portable.build_release`, verify the candidate and provide stick-update steps. |
 
 ## Owner decisions
 
-**Decided 2026-10-02 (current owner instruction):**
+**Decided later 2026-10-02 (current owner instruction):**
+- Master Reference is the owner's internal code-repository reference; an unverified hosting-size quota must not hold back the application.
+- Remove the aggregate hosting quota from internal artifact validation. Preserve complete source/member accounting, hashes, privacy, mutation checks and bounded member/receipt/decompression safeguards. Keep the existing required correctness check; do not bypass failures or change branch protection.
+- Report actual verified artifact size separately from hosting eligibility, which remains unassessed. No larger platform limit is asserted. R2 migration and Site deployment are outside this internal-reference fix.
+- This supersedes the earlier verified-limit/R2 prerequisite for W6. Continue W6, then merge main into #586 and resume W2d, W2e and W7 under the existing green-only merge authority. W5/#582 and W8/#587 remain untouched.
+
+**Earlier decision, 2026-10-02 (hosting prerequisite superseded above):**
 - Work in order **W6, W2d, W2e, W7**. W6 is the immediate shared finalization prerequisite.
 - A cap increase requires a verified actual Codex Sites deployment limit, at least 4 MiB of margin, and the source cited in code. The repository's 248 MiB constant is not itself platform-limit evidence.
 - If 248 MiB is verified as the platform limit, show the R2 migration plan before implementation and retain receipt/privacy boundaries.
@@ -105,7 +111,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 **Still open, owned by `CLAUDE.md` and not restated here:** the carried-forward review-tail items,
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
-### W6 verification and proposed R2 plan (review first)
+### Earlier W6 verification and R2 proposal (historical; superseded for internal builds)
 
 Current native Site metadata and saved-version records expose no numeric deployment
 ceiling. Saved archive sizes are measurements, not limits. The installed 25-operation
@@ -122,12 +128,19 @@ Proposed fallback, retaining the current repository budget pending the owner's d
 4. Verify every uploaded object's compressed and decoded hashes/lengths, complete inventory, namespace and source identity before activation. Refuse missing, extra, truncated, conflicting or cross-version objects. Preserve privacy gates and complete offline reconstruction.
 5. Activate only an exact saved reader version after that evidence closes. Retain the previous saved version and immutable object namespace for rollback; do not assume code rollback reverses storage or environment changes.
 
-The verified-limit condition is not yet satisfied. The owner has been asked whether
-to authorize this conservative R2 implementation while the actual maximum remains
-unknown, or hold for authoritative platform-limit evidence. No cap, storage, Site
-access, deployment, or protected-PR change has been made in W6.
+The verified platform maximum remains unknown. The owner's later internal-reference
+decision removes that dependency from this workstream; the proposal is retained as
+history, not an implementation queue. No storage, Site access, deployment or
+protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- 2026-10-02, Codex (W6 resumed as internal-reference policy correction):
+  - Owner explicitly directed proceeding: Master Reference is internal repository documentation and must not impose a hosting-size blocker on application work. This supersedes the earlier conditional Sites-limit/R2 decision; no further approval is needed for this bounded internal validation change.
+  - Revalidated the W6 branch and main `db9d8534`. Separate internal artifact integrity from hosting eligibility without changing required-check names or branch protection. Preserve receipt schema 1.2/census/digest semantics, safe byte arithmetic, privacy, mutation and bounded-read/expansion protections. No fake higher Sites limit or R2 deployment is introduced.
+  - Final implementation passes 150 deployment/compression contracts, 46 targeted review-closure checks, lint/syntax/diff checks, and the Python SSOT-registry/census selection. The initial 138-pass/one-fail test run is retained: only the new assertion was corrected to expect the existing redacted bounded-read error; no guard changed.
+  - Independent review built and publicly verified a distinct real 268,439,398-byte artifact (268,436,352 member bytes; 134 members plus outer receipt). An alternate valid outer representation changed physical bytes exactly while preserving the conceptual receipt. Same-size tampering, fully rehashed omitted members, invalid/overflowed byte totals and hostile reporting options all failed. Receipt schema/hash rules, remaining resource/concurrency bounds and compiler coverage policy are unchanged.
+  - Full exact-source reference build/rendered validation and required hosted checks remain pending for publication; focused results do not close them. Fresh stable-tree/history/PR-body privacy gates precede push. W2d remains preserved at `6f415c72`; #582/#587 and unrelated checkouts remain untouched.
 
 - 2026-10-02, Codex (W6 blocked audit):
   - Revalidated W6 at `fc6cab2e` and unchanged main `db9d8534`; tracked source was clean, with the original untracked cache preserved. No new human authorization or authoritative Sites limit evidence has arrived after the plan-first request.
