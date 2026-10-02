@@ -555,22 +555,19 @@ def _assert_jsonschema_dependency_contract(
     runtime_dependencies,
     release_requirements,
     runtime_requirements,
+    webapp_requirements,
     compatibility_requirements,
     ci,
 ):
     _assert_no_runtime_requirement_includes(runtime_requirements)
-    dev_jsonschema = [
-        item for item in dev_dependencies if _requirement_name(item) == "jsonschema"
-    ]
-    release_jsonschema = [
-        item for item in release_requirements if _requirement_name(item) == "jsonschema"
-    ]
-    assert dev_jsonschema == release_jsonschema == ["jsonschema==4.26.0"]
-    assert "jsonschema" not in {_requirement_name(item) for item in runtime_dependencies}, (
-        "jsonschema is a schema-test tool and must not become an application dependency"
-    )
-    assert "jsonschema" not in {_requirement_name(item) for item in runtime_requirements}, (
-        "jsonschema is a schema-test tool and must not enter requirements.txt"
+    _assert_no_runtime_requirement_includes(webapp_requirements)
+    for owner in (runtime_dependencies, runtime_requirements, webapp_requirements, release_requirements):
+        pins = [item for item in owner if _requirement_name(item) == "jsonschema"]
+        assert pins == ["jsonschema==4.26.0"], (
+            "runtime response validation and schema tooling must share one exact jsonschema pin"
+        )
+    assert "jsonschema" not in {_requirement_name(item) for item in dev_dependencies}, (
+        "dev installs must inherit the canonical runtime jsonschema dependency, not redeclare it"
     )
     assert compatibility_requirements == ["-e .[dev]"], (
         "requirements-dev.txt must remain a single compatibility path to the canonical [dev] owner"
@@ -580,8 +577,21 @@ def _assert_jsonschema_dependency_contract(
     )
 
 
+def test_jsonschema_runtime_promotion_keeps_the_exact_schema_toolchain_pin():
+    """The live response validator is required in a base install, inherited by dev installs."""
+    _assert_jsonschema_dependency_contract(
+        dev_dependencies=[],
+        runtime_dependencies=["jsonschema==4.26.0"],
+        release_requirements=["jsonschema==4.26.0"],
+        runtime_requirements=["jsonschema==4.26.0"],
+        webapp_requirements=["jsonschema==4.26.0"],
+        compatibility_requirements=["-e .[dev]"],
+        ci="python -m pip install -r requirements-dev.txt",
+    )
+
+
 def test_pyproject_declares_jsonschema_for_direct_test_imports():
-    """Every advertised dev install must collect directly imported schema-contract tests."""
+    """Base installs validate responses; every dev install inherits the same schema toolchain."""
     importers = []
     tests_root = os.path.join(ROOT, "tests")
     direct_import = re.compile(
@@ -605,6 +615,7 @@ def test_pyproject_declares_jsonschema_for_direct_test_imports():
             os.path.join("master-reference", "requirements-release.txt")
         ),
         runtime_requirements=_noncomment_requirements("requirements.txt"),
+        webapp_requirements=_noncomment_requirements(os.path.join("webapp", "requirements.txt")),
         compatibility_requirements=_noncomment_requirements("requirements-dev.txt"),
         ci=_read(".github", "workflows", "ci.yml"),
     )
@@ -614,10 +625,18 @@ def test_pyproject_declares_jsonschema_for_direct_test_imports():
 @pytest.mark.parametrize(
     "mutation",
     [
-        "dev_pin",
+        "dev_duplicate",
         "release_pin",
         "pyproject_runtime",
+        "pyproject_duplicate",
+        "pyproject_pin",
         "requirements_runtime",
+        "requirements_duplicate",
+        "requirements_pin",
+        "webapp_runtime",
+        "webapp_duplicate",
+        "webapp_pin",
+        "webapp_include",
         "requirements_include",
         "requirements_attached_include",
         "compatibility",
@@ -633,18 +652,35 @@ def test_jsonschema_dependency_contract_rejects_mutations(mutation):
             os.path.join("master-reference", "requirements-release.txt")
         ),
         "runtime_requirements": _noncomment_requirements("requirements.txt"),
+        "webapp_requirements": _noncomment_requirements(os.path.join("webapp", "requirements.txt")),
         "compatibility_requirements": _noncomment_requirements("requirements-dev.txt"),
         "ci": _read(".github", "workflows", "ci.yml"),
     }
-    if mutation == "dev_pin":
-        values["dev_dependencies"].remove("jsonschema==4.26.0")
+    if mutation == "dev_duplicate":
+        values["dev_dependencies"].append("jsonschema==4.26.0")
     elif mutation == "release_pin":
         index = values["release_requirements"].index("jsonschema==4.26.0")
         values["release_requirements"][index] = "jsonschema==4.25.1"
     elif mutation == "pyproject_runtime":
+        values["runtime_dependencies"].remove("jsonschema==4.26.0")
+    elif mutation == "pyproject_duplicate":
         values["runtime_dependencies"].append("jsonschema==4.26.0")
+    elif mutation == "pyproject_pin":
+        values["runtime_dependencies"][values["runtime_dependencies"].index("jsonschema==4.26.0")] = "jsonschema>=4.26"
     elif mutation == "requirements_runtime":
+        values["runtime_requirements"].remove("jsonschema==4.26.0")
+    elif mutation == "requirements_duplicate":
         values["runtime_requirements"].append("jsonschema==4.26.0")
+    elif mutation == "requirements_pin":
+        values["runtime_requirements"][values["runtime_requirements"].index("jsonschema==4.26.0")] = "jsonschema>=4.26"
+    elif mutation == "webapp_runtime":
+        values["webapp_requirements"].remove("jsonschema==4.26.0")
+    elif mutation == "webapp_duplicate":
+        values["webapp_requirements"].append("jsonschema==4.26.0")
+    elif mutation == "webapp_pin":
+        values["webapp_requirements"][values["webapp_requirements"].index("jsonschema==4.26.0")] = "jsonschema>=4.26"
+    elif mutation == "webapp_include":
+        values["webapp_requirements"].append("-r requirements.txt")
     elif mutation == "requirements_include":
         values["runtime_requirements"].append(
             "-r master-reference/requirements-release.txt"

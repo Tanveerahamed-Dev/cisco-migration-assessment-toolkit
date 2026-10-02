@@ -5,6 +5,7 @@ all be in datas, the dynamic imports static analysis cannot see must all be hidd
 the dist destination must be the exact directory the entry module probes when frozen."""
 
 import os
+import ast
 import re
 import subprocess
 import sys
@@ -124,6 +125,30 @@ def test_datas_cover_every_selftest_guarded_asset():
     assert sources["dist"] == atlas_bundle.DIST_DEST
     assert sources["sample_fleet.snapshot.json"] == "webapp/sample_data"
     assert sources["pyproject.toml"] == "."  # release-version source beats stale pip metadata
+
+
+def test_spec_collects_runtime_package_resources_from_the_pure_manifest(monkeypatch):
+    """The IRI checker reads its grammar at import time; importing Python code alone is insufficient."""
+    assert atlas_bundle.package_data_modules() == ("rfc3987_syntax",)
+    spec = ast.parse((ROOT / "portable/atlas.spec").read_text(encoding="utf-8"))
+    analysis = next(node for node in ast.walk(spec)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "Analysis")
+    datas = next(keyword.value for keyword in analysis.keywords if keyword.arg == "datas")
+    collected = []
+    def collect_data_files(module):
+        collected.append(module)
+        return [(f"installed/{module}/grammar.lark", module)]
+    # A future manifest entry must flow through the same thin spec, without a second list.
+    monkeypatch.setattr(atlas_bundle, "package_data_modules", lambda: ("first", "second"))
+    result = eval(compile(ast.Expression(datas), "atlas.spec datas", "eval"), {
+        "ROOT": ROOT, "bundle_datas": lambda _root: [("owned.txt", ".")],
+        "package_data_modules": atlas_bundle.package_data_modules,
+        "collect_data_files": collect_data_files,
+    })
+    assert collected == ["first", "second"]
+    assert result == [("owned.txt", "."), ("installed/first/grammar.lark", "first"),
+                      ("installed/second/grammar.lark", "second")]
 
 
 def test_tracked_sources_exist_on_a_checkout():

@@ -70,8 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2b | Engine defects G13 / G15 / G49 + approved Master Reference compaction | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout; [PR #583](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/583) | Codex | Handoff pushed as `7448cafd`; approved compaction is implemented and reviewed locally. All 4,038 saved source chunks round-trip exactly, saving 5,771,950 compressed bytes before whole-bundle overhead. Full rebuilt deployment acceptance remains pending; see [validation](engine-defects-validation-2026-10-01.md). (2026-10-02) | Measure the complete clean-source deployment including decoder/receipts, preserve all limits and records, and pass the privacy gates before publishing the candidate. Then finish exact-head CI and merge; W2c waits. Do not regenerate golden/sample fixtures again. |
-| W2c | Backend endpoint and first core screens | planned `codex/core-screens`; reuse existing `.claude/worktrees/ui-projection-2` checkout after W2b merges; branch not created | Codex | API and visual-reference preflights complete; implementation waits for W2b | After W2b merges, create the listed branch from current main in the clean existing checkout. Add the paged, declared-response-model endpoint, then Overview / Trust / Inventory + device / Findings screens using only contract envelopes. |
+| W2c | Backend endpoint and first core screens | `codex/core-screens`; existing `.claude/worktrees/ui-projection-2` checkout | Codex | Backend independent review and 1,262 full backend tests passed (one existing Windows symlink skip). Frozen runtime passes after a test-first grammar-resource repair. Core screens and independent client review are in progress; [validation](one-app-w2c-validation-2026-10-02.md). (2026-10-02) | Finish Overview / Trust / Inventory + device / Findings, close client source-binding refutations, and run generated-type, frontend, browser, distribution and exact-head CI gates. Preserve exact source identity, evidence states and pagination disclosures. No further golden/sample regeneration. |
 
 ## Owner decisions
 
@@ -97,6 +96,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-02, Codex (W2b merged / W2c started):
+  - All 15 required checks passed on `b2c13407`; all 28 check runs were terminal (26 successful, two inapplicable draft-publication jobs skipped). Merged #583 with the authorized exact-head merge command as `a0c727bd`. Main's tree `b2adece2e21c4ea44f2eae0c009c0a92ae882b49` equals the tested head. Removed W2b's row under rule 8.
+  - Final local complete Master Reference deployment, including its outer receipt: 256,488,364 bytes, with 3,558,484 bytes of headroom under the unchanged limit. Hosted Master Reference validation also passed; exact receipts and residual limits are in the W2b validation record. Golden/sample/Scope fixture bytes retain their single reviewed generation.
+  - Created the already-listed `codex/core-screens` branch from current main in the clean existing UI checkout. Backend owns only contract transport and exact-store binding; the engine remains the fact owner. Implementation order remains endpoint, independent contract validation, then core screens. W1 and the protected root checkout remain untouched.
 
 - 2026-10-02, Codex (compaction source freeze):
   - Closed the metadata-string numeric overflow refutation and generated-decoder EOL drift test-first. Final projection suite: 90 passed / one existing POSIX-only skip; TypeScript, lint and diff checks passed.

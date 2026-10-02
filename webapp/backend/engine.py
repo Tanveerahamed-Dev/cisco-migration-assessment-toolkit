@@ -25,6 +25,19 @@ from cisco_toolkit.textutils import _as_num as _as_num  # noqa: E402  (shared fa
 from cisco_toolkit import __version__ as ENGINE_SCHEMA_VERSION  # noqa: E402,F401  (re-exported for the app)
 from cisco_toolkit.precert import schema_compat_status  # noqa: E402  (P3-E2 schema gate)
 from cisco_toolkit import protocol_assurance as _protocol_assurance  # noqa: E402
+from cisco_toolkit import ui_projection as _ui_projection  # noqa: E402
+
+def ui_projection(snapshot: Any, host: str | None = None) -> Dict[str, Any]:
+    """Delegate a whole document to its engine owner; do not reconstruct view context."""
+    if host is not None:
+        return _ui_projection.project_device(snapshot, host)
+    return _ui_projection.project(snapshot)
+
+
+def ui_projection_schema() -> Dict[str, Any]:
+    """Fresh owner schema for the API's cached validator and mechanical OpenAPI projection."""
+    return _ui_projection.ui_projection_schema()
+
 
 # Canonical hostname normalisation — reuse the engine's own so the web layer groups hosts identically.
 canon_host = _analyze._canon_host

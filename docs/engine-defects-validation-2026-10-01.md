@@ -404,3 +404,39 @@ and diff checks passing. Final encoder SHA-256:
 The complete 4,038-chunk comparison was rerun on that hash and produced identical payload and
 savings results. The earlier clean `1b56f2f0` compiler output also passed all **1,766** envelope
 chunks plus manifest/completeness/graph metadata schemas; final-source rebuild evidence follows.
+
+### Final deployment gate and W2b merge (2026-10-02)
+
+The clean rebuild at `b2c134074c3bf58ebb47f7d83630973d1fded969` passed all 1,766 schema
+chunks and the manifest/completeness/graph metadata checks. Local Master Reference validation
+passed **268 contract tests / one existing POSIX-only skip**, followed by **43 rendered tests**.
+The independently reverified deployment contains **14,597 files / 256,488,364 bytes**, including
+the 4,462-byte outer receipt. It fits the unchanged 260,046,848-byte limit with **3,558,484 bytes
+of headroom**. This closes the observed aggregate-size failure for that exact source; it does
+not promise capacity for future additions or authorize publication.
+
+The local manifest binds 14,596 members / 256,483,902 bytes and bundle digest
+`0b257e55ab0626c16fd55204813a9ab59fe9c6e686bfdc5fd7fdee2a46494054`.
+Its outer receipt binds the clean source commit and tree
+`b2adece2e21c4ea44f2eae0c009c0a92ae882b49`. Protected golden/sample/Scope data hashes still
+match the single reviewed generation. No further pipeline regeneration was performed.
+
+Hosted Master Reference run **36947440940** passed **269 contract tests** (including the POSIX
+case), **43 rendered tests**, and deployment finalization. Its manifest reports 256,482,290
+member bytes, excluding the outer receipt, with digest
+`16c5d3babeacb85a031ec6ac19ef8c1d5c85ede8cfb0352270bf9d9338332136`.
+The CI synthetic merge commit and platform differ from the local build; these are separate
+validations, not a claim of whole-bundle byte identity. The focused decoder-EOL fixture proves
+only its stated generated-index equality across line endings.
+
+All **15 required checks** passed on `b2c13407`. All **28 check runs** were terminal: **26
+successful**, with only the two inapplicable draft-publication jobs skipped. CI **36947440983**,
+portable **36947440958**, Scope **36947440936**, webapp **36947440960**, and the Master Reference
+run above are exact-head evidence. Earlier failures/cancellations remain recorded above and
+are not reclassified. The two public-repository privacy gates passed before publication; the
+history scan covered all 14 new commits and 2,158,278 patch/message bytes without a marker hit.
+
+PR **#583** merged with the authorized merge-commit command at **2026-10-02 02:00:20 UTC** as
+`a0c727bd301272d1243036f8da0c931c9c5360ae`. Fetched `origin/main` has the exact tested tree
+`b2adece2e21c4ea44f2eae0c009c0a92ae882b49`; its parents are prior main `8000adce` and tested
+head `b2c13407`. W2b is merged. W2c continues in its listed existing checkout and branch.

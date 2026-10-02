@@ -1,0 +1,106 @@
+# W2c: core projection endpoint and screens
+
+Status: **in progress**. The backend and portable-resource repair have focused and independent
+verification; frontend implementation and combined final gates remain open. This record belongs
+to the existing `codex/core-screens` branch and `ui-projection-2` checkout, created from main
+`a0c727bd` after W2b merged. `docs/NOW.md` remains the live queue.
+
+## Backend contract
+
+The two declared-response-model routes serve `ui_projection_transport/1` over the unchanged
+`ui_projection/1` owner. The view route returns bounded first pages; the list route accepts only
+schema-derived primary-list pointers. Both read one exact bound store snapshot, validate the
+whole engine document before selection, and validate the returned transport object. They retain
+all six evidence states, withheld lists with items, owner ordering/indexes/pointers, engine cap
+disclosures, engine metadata and the common limitations registry. Device host strings are passed
+unchanged; missing snapshots are 404 and unknown hosts retain the owner's withheld document.
+
+Pagination bounds primary lists, not total projection computation or nested row bytes. Page
+totals count projected rows and are distinct from the engine's census facts. The schema adapter
+mechanically hoists owner definitions into OpenAPI; independent reverse-mapping proves equality
+with a fresh owner schema. The offline exporter creates only a temporary empty store, emits
+deterministic UTF-8/LF JSON, and has a nonwriting drift check.
+
+Observed test-first negatives: three missing-route/model/schema failures, then four forged-page
+metadata failures (returned count, total, `has_more`, pointer). The corrections retain strict
+validation rather than coercing or dropping fields. Focused API/raw/expensive-GET selection:
+**70 passed**, both on the existing host runtime and on an isolated overlay with FastAPI
+**0.141.1**, Pydantic **2.13.5** and Starlette **1.6.0**. The latter reads other installed host
+test dependencies; it is not claimed to be the fully hash-locked portable environment.
+An initial root invocation named a nonexistent raw-test file and exited 4 without running tests;
+the correctly named selection is the separate passing result.
+
+The full backend selection then passed **1,262 tests / one existing Windows symlink-privilege
+skip** in 404.246 seconds, with all three Scope real-toolchain, hub-build and browser-markup
+requirements enabled. JUnit reports zero errors/failures. The pinned Starlette runtime emits
+its existing TestClient/httpx deprecation warning; it was retained, not suppressed.
+
+Independent review on API source SHA-256
+`5f0090eaaa0c78957adb6faeaa82e9c134a31eb159ddc7bcb87decffbd1c194c` passed **115 preservation
+and paging probes** across five views and 28 primary lists, plus **11 adversarial probes**.
+Malformed complete source outside the requested page/view is rejected, and corrupt-store
+authority returns 409. No actionable endpoint defect remained in that bounded review.
+
+Actual app OpenAPI exports from the host FastAPI/Pydantic versions and the portable hash-locked
+versions are byte-identical at SHA-256
+`7c1240ee7338740f182510435e74aa6563525670db7a00bedf862216d231c333`.
+CI now exports that live contract before the frontend's nonwriting generated-type check; the
+exporter itself participates in the fail-closed webapp path policy. Its two initial guard
+failures were followed by **39 passing scope/generation-wiring tests**.
+
+Three sequential TestClient requests per view and limit measured the following sample-only
+medians, including source parsing, whole-document validation, response validation and serialization:
+
+| View | Limit 1 seconds / bytes | Limit 50 seconds / bytes |
+|---|---:|---:|
+| Overview | 0.624 / 25,257 | 0.604 / 33,911 |
+| Trust | 0.622 / 33,314 | 0.613 / 40,855 |
+| Inventory | 0.590 / 34,999 | 0.683 / 263,907 |
+| Findings | 0.591 / 19,909 | 0.746 / 284,757 |
+| Device | 0.159 / 51,842 | 0.241 / 274,133 |
+
+All three payload hashes agreed within each case. This is 30 requests over the checked-in
+synthetic sample, not a load test, worst-case bound or network-server latency claim.
+
+## Portable runtime closure
+
+`jsonschema==4.26.0` moved from development-only to the canonical base runtime and both
+compatibility requirement files. The dependency contract now requires the exact runtime/release
+pin and rejects missing, duplicate, widened or indirect declarations. The existing portable
+hash lock already contains the needed distributions; it was not regenerated.
+
+An isolated Python 3.12.10 environment installed that exact hash lock and passed `pip check`.
+PyInstaller **6.22.2** with hooks **2026.7** inferred **62 bundled distributions**: the existing
+46 plus 16 schema/format dependencies at their locked versions. The reviewed inventory now
+matches that observed set. Independent inspection matched all 20 JSON Schema specification
+resources to their frozen bytes and confirmed the native `rpds` extension.
+
+**Preserved failure:** the first physical frozen executable failed before its self-test because
+`rfc3987_syntax/syntax_rfc3987.lark` was absent. A correct module/distribution inventory did not
+prove resource closure. The pure bundle manifest now names that package's data, and the thin
+PyInstaller spec collects it. The new resource-seam regression was observed failing first.
+Lark's four grammars and the dateutil zoneinfo archive were independently found in the original
+bundle; no format dependency was excluded to obtain a pass.
+
+The repaired locked executable passed all **12 self-tests**, version-resource checks, frozen
+engine-child dispatch, and the temporary field-layout HTTP/SPA smoke. The strengthened smoke
+seeds only synthetic data in the temporary copy, hashes the exact raw response, compares the
+entire projected owner payload and source envelope, and checks a later list page. Immutable
+application-member and cleanup checks remain enforced. Independent review rejected **11** smoke
+mutations/network failures and passed **178 focused packaging/CI tests with seven existing
+skips**, plus the resource-seam test. This closes the observed missing-grammar failure; a final
+build with the completed frontend is still required.
+
+## Frontend review in progress
+
+Generated TypeScript is derived from the actual OpenAPI using the pinned local generator.
+Independent early review reproduced a device-page custody error: two devices in the same
+snapshot can share list metadata and totals, so snapshot identity alone cannot bind a device
+page. The author is closing that counterexample with exact host/document binding before fetch
+and navigation-race tests. A separate actual React/jsdom probe also retained an old drawer
+subject after the provider received a new source identity; the author is binding or clearing
+that selection so old evidence cannot be presented under a new digest. No final frontend or
+combined application pass is claimed yet.
+
+Golden, sample-data and Scope fixture bytes remain at W2b's single reviewed generation. Scope's
+ignored hub build was refreshed for backend mount/browser tests; no data compiler was run.
