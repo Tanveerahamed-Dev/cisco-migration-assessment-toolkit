@@ -5,4 +5,4 @@ jsonschema==4.26.0
 pypdf==6.19.0
 pytest==9.1.1
 reportlab==5.0.1
-ruff==0.16.6
+ruff==0.16.9
