@@ -152,8 +152,9 @@ per change, with verification evidence) lives in
   largely covered through the environment. Each requirements file and pip-compile lock is now
   audited by its own `pip_audit --strict` step, or, when it only installs this project editable,
   through the environment audit. `tests/test_python_dependency_audit_contract.py` derives the
-  declarations from `git ls-files`, from every file a workflow or requirements file passes to
-  `-r`/`-c`, and from `pyproject.toml` (an unrecognised Python lock, a nested project, a
+  declarations from `git ls-files`, from every tracked file a workflow's pip command names (in each
+  spelling this repository uses, including PowerShell `Join-Path` continuations) or a requirements
+  file includes, and from `pyproject.toml` (an unrecognised Python lock, a nested project, a
   uv/Poetry/PDM/Hatch dependency table or an unreviewed marker-gated dependency fails rather than
   being skipped). It reads the workflow with a duplicate-rejecting YAML loader and holds each
   audit-bearing step to a closed grammar, so that no condition, masked exit code, injected

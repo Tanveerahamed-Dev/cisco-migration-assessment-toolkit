@@ -108,6 +108,43 @@ _EDITABLE_PROJECT = re.compile(r"-e\s+\.(?:\[([A-Za-z0-9_,\-\s]*)\])?")
 # Writes that change what later steps' pip or pip-audit see: the runner's environment files and pip's configuration.
 _RUNNER_ENVIRONMENT_FILES = re.compile(r"GITHUB_ENV|GITHUB_PATH|PIP_CONFIG_FILE|pip\.conf|pip\.ini|\bpip\d*(?:\.\d+)?\s+config\b")
 _FILE_OPTION = re.compile(r"""(?:^|\s)(?:-r|--requirement|-c|--constraint)(?:\s+|=)["']?([^\s"']+)""")
+# A command that hands pip (or a locker, or the auditor) a file. Its arguments may continue on later lines: a YAML
+# block scalar or a PowerShell `--requirement (` / `Join-Path ...` continuation keeps the same or deeper indent.
+_PIP_COMMAND = re.compile(r"(?i)\bpip3?(?:\.exe)?[\"']?\s+(?:install|download|wheel)\b|pip[_-]audit\b|pip-compile\b"
+                          r"|pip-sync\b|\buv\s+pip\b")
+_PATH_TOKEN = re.compile(r"[^\s\"'()=,;|&<>]+\.(?:txt|in|pip|lock)\b")
+_WORKSPACE_PREFIX = re.compile(r"(?i)^.*?(?:GITHUB_WORKSPACE|github\.workspace\s*\}\})[\\/]?")
+
+
+def _command_windows(text: str) -> list[str]:
+    """Each pip-family command in a workflow together with the rest of its block (its continuation lines)."""
+    lines = text.splitlines()
+    windows = []
+    for index, line in enumerate(lines):
+        if not _PIP_COMMAND.search(line):
+            continue
+        indent = len(line) - len(line.lstrip())
+        window = [line]
+        for following in lines[index + 1:]:
+            depth = len(following) - len(following.lstrip())
+            if following.strip() and (depth < indent or (depth <= indent and following.lstrip().startswith("- "))):
+                break  # a shallower line, or the next list item (step) at the same level, ends this command
+            window.append(following)
+        windows.append("\n".join(window))
+    return windows
+
+
+def _workflow_file_references(text: str) -> set[str]:
+    """Every repository-relative path a workflow's pip-family commands name, in any spelling this repository uses."""
+    found = set()
+    for window in _command_windows(text):
+        for token in _PATH_TOKEN.findall(window.replace("${{ github.workspace }}", "${{github.workspace}}")):
+            token = _WORKSPACE_PREFIX.sub("", token)
+            token = re.sub(r"^-[rc](?=[^\s-])", "", token)
+            if "$" in token:
+                continue
+            found.add(_path(token.lstrip("/\\")))
+    return found
 
 
 class _StrictLoader(yaml.SafeLoader):
@@ -285,7 +322,7 @@ def _python_audit_gaps(ci: str, files: dict[str, str], workflows: dict[str, str]
         gaps.append(f"the {AUDIT_JOB} job is not named {AUDIT_JOB_NAME!r} on ubuntu-latest")
     holders, referenced = [], set()
     for path, text in {**{p: t for p, t in workflows.items() if p != CI_PATH}, CI_PATH: ci}.items():
-        referenced.update(_path(target) for target in _FILE_OPTION.findall(text) if "$" not in target)
+        referenced.update(_workflow_file_references(text))
         try:
             other = yaml.safe_load(text) or {}
         except yaml.YAMLError:
@@ -553,6 +590,12 @@ def _files(fn):
     return lambda ci, f, w, t: (ci, fn(dict(f)), w, t)
 
 
+def _workflow_naming(run_block: str):
+    """A new tracked workflow whose pip command names a tracked pins file outside the classifier."""
+    body = "jobs:\n  extra:\n    runs-on: windows-latest\n    steps:\n      - name: Install pins\n        run: " + run_block
+    return lambda ci, f, w, t: (ci, f, {**w, ".github/workflows/extra.yml": body}, t | {"tools/smoke-pins.txt"})
+
+
 def _pyproject(old: str, new: str):
     def edit(f):
         assert old in f["pyproject.toml"], old
@@ -575,6 +618,12 @@ _MUTATIONS = {
     "workflow_references_unclassified_file": lambda ci, f, w, t: (
         ci, f, {**w, ".github/workflows/tools.yml": "jobs:\n  t:\n    steps:\n      - run: pip install -r tools/ci-tools.txt\n"},
         t | {"tools/ci-tools.txt"}),
+    "powershell_join_path_reference": _workflow_naming(
+        "|\n          & $venvPython -m pip install --only-binary=:all: --requirement (\n"
+        "            Join-Path $env:GITHUB_WORKSPACE \"tools\\smoke-pins.txt\"\n          )\n"),
+    "workspace_prefixed_reference": _workflow_naming("python -m pip install -r \"${{ github.workspace }}/tools/smoke-pins.txt\"\n"),
+    "attached_r_reference": _workflow_naming("python -m pip install -rtools/smoke-pins.txt\n"),
+    "folded_run_reference": _workflow_naming(">-\n          python -m pip install\n          -r tools/smoke-pins.txt\n"),
     "requirements_file_includes_unclassified_file": lambda ci, f, w, t: (
         ci, {**f, "webapp/requirements.txt": f["webapp/requirements.txt"] + "-r ../tools/ci-tools.txt\n"}, w,
         t | {"tools/ci-tools.txt"}),

@@ -109,15 +109,15 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
     `[build-system].requires`. Each tracked requirements file and lock is now audited by its own `pip_audit --strict`
     step, or through the environment when it only installs this project editable; the environment installs every
     non-empty extra except [build] (whose set is the audited Atlas lock) and the build requirements.
-    `tests/test_python_dependency_audit_contract.py` derives the declarations from git and from every `-r`/`-c` target,
+    `tests/test_python_dependency_audit_contract.py` derives the declarations from git and from every file a pip command names,
     and holds every audit step to a closed grammar, so no condition, masked exit code, injected environment or
     unnamed suppression can neutralise it by accident. The new release step fails on the old pin with exactly the
     seven advisories and passes on the new one.
   - Stated limits: inline `pip install` pins in workflow files (graphifyy, build, twine) are not yet audited, and
     covering them means moving them into an audited requirements file used by the release workflows (its own
     change); `tomli`, installed only on the Python 3.10 test lane, has no audited 3.10 set.
-  - Three independent refutation rounds ran on frozen snapshots; every blocker and major they proved was fixed and
-    re-tested, and each fix carries a mutation that fails without it.
+  - Five independent refutation rounds ran (four on frozen snapshots, the fifth on the pushed head); every blocker
+    and major they proved was fixed and re-tested, and each fix carries a mutation that fails without it.
   - The paramiko PYSEC-2026-2858 suppression is scoped to the shipped lock, which still pins paramiko 4.0.0; netmiko
     4.8.0 lifted its paramiko cap, so the floating environment resolves 5.0.0 and is audited without it.
   - Dependabot's #585 makes the same one-line bump and is green; this PR supersedes it and the pypdf line of #572.
