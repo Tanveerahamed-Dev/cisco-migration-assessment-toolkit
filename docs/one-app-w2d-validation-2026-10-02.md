@@ -1,6 +1,6 @@
 # W2d: immutable snapshot projection performance
 
-Status: implementation, independent review and performance target verified; broader gates in progress. This record does not claim
+Status: implementation, independent review and performance target verified; local backend/custody gates passed; publication/hosted gates pending. This record does not claim
 readiness, merge, release qualification or field acceptance.
 
 ## Source and scope
@@ -146,9 +146,22 @@ directory. Both bind the final API source SHA-256
 source files, commit/diff identity and runtime versions. Subsequent documentation
 updates do not change those measured implementation bytes.
 
+The full local backend plus snapshot-binding and transition-custody selection
+passed **1,357 tests / one existing Windows symlink-privilege skip** in 689.965 s.
+Real Scope toolchain, hub-build and browser-markup prerequisites were required.
+JUnit reports zero failures and errors. This is not a full repository Python-suite
+or portable-candidate qualification claim.
+
+The initial publication privacy gate refused untracked reviewer test databases in
+this checkout and detected the candidate-set change when they were relocated.
+All 70 evidence files were preserved outside the checkout and verified byte-for-byte;
+none was staged. Rule 7's description is corrected to match the live verifier:
+Git index plus stable working-tree candidates, including non-ignored untracked files.
+The unchanged verifier and complete new-commit history scan must pass again before push.
+
 ## Closing evidence still required
 
-- Appropriate backend, OpenAPI, distribution and portable checks.
+- Required hosted repository, distribution, reference and portable checks.
 - Repository privacy and complete new-commit message/patch scan before push.
 - Every required hosted check green on the final PR head, followed by the
   authorized exact-head admin merge commit and tree reconciliation.
