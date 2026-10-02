@@ -199,6 +199,41 @@ reproduces it. The actual hosted source is merge commit
 The copy contains no Graphify input, matching hosted coverage, and uses fresh compiler
 and projection outputs. The cap and all verification gates remain unchanged.
 
+### Exact-source reference diagnosis
+
+The reproduction completed compiler census, schema validation (1,797 chunks),
+projection generation (4,110 source modules), and Vinext compilation. Finalization
+then failed at the same boundary as hosted CI. Invoking the unchanged internal
+builder with its default hooks exposed `deployment member aggregate exceeds the
+Sites expanded limit` at `digestPayload`, `deployment-manifest.mjs:1025`.
+
+The preserved `dist` has **14,848 regular files / 260,505,355 physical bytes**, already
+**458,507 bytes above** the unchanged **260,046,848-byte** repository cap, before an
+outer receipt exists. Its compression receipt covers 14,785 modules, 1,378,692,627
+original bytes and 250,453,066 compressed bytes; the compressed receipt itself is
+1,320,013 bytes. Before/after counts and sizes match. The exact hosted merge and tree
+remain tracked-clean. The private receipt is
+`reference-a1bcc46d-private-diagnostic.json` in the external task test-run directory.
+This confirms the local exact-source capacity failure; the hosted exception remains
+redacted, so attribution of its same-boundary failure is a supported inference.
+
+No generated fixtures, build outputs or unexpected dependencies entered the six-file
+W2d source diff. Required content cannot be discarded to pass the cap. Available
+Sites tooling and official Sites documentation expose no numeric deployment cap;
+the plugin-submission archive limits apply to Skills, not Sites. A cap increase is
+therefore not justified by current evidence.
+
+The concrete fallback is a separately reviewed W6 change: retain the complete
+offline projection and its digest ledger; move the hosted module family to an
+immutable R2 namespace; preserve same-origin module URLs, exact-byte verification,
+explicit missing-object failures and rollback to the prior namespace/version.
+The available Sites tools have no object-upload operation, so actual migration
+also needs a bounded private upload path, verified storage binding and a separately
+approved deployment/bootstrap step. No R2 writes or deployment have occurred.
+Moving this remedy ahead of W2d and implementing the proposal require an owner
+decision because the requested sequence and fallback were explicit. W2d remains
+unmerged; the cap and required gates remain intact.
+
 ## Closing evidence still required
 
 - Required hosted repository, distribution, reference and portable checks.
