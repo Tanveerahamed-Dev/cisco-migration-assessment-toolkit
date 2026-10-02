@@ -65,7 +65,7 @@ registry finding, do not supply an externally authenticated current-advisory or
 applicability/VEX review. That independent review gate remains explicitly
 blocked.
 
-Production builds also create a lossless Sites packaging profile. The canonical
+Production builds also create a lossless internal-reference artifact. The canonical
 projection and compression JSON receipts remain byte-for-byte reconstructable,
 but `dist` stores only their deterministic `.json.gz` representations; the
 outer deployment receipt uses the same representation. Its v1.2 contract keeps
@@ -78,8 +78,14 @@ payload in `dist` is likewise replaced by a deterministic, receipt-bound
 Worker serves that member at the original virtual module URL with explicit gzip
 and JavaScript response headers. Build tests require fixed-header single-member bounded expansion,
 exact raw/representation SHA-256 joins, exact module census, module gunzip
-equivalence, no uncompressed deployment duplicate, and a complete expanded
-`dist` below the Sites limit. For body-bearing GETs
+equivalence, no uncompressed deployment duplicate, and complete physical-byte
+accounting. Internal validation has no aggregate Sites hosting quota. The build
+report separately includes the verified outer receipt in `physicalBundleBytes`
+and marks hosting eligibility `not_evaluated`; the receipt's existing `totalBytes`
+continues to exclude its own representation. Per-member, receipt, module and
+expansion limits remain verifier resource safeguards. A valid internal artifact
+does not establish that a hosting service will accept it; publishing is a separate
+operation. For body-bearing GETs
 whose asset binding omits encoding metadata—including when it infers
 JavaScript from the compound suffix—the Worker accepts the response only after
 replay-safe validation against the

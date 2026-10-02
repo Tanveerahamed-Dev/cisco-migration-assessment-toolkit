@@ -1066,7 +1066,7 @@ test("serves the exact live Sites-inferred metadata tuple through Workerd", asyn
   }
 });
 
-test("keeps the complete compressed projection inside the Sites expanded limit", async () => {
+test("reconciles the complete compressed projection and physical bundle byte census", async () => {
   const distDirectory = fileURLToPath(new URL("../dist/", import.meta.url));
   const projectionDirectory = fileURLToPath(
     new URL("../dist/client/atlas-projection/", import.meta.url),
@@ -1084,7 +1084,13 @@ test("keeps the complete compressed projection inside the Sites expanded limit",
   const compressed = projectionPaths.filter((path) => path.endsWith(".mjs.gz"));
   const originals = projectionPaths.filter((path) => path.endsWith(".mjs"));
   const sizes = await Promise.all(distPaths.map(async (path) => (await stat(path)).size));
-  const expandedBytes = sizes.reduce((total, size) => total + size, 0);
+  const physicalBundleBytes = sizes.reduce((total, size) => {
+    assert.ok(Number.isSafeInteger(size) && size >= 0);
+    assert.ok(Number.isSafeInteger(total + size));
+    return total + size;
+  }, 0);
+  const outerRepresentation = await readFile(join(distDirectory, "deployment-manifest.json.gz"));
+  const outerReceipt = JSON.parse(gunzipSync(outerRepresentation));
 
   assert.equal(originals.length, 0, "deployable dist retained uncompressed projection modules");
   assert.deepEqual(
@@ -1119,10 +1125,9 @@ test("keeps the complete compressed projection inside the Sites expanded limit",
   assert.ok(distPaths.includes(join(distDirectory, "deployment-manifest.json.gz")));
   assert.ok(!distPaths.includes(join(distDirectory, "deployment-manifest.json")));
   assert.ok(receipt.originalBytes > receipt.compressedBytes);
-  assert.ok(
-    expandedBytes <= 248 * 1024 * 1024,
-    `Sites expanded payload is ${(expandedBytes / 1024 / 1024).toFixed(1)} MiB`,
-  );
+  assert.ok(Number.isSafeInteger(outerReceipt.totalBytes) && outerReceipt.totalBytes >= 0);
+  assert.equal(outerReceipt.memberCount + 1, distPaths.length);
+  assert.equal(outerReceipt.totalBytes + outerRepresentation.byteLength, physicalBundleBytes);
 });
 
 test("server-renders every owner workspace with its proof boundary", async () => {

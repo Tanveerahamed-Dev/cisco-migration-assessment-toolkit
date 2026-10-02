@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rename,
@@ -16,11 +17,13 @@ import {
 import os from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { constants, crc32, deflateRawSync, gunzipSync } from "node:zlib";
 import test from "node:test";
 import { CANONICAL_GZIP_HEADER_BYTES } from "../../build/gzip-contract.js";
 import {
   buildDeploymentManifest as buildDeploymentManifestPublic,
+  buildDeploymentManifestWithReport,
   deploymentManifestTestOnly,
   verifyDeploymentManifest as verifyDeploymentManifestPublic,
 } from "../../build/deployment-manifest.mjs";
@@ -407,6 +410,164 @@ async function listRegularFiles(root, prefix = "") {
   }
   return files.sort(compareText);
 }
+
+test("internal bundle above the former hosting quota builds and verifies every real byte", async (context) => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-internal-size-"));
+  try {
+    const fixture = await initializeFixture(scratch);
+    const deployment = await writeDist(fixture.repo, "dist");
+    // Real, modest files keep each concurrent read bounded without sparse-file
+    // accounting or a mocked hasher. Their aggregate alone exceeds the old cap.
+    const chunk = Buffer.alloc(1024 * 1024, 0x61);
+    const chunkHash = sha256(chunk);
+    const bulkPaths = [];
+    for (let index = 0; index < 249; index += 1) {
+      const path = `client/payload-${String(index).padStart(3, "0")}.bin`;
+      await writeBytes(join(deployment.dist, ...path.split("/")), chunk);
+      bulkPaths.push(path);
+    }
+    const options = { distDir: deployment.dist, repoRoot: fixture.repo };
+    const { receipt, physicalBundleBytes } = await buildDeploymentManifestWithReport(options);
+    assert.equal(receipt.schemaVersion, "1.2.0");
+    assert.ok(receipt.totalBytes > 248 * 1024 * 1024);
+    for (const path of bulkPaths) {
+      assert.deepEqual(receipt.members.find((member) => member.path === path), {
+        path, bytes: chunk.byteLength, sha256: chunkHash,
+      });
+    }
+    const manifestPath = join(deployment.dist, DEPLOYMENT_MANIFEST_NAME);
+    const representation = await readFile(manifestPath);
+    assert.equal(physicalBundleBytes, receipt.totalBytes + representation.byteLength);
+    const actualPaths = await listRegularFiles(deployment.dist);
+    let actualBytes = 0;
+    for (const path of actualPaths) actualBytes += (await lstat(join(deployment.dist, path))).size;
+    assert.equal(actualBytes, physicalBundleBytes);
+    assert.equal(actualPaths.length, receipt.memberCount + 1);
+    context.diagnostic(JSON.stringify({
+      memberBytes: receipt.totalBytes, physicalBundleBytes, members: receipt.memberCount,
+    }));
+    assert.deepEqual(await verifyDeploymentManifestPublic(options), receipt);
+
+    // A different valid outer gzip representation changes physical accounting,
+    // not the unchanged conceptual receipt or its member hash denominator.
+    const alternate = deterministicGzip(canonicalJsonBytes(receipt), constants.Z_NO_COMPRESSION);
+    assert.notEqual(alternate.byteLength, representation.byteLength);
+    await writeFile(manifestPath, alternate);
+    const verified = await deploymentManifestTestOnly.verifyDeploymentManifestResult(options);
+    assert.deepEqual(verified.receipt, receipt);
+    assert.equal(verified.physicalBundleBytes, actualBytes - representation.byteLength + alternate.byteLength);
+
+    const changed = await open(join(deployment.dist, ...bulkPaths[0].split("/")), "r+");
+    try {
+      await changed.write(Buffer.from("b"), 0, 1, 0);
+    } finally {
+      await changed.close();
+    }
+    await assert.rejects(verifyDeploymentManifest(options), /deployment member byte\/hash mismatch/);
+    assert.deepEqual(await readFile(manifestPath), alternate);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("bundle byte arithmetic rejects unsafe, negative and noninteger counts including the outer receipt", () => {
+  const { addByteCounts } = deploymentManifestTestOnly;
+  assert.equal(addByteCounts(248 * 1024 * 1024, 1), 248 * 1024 * 1024 + 1);
+  assert.equal(addByteCounts(Number.MAX_SAFE_INTEGER - 1, 1), Number.MAX_SAFE_INTEGER);
+  for (const [members, outer] of [
+    [Number.MAX_SAFE_INTEGER, 1], [0, Number.MAX_SAFE_INTEGER + 1],
+    [-1, 1], [1, -1], [0.5, 1], [1, 0.5],
+    [NaN, 0], [0, Infinity], ["1", 0], [0, null],
+  ]) {
+    assert.throws(() => addByteCounts(members, outer), /nonnegative safe integer/);
+  }
+});
+
+test("outer receipt still rejects forged totals and oversized direct members", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-size-tamper-"));
+  try {
+    const fixture = await initializeFixture(scratch);
+    const deployment = await writeDist(fixture.repo, "dist");
+    const options = { distDir: deployment.dist, repoRoot: fixture.repo };
+    const receipt = await buildDeploymentManifest(options);
+    const manifestPath = join(deployment.dist, DEPLOYMENT_MANIFEST_NAME);
+    for (const value of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, receipt.totalBytes + 1, "1"]) {
+      const forged = structuredClone(receipt);
+      forged.totalBytes = value;
+      rechainOuterBundleDigest(forged);
+      const { representation } = await writeGzipJson(manifestPath, forged);
+      await assert.rejects(verifyDeploymentManifest(options), /reconstructed member aggregate is inconsistent/);
+      assert.deepEqual(await readFile(manifestPath), representation);
+    }
+    for (const value of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      const forged = structuredClone(receipt);
+      forged.projectionMembers.totalBytes = value;
+      rechainOuterBundleDigest(forged);
+      await writeGzipJson(manifestPath, forged);
+      await assert.rejects(verifyDeploymentManifest(options), /projection member summary is malformed/);
+    }
+    const forged = structuredClone(receipt);
+    forged.members[0].bytes = 248 * 1024 * 1024 + 1;
+    rechainOuterBundleDigest(forged);
+    await writeGzipJson(manifestPath, forged);
+    await assert.rejects(verifyDeploymentManifest(options), /manifest members are malformed/);
+
+    await unlink(manifestPath);
+    const oversized = await open(join(deployment.dist, "oversized.bin"), "w");
+    try {
+      await oversized.truncate(248 * 1024 * 1024 + 1);
+    } finally {
+      await oversized.close();
+    }
+    await assert.rejects(buildDeploymentManifest(options), /^Error: deployment member bounded read failed$/);
+    await assert.rejects(readFile(manifestPath), /ENOENT/);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("finalizer and manifest CLI report verified physical bytes without asserting hosting eligibility", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-finalizer-report-"));
+  try {
+    const fixture = await initializeFixture(scratch);
+    const referenceRoot = join(fixture.repo, "master-reference");
+    await mkdir(referenceRoot);
+    const deployment = await writeDist(referenceRoot, "dist");
+    for (const path of [PROJECTION_MANIFEST_NAME, "identity.mjs.gz"]) {
+      const fullPath = join(deployment.projectionRoot, path);
+      await writeFile(fullPath.slice(0, -3), gunzipSync(await readFile(fullPath)));
+      await unlink(fullPath);
+    }
+    await unlink(join(deployment.projectionRoot, COMPRESSION_MANIFEST_NAME));
+    const { stdout } = await execFileAsync(process.execPath, [
+      fileURLToPath(new URL("../../build/finalize-deployment.mjs", import.meta.url)),
+    ], { cwd: referenceRoot, encoding: "utf8" });
+    const report = JSON.parse(stdout);
+    const receipt = await verifyDeploymentManifestPublic({ distDir: deployment.dist, repoRoot: fixture.repo });
+    const outerBytes = (await readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME))).byteLength;
+    assert.equal(report.hostingEligibility, "not_evaluated");
+    assert.equal(report.deploymentBytes, receipt.totalBytes);
+    assert.equal(report.physicalBundleBytes, receipt.totalBytes + outerBytes);
+    assert.equal(report.deploymentMembers, receipt.memberCount);
+    assert.equal(report.bundleDigest, receipt.bundleDigest);
+
+    await unlink(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME));
+    const cli = await execFileAsync(process.execPath, [
+      fileURLToPath(new URL("../../build/deployment-manifest.mjs", import.meta.url)),
+    ], { cwd: referenceRoot, encoding: "utf8" });
+    const cliReport = JSON.parse(cli.stdout);
+    const cliReceipt = await verifyDeploymentManifestPublic({ distDir: deployment.dist, repoRoot: fixture.repo });
+    const cliOuterBytes = (await readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME))).byteLength;
+    assert.deepEqual(cliReceipt, receipt);
+    assert.equal(cliReport.totalBytes, receipt.totalBytes);
+    assert.equal(cliReport.members, receipt.memberCount);
+    assert.equal(cliReport.bundleDigest, receipt.bundleDigest);
+    assert.equal(cliReport.physicalBundleBytes, receipt.totalBytes + cliOuterBytes);
+    assert.equal(cliReport.hostingEligibility, "not_evaluated");
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
 
 test("outer deployment receipt is deterministic, exact-source bound, and compactly covers every other file", async () => {
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-manifest-"));
@@ -971,6 +1132,7 @@ test("public deployment APIs reject hostile options without disclosure", async (
   const marker = "private-deployment-options-sentinel";
   const apis = [
     ["build", buildDeploymentManifestPublic, "deployment manifest build failed", ["distDir", "repoRoot"]],
+    ["build with report", buildDeploymentManifestWithReport, "deployment manifest build failed", ["distDir", "repoRoot"]],
     ["verify", verifyDeploymentManifestPublic, "deployment manifest verification failed", ["distDir", "repoRoot"]],
     ["prepare", prepareDeploymentPublic, "deployment preparation failed", ["distDir"]],
   ];
