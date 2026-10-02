@@ -3258,6 +3258,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
             _bands = _summ.get("bands") if isinstance(_summ, dict) else None
             if _has_blind and isinstance(_bands, dict) and not _bands.get("Unassessed"):
                 from cisco_toolkit.analyze import compute_device_dossiers
+                from cisco_toolkit.ssot import failed_sections
                 data = compute_device_dossiers(
                     health_scores=snap.get("health_scores"), failure_impact=snap.get("failure_impact"),
                     lifecycle_risk=snap.get("lifecycle_risk"), software_risk=snap.get("software_risk"),
@@ -3266,7 +3267,9 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     security=snap.get("security"), config_hygiene=snap.get("config_hygiene"),
                     stp_roots=snap.get("stp_roots"), vpc=snap.get("vpc"),
                     physical_health=snap.get("physical_health"), protocol_health=snap.get("protocol_health"),
-                    move_groups=snap.get("move_groups"))
+                    move_groups=snap.get("move_groups"),
+                    protocol_assessability=snap.get("protocol_assessability"),
+                    parse_yield=snap.get("parse_yield"), input_failures=failed_sections(snap))
         return {"section": name, "data": data}
 
     @app.get("/api/snapshots/{snapshot_id}/protocol-assurance/export")

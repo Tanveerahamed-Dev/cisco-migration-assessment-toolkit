@@ -51,12 +51,14 @@ def _waves(snap: dict):
     migration_readiness verdict rows (they carry the group name + switch set the validation plan keys
     on); fall back to synthesising 'Group N' from move_groups so the MOP still renders on an older or
     minimal snapshot."""
+    from cisco_toolkit.analyze import move_group_label, move_group_labels
     mr = [_as_dict(r) for r in _as_list(snap.get("migration_readiness"))]
     if mr:
-        return [(r.get("group") or f"Group {i + 1}", _as_strs(r.get("switches")))
+        return [(r.get("group") or move_group_label(i + 1), _as_strs(r.get("switches")))
                 for i, r in enumerate(mr)]
-    return [(f"Group {i + 1}", _as_strs(_as_dict(g).get("switches")))
-            for i, g in enumerate(_as_list(snap.get("move_groups")))]
+    mg = _as_list(snap.get("move_groups"))
+    return [(label, _as_strs(_as_dict(g).get("switches")))   # the owner's label (G13), never list position
+            for label, g in zip(move_group_labels(mg), mg)]
 
 
 def _wave_sections(snap: dict):
@@ -414,6 +416,7 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
                  "cleared or explicitly risk-accepted.", RED)
 
     if unbound:
+        from cisco_toolkit.analyze import MOVE_GROUP_UNSCHEDULED   # one owner of the no-group sentinel
         doc.add_heading("Unscheduled current-baseline blockers", level=2)
         doc.add_paragraph(
             f"{len(unbound)} validated current-baseline blocker(s) are not bound to any scheduled wave. "
@@ -424,7 +427,7 @@ def _write_bluf(doc, waves, readiness_by_group, seq_by_group, scen_by_group, val
             [
                 (
                     row.get("_baseline_state") or "review",
-                    row.get("wave") or "(unscheduled)",
+                    row.get("wave") or MOVE_GROUP_UNSCHEDULED,
                     row.get("device") or "—",
                     row.get("check") or "Current baseline blocker",
                     row.get("command") or "—",

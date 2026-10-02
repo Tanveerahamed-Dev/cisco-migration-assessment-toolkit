@@ -367,7 +367,7 @@ def test_t0_schema_is_sound_and_enums_are_the_module_vocabularies():
     assert set(uip.ENGINE_STATES) == set(uip.STATES) | set(uip.FLEET_HEALTH_STATES)
     assert d["EngineStateOwner"]["enum"] == list(uip.ENGINE_STATE_OWNERS)
     assert d["Ref"]["properties"]["role"]["enum"] == list(uip.REF_ROLES)
-    assert d["LimitationId"]["enum"] == [lim["id"] for lim in uip.LIMITATIONS]
+    assert d["LimitationId"]["enum"] == [lim["id"] for lim in uip.LIMITATIONS + uip.DEVICE_LIMITATIONS]
     typed = {"CountFact": {"type": "integer", "minimum": 0, "maximum": uip.JS_MAX_SAFE_INT},
              "ScoreFact": {"type": "number", "minimum": 0, "maximum": 100},
              "TextFact": {"type": "string"}, "FlagFact": {"type": "boolean"},
@@ -1297,7 +1297,7 @@ def test_module_imports_only_stdlib_and_the_ssot_owner():
         elif isinstance(node, ast.ImportFrom):
             base = ("." * node.level) + (node.module or "")
             imported.update(f"{base}:{alias.name}" for alias in node.names)
-    allowed = {"math", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
+    allowed = {"math", "re", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:__version__"}
     extra = {name for name in imported if name not in allowed and not name.startswith("typing:")}
     assert not extra, extra

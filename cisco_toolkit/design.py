@@ -477,11 +477,16 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                     " — protect and sequence these first."))
 
     doc.add_heading("2.2 Layer-2 domain", level=2)
+    # G15: count only the roots the election owner PUBLISHES; a VLAN several collected bridges claim is
+    # ambiguous and is disclosed below, never credited to one of its claimants.
+    from cisco_toolkit.stp_topology import classify_stp_root_election
+    _election = classify_stp_root_election(stp_roots)
     root_count: Counter = Counter()
-    for host, vmap in stp_roots.items():
-        for vid, info in _D(vmap).items():   # _D: a truthy non-dict per-host value (stp_roots={host:5}) -> {} (same class)
-            if isinstance(info, dict) and info.get("is_root"):
-                root_count[host] += 1
+    for _ns in ("pvst_vlan", "mst_instance"):
+        for _erec in _election[_ns].values():
+            if _erec["state"] == "published":
+                root_count[_erec["root"]] += 1
+    _ambiguous = sorted((v for v, e in _election["pvst_vlan"].items() if e["state"] == "ambiguous"), key=int)
     doc.add_paragraph(
         # SSOT: the headline VLAN COUNT reads the canonical executive_brief.scale.n_vlans (n_vlan), not a
         # recomputed len(vlans), so it can't drift from the rest of the doc (multi-domain audit L3). The VLAN
@@ -489,7 +494,11 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         f"The fabric carries {n_vlan} VLANs. Spanning-tree root placement is recovered from "
         f"'show spanning-tree': " + (
             "; ".join(f"{h} roots {n} VLAN(s)" for h, n in root_count.most_common(6))
-            if root_count else "no explicit root bridge was observed in the collected output") + ".")
+            if root_count else "no explicit root bridge was observed in the collected output") + "."
+        + (f" The root is AMBIGUOUS for {len(_ambiguous)} VLAN(s) ({', '.join(_ambiguous[:10])}"
+           + (f" +{len(_ambiguous) - 10} more" if len(_ambiguous) > 10 else "")
+           + ") — several collected bridges claim it, so no root is stated for them; reconcile before "
+             "designing root placement." if _ambiguous else ""))
     if vlans:
         table(["VLAN", "Name"], [(v, nm or "—") for v, nm in vlans[:40]], widths=[1.0, 4.5])
         if len(vlans) > 40:

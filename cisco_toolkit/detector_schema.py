@@ -176,7 +176,8 @@ _DETECTOR_DESCRIPTORS: List[Dict[str, Any]] = [
         "evidence_gated": True,
         "source_command": _src("FHRP", "show standby brief"),
     },
-    # ---- STP root placement (analyze.stp_root_findings; PVST/RPVST only) -----------------------------
+    # ---- STP root placement (analyze.stp_root_findings over stp_topology.classify_stp_root_election;
+    #      PVST/RPVST only) -------------------------------------------------------------------------------
     {
         "key": "stp-accidental-root",
         "title": "Accidental STP root (default bridge priority)",
@@ -186,7 +187,7 @@ _DETECTOR_DESCRIPTORS: List[Dict[str, Any]] = [
         "healthy_value": "a non-default (deliberately lowered) root priority",
         "threshold": "root_priority in {32768, 32768 + vlan-id}",
         "cited_fields": ["stp_roots.<host>.<vlan>.root_priority", "stp_roots.<host>.<vlan>.is_root"],
-        "abstains_when": "the root switch for the VLAN was not collected, or spanning-tree output not captured (MST instances are out of scope)",
+        "abstains_when": "the root switch for the VLAN was not collected, or spanning-tree output not captured (MST instances are out of scope), or root ownership is ambiguous (several collected bridges claim the VLAN's root, or they disagree about its identity -- stp_topology.classify_stp_root_election)",
         "evidence_gated": True,
         "source_command": _src("STP", "show spanning-tree"),
     },
@@ -199,7 +200,7 @@ _DETECTOR_DESCRIPTORS: List[Dict[str, Any]] = [
         "healthy_value": "root bridge == a gateway-hosting switch",
         "threshold": None,
         "cited_fields": ["stp_roots.<host>.<vlan>.is_root", "l3_forwarding[].svi_ip"],
-        "abstains_when": "the root switch or the VLAN's gateway switch was not collected",
+        "abstains_when": "the root switch or the VLAN's gateway switch was not collected, or root ownership is ambiguous (several collected bridges claim the VLAN's root, or they disagree about its identity -- stp_topology.classify_stp_root_election)",
         "evidence_gated": True,
         "source_command": _src("STP", "show spanning-tree"),
     },

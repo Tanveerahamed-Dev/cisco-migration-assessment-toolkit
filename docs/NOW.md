@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-10-01** (Claude Code). Reasoning behind the current direction:
+Last reconciled: **2026-10-02** (Codex). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -22,8 +22,8 @@ There is **one application**: the `main` branch of this repository on GitHub.
   must become the only owner of every analysis fact. Screens render engine output; they never
   invent, restate or default a fact (`docs/ssot.md`). Some screens still compute facts
   themselves; see the dated verdict.
-- **The one door:** AssessHub (`webapp/`). Atlas Scope (`atlas-scope/`, today only on its branch)
-  becomes AssessHub's 3-D investigation module.
+- **The one door:** AssessHub (`webapp/`). Atlas Scope (`atlas-scope/`) is its integrated
+  preview 3-D investigation module.
 - **Other surfaces:**
   - The engine HTML explorer stays an offline deliverable.
   - Atlas (`portable/`) packages AssessHub for the USB stick.
@@ -70,8 +70,9 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W5 | Atlas Scope preview-scope repairs: the D3 citation-path clipping, the `/scope` reader, the C1 KEY validator, engine-owned display vocabularies and bundle receipts, then the C1 critic panel and an independent 39-criterion re-grade | `claude/scope-preview-fixes` (pushed), now against `main` | Claude Code session in the `.claude/worktrees/scope-preview` checkout | PR #582, retargeted to `main` after #579 merged, with `main` merged in (2026-10-01). Two repair waves, each independently verified; a whole-branch refuter found no blocker or major. D3 and C1 stay UNPROVEN, and no re-grade has run. Residuals are in `atlas-scope/docs/open-issues.md` O78. | The full D3 focus audit is running on a quiet host; then rebuild the C1 sheets, run the critic panel, then the re-grade. Owner reviews and merges #582, preserving merge commits. |
-| W2 | One-application UI consolidation (AssessHub + Scope + explorer) | engine slices on short branches off `main` (now: `feat/ui-projection-slice1`); UI slices after W1 merges | Claude Code | Engine honesty (#575) merged. `ui_projection/1` slice 1 (Overview + Trust) is PR #577. Prototype published privately to the owner; backlog in `docs/one-app-feature-backlog-2026-09-30.md` (2026-09-30). | Merge #577. Owner runs the prototype's 2-D vs 2.5-D task test on the reference laptop. After W1 merges: backend endpoint serving the projection with response models, then the first core screens. |
+| W5 | Atlas Scope preview-scope repairs: the D3 citation-path clipping, the `/scope` reader, the C1 KEY validator, engine-owned display vocabularies and bundle receipts, then the C1 critic panel and an independent 39-criterion re-grade | `claude/scope-preview-fixes` (pushed), against `main` | Claude Code session in the `.claude/worktrees/scope-preview` checkout | PR #582, with `main` merged in again after #583 (2026-10-02). C1 panel ran: UNPROVEN, protocol limit (O70). D3: no complete audit is tractable on this host, so UNPROVEN (O68). The first re-grade lost 35 of 39 graders to the account usage limit. Residuals in `atlas-scope/docs/open-issues.md` O78. | Re-grade this head, record the report, then the owner reviews and merges #582, preserving merge commits. |
+| W2b | Engine defects G13 / G15 / G49 + approved Master Reference compaction | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout; [PR #583](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/583) | Codex | Handoff pushed as `7448cafd`; approved compaction is implemented and reviewed locally. All 4,038 saved source chunks round-trip exactly, saving 5,771,950 compressed bytes before whole-bundle overhead. Full rebuilt deployment acceptance remains pending; see [validation](engine-defects-validation-2026-10-01.md). (2026-10-02) | Measure the complete clean-source deployment including decoder/receipts, preserve all limits and records, and pass the privacy gates before publishing the candidate. Then finish exact-head CI and merge; W2c waits. Do not regenerate golden/sample fixtures again. |
+| W2c | Backend endpoint and first core screens | planned `codex/core-screens`; reuse existing `.claude/worktrees/ui-projection-2` checkout after W2b merges; branch not created | Codex | API and visual-reference preflights complete; implementation waits for W2b | After W2b merges, create the listed branch from current main in the clean existing checkout. Add the paged, declared-response-model endpoint, then Overview / Trust / Inventory + device / Findings screens using only contract envelopes. |
 
 ## Owner decisions
 
@@ -98,6 +99,16 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
 
 ## Handoff log (newest first)
 
+- 2026-10-02, Codex (compaction source freeze):
+  - Closed the metadata-string numeric overflow refutation and generated-decoder EOL drift test-first. Final projection suite: 90 passed / one existing POSIX-only skip; TypeScript, lint and diff checks passed.
+  - Independent bounded review and a repeated all-chunk payload/gzip comparison preserve record values, ordering, indexes, digests, text and terminators. The original chunk partition and limits remain. The explicit pre-existing legacy fallback key limitation is recorded rather than claimed repaired.
+  - Full deployment size is still pending. Source-chunk savings alone are not a successful deployment gate. Golden/sample/Scope fixture bytes remain unchanged.
+
+- 2026-10-02, Codex (approved W2b compaction):
+  - Owner approved the pending bounded lossless Master Reference compaction request. It is now part of W2b on the existing branch and checkout.
+  - Scope: existing projection encoder/generated decoder, round-trip and hostile-input tests, documentation and exact-source rebuild validation. Public payloads, all source records/text/digests/terminators/census denominators, the decoded 256 KiB ceiling and the existing deployment/privacy gates stay intact. Net savings must be measured after decoder and receipt overhead.
+  - No additional golden/sample regeneration, W1 changes, new branch/worktree, release publication or qualification authority is included. W2c follows the already reserved route after #583 merges.
+
 - 2026-10-01, Claude Code (W1, closing):
   - #579 merged as `d92fcb1f` on the owner's instruction, after every required check was green on head
     `0345eb1d` and `main`'s tree was confirmed equal to that head's. Row W1 deleted (rule 8).
@@ -110,6 +121,73 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
   - Re-ran the engine gate after a network drop killed it mid-wave.
   - A whole-branch refuter found no blocker or major; its minors are fixed or recorded in O78.
   - Pushed after the rule-7 checks passed (0 hits over 50 commits since `main`) and opened #582, stacked on #579.
+
+- 2026-10-01, Codex (W2b Master Reference capacity gate):
+  - The final-head Master Reference run `36918999658` passed compiler/schema validation and 264 contract tests, then failed deployment finalization. Its public error is intentionally redacted; there were no retained CI artifacts.
+  - Reproduced from the same tracked tree and compiler census locally. The compressed deployment is 260,473,519 bytes before its outer receipt, exceeding the unchanged 260,046,848-byte limit by 426,671. The private existing diagnostic confirms the aggregate-size rejection. No tracked source or fixture changed during reproduction.
+  - Requested owner approval for lossless projection compaction because the earlier board assigns that follow-up to its owner and the current W2 queue does not list it. No compaction edits, budget increase or coverage reduction have been made. Remaining CI is allowed to finish; the PR is held.
+
+- 2026-10-01, Codex (W2b PR publication):
+  - Repository privacy passed; the complete marker scan passed across all ten new commits and 2,104,617 patch/message bytes. Pushed `087b00c8` and opened #583 against main `8000adce`.
+  - Hosted Python, coverage, distribution, portable, Master Reference and UI checks are in progress. This board update records the publication; its final head must receive its own successful checks before the authorized merge. W2c remains held until that merge.
+
+- 2026-10-01, Codex (W2b single regeneration):
+  - Regenerated golden, sample and four Scope bindings once from reviewed source `e4be15f1`, preserving LF. Independent review reconciled the finding/risk changes and all 807 sample evidence references.
+  - The sheet guard initially rejected a summary-banner count change. Review proved all 74 sheets and columns unchanged; accepted the exact saved candidate through the documented reviewed-change path without rerunning the pipeline. The initial failure is retained.
+  - Projection/sample 665 tests, golden 22 tests, frontend 274 unit tests, five E2E tests and 22 visual checks pass. Backend: 1,224 passed / one Windows privilege skip. Final Scope: 6,992 passed / one sample-inapplicable skip; independent review verified every remapped assertion without weakening coverage. Earlier failures are preserved. No hosted W2b or merge pass is claimed.
+  - Integration is committed on this branch for publication, gated by fresh repository privacy and complete new-commit marker checks. Next: open W2b's PR and await the exact-head hosted gates before the authorized merge.
+
+- 2026-10-01, Codex (W2b consumer source freeze):
+  - Closed the projection's G13 labels, G15 owner metadata/pointers/readiness scope and G49 input-state handling test-first. Independent final-source refutation found no residual actionable defects.
+  - Engine selection: 178 passed. Projection selection: 307 passed with one sample-signature check deferred until regeneration; independent regression replay: 70 passed. Scope synthetic absence controls: 162 passed, zero skipped.
+  - Consumer integration is committed locally before the one regeneration pass; no protected fixture has been regenerated. Fresh privacy gates are required before the next push.
+
+- 2026-10-01, Codex (W2a merged / W2b integration):
+  - Marked #580 ready after all 15 required checks passed on `1e6268f3`; the applicable webapp and CodeQL checks also passed. Merged with the authorized merge-commit command as `8000adce`. Its tree `3a99bc64d24b5892d4880810ab59a2da3c0280ab` equals the tested head's tree. Removed W2a's active row under rule 8.
+  - Merged current main into the existing W2b checkout. The only conflict was this board; every handoff line from both parents is retained. W1's branch/folder remain untouched.
+  - W2b now owns projection/Scope consumer reconciliation and the single fixture-regeneration pass. Reserved W2c's concrete branch and existing folder here before creation; it starts only after W2b merges.
+
+- 2026-10-01, Codex (W2a hosted gate):
+  - Pushed implementation `c8a78732` after repository privacy and all seven new commits' marker scans passed. Updated draft #580 to its complete scope.
+  - Five completed Linux full-suite jobs found the same sole receipt-reader classification gap. The projection's section-level dependency needs a mechanical SSOT-delegation proof; the guard remains mandatory. The scoped correction now passes the final 32-test protocol suite and independent refutation, including later-row, aggregate and shadowing counterexamples. Production source is unchanged.
+  - The full local coverage cancellation and hosted failure receipts remain explicit in the validation record. W2b integration still waits for #580 to pass and merge.
+
+- 2026-10-01, Codex (W2a evidence integration):
+  - Projected finding evidence and health deduction references with closed schemas, owner-vocabulary parity, cap disclosure, source-failure precedence and legacy handling. Independent review closed the refutations; final focused and frontend results are in the validation record.
+  - The instrumented full local suite was cancelled incomplete at about 38% after 1,628.78 seconds. Seven reported failures remain unclassified; no full-suite or coverage pass is claimed. Required hosted CI must close those gates before #580 is ready or merged.
+  - Golden, sample-data and frontend distribution bytes were preserved. W2b remains pushed through `f950f888`; its consumer repairs and regeneration wait for #580.
+
+- 2026-10-01, Codex (W2a):
+  - Verified #579 merged as `d92fcb1f`; its tree equals tested head `0345eb1d`. Removed W1's active row under rule 8; its branch, checkout and follow-ups remain with their owner.
+  - Merged current main into the existing `feat/ui-projection-slice2` checkout with a merge commit. Preserved every handoff entry from both sides of the board conflict.
+  - W2b is pushed through `f950f888`: engine fixes and full-suite refutations are saved on that branch. W2a now owns evidence-reference projection and its gates; W2b integration/regeneration follows W2a's merge.
+
+- 2026-10-01, Codex (W2 full-suite refutation):
+  - Full JUnit result at `e74a4c42`: 9,684 passed, 40 skipped, 20 failed. Classified eight listed context failures, nine deferred golden/sample comparisons, and three actionable failures. The log wrapper's Unicode printing failure is preserved in the validation record; the completed XML is the count source.
+  - Closed the three actionable failures: G49 now consumes the protocol conclusion owner; two simulator fixtures now describe a consistent incumbent root. All assertions retained. Post-fix focused suite: 146 passed; repository-wide ruff and diff checks pass.
+  - No golden/sample regeneration. #579 checks are green but it remains unmerged under W1 ownership. W2a implementation still waits; read-only API and prototype-source preflights are in `docs/one-app-w2-integration-preflight-2026-10-01.md`.
+
+- 2026-10-01, Codex (approved W2 publication):
+  - Owner approved the six-command path-only repair and push of `fix/engine-contract-defects`. Repaired only the untracked hook command values, preserved an external local backup, and independently verified six syntax checks plus 12 path-resolution probes; no hooks executed.
+  - Repository privacy verifier and full new-commit message/patch marker scan passed. Publication is authorized and gated on fresh successful reruns; local tooling stays untracked.
+  - #581 exact-main CI `36858426410` and Master Reference `36858426344` both completed successfully on `497e26b6`.
+  - W1 advanced to `0345eb1d`; #579 remains unmerged. W2a implementation and W2b golden/sample regeneration remain held for its merge.
+
+- 2026-10-01, Codex (W2 blocked audit):
+  - The same hook-repair approval and W1 merge dependency remain after three consecutive goal turns. #579 is still open/behind; the local hook marker is still present. Goal marked blocked, not complete.
+  - The fixes and handoff are committed locally; no push is permitted until the mandatory privacy verifier passes. The existing approval request remains pending.
+  - Stopped only the two local `gh run watch` clients. Hosted #581 main runs `36858426410` and `36858426344` remain live; query their terminal verdicts on resume. No W1 or fixture changes.
+
+- 2026-10-01, Codex (W2 continuation):
+  - Re-fetched and confirmed #579 remains open/behind; #581 is merged, with exact-main CI run `36858426410` and Master Reference run `36858426344` still live.
+  - Prepared and independently reviewed the six-command hook-path repair read-only; approval remains pending. No hooks were executed or modified. Concrete replacement and limits are in the W2b validation record.
+  - `ebb5a368` and this handoff remain local only; the mandatory privacy failure still prevents push. No new implementation or fixture changes.
+
+- 2026-10-01, Codex (W2):
+  - Merged docs-only #581 at `6a817777` after every required check passed; merge `497e26b6` has the tested head tree.
+  - Took over W2b, finished G13/G15/G49 test-first and closed independently reproduced refutations; 1,022 related tests pass. Details and preserved negative evidence: `docs/engine-defects-validation-2026-10-01.md`.
+  - No golden/sample refresh and no W1 branch/folder changes. #579 remains open/behind main; W2a and the W2b integration/PR wait for its owning session.
+  - Fixes are **local only, not pushed**: the required privacy gate rejects pre-existing untracked `.codex/hooks.json`. Requested approval for a path-only local repair; `.agents/` and `.codex/` were preserved and excluded from staging.
 
 - 2026-10-01, Claude Code (W1):
   - Made #579's CI honest. Each red check was fixed at its root, with a test that fails without the fix:
@@ -145,26 +223,22 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
     request.
   - W2 started.
 
+- 2026-09-30, Claude Code:
+  - Merged #577 (`ui_projection` slice 1) and #578 (`ssot` owner robustness).
+  - The owner confirmed D11, so W1 is published as PR #579; its compile diagnosis was sent to its
+    holder.
+  - Slice 2 is held as a draft until W1 merges.
+
 - 2026-09-29, Claude Code:
   - Created this board and recorded the direction verdict (dated record linked above).
   - Removed idle worktrees, fully merged local branches and empty orphan directories, preserving
     all uncommitted work.
   - W1 continues in its own session. W2 waits on the owner decisions above.
 
-## W2 handoff to Codex (2026-10-01) -- supersedes the W2 row above
+## W2 handoff notes (2026-10-01)
 
-The W2 row above is stale. #577 and #578 are merged. Until the board is reconciled after PR #579 merges,
-**this section is the current state of W2**. It is appended here so that it cannot conflict with #579's own
-board edits. **W2 is now held by Codex.** Claude Code has stopped all W2 work, so there is one writer.
-
-| Item | Branch / PR | Folder to open (Codex: Local mode, that folder) | State (2026-10-01) | Next step |
-|---|---|---|---|---|
-| W2a: `ui_projection` slice 2 (Inventory, device page, Findings) | `feat/ui-projection-slice2`, draft PR #580 | `.claude/worktrees/ui-projection-2` | Built, refuted, gates green. HELD until #579 merges: its tripwire test fails once #579's `evidence_refs` / `evidence_basis` / `deduction_refs` fields land. | After #579 merges: merge `origin/main` (merge commit), project those three fields so the tripwire passes, run every gate, mark ready, merge. |
-| W2b: engine defects G13 (move-group label), G15 (STP root uniqueness), G49 (dossier absence semantics) | `fix/engine-contract-defects`, pushed, no PR yet | `.claude/worktrees/engine-defects` | Read-only designs DONE (`docs/engine-defects-design-2026-10-01.md` on that branch). The implementation run was interrupted; its edits are commit `3cb8891d`, marked **wip(unverified)**. The branch is based on #579's head, so it can proceed before #579 merges. | Verify the WIP against the designs, finish test-first, run an independent refutation pass. After #579 merges: merge `origin/main`, regenerate the golden and sample snapshots ONCE (see the notes below), open the PR, merge. |
-| W2c: backend endpoint + first real screens | not started | none yet | Waits for W2a | A FastAPI endpoint serving `ui_projection` (paged, declared response models), then the AssessHub Overview / Trust / Inventory + device / Findings screens rendering only contract envelopes. The private prototype (v2) is the visual reference, and `docs/one-app-contract-gaps-2026-09-30.md` ranks the engine gaps. |
-
-**Not W2's (do not touch):** W1 / PR #579 (Atlas Scope) belongs to its own Claude Code session. It is green on
-every hosted check and waits only for the owner's merge decision.
+W2 was transferred from Claude Code to Codex. The Active table is now the current queue.
+W1 / #579 has merged; its follow-ups remain with its own holder.
 
 **Notes for the W2 holder (verified on this host):**
 - **Linked worktrees always show 8 test failures:** `test_graphify_guarded` (4), `test_graph_invariants` (3) and

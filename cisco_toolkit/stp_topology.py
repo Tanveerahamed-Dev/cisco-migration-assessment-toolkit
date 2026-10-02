@@ -984,10 +984,167 @@ def validate_stp_topology_baseline(
     }
 
 
+# ---------------------------------------------------------------------------------------------
+# Cross-switch STP root election (G15). ONE owner for "who is the root of this VLAN" over the
+# legacy per-host ``stp_roots`` projection (which stays byte-identical): every consumer -- the VLAN
+# cutover matrix, stp_root_findings and the punch-list / remediation / validation / NRFU / dossier /
+# workbook / architecture-review / design / failover / explorer surfaces -- reads this verdict instead
+# of "first sorted host claiming root wins".
+#
+# A bridge ID is its priority plus its OWN MAC, so it is unique per switch, and a claimant's
+# root_address is its own address. Several host names claiming ONE root identity is a duplicate
+# bridge identity; several identities is either separate L2 domains or a split domain -- the snapshot
+# carries no proof of L2 adjacency to tell them apart. Either way no single root is published: the
+# VLAN is ``ambiguous`` and the claimants are named. Unknown stays unknown: a VLAN whose root no
+# collected bridge claims is ``not_observed`` and its default-election verdict is undetermined (None).
+# ---------------------------------------------------------------------------------------------
+STP_ROOT_ELECTION_STATES = ("published", "ambiguous", "not_observed")
+STP_ROOT_ELECTION_REASONS = {
+    "published": ("single_claimant",),
+    "ambiguous": ("malformed_root_rows", "multiple_root_identities", "duplicate_bridge_identity"),
+    "not_observed": ("root_not_collected", "no_root_evidence"),
+}
+_DEFAULT_BRIDGE_PRIORITY = 32768
+
+
+def _election_priority(value: Any) -> Any:
+    """A bridge priority is accepted only as an exact browser-safe integer (never a bool) or an ASCII digit string;
+    anything else (inf, nan, a dict, a signed/decorated string) is ``None`` -- the one rule every
+    consumer shares instead of an integer-only test in one place and an ``int()`` coercion in another."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if abs(value) <= 2 ** 53 - 1 else None
+    if isinstance(value, str):
+        token = value.strip()
+        # Bound conversion before int(): host integer-string limits differ, and the explorer mirror
+        # requires exact JavaScript integers. Real STP priorities and instance IDs fit comfortably.
+        if len(token) <= 16 and token.isascii() and token.isdigit():
+            parsed = int(token)
+            return parsed if parsed <= 2 ** 53 - 1 else None
+    return None
+
+
+def stp_default_priority(vid: Any, priority: Any) -> Any:
+    """Is ``priority`` the DEFAULT bridge priority for PVST/RPVST VLAN ``vid``? ``32768 + vid`` with
+    extended-system-id on, or a bare ``32768`` with it off (legacy IOS). ``None`` (undetermined) when the
+    priority or the VLAN id is not a usable integer. MST instance numbers are not VLAN ids: callers pass
+    PVST VLANs only."""
+    prio = _election_priority(priority)
+    vlan = _election_priority(vid)
+    if prio is None or vlan is None or vlan < 0:
+        return None
+    return prio in (_DEFAULT_BRIDGE_PRIORITY, _DEFAULT_BRIDGE_PRIORITY + vlan)
+
+
+def classify_stp_root_election(stp_roots: Any) -> Dict[str, Dict[str, dict]]:
+    """Classify every PVST VLAN / MST instance in the legacy ``stp_roots`` projection.
+
+    Returns ``{"pvst_vlan": {vid: rec}, "mst_instance": {instance: rec}}`` keyed by the canonical decimal
+    token, where ``rec`` is::
+
+        {state, reason, root, claimants, identities, root_priority, default_election}
+
+    * ``identities`` -- one entry per observed root identity (keyed by root address; a claimant with no
+      address is its own identity): ``{root_address, root_priority, root_priorities, claimants,
+      observers}``;
+    * ``state``/``reason`` (checked in this order) -- ``ambiguous``/``malformed_root_rows`` (an
+      ``is_root`` that is present but not a bool, or a non-string ``root_address``), ``ambiguous``/
+      ``multiple_root_identities``, ``ambiguous``/``duplicate_bridge_identity`` (several claimants of one
+      identity), ``published``/``single_claimant``, ``not_observed``/``root_not_collected`` (collected
+      bridges agree on an off-scan root), ``not_observed``/``no_root_evidence``;
+    * ``root`` -- the claimant host only when ``published``, else ``None``;
+    * ``root_priority`` -- the one integer priority of the one identity, else ``None``;
+    * ``default_election`` -- ``True``/``False`` only for a ``published`` PVST VLAN whose root has one
+      integer priority; otherwise ``None`` (undetermined), never ``False``.
+
+    Total on malformed input; derives only, never mutates. Row-level shape: a row with no ``is_root``
+    key makes no claim; a row with neither an address nor a claim contributes no identity.
+    """
+    work: Dict[str, Dict[str, dict]] = {"pvst_vlan": {}, "mst_instance": {}}
+    roots = stp_roots if isinstance(stp_roots, Mapping) else {}
+    for host in sorted(h for h in roots if isinstance(h, str) and h):
+        per = roots[host]
+        if not isinstance(per, Mapping):
+            continue
+        for key, rec in per.items():
+            number = _election_priority(key)
+            if number is None or number < 0:
+                continue
+            namespace = "mst_instance" if isinstance(rec, Mapping) and rec.get("is_mst") else "pvst_vlan"
+            entry = work[namespace].setdefault(str(number), {"malformed": [], "claimants": [], "ids": {}})
+            if not isinstance(rec, Mapping):
+                entry["malformed"].append(host)
+                continue
+            flag = rec.get("is_root", False)
+            addr = rec.get("root_address", "")
+            if not isinstance(flag, bool) or not isinstance(addr, str):
+                entry["malformed"].append(host)
+                continue
+            addr = addr.strip().lower()
+            if flag:
+                entry["claimants"].append(host)
+            if not addr and not flag:
+                continue
+            ident = entry["ids"].setdefault(addr or f"<unaddressed:{host}>", {
+                "root_address": addr, "priorities": set(), "claimants": [], "observers": []})
+            prio = _election_priority(rec.get("root_priority"))
+            if prio is not None:
+                ident["priorities"].add(prio)
+            (ident["claimants"] if flag else ident["observers"]).append(host)
+
+    out: Dict[str, Dict[str, dict]] = {"pvst_vlan": {}, "mst_instance": {}}
+    for namespace, entries in work.items():
+        for token in sorted(entries, key=int):
+            entry = entries[token]
+            identities = []
+            for ident_key in sorted(entry["ids"]):
+                ident = entry["ids"][ident_key]
+                prios = sorted(ident["priorities"])
+                identities.append({"root_address": ident["root_address"],
+                                   "root_priority": prios[0] if len(prios) == 1 else None,
+                                   "root_priorities": prios,
+                                   "claimants": sorted(ident["claimants"]),
+                                   "observers": sorted(ident["observers"])})
+            claimants = sorted(entry["claimants"])
+            if entry["malformed"]:
+                state, reason = "ambiguous", "malformed_root_rows"
+            elif len(identities) >= 2:
+                state, reason = "ambiguous", "multiple_root_identities"
+            elif len(claimants) >= 2:
+                state, reason = "ambiguous", "duplicate_bridge_identity"
+            elif len(claimants) == 1:
+                state, reason = "published", "single_claimant"
+            elif identities:
+                state, reason = "not_observed", "root_not_collected"
+            else:
+                state, reason = "not_observed", "no_root_evidence"
+            root_priority = identities[0]["root_priority"] if len(identities) == 1 else None
+            default = (stp_default_priority(token, root_priority)
+                       if state == "published" and namespace == "pvst_vlan" else None)
+            out[namespace][token] = {"state": state, "reason": reason,
+                                     "root": claimants[0] if state == "published" else None,
+                                     "claimants": claimants, "identities": identities,
+                                     "root_priority": root_priority, "default_election": default}
+    return out
+
+
+def published_stp_roots(stp_roots: Any) -> Dict[str, str]:
+    """``{vid: host}`` for every PVST VLAN whose root the owner PUBLISHES (exactly one claimant of one
+    identity). Ambiguous and unobserved VLANs are absent -- read ``classify_stp_root_election`` for them."""
+    return {vid: rec["root"] for vid, rec in classify_stp_root_election(stp_roots)["pvst_vlan"].items()
+            if rec["state"] == "published"}
+
+
 __all__ = [
+    "STP_ROOT_ELECTION_REASONS",
+    "STP_ROOT_ELECTION_STATES",
     "STP_TOPOLOGY_BASELINE_SCHEMA",
     "STP_TOPOLOGY_OBSERVATION_SCHEMA",
+    "classify_stp_root_election",
     "compute_stp_topology_baseline",
+    "published_stp_roots",
+    "stp_default_priority",
     "produce_stp_topology_observation",
     "validate_stp_topology_baseline",
     "validate_stp_topology_observation",

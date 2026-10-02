@@ -593,28 +593,9 @@ def test_deck_wellformed_unchanged_alongside_hardening(tmp_path):
 # ===========================================================================================
 
 def _real_dossiers(assessed: bool):
-    """Dossiers from the REAL producer (analyze.compute_device_dossiers), not a hand-shaped dict —
-    a fixture in the shape the writer expects would only prove the writer agrees with itself.
-
-    assessed=False feeds ONLY health + blast radius + an Unknown-lifecycle row, so 8 of the 11 risk
-    axes ABSTAIN. An abstaining axis is weighted ZERO exposure, so every asset bands 'Low' with
-    risk_index 0 and the verdict "No stacked risk — routine migration handling"."""
-    from cisco_toolkit.analyze import compute_device_dossiers
-    if not assessed:
-        return compute_device_dossiers(
-            health_scores=[{"switch": "core1", "score": 70, "band": "Good", "role": "core"},
-                           {"switch": "acc1", "score": 80, "band": "Good", "role": "access"}],
-            failure_impact=[{"host": "core1", "stranded": 220, "vlans_impacted": 4},
-                            {"host": "acc1", "stranded": 10, "vlans_impacted": 1}],
-            lifecycle_risk={"per_device": [{"host": "core1", "band": "Unknown"},
-                                           {"host": "acc1", "band": "Unknown"}]})
-    return compute_device_dossiers(
-        health_scores=[{"switch": "core1", "score": 92, "band": "Excellent", "role": "core"}],
-        failure_impact=[{"host": "core1", "stranded": 4, "vlans_impacted": 1}],
-        lifecycle_risk={"per_device": [{"host": "core1", "band": "Active", "model": "C9300"}]},
-        software_risk={"per_device": [{"host": "core1", "band": "OK", "n_findings": 0}]},
-        security={"core1": {"checks": [{"id": "x", "status": "pass"}]}},
-        config_hygiene={"core1": {"findings": []}})
+    from dossier_fixtures import coverage_dossiers
+    hosts = ("core1",) if assessed else ("core1", "acc1")
+    return coverage_dossiers(assessed, hosts, roles={"core1": "core"})
 
 
 def test_dossier_coverage_mirrors_the_canonical_rule():
@@ -637,7 +618,7 @@ def test_all_unassessed_fleet_still_gets_a_slide_and_it_says_not_assessed(tmp_pa
     stacked risk. Pre-fix this snapshot rendered 7 slides with no mention of coverage at all."""
     dd = _real_dossiers(assessed=False)
     assert {d["risk_band"] for d in dd["per_device"]} == {"Low"}      # the defect's precondition
-    assert all(d["risk_index"] == 0 and d["n_na"] == 8 for d in dd["per_device"])
+    assert all(d["risk_index"] == 0 and d["n_na"] == 9 for d in dd["per_device"])
 
     snap = _rich_snap()
     snap["device_dossiers"] = dd
@@ -646,7 +627,7 @@ def test_all_unassessed_fleet_still_gets_a_slide_and_it_says_not_assessed(tmp_pa
     n, txt = _deck(str(out))
     assert n == 8, f"the un-evidenced fleet must still get the stacked-risk slide, got {n}"
     assert "NOT ASSESSED" in txt
-    assert "8 of 11 risk axes NOT ASSESSED" in txt                   # per-asset census
+    assert "9 of 11 risk axes NOT ASSESSED" in txt                   # per-asset census
     assert "band rests on absent evidence" in txt
     assert "NOT a clean fleet" in txt
     assert "core1" in txt and "acc1" in txt                          # the un-evidenced assets are named
@@ -665,7 +646,7 @@ def test_banded_slide_carries_the_coverage_qualification(tmp_path):
     n, txt = _deck(str(out))
     assert n == 8
     assert "worry an engineer most" in txt                       # the normal (banded) framing
-    assert "8 of 11 risk axes NOT ASSESSED" in txt               # ... but the census travels with it
+    assert "9 of 11 risk axes NOT ASSESSED" in txt               # ... but the census travels with it
     assert "half or more of their risk axes NOT ASSESSED" in txt
 
 

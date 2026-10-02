@@ -10,7 +10,7 @@ today's local-variable flow with zero behaviour change. Leaf module: depends onl
 dataclasses/typing (no project imports), so it can be imported anywhere without a cycle.
 """
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 
 @dataclass
@@ -52,6 +52,8 @@ class AnalysisContext:
     physical_health: List[Any] = field(default_factory=list)
     protocol_health: List[Any] = field(default_factory=list)
     protocol_assessability: Dict[str, Any] = field(default_factory=dict)
+    parse_yield: Dict[str, Any] = field(default_factory=dict)
+    input_failures: Optional[Tuple[FrozenSet[str], bool]] = None
     vtp_safety_baseline: Dict[str, Any] = field(default_factory=dict)
     vtp_safety_subject_scope: List[Any] = field(default_factory=list)
     ipv6_routing_adjacency_baseline: Dict[str, Any] = field(default_factory=dict)

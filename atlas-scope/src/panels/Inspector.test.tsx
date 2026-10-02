@@ -2,14 +2,14 @@
  * Inspector.test.tsx — the behaviour a visual review cannot see.
  *
  * Everything asserted here is a claim the Inspector makes about evidence, and each one is checked
- * against the REAL compiled snapshot rather than a fixture shaped to agree with the component:
+ * against the REAL compiled snapshot, with explicit synthetic controls for absence and failure paths:
  *
  *   - a citation that resolves is shown, and one that does not is shouted about;
  *   - a null in a record reaches the not-observed treatment rather than an empty cell;
  *   - the coverage lists are the actual members, recomputed from the arrays, not copied counts;
  *   - opening the panel does not disturb the investigation behind it.
  *
- * The only fabricated inputs are the two things the real data cannot supply: a deliberately broken
+ * Synthetic inputs include an absent-wave finding (the sample may label every wave), a deliberately broken
  * citation (the failure path has to be executed to be a failure path) and an oversized array (the
  * chunking guard never fires on a document this small, and an unexercised guard is not a guard).
  */
@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aclUndecidability } from "../core/acl-coverage";
 import * as claims from "../core/claims";
 import { fabric } from "../core/data";
+import { dataset } from "../core/dataset";
 import { useInvestigation } from "../core/store";
 import {
   Inspector,
@@ -105,6 +106,12 @@ const firstFinding = (): Finding => {
   const f = fabric.findings[0];
   expect(f, "precondition: the snapshot carries a finding").toBeDefined();
   return f!;
+};
+/** The null-wave rendering contract must run even when every real finding has a published wave. */
+const ABSENT_WAVE_FINDING: Finding = {
+  id: "synthetic-absent-wave", severity: "Medium", rank: null, priority: null,
+  category: "Synthetic absence control", devices: [], wave: null, title: "Synthetic absent-wave finding",
+  detail: null, remediation: null, cite: "synthetic.absent-wave",
 };
 /** A route record's citation, which resolves by its own model path (routes.<host>[i]). */
 const modelCite = (): string => {
@@ -210,16 +217,28 @@ describe("the Data tab shows the record behind a claim", () => {
     expect(body).toContain("findings[0]");
   });
 
-  it("renders a null field through the not-observed treatment, never as a blank cell", () => {
-    /* F001 carries `wave: null`. A blank cell there would read as "no wave needed"; the record
-       actually says nobody recorded one. */
-    expect(firstFinding().wave).toBeNull();
-    const c = mount(<Inspector cite={firstFinding().cite} forceOpen />);
-    const rows = [...(panel(c, "data")?.querySelectorAll(".insp-kv__row") ?? [])];
-    const waveRow = rows.find((r) => text(r.querySelector(".insp-kv__key")) === "wave");
-    expect(waveRow, "the null field must still be listed, not omitted").toBeTruthy();
-    expect(waveRow!.querySelector('[data-unobserved="true"]')).toBeTruthy();
-    expect(text(waveRow!)).toContain("not observed");
+  it("renders a null field through the not-observed treatment, never as a blank cell", async () => {
+    /* This synthetic record explicitly carries `wave: null`; its absence must be rendered even after
+       the reference sample gains wave labels. Load the real Inspector against an isolated dataset. */
+    expect(ABSENT_WAVE_FINDING.wave).toBeNull();
+    vi.resetModules();
+    const set = structuredClone(dataset);
+    set.fabric.findings = [structuredClone(ABSENT_WAVE_FINDING)];
+    try {
+      (await import("../core/dataset/slot")).installDataset({
+        set,
+        origin: { kind: "opened-file", fileName: "synthetic-absent-wave.json", fileBytes: set.fabric.meta.sourceBytes, warnings: [] },
+      });
+      const { Inspector: SyntheticInspector } = await import("./Inspector");
+      const c = mount(<SyntheticInspector cite={ABSENT_WAVE_FINDING.cite} forceOpen />);
+      const rows = [...(panel(c, "data")?.querySelectorAll(".insp-kv__row") ?? [])];
+      const waveRow = rows.find((r) => text(r.querySelector(".insp-kv__key")) === "wave");
+      expect(waveRow, "the null field must still be listed, not omitted").toBeTruthy();
+      expect(waveRow!.querySelector('[data-unobserved="true"]')).toBeTruthy();
+      expect(text(waveRow!)).toContain("not observed");
+    } finally {
+      vi.resetModules();
+    }
   });
 
   it("renders a STRUCTURAL null as not applicable, not as not observed (B1)", () => {
@@ -861,7 +880,7 @@ describe("JsonView is a real tree over the real document", () => {
   it("renders a null leaf through the not-observed treatment", () => {
     const c = mount(
       <JsonView
-        value={fabric as unknown}
+        value={{ findings: [ABSENT_WAVE_FINDING] }}
         rootLabel="fabric.json"
         label="doc"
         citedPath="findings[0].wave"

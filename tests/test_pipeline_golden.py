@@ -31,6 +31,7 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 import synthetic_fixtures as fx
+from cisco_toolkit.analyze import DOSSIER_AXIS_INPUTS
 from cisco_toolkit.multichassis_lag import validate_multichassis_lag_domain_baseline
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -367,9 +368,9 @@ def test_lifecycle_fold_is_dated_by_the_pinned_evidence_date_not_the_wall_clock(
 
 # The dossier inputs the pipeline's ctx-adapter (COLLECT_PARSE `_device_dossiers`) passes, by the snapshot key
 # each is published under -- lifecycle_risk excepted: the golden strips it, so it is recomputed below.
-_DOSSIER_SECTIONS = ("health_scores", "failure_impact", "software_risk", "platform_health", "syslog_intelligence",
-                     "qos_audit", "golden_drift", "security", "config_hygiene", "stp_roots", "vpc",
-                     "physical_health", "protocol_health", "move_groups")
+_DOSSIER_SECTIONS = tuple(dict.fromkeys(
+    section for sections in (*DOSSIER_AXIS_INPUTS.values(), ("failure_impact", "stp_roots", "vpc", "move_groups"))
+    for section in sections if section != "lifecycle_risk"))
 
 
 def _golden_dossiers_under_wall_clock(monkeypatch, instant, evidence_date=None, *, break_chain=False):
@@ -379,7 +380,7 @@ def _golden_dossiers_under_wall_clock(monkeypatch, instant, evidence_date=None, 
     byte/semantic verification fail, whatever the date. Returns (lifecycle_risk, device_dossiers, golden)."""
     from datetime import datetime
 
-    from cisco_toolkit import analyze, eoldb, registry_integrity
+    from cisco_toolkit import analyze, eoldb, registry_integrity, ssot
 
     class _PinnedClock(datetime):
         @classmethod
@@ -401,7 +402,8 @@ def _golden_dossiers_under_wall_clock(monkeypatch, instant, evidence_date=None, 
     try:
         lifecycle = analyze.compute_lifecycle_risk(devices, asof=evidence_date)
         dossiers = analyze.compute_device_dossiers(
-            lifecycle_risk=lifecycle, **{k: golden.get(k) for k in _DOSSIER_SECTIONS})
+            lifecycle_risk=lifecycle, input_failures=ssot.failed_sections(golden),
+            **{k: golden.get(k) for k in _DOSSIER_SECTIONS})
     finally:
         monkeypatch.undo()
         eoldb._runtime_source_proof.cache_clear()
@@ -436,6 +438,16 @@ def test_dossiers_do_not_depend_on_the_wall_clock_even_past_the_eol_registry_win
         for d in lifecycle["per_device"]:
             if d["match_kind"] != "none":
                 assert d["citation_status"] == "retained-primary-fixture", (instant, d)
+
+
+def test_current_dossiers_are_wall_clock_invariant_without_rewriting_the_golden(monkeypatch):
+    """Exercise the current producer independently of a deliberately deferred fixture refresh."""
+    from datetime import datetime, timezone
+
+    current = _golden_dossiers_under_wall_clock(monkeypatch, datetime(2026, 7, 30, tzinfo=timezone.utc))[1]
+    future = _golden_dossiers_under_wall_clock(monkeypatch, datetime(2027, 7, 30, tzinfo=timezone.utc))[1]
+    assert current["per_device"]
+    assert current == future
 
 
 def test_eol_registry_staleness_is_judged_at_the_evidence_date_and_fails_closed(monkeypatch):

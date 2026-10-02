@@ -253,8 +253,8 @@ describe("A4 under a filter: the refuter's case", () => {
   });
 
   describeGolden("the refuter's finding", () => {
-    it("severity:Critical, then F120 from another surface: named, pinned, current, in view; then shown in place", async () => {
-      await refutersCase("F120");
+    it("severity:Critical, then F115 from another surface: named, pinned, current, in view; then shown in place", async () => {
+      await refutersCase("F115");
     });
   });
 

@@ -7,6 +7,8 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
+import * as sourceCodec from "../../build/projection/build.mjs";
+import { deterministicGzip } from "../../build/deterministic-gzip.mjs";
 import {
   beginCommunitySelection,
   rejectCommunitySelection,
@@ -231,6 +233,136 @@ const SOURCE_SEGMENT_BASE_KEYS = [
   "text",
   "unresolvedReasons",
 ].sort();
+
+const SOURCE_CODEC_HEADER = {
+  id: "source-id", fileId: "file-id", path: "src/hostile.ts", encoding: "utf-8",
+  byteCount: 7, contentDigest: "f".repeat(64), lineCount: 7,
+  derivation: "compiler_structural", verification: { semanticDepth: "preserved" },
+};
+function sourceCodecSegment(number, overrides = {}) {
+  return {
+    number, text: `line ${number}`, terminator: "\r\n", fragmentIndex: 0,
+    fragmentCount: 1, lineDigest: sha256(`line ${number}\r\n`), recordId: `line:${number}`,
+    syntaxKind: "code", structuralMappingBasis: "compiler", containingSymbol: "entry",
+    containingSymbolId: "symbol-id", syntaxDepth: 1, explanationDepth: 1,
+    semanticEntity: "statement", owner: "src/hostile.ts", behaviorGroup: ["entry"],
+    inputsAndOutputs: JSON.parse('{"__proto__":{"kept":true},"nested":[{"constructor":"kept"}]}'),
+    claimsInfluenced: ["claim"], callersAndDependencies: ["caller"], testsCoveringIt: ["test"],
+    testCoverageState: "unverified", runtimeTraceState: "unobserved",
+    guiOrArtifactConsumers: ["consumer"], securityAndPrivacyEffect: { nested: ["unknown"] },
+    currentOrHistorical: "current", unresolvedReasons: ["not_reviewed"], ...overrides,
+  };
+}
+
+async function importSourceCodecBytes(bytes) {
+  return import(`data:text/javascript;base64,${bytes.toString("base64")}`);
+}
+
+test("source metadata compaction round-trips every field without sharing mutable metadata", async () => {
+  assert.equal(typeof sourceCodec.sourceChunkBytes, "function");
+  const segments = Array.from({ length: 90 }, (_, number) => sourceCodecSegment(number + 1));
+  segments[0] = sourceCodecSegment(1, { text: `</script>&/\u2028\u2029😀\t  `, terminator: "\n", recordId: null });
+  segments[1] = sourceCodecSegment(2, { text: "", terminator: "\r", syntaxKind: null });
+  segments[2] = sourceCodecSegment(3, { text: "\u0085\ufeff", terminator: "", fragmentCount: 2, fragmentIndex: 0, fragmentDigest: "a".repeat(64) });
+  segments[3] = sourceCodecSegment(3, { text: " tail ", terminator: "\r\n", fragmentCount: 2, fragmentIndex: 1, fragmentDigest: "b".repeat(64) });
+  const before = structuredClone(segments);
+  const bytes = sourceCodec.sourceChunkBytes(SOURCE_CODEC_HEADER, segments);
+  const loaded = await importSourceCodecBytes(bytes);
+  assert.ok(loaded.compactSourceChunk, "repeated complete metadata must be physically interned");
+  const decoded = sourceCodec.decodeSourceChunk(loaded.compactSourceChunk);
+  assert.deepEqual(decoded, { ...SOURCE_CODEC_HEADER, segments });
+  assert.deepEqual(segments, before, "encoding must not mutate its input");
+  assert.deepEqual(sourceCodec.sourceChunkBytes(SOURCE_CODEC_HEADER, segments), bytes);
+  const raw = Buffer.from(`export const sourceChunk = ${stableJson({ ...SOURCE_CODEC_HEADER, segments })};\nexport default sourceChunk;\n`);
+  assert.ok((await deterministicGzip(bytes)).byteLength < (await deterministicGzip(raw)).byteLength);
+  decoded.segments[4].inputsAndOutputs.nested[0].constructor = "changed";
+  decoded.segments[4].unresolvedReasons.push("changed");
+  assert.equal(decoded.segments[5].inputsAndOutputs.nested[0].constructor, "kept");
+  assert.deepEqual(decoded.segments[5].unresolvedReasons, ["not_reviewed"]);
+  assert.deepEqual(sourceCodec.decodeSourceChunk(loaded.compactSourceChunk), { ...SOURCE_CODEC_HEADER, segments });
+  assert.equal({}.kept, undefined);
+});
+
+test("source metadata compaction preserves expanded-byte chunk boundaries and refuses oversize segments", async () => {
+  assert.equal(typeof sourceCodec.packSourceSegments, "function");
+  const segments = Array.from({ length: 200 }, (_, number) => sourceCodecSegment(number + 1, {
+    unresolvedReasons: ["😀 ".repeat(160)],
+  }));
+  const raw = (values) => Buffer.from(`export const sourceChunk = ${stableJson({ ...SOURCE_CODEC_HEADER, segments: values })};\nexport default sourceChunk;\n`);
+  const expected = [];
+  let pending = [];
+  for (const segment of segments) {
+    if (pending.length && raw([...pending, segment]).byteLength > 256 * 1024) {
+      expected.push(pending);
+      pending = [];
+    }
+    pending.push(segment);
+  }
+  if (pending.length) expected.push(pending);
+  assert.ok(expected.length > 1);
+  const actual = sourceCodec.packSourceSegments(SOURCE_CODEC_HEADER, segments);
+  assert.deepEqual(actual.map((chunk) => chunk.segments), expected);
+  for (const chunk of actual) {
+    const loaded = await importSourceCodecBytes(chunk.bytes);
+    const decoded = loaded.compactSourceChunk ? sourceCodec.decodeSourceChunk(loaded.compactSourceChunk) : loaded.sourceChunk;
+    assert.deepEqual(decoded.segments, chunk.segments);
+    assert.ok(chunk.bytes.byteLength <= 256 * 1024);
+    assert.ok(raw(decoded.segments).byteLength <= 256 * 1024);
+  }
+  assert.throws(() => sourceCodec.packSourceSegments(SOURCE_CODEC_HEADER, [
+    sourceCodecSegment(1, { text: "😀".repeat(70_000) }),
+  ]), /exceeds 262144 bytes/);
+});
+
+test("source metadata decoder rejects hostile tables and decoded-size bombs without disclosing payloads", async () => {
+  assert.equal(typeof sourceCodec.decodeSourceChunk, "function");
+  const loaded = await importSourceCodecBytes(sourceCodec.sourceChunkBytes(SOURCE_CODEC_HEADER,
+    Array.from({ length: 90 }, (_, index) => sourceCodecSegment(index + 1))));
+  const encoded = loaded.compactSourceChunk;
+  assert.ok(encoded);
+  const rejected = (mutate) => {
+    const candidate = structuredClone(encoded);
+    mutate(candidate);
+    assert.throws(() => sourceCodec.decodeSourceChunk(candidate), { message: "invalid compact source chunk" });
+  };
+  for (const ordinal of [-1, 0.5, "0", true, null, NaN, Infinity, 2 ** 53, 999]) {
+    rejected((candidate) => { candidate[2][0][0] = ordinal; });
+  }
+  rejected((candidate) => { delete candidate[1][0]; });
+  rejected((candidate) => { delete candidate[2][0]; });
+  rejected((candidate) => { candidate[1][0] = "secret invalid JSON"; });
+  rejected((candidate) => { candidate[1][0] = "null"; });
+  rejected((candidate) => { candidate[1][0] = "[]"; });
+  for (const number of ["1e400", "-1e400"]) {
+    rejected((candidate) => { candidate[1][0] = candidate[1][0].replace('"syntaxDepth":1', `"syntaxDepth":${number}`); });
+    rejected((candidate) => { candidate[1][0] = candidate[1][0].replace('"kept":true', `"kept":${number}`); });
+  }
+  rejected((candidate) => { const metadata = JSON.parse(candidate[1][0]); delete metadata.owner; candidate[1][0] = JSON.stringify(metadata); });
+  rejected((candidate) => { candidate[1][0] = JSON.stringify({ ...JSON.parse(candidate[1][0]), text: "secret collision" }); });
+  rejected((candidate) => { candidate[2][0][1].unexpected = "secret field"; });
+  rejected((candidate) => { candidate[0].segments = []; });
+  rejected((candidate) => { Object.defineProperty(candidate[0], "hidden", { value: "secret" }); });
+  rejected((candidate) => { candidate[0][Symbol("secret")] = true; });
+  rejected((candidate) => { Object.defineProperty(candidate[2][0][1], "hidden", { value: "secret" }); });
+  rejected((candidate) => { candidate[2][0][1][Symbol("secret")] = true; });
+  let hooksCalled = 0;
+  rejected((candidate) => { candidate[0].verification.toJSON = () => { hooksCalled += 1; return {}; }; });
+  rejected((candidate) => { Object.defineProperty(candidate[2][0][1], "text", { enumerable: true, get() { hooksCalled += 1; return "secret"; } }); });
+  rejected((candidate) => { Object.defineProperty(candidate[2][0], "1", { enumerable: true, get() { hooksCalled += 1; return {}; } }); });
+  assert.equal(hooksCalled, 0, "decoding rejects non-data hooks without invoking them");
+  rejected((candidate) => { candidate.push("secret extra"); });
+  rejected((candidate) => { candidate[2][0].push("secret extra"); });
+  rejected((candidate) => { candidate[2] = Array.from({ length: 400 }, () => structuredClone(candidate[2][0])); });
+  rejected((candidate) => { candidate[1][0] = JSON.stringify({ ...JSON.parse(candidate[1][0]), unresolvedReasons: ["😀".repeat(70_000)] }); });
+});
+
+test("source metadata compaction keeps nonrepeating chunks in their original representation", async () => {
+  const segments = [sourceCodecSegment(1, { inputsAndOutputs: null }), sourceCodecSegment(2, { owner: "other.ts", inputsAndOutputs: null })];
+  const bytes = sourceCodec.sourceChunkBytes(SOURCE_CODEC_HEADER, segments);
+  const raw = Buffer.from(`export const sourceChunk = ${stableJson({ ...SOURCE_CODEC_HEADER, segments })};\nexport default sourceChunk;\n`);
+  assert.deepEqual(bytes, raw);
+  assert.deepEqual((await importSourceCodecBytes(bytes)).sourceChunk, { ...SOURCE_CODEC_HEADER, segments });
+});
 
 function assertSourceDigestProjection(descriptor, segments, expectedBytes) {
   const byLine = Map.groupBy(segments, (segment) => segment.number);
@@ -2374,6 +2506,40 @@ test("symbol metadata routes reject self-receipted binding, count, order, digest
     () => validateSymbolMetadataRoute(malformed, metadataEntries, moduleRecordIds, expected),
     rejection,
   );
+});
+
+test("source decoder emission is identical across LF, CRLF and CR checkouts", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-decoder-eol-"));
+  const originalDescriptor = Object.getOwnPropertyDescriptor(sourceCodec.decodeSourceChunk, "toString");
+  const functionSource = Function.prototype.toString.call(sourceCodec.decodeSourceChunk).replace(/\r\n?/gu, "\n");
+  try {
+    const { input } = await makeCompilerFixture(scratch);
+    let expectedBytes;
+    let expectedDigest;
+    for (const [name, eol] of [["lf", "\n"], ["crlf", "\r\n"], ["cr", "\r"]]) {
+      Object.defineProperty(sourceCodec.decodeSourceChunk, "toString", {
+        configurable: true, value: () => functionSource.replaceAll("\n", eol),
+      });
+      const output = join(scratch, name);
+      const manifest = await buildProjection({ input, output });
+      const indexBytes = await readFile(join(output, ...manifest.sourceIndex.module.split("/")));
+      if (name === "lf") {
+        expectedBytes = indexBytes;
+        expectedDigest = manifest.sourceIndex.sha256;
+      } else {
+        assert.deepEqual(indexBytes, expectedBytes, `${name} checkout must not change emitted decoder bytes`);
+        assert.equal(manifest.sourceIndex.sha256, expectedDigest);
+      }
+      const loaded = await import(pathToFileURL(join(output, "index.mjs")).href);
+      const descriptor = await loaded.loadSource(manifest.sourceModules[0].path);
+      assert.ok(descriptor);
+      assert.ok((await loaded.loadSourceChunk(descriptor.path, 0)).segments.length > 0);
+    }
+  } finally {
+    if (originalDescriptor) Object.defineProperty(sourceCodec.decodeSourceChunk, "toString", originalDescriptor);
+    else delete sourceCodec.decodeSourceChunk.toString;
+    await rm(scratch, { recursive: true, force: true });
+  }
 });
 
 test("projection is deterministic, lazy, privacy-gated, and exact-source preserving", async () => {

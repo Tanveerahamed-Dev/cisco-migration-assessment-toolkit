@@ -547,23 +547,8 @@ def test_socket_transport_refuses_a_non_loopback_fastmcp_host(monkeypatch, tmp_p
 # ===========================================================================================
 
 def _real_dossier_snapshot(assessed: bool):
-    """A snapshot section built by the REAL producer (analyze.compute_device_dossiers), never a
-    hand-shaped dict — a fixture in the shape the reader expects only proves the reader agrees
-    with itself. assessed=False -> 8 of 11 axes abstain -> band 'Low', index 0."""
-    from cisco_toolkit.analyze import compute_device_dossiers
-    if not assessed:
-        dd = compute_device_dossiers(
-            health_scores=[{"switch": "sw0", "score": 70, "band": "Good", "role": "access"}],
-            failure_impact=[{"host": "sw0", "stranded": 40, "vlans_impacted": 2}],
-            lifecycle_risk={"per_device": [{"host": "sw0", "band": "Unknown"}]})
-    else:
-        dd = compute_device_dossiers(
-            health_scores=[{"switch": "sw0", "score": 92, "band": "Excellent", "role": "access"}],
-            failure_impact=[{"host": "sw0", "stranded": 4, "vlans_impacted": 1}],
-            lifecycle_risk={"per_device": [{"host": "sw0", "band": "Active", "model": "C9300"}]},
-            software_risk={"per_device": [{"host": "sw0", "band": "OK", "n_findings": 0}]},
-            security={"sw0": {"checks": [{"id": "x", "status": "pass"}]}},
-            config_hygiene={"sw0": {"findings": []}})
+    from dossier_fixtures import coverage_dossiers
+    dd = coverage_dossiers(assessed)
     return {"devices": {"sw0": {"hostname": "sw0"}}, "device_dossiers": dd,
             "health_scores": [{"switch": "sw0", "band": dd["per_device"][0]["health_band"]}],
             "interfaces": {}}
@@ -588,11 +573,11 @@ def test_list_devices_qualifies_a_band_that_rests_on_unassessed_axes():
     were never assessed. Pre-fix the row had no n_na, no n_axes and no basis at all."""
     snap = _real_dossier_snapshot(assessed=False)
     row0 = snap["device_dossiers"]["per_device"][0]
-    assert row0["risk_band"] == "Low" and row0["n_na"] == 8      # the defect's precondition
+    assert row0["risk_band"] == "Low" and row0["n_na"] == 9      # the defect's precondition
     row = M.list_devices(snap)[0]
     assert row["risk_band"] == "Low"                            # the engine's band is NEVER re-derived
-    assert (row["n_na"], row["n_axes"], row["coverage_thin"]) == (8, 11, True)
-    assert "8 of 11 risk axes NOT ASSESSED" in row["risk_band_basis"]
+    assert (row["n_na"], row["n_axes"], row["coverage_thin"]) == (9, 11, True)
+    assert "9 of 11 risk axes NOT ASSESSED" in row["risk_band_basis"]
     assert "rests on absent evidence" in row["risk_band_basis"]
 
 
@@ -612,7 +597,7 @@ def test_search_devices_posture_carries_the_band_basis():
     snap = _real_dossier_snapshot(assessed=False)
     hit = M.search_devices(snap, "sw0")["matches"][0]
     assert hit["risk_band"] == "Low"
-    assert "risk: Low (" in hit["posture"] and "8 of 11 risk axes NOT ASSESSED" in hit["posture"]
+    assert "risk: Low (" in hit["posture"] and "9 of 11 risk axes NOT ASSESSED" in hit["posture"]
     assert "rests on absent evidence" in hit["risk_band_basis"]
 
     clean = M.search_devices(_real_dossier_snapshot(assessed=True), "sw0")["matches"][0]
@@ -635,7 +620,7 @@ def test_device_detail_carries_the_basis_and_never_mutates_the_snapshot():
     snap = _real_dossier_snapshot(assessed=False)
     row = M.device_detail(snap, "SW0")
     assert row["host"] == "sw0"
-    assert "8 of 11 risk axes NOT ASSESSED" in row["risk_band_basis"]
+    assert "9 of 11 risk axes NOT ASSESSED" in row["risk_band_basis"]
     assert "risk_band_basis" not in snap["device_dossiers"]["per_device"][0]
 
 
