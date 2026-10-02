@@ -8,6 +8,8 @@
     "node": ">=24.18.0 <25"
   },
   "scripts": {
+    "api:generate": "node scripts/generate-api-types.mjs",
+    "api:check": "node --test scripts/generation-policy.test.mjs && node scripts/generate-api-types.mjs --check",
     "verify:node": "node scripts/verify-node.mjs",
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
@@ -31,16 +33,17 @@
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
-    "@types/node": "24.13.3",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/d3-force": "^3.0.10",
+    "@types/node": "24.13.3",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "@types/three": "^0.185.4",
     "@vitejs/plugin-react": "6.1.0",
     "@vitest/coverage-v8": "^4.1.11",
     "jsdom": "^29.1.1",
+    "openapi-typescript": "7.13.0",
     "typescript": "5.9.3",
     "vite": "8.2.2",
     "vitest": "^4.1.10"

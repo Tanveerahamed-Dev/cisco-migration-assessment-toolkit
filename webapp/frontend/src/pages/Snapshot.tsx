@@ -841,7 +841,7 @@ export default function SnapshotPage() {
   return (
     <div className="container">
       <div className="breadcrumb">
-        <Link to="/campaigns">Campaigns</Link> / <Link to={`/campaigns/${meta!.campaign_id}`}>campaign</Link> / {meta!.label}
+        <Link to="/campaigns">Campaigns</Link> / <Link to={`/campaigns/${meta!.campaign_id}`}>campaign</Link> / <Link to={`/snapshots/${sid}`}>Core assessment</Link> / Tools · {meta!.label}
       </div>
       <div className="page-head">
         <div>

@@ -12,10 +12,11 @@ directory and proves it the same way the field would:
 2. ``Atlas.exe --version``      must report the checkout release (never stale pip metadata)
 3. ``Atlas.exe --run-engine --help``  must reach the ENGINE's argparse (the frozen dispatch child)
    while writing its audit log only under ``Atlas\\data``; every other bundle member remains exact
-4. boot the server, then over HTTP: /api/health, /api/meta (app identity block), and / must serve
-   the SPA's index.html — proving the bundled webapp_dist is found via the _MEIPASS probe — and
-   /scope/ must answer 200 with the bundled Atlas Scope shell carrying the runtime-source meta
-   (:func:`scope_shell_gap`).
+4. boot the server, then over HTTP: /api/health, /api/meta (app identity block), a synthetic demo's
+   schema-validated UI projection and paging, and / must serve the SPA's index.html — proving the bundled
+   webapp_dist is found via the _MEIPASS probe — and /scope/ must answer 200 with the bundled Atlas Scope
+   shell carrying the runtime-source meta (:func:`scope_shell_gap`). The demo is written only inside the
+   temporary field-layout copy's detached runtime data.
 
 Exit code is non-zero on the first failed step. The bundle lands at portable/dist/Atlas/.
 """
@@ -23,6 +24,8 @@ Exit code is non-zero on the first failed step. The bundle lands at portable/dis
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
+import hashlib
 import json
 import os
 import secrets
@@ -377,6 +380,78 @@ def build() -> None:
         shutil.copy2(src, DIST / Path(src).name)
 
 
+def _smoke_ui_projection(base: str) -> None:
+    """Exercise frozen schema resources/validator and compare every returned field to its owner.
+
+    Called only against the nonce-verified temporary smoke process. Importing its projection
+    routes checks the complete Draft 2020-12 owner and transport schemas; successful requests
+    also exercise the frozen validators, references and native rpds dependency at runtime.
+    """
+    from webapp.backend.engine import ui_projection
+
+    def request(path: str, *, post: bool = False):
+        req = urllib.request.Request(
+            base + path, data=b"" if post else None,
+            headers={"Origin": base, "Sec-Fetch-Site": "same-origin"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as response:
+            if response.status != 200:
+                raise ValueError("unexpected response status")
+            return response.read(), response.headers
+
+    def equal(actual, expected):
+        # JSON equality retains the distinction between bool/int and int/float.
+        options = {"sort_keys": True, "separators": (",", ":"), "allow_nan": False}
+        if json.dumps(actual, **options) != json.dumps(expected, **options):
+            raise ValueError("projection differs from owner")
+
+    try:
+        seeded, _ = request("/api/demo/seed", post=True)
+        sid = json.loads(seeded)["snapshot"]["id"]
+        if type(sid) is not int or sid <= 0:
+            raise ValueError("invalid synthetic snapshot identity")
+        prefix = f"/api/snapshots/{sid}"
+        raw, headers = request(prefix + "/raw")
+        digest = hashlib.sha256(raw).hexdigest()
+        if (headers.get("x-snapshot-sha256") != digest
+                or headers.get("x-snapshot-bytes") != str(len(raw))
+                or headers.get("x-snapshot-digest-form") != "assesshub-store-blob"
+                or headers.get("cache-control") != "no-store"):
+            raise ValueError("raw snapshot binding differs")
+        source = ui_projection(json.loads(raw))
+        context = {"schema": "ui_projection_transport/1", "projection_schema": source["schema"],
+                   "identity": {"snapshot_id": sid, "sha256": "sha256:" + digest,
+                                "bytes": len(raw), "digest_form": "assesshub-store-blob"},
+                   "view": "overview", "engine": source["engine"],
+                   "limitations": source["trust"]["limitations"]}
+
+        def page(name: str, offset: int):
+            value = source["overview"][name]
+            selected = value["items"][offset:offset + 1]
+            return {"pointer": "/" + name,
+                    "source_list": {key: item for key, item in value.items() if key != "items"},
+                    "page": {"offset": offset, "limit": 1, "returned": len(selected),
+                             "total": len(value["items"]),
+                             "has_more": offset + len(selected) < len(value["items"]),
+                             "items": selected}}
+
+        if len(source["overview"]["axes"]["items"]) <= 1:
+            raise ValueError("synthetic source cannot exercise the next page")
+        expected = deepcopy(source["overview"])
+        for name in ("axes", "top_gating"):
+            expected[name] = page(name, 0)
+        body, headers = request(prefix + "/ui-projection/overview?limit=1")
+        if headers.get("cache-control") != "no-store":
+            raise ValueError("projection response is cacheable")
+        equal(json.loads(body), {**context, "payload": expected})
+        body, headers = request(prefix + "/ui-projection/overview/lists?pointer=/axes&offset=1&limit=1")
+        if headers.get("cache-control") != "no-store":
+            raise ValueError("projection list response is cacheable")
+        equal(json.loads(body), {**context, "list": page("axes", 1)})
+    except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+        raise SystemExit("frozen UI projection smoke failed") from exc
+
+
 def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = None) -> dict:
     dist = Path(dist).resolve(strict=True)
     source_exe = dist / f"{exe_name()}.exe"
@@ -492,6 +567,9 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
             if app.get("name") != "Atlas":
                 raise SystemExit(f"/api/meta app block wrong: {app!r}")
             print(f"    /api/meta app: {app['title']} · release {app['release']}")
+
+            _smoke_ui_projection(base)
+            print("    frozen UI projection preserves exact source binding, owner states and bounded pages")
 
             req = urllib.request.Request(base + "/", headers={"Accept": "text/html"})
             with urllib.request.urlopen(req, timeout=5) as r:

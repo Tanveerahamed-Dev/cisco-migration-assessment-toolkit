@@ -16,7 +16,7 @@ Decisions this file encodes:
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH).resolve().parent  # noqa: F821 — SPECPATH is injected by PyInstaller
 if str(ROOT) not in sys.path:
@@ -27,6 +27,7 @@ from portable.atlas_bundle import (  # noqa: E402
     exe_name,
     hidden_imports,
     missing_data_sources,
+    package_data_modules,
 )
 from portable.windows_version_info import pyinstaller_version_info  # noqa: E402
 
@@ -48,7 +49,9 @@ if _missing:
 a = Analysis(  # noqa: F821
     [str(ROOT / "portable" / "atlas_entry.py")],
     pathex=[str(ROOT)],
-    datas=bundle_datas(ROOT),
+    datas=bundle_datas(ROOT) + [
+        resource for module in package_data_modules() for resource in collect_data_files(module)
+    ],
     # netmiko resolves vendor drivers via its class map — take the whole tree; the rest of the
     # dynamic seams are pinned (with rationale) in atlas_bundle.hidden_imports.
     hiddenimports=hidden_imports() + collect_submodules("netmiko"),

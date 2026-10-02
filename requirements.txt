@@ -11,6 +11,8 @@ python-pptx>=0.6,<2
 fastapi>=0.110,<1
 uvicorn[standard]>=0.27,<1
 python-multipart>=0.0.9,<1
+# Engine-owned UI projection responses are validated before delivery.
+jsonschema==4.26.0
 
 # Atlas R2 qualification receipts verify Ed25519 signatures directly. This
 # compatibility path mirrors pyproject.toml's explicit security boundary.

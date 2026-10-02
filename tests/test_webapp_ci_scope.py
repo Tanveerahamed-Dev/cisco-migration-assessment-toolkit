@@ -98,6 +98,7 @@ def test_push_filter_and_classifier_share_the_exact_path_policy():
         "tests/golden/snapshot.json",
         "tests/synthetic_fixtures.py",
         "tests/pytest_invocation_reader.py",
+        "webapp/backend/export_ui_projection_openapi.py",
         ".github/workflows/webapp-ci.yml",
         ".github/scripts/classify_webapp_ci_scope.py",
     ],
@@ -279,6 +280,23 @@ def test_pr_retargeting_is_an_explicit_scope_trigger():
     trigger_block = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
 
     assert "types: [opened, synchronize, reopened, edited]" in trigger_block
+
+
+def test_frontend_gate_checks_generated_types_against_the_actual_backend():
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    frontend = workflow.split("\n  frontend:", 1)[1].split("\n  e2e:", 1)[0]
+    export = "python -m webapp.backend.export_ui_projection_openapi --output webapp/frontend/.generated/openapi.json"
+    assert "actions/setup-python@" in frontend
+    assert 'python -m pip install -e ".[dev]"' in frontend
+    assert frontend.index(export) < frontend.index("npm run api:check")
+    assert frontend.index("npm ci") < frontend.index("npm run api:check")
+    assert frontend.index("npm run api:check") < frontend.index("npm run build")
+    # Run from the checkout root so export imports this app and never a user store.
+    export_step = frontend.split("      - name: Export the live backend contract offline", 1)[1]
+    export_step = export_step.split("      - ", 1)[0]
+    assert "working-directory: ." in export_step
+    assert export in export_step
+    assert "continue-on-error" not in frontend
 
 
 def test_one_stable_aggregate_gate_requires_exact_classified_results():

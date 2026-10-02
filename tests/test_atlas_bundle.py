@@ -7,6 +7,7 @@ the dist destination must be the exact directory the entry module probes when fr
 import io
 import json
 import os
+import ast
 import re
 import subprocess
 import sys
@@ -127,6 +128,30 @@ def test_datas_cover_every_selftest_guarded_asset():
     assert sources["dist"] == atlas_bundle.DIST_DEST
     assert sources["sample_fleet.snapshot.json"] == "webapp/sample_data"
     assert sources["pyproject.toml"] == "."  # release-version source beats stale pip metadata
+
+
+def test_spec_collects_runtime_package_resources_from_the_pure_manifest(monkeypatch):
+    """The IRI checker reads its grammar at import time; importing Python code alone is insufficient."""
+    assert atlas_bundle.package_data_modules() == ("rfc3987_syntax",)
+    spec = ast.parse((ROOT / "portable/atlas.spec").read_text(encoding="utf-8"))
+    analysis = next(node for node in ast.walk(spec)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "Analysis")
+    datas = next(keyword.value for keyword in analysis.keywords if keyword.arg == "datas")
+    collected = []
+    def collect_data_files(module):
+        collected.append(module)
+        return [(f"installed/{module}/grammar.lark", module)]
+    # A future manifest entry must flow through the same thin spec, without a second list.
+    monkeypatch.setattr(atlas_bundle, "package_data_modules", lambda: ("first", "second"))
+    result = eval(compile(ast.Expression(datas), "atlas.spec datas", "eval"), {
+        "ROOT": ROOT, "bundle_datas": lambda _root: [("owned.txt", ".")],
+        "package_data_modules": atlas_bundle.package_data_modules,
+        "collect_data_files": collect_data_files,
+    })
+    assert collected == ["first", "second"]
+    assert result == [("owned.txt", "."), ("installed/first/grammar.lark", "first"),
+                      ("installed/second/grammar.lark", "second")]
 
 
 def test_tracked_sources_exist_on_a_checkout():
@@ -701,6 +726,16 @@ class _SmokeHarness:
                 return _FakeResponse(status, body, content_type)
             raise urllib.error.HTTPError(url, 404, "Not found", {}, io.BytesIO(b""))
 
+        # The frozen UI-projection step owns its transcript and its refusals in
+        # tests/test_atlas_projection_smoke.py. Here it is recorded in request order, so these tests
+        # still prove smoke() runs it once against the served base while each changes one /scope fact.
+        self.projection_bases: list[str] = []
+
+        def fake_projection(base):
+            harness.projection_bases.append(base)
+            harness.requests.append("<ui-projection>")
+
+        monkeypatch.setattr(build_atlas, "_smoke_ui_projection", fake_projection)
         monkeypatch.setattr(build_atlas, "_run", fake_run)
         monkeypatch.setattr(build_atlas, "_windows_version_info",
                             lambda *_a, **_k: version_expectations(ROOT))
@@ -718,6 +753,7 @@ def test_the_smoke_harness_passes_a_bundle_that_serves_its_scope_view(tmp_path, 
     harness = _SmokeHarness(tmp_path, monkeypatch)
     result = harness.run()
     assert "/scope/" in harness.requests, harness.requests
+    assert harness.projection_bases == ["http://127.0.0.1:8479"], harness.projection_bases
     assert result.get("loopback_http_scope_runtime_shell") == "pass", result
 
 
