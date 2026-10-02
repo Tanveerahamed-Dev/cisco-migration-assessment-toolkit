@@ -234,6 +234,58 @@ Moving this remedy ahead of W2d and implementing the proposal require an owner
 decision because the requested sequence and fallback were explicit. W2d remains
 unmerged; the cap and required gates remain intact.
 
+### Later corrected-source evidence
+
+A further sample-only, 200-row replay completed all 36 request shapes with five
+repeats on tracked-clean `1a20b70d`, with unchanged API SHA-256
+`416672bd23fbfdb1419282fefc0531d9d7750ac3a0c86687e3b91333d96aeb07` and the same
+recorded interpreter/dependencies. It **failed** the 300 ms gate:
+worst repeated request 2,648.3 ms (`findings_page`), worst later first request
+2,122.5 ms (`findings:/rows`). Stable-response and source checks passed. The private
+receipt is `post-reproduction-200.json`; its paired resource receipt records
+88-93% CPU before launch and paging in the post-run observation. These observations
+do not uniquely establish the cause. No synthetic run or immediate retry followed;
+earlier passing measurements do not close this corrected-source timing gap.
+
+Hosted reference run `37003241563` also failed on PR head `4a2671db`, from synthetic
+merge `640c614a054d6d8d29f01640e5a8a57f6fd21f9e`. It passed 269 Node contracts,
+validated 1,797 compiler chunks and built 4,111 source modules, then failed at the
+same `node build/finalize-deployment.mjs` boundary with a redacted error. Its full
+log and terminal run receipt are preserved externally. The earlier 458,507-byte
+overage belongs to `a1bcc46d`; no byte count is transferred to this later source.
+
+### Opt-in hosted measurement
+
+The existing CI workflow gains a default-off `measure_projection_performance`
+dispatch input and a separate Windows 2025 / Python 3.12.10 measurement job.
+When enabled, `expected_source_commit` is mandatory and must equal both checkout
+HEAD and the event SHA. Existing jobs remain unchanged; the measurement dispatch
+has a separate concurrency group. No Node build or pytest runs on its measurement
+runner. Canonical development dependencies and their installed versions are recorded.
+
+The unchanged benchmark runs both profiles sequentially: all selectors/five repeats
+at 50 rows for the sample plus 300-device synthetic fleet, then at 200 rows for the
+sample alone. Each sample retains the 300 ms gate. Failure of the first profile
+does not suppress the second, and either failure makes the measurement job fail.
+Logs, exit codes, setup outcomes, source identity and receipts are retained through
+an always-attempted artifact upload. This optional check is not a substitute for
+any existing required check or for interpreting the measured result.
+
+The ephemeral runner disables checkout newline conversion before checkout. Every
+reported source hash is compared with both the expected commit's raw Git blob and
+the working file; missing or malformed maps fail closed. Local Git configuration
+and the benchmark/thresholds are unchanged.
+
+Forty existing CI/platform policy tests pass. The first run had 39 passes and one
+failure in `test_ci_owns_the_outside_checkout_installed_transition_smoke`: its parser
+requires the installed-runtime job to remain last. Moving only the new job earlier
+closed this without changing the guard. Independent review passed 21 simulated
+identity/setup, failure/timeout, source-mutation and LF/hash/map/path cases. The
+reviewer's initial test-double setup error is retained separately; it was not a
+workflow failure. YAML, inline Python syntax, existing action pins and unchanged
+existing-job mappings were checked. Actionlint was unavailable. Actual hosted
+execution and performance remain pending; no local timing failure is erased.
+
 ## Closing evidence still required
 
 - Required hosted repository, distribution, reference and portable checks.
