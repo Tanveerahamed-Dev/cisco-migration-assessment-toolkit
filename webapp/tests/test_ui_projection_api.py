@@ -851,6 +851,98 @@ def _validation_errors(validator, value):
     return [record(error) for error in validator.iter_errors(value)]
 
 
+@pytest.mark.parametrize("flavor", ["properties", "unique_oneof"])
+def test_compiled_invalid_depth_does_not_multiply_validation_work(flavor, monkeypatch):
+    from backend.ui_projection_api import _compiled_validator
+
+    originals = {name: Draft202012Validator.VALIDATORS[name] for name in ("properties", "type")}
+    counting = False
+    calls = {}
+
+    def count_keyword(name, original):
+        # An ordinary function counts invocation once, then returns the unchanged
+        # keyword generator. Generator resumes/cleanup cannot inflate the count.
+        def counted(validator, constraint, instance, schema):
+            if counting:
+                calls[name] += 1
+            return original(validator, constraint, instance, schema)
+        return counted
+
+    for name, original in originals.items():
+        monkeypatch.setitem(Draft202012Validator.VALIDATORS, name, count_keyword(name, original))
+
+    for depth in (4, 8, 12):
+        schema, value = {"type": "integer"}, "invalid leaf"
+        for _ in range(depth):
+            if flavor == "properties":
+                schema = {"type": "object", "properties": {"child": schema}, "required": ["child"]}
+                value = {"child": value}
+            else:
+                schema = {"oneOf": [
+                    {"type": "object", "required": ["kind", "child"], "additionalProperties": False,
+                     "properties": {"kind": {"const": "a"}, "child": schema}},
+                    {"type": "object", "required": ["kind"], "additionalProperties": False,
+                     "properties": {"kind": {"const": "b"}}},
+                ]}
+                value = {"kind": "a", "child": value}
+        compiled = _compiled_validator(schema)
+        calls = dict.fromkeys(originals, 0)
+        counting = True
+        try:
+            actual = _validation_errors(compiled, value)
+        finally:
+            counting = False
+        assert actual == _validation_errors(Draft202012Validator(schema), value)
+        assert actual and actual[0]["path"] == (["child"] * depth if flavor == "properties" else [])
+        # One private traversal plus public stock diagnostics is bounded by depth.
+        # A per-child probe followed by stock retry fails already at depth four.
+        assert 0 < calls["properties"] <= 3 * depth
+        assert 0 < calls["type"] <= 3 * (depth + 1)
+
+
+@pytest.mark.parametrize("schema,valid,invalid", [
+    ({"type": "object", "properties": {"free": True, "never": False}},
+     [{}, {"free": [1, None]}], [{"never": None}, {"never": 1}]),
+    ({"type": "object", "required": ["mode"],
+      "properties": {"mode": {"type": "string"}, "x": {"type": "integer"}},
+      "dependentRequired": {"x": ["mode"]},
+      "dependentSchemas": {"x": {"properties": {"y": {"type": "string"}}, "required": ["y"]}},
+      "if": {"properties": {"mode": {"const": "a"}}},
+      "then": {"properties": {"x": {"minimum": 1}}}, "else": {"not": {"required": ["x"]}}},
+     [{"mode": "a", "x": 1, "y": "ok"}, {"mode": "b"}],
+     [{"mode": "a", "x": 0, "y": 3}, {"mode": "b", "x": 1, "y": "ok"}, {"x": 1}]),
+    ({"$defs": {"Record": {"type": "object", "properties": {"x": {"type": "integer"}},
+                            "required": ["x"]}},
+      "allOf": [{"$ref": "#/$defs/Record"}, {"anyOf": [
+          {"properties": {"y": {"type": "string"}}, "required": ["y"]},
+          {"properties": {"z": {"type": "boolean"}}, "required": ["z"]},
+      ]}], "unevaluatedProperties": False},
+     [{"x": 1, "y": "ok"}, {"x": 1, "z": True}],
+     [{"x": "bad", "y": 0}, {"x": 1, "y": "ok", "extra": 1}, {"x": 1, "y": 9, "z": True}]),
+    ({"properties": {"value": {"allOf": [
+        {"anyOf": [{"type": "integer"}, {"type": "string"}]},
+        {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "integer", "maximum": 10},
+                   {"type": "string"}]}, {"not": {"const": "forbidden"}},
+    ]}}, "required": ["value"]},
+     [{"value": 11}, {"value": -1}, {"value": "ok"}],
+     [{"value": 5}, {"value": "forbidden"}, {"value": None}]),
+    ({"type": "array", "prefixItems": [{"type": "integer"}],
+      "contains": {"type": "string", "minLength": 2}, "minContains": 1, "maxContains": 2,
+      "unevaluatedItems": False},
+     [[1, "ok"], [1, "ok", "yes"]], [[1, "x"], [1, "ok", True], [1, "ok", "yes", "more"]]),
+], ids=["boolean-children", "conditional-dependencies", "ref-evaluated-properties",
+        "composed-branches", "contains-evaluated-items"])
+def test_compiled_private_descents_preserve_composed_validity_and_public_diagnostics(schema, valid, invalid):
+    from backend.ui_projection_api import _compiled_validator
+
+    stock, compiled = Draft202012Validator(schema), _compiled_validator(schema)
+    for expected, values in ((True, valid), (False, invalid)):
+        for value in values:
+            assert stock.is_valid(value) is expected
+            assert compiled.is_valid(value) is expected
+            assert _validation_errors(compiled, value) == _validation_errors(stock, value)
+
+
 @pytest.mark.parametrize("mutation", ["inline_type", "reference_type", "new_minimum", "required", "resource", "dialect"])
 def test_compiled_construction_preserves_public_schema_mutations(mutation):
     from backend.ui_projection_api import _compiled_validator

@@ -206,10 +206,10 @@ def _compiled_validator(schema: dict[str, Any]):
                 indexes = by_value[value]
                 if len(indexes) == 1:
                     index = indexes[0]
-                    if not branch_validators[id(branches)][index].is_valid(instance):
-                        # Keep the standard complete failure diagnostics. The hot valid
-                        # path reuses the whole branch validator in the proven root scope.
-                        yield from stock_one_of(validator, branches, instance, containing_schema)
+                    # All other branches are impossible under this proven domain.
+                    # Keep failures private for the facade's one public-stock replay;
+                    # retrying here would multiply work in nested invalid oneOfs.
+                    yield from branch_validators[id(branches)][index].iter_errors(instance)
                     return
                 branches = [branches[index] for index in indexes]
         yield from stock_one_of(validator, branches, instance, containing_schema)
@@ -245,8 +245,12 @@ def _compiled_validator(schema: dict[str, Any]):
             if (resolver is None and owned_context(validator)
                     and retained is not None and retained[0] is schema):
                 # In this proven no-$id context, in_subresource returns this exact
-                # resolver. Stock descend still owns keyword evaluation/error paths.
-                resolver = root_resolver
+                # resolver. Reuse the complete stock keyword plan without rebuilding
+                # descent/evolve dispatch. Relative errors stay inside the private
+                # graph: keyword validity depends on their existence, not their paths,
+                # and the facade replays every public failure through fresh stock.
+                # Do not probe then retry here: nested invalid subtrees would multiply.
+                return retained[1].iter_errors(instance)
             return stock_descend(validator, instance, schema, path=path,
                                  schema_path=schema_path, resolver=resolver)
 

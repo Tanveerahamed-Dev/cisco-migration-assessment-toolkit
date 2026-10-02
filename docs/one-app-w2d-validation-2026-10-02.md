@@ -399,9 +399,105 @@ measurements retain their own source scope. Fresh privacy/history scans,
 publication, hosted sample/300-device measurement and all required CI still
 must close on the resulting head before the authorized merge.
 
+### Second hosted measurement and remaining traversal cost
+
+After W6, main was merged and `2a50978a4f8ae376aafaeef8cfc35b6ce982a65f`
+was published with fresh repository/history/body privacy receipts. The exact runner
+guard and eight installed-runtime mutation cases passed on that integrated tree.
+The runner-security owner is byte-identical to main.
+
+Dispatch `37046103736` used the exact reviewed API hash above. Its measurement job
+`110967825775` failed the unchanged sample gate. Artifact `11244541464` has ZIP
+SHA-256 `9fde990250bc3c7f8f62750962be96e27e704003b1bd6536847b186e60c90b34`.
+Independent verification closed all 15 members, 11 source hashes against raw Git
+blobs, fixture identities, 36 request shapes and five repeats per profile.
+
+| Profile | Cold complete projection ms | Largest repeated call ms | Result |
+|---|---:|---:|---|
+| 23-device sample, limit 50 | 726.2 | 192.9 | Snapshot-warm maximum 192.9263 ms passed |
+| 23-device sample, limit 200 | 723.4 | 436.7 | First Findings list 445.9400 ms failed |
+| 300-device synthetic, limit 50 | 17831.5 | 361.4 | Diagnostic; first lazy device 831.2178 ms |
+
+The 200-row Findings/list/page medians were 365.1541, 371.9375 and 354.3264 ms.
+Other 200-row sample responses stayed at or below 121.402 ms. All 108 response
+byte counts and SHA-256 values match the earlier hosted artifact; the benchmark
+driver is unchanged. Hosted Python was 3.12.10 with FastAPI 0.142.2, Starlette
+1.7.0, Pydantic 2.13.5 and jsonschema 4.26.0. These measurements do not establish
+timing for the portable pinned runtime or a causal difference between runners.
+
+A fresh external environment matches all 80 hosted third-party versions. A bounded
+profile preserves the 938,913-byte response and finds one field validation and one
+schema-facade call. In an instrumented HTTP request, the schema walk used 418 ms of
+509 ms overall; page copying used 39 ms, JSON-native checking 15 ms and serialization
+5 ms. The schema's 9 ms fingerprint is included in its schema cost. These are
+diagnostic shared-host measurements, not additive phase accounting or acceptance.
+The schema profile still executes 40,265 stock descents, 40,190 evolve-wrapper calls
+and 1,644,040 calls overall, despite reusing validator construction.
+
+The bounded next change reuses private retained validators' precomputed rule lists
+during descent. Every stock keyword constraint remains evaluated; unsupported
+contexts/resources retain stock descent and the existing facade replays all public
+failures through fresh stock validation. Private relative errors are not exposed.
+Review rejected a child-probe-then-stock-retry approach because invalid nested
+subtrees could be repeated recursively. Its valid-payload-only diagnostic remains
+separate evidence and is not the implementation or an acceptance result. Focused
+negative-depth/parity tests, independent review and a new hosted run must close the
+actual direct-reuse correction before any performance success is claimed.
+
+The direct-reuse candidate has API SHA-256
+`5573a2a5eb6e607e1058acb095116e7d6a3fce839486900a59a27ad6829d9c6c`.
+All 105 focused API tests pass in the hosted-matched environment, including six
+new semantic/complexity regressions; Ruff and diff checks pass. The first targeted
+run had five passes and one instrumentation failure: Python's profile hook counts
+generator resumes as calls. Counting strongly retained frame entries corrected
+that measurement while preserving the linear bound and production code; all six
+then passed. Independent refutation/profile results and hosted acceptance remain
+pending for this candidate.
+
+Independent review then confirmed a separate repeated-work defect in the existing
+unique-discriminator `oneOf` failure path. Nested invalid alternatives at depths
+2/4/6/8 performed 18/70/266/1,038 type evaluations, versus stock's 5/9/13/17.
+The published `2a50978a` helper has the same counts, so direct descent did not
+introduce it; it is nevertheless part of this W2d helper and must be corrected
+before merge. The bounded correction is to propagate the uniquely possible private
+branch's errors once and retain the existing complete public-stock replay, instead
+of checking that branch and then retrying it through `oneOf`. The corresponding
+linear-work/error-parity regression now covers both invalid property chains and
+unique-discriminator chains at depths 4/8/12. Ordinary, non-generator keyword
+wrappers count actual invocations; they avoid delayed generator resume/close events
+that made the earlier profiler-based counters unreliable. The original linear
+bounds are unchanged and all intermediate instrumentation failures are preserved.
+
+The combined direct-descent/unique-branch correction has API SHA-256
+`215c97cd62b8e52eb4c437cf5359ab82f69f52a7dcb63055dd3e6c465ac0572a`.
+All 106 focused API tests and 16 targeted checks pass in the matched environment,
+with Ruff and diff checks passing. Independent keyword counters confirm linear
+work through depth 20 and exact public diagnostics: the unique-alternative case
+uses 26 type checks at depth 8 (previously 1,038; stock 17) and 62 at depth 20.
+Fresh hosted performance acceptance is still required; local profiles do not
+establish the target.
+
+The final independent replay also closes 17 ownership/context groups, 73 reference
+cases, 200 concurrent validations, off-page faults and five warmed HTTP corruptions
+with valid retry. The response remains exactly 938,913 bytes with SHA-256
+`b8d65bdd018f5f90cd2023e8e03c05bbd394b6454c86ce4dd2ecbd6ed4feb022`.
+The final schema profile contains 1,221,774 calls; local schema/field medians were
+307.5/353.7 ms. Two HTTP observations were 600.5/514.8 ms, so this shared-host
+diagnostic proves neither the target nor a reliable regression. The published
+hosted failure remains the open acceptance result.
+
+A separate isolated feasibility trial can assess a maintained compiled validator,
+with offline retrieval and conservative eligibility before native acceptance.
+Every response still needs complete schema, JSON-native/finite, Pydantic and
+pagination validation; public errors must retain stock behavior. No production
+dependency or portable lock has changed for this trial. Differential semantics,
+offline refusal and frozen-runtime packaging must be established before adoption.
+
 ## Closing evidence still required
 
 - Required hosted repository, distribution, reference and portable checks.
+- New exact-source hosted sample 50/200-row snapshot-warm maxima below 300 ms,
+  with the 300-device diagnostic retained.
 - Repository privacy and complete new-commit message/patch scan before push.
 - Every required hosted check green on the final PR head, followed by the
   authorized exact-head admin merge commit and tree reconciliation.
