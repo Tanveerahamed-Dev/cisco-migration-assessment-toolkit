@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W6 | Release-toolchain advisories and Python dependency-audit coverage | `fix/pypdf-advisories`; existing `.claude/worktrees/pypdf-advisories` checkout; [PR #587](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/587) | Claude Code | The Master Reference release toolchain moves from pypdf 6.17.0 to 6.19.0, clearing the seven high Dependabot alerts (#9 to #15). The required dependency audit now covers every tracked Python requirements file, lock and pyproject declaration, including the extras and `[build-system].requires`, under a contract test derived from `git ls-files` that also proves each audit can fail; inline workflow `pip install` pins and `tomli` (Python 3.10 only) remain stated limits. Local gates pass and the refutation rounds' findings are fixed; pushed and PR #587 opened, hosted CI on its head is next. (2026-10-02) | Owner reviews and merges the PR, preserving merge commits; then confirm alerts #9 to #15 read `fixed`. Dependabot #585 and the pypdf line of #572 become redundant. Its own later change: re-lock the shipped Atlas lock to netmiko 4.8.0 / paramiko 5.0.0 and delete the last PYSEC-2026-2858 suppression. |
+| W8 | Release-toolchain advisories and Python dependency-audit coverage | `fix/pypdf-advisories`; existing `.claude/worktrees/pypdf-advisories` checkout; [PR #587](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/587) | Claude Code | The Master Reference release toolchain moves from pypdf 6.17.0 to 6.19.0, clearing the seven high Dependabot alerts (#9 to #15). The required dependency audit now covers every tracked Python requirements file, lock and pyproject declaration, including the extras and `[build-system].requires`, under a contract test derived from `git ls-files` that also proves each audit can fail; inline workflow `pip install` pins and `tomli` (Python 3.10 only) remain stated limits. Local gates pass and the refutation rounds' findings are fixed; pushed and PR #587 opened. Its exact-source reference job, like #582's, fails only at deployment finalization: the projection exceeds the Sites size cap, which Codex's W6 (PR #586) raises; every contract test in it passes. (2026-10-02) | After W6 lands: merge `origin/main` into this branch (merge commit), re-run CI, then the owner reviews and merges, preserving merge commits; then confirm alerts #9 to #15 read `fixed`. Dependabot #585 and the pypdf line of #572 become redundant. Its own later change: re-lock the shipped Atlas lock to netmiko 4.8.0 / paramiko 5.0.0 and delete the last PYSEC-2026-2858 suppression. |
 
 ## Owner decisions
 
@@ -97,7 +97,15 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
 
 ## Handoff log (newest first)
 
-- 2026-10-02, Claude Code (W6 started; W2c merged):
+- 2026-10-02, Claude Code (W8 renumbered):
+  - Renumbered this row from W6 to W8 at the coordination session's request: Codex's #586 reserves W6 (Verified
+    Sites size cap) and W7 (Atlas release candidate).
+  - #587 and #582 fail `Exact-source compiler, reference, and release contracts` only in
+    `build/finalize-deployment.mjs` ("deployment manifest build failed") after every contract test passes; main passes
+    the same job at `db9d8534`. Codex reproduced the cause as the projection exceeding the Sites size cap. Neither PR is
+    being shrunk to fit; both merge `origin/main` and re-run CI after W6 lands.
+
+- 2026-10-02, Claude Code (W8 started; W2c merged):
   - #584 merged as `db9d8534`; its W2c row is deleted here (rule 8).
   - GitHub opened seven high Dependabot alerts for pypdf 6.17.0 in `master-reference/requirements-release.txt`. Four
     independent researchers and a completeness critic verified every advisory against GitHub and OSV: 6.19.0 is the
