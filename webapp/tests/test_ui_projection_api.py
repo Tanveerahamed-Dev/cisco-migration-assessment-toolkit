@@ -509,6 +509,38 @@ def test_cache_single_flight_on_concurrent_views(client, monkeypatch):
     assert calls == [None]
 
 
+def test_cached_core_and_device_http_reads_finish_while_another_device_build_is_held(client, monkeypatch):
+    sid = seed(client, {"devices": {"cached": {}, "cold": {}}})
+    assert client.get(url(sid)).status_code == 200
+    assert client.get(url(sid, "device"), params={"host": "cached"}).status_code == 200
+    project = engine.ui_projection
+    entered, release = Event(), Event()
+    calls = []
+    def held(snapshot, host=None):
+        calls.append(host)
+        assert host == "cold", "already-cached documents must not be recomputed"
+        entered.set()
+        assert release.wait(30), "test must release the held producer"
+        return project(snapshot, host)
+    monkeypatch.setattr(engine, "ui_projection", held)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        cold = pool.submit(client.get, url(sid, "device"), params={"host": "cold"})
+        try:
+            assert entered.wait(10)
+            core = pool.submit(client.get, url(sid, "inventory"))
+            cached_device = pool.submit(client.get, url(sid, "device"), params={"host": "cached"})
+            # These generous deadlines detect dependence on the held producer, not
+            # hardware speed. Both responses must finish BEFORE its release event.
+            assert core.result(timeout=10).status_code == 200
+            assert cached_device.result(timeout=10).status_code == 200
+            assert not cold.done()
+            assert not release.is_set()
+        finally:
+            release.set()
+        assert cold.result(timeout=10).status_code == 200
+    assert calls == ["cold"]
+
+
 def test_cache_has_no_small_lru_and_versions_are_namespaced(client, monkeypatch):
     from backend import ui_projection_api as api
     calls = []

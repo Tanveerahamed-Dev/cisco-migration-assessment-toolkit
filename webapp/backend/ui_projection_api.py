@@ -240,20 +240,27 @@ class _ProjectionCache:
         key = (*_PROJECTION_VERSION, digest)
         with self.lock:
             entry = self.entries.setdefault(key, _SnapshotProjection())
+            if host in entry.documents:
+                return entry.documents[host]
+        # Never wait for a builder while holding the publication lock: an unrelated
+        # cold host must not prevent reads of already validated documents.
         with entry.lock:
-            if host not in entry.documents:
-                if entry.snapshot is None:
-                    entry.snapshot = engine.bind_ui_projection_snapshot(raw)
-                # A producer may retain its input too. Its later mutation must not
-                # poison the private bound source used by another lazy host document.
-                produced = engine.ui_projection(deepcopy(entry.snapshot), host)
-                # The producer may retain aliases. Cache only an owned complete document
-                # after both guards succeed; an exception leaves this host retryable.
-                _require_json_native(produced)
-                document = deepcopy(produced)
-                (_DEVICE_VALIDATOR if host is not None else _DOCUMENT_VALIDATOR).validate(document)
+            with self.lock:
+                if host in entry.documents:
+                    return entry.documents[host]
+            if entry.snapshot is None:
+                entry.snapshot = engine.bind_ui_projection_snapshot(raw)
+            # A producer may retain its input too. Its later mutation must not
+            # poison the private bound source used by another lazy host document.
+            produced = engine.ui_projection(deepcopy(entry.snapshot), host)
+            # The producer may retain aliases. Cache only an owned complete document
+            # after both guards succeed; an exception leaves this host retryable.
+            _require_json_native(produced)
+            document = deepcopy(produced)
+            (_DEVICE_VALIDATOR if host is not None else _DOCUMENT_VALIDATOR).validate(document)
+            with self.lock:
                 entry.documents[host] = document
-            return entry.documents[host]
+            return document
 
 
 def _source_document(store: Any, cache: _ProjectionCache, snapshot_id: int, view: View, host: str | None):

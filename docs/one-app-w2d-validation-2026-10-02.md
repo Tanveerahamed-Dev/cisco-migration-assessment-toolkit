@@ -1,6 +1,6 @@
 # W2d: immutable snapshot projection performance
 
-Status: implementation, independent review and performance target verified; local backend/custody gates passed; publication/hosted gates pending. This record does not claim
+Status: published implementation remains held by a failed reference gate. A local concurrency correction passes independent verification; its uncontended timing confirmation is pending. This record does not claim
 readiness, merge, release qualification or field acceptance.
 
 ## Source and scope
@@ -164,6 +164,40 @@ message/patch scan passed with zero matches across 83,113 bytes and 12 patterns.
 Draft [#586](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/586)
 now owns hosted validation. This documentation handoff needs its own fresh privacy
 scan and exact-head CI before merge; the earlier failure remains recorded above.
+
+## Subsequent concurrency and hosted-gate findings
+
+An additional 200-row device sweep at `b54a59be` covered all 23 sample hosts and all
+device selectors, with three repeats each. Its repeated-call maximum was 186.2 ms;
+first lazy device creation reached 342.2 ms. Those cold calls remain distinct.
+
+A synchronized refutation then showed a cached core read waiting 414.4 ms behind
+an intentionally held cold device producer. This proves unnecessary lock contention,
+not a measured real-device build duration. The correction uses a short publication
+lock for lookup/publication and retains the per-source builder lock only for misses.
+No publication lock is held while waiting, binding, projecting or validating.
+All **84 focused tests** pass. Independent replay verifies cached core/device and
+other-snapshot reads during a held build, single-flight duplicate misses, exactly
+one successful retry after a failed builder, and fresh HTTP 409 on source corruption.
+
+The subsequent timing run missed the target under current conditions: maximum
+1,281.9 ms, with an observed 87% host CPU load and other pytest/Node processes active.
+It remains failed evidence. A controlled same-process comparison alternated the old
+and corrected cache-hit methods over one warmed app: old median 1,035.7 ms / 906.3 ms
+process CPU; new 964.5 ms / 835.9 ms process CPU. All eight 938,913-byte responses
+were identical. This does not implicate the lock change, but high process CPU means
+it does not uniquely establish scheduler contention as the cause. A quiet-host replay
+of the corrected source remains required; earlier passing timings are not relabeled.
+
+Required reference run `36985790137` failed during outer deployment-manifest
+finalization after compression. Its public error is deliberately redacted and no
+artifacts were retained. Cause is **unconfirmed** until the reserved read-only copy
+reproduces it. The actual hosted source is merge commit
+`a1bcc46d917a2279e0deaad1d6f66bdb25004935`; its Git tree equals `b54a59be`:
+`ab6df5bff6ec218eb301fc20042eaccdfd0b1f36`. The expected compiler source-tree digest is
+`cd1f6b30f3ecfca8adcc96845f4e22f089f706e67f488cdcbd0c8db98f3ab7c7`.
+The copy contains no Graphify input, matching hosted coverage, and uses fresh compiler
+and projection outputs. The cap and all verification gates remain unchanged.
 
 ## Closing evidence still required
 
