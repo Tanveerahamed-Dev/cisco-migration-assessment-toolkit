@@ -70,7 +70,10 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2c | Backend endpoint and first core screens | `codex/core-screens`; existing `.claude/worktrees/ui-projection-2` checkout; [PR #584](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/584) | Codex | Application and portable gates passed; hosted full suites found three integration failures in Design inventory, the npm test entry and LF custody receipt. Corrections pass locally with unchanged guards and byte-identical app output; review/publication follows. [Validation](one-app-w2c-validation-2026-10-02.md). (2026-10-02) | Publish the reviewed integration corrections after both privacy gates, then require all checks on the latest head before readiness/owner merge. Reference capacity remains gated (322,332 bytes locally at `c5519bdf`). No further golden/sample regeneration. |
+| W2d | Projection performance | `codex/ui-projection-performance`; existing `.claude/worktrees/ui-projection-2` checkout | Codex | Started from merged #584; immutable stored-byte projection caching, validator reuse and 23/300-device HTTP measurements are in scope. (2026-10-02) | Implement and independently review; publish one PR after privacy gates, then merge only after every required check is green on its exact head. |
+| W2e | Topology & Paths | `codex/topology-paths`; reuse `.claude/worktrees/ui-projection-2` after W2d | Codex | Queued after W2d. Fifth core screen with contract-owned 2-D facts and embedded Atlas Scope 3-D hub in the bundle. (2026-10-02) | Start after W2d merges; independent review and exact-head required checks before its own merge commit. #582 remains with the Scope session. |
+| W6 | Verified Sites size cap | `codex/sites-size-cap`; reuse `.claude/worktrees/ui-projection-2` after W2e | Codex | Queued after W2e; read-only tooling preflight may run in parallel. (2026-10-02) | Verify the actual Sites limit; raise the cap only to the verified limit minus a margin, otherwise propose R2 for large projection modules. Own PR and required checks. |
+| W7 | Atlas release candidate | `codex/atlas-release-candidate`; reuse `.claude/worktrees/ui-projection-2` after W6 | Codex | Queued after W6. (2026-10-02) | Build with `python -m portable.build_release` from the reconciled source; verify the candidate and provide stick-update steps. |
 
 ## Owner decisions
 
@@ -96,6 +99,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-02, Codex (W2c merged / W2d started):
+  - Live GitHub confirms #584 merged as `db9d8534` from `61961ca3`; both trees are identical. Removed W2c under rule 8 and reserved the ordered W2d, W2e, W6 and W7 branches in this change.
+  - Reuse the existing UI checkout, whose tracked tree is clean. Its existing untracked root `node_modules/` test cache is preserved and excluded. The old engine-defects checkout and its untracked agent configuration are preserved.
+  - Owner authorized one PR per workstream and exact-head admin merge commits only after all required checks are green. #582 remains outside this session. No new implementation or performance result is claimed by this start entry.
 
 - 2026-10-02, Codex (W2c hosted integration corrections):
   - The completed Linux jobs at `2525e58b` agree on three failures; none is a linked-worktree exception. The webapp, CodeQL, dependency/distribution and portable-build gates passed on that head.
