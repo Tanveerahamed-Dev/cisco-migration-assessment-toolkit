@@ -28,6 +28,30 @@ from backend.ui_projection_api import LIST_CATALOG  # noqa: E402
 from test_ui_projection_inventory import _big  # noqa: E402
 
 
+def resident_bytes():
+    """Optional process observation, outside the timed interval; not cache-only allocation."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [
+                (name, ctypes.c_size_t) for name in ("peak", "resident", "peak_paged", "paged",
+                                                    "peak_nonpaged", "nonpaged", "pagefile", "peak_pagefile")]
+        counters = Counters()
+        counters.cb = ctypes.sizeof(counters)
+        current = ctypes.WinDLL("kernel32").GetCurrentProcess
+        current.restype = wintypes.HANDLE
+        observe = ctypes.WinDLL("psapi").GetProcessMemoryInfo
+        observe.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+        observe.restype = wintypes.BOOL
+        return counters.resident if observe(current(), ctypes.byref(counters), counters.cb) else None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    return psutil.Process().memory_info().rss
+
+
 def measure(snapshot, repeats, limit, all_lists):
     with tempfile.TemporaryDirectory(prefix="atlas-projection-benchmark-") as directory:
         app = create_app(db_path=str(Path(directory) / "benchmark.db"), scope_dist_dir=None)
@@ -54,6 +78,7 @@ def measure(snapshot, repeats, limit, all_lists):
                         params["host"] = host
                     requests.append((f"{view}:{pointer}", f"{base}/{view}/lists", params))
         rows = []
+        memory_before = resident_bytes()
         with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000)) as client:
             for name, path, params in requests:
                 samples = []
@@ -74,10 +99,13 @@ def measure(snapshot, repeats, limit, all_lists):
                              "response_bytes": len(response.content), "response_sha256": digest})
                 print(f"{len(snapshot['devices'])} devices {name}: first={samples[0]:.1f} ms, "
                       f"warm median={statistics.median(warm):.1f} ms, max={max(warm):.1f} ms", flush=True)
+            memory_warm = resident_bytes()
         return {"devices": len(snapshot["devices"]),
                 "interfaces": sum(len(value) for value in snapshot.get("interfaces", {}).values()),
                 "endpoints": len(snapshot.get("endpoint_identity", [])),
-                "stored_bytes": len(raw), "stored_sha256": binding["sha256"], "requests": rows}
+                "stored_bytes": len(raw), "stored_sha256": binding["sha256"],
+                "process_rss_before_requests": memory_before, "process_rss_warm": memory_warm,
+                "requests": rows}
 
 
 def main():
@@ -94,16 +122,21 @@ def main():
     sample = json.loads((ROOT / "webapp/sample_data/sample_fleet.snapshot.json").read_bytes())
     sources = ("cisco_toolkit/ui_projection.py", "cisco_toolkit/protocol_assurance.py",
                "webapp/backend/ui_projection_api.py", "webapp/backend/engine.py",
-               "webapp/backend/storage.py", "webapp/sample_data/sample_fleet.snapshot.json",
+               "webapp/backend/storage.py", "webapp/backend/app.py", "webapp/backend/serve.py",
+               "webapp/sample_data/sample_fleet.snapshot.json",
                "tests/test_ui_projection_inventory.py", "tests/perf_ui_projection.py", "pyproject.toml")
     def hashes():
         return {path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in sources}
+    def tracked_identity():
+        return (subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+                hashlib.sha256(subprocess.check_output(["git", "diff", "HEAD", "--binary"], cwd=ROOT)).hexdigest())
     source_hashes = hashes()
+    commit, diff_digest = tracked_identity()
     receipt = {"schema": "ui_projection_http_benchmark/1", "python": platform.python_version(),
                "platform": platform.platform(),
                "dependencies": {name: version(name) for name in ("fastapi", "starlette", "pydantic", "jsonschema")},
                "source_sha256": source_hashes,
-               "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+               "source_commit": commit, "tracked_diff_sha256": diff_digest,
                "tracked_changes": subprocess.check_output(["git", "diff", "--name-only", "HEAD"], cwd=ROOT, text=True).splitlines(),
                "method": "sequential ASGI HTTP; first request then repeated identical requests",
                "limit": args.limit, "all_list_selectors": args.all_lists,
@@ -111,14 +144,17 @@ def main():
     if not args.sample_only:
         synthetic, _ = _big(sample)
         receipt["fleets"].append(measure(synthetic, args.repeats, args.limit, args.all_lists))
-    if hashes() != source_hashes:
+    if hashes() != source_hashes or tracked_identity() != (commit, diff_digest):
         raise RuntimeError("Benchmark source changed during measurement")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     if args.require_sample_warm_ms is not None:
-        worst = max(row["warm_max_ms"] for row in receipt["fleets"][0]["requests"])
+        rows = receipt["fleets"][0]["requests"]
+        # Only the first Overview builds the complete snapshot document. Include
+        # first visits to every later view/page, not just identical-response repeats.
+        worst = max([row["warm_max_ms"] for row in rows] + [row["first_ms"] for row in rows[1:]])
         if worst >= args.require_sample_warm_ms:
-            raise SystemExit(f"Sample warm maximum {worst:.1f} ms exceeds {args.require_sample_warm_ms:.1f} ms")
+            raise SystemExit(f"Sample snapshot-warm maximum {worst:.1f} ms exceeds {args.require_sample_warm_ms:.1f} ms")
 
 
 if __name__ == "__main__":

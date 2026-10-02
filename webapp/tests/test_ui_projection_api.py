@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import sys
+from threading import Event
 from pathlib import Path
 
 import pytest
@@ -23,7 +25,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
     monkeypatch.delenv("ASSESSHUB_ALLOWED_HOSTS", raising=False)
     app = create_app(db_path=str(tmp_path / "projection.db"), scope_dist_dir=None)
-    with TestClient(app, base_url="http://localhost") as client:
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000)) as client:
         yield client
 
 
@@ -47,7 +49,7 @@ def test_unknown_snapshot_and_selectors(client):
 def test_guard_runs_before_snapshot_or_projection(client, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("guard must precede source read")
-    monkeypatch.setattr(client.app.state.store, "get_bound_snapshot", forbidden)
+    monkeypatch.setattr(client.app.state.store, "get_snapshot_blob", forbidden)
     for path in (url(991), url(991, "inventory") + "/lists?pointer=/devices/rows"):
         assert client.get(path, headers={"sec-fetch-site": "cross-site"}).status_code == 403
         assert client.get(path, headers={"host": "evil.example"}).status_code == 403
@@ -188,7 +190,7 @@ def test_source_document_is_validated_before_paging_even_outside_selected_view(c
     {"pointer": "rows"}, {"pointer": "/rows/items/0"}, {"pointer": "/~2rows"},
 ])
 def test_invalid_paging_rejected_before_source_read(client, monkeypatch, params):
-    monkeypatch.setattr(client.app.state.store, "get_bound_snapshot", lambda *_: pytest.fail("invalid selector read source"))
+    monkeypatch.setattr(client.app.state.store, "get_snapshot_blob", lambda *_: pytest.fail("invalid selector read source"))
     assert client.get(url(1, "findings") + "/lists", params=params).status_code == 422
 
 
@@ -280,19 +282,38 @@ def test_http_boundary_really_validates_response(client, monkeypatch):
 
 
 def test_projection_reads_one_bound_source_and_no_legacy_backfill(client, monkeypatch):
+    from cisco_toolkit.protocol_assurance import bound_snapshot_source
     sid = seed(client)
     store = client.app.state.store
     calls = []
-    real = store.get_bound_snapshot
+    parsed = []
+    produced = []
+    real = store.get_snapshot_blob
+    bind = engine.bind_ui_projection_snapshot
+    project = engine.ui_projection
     def bound(snapshot_id):
-        calls.append(snapshot_id)
-        return real(snapshot_id)
-    monkeypatch.setattr(store, "get_bound_snapshot", bound)
-    for name in ("get_snapshot", "get_section", "get_snapshot_meta"):
+        result = real(snapshot_id)
+        calls.append(result)
+        return result
+    def bound_bytes(raw):
+        parsed.append(raw)
+        assert raw is calls[-1][0]
+        return bind(raw)
+    def projection(snapshot, host=None):
+        produced.append(bound_snapshot_source(snapshot))
+        return project(snapshot, host)
+    monkeypatch.setattr(store, "get_snapshot_blob", bound)
+    monkeypatch.setattr(engine, "bind_ui_projection_snapshot", bound_bytes)
+    monkeypatch.setattr(engine, "ui_projection", projection)
+    for name in ("get_bound_snapshot", "get_snapshot", "get_section", "get_snapshot_meta"):
         if hasattr(store, name):
             monkeypatch.setattr(store, name, lambda *args: pytest.fail("projection used a legacy backfill seam"))
     assert client.get(url(sid)).status_code == 200
-    assert calls == [sid]
+    assert client.get(url(sid, "trust")).status_code == 200
+    assert len(calls) == 2 and len(parsed) == len(produced) == 1
+    assert produced[0]["source_bound"] is True
+    assert produced[0]["sha256"] == "sha256:" + hashlib.sha256(parsed[0]).hexdigest() == calls[0][1]["sha256"]
+    assert produced[0]["bytes"] == len(parsed[0])
 
 
 def test_openapi_can_be_reversed_to_exact_fresh_owner_schema(client):
@@ -425,3 +446,366 @@ def test_json_native_check_preserves_native_values_and_shared_aliases():
     assert value["second"] is value["first"] is shared
     assert list(value) == ["second", "first"]
     assert type(shared[3]) is int and type(shared[5]) is float
+
+
+def test_cache_computes_and_validates_once_across_views_pages_and_exact_hosts(client, monkeypatch):
+    from backend import ui_projection_api as api
+    sid = seed(client, {"devices": {"edge": {}, " edge ": {}}})
+    projected, bound, validated = [], [], []
+    project, bind = engine.ui_projection, engine.bind_ui_projection_snapshot
+    def projection(snapshot, host=None):
+        projected.append(host)
+        return project(snapshot, host)
+    def binding(raw):
+        bound.append(raw)
+        return bind(raw)
+    class Validator:
+        def __init__(self, source, name):
+            self.source, self.name = source, name
+        def validate(self, value):
+            validated.append(self.name)
+            self.source.validate(value)
+    monkeypatch.setattr(engine, "ui_projection", projection)
+    monkeypatch.setattr(engine, "bind_ui_projection_snapshot", binding)
+    monkeypatch.setattr(api, "_DOCUMENT_VALIDATOR", Validator(api._DOCUMENT_VALIDATOR, "document"))
+    monkeypatch.setattr(api, "_DEVICE_VALIDATOR", Validator(api._DEVICE_VALIDATOR, "device"))
+    for view in ("overview", "trust", "inventory", "findings", "overview"):
+        assert client.get(url(sid, view), params={"limit": 1}).status_code == 200
+        for pointer in api.LIST_CATALOG[view]:
+            for offset in (0, 1, 100):
+                assert client.get(url(sid, view) + "/lists", params={
+                    "pointer": pointer, "offset": offset, "limit": 1,
+                }).status_code == 200
+    for host in ("edge", " edge ", "edge", "", " edge "):
+        response = client.get(url(sid, "device"), params={"host": host, "limit": 1})
+        assert response.status_code == 200
+        assert response.json()["payload"]["host"] == host
+        for pointer in api.LIST_CATALOG["device"]:
+            assert client.get(url(sid, "device") + "/lists", params={
+                "host": host, "pointer": pointer, "offset": 1, "limit": 1,
+            }).status_code == 200
+    assert projected == [None, "edge", " edge ", ""]
+    assert len(bound) == 1
+    assert validated == ["document", "device", "device", "device"]
+
+
+def test_cache_single_flight_on_concurrent_views(client, monkeypatch):
+    sid = seed(client)
+    project = engine.ui_projection
+    entered, release = Event(), Event()
+    calls = []
+    def slow(snapshot, host=None):
+        calls.append(host)
+        entered.set()
+        assert release.wait(10)
+        return project(snapshot, host)
+    monkeypatch.setattr(engine, "ui_projection", slow)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        first = pool.submit(client.get, url(sid))
+        assert entered.wait(10)
+        rest = [pool.submit(client.get, url(sid, view)) for view in ("trust", "inventory", "findings")]
+        release.set()
+        assert all(result.result().status_code == 200 for result in [first, *rest])
+    assert calls == [None]
+
+
+def test_cache_has_no_small_lru_and_versions_are_namespaced(client, monkeypatch):
+    from backend import ui_projection_api as api
+    calls = []
+    project = engine.ui_projection
+    def counted(snapshot, host=None):
+        calls.append(snapshot.get("generated_at"))
+        return project(snapshot, host)
+    monkeypatch.setattr(engine, "ui_projection", counted)
+    snapshots = [seed(client, {"generated_at": str(index)}) for index in range(12)]
+    for sid in [*snapshots, *reversed(snapshots)]:
+        assert client.get(url(sid)).status_code == 200
+    assert len(calls) == len(snapshots)
+    monkeypatch.setattr(api, "_PROJECTION_VERSION", (*api._PROJECTION_VERSION, "changed-projection"))
+    assert client.get(url(snapshots[0])).status_code == 200
+    assert len(calls) == len(snapshots) + 1
+
+
+def test_cache_reuses_equal_bytes_but_identity_and_store_lifetime_are_separate(client, tmp_path, monkeypatch):
+    calls = []
+    project = engine.ui_projection
+    def counted(snapshot, host=None):
+        calls.append(host)
+        return project(snapshot, host)
+    monkeypatch.setattr(engine, "ui_projection", counted)
+    first, duplicate, different = seed(client), seed(client), seed(client, {"devices": {"other": {}}})
+    bodies = [client.get(url(sid)).json() for sid in (first, duplicate, different)]
+    assert [body["identity"]["snapshot_id"] for body in bodies] == [first, duplicate, different]
+    assert bodies[0]["identity"]["sha256"] == bodies[1]["identity"]["sha256"]
+    assert bodies[1]["identity"]["sha256"] != bodies[2]["identity"]["sha256"]
+    assert len(calls) == 2
+    app = create_app(db_path=str(tmp_path / "other.db"), scope_dist_dir=None)
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50001)) as other:
+        assert other.get(url(seed(other))).status_code == 200
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("failure", ["deleted", "bytes_changed", "authority_changed"])
+def test_warm_cache_still_checks_live_store_authority(client, failure):
+    sid = seed(client)
+    assert client.get(url(sid)).status_code == 200
+    store = client.app.state.store
+    if failure == "deleted":
+        assert store.delete_snapshot(sid)
+        assert client.get(url(sid)).status_code == 404
+        return
+    with store._lock:
+        if failure == "bytes_changed":
+            store._conn.execute("UPDATE snapshots SET snapshot_json = ? WHERE id = ?", ('{"changed":true}', sid))
+        else:
+            store._conn.execute("DELETE FROM snapshot_authority WHERE snapshot_id = ?", (sid,))
+        store._conn.commit()
+    response = client.get(url(sid))
+    assert response.status_code == 409
+    assert "payload" not in response.json()
+
+
+def test_failed_cache_admission_is_retried_and_does_not_poison_other_hosts(client, monkeypatch):
+    sid = seed(client)
+    project = engine.ui_projection
+    calls = []
+    def initially_broken(snapshot, host=None):
+        calls.append(host)
+        result = project(snapshot, host)
+        if len(calls) == 1:
+            result["overview"]["posture_statement"]["state"] = "invented"
+        return result
+    monkeypatch.setattr(engine, "ui_projection", initially_broken)
+    with pytest.raises(SchemaValidationError):
+        client.get(url(sid))
+    assert client.get(url(sid)).status_code == 200
+    assert client.get(url(sid, "trust")).status_code == 200
+    assert calls == [None, None]
+
+
+def test_cache_owns_producer_values_and_copies_only_selected_rows(client, sample, monkeypatch):
+    from backend import ui_projection_api as api
+    document = owner.project(sample)
+    original = deepcopy(document)
+    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    sid = seed(client)
+    assert client.get(url(sid)).status_code == 200
+    document["engine"].clear()
+    document["findings"]["rows"]["items"].clear()
+    response = client.get(url(sid, "findings") + "/lists", params={"pointer": "/rows", "limit": 1})
+    assert response.status_code == 200
+    assert response.json()["list"]["page"]["items"] == original["findings"]["rows"]["items"][:1]
+    assert response.json()["engine"] == original["engine"]
+    # Copying a whole list before pagination is both an alias and scaling regression.
+    copied = []
+    real_copy = api.deepcopy
+    def counted(value):
+        if isinstance(value, list):
+            copied.append(len(value))
+        return real_copy(value)
+    monkeypatch.setattr(api, "deepcopy", counted)
+    page = api._page_view(original["findings"], "findings", 1)
+    assert len(original["findings"]["rows"]["items"]) not in copied
+    page["rows"]["page"]["items"][0].clear()
+    page["rows"]["source_list"]["refs"].append({"mutated": True})
+    assert original["findings"]["rows"]["items"][0]
+    assert {"mutated": True} not in original["findings"]["rows"]["refs"]
+
+
+def test_cache_owns_bound_source_when_producer_retains_and_mutates_its_input(client, monkeypatch):
+    from backend.ui_projection_api import LIST_CATALOG
+    sid = seed(client, {"devices": {"edge": {}}})
+    snapshot, _binding = client.app.state.store.get_bound_snapshot(sid)
+    expected = owner.project_device(snapshot, "edge")
+    retained = []
+    project = engine.ui_projection
+    def retaining(source, host=None):
+        retained.append(source)
+        return project(source, host)
+    monkeypatch.setattr(engine, "ui_projection", retaining)
+    assert client.get(url(sid)).status_code == 200
+    retained[0]["devices"].clear()
+    response = client.get(url(sid, "device"), params={"host": "edge", "limit": 200})
+    assert response.status_code == 200
+    body = response.json()
+    rebuilt = body["payload"]
+    for pointer in LIST_CATALOG["device"]:
+        wrapper = resolve(rebuilt, pointer)
+        parent, _, last = pointer.rpartition("/")
+        (resolve(rebuilt, parent) if parent else rebuilt)[last] = {
+            **wrapper["source_list"], "items": wrapper["page"]["items"],
+        }
+    assert rebuilt == expected["device"]
+    assert body["engine"] == expected["engine"]
+    assert retained[0] is not retained[1]
+
+
+def test_compiled_oneof_matches_stock_for_constraints_ambiguity_and_ref_domains():
+    from backend.ui_projection_api import _compiled_validator
+    schema = {
+        "$defs": {"other": {"type": "string", "enum": ["withheld", "missing"]}},
+        "oneOf": [
+            {"type": "object", "required": ["state", "value"], "additionalProperties": False,
+             "properties": {"state": {"const": "published"}, "value": {"type": "integer", "minimum": 1},
+                            "paired": {"type": "boolean"}}, "dependentRequired": {"paired": ["absent"]}},
+            {"type": "object", "required": ["state", "value", "reason"], "additionalProperties": False,
+             "properties": {"state": {"$ref": "#/$defs/other"}, "value": {"type": "null"},
+                            "reason": {"type": "string", "minLength": 1}}},
+            # Overlap requires oneOf's exact-one check, even with discriminator narrowing.
+            {"type": "object", "required": ["state", "value"],
+             "properties": {"state": {"const": "published"}, "value": {"const": 2}}},
+        ],
+    }
+    before = deepcopy(schema)
+    stock, compiled = Draft202012Validator(schema), _compiled_validator(schema)
+    for state in ("published", "withheld", "missing", "invented", None, 3, [], {}):
+        for value in (None, True, 0, 1, 2, 2.5, "1", [], {}):
+            for extra in ({}, {"reason": ""}, {"reason": "because"}, {"paired": True}, {"unknown": 1}):
+                document = {"state": state, "value": value, **extra}
+                assert compiled.is_valid(document) == stock.is_valid(document), document
+    for document in (None, True, [], "published", {}, {"value": 1}, {"state": "published"}):
+        assert compiled.is_valid(document) == stock.is_valid(document)
+    assert schema == before
+
+
+@pytest.mark.parametrize("reference,definitions", [
+    ("#/$defs/a~1b", {"a/b": {"enum": ["a"]}, "a~1b": {"enum": ["b"]}}),
+    ("#/$defs/%6bind", {"kind": {"enum": ["a"]}, "%6bind": {"enum": ["b"]}}),
+    ("#/$defs/a/b", {"a": {"b": {"enum": ["a"]}}, "a/b": {"enum": ["b"]}}),
+    ("#/$defs/kind", {"kind": True}),
+    ("#/$defs/kind", {"kind": False}),
+])
+def test_compiled_oneof_leaves_complex_and_boolean_refs_to_stock(reference, definitions):
+    from backend.ui_projection_api import _compiled_validator
+    schema = {"$defs": definitions, "oneOf": [
+        {"type": "object", "required": ["kind"], "properties": {"kind": {"$ref": reference}}},
+        {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "a"}}},
+    ]}
+    stock, compiled = Draft202012Validator(schema), _compiled_validator(schema)
+    for document in ({"kind": "a"}, {"kind": "b"}, {"kind": None}, {}, []):
+        assert compiled.is_valid(document) == stock.is_valid(document)
+
+
+def test_compiled_oneof_does_not_resolve_nested_resource_refs_against_root():
+    from backend.ui_projection_api import _compiled_validator
+    schema = {"$id": "urn:outer", "$defs": {"kind": {"enum": ["b"]}}, "type": "object", "properties": {
+        "inner": {"$id": "urn:inner", "$defs": {"kind": {"enum": ["a"]}}, "oneOf": [
+            {"type": "object", "required": ["kind"], "properties": {"kind": {"$ref": "#/$defs/kind"}}},
+            {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "a"}}},
+        ]},
+    }}
+    stock, compiled = Draft202012Validator(schema), _compiled_validator(schema)
+    for document in ({"inner": {"kind": "a"}}, {"inner": {"kind": "b"}}, {"inner": {"kind": None}}, {}):
+        assert compiled.is_valid(document) == stock.is_valid(document)
+    assert not compiled.is_valid({"inner": {"kind": "a"}})
+
+
+def test_compiled_oneof_rejects_reusing_an_aliased_branch_proof_in_another_resource():
+    from backend.ui_projection_api import _compiled_validator
+    branches = [
+        {"type": "object", "required": ["kind"], "properties": {"kind": {"$ref": "#/$defs/kind"}}},
+        {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "a"}}},
+    ]
+    schema = {"$id": "urn:outer", "$defs": {"kind": {"enum": ["b"]}}, "type": "object", "properties": {
+        "outer": {"oneOf": branches},
+        "inner": {"$id": "urn:inner", "$defs": {"kind": {"enum": ["a"]}}, "oneOf": branches},
+    }}
+    stock, compiled = Draft202012Validator(schema), _compiled_validator(schema)
+    for document in ({"outer": {"kind": "a"}}, {"inner": {"kind": "a"}}, {"inner": {"kind": "b"}}):
+        assert compiled.is_valid(document) == stock.is_valid(document)
+    assert not compiled.is_valid({"inner": {"kind": "a"}})
+
+
+def test_compiled_oneof_leaves_nested_dialect_keywords_to_stock():
+    from backend.ui_projection_api import _compiled_validator
+    schema = {"oneOf": [
+        {"type": "object", "required": ["kind"], "properties": {
+            "kind": {"$schema": "http://json-schema.org/draft-04/schema#", "const": "b"},
+        }},
+        {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "a"}}},
+    ]}
+    stock, compiled = Draft202012Validator(schema), _compiled_validator(schema)
+    for document in ({"kind": "a"}, {"kind": "b"}, {"kind": None}, {}, []):
+        assert compiled.is_valid(document) == stock.is_valid(document)
+    assert not compiled.is_valid({"kind": "a"})
+
+
+def test_compiled_direct_refs_preserve_siblings_nested_constraints_and_error_paths():
+    from backend.ui_projection_api import _compiled_validator
+    schema = {
+        "$defs": {
+            "Score": {"type": "integer", "minimum": 1},
+            "Row": {"type": "object", "required": ["score"], "additionalProperties": False,
+                    "properties": {"score": {"$ref": "#/$defs/Score"}}},
+            "Rows": {"type": "array", "items": {"$ref": "#/$defs/Row"}},
+            "Alias": {"$ref": "#/$defs/Rows"},
+            "Any": True, "Never": False,
+        },
+        "type": "object", "required": ["rows"], "additionalProperties": False,
+        "properties": {"rows": {"$ref": "#/$defs/Alias", "minItems": 1},
+                       "positive": {"$ref": "#/$defs/Any", "type": "integer", "minimum": 1},
+                       "impossible": {"$ref": "#/$defs/Never"}},
+    }
+    stock, compiled = Draft202012Validator(schema), _compiled_validator(schema)
+    def failures(validator, value):
+        return [(error.validator, list(error.absolute_path), list(error.absolute_schema_path), error.message)
+                for error in validator.iter_errors(value)]
+    for document in (
+        {"rows": [{"score": 1}]}, {"rows": []}, {"rows": [{"score": 0}]}, {"rows": [{}]},
+        {"rows": [{"score": 1, "extra": True}]}, {"rows": ["bad"]}, {},
+        {"rows": [{"score": 1}], "positive": 0}, {"rows": [{"score": 1}], "impossible": None},
+    ):
+        assert failures(compiled, document) == failures(stock, document)
+
+
+def test_compiled_direct_static_recursive_ref_preserves_acceptance_and_paths():
+    from backend.ui_projection_api import _compiled_validator
+    schema = {"$defs": {"Node": {
+        "type": "object", "required": ["name"], "additionalProperties": False,
+        "properties": {"name": {"type": "string", "minLength": 1},
+                       "children": {"type": "array", "items": {"$ref": "#/$defs/Node"}}},
+    }}, "$ref": "#/$defs/Node"}
+    stock, compiled = Draft202012Validator(schema), _compiled_validator(schema)
+    for document in ({"name": "root"}, {"name": "root", "children": [{"name": "leaf"}]},
+                     {"name": "root", "children": [{"name": ""}]},
+                     {"name": "root", "children": [{"name": "middle", "children": [{}]}]}):
+        actual = [(error.message, list(error.absolute_path), list(error.absolute_schema_path))
+                  for error in compiled.iter_errors(document)]
+        expected = [(error.message, list(error.absolute_path), list(error.absolute_schema_path))
+                    for error in stock.iter_errors(document)]
+        assert actual == expected
+
+
+@pytest.mark.parametrize("keyword,value", [("$dynamicRef", "#"), ("$dynamicAnchor", "node"),
+                                          ("$recursiveRef", "#"), ("$recursiveAnchor", True)])
+def test_compiler_delegates_dynamic_and_recursive_scope_keywords_to_stock(keyword, value):
+    from backend.ui_projection_api import _compiled_validator
+    schema = {"$defs": {"Dynamic": {keyword: value}}, "type": "integer"}
+    compiled = _compiled_validator(schema)
+    assert type(compiled) is Draft202012Validator
+    assert compiled.is_valid(1) and not compiled.is_valid("1")
+
+
+def test_compiled_source_and_transport_match_canonical_owner(client):
+    from backend import ui_projection_api as api
+    sid = seed(client, {"devices": {"edge": {}}})
+    for host in (None, "edge", "missing"):
+        source = owner.project({}) if host is None else owner.project_device({}, host)
+        schema = api._OWNER if host is None else {"$ref": "#/$defs/DeviceDocument", "$defs": api._DEFS}
+        compiled = api._DOCUMENT_VALIDATOR if host is None else api._DEVICE_VALIDATOR
+        stock = Draft202012Validator(schema)
+        assert compiled.is_valid(source) == stock.is_valid(source) is True
+        source["engine"]["code_schema_version"] = 3
+        assert compiled.is_valid(source) == stock.is_valid(source) is False
+    for view, pointers in api.LIST_CATALOG.items():
+        params = {"host": "edge"} if view == "device" else {}
+        bodies = [("view", client.get(url(sid, view), params=params).json())]
+        for pointer in pointers:
+            bodies.append(("list", client.get(url(sid, view) + "/lists", params={**params, "pointer": pointer}).json()))
+        for kind, body in bodies:
+            schema = api._VIEW_SCHEMA if kind == "view" else api._LIST_SCHEMA
+            stock, compiled = Draft202012Validator(schema), api._VALIDATORS[kind]
+            assert compiled.is_valid(body) == stock.is_valid(body) is True
+            for key, value in (("view", "invented"), ("identity", {}), ("engine", {}), ("unexpected", 1)):
+                bad = {**body, key: value}
+                assert compiled.is_valid(bad) == stock.is_valid(bad) is False

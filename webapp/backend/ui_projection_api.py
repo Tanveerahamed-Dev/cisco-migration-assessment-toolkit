@@ -6,16 +6,19 @@ selection or pagination; the engine is the sole owner of values, states and cave
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+import json
 import math
+from threading import Lock
 from typing import Annotated, Any, ClassVar, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi import Path as PathParam
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, validators
 from jsonschema.exceptions import ValidationError
 from pydantic import ConfigDict, JsonValue, RootModel, model_validator
 
-from . import engine
+from . import engine, serve
 
 View = Literal["overview", "trust", "inventory", "findings", "device"]
 VIEWS = {"overview": "Overview", "trust": "Trust", "inventory": "Inventory",
@@ -25,8 +28,126 @@ MAX_PAGE_SIZE = 200
 _OWNER = engine.ui_projection_schema()
 Draft202012Validator.check_schema(_OWNER)
 _DEFS = _OWNER["$defs"]
-_DOCUMENT_VALIDATOR = Draft202012Validator(_OWNER)
-_DEVICE_VALIDATOR = Draft202012Validator({"$ref": "#/$defs/DeviceDocument", "$defs": _DEFS})
+
+
+def _compiled_validator(schema: dict[str, Any]):
+    """Compile discriminators and direct references without dropping schema constraints.
+
+    A required object property restricted to a finite string domain proves which
+    oneOf branches cannot possibly match. Only those impossible branches are skipped;
+    all applicable branches and their complete schemas still use jsonschema. Direct
+    root definition references reuse validators with the same root resolver, avoiding
+    reconstruction for every repeated Fact/Ref leaf. Schemas
+    without that proof keep the stock oneOf implementation. The canonical schemas,
+    including OpenAPI, are never rewritten.
+    """
+    def nested_resource(node: Any) -> bool:
+        if isinstance(node, dict):
+            return (node is not schema and ("$id" in node or "$schema" in node)) or bool(
+                {"$dynamicRef", "$dynamicAnchor", "$recursiveRef", "$recursiveAnchor"} & node.keys()
+            ) or any(
+                nested_resource(value) for value in node.values()
+            )
+        return isinstance(node, list) and any(nested_resource(value) for value in node)
+
+    # One Python schema node can be aliased into several resources. Avoid compiling
+    # any resource/dialect-changing document, rather than caching a root-scoped proof
+    # that could accidentally be reused under another URI or vocabulary.
+    if (schema.get("$schema", Draft202012Validator.META_SCHEMA["$id"]) != Draft202012Validator.META_SCHEMA["$id"]
+            or nested_resource(schema)):
+        return Draft202012Validator(schema)
+    dispatch: dict[int, tuple[str, dict[str, list[int]]]] = {}
+    branch_schemas: dict[int, list[dict[str, Any]]] = {}
+    branch_validators: dict[int, list[Any]] = {}
+
+    def domain(node: Any) -> set[str] | None:
+        if not isinstance(node, dict):
+            return None
+        if set(node) == {"$ref"} and node["$ref"].startswith("#/$defs/"):
+            name = node["$ref"].removeprefix("#/$defs/")
+            # This compiler supports only direct, unescaped owner definition names.
+            # Other JSON pointers keep the reference resolver's ordinary behavior.
+            if any(escape in name for escape in ("/", "~", "%")):
+                return None
+            node = schema.get("$defs", {}).get(name, {})
+            if not isinstance(node, dict):
+                return None
+        if isinstance(node.get("const"), str):
+            return {node["const"]}
+        values = node.get("enum")
+        if isinstance(values, list) and values and all(type(value) is str for value in values):
+            return set(values)
+        return None
+
+    def compile_node(node: Any) -> None:
+        if isinstance(node, dict):
+            branches = node.get("oneOf")
+            if isinstance(branches, list) and branches and all(
+                isinstance(branch, dict) and branch.get("type") == "object" for branch in branches
+            ):
+                for key in branches[0].get("required", []):
+                    domains = [domain(branch.get("properties", {}).get(key))
+                               if key in branch.get("required", []) else None for branch in branches]
+                    if all(domains):
+                        by_value: dict[str, list[int]] = {}
+                        for index, values in enumerate(domains):
+                            for value in values:
+                                by_value.setdefault(value, []).append(index)
+                        if max(map(len, by_value.values())) == len(branches):
+                            continue
+                        dispatch[id(branches)] = (key, by_value)
+                        branch_schemas[id(branches)] = branches
+                        break
+            for value in node.values():
+                compile_node(value)
+        elif isinstance(node, list):
+            for value in node:
+                compile_node(value)
+
+    compile_node(schema)
+    stock_one_of = Draft202012Validator.VALIDATORS["oneOf"]
+    stock_ref = Draft202012Validator.VALIDATORS["$ref"]
+    references: dict[str, Any] = {}
+
+    def reference(validator, ref, instance, containing_schema):
+        target = references.get(ref)
+        if target is not None:
+            yield from target.iter_errors(instance)
+        else:
+            yield from stock_ref(validator, ref, instance, containing_schema)
+
+    def one_of(validator, branches, instance, containing_schema):
+        rule = dispatch.get(id(branches))
+        if rule is not None and isinstance(instance, dict):
+            key, by_value = rule
+            value = instance.get(key)
+            if type(value) is str and value in by_value:
+                indexes = by_value[value]
+                if len(indexes) == 1:
+                    index = indexes[0]
+                    if not branch_validators[id(branches)][index].is_valid(instance):
+                        # Keep the standard complete failure diagnostics. The hot valid
+                        # path reuses the whole branch validator in the proven root scope.
+                        yield from stock_one_of(validator, branches, instance, containing_schema)
+                    return
+                branches = [branches[index] for index in indexes]
+        yield from stock_one_of(validator, branches, instance, containing_schema)
+
+    compiled = validators.extend(Draft202012Validator, {"oneOf": one_of, "$ref": reference})(schema)
+    for name, definition in schema.get("$defs", {}).items():
+        if not any(escape in name for escape in ("/", "~", "%")):
+            references["#/$defs/" + name] = compiled.evolve(schema=definition)
+    for identity, branches in branch_schemas.items():
+        branch_validators[identity] = [compiled.evolve(schema=branch) for branch in branches]
+    return compiled
+
+
+_DOCUMENT_VALIDATOR = _compiled_validator(_OWNER)
+_DEVICE_VALIDATOR = _compiled_validator({"$ref": "#/$defs/DeviceDocument", "$defs": _DEFS})
+_PROJECTION_VERSION = (
+    engine.ENGINE_SCHEMA_VERSION, serve._release_version(),
+    hashlib.sha256(json.dumps(_OWNER, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+)
 
 
 def _rewrite_refs(value: Any) -> Any:
@@ -96,24 +217,61 @@ def _require_json_native(value: Any) -> None:
     visit(value)
 
 
-def _source_document(store: Any, snapshot_id: int, view: View, host: str | None):
+class _SnapshotProjection:
+    def __init__(self) -> None:
+        self.lock = Lock()
+        self.snapshot: dict[str, Any] | None = None
+        self.documents: dict[str | None, dict[str, Any]] = {}
+
+
+class _ProjectionCache:
+    """One app/store lifetime, with single-flight admission per immutable byte digest.
+
+    There is deliberately no size eviction: moving between snapshots, hosts and pages
+    must not repeatedly compute and validate the same document. Memory is released
+    with the owning app; nothing is persisted, shared between stores, or served without
+    a fresh authoritative store read. A restart discards the cache with the old code.
+    """
+    def __init__(self) -> None:
+        self.lock = Lock()
+        self.entries: dict[tuple[Any, ...], _SnapshotProjection] = {}
+
+    def document(self, raw: bytes, digest: str, host: str | None) -> dict[str, Any]:
+        key = (*_PROJECTION_VERSION, digest)
+        with self.lock:
+            entry = self.entries.setdefault(key, _SnapshotProjection())
+        with entry.lock:
+            if host not in entry.documents:
+                if entry.snapshot is None:
+                    entry.snapshot = engine.bind_ui_projection_snapshot(raw)
+                # A producer may retain its input too. Its later mutation must not
+                # poison the private bound source used by another lazy host document.
+                produced = engine.ui_projection(deepcopy(entry.snapshot), host)
+                # The producer may retain aliases. Cache only an owned complete document
+                # after both guards succeed; an exception leaves this host retryable.
+                _require_json_native(produced)
+                document = deepcopy(produced)
+                (_DEVICE_VALIDATOR if host is not None else _DOCUMENT_VALIDATOR).validate(document)
+                entry.documents[host] = document
+            return entry.documents[host]
+
+
+def _source_document(store: Any, cache: _ProjectionCache, snapshot_id: int, view: View, host: str | None):
     if view == "device" and host is None:
         raise HTTPException(422, "The device view requires a host query parameter")
     if view != "device" and host is not None:
         raise HTTPException(422, "The host query parameter belongs to the device view")
-    bound = store.get_bound_snapshot(snapshot_id)
+    bound = store.get_snapshot_blob(snapshot_id)
     if bound is None:
         raise HTTPException(404, "Snapshot not found")
-    snapshot, binding = bound
-    document = engine.ui_projection(snapshot, host if view == "device" else None)
-    _require_json_native(document)
-    (_DEVICE_VALIDATOR if view == "device" else _DOCUMENT_VALIDATOR).validate(document)
+    raw, binding = bound
+    document = cache.document(raw, binding["sha256"], host if view == "device" else None)
     registry = document["device"]["limitations"] if view == "device" else document["trust"]["limitations"]
     common = {
         "schema": TRANSPORT_SCHEMA, "projection_schema": document["schema"],
         "identity": {"snapshot_id": snapshot_id, "sha256": binding["sha256"],
                      "bytes": binding["bytes"], "digest_form": "assesshub-store-blob"},
-        "view": view, "engine": document["engine"], "limitations": registry,
+        "view": view, "engine": deepcopy(document["engine"]), "limitations": deepcopy(registry),
     }
     return document, common
 
@@ -201,7 +359,7 @@ _LIST_SCHEMA = {"oneOf": [
 for _schema in (_VIEW_SCHEMA, _LIST_SCHEMA):
     _schema["$defs"] = {**_DEFS, **_TRANSPORT_DEFS}
     Draft202012Validator.check_schema(_schema)
-_VALIDATORS = {"view": Draft202012Validator(_VIEW_SCHEMA), "list": Draft202012Validator(_LIST_SCHEMA)}
+_VALIDATORS = {"view": _compiled_validator(_VIEW_SCHEMA), "list": _compiled_validator(_LIST_SCHEMA)}
 
 
 class _ProjectionResponse(RootModel[dict[str, JsonValue]]):
@@ -255,23 +413,26 @@ def _at_pointer(value: Any, pointer: str) -> Any:
 
 def _page(value: dict[str, Any], pointer: str, offset: int, limit: int) -> dict[str, Any]:
     items = value["items"]
-    selected = items[offset:offset + limit]
-    return {"pointer": pointer, "source_list": {key: value for key, value in value.items() if key != "items"},
+    selected = deepcopy(items[offset:offset + limit])
+    return {"pointer": pointer, "source_list": deepcopy({key: value for key, value in value.items() if key != "items"}),
             "page": {"offset": offset, "limit": limit, "returned": len(selected), "total": len(items),
                      "has_more": offset + len(selected) < len(items), "items": selected}}
 
 
 def _page_view(value: dict[str, Any], view: str, limit: int) -> dict[str, Any]:
-    result = deepcopy(value)
-    for pointer in LIST_CATALOG[view]:
-        parent_pointer, _, final = pointer.rpartition("/")
-        parent = _at_pointer(result, parent_pointer) if parent_pointer else result
-        parent[final] = _page(_at_pointer(value, pointer), pointer, 0, limit)
-    return result
+    def selected(node: Any, pointer: str) -> Any:
+        if pointer in LIST_CATALOG[view]:
+            return _page(node, pointer, 0, limit)
+        if any(path.startswith(pointer + "/") for path in LIST_CATALOG[view]):
+            return {key: selected(child, pointer + "/" + key.replace("~", "~0").replace("/", "~1"))
+                    for key, child in node.items()}
+        return deepcopy(node)
+    return selected(value, "")
 
 
 def install_routes(app: FastAPI, store: Any) -> None:
     """Register guarded /api GETs; ordinary dict returns enforce declared response validation."""
+    cache = _ProjectionCache()
     @app.get("/api/snapshots/{snapshot_id}/ui-projection/{view}",
              response_model=UiProjectionViewResponse, operation_id="get_ui_projection_view")
     def projection_view(
@@ -279,7 +440,7 @@ def install_routes(app: FastAPI, store: Any) -> None:
         response: Response, host: str | None = None,
         limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 50,
     ) -> dict[str, Any]:
-        document, common = _source_document(store, snapshot_id, view, host)
+        document, common = _source_document(store, cache, snapshot_id, view, host)
         response.headers["Cache-Control"] = "no-store"
         return {**common, "payload": _page_view(document[view], view, limit)}
 
@@ -293,7 +454,7 @@ def install_routes(app: FastAPI, store: Any) -> None:
     ) -> dict[str, Any]:
         if pointer not in LIST_CATALOG[view]:
             raise HTTPException(422, "Unknown projection list selector")
-        document, common = _source_document(store, snapshot_id, view, host)
+        document, common = _source_document(store, cache, snapshot_id, view, host)
         response.headers["Cache-Control"] = "no-store"
         return {**common, "list": _page(_at_pointer(document[view], pointer), pointer, offset, limit)}
 

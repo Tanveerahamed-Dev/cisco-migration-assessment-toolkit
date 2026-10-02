@@ -70,10 +70,10 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2d | Projection performance | `codex/ui-projection-performance`; existing `.claude/worktrees/ui-projection-2` checkout | Codex | Started from merged #584; immutable stored-byte projection caching, validator reuse and 23/300-device HTTP measurements are in scope. (2026-10-02) | Implement and independently review; publish one PR after privacy gates, then merge only after every required check is green on its exact head. |
+| W2d | Projection performance | `codex/ui-projection-performance`; existing `.claude/worktrees/ui-projection-2` checkout | Codex | Implemented and independently reviewed; 83 focused tests pass. All 36 sample request shapes meet 300 ms, including first later pages: maximum 145 ms at 50 rows and 274 ms at 200 rows. The 300-device repeated maximum is 276 ms. Broader backend/custody checks are running. [Validation](one-app-w2d-validation-2026-10-02.md). (2026-10-02) | Publish the reviewed source after privacy gates; require all checks green on the final head before the authorized exact-head admin merge commit. W2e follows its merge. |
 | W2e | Topology & Paths | `codex/topology-paths`; reuse `.claude/worktrees/ui-projection-2` after W2d | Codex | Queued after W2d. Fifth core screen with contract-owned 2-D facts and embedded Atlas Scope 3-D hub in the bundle. (2026-10-02) | Start after W2d merges; independent review and exact-head required checks before its own merge commit. #582 remains with the Scope session. |
 | W6 | Verified Sites size cap | `codex/sites-size-cap`; reuse `.claude/worktrees/ui-projection-2` after W2e | Codex | Queued after W2e; read-only tooling preflight may run in parallel. (2026-10-02) | Verify the actual Sites limit; raise the cap only to the verified limit minus a margin, otherwise propose R2 for large projection modules. Own PR and required checks. |
-| W7 | Atlas release candidate | `codex/atlas-release-candidate`; reuse `.claude/worktrees/ui-projection-2` after W6 | Codex | Queued after W6. (2026-10-02) | Build with `python -m portable.build_release` from the reconciled source; verify the candidate and provide stick-update steps. |
+| W7 | Atlas release candidate | `codex/atlas-release-candidate`; reuse `.claude/worktrees/ui-projection-2` after W6 | Codex | Queued after W6. Read-only preflight found the release dependency inventory/notices and material receipt omit the bundled Scope lock; bounded correction is required before the new candidate. (2026-10-02) | Reconcile both frontend dependency roots in `portable/release_contract.py`, prepare the pinned Node/npm toolchain, then build with `python -m portable.build_release`, verify the candidate and provide stick-update steps. |
 
 ## Owner decisions
 
@@ -99,6 +99,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-02, Codex (W2d local implementation):
+  - Cached one validated owner document per stored-byte digest and runtime/projection namespace, with lazy exact-host device documents and single-flight admission. Every call still verifies current stored-byte authority and all applicable HTTP response constraints; source and output aliases are isolated.
+  - Final focused suite: 83 passed. Independent review closed reference/resource/dialect/dynamic-scope and alias counterexamples, including 73 reference cases, 200 concurrent validator runs and warmed-HTTP mutations. API generation, repository Ruff and diff checks pass. Default and maximum-page sample timing gates pass; the 300-device fleet is measured. Earlier setup and 200-row performance failures remain in the validation record.
+  - Full backend/custody validation is running. Publication follows fresh privacy checks; final-head hosted gates remain mandatory. No golden/sample/Scope source changed, and #582 remains untouched. W7 preflight also records the bundled Scope dependency-notice/material gap for correction before its candidate build.
 
 - 2026-10-02, Codex (W2c merged / W2d started):
   - Live GitHub confirms #584 merged as `db9d8534` from `61961ca3`; both trees are identical. Removed W2c under rule 8 and reserved the ordered W2d, W2e, W6 and W7 branches in this change.
