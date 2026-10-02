@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-10-02** (Codex). Reasoning behind the current direction:
+Last reconciled: **2026-10-02** (Claude Code). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -74,6 +74,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | W2d | Projection performance | `codex/ui-projection-performance`; [PR #586](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/586); checkout temporarily reassigned to W6 after handoff | Codex | Held for W6 by owner decision. Reviewed construction correction is committed locally at `bce1d47a` (99 API / 42 policy passes and independent refutations), not yet pushed. Measurement job changed to GitHub-hosted `windows-latest` as requested; new timing remains pending. [W2d PR](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/586). (2026-10-02) | After W6 merges, merge main into this branch, publish with fresh privacy gates, rerun measurement/CI, and merge only when every required check and performance requirement is satisfied. |
 | W2e | Topology & Paths | `codex/topology-paths`; reuse `.claude/worktrees/ui-projection-2` after W2d | Codex | Queued after W2d. Fifth core screen with contract-owned 2-D facts and embedded Atlas Scope 3-D hub in the bundle. (2026-10-02) | Start after W2d merges; independent review and exact-head required checks before its own merge commit. #582 remains with the Scope session. |
 | W7 | Atlas release candidate | `codex/atlas-release-candidate`; reuse `.claude/worktrees/ui-projection-2` after W2e | Codex | Queued after W6, W2d and W2e. Read-only preflight found the release dependency inventory/notices and material receipt omit the bundled Scope lock; bounded correction is required before the new candidate. (2026-10-02) | Reconcile both frontend dependency roots in `portable/release_contract.py`, prepare the pinned Node/npm toolchain, then build with `python -m portable.build_release`, verify the candidate and provide stick-update steps. |
+| W8 | Release-toolchain advisories and Python dependency-audit coverage | `fix/pypdf-advisories`; existing `.claude/worktrees/pypdf-advisories` checkout; [PR #587](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/587) | Claude Code | The Master Reference release toolchain moves from pypdf 6.17.0 to 6.19.0, clearing the seven high Dependabot alerts (#9 to #15). The required dependency audit now covers every tracked Python requirements file, lock and pyproject declaration, including the extras and `[build-system].requires`, under a contract test derived from `git ls-files` that also proves each audit can fail; inline workflow `pip install` pins and `tomli` (Python 3.10 only) remain stated limits. Local gates pass and the refutation rounds' findings are fixed; pushed and PR #587 opened; `main` merged in after W6 (#588, `0577aaf5`), and the required checks are re-running on that head. (2026-10-02) | Once every required check is green on the exact head, the owner merges with a merge commit (an admin merge needs the owner's explicit authority in this session); then confirm alerts #9 to #15 read `fixed`. Dependabot #585 and the pypdf line of #572 become redundant. Its own later change: re-lock the shipped Atlas lock to netmiko 4.8.0 / paramiko 5.0.0 and delete the last PYSEC-2026-2858 suppression. |
 
 ## Owner decisions
 
@@ -134,6 +135,14 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- 2026-10-02, Claude Code (W8 merged main after W6):
+  - #588 (W6) merged as `0577aaf5`, so the internal reference no longer fails on the hosting size cap. Merged
+    `origin/main` into this branch with a merge commit; the only conflict was this board, resolved keeping every row and
+    handoff line from both sides. Re-running all required checks on the new head.
+  - The coordination session relayed the next steps. The admin merge itself waits for the owner's explicit authority in
+    this Claude Code session: the standing admin-merge authority recorded on this board belongs to Codex's W2 session
+    and excludes #582. Once merged: close Dependabot #585 as superseded and confirm alerts #9 to #15 read `fixed`.
 
 - 2026-10-02, Codex (W6 resumed as internal-reference policy correction):
   - Owner explicitly directed proceeding: Master Reference is internal repository documentation and must not impose a hosting-size blocker on application work. This supersedes the earlier conditional Sites-limit/R2 decision; no further approval is needed for this bounded internal validation change.
@@ -206,6 +215,41 @@ protected-PR change is part of the resumed W6 scope.
   - Live GitHub confirms #584 merged as `db9d8534` from `61961ca3`; both trees are identical. Removed W2c under rule 8 and reserved the ordered W2d, W2e, W6 and W7 branches in this change.
   - Reuse the existing UI checkout, whose tracked tree is clean. Its existing untracked root `node_modules/` test cache is preserved and excluded. The old engine-defects checkout and its untracked agent configuration are preserved.
   - Owner authorized one PR per workstream and exact-head admin merge commits only after all required checks are green. #582 remains outside this session. No new implementation or performance result is claimed by this start entry.
+
+- 2026-10-02, Claude Code (W8 renumbered):
+  - Renumbered this row from W6 to W8 at the coordination session's request: Codex's #586 reserves W6 (Verified
+    Sites size cap) and W7 (Atlas release candidate).
+  - #587 and #582 fail `Exact-source compiler, reference, and release contracts` only in
+    `build/finalize-deployment.mjs` ("deployment manifest build failed") after every contract test passes; main passes
+    the same job at `db9d8534`. Codex reproduced the cause as the projection exceeding the Sites size cap. Neither PR is
+    being shrunk to fit; both merge `origin/main` and re-run CI after W6 lands.
+
+- 2026-10-02, Claude Code (W8 started; W2c merged):
+  - #584 merged as `db9d8534`; its W2c row is deleted here (rule 8).
+  - GitHub opened seven high Dependabot alerts for pypdf 6.17.0 in `master-reference/requirements-release.txt`. Four
+    independent researchers and a completeness critic verified every advisory against GitHub and OSV: 6.19.0 is the
+    first release closing all seven, and nothing published affects it. The required master-reference job passes on
+    hosted CI with both pins, and a strict-mode text, metadata and diagnostic comparison of the generated PDFs is
+    identical on 6.17.0 and 6.19.0.
+  - Root cause: the required dependency audit installed only `.[dev]`, so no required check had ever audited the release
+    toolchain, the hash-locked set inside Atlas.exe, the transition pins, the `mcp`/`eval` extras or `wheel` from
+    `[build-system].requires`. Each tracked requirements file and lock is now audited by its own `pip_audit --strict`
+    step, or through the environment when it only installs this project editable; the environment installs every
+    non-empty extra except [build] (whose set is the audited Atlas lock) and the build requirements.
+    `tests/test_python_dependency_audit_contract.py` derives the declarations from git and from every file a pip command names,
+    and holds every audit step to a closed grammar, so no condition, masked exit code, injected environment or
+    unnamed suppression can neutralise it by accident. The new release step fails on the old pin with exactly the
+    seven advisories and passes on the new one.
+  - Stated limits: inline `pip install` pins in workflow files (graphifyy, build, twine) are not yet audited, and
+    covering them means moving them into an audited requirements file used by the release workflows (its own
+    change); `tomli`, installed only on the Python 3.10 test lane, has no audited 3.10 set.
+  - Five independent refutation rounds ran (four on frozen snapshots, the fifth on the pushed head); every blocker
+    and major they proved was fixed and re-tested, and each fix carries a mutation that fails without it.
+  - The paramiko PYSEC-2026-2858 suppression is scoped to the shipped lock, which still pins paramiko 4.0.0; netmiko
+    4.8.0 lifted its paramiko cap, so the floating environment resolves 5.0.0 and is audited without it.
+  - Dependabot's #585 makes the same one-line bump and is green; this PR supersedes it and the pypdf line of #572.
+  - Pushed `fix/pypdf-advisories` after the repository privacy verifier and the client-marker scan of every new commit
+    and of the PR text passed; opened #587. Owner review and merge (merge commit) follow hosted CI.
 
 - 2026-10-02, Codex (W2c hosted integration corrections):
   - The completed Linux jobs at `2525e58b` agree on three failures; none is a linked-worktree exception. The webapp, CodeQL, dependency/distribution and portable-build gates passed on that head.
