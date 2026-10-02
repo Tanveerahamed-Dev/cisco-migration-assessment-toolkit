@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { EvidenceProvider, FactView } from "./ProjectionEvidence";
-import type { Fact, Identity, Limitation } from "../projection";
+import type { Fact, Identity, Limitation } from "../../projection";
 
 const identity: Identity = { snapshot_id: 1, sha256: `sha256:${"a".repeat(64)}`, bytes: 20, digest_form: "assesshub-store-blob" };
 const base = { subject: "/a~1b/0", refs: [{ pointer: "/witness/4", role: "witness" as const }], basis: "owner.rule" };

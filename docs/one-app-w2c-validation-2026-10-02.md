@@ -1,6 +1,7 @@
 # W2c: core projection endpoint and screens
 
-Status: **local gates passed; published as draft PR #584 for exact-head hosted CI**.
+Status: **draft PR #584; three full-suite integration failures corrected and independently
+reviewed, awaiting follow-up publication and exact-head CI**.
 The JSON-value and architecture-placement refutations below are closed. Original failures and
 their distinct closing evidence remain recorded. Hosted verdicts must bind the final PR head.
 This record belongs
@@ -244,3 +245,31 @@ four new commits / 2,176,291 patch-and-message bytes with zero hits across 12 pa
 hosted checks and review. This closing documentation update requires fresh privacy gates before
 its push; exact-head hosted CI remains the merge gate. No release publication or field acceptance
 is implied by these implementation and test results.
+
+### First hosted full-suite findings
+
+Head `2525e58b` passed the hosted webapp, CodeQL, dependency/distribution and portable-build
+gates. Four completed Linux suites (3.11–3.14) found the same three integration failures: the
+Design component export inventory, the canonical frontend test entry point, and the LF path
+receipt. Python 3.14 reported **3 failed / 10,151 passed / 151 skipped / one expected failure**;
+the other completed logs are retained privately. These are real repository-contract failures,
+not the eight linked-worktree environmental exceptions. Remaining old-head jobs are not passes.
+
+The fixes retain the existing guards. Snapshot-context helpers/tests move from public
+`src/components` into feature-private `src/pages/core`; the Design barrel and its public
+denominator are unchanged. `npm test` remains exactly `vitest run`, while the required
+`api:check` first runs the nine generator-policy tests and only then the nonwriting drift check.
+The dedicated LF receipt reflects the independently enumerated two new backend paths: 180
+LF-scoped paths and 142 broader paths; its 38 derived owners and one publisher remain unchanged.
+No attribution rules, filters, encodings, `.gitattributes`, golden/sample data or visual baselines
+were weakened or regenerated.
+
+Both frontend guards were reproduced failing and then passed unchanged. All **306 frontend
+tests**, **nine policy tests**, API drift check and build passed; the resulting distribution is
+byte-identical to `2525e58b` (index hash `85830f78...69e32`), as are the generated API types.
+The custody selection passed **14 tests** with its mutation guards. Independent review verifies
+that an undeclared public component still fails and a failing policy test prevents generation.
+It independently reconciled all 244 policy-domain paths, exact LF sets, attributes and scoped
+blobs; omitted, extra and same-count-swapped paths fail, as do the existing CR/attribute/path
+mutation cases. Review closed without changing a guard. Fresh privacy and hosted gates remain
+required.

@@ -1,5 +1,8 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import type { Fact, Identity, Limitation, SourceList, State } from "../projection";
+import type { Fact, Identity, Limitation, SourceList, State } from "../../projection";
+
+// Core-page implementation detail: these renderers require the active source-bound projection
+// context and are not standalone components in the public Design component library.
 
 export const STATE_LABEL: Record<State, string> = {
   published: "Published", collected_but_empty: "Collected, empty", not_collected: "Not collected",

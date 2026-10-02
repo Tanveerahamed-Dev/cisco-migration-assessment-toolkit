@@ -2,8 +2,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { api } from "../api";
 import { loadProjection, type Fact, type Projection, type Schemas, type View, type ViewDocument } from "../projection";
-import { EvidenceProvider, FactView, ListState, StateLabel, ValueText } from "../components/ProjectionEvidence";
-import { ProjectionList } from "../components/ProjectionList";
+import { EvidenceProvider, FactView, ListState, StateLabel, ValueText } from "./core/ProjectionEvidence";
+import { ProjectionList } from "./core/ProjectionList";
 import "./coreSnapshot.css";
 
 const titles = { overview: "Overview", trust: "Trust", inventory: "Inventory", findings: "Findings", device: "Device" };

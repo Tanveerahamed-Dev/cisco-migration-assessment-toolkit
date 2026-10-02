@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectionList } from "./ProjectionList";
-import type { Page, Projection } from "../projection";
+import type { Page, Projection } from "../../projection";
 const document = { schema: "ui_projection_transport/1", projection_schema: "ui_projection/1", view: "findings",
   identity: { snapshot_id: 1, sha256: `sha256:${"a".repeat(64)}`, bytes: 20, digest_form: "assesshub-store-blob" } } as Projection;
 const initial = { pointer: "/rows", source_list: { state: "analysis_unavailable", reason: "Some rows remain usable", subject: "/punchlist", refs: [], basis: "engine" },

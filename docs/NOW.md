@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2c | Backend endpoint and first core screens | `codex/core-screens`; existing `.claude/worktrees/ui-projection-2` checkout; [PR #584](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/584) | Codex | Implemented, independently reviewed and locally verified: 1,281 backend passes, 306 frontend passes, nine generator-policy passes, six E2E passes, 22 visual passes, frozen runtime and complete reference build. Published after both privacy gates; hosted verdicts belong to the PR's current head. [Validation](one-app-w2c-validation-2026-10-02.md). (2026-10-02) | Close all required checks on the latest head, then mark ready for owner review and merge. The local reference build has 322,332 bytes of headroom at `c5519bdf`; retain the unchanged size gate. No further golden/sample regeneration. |
+| W2c | Backend endpoint and first core screens | `codex/core-screens`; existing `.claude/worktrees/ui-projection-2` checkout; [PR #584](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/584) | Codex | Application and portable gates passed; hosted full suites found three integration failures in Design inventory, the npm test entry and LF custody receipt. Corrections pass locally with unchanged guards and byte-identical app output; review/publication follows. [Validation](one-app-w2c-validation-2026-10-02.md). (2026-10-02) | Publish the reviewed integration corrections after both privacy gates, then require all checks on the latest head before readiness/owner merge. Reference capacity remains gated (322,332 bytes locally at `c5519bdf`). No further golden/sample regeneration. |
 
 ## Owner decisions
 
@@ -96,6 +96,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-02, Codex (W2c hosted integration corrections):
+  - The completed Linux jobs at `2525e58b` agree on three failures; none is a linked-worktree exception. The webapp, CodeQL, dependency/distribution and portable-build gates passed on that head.
+  - Kept the public Design inventory and canonical `vitest run` contract intact: moved application-only helpers into the feature folder and gated generation-policy tests through `api:check`. Reconciled the LF receipt to the exact two new backend files without changing owner/attribute policy. Focused guards, 306 frontend tests, nine policy tests and 14 custody tests pass; runtime app bytes and generated types are unchanged.
+  - Independent review closed all three corrections, including failing-policy short-circuit, a rejected undeclared public component, and omitted/extra/swapped LF-path counterexamples. The follow-up needs fresh privacy gates and exact-head CI. Earlier failures and partial/cancelled runs remain distinct evidence. Protected fixtures and W1 remain untouched.
 
 - 2026-10-02, Codex (W2c published):
   - Pushed `c5519bdf` after the repository privacy verifier and full four-commit marker scan both exited zero; opened draft #584. The endpoint, generated types, core screens, evidence drawer and portable runtime are implemented and independently reviewed. Required hosted CI must close on the final head before readiness/merge.

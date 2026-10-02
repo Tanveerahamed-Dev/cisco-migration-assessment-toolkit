@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { loadProjectionPage, type Page, type Projection } from "../projection";
+import { loadProjectionPage, type Page, type Projection } from "../../projection";
 import { ListState } from "./ProjectionEvidence";
+
+// Feature-private transport renderer for CoreSnapshot; requires its exact document identity.
 
 export function ProjectionList<P extends Page>({ title, initial, document, host, renderRow, reference, paired = false }: {
   title: string; initial: P; document: Projection; host?: string;
