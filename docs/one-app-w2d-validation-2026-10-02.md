@@ -159,6 +159,12 @@ none was staged. Rule 7's description is corrected to match the live verifier:
 Git index plus stable working-tree candidates, including non-ignored untracked files.
 The unchanged verifier and complete new-commit history scan must pass again before push.
 
+The stable-tree privacy rerun passed at `ad2c0b3b`. Its complete three-commit
+message/patch scan passed with zero matches across 83,113 bytes and 12 patterns.
+Draft [#586](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/586)
+now owns hosted validation. This documentation handoff needs its own fresh privacy
+scan and exact-head CI before merge; the earlier failure remains recorded above.
+
 ## Closing evidence still required
 
 - Required hosted repository, distribution, reference and portable checks.
