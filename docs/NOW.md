@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-10-02** (Codex). Reasoning behind the current direction:
+Last reconciled: **2026-10-02** (Claude Code). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2c | Backend endpoint and first core screens | `codex/core-screens`; existing `.claude/worktrees/ui-projection-2` checkout; [PR #584](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/584) | Codex | Application and portable gates passed; hosted full suites found three integration failures in Design inventory, the npm test entry and LF custody receipt. Corrections pass locally with unchanged guards and byte-identical app output; review/publication follows. [Validation](one-app-w2c-validation-2026-10-02.md). (2026-10-02) | Publish the reviewed integration corrections after both privacy gates, then require all checks on the latest head before readiness/owner merge. Reference capacity remains gated (322,332 bytes locally at `c5519bdf`). No further golden/sample regeneration. |
+| W6 | Release-toolchain advisories and Python dependency-audit coverage | `fix/pypdf-advisories`; existing `.claude/worktrees/pypdf-advisories` checkout; PR opened from this branch | Claude Code | The Master Reference release toolchain moves from pypdf 6.17.0 to 6.19.0, clearing the seven high Dependabot alerts (#9 to #15). The required dependency audit now covers every tracked Python requirements file, lock and pyproject declaration, including the extras and `[build-system].requires`, under a contract test derived from `git ls-files` that also proves each audit can fail; inline workflow `pip install` pins and `tomli` (Python 3.10 only) remain stated limits. Local gates pass and the refutation rounds' findings are fixed; push, PR and hosted CI are next. (2026-10-02) | Owner reviews and merges the PR, preserving merge commits; then confirm alerts #9 to #15 read `fixed`. Dependabot #585 and the pypdf line of #572 become redundant. Its own later change: re-lock the shipped Atlas lock to netmiko 4.8.0 / paramiko 5.0.0 and delete the last PYSEC-2026-2858 suppression. |
 
 ## Owner decisions
 
@@ -96,6 +96,31 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-02, Claude Code (W6 started; W2c merged):
+  - #584 merged as `db9d8534`; its W2c row is deleted here (rule 8).
+  - GitHub opened seven high Dependabot alerts for pypdf 6.17.0 in `master-reference/requirements-release.txt`. Four
+    independent researchers and a completeness critic verified every advisory against GitHub and OSV: 6.19.0 is the
+    first release closing all seven, and nothing published affects it. The required master-reference job passes on
+    hosted CI with both pins, and a strict-mode text, metadata and diagnostic comparison of the generated PDFs is
+    identical on 6.17.0 and 6.19.0.
+  - Root cause: the required dependency audit installed only `.[dev]`, so no required check had ever audited the release
+    toolchain, the hash-locked set inside Atlas.exe, the transition pins, the `mcp`/`eval` extras or `wheel` from
+    `[build-system].requires`. Each tracked requirements file and lock is now audited by its own `pip_audit --strict`
+    step, or through the environment when it only installs this project editable; the environment installs every
+    non-empty extra except [build] (whose set is the audited Atlas lock) and the build requirements.
+    `tests/test_python_dependency_audit_contract.py` derives the declarations from git and from every `-r`/`-c` target,
+    and holds every audit step to a closed grammar, so no condition, masked exit code, injected environment or
+    unnamed suppression can neutralise it by accident. The new release step fails on the old pin with exactly the
+    seven advisories and passes on the new one.
+  - Stated limits: inline `pip install` pins in workflow files (graphifyy, build, twine) are not yet audited, and
+    covering them means moving them into an audited requirements file used by the release workflows (its own
+    change); `tomli`, installed only on the Python 3.10 test lane, has no audited 3.10 set.
+  - Three independent refutation rounds ran on frozen snapshots; every blocker and major they proved was fixed and
+    re-tested, and each fix carries a mutation that fails without it.
+  - The paramiko PYSEC-2026-2858 suppression is scoped to the shipped lock, which still pins paramiko 4.0.0; netmiko
+    4.8.0 lifted its paramiko cap, so the floating environment resolves 5.0.0 and is audited without it.
+  - Dependabot's #585 makes the same one-line bump and is green; this PR supersedes it and the pypdf line of #572.
 
 - 2026-10-02, Codex (W2c hosted integration corrections):
   - The completed Linux jobs at `2525e58b` agree on three failures; none is a linked-worktree exception. The webapp, CodeQL, dependency/distribution and portable-build gates passed on that head.

@@ -133,6 +133,38 @@ per change, with verification evidence) lives in
   for. CI-only; no shipped bytes are affected, so v3.32.1's artifacts are unchanged.
 
 ### Fixed
+- **The Master Reference release toolchain moves from pypdf 6.17.0 to 6.19.0, the first release that
+  closes all seven high advisories published for it on 2026-10-01.** GHSA-5jq2-8x83-x246 is fixed in
+  6.18.0; GHSA-fp3h-c4fm-7vvf, GHSA-g9cg-prrw-2r8q and GHSA-jw7q-gvrg-4vj3 in 6.18.1; and
+  GHSA-w23x-9jrw-r45c, GHSA-php9-fj8v-98fj and GHSA-v247-6f48-mgcj in 6.19.0. All are
+  denial-of-service bugs on crafted PDF input. The reachable path is local and operator-invoked:
+  `verify-pdf-review` parses a caller-supplied family PDF in strict mode before it checks the
+  reviewer signature, while the generated reports are parsed in-process. The required
+  master-reference job passes on hosted CI with both pins, and a strict-mode text, metadata and
+  parser-diagnostic comparison of the generated PDFs is identical on 6.17.0 and 6.19.0. This is a
+  dependency repair, not applicability/VEX review or release authorization.
+- **The required dependency audit now covers every tracked Python requirements file, lock and
+  pyproject declaration it can reach, not only the `.[dev]` environment, and each audit is shown
+  able to fail.** The release toolchain above, the hash-locked set that ships inside Atlas.exe, the
+  transition runtime pins, the `mcp`/`eval` extras and `wheel` from `[build-system].requires` were
+  audited by no required check, which is why Dependabot, not this gate, found the pypdf advisories;
+  the runtime and webapp requirements files had no audit of their own, though their packages were
+  largely covered through the environment. Each requirements file and pip-compile lock is now
+  audited by its own `pip_audit --strict` step, or, when it only installs this project editable,
+  through the environment audit. `tests/test_python_dependency_audit_contract.py` derives the
+  declarations from `git ls-files`, from every file a workflow or requirements file passes to
+  `-r`/`-c`, and from `pyproject.toml` (an unrecognised Python lock, a nested project, a
+  uv/Poetry/PDM/Hatch dependency table or an unreviewed marker-gated dependency fails rather than
+  being skipped). It reads the workflow with a duplicate-rejecting YAML loader and holds each
+  audit-bearing step to a closed grammar, so that no condition, masked exit code, injected
+  environment or unnamed suppression can neutralise it by accident, with a mutation self-test for
+  each known way coverage or blocking can be lost and a test that harmless edits stay green. Stated
+  limits, not yet covered: inline `pip install` pins in workflow files (the graph, build and publish
+  tooling), `tomli`, which only the Python 3.10 test lane installs, and Windows-only transitive
+  dependencies of the ranged sets, which the Linux audit runner resolves away. The new release step
+  fails on pypdf 6.17.0 with exactly the seven advisories. The paramiko PYSEC-2026-2858
+  suppression is now scoped to the shipped lock, which still pins paramiko 4.0.0; netmiko 4.8.0
+  lifted its paramiko cap, so the floating environment resolves 5.0.0 and is audited without it.
 - **Generated projection imports and compiler privacy findings now cross explicit code/data
   boundaries.** Every generated dynamic-import specifier must match a bounded relative `.mjs`
   grammar and is serialized through a JavaScript-source encoder that escapes HTML/script-breaking
