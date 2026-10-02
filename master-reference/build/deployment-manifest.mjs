@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Produce and verify the outer, exact-member receipt for a Sites deployment.
+ * Produce and verify the outer, exact-member receipt for an internal reference
+ * bundle. Receipt validity does not establish eligibility for a hosting service.
  * Its raw canonical JSON is deliberately not self-hashed: the physical
  * deterministic-gzip representation is excluded from the member census, and
  * verification reconstructs and recomputes the conceptual receipt in memory.
@@ -43,7 +44,6 @@ const MAX_EXPANDED_MODULE_BYTES = 8 * 1024 * 1024;
 const MAX_COMPRESSED_PROJECTION_BYTES = 512 * 1024 * 1024;
 const MAX_EXPANDED_PROJECTION_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_DEPLOYMENT_MEMBER_BYTES = 248 * 1024 * 1024;
-const MAX_DEPLOYMENT_BYTES = 248 * 1024 * 1024;
 const MAX_RUNTIME_VERSION_BYTES = 64;
 const PUBLIC_OPTIONS_KEYS = new Set(["distDir", "repoRoot"]);
 const GENERIC_AUTOMATION_USERS = new Set([
@@ -940,6 +940,24 @@ function isProjectionModuleRepresentationPath(path) {
   return path.startsWith(`${PROJECTION_DIRECTORY}/`) && path.endsWith(".mjs.gz");
 }
 
+// Internal bundles have no aggregate hosting quota. Arithmetic remains exact,
+// and the independent per-member, receipt and expansion bounds still apply.
+function addByteCounts(total, bytes) {
+  const result = total + bytes;
+  if (
+    !Number.isSafeInteger(total) || total < 0 ||
+    !Number.isSafeInteger(bytes) || bytes < 0 ||
+    !Number.isSafeInteger(result)
+  ) {
+    throw new Error("deployment byte count is not a nonnegative safe integer");
+  }
+  return result;
+}
+
+function memberByteTotal(members) {
+  return members.reduce((total, member) => addByteCounts(total, member.bytes), 0);
+}
+
 async function censusMembers(
   distRoot,
   repoRoot,
@@ -982,21 +1000,12 @@ async function censusMembers(
     );
     return { path, bytes: bytes.byteLength, sha256: sha256(bytes) };
   });
-  const totalBytes = members.reduce((total, member) => total + member.bytes, 0);
-  if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_DEPLOYMENT_BYTES) {
-    throw new Error("deployment member aggregate exceeds the Sites expanded limit");
-  }
+  memberByteTotal(members);
   return members;
 }
 
 function projectionMembersSummary(projectionMemberLedger) {
-  const totalBytes = projectionMemberLedger.reduce(
-    (total, member) => total + member.bytes,
-    0,
-  );
-  if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_DEPLOYMENT_BYTES) {
-    throw new Error("projection member aggregate exceeds the Sites expanded limit");
-  }
+  const totalBytes = memberByteTotal(projectionMemberLedger);
   return {
     authorityRepresentationPath: PROJECTION_MEMBER_AUTHORITY,
     memberCount: projectionMemberLedger.length,
@@ -1017,13 +1026,7 @@ function reconstructMembers(members, projectionMemberLedger) {
 function digestPayload({ source, referenceSource, members, projectionMemberLedger }) {
   const projectionMembers = projectionMembersSummary(projectionMemberLedger);
   const reconstructedMembers = reconstructMembers(members, projectionMemberLedger);
-  const totalBytes = reconstructedMembers.reduce(
-    (total, member) => total + member.bytes,
-    0,
-  );
-  if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_DEPLOYMENT_BYTES) {
-    throw new Error("deployment member aggregate exceeds the Sites expanded limit");
-  }
+  const totalBytes = memberByteTotal(reconstructedMembers);
   const membersDigest = sha256(canonicalBytes(reconstructedMembers));
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -1076,14 +1079,13 @@ function assertProjectionMembersSummaryShape(value) {
     value.memberCount > MAX_JSON_STRUCTURE_VALUES ||
     !Number.isSafeInteger(value.totalBytes) ||
     value.totalBytes < 0 ||
-    value.totalBytes > MAX_DEPLOYMENT_BYTES ||
     !/^[0-9a-f]{64}$/.test(String(value.membersDigest ?? ""))
   ) {
     throw new Error("deployment projection member summary is malformed");
   }
 }
 
-async function verifyDeploymentManifestReceipt(
+async function verifyDeploymentManifestResult(
   { distDir = "dist", repoRoot = ".." } = {},
   readHooks = {},
 ) {
@@ -1121,10 +1123,7 @@ async function verifyDeploymentManifestReceipt(
     ) {
       throw new Error("deployment manifest members are malformed");
     }
-    directTotalBytes += member.bytes;
-    if (!Number.isSafeInteger(directTotalBytes) || directTotalBytes > MAX_DEPLOYMENT_BYTES) {
-      throw new Error("deployment member aggregate exceeds the Sites expanded limit");
-    }
+    directTotalBytes = addByteCounts(directTotalBytes, member.bytes);
   }
   receipt.members.forEach((member, index) => {
     assertGeneratedPathPrivacy(member?.path, privacyContract, "deployment-member", index);
@@ -1161,25 +1160,18 @@ async function verifyDeploymentManifestReceipt(
     receipt.members,
     projectionMemberLedger,
   );
-  const reconstructedTotalBytes = reconstructedMembers.reduce(
-    (total, member) => total + member.bytes,
-    0,
-  );
+  const reconstructedTotalBytes = memberByteTotal(reconstructedMembers);
   if (
-    !Number.isSafeInteger(reconstructedTotalBytes) ||
-    reconstructedTotalBytes > MAX_DEPLOYMENT_BYTES ||
     receipt.memberCount !== reconstructedMembers.length ||
     receipt.totalBytes !== reconstructedTotalBytes ||
     receipt.membersDigest !== sha256(canonicalBytes(reconstructedMembers))
   ) {
     throw new Error("deployment manifest reconstructed member aggregate is inconsistent");
   }
-  if (
-    reconstructedTotalBytes + manifestReceipt.representationBytes.byteLength >
-    MAX_DEPLOYMENT_BYTES
-  ) {
-    throw new Error("deployment bundle exceeds the Sites expanded limit");
-  }
+  const physicalBundleBytes = addByteCounts(
+    reconstructedTotalBytes,
+    manifestReceipt.representationBytes.byteLength,
+  );
   const actualFiles = await walkRegularFiles(distRoot);
   const actualPaths = new Set(
     actualFiles
@@ -1232,7 +1224,11 @@ async function verifyDeploymentManifestReceipt(
   if (stableJson(initialPhysicalTree) !== stableJson(finalPhysicalTree)) {
     throw new Error("deployment physical tree changed during verification");
   }
-  return receipt;
+  return { receipt, physicalBundleBytes };
+}
+
+async function verifyDeploymentManifestReceipt(options, readHooks) {
+  return (await verifyDeploymentManifestResult(options, readHooks)).receipt;
 }
 
 function isMissingFileError(error) {
@@ -1368,7 +1364,7 @@ async function publishManifestNoClobber(temporary, manifestPath) {
   return { ...temporary, path: manifestPath };
 }
 
-async function buildDeploymentManifestInternal(
+async function buildDeploymentManifestResult(
   { distDir = "dist", repoRoot = ".." } = {},
   hooks = {},
 ) {
@@ -1416,9 +1412,7 @@ async function buildDeploymentManifestInternal(
     maximumCompressedBytes: MAX_GZIP_RECEIPT_BYTES,
     maximumExpandedBytes: MAX_JSON_RECEIPT_BYTES,
   });
-  if (receipt.totalBytes + receiptRepresentation.byteLength > MAX_DEPLOYMENT_BYTES) {
-    throw new Error("deployment bundle exceeds the Sites expanded limit");
-  }
+  addByteCounts(receipt.totalBytes, receiptRepresentation.byteLength);
   const temporaryPath = join(
     dirname(distRoot),
     `.${basename(distRoot)}.${MANIFEST_NAME}.${randomUUID()}.tmp`,
@@ -1433,11 +1427,10 @@ async function buildDeploymentManifestInternal(
       throw new Error("deployment manifest temporary publication cleanup refused");
     }
     temporary = null;
-    await verifyDeploymentManifestReceipt(
+    return await verifyDeploymentManifestResult(
       { distDir: distRoot, repoRoot },
       hooks.readHooks,
     );
-    return receipt;
   } catch (error) {
     let cleanupFailure = false;
     if (
@@ -1457,6 +1450,10 @@ async function buildDeploymentManifestInternal(
     }
     throw error;
   }
+}
+
+async function buildDeploymentManifestInternal(options, hooks) {
+  return (await buildDeploymentManifestResult(options, hooks)).receipt;
 }
 
 function snapshotPublicOptions(options) {
@@ -1498,8 +1495,14 @@ export async function verifyDeploymentManifest(options = {}) {
 }
 
 export async function buildDeploymentManifest(options = {}) {
+  return (await buildDeploymentManifestWithReport(options)).receipt;
+}
+
+// Keep physical accounting outside the unchanged v1.2 self-excluded receipt.
+// The report uses the representation actually read by the completed verifier.
+export async function buildDeploymentManifestWithReport(options = {}) {
   try {
-    return await buildDeploymentManifestInternal(snapshotPublicOptions(options));
+    return await buildDeploymentManifestResult(snapshotPublicOptions(options));
   } catch {
     throw new Error("deployment manifest build failed");
   }
@@ -1510,17 +1513,21 @@ export const deploymentManifestTestOnly = Object.freeze({
   verifyDeploymentManifestWithHooks: verifyDeploymentManifestReceipt,
   readJsonObject,
   readGzipJsonObject,
+  addByteCounts,
+  verifyDeploymentManifestResult,
 });
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
 if (import.meta.url === invokedPath) {
   try {
-    const receipt = await buildDeploymentManifest();
+    const { receipt, physicalBundleBytes } = await buildDeploymentManifestWithReport();
     process.stdout.write(
       `${JSON.stringify({
         output: resolve("dist", MANIFEST_NAME),
         members: receipt.memberCount,
         totalBytes: receipt.totalBytes,
+        physicalBundleBytes,
+        hostingEligibility: "not_evaluated",
         bundleDigest: receipt.bundleDigest,
       })}\n`,
     );
