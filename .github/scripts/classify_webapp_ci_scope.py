@@ -39,6 +39,7 @@ RELEVANT_PATH_FILTERS = (
     "pytest.ini",
     "tests/golden/**",
     "tests/synthetic_fixtures.py",
+    "tools/export_ui_projection_openapi.py",
     ".github/workflows/webapp-ci.yml",
     ".github/scripts/classify_webapp_ci_scope.py",
 )

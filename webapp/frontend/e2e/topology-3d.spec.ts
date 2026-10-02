@@ -47,7 +47,7 @@ test("renders the WebGL 3D topology fabric in a real browser (jsdom cannot)", as
     return route.fulfill({ status: 404, json: { detail: "not mocked (unrelated panel)" } });
   });
 
-  await page.goto("/snapshots/1");
+  await page.goto("/snapshots/1/tools");
 
   // the topology panel renders; its 2D/3D toggle appears once the (mocked) graph has loaded
   await expect(page.getByRole("heading", { name: /Fleet topology/ })).toBeVisible();

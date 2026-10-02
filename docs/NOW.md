@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2c | Backend endpoint and first core screens | `codex/core-screens`; existing `.claude/worktrees/ui-projection-2` checkout | Codex | Backend independent review and 1,262 full backend tests passed (one existing Windows symlink skip). Frozen runtime passes after a test-first grammar-resource repair. Core screens and independent client review are in progress; [validation](one-app-w2c-validation-2026-10-02.md). (2026-10-02) | Finish Overview / Trust / Inventory + device / Findings, close client source-binding refutations, and run generated-type, frontend, browser, distribution and exact-head CI gates. Preserve exact source identity, evidence states and pagination disclosures. No further golden/sample regeneration. |
+| W2c | Backend endpoint and first core screens | `codex/core-screens`; existing `.claude/worktrees/ui-projection-2` checkout | Codex | Endpoint checkpoint `a4c898a9` is local only. Core screens pass unit, browser, visual and independent review; the UI-bearing frozen build passes. A later actual-HTTP NaN refutation reopened the JSON-value boundary before publication; [validation](one-app-w2c-validation-2026-10-02.md). (2026-10-02) | Close the nonfinite-value case test-first without coercion, replay independent/backend/frozen gates, then pass both privacy gates and publish the complete PR for exact-head CI. Preserve source identity, evidence states and paging disclosures. No further golden/sample regeneration. |
 
 ## Owner decisions
 
@@ -96,6 +96,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-02, Codex (W2c local validation and final boundary probe):
+  - Committed the endpoint/runtime checkpoint as `a4c898a9`; no W2c push or PR yet. Core screens now consume generated engine-contract types and preserve source-bound evidence, withheld rows and exact reference joins. Final frontend gates: 306 unit tests, nine generator-policy tests, six E2E passes with one existing opt-in skip, and 22 unchanged visual comparisons.
+  - Independent review closed wrong-host/stale-context pagination, stale evidence identity, retry-offset, interface-order, Scope-link normalization and offline-generator resource-resolution findings. Live browser checks covered the actual synthetic-fleet app, drawer keyboard behavior and corrected 390-pixel layout. The full UI-bearing frozen smoke passed.
+  - A later producer-fault probe showed a published NaN could escape the actual HTTP boundary as null despite direct model rejection. Publication remains held for explicit JSON-native/finite guards, independent replay and fresh backend/frozen evidence. Earlier successful paths remain scoped in the validation record; no golden/sample regeneration or W1 changes.
 
 - 2026-10-02, Codex (W2b merged / W2c started):
   - All 15 required checks passed on `b2c13407`; all 28 check runs were terminal (26 successful, two inapplicable draft-publication jobs skipped). Merged #583 with the authorized exact-head merge command as `a0c727bd`. Main's tree `b2adece2e21c4ea44f2eae0c009c0a92ae882b49` equals the tested head. Removed W2b's row under rule 8.

@@ -1,10 +1,9 @@
 # AssessHub — web cockpit for the Cisco Migration-Assessment engine
 
-AssessHub is a **served, full-stack web platform layered on top of the existing engine**. It is
-*additive*: it imports `cisco_toolkit` and re-uses its snapshot contract, diff, trend, and explorer
-rendering — it never re-runs analysis, and it does not modify a single line of the engine (the
-262-test golden suite is untouched). The CLI engine stays the single source of truth; AssessHub gives
-the snapshots it already produces a live surface.
+AssessHub is the **served web application over the existing engine**. It imports `cisco_toolkit`
+for snapshot projections, comparisons, trends and deliverable generation. The Python engine owns
+analysis facts; AssessHub gives its evidence a live surface and runs that engine for collection
+ingest.
 
 ```
 SSH collection (CLI engine)  →  snapshot.json  ─┐
@@ -22,7 +21,11 @@ stores the result as a first-class snapshot.
 
 - **Campaigns & waves** — a campaign is a fleet tracked over time; each uploaded snapshot is one wave
   (one collection / cutover checkpoint), persisted in SQLite.
-- **Risk cockpit** — per-snapshot: avg-health gauge, health-band distribution, punch-list triaged by
+- **Core assessment** — `/snapshots/{id}` opens Overview, Trust, Inventory with device details,
+  and Findings. These screens consume only the typed engine projection, retain missing/withheld
+  evidence states, page large lists and expose exact source references in a shared evidence drawer.
+  Existing operational panels and downloads remain under `/snapshots/{id}/tools`.
+- **Tools risk cockpit** — per-snapshot: avg-health gauge, health-band distribution, punch-list triaged by
   severity & category, move-group readiness, and the **keystone devices** the fleet most depends on by
   migration blast radius.
 - **Cutover planner (run-of-show)** — a synthesis layer over the engine's migration model: a per-wave
@@ -79,6 +82,7 @@ stores the result as a first-class snapshot.
 webapp/
   backend/            FastAPI + SQLite (stdlib sqlite3); imports cisco_toolkit
     app.py            REST surface + serves the built SPA (with history fallback)
+    ui_projection_api.py  validated, paged transport for engine-owned core-screen facts
     serve.py          Atlas production entry (ADR-0004 P1): uvicorn.run(app) — no reload/workers,
                       frozen engine-child sentinel (--run-engine), --selftest, browser auto-open
     storage.py        campaign / snapshot / execution-run persistence
@@ -210,6 +214,8 @@ python -m pytest webapp/tests -q           # backend e2e (isolated temp DB)
 | `GET`  | `/api/campaigns/{id}/gates` | gate board: cadence + derivable waves + recorded sign-offs |
 | `POST` | `/api/campaigns/{id}/gates` | record a gate decision (`go`/`no-go`/`slipped`; `pending` clears) |
 | `GET`  | `/api/snapshots/{id}` | snapshot meta + derived KPI summary |
+| `GET`  | `/api/snapshots/{id}/ui-projection/{view}` | typed core view with first pages of its primary lists |
+| `GET`  | `/api/snapshots/{id}/ui-projection/{view}/lists` | one schema-declared list page (`pointer`, `offset`, `limit`) |
 | `GET`  | `/api/snapshots/{id}/section/{name}` | one detail section, sliced from the snapshot |
 | `GET`  | `/api/snapshots/{id}/graph` | switch-topology nodes + edges (for the force graph) |
 | `GET`  | `/api/snapshots/{id}/cutover` | gated, pilot-first cutover plan (run-of-show) synthesized from the migration model |
@@ -222,3 +228,37 @@ python -m pytest webapp/tests -q           # backend e2e (isolated temp DB)
 | `GET`  | `/api/executions/{id}/report` | Post-Implementation Review / as-executed record (DOCX) |
 
 Interactive API docs at `/docs` when the server is running.
+
+### Core projection contract
+
+The core views are `overview`, `trust`, `inventory`, `findings` and `device`. Device requests
+require the exact hostname as a `host` query parameter, including on subsequent list requests.
+An unknown hostname returns the engine's withheld device document; an unknown snapshot is 404.
+Unsupported views, list selectors or paging bounds are 422.
+
+The response identifies `ui_projection_transport/1` and `ui_projection/1`, includes the engine
+metadata and common limitations registry, and binds the exact stored snapshot bytes by SHA-256,
+byte count and `assesshub-store-blob` digest form. Consumers must not combine pages with different
+bindings. The backend validates the complete engine document before selecting or slicing it,
+then validates its ordinary response through the route's declared response model.
+
+Each primary FactList becomes `{pointer, source_list, page}`. `source_list` retains every owner
+field except `items`; `page` carries `offset`, `limit`, `returned`, `total`, `has_more` and the
+unchanged selected rows. The default limit is 50 and maximum is 200. Page totals describe the
+projected list, not a new engine census. Paging never changes the source evidence state: withheld
+lists can retain rows, and an empty end page does not turn a published list into an empty finding.
+Original indexes, pointers, evidence references and engine cap disclosures remain intact.
+Primary arrays are bounded; this does not bound full projection computation or nested row bytes.
+
+OpenAPI hoists a mechanically rewritten copy of the engine schema; owner-schema parity is
+tested. To refresh the frontend types from the actual app without starting a server or opening
+a user store, run these commands from the repository root:
+
+```text
+python tools/export_ui_projection_openapi.py --output webapp/frontend/.generated/openapi.json
+npm --prefix webapp/frontend run api:generate
+npm --prefix webapp/frontend run api:check
+```
+
+The generated OpenAPI JSON is temporary; generated TypeScript is tracked. CI exports the current
+backend schema and runs the nonwriting type-drift check before building the frontend.

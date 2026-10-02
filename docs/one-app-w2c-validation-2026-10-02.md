@@ -1,7 +1,9 @@
 # W2c: core projection endpoint and screens
 
-Status: **in progress**. The backend and portable-resource repair have focused and independent
-verification; frontend implementation and combined final gates remain open. This record belongs
+Status: **candidate held for a final JSON-value boundary refutation; unpublished**.
+The frontend and portable-resource repair have focused and independent verification; a later
+backend probe below supersedes the earlier passing boundary evidence for nonfinite numbers.
+This record belongs
 to the existing `codex/core-screens` branch and `ui-projection-2` checkout, created from main
 `a0c727bd` after W2b merged. `docs/NOW.md` remains the live queue.
 
@@ -104,3 +106,81 @@ combined application pass is claimed yet.
 
 Golden, sample-data and Scope fixture bytes remain at W2b's single reviewed generation. Scope's
 ignored hub build was refreshed for backend mount/browser tests; no data compiler was run.
+
+### Frontend closure and browser verification
+
+The early counterexamples above are now closed test-first. Further independent probes exposed
+and closed failed-next-page retry using the current offset, changed engine/limitations context
+accepted on a continuation page, and interface cells following object-key order rather than the
+owner's explicit column vector. Exact host, whole source identity and engine/registry context
+now bind page requests; obsolete requests are aborted and stale responses cannot replace a
+new view. Drawer selection is source-bound. Missing or reordered reference targets are never
+joined by array position: a bounded page hint is checked against both pointer and original
+index, with an explicit reference-only disclosure when no exact match is present.
+
+The generator initially rejected external `$ref` but Redocly could resolve an example's
+`externalValue`. Two attempted fetches were intercepted by a deny-network review harness;
+no network request escaped. URL, file and relative `externalValue`, dynamic/recursive references
+and nonfragment `$ref` are now rejected before the generator starts. Independent black-box
+replay confirms zero intercepted network attempts after the fix and no writes on failed checks.
+Missing, stale, forged and malformed inputs fail closed. Independent TypeScript compilation
+proved closed states/keys, non-`any` values, withheld null/reason requirements and published
+nonempty lists across **32 Fact and 28 FactList schemas**.
+
+Final author validation passed **306 Vitest tests + nine generator-policy tests**, the
+nonwriting API type-drift check, TypeScript and Vite build. Independent final renderer/client
+selection passed **32 tests**. The normalized same-origin Scope capability check also rejects
+encoded traversal outside `/scope/`. Root's final production-build E2E run passed **six tests /
+one existing opt-in performance skip**; legacy WebGL coverage still runs under Tools. Visual
+type checking and all **22 existing visual comparisons** passed without baseline promotion.
+The mocked-API E2E lane retains its API-unavailable fallback log; the separate live-server check
+below exercises real responses.
+
+Root inspected the actual served application with a temporary synthetic-fleet store. Overview,
+Trust, Inventory, device details, Findings, the evidence drawer and the return path through Tools
+worked. The drawer showed exact values, basis, subjects, ordered references and full qualifications;
+Tab stayed inside it and Escape returned focus. A device's `/punchlist/139` reference selected
+the exact original record on rows 126–140, with no positional join. Repeated long caveats were
+replaced by visible qualification indicators opening their complete source text; withheld
+reasons remain visible. Labels preserve the owner's denominator rather than showing code
+expressions as metric captions.
+
+An initial 390-pixel browser test exposed top-bar overflow; the shell now wraps its navigation.
+The final live check reports a 375-pixel document inside the 390-pixel viewport (the remaining
+width is the vertical scrollbar), in light and dark themes. The mobile drawer fits, and the
+desktop layout remains usable. The temporary viewport override was reset. The live browser
+reported no console errors. AssessHub intentionally indexes immutable frontend bytes at startup;
+the private server was restarted after builds, and the final browser loaded `index-C7bPXL4x.js`.
+
+Frozen source hashes:
+
+| File | SHA-256 |
+|---|---|
+| `CoreSnapshot.tsx` | `d5016c529defbb704aa4623e17f83deb679e5a672da0bc928901e2b533a46ee1` |
+| `ProjectionEvidence.tsx` | `bca716c74f7680329ac3ecf4bf57bab6c07588a952c2ad9bc9b902c2aebfc810` |
+| `ProjectionList.tsx` | `f589296c3338169e90c98f7fd8c406079a0f982abe17ab4dfce4df4a9db09edd` |
+| `projection.ts` | `67096943d4f5acdd4b1e95dfcb72ab926f204cd5ae2f014b7c7fae9b48510cff` |
+| `generated/openapi.ts` | `2481934ef8985911166ad57ae8a013d6cfe2d289fc813f13f712c1025c73d7eb` |
+| `dist/index.html` | `85830f785deb7fd4e027121389eb1530d22dccba0b4688a2613c48c781069e32` |
+
+Repository-wide Ruff and diff checks pass. One independent Vitest invocation from the repository
+root missed the frontend jsdom configuration and produced 12 `document is not defined` failures;
+the correct-directory replay passed without source changes. Its generated root test cache stays
+untracked: automatic approval review rejected cleanup with `blocked by policy`. The failed
+receipt is preserved privately, and the cache is excluded from commits.
+
+### Later JSON-value boundary refutation
+
+The UI-bearing frozen build also passed all 12 self-tests and the complete temporary field-layout
+smoke with frontend index hash `85830f78...69e32` and API hash `5f0090ea...1c194c`. A subsequent
+independent producer-fault probe found a gap those successful paths did not cover. Replacing a
+published score in inventory row 22 with `NaN` passed the Python JSON Schema validator; both an
+unrelated Overview request and an off-page Inventory request returned 200. A request selecting
+that row also returned 200, with the invalid score silently serialized as `null` while retaining
+the `published` state. Direct Pydantic model validation rejected the same number, so its config
+flags alone did not enforce the actual HTTP boundary.
+
+The candidate is held locally while explicit, noncoercing JSON-native/finite checks are added
+before whole-document schema validation and at the response boundary. Actual HTTP regression
+tests, independent replay, a fresh backend gate and a rebuilt frozen runtime must close this
+case. No schema widening, frontend fallback or fixture regeneration is allowed for this repair.

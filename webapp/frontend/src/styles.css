@@ -50,6 +50,12 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
 }
 .topbar nav a:hover { color: var(--text); background: var(--surface-2); text-decoration: none; }
 .topbar nav a.active { color: var(--text); background: var(--surface-2); }
+@media (max-width: 600px) {
+  .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 14px; }
+  .topbar .brand { flex: 1; min-width: 0; flex-wrap: wrap; }
+  .topbar .spacer { display: none; }
+  .topbar nav { order: 3; width: 100%; justify-content: space-between; }
+}
 
 /* ---- layout ---- */
 .container { max-width: 1180px; margin: 0 auto; padding: 28px 22px 80px; }
