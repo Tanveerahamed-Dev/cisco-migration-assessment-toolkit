@@ -841,3 +841,167 @@ def test_compiled_source_and_transport_match_canonical_owner(client):
             for key, value in (("view", "invented"), ("identity", {}), ("engine", {}), ("unexpected", 1)):
                 bad = {**body, key: value}
                 assert compiled.is_valid(bad) == stock.is_valid(bad) is False
+
+
+def _validation_errors(validator, value):
+    def record(error):
+        return {"message": error.message, "validator": error.validator,
+                "path": list(error.absolute_path), "schema_path": list(error.absolute_schema_path),
+                "context": [record(child) for child in error.context]}
+    return [record(error) for error in validator.iter_errors(value)]
+
+
+@pytest.mark.parametrize("mutation", ["inline_type", "reference_type", "new_minimum", "required", "resource", "dialect"])
+def test_compiled_construction_preserves_public_schema_mutations(mutation):
+    from backend.ui_projection_api import _compiled_validator
+    schema = {"$defs": {"Leaf": {"type": "integer"}}, "type": "object",
+              "properties": {"inline": {"type": "integer"}, "ref": {"$ref": "#/$defs/Leaf"}},
+              "required": ["ref"]}
+    compiled = _compiled_validator(schema)
+    assert compiled.is_valid({"inline": 1, "ref": 1})
+    if mutation == "inline_type":
+        schema["properties"]["inline"]["type"] = "string"
+    elif mutation == "reference_type":
+        schema["$defs"]["Leaf"]["type"] = "string"
+    elif mutation == "new_minimum":
+        schema["$defs"]["Leaf"]["minimum"] = 5
+    elif mutation == "required":
+        schema["required"] = ["missing"]
+    elif mutation == "resource":
+        schema["properties"]["ref"] = {"$id": "urn:changed", "$defs": {"Leaf": {"type": "string"}},
+                                       "$ref": "#/$defs/Leaf"}
+    else:
+        schema["properties"]["inline"] = {"$schema": "http://json-schema.org/draft-04/schema#", "const": 10}
+    for value in ({"inline": 1, "ref": 1}, {"inline": "a", "ref": "a"}, {"ref": 6}, {}):
+        assert _validation_errors(compiled, value) == _validation_errors(Draft202012Validator(schema), value)
+
+
+def test_compiled_construction_never_exposes_private_schema_through_error_context():
+    from backend.ui_projection_api import _compiled_validator
+    schema = {"$defs": {"Leaf": {"type": "integer"}}, "oneOf": [
+        {"type": "object", "required": ["kind", "value"],
+         "properties": {"kind": {"const": "integer"}, "value": {"$ref": "#/$defs/Leaf"}}},
+        {"type": "object", "required": ["kind", "value"],
+         "properties": {"kind": {"const": "null"}, "value": {"type": "null"}}},
+    ]}
+    compiled = _compiled_validator(schema)
+    bad = {"kind": "integer", "value": "changed"}
+    assert _validation_errors(compiled, bad) == _validation_errors(Draft202012Validator(schema), bad)
+    error = next(compiled.iter_errors(bad))
+    leaf_error = next(child for child in error.context if child.validator == "type" and child.instance == "changed")
+    assert error.schema is schema
+    assert leaf_error.schema is schema["$defs"]["Leaf"]
+    leaf_error.schema["type"] = "string"
+    assert compiled.is_valid(bad)
+    assert not compiled.is_valid({"kind": "integer", "value": 1})
+
+
+def test_compiled_construction_schema_reassignment_and_type_exact_fingerprint():
+    from backend.ui_projection_api import _compiled_validator
+    schema = {"const": True}
+    compiled = _compiled_validator(schema)
+    schema["const"] = 1
+    assert compiled.is_valid(1) and not compiled.is_valid(True)
+    unicode_schema = {"const": "\U0001f600"}
+    unicode_compiled = _compiled_validator(unicode_schema)
+    assert unicode_compiled.is_valid("\U0001f600")
+    unicode_schema["const"] = "\ud83d\ude00"
+    assert unicode_compiled.is_valid("\ud83d\ude00") and not unicode_compiled.is_valid("\U0001f600")
+    compiled.schema = {"type": "string"}
+    assert compiled.is_valid("new") and not compiled.is_valid(1)
+
+
+def test_compiled_construction_changed_format_resolver_registry_and_legacy_contexts_are_stock():
+    from backend.ui_projection_api import _compiled_validator
+    from jsonschema import FormatChecker
+    from referencing import Registry, Resource
+    schema = {"$defs": {"Leaf": {"type": "string", "format": "date"}}, "$ref": "#/$defs/Leaf"}
+    compiled = _compiled_validator(schema)
+    assert compiled.is_valid("not-a-date")
+    formatted = compiled.evolve(format_checker=FormatChecker())
+    assert type(formatted) is Draft202012Validator
+    assert not formatted.is_valid("not-a-date") and formatted.is_valid("2026-10-02")
+    alternate = Draft202012Validator({"$defs": {"Leaf": {"type": "integer"}}})._resolver
+    changed = compiled.evolve(_resolver=alternate)
+    stock = Draft202012Validator(schema).evolve(_resolver=alternate)
+    for value in (1, "2026-10-02", None):
+        assert _validation_errors(changed, value) == _validation_errors(stock, value)
+    resource = Resource.from_contents({"$schema": Draft202012Validator.META_SCHEMA["$id"], "type": "integer"})
+    registry = Registry().with_resource("urn:external-test", resource)
+    registered = compiled.evolve(schema={"$ref": "urn:external-test"}, registry=registry, _resolver=None)
+    assert registered.is_valid(1) and not registered.is_valid("1")
+    with pytest.warns(DeprecationWarning):
+        from jsonschema import RefResolver
+    legacy = RefResolver.from_schema({"$defs": {"Leaf": {"type": "integer"}}})
+    evolved = compiled.evolve(resolver=legacy)
+    assert evolved.is_valid(1) and not evolved.is_valid("1")
+
+
+@pytest.mark.parametrize("attribute", ["format_checker", "_resolver", "_registry"])
+def test_compiled_facade_rejects_unsupported_direct_context_assignment(attribute):
+    from backend.ui_projection_api import _compiled_validator
+    compiled = _compiled_validator({"type": "integer"})
+    with pytest.raises(AttributeError):
+        setattr(compiled, attribute, object())
+
+
+def test_compiled_facade_preserves_deprecated_schema_overloads_and_reference_exceptions():
+    from backend.ui_projection_api import _compiled_validator
+    compiled = _compiled_validator({"type": "integer"})
+    with pytest.warns(DeprecationWarning):
+        assert compiled.is_valid("x", {"type": "string"})
+    with pytest.warns(DeprecationWarning):
+        assert list(compiled.iter_errors("x", {"type": "string"})) == []
+    schema = {"$ref": "#/$defs/absent"}
+    with pytest.raises(Exception) as stock:
+        Draft202012Validator(schema).validate(1)
+    with pytest.raises(type(stock.value)) as actual:
+        _compiled_validator(schema).validate(1)
+    assert str(actual.value) == str(stock.value)
+
+
+def test_compiled_construction_cache_is_bounded_strongly_retained_and_read_only(monkeypatch):
+    from backend import ui_projection_api as api
+    import inspect
+    schema = {"type": "object", "properties": {"value": {"type": "integer"}}, "required": ["value"]}
+    compiled = api._compiled_validator(schema)
+    private = compiled._OwnedSchemaValidator__compiled
+    retained = inspect.getclosurevars(type(private).evolve).nonlocals["constructions"]
+    owned_context = inspect.getclosurevars(type(private).evolve).nonlocals["owned_context"]
+    contexts = inspect.getclosurevars(owned_context).nonlocals["contexts"]
+    count = len(retained)
+    context_count = len(contexts)
+    assert 0 < count <= api._MAX_CONSTRUCTION_NODES
+    assert all(identity == id(node) and validator.schema is node for identity, (node, validator) in retained.items())
+    with pytest.raises(TypeError):
+        retained[0] = ({}, None)
+    with pytest.raises(TypeError):
+        contexts[0] = private
+    assert all(identity == id(validator) and owned_context(validator) for identity, validator in contexts.items())
+    unknown = type(private)(schema=private.schema, _resolver=private._resolver)
+    assert not owned_context(unknown)
+    assert unknown.is_valid({"value": 1}) and not unknown.is_valid({"value": "1"})
+    assert not owned_context(compiled.evolve())
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        values = [{"value": n if n % 2 else str(n)} for n in range(60)]
+        assert list(pool.map(compiled.is_valid, values)) == [bool(n % 2) for n in range(60)]
+    assert len(retained) == count
+    assert len(contexts) == context_count
+    monkeypatch.setattr(api, "_MAX_CONSTRUCTION_NODES", 1)
+    bounded = api._compiled_validator(schema)
+    bounded_private = bounded._OwnedSchemaValidator__compiled
+    assert "constructions" not in inspect.getclosurevars(type(bounded_private).evolve).nonlocals
+    assert bounded.is_valid({"value": 1}) and not bounded.is_valid({"value": "1"})
+
+
+def test_compiled_schema_unsupported_python_values_remain_stock():
+    from backend.ui_projection_api import _compiled_validator
+    schema = {"enum": [(1,)]}
+    assert type(_compiled_validator(schema)) is Draft202012Validator
+    cyclic = {}
+    cyclic["$defs"] = {"Cycle": cyclic}
+    assert type(_compiled_validator(cyclic)) is Draft202012Validator
+    schema = {"const": []}
+    compiled = _compiled_validator(schema)
+    schema["const"] = ()
+    assert compiled.is_valid(()) == Draft202012Validator(schema).is_valid(())

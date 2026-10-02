@@ -283,8 +283,90 @@ closed this without changing the guard. Independent review passed 21 simulated
 identity/setup, failure/timeout, source-mutation and LF/hash/map/path cases. The
 reviewer's initial test-double setup error is retained separately; it was not a
 workflow failure. YAML, inline Python syntax, existing action pins and unchanged
-existing-job mappings were checked. Actionlint was unavailable. Actual hosted
-execution and performance remain pending; no local timing failure is erased.
+existing-job mappings were checked. Actionlint was unavailable. These checks
+preceded hosted execution; the results below retain the local timing failures.
+
+### First hosted measurement result
+
+The opt-in job ran on exact commit `492e42843f76a22711ef49d575471b627f3b601a`
+in dispatch `37009338445`, attempt 1. Setup and source checks passed; both benchmark
+profiles completed and the measurement job failed its unchanged 200-row timing gate.
+
+| Profile | Cold complete projection ms | Largest repeated call ms | Result |
+|---|---:|---:|---|
+| 23-device sample, limit 50 | 670.4 | 164.4 | Sample warm gate passed |
+| 23-device sample, limit 200 | 669.9 | 406.8 | Sample warm gate failed |
+| 300-device synthetic, limit 50 | 17007.6 | 371.1 | Measured; no synthetic latency gate |
+
+The 200-row Findings median was 358.0 ms; its first list call also exceeded 300 ms
+at 394.8 ms. The synthetic fleet's first lazy device call was 799.9 ms. These are
+sequential ASGI measurements, not browser/network or concurrent-load results.
+The runner used FastAPI 0.142.2, Starlette 1.7.0, Pydantic 2.13.5 and jsonschema
+4.26.0. The first three differ from the local runtime; do not attribute all differences
+to workstation contention or claim timing for the portable pinned environment.
+
+Independent verification matched the exact artifact ZIP digest, all 15 extracted
+members, all 11 source hashes against Git blobs, both clean source identities,
+both stored fixture digests, and 36 request shapes with five repeats per profile.
+It recomputed medians/maxima and confirmed the failed job verdict. The private
+receipt is `hosted-492e4284-independent-review.json`; the artifact is retained under
+`hosted-492e4284-run37009338445-attempt1` in the task evidence directory.
+
+A bounded local profile then reproduced the exact 938,913-byte Findings response
+and actual HTTP bytes without source changes. One schema validation performed
+40,190 child-validator/resource constructions and 40,265 descents. Instrumented
+CPU attributed a material share to `evolve`, resource construction and subresource
+setup; these instrumented values are not acceptance timings. Construction reuse is
+the next in-scope optimization; all per-response validation must remain active.
+
+Independent baseline probes also found five private-compiler schema/context
+mutation cases that diverged from stock validation: direct-reference type/constraint
+changes, replacement of a discriminator branch's required list, and evolved format
+checker/resolver contexts. These are synthetic private-helper probes, not observed
+production HTTP faults. The baseline is preserved as
+`constructor-mutation-baseline-492e4284.json`. The construction optimization must
+close these ownership/context assumptions as well as retain every response check.
+
+### Construction reuse and workflow corrections
+
+The compiler now fingerprints the caller's schema once per external validation and
+keeps an unexposed copy for optimized validation. A bounded, eagerly constructed
+table retains child validators with their exact initial context. Runtime reads use
+a read-only strong-identity map; unknown/evolved objects fall back. Proven resource-free
+descents pass the existing resolver through the stock descent implementation.
+Every keyword and response validation remains active; validation outcomes are not cached.
+
+Schema changes and unsupported fingerprints use fresh stock validation. Public
+`evolve` delegates to stock validation with the requested context. Private validation
+failures/exceptions are replayed through stock validation so errors cannot expose
+cached schema aliases. Direct context-attribute assignment is explicitly unsupported
+by this private facade; callers use `evolve`. This is not a claim of identical mutable
+Draft-validator object APIs. The five baseline schema/context mismatches are closed.
+
+Final API SHA-256:
+`7c9226a594d3c53aeed1ab99a1efe3ca411ad6ff96ae479b34c6f2610222d537`.
+All 99 focused API tests pass. Independent review passed 17 mutation/context/identity
+groups, including 400 concurrent calls, bounded ownership and zero runtime private
+constructor/registry writes. A fresh final-source replay passed the 73 reference/error
+cases, dynamic/resource fallbacks, concurrent error validation, full-sample/off-page
+corruption checks and all five warmed HTTP corruptions with valid retry. Earlier
+probe assumptions and earlier-source passes remain separate records. API generation
+also passed all nine policy checks and exact equality with the actual application schema.
+
+The bounded final profile preserved the exact 938,913-byte HTTP response and all
+40,265 stock descents while removing the 40,190 repeated child-validator/resource
+constructions. Its local instrumented/CPU timings are diagnostic; a fresh hosted
+measurement remains required before claiming the 300 ms target.
+
+Published `492e4284` CI exposed a workflow-format conflict: all six Python jobs and
+Coverage failed the literal hosted-runner policy because the optional job quoted
+`windows-2025`. Unquoting preserves the same runner. The first local rerun then had
+32 passes/eight failures because a mutation test counted that runner globally.
+Its marker/count/replacement is now scoped to the uniquely named installed-runtime
+job. All eight rejection cases and production guards are unchanged. Forty-two policy
+checks pass; independent decoy/missing/duplicate-owner probes also pass. The quoted
+runner failure and the intermediate 32/eight result remain preserved. New-head hosted
+CI must verify both corrections; no previous failed run is relabeled.
 
 ## Closing evidence still required
 

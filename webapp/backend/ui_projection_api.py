@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 from threading import Lock
+from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -28,6 +29,60 @@ MAX_PAGE_SIZE = 200
 _OWNER = engine.ui_projection_schema()
 Draft202012Validator.check_schema(_OWNER)
 _DEFS = _OWNER["$defs"]
+_MAX_CONSTRUCTION_NODES = 8192
+
+
+def _schema_fingerprint(schema: Any) -> str | None:
+    """Exact JSON types, code points and ordering; unsupported schemas stay stock."""
+    try:
+        _require_json_native(schema)
+        return json.dumps(schema, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    except (ValueError, TypeError, RecursionError, OverflowError, RuntimeError):
+        return None
+
+
+class _OwnedSchemaValidator:
+    """Private-helper facade, not the full mutable DraftValidator attribute API.
+
+    Public schema edits are honored by fresh stock validation. Other context changes
+    use ``evolve`` (which returns stock); direct context assignments are rejected by
+    slots. The optimized graph has no supported public alias, including through errors.
+    The fingerprint is a call-entry observation, not atomicity over concurrent writers.
+    """
+    __slots__ = ("schema", "__compiled", "__fingerprint")
+
+    def __init__(self, schema: dict[str, Any], compiled: Any, fingerprint: str) -> None:
+        self.schema = schema
+        self.__compiled = compiled
+        self.__fingerprint = fingerprint
+
+    def iter_errors(self, instance: Any, _schema: Any = None):
+        if _schema is not None:
+            yield from Draft202012Validator(self.schema).iter_errors(instance, _schema)
+            return
+        if _schema_fingerprint(self.schema) == self.__fingerprint:
+            try:
+                error = next(self.__compiled.iter_errors(instance), None)
+            except Exception:
+                # References and other exceptional paths must also use the public
+                # schema/context, never expose the private construction graph.
+                pass
+            else:
+                if error is None:
+                    return
+        yield from Draft202012Validator(self.schema).iter_errors(instance)
+
+    def validate(self, *args, **kwargs) -> None:
+        for error in self.iter_errors(*args, **kwargs):
+            raise error
+
+    def is_valid(self, instance: Any, _schema: Any = None) -> bool:
+        if _schema is not None:
+            return Draft202012Validator(self.schema).is_valid(instance, _schema)
+        return next(self.iter_errors(instance), None) is None
+
+    def evolve(self, **changes):
+        return Draft202012Validator(self.schema).evolve(**changes)
 
 
 def _compiled_validator(schema: dict[str, Any]):
@@ -39,8 +94,15 @@ def _compiled_validator(schema: dict[str, Any]):
     root definition references reuse validators with the same root resolver, avoiding
     reconstruction for every repeated Fact/Ref leaf. Schemas
     without that proof keep the stock oneOf implementation. The canonical schemas,
-    including OpenAPI, are never rewritten.
+    including OpenAPI, are never rewritten. A private copy owns the construction
+    cache; a public facade detects schema edits once per outer validation and routes
+    them, all failures, and requested alternate contexts through fresh stock behavior.
     """
+    original = schema
+    if type(schema) is not dict or _schema_fingerprint(schema) is None:
+        return Draft202012Validator(original)
+    schema = deepcopy(schema)
+    fingerprint = _schema_fingerprint(schema)
     def nested_resource(node: Any) -> bool:
         if isinstance(node, dict):
             return (node is not schema and ("$id" in node or "$schema" in node)) or bool(
@@ -53,12 +115,14 @@ def _compiled_validator(schema: dict[str, Any]):
     # One Python schema node can be aliased into several resources. Avoid compiling
     # any resource/dialect-changing document, rather than caching a root-scoped proof
     # that could accidentally be reused under another URI or vocabulary.
-    if (schema.get("$schema", Draft202012Validator.META_SCHEMA["$id"]) != Draft202012Validator.META_SCHEMA["$id"]
+    if (fingerprint is None
+            or schema.get("$schema", Draft202012Validator.META_SCHEMA["$id"]) != Draft202012Validator.META_SCHEMA["$id"]
             or nested_resource(schema)):
-        return Draft202012Validator(schema)
+        return Draft202012Validator(original)
     dispatch: dict[int, tuple[str, dict[str, list[int]]]] = {}
     branch_schemas: dict[int, list[dict[str, Any]]] = {}
     branch_validators: dict[int, list[Any]] = {}
+    owned_nodes: dict[int, Any] = {}
 
     def domain(node: Any) -> set[str] | None:
         if not isinstance(node, dict):
@@ -80,6 +144,8 @@ def _compiled_validator(schema: dict[str, Any]):
         return None
 
     def compile_node(node: Any) -> None:
+        if type(node) in (dict, bool):
+            owned_nodes[id(node)] = node
         if isinstance(node, dict):
             branches = node.get("oneOf")
             if isinstance(branches, list) and branches and all(
@@ -108,16 +174,31 @@ def _compiled_validator(schema: dict[str, Any]):
     stock_one_of = Draft202012Validator.VALIDATORS["oneOf"]
     stock_ref = Draft202012Validator.VALIDATORS["$ref"]
     references: dict[str, Any] = {}
+    context_members: dict[int, Any] = {}
+    contexts = MappingProxyType(context_members)
+
+    def owned_context(validator) -> bool:
+        # Registered objects never escape the facade or change context after setup.
+        # Strong identity preserves the exact checked context without per-leaf
+        # attribute checks; an unknown/evolved object cannot inherit an old ID.
+        return contexts.get(id(validator)) is validator
+
+    def register_context(validator) -> None:
+        if (type(validator) is validator_class and validator._ref_resolver is None
+                and validator._resolver is root_resolver and validator._registry is root_registry
+                and validator.format_checker is None
+                and owned_nodes.get(id(validator.schema)) is validator.schema):
+            context_members[id(validator)] = validator
 
     def reference(validator, ref, instance, containing_schema):
-        target = references.get(ref)
+        target = references.get(ref) if owned_context(validator) else None
         if target is not None:
             yield from target.iter_errors(instance)
         else:
             yield from stock_ref(validator, ref, instance, containing_schema)
 
     def one_of(validator, branches, instance, containing_schema):
-        rule = dispatch.get(id(branches))
+        rule = dispatch.get(id(branches)) if owned_context(validator) else None
         if rule is not None and isinstance(instance, dict):
             key, by_value = rule
             value = instance.get(key)
@@ -133,21 +214,53 @@ def _compiled_validator(schema: dict[str, Any]):
                 branches = [branches[index] for index in indexes]
         yield from stock_one_of(validator, branches, instance, containing_schema)
 
-    compiled = validators.extend(Draft202012Validator, {"oneOf": one_of, "$ref": reference})(schema)
+    validator_class = validators.extend(Draft202012Validator, {"oneOf": one_of, "$ref": reference})
+    compiled = validator_class(schema)
+    root_resolver, root_registry = compiled._resolver, compiled._registry
+    stock_evolve, stock_descend = validator_class.evolve, validator_class.descend
+    register_context(compiled)
+    # Construction is eager and bounded by the privately retained schema graph.
+    # No cache writes, instance keys, generators, errors, or validation outcomes occur
+    # during requests. Explicit dialect/resource roots keep stock construction.
+    if len(owned_nodes) <= _MAX_CONSTRUCTION_NODES:
+        constructions = MappingProxyType({
+            identity: (node, stock_evolve(compiled, schema=node, _resolver=root_resolver))
+            for identity, node in owned_nodes.items()
+            if type(node) is bool or not ({"$id", "$schema"} & node.keys())
+        })
+        for _node, validator in constructions.values():
+            register_context(validator)
+
+        def evolve(validator, **changes):
+            target = changes.get("schema", validator.schema)
+            retained = constructions.get(id(target))
+            if (not changes.keys() - {"schema", "_resolver"} and owned_context(validator)
+                    and changes.get("_resolver", root_resolver) is root_resolver
+                    and retained is not None and retained[0] is target):
+                return retained[1]
+            return stock_evolve(validator, **changes)
+
+        def descend(validator, instance, schema, path=None, schema_path=None, resolver=None):
+            retained = constructions.get(id(schema))
+            if (resolver is None and owned_context(validator)
+                    and retained is not None and retained[0] is schema):
+                # In this proven no-$id context, in_subresource returns this exact
+                # resolver. Stock descend still owns keyword evaluation/error paths.
+                resolver = root_resolver
+            return stock_descend(validator, instance, schema, path=path,
+                                 schema_path=schema_path, resolver=resolver)
+
+        validator_class.evolve = evolve
+        validator_class.descend = descend
     for name, definition in schema.get("$defs", {}).items():
         if not any(escape in name for escape in ("/", "~", "%")):
             references["#/$defs/" + name] = compiled.evolve(schema=definition)
+            register_context(references["#/$defs/" + name])
     for identity, branches in branch_schemas.items():
         branch_validators[identity] = [compiled.evolve(schema=branch) for branch in branches]
-    return compiled
-
-
-_DOCUMENT_VALIDATOR = _compiled_validator(_OWNER)
-_DEVICE_VALIDATOR = _compiled_validator({"$ref": "#/$defs/DeviceDocument", "$defs": _DEFS})
-_PROJECTION_VERSION = (
-    engine.ENGINE_SCHEMA_VERSION, serve._release_version(),
-    hashlib.sha256(json.dumps(_OWNER, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-)
+        for validator in branch_validators[identity]:
+            register_context(validator)
+    return _OwnedSchemaValidator(original, compiled, fingerprint)
 
 
 def _rewrite_refs(value: Any) -> Any:
@@ -215,6 +328,14 @@ def _require_json_native(value: Any) -> None:
             active.remove(identity)
 
     visit(value)
+
+
+_DOCUMENT_VALIDATOR = _compiled_validator(_OWNER)
+_DEVICE_VALIDATOR = _compiled_validator({"$ref": "#/$defs/DeviceDocument", "$defs": _DEFS})
+_PROJECTION_VERSION = (
+    engine.ENGINE_SCHEMA_VERSION, serve._release_version(),
+    hashlib.sha256(json.dumps(_OWNER, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+)
 
 
 class _SnapshotProjection:

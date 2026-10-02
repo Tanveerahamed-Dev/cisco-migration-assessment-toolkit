@@ -1024,6 +1024,21 @@ def test_installed_transition_ci_contract_rejects_commented_positive_smoke():
         _assert_ci_owns_installed_transition_smoke(mutated)
 
 
+def _mutate_installed_transition_job(ci, addition):
+    """Target the owned job even when other jobs use the same hosted runner."""
+    matches = list(re.finditer(
+        r"(?ms)^  installed-transition-runtime:\n"
+        r"(?P<job>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", ci,
+    ))
+    assert len(matches) == 1, "the mutation needs one uniquely named installed-runtime job"
+    match = matches[0]
+    job = match.group("job")
+    marker = "    runs-on: windows-2025\n"
+    assert job.count(marker) == 1, "the owned job's runner is absent or ambiguous"
+    return (ci[:match.start("job")] + job.replace(marker, marker + addition, 1)
+            + ci[match.end("job"):])
+
+
 @pytest.mark.parametrize(
     "addition",
     [
@@ -1039,11 +1054,37 @@ def test_installed_transition_ci_contract_rejects_commented_positive_smoke():
 )
 def test_installed_transition_ci_contract_rejects_disabled_or_softened_job(addition):
     ci = _read(".github", "workflows", "ci.yml")
-    marker = "    runs-on: windows-2025\n"
-    assert ci.count(marker) == 1
-    mutated = ci.replace(marker, marker + addition)
+    mutated = _mutate_installed_transition_job(ci, addition)
     with pytest.raises(AssertionError):
         _assert_ci_owns_installed_transition_smoke(mutated)
+
+
+def test_installed_transition_mutation_targets_named_owner_among_other_hosted_jobs():
+    ci = _read(".github", "workflows", "ci.yml")
+    header = "  installed-transition-runtime:\n"
+    extra = ("  additional-hosted-proof:\n"
+             "    runs-on: windows-2025\n"
+             "    steps:\n"
+             "      - name: Independent hosted job\n"
+             "        run: echo independent\n\n")
+    fixture = ci.replace(header, extra + header, 1)
+    _assert_ci_owns_installed_transition_smoke(fixture)
+    addition = "    if: ${{ false }}\n"
+    mutated = _mutate_installed_transition_job(fixture, addition)
+    prefix, owned = fixture.split(header, 1)
+    assert mutated.startswith(prefix + header), "an unrelated hosted job was changed"
+    assert extra in mutated
+    with pytest.raises(AssertionError):
+        _assert_ci_owns_installed_transition_smoke(mutated)
+    # A runner declaration elsewhere cannot supply the missing owned-job proof,
+    # nor can it become the mutation target when that owned declaration is absent.
+    missing_runner = prefix + header + owned.replace("    runs-on: windows-2025\n", "", 1)
+    with pytest.raises(AssertionError):
+        _assert_ci_owns_installed_transition_smoke(missing_runner)
+    with pytest.raises(AssertionError):
+        _mutate_installed_transition_job(missing_runner, addition)
+    with pytest.raises(AssertionError):
+        _mutate_installed_transition_job(prefix, addition)
 
 
 @pytest.mark.parametrize(

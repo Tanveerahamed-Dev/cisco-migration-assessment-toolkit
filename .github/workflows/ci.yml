@@ -405,7 +405,7 @@ jobs:
   projection-performance:
     name: Projection HTTP performance · opt-in measurement
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_projection_performance }}
-    runs-on: "windows-2025"
+    runs-on: windows-2025
     timeout-minutes: 40
     env:
       EXPECTED_SOURCE_COMMIT: ${{ inputs.expected_source_commit }}
