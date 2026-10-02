@@ -144,8 +144,12 @@ jobs:
           cache: npm
           cache-dependency-path: "**/package-lock.json"
       - run: python -m pip install --upgrade pip
+      # Every non-empty declared extra except [build] is installed so the audit below covers it; [build]'s exact
+      # set is the shipped Atlas lock, audited on its own further down. [build-system].requires is
+      # installed explicitly too: pip's build isolation would otherwise keep it out of the audited
+      # environment. The contract test requires these specifiers to equal pyproject.toml's.
       - name: Install audited Python environment
-        run: python -m pip install -e ".[dev]" "pip-audit>=2.9,<3"
+        run: python -m pip install "setuptools==84.0.0" "wheel==0.48.0" -e ".[dev,docx,pptx,mcp,eval]" "pip-audit>=2.9,<3"
       # The audit's subject is the DEPENDENCY CLOSURE, so the unpublishable project itself is
       # uninstalled first. Both flag-level attempts failed, each measured on a real run (2026-08-02):
       #   --strict                  -> "Dependency not found on PyPI: cisco-migration-assessment-
@@ -157,19 +161,51 @@ jobs:
       # Uninstalling the project leaves exactly the dependency set in the environment, fully audited
       # under undiluted --strict: no skips, no not-found, and a real CVE in any dependency still
       # fails the job. The project's own code is what every other job tests.
-      # --ignore-vuln PYSEC-2026-2858 is a NAMED, dated suppression with no admissible fix, not a
-      # loosening — every other advisory remains fatal. The gate's first successful execution
-      # (2026-08-02, after the uninstall fix below) found paramiko 4.0.0 flagged for permitting
-      # SHA-1 in rsakey.py. Verified against primary sources the same day: the fix exists only in
-      # paramiko 5.0.0, and netmiko — the SSH engine this tool is built on — caps `paramiko<5.0`
-      # in its LATEST release (4.7.0), so the fixed version is unresolvable without abandoning
-      # netmiko. Severity supports waiting: CVSS AV:A/AC:H/I:L — adjacent network, high attack
-      # complexity, low integrity impact. RE-EVALUATE whenever netmiko releases: the moment its cap
-      # admits paramiko>=5, delete this flag and bump instead.
+      # This environment no longer suppresses PYSEC-2026-2858 (paramiko 4.0.0 permits SHA-1 in
+      # rsakey.py). The suppression existed because netmiko 4.7.0 capped `paramiko<5.0`; netmiko 4.8.0
+      # (2026-09-21) lifted that cap, so this floating environment resolves paramiko 5.0.0 (the hosted
+      # audit of PR #585 installed it on 2026-10-02), which the advisory does not affect (OSV records
+      # 4.0.0 as the last affected version). The flag now applies only to the shipped lock below,
+      # which still pins paramiko 4.0.0.
       - name: Audit installed Python dependencies
+        if: ${{ !cancelled() }}
         run: |
           python -m pip uninstall --yes cisco-migration-assessment-toolkit
-          python -m pip_audit --strict --ignore-vuln PYSEC-2026-2858
+          python -m pip_audit --strict
+      # EVERY tracked Python requirements file and pip-compile lock is also audited: by its own step
+      # below, or, for a file that only installs this project editable, through the environment
+      # above. That environment is one install, not the Master Reference release toolchain, the
+      # transition runtime pins or the hash-locked set inside Atlas.exe.
+      # Seven high pypdf advisories in the release toolchain were found by Dependabot, not here
+      # (2026-10-02). tests/test_python_dependency_audit_contract.py derives the manifests from
+      # `git ls-files` and fails when one has no audit step here. A ranged file is resolved into a
+      # temporary environment on the day of the run; the hash-locked file is audited exactly as
+      # pinned (--disable-pip), because it is the Windows set the release is built from. A resolving
+      # audit pre-installs the latest pip, wheel and setuptools in its temporary environment, so a
+      # file's pin of one of those is not in that file's report; the contract therefore requires
+      # such a pin to equal the version the environment above installs from [build-system].requires.
+      # Each Python audit runs unless the workflow is cancelled (`!cancelled()`), so one failing
+      # manifest does not hide the other Python verdicts; any failure still fails this required job.
+      - name: Audit the Master Reference release toolchain
+        if: ${{ !cancelled() }}
+        run: python -m pip_audit --strict -r master-reference/requirements-release.txt
+      - name: Audit the runtime requirements
+        if: ${{ !cancelled() }}
+        run: python -m pip_audit --strict -r requirements.txt
+      - name: Audit the webapp requirements
+        if: ${{ !cancelled() }}
+        run: python -m pip_audit --strict -r webapp/requirements.txt
+      - name: Audit the transition runtime test pins
+        if: ${{ !cancelled() }}
+        run: python -m pip_audit --strict -r tools/requirements-transition-runtime-test.txt
+      # --ignore-vuln PYSEC-2026-2858 is a NAMED suppression on this lock only; the registry with its
+      # reason is NAMED_PIP_AUDIT_SUPPRESSIONS in tests/test_python_dependency_audit_contract.py. The
+      # shipped lock still pins paramiko 4.0.0 under netmiko 4.7.0; the fix is a re-lock to netmiko
+      # 4.8.0 / paramiko 5.0.0, which re-qualifies the portable release contract and is its own
+      # change. Severity: CVSS AV:A/AC:H/I:L (adjacent network, high complexity, low integrity).
+      - name: Audit the shipped Atlas lock
+        if: ${{ !cancelled() }}
+        run: python -m pip_audit --strict --disable-pip -r portable/windows-x64-requirements.lock --ignore-vuln PYSEC-2026-2858
       # EVERY tracked npm lockfile is audited with the same flags: a required check that audits one
       # hand-picked package leaves the others' production and development graphs unaudited (the
       # atlas-scope/ hub build ships in the Atlas bundle). tests/test_frontend_platform_contract.py

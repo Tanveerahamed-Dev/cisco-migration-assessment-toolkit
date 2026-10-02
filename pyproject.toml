@@ -97,6 +97,8 @@ dev = [
     # webapp/tests for the same reason. Declared here rather than only in webapp/requirements.txt
     # because `[dev]` is what CI actually installs.
     "httpx>=0.23,<1",
+    # read directly by tests/test_python_dependency_audit_contract.py
+    "pyyaml>=6,<7",
     # Strictly validates the portable CycloneDX 1.6 file SBOM in tests and the release lane.
     "cyclonedx-python-lib==11.12.0",
 ]
