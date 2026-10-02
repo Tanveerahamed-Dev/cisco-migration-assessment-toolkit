@@ -7,11 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 
-_REPO = Path(__file__).resolve().parents[1]
-if str(_REPO) not in sys.path:
-    sys.path.insert(0, str(_REPO))
-
-from webapp.backend.app import create_app  # noqa: E402
+from .app import create_app
 
 
 def export_schema() -> dict:

@@ -93,7 +93,7 @@ def test_push_filter_and_classifier_share_the_exact_path_policy():
         "pytest.ini",
         "tests/golden/snapshot.json",
         "tests/synthetic_fixtures.py",
-        "tools/export_ui_projection_openapi.py",
+        "webapp/backend/export_ui_projection_openapi.py",
         ".github/workflows/webapp-ci.yml",
         ".github/scripts/classify_webapp_ci_scope.py",
     ],
@@ -279,7 +279,7 @@ def test_pr_retargeting_is_an_explicit_scope_trigger():
 def test_frontend_gate_checks_generated_types_against_the_actual_backend():
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     frontend = workflow.split("\n  frontend:", 1)[1].split("\n  e2e:", 1)[0]
-    export = "python tools/export_ui_projection_openapi.py --output webapp/frontend/.generated/openapi.json"
+    export = "python -m webapp.backend.export_ui_projection_openapi --output webapp/frontend/.generated/openapi.json"
     assert "actions/setup-python@" in frontend
     assert 'python -m pip install -e ".[dev]"' in frontend
     assert frontend.index(export) < frontend.index("npm run api:check")

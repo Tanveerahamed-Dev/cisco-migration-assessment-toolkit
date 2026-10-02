@@ -255,7 +255,7 @@ tested. To refresh the frontend types from the actual app without starting a ser
 a user store, run these commands from the repository root:
 
 ```text
-python tools/export_ui_projection_openapi.py --output webapp/frontend/.generated/openapi.json
+python -m webapp.backend.export_ui_projection_openapi --output webapp/frontend/.generated/openapi.json
 npm --prefix webapp/frontend run api:generate
 npm --prefix webapp/frontend run api:check
 ```

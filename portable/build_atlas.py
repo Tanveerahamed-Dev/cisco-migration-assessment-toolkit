@@ -260,7 +260,7 @@ def _smoke_ui_projection(base: str) -> None:
     routes checks the complete Draft 2020-12 owner and transport schemas; successful requests
     also exercise the frozen validators, references and native rpds dependency at runtime.
     """
-    from cisco_toolkit.ui_projection import project
+    from webapp.backend.engine import ui_projection
 
     def request(path: str, *, post: bool = False):
         req = urllib.request.Request(
@@ -291,7 +291,7 @@ def _smoke_ui_projection(base: str) -> None:
                 or headers.get("x-snapshot-digest-form") != "assesshub-store-blob"
                 or headers.get("cache-control") != "no-store"):
             raise ValueError("raw snapshot binding differs")
-        source = project(json.loads(raw))
+        source = ui_projection(json.loads(raw))
         context = {"schema": "ui_projection_transport/1", "projection_schema": source["schema"],
                    "identity": {"snapshot_id": sid, "sha256": "sha256:" + digest,
                                 "bytes": len(raw), "digest_form": "assesshub-store-blob"},

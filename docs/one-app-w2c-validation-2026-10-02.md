@@ -1,8 +1,8 @@
 # W2c: core projection endpoint and screens
 
-Status: **candidate held for a final JSON-value boundary refutation; unpublished**.
-The frontend and portable-resource repair have focused and independent verification; a later
-backend probe below supersedes the earlier passing boundary evidence for nonfinite numbers.
+Status: **local application gates passed; reference architecture/build gate in progress;
+unpublished**. The JSON-value refutation below is closed with fresh independent, full-backend
+and frozen-runtime evidence. The original failure remains recorded.
 This record belongs
 to the existing `codex/core-screens` branch and `ui-projection-2` checkout, created from main
 `a0c727bd` after W2b merged. `docs/NOW.md` remains the live queue.
@@ -195,3 +195,29 @@ OpenAPI bytes still equal `7c1240ee...c333`, so the reviewed frontend types and 
 The guard alone measured a 9.06 ms median over the 1,234,865-byte synthetic projection (50
 checks; no load or worst-case claim). Independent replay and fresh full-backend/frozen gates
 are still in progress at this checkpoint.
+
+Final JSON-boundary closure: independent review rejected **12 invalid native-value classes**,
+**19 producer/HTTP mutations** and invalid model-constructed response bypasses, while preserving
+valid responses, aliases, negative zero and native large integers. An additional ASGI replay
+under the exact portable Python environment accepted the valid response and rejected producer
+NaN in another view, response NaN and response tuples. OpenAPI remained byte-identical. The fresh
+full backend suite passed **1,281 tests / one existing Windows symlink-privilege skip** in
+443.798 seconds, with all three Scope requirements enabled and zero errors/failures. The rebuilt
+frozen executable with API hash `235e8320...5293` and the unchanged reviewed frontend passed all
+12 self-tests and the complete field-layout/HTTP/immutable-copy smoke. The nonfinite-value case
+is resolved for the tested boundaries.
+
+### Reference architecture gate
+
+The first exact-source compiler run at `8bff83ec` failed with four undeclared edges: the portable
+smoke's direct analysis import/call and the exporter under `tools/` importing/calling the webapp.
+The architecture owner classifies that tools path as release distribution. This was a genuine
+placement failure, not an environmental waiver.
+
+The correction preserves the existing architecture policy: the smoke uses the established
+`webapp.backend.engine.ui_projection` adapter, and application contract export now lives at
+`webapp/backend/export_ui_projection_openapi.py`, invoked as a Python module. There is no old
+tools shim or dynamic indirection. README, workflow and scope witnesses follow the module;
+`webapp/**` already covers it. The unchanged owner accepts the proposed edges. The exporter
+test and exact OpenAPI byte check passed; **52 smoke/CI-scope tests** passed. A rebuilt
+exact-source architecture receipt and the remaining reference build are still required.

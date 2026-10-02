@@ -317,7 +317,7 @@ def test_openapi_can_be_reversed_to_exact_fresh_owner_schema(client):
 
 
 def test_openapi_export_is_deterministic_offline_and_check_never_writes(tmp_path, monkeypatch):
-    from tools import export_ui_projection_openapi as exporter
+    from backend import export_ui_projection_openapi as exporter
     forbidden = tmp_path / "do-not-open" / "user.db"
     monkeypatch.setenv("ASSESSHUB_DB", str(forbidden))
     target = tmp_path / "generated" / "openapi.json"
