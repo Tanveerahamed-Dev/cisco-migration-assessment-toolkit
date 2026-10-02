@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2b | Engine defects G13 / G15 / G49 + approved Master Reference compaction | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout; [PR #583](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/583) | Codex | Handoff pushed as `7448cafd`. Owner approved bounded lossless projection compaction on 2026-10-02 to close the reproduced 248 MiB deployment-size failure. Engine/UI gates and earlier reviews are retained in [validation](engine-defects-validation-2026-10-01.md). | Implement source-chunk metadata factoring test-first, independently refute, and measure the complete rebuilt deployment including decoder/receipts. Preserve public records, every source line, decoded-size bounds and privacy/size gates. Then pass exact-head CI and merge; W2c waits. Do not regenerate golden/sample fixtures again. |
+| W2b | Engine defects G13 / G15 / G49 + approved Master Reference compaction | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout; [PR #583](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/583) | Codex | Handoff pushed as `7448cafd`; approved compaction is implemented and reviewed locally. All 4,038 saved source chunks round-trip exactly, saving 5,771,950 compressed bytes before whole-bundle overhead. Full rebuilt deployment acceptance remains pending; see [validation](engine-defects-validation-2026-10-01.md). (2026-10-02) | Measure the complete clean-source deployment including decoder/receipts, preserve all limits and records, and pass the privacy gates before publishing the candidate. Then finish exact-head CI and merge; W2c waits. Do not regenerate golden/sample fixtures again. |
 | W2c | Backend endpoint and first core screens | planned `codex/core-screens`; reuse existing `.claude/worktrees/ui-projection-2` checkout after W2b merges; branch not created | Codex | API and visual-reference preflights complete; implementation waits for W2b | After W2b merges, create the listed branch from current main in the clean existing checkout. Add the paged, declared-response-model endpoint, then Overview / Trust / Inventory + device / Findings screens using only contract envelopes. |
 
 ## Owner decisions
@@ -97,6 +97,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-02, Codex (compaction source freeze):
+  - Closed the metadata-string numeric overflow refutation and generated-decoder EOL drift test-first. Final projection suite: 90 passed / one existing POSIX-only skip; TypeScript, lint and diff checks passed.
+  - Independent bounded review and a repeated all-chunk payload/gzip comparison preserve record values, ordering, indexes, digests, text and terminators. The original chunk partition and limits remain. The explicit pre-existing legacy fallback key limitation is recorded rather than claimed repaired.
+  - Full deployment size is still pending. Source-chunk savings alone are not a successful deployment gate. Golden/sample/Scope fixture bytes remain unchanged.
 
 - 2026-10-02, Codex (approved W2b compaction):
   - Owner approved the pending bounded lossless Master Reference compaction request. It is now part of W2b on the existing branch and checkout.

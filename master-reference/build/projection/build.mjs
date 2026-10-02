@@ -3740,7 +3740,7 @@ async function writeSourceProjection({
       `const sourceChunkLoaders = Object.freeze([\n${loaderLines}\n]);\n` +
       "if (sourceChunkLoaders.length !== sourceFilePaths.length || sourceChunkLoaders.some((loaders, index) => { const descriptor = sourceFiles[sourceFilePaths[index]]; return descriptor?.path !== sourceFilePaths[index] || !Number.isSafeInteger(descriptor.chunkCount) || descriptor.chunkCount !== descriptor.chunks.length || loaders.length !== descriptor.chunks.length || loaders.some((loader) => typeof loader !== \"function\") || descriptor.chunks.some((chunk, chunkIndex) => chunk.chunkIndex !== chunkIndex); })) throw new Error(\"source chunk loader route is absent or inconsistent\");\n" +
       "const sourceFileOrdinals = new Map(sourceFilePaths.map((path, index) => [path, index]));\n" +
-      `${decodeSourceChunk.toString()}\n` +
+      `${decodeSourceChunk.toString().replace(/\r\n?/gu, "\n")}\n` +
       "export function getSourceFile(path) { return Object.hasOwn(sourceFiles, path) ? sourceFiles[path] : null; }\n" +
       "export async function loadSourceChunk(path, chunkIndex) {\n" +
       "  const ordinal = typeof path === \"string\" ? sourceFileOrdinals.get(path) : undefined;\n" +

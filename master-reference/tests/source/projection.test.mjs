@@ -2508,6 +2508,40 @@ test("symbol metadata routes reject self-receipted binding, count, order, digest
   );
 });
 
+test("source decoder emission is identical across LF, CRLF and CR checkouts", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-decoder-eol-"));
+  const originalDescriptor = Object.getOwnPropertyDescriptor(sourceCodec.decodeSourceChunk, "toString");
+  const functionSource = Function.prototype.toString.call(sourceCodec.decodeSourceChunk).replace(/\r\n?/gu, "\n");
+  try {
+    const { input } = await makeCompilerFixture(scratch);
+    let expectedBytes;
+    let expectedDigest;
+    for (const [name, eol] of [["lf", "\n"], ["crlf", "\r\n"], ["cr", "\r"]]) {
+      Object.defineProperty(sourceCodec.decodeSourceChunk, "toString", {
+        configurable: true, value: () => functionSource.replaceAll("\n", eol),
+      });
+      const output = join(scratch, name);
+      const manifest = await buildProjection({ input, output });
+      const indexBytes = await readFile(join(output, ...manifest.sourceIndex.module.split("/")));
+      if (name === "lf") {
+        expectedBytes = indexBytes;
+        expectedDigest = manifest.sourceIndex.sha256;
+      } else {
+        assert.deepEqual(indexBytes, expectedBytes, `${name} checkout must not change emitted decoder bytes`);
+        assert.equal(manifest.sourceIndex.sha256, expectedDigest);
+      }
+      const loaded = await import(pathToFileURL(join(output, "index.mjs")).href);
+      const descriptor = await loaded.loadSource(manifest.sourceModules[0].path);
+      assert.ok(descriptor);
+      assert.ok((await loaded.loadSourceChunk(descriptor.path, 0)).segments.length > 0);
+    }
+  } finally {
+    if (originalDescriptor) Object.defineProperty(sourceCodec.decodeSourceChunk, "toString", originalDescriptor);
+    else delete sourceCodec.decodeSourceChunk.toString;
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
 test("projection is deterministic, lazy, privacy-gated, and exact-source preserving", async () => {
   const scratch = await mkdtemp(join(os.tmpdir(), "atlas-projection-test-"));
   try {

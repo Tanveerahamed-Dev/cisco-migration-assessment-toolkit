@@ -393,3 +393,14 @@ codec defect was found. Author checks: initial test-first RED, then 89 projectio
 one existing POSIX-only skip; after the one-line finite-value repair, all five focused codec and
 loader cases, TypeScript, lint and diff checks passed. The complete rebuilt bundle remains the
 next acceptance gate.
+
+A final portability check reproduced different generated-index bytes for an equivalent CRLF
+decoder body (8,242 bytes versus 8,173 with LF). Normalizing only the embedded function's source
+text closes that regression; source data and its terminators are untouched. One fixture now
+proves byte/hash-identical indexes and successful loading for LF, CRLF and bare-CR bodies.
+Final projection suite: **90 passed / one existing POSIX-only skip**, with TypeScript, lint
+and diff checks passing. Final encoder SHA-256:
+`44c7cb339cbad210d6f8fe25babd83d30e634aa647bac1a80f0de45a7ffa04a0`.
+The complete 4,038-chunk comparison was rerun on that hash and produced identical payload and
+savings results. The earlier clean `1b56f2f0` compiler output also passed all **1,766** envelope
+chunks plus manifest/completeness/graph metadata schemas; final-source rebuild evidence follows.
