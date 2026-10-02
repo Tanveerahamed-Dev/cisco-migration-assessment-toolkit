@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-10-02** (Codex). Reasoning behind the current direction:
+Last reconciled: **2026-10-03** (Codex). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -70,11 +70,17 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2d | Projection performance | `codex/ui-projection-performance`; [PR #586](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/586); active `.claude/worktrees/ui-projection-2` checkout | Codex | Published `2a50978a` sample 200-row maximum 445.9 ms still fails (2026-10-02). Local direct rule-list reuse and invalid-alternative retry correction pass 106 API tests and independent correctness review; timing remains open. An isolated compiled-validator feasibility trial is authorized, with no production dependency change yet. [Validation](one-app-w2d-validation-2026-10-02.md). | Complete performance work without skipping response constraints, then fresh privacy/history gates, new exact-source hosted measurement below 300 ms and every required CI check before merge. Earlier failures retain their source scope. |
+| W2d | Projection performance | `codex/ui-projection-performance`; [PR #586](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/586); active `.claude/worktrees/ui-projection-2` checkout | Codex | Published `2a50978a` has all 15 required checks green but still fails the 200-row timing target. Local correctness fix `3b286f6f` passes 106 API tests and independent review. Owner approved pinned jsonschema-rs with Python fallback, private-version guard and lock/notice/SBOM custody; final validation and publication preparation continue (2026-10-03). [Validation](one-app-w2d-validation-2026-10-02.md). | Finish the guard/filter replay and review, commit, run privacy gates, push, then require every exact-head check, hosted frozen proof and the unchanged hosted 300 ms gate before the authorized merge. The dependency hold is lifted; diagnostic timings are not acceptance. |
 | W2e | Topology & Paths | `codex/topology-paths`; reuse `.claude/worktrees/ui-projection-2` after W2d | Codex | Queued after W2d. Fifth core screen with contract-owned 2-D facts and embedded Atlas Scope 3-D hub in the bundle. (2026-10-02) | Start after W2d merges; independent review and exact-head required checks before its own merge commit. #582 remains with the Scope session. |
 | W7 | Atlas release candidate | `codex/atlas-release-candidate`; reuse `.claude/worktrees/ui-projection-2` after W2e | Codex | Queued after W6, W2d and W2e. Read-only preflight found the release dependency inventory/notices and material receipt omit the bundled Scope lock; bounded correction is required before the new candidate. (2026-10-02) | Reconcile both frontend dependency roots in `portable/release_contract.py`, prepare the pinned Node/npm toolchain, then build with `python -m portable.build_release`, verify the candidate and provide stick-update steps. |
 
 ## Owner decisions
+
+**Decided — #586 native dependency APPROVED (owner decision 2026-10-02, relayed in chat 2026-10-03):**
+- The owner explicitly approved adding pinned `jsonschema-rs==0.58.4` to the product and Atlas bundle exactly as designed: Python fallback, fail-closed `_RefResolver` version guard, pinned lock, notice and SBOM custody.
+- The dependency approval hold is lifted. Commit, privacy gates, push and CI remain authorized. **Merge #586 only when every required check on the exact final head and the unchanged hosted 300 ms performance gate pass.** Preserve the existing merge-commit and tree-reconciliation rules.
+- The private `jsonschema.validators._RefResolver` import must remain bound to its explicitly reviewed jsonschema version, with a test that fails closed on version drift. This approval does not relax runner security, privacy, packaging or release gates and does not authorize release publication, signing or deployment.
+- W2e and W7 still follow W2d's authorized merge. W5/#582 and W8/#587 remain with their owner.
 
 **Decided later 2026-10-02 (current owner instruction):**
 - Master Reference is the owner's internal code-repository reference; an unverified hosting-size quota must not hold back the application.
@@ -133,6 +139,26 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- 2026-10-03, Codex (approved native integration prepared for hosted gates):
+  - Final API `1d96342cb543d74994d42b6ac75b01c64484ed1cfa144de8e3acc6233cd4bede` passes 119 tests, ten private-version checks, nine generation-policy checks, Ruff and diff checks. Actual OpenAPI and generated TypeScript are unchanged. The private resolver loader refuses unreviewed or missing jsonschema versions before private import/use; the frozen selftest also exercises the loader.
+  - Packaging passes 253 focused tests with nine explicit platform/tool skips, followed by eight final guard/filter delta checks. The reviewed native pin/Windows wheel hash, Python fallback, MIT fallback, upstream SBOM custody and exact metadata selection are present. Installer-added metadata is removed only from the two reviewed validator directories; required metadata/licenses/SBOM and unrelated metadata are retained.
+  - Independent native/ownership/reference/hostile-HTTP review passed on the pre-guard source, and the final private-version/metadata deltas passed on the final source hashes. All earlier failed probes and correction scopes are retained. No remaining source finding is open. The combined checkpoint still needs fresh privacy/history/body gates, publication and exact-head hosted CI/performance.
+  - No local frozen-build result is claimed. Observed low memory/high CPU makes another heavy local build inappropriate; the canonical isolated hosted Windows job must close exact-source assets, executable/native HTTP proof and private-version proof. Merge remains authorized only after every required final-head check and the hosted 300 ms gate pass; W2e and W7 follow.
+
+- 2026-10-03, Codex (native dependency approved):
+  - Owner relayed the explicit 2026-10-02 approval in chat for pinned jsonschema-rs 0.58.4 with Python fallback, fail-closed private-resolver guard and lock/notice/SBOM custody. Updated the pending decision above to approved and lifted only that dependency hold.
+  - Every required exact-head check and the hosted 300 ms gate must still pass before #586 merges. The final private-version and metadata-filter checks are completing locally; the combined committed source will receive privacy scans and hosted Windows frozen/native proof. Local host resource pressure makes an additional local heavy build inappropriate; no required gate is waived.
+
+- 2026-10-02, Codex (native merge hold / private API version guard):
+  - The supervisor note explicitly withholds native dependency adoption authority. Keep #586 as a reviewable proposal; local commits, publication privacy checks, push and CI may continue, but no merge is allowed until the owner approves jsonschema-rs in chat. This supersedes broad green-only merge authority for the native addition.
+  - The API worker owns a narrow fixed-version/fail-closed check around the private `_RefResolver` import after the current independent replay reaches its terminal checkpoint. All earlier source hashes/results retain their scope. Combined commit and authoritative frozen build wait for that guard's validation and review.
+
+- 2026-10-02, Codex (W2d compiled-validator integration selected):
+  - The external trial on committed `3b286f6f` used pinned `jsonschema-rs==0.58.4`, verified Windows wheel bytes/RECORD/AMD64 identity and an isolated target installation. Three paired repeats preserved exact HTTP bodies and every other response guard: Findings/list 200-row medians fell from 448.3/468.1 ms to 176.4/194.0 ms. These are diagnostic, not hosted acceptance. Untimed counters prove one native call per response validation on all three tested payloads.
+  - Native acceptance is restricted before evaluation to the audited unchanged schema profile and exact JSON builtins: safe-53-bit integers, no floats/cycles/depth above 128, no line terminators or surrogates in strings/keys. Formats are disabled and retrieval is offline. All 155 differential probes and nine real paired-engine-field cases preserve the required behavior within this boundary; eight observed differences are excluded before native acceptance. Unknown/mutated schemas and unsupported inputs use Python, with closed-registry fallback also refusing HTTP/file retrieval.
+  - The wheel lacks license text. The pinned upstream MIT text and wheel-provided 203-component SBOM are retained for reviewed notice/material custody; that SBOM is declared upstream metadata, not independent linked-component or legal closure. The native path requires pinned dependencies, a reviewed portable lock/inventory update, metadata/native-extension custody and a frozen HTTP proof of actual native use. No version, release tag, signing or publication action is included.
+  - API and packaging work have separate file owners, with an independent reviewer. Canonical schemas, all per-response guards, the 300 ms gate and the GitHub-hosted-only runner remain intact. The smaller pure-Python compiler is not selected: it ignores current dependentRequired constraints without an additional schema adapter. #582/#587 and W7's separate Scope inventory correction remain outside this implementation.
 
 - 2026-10-02, Codex (W2d traversal correctness checkpoint):
   - Direct private descent and uniquely selected alternative validation now reuse complete retained keyword plans without retrying invalid subtrees. Public failures still replay through the original stock validator. API SHA-256 is `215c97cd62b8e52eb4c437cf5359ab82f69f52a7dcb63055dd3e6c465ac0572a`; 106 focused API tests, 16 targeted checks, Ruff and diff checks pass.

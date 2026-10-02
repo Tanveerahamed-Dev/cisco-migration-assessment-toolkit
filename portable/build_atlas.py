@@ -253,19 +253,21 @@ def build() -> None:
         shutil.copy2(src, DIST / Path(src).name)
 
 
-def _smoke_ui_projection(base: str) -> None:
+def _smoke_ui_projection(base: str, instance_nonce: str) -> None:
     """Exercise frozen schema resources/validator and compare every returned field to its owner.
 
     Called only against the nonce-verified temporary smoke process. Importing its projection
-    routes checks the complete Draft 2020-12 owner and transport schemas; successful requests
-    also exercise the frozen validators, references and native rpds dependency at runtime.
+    routes checks the complete Draft 2020-12 owner and transport schemas. The child enables
+    a nonce-bound smoke-only header emitted after native acceptance and all response guards;
+    exact bodies alone cannot prove that the bundled native provider handled these requests.
     """
     from webapp.backend.engine import ui_projection
 
     def request(path: str, *, post: bool = False):
         req = urllib.request.Request(
             base + path, data=b"" if post else None,
-            headers={"Origin": base, "Sec-Fetch-Site": "same-origin"},
+            headers={"Origin": base, "Sec-Fetch-Site": "same-origin",
+                     "X-Atlas-Native-Smoke-Nonce": instance_nonce},
         )
         with urllib.request.urlopen(req, timeout=60) as response:
             if response.status != 200:
@@ -279,6 +281,8 @@ def _smoke_ui_projection(base: str) -> None:
             raise ValueError("projection differs from owner")
 
     try:
+        if not instance_nonce:
+            raise ValueError("native validation smoke nonce is absent")
         seeded, _ = request("/api/demo/seed", post=True)
         sid = json.loads(seeded)["snapshot"]["id"]
         if type(sid) is not int or sid <= 0:
@@ -316,10 +320,14 @@ def _smoke_ui_projection(base: str) -> None:
         body, headers = request(prefix + "/ui-projection/overview?limit=1")
         if headers.get("cache-control") != "no-store":
             raise ValueError("projection response is cacheable")
+        if headers.get("x-atlas-native-validation") != "jsonschema-rs/0.58.4":
+            raise ValueError("frozen view did not prove actual native validation")
         equal(json.loads(body), {**context, "payload": expected})
         body, headers = request(prefix + "/ui-projection/overview/lists?pointer=/axes&offset=1&limit=1")
         if headers.get("cache-control") != "no-store":
             raise ValueError("projection list response is cacheable")
+        if headers.get("x-atlas-native-validation") != "jsonschema-rs/0.58.4":
+            raise ValueError("frozen list did not prove actual native validation")
         equal(json.loads(body), {**context, "list": page("axes", 1)})
     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
         raise SystemExit("frozen UI projection smoke failed") from exc
@@ -372,6 +380,8 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
             raise SystemExit(
                 "selftest did not prove the frozen offline network boundary in its exact mode"
             )
+        if "  [ ok ] ui-projection-legacy-resolver" not in p.stdout:
+            raise SystemExit("selftest did not prove the frozen reviewed jsonschema private interface")
 
         print("[smoke 2/4] --version")
         p = _run([str(exe), "--version"], timeout=120, env=runtime_env, cwd=smoke_bundle)
@@ -408,6 +418,7 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
         instance_nonce = secrets.token_urlsafe(24)
         child_env = dict(runtime_env)
         child_env["ASSESSHUB_INSTANCE_NONCE"] = instance_nonce
+        child_env["ASSESSHUB_NATIVE_VALIDATION_SMOKE"] = "1"
         srv = subprocess.Popen([str(exe), "--no-browser", "--port", str(port), "--db", db],
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, encoding="utf-8", errors="replace",
@@ -443,7 +454,7 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
                 raise SystemExit(f"/api/meta app block wrong: {app!r}")
             print(f"    /api/meta app: {app['title']} · release {app['release']}")
 
-            _smoke_ui_projection(base)
+            _smoke_ui_projection(base, instance_nonce)
             print("    frozen UI projection preserves exact source binding, owner states and bounded pages")
 
             req = urllib.request.Request(base + "/", headers={"Accept": "text/html"})

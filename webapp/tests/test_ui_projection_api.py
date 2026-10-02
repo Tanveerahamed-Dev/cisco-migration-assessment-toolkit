@@ -1097,3 +1097,329 @@ def test_compiled_schema_unsupported_python_values_remain_stock():
     compiled = _compiled_validator(schema)
     schema["const"] = ()
     assert compiled.is_valid(()) == Draft202012Validator(schema).is_valid(())
+
+
+@pytest.fixture()
+def native_body(client, sample):
+    from backend import ui_projection_api as api
+    body = client.get(url(seed(client, sample))).json()
+    assert api._native_instance_allowed(body)
+    return body
+
+
+def test_native_transport_pins_provider_schema_and_preserves_public_errors(native_body):
+    from backend import ui_projection_api as api
+    assert api.version("jsonschema-rs") == "0.58.4"
+    assert api._native_schema_hash(api._VIEW_SCHEMA) == api._NATIVE_SCHEMA_HASHES["view"]
+    assert api._native_schema_hash(api._LIST_SCHEMA) == api._NATIVE_SCHEMA_HASHES["list"]
+    schema = deepcopy(api._VIEW_SCHEMA)
+    validator = api._NativeTransportValidator(schema, "view")
+    native = validator._NativeTransportValidator__native
+    assert native is not None
+    calls = []
+
+    class Observed:
+        def is_valid(self, value):
+            calls.append(True)
+            return native.is_valid(value)
+
+    validator._NativeTransportValidator__native = Observed()
+    assert validator.is_valid(native_body)
+    assert len(calls) == 1
+    for removed in (("engine_state",), ("engine_state_owner",), ("engine_state", "engine_state_owner")):
+        changed = deepcopy(native_body)
+        fact = changed["payload"]["facts"]["avg_health"]["fact"]
+        assert {"engine_state", "engine_state_owner"} <= fact.keys()
+        for key in removed:
+            del fact[key]
+        assert validator.is_valid(changed) is (len(removed) == 2)
+        assert _validation_errors(validator, changed) == _validation_errors(api._stock_validator(schema), changed)
+    bad = {**native_body, "view": "invented"}
+    error = next(validator.iter_errors(bad))
+    assert error.schema is schema
+    assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(schema), bad)
+    assert not hasattr(api._DOCUMENT_VALIDATOR, "_NativeTransportValidator__native")
+    assert not hasattr(api._DEVICE_VALIDATOR, "_NativeTransportValidator__native")
+
+
+def test_native_refuses_unsupported_instances_before_acceptance(native_body):
+    from backend import ui_projection_api as api
+    validator = api._NativeTransportValidator(deepcopy(api._VIEW_SCHEMA), "view")
+
+    class Forbidden:
+        def is_valid(self, _value):
+            pytest.fail("unsupported instance reached native acceptance")
+
+    validator._NativeTransportValidator__native = Forbidden()
+    for value in (1.0, 2**53, -(2**53), "line\n", "line\r", "\u2028", "\u2029", "\ud800", "\udfff"):
+        body = deepcopy(native_body)
+        if type(value) in (float, int):
+            body["identity"]["snapshot_id"] = value
+        else:
+            body["engine"]["code_schema_version"] = value
+        assert not api._native_instance_allowed(body)
+        assert _validation_errors(validator, body) == _validation_errors(api._stock_validator(validator.schema), body)
+    for value in ((1,), {1: "key"}, {"\ud800": 1}, float("nan"), float("inf")):
+        assert not api._native_instance_allowed(value)
+        assert validator.is_valid(value) == api._stock_validator(validator.schema).is_valid(value)
+    cyclic = []
+    cyclic.append(cyclic)
+    assert not api._native_instance_allowed(cyclic)
+    deep = 1
+    for _ in range(129):
+        deep = [deep]
+    assert not api._native_instance_allowed(deep)
+    assert not api._native_instance_allowed(type("ForeignDict", (dict,), {})())
+    assert api._native_instance_allowed({"okay": [True, False, None, 2**53 - 1, -(2**53 - 1), "\U0001f600"]})
+
+
+def test_native_schema_version_and_owned_copy_are_checked_before_compilation(monkeypatch):
+    from backend import ui_projection_api as api
+    provider = api._native_provider()
+    assert provider is not None
+    calls = []
+    real = provider.Draft202012Validator
+
+    def observed(schema, **options):
+        calls.append(options)
+        assert options == {"offline": True, "validate_formats": False, "ignore_unknown_formats": True}
+        return real(schema, **options)
+
+    monkeypatch.setattr(provider, "Draft202012Validator", observed)
+    changed = deepcopy(api._VIEW_SCHEMA)
+    changed["title"] = "not audited"
+    assert api._NativeTransportValidator(changed, "view")._NativeTransportValidator__native is None
+    assert api._NativeTransportValidator(api._OWNER, "view")._NativeTransportValidator__native is None
+    assert api._NativeTransportValidator(api._VIEW_SCHEMA, "list")._NativeTransportValidator__native is None
+    with monkeypatch.context() as altered:
+        altered.setattr(api, "version", lambda _name: "0.58.3")
+        assert api._NativeTransportValidator(api._VIEW_SCHEMA, "view")._NativeTransportValidator__native is None
+    assert calls == []
+    assert api._native_schema_hash({"const": "\ud83d\ude00"}) is None
+    copied = api.deepcopy
+    schema = deepcopy(api._VIEW_SCHEMA)
+
+    def changed_copy(value):
+        result = copied(value)
+        if value is schema:
+            result["title"] = "changed during copy"
+        return result
+
+    with monkeypatch.context() as altered:
+        altered.setattr(api, "deepcopy", changed_copy)
+        assert api._NativeTransportValidator(schema, "view")._NativeTransportValidator__native is None
+    assert calls == []
+    assert api._NativeTransportValidator(schema, "view")._NativeTransportValidator__native is not None
+    assert len(calls) == 1
+
+
+def test_native_failure_and_mutation_never_publish_private_diagnostics(native_body):
+    from backend import ui_projection_api as api
+    schema = deepcopy(api._VIEW_SCHEMA)
+    validator = api._NativeTransportValidator(schema, "view")
+
+    class Failing:
+        def is_valid(self, _value):
+            raise ValueError("private native sentinel")
+
+    validator._NativeTransportValidator__native = Failing()
+    assert validator.is_valid(native_body)
+    bad = {**native_body, "view": "invented"}
+    error = next(validator.iter_errors(bad))
+    assert error.__context__ is None
+    assert "private native sentinel" not in str(error)
+    assert _validation_errors(validator, bad) == _validation_errors(api._stock_validator(schema), bad)
+
+    class Mutating:
+        def is_valid(self, _value):
+            schema["required"] = ["not_present"]
+            return True
+
+    validator._NativeTransportValidator__native = Mutating()
+    assert not validator.is_valid(native_body)
+    validator.schema = {"type": "integer"}
+    assert validator.is_valid(1) and not validator.is_valid("1")
+    assert type(validator.evolve()) is Draft202012Validator
+    for outcome in (True, False, "exception"):
+        replaced = api._NativeTransportValidator(deepcopy(api._VIEW_SCHEMA), "view")
+
+        class Replacing:
+            def is_valid(self, _value):
+                replaced.schema = {"type": "integer"}
+                if outcome == "exception":
+                    raise ValueError("private native sentinel")
+                return outcome
+
+        replaced._NativeTransportValidator__native = Replacing()
+        assert not replaced.is_valid(native_body)
+        assert next(replaced.iter_errors(native_body)).schema is replaced.schema
+
+
+def test_all_python_fallbacks_and_evolved_contexts_refuse_external_retrieval(tmp_path):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    from referencing import Registry, Resource
+    from backend import ui_projection_api as api
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"type":"integer"}')
+
+        def log_message(self, *_args):
+            pass
+
+    fixture = tmp_path / "reference.json"
+    fixture.write_text('{"type":"integer"}')
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for reference in (f"http://127.0.0.1:{server.server_port}/schema", fixture.as_uri()):
+            for factory in (api._compiled_validator, lambda schema: api._NativeTransportValidator(schema, "view")):
+                unknown = factory({"$ref": reference})
+                with pytest.raises(Exception, match="Unresolvable"):
+                    unknown.validate(1)
+                mutated = factory(deepcopy(api._VIEW_SCHEMA))
+                mutated.schema.clear()
+                mutated.schema["$ref"] = reference
+                with pytest.raises(Exception, match="Unresolvable"):
+                    mutated.validate(1)
+
+                def retrieve(uri):
+                    pytest.fail(f"custom retrieval invoked: {uri}")
+
+                registry = Registry(retrieve=retrieve)
+                evolved = factory({"type": "integer"}).evolve(
+                    schema={"$ref": reference}, registry=registry, _resolver=None,
+                )
+                with pytest.raises(Exception, match="Unresolvable"):
+                    evolved.validate(1)
+                resolved = factory({"type": "integer"}).evolve(
+                    schema={"$ref": reference}, _resolver=registry.resolver(),
+                )
+                with pytest.raises(Exception, match="Unresolvable"):
+                    resolved.validate(1)
+                from jsonschema.validators import _RefResolver
+                legacy = _RefResolver.from_schema({"$ref": reference}, handlers={"http": retrieve, "file": retrieve})
+                legacy_evolved = factory({"type": "integer"}).evolve(schema={"$ref": reference}, resolver=legacy)
+                with pytest.raises(Exception):
+                    legacy_evolved.validate(1)
+        resource = Resource.from_contents({"$schema": Draft202012Validator.META_SCHEMA["$id"], "type": "integer"})
+        registered = api._NativeTransportValidator({}, "view").evolve(
+            schema={"$ref": "urn:local"}, registry=Registry().with_resource("urn:local", resource), _resolver=None,
+        )
+        assert registered.is_valid(1) and not registered.is_valid("1")
+        assert requests == []
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.mark.parametrize("installed", ["4.25.0", "4.26.1", "4.27.0", None])
+def test_private_legacy_resolver_version_guard_precedes_import_and_use(monkeypatch, installed):
+    import builtins
+    from backend import ui_projection_api as api
+    assert api._LEGACY_RESOLVER_REVIEWED_VERSION == "4.26.0"
+    original_import = builtins.__import__
+
+    def forbidden_private_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "jsonschema.validators" and "_RefResolver" in fromlist:
+            pytest.fail("unaudited private resolver was imported")
+        return original_import(name, globals, locals, fromlist, level)
+
+    def observed_version(name):
+        assert name == "jsonschema"
+        if installed is None:
+            raise api.PackageNotFoundError(name)
+        return installed
+
+    monkeypatch.setattr(builtins, "__import__", forbidden_private_import)
+    monkeypatch.setattr(api, "version", observed_version)
+    with pytest.raises(RuntimeError, match=r"reviewed jsonschema 4\.26\.0"):
+        api._offline_context({"resolver": object()})
+
+
+@pytest.mark.parametrize("failure", ["missing", "import_failure"])
+def test_private_legacy_resolver_missing_interface_refuses(monkeypatch, failure):
+    import builtins
+    import jsonschema.validators as validators_module
+    from backend import ui_projection_api as api
+    assert api.version("jsonschema") == "4.26.0"
+    if failure == "missing":
+        monkeypatch.delattr(validators_module, "_RefResolver")
+    else:
+        original_import = builtins.__import__
+
+        def unavailable(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "jsonschema.validators" and "_RefResolver" in fromlist:
+                raise ImportError("private import sentinel")
+            return original_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", unavailable)
+    with pytest.raises(RuntimeError, match="legacy resolver is unavailable") as result:
+        api._reviewed_legacy_resolver_type()
+    assert result.value.__suppress_context__
+
+
+def test_reviewed_legacy_resolver_retains_in_memory_context_without_retrieval():
+    from backend import ui_projection_api as api
+    assert api.version("jsonschema") == "4.26.0"
+    legacy_type = api._reviewed_legacy_resolver_type()
+    legacy = legacy_type.from_schema({"$defs": {"Leaf": {"type": "integer"}}})
+    validator = api._compiled_validator({"$ref": "#/$defs/Leaf"}).evolve(resolver=legacy)
+    assert validator.is_valid(1) and not validator.is_valid("1")
+    assert validator._ref_resolver is not legacy
+    assert validator._ref_resolver.store == legacy.store
+
+
+def test_native_smoke_proof_is_request_local_and_requires_complete_validation(tmp_path, monkeypatch, sample):
+    from backend import ui_projection_api as api
+    monkeypatch.setenv("ASSESSHUB_NATIVE_VALIDATION_SMOKE", "1")
+    monkeypatch.setenv("ASSESSHUB_INSTANCE_NONCE", "native-smoke-test")
+    monkeypatch.delenv("ASSESSHUB_TOKEN", raising=False)
+    app = create_app(db_path=str(tmp_path / "native-smoke.db"), scope_dist_dir=None)
+    proof = "x-atlas-native-validation"
+    headers = {"X-Atlas-Native-Smoke-Nonce": "native-smoke-test"}
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000),
+                    raise_server_exceptions=False) as client:
+        sid = seed(client, sample)
+        path = url(sid)
+        assert client.get(path, headers=headers).headers[proof] == "jsonschema-rs/0.58.4"
+        assert client.get(url(sid, "findings") + "/lists?pointer=/rows&limit=200", headers=headers).headers[proof] == "jsonschema-rs/0.58.4"
+        assert proof not in client.get(path).headers
+        assert proof not in client.get(path, headers={"X-Atlas-Native-Smoke-Nonce": "wrong"}).headers
+        assert proof not in client.get(path, headers=[*headers.items(), *headers.items()]).headers
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            modes = [True, False] * 6
+            responses = list(pool.map(lambda mode: client.get(path, headers=headers if mode else {}), modes))
+        assert [proof in response.headers for response in responses] == modes
+        native = api._VALIDATORS["view"]
+
+        class Declined:
+            def is_valid(self, _instance):
+                return False
+
+        with monkeypatch.context() as changed:
+            changed.setattr(native, "_NativeTransportValidator__native", Declined())
+            response = client.get(path, headers=headers)
+            assert response.status_code == 200 and proof not in response.headers
+        original = api._page_view
+
+        def malformed_page(*args):
+            payload = original(*args)
+            payload["axes"]["page"]["has_more"] = not payload["axes"]["page"]["has_more"]
+            return payload
+
+        monkeypatch.setattr(api, "_page_view", malformed_page)
+        response = client.get(path, headers=headers)
+        assert response.status_code == 500 and proof not in response.headers
+    monkeypatch.delenv("ASSESSHUB_NATIVE_VALIDATION_SMOKE")
+    with TestClient(create_app(db_path=str(tmp_path / "normal.db"), scope_dist_dir=None),
+                    base_url="http://localhost", client=("127.0.0.1", 50000)) as normal:
+        monkeypatch.setattr(api, "_page_view", original)
+        assert proof not in normal.get(url(seed(normal, sample)), headers=headers).headers

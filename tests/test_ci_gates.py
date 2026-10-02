@@ -700,6 +700,43 @@ def test_jsonschema_dependency_contract_rejects_mutations(mutation):
         _assert_jsonschema_dependency_contract(**values)
 
 
+def _assert_native_validator_dependency_contract(owners):
+    for owner in owners:
+        for name, pin in (("jsonschema-rs", "jsonschema-rs==0.58.4"),
+                          ("referencing", "referencing==0.37.0")):
+            assert [item for item in owner if _requirement_name(item) == name] == [pin], (
+                "native response validation and offline registry require exact direct runtime pins"
+            )
+
+
+def test_native_validator_and_offline_registry_pins_are_runtime_only():
+    project = tomllib.loads(_read("pyproject.toml"))["project"]
+    _assert_native_validator_dependency_contract([
+        project["dependencies"], _noncomment_requirements("requirements.txt"),
+        _noncomment_requirements(os.path.join("webapp", "requirements.txt")),
+    ])
+    for owner in (project["optional-dependencies"]["dev"],
+                  _noncomment_requirements(os.path.join("master-reference", "requirements-release.txt"))):
+        assert "jsonschema-rs" not in {_requirement_name(item) for item in owner}
+    assert _noncomment_requirements("requirements-dev.txt") == ["-e .[dev]"]
+
+
+@pytest.mark.parametrize("name", ["jsonschema-rs", "referencing"])
+@pytest.mark.parametrize("owner", [0, 1, 2])
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "unbounded"])
+def test_native_validator_dependency_contract_rejects_drift(name, owner, mutation):
+    owners = [["jsonschema-rs==0.58.4", "referencing==0.37.0"] for _ in range(3)]
+    pin = next(item for item in owners[owner] if _requirement_name(item) == name)
+    if mutation == "missing":
+        owners[owner].remove(pin)
+    elif mutation == "duplicate":
+        owners[owner].append(pin)
+    else:
+        owners[owner][owners[owner].index(pin)] = name + ">=0.1"
+    with pytest.raises(AssertionError):
+        _assert_native_validator_dependency_contract(owners)
+
+
 def _assert_transition_profile_is_test_only(rows, runtime_dependencies, runtime_requirements):
     _assert_no_runtime_requirement_includes(runtime_requirements)
     profile = {row["name"]: row["version"] for row in rows}

@@ -6,9 +6,14 @@ selection or pagination; the engine is the sole owner of values, states and cave
 from __future__ import annotations
 
 from copy import deepcopy
+from contextvars import ContextVar
 import hashlib
+from importlib.metadata import PackageNotFoundError, version
 import json
 import math
+import os
+import re
+import secrets
 from threading import Lock
 from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal
@@ -18,6 +23,8 @@ from fastapi import Path as PathParam
 from jsonschema import Draft202012Validator, validators
 from jsonschema.exceptions import ValidationError
 from pydantic import ConfigDict, JsonValue, RootModel, model_validator
+from referencing import Registry
+from referencing.exceptions import NoSuchResource
 
 from . import engine, serve
 
@@ -30,6 +37,77 @@ _OWNER = engine.ui_projection_schema()
 Draft202012Validator.check_schema(_OWNER)
 _DEFS = _OWNER["$defs"]
 _MAX_CONSTRUCTION_NODES = 8192
+_NO_RETRIEVAL = Registry()
+_RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
+_NATIVE_VERSION = "0.58.4"
+# Independent review pin for the private legacy resolver interface below.
+_LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
+# Reviewed at 3b286f6f: compact ensure_ascii JSON plus LF, in owner key order.
+# These are audit pins, never populated from the schemas present at runtime.
+# A schema change requires a new equivalence review before changing these pins.
+_NATIVE_SCHEMA_HASHES = MappingProxyType({
+    "view": "20700e5ae801a59c6e2ad13dced0b4751b3bf9fca576cebf3b8391812bbf5cd2",
+    "list": "a96b357644070a491a8c8eb0113305ad60853d209199db63b13e73a9902a9f12",
+})
+_NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
+_NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)
+
+
+def _offline_registry(registry):
+    if type(registry) is not Registry:
+        raise ValueError("Unsupported offline reference registry")
+    return _NO_RETRIEVAL.with_resources(registry.items())
+
+
+def _deny_remote_reference(uri):
+    raise NoSuchResource(ref=uri)
+
+
+def _reviewed_legacy_resolver_type():
+    """Fail closed before using private resolver internals from another release."""
+    message = "Legacy resolver requires reviewed jsonschema 4.26.0"
+    try:
+        installed = version("jsonschema")
+    except PackageNotFoundError:
+        raise RuntimeError(message) from None
+    if installed != _LEGACY_RESOLVER_REVIEWED_VERSION:
+        raise RuntimeError(message)
+    try:
+        from jsonschema.validators import _RefResolver
+    except (ImportError, AttributeError):
+        raise RuntimeError("Reviewed jsonschema legacy resolver is unavailable") from None
+    if not isinstance(_RefResolver, type):
+        raise RuntimeError("Reviewed jsonschema legacy resolver is unavailable")
+    return _RefResolver
+
+
+def _offline_context(changes):
+    """Retain explicit in-memory contexts without inheriting retrieval callbacks."""
+    changes = dict(changes)
+    if "registry" in changes:
+        changes["registry"] = _offline_registry(changes["registry"])
+    resolver = changes.get("_resolver")
+    if resolver is not None:
+        if type(resolver) is not _RESOLVER_TYPE:
+            raise ValueError("Unsupported offline reference resolver")
+        changes["_resolver"] = _RESOLVER_TYPE(
+            base_uri=resolver._base_uri, registry=_offline_registry(resolver._registry), previous=resolver._previous,
+        )
+    legacy = changes.get("resolver")
+    if legacy is not None:
+        legacy_type = _reviewed_legacy_resolver_type()
+        if type(legacy) is not legacy_type:
+            raise ValueError("Unsupported offline legacy reference resolver")
+        closed = legacy_type(base_uri=legacy.base_uri, referrer=legacy.referrer,
+                             store=dict(legacy.store), cache_remote=False, handlers={})
+        closed._scopes_stack = list(legacy._scopes_stack)
+        closed.resolve_remote = _deny_remote_reference
+        changes["resolver"] = closed
+    return changes
+
+
+def _stock_validator(schema):
+    return Draft202012Validator(schema, registry=_NO_RETRIEVAL)
 
 
 def _schema_fingerprint(schema: Any) -> str | None:
@@ -58,7 +136,7 @@ class _OwnedSchemaValidator:
 
     def iter_errors(self, instance: Any, _schema: Any = None):
         if _schema is not None:
-            yield from Draft202012Validator(self.schema).iter_errors(instance, _schema)
+            yield from _stock_validator(self.schema).iter_errors(instance, _schema)
             return
         if _schema_fingerprint(self.schema) == self.__fingerprint:
             try:
@@ -70,7 +148,7 @@ class _OwnedSchemaValidator:
             else:
                 if error is None:
                     return
-        yield from Draft202012Validator(self.schema).iter_errors(instance)
+        yield from _stock_validator(self.schema).iter_errors(instance)
 
     def validate(self, *args, **kwargs) -> None:
         for error in self.iter_errors(*args, **kwargs):
@@ -78,11 +156,11 @@ class _OwnedSchemaValidator:
 
     def is_valid(self, instance: Any, _schema: Any = None) -> bool:
         if _schema is not None:
-            return Draft202012Validator(self.schema).is_valid(instance, _schema)
+            return _stock_validator(self.schema).is_valid(instance, _schema)
         return next(self.iter_errors(instance), None) is None
 
     def evolve(self, **changes):
-        return Draft202012Validator(self.schema).evolve(**changes)
+        return _stock_validator(self.schema).evolve(**_offline_context(changes))
 
 
 def _compiled_validator(schema: dict[str, Any]):
@@ -100,7 +178,7 @@ def _compiled_validator(schema: dict[str, Any]):
     """
     original = schema
     if type(schema) is not dict or _schema_fingerprint(schema) is None:
-        return Draft202012Validator(original)
+        return _stock_validator(original)
     schema = deepcopy(schema)
     fingerprint = _schema_fingerprint(schema)
     def nested_resource(node: Any) -> bool:
@@ -118,7 +196,7 @@ def _compiled_validator(schema: dict[str, Any]):
     if (fingerprint is None
             or schema.get("$schema", Draft202012Validator.META_SCHEMA["$id"]) != Draft202012Validator.META_SCHEMA["$id"]
             or nested_resource(schema)):
-        return Draft202012Validator(original)
+        return _stock_validator(original)
     dispatch: dict[int, tuple[str, dict[str, list[int]]]] = {}
     branch_schemas: dict[int, list[dict[str, Any]]] = {}
     branch_validators: dict[int, list[Any]] = {}
@@ -215,7 +293,7 @@ def _compiled_validator(schema: dict[str, Any]):
         yield from stock_one_of(validator, branches, instance, containing_schema)
 
     validator_class = validators.extend(Draft202012Validator, {"oneOf": one_of, "$ref": reference})
-    compiled = validator_class(schema)
+    compiled = validator_class(schema, registry=_NO_RETRIEVAL)
     root_resolver, root_registry = compiled._resolver, compiled._registry
     stock_evolve, stock_descend = validator_class.evolve, validator_class.descend
     register_context(compiled)
@@ -265,6 +343,156 @@ def _compiled_validator(schema: dict[str, Any]):
         for validator in branch_validators[identity]:
             register_context(validator)
     return _OwnedSchemaValidator(original, compiled, fingerprint)
+
+
+def _native_instance_allowed(value: Any) -> bool:
+    """Audited native domain; rejection selects Python, never rejects the response."""
+    active: set[int] = set()
+
+    def visit(node, depth):
+        if depth > 128:
+            return False
+        kind = type(node)
+        if node is None or kind is bool:
+            return True
+        if kind is int:
+            return -(2**53 - 1) <= node <= 2**53 - 1
+        if kind is str:
+            return _NATIVE_UNSAFE_STRING.search(node) is None
+        if kind not in (dict, list) or id(node) in active:
+            return False
+        active.add(id(node))
+        try:
+            if kind is dict:
+                return all(type(key) is str and visit(key, depth + 1) and visit(child, depth + 1)
+                           for key, child in node.items())
+            return all(visit(child, depth + 1) for child in node)
+        finally:
+            active.remove(id(node))
+
+    try:
+        return visit(value, 0)
+    except (RecursionError, RuntimeError):
+        return False
+
+
+def _native_schema_hash(schema):
+    fingerprint = _schema_fingerprint(schema)
+    if fingerprint is None:
+        return None
+    try:
+        fingerprint.encode("utf-8", errors="strict")  # no astral/surrogate-pair hash alias
+        raw = json.dumps(schema, ensure_ascii=True, allow_nan=False, separators=(",", ":")) + "\n"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    except (ValueError, TypeError, RecursionError, RuntimeError):
+        return None
+
+
+def _native_provider():
+    try:
+        if version("jsonschema-rs") != _NATIVE_VERSION:
+            return None
+        import jsonschema_rs
+        return jsonschema_rs
+    except (PackageNotFoundError, ImportError, OSError):
+        return None
+
+
+class _NativeTransportValidator:
+    """Native acceptance only for two pinned schemas and their audited instance domain.
+
+    Python remains the source of public errors and unsupported/context behavior.
+    No instances or validation results are retained between calls.
+    """
+    __slots__ = ("schema", "__original", "__fingerprint", "__python", "__native")
+
+    def __init__(self, schema, kind):
+        self.schema = self.__original = schema
+        self.__fingerprint = _schema_fingerprint(schema)
+        self.__python = _compiled_validator(schema)
+        self.__native = None
+        expected = _NATIVE_SCHEMA_HASHES.get(kind)
+        if expected is None or _native_schema_hash(schema) != expected:
+            return
+        provider = _native_provider()
+        if provider is None:
+            return
+        try:
+            owned = deepcopy(schema)
+            # Bind construction to the exact owned bytes, even if the public schema
+            # changes during the copy. Future schemas never certify themselves.
+            if (_schema_fingerprint(owned) != self.__fingerprint
+                    or _native_schema_hash(owned) != expected):
+                return
+            self.__native = provider.Draft202012Validator(
+                owned, offline=True, validate_formats=False, ignore_unknown_formats=True,
+            )
+        except Exception:
+            pass  # Unavailable native construction remains an offline Python path.
+
+    def iter_errors(self, instance, _schema=None):
+        if _schema is not None:
+            yield from _stock_validator(self.schema).iter_errors(instance, _schema)
+            return
+        unchanged = self.schema is self.__original and _schema_fingerprint(self.schema) == self.__fingerprint
+        if unchanged and self.__native is not None and _native_instance_allowed(instance):
+            try:
+                accepted = self.__native.is_valid(instance)
+            except Exception:
+                pass
+            else:
+                if (accepted is True and self.schema is self.__original
+                        and _schema_fingerprint(self.schema) == self.__fingerprint):
+                    trace = _NATIVE_SMOKE_TRACE.get()
+                    if trace is not None:
+                        trace["native"] = True
+                    return
+        if self.schema is self.__original and _schema_fingerprint(self.schema) == self.__fingerprint:
+            yield from self.__python.iter_errors(instance)
+        else:
+            yield from _stock_validator(self.schema).iter_errors(instance)
+
+    def validate(self, *args, **kwargs):
+        for error in self.iter_errors(*args, **kwargs):
+            raise error
+
+    def is_valid(self, instance, _schema=None):
+        return next(self.iter_errors(instance, _schema), None) is None
+
+    def evolve(self, **changes):
+        return _stock_validator(self.schema).evolve(**_offline_context(changes))
+
+
+class _NativeValidationSmoke:
+    """Nonce-bound, request-local frozen smoke proof; absent in normal operation."""
+    def __init__(self, app):
+        self.app = app
+        self.nonce = (os.environ.get("ASSESSHUB_INSTANCE_NONCE", "").encode("utf-8")
+                      if os.environ.get("ASSESSHUB_NATIVE_VALIDATION_SMOKE") == "1" else b"")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        nonces = [value for key, value in scope.get("headers", []) if key.lower() == b"x-atlas-native-smoke-nonce"]
+        enabled = (bool(self.nonce) and len(nonces) == 1 and secrets.compare_digest(nonces[0], self.nonce)
+                   and scope.get("method") == "GET" and "/ui-projection/" in scope.get("path", ""))
+        trace = {"native": False, "complete": False} if enabled else None
+        token = _NATIVE_SMOKE_TRACE.set(trace)
+
+        async def checked_send(message):
+            if message["type"] == "http.response.start":
+                message = dict(message)
+                headers = [(key, value) for key, value in message.get("headers", [])
+                           if key.lower() != b"x-atlas-native-validation"]
+                if trace is not None and trace["complete"] and 200 <= message["status"] < 300:
+                    headers.append((b"x-atlas-native-validation", b"jsonschema-rs/0.58.4"))
+                message["headers"] = headers
+            await send(message)
+
+        try:
+            return await self.app(scope, receive, checked_send)
+        finally:
+            _NATIVE_SMOKE_TRACE.reset(token)
 
 
 def _rewrite_refs(value: Any) -> Any:
@@ -491,7 +719,8 @@ _LIST_SCHEMA = {"oneOf": [
 for _schema in (_VIEW_SCHEMA, _LIST_SCHEMA):
     _schema["$defs"] = {**_DEFS, **_TRANSPORT_DEFS}
     Draft202012Validator.check_schema(_schema)
-_VALIDATORS = {"view": _compiled_validator(_VIEW_SCHEMA), "list": _compiled_validator(_LIST_SCHEMA)}
+_VALIDATORS = {"view": _NativeTransportValidator(_VIEW_SCHEMA, "view"),
+               "list": _NativeTransportValidator(_LIST_SCHEMA, "list")}
 
 
 class _ProjectionResponse(RootModel[dict[str, JsonValue]]):
@@ -506,6 +735,9 @@ class _ProjectionResponse(RootModel[dict[str, JsonValue]]):
 
     @model_validator(mode="after")
     def owner_transport_contract(self):
+        trace = _NATIVE_SMOKE_TRACE.get()
+        if trace is not None:
+            trace.update(native=False, complete=False)
         try:
             _VALIDATORS[self.kind].validate(self.root)
         except ValidationError as exc:
@@ -520,6 +752,8 @@ class _ProjectionResponse(RootModel[dict[str, JsonValue]]):
                     or page["has_more"] != (page["offset"] + page["returned"] < page["total"])
                     or (wrapper["source_list"]["state"] == "published" and page["total"] == 0)):
                 raise ValueError("Projection page metadata disagrees with its items")
+        if trace is not None:
+            trace["complete"] = trace["native"]
         return self
 
     @classmethod
@@ -565,6 +799,7 @@ def _page_view(value: dict[str, Any], view: str, limit: int) -> dict[str, Any]:
 def install_routes(app: FastAPI, store: Any) -> None:
     """Register guarded /api GETs; ordinary dict returns enforce declared response validation."""
     cache = _ProjectionCache()
+    app.add_middleware(_NativeValidationSmoke)
     @app.get("/api/snapshots/{snapshot_id}/ui-projection/{view}",
              response_model=UiProjectionViewResponse, operation_id="get_ui_projection_view")
     def projection_view(

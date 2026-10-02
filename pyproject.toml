@@ -54,6 +54,9 @@ dependencies = [
     "python-multipart>=0.0.9,<1",
     # AssessHub validates engine-owned UI contracts at runtime; also serves schema-contract tests.
     "jsonschema==4.26.0",
+    "jsonschema-rs==0.58.4",
+    # Explicit offline Registry policy; do not inherit this boundary transitively.
+    "referencing==0.37.0",
     # Atlas R2 qualification receipts verify Ed25519 signatures directly.  Keep this an explicit
     # dependency rather than relying on netmiko/paramiko to provide a security boundary transitively.
     "cryptography>=50,<51",

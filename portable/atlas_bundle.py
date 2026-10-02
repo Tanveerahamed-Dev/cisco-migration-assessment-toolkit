@@ -129,6 +129,8 @@ def hidden_imports() -> List[str]:
         "COLLECT_PARSE_V3_23_0",
         # lazy server half (serve.main imports it after the sentinel check)
         "webapp.backend.app",
+        # The projection accelerator's ABI3 extension must be in the frozen runtime.
+        "jsonschema_rs.jsonschema_rs",
         # serve.run_verify_manifest imports this lazily, so --verify-manifest is the one field
         # command whose module PyInstaller only sees inside a function body. README-FIELD teaches
         # that command; a ModuleNotFoundError at a client site is the failure this line prevents.
@@ -166,3 +168,81 @@ def package_data_modules() -> tuple[str, ...]:
     therefore cannot start the frozen API. The spec collects package data through this owner.
     """
     return ("rfc3987_syntax",)
+
+
+def package_metadata_distributions() -> tuple[str, ...]:
+    """Native-provider distributions whose reviewed metadata must survive freezing.
+
+    The SBOM is retained evidence, not proof of the linked Rust component set or their
+    individual license texts. The package's MIT text is a separately pinned fallback.
+    """
+    return ("jsonschema-rs",)
+
+
+def native_runtime_files() -> dict[str, dict[str, str | int] | None]:
+    """Required Windows wheel members; normal manifests bind every retained byte.
+
+    Pin the upstream SBOM representation so omission or replacement cannot be hidden by
+    reauthoring the surrounding release manifest. PE code uses the ordinary signing custody.
+    """
+    metadata = "_internal/jsonschema_rs-0.58.4.dist-info/"
+    return {
+        # The stock fallback's private legacy seam checks this distribution at runtime.
+        # The upstream hook-jsonschema collects it; the actual frozen selftest checks lookup.
+        "_internal/jsonschema-4.26.0.dist-info/METADATA": None,
+        "_internal/jsonschema-4.26.0.dist-info/WHEEL": None,
+        "_internal/jsonschema_rs/jsonschema_rs.pyd": None,
+        metadata + "METADATA": None,
+        metadata + "WHEEL": None,
+        metadata + "sboms/jsonschema-py.cyclonedx.json": {
+            "bytes": 245181,
+            "sha256": "fc02e97118764c2c8e0e67bc1f0fc554cda259a4925e944677894d0792cf6a88",
+        },
+    }
+
+
+def package_metadata_datas(copy_metadata) -> List[Tuple[str, str]]:
+    """Select wheel metadata without shipping installer-added local provenance.
+
+    PyInstaller's collector locates the distribution; this owner selects individual files.
+    In particular, direct_url.json can contain a local wheel path. INSTALLER, REQUESTED and
+    the installation-modified RECORD are not required for runtime version lookup or SBOM custody.
+    """
+    result = []
+    for distribution in package_metadata_distributions():
+        located = copy_metadata(distribution)
+        if len(located) != 1:
+            raise ValueError("native validator metadata location is ambiguous")
+        source, destination = located[0]
+        prefix = "_internal/" + destination + "/"
+        required = [path.removeprefix(prefix) for path in native_runtime_files()
+                    if path.startswith(prefix)]
+        if not required:
+            raise ValueError("native validator metadata version differs")
+        directory = Path(source).resolve(strict=True)
+        for relative in required:
+            path = Path(source) / relative
+            if (not path.is_file() or path.is_symlink()
+                    or not path.resolve(strict=True).is_relative_to(directory)):
+                raise ValueError("native validator metadata file is absent or outside its package")
+            parent = Path(destination) / Path(relative).parent
+            result.append((str(path), parent.as_posix()))
+    return result
+
+
+def reviewed_validator_metadata_toc(rows: list) -> list:
+    """Remove installer provenance even when an upstream hook collected full metadata.
+
+    Retain upstream license files and entry metadata. Only the two reviewed validator
+    distributions are affected; the native SBOM and both version metadata files stay intact.
+    """
+    directories = {Path(path).parts[1].casefold() for path in native_runtime_files()
+                   if Path(path).parts[1].endswith(".dist-info")}
+    installer_files = {"direct_url.json", "installer", "requested", "record"}
+    result = []
+    for row in rows:
+        parts = str(row[0]).replace("\\", "/").casefold().split("/")
+        if len(parts) == 2 and parts[0] in directories and parts[1] in installer_files:
+            continue
+        result.append(row)
+    return result

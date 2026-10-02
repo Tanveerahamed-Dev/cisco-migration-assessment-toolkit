@@ -203,6 +203,69 @@ def _directory_alias(link: Path, target: Path) -> None:
         pytest.skip(f"directory junction creation unavailable: {result.stderr}")
 
 
+def test_native_package_custody_requires_metadata_extension_and_unchanged_upstream_sbom():
+    from portable.atlas_bundle import native_runtime_files
+
+    # Member digest validation joins these claims to physical bytes elsewhere. This check
+    # additionally refuses a reauthored manifest that omits/replaces required wheel evidence.
+    members = [{"path": "_internal/python312.dll"}]
+    for path, receipt in native_runtime_files().items():
+        members.append({"path": path, **(receipt or {})})
+    subject._validate_native_package_members(members)
+    for omitted in native_runtime_files():
+        changed = [row for row in members if row["path"] != omitted]
+        with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
+            subject._validate_native_package_members(changed)
+    for field, replacement in (("bytes", 245180), ("sha256", "0" * 64)):
+        changed = copy.deepcopy(members)
+        next(row for row in changed if row["path"].endswith(".cyclonedx.json"))[field] = replacement
+        with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
+            subject._validate_native_package_members(changed)
+    # A differently versioned metadata folder cannot satisfy the reviewed provider identity.
+    changed = [{**row, "path": row["path"].replace("0.58.4.dist-info", "0.58.3.dist-info")}
+               for row in members]
+    with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
+        subject._validate_native_package_members(changed)
+
+
+def test_real_python_manifest_cannot_omit_native_evidence_even_with_reauthored_totals(tmp_path):
+    repository = _repository(tmp_path)
+    bundle = _bundle(tmp_path)
+    source = subject.source_identity(repository)
+    old = subject.member_manifest(source, subject.collect_members(bundle))
+    (bundle / "_internal/python312.dll").write_bytes(_amd64_pe())
+    members = subject.collect_members(bundle)
+    with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
+        subject.member_manifest(source, members)
+    # Reauthoring every generic member/count/digest claim still cannot suppress native custody.
+    old["members"] = members
+    old["summary"].update(member_count=len(members), total_bytes=sum(row["bytes"] for row in members),
+                          member_set_digest=subject.digest_object(members))
+    with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
+        subject.validate_member_manifest(old)
+
+
+def test_native_package_mit_fallback_is_exact_and_does_not_claim_component_license_closure(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    fallback = subject._license_fallbacks(root)["pypi:jsonschema-rs@0.58.4"]
+    assert fallback["bytes"] == 1075
+    assert fallback["sha256"] == "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038"
+    assert "Permission is hereby granted" in fallback["content"]
+    assert "f864033d8ae481b5c96985a4ca6990e4375614ac" in fallback["source"]
+    assert "not individual Rust component license texts" in fallback["source_identity"]
+    assert "not independently verified linked components" in subject.NOTICES_INFERENCE_BOUNDARY
+    registry = {"schema": "atlas.portable-license-fallbacks/1", "entries": [{
+        "key": "pypi:jsonschema-rs@0.58.4", "license_file": "LICENSE",
+        "license_sha256": fallback["sha256"], "source": fallback["source"],
+        "source_identity": fallback["source_identity"],
+    }]}
+    (tmp_path / "portable").mkdir()
+    (tmp_path / "portable/third-party-license-fallbacks.json").write_text(json.dumps(registry))
+    (tmp_path / "LICENSE").write_bytes(fallback["content"].encode("utf-8") + b" ")
+    with pytest.raises(subject.PortableReleaseError, match="fallback hash differs"):
+        subject._license_fallbacks(tmp_path)
+
+
 class _Distribution:
     def __init__(
         self,

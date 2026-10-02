@@ -16,7 +16,7 @@ Decisions this file encodes:
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).resolve().parent  # noqa: F821 — SPECPATH is injected by PyInstaller
 if str(ROOT) not in sys.path:
@@ -28,6 +28,8 @@ from portable.atlas_bundle import (  # noqa: E402
     hidden_imports,
     missing_data_sources,
     package_data_modules,
+    package_metadata_datas,
+    reviewed_validator_metadata_toc,
 )
 from portable.windows_version_info import pyinstaller_version_info  # noqa: E402
 
@@ -45,7 +47,7 @@ a = Analysis(  # noqa: F821
     pathex=[str(ROOT)],
     datas=bundle_datas(ROOT) + [
         resource for module in package_data_modules() for resource in collect_data_files(module)
-    ],
+    ] + package_metadata_datas(copy_metadata),
     # netmiko resolves vendor drivers via its class map — take the whole tree; the rest of the
     # dynamic seams are pinned (with rationale) in atlas_bundle.hidden_imports.
     hiddenimports=hidden_imports() + collect_submodules("netmiko"),
@@ -55,6 +57,8 @@ a = Analysis(  # noqa: F821
     ],
     excludes=["tkinter"],
 )
+# Upstream hooks can also collect distribution metadata; keep installer provenance out.
+a.datas = reviewed_validator_metadata_toc(a.datas)
 pyz = PYZ(a.pure)  # noqa: F821
 
 exe = EXE(  # noqa: F821

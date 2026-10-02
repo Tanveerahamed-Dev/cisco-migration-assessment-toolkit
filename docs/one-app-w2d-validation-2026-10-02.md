@@ -493,6 +493,114 @@ pagination validation; public errors must retain stock behavior. No production
 dependency or portable lock has changed for this trial. Differential semantics,
 offline refusal and frozen-runtime packaging must be established before adoption.
 
+### Guarded native response validation (integration in progress)
+
+An isolated trial at `3b286f6f` used `jsonschema-rs==0.58.4` with the same matched
+CPython 3.12.10 environment plus a separate target installation. The original
+80-package environment and source stayed unchanged. The Windows wheel SHA-256 is
+`803612a214ce5ccb2ceefe87b3cab4711a7d04694479b5a22f82cb509635d9cc`;
+all RECORD hashes/sizes and the AMD64 native member were verified.
+
+Three paired HTTP observations per endpoint preserved exact response bytes:
+
+| Endpoint | Python median / maximum ms | Native median / maximum ms |
+|---|---:|---:|
+| Findings, 200 rows | 448.3 / 480.7 | 176.4 / 295.1 |
+| Findings list, 200 rows | 468.1 / 894.4 | 194.0 / 199.5 |
+| Overview, 50 rows | 36.5 / 42.0 | 33.7 / 34.6 |
+
+These are shared-host diagnostic observations, not acceptance. An untimed census
+confirmed one native call per validation for all three identical bodies. The
+prototype retained store authority, JSON-native/finite, Pydantic and pagination
+checks and compiled each unchanged schema once; it cached no validation outcome.
+
+The selected implementation initially accelerates only HTTP view/list transport
+validation. Native acceptance requires the explicitly audited, unchanged schema
+profile and exact JSON builtin values: integers within plus/minus 2**53-1, no
+floats, cycles or depth above 128, and no CR/LF/U+2028/U+2029/surrogate characters
+in keys or strings. Unknown schema features, contexts, mutations and unsupported
+values must enter Python before native acceptance. The two audited patterns and
+local reference closure are fixed; future schema expansion requires re-audit.
+The native constructor uses `offline=True`, disabled formats and the pinned
+provider. Python fallback uses a closed registry so unknown or mutated HTTP/file
+references cannot trigger retrieval. Public errors retain Python-stock behavior.
+
+The 155 differential probes found eight differences involving NaN, floating
+multipleOf, surrogate strings and trailing-newline regex behavior. Those cases
+are excluded before native acceptance, not excused after a native success. Nine
+additional tests on actual Overview facts prove that deleting either paired
+engine_state/engine_state_owner field alone fails in both validators; deleting
+both remains valid under the unchanged schema. Exact public errors match. These
+bounded checks are not a claim of universal equivalence between implementations.
+
+The wheel has no embedded license text. Its pinned upstream MIT file has SHA-256
+`117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038`.
+Its supplied 203-component CycloneDX document has SHA-256
+`fc02e97118764c2c8e0e67bc1f0fc554cda259a4925e944677894d0792cf6a88`.
+Portable integration must retain that metadata and exact native member custody,
+embed the reviewed MIT fallback and reconcile the dependency lock/inventory.
+The upstream SBOM supplies declarations, not license texts or independent proof
+of which components were linked. The existing notice inference boundary remains.
+
+The smaller fastjsonschema alternative is not selected: direct compilation drops
+the current dependentRequired constraints and changes regex handling. It would
+require an additional restricted schema adapter. The chosen full-draft path must
+still pass production parity, source/distribution, frozen native HTTP, privacy,
+supported-Python and unchanged hosted performance gates before merge.
+
+The initial local integration has API SHA-256
+`1b25bf3f2fae770804d4b659e5bc75bf4fba5a937d934082778bf31f5987c565`.
+All 112 API tests and 21 targeted checks pass, with Ruff/diff checks passing.
+Coverage includes pre-acceptance eligibility, pinned provider/schema checks,
+owned-copy and public-schema replacement races, offline default/evolved modern
+and legacy contexts, paired fields, stock diagnostics and per-request smoke
+isolation. A detected stale pre-native schema decision was corrected by refreshing
+the identity/fingerprint after native success, failure or exception. The frozen
+smoke proof requires its explicit mode and one matching nonce, a real native
+acceptance, completed model/pagination validation and a successful response; it
+is absent in normal mode and on fallback/failure. Final independent, packaging,
+frozen-build and hosted results are not yet established for this integration.
+
+Owner approval for pinned `jsonschema-rs==0.58.4` and the designed fallback,
+private-version guard and lock/notice/SBOM custody was explicitly relayed in chat
+on 2026-10-03 (owner decision dated 2026-10-02). The dependency hold is lifted.
+The exact-head required checks and unchanged hosted 300 ms gate still govern merge;
+release publication, signing and deployment remain separate authority.
+
+The requested private-import guard now checks the explicit reviewed jsonschema
+version `4.26.0` before lazily importing or using `_RefResolver`. Missing metadata,
+version drift, a missing/import-failed symbol or a non-class replacement fails
+closed; supported in-memory legacy contexts retain remote denial. The final API
+SHA-256 is `1d96342cb543d74994d42b6ac75b01c64484ed1cfa144de8e3acc6233cd4bede`.
+All 119 API tests, ten targeted private-guard tests, Ruff and diff checks pass.
+Actual OpenAPI export remains byte-identical (682,511 bytes, SHA-256
+`7c1240ee7338740f182510435e74aa6563525670db7a00bedf862216d231c333`),
+as do generated TypeScript types (389,699 bytes, SHA-256
+`2481934ef8985911166ad57ae8a013d6cfe2d289fc813f13f712c1025c73d7eb`);
+the nine generation-policy checks pass. The local full suite took 462.43 seconds
+under observed host resource pressure; this is correctness evidence, not latency
+acceptance. Final packaging/filter review and hosted frozen/performance gates
+remain open.
+
+Final local packaging validation passed 253 tests with nine explicit platform/tool
+skips (one POSIX FIFO, one Windows symlink privilege, seven unavailable bash
+verify-green cases), followed by eight final private-guard/metadata-filter checks.
+No native-related check was skipped. Independent delta review refused five
+unreviewed/missing versions before private import, four non-class symbols and
+missing/import-failed private interfaces, while preserving supported in-memory
+contexts. Metadata refutations removed 32 installer-path variants, retained the
+12 required/upstream/unrelated rows and left inputs unchanged. Required native
+metadata remains exactly METADATA/WHEEL/upstream SBOM; jsonschema's upstream
+metadata/license is retained while installer provenance is excluded. These final
+delta receipts supplement the earlier source-bound native/reference/HTTP review;
+they do not transfer old-source timing or claim a frozen build.
+
+All final local worker/reviewer processes are terminal and no source finding
+remains. The canonical hosted Windows job, rather than a competing heavy local
+build on the memory-constrained workstation, will establish the committed-source
+asset, executable, actual-native HTTP and private-version proof. The unchanged
+hosted benchmark must separately establish both sample page-size gates.
+
 ## Closing evidence still required
 
 - Required hosted repository, distribution, reference and portable checks.
