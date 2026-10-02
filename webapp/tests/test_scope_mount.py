@@ -1131,20 +1131,53 @@ def test_the_hub_build_ships_no_xml_document():
     xml_suffixes = _xml_typed_suffixes()
     assert {".svg", ".xhtml", ".xml"} <= xml_suffixes, sorted(xml_suffixes)
     assert not (package / "public").exists()
-    imports = []
-    for path in sorted((package / "src").rglob("*")):
-        if path.is_file() and not _SCOPE_TEST_FILE.search(path.name) and path.suffix in (
-                ".ts", ".tsx", ".js", ".jsx", ".mjs", ".css"):
-            text = path.read_text(encoding="utf-8")
-            imports += [(path.name, spec) for spec in re.findall(r"""["'`]([^"'`\n]+)["'`]""", text)
-                        if PurePosixPath(spec.split("?", 1)[0]).suffix.casefold() in xml_suffixes
-                        and not spec.startswith(("http:", "https:", "data:"))]
+    imports = _xml_typed_asset_references(package, xml_suffixes)
     assert not imports, imports
     hub = app_mod._REPO_ATLAS_SCOPE_DIST
     if (hub / "index.html").is_file():
         shipped = [p.relative_to(hub).as_posix() for p in hub.rglob("*") if p.is_file()
                    and app_mod._scope_markup_kind(app_mod._frontend_media_type(p.name)) == "xml"]
         assert not shipped, shipped
+
+
+def _xml_typed_asset_references(package: Path, xml_suffixes: set[str]) -> list[tuple[str, str]]:
+    """Every quoted string in the package's source and HTML entries that a build could emit as an XML-typed
+    asset. A build emits an asset only for a reference that reaches a file, so a string counts when it is
+    path-shaped (a separator or a leading dot: a relative, aliased or dependency path) or names a file beside
+    the referencing one; a bare identifier that merely ends in such a suffix is not one. The suffix set is the
+    host's served registry, which differs between hosts: the hosted Windows image types `.config` as XML, so
+    the command id "select.config" in commands.ts once read as an asset there and nowhere else."""
+    sources = [p for p in sorted((package / "src").rglob("*")) if p.is_file()
+               and not _SCOPE_TEST_FILE.search(p.name) and p.suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".css")]
+    found = []
+    for path in sources + sorted(package.glob("*.html")):
+        for spec in re.findall(r"""["'`]([^"'`\n]+)["'`]""", path.read_text(encoding="utf-8")):
+            target = spec.split("?", 1)[0].split("#", 1)[0]
+            if (PurePosixPath(target).suffix.casefold() in xml_suffixes
+                    and not spec.startswith(("http:", "https:", "data:"))
+                    and ("/" in target or "\\" in target or target.startswith(".")
+                         or (path.parent / target).is_file())):
+                found.append((path.name, spec))
+    return found
+
+
+def test_xml_typed_asset_scan_tells_a_reference_from_an_identifier(tmp_path):
+    """Pins the scan in both directions on every host, by forcing `.config` into the suffix set as the hosted
+    Windows registry does: an identifier is not a reference, and each way a build reaches a file still is."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "beside.svg").write_text("<svg/>", encoding="utf-8")
+    (src / "commands.ts").write_text('export const ids = ["select.config", "inspect.svg"];\n', encoding="utf-8")
+    (src / "assets.ts").write_text(
+        'import a from "./icon.svg";\nimport b from "pkg/sprite.svg?url";\n'
+        'export const c = new URL("beside.svg", import.meta.url);\nexport const d = "../up.config";\n',
+        encoding="utf-8")
+    (src / "assets.test.ts").write_text('import t from "./only-in-a-test.svg";\n', encoding="utf-8")
+    (tmp_path / "index.html").write_text('<link rel="icon" href="/favicon.svg">\n', encoding="utf-8")
+    found = _xml_typed_asset_references(tmp_path, {".svg", ".config"})
+    assert sorted(found) == sorted([
+        ("assets.ts", "./icon.svg"), ("assets.ts", "pkg/sprite.svg?url"), ("assets.ts", "beside.svg"),
+        ("assets.ts", "../up.config"), ("index.html", "/favicon.svg")]), found
 
 
 def _xml_typed_suffixes() -> set[str]:

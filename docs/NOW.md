@@ -99,6 +99,16 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
 
 ## Handoff log (newest first)
 
+- 2026-10-02, Claude Code (W5):
+  - #582's two red checks (Windows tests and the full source/frontend gate, both on `windows-2025`) were one test:
+    the `/scope` XML-asset source scan read every quoted string as an import, and the hosted Windows registry types
+    `.config` as XML, so the command id `select.config` was flagged there and nowhere else. The scan now counts only
+    path-shaped references or references to a real file, covers the package's HTML entries, and a new test pins it on
+    every host by forcing `.config` into the suffix set. A mutation that restores the old behaviour fails it.
+  - Merged `main` after #583 (`a7016984`); conflicts in `analyze.py` and this board resolved by keeping both sides.
+    The sample fleet is fresh against the merged engine.
+  - The first re-grade (`b342a05d`) lost 35 of 39 graders to the account usage limit; it is re-run on this head.
+
 - 2026-10-02, Codex (compaction source freeze):
   - Closed the metadata-string numeric overflow refutation and generated-decoder EOL drift test-first. Final projection suite: 90 passed / one existing POSIX-only skip; TypeScript, lint and diff checks passed.
   - Independent bounded review and a repeated all-chunk payload/gzip comparison preserve record values, ordering, indexes, digests, text and terminators. The original chunk partition and limits remain. The explicit pre-existing legacy fallback key limitation is recorded rather than claimed repaired.
