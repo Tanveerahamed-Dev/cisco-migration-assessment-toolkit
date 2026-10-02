@@ -1229,7 +1229,7 @@ export interface DesignTargetState {
     zones?: { zone: string; summary: string; n_vlans: number }[]; n_allocated?: number; n_overflow?: number;
   };
   wave_plan: {
-    waves: { wave: number; kind: string; n_switches: number; switches: string[]; source_groups: number[] }[];
+    waves: { wave: number; kind: string; n_switches: number; switches: string[]; source_groups: number[]; source_move_groups?: string[] }[];
     n_waves: number; wave_cap: number; n_move_groups: number; largest_group: number; n_subdivided_groups: number; note: string;
   };
   aci_move_groups?: {

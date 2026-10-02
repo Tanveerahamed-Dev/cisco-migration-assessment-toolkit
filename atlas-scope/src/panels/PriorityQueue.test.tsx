@@ -746,16 +746,16 @@ describe("a selection from another surface is revealed, not merely marked", () =
     hiddenWitness(need(ctx, [...fabric.findings].reverse().find((f) => String(f.severity) !== "Critical"), "finding the severity:Critical filter hides").id);
   });
   describeGolden("the refuter's finding", () => {
-    it("F120 under severity:Critical: pinned, current, in view, and said in words", () => {
+    it("F115 under severity:Critical: pinned, current, in view, and said in words", () => {
       setQuery("severity:Critical");
       const c = mount(<PriorityQueue debounceMs={0} />);
       installLayout(c);
-      expect(textOf(c)).not.toContain("F120");
+      expect(textOf(c)).not.toContain("F115");
       for (const m of mounted.splice(0)) {
         act(() => m.root.unmount());
         m.container.remove();
       }
-      hiddenWitness("F120");
+      hiddenWitness("F115");
     });
   });
 

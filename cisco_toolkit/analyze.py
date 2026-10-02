@@ -32,6 +32,7 @@ from cisco_toolkit.cmdio import (
     cmd_not_running_banner,
 )
 from cisco_toolkit.model import DevicePhysical, InterfaceData
+from cisco_toolkit.stp_topology import _election_priority, classify_stp_root_election
 from cisco_toolkit.parse import (
     _parse_fhrp, _is_physical_port, parse_spanning_tree_blockedports,
     parse_spanning_tree_root, parse_spanning_tree_states,
@@ -155,10 +156,63 @@ def _uf_union(parent: Dict[str, str], a: str, b: str) -> None:
     if ra != rb:
         parent[rb] = ra
 
+# Move-group identity (G13). compute_move_groups is the ONE owner of a group's label: it writes
+# `group` on every row it publishes. Every other surface (wave sequencing, readiness, VLAN cutover,
+# validation, NRFU, punch-list, remediation, dossiers, endpoint/subnet/application intelligence, the
+# MOP, MCP, workbook, explorer and AssessHub) joins on that label through the helpers below and orders
+# a multi-label join by the owner's ordinal -- never by string order ("Group 10" < "Group 2") and never
+# by re-deriving "Group N" from its own list position.
+MOVE_GROUP_UNSCHEDULED = "(unscheduled)"   # a device in no move group (validation / NRFU / MOP bucket)
+
+
+def move_group_label(ordinal: int) -> str:
+    """The one place the move-group label format lives: ``"Group N"`` for the 1-based ordinal ``N`` in
+    compute_move_groups' own order. A label identifies a group within ONE snapshot only; matching groups
+    across snapshots must use switch membership."""
+    return f"Group {ordinal}"
+
+
+def move_group_labels(move_groups: Any) -> List[str]:
+    """Labels index-aligned with the RAW (unfiltered) ``move_groups`` list. The owner's written labels are
+    used only when every row is a dict carrying a distinct non-empty string label; otherwise every row gets
+    the owner formula for its position -- exact for a snapshot written before the owner labelled its rows
+    (a snapshot stores the owner's list in owner order), and never a raise or a duplicate label on a
+    hand-written / malformed input."""
+    rows = move_groups if isinstance(move_groups, list) else []
+    written = [r.get("group") if isinstance(r, dict) else None for r in rows]
+    if written and all(isinstance(w, str) and w.strip() for w in written) and len(set(written)) == len(written):
+        return [str(w) for w in written]
+    return [move_group_label(i) for i in range(1, len(rows) + 1)]
+
+
+def move_group_host_index(move_groups: Any) -> Tuple[Dict[str, str], Dict[str, int]]:
+    """``(host -> label, label -> 1-based ordinal)`` over ``move_groups``. First group wins for a host (the
+    owner never places a switch twice); hosts are stringified. Sort a multi-label join with
+    ``key=ordinal.get`` so it follows the owner's order."""
+    rows = move_groups if isinstance(move_groups, list) else []
+    labels = move_group_labels(rows)
+    host_label: Dict[str, str] = {}
+    ordinal: Dict[str, int] = {}
+    for i, (g, label) in enumerate(zip(rows, labels), 1):
+        ordinal.setdefault(label, i)
+        sw = g.get("switches") if isinstance(g, dict) else None
+        for h in (sw if isinstance(sw, (list, tuple, set)) else []):
+            if isinstance(h, (str, int, float)) and not isinstance(h, bool) and str(h):
+                host_label.setdefault(str(h), label)
+    return host_label, ordinal
+
+
+def _ordered_group_labels(labels, ordinal: Dict[str, int]) -> List[str]:
+    """Distinct non-empty labels ordered by the owner's ordinal (unknown labels last, then by text)."""
+    return sorted({lb for lb in labels if lb}, key=lambda lb: (ordinal.get(lb, 10 ** 9), lb))
+
+
 def compute_move_groups(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> List[Dict[str, object]]:
     """Return migration move-groups (connected components of the shared-VLAN graph).
 
-    Each group dict: switches(list), spanning_vlans(list[(vid,name,nswitches)]),
+    Each group dict: group(str, the ONE owner of the label -- ``move_group_label(N)`` for the 1-based
+    position in this function's own order: size desc, spanning-VLAN count desc, first switch name),
+    switches(list), spanning_vlans(list[(vid,name,nswitches)]),
     endpoints(int), gateways(list[str]), blocked_paths(list[str]), vlan1_spans(bool).
 
     NOTE on `endpoints`: it is the SUM over the group's switches of each switch's learned MACs -- an
@@ -233,7 +287,9 @@ def compute_move_groups(all_interfaces: Dict[str, Dict[str, InterfaceData]]) -> 
     # Biggest blast radius first.
     groups.sort(key=lambda g: (-len(g["switches"]), -len(g["spanning_vlans"]),
                                g["switches"][0] if g["switches"] else ""))
-    return groups
+    # Switch sets never overlap, so switches[0] breaks every tie: the order (and so the label) is total and
+    # independent of the input dict's construction order. The label is written FIRST in each row.
+    return [{"group": move_group_label(i), **g} for i, g in enumerate(groups, 1)]
 
 
 # =============================================================================
@@ -1449,7 +1505,7 @@ def compute_wave_sequencing(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                     macs.add(m)
         ep[host] = len(macs)
     out: List[Dict[str, object]] = []
-    for gi, g in enumerate(move_groups, 1):
+    for label, g in zip(move_group_labels(move_groups), move_groups):
         switches = [str(h) for h in (g.get("switches") or [])]
         mbb, hard, unknown = [], [], []
         for h in switches:
@@ -1472,7 +1528,7 @@ def compute_wave_sequencing(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             if mbb: bits.append(f"{len(mbb)} make-before-break (dual-homed)")
             if unknown: bits.append(f"{len(unknown)} homing UNKNOWN (never collected — verify uplinks first)")
             seq = " + ".join(bits)
-        out.append({"group": f"Group {gi}", "make_before_break": sorted(mbb),
+        out.append({"group": label, "make_before_break": sorted(mbb),
                     "hard_cutover": sorted(hard), "homing_unknown": sorted(unknown),
                     "hard_cutover_endpoints": hard_ep, "sequence": seq})
     return out
@@ -1489,6 +1545,9 @@ def compute_wave_sequencing(all_interfaces: Dict[str, Dict[str, InterfaceData]],
 # shows exactly one gateway (mirrors compute_migration_readiness's wording).
 # =============================================================================
 VLAN_CUTOVER_NOT_OBSERVED = "[NOT OBSERVED]"
+# G15: several collected bridges claim this VLAN's root (stp_topology.classify_stp_root_election) --
+# no single root is published; the row names the claimants instead.
+VLAN_CUTOVER_AMBIGUOUS = "[AMBIGUOUS]"
 
 _VLAN_CUTOVER_READY_RANK = {"NOT READY": 0, "CAUTION": 1, "READY": 2}   # worst-first pull-through
 
@@ -1516,7 +1575,8 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
                                 migration_readiness: Optional[List[dict]] = None,
                                 multicast_intelligence: Optional[dict] = None) -> List[dict]:
     """One row per evidenced VLAN with every cutover-relevant fact pre-filled from evidence the
-    snapshot already carries. Returns [{vlan, name, stp_root, stp_root_default_election, fhrp,
+    snapshot already carries. Returns [{vlan, name, stp_root, stp_root_default_election, stp_root_state,
+    stp_root_reason, stp_root_claimants, stp_root_identities, fhrp,
     gateway_svi_hosts, endpoint_count, app_domain, criticality, dependencies, wave, scenario,
     readiness, cutover_window, rollback_owner}] sorted by VLAN id. cutover_window / rollback_owner
     are DELIBERATELY blank -- they belong to the human running the window. Deterministic; tolerant
@@ -1548,18 +1608,16 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
                 gws.setdefault(vid, []).append((host, d))
     # STP root evidence adds VLAN presence too (a trunk-carried VLAN still runs an STP instance on
     # its root even where no local access port / SVI was collected). MST keys are INSTANCE numbers,
-    # not VLAN ids -- excluded, mirroring stp_root_findings. First sorted host claiming root wins.
-    root_of: Dict[int, str] = {}
-    root_prio: Dict[int, object] = {}
+    # not VLAN ids -- excluded, mirroring stp_root_findings. WHO the root is comes from the one owner
+    # (G15): a VLAN several bridges claim is ambiguous, never "first sorted claimant wins".
     for host in sorted(stp_roots or {}):
-        for vlan, rec in (stp_roots[host] or {}).items():
-            if not str(vlan).isdigit() or not isinstance(rec, dict) or rec.get("is_mst"):
+        per_host = stp_roots[host]
+        for vlan, rec in (per_host.items() if isinstance(per_host, dict) else []):
+            number = _election_priority(vlan)
+            if number is None or number < 0 or (isinstance(rec, dict) and rec.get("is_mst")):
                 continue
-            vid = int(vlan)
-            vlan_hosts.setdefault(vid, set()).add(host)
-            if rec.get("is_root") and vid not in root_of:
-                root_of[vid] = host
-                root_prio[vid] = rec.get("root_priority")
+            vlan_hosts.setdefault(number, set()).add(host)
+    election = classify_stp_root_election(stp_roots)["pvst_vlan"]
 
     # ---- join indexes over the precomputed axes ------------------------------------------------
     det_ix: Dict[tuple, dict] = {}                   # (host, vid) -> FHRP election-detail record
@@ -1583,10 +1641,7 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
         for v in ((dom or {}).get("vlans") or []):
             if str(v).strip().isdigit():
                 doms_of.setdefault(int(str(v).strip()), []).append(dom)
-    group_of: Dict[str, str] = {}                    # host -> its move-group label
-    for gi, g in enumerate(move_groups or [], 1):
-        for h in ((g or {}).get("switches") or []):
-            group_of.setdefault(str(h), f"Group {gi}")
+    group_of, group_ordinal = move_group_host_index(move_groups)   # host -> the owner's move-group label
     seq_of = {str(r.get("group", "")): r for r in (wave_sequencing or []) if isinstance(r, dict)}
     ready_of = {str(r.get("group", "")): str(r.get("readiness", ""))
                 for r in (migration_readiness or []) if isinstance(r, dict)}
@@ -1597,11 +1652,13 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
     rows: List[dict] = []
     for vid in sorted(vlan_hosts):
         hosts = vlan_hosts[vid]
-        # STP root + the default-election smell (same 32768 / 32768+vlan test as stp_root_findings)
-        root = root_of.get(vid, VLAN_CUTOVER_NOT_OBSERVED)
-        prio = root_prio.get(vid)
-        default_election = bool(vid in root_of and isinstance(prio, int)
-                                and prio in (32768, 32768 + vid))
+        # STP root + the default-election smell, from the one election owner. The smell is True/False
+        # only for a PUBLISHED root with one integer priority; otherwise it is undetermined (None).
+        erec = election.get(str(vid)) or {"state": "not_observed", "reason": "no_root_evidence", "root": None,
+                                          "claimants": [], "identities": [], "default_election": None}
+        root = (erec["root"] if erec["state"] == "published"
+                else VLAN_CUTOVER_AMBIGUOUS if erec["state"] == "ambiguous" else VLAN_CUTOVER_NOT_OBSERVED)
+        default_election = erec["default_election"]
         # FHRP: brief behaviour string joined with the election detail where collected
         gwl = gws.get(vid, [])
         members: List[dict] = []
@@ -1657,8 +1714,7 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
             deps.append("DHCP relay via " + ", ".join(helpers))
         # wave / scenario / readiness: via the VLAN's OWN switches (a VLAN inherits the group's
         # sequencing only for the switches it actually rides)
-        glabels = sorted({group_of[h] for h in hosts if h in group_of},
-                         key=lambda s: int(s.split()[-1]) if s.split()[-1].isdigit() else 0)
+        glabels = _ordered_group_labels((group_of[h] for h in hosts if h in group_of), group_ordinal)
         n_hard = n_mbb = n_unk = 0
         for gl in glabels:
             rec = seq_of.get(gl) or {}
@@ -1678,6 +1734,8 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
         rows.append({
             "vlan": vid, "name": names.get(vid, ""),
             "stp_root": root, "stp_root_default_election": default_election,
+            "stp_root_state": erec["state"], "stp_root_reason": erec["reason"],
+            "stp_root_claimants": list(erec["claimants"]), "stp_root_identities": list(erec["identities"]),
             "fhrp": fhrp, "gateway_svi_hosts": sorted(h for h, _d in gwl),
             "endpoint_count": ep_count.get(vid, 0),
             "endpoint_mix": _fmt_endpoint_mix(ep_classes.get(vid, {})),
@@ -3059,7 +3117,7 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
                     ipv6_routing_global_rows.append(row)
 
     out: List[dict] = []
-    for gi, g in enumerate(move_groups, 1):
+    for label, g in zip(move_group_labels(move_groups), move_groups):
         gset = set(g["switches"])
 
         def any_in(s):
@@ -3643,7 +3701,7 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
         # readiness/counts inspect only fail/warn, so 'info' checks are benign
         statuses = [c[1] for c in checks]
         readiness = "NOT READY" if "fail" in statuses else ("CAUTION" if "warn" in statuses else "READY")
-        out.append({"group": f"Group {gi}", "switches": g["switches"],
+        out.append({"group": label, "switches": g["switches"],
                     "endpoints": g.get("endpoints", 0), "readiness": readiness,
                     "n_fail": statuses.count("fail"), "n_warn": statuses.count("warn"),
                     "checks": [{"check": c[0], "status": c[1], "note": c[2],
@@ -7130,12 +7188,17 @@ def stp_root_findings(all_stp_roots: Dict[str, dict],
     MAC tiebreak and can move unexpectedly on a cutover; and (2) root / gateway
     MISALIGNMENT -- the VLAN's root bridge is not a switch that hosts its L3 gateway
     SVI, so intra-VLAN traffic to the default gateway hairpins through the root. Pure
-    derivation; no new collection. Returns {accidental:[...], misaligned:[...]}."""
-    root_of: Dict[str, str] = {}
-    for host in sorted(all_stp_roots or {}):
-        for vlan, r in (all_stp_roots[host] or {}).items():
-            if r.get("is_root"):
-                root_of.setdefault(vlan, host)
+    derivation; no new collection. Returns {accidental:[...], misaligned:[...], ambiguous:[...]}.
+
+    G15: both smells are judged ONLY for a VLAN whose root the election owner
+    (stp_topology.classify_stp_root_election) publishes. A VLAN several collected bridges claim is
+    listed in `ambiguous` ({vlan, reason, claimants, root_priority, identities}) and no claimant is ever
+    named its root."""
+    election = classify_stp_root_election(all_stp_roots)["pvst_vlan"]
+    root_of: Dict[str, str] = {v: rec["root"] for v, rec in election.items() if rec["state"] == "published"}
+    ambiguous = [{"vlan": v, "reason": rec["reason"], "claimants": list(rec["claimants"]),
+                  "root_priority": rec["root_priority"], "identities": list(rec["identities"])}
+                 for v, rec in election.items() if rec["state"] == "ambiguous"]
     gw_of: Dict[str, set] = {}
     for host, ifaces in (all_interfaces or {}).items():
         for port, d in (ifaces or {}).items():
@@ -7145,25 +7208,23 @@ def stp_root_findings(all_stp_roots: Dict[str, dict],
     accidental: List[dict] = []
     misaligned: List[dict] = []
     for vlan, host in root_of.items():
-        rec = all_stp_roots[host][vlan] or {}
         # MST keys are INSTANCE numbers, not VLAN ids: the 32768+vlan accidental-root test would fire on
         # instance 0 at default priority (a non-existent 'VLAN 0' cry-wolf), and the gateway-misalignment join
-        # (keyed on real VLAN ids) can never match an instance key. Both checks are PVST/RPVST-only.
-        if rec.get("is_mst"):
-            continue
-        prio = rec.get("root_priority")
+        # (keyed on real VLAN ids) can never match an instance key. Both checks are PVST/RPVST-only -- the
+        # owner keys MST instances in their own namespace, so none reaches this loop.
         # default bridge priority won on a MAC tiebreak. With extended-system-id ON (the common case) the field
         # reads 32768 + sys-id-ext(=vlan); with 'no spanning-tree extend system-id' (legacy IOS) it reads a BARE
         # 32768 -- accept BOTH, else a legacy ext-id-off accidental root is silently missed (audit-3 #14). A real
         # PVST vlan>=1 with ext-id ON never lands on exactly 32768, so the bare-32768 arm adds no false positive.
-        if isinstance(prio, int) and prio in (32768, 32768 + int(vlan)):
-            accidental.append({"vlan": vlan, "host": host, "priority": prio})
+        # The test itself lives with the owner (stp_topology.stp_default_priority).
+        if election[vlan]["default_election"] is True:
+            accidental.append({"vlan": vlan, "host": host, "priority": election[vlan]["root_priority"]})
         gws = gw_of.get(vlan)
         if gws and host not in gws:
             misaligned.append({"vlan": vlan, "root": host, "gateways": sorted(gws)})
     accidental.sort(key=lambda x: int(x["vlan"]))
     misaligned.sort(key=lambda x: int(x["vlan"]))
-    return {"accidental": accidental, "misaligned": misaligned}
+    return {"accidental": accidental, "misaligned": misaligned, "ambiguous": ambiguous}
 
 
 # =============================================================================
@@ -7326,10 +7387,7 @@ def compute_endpoint_dependencies(endpoint_identity: List[dict],
     identity records."""
     from collections import Counter, defaultdict
     ident = endpoint_identity or []
-    wave_of: Dict[str, str] = {}
-    for g in (move_groups or []):
-        for h in (g.get("switches") or []):          # tolerate switches=None, not just a missing key
-            wave_of.setdefault(h, g.get("group", ""))
+    wave_of, wave_ordinal = move_group_host_index(move_groups)   # the owner's labels (G13)
 
     mac_sw: Dict[str, set] = defaultdict(set); mac_meta: Dict[str, dict] = {}
     ip_sw: Dict[str, set] = defaultdict(set); ip_macs: Dict[str, set] = defaultdict(set)
@@ -7359,7 +7417,7 @@ def compute_endpoint_dependencies(endpoint_identity: List[dict],
     dual_homed = []
     for mac, sws in mac_sw.items():
         if len(sws) >= 2:
-            m = mac_meta[mac]; groups = sorted({wave_of.get(s, "") for s in sws} - {""})
+            m = mac_meta[mac]; groups = _ordered_group_labels((wave_of.get(s, "") for s in sws), wave_ordinal)
             sw_has_dualhomed.update(sws)
             dual_homed.append({"mac": mac, "ip": m["ip"], "vendor": m["vendor"],
                                "endpoint_class": m["endpoint_class"], "switches": sorted(sws),
@@ -7376,7 +7434,7 @@ def compute_endpoint_dependencies(endpoint_identity: List[dict],
         cnt = len(macs - {""})            # DISTINCT MACs, not (host,port) rows -- a dual-homed / multi-port MAC
         if cnt < 3:                        # was counted once per row, inflating the cluster size (audit-5 scale-ssot #0)
             continue
-        groups = sorted({wave_of.get(s, "") for s in sws} - {""})
+        groups = _ordered_group_labels((wave_of.get(s, "") for s in sws), wave_ordinal)
         clu.append({"vendor": vendor, "endpoint_class": cls, "count": cnt, "switches": len(sws),
                     "vlans": len(vlans), "move_groups": len(groups), "spans_groups": len(groups) > 1})
     clu.sort(key=lambda c: -c["count"])
@@ -7498,14 +7556,14 @@ def compute_subnet_intelligence(all_interfaces: Dict[str, Dict[str, InterfaceDat
     dest_by = {r["host"]: set(r["destination_subnets"]) for r in per_device}
     served_by = {r["host"]: {s["subnet"] for s in r["served_subnets"]} for r in per_device}
     mg = []
-    for g in (move_groups or []):
+    for label, g in zip(move_group_labels(move_groups), (move_groups or [])):
         members = g.get("switches") or []; local: set = set(); remote: set = set()
         for h in members:
             local |= dest_by.get(h, set()) | served_by.get(h, set())
         for h in members:
             remote |= reach_full.get(h, set())
         remote -= local
-        mg.append({"group": g.get("group", ""), "switches": len(members),
+        mg.append({"group": label, "switches": len(members),
                    "local_subnets": sorted(local)[:50], "local_count": len(local),
                    "remote_count": len(remote)})
     return {"per_device": per_device, "move_groups": mg, "bgp_received_collected": bool(bgp_received)}
@@ -8248,10 +8306,7 @@ def compute_migration_punchlist(cross_layer: List[dict],
     keys) lets folds that only hold a RECONSTRUCTED interface name (an L3/STP gateway SVI rebuilt from a
     VLAN id, an FHRP receipt member, an IPv6 adjacency interface) point at the exact snapshot key; without
     it those folds keep their row refs and never emit an unproven interface pointer."""
-    wave_of: Dict[str, str] = {}
-    for g in (move_groups or []):
-        for h in (g.get("switches") or []):          # tolerate switches=None, not just a missing key
-            wave_of.setdefault(h, g.get("group", ""))
+    wave_of, wave_ordinal = move_group_host_index(move_groups)   # the owner's labels (G13)
     items: List[dict] = []
 
     def _clip(s: str, n: int = 400) -> str:
@@ -8268,7 +8323,7 @@ def compute_migration_punchlist(cross_layer: List[dict],
         # float, a non-list) must degrade to "no device", never raise (unhashable / non-iterable).
         devs = sorted({d for d in (devices if isinstance(devices, (list, tuple, set)) else [])
                        if isinstance(d, str) and d})
-        waves = sorted({wave_of.get(d, "") for d in devs} - {""})
+        waves = _ordered_group_labels((wave_of.get(d, MOVE_GROUP_UNSCHEDULED) for d in devs), wave_ordinal)
         it = {"severity": severity, "rank": _PUNCH_RANK.get(severity, 0),
               "category": category, "devices": devs, "wave": ", ".join(waves),
               "title": title, "detail": _clip(detail), "remediation": remediation}
@@ -8577,6 +8632,34 @@ def compute_migration_punchlist(cross_layer: List[dict],
             f"STP root != gateway (VLAN {m.get('vlan')})",
             "The spanning-tree root is not on the VLAN's gateway switch -- traffic to the default gateway hairpins.",
             "Align the STP root priority with the active gateway switch.", refs=srefs)
+    for amb in (_evlist(sf.get("ambiguous"))):
+        # G15: several collected bridges claim this VLAN's root -- the owner publishes no root, so the
+        # punch-list names the claimants and asks for reconciliation instead of an accidental/misaligned row.
+        if not isinstance(amb, dict):
+            continue
+        vlan = amb.get("vlan")
+        if not isinstance(vlan, (str, int)) or isinstance(vlan, bool):
+            continue
+        claimants = [h for h in _evlist(amb.get("claimants")) if isinstance(h, str) and h]
+        why = {"duplicate_bridge_identity": "several switches present ONE root bridge identity (a bridge ID is "
+                                            "unique per switch -- cloned/duplicated identity or stale capture)",
+               "multiple_root_identities": "collected switches disagree about the root bridge identity "
+                                           "(separate L2 domains or a split domain -- not provable offline)",
+               "malformed_root_rows": "one or more collected root records are malformed"}.get(
+                   str(amb.get("reason") or ""), "the collected root evidence does not identify one root")
+        prio = amb.get("root_priority")
+        ids = _evlist(amb.get("identities"))
+        default_note = ""
+        if len(ids) == 1 and isinstance(prio, int) and not isinstance(prio, bool) and prio in (32768, 32768 + int(vlan)):
+            default_note = f" The one claimed identity runs the DEFAULT bridge priority ({prio})."
+        arefs = []
+        for h in claimants:
+            arefs.extend(_refs(_row_ref("stp_roots", h, vlan, host=h, kind="device_fact", role="subject",
+                                        cite=f"{h} STP root record VLAN {vlan} (claims root)")))
+        add("Medium", "STP", claimants, f"STP root ambiguous (VLAN {vlan})",
+            f"{len(claimants)} collected bridge(s) report being root for VLAN {vlan}: {why}.{default_note}",
+            "Reconcile the root before cutover: confirm each claimant's own bridge ID ('show spanning-tree "
+            f"vlan {vlan} bridge'), then pin root primary/secondary deliberately.", refs=arefs)
     for a in (_evlist(sf.get("accidental"))):
         if not isinstance(a, dict):
             continue
@@ -9007,10 +9090,7 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
                   if g.get("broadcast") or "PTP" in (g.get("name") or "")
                   or (g.get("category") or "") == "Broadcast-AV"]
     band_of = {r.get("switch"): r.get("band", "") for r in (health_scores or [])}
-    wave_of: Dict[str, str] = {}
-    for g in (move_groups or []):
-        for h in (g.get("switches") or []):              # tolerate switches=None, not just a missing key
-            wave_of.setdefault(h, g.get("group") or "")  # coerce a None group label to "" (move_groups may omit it)
+    wave_of, wave_ordinal = move_group_host_index(move_groups)   # the owner's labels (G13)
 
     # ---- per-host endpoint classes + counts (from the identity layer) ----
     classes_by_host: Dict[str, "Counter"] = defaultdict(Counter)
@@ -9103,7 +9183,7 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
         n_unassessed = sum(1 for b in bands if b in ("", "Insufficient Data")) if band_of else 0
         worst = min((b for b in bands if b and b != "Insufficient Data"),
                     key=lambda b: _APP_BAND_RANK.get(b, 99), default="")
-        waves = sorted({wave_of.get(h, "") for h in mhosts} - {""})
+        waves = _ordered_group_labels((wave_of.get(h, "") for h in mhosts), wave_ordinal)
         spans = len(waves) > 1
         ptp_hosts = [h for h in mhosts if h in ptp]
         ptp_present = bool(ptp_hosts)
@@ -9202,9 +9282,9 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
     cross: List[dict] = []
     for v in sorted(vlan_hosts, key=lambda x: int(x)):
         mh = vlan_hosts[v]
-        vwaves = sorted({wave_of.get(h, "") for h in mh} - {""})
+        vwaves = _ordered_group_labels((wave_of.get(h, "") for h in mh), wave_ordinal)
         if v in q_hosts and len(vwaves) > 1 and (mh & oncrit_hosts):
-            qh = sorted(q_hosts[v]); qw = sorted({wave_of.get(h, "") for h in qh} - {""})
+            qh = sorted(q_hosts[v]); qw = _ordered_group_labels((wave_of.get(h, "") for h in qh), wave_ordinal)
             cross.append({"severity": "High", "kind": "querier-wave", "vlan": v,
                 "querier_switches": qh[:6], "querier_waves": qw, "vlan_waves": vwaves,
                 "title": f"IGMP querier for VLAN {v} may not survive the cutover",
@@ -9438,10 +9518,7 @@ def compute_remediation_plan(devices: Optional[dict] = None,
     from collections import Counter, defaultdict
     devs = devices or {}
     l2 = l2 or {}
-    wave_of: Dict[str, str] = {}
-    for g in (move_groups or []):
-        for h in (g.get("switches") or []):
-            wave_of.setdefault(h, g.get("group") or "")
+    wave_of, _wave_ordinal = move_group_host_index(move_groups)   # the owner's labels (G13)
 
     def _plat(host):
         return (devs.get(host) or {}).get("platform", "ios") or "ios"
@@ -9452,7 +9529,8 @@ def compute_remediation_plan(devices: Optional[dict] = None,
         items.append({"device": device, "platform": _plat(device), "category": category,
                       "severity": severity, "title": title, "why": (why or "")[:300],
                       "commands": [c for c in commands if c is not None], "verify": verify,
-                      "caution": caution, "source": source, "wave": wave_of.get(device, "")})
+                      "caution": caution, "source": source,
+                      "wave": wave_of.get(device, MOVE_GROUP_UNSCHEDULED) if device else ""})
 
     sf = stp_findings or {}
     for a in sf.get("accidental", []):                                    # STP accidental root (default priority)
@@ -9593,7 +9671,8 @@ _VALIDATION_BANNER = ("Run these AFTER each wave's cutover. The 'Observed baseli
 def _validation_wave_key(w: str):
     """Sort 'Group 2' before 'Group 10' (numeric), numbered waves before any non-numbered label."""
     m = re.search(r"(\d+)", w or "")
-    return (0, int(m.group(1))) if m else (1, w or "")
+    number = _election_priority(m.group(1)) if m else None
+    return (0, number) if number is not None else (1, w or "")
 
 
 def _bgp_configured_peer_acceptance(row: Any) -> str:
@@ -9712,12 +9791,9 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
     stp = stp_roots or {}
     groups = list(move_groups or [])
 
-    # host -> wave label ("Group N", enumerated exactly like compute_migration_readiness). A host not in any
+    # host -> the owner's move-group label (G13: compute_move_groups writes it). A host not in any
     # multi-switch group still gets checks under "(unscheduled)" so nothing is silently skipped.
-    wave_of: Dict[str, str] = {}
-    for gi, g in enumerate(groups, 1):
-        for h in (g.get("switches") or []):
-            wave_of.setdefault(h, f"Group {gi}")
+    wave_of, _wave_ordinal = move_group_host_index(groups)
 
     def _plat(host):
         return (devs.get(host) or {}).get("platform", "ios") or "ios"
@@ -9730,7 +9806,7 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             bgp_metadata: Optional[dict] = None,
             fhrp_metadata: Optional[dict] = None):
         item = {"device": device, "platform": _plat(device),
-                "wave": wave_of.get(device, "(unscheduled)"),
+                "wave": wave_of.get(device, MOVE_GROUP_UNSCHEDULED),
                 "category": category, "severity": severity, "check": check,
                 "command": command, "expect": expect, "why": (why or "")[:300]}
         if evidence_state:
@@ -10005,7 +10081,7 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             item.update({
                 "device": host,
                 "platform": _plat(host),
-                "wave": wave_of.get(host, "(unscheduled)"),
+                "wave": wave_of.get(host, MOVE_GROUP_UNSCHEDULED),
                 "category": "FHRP",
                 "severity": "High",
                 "expect": owner_row["acceptance"],
@@ -10043,7 +10119,7 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             item.update({
                 "device": host,
                 "platform": _plat(host),
-                "wave": wave_of.get(host, "(unscheduled)"),
+                "wave": wave_of.get(host, MOVE_GROUP_UNSCHEDULED),
                 "category": "VTP",
                 "severity": "Medium" if status == "assessed" else "High",
                 "check": check,
@@ -10291,9 +10367,28 @@ def compute_validation_plan(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         )
 
     # ---- STP root placement unchanged (a moved root reconverges L2 and shifts forwarding paths). ----
+    # G15: only a root the election owner PUBLISHES is baselined as "unchanged"; every claimant of an
+    # ambiguous VLAN gets a High review row instead (the root must be reconciled before cutover).
+    stp_election = classify_stp_root_election(stp)
     for host in sorted(stp):
         for vlan, info in sorted((stp.get(host) or {}).items(), key=lambda kv: _validation_wave_key(str(kv[0]))):
-            if isinstance(info, dict) and info.get("is_root"):
+            if not (isinstance(info, dict) and info.get("is_root")):
+                continue
+            number = _election_priority(vlan)
+            if number is None or number < 0:
+                continue
+            erec = stp_election["mst_instance" if info.get("is_mst") else "pvst_vlan"].get(str(number)) or {}
+            if erec.get("state") == "ambiguous":
+                others = len(erec.get("claimants") or []) - 1
+                add(host, "STP", "High",
+                    f"Spanning-tree root for VLAN {vlan} ambiguous — reconcile before cutover",
+                    f"show spanning-tree vlan {vlan} bridge",
+                    f"PRE-CUTOVER REVIEW — BLOCKER: {host} and {others} other collected bridge(s) report being "
+                    f"root for VLAN {vlan} ({erec.get('reason')}); confirm this bridge's own ID and the intended root",
+                    "No single root is provable from the collection, so an 'unchanged root' baseline cannot be set.",
+                    evidence_state="review", projection_custody="stp_root_election",
+                    source_key=f"stp_roots.{host}.{vlan}")
+            elif erec.get("state") == "published":
                 add(host, "STP", "Medium",
                     f"Spanning-tree root for VLAN {vlan} unchanged",
                     f"show spanning-tree vlan {vlan}",
@@ -12320,6 +12415,53 @@ _DOSSIER_BAND_RANK = {b: i for i, b in enumerate(_DOSSIER_BANDS)}
 # risk_index thresholds (impact 1-10 x exposure 0-10 -> 0-100)
 _DOSSIER_SEVERE, _DOSSIER_ELEVATED, _DOSSIER_GUARDED = 50, 25, 10
 
+# Closed denominator and input custody for the dossier's eleven exposure axes.
+# Config consumers read the canonical software capture record, falling back to QoS.
+DOSSIER_AXIS_INPUTS = {
+    "Health": ("health_scores",),
+    "Hardware EoL": ("lifecycle_risk",),
+    "Software risk": ("software_risk",),
+    "Control plane": ("platform_health",),
+    "Operational logs": ("syslog_intelligence",),
+    "Security posture": ("security", "software_risk", "qos_audit"),
+    "Config hygiene": ("config_hygiene", "software_risk", "qos_audit", "parse_yield"),
+    "Golden drift": ("golden_drift", "software_risk", "qos_audit"),
+    "QoS posture": ("qos_audit", "software_risk"),
+    "Physical": ("physical_health", "health_scores"),
+    "Protocol": ("protocol_health", "protocol_assessability"),
+}
+DOSSIER_EMPTY_IS_CLEAN = frozenset({"Config hygiene", "Physical"})
+
+
+def _dossier_hygiene_screened_empty(parse_yield: Any, host: str, hosts: list) -> bool:
+    """Positive parser custody only; a missing/ambiguous/malformed receipt cannot license clean."""
+    from cisco_toolkit.textutils import safe_fs_name
+    from typing import cast
+
+    receipts = parse_yield.get("receipts") if isinstance(parse_yield, dict) else None
+    if not isinstance(receipts, list):
+        return False
+    candidates = [r for r in receipts if isinstance(r, dict)
+                  and r.get("parser") == "parse_config_hygiene"
+                  and r.get("cmd") == "show running-config"]
+    mapped = safe_fs_name(host)
+    # Even an exact spelling is a directory-safe name: another raw host can map to it.
+    if sum(safe_fs_name(h) == mapped for h in hosts) != 1:
+        return False
+    exact = [r for r in candidates if r.get("device") == host]
+    if exact:
+        matches = exact
+    else:
+        matches = [r for r in candidates if r.get("device") == mapped]
+    if len(matches) != 1:
+        return False
+    receipt = matches[0]
+    counts = tuple(receipt.get(key) for key in ("calls", "with_entities", "zero_yield", "errors"))
+    if any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in counts):
+        return False
+    calls, with_entities, zero_yield, errors = cast(Tuple[int, int, int, int], counts)
+    return calls >= 1 and zero_yield >= 1 and errors == 0 and calls == with_entities + zero_yield + errors
+
 
 def compute_device_dossiers(health_scores: Optional[list] = None,
                             failure_impact: Optional[list] = None,
@@ -12335,7 +12477,10 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
                             vpc: Optional[Dict[str, dict]] = None,
                             physical_health: Optional[list] = None,
                             protocol_health: Optional[list] = None,
-                            move_groups: Optional[list] = None) -> dict:
+                            move_groups: Optional[list] = None, *,
+                            protocol_assessability: Optional[dict] = None,
+                            parse_yield: Optional[dict] = None,
+                            input_failures: Optional[Tuple[frozenset, bool]] = None) -> dict:
     """NEW-V3.23.172: per-device 360-degree dossier + compound-risk ranking.
     Joins the 11 per-device-capable axes (health / hardware EoL / software risk /
     control-plane capacity / operational logs / CIS posture / config hygiene /
@@ -12344,87 +12489,156 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
     root / gateway roles), and emits named compound patterns where independent
     risks coincide on one box. Deterministic; tolerant of empty/oddly-typed
     input; absence of evidence is state 'na' (not assessed) and NEVER counts
-    toward exposure. Returns {per_device, summary, note}."""
-    hs_by = {r.get("switch"): r for r in (health_scores or []) if isinstance(r, dict)}
-    fi_by = {r.get("host"): r for r in (failure_impact or []) if isinstance(r, dict)}
-    lc_by = {r.get("host"): r for r in ((lifecycle_risk or {}).get("per_device") or [])
-             if isinstance(r, dict)}
-    sw = software_risk or {}
-    sw_by = {r.get("host"): r for r in (sw.get("per_device") or []) if isinstance(r, dict)}
-    sw_find: Dict[str, list] = {}
-    for f in (sw.get("findings") or []):
-        if isinstance(f, dict):
-            sw_find.setdefault(f.get("host", ""), []).append(f)
-    ph_by = {r.get("host"): r for r in ((platform_health or {}).get("per_device") or [])
-             if isinstance(r, dict)}
-    si = syslog_intelligence or {}
-    si_by = {r.get("host"): r for r in (si.get("per_device") or []) if isinstance(r, dict)}
-    si_det: Dict[str, list] = {}
-    for d in (si.get("detections") or []):
-        if isinstance(d, dict):
-            si_det.setdefault(d.get("host", ""), []).append(d)
-    qa = qos_audit or {}
-    qa_by = {r.get("host"): r for r in (qa.get("per_device") or []) if isinstance(r, dict)}
-    qa_find: Dict[str, list] = {}
-    for f in (qa.get("findings") or []):
-        if isinstance(f, dict):
-            qa_find.setdefault(f.get("host", ""), []).append(f)
-    gd_by = {r.get("host"): r for r in ((golden_drift or {}).get("per_device") or [])
-             if isinstance(r, dict)}
+    toward exposure. Each axis's input_state is custody, independent of its risk state.
+    Missing protocol receipts fail closed; only a successful parse receipt proves a sparse
+    hygiene result was screened. Returns {per_device, summary, note}."""
+    from cisco_toolkit.ssot import _is_deep_empty
+
+    def d(value):
+        return value if isinstance(value, dict) else {}
+
+    def rows(value):
+        return value if isinstance(value, list) else []
+
+    def by_host(value, key="host"):
+        return {r[key]: r for r in rows(value) if isinstance(r, dict)
+                and isinstance(r.get(key), str) and r[key]}
+
+    malformed_sections: set = set()
+    malformed_hosts: Dict[str, set] = {}
+
+    def finding_index(value, key, section, *, physical=False):
+        index: Dict[str, list] = {}
+        if value is not None and not isinstance(value, list):
+            malformed_sections.add(section)
+            return index
+        for record in rows(value):
+            host = record.get(key) if isinstance(record, dict) else None
+            if not isinstance(host, str) or not host:
+                malformed_sections.add(section)
+                continue
+            severity = record.get("severity")
+            if (severity not in (None, "", "High", "Medium", "Low", "Info", "OK")
+                    or (physical and not isinstance(record.get("risk", ""), str))):
+                malformed_hosts.setdefault(section, set()).add(host)
+                continue
+            index.setdefault(host, []).append(record)
+        return index
+
+    def valid_number(value, low=0, high=None):
+        import math
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return False
+        try:
+            return math.isfinite(value) and value >= low and (high is None or value <= high)
+        except OverflowError:
+            return False
+
+    # Retain raw section values for the same deep-empty failure rule the SSOT owner uses.
+    inputs = {key: value for key, value in locals().items()
+              if key in {s for sections in DOSSIER_AXIS_INPUTS.values() for s in sections}}
+    direct, unattributed = input_failures if input_failures is not None else (frozenset(), False)
+    failed_axes = {axis for axis, sections in DOSSIER_AXIS_INPUTS.items()
+                   if any(s in direct or (unattributed and _is_deep_empty(inputs.get(s)))
+                          for s in sections)}
+    hs_by = by_host(health_scores, "switch")
+    fi_by = by_host(failure_impact)
+    lc_by = by_host(d(lifecycle_risk).get("per_device"))
+    sw = d(software_risk)
+    sw_by = by_host(sw.get("per_device"))
+    sw_find = finding_index(sw.get("findings"), "host", "software_risk")
+    ph_by = by_host(d(platform_health).get("per_device"))
+    si = d(syslog_intelligence)
+    si_by = by_host(si.get("per_device"))
+    si_det = finding_index(si.get("detections"), "host", "syslog_intelligence")
+    qa = d(qos_audit)
+    qa_by = by_host(qa.get("per_device"))
+    qa_find = finding_index(qa.get("findings"), "host", "qos_audit")
+    gd_by = by_host(d(golden_drift).get("per_device"))
     # When fewer than 3 comparable configs exist (majority mode), compute_golden_drift derives NO baseline
     # (summary.n_baseline == 0) yet still emits per_device rows with n_missing 0 / compliance 100. Those must
     # read 'na -- no baseline', not 'ok / matches the config baseline' (asserting conformance to a baseline
     # that was never derived = false-health).
-    _gd_has_baseline = bool((((golden_drift or {}).get("summary")) or {}).get("n_baseline"))
-    sec = security or {}
-    hyg = config_hygiene or {}
-    roots = stp_roots or {}
-    vpc = vpc or {}
-    phy_by: Dict[str, list] = {}
-    for r in (physical_health or []):
-        if isinstance(r, dict):
-            phy_by.setdefault(r.get("switch", ""), []).append(r)
-    proto_by: Dict[str, list] = {}
-    for r in (protocol_health or []):
-        if isinstance(r, dict):
-            proto_by.setdefault(r.get("switch", ""), []).append(r)
-    wave_of: Dict[str, str] = {}
-    for g in (move_groups or []):
-        if isinstance(g, dict):
-            for h in (g.get("switches") or []):
-                wave_of.setdefault(h, g.get("group", ""))
+    gd_baseline_size = d(d(golden_drift).get("summary")).get("n_baseline")
+    _gd_has_baseline = isinstance(gd_baseline_size, int) and not isinstance(gd_baseline_size, bool) and gd_baseline_size > 0
+    sec = d(security)
+    hyg = d(config_hygiene)
+    roots = d(stp_roots)
+    _el = classify_stp_root_election(roots)          # the one root-election owner (G15), both namespaces
+    stp_election = list(_el["pvst_vlan"].values()) + list(_el["mst_instance"].values())
+    vpc = d(vpc)
+    phy_by = finding_index(physical_health, "switch", "physical_health", physical=True)
+    proto_by = finding_index(protocol_health, "switch", "protocol_health")
+    wave_of, _wave_ordinal = move_group_host_index(move_groups)   # the owner's labels (G13)
+
+    try:
+        protocol_receipt = _validate_protocol_assessability_receipt(protocol_assessability)
+    except (TypeError, ValueError):
+        # Imported hostile snapshots may carry unhashable values in otherwise-valid dictionaries.
+        protocol_receipt = {"valid": False, "index": {}, "reason": "malformed protocol receipt"}
 
     hosts = sorted({h for h in (set(hs_by) | set(fi_by) | set(lc_by) | set(sw_by)
                                 | set(ph_by) | set(si_by) | set(qa_by) | set(gd_by)
-                                | set(sec) | set(hyg)) if h})
+                                | set(sec) | set(hyg) | set(phy_by) | set(proto_by)
+                                | {h for h, _ in protocol_receipt["index"]}) if isinstance(h, str) and h})
     per_device: List[dict] = []
     for host in hosts:
         exposures: List[dict] = []
 
-        def ax(axis: str, state: str, label: str) -> None:
-            exposures.append({"axis": axis, "state": state, "label": label})
+        def ax(axis: str, state: str, label: str, input_state: str = "published") -> None:
+            if axis in failed_axes:
+                state, input_state, label = "na", "analysis_unavailable", "analysis unavailable — input phase failed"
+            elif any(s in malformed_sections or host in malformed_hosts.get(s, ())
+                     for s in DOSSIER_AXIS_INPUTS[axis]):
+                state, input_state, label = "na", "analysis_unavailable", "analysis unavailable — malformed input record"
+            elif input_state not in ("published", "collected_but_empty"):
+                state = "na"
+            elif state == "ok" and input_state == "collected_but_empty" and axis not in DOSSIER_EMPTY_IS_CLEAN:
+                state = "na"
+            exposures.append({"axis": axis, "state": state, "label": label, "input_state": input_state})
+
+        swr = sw_by.get(host)
+        qar = qa_by.get(host)
+        # Exact boolean records only. A present canonical record dominates its fallback even False.
+        capture = swr.get("config_assessable") if swr is not None else (qar or {}).get("assessable")
+        if not isinstance(capture, bool):
+            capture = None
+
+        def config_gap(axis: str, record: Any) -> bool:
+            if capture is False:
+                ax(axis, "na", "no captured running-config", "not_collected")
+                return True
+            if capture is None:
+                ax(axis, "na", "analysis unavailable — running-config capture record missing or malformed", "analysis_unavailable")
+                return True
+            if not isinstance(record, dict) or not record:
+                ax(axis, "na", "analysis unavailable — running-config assessment missing", "analysis_unavailable")
+                return True
+            return False
 
         # -- the 11 exposure axes (state: risk / watch / ok / na) ------------
         hsr = hs_by.get(host)
         band = (hsr or {}).get("band", "")
         if hsr is None:
-            ax("Health", "na", "not scored")
+            ax("Health", "na", "not scored", "not_collected")
         elif band == "Insufficient Data":
-            ax("Health", "na", "not scored — collection gap")
+            ax("Health", "na", "not scored — collection gap", "not_collected")
         elif band == "Critical":
             ax("Health", "risk", f"health Critical ({hsr.get('score', '')}/100)")
         elif band == "Poor":
             ax("Health", "watch", f"health Poor ({hsr.get('score', '')}/100)")
-        else:
+        elif band in ("Excellent", "Good", "Fair"):
             ax("Health", "ok", f"health {band or '—'} ({hsr.get('score', '')}/100)")
+        else:
+            ax("Health", "na", f"unrecognized health band {band!r}", "analysis_unavailable")
 
         lcr = lc_by.get(host)
         lcb = (lcr or {}).get("band", "Unknown")
         if lcr is None:
-            ax("Hardware EoL", "na", "not lifecycle-assessed — no lifecycle row was produced")
+            ax("Hardware EoL", "na", "not lifecycle-assessed — no lifecycle row was produced", "not_collected")
         elif lcb == "Unknown":
             ax("Hardware EoL", "na", "no authoritative lifecycle band — either no exact EoX row "
-               "matched or the matched row's source/date authority was withheld")
+               "matched or the matched row's source/date authority was withheld", "collected_but_empty")
         elif lcb in ("Past-LDoS", "Near-LDoS"):
             ax("Hardware EoL", "risk", f"hardware {lcb.replace('-', ' ')}")
         elif lcb == "Past-EoS":
@@ -12433,14 +12647,14 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             ax("Hardware EoL", "ok", "pre-EoS date position (schema: Active; support entitlement "
                "not assessed)")
         else:
-            ax("Hardware EoL", "na", f"unrecognized lifecycle band {lcb!r} — not assessed")
+            ax("Hardware EoL", "na", f"unrecognized lifecycle band {lcb!r} — not assessed", "analysis_unavailable")
 
         swr = sw_by.get(host)
         sw_sevs = {f.get("severity") for f in sw_find.get(host, [])}
         swb = (swr or {}).get("train_band", "Unknown")
         if swr is None or (not swr.get("config_assessable")
                            and str(swr.get("sw_version", "")).startswith("(not")):
-            ax("Software risk", "na", "not assessable — no config or version evidence")
+            ax("Software risk", "na", "not assessable — no config or version evidence", "not_collected")
         elif "High" in sw_sevs or swb == "Replace/Upgrade":
             ax("Software risk", "risk",
                "open advisory surface" if "High" in sw_sevs else "software train end-of-era")
@@ -12457,9 +12671,11 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             # gap, not an absence of exposed surface.
             ax("Software risk", "na",
                "advisory surface not screened — no captured running-config"
-               + (f" (software train {swb})" if swb and swb != "Unknown" else ""))
-        else:
+               + (f" (software train {swb})" if swb and swb != "Unknown" else ""), "not_collected")
+        elif swr.get("config_assessable") is True and swb in ("Unknown", "Current-era"):
             ax("Software risk", "ok", "no exposed advisory surface flagged")
+        else:
+            ax("Software risk", "na", "analysis unavailable — unrecognized software assessment", "analysis_unavailable")
 
         phr = ph_by.get(host)
         phb = (phr or {}).get("band", "Unknown")
@@ -12471,8 +12687,15 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         ph_parts = ([f"CPU {_cpu5}%"] if _cpu5 is not None else []) \
             + ([f"memory {_memf}% free"] if _memf is not None else [])
         ph_why = " · ".join(ph_parts) or "see sample"
-        if phr is None or not phr.get("collected"):
-            ax("Control plane", "na", "capacity output not collected")
+        if phr is None or phr.get("collected") is False:
+            ax("Control plane", "na", "capacity output not collected", "not_collected")
+        elif phr.get("collected") is not True or phb not in ("Hot", "Elevated", "OK", "Unknown"):
+            ax("Control plane", "na", "analysis unavailable — unrecognized capacity assessment", "analysis_unavailable")
+        elif phb == "Unknown":
+            ax("Control plane", "na", "capacity output collected but no figures recognized", "collected_but_empty")
+        elif ((all(value is None for value in (_cpu5, _memf)))
+              or any(value is not None and not valid_number(value, high=100) for value in (_cpu5, _memf))):
+            ax("Control plane", "na", "analysis unavailable — malformed capacity figures", "analysis_unavailable")
         elif phb == "Hot":
             ax("Control plane", "risk", f"control plane Hot ({ph_why})")
         elif phb == "Elevated":
@@ -12482,31 +12705,48 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
 
         sir = si_by.get(host)
         si_sevs = {d.get("severity") for d in si_det.get(host, [])}
-        if sir is None or not sir.get("collected"):
-            ax("Operational logs", "na", "log evidence not collected")
+        if sir is None or sir.get("collected") is False:
+            ax("Operational logs", "na", "log evidence not collected", "not_collected")
+        elif sir.get("collected") is not True:
+            ax("Operational logs", "na", "analysis unavailable — unrecognized log collection record", "analysis_unavailable")
         elif "High" in si_sevs:
             ax("Operational logs", "risk", "high-severity operational events in the device's own logs")
         elif "Medium" in si_sevs:
             ax("Operational logs", "watch", "operational events to review in the logs")
+        elif sir.get("events") == 0:
+            ax("Operational logs", "na", "log captured but no events recognized", "collected_but_empty")
+        elif not isinstance(sir.get("events"), int) or isinstance(sir.get("events"), bool) or sir["events"] < 0:
+            ax("Operational logs", "na", "analysis unavailable — unrecognized event count", "analysis_unavailable")
         else:
             ax("Operational logs", "ok", "no flagged operational events")
 
         s = sec.get(host)
-        fails = [f for f in ((s or {}).get("findings") or [])
+        findings = rows(d(s).get("findings"))
+        fails = [f for f in findings
                  if isinstance(f, dict) and f.get("status") == "fail"]
-        if s is None:
-            ax("Security posture", "na", "no captured running-config")
+        if config_gap("Security posture", s):
+            pass
         elif any(str(f.get("severity", "")).lower() == "high" for f in fails):
             ax("Security posture", "risk", f"{len(fails)} CIS check(s) failing (incl. high)")
         elif fails:
             ax("Security posture", "watch", f"{len(fails)} CIS check(s) failing")
-        else:
+        elif any(isinstance(f, dict) and f.get("status") == "pass" for f in findings):
             ax("Security posture", "ok", "CIS checks pass")
+        elif isinstance(d(s).get("findings"), list):
+            ax("Security posture", "na", "security screened but no pass/fail checks evaluated", "collected_but_empty")
+        else:
+            ax("Security posture", "na", "analysis unavailable — malformed security findings", "analysis_unavailable")
 
         hg = hyg.get(host)
-        n_undef = len((hg or {}).get("undefined") or [])
-        if hg is None:
-            ax("Config hygiene", "na", "no captured running-config")
+        n_undef = len(rows(d(hg).get("undefined")))
+        if capture is False:
+            ax("Config hygiene", "na", "no captured running-config", "not_collected")
+        elif capture is None:
+            ax("Config hygiene", "na", "analysis unavailable — running-config capture record missing or malformed", "analysis_unavailable")
+        elif hg is None and capture is True and _dossier_hygiene_screened_empty(parse_yield, host, hosts):
+            ax("Config hygiene", "ok", "screened — no named structure to dangle", "collected_but_empty")
+        elif not isinstance(hg, dict) or not isinstance(hg.get("undefined"), list):
+            ax("Config hygiene", "na", "analysis unavailable — config-hygiene screening missing", "analysis_unavailable")
         elif n_undef >= 5:
             ax("Config hygiene", "risk", f"{n_undef} undefined reference(s)")
         elif n_undef:
@@ -12515,10 +12755,16 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             ax("Config hygiene", "ok", "no dangling references")
 
         gdr = gd_by.get(host)
-        if gdr is None:
-            ax("Golden drift", "na", "not in the drift baseline")
+        if config_gap("Golden drift", gdr):
+            pass
+        elif (not isinstance(gd_baseline_size, int) or isinstance(gd_baseline_size, bool) or gd_baseline_size < 0):
+            ax("Golden drift", "na", "analysis unavailable — malformed baseline count", "analysis_unavailable")
         elif not _gd_has_baseline:
-            ax("Golden drift", "na", "no config baseline derived (need 3+ comparable configs)")
+            ax("Golden drift", "na", "no config baseline derived (need 3+ comparable configs)", "collected_but_empty")
+        elif (not isinstance(gdr.get("n_missing"), int) or isinstance(gdr.get("n_missing"), bool)
+              or not valid_number(gdr.get("n_missing"), high=gd_baseline_size)
+              or not valid_number(gdr.get("compliance_pct"), high=100)):
+            ax("Golden drift", "na", "analysis unavailable — malformed drift counts", "analysis_unavailable")
         elif _as_num(gdr.get("n_missing")) >= 5 or _as_num(gdr.get("compliance_pct"), 100) < 70:
             ax("Golden drift", "risk",
                f"{gdr.get('n_missing', 0)} required directive(s) missing "
@@ -12526,12 +12772,14 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         elif gdr.get("n_missing", 0):
             ax("Golden drift", "watch", f"{gdr.get('n_missing', 0)} required directive(s) missing")
         else:
-            ax("Golden drift", "ok", "matches the config baseline")
+            ax("Golden drift", "ok", f"matches the {gd_baseline_size}-directive {d(golden_drift).get('mode', 'unknown')} baseline")
 
         qar = qa_by.get(host)
         qa_sevs = {f.get("severity") for f in qa_find.get(host, [])}
-        if qar is None or not qar.get("assessable"):
-            ax("QoS posture", "na", "not assessable — full running-config not captured")
+        if config_gap("QoS posture", qar):
+            pass
+        elif qar.get("assessable") is not True:
+            ax("QoS posture", "na", "analysis unavailable — contradictory QoS capture record", "analysis_unavailable")
         elif qa_sevs & {"High", "Medium"}:
             # QoS doctrine gaps gate the DESIGN, not the asset's survival -> capped at watch.
             ax("QoS posture", "watch", "QoS doctrine finding(s) on this device")
@@ -12540,14 +12788,9 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         else:
             ax("QoS posture", "ok", "QoS posture consistent")
 
-        # physical/protocol findings derive from the interface scan -- a host the scorer never
-        # saw (in the roster only via EoL / software / log evidence) is 'na', not silently clean.
-        # `hsr is not None` alone was INERT for the case it targets: a host banded 'Insufficient
-        # Data' still HAS a health-score row, so it read scanned=True and rendered "ok - no L1
-        # findings" / "protocol health clean" right beside its own "Health: na - collection gap"
-        # (#16). Only a genuinely scored host licenses an 'ok' by silence; a host that produced
-        # actual physical/protocol rows still does so through the `host in *_by` arm below.
-        scanned = hsr is not None and band != "Insufficient Data"
+        # A recognized health-score record proves the physical interface scan ran. Protocol
+        # conclusions use their separate seven-family receipt below.
+        scanned = hsr is not None and band in ("Excellent", "Good", "Fair", "Poor", "Critical")
         phys = [r for r in phy_by.get(host, [])
                 if r.get("severity") not in (None, "", "Info", "OK")]
         hard_phy = [r for r in phys
@@ -12557,9 +12800,10 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         elif phys:
             ax("Physical", "watch", f"{len(phys)} port(s) with L1 findings")
         elif scanned or host in phy_by:
-            ax("Physical", "ok", "no L1 findings")
+            ax("Physical", "ok", "no L1 findings", "published" if host in phy_by else "collected_but_empty")
         else:
-            ax("Physical", "na", "device not interface-scanned / collection gap")
+            ax("Physical", "na", "device not interface-scanned / collection gap",
+               "analysis_unavailable" if hsr is not None and band != "Insufficient Data" else "not_collected")
 
         protos = proto_by.get(host, [])
         p_sevs = {r.get("severity") for r in protos}
@@ -12567,10 +12811,22 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             ax("Protocol", "risk", "high-severity protocol-health finding")
         elif "Medium" in p_sevs:
             ax("Protocol", "watch", "protocol-health finding(s) to review")
-        elif scanned or host in proto_by:
-            ax("Protocol", "ok", "protocol health clean")
+        elif not protocol_receipt["valid"]:
+            ax("Protocol", "na", "analysis unavailable — missing or malformed protocol receipt", "analysis_unavailable")
         else:
-            ax("Protocol", "na", "device not interface-scanned / collection gap")
+            cells = [protocol_receipt["index"].get((host, family["protocol"]))
+                     for family in PROTOCOL_ASSESSABILITY_FAMILIES]
+            observed = [cell["protocol"] for cell in cells if cell is not None
+                        and cell["state"] in PROTOCOL_ASSESSABILITY_AUTHORIZING_STATES]
+            if observed:
+                ax("Protocol", "ok", f"clean where observed — {len(observed)} of {len(cells)} families assessed ({', '.join(observed)})")
+            elif any(cell is None or cell["state"] == "analysis_unavailable" for cell in cells):
+                ax("Protocol", "na", "analysis unavailable — protocol family analysis missing", "analysis_unavailable")
+            elif any(_protocol_assessability_conclusion(cell["state"]) in ("abstained", "not_running")
+                     for cell in cells):
+                ax("Protocol", "na", "protocol captures contain no assessable health records", "collected_but_empty")
+            else:
+                ax("Protocol", "na", "no assessable protocol captures (missing or capture error)", "not_collected")
 
         n_risk = sum(1 for e in exposures if e["state"] == "risk")
         n_watch = sum(1 for e in exposures if e["state"] == "watch")
@@ -12587,8 +12843,11 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             impact += 2
         elif stranded >= 50:
             impact += 1
-        root_vlans = sum(1 for v in (roots.get(host) or {}).values()
-                         if isinstance(v, dict) and v.get("is_root"))
+        # G15: only a root the election owner PUBLISHES counts toward impact / CR-03; a VLAN this host
+        # claims alongside other claimants is disclosed as `stp_root_ambiguous_vlans`, never counted.
+        root_vlans = sum(1 for rec in stp_election if rec["state"] == "published" and rec["root"] == host)
+        ambiguous_root_vlans = sum(1 for rec in stp_election
+                                   if rec["state"] == "ambiguous" and host in rec["claimants"])
         if root_vlans:
             impact += 1                       # STP control-plane keystone
         if (hs_by.get(host) or {}).get("role") == "distribution":
@@ -12700,12 +12959,12 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             "host": host,
             "model": (lcr or {}).get("model", ""), "platform": (lcr or {}).get("platform", ""),
             "sw_version": (lcr or {}).get("sw_version", "") or (swr or {}).get("sw_version", ""),
-            "role": (hsr or {}).get("role", ""), "wave": wave_of.get(host, ""),
+            "role": (hsr or {}).get("role", ""), "wave": wave_of.get(host, MOVE_GROUP_UNSCHEDULED),
             "health_score": (hsr or {}).get("score"), "health_band": band,
             "eol_band": lcb if lcr else "Unknown", "train_band": swb if swr else "Unknown",
             "platform_band": phb if phr else "Unknown",
             "vpc_role": (vpc.get(host) or {}).get("role", ""),
-            "stp_root_vlans": root_vlans,
+            "stp_root_vlans": root_vlans, "stp_root_ambiguous_vlans": ambiguous_root_vlans,
             "impact_score": impact, "impact_severity": fi_sev or "—",
             "stranded": stranded, "vlans_impacted": vlans_imp,
             "exposure_score": exposure_score, "exposures": exposures,

@@ -65,8 +65,8 @@ describe("the compiler carries every field the producer put on a finding", () =>
 
 let citedRows = -1;
 describeGolden("the reference sample's cited rows", () => {
-  it("33 of its rows name their source command (a ratchet over the data, not a target)", () => {
-    expect(citedRows, "the per-row comparison above ran").toBe(33);
+  it("32 of its rows name their source command (a ratchet over the data, not a target)", () => {
+    expect(citedRows, "the per-row comparison above ran").toBe(32);
   });
 });
 
@@ -90,11 +90,11 @@ afterEach(() => {
   }
 });
 
-describeGolden("the pane shows the finding's own source command, and says what it is not (F017 on the reference sample)", () => {
-  it("F017 ('Undefined acl 7') names show running-config as the engine's source, in the header", () => {
-    const f = fabric.findings.find((x) => x.id === "F017")!;
+describeGolden("the pane shows the finding's own source command, and says what it is not (F012 on the reference sample)", () => {
+  it("F012 ('Undefined acl 7') names show running-config as the engine's source, in the header", () => {
+    const f = fabric.findings.find((x) => x.id === "F012")!;
     expect(f.sourceCommand, "precondition").toBe("show running-config");
-    const c = mountFor("F017");
+    const c = mountFor("F012");
     const el = c.querySelector<HTMLElement>("[data-finding-source]");
     expect(el, "the source line is rendered").not.toBeNull();
     // In the header: visible on selection, zero further interactions.

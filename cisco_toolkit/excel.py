@@ -684,7 +684,7 @@ def write_move_group_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData
     DAT_L = Alignment(horizontal="left", vertical="top", wrap_text=True)
 
     r = 2
-    for i, g in enumerate(groups, 1):
+    for g in groups:
         span_txt = ", ".join(f"{vid}{'('+name+')' if name else ''}[x{n}]"
                              for vid, name, n in g["spanning_vlans"])
         notes = []
@@ -696,7 +696,7 @@ def write_move_group_sheet(wb, all_interfaces: Dict[str, Dict[str, InterfaceData
             notes.append("VLAN 1 also spans group (default, excluded from grouping)")
         if g["blocked_paths"]:
             notes.append("Has redundant blocked path(s) — verify before cutover")
-        vals = [f"Group {i}", len(g["switches"]), ", ".join(g["switches"]),
+        vals = [g["group"], len(g["switches"]), ", ".join(g["switches"]),   # the owner's label (G13)
                 len(g["spanning_vlans"]), span_txt, g["endpoints"],
                 ", ".join(g["gateways"]), "; ".join(g["blocked_paths"]), " | ".join(notes)]
         for col, v in enumerate(vals, 1):
@@ -3455,8 +3455,13 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
     an axis nothing was ever compared on. On an access-only collection -- where every gateway SVI sits on
     an uncollected core -- that is a fabricated fleet-wide 'aligned' down the whole sheet (seen exactly so
     in a shipped deliverable). Absence of evidence is never health, so those rows carry
-    HEALTH_NOT_OBSERVED instead."""
+    HEALTH_NOT_OBSERVED instead.
+
+    G15: the rows are the VLANs/instances whose root the election owner (stp_topology.
+    classify_stp_root_election) PUBLISHES, plus every AMBIGUOUS one -- rendered '[AMBIGUOUS] N claim root:
+    ...' with both verdicts HEALTH_NOT_OBSERVED. A claimant is never written as the VLAN's root switch."""
     from cisco_toolkit.analyze import stp_root_findings
+    from cisco_toolkit.stp_topology import classify_stp_root_election
     f = stp_root_findings(all_stp_roots, all_interfaces)
     acc = {(x["vlan"], x["host"]) for x in f["accidental"]}
     mis = {x["vlan"]: x["gateways"] for x in f["misaligned"]}
@@ -3474,19 +3479,36 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
                              "VLAN gateway(s)", "Aligned?"], 1):
         c = ws.cell(1, col, h); c.font = Font(bold=True, color="FFFFFF")
         c.fill = PatternFill("solid", fgColor="434343"); c.alignment = Alignment(horizontal="center")
-    root_of: dict = {}
-    for host in sorted(all_stp_roots or {}):
-        for vlan, r in (all_stp_roots[host] or {}).items():
-            if r.get("is_root"):
-                root_of.setdefault(vlan, (host, r.get("root_priority"), bool(r.get("is_mst"))))
+    election = classify_stp_root_election(all_stp_roots)
+    rows_of = []                                     # (vlan, namespace, election record)
+    for ns in ("pvst_vlan", "mst_instance"):
+        for vlan, erec in election[ns].items():
+            if erec["state"] in ("published", "ambiguous"):
+                rows_of.append((vlan, ns, erec))
     warn = PatternFill("solid", fgColor="FCE5CD")
     blind = PatternFill("solid", fgColor="EFEFEF")   # neutral grey — the established not-observed shade
-    r = 2; nrows = 0
-    for vlan in sorted(root_of, key=lambda v: int(v)):
-        host, prio, is_mst = root_of[vlan]
+    r = 2; nrows = 0; n_ambiguous = 0
+    for vlan, ns, erec in sorted(rows_of, key=lambda t: (int(t[0]), t[1] != "pvst_vlan")):
+        is_mst = ns == "mst_instance"
+        if erec["state"] == "ambiguous":
+            n_ambiguous += 1
+            cl = erec["claimants"]
+            ws.cell(r, 1, vlan)
+            ws.cell(r, 2, f"[AMBIGUOUS] {len(cl)} claim root: " + ", ".join(cl[:12])
+                    + (f" +{len(cl) - 12} more" if len(cl) > 12 else "") + f" ({erec['reason']})")
+            ids = erec["identities"]
+            ws.cell(r, 3, erec["root_priority"] if len(ids) == 1 and erec["root_priority"] is not None else "")
+            ws.cell(r, 4, HEALTH_NOT_OBSERVED)
+            ws.cell(r, 5, "(root ambiguous — reconcile before judging gateway alignment)")
+            ws.cell(r, 6, HEALTH_NOT_OBSERVED)
+            for col in range(1, 7):
+                ws.cell(r, col).fill = warn
+            r += 1; nrows += 1
+            continue
+        host, prio = erec["root"], erec["root_priority"]
         is_acc = (vlan, host) in acc
-        gws = mis.get(vlan)
-        seen = gw_seen.get(vlan)
+        gws = None if is_mst else mis.get(vlan)
+        seen = None if is_mst else gw_seen.get(vlan)
         ws.cell(r, 1, vlan); ws.cell(r, 2, host)
         ws.cell(r, 3, prio if prio is not None else "")
         if is_mst:
@@ -3496,7 +3518,9 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
             ws.cell(r, 5, "(MST instance — root/gateway join is PVST/RPVST-only)")
             ws.cell(r, 6, HEALTH_NOT_OBSERVED)
         else:
-            ws.cell(r, 4, "yes (default priority)" if is_acc else "no")
+            # an undetermined election (no single integer root priority) is not "no": tri-state (G15)
+            ws.cell(r, 4, HEALTH_NOT_OBSERVED if erec["default_election"] is None
+                    else "yes (default priority)" if is_acc else "no")
             if gws:
                 ws.cell(r, 5, ", ".join(gws)); ws.cell(r, 6, "no - root != gateway")
             elif seen:
@@ -3516,7 +3540,8 @@ def write_stp_roots_sheet(wb, all_stp_roots: dict, all_interfaces: dict) -> None
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
     logger.info(f"  [OK] '{STP_ROOTS_SHEET_NAME}' sheet: {nrows} rooted VLAN(s), "
-                f"{len(f['accidental'])} accidental, {len(f['misaligned'])} misaligned")
+                f"{len(f['accidental'])} accidental, {len(f['misaligned'])} misaligned, "
+                f"{n_ambiguous} ambiguous")
 
 
 PUNCHLIST_SHEET_NAME = "Migration Punch-List"   # consolidated severity-ranked roll-up (NEW-V3.23.63)
@@ -6086,7 +6111,7 @@ def write_vlan_cutover_sheet(wb, vlan_cutover: List[dict]) -> None:
     dependency flags, wave / scenario / readiness) plus the two DELIBERATELY blank human columns
     (Cutover Window / Rollback Owner) the team fills during the window. Pure presentation of
     compute_vlan_cutover_matrix (one source of truth with snap['vlan_cutover'])."""
-    from cisco_toolkit.analyze import VLAN_CUTOVER_NOT_OBSERVED
+    from cisco_toolkit.analyze import VLAN_CUTOVER_AMBIGUOUS, VLAN_CUTOVER_NOT_OBSERVED
     cols = ["VLAN", "Name", "STP Root", "Root Default-Election", "FHRP",
             "Gateway SVIs", "Endpoint MACs (per-port sum)", "Endpoint Mix", "App Domain", "Criticality",
             "Dependencies", "Wave", "Scenario", "Readiness", "Cutover Window", "Rollback Owner"]
@@ -6113,10 +6138,22 @@ def write_vlan_cutover_sheet(wb, vlan_cutover: List[dict]) -> None:
                 + (f" (vMAC {', '.join(vmacs)})" if vmacs else "")
         else:
             fhrp_txt = str(fhrp or "")
-        # tri-state honesty: yes / no only when a root was observed; blank = no claim possible
-        root_seen = rec.get("stp_root") != VLAN_CUTOVER_NOT_OBSERVED
-        de = ("yes" if rec.get("stp_root_default_election") else "no") if root_seen else ""
-        vals = [rec.get("vlan"), rec.get("name", ""), rec.get("stp_root", ""), de, fhrp_txt,
+        # tri-state honesty (G15): yes / no only for a PUBLISHED root whose election the owner judged
+        # (a bool); an ambiguous root reads 'undetermined (root ambiguous)' with the claimants named; an
+        # unobserved root -- or an older row whose verdict is None -- is blank, never 'no'.
+        de_val = rec.get("stp_root_default_election")
+        state = rec.get("stp_root_state")
+        stp_root_txt = rec.get("stp_root", "")
+        if state == "ambiguous" or stp_root_txt == VLAN_CUTOVER_AMBIGUOUS:
+            de = "undetermined (root ambiguous)"
+            cl = [str(h) for h in (rec.get("stp_root_claimants") or [])]
+            stp_root_txt = (f"{VLAN_CUTOVER_AMBIGUOUS} {len(cl)} claim root: " + ", ".join(cl[:12])
+                            + (f" +{len(cl) - 12} more" if len(cl) > 12 else "")) if cl else VLAN_CUTOVER_AMBIGUOUS
+        elif state in (None, "published") and isinstance(de_val, bool) and stp_root_txt != VLAN_CUTOVER_NOT_OBSERVED:
+            de = "yes" if de_val else "no"
+        else:
+            de = ""
+        vals = [rec.get("vlan"), rec.get("name", ""), stp_root_txt, de, fhrp_txt,
                 ", ".join(rec.get("gateway_svi_hosts") or []), rec.get("endpoint_count", 0),
                 rec.get("endpoint_mix", ""),
                 rec.get("app_domain", ""), rec.get("criticality", ""),
@@ -6126,7 +6163,7 @@ def write_vlan_cutover_sheet(wb, vlan_cutover: List[dict]) -> None:
         for col, v in enumerate(vals, 1):
             c = ws.cell(row=r, column=col, value=v); c.font = DAT_FONT
             c.alignment = DAT_C if col in (1, 7) else DAT_L
-        if rec.get("stp_root_default_election"):
+        if de_val is True or de.startswith("undetermined"):
             ws.cell(r, 3).fill = warn_fill; ws.cell(r, 4).fill = warn_fill
         if rec.get("readiness") == "NOT READY":
             ws.cell(r, 14).font = Font(name="Calibri", size=10, bold=True, color="C00000")

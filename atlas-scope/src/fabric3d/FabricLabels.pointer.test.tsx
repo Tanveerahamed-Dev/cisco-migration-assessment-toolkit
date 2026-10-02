@@ -32,8 +32,8 @@ import { createHoverChannel, FabricLabels } from "./FabricLabels";
 
 type P = { x: number; y: number; visible: boolean };
 
-/* F094 names only access5 — the refuter's case. Resolved from the data, not assumed. */
-const FINDING = fabric.findings.find((f) => f.id === "F094") ?? fabric.findings.find((f) => f.devices.length === 1)!;
+/* F089 names only access5 — the refuter's case, renumbered from F094 by G15. */
+const FINDING = fabric.findings.find((f) => f.id === "F089") ?? fabric.findings.find((f) => f.devices.length === 1)!;
 const TARGET = fabric.devices.find((d) => FINDING.devices.includes(d.host) || FINDING.devices.includes(d.id))!;
 const OTHER = fabric.devices.find((d) => d.id !== TARGET.id)!;
 const DEVICES: Device[] = [TARGET, OTHER];

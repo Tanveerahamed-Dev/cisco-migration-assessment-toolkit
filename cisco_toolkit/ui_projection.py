@@ -194,6 +194,19 @@ PUNCH_RANK: Mapping[str, int] = MappingProxyType(
     {"Critical": 4, "High": 3, "Medium": 2, "Low": 1})                            # analyze._PUNCH_RANK
 DOSSIER_BANDS: Tuple[str, ...] = ("Severe", "Elevated", "Guarded", "Low", "Unassessed")   # analyze._DOSSIER_BANDS
 EXPOSURE_STATES: Tuple[str, ...] = ("risk", "watch", "ok", "na")    # analyze.compute_device_dossiers ax() states
+DOSSIER_INPUT_STATES: Tuple[str, ...] = tuple(ssot.ABSTENTION_STATES)  # analyze.compute_device_dossiers ax()
+DOSSIER_EMPTY_IS_CLEAN: FrozenSet[str] = frozenset({"Config hygiene", "Physical"})  # analyze owner
+DOSSIER_AXES: Tuple[str, ...] = ("Health", "Hardware EoL", "Software risk", "Control plane", "Operational logs",
+                                "Security posture", "Config hygiene", "Golden drift", "QoS posture", "Physical",
+                                "Protocol")  # analyze.DOSSIER_AXIS_INPUTS keys
+STP_ROOT_ELECTION_STATES: Tuple[str, ...] = ("published", "ambiguous", "not_observed")  # stp_topology owner
+STP_ROOT_ELECTION_REASONS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
+    "published": ("single_claimant",),
+    "ambiguous": ("malformed_root_rows", "multiple_root_identities", "duplicate_bridge_identity"),
+    "not_observed": ("root_not_collected", "no_root_evidence"),
+})
+STP_ROOT_REASONS: Tuple[str, ...] = tuple(r for reasons in STP_ROOT_ELECTION_REASONS.values() for r in reasons)
+STP_DEFAULT_BRIDGE_PRIORITY = 32768  # stp_topology._DEFAULT_BRIDGE_PRIORITY; validation only
 VLAN_READINESS: Tuple[str, ...] = ("NOT READY", "CAUTION", "READY")     # analyze._VLAN_CUTOVER_READY_RANK
 ENDPOINT_CONFIDENCES: Tuple[str, ...] = ("Inferred-high", "Inferred-medium", "Unknown")    # analyze._EP_CONF
 #: The statuses analyze.compute_collection_completeness lists (it lists only blind spots, never 'complete').
@@ -203,6 +216,7 @@ SEC_SEVERITIES: Tuple[str, ...] = ("high", "medium", "low", "info")             
 SEC_GRADES: Tuple[str, ...] = ("weak", "partial", "hardened")                   # parse.parse_security
 OP_STATUSES: Tuple[str, ...] = ("up", "down", "unknown")                        # analyze.compute_cable_map
 NOT_OBSERVED_SENTINEL = "[NOT OBSERVED]"                                        # analyze.VLAN_CUTOVER_NOT_OBSERVED
+AMBIGUOUS_STP_SENTINEL = "[AMBIGUOUS]"                                          # analyze.VLAN_CUTOVER_AMBIGUOUS
 NRFU_NOT_OBSERVED = "[NOT OBSERVED — record baseline at execution]"        # nrfu_export.NOT_OBSERVED
 PUNCH_BASIS_UNPUBLISHED = ("severity basis NOT published by this snapshot — check the finding's own "
                            "detail for what it rests on")                        # analyze.PUNCH_BASIS_UNPUBLISHED
@@ -273,6 +287,8 @@ DOSSIER_UNDERSTATABLE: Tuple[str, ...] = ("Elevated", "Guarded", "Low")
 VLAN_FIELD_BASIS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "vlan": ("interfaces",), "name": ("interfaces",), "stp_root": ("stp_roots",),
     "stp_root_default_election": ("stp_roots",), "fhrp": ("interfaces", "fhrp_detail"),
+    "stp_root_state": ("stp_roots",), "stp_root_reason": ("stp_roots",),
+    "stp_root_claimants": ("stp_roots",), "stp_root_identities": ("stp_roots",),
     "gateway_svi_hosts": ("interfaces",), "endpoint_count": ("endpoint_identity",),
     "endpoint_mix": ("endpoint_identity",), "app_domain": ("application_intelligence",),
     "criticality": ("application_intelligence",), "dependencies": ("multicast_intelligence", "interfaces"),
@@ -284,8 +300,9 @@ PUNCHLIST_INPUTS: Tuple[str, ...] = (
     "cross_layer", "security", "config_hygiene", "physical_health", "l3_forwarding", "protocol_health",
     "health_scores", "move_groups", "syslog_intelligence", "qos_audit", "software_risk", "platform_health",
     "device_dossiers", "protocol_assessability", "vtp_safety_baseline", "ipv6_routing_adjacency_baseline")
-#: The key four consumers read from a move-group row, which ``compute_move_groups`` never writes.
+#: The snapshot-local identity written by ``compute_move_groups``; legacy rows may lack it.
 MOVE_GROUP_LABEL = "group"
+MOVE_GROUP_UNSCHEDULED = "(unscheduled)"  # analyze.MOVE_GROUP_UNSCHEDULED
 
 
 def _limitation(lid: str, owner: str, text: str, applies_to: Sequence[str]) -> Mapping[str, Any]:
@@ -409,11 +426,10 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         ["/inventory/vlans", "/inventory/endpoints/dual_homed", "/findings/rows"]),
     _limitation(
         "move_group_label_absent", "analyze.compute_move_groups",
-        "compute_move_groups writes no 'group' label on its rows, yet the punch-list, remediation, dossier and "
-        "endpoint-dependency consumers read one, so their wave, move_groups and split_across_groups values are "
-        "computed over no labels. They are withheld as not_collected while no move group carries a label. The VLAN "
-        "cutover matrix is not affected: it labels groups by position.",
-        ["/findings/rows", "/inventory/endpoints/dual_homed"]),
+        "Legacy move-group rows have no stored 'group' labels. This projection does not invent positional labels "
+        "or use partially labelled, duplicate or malformed groups to assert a device's identity. Values depending "
+        "on those labels are withheld; current snapshots retain the labels their producer writes.",
+        ["/findings/rows", "/inventory/endpoints/dual_homed", "/inventory/devices"]),
     _limitation(
         "vlan_cutover_universe", "analyze.compute_vlan_cutover_matrix",
         "The VLAN rows are the cutover matrix's universe (access ports, SVIs and STP roots), not the headline VLAN "
@@ -425,6 +441,13 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "analyze.compute_vlan_cutover_matrix publishes no per-field basis. The field-to-input table is owned by this "
         "projection and held against the producer's parameters by tests.",
         ["/inventory/vlans"]),
+    _limitation(
+        "vlan_readiness_scope", "analyze.compute_vlan_cutover_matrix",
+        "VLAN readiness is the producer's join of move-group migration-readiness verdicts; it does not establish "
+        "STP root ownership. Consult the row's STP election state and reason: ambiguity, unobserved roots and "
+        "missing legacy verdicts remain unresolved even when readiness is READY. Malformed or duplicate owner verdicts "
+        "withhold READY rather than replacing it with another verdict.",
+        ["/inventory/vlans/rows"]),
     _limitation(
         "punch_rows_carry_no_evidence_pointers", "analyze.compute_migration_punchlist",
         "A legacy punch-list row has neither evidence_refs nor evidence_basis. That snapshot publishes no "
@@ -484,7 +507,7 @@ DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
 DEVICE_CITED_LIMITATIONS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "one_hop_failure_attribution": ("/device/collection", "/device/health", "/device/lifecycle", "/device/dossier",
                                     "/device/coverage", "/device/links", "/device/remediation", "/device/nrfu_cases",
-                                    "/device/findings", "/device/endpoints"),
+                                    "/device/findings", "/device/endpoints", "/device/move_group"),
     "coverage_matrix_shown_as_published": ("/device/coverage",),
     "projection_owned_verdicts": ("/device/health/deductions_cap", "/device/remediation/items", "/device/links",
                                   "/device/native_vlan_mismatches", "/device/findings", "/device/endpoints"),
@@ -493,7 +516,7 @@ DEVICE_CITED_LIMITATIONS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "health_scored_over_partial_collection": ("/device/health",),
     "dossier_band_over_unassessed_axes": ("/device/dossier/risk_band",),
     "engine_list_capped": ("/device/health/deductions", "/device/health/deduction_refs", "/device/remediation/items"),
-    "move_group_label_absent": ("/device/remediation/items",),
+    "move_group_label_absent": ("/device/remediation/items", "/device/move_group"),
     "row_selection_by_exact_key": ("/device/links", "/device/native_vlan_mismatches", "/device/findings",
                                    "/device/endpoints"),
 })
@@ -522,7 +545,8 @@ _SLOT_RULE = {
     "list": "a list",
     "text_list": "a list of strings",
     "fhrp": "an FHRP record {proto, group, vip, members} or the engine's text",
-    "exposure": "an {axis, state, label} record with a known state",
+    "exposure": "an {axis, state, label, input_state} record with known and consistent risk/input states",
+    "stp_identities": "a list of closed STP identities with exact signed browser-safe integer priorities",
     "compound": "a {code, title, severity, basis} record with a known severity",
     "security_check": "an {id, title, severity, status, detail, cis_ref, remediation} record with a known severity "
                       "and status",
@@ -552,8 +576,8 @@ _R_DEVICE_NC = ("not collected: collection_completeness lists this device as not
 _R_AMBIG = "unverified: {n} rows in {section} name this key, so no single row can be chosen"
 _R_NOT_SCORED = ("not assessed: the engine banded this device 'Insufficient Data' (a collection gap or an interface "
                  "set it could not parse), so its score is not a measurement (analyze.compute_health_scores)")
-_R_MG = ("not collected: the engine's move groups carry no 'group' label (analyze.compute_move_groups), so this value "
-         "was computed over no labels")
+_R_MG = ("not collected: the legacy snapshot's move groups carry no 'group' label (analyze.compute_move_groups), so this value "
+         "has no verifiable stored group identity")
 _R_NO_SOURCE_CMD = ("not collected: a composite category. The engine cites no single show command for it "
                     "(analyze.compute_migration_punchlist)")
 _R_UNKNOWN_HOST = ("not collected: no roster in this snapshot names this device (devices, collection_completeness, "
@@ -670,7 +694,6 @@ class _Ctx:
         self._cc_witness: Dict[str, List[Tuple[str, Sequence[Any]]]] = {}
         self._blind_rows: Optional[List[int]] = None
         self._no_config: Optional[List[str]] = None
-        self._stp_roots: Optional[Dict[int, Tuple[str, str, Dict[str, Any]]]] = None
 
     def _call(self, owner: str, fn: Callable[[Any], Any], fallback: Any) -> Any:
         try:
@@ -826,30 +849,11 @@ class _Ctx:
                                if isinstance(devices, dict) and isinstance(sec, dict) else [])
         return list(self._no_config)
 
-    def stp_root_record(self, vid: int) -> Optional[Tuple[str, str, Dict[str, Any]]]:
-        """``(host, key, record)`` of the STP root compute_vlan_cutover_matrix reads for VLAN `vid`: the first sorted
-        host whose non-MST record, keyed by that VLAN id, claims root (its own rule, record order kept)."""
-        if self._stp_roots is None:
-            out: Dict[int, Tuple[str, str, Dict[str, Any]]] = {}
-            roots = self.s.get("stp_roots")
-            for host in sorted(k for k in roots if _is_text(k)) if isinstance(roots, dict) else ():
-                recs = roots[host]
-                for key, rec in (recs.items() if isinstance(recs, dict) else ()):
-                    v = _vid(key, strip=False) if _is_text(key) else None
-                    if (v is not None and isinstance(rec, dict) and not rec.get("is_mst") and rec.get("is_root")
-                            and v not in out):
-                        out[v] = (host, key, rec)
-            self._stp_roots = out
-        return self._stp_roots.get(vid)
-
     @property
-    def mg_labelled(self) -> bool:
-        """True when some move group carries a non-empty text label (the key its consumers read)."""
+    def mg_legacy(self) -> bool:
+        """The stored membership is readable but predates producer-written labels."""
         if self._mg is None:
-            rows = self.s.get("move_groups")
-            self._mg = isinstance(rows, list) and any(
-                isinstance(g, dict) and isinstance(g.get(MOVE_GROUP_LABEL), str) and g[MOVE_GROUP_LABEL].strip()
-                for g in rows)
+            self._mg = _move_group_problem(self.s.get("move_groups")) == (_NC, _R_MG)
         return self._mg
 
     def census(self) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -981,7 +985,8 @@ def _fhrp(raw: Any) -> Tuple[bool, Any]:
 
 #: Fixed-shape records: slot -> ((field, slot, vocabulary), ...), in output order.
 _RECORD_SLOTS: Mapping[str, Tuple[Tuple[str, str, Tuple[str, ...]], ...]] = MappingProxyType({
-    "exposure": (("axis", "text", ()), ("state", "enum", EXPOSURE_STATES), ("label", "text", ())),
+    "exposure": (("axis", "enum", DOSSIER_AXES), ("state", "enum", EXPOSURE_STATES), ("label", "text", ()),
+                 ("input_state", "enum", DOSSIER_INPUT_STATES)),
     "compound": (("code", "text", ()), ("title", "text", ()), ("severity", "enum", SEVERITIES),
                  ("basis", "text", ())),
     "security_check": (("id", "text", ()), ("title", "text", ()), ("severity", "enum", SEC_SEVERITIES),
@@ -1003,6 +1008,10 @@ def _record(raw: Dict[str, Any], slot: str) -> Tuple[bool, Any]:
         if not ok:
             return False, None
         out[key] = val
+    if slot == "exposure" and (
+            (out["state"] != "na" and out["input_state"] not in (_PUB, _CBE))
+            or (out["state"] == "ok" and out["input_state"] == _CBE and out["axis"] not in DOSSIER_EMPTY_IS_CLEAN)):
+        return False, None
     return True, out
 
 
@@ -1021,6 +1030,8 @@ def _typed(raw: Any, slot: str, vocab: Sequence[str] = ()) -> Tuple[bool, Any]:
         return ok, (raw if ok else None)
     if slot == "text_list":
         return _text_list(raw)
+    if slot == "stp_identities":
+        return _stp_identities(raw)
     if slot == "fhrp":
         return (True, raw) if _is_text(raw) else _fhrp(raw)
     if slot == "coverage_cell":
@@ -2236,10 +2247,82 @@ def _not_scored(_raw: Any, row: _Row) -> Optional[Tuple[str, str]]:
     return (_NA, _R_NOT_SCORED) if isinstance(band, str) and band == HEALTH_BAND_NOT_SCORED else None
 
 
-def _mg_pre(ctx: _Ctx) -> _Pre:
-    def pre(_raw: Any, _row: _Row) -> Optional[Tuple[str, str]]:
-        return None if ctx.mg_labelled else (_NC, _R_MG)
+def _mg_pre(ctx: _Ctx, field: str = "wave", host: Any = None) -> _Pre:
+    """Validate a stored derived field's join to stored labels; never emit a repaired/positional value."""
+    def pre(raw: Any, row: _Row) -> Optional[Tuple[str, str]]:
+        groups = ctx.s.get("move_groups")
+        problem = _move_group_problem(groups)
+        if problem:
+            return problem
+        rec = row.raw if isinstance(row.raw, dict) else {}
+        if host is not None:
+            hosts = [host] if rec.get("device") == host else None
+        else:
+            hosts = rec.get("devices" if field == "wave" else "switches")
+        invalid = (_UV, "unverified: this stored move-group value contradicts its devices' published group membership")
+        if not _text_list(hosts)[0] or any(not h for h in hosts):
+            return invalid
+        labels = [g[MOVE_GROUP_LABEL] for g in groups if any(h in g["switches"] for h in hosts)]
+        if field == "wave":
+            known = {h for g in groups for h in g["switches"]}
+            if any(h not in known for h in hosts) and MOVE_GROUP_UNSCHEDULED not in labels:
+                labels.append(MOVE_GROUP_UNSCHEDULED)
+            expected: Any = ", ".join(labels)
+        elif field == "move_groups":
+            expected = labels
+        else:
+            expected = len(labels) > 1
+        if type(raw) is not type(expected) or raw != expected:
+            return invalid
+        return None
     return pre
+
+
+def _move_group_problem(raw: Any) -> Optional[Tuple[str, str]]:
+    """Validate stored identity, never invoke the engine's legacy positional-label fallback."""
+    if raw is None:
+        return _NC, "not collected: no move-group list was published"
+    if not isinstance(raw, list):
+        return _UV, "unverified: move_groups is not a list"
+    labels: List[str] = []
+    members: List[str] = []
+    for group in raw:
+        if (not isinstance(group, dict) or not isinstance(group.get("switches"), list)
+                or not all(_is_text(h) and h.strip() for h in group["switches"])):
+            return _UV, "unverified: a move-group row has malformed membership"
+        members.extend(group["switches"])
+        if MOVE_GROUP_LABEL in group:
+            label = group[MOVE_GROUP_LABEL]
+            if not _is_text(label) or not label.strip():
+                return _UV, "unverified: a move-group label is not non-empty text"
+            labels.append(label)
+    if len(set(members)) != len(members):
+        return _UV, "unverified: a device occurs more than once in the move-group membership"
+    if raw and not labels:
+        return _NC, _R_MG
+    if len(labels) != len(raw) or len(set(labels)) != len(labels):
+        return _UV, "unverified: move-group labels are incomplete or duplicated"
+    return None
+
+
+def _move_group_fact(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
+    source = _resolve(ctx, ("move_groups",), ("move_groups",), want=list, host=host, forced=forced)
+    basis = "analyze.compute_move_groups:move_groups[].group"
+    if source.state is not None:
+        return _cell(ctx, source, None, "text", basis)
+    problem = _move_group_problem(source.raw)
+    if problem:
+        row = _Row(problem[0], problem[1], source.toks, None, source.sections)
+        return _cell(ctx, row, None, "text", basis,
+                     caveats=("move_group_label_absent",) if problem[0] == _NC else ())
+    matches = [(i, group) for i, group in enumerate(source.raw) if host in group["switches"]]
+    if not matches:
+        row = _Row(_CBE, "collected but empty: no published move group contains this device (not a blind spot)",
+                   source.toks, None, source.sections)
+        return _cell(ctx, row, None, "text", basis)
+    index, group = matches[0]  # validated disjoint membership above; never an ambiguous first match
+    row = _Row(None, None, ("move_groups", index), group, source.sections)
+    return _cell(ctx, row, MOVE_GROUP_LABEL, "text", basis)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -2356,6 +2439,7 @@ def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_norm: Mapping[
         "rosters": {"devices": in_devices, "collection_completeness": bool(blind)},
         "rows": {name: _row_pointer(j[name]) for name in ("health", "lifecycle", "dossier", "collection")},
         "collection_status": _cell(ctx, j["collection"], "status", "enum", _B_CC + "status", vocab=CC_STATUSES),
+        "move_group": _move_group_fact(ctx, host),
     }
     for field in ("model", "platform", "sw_version", "serial_number"):
         row[field] = _cell(ctx, j["devices"], field, "text", _dev_basis(field), pre=_default_text)
@@ -2415,26 +2499,100 @@ def _vlan_endpoint_zero(raw: Any, row: _Row) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _vlan_election_pre(ctx: _Ctx) -> _Pre:
-    """The default-election flag is ``False`` over nothing when no root was observed, or when the root the owner
-    reads carries no parsed priority (compute_vlan_cutover_matrix tests ``isinstance(prio, int)``)."""
-    def pre(_raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
-        rec = row.raw if isinstance(row.raw, dict) else {}
-        if rec.get("stp_root") == NOT_OBSERVED_SENTINEL:
-            return (_NC, "not collected: no STP root was observed for this VLAN, so the default-election flag is a "
-                         "false over nothing")
-        ok, vid = _count(rec.get("vlan"))
-        root = ctx.stp_root_record(vid) if ok else None
-        if root is None:
-            return None
-        host, key, record = root
-        prio = record.get("root_priority")
-        if isinstance(prio, int) and not isinstance(prio, bool):
-            return None
-        toks = ("stp_roots", host, key) + (("root_priority",) if "root_priority" in record else ())
-        return (_NC, "not collected: the root bridge's root_priority for this VLAN was not parsed (it is not a "
-                     "number), so the default-election flag is a false over nothing", [("witness", toks)])
-    return pre
+def _signed_safe_int(value: Any) -> bool:
+    return type(value) is int and -JS_MAX_SAFE_INT <= value <= JS_MAX_SAFE_INT
+
+
+def _stp_identities(raw: Any) -> Tuple[bool, Any]:
+    """Typed copies of the owner's identities, including unknown and conflicting priorities."""
+    if not isinstance(raw, list):
+        return False, None
+    out = []
+    keys = {"root_address", "root_priority", "root_priorities", "claimants", "observers"}
+    for identity in raw:
+        if not isinstance(identity, dict) or set(identity) != keys or not _is_text(identity["root_address"]):
+            return False, None
+        priority, priorities = identity["root_priority"], identity["root_priorities"]
+        if (not isinstance(priorities, list) or not all(_signed_safe_int(p) for p in priorities)
+                or priorities != sorted(set(priorities))
+                or (priority is not None and not _signed_safe_int(priority))
+                or priority != (priorities[0] if len(priorities) == 1 else None)):
+            return False, None
+        for field in ("claimants", "observers"):
+            if not _text_list(identity[field])[0] or any(not h for h in identity[field]):
+                return False, None
+        out.append({"root_address": identity["root_address"], "root_priority": priority,
+                    "root_priorities": list(priorities), "claimants": list(identity["claimants"]),
+                    "observers": list(identity["observers"])})
+    return True, out
+
+
+def _stp_contract(row: _Row) -> Optional[Tuple[str, str]]:
+    """Check the published record's contract, never derive an election from stp_roots."""
+    rec = row.raw if isinstance(row.raw, dict) else {}
+    fields = ("stp_root_state", "stp_root_reason", "stp_root_claimants", "stp_root_identities")
+    if not any(field in rec for field in fields):
+        return _NC, "not collected: this legacy VLAN row publishes no STP election verdict; uniqueness is unknown"
+    state, reason = rec.get("stp_root_state"), rec.get("stp_root_reason")
+    claimants = rec.get("stp_root_claimants")
+    ok, identities = _stp_identities(rec.get("stp_root_identities"))
+    malformed = (_UV, "unverified: the published STP election fields are malformed or contradict each other")
+    if (not _is_text(state) or state not in STP_ROOT_ELECTION_STATES
+            or not _is_text(reason) or reason not in STP_ROOT_ELECTION_REASONS[state]
+            or not _text_list(claimants)[0] or any(not h for h in claimants) or not ok):
+        return malformed
+    root, default = rec.get("stp_root"), rec.get("stp_root_default_election", _MISSING)
+    if state == _PUB:
+        if (len(claimants) != 1 or not _is_text(root) or root != claimants[0]
+                or len(identities) != 1 or identities[0]["claimants"] != claimants
+                or (default is not None and not isinstance(default, bool))
+                or (default is None) != (identities[0]["root_priority"] is None)):
+            return malformed
+        priority = identities[0]["root_priority"]
+        vlan = rec.get("vlan")
+        if (priority is not None and (type(vlan) is not int or not 0 <= vlan <= JS_MAX_SAFE_INT
+                or default is not (priority in (STP_DEFAULT_BRIDGE_PRIORITY, STP_DEFAULT_BRIDGE_PRIORITY + vlan)))):
+            return malformed
+    elif root != (AMBIGUOUS_STP_SENTINEL if state == "ambiguous" else NOT_OBSERVED_SENTINEL) or default is not None:
+        return malformed
+    elif state == "not_observed" and (claimants or len(identities) > 1
+                                      or (reason == "no_root_evidence") != (not identities)):
+        return malformed
+    elif reason == "multiple_root_identities" and len(identities) < 2:
+        return malformed
+    elif reason == "duplicate_bridge_identity" and (len(claimants) < 2 or len(identities) != 1):
+        return malformed
+    if sorted(h for identity in identities for h in identity["claimants"]) != sorted(claimants):
+        return malformed
+    return None
+
+
+def _stp_metadata_pre(_raw: Any, row: _Row) -> Optional[Tuple[str, str]]:
+    return _stp_contract(row)
+
+
+def _stp_verdict_pre(raw: Any, row: _Row) -> Optional[Tuple[str, str]]:
+    problem = _stp_contract(row)
+    if problem:
+        return problem
+    state = row.raw["stp_root_state"]
+    if state == "ambiguous":
+        return _UV, "unverified: the engine reports an ambiguous STP election: " + row.raw["stp_root_reason"]
+    if state == "not_observed":
+        return _NC, "not collected: the engine reports no observed STP root: " + row.raw["stp_root_reason"]
+    if raw is None:
+        return _NC, "not collected: the engine withholds default election because the root priority is undetermined"
+    return None
+
+
+def _vlan_readiness_pre(raw: Any, row: _Row) -> Optional[Tuple[str, str]]:
+    if raw == "":
+        return _NC, "not collected: no readiness verdict covers this VLAN's move groups"
+    if raw == "READY":
+        problem = _stp_contract(row)
+        if problem and problem[0] == _UV:
+            return _UV, "unverified: READY accompanies malformed or contradictory published STP election fields"
+    return None
 
 
 _SVI = re.compile(r"^Vlan0*(\d+)$", re.IGNORECASE)                  # compute_vlan_cutover_matrix's SVI rule
@@ -2488,8 +2646,16 @@ _VLAN_CELLS: Mapping[str, Tuple[str, Tuple[str, ...], Optional[_Pre], Optional[T
     MappingProxyType({
         "vlan": ("count", (), None, None, ()),
         "name": ("text", (), _blank("not collected: no VLAN name was evidenced"), None, ()),
-        "stp_root": ("text", (), _marker, None, ()),
-        "stp_root_default_election": ("flag", (), None, None, ()),
+        "stp_root": ("text", (), _stp_verdict_pre, None, ()),
+        "stp_root_default_election": ("flag", (), _stp_verdict_pre, None, ()),
+        "stp_root_state": ("enum", STP_ROOT_ELECTION_STATES, _stp_metadata_pre, None, ()),
+        "stp_root_reason": ("enum", STP_ROOT_REASONS, _stp_metadata_pre, None, ()),
+        "stp_root_claimants": ("text_list", (), _stp_metadata_pre,
+                              (_CBE, "collected but empty: the published STP claimant list contains no parsed entries; "
+                               "consult election state/reason for ownership"), ()),
+        "stp_root_identities": ("stp_identities", (), _stp_metadata_pre,
+                               (_CBE, "collected but empty: the published STP identity list contains no parsed entries; "
+                                "consult election state/reason for ownership"), ()),
         "fhrp": ("fhrp", (), _marker, None, ()),
         "gateway_svi_hosts": ("text_list", (), _blank("not collected: no gateway SVI was observed for this VLAN "
                                                       "(its fhrp abstains with the engine's marker)", []), None, ()),
@@ -2505,22 +2671,33 @@ _VLAN_CELLS: Mapping[str, Tuple[str, Tuple[str, ...], Optional[_Pre], Optional[T
                          ()),
         "wave": ("text", (), _blank(_R_NO_GROUP), None, ()),
         "scenario": ("text", (), _vlan_scenario_pre, None, ()),
-        "readiness": ("enum", VLAN_READINESS, _blank("not collected: no readiness verdict covers this VLAN's move "
-                                                     "groups"), None, ()),
+        "readiness": ("enum", VLAN_READINESS, _vlan_readiness_pre, None, ("vlan_readiness_scope",)),
         "cutover_window": ("text", (), _blank(_R_HUMAN), None, ()),
         "rollback_owner": ("text", (), _blank(_R_HUMAN), None, ()),
     })
+
+
+def _stp_vlan_key(value: Any) -> Optional[int]:
+    """Selection-only copy of stp_topology._election_priority's nonnegative key rule, parity pinned by tests."""
+    if type(value) is int:
+        return value if 0 <= value <= JS_MAX_SAFE_INT else None
+    if _is_text(value):
+        token = value.strip()
+        if len(token) <= 16 and token.isascii() and token.isdigit():
+            number = int(token)
+            return number if number <= JS_MAX_SAFE_INT else None
+    return None
 
 
 def _stp_root_index(ctx: _Ctx) -> Dict[int, List[str]]:
     """VLAN id -> ``/stp_roots/<host>/<vid>`` for every non-MST record whose key is a VLAN id (the owner's rule)."""
     out: Dict[int, List[str]] = {}
     roots = ctx.s.get("stp_roots")
-    for host in sorted(k for k in roots if _is_text(k)) if isinstance(roots, dict) else ():
+    for host in sorted(k for k in roots if _is_text(k) and k) if isinstance(roots, dict) else ():
         recs = roots[host]
-        for key in (sorted(k for k in recs if _is_text(k)) if isinstance(recs, dict) else ()):
-            vid = _vid(key, strip=False)
-            if vid is not None and isinstance(recs[key], dict) and not recs[key].get("is_mst"):
+        for key in recs if isinstance(recs, dict) else ():
+            vid = _stp_vlan_key(key)
+            if vid is not None and not (isinstance(recs[key], dict) and recs[key].get("is_mst")):
                 out.setdefault(vid, []).append(json_pointer("stp_roots", host, key))
     return {vid: sorted(ptrs) for vid, ptrs in out.items()}
 
@@ -2542,27 +2719,49 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
     toks = ("vlan_cutover",)
     base, reason, raw = _list_state(ctx, toks, toks)
     src_roots, ok_roots = _source(ctx, ("stp_roots",), ("stp_roots",), "build.build_stp_roots:stp_roots{}{}", want=dict)
+    source_roots = ctx.s.get("stp_roots")
+    root_pointers = [json_pointer("stp_roots", host, key)
+                     for host, per_host in (source_roots.items() if isinstance(source_roots, dict) else ())
+                     if _is_text(host) and host and isinstance(per_host, dict)
+                     for key in per_host if _stp_vlan_key(key) is not None]
+    if ok_roots and len(set(root_pointers)) != len(root_pointers):
+        src_roots.update(state=_UV, reason="unverified: STP map keys collide when serialized as RFC 6901 pointers")
+        ok_roots = False
     src_gw, ok_gw = _source(ctx, ("l3_forwarding",), ("l3_forwarding",),
                             "excel.write_l3_forwarding_sheet:l3_forwarding[]")
     src_ep, ok_ep = _source(ctx, ("endpoint_identity",), ("endpoint_identity",),
                             "analyze.compute_endpoint_identity:endpoint_identity[]")
     roots, gateways, endpoints = _stp_root_index(ctx), _vid_index(ctx, ("l3_forwarding",)), _vid_index(
         ctx, ("endpoint_identity",))
-    pres = {"stp_root_default_election": _vlan_election_pre(ctx), "dependencies": _vlan_deps_pre(ctx)}
+    pres = {"dependencies": _vlan_deps_pre(ctx)}
     capped = ENGINE_LIST_CAPS["vlan_cutover[].app_domain"]
+    owner_rows: Dict[int, List[int]] = {}
+    for index, record in enumerate(raw if isinstance(raw, list) else ()):
+        valid, number = _count(record.get("vlan")) if isinstance(record, dict) else (False, None)
+        if valid:
+            owner_rows.setdefault(number, []).append(index)
     items: List[Dict[str, Any]] = []
     for i, rec in enumerate(raw if isinstance(raw, list) else ()):
         row = _list_row(toks + (i,), rec, toks)
         item: Dict[str, Any] = {"index": i, "pointer": json_pointer(*toks, i)}
+        ok, vid = _count(rec.get("vlan")) if isinstance(rec, dict) else (False, None)
+        duplicates = owner_rows.get(vid, []) if ok else []
+
+        def duplicate_owner_pre(_raw: Any, _row: _Row) -> Optional[Tuple[Any, ...]]:
+            return (_UV, "unverified: multiple published VLAN rows name this VLAN; no single STP verdict is "
+                    "identifiable", [("witness", toks + (j,)) for j in duplicates])
+
         for field, (slot, vocab, pre, empty, pub_cav) in _VLAN_CELLS.items():
             if field == "app_domain":
                 dom = rec.get("app_domain") if isinstance(rec, dict) else None
                 if _is_text(dom) and dom and len(dom.split(APP_DOMAIN_JOINER)) >= capped:
                     pub_cav = pub_cav + ("engine_list_capped",)
+            ready = field == "readiness" and isinstance(rec, dict) and rec.get(field) == "READY"
+            check = (duplicate_owner_pre if len(duplicates) > 1 and (field.startswith("stp_root") or ready)
+                     else pres.get(field, pre))
             item[field] = _cell(ctx, row, field, slot, _B_VLAN + field, vocab=vocab,
-                                sections=toks + VLAN_FIELD_BASIS[field], pre=pres.get(field, pre), empty=empty,
+                                sections=toks + VLAN_FIELD_BASIS[field], pre=check, empty=empty,
                                 published_caveats=pub_cav)
-        ok, vid = _count(rec.get("vlan")) if isinstance(rec, dict) else (False, None)
         item["selections"] = {"stp_roots": (list(roots.get(vid, ())) if ok else []) if ok_roots else None,
                               "gateways": (list(gateways.get(vid, ())) if ok else []) if ok_gw else None,
                               "endpoints": (list(endpoints.get(vid, ())) if ok else []) if ok_ep else None}
@@ -2639,9 +2838,9 @@ def _dual_homed_row(ctx: _Ctx, k: int, rec: Any) -> Dict[str, Any]:
         "ports": ports_fact,
         "ports_cap": _cap(cap, ports, "analyze.compute_endpoint_dependencies", ports_fact["state"] in (_PUB, _CBE)),
         "move_groups": _cell(ctx, row, "move_groups", "text_list", basis + "move_groups", sections=mg_secs,
-                             pre=_mg_pre(ctx)),
+                             pre=_mg_pre(ctx, "move_groups")),
         "split_across_groups": _cell(ctx, row, "split_across_groups", "flag", basis + "split_across_groups",
-                                     sections=mg_secs, pre=_mg_pre(ctx)),
+                                     sections=mg_secs, pre=_mg_pre(ctx, "split_across_groups")),
     }
 
 
@@ -2677,7 +2876,7 @@ def _endpoint_rows(ctx: _Ctx) -> Dict[str, Any]:
     dbase, dreason, draw = _list_state(ctx, dtoks, deps)
     dual_items = [_dual_homed_row(ctx, k, rec) for k, rec in enumerate(draw if isinstance(draw, list) else ())]
     dual_list = _listing(ctx, dbase, dreason, dtoks, _B_DEPS + "dual_homed", dual_items, sections=deps, rollup=toks,
-                         caveats=("engine_list_capped",) + (() if ctx.mg_labelled else ("move_group_label_absent",)),
+                         caveats=("engine_list_capped",) + (("move_group_label_absent",) if ctx.mg_legacy else ()),
                          qualify=qualify)
     return {"total": total, "rows": listing, "shared_ip": shared_list, "dual_homed": dual_list,
             "selection_sources": {"interfaces": src_if, "vlan_rows": src_vl, "shared_ip": src_sh,
@@ -2937,7 +3136,7 @@ def _findings(ctx: _Ctx) -> Dict[str, Any]:
     base, reason, raw = _list_state(ctx, toks, toks)
     cav = _brief_caveats(ctx)
     items = [_finding_row(ctx, i, rec, cav) for i, rec in enumerate(raw if isinstance(raw, list) else ())]
-    mg = () if ctx.mg_labelled else ("move_group_label_absent",)
+    mg = ("move_group_label_absent",) if ctx.mg_legacy else ()
     qualify = _fleet_qualify(ctx, config=True)
     legacy = ("punch_rows_carry_no_evidence_pointers",) if any(
         isinstance(rec, dict) and not {"evidence_refs", "evidence_basis", "evidence_refs_total"}.intersection(rec)
@@ -3122,7 +3321,7 @@ def _remediation_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) 
         item["commands"] = _cell(ctx, row, "commands", "text_list", _B_RP + "commands")
         for field in ("verify", "caution", "source"):
             item[field] = _cell(ctx, row, field, "text", _B_RP + field)
-        item["wave"] = _cell(ctx, row, "wave", "text", _B_RP + "wave", sections=mg_secs, pre=_mg_pre(ctx),
+        item["wave"] = _cell(ctx, row, "wave", "text", _B_RP + "wave", sections=mg_secs, pre=_mg_pre(ctx, host=host),
                              empty=(_CBE, "collected but empty: this device is in no labelled move group (not a "
                                           "blind spot)"))
         items.append(item)
@@ -3135,7 +3334,7 @@ def _remediation_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) 
             "items": _listing(ctx, state, reason, rb.toks, "analyze.compute_remediation_plan:remediation_plan."
                                                             "by_device{}", items, sections=("remediation_plan",),
                               extra=rb.extra, incomplete=incomplete, bare=rb.bare,
-                              caveats=(("move_group_label_absent",) if not ctx.mg_labelled else ()))}
+                              caveats=(("move_group_label_absent",) if ctx.mg_legacy else ()))}
 
 
 def _nrfu_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -> Dict[str, Any]:
@@ -3250,6 +3449,7 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
     return {
         "host": host if _is_text(host) else None,
         "rosters": rosters,
+        "move_group": _move_group_fact(ctx, host, forced),
         "identity": {f: _cell(ctx, dev, f, "text", _dev_basis(f), pre=_default_text) for f in IDENTITY_FIELDS},
         "physical": physical,
         "collection": {"status": _cell(ctx, cc, "status", "enum", _B_CC + "status", vocab=CC_STATUSES),
@@ -3451,8 +3651,10 @@ _TEXT = "TextFact"
 _DEVICE_ROW_CELLS = (("collection_status", "CollectionStatusFact"), ("model", _TEXT), ("platform", _TEXT),
                      ("sw_version", _TEXT), ("serial_number", _TEXT), ("role", _TEXT), ("health_score", "ScoreFact"),
                      ("health_band", "BandFact"), ("lifecycle_band", "LifecycleBandFact"),
-                     ("risk_band", "RiskBandFact"))
+                     ("risk_band", "RiskBandFact"), ("move_group", _TEXT))
 _VLAN_ROW_FACTS = {"vlan": "CountFact", "stp_root_default_election": "FlagFact", "fhrp": "FhrpFact",
+                   "stp_root_state": "StpRootStateFact", "stp_root_reason": "StpRootReasonFact",
+                   "stp_root_claimants": "TextListFact", "stp_root_identities": "StpRootIdentitiesFact",
                    "gateway_svi_hosts": "TextListFact", "endpoint_count": "CountFact",
                    "dependencies": "TextListFact", "readiness": "ReadinessFact"}
 _ENDPOINT_ROW_CELLS = (("host", _TEXT), ("port", _TEXT), ("mac", _TEXT), ("vlan", _TEXT), ("ip", _TEXT),
@@ -3471,7 +3673,8 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     for name, vocab in (("LifecycleBandFact", LIFECYCLE_BAND_ORDER), ("RiskBandFact", DOSSIER_BANDS),
                         ("SeverityFact", SEVERITIES), ("ReadinessFact", VLAN_READINESS),
                         ("EndpointConfidenceFact", ENDPOINT_CONFIDENCES), ("CollectionStatusFact", CC_STATUSES),
-                        ("OpStatusFact", OP_STATUSES), ("EvidenceBasisFact", PUNCH_EVIDENCE_BASES)):
+                        ("OpStatusFact", OP_STATUSES), ("EvidenceBasisFact", PUNCH_EVIDENCE_BASES),
+                        ("StpRootStateFact", STP_ROOT_ELECTION_STATES), ("StpRootReasonFact", STP_ROOT_REASONS)):
         defs[name] = _fact_def(name, _enum(vocab))
     defs["EvidenceRefValue"] = _closed("EvidenceRefValue", ("kind", "host", "ref", "role", "cite"),
                                        {"kind": _enum(PUNCH_EVIDENCE_REF_KINDS), "host": _nullable(_str()),
@@ -3483,6 +3686,14 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                   {"limit": {"const": PUNCH_EVIDENCE_REFS_CAP},
                                    "reached": _nullable(_bool()), "total": _ref("CountFact")})
     defs["TextListFact"] = _fact_def("TextListFact", {"type": "array", "items": _str()})
+    priority = {"type": "integer", "minimum": -JS_MAX_SAFE_INT, "maximum": JS_MAX_SAFE_INT}
+    defs["StpRootIdentity"] = _closed("StpRootIdentity", (
+        "root_address", "root_priority", "root_priorities", "claimants", "observers"), {
+        "root_address": _str(), "root_priority": _nullable(priority),
+        "root_priorities": {"type": "array", "items": priority},
+        "claimants": {"type": "array", "items": _str()}, "observers": {"type": "array", "items": _str()}})
+    defs["StpRootIdentitiesFact"] = _fact_def("StpRootIdentitiesFact", {
+        "type": "array", "items": _ref("StpRootIdentity")})
     defs["FhrpMember"] = _closed("FhrpMember", ("host", "proto", "group", "vip", "role", "priority", "preempt", "vmac"),
                                  {**{k: _nullable(_str()) for k in _FHRP_MEMBER_TEXT},
                                   "priority": _nullable(_nonneg_int()), "preempt": _nullable(_bool())})
@@ -3606,8 +3817,9 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     defs["DevicePage"] = _closed("DevicePage", (
         "host", "rosters", "identity", "physical", "collection", "health", "lifecycle", "dossier", "coverage",
         "interfaces", "links", "routes", "routing_neighbors", "security", "native_vlan_mismatches", "remediation",
-        "nrfu_cases", "findings", "endpoints", "limitations"), {
+        "nrfu_cases", "findings", "endpoints", "limitations", "move_group"), {
         "host": _nullable(_str()),
+        "move_group": _ref(_TEXT),
         "rosters": _closed("DevicePageRosters", ("devices", "collection_completeness", "cable_map"),
                            {"devices": _bool(), "collection_completeness": _bool(), "cable_map": _bool()}),
         "identity": identity,

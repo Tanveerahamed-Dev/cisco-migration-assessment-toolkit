@@ -4855,6 +4855,7 @@ def main():
     # WIDE compute_* below stop threading 15/19/14 locals positionally through _run_phase (a silent
     # reorder could corrupt them). _actx is populated per-consumer as each feed becomes available;
     # the public compute_* keep their explicit-arg signatures (see the adapters just after main()).
+    from cisco_toolkit.ssot import failed_sections as _dossier_failed_sections
     _actx = AnalysisContext(
         health_scores=health_scores, failure_impact=failure_impact, lifecycle_risk=lifecycle_risk,
         software_risk=software_risk, platform_health=platform_health,
@@ -4862,6 +4863,9 @@ def main():
         all_security=all_security, all_config_hygiene=all_config_hygiene,
         all_stp_roots=all_stp_roots, all_vpc=all_vpc, physical_health=physical_health,
         protocol_health=protocol_health, protocol_assessability=protocol_assessability,
+        parse_yield=parse_yield_report(),
+        input_failures=_dossier_failed_sections({"assessment_integrity": {
+            "failed_phases": [p["phase"] for p in _PHASE_TIMINGS if p.get("ok") is False]}}),
         vtp_safety_baseline=vtp_safety_baseline,
         vtp_safety_subject_scope=vtp_safety_subject_scope,
         ipv6_routing_adjacency_baseline=ipv6_routing_adjacency_baseline,
@@ -6247,7 +6251,8 @@ def _device_dossiers(ctx: "AnalysisContext") -> dict:
         security=ctx.all_security, config_hygiene=ctx.all_config_hygiene,
         stp_roots=ctx.all_stp_roots, vpc=ctx.all_vpc,
         physical_health=ctx.physical_health, protocol_health=ctx.protocol_health,
-        move_groups=ctx.move_groups)
+        move_groups=ctx.move_groups, protocol_assessability=ctx.protocol_assessability,
+        parse_yield=ctx.parse_yield, input_failures=ctx.input_failures)
 
 
 def _punchlist(ctx: "AnalysisContext") -> list:

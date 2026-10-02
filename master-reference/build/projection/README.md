@@ -49,7 +49,20 @@ Output layout:
   text plus its terminator. The compiler's text digest is verified before
   projection and then omitted because it is derivable from the emitted text;
   a fragment digest is emitted only for the genuinely split lines that require
-  independent fragment reassembly.
+  independent fragment reassembly. Within an existing chunk, complete repeated
+  line metadata may be stored once in a dictionary. The lazy source-index
+  decoder reconstructs independent, complete `SourceLine` objects before
+  `loadSourceChunk` or `loadSourceWindow` returns; source text, terminators,
+  record IDs, line/fragment digests and all semantic metadata remain intact.
+  The original expanded representation still determines every chunk boundary
+  and the 256 KiB ceiling. The decoder checks that expanded UTF-8 size before
+  creating per-line copies and rejects malformed tables with a static error.
+  Encoding is selected only when it reduces both raw bytes and the exact
+  level-9 filtered-deflate representation used by deterministic gzip packaging;
+  otherwise that chunk retains its original module bytes. Whole-bundle size
+  gates include the decoder and all generated receipts. This private storage
+  encoding changes neither compiler/projection contracts nor public source
+  payload types, census denominators, privacy gates or capacity limits.
 - `graph/summary-*.mjs`, `graph/index-*.mjs`, and `graph/shards/*.mjs` — a
   bounded initial graph overview plus complete community partitions loaded only
   after selection.

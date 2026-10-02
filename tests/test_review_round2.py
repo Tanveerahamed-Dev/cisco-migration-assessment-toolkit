@@ -29,9 +29,11 @@ def test_golden_drift_dossier_reads_na_when_no_baseline_derived():
     (summary.n_baseline == 0) yet still emits per_device rows with n_missing 0 / compliance 100. The dossier
     Golden-drift axis read those as 'ok / matches the config baseline' -- asserting conformance to a baseline
     that never existed (false-health). It must read 'na'."""
-    gd = analyze.compute_golden_drift({"A": "hostname A\nip routing", "B": "hostname B"})
+    configs = {"A": "hostname A\nip routing", "B": "hostname B"}
+    gd = analyze.compute_golden_drift(configs)
     assert gd["summary"]["n_baseline"] == 0
-    dos = analyze.compute_device_dossiers(health_scores=[{"switch": "A"}, {"switch": "B"}], golden_drift=gd)
+    dos = analyze.compute_device_dossiers(health_scores=[{"switch": "A"}, {"switch": "B"}], golden_drift=gd,
+                                         software_risk=analyze.compute_software_risk(configs))
     states = [(e["state"], e["label"]) for pd in dos["per_device"]
               for e in pd["exposures"] if e["axis"] == "Golden drift"]
     assert states and all(s == "na" for s, _ in states), states

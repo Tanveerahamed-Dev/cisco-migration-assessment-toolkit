@@ -697,27 +697,8 @@ def test_runbook_nonstr_join_coercion_is_identity_on_strings(tmp_path):
 # ===========================================================================================
 
 def _real_dossiers(assessed: bool):
-    """A dossier section built by the REAL producer (analyze.compute_device_dossiers), not a
-    hand-shaped dict. A hand-built row in the shape the writer expects would only prove the writer
-    agrees with itself; this proves the writer agrees with the ENGINE.
-
-    assessed=False feeds ONLY health + blast radius + an Unknown-lifecycle row -> 8 of the 11 risk
-    axes abstain -> exposure 0 -> risk_band 'Low', risk_index 0, verdict "No stacked risk — routine
-    migration handling." That is the exact false-health shape this section fixes. assessed=True
-    feeds most axes -> 5 of 11 na -> NOT thin (the non-vacuity control)."""
-    from cisco_toolkit.analyze import compute_device_dossiers
-    if not assessed:
-        return compute_device_dossiers(
-            health_scores=[{"switch": "sw0", "score": 70, "band": "Good", "role": "access"}],
-            failure_impact=[{"host": "sw0", "stranded": 40, "vlans_impacted": 2}],
-            lifecycle_risk={"per_device": [{"host": "sw0", "band": "Unknown"}]})
-    return compute_device_dossiers(
-        health_scores=[{"switch": "sw0", "score": 92, "band": "Excellent", "role": "access"}],
-        failure_impact=[{"host": "sw0", "stranded": 4, "vlans_impacted": 1}],
-        lifecycle_risk={"per_device": [{"host": "sw0", "band": "Active", "model": "C9300"}]},
-        software_risk={"per_device": [{"host": "sw0", "band": "OK", "n_findings": 0}]},
-        security={"sw0": {"checks": [{"id": "x", "status": "pass"}]}},
-        config_hygiene={"sw0": {"findings": []}})
+    from dossier_fixtures import coverage_dossiers
+    return coverage_dossiers(assessed)
 
 
 def test_dossier_coverage_mirrors_the_canonical_rule():
@@ -736,22 +717,22 @@ def test_dossier_coverage_mirrors_the_canonical_rule():
 
 def test_device_risk_register_discloses_not_assessed_axes(tmp_path):
     """review r9 F1. The §10.1 register rendered host/band/index/verdict and nothing else, so an
-    asset whose 8-of-11 risk axes were NEVER ASSESSED printed as 'Low', index 0, "No stacked risk —
+    asset whose 9-of-11 risk axes were NEVER ASSESSED printed as 'Low', index 0, "No stacked risk —
     routine migration handling" — indistinguishable from a genuinely clean asset. Pre-fix the
     rendered document contained neither the per-asset census nor the fleet-wide coverage sentence."""
     dd = _real_dossiers(assessed=False)
     row = dd["per_device"][0]
     # the producer really does band an un-assessed asset 'Low' (this is the defect's precondition)
-    assert row["risk_band"] == "Low" and row["risk_index"] == 0 and row["n_na"] == 8
+    assert row["risk_band"] == "Low" and row["risk_index"] == 0 and row["n_na"] == 9
 
     snap = _snap()
     snap["device_dossiers"] = dd
     out = str(tmp_path / "rb_cov.docx")
     write_runbook_docx(out, snap, "Unit Test Fleet")
     text = _all_text(Document(out))
-    assert "8 of 11 NOT ASSESSED" in text, "per-asset coverage cell missing from the register table"
+    assert "9 of 11 NOT ASSESSED" in text, "per-asset coverage cell missing from the register table"
     assert "band computed on absent evidence" in text, "the 'Low' band is not qualified"
-    assert "8 of 11 risk axes fleet-wide were NOT ASSESSED" in text
+    assert "9 of 11 risk axes fleet-wide were NOT ASSESSED" in text
     assert "HALF OR MORE of their risk axes NOT ASSESSED" in text
     assert "Coverage" in text                                  # the new column header renders
 

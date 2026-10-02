@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-10-01** (Codex). Reasoning behind the current direction:
+Last reconciled: **2026-10-02** (Codex). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -22,8 +22,8 @@ There is **one application**: the `main` branch of this repository on GitHub.
   must become the only owner of every analysis fact. Screens render engine output; they never
   invent, restate or default a fact (`docs/ssot.md`). Some screens still compute facts
   themselves; see the dated verdict.
-- **The one door:** AssessHub (`webapp/`). Atlas Scope (`atlas-scope/`, today only on its branch)
-  becomes AssessHub's 3-D investigation module.
+- **The one door:** AssessHub (`webapp/`). Atlas Scope (`atlas-scope/`) is its integrated
+  preview 3-D investigation module.
 - **Other surfaces:**
   - The engine HTML explorer stays an offline deliverable.
   - Atlas (`portable/`) packages AssessHub for the USB stick.
@@ -70,9 +70,8 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2a | `ui_projection` slice 2: Inventory, device page, Findings | `feat/ui-projection-slice2`, draft PR #580; existing `.claude/worktrees/ui-projection-2` checkout | Codex | Implementation pushed at `c8a78732` after both privacy gates passed. Five Linux full-suite jobs found one receipt-reader classification gap; its scoped proof correction is independently reviewed and passes 32 protocol tests. [Validation](ui-projection-slice2-validation-2026-10-01.md). (2026-10-01) | Push the reviewed guard correction after both privacy gates; require all hosted checks on the exact head, then mark ready and merge. |
-| W2b | Engine defects G13 / G15 / G49 | `fix/engine-contract-defects`, pushed through `f950f888`; existing `.claude/worktrees/engine-defects` checkout | Codex | Engine fixes/refutation committed. Full run: 9,684 passed / 40 skipped / 20 failed; eight context and nine deferred fixture failures preserved, three actionable failures repaired with 146 focused tests passing. [Validation on its branch](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/blob/f950f888/docs/engine-defects-validation-2026-10-01.md). | After W2a merges: merge main with a merge commit, reconcile its projection consumers, regenerate golden/sheet schema/sample ONCE with LF bytes, run all gates, open the PR and merge when green. |
-| W2c | Backend endpoint and first core screens | not started; no branch or folder yet | Codex | Read-only API and static prototype-source preflights complete on the W2b branch; implementation waits for W2a/W2b | Add the paged, declared-response-model endpoint and Overview / Trust / Inventory + device / Findings screens using only contract envelopes. List the concrete branch/folder before creating either. |
+| W2b | Engine defects G13 / G15 / G49 + approved Master Reference compaction | `fix/engine-contract-defects`; existing `.claude/worktrees/engine-defects` checkout; [PR #583](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/583) | Codex | Handoff pushed as `7448cafd`; approved compaction is implemented and reviewed locally. All 4,038 saved source chunks round-trip exactly, saving 5,771,950 compressed bytes before whole-bundle overhead. Full rebuilt deployment acceptance remains pending; see [validation](engine-defects-validation-2026-10-01.md). (2026-10-02) | Measure the complete clean-source deployment including decoder/receipts, preserve all limits and records, and pass the privacy gates before publishing the candidate. Then finish exact-head CI and merge; W2c waits. Do not regenerate golden/sample fixtures again. |
+| W2c | Backend endpoint and first core screens | planned `codex/core-screens`; reuse existing `.claude/worktrees/ui-projection-2` checkout after W2b merges; branch not created | Codex | API and visual-reference preflights complete; implementation waits for W2b | After W2b merges, create the listed branch from current main in the clean existing checkout. Add the paged, declared-response-model endpoint, then Overview / Trust / Inventory + device / Findings screens using only contract envelopes. |
 
 ## Owner decisions
 
@@ -99,6 +98,41 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
 
 ## Handoff log (newest first)
 
+- 2026-10-02, Codex (compaction source freeze):
+  - Closed the metadata-string numeric overflow refutation and generated-decoder EOL drift test-first. Final projection suite: 90 passed / one existing POSIX-only skip; TypeScript, lint and diff checks passed.
+  - Independent bounded review and a repeated all-chunk payload/gzip comparison preserve record values, ordering, indexes, digests, text and terminators. The original chunk partition and limits remain. The explicit pre-existing legacy fallback key limitation is recorded rather than claimed repaired.
+  - Full deployment size is still pending. Source-chunk savings alone are not a successful deployment gate. Golden/sample/Scope fixture bytes remain unchanged.
+
+- 2026-10-02, Codex (approved W2b compaction):
+  - Owner approved the pending bounded lossless Master Reference compaction request. It is now part of W2b on the existing branch and checkout.
+  - Scope: existing projection encoder/generated decoder, round-trip and hostile-input tests, documentation and exact-source rebuild validation. Public payloads, all source records/text/digests/terminators/census denominators, the decoded 256 KiB ceiling and the existing deployment/privacy gates stay intact. Net savings must be measured after decoder and receipt overhead.
+  - No additional golden/sample regeneration, W1 changes, new branch/worktree, release publication or qualification authority is included. W2c follows the already reserved route after #583 merges.
+
+- 2026-10-01, Codex (W2b Master Reference capacity gate):
+  - The final-head Master Reference run `36918999658` passed compiler/schema validation and 264 contract tests, then failed deployment finalization. Its public error is intentionally redacted; there were no retained CI artifacts.
+  - Reproduced from the same tracked tree and compiler census locally. The compressed deployment is 260,473,519 bytes before its outer receipt, exceeding the unchanged 260,046,848-byte limit by 426,671. The private existing diagnostic confirms the aggregate-size rejection. No tracked source or fixture changed during reproduction.
+  - Requested owner approval for lossless projection compaction because the earlier board assigns that follow-up to its owner and the current W2 queue does not list it. No compaction edits, budget increase or coverage reduction have been made. Remaining CI is allowed to finish; the PR is held.
+
+- 2026-10-01, Codex (W2b PR publication):
+  - Repository privacy passed; the complete marker scan passed across all ten new commits and 2,104,617 patch/message bytes. Pushed `087b00c8` and opened #583 against main `8000adce`.
+  - Hosted Python, coverage, distribution, portable, Master Reference and UI checks are in progress. This board update records the publication; its final head must receive its own successful checks before the authorized merge. W2c remains held until that merge.
+
+- 2026-10-01, Codex (W2b single regeneration):
+  - Regenerated golden, sample and four Scope bindings once from reviewed source `e4be15f1`, preserving LF. Independent review reconciled the finding/risk changes and all 807 sample evidence references.
+  - The sheet guard initially rejected a summary-banner count change. Review proved all 74 sheets and columns unchanged; accepted the exact saved candidate through the documented reviewed-change path without rerunning the pipeline. The initial failure is retained.
+  - Projection/sample 665 tests, golden 22 tests, frontend 274 unit tests, five E2E tests and 22 visual checks pass. Backend: 1,224 passed / one Windows privilege skip. Final Scope: 6,992 passed / one sample-inapplicable skip; independent review verified every remapped assertion without weakening coverage. Earlier failures are preserved. No hosted W2b or merge pass is claimed.
+  - Integration is committed on this branch for publication, gated by fresh repository privacy and complete new-commit marker checks. Next: open W2b's PR and await the exact-head hosted gates before the authorized merge.
+
+- 2026-10-01, Codex (W2b consumer source freeze):
+  - Closed the projection's G13 labels, G15 owner metadata/pointers/readiness scope and G49 input-state handling test-first. Independent final-source refutation found no residual actionable defects.
+  - Engine selection: 178 passed. Projection selection: 307 passed with one sample-signature check deferred until regeneration; independent regression replay: 70 passed. Scope synthetic absence controls: 162 passed, zero skipped.
+  - Consumer integration is committed locally before the one regeneration pass; no protected fixture has been regenerated. Fresh privacy gates are required before the next push.
+
+- 2026-10-01, Codex (W2a merged / W2b integration):
+  - Marked #580 ready after all 15 required checks passed on `1e6268f3`; the applicable webapp and CodeQL checks also passed. Merged with the authorized merge-commit command as `8000adce`. Its tree `3a99bc64d24b5892d4880810ab59a2da3c0280ab` equals the tested head's tree. Removed W2a's active row under rule 8.
+  - Merged current main into the existing W2b checkout. The only conflict was this board; every handoff line from both parents is retained. W1's branch/folder remain untouched.
+  - W2b now owns projection/Scope consumer reconciliation and the single fixture-regeneration pass. Reserved W2c's concrete branch and existing folder here before creation; it starts only after W2b merges.
+
 - 2026-10-01, Codex (W2a hosted gate):
   - Pushed implementation `c8a78732` after repository privacy and all seven new commits' marker scans passed. Updated draft #580 to its complete scope.
   - Five completed Linux full-suite jobs found the same sole receipt-reader classification gap. The projection's section-level dependency needs a mechanical SSOT-delegation proof; the guard remains mandatory. The scoped correction now passes the final 32-test protocol suite and independent refutation, including later-row, aggregate and shadowing counterexamples. Production source is unchanged.
@@ -113,6 +147,33 @@ publishing the master-reference site, and the Claude Design pixel-baseline promo
   - Verified #579 merged as `d92fcb1f`; its tree equals tested head `0345eb1d`. Removed W1's active row under rule 8; its branch, checkout and follow-ups remain with their owner.
   - Merged current main into the existing `feat/ui-projection-slice2` checkout with a merge commit. Preserved every handoff entry from both sides of the board conflict.
   - W2b is pushed through `f950f888`: engine fixes and full-suite refutations are saved on that branch. W2a now owns evidence-reference projection and its gates; W2b integration/regeneration follows W2a's merge.
+
+- 2026-10-01, Codex (W2 full-suite refutation):
+  - Full JUnit result at `e74a4c42`: 9,684 passed, 40 skipped, 20 failed. Classified eight listed context failures, nine deferred golden/sample comparisons, and three actionable failures. The log wrapper's Unicode printing failure is preserved in the validation record; the completed XML is the count source.
+  - Closed the three actionable failures: G49 now consumes the protocol conclusion owner; two simulator fixtures now describe a consistent incumbent root. All assertions retained. Post-fix focused suite: 146 passed; repository-wide ruff and diff checks pass.
+  - No golden/sample regeneration. #579 checks are green but it remains unmerged under W1 ownership. W2a implementation still waits; read-only API and prototype-source preflights are in `docs/one-app-w2-integration-preflight-2026-10-01.md`.
+
+- 2026-10-01, Codex (approved W2 publication):
+  - Owner approved the six-command path-only repair and push of `fix/engine-contract-defects`. Repaired only the untracked hook command values, preserved an external local backup, and independently verified six syntax checks plus 12 path-resolution probes; no hooks executed.
+  - Repository privacy verifier and full new-commit message/patch marker scan passed. Publication is authorized and gated on fresh successful reruns; local tooling stays untracked.
+  - #581 exact-main CI `36858426410` and Master Reference `36858426344` both completed successfully on `497e26b6`.
+  - W1 advanced to `0345eb1d`; #579 remains unmerged. W2a implementation and W2b golden/sample regeneration remain held for its merge.
+
+- 2026-10-01, Codex (W2 blocked audit):
+  - The same hook-repair approval and W1 merge dependency remain after three consecutive goal turns. #579 is still open/behind; the local hook marker is still present. Goal marked blocked, not complete.
+  - The fixes and handoff are committed locally; no push is permitted until the mandatory privacy verifier passes. The existing approval request remains pending.
+  - Stopped only the two local `gh run watch` clients. Hosted #581 main runs `36858426410` and `36858426344` remain live; query their terminal verdicts on resume. No W1 or fixture changes.
+
+- 2026-10-01, Codex (W2 continuation):
+  - Re-fetched and confirmed #579 remains open/behind; #581 is merged, with exact-main CI run `36858426410` and Master Reference run `36858426344` still live.
+  - Prepared and independently reviewed the six-command hook-path repair read-only; approval remains pending. No hooks were executed or modified. Concrete replacement and limits are in the W2b validation record.
+  - `ebb5a368` and this handoff remain local only; the mandatory privacy failure still prevents push. No new implementation or fixture changes.
+
+- 2026-10-01, Codex (W2):
+  - Merged docs-only #581 at `6a817777` after every required check passed; merge `497e26b6` has the tested head tree.
+  - Took over W2b, finished G13/G15/G49 test-first and closed independently reproduced refutations; 1,022 related tests pass. Details and preserved negative evidence: `docs/engine-defects-validation-2026-10-01.md`.
+  - No golden/sample refresh and no W1 branch/folder changes. #579 remains open/behind main; W2a and the W2b integration/PR wait for its owning session.
+  - Fixes are **local only, not pushed**: the required privacy gate rejects pre-existing untracked `.codex/hooks.json`. Requested approval for a path-only local repair; `.agents/` and `.codex/` were preserved and excluded from staging.
 
 - 2026-10-01, Claude Code (W1):
   - Made #579's CI honest. Each red check was fixed at its root, with a test that fails without the fix:

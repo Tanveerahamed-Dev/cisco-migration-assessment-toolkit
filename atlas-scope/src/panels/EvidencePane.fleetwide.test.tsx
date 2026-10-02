@@ -97,8 +97,8 @@ describe("a finding that names no device", () => {
 });
 
 describeGolden("the reference sample's fleet-wide finding", () => {
-  it("is F142 ('No QoS configured anywhere')", () => {
-    expect(fleetWide.map((f) => f.id)).toContain("F142");
+  it("is F137 ('No QoS configured anywhere')", () => {
+    expect(fleetWide.map((f) => f.id)).toContain("F137");
   });
 });
 

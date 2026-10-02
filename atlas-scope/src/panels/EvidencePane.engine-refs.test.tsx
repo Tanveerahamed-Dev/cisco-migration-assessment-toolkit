@@ -595,20 +595,20 @@ describeGolden("A1 census over the regenerated sample: what the engine points at
   const count = (pred: (f: Finding) => boolean): number => fabric.findings.filter(pred).length;
   const kinds = (f: Finding): Set<string> => new Set((f.evidenceRefs ?? []).map((r) => r.kind));
 
-  it("every one of the 146 findings carries the engine's pointers, and every one reaches them", () => {
-    expect(fabric.findings.length).toBe(146);
-    expect(withRefs.length).toBe(146);
+  it("every one of the 140 findings carries the engine's pointers, and every one reaches them", () => {
+    expect(fabric.findings.length).toBe(140);
+    expect(withRefs.length).toBe(140);
     expect(count((f) => (f.evidenceRefs ?? []).length === 0)).toBe(0);
   });
 
-  it("the basis split: 58 record, 82 derived from an analysis row, 6 absence", () => {
-    expect(count((f) => f.evidenceBasis === "record")).toBe(58);
-    expect(count((f) => f.evidenceBasis === "row")).toBe(82);
+  it("the basis split: 57 record, 77 derived from an analysis row, 6 absence", () => {
+    expect(count((f) => f.evidenceBasis === "record")).toBe(57);
+    expect(count((f) => f.evidenceBasis === "row")).toBe(77);
     expect(count((f) => f.evidenceBasis === "absence")).toBe(6);
   });
 
-  it("55 findings open an interface record the engine names; 3 print configuration text; 6 are witnessed absences", () => {
-    expect(count((f) => engineEvidenceFor(f)!.some((r) => r.open !== null))).toBe(55);
+  it("54 findings open an interface record the engine names; 3 print configuration text; 6 are witnessed absences", () => {
+    expect(count((f) => engineEvidenceFor(f)!.some((r) => r.open !== null))).toBe(54);
     expect(count((f) => kinds(f).has("config_text"))).toBe(3);
     expect(count((f) => kinds(f).has("absence_witness"))).toBe(6);
     // Every record-basis finding has a configuration record to open or text to read; no row or absence one does.
@@ -618,38 +618,38 @@ describeGolden("A1 census over the regenerated sample: what the engine points at
     }
   });
 
-  it("the interactions needed to reach EVERY pointer of a finding, by the acceptance's counting, over the 146", () => {
+  it("the interactions needed to reach EVERY pointer of a finding, by the acceptance's counting, over the 140", () => {
     /* Measured by the per-finding cases above (so a filtered run, which fills none of them, fails here), over
        the palette route every finding can take whether or not its row is in view: Ctrl+K, the id with Enter,
        the record's control. The worst case is the finding's worst pointer. Re-measured 2026-09-29 after the
        verifier's recount (P3A1-V2-1) found the phase-3 {1:82, 2:33, 3:31} counted selection as one interaction
        for every row and left the move to step 3 uncounted — 30 findings then needed 4. */
-    expect(reached.size, "every per-finding case ran").toBe(146);
+    expect(reached.size, "every per-finding case ran").toBe(140);
     const dist: Record<number, number> = {};
     for (const n of reached.values()) dist[n] = (dist[n] ?? 0) + 1;
-    expect(dist).toEqual({ 3: 146 });
+    expect(dist).toEqual({ 3: 140 });
     // Every pointer instance of every finding was worked, the ones past step 3's fold included.
-    expect([...refsWorked.values()].reduce((a, b) => a + b, 0)).toBe(583);
-    expect(fabric.findings.filter((f) => (f.evidenceRefs ?? []).length > 8).length, "findings with refs past the step-3 fold").toBe(31);
-    for (const id of ["F127", "F129", "F132", "F133", "F135", "F142", "F144", "F145", "F146"])
+    expect([...refsWorked.values()].reduce((a, b) => a + b, 0)).toBe(587);
+    expect(fabric.findings.filter((f) => (f.evidenceRefs ?? []).length > 8).length, "findings with refs past the step-3 fold").toBe(32);
+    for (const id of ["F122", "F124", "F127", "F128", "F130", "F137", "F138", "F139", "F140"])
       expect(reached.get(id), `${id}: a folded-only finding the verifier counted at 4`).toBe(3);
   });
 
-  it("F142's 20 witnesses share the ending of their names, said once: the header stays short enough to read the chain", () => {
-    const f = findingById.get("F142")!;
+  it("F137's 20 witnesses share the ending of their names, said once: the header stays short enough to read the chain", () => {
+    const f = findingById.get("F137")!;
     const refs = engineEvidenceFor(f)!;
     const names = engineRecordNames(refs);
     expect(names.slice(1).every((n) => n.endsWith(" assessed -- none found"))).toBe(true);
     expect(engineNameRuns(refs, names)).toEqual([{ start: 1, end: 21, suffix: " assessed -- none found" }]);
   });
 
-  it("369 distinct pointers, each projected, none withheld by the budget", () => {
-    expect(fabric.evidenceRecords?.length).toBe(369);
+  it("377 distinct pointers, each projected, none withheld by the budget", () => {
+    expect(fabric.evidenceRecords?.length).toBe(377);
     expect(fabric.evidenceProjection?.recordsWithheld).toBe(0);
   });
 
-  it("F142 (fleet-wide QoS absence) is witnessed by per-device records, not by configuration", () => {
-    const f = findingById.get("F142")!;
+  it("F137 (fleet-wide QoS absence) is witnessed by per-device records, not by configuration", () => {
+    const f = findingById.get("F137")!;
     expect(f.devices).toEqual([]);
     expect(f.evidenceBasis).toBe("absence");
     expect(kinds(f).has("absence_witness")).toBe(true);

@@ -1,24 +1,25 @@
 /**
  * query.test.ts — the query engine measured against the REAL compiled fabric.
  *
- * Every expectation below is derived from the loaded fabric by INDEPENDENT inspection (raw traversal of
+ * Expectations over the loaded fabric are derived by INDEPENDENT inspection (raw traversal of
  * `fabric.devices` / `fabric.findings` / ..., with predicates written here), not by re-running the engine's own
  * code paths. A test that recomputes an answer with the implementation's logic agrees with the implementation's
- * bugs.
+ * bugs. Explicit synthetic absent-wave controls exercise absence even when the loaded fabric has wave labels.
  *
  * TWO TIERS (src/test-support/golden-sample.ts). The invariant tests hold on ANY compiled fabric: their subjects
  * (a host, a severity, a category, a search term) are chosen by PROPERTY from the loaded data, and their counts are
  * raw traversals, so the rename leg and the golden-snapshot leg run them unchanged. A test whose subject the loaded
  * dataset does not have at all (no uncollected device, no endpoint with an address, ...) is skipped BY NAME there,
  * and the golden block proves that on the reference sample every one of them runs. The numbers and names that are
- * facts about the tracked sample alone — 146 findings, core1's 32, "gateway" in 27 — are the contract between that
+ * facts about the tracked sample alone — 140 findings, core1's 31, "gateway" in 26 — are the contract between that
  * sample and the UI, and they live in the golden blocks at the foot of this file, where they still fail loudly if
  * the sample changes. RE-EXPRESSED 2026-09-29 (P3C-V2-3): the module constants TOTAL_FINDINGS, CORE1_FINDINGS, ...
  * that the invariant blocks used to read are gone; each of those figures is now a raw count here and a golden pin
  * there.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fabric } from "./data";
+import { dataset } from "./dataset";
 import { unassessedScoringDomains } from "./band-qualification";
 import { describeGolden } from "../test-support/golden-sample";
 import type { Device, Finding } from "./types";
@@ -169,7 +170,6 @@ const HAS = {
   "a kind of device never collected": DARK_KIND !== undefined,
   "a tier both collected and not": MIXED_TIER !== undefined,
   "an absent legal severity and band": ABSENT_SEV !== undefined && ABSENT_BAND !== undefined,
-  "no finding with a wave": fabric.findings.every((f) => f.wave === null),
   "a cross-layer layers value": LAYERS !== undefined,
   "an endpoint address": EP_IP !== undefined,
   "a finding naming the host in its devices and title": DOUBLE_NAMED !== undefined,
@@ -191,6 +191,28 @@ const need = <V>(v: V | undefined): V => {
 };
 
 const ids = <T extends { id: string }>(xs: readonly T[]): string[] => xs.map((x) => x.id);
+
+/** Explicit absence controls: the reference sample may legitimately label every finding's wave. */
+const ABSENT_WAVE_FINDINGS: Finding[] = ["synthetic-absent-wave-1", "synthetic-absent-wave-2"].map((id) => ({
+  id, severity: "Medium", rank: null, priority: null, category: "Synthetic absence control",
+  devices: [], wave: null, title: id, detail: null, remediation: null, cite: `synthetic.${id}`,
+}));
+
+/** Query vocabulary is memoized at module load: install an isolated synthetic dataset before importing it. */
+async function absentWaveQuery(): Promise<typeof import("./query")> {
+  vi.resetModules();
+  const set = structuredClone(dataset);
+  set.fabric.findings = structuredClone(ABSENT_WAVE_FINDINGS);
+  try {
+    (await import("./dataset/slot")).installDataset({
+      set,
+      origin: { kind: "opened-file", fileName: "synthetic-absent-wave.json", fileBytes: set.fabric.meta.sourceBytes, warnings: [] },
+    });
+    return await import("./query");
+  } finally {
+    vi.resetModules();
+  }
+}
 
 /** Independent restatement of the required tie-break, so the test does not borrow the engine's
  *  own comparator to check the engine's own comparator. `cite` is in the tuple because `id` is not
@@ -267,10 +289,11 @@ describe("parseQuery — grammar", () => {
     expect(p.unmatchableValues.map((u) => `${u.key}:${u.value}`)).toEqual([`severity:${ABSENT_SEV}`, `band:${ABSENT_BAND}`]);
   });
 
-  it.runIf(has("no finding with a wave"))(titled("reports a key for which the snapshot observed no values at all", "no finding with a wave"), () => {
+  it("reports a key for which the snapshot observed no values at all", async () => {
     // Every finding has wave === null. That is NOT 'no waves exist'; it is 'migration waves were never observed',
     // and the UI must be able to say so.
-    const p = parseQuery("wave:2");
+    const q = await absentWaveQuery();
+    const p = q.parseQuery("wave:2");
     expect(p.unobservedKeys).toContain("wave");
   });
 });
@@ -394,10 +417,11 @@ describe("an unrecognised key never silently passes everything through", () => {
 });
 
 describe("unobserved fields stay unobserved", () => {
-  it.runIf(has("no finding with a wave"))(titled("reports every finding as undetermined for wave, never as excluded", "no finding with a wave"), () => {
-    const r = applyToFindings(fabric.findings, parseQuery("wave:2"));
+  it("reports every finding as undetermined for wave, never as excluded", async () => {
+    const q = await absentWaveQuery();
+    const r = q.applyToFindings(ABSENT_WAVE_FINDINGS, q.parseQuery("wave:2"));
     expect(r.items).toHaveLength(0);
-    expect(r.clauses[0]!.undetermined).toBe(RAW.findings);
+    expect(r.clauses[0]!.undetermined).toBe(ABSENT_WAVE_FINDINGS.length);
     expect(r.clauses[0]!.excluded).toBe(0);
     expect(r.clauses[0]!.note).toMatch(/not observed/i);
   });
@@ -533,8 +557,9 @@ describe("suggest — completions drawn from the data, never invented", () => {
     expect(s.replace).toEqual({ start: 5, end: 5 + typed.length });
   });
 
-  it.runIf(has("no finding with a wave"))(titled("says plainly when a key has no observed values rather than showing an empty menu", "no finding with a wave"), () => {
-    const s = suggest("wave:", 5);
+  it("says plainly when a key has no observed values rather than showing an empty menu", async () => {
+    const q = await absentWaveQuery();
+    const s = q.suggest("wave:", 5);
     expect(s.suggestions).toHaveLength(0);
     expect(s.note).toMatch(/not observed/i);
   });
@@ -650,12 +675,12 @@ describe("grouping and ordering", () => {
     for (const g of groups) expect(g.items, g.key).toHaveLength(RAW.sev(g.key));
   });
 
-  it.runIf(has("no finding with a wave"))(titled("keeps an unobserved bucket separate and labelled, never folded into a value", "no finding with a wave"), () => {
-    const groups = groupBy(fabric.findings, "wave");
+  it("keeps an unobserved bucket separate and labelled, never folded into a value", () => {
+    const groups = groupBy(ABSENT_WAVE_FINDINGS, "wave");
     expect(groups).toHaveLength(1);
     expect(groups[0]!.observed).toBe(false);
     expect(groups[0]!.label).toMatch(/not observed/i);
-    expect(groups[0]!.items).toHaveLength(RAW.findings);
+    expect(groups[0]!.items).toHaveLength(ABSENT_WAVE_FINDINGS.length);
   });
 
   it("groups devices by band in band order with the unobserved bucket last", () => {
@@ -1211,14 +1236,14 @@ describe("free text on devices is tri-state: an unobserved field never decides a
 describeGolden("query counts on the reference sample", () => {
   /* The contract between the tracked sample and the UI, formerly module constants every block read. */
   const GOLDEN = {
-    findings: 146,
+    findings: 140,
     devices: 26,
-    sev: { Critical: 3, High: 104, Medium: 33, Low: 6 },
-    compoundRisk: 15,
-    core1: 32,
-    accessRole: 116,
-    poorBand: 76,
-    withRemediation: 66,
+    sev: { Critical: 3, High: 99, Medium: 33, Low: 5 },
+    compoundRisk: 10,
+    core1: 31,
+    accessRole: 110,
+    poorBand: 75,
+    withRemediation: 60,
     uncollected: 3,
     bridge: { yes: 19, no: 4, unknown: 3 },
     poorBandDevices: 12,
@@ -1258,35 +1283,35 @@ describeGolden("query counts on the reference sample", () => {
     expect(EP_IP).toBe("10.0.10.50");
     expect(DOUBLE_NAMED?.id).toBe("F003");
     expect(FIRST_FINDING?.id).toBe("F001");
-    expect(fabric.findings.find((f) => f.devices.length === 0)?.id).toBe("F142");
+    expect(fabric.findings.find((f) => f.devices.length === 0)?.id).toBe("F137");
   });
 
   it("the engine's answers on the sample", () => {
     const all = fabric.findings;
     const n = (q: string): number => applyToFindings(all, parseQuery(q)).items.length;
     expect(n("severity:Critical")).toBe(3);
-    expect(n("severity:High")).toBe(104);
-    expect(n("severity:Critical,High")).toBe(107);
+    expect(n("severity:High")).toBe(99);
+    expect(n("severity:Critical,High")).toBe(102);
     expect(n('category:"Compound risk"')).toBe(GOLDEN.compoundRisk);
     expect(n("host:core1")).toBe(GOLDEN.core1);
     expect(n("role:access")).toBe(GOLDEN.accessRole);
     expect(n("band:Poor")).toBe(GOLDEN.poorBand);
     expect(n("-has:remediation")).toBe(80);
-    expect(n("gateway")).toBe(27);
-    expect(n("severity:High -core1")).toBe(88);
-    expect(n("-core1")).toBe(146 - 32);
+    expect(n("gateway")).toBe(26);
+    expect(n("severity:High -core1")).toBe(83);
+    expect(n("-core1")).toBe(140 - 31);
     const role = applyToFindings(all, parseQuery("role:access"));
     expect(role.clauses[0]!.undetermined).toBe(1);
-    expect(ids(role.items)).not.toContain("F142");
+    expect(ids(role.items)).not.toContain("F137");
     const hostSplit = applyToFindings(all, parseQuery("host:core1")).clauses[0]!;
-    expect([hostSplit.matched, hostSplit.excluded, hostSplit.undetermined]).toEqual([32, 113, 1]);
+    expect([hostSplit.matched, hostSplit.excluded, hostSplit.undetermined]).toEqual([31, 108, 1]);
     const dev = (q: string): number => applyToDevices(fabric.devices, parseQuery(q)).items.length;
     expect(dev("severity:Critical")).toBe(GOLDEN.devicesWithCritical);
     expect(dev("band:Poor")).toBe(GOLDEN.poorBandDevices);
     expect(dev("tier:1")).toBe(17);
     expect(dev("platform:ios")).toBe(22);
     expect(dev("host:access*")).toBe(17);
-    expect(applyToFindings(all, parseQuery("host:AP-floor1")).excludedTotal).toBe(145);
+    expect(applyToFindings(all, parseQuery("host:AP-floor1")).excludedTotal).toBe(139);
     expect(applyToCrossLayer(fabric.crossLayer, parseQuery("layer:L1+L3")).items).toHaveLength(3);
     const tier3 = applyToFindings(all, parseQuery("tier:3"));
     expect(tier3.items).toHaveLength(5);

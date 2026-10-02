@@ -189,10 +189,13 @@ def test_dossier_insufficient_data_host_renders_na_not_clean():
     state = {e["axis"]: e["state"] for e in d["exposures"]}
     assert state["Health"] == "na"
     assert state["Physical"] == "na" and state["Protocol"] == "na"
-    # a genuinely scored host still gets its 'ok' by silence (the guard is not a blanket mute)
+    # A scored interface scan and a real protocol receipt license their bounded clean conclusions.
+    from dossier_fixtures import observed_stp_receipt
+    protocol_health, receipt = observed_stp_receipt(["goodbox"])
     ok = analyze.compute_device_dossiers(
         health_scores=[{"switch": "goodbox", "score": 95, "band": "Excellent",
-                        "data_quality": 1.0, "role": "access"}])["per_device"][0]
+                        "data_quality": 1.0, "role": "access"}],
+        protocol_health=protocol_health, protocol_assessability=receipt)["per_device"][0]
     ok_state = {e["axis"]: e["state"] for e in ok["exposures"]}
     assert ok_state["Physical"] == "ok" and ok_state["Protocol"] == "ok"
 

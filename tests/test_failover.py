@@ -375,9 +375,9 @@ def test_orchestrator_site_substring_match():
     snap = {"stp_roots": {
         "SW-NYC-1": {"5": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": True,
                            "bridge_priority": 4096}},
-        "SW-NYC-2": {"5": {"root_priority": 4096, "root_address": "aaaa.0000.0002", "is_root": False,
+        "SW-NYC-2": {"5": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": False,
                            "bridge_priority": 8192}},
-        "SW-LAX-1": {"5": {"root_priority": 4096, "root_address": "aaaa.0000.0003", "is_root": False,
+        "SW-LAX-1": {"5": {"root_priority": 4096, "root_address": "aaaa.0000.0001", "is_root": False,
                            "bridge_priority": 8192}},
     }}
     tw = failover.compute_failover_twin(snap, [{"type": "site", "id": "NYC"}])

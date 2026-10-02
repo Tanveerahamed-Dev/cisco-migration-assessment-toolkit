@@ -107,7 +107,7 @@ describeGolden("the word-matched (context) route on the reference sample, and ho
       else parsed += 1;
     }
 
-    expect(fabric.findings.length).toBe(146);
+    expect(fabric.findings.length).toBe(140);
     /* 24 -> 22 and 121 -> 123 on 2026-09-21 (A1): F102 and F109 ("Port err-disabled", "core1: L1
        fault on an L3 gateway switch") used to open core1's first ACL because it happened to be
        listed first; they now open core1 Gi1/0/9, the err-disabled port core1's own deductions name.
@@ -117,9 +117,10 @@ describeGolden("the word-matched (context) route on the reference sample, and ho
        Access lists are now ranked by their name's words like everything else; the two that stay
        literal are F106 and F107, which open MGMT_IN because they say "management". */
     expect(literal, "findings whose two-click record carries literal configuration lines").toBe(2);
-    expect(parsed, "findings whose two-click record is parsed fields with no literal block").toBe(143);
-    expect(noTarget, "findings with no configuration target at all — each must be a fleet-wide conclusion").toEqual(["F142"]);
-    expect(literal + parsed + noTarget.length, "every finding is accounted for in exactly one category").toBe(146);
+    // G15 removed seven unsupported root findings and added one ambiguity finding; all eight use parsed context.
+    expect(parsed, "findings whose two-click record is parsed fields with no literal block").toBe(137);
+    expect(noTarget, "findings with no configuration target at all — each must be a fleet-wide conclusion").toEqual(["F137"]);
+    expect(literal + parsed + noTarget.length, "every finding is accounted for in exactly one category").toBe(140);
     expect(named).toBe(6);
     expect(namedLiteral, "of the six findings that NAME configuration, how many reach literal text").toBe(0);
 
@@ -132,12 +133,12 @@ describeGolden("the word-matched (context) route on the reference sample, and ho
        the 33 (F106, F107) do land on literal text, but through the word-ranked MGMT_IN match that
        existed before this field — not through the citation. */
     const cited = fabric.findings.filter((f) => (f.sourceCommand ?? null) !== null);
-    expect(cited.length, "findings whose producer row cites its source command").toBe(33);
+    expect(cited.length, "findings whose producer row cites its source command").toBe(32);
     const citedLiteral = cited.filter((f) => {
       const hits = configEvidenceFor(f);
       return (hits.length > 0 ? hits : nearestConfigFor(f))[0]?.kind === "acl";
     });
-    expect(citedLiteral.map((f) => f.id), "cited findings whose two-click record is literal text").toEqual(["F106", "F107"]);
+    expect(citedLiteral.map((f) => f.id), "cited findings whose two-click record is literal text").toEqual(["F101", "F102"]);
   });
 });
 
@@ -214,9 +215,9 @@ describe("the named-configuration path, over the real collected records", () => 
 });
 
 describeGolden("the nearest record on the reference sample: named findings land where their words say (A1)", () => {
-  it("F099 ('L1 risk err-disabled on 6 switches') opens an err-disabled port, not the first port", () => {
-    const f = fabric.findings.find((x) => x.id === "F099");
-    expect(f, "precondition: F099 exists in the compiled data").toBeDefined();
+  it("F094 ('L1 risk err-disabled on 6 switches') opens an err-disabled port, not the first port", () => {
+    const f = fabric.findings.find((x) => x.id === "F094");
+    expect(f, "precondition: F094 exists in the compiled data").toBeDefined();
     expect(configEvidenceFor(f!)).toEqual([]);
     const first = nearestConfigFor(f!)[0];
     expect(first?.kind).toBe("interface");
@@ -232,7 +233,7 @@ describeGolden("the nearest record on the reference sample: named findings land 
     expect(matchedLandings(), "findings landing on a matched interface record").toBeGreaterThan(0);
   });
 
-  it("an access list is never 'nearest' by list order: F004, F100 and F106 no longer all open core1's first list", () => {
+  it("an access list is never 'nearest' by list order: F004, F095 and F101 no longer all open core1's first list", () => {
     const firstAcl = Object.keys(fabric.acls["core1"] ?? {})[0];
     expect(firstAcl, "precondition: core1 holds collected access lists").toBeDefined();
     const land = (id: string) => {
@@ -240,13 +241,13 @@ describeGolden("the nearest record on the reference sample: named findings land 
       expect(f, `precondition: ${id} exists`).toBeDefined();
       return nearestConfigFor(f!)[0];
     };
-    // F106 ("VTY transport (telnet) … cleartext management") says "management"; MGMT_IN is that list.
-    const f106 = land("F106");
-    expect(f106?.label).toBe("core1 · MGMT_IN");
-    expect(f106?.kind === "acl" && f106.matched).toBe(true);
-    expect(f106?.how).toMatch(/“MGMT”, read as “management”/);
-    // F004 (failing hardware) and F100 (single gateway) match nothing we hold: the landing must say so.
-    for (const id of ["F004", "F100"]) {
+    // F101 ("VTY transport (telnet) … cleartext management") says "management"; MGMT_IN is that list.
+    const management = land("F101");
+    expect(management?.label).toBe("core1 · MGMT_IN");
+    expect(management?.kind === "acl" && management.matched).toBe(true);
+    expect(management?.how).toMatch(/“MGMT”, read as “management”/);
+    // F004 (failing hardware) and F095 (single gateway) match nothing we hold: the landing must say so.
+    for (const id of ["F004", "F095"]) {
       const first = land(id);
       expect(first?.label, id).not.toBe(`core1 · ${firstAcl}`);
       expect(first?.how, id).toMatch(/not ranked/);
