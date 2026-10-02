@@ -70,7 +70,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W0 | Main checkout hygiene | main checkout on `codex/atlas-master-reference` (already merged, behind `main`); its uncommitted edits are preserved at `refs/preserved/main-checkout-wip-20260929` | owner | Sessions started there load an old `CLAUDE.md` that does not mention this board (2026-09-29) | Owner: keep or drop the preserved edits, then switch the main checkout to `main` once W1 no longer needs its launch configuration |
-| W2c | Backend endpoint and first core screens | `codex/core-screens`; existing `.claude/worktrees/ui-projection-2` checkout | Codex | Core screens and JSON-native response boundary are implemented, independently reviewed and locally tested: 1,281 backend passes, 306 frontend passes, nine generator-policy passes, six E2E passes, 22 visual passes and frozen runtime smoke. Local commits through `8bff83ec`; unpublished. Reference architecture placement is being reverified; [validation](one-app-w2c-validation-2026-10-02.md). (2026-10-02) | Finish the exact-source reference gate using the existing adapter/component boundaries, then pass both privacy gates and publish the complete PR for exact-head CI. Preserve source identity, evidence states and paging disclosures. No further golden/sample regeneration. |
+| W2c | Backend endpoint and first core screens | `codex/core-screens`; existing `.claude/worktrees/ui-projection-2` checkout; [PR #584](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/584) | Codex | Implemented, independently reviewed and locally verified: 1,281 backend passes, 306 frontend passes, nine generator-policy passes, six E2E passes, 22 visual passes, frozen runtime and complete reference build. Published after both privacy gates; hosted verdicts belong to the PR's current head. [Validation](one-app-w2c-validation-2026-10-02.md). (2026-10-02) | Close all required checks on the latest head, then mark ready for owner review and merge. The local reference build has 322,332 bytes of headroom at `c5519bdf`; retain the unchanged size gate. No further golden/sample regeneration. |
 
 ## Owner decisions
 
@@ -96,6 +96,11 @@ There is **one application**: the `main` branch of this repository on GitHub.
 publishing the master-reference site, and the Claude Design pixel-baseline promotion.
 
 ## Handoff log (newest first)
+
+- 2026-10-02, Codex (W2c published):
+  - Pushed `c5519bdf` after the repository privacy verifier and full four-commit marker scan both exited zero; opened draft #584. The endpoint, generated types, core screens, evidence drawer and portable runtime are implemented and independently reviewed. Required hosted CI must close on the final head before readiness/merge.
+  - Closed the JSON-native/finite HTTP refutation with 89 focused passes, independent negative/positive replay, 1,281 full backend passes and fresh frozen smoke. Closed the four reference architecture edges by using the existing adapter and relocating the exporter; no architecture policy changed. The complete reference build and its existing size gate passed with 322,332 bytes of headroom at `c5519bdf`.
+  - This documentation handoff follows the implementation without changing app/runtime bytes. Fresh privacy gates remain mandatory for its push. The generated root test cache remains untracked after automatic approval review rejected cleanup; it is excluded from publication. W1 and golden/sample/Scope data remain untouched.
 
 - 2026-10-02, Codex (W2c local validation and final boundary probe):
   - Committed the endpoint/runtime checkpoint as `a4c898a9`; no W2c push or PR yet. Core screens now consume generated engine-contract types and preserve source-bound evidence, withheld rows and exact reference joins. Final frontend gates: 306 unit tests, nine generator-policy tests, six E2E passes with one existing opt-in skip, and 22 unchanged visual comparisons.

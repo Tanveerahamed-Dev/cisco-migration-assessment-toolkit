@@ -1,8 +1,8 @@
 # W2c: core projection endpoint and screens
 
-Status: **local application gates passed; reference architecture/build gate in progress;
-unpublished**. The JSON-value refutation below is closed with fresh independent, full-backend
-and frozen-runtime evidence. The original failure remains recorded.
+Status: **local gates passed; published as draft PR #584 for exact-head hosted CI**.
+The JSON-value and architecture-placement refutations below are closed. Original failures and
+their distinct closing evidence remain recorded. Hosted verdicts must bind the final PR head.
 This record belongs
 to the existing `codex/core-screens` branch and `ui-projection-2` checkout, created from main
 `a0c727bd` after W2b merged. `docs/NOW.md` remains the live queue.
@@ -221,3 +221,26 @@ tools shim or dynamic indirection. README, workflow and scope witnesses follow t
 `webapp/**` already covers it. The unchanged owner accepts the proposed edges. The exporter
 test and exact OpenAPI byte check passed; **52 smoke/CI-scope tests** passed. A rebuilt
 exact-source architecture receipt and the remaining reference build are still required.
+
+The corrected compiler run at `c5519bdf8dcb4a976b28767f6cc2c2bcd0c5005d` completed with
+source-tree digest `1fe17cd4e4157d832e8e23ef5ee52a70c3766e08478626ea67f95f07005c2a04`.
+All **1,794** chunks and manifest/completeness/graph metadata schemas passed. The reference
+projection contains 4,105 source modules; its full local gate passed **268 contract tests /
+one existing POSIX-only skip**, followed by **43 rendered tests**. Complete deployment size,
+including the 4,467-byte outer receipt: **259,724,516 bytes / 14,804 files**, leaving **322,332
+bytes** under the unchanged 260,046,848-byte limit. Member digest:
+`f92d09c7a1f8f8b932250bf74ff96fefef7915c600ddd6aea10505755319dcf6`.
+This is limited remaining capacity at that exact source; later heads need their own size gate.
+
+The relocated exporter retains identical OpenAPI bytes. Neither it nor the host smoke driver
+appears in PyInstaller's runtime Analysis; the reviewed frozen API/UI bytes are unchanged.
+The corrected adapter-based checker passed the complete frozen smoke again. The temporary
+browser tab and server were closed after verification. Repository-wide Ruff, diff checks and
+the frontend npm audit passed (zero reported vulnerabilities).
+
+Both public-repository privacy gates passed before the first push: the history scan covered all
+four new commits / 2,176,291 patch-and-message bytes with zero hits across 12 patterns. PR
+[#584](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/584) owns the
+hosted checks and review. This closing documentation update requires fresh privacy gates before
+its push; exact-head hosted CI remains the merge gate. No release publication or field acceptance
+is implied by these implementation and test results.
