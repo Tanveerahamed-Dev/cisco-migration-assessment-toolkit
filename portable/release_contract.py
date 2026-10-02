@@ -63,6 +63,7 @@ EXPECTED_BUNDLED_PYTHON = {
     "isoduration": "20.11.0",
     "jsonpointer": "3.1.1",
     "jsonschema": "4.26.0",
+    "jsonschema-rs": "0.58.4",
     "jsonschema-specifications": "2025.9.1",
     "lark": "1.3.1",
     "lxml": "6.1.3",
@@ -215,6 +216,8 @@ NOTICES_INFERENCE_BOUNDARY = (
     "PyInstaller are explicit runtime components. Dataset rows bind exact shipped bytes and source "
     "provenance while redistribution review remains external. The exact file manifest remains the "
     "shipped-byte denominator."
+    " The jsonschema-rs upstream CycloneDX file is preserved as package declarations, not "
+    "independently verified linked components or their individual license texts."
 )
 
 
@@ -1172,6 +1175,7 @@ def toolchain_receipt(repository_root: str | Path) -> dict[str, Any]:
         "portable/third-party-license-fallbacks.json",
         "portable/third-party-licenses/pyserial-LICENSE.txt",
         "portable/third-party-licenses/react-force-graph-LICENSE",
+        "portable/third-party-licenses/jsonschema-rs-LICENSE",
         "cisco_toolkit/data/registry_manifest.json",
         "cisco_toolkit/data/eol-bulletins.json",
         "tests/fixtures/assesshub-v3.32.1.sql",
@@ -1334,6 +1338,8 @@ def _validate_toolchain_receipt(value: object, runtime_names: list[str]) -> Mapp
         "pyinstaller": PYINSTALLER_VERSION,
         "cyclonedx-python-lib": "11.12.0",
         "jsonschema": "4.26.0",
+        "jsonschema-rs": "0.58.4",
+        "referencing": "0.37.0",
     }.items():
         if versions.get(name) != expected:
             raise PortableReleaseError(f"portable build distribution pin differs: {name}")
@@ -1417,6 +1423,7 @@ def _validate_toolchain_receipt(value: object, runtime_names: list[str]) -> Mapp
         "portable/third-party-license-fallbacks.json",
         "portable/third-party-licenses/pyserial-LICENSE.txt",
         "portable/third-party-licenses/react-force-graph-LICENSE",
+        "portable/third-party-licenses/jsonschema-rs-LICENSE",
         "cisco_toolkit/data/registry_manifest.json",
         "cisco_toolkit/data/eol-bulletins.json",
         "tests/fixtures/assesshub-v3.32.1.sql",
@@ -1743,6 +1750,7 @@ def third_party_notices(root: Path, toolchain: Mapping[str, Any]) -> dict[str, A
 
 
 def member_manifest(source: Mapping[str, Any], members: list[dict[str, Any]]) -> dict[str, Any]:
+    _validate_native_package_members(members)
     return {
         "schema": MANIFEST_SCHEMA,
         "platform": PLATFORM_ID,
@@ -1758,6 +1766,19 @@ def member_manifest(source: Mapping[str, Any], members: list[dict[str, Any]]) ->
             "pe_architecture": "AMD64",
         },
     }
+
+
+def _validate_native_package_members(members: list[Mapping[str, Any]]) -> None:
+    """Require the native provider and its retained declarations in real Windows bundles."""
+    from portable.atlas_bundle import native_runtime_files
+
+    indexed = {item["path"]: item for item in members}
+    if not any(path.casefold() == "_internal/python312.dll" for path in indexed):
+        return  # Synthetic release-contract fixtures do not claim a Python runtime.
+    for path, receipt in native_runtime_files().items():
+        row = indexed.get(path)
+        if row is None or (receipt and any(row.get(key) != value for key, value in receipt.items())):
+            raise PortableReleaseError(f"native validator runtime evidence is absent or differs: {path}")
 
 
 def validate_member_manifest(value: object) -> tuple[dict[str, Any], list[Mapping[str, Any]]]:
@@ -1817,6 +1838,7 @@ def validate_member_manifest(value: object) -> tuple[dict[str, Any], list[Mappin
         raise PortableReleaseError("portable manifest paths are unsorted or collide")
     if set(_RUNTIME_REQUIRED) - {path.casefold() for path in paths}:
         raise PortableReleaseError("portable manifest lacks a required entry, guide, or license")
+    _validate_native_package_members(members)
     expected_summary = {
         "member_count": len(members),
         "total_bytes": sum(item["bytes"] for item in members),

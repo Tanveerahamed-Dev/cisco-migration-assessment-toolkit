@@ -472,6 +472,15 @@ def run_selftest(dist_dir=None, db_path=None, scope_dist_dir=None) -> int:
         check("engine-entry", None if _ilu.find_spec("COLLECT_PARSE_V3_23_0")
               else "engine module not bundled — ingest would respawn the app instead of "
                    "running the engine")
+        try:
+            from .ui_projection_api import _reviewed_legacy_resolver_type
+
+            _reviewed_legacy_resolver_type()
+        except (ImportError, RuntimeError):
+            legacy_failure = "reviewed jsonschema metadata or its guarded legacy interface is unavailable"
+        else:
+            legacy_failure = None
+        check("ui-projection-legacy-resolver", legacy_failure)
         from portable import network_boundary
 
         network_ok = network_boundary.installed() and (

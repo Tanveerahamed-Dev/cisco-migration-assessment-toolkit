@@ -5,12 +5,23 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      measure_projection_performance:
+        description: "Run the optional hosted projection measurement (existing CI jobs still run)"
+        type: boolean
+        default: false
+        required: false
+      expected_source_commit:
+        description: "Required for measurement: full commit SHA, matching the selected ref"
+        type: string
+        default: ""
+        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && inputs.measure_projection_performance && '-projection-performance' || '' }}
   cancel-in-progress: true
 
 # Every third-party action is pinned to an immutable commit. Pull-request code runs only
@@ -424,6 +435,211 @@ jobs:
             dist/*.whl
             dist/*.tar.gz
             dist/dist-verification.json
+          if-no-files-found: error
+          retention-days: 14
+
+  projection-performance:
+    name: Projection HTTP performance · opt-in measurement
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_projection_performance }}
+    strategy:
+      matrix:
+        os: [windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      EXPECTED_SOURCE_COMMIT: ${{ inputs.expected_source_commit }}
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONNOUSERSITE: "1"
+      PYTHONPATH: ""
+      PYTHONIOENCODING: utf-8
+    steps:
+      - name: Initialize external measurement evidence
+        id: evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $proof = Join-Path $env:RUNNER_TEMP "atlas-ui-projection-performance"
+          New-Item -ItemType Directory -Path $proof | Out-Null
+          [ordered]@{
+            schema = "ui_projection_hosted_context/1"
+            github_sha = $env:GITHUB_SHA
+            repository = $env:GITHUB_REPOSITORY
+            ref = $env:GITHUB_REF
+            workflow = $env:GITHUB_WORKFLOW
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            runner_os = $env:RUNNER_OS
+            runner_arch = $env:RUNNER_ARCH
+            image_os = $env:ImageOS
+            image_version = $env:ImageVersion
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $proof "context.json") -Encoding utf8
+          # Configure only this ephemeral measurement runner, before checkout.
+          git config --global core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { throw "Failed to configure literal checkout bytes" }
+          git config --global core.eol lf
+          if ($LASTEXITCODE -ne 0) { throw "Failed to configure LF checkout bytes" }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        id: checkout
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
+        with:
+          python-version: "3.12.10"
+          architecture: x64
+          cache: pip
+      # This runner executes neither Node builds nor pytest. The unchanged benchmark
+      # measures real ASGI responses; these receipts do not replace local failures.
+      - name: Bind source, install canonical dependencies, and measure both profiles
+        id: measure
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          import platform
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          root = Path(os.environ["GITHUB_WORKSPACE"])
+          proof = Path(os.environ["RUNNER_TEMP"]) / "atlas-ui-projection-performance"
+          report = {"schema": "ui_projection_hosted_measurement/1", "setup": [],
+                    "measurements": [], "errors": [], "scope": "hosted runner; local failures remain evidence"}
+
+          def save():
+              (proof / "measurement.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+          def identity():
+              def git(*args):
+                  result = subprocess.run(["git", *args], cwd=root, capture_output=True,
+                                          text=True, encoding="utf-8", check=True)
+                  return result.stdout.strip()
+              return {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
+                      "tracked_status": git("status", "--porcelain=v1", "--untracked-files=no")}
+
+          def capture(name, args, timeout):
+              result = {"name": name, "argv": args, "exit_code": None}
+              try:
+                  with (proof / (name + ".stdout.log")).open("wb") as stdout, \
+                       (proof / (name + ".stderr.log")).open("wb") as stderr:
+                      result["exit_code"] = subprocess.run(args, cwd=root, stdout=stdout, stderr=stderr,
+                                                           timeout=timeout, check=False).returncode
+              except (OSError, subprocess.TimeoutExpired) as exc:
+                  result["error"] = str(exc)
+              return result
+
+          before = None
+          try:
+              context = json.loads((proof / "context.json").read_text(encoding="utf-8-sig"))
+              required = ("github_sha", "repository", "ref", "workflow", "run_id", "run_attempt",
+                          "runner_os", "runner_arch", "image_os", "image_version")
+              missing = [key for key in required if not context.get(key)]
+              if missing:
+                  raise RuntimeError("Missing hosted identity fields: " + ", ".join(missing))
+              expected = os.environ.get("EXPECTED_SOURCE_COMMIT", "")
+              workflow_sha = os.environ.get("GITHUB_SHA", "")
+              if not re.fullmatch(r"[0-9a-fA-F]{40}", expected):
+                  raise RuntimeError("Measurement requires a nonempty full expected_source_commit SHA")
+              if not re.fullmatch(r"[0-9a-fA-F]{40}", workflow_sha):
+                  raise RuntimeError("Missing or malformed workflow SHA")
+              before = identity()
+              report["source_before"] = before
+              report["expected_commit"] = expected.lower()
+              if before["commit"] != expected.lower() or before["commit"] != workflow_sha.lower():
+                  raise RuntimeError("Expected commit, checkout HEAD, and workflow SHA must agree")
+              if before["tracked_status"]:
+                  raise RuntimeError("Tracked checkout is not clean before setup")
+              report["python"] = {"version": platform.python_version(), "executable": sys.executable,
+                                  "platform": platform.platform()}
+              if sys.version_info[:3] != (3, 12, 10):
+                  raise RuntimeError("Measurement requires Python 3.12.10")
+              for name, args, timeout in (
+                  ("pip-upgrade", [sys.executable, "-m", "pip", "install", "--upgrade", "pip"], 120),
+                  ("pip-install", [sys.executable, "-m", "pip", "install", "-r", "requirements-dev.txt"], 600),
+                  ("pip-freeze", [sys.executable, "-m", "pip", "freeze", "--all"], 60),
+              ):
+                  step = capture(name, args, timeout)
+                  report["setup"].append(step)
+                  save()
+                  if step["exit_code"] != 0:
+                      raise RuntimeError(name + " failed; see its preserved stdout/stderr")
+              if identity() != before:
+                  raise RuntimeError("Tracked source changed during dependency setup")
+              for name, options in (
+                  ("sample-50-and-synthetic-300", ["--limit", "50"]),
+                  ("sample-200", ["--sample-only", "--limit", "200"]),
+              ):
+                  output = proof / (name + ".json")
+                  args = [sys.executable, "tests/perf_ui_projection.py", "--all-lists", "--repeats", "5",
+                          "--require-sample-warm-ms", "300", "--output", str(output), *options]
+                  measurement = capture(name, args, 600)
+                  measurement["receipt"] = output.name
+                  try:
+                      receipt = json.loads(output.read_text(encoding="utf-8"))
+                      if receipt["source_commit"] != before["commit"] or receipt["tracked_changes"]:
+                          raise RuntimeError("Benchmark receipt does not bind the unchanged expected source")
+                      source_map = receipt.get("source_sha256")
+                      required_sources = {"tests/perf_ui_projection.py", "tests/test_ui_projection_inventory.py",
+                                          "webapp/backend/ui_projection_api.py"}
+                      if not isinstance(source_map, dict) or not required_sources.issubset(source_map):
+                          raise RuntimeError("Benchmark receipt lacks its required source hash map")
+                      for path, digest in source_map.items():
+                          if (not isinstance(path, str) or "\\" in path or ":" in path
+                                  or any(part in ("", ".", "..") for part in path.split("/"))
+                                  or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+                              raise RuntimeError("Benchmark receipt has an invalid source hash entry")
+                          blob = subprocess.run(["git", "cat-file", "blob", expected.lower() + ":" + path],
+                                                cwd=root, capture_output=True, check=True).stdout
+                          if (hashlib.sha256(blob).hexdigest() != digest
+                                  or hashlib.sha256((root / path).read_bytes()).hexdigest() != digest):
+                              raise RuntimeError("Benchmark source bytes differ from the expected Git blob: " + path)
+                  except Exception as exc:
+                      measurement["receipt_error"] = str(exc)
+                  report["measurements"].append(measurement)
+                  save()
+                  # A nonzero first benchmark never suppresses the second profile.
+          except Exception as exc:
+              report["errors"].append(str(exc))
+          finally:
+              try:
+                  report["source_after"] = identity()
+                  if before is None or report["source_after"] != before:
+                      report["errors"].append("Final tracked source identity did not match the initial clean source")
+              except Exception as exc:
+                  report["errors"].append("Final source check failed: " + str(exc))
+              report["passed"] = (not report["errors"] and len(report["measurements"]) == 2
+                                  and all(row["exit_code"] == 0 and "receipt_error" not in row
+                                          for row in report["measurements"]))
+              save()
+          if not report["passed"]:
+              raise SystemExit("Hosted projection measurement failed; inspect the preserved evidence")
+      - name: Preserve step outcomes even when setup fails
+        if: ${{ always() }}
+        shell: pwsh
+        env:
+          EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          PYTHON_OUTCOME: ${{ steps.python.outcome }}
+          MEASURE_OUTCOME: ${{ steps.measure.outcome }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $proof = Join-Path $env:RUNNER_TEMP "atlas-ui-projection-performance"
+          New-Item -ItemType Directory -Force -Path $proof | Out-Null
+          [ordered]@{
+            evidence = $env:EVIDENCE_OUTCOME
+            checkout = $env:CHECKOUT_OUTCOME
+            python = $env:PYTHON_OUTCOME
+            measurement = $env:MEASURE_OUTCOME
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $proof "step-outcomes.json") -Encoding utf8
+      - name: Upload hosted measurement evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: projection-performance-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/atlas-ui-projection-performance/
           if-no-files-found: error
           retention-days: 14
 

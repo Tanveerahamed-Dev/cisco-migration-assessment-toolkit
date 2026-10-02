@@ -145,10 +145,94 @@ def test_spec_collects_runtime_package_resources_from_the_pure_manifest(monkeypa
         "ROOT": ROOT, "bundle_datas": lambda _root: [("owned.txt", ".")],
         "package_data_modules": atlas_bundle.package_data_modules,
         "collect_data_files": collect_data_files,
+        "package_metadata_datas": lambda _collector: [], "copy_metadata": object(),
     })
     assert collected == ["first", "second"]
     assert result == [("owned.txt", "."), ("installed/first/grammar.lark", "first"),
                       ("installed/second/grammar.lark", "second")]
+
+
+def test_spec_retains_native_extension_and_reviewed_distribution_metadata():
+    assert "jsonschema_rs.jsonschema_rs" in atlas_bundle.hidden_imports()
+    assert atlas_bundle.package_metadata_distributions() == ("jsonschema-rs",)
+    required = atlas_bundle.native_runtime_files()
+    assert "_internal/jsonschema_rs/jsonschema_rs.pyd" in required
+    assert "_internal/jsonschema_rs-0.58.4.dist-info/METADATA" in required
+    assert required["_internal/jsonschema_rs-0.58.4.dist-info/sboms/jsonschema-py.cyclonedx.json"] == {
+        "bytes": 245181,
+        "sha256": "fc02e97118764c2c8e0e67bc1f0fc554cda259a4925e944677894d0792cf6a88",
+    }
+    spec = ast.parse((ROOT / "portable/atlas.spec").read_text(encoding="utf-8"))
+    analysis = next(node for node in ast.walk(spec)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "Analysis")
+    datas = next(keyword.value for keyword in analysis.keywords if keyword.arg == "datas")
+    collector = object()
+    def package_metadata_datas(observed_collector):
+        assert observed_collector is collector
+        return [("owned-metadata/METADATA", "native.dist-info")]
+    result = eval(compile(ast.Expression(datas), "atlas.spec metadata", "eval"), {
+        "ROOT": ROOT, "bundle_datas": lambda _root: [],
+        "package_data_modules": lambda: (), "collect_data_files": lambda _module: [],
+        "package_metadata_datas": package_metadata_datas, "copy_metadata": collector,
+    })
+    assert result == [("owned-metadata/METADATA", "native.dist-info")]
+
+
+def test_native_metadata_selection_preserves_version_and_sbom_without_installer_provenance(tmp_path):
+    import importlib.metadata
+
+    destination = "jsonschema_rs-0.58.4.dist-info"
+    metadata = tmp_path / destination
+    (metadata / "sboms").mkdir(parents=True)
+    (metadata / "METADATA").write_text("Metadata-Version: 2.4\nName: jsonschema-rs\nVersion: 0.58.4\n")
+    (metadata / "WHEEL").write_text("Wheel-Version: 1.0\nTag: cp310-abi3-win_amd64\n")
+    (metadata / "sboms/jsonschema-py.cyclonedx.json").write_text('{"bomFormat":"CycloneDX"}')
+    for name in ("direct_url.json", "INSTALLER", "REQUESTED", "RECORD"):
+        (metadata / name).write_text("file:///C:/synthetic-private-build/location.whl")
+    selected = atlas_bundle.package_metadata_datas(lambda name: [(str(metadata), destination)])
+    expected = {"METADATA", "WHEEL", "sboms/jsonschema-py.cyclonedx.json"}
+    assert {Path(path).relative_to(metadata).as_posix() for path, _dest in selected} == expected
+    frozen = tmp_path / "frozen"
+    for path, directory in selected:
+        target = frozen / directory / Path(path).name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(Path(path).read_bytes())
+    distributions = list(importlib.metadata.distributions(path=[str(frozen)]))
+    assert [(item.metadata["Name"], item.version) for item in distributions] == [("jsonschema-rs", "0.58.4")]
+    assert not any(b"synthetic-private-build" in path.read_bytes() for path in frozen.rglob("*") if path.is_file())
+    for name in expected:
+        path = metadata / name
+        original = path.read_bytes()
+        path.unlink()
+        with pytest.raises(ValueError, match="metadata file is absent"):
+            atlas_bundle.package_metadata_datas(lambda _name: [(str(metadata), destination)])
+        path.write_bytes(original)
+    with pytest.raises(ValueError, match="metadata version differs"):
+        atlas_bundle.package_metadata_datas(lambda _name: [(str(metadata), "jsonschema_rs-0.58.3.dist-info")])
+
+
+def test_validator_metadata_filter_also_closes_upstream_hook_collection():
+    original = []
+    kept = []
+    for directory in ("jsonschema-4.26.0.dist-info", "jsonschema_rs-0.58.4.dist-info"):
+        for name in ("METADATA", "WHEEL", "licenses/COPYING", "sboms/jsonschema-py.cyclonedx.json"):
+            row = (directory + "/" + name, "installed/" + name, "DATA")
+            original.append(row)
+            kept.append(row)
+        for name in ("direct_url.json", "INSTALLER", "REQUESTED", "RECORD"):
+            original.append((directory + "\\" + name, "private-installation", "DATA"))
+    unrelated = ("other.dist-info/direct_url.json", "unrelated-owner", "DATA")
+    original.append(unrelated)
+    kept.append(unrelated)
+    assert atlas_bundle.reviewed_validator_metadata_toc(original) == kept
+    assert len(original) == len(kept) + 8  # The source TOC itself is not mutated.
+    spec = ast.parse((ROOT / "portable/atlas.spec").read_text(encoding="utf-8"))
+    assignments = [node for node in ast.walk(spec) if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Attribute) and target.attr == "datas"
+                           for target in node.targets)]
+    assert any(isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
+               and node.value.func.id == "reviewed_validator_metadata_toc" for node in assignments)
 
 
 def test_tracked_sources_exist_on_a_checkout():
@@ -417,6 +501,33 @@ def test_selftest_requires_a_ready_scope_build_in_a_frozen_bundle(monkeypatch, t
     assert serve._scope_build_required() is True
     monkeypatch.setattr(sys, "frozen", False, raising=False)
     assert serve._scope_build_required() is False
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_frozen_selftest_exercises_reviewed_jsonschema_loader(monkeypatch, tmp_path, capsys, available):
+    from webapp.backend import ui_projection_api
+    from portable import network_boundary
+
+    serve = _serve()
+    monkeypatch.setattr(serve, "_frozen", lambda: True)
+    monkeypatch.setattr(network_boundary, "installed", lambda: True)
+    monkeypatch.setattr(network_boundary, "live_network_allowed", lambda: False)
+    monkeypatch.setattr(network_boundary, "offline_probe", lambda: True)
+    calls = []
+    def load():
+        calls.append("actual guarded loader")
+        if not available:
+            raise RuntimeError("reviewed metadata or interface unavailable")
+        return object
+    monkeypatch.setattr(ui_projection_api, "_reviewed_legacy_resolver_type", load)
+    hub = tmp_path / "hub"
+    _write_scope_hub_build(hub)
+    rc, _lines, output = _selftest(serve, capsys, tmp_path / "run", scope_dist=hub)
+    assert calls == ["actual guarded loader"]
+    marker = "[ ok ]" if available else "[FAIL]"
+    assert f"{marker} ui-projection-legacy-resolver" in output
+    if not available:
+        assert rc == 1
 
 
 def test_selftest_refuses_a_present_scope_build_it_would_not_serve(tmp_path, capsys):
