@@ -368,6 +368,21 @@ checks pass; independent decoy/missing/duplicate-owner probes also pass. The quo
 runner failure and the intermediate 32/eight result remain preserved. New-head hosted
 CI must verify both corrections; no previous failed run is relabeled.
 
+### Owner-directed W6 prerequisite and runner selection
+
+The owner now requires W6 before completing W2d, then main merged into #586 before
+new CI/measurement and a green-only merge. W5/#582 and W8/#587 remain with their
+owning session. The reviewed construction correction is retained locally at
+`bce1d47a`; its publication scans passed, but it was not pushed before this decision.
+
+The measurement job now selects only `windows-latest` through a fixed, single-value
+`matrix.os`. This is the existing runner-policy test's supported selector form;
+neither the test nor any production guard is changed. The exact runner-policy test
+and all eight installed-runtime mutation cases pass. An initial direct-literal
+`windows-latest` attempt failed that literal allowlist, and a broader selection also
+hit the existing one-second smoke-start/output assertion; those results are retained
+and no full rerun pass is inferred. No new measurement is dispatched before W6.
+
 ## Closing evidence still required
 
 - Required hosted repository, distribution, reference and portable checks.
