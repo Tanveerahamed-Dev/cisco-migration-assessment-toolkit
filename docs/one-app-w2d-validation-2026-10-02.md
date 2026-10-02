@@ -383,6 +383,22 @@ and all eight installed-runtime mutation cases pass. An initial direct-literal
 hit the existing one-second smoke-start/output assertion; those results are retained
 and no full rerun pass is inferred. No new measurement is dispatched before W6.
 
+### W6 merged and main integrated
+
+W6/#588 merged as `0577aaf5` after all 15 required checks passed on `1080bfa5`.
+The merged-main tree equals the tested tree. Its exact-source hosted reference
+build finalized 260,145,929 physical bytes above the former 260,046,848-byte
+aggregate quota, then passed all rendered and artifact-family/PDF receipts.
+The internal-reference fix preserves integrity/privacy/resource bounds and does
+not establish hosting eligibility.
+
+Current main is merged into this W2d branch. Only the board conflicted; its full
+handoff history is retained. The final reviewed API hash above is unchanged,
+as is the fixed GitHub-hosted `windows-latest` measurement selector. Earlier
+measurements retain their own source scope. Fresh privacy/history scans,
+publication, hosted sample/300-device measurement and all required CI still
+must close on the resulting head before the authorized merge.
+
 ## Closing evidence still required
 
 - Required hosted repository, distribution, reference and portable checks.
