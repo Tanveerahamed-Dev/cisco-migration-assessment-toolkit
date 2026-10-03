@@ -204,6 +204,69 @@ def _directory_alias(link: Path, target: Path) -> None:
         pytest.skip(f"directory junction creation unavailable: {result.stderr}")
 
 
+def test_native_package_custody_requires_metadata_extension_and_unchanged_upstream_sbom():
+    from portable.atlas_bundle import native_runtime_files
+
+    # Member digest validation joins these claims to physical bytes elsewhere. This check
+    # additionally refuses a reauthored manifest that omits/replaces required wheel evidence.
+    members = [{"path": "_internal/python312.dll"}]
+    for path, receipt in native_runtime_files().items():
+        members.append({"path": path, **(receipt or {})})
+    subject._validate_native_package_members(members)
+    for omitted in native_runtime_files():
+        changed = [row for row in members if row["path"] != omitted]
+        with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
+            subject._validate_native_package_members(changed)
+    for field, replacement in (("bytes", 245180), ("sha256", "0" * 64)):
+        changed = copy.deepcopy(members)
+        next(row for row in changed if row["path"].endswith(".cyclonedx.json"))[field] = replacement
+        with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
+            subject._validate_native_package_members(changed)
+    # A differently versioned metadata folder cannot satisfy the reviewed provider identity.
+    changed = [{**row, "path": row["path"].replace("0.58.4.dist-info", "0.58.3.dist-info")}
+               for row in members]
+    with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
+        subject._validate_native_package_members(changed)
+
+
+def test_real_python_manifest_cannot_omit_native_evidence_even_with_reauthored_totals(tmp_path):
+    repository = _repository(tmp_path)
+    bundle = _bundle(tmp_path)
+    source = subject.source_identity(repository)
+    old = subject.member_manifest(source, subject.collect_members(bundle))
+    (bundle / "_internal/python312.dll").write_bytes(_amd64_pe())
+    members = subject.collect_members(bundle)
+    with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
+        subject.member_manifest(source, members)
+    # Reauthoring every generic member/count/digest claim still cannot suppress native custody.
+    old["members"] = members
+    old["summary"].update(member_count=len(members), total_bytes=sum(row["bytes"] for row in members),
+                          member_set_digest=subject.digest_object(members))
+    with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
+        subject.validate_member_manifest(old)
+
+
+def test_native_package_mit_fallback_is_exact_and_does_not_claim_component_license_closure(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    fallback = subject._license_fallbacks(root)["pypi:jsonschema-rs@0.58.4"]
+    assert fallback["bytes"] == 1075
+    assert fallback["sha256"] == "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038"
+    assert "Permission is hereby granted" in fallback["content"]
+    assert "f864033d8ae481b5c96985a4ca6990e4375614ac" in fallback["source"]
+    assert "not individual Rust component license texts" in fallback["source_identity"]
+    assert "not independently verified linked components" in subject.NOTICES_INFERENCE_BOUNDARY
+    registry = {"schema": "atlas.portable-license-fallbacks/1", "entries": [{
+        "key": "pypi:jsonschema-rs@0.58.4", "license_file": "LICENSE",
+        "license_sha256": fallback["sha256"], "source": fallback["source"],
+        "source_identity": fallback["source_identity"],
+    }]}
+    (tmp_path / "portable").mkdir()
+    (tmp_path / "portable/third-party-license-fallbacks.json").write_text(json.dumps(registry))
+    (tmp_path / "LICENSE").write_bytes(fallback["content"].encode("utf-8") + b" ")
+    with pytest.raises(subject.PortableReleaseError, match="fallback hash differs"):
+        subject._license_fallbacks(tmp_path)
+
+
 class _Distribution:
     def __init__(
         self,
@@ -1195,7 +1258,10 @@ def test_self_authored_signing_or_qualification_promotion_claims_are_rejected(tm
 #: ids' declarations are the key sets their validators already enforced, moved out of line.
 _PINNED_SCHEMA_SHAPES = {
     "atlas.portable-member-manifest/1": "ccd122043a0f915da06b99677aabe903e8f15d3ce538bc19c05daaecbf651ea9",
-    "atlas.portable-toolchain-receipt/2": "59ee40f36c2dee91347e56e40d5f073d5ea845eed740d35e92910998afef2b60",
+    # /2 is introduced by the same change that added this guard (#582) and had not been published when #586's
+    # jsonschema-rs licence joined the toolchain material set, so it was pinned once more before release; no /2
+    # document exists with the earlier shape. After /2 ships, a moved fingerprint needs /3 like any other id.
+    "atlas.portable-toolchain-receipt/2": "0ce3a0c0a1244f58ae8d17c3011a493b5ecd728936edb898536d57eb43b1cd41",
     "atlas.portable-signing/1": "9d5fd0888866cff704b03b7e5189dee91fa9e8137c005dcee5606097673e6fc2",
     "atlas.portable-authenticode-verification/1": "037244250cd1a7c1c69ec2543f99ae306cc3b411aa2ef0cc4e33294bacbe8501",
     "atlas.portable-qualification/2": "7b93dc001ef903cd1f2bdc6bc19f7b1305d3276e015bff83456adc28f5f440f9",

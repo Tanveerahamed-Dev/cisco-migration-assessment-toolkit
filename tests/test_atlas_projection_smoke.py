@@ -40,8 +40,10 @@ def run_projection_smoke(monkeypatch, projection_responses, mutate=None):
         [{"snapshot": {"id": 7}}, {}],
         [raw, {"x-snapshot-sha256": hashlib.sha256(raw).hexdigest(), "x-snapshot-bytes": str(len(raw)),
                "x-snapshot-digest-form": "assesshub-store-blob", "cache-control": "no-store"}],
-        [{**context, "payload": overview}, {"cache-control": "no-store"}],
-        [{**context, "list": later}, {"cache-control": "no-store"}],
+        [{**context, "payload": overview}, {"cache-control": "no-store",
+                                            "x-atlas-native-validation": "jsonschema-rs/0.58.4"}],
+        [{**context, "list": later}, {"cache-control": "no-store",
+                                      "x-atlas-native-validation": "jsonschema-rs/0.58.4"}],
     ]
     if mutate:
         mutate(responses)
@@ -54,7 +56,7 @@ def run_projection_smoke(monkeypatch, projection_responses, mutate=None):
         result.headers = headers
         return result
     monkeypatch.setattr(build_atlas.urllib.request, "urlopen", request)
-    build_atlas._smoke_ui_projection("http://127.0.0.1:8479")
+    build_atlas._smoke_ui_projection("http://127.0.0.1:8479", "one-use-smoke-nonce")
     return calls
 
 
@@ -67,11 +69,21 @@ def test_projection_smoke_checks_exact_blob_and_owner_rows_on_two_pages(monkeypa
         ("http://127.0.0.1:8479/api/snapshots/7/ui-projection/overview/lists?pointer=/axes&offset=1&limit=1", "GET"),
     ]
     assert all(call[2]["Origin"] == "http://127.0.0.1:8479" for call in calls)
+    assert all(call[2]["X-atlas-native-smoke-nonce"] == "one-use-smoke-nonce" for call in calls)
+
+
+def test_projection_smoke_requires_nonce_before_any_request(monkeypatch):
+    def refuse(*_args, **_kwargs):
+        pytest.fail("missing nonce must fail before HTTP")
+    monkeypatch.setattr(build_atlas.urllib.request, "urlopen", refuse)
+    with pytest.raises(SystemExit, match="frozen UI projection smoke failed"):
+        build_atlas._smoke_ui_projection("http://127.0.0.1:8479", "")
 
 
 @pytest.mark.parametrize("mutation", [
     "raw_digest", "raw_bytes", "raw_form", "view_binding", "view_schema", "owner_value",
     "source_state", "source_metadata", "page_total", "page_items", "later_rows", "cache",
+    "native_missing_view", "native_missing_list", "native_wrong_version", "native_stock",
 ])
 def test_projection_smoke_refuses_drift(monkeypatch, projection_responses, mutation):
     def mutate(responses):
@@ -90,5 +102,9 @@ def test_projection_smoke_refuses_drift(monkeypatch, projection_responses, mutat
         elif mutation == "page_items": axes["page"]["items"] = []
         elif mutation == "later_rows": responses[3][0]["list"]["page"]["items"] = axes["page"]["items"]
         elif mutation == "cache": responses[2][1]["cache-control"] = "public"
+        elif mutation == "native_missing_view": responses[2][1].pop("x-atlas-native-validation")
+        elif mutation == "native_missing_list": responses[3][1].pop("x-atlas-native-validation")
+        elif mutation == "native_wrong_version": responses[2][1]["x-atlas-native-validation"] = "jsonschema-rs/0.58.3"
+        elif mutation == "native_stock": responses[2][1]["x-atlas-native-validation"] = "jsonschema/4.26.0"
     with pytest.raises(SystemExit, match="frozen UI projection smoke failed"):
         run_projection_smoke(monkeypatch, projection_responses, mutate)
