@@ -25,7 +25,7 @@ a gate).
 | # | Criterion | Evidence |
 |---|---|---|
 | B1 | No surface renders a `null`/absent value as a healthy, passing, or zero state. | Adversarial sweep report: every place a null reaches a renderer, and what it renders as. |
-| B2 | Every forwarding verdict carries a one-sentence **scope claim** and a **non-empty caveat list**. The scope names that RIBs exist for only 2 of 26 hosts. | `traceFlow` output for every `suggestedFlows()` entry. |
+| B2 | Every forwarding verdict carries a one-sentence **scope claim** and a **non-empty caveat list**. The scope names the hosts whose RIBs were collected and states that count against the topology's host total, read from the compiled coverage (`fabric.coverage.hostsWithRoutes` of the device count) — never a number fixed in the criterion or the code. | `traceFlow` output for every `suggestedFlows()` entry. |
 | B3 | A trace that traverses a host with no RIB returns **indeterminate**, never *delivered*. | Unit test, run output pasted. |
 | B4 | A trace whose source IP is in no observed subnet returns **out-of-scope**, and says so in words. | Unit test, run output pasted. |
 | B5 | An ACL match preceded by an **unevaluable** line (established / icmp-type / object-group) is reported as indeterminate, naming the line that blocked evaluation. | Unit test against the real `INET_RETURN` / `PROTECT_SERVERS` data. |

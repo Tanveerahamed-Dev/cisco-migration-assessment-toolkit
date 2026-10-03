@@ -1454,6 +1454,49 @@ describe("the blast radius is wired to the scene contract and the label layer", 
     },
   );
 
+  it.runIf(wide)(
+    wide
+      ? "never says a mark is shown while it lies under another label: a stage too small for them all names the hidden ones (A6)"
+      : "never says a mark is shown while it lies under another label: a stage too small for them all names the hidden ones (A6) [skipped: no cut point here strands more than 3 hosts]",
+    () => {
+    /* MEASURED (A6 refuter, 390x844): access10's and access12's STRANDED? marks lay fully under
+       access8's and access4's labels, and the note still read "core1 strands 9 … · all 9 marked". Here
+       the stage is 60 px tall and every stranded label is 150 x 16 on one point: it cannot hold them
+       all, and the note must say which it could not show rather than count them as marked. */
+    expect(cutPoint).toBeDefined();
+    const stranded = strandedBy(cutPoint!);
+    projectAll();
+    const idOf = (host: string): string => fabric.devices.find((x) => x.host === host)!.id;
+    for (const host of stranded) mock.projections.set(idOf(host), { x: 195, y: 40, visible: true });
+    const m = mount(<Fabric3D />);
+    const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]');
+    if (overlay === null) throw new Error("the label overlay did not render");
+    overlay.getBoundingClientRect = (): DOMRect =>
+      ({ left: 0, top: 0, right: 390, bottom: 60, width: 390, height: 60, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    for (const el of m.container.querySelectorAll<HTMLElement>(".fabric3d-label")) {
+      Object.defineProperty(el, "offsetWidth", { configurable: true, get: () => 150 });
+      Object.defineProperty(el, "offsetHeight", { configurable: true, get: () => 16 });
+    }
+    act(() => {
+      useInvestigation.getState().selectDevice(cutPoint!);
+    });
+    act(() => {
+      flushFrames(4);
+    });
+    const note = m.container.querySelector<HTMLElement>("[data-stranded-total]");
+    expect(note).not.toBeNull();
+    const shown = stranded.filter((h) => {
+      const el = m.container.querySelector<HTMLElement>(`[data-device="${idOf(h)}"]`)!;
+      return el.dataset["visible"] === "true" && el.dataset["covered"] !== "yes";
+    });
+    expect(shown.length, "the 60 px stage cannot hold every stranded label").toBeLessThan(stranded.length);
+    expect(note!.textContent, "a mark under another label is not a mark shown").not.toContain("all ");
+    expect(shown.length + Number(note!.dataset["strandedUnseen"]), "every stranded host is shown or named as not shown").toBe(stranded.length);
+    for (const h of stranded.filter((x) => !shown.includes(x))) expect(note!.textContent, `${h} is named, not just counted`).toContain(h);
+    m.unmount();
+    },
+  );
+
   it("marks the hosts a selected finding names, distinct from the device selection (A4)", () => {
     const finding = fabric.findings.find((f) => f.devices.length > 0)!;
     projectAll();
