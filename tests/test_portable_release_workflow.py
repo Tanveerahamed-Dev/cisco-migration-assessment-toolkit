@@ -147,6 +147,10 @@ def test_hash_lock_and_toolchain_contract_reconcile() -> None:
     frontend = release_contract._bundled_frontend_packages(ROOT)
     assert len(frontend) == release_contract.EXPECTED_BUNDLED_FRONTEND_COUNT
     assert release_contract.digest_object(frontend) == release_contract.EXPECTED_BUNDLED_FRONTEND_DIGEST
+    scope = release_contract._bundled_scope_frontend_packages(ROOT)
+    assert len(scope) == release_contract.EXPECTED_BUNDLED_SCOPE_FRONTEND_COUNT
+    assert release_contract.digest_object(scope) == (
+        release_contract.EXPECTED_BUNDLED_SCOPE_FRONTEND_DIGEST)
     assert f"pyinstaller=={contract['pyinstaller']} " in lock
     assert "setuptools==84.0.0 " in lock
     assert "cyclonedx-python-lib==11.12.0 " in lock
@@ -161,6 +165,58 @@ def test_hash_lock_and_toolchain_contract_reconcile() -> None:
     assert "jsonschema-specifications==2025.9.1 " in lock
     assert "--hash=sha256:" in lock
     assert "\r" not in lock
+
+
+def _npm_resolve(packages: dict, dependent: str, name: str) -> str | None:
+    """Node's resolution over a v3 lock: the nearest ``node_modules/<name>`` walking up from the
+    dependent's install path."""
+    base = dependent
+    while True:
+        candidate = f"{base}/node_modules/{name}" if base else f"node_modules/{name}"
+        if candidate in packages:
+            return candidate
+        if not base:
+            return None
+        head, sep, _tail = base.rpartition("/node_modules/")
+        base = head if sep else ""
+
+
+def test_scope_inventory_covers_the_real_production_closure_of_the_atlas_scope_lock() -> None:
+    """Requirement R-PB 3, against the real lock and an INDEPENDENT oracle: walk atlas-scope's
+    runtime dependency graph from its root `dependencies` (dependencies, optional dependencies and
+    required peers, resolved the way Node resolves them) and require every package reached to be in
+    the release inventory. Every inventoried package the walk does not reach must be one the lock
+    itself flags devOptional (disclosed over-inclusion of the same lock-derived rule the AssessHub
+    SPA uses), never an unexplained extra."""
+    lock = json.loads((ROOT / "atlas-scope" / "package-lock.json").read_text(encoding="utf-8"))
+    packages = lock["packages"]
+    root_dependencies = packages[""].get("dependencies", {})
+    assert {"three", "postprocessing", "react", "react-dom", "zustand"} <= set(root_dependencies)
+    reached: set[str] = set()
+    pending = [("", name) for name in root_dependencies]
+    while pending:
+        dependent, name = pending.pop()
+        resolved = _npm_resolve(packages, dependent, name)
+        assert resolved is not None, (dependent, name)
+        if resolved in reached:
+            continue
+        reached.add(resolved)
+        package = packages[resolved]
+        optional_peers = {peer for peer, meta in (package.get("peerDependenciesMeta") or {}).items()
+                          if meta.get("optional")}
+        for field in ("dependencies", "optionalDependencies", "peerDependencies"):
+            for child in package.get(field) or {}:
+                if field == "peerDependencies" and child in optional_peers:
+                    continue
+                if field == "optionalDependencies" and _npm_resolve(packages, resolved, child) is None:
+                    continue
+                pending.append((resolved, child))
+    inventory = {row["install_path"]: row for row in release_contract._bundled_scope_frontend_packages(ROOT)}
+    assert reached <= set(inventory), sorted(reached - set(inventory))
+    for install_path in set(inventory) - reached:
+        assert packages[install_path].get("devOptional") is True, install_path
+    for install_path in reached:
+        assert inventory[install_path]["version"] == packages[install_path]["version"]
 
 
 @pytest.mark.parametrize(
@@ -342,3 +398,64 @@ def test_signing_machinery_requires_explicit_identity_sha256_and_rfc3161() -> No
     ):
         assert token in verify
     assert "BEGIN PRIVATE KEY" not in sign + verify
+
+
+def _project_output(field: str) -> tuple[str, str]:
+    from portable import atlas_bundle
+
+    project = release_contract._NPM_INVENTORIES[field][0]
+    outputs = [output for output in atlas_bundle.BUILD_OUTPUTS
+               if output.rsplit("/", 1)[0] == project]
+    assert len(outputs) == 1, outputs
+    return project, outputs[0]
+
+
+@pytest.mark.parametrize("field", sorted(release_contract._NPM_INVENTORIES))
+def test_the_real_built_output_carries_bundler_runtime_packages_and_they_are_inventoried(
+        field: str, tmp_path: Path) -> None:
+    """W5-X5 against the REAL frontends: build each shipped output the way its npm script does
+    (into a scratch tree that mirrors the repository layout), then derive the shipped-package set
+    from a module-recording rebuild bound byte-for-byte to it. Vite's preload helper and Rolldown's
+    runtime are in BOTH real builds although both packages are dev-only; the derived set beyond the
+    production graph must be exactly the reviewed one (a new bundler-injected package must be
+    reviewed before a release, as a production lock change already is)."""
+    import shutil
+
+    project, output = _project_output(field)
+    project_root = ROOT.joinpath(*project.split("/"))
+    vite = project_root / "node_modules" / "vite" / "bin" / "vite.js"
+    node = shutil.which("node")
+    if node is None or not vite.is_file():
+        pytest.skip(f"{project}: node or its installed toolchain is absent (run npm ci there); the "
+                    "built-output proof needs the real bundler, and nothing else can stand in for it")
+    mirror = tmp_path / "mirror"
+    shipped = mirror.joinpath(*output.split("/"))
+    arguments = release_contract._vite_build_arguments(ROOT, output)
+    built = subprocess.run(
+        [node, str(vite), "build", *arguments, "--outDir", str(shipped), "--emptyOutDir",
+         "--logLevel", "error"],
+        cwd=project_root, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=900, check=False,
+    )
+    assert built.returncode == 0, built.stderr[-4000:]
+    attribution = release_contract._npm_build_attribution(
+        ROOT, field, build_root=mirror, required=True)
+    assert attribution["status"] == "built_module_graph_bound"
+    assert attribution["output"] == output
+    # every shipped file is accounted for by the graph: chunks by their modules, emitted assets
+    # (the HTML shell, stylesheets) by the files they were made from; none is attributed by default
+    assert attribution["files_without_modules"] == [], attribution["files_without_modules"]
+    names = {row["name"] for row in attribution["additional_rows"]}
+    assert {"vite", "rolldown"} <= names, attribution["additional_rows"]
+    virtual = {
+        module for package in attribution["packages"] for module in package["virtual_modules"]}
+    assert {"vite/preload-helper.js", "rolldown/runtime.js"} <= virtual, virtual
+    assert tuple(
+        f"{row['install_path']}@{row['version']}" for row in attribution["additional_rows"]
+    ) == release_contract.EXPECTED_BUILD_ONLY_NPM_PACKAGES[field]
+    # every production package whose modules ship is in the production graph already
+    production = {row["install_path"] for row in release_contract._npm_production_packages(ROOT, project)}
+    attributed = {package["install_path"] for package in attribution["packages"]}
+    assert attributed - production == {row["install_path"] for row in attribution["additional_rows"]}
+    # the derivation never records a path outside the project (no home directory in a receipt)
+    assert str(ROOT).replace("\\", "/").casefold() not in json.dumps(attribution).casefold()

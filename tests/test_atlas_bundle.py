@@ -4,11 +4,14 @@ Pins the frozen bundle's contract WITHOUT running PyInstaller: the assets --self
 all be in datas, the dynamic imports static analysis cannot see must all be hidden-imports, and
 the dist destination must be the exact directory the entry module probes when frozen."""
 
+import io
+import json
 import os
 import ast
 import re
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -414,6 +417,9 @@ def _write_scope_hub_build(dist: Path, *, with_maps: bool = True) -> None:
         b'<meta name="atlas-scope-snapshot-source" content="assesshub-api-runtime">'
         b'<script type="module" crossorigin src="/scope/assets/index-a1.js"></script>'
         b'<link rel="stylesheet" crossorigin href="/scope/assets/index-b2.css">'
+        # An icon in the head, as the real shell carries: without one the browser asks for the
+        # origin's /favicon.ico, outside /scope, and AssessHub refuses the build (RQF-V1-4).
+        b'<link rel="icon" href="data:image/svg+xml,%3Csvg%3E%3C/svg%3E">'
         b'</head><body><div id="root"></div></body></html>')
 
 
@@ -468,6 +474,9 @@ def test_the_build_refuses_a_bundle_without_the_scope_hub_build(tmp_path):
     assert str(hub / "index.html") in atlas_bundle.missing_data_sources(tmp_path)
     spec = (ROOT / "portable" / "atlas.spec").read_text(encoding="utf-8")
     assert "npm run build:hub" in spec  # the refusal names the command that fixes it
+    # ...one command per line: the user pastes it into Windows PowerShell 5.1, where `&&` is a
+    # parser error (build_atlas.build() refuses the same way)
+    assert "&&" not in spec
 
 
 def _selftest(serve, capsys, tmp_path, *, scope_dist):
@@ -577,3 +586,442 @@ def test_serve_passes_the_resolved_scope_build_to_the_app(monkeypatch, tmp_path)
                      "--dist", str(tmp_path / "spa")])
     assert rc == 1
     assert seen["scope_dist_dir"] == str(tmp_path / "bundled-scope")
+
+
+# ── R-PB: the build refuses a missing or non-runtime hub build with the exact commands ──────────
+# The commands a person runs from the repository root to produce the hub build, one per line
+# (they are pasted into Windows PowerShell 5.1, where `&&` is a parser error).
+_SCOPE_HUB_COMMANDS = ("cd atlas-scope", "npm ci", "npm run build:hub")
+
+
+def _refusal_names_the_scope_commands(message: str) -> bool:
+    lines = [line.strip() for line in message.splitlines()]
+    positions = [lines.index(command) if command in lines else -1 for command in _SCOPE_HUB_COMMANDS]
+    return -1 not in positions and positions == sorted(positions)
+
+
+def _refused_build(monkeypatch, root: Path) -> str:
+    """Run build_atlas.build() against ``root`` and return its refusal. PyInstaller must never be
+    reached: a refusal is the only acceptable outcome for these roots."""
+    from portable import build_atlas
+
+    def no_pyinstaller(*_args, **_kwargs):
+        raise AssertionError("build() reached PyInstaller instead of refusing")
+
+    monkeypatch.setattr(build_atlas, "ROOT", root)
+    monkeypatch.setattr(build_atlas, "DIST", root / "portable" / "dist" / "Atlas")
+    monkeypatch.setattr(build_atlas.subprocess, "run", no_pyinstaller)
+    with pytest.raises(SystemExit) as refused:
+        build_atlas.build()
+    return str(refused.value)
+
+
+def _tracked_sources(root: Path) -> None:
+    """Every tracked bundle source present under ``root`` (stand-ins), and the built SPA, so that
+    only the Atlas Scope hub build decides the outcome."""
+    for source in atlas_bundle.missing_data_sources(root):
+        path = Path(source)
+        if path.is_relative_to(root / atlas_bundle.SCOPE_DIST_SOURCE):
+            continue
+        if path == root / "webapp" / "frontend" / "dist":
+            (path / "assets").mkdir(parents=True, exist_ok=True)
+            (path / "index.html").write_bytes(b'<!doctype html><div id="root"></div>')
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"stand-in")
+
+
+def test_build_refuses_an_absent_scope_hub_build_naming_the_exact_commands(monkeypatch, tmp_path):
+    """Requirement R-PB 1: no atlas-scope/dist-hub -> the refusal says exactly what to run."""
+    _tracked_sources(tmp_path)
+    assert atlas_bundle.missing_data_sources(tmp_path) == [
+        str(tmp_path / atlas_bundle.SCOPE_DIST_SOURCE)]
+    message = _refused_build(monkeypatch, tmp_path)
+    assert _refusal_names_the_scope_commands(message), message
+    assert atlas_bundle.SCOPE_DIST_SOURCE in message
+
+
+@pytest.mark.parametrize("variant", ["standalone-root-mounted", "no-runtime-source-meta"])
+def test_build_refuses_a_present_scope_build_that_is_not_a_runtime_hub_build(
+        monkeypatch, tmp_path, variant):
+    """Requirement R-PB 1: a dist-hub that exists but is not a runtime-source hub build (the
+    standalone root-mounted shape, or a shell without the runtime-snapshot declaration) is refused
+    BEFORE PyInstaller, judged by the same index AssessHub serves /scope from, and the refusal names
+    the same commands. Presence alone used to pass the build's pre-check."""
+    _tracked_sources(tmp_path)
+    hub = tmp_path / atlas_bundle.SCOPE_DIST_SOURCE
+    _write_scope_hub_build(hub, with_maps=False)
+    shell = (hub / "index.html").read_bytes()
+    if variant == "standalone-root-mounted":
+        shell = shell.replace(b"/scope/", b"/")
+    else:
+        shell = shell.replace(
+            b'<meta name="atlas-scope-snapshot-source" content="assesshub-api-runtime">', b"")
+    (hub / "index.html").write_bytes(shell)
+    assert atlas_bundle.missing_data_sources(tmp_path) == []  # present: presence is not enough
+    message = _refused_build(monkeypatch, tmp_path)
+    assert _refusal_names_the_scope_commands(message), message
+    assert "invalid_build" in message
+
+
+def test_every_bundle_build_output_has_the_commands_that_produce_it():
+    """The refusal's commands are keyed by the bundle manifest's own BUILD_OUTPUTS, so a new build
+    output cannot be refused without telling the person how to make it."""
+    from portable import build_atlas
+
+    assert set(build_atlas.BUILD_OUTPUT_COMMANDS) == set(atlas_bundle.BUILD_OUTPUTS)
+    assert build_atlas.BUILD_OUTPUT_COMMANDS[atlas_bundle.SCOPE_DIST_SOURCE] == _SCOPE_HUB_COMMANDS
+    for commands in build_atlas.BUILD_OUTPUT_COMMANDS.values():
+        assert not any("&&" in command for command in commands)  # PowerShell 5.1 parser error
+    # the npm script the refusal names is the one that writes the hub build
+    scripts = json.loads((ROOT / "atlas-scope" / "package.json").read_text(encoding="utf-8"))["scripts"]
+    assert "--mode hub" in scripts["build:hub"]
+
+
+def test_build_passes_the_scope_precheck_with_a_runtime_hub_build(monkeypatch, tmp_path):
+    """The counter-case: a servable hub build is not refused by the pre-check (the build then
+    proceeds to PyInstaller, which the harness stops)."""
+    from portable import build_atlas
+
+    _tracked_sources(tmp_path)
+    _write_scope_hub_build(tmp_path / atlas_bundle.SCOPE_DIST_SOURCE, with_maps=False)
+    reached = []
+
+    def stop_at_pyinstaller(cmd, **_kwargs):
+        reached.append(cmd)
+        raise SystemExit("stopped at PyInstaller")
+
+    monkeypatch.setattr(build_atlas, "ROOT", tmp_path)
+    monkeypatch.setattr(build_atlas, "DIST", tmp_path / "portable" / "dist" / "Atlas")
+    monkeypatch.setattr(build_atlas.subprocess, "run", stop_at_pyinstaller)
+    with pytest.raises(SystemExit, match="stopped at PyInstaller"):
+        build_atlas.build()
+    assert reached and "PyInstaller" in reached[0]
+
+
+# ── R-PB: the frozen smoke requires the /scope shell and the atlas-scope-dist selftest line ─────
+_SCOPE_SELFTEST_LINE = "  [ ok ] atlas-scope-dist"
+_NETWORK_SELFTEST_LINE = "  [ ok ] network-boundary [offline-loopback-only]"
+_LEGACY_RESOLVER_SELFTEST_LINE = "  [ ok ] ui-projection-legacy-resolver"
+
+
+def test_the_smoke_selftest_line_is_the_line_serve_really_prints():
+    """The smoke looks for the exact line serve.run_selftest prints for the /scope check; its name
+    is owned by serve.py, so a rename there must fail here rather than leave the smoke looking for
+    a line that can never appear (or that another check could satisfy)."""
+    from portable import build_atlas
+
+    serve_src = (ROOT / "webapp" / "backend" / "serve.py").read_text(encoding="utf-8")
+    names = set(re.findall(r'check\(\s*"(atlas-scope[a-z-]*)"', serve_src))
+    assert names == {"atlas-scope-dist"}, names
+    assert 'print(f"  [ ok ] {name}"' in serve_src
+    assert _SCOPE_SELFTEST_LINE == "  [ ok ] " + names.pop()
+    resolver = set(re.findall(r'check\(\s*"(ui-projection-legacy-resolver)"', serve_src))
+    assert resolver == {"ui-projection-legacy-resolver"}, resolver
+    assert _LEGACY_RESOLVER_SELFTEST_LINE == "  [ ok ] " + resolver.pop()
+    assert set(build_atlas.REQUIRED_SELFTEST_LINES) == {
+        _SCOPE_SELFTEST_LINE, _NETWORK_SELFTEST_LINE, _LEGACY_RESOLVER_SELFTEST_LINE}
+
+
+class _FakeResponse:
+    def __init__(self, status: int, body: bytes, content_type: str):
+        self.status = status
+        self._body = body
+        self.headers = {"Content-Type": content_type}
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._body if size is None or size < 0 else self._body[:size]
+        self._body = self._body[len(chunk):]
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def _amd64_pe() -> bytes:
+    value = bytearray(512)
+    value[:2] = b"MZ"
+    value[0x3C:0x40] = (0x80).to_bytes(4, "little")
+    value[0x80:0x84] = b"PE\0\0"
+    value[0x84:0x86] = (0x8664).to_bytes(2, "little")
+    return bytes(value)
+
+
+class _SmokeHarness:
+    """Drives build_atlas.smoke() end to end against a fake one-folder bundle: every child process
+    and every HTTP answer is scripted, so each test changes exactly one observable and the smoke's
+    own decision is what is under test (nothing about PyInstaller or a real server)."""
+
+    def __init__(self, tmp_path: Path, monkeypatch):
+        from portable import build_atlas
+        from portable.windows_version_info import version_expectations
+
+        self.build_atlas = build_atlas
+        self.selftest_lines = [
+            "Atlas - selftest - release test",
+            "  [ ok ] frontend-dist",
+            _SCOPE_SELFTEST_LINE,
+            _NETWORK_SELFTEST_LINE,
+            _LEGACY_RESOLVER_SELFTEST_LINE,
+            "SELFTEST: PASS (4/4 checks ok)",
+        ]
+        self.scope_answer = None  # None -> 200 with the served bundle's own shell bytes
+        self.requests: list[str] = []
+        self.server_env: dict = {}
+        self.server_cwd = None
+        self.dist = tmp_path / "dist" / "Atlas"
+        internal = self.dist / "_internal"
+        (internal / atlas_bundle.DIST_DEST).mkdir(parents=True)
+        (internal / atlas_bundle.DIST_DEST / "index.html").write_bytes(b'<div id="root"></div>')
+        _write_scope_hub_build(internal / atlas_bundle.SCOPE_DIST_DEST, with_maps=False)
+        (self.dist / "Atlas.exe").write_bytes(_amd64_pe())
+        for src in atlas_bundle.root_files(ROOT):
+            (self.dist / Path(src).name).write_bytes(Path(src).read_bytes())
+        expected = build_atlas.expected_release()
+        harness = self
+
+        def fake_run(cmd, timeout, *, cwd, **_kwargs):
+            data = Path(cwd) / "data"
+            if cmd[1] == "--selftest":
+                data.mkdir(exist_ok=True)
+                return subprocess.CompletedProcess(cmd, 0, "\n".join(harness.selftest_lines), "")
+            if cmd[1] == "--version":
+                return subprocess.CompletedProcess(
+                    cmd, 0, f"Atlas - release {expected} - engine schema test", "")
+            if cmd[1] == "--run-engine":
+                from cisco_toolkit import __version__ as schema
+
+                data.mkdir(exist_ok=True)
+                (data / f"cisco_migration_autofill_v{schema.replace('.', '_')}.log").write_bytes(b"")
+                return subprocess.CompletedProcess(cmd, 0, "usage: cisco-assess [-h]", "")
+            raise AssertionError(f"unexpected child: {cmd!r}")
+
+        class FakeServer:
+            def __init__(self, _cmd, *, env, cwd, **_kwargs):
+                harness.server_env = env
+                harness.server_cwd = Path(cwd)
+                self.returncode = None
+                self.stdout = None
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = 0
+
+            def kill(self):
+                self.returncode = -9
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        def fake_urlopen(request, timeout=None):
+            url = request if isinstance(request, str) else request.full_url
+            path = "/" + url.split("://", 1)[1].split("/", 1)[1]
+            harness.requests.append(path)
+            if path == "/api/health":
+                nonce = harness.server_env["ASSESSHUB_INSTANCE_NONCE"]
+                return _FakeResponse(200, json.dumps({"instance_nonce": nonce}).encode(),
+                                     "application/json")
+            if path == "/api/meta":
+                body = {"app": {"name": "Atlas", "title": "Atlas", "release": expected}}
+                return _FakeResponse(200, json.dumps(body).encode(), "application/json")
+            if path == "/":
+                return _FakeResponse(200, b'<!doctype html><div id="root"></div><script></script>',
+                                     "text/html; charset=utf-8")
+            if path == "/scope/":
+                if harness.scope_answer is None:
+                    shell = (harness.server_cwd / "_internal" / atlas_bundle.SCOPE_DIST_DEST
+                             / "index.html").read_bytes()
+                    return _FakeResponse(200, shell, "text/html; charset=utf-8")
+                status, body, content_type = harness.scope_answer
+                if status >= 400:
+                    raise urllib.error.HTTPError(url, status, "refused", {}, io.BytesIO(body))
+                return _FakeResponse(status, body, content_type)
+            raise urllib.error.HTTPError(url, 404, "Not found", {}, io.BytesIO(b""))
+
+        # The frozen UI-projection step owns its transcript and its refusals in
+        # tests/test_atlas_projection_smoke.py. Here it is recorded in request order, so these tests
+        # still prove smoke() runs it once against the served base while each changes one /scope fact.
+        self.projection_bases: list[str] = []
+        self.projection_nonces: list[str] = []
+
+        def fake_projection(base, instance_nonce):
+            harness.projection_bases.append(base)
+            harness.projection_nonces.append(instance_nonce)
+            harness.requests.append("<ui-projection>")
+
+        monkeypatch.setattr(build_atlas, "_smoke_ui_projection", fake_projection)
+        monkeypatch.setattr(build_atlas, "_run", fake_run)
+        monkeypatch.setattr(build_atlas, "_windows_version_info",
+                            lambda *_a, **_k: version_expectations(ROOT))
+        monkeypatch.setattr(build_atlas.subprocess, "Popen", FakeServer)
+        monkeypatch.setattr(build_atlas.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(build_atlas.time, "sleep", lambda _seconds: None)
+
+    def run(self):
+        return self.build_atlas.smoke(8479, dist=self.dist, environment=dict(os.environ))
+
+
+def test_the_smoke_harness_passes_a_bundle_that_serves_its_scope_view(tmp_path, monkeypatch):
+    """The counter-case every refusal below is measured against: the scripted bundle passes, and
+    the smoke did request /scope/ (a smoke that never asks for it cannot be what passes here)."""
+    harness = _SmokeHarness(tmp_path, monkeypatch)
+    result = harness.run()
+    assert "/scope/" in harness.requests, harness.requests
+    assert harness.projection_bases == ["http://127.0.0.1:8479"], harness.projection_bases
+    # the step is handed the spawned child's own one-use nonce, not some other value
+    assert harness.projection_nonces == [harness.server_env["ASSESSHUB_INSTANCE_NONCE"]], harness.projection_nonces
+    assert result.get("loopback_http_scope_runtime_shell") == "pass", result
+
+
+def test_the_smoke_refuses_a_selftest_without_the_atlas_scope_dist_ok_line(tmp_path, monkeypatch):
+    """Requirement R-PB 2: `[ ok ] atlas-scope-dist` is required. A frozen bundle whose selftest
+    reports the view as not applicable (the checkout wording) exits 0 -- the smoke must not pass."""
+    harness = _SmokeHarness(tmp_path, monkeypatch)
+    harness.selftest_lines[2] = ("  [ -- ] atlas-scope-dist - not built in this checkout; /scope "
+                                 "answers 'not built'")
+    with pytest.raises(SystemExit, match="atlas-scope-dist"):
+        harness.run()
+
+
+def test_the_smoke_requires_the_scope_line_exactly_not_a_lookalike(tmp_path, monkeypatch):
+    harness = _SmokeHarness(tmp_path, monkeypatch)
+    harness.selftest_lines[2] = "  [ ok ] atlas-scope-dist-legacy"
+    with pytest.raises(SystemExit, match="atlas-scope-dist"):
+        harness.run()
+
+
+def test_the_smoke_still_requires_the_offline_network_boundary_line(tmp_path, monkeypatch):
+    harness = _SmokeHarness(tmp_path, monkeypatch)
+    harness.selftest_lines[3] = "  [ ok ] network-boundary [explicit-live]"
+    with pytest.raises(SystemExit, match="network"):
+        harness.run()
+
+
+def test_the_smoke_requires_the_reviewed_jsonschema_interface_line(tmp_path, monkeypatch):
+    """A frozen bundle whose selftest cannot prove the reviewed jsonschema private interface the UI projection
+    relies on must not pass; the refusal names that exact line, not just any missing line."""
+    harness = _SmokeHarness(tmp_path, monkeypatch)
+    harness.selftest_lines[4] = "  [FAIL] ui-projection-legacy-resolver"
+    with pytest.raises(SystemExit, match="ui-projection-legacy-resolver"):
+        harness.run()
+
+
+@pytest.mark.parametrize("answer", [
+    (503, b'{"detail": "Atlas Scope is not built in this installation."}', "application/json"),
+    (404, b"Not found", "text/plain"),
+])
+def test_the_smoke_refuses_a_scope_mount_that_does_not_answer_200(tmp_path, monkeypatch, answer):
+    """Requirement R-PB 2: GET /scope/ must answer 200 on the frozen bundle."""
+    harness = _SmokeHarness(tmp_path, monkeypatch)
+    harness.scope_answer = answer
+    with pytest.raises(SystemExit, match="/scope/"):
+        harness.run()
+
+
+def test_the_smoke_refuses_a_scope_200_without_the_runtime_source_meta(tmp_path, monkeypatch):
+    """Requirement R-PB 2: a 200 that is not the runtime-source hub shell (here AssessHub's own SPA
+    shell, what a fall-through would serve) is refused."""
+    harness = _SmokeHarness(tmp_path, monkeypatch)
+    harness.scope_answer = (200, b'<!doctype html><html><head><script type="module" '
+                                 b'src="/assets/app.js"></script></head><body><div id="root">'
+                                 b'</div></body></html>', "text/html; charset=utf-8")
+    with pytest.raises(SystemExit, match="runtime"):
+        harness.run()
+
+
+def test_the_scope_shell_gap_names_the_readers_own_reason_not_a_fixed_one():
+    """VQF-2: AssessHub's shell reader refuses for more than one reason (RQF-V2-1: a raw-text element
+    holding markup or never ending, a shell that is not UTF-8, the runtime source not declared
+    exactly once). The smoke's refusal names THAT reason -- the reader's own words -- so a shell that
+    carries the runtime-source meta is never reported as lacking it."""
+    from portable.build_atlas import scope_shell_gap
+    from webapp.backend import app as app_module
+
+    meta = (f'<meta name="{app_module._SCOPE_RUNTIME_SOURCE_META}" '
+            f'content="{app_module._SCOPE_RUNTIME_SOURCE_VALUE}">')
+    shells = {
+        "markup in a title": f"<!doctype html><html><head>{meta}<title><b>x</b></title></head><body></body></html>".encode(),
+        "a title that never ends": f"<!doctype html><html><head>{meta}<title>x</head><body></body></html>".encode(),
+        "not UTF-8": b"\xff\xfe" + meta.encode(),
+        "no runtime source": b"<!doctype html><html><head><title>x</title></head><body></body></html>",
+        "the runtime source twice": f"<!doctype html><html><head>{meta}{meta}<title>x</title></head><body></body></html>".encode(),
+    }
+    for case, body in shells.items():
+        reason = app_module._scope_shell_tokens(body)
+        assert isinstance(reason, str), case  # the reader refuses every one of these
+        gap = scope_shell_gap(200, "text/html; charset=utf-8", body, b"<bundled/>")
+        assert gap.startswith("GET /scope/ did not serve a runtime-source hub shell"), (case, gap)
+        assert reason in gap, (case, gap)
+    # the meta-carrying refusals no longer claim the meta is missing
+    for case in ("markup in a title", "a title that never ends", "not UTF-8"):
+        gap = scope_shell_gap(200, "text/html", shells[case], b"<bundled/>")
+        assert "finds no single <meta" not in gap, (case, gap)
+        assert "does not declare the runtime snapshot source" not in gap, (case, gap)
+
+
+def test_the_smoke_refuses_a_scope_shell_that_is_not_the_bundled_member(tmp_path, monkeypatch):
+    """A runtime-source shell that is not the byte-exact bundled atlas_scope_dist/index.html (for
+    example a build served from somewhere else) is not proof that the stick serves its own view."""
+    harness = _SmokeHarness(tmp_path, monkeypatch)
+    other = tmp_path / "other-hub"
+    _write_scope_hub_build(other, with_maps=False)
+    harness.scope_answer = (200, (other / "index.html").read_bytes() + b"\n<!-- elsewhere -->",
+                            "text/html; charset=utf-8")
+    with pytest.raises(SystemExit, match="bundled"):
+        harness.run()
+
+
+def test_the_smoke_scope_proof_is_a_required_release_qualification_check():
+    """The /scope proof is part of what release qualification requires, so a smoke that stops
+    reporting it cannot qualify a release (release_contract validates the exact check set)."""
+    from portable import release_contract
+
+    assert "loopback_http_scope_runtime_shell" in release_contract.REQUIRED_AUTOMATED_CHECKS
+
+
+# ── S-PB: the build's tracked-asset refusal branch, the /scope Content-Type proof, smoke evidence ──
+def test_build_refuses_a_missing_tracked_asset_beside_a_valid_scope_hub_build(monkeypatch, tmp_path):
+    """PB-V1-H: with every build output valid, a TRACKED bundle asset that is absent (here the
+    lifecycle fixture) still refuses the build before PyInstaller, naming the path. The refusal for
+    tracked assets lives in its own branch of build_refusal; a valid hub build must not mask it."""
+    _tracked_sources(tmp_path)
+    _write_scope_hub_build(tmp_path / atlas_bundle.SCOPE_DIST_SOURCE, with_maps=False)
+    victim = tmp_path / "cisco_toolkit" / "data" / "eol-bulletins.json"
+    assert victim.is_file()
+    victim.unlink()
+    assert atlas_bundle.missing_data_sources(tmp_path) == [str(victim)]
+    message = _refused_build(monkeypatch, tmp_path)
+    assert "tracked bundle assets are missing" in message, message
+    # named as the checkout path a person can act on, one per line (not a Python list repr whose
+    # doubled backslashes nobody can paste)
+    assert "cisco_toolkit/data/eol-bulletins.json" in [line.strip() for line in message.splitlines()], message
+    assert "atlas-scope" not in message  # the valid hub build is not what is refused
+
+
+def test_the_smoke_refuses_a_scope_200_that_is_not_an_html_document(tmp_path, monkeypatch):
+    """PB-V1-B: the byte-exact bundled runtime shell served as text/plain is not the stick serving
+    its own view (a browser would not render it). Every other part of the proof holds here, so only
+    the Content-Type check can refuse it."""
+    harness = _SmokeHarness(tmp_path, monkeypatch)
+    shell = (harness.dist / "_internal" / atlas_bundle.SCOPE_DIST_DEST / "index.html").read_bytes()
+    harness.scope_answer = (200, shell, "text/plain; charset=utf-8")
+    with pytest.raises(SystemExit, match="not an HTML document"):
+        harness.run()
+
+
+def test_every_smoke_check_is_an_evidence_free_release_qualification_check(tmp_path, monkeypatch):
+    """PB-V1-Q, from the producer's side: every check the smoke REPORTS (its real return value, not
+    a list typed here) is a required qualification check that the release contract declares
+    evidence-free, so a smoke row carrying unowned evidence is refused for every smoke check,
+    including the /scope proof added after the original set."""
+    from portable import release_contract
+
+    result = _SmokeHarness(tmp_path, monkeypatch).run()
+    assert set(result) <= release_contract.REQUIRED_AUTOMATED_CHECKS, result
+    assert {name: release_contract.AUTOMATED_CHECK_EVIDENCE[name] for name in result} == {
+        name: None for name in result}

@@ -44,5 +44,34 @@
     "not_collected",
     "not_running",
     "partial"
-  ]
+  ],
+  "severities": [
+    "Critical",
+    "High",
+    "Medium",
+    "Low",
+    "Info"
+  ],
+  "health_bands": {
+    "scored": [
+      "Excellent",
+      "Good",
+      "Fair",
+      "Poor",
+      "Critical"
+    ],
+    "not_measured": "Insufficient Data"
+  },
+  "node_kinds": {
+    "collected": "device",
+    "classified": [
+      "switch",
+      "router",
+      "firewall",
+      "ap",
+      "phone",
+      "endpoint",
+      "unknown"
+    ]
+  }
 }

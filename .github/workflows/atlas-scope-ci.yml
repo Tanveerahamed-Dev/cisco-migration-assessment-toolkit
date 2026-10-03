@@ -5,8 +5,9 @@ name: atlas-scope-ci
 # It is not a required check. Whether AssessHub SERVES the hub build it produces (the /scope
 # privacy-by-construction refusals, the markup read the way Chromium reads it, the one-door link) is
 # pinned by webapp/tests/test_scope_mount.py, which this job ALSO runs against the hub build it just
-# made: webapp-ci's path filter and classifier do not select a change confined to atlas-scope/**, so
-# without this step such a change would never meet the check that it is still servable (P3F-V2-2).
+# made (P3F-V2-2). webapp-ci's push filter and classifier now select atlas-scope/** as well, and its
+# backend leg also builds the hub and runs these pins; this job keeps its own run so the app's suite and
+# the proof that its fresh hub build is still servable always meet in one job.
 # That step sets ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN=1, ATLAS_SCOPE_REQUIRE_HUB_BUILD=1 and
 # ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE=1, so a missing prerequisite (node, the hub build, the oracle's
 # Chromium) fails instead of skipping.

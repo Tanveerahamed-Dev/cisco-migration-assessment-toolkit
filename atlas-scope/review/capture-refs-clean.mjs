@@ -51,6 +51,11 @@
  *   8. Control frames ARE flagged (a detector that passes its control is broken).
  *   9. Every frame whose identity marks were not measured in its DOM (identityRects) declares its identity slots — logo glyph, workspace chip, user menu — as
  *      geometry measured on that frame, or an empty list with a reason; blind-pair.mjs masks them.
+ *  10. Every paired reference DECLARES its task's result (`taskState`), legible in its pixels and on no
+ *      frame of the same product whose task kind cannot show the task. That contrast is a SANITY
+ *      screen, reported UNCALIBRATED (contrastCalibration): it does not prove the text is content
+ *      rather than chrome; the task state rests on the declared, reviewed text (O70 R2-5, QG3-3).
+ *  11. No identity glyph beside a masked identity word escapes the masks (O70 R2-6).
  *
  * Output lives under review/shots/refs-clean/, which .gitignore excludes (review/shots/): vendor
  * demo and documentation imagery is NEVER tracked and never goes into anything published.
@@ -246,6 +251,10 @@ const FORWARD_IDENTITY = ["Forward", "Forward AI", "Forward Networks", "Forward 
 const FORWARD_RECORDED_HEADER_SLOTS = [
   { x: 206, y: 5, w: 214, h: 38, why: "workspace chip 'Demo Network (default)' with its caret (measured on the frame)" },
   { x: 1770, y: 8, w: 102, h: 32, why: "user menu 'demoguy' with its avatar glyph (measured on the frame)" },
+  /* O70 R2-6: the nav rail's 'Forward AI' entry — its sparkle glyph sits 1.5 line heights left of the
+     label, beyond the OCR mask's glyph widening, and survived on the composition sheet. Measured on
+     each of the four rendered pages (ink 40..138 x 84..100 CSS px on all four, 2026-09-30). */
+  { x: 38, y: 82, w: 102, h: 20, why: "nav entry 'Forward AI' with its sparkle glyph (measured on the frame)" },
 ];
 export const TARGETS = [
   {
@@ -257,6 +266,8 @@ export const TARGETS = [
     pageFile: "anbgag3v",
     task: "path search result: a flow dropped by an ACL on a firewall, with hop list, topology and MTU check",
     expect: ["dropped", "path mtu"],
+    /* O70 R2-5: the RESULT, not the chrome — the rule that drops the flow and the verdict. */
+    taskState: ["deny all (default rule)", "dropped"],
     identity: FORWARD_IDENTITY,
     identitySlots: FORWARD_RECORDED_HEADER_SLOTS,
     identitySlotsCheckedOn: "82e931784f0dee8b",
@@ -283,6 +294,9 @@ export const TARGETS = [
     pageFile: "uajafk3c",
     task: "a data-centre physical topology drawn with a traced path highlighted on it",
     expect: ["physical topology"],
+    /* "Physical topology" is a panel title, present with no trace (verifier R2-5): the traced path's own
+       source and transit labels, drawn on the topology, are the task state. */
+    taskState: ["atlanta dc (source)", "houston (transit)"],
     identity: FORWARD_IDENTITY,
     identitySlots: FORWARD_RECORDED_HEADER_SLOTS,
     identitySlotsCheckedOn: "c1391863cbc6104a",
@@ -313,6 +327,8 @@ export const TARGETS = [
        viewport as 1920 wide, so the capture DPR is 2560/1920. Read from the demo data at fetch. */
     task: "a dense working table: devices by vulnerability, with key metrics above",
     expect: ["total devices analyzed", "key metrics"],
+    /* Rows of the device table, not its metric labels. */
+    taskState: ["atl-dc1-ios-spr01", "sjc-bldg2-fw01"],
     identity: FORWARD_IDENTITY,
     /* A raster frame has no DOM to measure its logo slot from, so its identity slots are DECLARED —
        geometry measured on this frame, in its CSS px — and the self-check requires every raster frame
@@ -321,6 +337,8 @@ export const TARGETS = [
       { x: 10, y: 5, w: 52, h: 36, why: "Forward logo glyph (measured on the stored screenshot)" },
       { x: 79, y: 7, w: 208, h: 34, why: "workspace chip 'Demo Network (default)' with its caret (measured on the stored screenshot)" },
       { x: 1770, y: 10, w: 100, h: 32, why: "user menu 'demoguy' with its avatar glyph (measured on the stored screenshot)" },
+      /* O70 R2-6: measured on the stored screenshot, ink 39.8..138 x 84..99.8 CSS px. */
+      { x: 38, y: 82, w: 102, h: 20, why: "nav entry 'Forward AI' with its sparkle glyph (measured on the stored screenshot)" },
     ],
     identitySlotsCheckedOn: "2da15affda65c9a8",
   },
@@ -333,6 +351,8 @@ export const TARGETS = [
     dpr: 1,
     task: "path lookup detail: path topology, per-hop decision table and packet diff (evidence behind a path result)",
     expect: ["decision table", "path inspector"],
+    /* The hop's decision rows, not the table's title. */
+    taskState: ["routes table match", "arp table match"],
     identity: ["IP Fabric", "IPFabric", "ipfabric"],
     identitySlots: [],
     identitySlotsNote: "No logo, product name or user area in this frame: it opens at the Network Viewer rail, below the application header (checked on the frame).",
@@ -362,6 +382,9 @@ export const TARGETS = [
     url: "https://play.grafana.org/explore",
     task: "inspecting query results and the underlying data (Explore)",
     expect: ["query inspector", "query history"],
+    /* "Query inspector" and "Query history" are toolbar buttons, present with no result (verifier R2-5):
+       the result's own values, in its table, are the task state. */
+    taskState: ["93.0 92.9 93.3"],
     identity: ["Grafana", "Powered by Grafana", "Grafana Labs", "Grafana Cloud", "play.grafana.org", "Sign in"],
     identitySlots: [],
     identitySlotsNote:
@@ -817,6 +840,176 @@ export function undeclaredIdentitySlots(frames, targets) {
     .map(({ f }) => f.id);
 }
 
+/* ── The reference's TASK STATE: DECLARED result text, screened against chrome (O70 R2-5) ───────────
+   A TARGET's `expect` shows the working surface is there; it cannot show the TASK state: toolbar
+   labels ("Query inspector", "Query history") and panel titles ("Physical topology") hold whatever the
+   screen shows. So every paired TARGET declares `taskState`: text only the task's result shows (a data
+   row, a traced path's source and transit, a hop's decision rows) — DECLARED, reviewed result text —
+   and blind-pair.mjs requires the phrases INSIDE the crop the critic sees. The self-check adds a
+   CONTRAST screen: each phrase must be legible on this frame and on NO frame of the same product whose
+   task kind cannot show the task (the kind's `ref.contrast` in blind-pair.mjs :: TASK_KINDS: a network
+   at rest, a query form before its result). A phrase also on a contrast frame is chrome; a target with
+   no contrast frame cannot be screened. The screen is a SANITY screen, not a proof that the text is content:
+   on the real set it would also accept every paired target's chrome labels (contrastCalibration,
+   reported as info; W5 round 2, QG-V3). */
+/** Problems with a target's DECLARED task state under the contrast sanity screen (never a proof). `textOf(id)` -> OCR text of a frame (null = unreadable);
+    `frames` -> [{id, product}] of the set; `targets` the TARGETS; `kinds` blind-pair.mjs TASK_KINDS. */
+export function refTaskProblems(target, { textOf, frames, targets, kinds }) {
+  const out = [];
+  const phrases = Array.isArray(target.taskState) ? target.taskState.filter((x) => typeof x === "string" && x.trim()) : [];
+  if (!phrases.length) return [`${target.id}: declares no taskState (text only its task's result shows), so its task state rests on chrome labels`];
+  const own = textOf(target.id);
+  if (own === null) return [`${target.id}: its pixels could not be read, so its declared task state cannot be checked`];
+  const missing = phrases.filter((ph) => !phrasesIn(own, [ph]).length);
+  if (missing.length) out.push(`${target.id}: task-state text not in its pixels: ${missing.join(", ")}`);
+  const contrastKinds = kinds?.[target.taskKind]?.ref?.contrast ?? [];
+  if (!contrastKinds.length) out.push(`${target.id}: its task kind ${JSON.stringify(target.taskKind)} names no contrast kind (a state that cannot show it), so chrome cannot be told from content`);
+  const contrasts = targets.filter((t) => t.id !== target.id && t.product === target.product && contrastKinds.includes(t.taskKind) && frames.some((f) => f.id === t.id));
+  if (contrastKinds.length && !contrasts.length) out.push(`${target.id}: no frame of ${target.product} shows a contrast kind (${contrastKinds.join(", ")}), so its task-state text cannot be screened against chrome`);
+  for (const c of contrasts) {
+    const text = textOf(c.id);
+    if (text === null) {
+      out.push(`${target.id}: its contrast frame ${c.id} could not be read`);
+      continue;
+    }
+    const chrome = phrases.filter((ph) => phrasesIn(text, [ph]).length);
+    if (chrome.length) out.push(`${target.id}: task-state text also on ${c.id} (${c.taskKind}), so it is chrome, not the task's result: ${chrome.join(", ")}`);
+  }
+  return out;
+}
+/** How far the contrast screen above can be trusted for one target (W5 round 2, QG-V3): feed the
+    target's own CHROME labels (its `expect` text that is not task-state) through the same screen. A
+    label it would accept as content (legible on the frame, on no contrast frame) shows the screen cannot
+    tell chrome from content for this target — typically because the product's only contrast frame has
+    no toolbar at all (Grafana's is a kiosk page). { acceptedChrome: [labels], contrasts: [ids] }.
+    Measured on the real set, the screen is UNCALIBRATED for every paired reference, so the task state
+    rests on the DECLARED taskState — reviewed result text (result values, a path's source and transit
+    labels, a hop's decision rows) — which blind-pair.mjs requires inside the crop the critic sees; the
+    contrast is a sanity screen, not a proof that the text is content. */
+export function contrastCalibration(target, { textOf, frames, targets, kinds }) {
+  const state = new Set((target.taskState ?? []).map((x) => String(x).toLowerCase()));
+  const labels = (target.expect ?? []).filter((x) => typeof x === "string" && x.trim() && !state.has(x.toLowerCase()));
+  const own = textOf(target.id);
+  const contrastKinds = kinds?.[target.taskKind]?.ref?.contrast ?? [];
+  const contrasts = targets.filter((t) => t.id !== target.id && t.product === target.product && contrastKinds.includes(t.taskKind) && frames.some((f) => f.id === t.id));
+  const texts = contrasts.map((c) => textOf(c.id));
+  if (own === null || texts.some((x) => x === null)) return { acceptedChrome: labels, contrasts: contrasts.map((c) => c.id), unreadable: true };
+  const acceptedChrome = labels.filter((l) => phrasesIn(own, [l]).length && !texts.some((x) => phrasesIn(x, [l]).length));
+  return { acceptedChrome, contrasts: contrasts.map((c) => c.id) };
+}
+
+/* ── An identity GLYPH beside a masked identity word (O70 R2-6) ───────────────────────────────────
+   OCR reads words, never glyphs, and widens an identity word's mask leftwards by a fixed 2.5 line
+   heights for a wordmark's glyph. A nav entry's icon can sit further out: the Forward AI sparkle
+   survived beside its mask on the composition sheet. So for EVERY identity word OCR finds on a frame,
+   its LEADING glyph is measured on the frame's pixels: the first run of ink to the word's left within
+   2 line heights (a run's own gaps under 0.35 line heights, so a sparkle's dots stay one run). A run
+   that overlaps another OCR word (two or more letters or digits) is text, not a glyph (prose before "Forward Documentation", the "--"
+   before a data-source name); any other run, with the word, must be inside the masks the sheet will
+   paint (declared slots, DOM-measured slots, the widened OCR box). */
+/** Runs in the page: for each probe {x, y, w, h} (device px), the leading ink run {left, right} left
+    of it (device px), or null. `words` are every OCR word box of the frame (device px). */
+async function leadingInk(page, file, probes) {
+  const uri = `data:image/png;base64,${readFileSync(file).toString("base64")}`;
+  return page.evaluate(
+    async ({ src, probes }) => {
+      const img = new Image();
+      img.src = src;
+      await img.decode();
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      const g = c.getContext("2d", { willReadFrequently: true });
+      g.drawImage(img, 0, 0);
+      return probes.map((p) => {
+        const reach = Math.round(2 * p.h);
+        const inner = Math.max(2, Math.round(0.35 * p.h));
+        const x1 = Math.round(p.x) - 1;
+        const x0 = Math.max(0, x1 - reach - Math.round(3 * p.h));
+        const y0 = Math.max(0, Math.round(p.y) - 1);
+        const h = Math.min(c.height - y0, Math.round(p.h) + 2);
+        const w = x1 - x0;
+        if (w <= 0 || h <= 0) return null;
+        const d = g.getImageData(x0, y0, w, h).data;
+        /* The background is the band's own mode colour (the ground the glyphs sit on). */
+        const count = new Map();
+        for (let i = 0; i < d.length; i += 4) {
+          const k = (d[i] >> 3) * 1024 + (d[i + 1] >> 3) * 32 + (d[i + 2] >> 3);
+          count.set(k, (count.get(k) ?? 0) + 1);
+        }
+        const mode = [...count].sort((a, b) => b[1] - a[1])[0][0];
+        const bg = [(mode >> 10) * 8 + 4, ((mode >> 5) & 31) * 8 + 4, (mode & 31) * 8 + 4];
+        const ink = (col) => {
+          for (let y = 0; y < h; y++) {
+            const i = (y * w + col) * 4;
+            if (Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]) > 90) return true;
+          }
+          return false;
+        };
+        /* Skip the gap next to the word (within `reach`), then take the run. */
+        let col = w - 1;
+        while (col >= 0 && w - 1 - col <= reach && !ink(col)) col--;
+        if (col < 0 || w - 1 - col > reach) return null;
+        const right = col;
+        let left = col;
+        for (; col >= 0; col--) {
+          if (ink(col)) left = col;
+          else if (left - col > inner) break;
+        }
+        return { left: x0 + left, right: x0 + right + 1 };
+      });
+    },
+    { src: uri, probes },
+  );
+}
+/** Is the CSS-px interval [a, b] on row y covered by the union of rects? */
+const rowCovered = (rects, a, b, y) => {
+  const iv = rects
+    .filter((r) => r.y <= y && r.y + r.h >= y)
+    .map((r) => [r.x, r.x + r.w])
+    .sort((p, q) => p[0] - q[0]);
+  let reach = a;
+  for (const [s, e] of iv) {
+    if (s > reach + 0.5) break;
+    reach = Math.max(reach, e);
+    if (reach >= b) return true;
+  }
+  return reach >= b;
+};
+/** Identity glyphs that would survive a sheet's masks: for each frame, each identity word OCR finds,
+    the ink run left of it that no mask covers. `ocrOf(f)` -> OCR result; `bp` is blind-pair.mjs. */
+export async function identityGlyphResiduals(page, frames, targets, ocrOf, bp) {
+  const out = [];
+  const lib = { tokens, findPhrase };
+  for (const f of frames) {
+    const o = ocrOf(f);
+    const t = targets.find((x) => x.id === f.id);
+    if (!o?.ok || !t) continue;
+    const identity = [...new Set([...(t.identity ?? []), ...(f.identity ?? [])])];
+    const hits = bp.identityHits(o, identity, f.dpr, lib);
+    if (!hits.length) continue;
+    const pad = bp.MASK_PAD;
+    const masks = [
+      ...[...(t.identitySlots ?? []), ...(f.census?.logoRects ?? []), ...(f.census?.identityRects ?? [])].map((r) => ({ x: r.x - pad, y: r.y - pad, w: r.w + 2 * pad, h: r.h + 2 * pad })),
+      ...bp.identityBoxes(o, identity, f.dpr, lib),
+    ];
+    const runs = await leadingInk(page, fromRel(f.file), hits.map((hh) => ({ x: hh.x * f.dpr, y: hh.y * f.dpr, w: hh.w * f.dpr, h: hh.h * f.dpr })));
+    /* Text is a word of at least two letters or digits: OCR also reads icons as "+", "O" or "-". */
+    const words = (o.lines ?? []).flatMap((l) => l.words ?? []).filter((w) => /[\p{L}\p{N}]{2,}/u.test(String(w.text ?? ""))).map((w) => ({ x: w.x / f.dpr, y: w.y / f.dpr, w: w.w / f.dpr, h: w.h / f.dpr }));
+    hits.forEach((hh, i) => {
+      const run = runs[i] ? { left: runs[i].left / f.dpr, right: runs[i].right / f.dpr } : null;
+      if (!run) return;
+      const cy = hh.y + hh.h / 2;
+      /* A run that overlaps an OCR word left of the hit is text, not a glyph. */
+      const text = words.some((w) => w.x < hh.x - 0.5 && w.x < run.right && w.x + w.w > run.left && w.y < hh.y + hh.h && w.y + w.h > hh.y);
+      if (text) return;
+      const inkLeft = run.left;
+      if (!rowCovered(masks, inkLeft, hh.x + hh.w, cy)) out.push(`${f.id}: identity "${hh.why}" at ${Math.round(hh.x)},${Math.round(hh.y)} has ink from x=${Math.round(inkLeft)} that no mask covers (a glyph beside a masked word)`);
+    });
+  }
+  return out;
+}
+
 async function positiveControls() {
   const out = [];
   const ok = (name, pass, detail = "") => out.push({ name, pass, detail });
@@ -854,6 +1047,41 @@ async function positiveControls() {
     "similar-screen check: a declared similar screen, with a reason, passes",
     similarScreenViolations([{ ...simPairs[0], similarScreenWith: { b: "judged on different dimensions" } }, simPairs[1], simPairs[2]], (id) => th[id]).length === 0,
   );
+  /* O70 R2-5: task-state text must be on the frame and on NO contrast frame of the product. */
+  {
+    const kinds = { k: { ref: { contrast: ["rest"] } }, orphan: { ref: { contrast: ["rest"] } }, bare: {} };
+    const tg = [
+      { id: "t", product: "P", taskKind: "k", taskState: ["row value 42"] },
+      { id: "c", product: "P", taskKind: "rest" },
+      { id: "o", product: "Q", taskKind: "orphan", taskState: ["row value 42"] },
+      { id: "n", product: "P", taskKind: "k" },
+      { id: "b", product: "P", taskKind: "bare", taskState: ["row value 42"] },
+    ];
+    const frames = tg.map((t) => ({ id: t.id }));
+    const run = (id, texts) => refTaskProblems(tg.find((t) => t.id === id), { textOf: (x) => texts[x] ?? "", frames, targets: tg, kinds });
+    const content = run("t", { t: "Query history Row value 42", c: "Query history" });
+    const chrome = run("t", { t: "Query history Row value 42", c: "row value 42" });
+    const absent = run("t", { t: "Query history", c: "" });
+    const noContrast = run("o", { o: "row value 42" });
+    const undeclared = run("n", { n: "row value 42" });
+    const noKind = run("b", { b: "row value 42", c: "" });
+    ok(
+      "task-state check: result text on the frame and not on its contrast passes; chrome, absent text, no contrast frame, no declaration and no contrast kind are each flagged (R2-5)",
+      content.length === 0 && chrome.length === 1 && absent.length === 1 && noContrast.length === 1 && undeclared.length === 1 && noKind.length >= 1,
+      JSON.stringify({ content, chrome, absent, noContrast, undeclared, noKind }).slice(0, 300),
+    );
+    /* W5 round 2 (QG-V3): the contrast screen is CALIBRATED for a target only if it would reject that
+       target's own chrome labels (its `expect` text that is not task-state). */
+    const tc = { ...tg[0], expect: ["query history", "row value 42"] };
+    const cal = (texts) => contrastCalibration(tc, { textOf: (x) => texts[x] ?? "", frames, targets: tg, kinds });
+    const shared = cal({ t: "Query history Row value 42", c: "Query history" });
+    const unshared = cal({ t: "Query history Row value 42", c: "a map" });
+    ok(
+      "contrast calibration: a chrome label also on the contrast frame is rejected (calibrated); one the contrast lacks is accepted and reported (QG-V3)",
+      shared.acceptedChrome.length === 0 && unshared.acceptedChrome.join() === "query history",
+      JSON.stringify({ shared, unshared }),
+    );
+  }
   ok("identity-slot check: a raster frame without declared slots is flagged", undeclaredIdentitySlots([{ id: "r", census: null }, { id: "d", census: { identityRects: [] } }], [{ id: "r" }, { id: "d" }]).join() === "r");
   /* phase 3.5: a DOM census that measured only logo slots does not locate a workspace chip or a user
      menu, so a DOM frame without measured identity marks must declare them too. */
@@ -907,6 +1135,22 @@ async function positiveControls() {
     const hits = ocr?.ok ? phrasesIn(ocr.text, TOUR_BANNER_PHRASES) : [];
     ok("OCR layer: available on this host", !!ocr?.ok, ocr?.ok ? "" : ocr?.error);
     ok("OCR layer: flags a synthetic Storylane tour card from its PIXELS", hits.length > 0, hits.join(", "));
+    /* O70 R2-6: a glyph beside an identity word, outside the word's widened mask, must be found; a
+       declared slot over it clears it. */
+    await page.setViewportSize({ width: 600, height: 120 });
+    await page.setContent(
+      /* A sparkle of star and dots, as a nav icon is drawn: OCR reads no word from it (a plain star
+         reads as "+", which the chip rule then masks with its line). */
+      `<body style="margin:0;background:#0c264d;color:#dde"><div style="position:absolute;left:42px;top:40px"><svg width="34" height="34" viewBox="0 0 34 34"><path d="M14 4 L17 14 L27 17 L17 20 L14 30 L11 20 L1 17 L11 14 Z" fill="#dde"/><circle cx="27" cy="5" r="2" fill="#dde"/><circle cx="31" cy="11" r="1.5" fill="#dde"/><circle cx="25" cy="28" r="2" fill="#dde"/><circle cx="22" cy="3" r="1.2" fill="#dde"/></svg></div><div style="position:absolute;left:112px;top:36px;font:600 32px/40px system-ui">Acme Cloud</div></body>`,
+    );
+    const gf = resolve(WORK, "control-identity-glyph.png");
+    await page.screenshot({ path: gf });
+    const bp = await import("./blind-pair.mjs");
+    const gFrame = { id: "glyph", file: rel(gf), dpr: 1, census: null };
+    const gOcr = ocrImages([gf]).get(resolve(gf));
+    const bare = await identityGlyphResiduals(page, [gFrame], [{ id: "glyph", identity: ["Acme"], identitySlots: [] }], () => gOcr, bp);
+    const slotted = await identityGlyphResiduals(page, [gFrame], [{ id: "glyph", identity: ["Acme"], identitySlots: [{ x: 38, y: 36, w: 42, h: 42 }] }], () => gOcr, bp);
+    ok("glyph check: an identity glyph outside its word's widened mask is flagged; a measured slot over it clears it (R2-6)", gOcr?.ok === true && bare.length === 1 && slotted.length === 0, JSON.stringify({ bare, slotted, ocr: gOcr?.ok ? gOcr.text : gOcr?.error }));
   } finally {
     await browser.close();
   }
@@ -982,10 +1226,10 @@ export async function selfCheck({ pairings } = {}) {
   const badKinds = TARGETS.filter((t) => !Object.hasOwn(bp.TASK_KINDS, t.taskKind)).map((t) => `${t.id} (${JSON.stringify(t.taskKind)})`);
   line(badKinds.length === 0, `every reference target names a task kind from the vocabulary${badKinds.length ? ` — not: ${badKinds.join(", ")}` : ` (${TARGETS.length})`}`);
   const control = bp.taskKindProblems([{ id: "control", task: "path-hop-decision", ref: "forward-vulnerability-table" }], TARGETS);
-  line(control.length === 1, `task-match check: flags a pairing whose reference shows another task (control) — ${control.join("; ") || "NOT flagged"}`);
+  line(control.length === 1, `task-match check: flags a pairing whose reference declares another task kind (control) — ${control.join("; ") || "NOT flagged"}`);
   const mismatched = bp.taskKindProblems(ps, TARGETS);
   for (const m of mismatched) line(false, `pairing not matched by task: ${m}`);
-  if (!mismatched.length) line(true, `every pairing's reference shows the pairing's task kind (${ps.map((p) => `${p.id}: ${p.task}`).join(", ")})`);
+  if (!mismatched.length) line(true, `every pairing's reference declares the pairing's task kind (${ps.map((p) => `${p.id}: ${p.task}`).join(", ")})`);
   const shaOf = (id) => frames.find((f) => f.id === id)?.sha256;
   const unknown = ps.filter((p) => !shaOf(p.ref)).map((p) => `${p.id} -> ${p.ref}`);
   line(unknown.length === 0, `every pairing's reference is in the set${unknown.length ? ` — missing: ${unknown.join(", ")}` : ` (${ps.length} pairings)`}`);
@@ -1022,6 +1266,35 @@ export async function selfCheck({ pairings } = {}) {
   line(undeclared.length === 0, `every frame without measured identity marks declares its identity slots${undeclared.length ? ` — undeclared: ${undeclared.join(", ")}` : ""}`);
   const stale = staleIdentitySlots(frames, TARGETS);
   line(stale.length === 0, `every declared identity slot was measured on the frame on disk${stale.length ? ` — stale: ${stale.join("; ")}` : ` (${frames.filter((f) => !Array.isArray(f.census?.identityRects)).length} frame(s))`}`);
+
+  /* O70 R2-5: every paired reference's DECLARED task state is legible on its frame and passes the
+     contrast SANITY screen against the product's frames that cannot show the task. The screen is
+     UNCALIBRATED (contrastCalibration, below): it supports the declaration, it proves nothing (QG3-3). */
+  const textOf = (id) => {
+    const f = frames.find((x) => x.id === id);
+    const o = f ? ocr.get(resolve(fromRel(f.file))) : null;
+    return o?.ok ? o.text : null;
+  };
+  const pairedTargets = [...new Set(ps.map((p) => p.ref))].map((id) => TARGETS.find((t) => t.id === id)).filter(Boolean);
+  const taskProblems = pairedTargets.flatMap((t) => refTaskProblems(t, { textOf, frames, targets: TARGETS, kinds: bp.TASK_KINDS }));
+  for (const m of taskProblems) line(false, `declared task state problem: ${m}`);
+  /* (W5 round 2, QG-V3: this line used to say the references "show their task's RESULT, not only
+     their chrome"; the contrast screen cannot establish that — see contrastCalibration.) */
+  if (!taskProblems.length) line(true, `every paired reference's DECLARED task-state text is legible on its frame and absent from its product's contrast frames: ${pairedTargets.map((t) => t.id).join(", ")}`);
+  const uncalibrated = pairedTargets.map((t) => ({ t, c: contrastCalibration(t, { textOf, frames, targets: TARGETS, kinds: bp.TASK_KINDS }) })).filter(({ c }) => c.acceptedChrome.length);
+  for (const { t, c } of uncalibrated)
+    console.log(`  info  contrast screen UNCALIBRATED for ${t.id}: it would also accept its chrome label(s) ${c.acceptedChrome.map((x) => JSON.stringify(x)).join(", ")} as content (contrast ${c.contrasts.join(", ") || "none"}${c.unreadable ? "; a frame is unreadable" : ""}) — its task state rests on the DECLARED taskState, required inside the crop by blind-pair.mjs, not on this screen`);
+
+  /* O70 R2-6: no identity glyph beside a masked identity word survives, on any frame. */
+  const gb = await chromium.launch();
+  let glyphs;
+  try {
+    glyphs = await identityGlyphResiduals(await gb.newPage(), frames.filter((f) => existsSync(fromRel(f.file))), TARGETS, (f) => ocr.get(resolve(fromRel(f.file))), bp);
+  } finally {
+    await gb.close();
+  }
+  for (const g of glyphs) line(false, `identity glyph unmasked: ${g}`);
+  if (!glyphs.length) line(true, `no identity glyph beside a masked identity word escapes the masks (${frames.length} frames)`);
   return failed;
 }
 

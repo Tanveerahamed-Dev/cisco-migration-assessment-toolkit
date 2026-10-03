@@ -1075,18 +1075,24 @@ export function Inspector({
             record.
           </span>
         ) : (
-          <Chip mono tone="neutral" title={effectiveCite}>
-            <span className="inspector__citelabel">citation</span>
-            {effectiveCite}
-          </Chip>
-        )}
-        {effectiveCite === null ? null : (
-          <IconButton
-            label="Copy the citation path"
-            icon={<IconCopy />}
-            size="sm"
-            onClick={() => copy(effectiveCite, "citation path")}
-          />
+          /* The citation and its copy control are ONE group that shrinks with the header and wraps inside itself
+             (Inspector.css `.inspector__cite`). As two rigid items of the header they could not shrink: MEASURED
+             (review/audit-d3-focus.mjs, 768 -> 390 px) a 339 px citation chip made the Inspector 397 px wide in a
+             390 px stage and put this button at x = 429, clipped whole by the frame. */
+          <span className="inspector__cite">
+            <Chip mono tone="neutral" title={effectiveCite}>
+              <span className="inspector__citelabel">citation</span>
+              {/* Its own box, so the path can take a line of its own below the caption when it does not fit
+                  beside it (Inspector.css `.inspector__citetext`). */}
+              <span className="inspector__citetext">{effectiveCite}</span>
+            </Chip>
+            <IconButton
+              label="Copy the citation path"
+              icon={<IconCopy />}
+              size="sm"
+              onClick={() => copy(effectiveCite, "citation path")}
+            />
+          </span>
         )}
         <span className="inspector__spacer" />
         <IconButton

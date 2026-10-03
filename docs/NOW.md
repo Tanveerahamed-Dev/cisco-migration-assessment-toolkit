@@ -73,7 +73,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | W2d | Projection performance | `codex/ui-projection-performance`; [PR #586](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/586); active `.claude/worktrees/ui-projection-2` checkout | Codex | Published `2a50978a` has all 15 required checks green but still fails the 200-row timing target. Local correctness fix `3b286f6f` passes 106 API tests and independent review. Owner approved pinned jsonschema-rs with Python fallback, private-version guard and lock/notice/SBOM custody; final validation and publication preparation continue (2026-10-03). [Validation](one-app-w2d-validation-2026-10-02.md). | Finish the guard/filter replay and review, commit, run privacy gates, push, then require every exact-head check, hosted frozen proof and the unchanged hosted 300 ms gate before the authorized merge. The dependency hold is lifted; diagnostic timings are not acceptance. |
 | W2e | Topology & Paths | `codex/topology-paths`; reuse `.claude/worktrees/ui-projection-2` after W2d | Codex | Queued after W2d. Fifth core screen with contract-owned 2-D facts and embedded Atlas Scope 3-D hub in the bundle. (2026-10-02) | Start after W2d merges; independent review and exact-head required checks before its own merge commit. #582 remains with the Scope session. |
 | W7 | Atlas release candidate | `codex/atlas-release-candidate`; reuse `.claude/worktrees/ui-projection-2` after W2e | Codex | Queued after W6, W2d and W2e. Read-only preflight found the release dependency inventory/notices and material receipt omit the bundled Scope lock; bounded correction is required before the new candidate. (2026-10-02) | Reconcile both frontend dependency roots in `portable/release_contract.py`, prepare the pinned Node/npm toolchain, then build with `python -m portable.build_release`, verify the candidate and provide stick-update steps. |
-| W8 | Release-toolchain advisories and Python dependency-audit coverage | `fix/pypdf-advisories`; existing `.claude/worktrees/pypdf-advisories` checkout; [PR #587](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/587) | Claude Code | The Master Reference release toolchain moves from pypdf 6.17.0 to 6.19.0, clearing the seven high Dependabot alerts (#9 to #15). The required dependency audit now covers every tracked Python requirements file, lock and pyproject declaration, including the extras and `[build-system].requires`, under a contract test derived from `git ls-files` that also proves each audit can fail; inline workflow `pip install` pins and `tomli` (Python 3.10 only) remain stated limits. Local gates pass and the refutation rounds' findings are fixed; pushed and PR #587 opened; `main` merged in after W6 (#588, `0577aaf5`), and the required checks are re-running on that head. (2026-10-02) | Once every required check is green on the exact head, the owner merges with a merge commit (an admin merge needs the owner's explicit authority in this session); then confirm alerts #9 to #15 read `fixed`. Dependabot #585 and the pypdf line of #572 become redundant. Its own later change: re-lock the shipped Atlas lock to netmiko 4.8.0 / paramiko 5.0.0 and delete the last PYSEC-2026-2858 suppression. |
+| W5 | Atlas Scope preview-scope repairs: the D3 citation-path clipping, the `/scope` reader, the C1 KEY validator, engine-owned display vocabularies and bundle receipts, then the C1 critic panel and an independent 39-criterion re-grade | `claude/scope-preview-fixes` (pushed), against `main` | Claude Code session in the `.claude/worktrees/scope-preview` checkout | PR #582, with `main` merged in again after #583, #584 and #588 (2026-10-02). C1 panel ran: UNPROVEN, protocol limit (O70). D3: no complete audit is tractable on this host, so UNPROVEN (O68). The first re-grade lost 35 of 39 graders to the account usage limit. Residuals in `atlas-scope/docs/open-issues.md` O78. | The owner authorized merging #582 once green (2026-10-02, in this Claude Code session): when every required check is green on the exact head, merge with `gh pr merge 582 --merge --admin --match-head-commit <that head>`. The re-grade resumes from its cache; if #582 merges first, its report lands in a follow-up PR. |
 
 ## Owner decisions
 
@@ -141,6 +141,15 @@ protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
 
+- 2026-10-03, Claude Code (W5 brought up to date after W2d):
+  - #586 (W2d) merged as `828847f1`. Merged it into #582 in a separate checkout (the re-grade's refuters were still
+    reading the W5 checkout), keeping both sides of three real conflicts: `portable/release_contract.py` keeps W5's
+    `_TOOLCHAIN_MATERIALS` and `_manifest_summary` owners with #586's `jsonschema-rs` licence material and native-runtime
+    member checks; `portable/build_atlas.py` keeps W5's derived `selftest_gap` and adds #586's
+    `ui-projection-legacy-resolver` line to `REQUIRED_SELFTEST_LINES`; this board keeps every handoff line.
+  - #586's `_smoke_ui_projection(base, instance_nonce)` broke W5's smoke harness stub, which now records and pins both.
+    #586 changes neither `atlas-scope/` nor the sample data, so the re-grade still describes this head's application.
+
 - 2026-10-03, Codex (current-main audit changes integrated before publication):
   - The Scope owner's #587 merged upstream as `fea045f6b03819edec2a08d0357a27ec9f026039`. Merged current main into W2d; CI, pyproject, SSOT, the release pin and the new dependency-audit contract merged automatically. Only this board conflicted; every handoff line from both parents and the owner's W8 row are retained. No work on the W8 branch, alerts, follow-ups or #582 occurred.
   - The API/native tests and packaging source remain unchanged from their reviewed hashes. Fresh integrated audit/runner checks and full publication privacy/history/body gates precede push. The earlier e59 privacy scan was interrupted because it became obsolete when main advanced; it is not a passing receipt. Hosted checks and performance must bind the integrated head.
@@ -183,6 +192,15 @@ protected-PR change is part of the resumed W6 scope.
   - Reused the existing checkout for W2d and merged current main. The only conflict was this board; every pre-existing handoff line is preserved. Final reviewed API SHA-256 remains `7c9226a594d3c53aeed1ab99a1efe3ca411ad6ff96ae479b34c6f2610222d537`. The opt-in measurement job remains restricted to the single GitHub-hosted `windows-latest` matrix value; the self-hosted-runner guard is unchanged.
   - The integrated W2d head requires fresh publication privacy/history scans and new hosted performance/CI results. No old timing result is transferred to it. W2e and W7 follow its green merge; #582/#587, their branches, devices and the vault remain outside this session.
 
+- 2026-10-02, Claude Code (W8 merged; W5 brought up to date):
+  - The owner authorized merging #582 and #587 once green, in this Claude Code session. #587 merged as `fea045f6` with
+    `--merge --admin --match-head-commit 5fc797b2` after all 15 required checks succeeded on that exact head and no
+    other check failed; `main`'s tree equals the tested head's tree. W8's row is deleted under rule 8.
+  - Closed Dependabot #585 as superseded by #587. Alerts #9 to #15 still read open right after the merge, while
+    GitHub's dependency graph re-scans `main`; confirm they read `fixed` rather than assuming it.
+  - Merged the new `main` into #582 (only this board conflicted; every handoff line kept). #582 merges under the same
+    authority once every required check is green on its new head.
+
 - 2026-10-02, Claude Code (W8 merged main after W6):
   - #588 (W6) merged as `0577aaf5`, so the internal reference no longer fails on the hosting size cap. Merged
     `origin/main` into this branch with a merge commit; the only conflict was this board, resolved keeping every row and
@@ -190,6 +208,15 @@ protected-PR change is part of the resumed W6 scope.
   - The coordination session relayed the next steps. The admin merge itself waits for the owner's explicit authority in
     this Claude Code session: the standing admin-merge authority recorded on this board belongs to Codex's W2 session
     and excludes #582. Once merged: close Dependabot #585 as superseded and confirm alerts #9 to #15 read `fixed`.
+
+- 2026-10-02, Claude Code (W5 merged main after W6):
+  - #588 (W6) merged as `0577aaf5`, so the internal reference no longer fails on the hosting size cap, the only check
+    this branch failed. Merged `origin/main` with a merge commit; the only conflict was this board, resolved keeping
+    every row and handoff line from both sides and dropping W2c, which main deleted under rule 8 (#584 merged).
+  - #588 changes neither `atlas-scope/` nor the sample data, so the re-grade of `de6b9b76` still describes this head's
+    application tree. That run (32 of 39 criteria graded before the previous session ended) resumes from its cache.
+  - The admin merge waits for the owner's explicit authority in this Claude Code session; the standing admin-merge
+    authority recorded on this board belongs to Codex's W2 session and excludes #582.
 
 - 2026-10-02, Codex (W6 resumed as internal-reference policy correction):
   - Owner explicitly directed proceeding: Master Reference is internal repository documentation and must not impose a hosting-size blocker on application work. This supersedes the earlier conditional Sites-limit/R2 decision; no further approval is needed for this bounded internal validation change.
@@ -318,6 +345,16 @@ protected-PR change is part of the resumed W6 scope.
   - Final local complete Master Reference deployment, including its outer receipt: 256,488,364 bytes, with 3,558,484 bytes of headroom under the unchanged limit. Hosted Master Reference validation also passed; exact receipts and residual limits are in the W2b validation record. Golden/sample/Scope fixture bytes retain their single reviewed generation.
   - Created the already-listed `codex/core-screens` branch from current main in the clean existing UI checkout. Backend owns only contract transport and exact-store binding; the engine remains the fact owner. Implementation order remains endpoint, independent contract validation, then core screens. W1 and the protected root checkout remain untouched.
 
+- 2026-10-02, Claude Code (W5):
+  - #582's two red checks (Windows tests and the full source/frontend gate, both on `windows-2025`) were one test:
+    the `/scope` XML-asset source scan read every quoted string as an import, and the hosted Windows registry types
+    `.config` as XML, so the command id `select.config` was flagged there and nowhere else. The scan now counts only
+    path-shaped references or references to a real file, covers the package's HTML entries, and a new test pins it on
+    every host by forcing `.config` into the suffix set. A mutation that restores the old behaviour fails it.
+  - Merged `main` after #583 (`a7016984`); conflicts in `analyze.py` and this board resolved by keeping both sides.
+    The sample fleet is fresh against the merged engine.
+  - The first re-grade (`b342a05d`) lost 35 of 39 graders to the account usage limit; it is re-run on this head.
+
 - 2026-10-02, Codex (compaction source freeze):
   - Closed the metadata-string numeric overflow refutation and generated-decoder EOL drift test-first. Final projection suite: 90 passed / one existing POSIX-only skip; TypeScript, lint and diff checks passed.
   - Independent bounded review and a repeated all-chunk payload/gzip comparison preserve record values, ordering, indexes, digests, text and terminators. The original chunk partition and limits remain. The explicit pre-existing legacy fallback key limitation is recorded rather than claimed repaired.
@@ -327,6 +364,19 @@ protected-PR change is part of the resumed W6 scope.
   - Owner approved the pending bounded lossless Master Reference compaction request. It is now part of W2b on the existing branch and checkout.
   - Scope: existing projection encoder/generated decoder, round-trip and hostile-input tests, documentation and exact-source rebuild validation. Public payloads, all source records/text/digests/terminators/census denominators, the decoded 256 KiB ceiling and the existing deployment/privacy gates stay intact. Net savings must be measured after decoder and receipt overhead.
   - No additional golden/sample regeneration, W1 changes, new branch/worktree, release publication or qualification authority is included. W2c follows the already reserved route after #583 merges.
+
+- 2026-10-01, Claude Code (W1, closing):
+  - #579 merged as `d92fcb1f` on the owner's instruction, after every required check was green on head
+    `0345eb1d` and `main`'s tree was confirmed equal to that head's. Row W1 deleted (rule 8).
+  - The W1 branch and its worktree stay until #582 lands; the main checkout's launch configuration still
+    points at that worktree (W0).
+  - #582 (W5) retargeted to `main` while open, and `main` merged in.
+
+- 2026-10-01, Claude Code (W5):
+  - Ran the W5 repair wave and its W5b follow-up, each with independent verifiers and refuters.
+  - Re-ran the engine gate after a network drop killed it mid-wave.
+  - A whole-branch refuter found no blocker or major; its minors are fixed or recorded in O78.
+  - Pushed after the rule-7 checks passed (0 hits over 50 commits since `main`) and opened #582, stacked on #579.
 
 - 2026-10-01, Codex (W2b Master Reference capacity gate):
   - The final-head Master Reference run `36918999658` passed compiler/schema validation and 264 contract tests, then failed deployment finalization. Its public error is intentionally redacted; there were no retained CI artifacts.

@@ -85,6 +85,36 @@ def safe_decode_text(data: bytes, path: str) -> str:
     return text
 
 
+_PHYSICAL_LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
+
+
+def physical_lines(text: str, *, keepends: bool = False) -> list[str]:
+    """Split source text on exactly CRLF, LF or CR.
+
+    This is the one line definition every emitted line number and line count
+    must come from.  It is the definition Git, the Python tokenizer (``ast``
+    ``lineno``), the TypeScript adapter and the exact ``source_text``
+    projection share.  ``str.splitlines`` additionally breaks on VT, FF, FS,
+    GS, RS, NEL, LS and PS; a literal one of those inside a string literal or
+    comment is a valid source character, and numbering lines through
+    ``splitlines`` renumbers every later line relative to the parser and the
+    projection (observed as ``KeyError: (path, line_count + 1)`` when the
+    line rows no longer joined the exactly split source text).
+
+    Shapes agree with ``str.splitlines`` wherever only CR/LF are involved: no
+    empty trailing line after a final terminator, and ``""`` yields ``[]``.
+    """
+
+    lines: list[str] = []
+    start = 0
+    for match in _PHYSICAL_LINE_BREAK_RE.finditer(text):
+        lines.append(text[start : match.end() if keepends else match.start()])
+        start = match.end()
+    if start < len(text):
+        lines.append(text[start:])
+    return lines
+
+
 def nonblank_line_records(
     path: str,
     file_id: str,
@@ -93,7 +123,7 @@ def nonblank_line_records(
     contexts: dict[int, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(physical_lines(text), start=1):
         if not line.strip():
             continue
         context = contexts.get(number) or {}
@@ -163,7 +193,7 @@ def _node_source(text: str, node: ast.AST, *, include_decorators: bool = True) -
         ]
         if decorator_lines:
             start = min(start, *decorator_lines)
-    lines = text.splitlines(keepends=True)
+    lines = physical_lines(text, keepends=True)
     return "".join(lines[max(0, start - 1) : min(len(lines), end)])
 
 
@@ -589,7 +619,7 @@ def parse_markdown(path: str, file_id: str, text: str) -> ParseResult:
     heading_stack: list[tuple[int, str, str]] = []
     in_fence = False
     fence_token = ""
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(physical_lines(text), start=1):
         stripped = line.strip()
         if stripped.startswith(("```", "~~~")):
             token = stripped[:3]
@@ -771,7 +801,7 @@ def _context_all_nonblank(text: str, kind: str, containing: str | None = None) -
             "depth": 0,
             "unresolved_reasons": [],
         }
-        for number, line in enumerate(text.splitlines(), start=1)
+        for number, line in enumerate(physical_lines(text), start=1)
         if line.strip()
     }
 
@@ -858,7 +888,7 @@ def parse_json(path: str, file_id: str, text: str) -> ParseResult:
 
 def parse_jsonl(path: str, file_id: str, text: str) -> ParseResult:
     result = ParseResult(parser="stdlib_jsonl")
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(physical_lines(text), start=1):
         if not line.strip():
             continue
         try:
@@ -884,7 +914,7 @@ def parse_toml(path: str, file_id: str, text: str) -> ParseResult:
     result = ParseResult(parser="stdlib_tomllib")
     result.structured = _flatten_structured(path, file_id, value)
     section: str | None = None
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(physical_lines(text), start=1):
         stripped = line.strip()
         if not stripped:
             continue
@@ -943,7 +973,7 @@ def _parse_github_workflow_entities(
     upload/download artifact actions are nevertheless represented one-for-one.
     """
 
-    source_lines = text.splitlines(keepends=True)
+    source_lines = physical_lines(text, keepends=True)
     job_records: dict[str, dict[str, Any]] = {}
     step_records: list[dict[str, Any]] = []
     permission_records: list[dict[str, Any]] = []
@@ -1022,7 +1052,7 @@ def _parse_github_workflow_entities(
             job_records[current_job]["artifacts"].append(artifact_id)
         current_step = None
 
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(physical_lines(text), start=1):
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -1180,7 +1210,7 @@ def parse_yaml_structural(path: str, file_id: str, text: str) -> ParseResult:
     triggers: list[str] = []
     in_on = False
     on_indent = 0
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(physical_lines(text), start=1):
         stripped = line.strip()
         if not stripped:
             continue
@@ -1276,7 +1306,7 @@ def parse_ini(path: str, file_id: str, text: str) -> ParseResult:
     result = ParseResult(parser="stdlib_configparser")
     result.structured = _flatten_structured(path, file_id, value)
     section: str | None = None
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(physical_lines(text), start=1):
         stripped = line.strip()
         if not stripped:
             continue
@@ -1659,7 +1689,7 @@ def _extract_command_entity(
 
 def parse_generic_text(path: str, file_id: str, language: str, text: str) -> ParseResult:
     result = ParseResult(parser=f"{language}_lexical", parser_mode="structural")
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(physical_lines(text), start=1):
         stripped = line.strip()
         if not stripped:
             continue
@@ -1772,7 +1802,7 @@ def _dependencies_from_toml(path: str, file_id: str, value: Any, result: ParseRe
 
 
 def _dependencies_from_requirements(path: str, file_id: str, text: str, result: ParseResult) -> None:
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(physical_lines(text), start=1):
         value = line.strip()
         if not value or value.startswith("#"):
             continue

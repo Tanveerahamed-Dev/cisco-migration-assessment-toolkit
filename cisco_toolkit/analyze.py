@@ -48,6 +48,9 @@ from cisco_toolkit.textutils import (
 # score band -> (label, fill)
 _HEALTH_BANDS = [(90, "Excellent", "36E08A"), (75, "Good", "7ADB8F"),
                  (60, "Fair", "FFE566"), (40, "Poor", "FF9F45"), (0, "Critical", "FF5775")]
+# The measured band labels, derived from the owner above: the not-measured band and any unrecognised label
+# lie outside it, so membership is a positive recognition, never "anything but not-measured".
+_HEALTH_BAND_LABELS = frozenset(label for _, label, _ in _HEALTH_BANDS)
 
 # Default/global IPv4-unicast only.  The two explicit NX-OS forms precede the
 # historic generic fallbacks so a multi-AF ``show bgp summary`` cannot silently
@@ -575,7 +578,7 @@ def compute_cable_map(all_interfaces: Dict[str, Dict[str, InterfaceData]],
         nodes.append({
             "host": h, "role": roles.get(h, ""), "tier": tier[h], "order": order.get(h, 0),
             "collected": collected, "op_status": "up" if collected else "unknown",
-            "kind": "device" if collected else _node_kind(ep_ev.get(h), plat_ev.get(h)),
+            "kind": CABLE_MAP_COLLECTED_KIND if collected else _node_kind(ep_ev.get(h), plat_ev.get(h)),
             "badges": badges[:3],
             "ports": sorted(ports[h].values(), key=lambda p: p["name"].lower()),
         })
@@ -1959,7 +1962,7 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             # test could never fire on. Unmeasured is 'Insufficient Data' with dq None, not 1.0 (#15).
             if h not in data_quality:
                 rec["data_quality"] = None
-                rec["band"] = "Insufficient Data"
+                rec["band"] = HEALTH_BAND_NOT_MEASURED
                 records.append(rec)
                 continue
             dq = data_quality[h]
@@ -1971,7 +1974,7 @@ def compute_health_scores(all_interfaces: Dict[str, Dict[str, InterfaceData]],
             # 'Excellent', ranking the unreadable box the single healthiest asset and excluding it from every
             # finding. An empty parse is 'Insufficient Data', never Excellent (the absence-is-not-health rule).
             if dq < config.data_quality_threshold or not all_interfaces.get(h):
-                rec["band"] = "Insufficient Data"             # collection gap / unparseable != healthy
+                rec["band"] = HEALTH_BAND_NOT_MEASURED             # collection gap / unparseable != healthy
         records.append(rec)
     records.sort(key=lambda r: (r["score"], r["switch"]))
     return records
@@ -2035,7 +2038,7 @@ def compute_calibration_report(health_scores: List[dict],
     # unbounded-precision int literal (OverflowError). `or []` also kept a truthy non-list section.
     scored = [r for r in (health_scores if isinstance(health_scores, list) else [])
               if isinstance(r, dict)
-              and is_finite_num(r.get("score")) and r.get("band") != "Insufficient Data"]
+              and is_finite_num(r.get("score")) and r.get("band") != HEALTH_BAND_NOT_MEASURED]
     n = len(scored)
     if n == 0:
         return {"n": 0, "note": "no scored switches to calibrate against",
@@ -3643,7 +3646,7 @@ def compute_migration_readiness(all_interfaces, move_groups, health_scores,
         crit = sorted([h for h in gset if band_by_host.get(h) == "Critical"])
         poor = sorted([h for h in gset if band_by_host.get(h) == "Poor"])
         unscored = sorted([h for h in gset
-                           if str(band_by_host.get(h) or "") in ("", "Insufficient Data")])
+                           if str(band_by_host.get(h) or "") in ("", HEALTH_BAND_NOT_MEASURED)])
         if crit:
             st, note = R["health_floor_critical"], f"Critical-health switch: {', '.join(crit)}"
         elif poor:
@@ -7655,7 +7658,7 @@ def compute_migration_scenarios(migration_readiness: list, wave_sequencing: list
     # greenfield-vs-in-place recommendation below its 60% gate (audit-6 correctness: a 4/6=67% -> GREENFIELD
     # fleet reads 4/10=40% -> in-place when 4 devices were merely not collected). Matches the exec-brief
     # convention, which already averages health over genuinely-scored rows only (analyze.py compute_executive_brief).
-    hs = [r for r in (health_scores or []) if r.get("band") != "Insufficient Data"]
+    hs = [r for r in (health_scores or []) if r.get("band") != HEALTH_BAND_NOT_MEASURED]
     if hs:
         crit = sum(1 for r in hs if r.get("band") in ("Critical", "Poor"))
         pct = round(100 * crit / len(hs))
@@ -7964,12 +7967,27 @@ PUNCH_EVIDENCE_RULES: Dict[str, bool] = {
 }
 ENGINE_CONTRACT_SCHEMA = "atlas-engine-contract/1"
 ENGINE_CONTRACT_PATH = "atlas-scope/contracts/engine-contract.v1.json"   # repo-relative projection
+# The health band compute_health_scores writes for a host it could NOT measure (data quality never measured,
+# below threshold, or an empty interface parse). It is a stated absence of a measurement, never a scored band:
+# the contract publishes it apart from the _HEALTH_BANDS labels. tests/test_engine_contract_vocabularies.py
+# drives the producer and pins that this is the literal it writes.
+HEALTH_BAND_NOT_MEASURED = "Insufficient Data"
+# The node kind compute_cable_map writes for every COLLECTED host (it is not classified: only an uncollected
+# neighbour is, through _node_kind, which can return only a _KIND_RANK member). Pinned against the producer by
+# tests/test_engine_contract_vocabularies.py.
+CABLE_MAP_COLLECTED_KIND = "device"
 
 
 def engine_contract_projection() -> dict:
-    """The engine-owned vocabularies a consumer (the Atlas Scope compiler) validates against, projected
+    """The engine-owned vocabularies a consumer (the Atlas Scope compiler and app) validates against, projected
     from THIS module's constants -- the owner stays here; the JSON file is a generated projection
-    (tests/test_engine_contract_projection.py fails when the committed file drifts)."""
+    (tests/test_engine_contract_projection.py fails when the committed file drifts).
+
+    The closed display vocabularies (ADR 0007 D9) are ORDERED lists, not sorted ones, because their order is
+    the engine's rank: `severities` most severe first (_APP_SEV_RANK); `health_bands.scored` highest band first
+    (_HEALTH_BANDS, the default SCORING.bands), with the not-measured band marked apart (`not_measured`) since it
+    is no band at all; `node_kinds` the collected-host kind apart from the classifier's ranked kinds
+    (_KIND_RANK). tests/test_engine_contract_vocabularies.py pins each against the producer that writes it."""
     return {
         "schema": ENGINE_CONTRACT_SCHEMA,
         "owner": "cisco_toolkit/analyze.py",
@@ -7982,6 +8000,15 @@ def engine_contract_projection() -> dict:
             **PUNCH_EVIDENCE_RULES,
         },
         "protocol_assessability_states": sorted(PROTOCOL_ASSESSABILITY_STATES),
+        "severities": sorted(_APP_SEV_RANK, key=_APP_SEV_RANK.__getitem__),
+        "health_bands": {
+            "scored": [label for _thr, label, _fill in _HEALTH_BANDS],
+            "not_measured": HEALTH_BAND_NOT_MEASURED,
+        },
+        "node_kinds": {
+            "collected": CABLE_MAP_COLLECTED_KIND,
+            "classified": list(_KIND_RANK),
+        },
     }
 
 
@@ -8986,12 +9013,12 @@ def compute_migration_punchlist(cross_layer: List[dict],
 # =============================================================================
 _APP_TIER_RANK = {"On-air critical": 0, "Production": 1, "Support": 2}
 _APP_SEV_RANK = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
-_APP_BAND_RANK = {"Critical": 0, "Poor": 1, "Fair": 2, "Good": 3, "Excellent": 4, "Insufficient Data": 5}
+_APP_BAND_RANK = {"Critical": 0, "Poor": 1, "Fair": 2, "Good": 3, "Excellent": 4, HEALTH_BAND_NOT_MEASURED: 5}
 # Migration-criticality weights (NEW-V3.23.114). Higher total = more critical/risky = cut over LATER with
 # more safeguards; lowest = a safe pilot. Tunable in one place; documented heuristic, not a hard schedule.
 _CRIT_WEIGHTS = {
     "tier": {"On-air critical": 40, "Production": 24, "Support": 8},
-    "band": {"Critical": 18, "Poor": 11, "Fair": 5, "Good": 0, "Excellent": 0, "Insufficient Data": 6},
+    "band": {"Critical": 18, "Poor": 11, "Fair": 5, "Good": 0, "Excellent": 0, HEALTH_BAND_NOT_MEASURED: 6},
     "health_cap": 12, "high_risk": 5, "risk": 2, "risk_cap": 16,
     "coupling": 14, "spans_waves": 5, "ptp": 6, "size": 6, "last_threshold": 80,
 }
@@ -9180,8 +9207,8 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
         # start here to fail-fast and learn": the least-safeguarded wave, chosen because we knew least
         # about it. Only score health where health was measured; disclose the rest. (band_of empty =
         # health scoring not supplied at all -> nothing to disclose, no cry-wolf.)
-        n_unassessed = sum(1 for b in bands if b in ("", "Insufficient Data")) if band_of else 0
-        worst = min((b for b in bands if b and b != "Insufficient Data"),
+        n_unassessed = sum(1 for b in bands if b in ("", HEALTH_BAND_NOT_MEASURED)) if band_of else 0
+        worst = min((b for b in bands if b and b != HEALTH_BAND_NOT_MEASURED),
                     key=lambda b: _APP_BAND_RANK.get(b, 99), default="")
         waves = _ordered_group_labels((wave_of.get(h, "") for h in mhosts), wave_ordinal)
         spans = len(waves) > 1
@@ -9421,9 +9448,9 @@ def compute_application_intelligence(all_interfaces: Dict[str, Dict[str, Interfa
         # unassessed domain sorts to the front as the "Pilot". Unknown is not safe; it is unknown.
         # (Re-derived from band_of rather than stored on the record, so the domain schema is unchanged;
         # the gap's structural disclosure is the "NO health evidence" risk row emitted above.)
-        if band_of and any(band_of.get(h, "") in ("", "Insufficient Data")
+        if band_of and any(band_of.get(h, "") in ("", HEALTH_BAND_NOT_MEASURED)
                            for h in (d.get("switches") or [])):
-            score += W["band"].get("Insufficient Data", 0)
+            score += W["band"].get(HEALTH_BAND_NOT_MEASURED, 0)
         score += min(hh.get("n_critical", 0) * 3 + hh.get("n_poor", 0) * 1.5, W["health_cap"])
         score += min(d.get("n_high_risk", 0) * W["high_risk"] + len(d.get("risks") or []) * W["risk"], W["risk_cap"])
         score += (d.get("degree", 0) / max_deg * W["coupling"]) if max_deg else 0
@@ -12082,7 +12109,7 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     # (absent evidence -> no deductions -> a near-perfect score) must not inflate the fleet health headline.
     # is_finite_num (the predicate ssot.reconcile verifies with), not isinstance((int, float)): that let a
     # bool "score", and crashed round() on a NaN / inf / unbounded-int score from an uploaded snapshot.
-    _scored = [x for x in hs if is_finite_num(x.get("score")) and x.get("band") != "Insufficient Data"]
+    _scored = [x for x in hs if is_finite_num(x.get("score")) and x.get("band") != HEALTH_BAND_NOT_MEASURED]
     # G15: an EMPTY scored set is "not assessed", never an average of 0. The old `else 0` published
     # `avg_health: 0` and a "0/100 avg" axis at severity Low for a fleet in which no device was scored --
     # absence rendered as a measurement. None is the abstention (ssot.canonical_facts renders it
@@ -12140,7 +12167,7 @@ def compute_executive_brief(health_scores: Optional[list] = None, punchlist: Opt
     # assessed beside an average that excludes them was a false coverage claim (audit-3 #6).
     _n_scored = len(_scored)
     _n_unscored = n - _n_scored
-    _n_insuff = bands.get("Insufficient Data", 0)
+    _n_insuff = bands.get(HEALTH_BAND_NOT_MEASURED, 0)
     _fh_detail = f"{_n_scored} switch(es) assessed" + (f"; {_n_insuff} not collected (no evidence)." if _n_insuff else ".")
     if _scored:
         # `Low` is the clean-fleet value and requires COMPLETE coverage (the EoL axis's own rule below):
@@ -12621,7 +12648,7 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         band = (hsr or {}).get("band", "")
         if hsr is None:
             ax("Health", "na", "not scored", "not_collected")
-        elif band == "Insufficient Data":
+        elif band == HEALTH_BAND_NOT_MEASURED:
             ax("Health", "na", "not scored — collection gap", "not_collected")
         elif band == "Critical":
             ax("Health", "risk", f"health Critical ({hsr.get('score', '')}/100)")
@@ -12788,9 +12815,10 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         else:
             ax("QoS posture", "ok", "QoS posture consistent")
 
-        # A recognized health-score record proves the physical interface scan ran. Protocol
-        # conclusions use their separate seven-family receipt below.
-        scanned = hsr is not None and band in ("Excellent", "Good", "Fair", "Poor", "Critical")
+        # A recognized health-score record proves the physical interface scan ran; the measured labels are read
+        # from their owner (_HEALTH_BAND_LABELS), so the not-measured band and any unrecognised label never
+        # license an 'ok' by silence. Protocol conclusions use their separate seven-family receipt below.
+        scanned = hsr is not None and band in _HEALTH_BAND_LABELS
         phys = [r for r in phy_by.get(host, [])
                 if r.get("severity") not in (None, "", "Info", "OK")]
         hard_phy = [r for r in phys
@@ -12803,7 +12831,7 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             ax("Physical", "ok", "no L1 findings", "published" if host in phy_by else "collected_but_empty")
         else:
             ax("Physical", "na", "device not interface-scanned / collection gap",
-               "analysis_unavailable" if hsr is not None and band != "Insufficient Data" else "not_collected")
+               "analysis_unavailable" if hsr is not None and band != HEALTH_BAND_NOT_MEASURED else "not_collected")
 
         protos = proto_by.get(host, [])
         p_sevs = {r.get("severity") for r in protos}
@@ -12928,7 +12956,7 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         # Banding it "Low / no stacked risk" would read a collection GAP as a clean bill of health
         # (the exact false-health the doctrine forbids). Distinct band so it never inflates the risk
         # view yet is counted + visible. (Meridian: the 50 not-collected devices.)
-        if band == "Insufficient Data" and n_risk == 0 and n_watch == 0:
+        if band == HEALTH_BAND_NOT_MEASURED and n_risk == 0 and n_watch == 0:
             risk_band = "Unassessed"
 
         # -- the engineer's one-sentence verdict ------------------------------

@@ -202,14 +202,94 @@ def _rechain(material: dict[str, Any], **changes: Any) -> bytes:
     return decision.canonical_json_bytes(receipt)
 
 
+def _standalone_lf_exact_subject(source: Path, destination: Path) -> Path:
+    """A builder subject holding exactly `source`'s HEAD commit and its whole ancestry.
+
+    The candidate builder admits only a release-custody repository: a standalone Git directory (not a
+    linked worktree), the full history, LF-exact `core.autocrlf=false` / `core.eol=lf` /
+    `core.safecrlf=true`, and a clean tracked tree. Those are properties of a custody repository, not
+    of whatever checkout runs the suite (W5-X1, measured: a linked worktree fails
+    STANDALONE_GIT_DIRECTORY_REQUIRED, and a CI-style full clone fails
+    LF_EXACT_GIT_CONFIG_MISSING), so the subject is materialized here the way a custody repository
+    is made -- the same commit, fetched with its ancestry into a fresh LF-exact repository -- and the
+    running checkout's own Git configuration is never consulted or changed. A shallow source stays
+    shallow: without `--update-shallow` Git REJECTS a shallow source's HEAD while still exiting 0
+    (measured, git 2.55: "rejected HEAD because shallow roots are not allowed to be updated", no
+    FETCH_HEAD), so the boundary is carried explicitly and the builder's full-history refusal still
+    applies to it. The fetched commit is required to be the source's HEAD, never assumed."""
+    destination.mkdir()
+    _git(destination, "init", "-q")
+    _git(destination, "config", "core.autocrlf", "false")
+    _git(destination, "config", "core.eol", "lf")
+    _git(destination, "config", "core.safecrlf", "true")
+    _git(destination, "fetch", "-q", "--update-shallow", "--no-tags", str(source), "HEAD")
+    fetched = _git(destination, "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}")
+    assert fetched == _git(source, "rev-parse", "HEAD"), (fetched, source)
+    _git(destination, "checkout", "-q", "--detach", fetched)
+    return destination
+
+
+def test_the_successor_subject_is_standalone_lf_exact_and_this_exact_commit_from_any_checkout(
+    tmp_path: Path,
+) -> None:
+    """W5-X1: the integration below must not depend on the checkout that runs the suite. Measured on
+    a real source repository shaped like a CI runner's checkout (CRLF-converting `core.autocrlf=true`,
+    no `core.eol`/`core.safecrlf`) and on a real linked worktree of it: the builder refuses both as
+    they are, and accepts the subject materialized from either -- the same commit and tree, LF-exact.
+    A real depth-1 clone stays shallow through the materialization, so the builder's full-history
+    refusal is what the integration's shallow skip declares, not an environment guess."""
+    source = tmp_path / "runner-checkout"
+    source.mkdir()
+    _git(source, "init", "-q", "-b", "main")
+    _git(source, "config", "user.name", "Atlas Test")
+    _git(source, "config", "user.email", "atlas-test@example.invalid")
+    _git(source, "config", "core.autocrlf", "true")
+    (source / ".gitattributes").write_bytes(b"*.py text eol=lf\n")
+    (source / "README.md").write_bytes(b"# runner checkout\n")
+    (source / "tool.py").write_bytes(b"print('atlas')\n")
+    _git(source, "add", "--all")
+    _git(source, "commit", "-q", "-m", "first")
+    (source / "README.md").write_bytes(b"# runner checkout\nsecond\n")
+    _git(source, "commit", "-q", "-am", "second")
+    linked = tmp_path / "linked-worktree"
+    _git(source, "worktree", "add", "-q", "--detach", str(linked), "HEAD")
+    commit = _git(source, "rev-parse", "HEAD")
+    tree = _git(source, "rev-parse", "HEAD^{tree}")
+
+    with pytest.raises(candidate.CandidatePackageError, match="LF_EXACT_GIT_CONFIG_(MISSING|REQUIRED)"):
+        candidate._read_subject(source)
+    with pytest.raises(candidate.CandidatePackageError, match="STANDALONE_GIT_DIRECTORY_REQUIRED"):
+        candidate._read_subject(linked)
+
+    for name, checkout in (("from-checkout", source), ("from-linked-worktree", linked)):
+        subject = candidate._read_subject(_standalone_lf_exact_subject(checkout, tmp_path / name))
+        assert (subject.commit, subject.tree) == (commit, tree)
+        assert (subject.core_autocrlf, subject.core_eol, subject.core_safecrlf) == ("false", "lf", "true")
+        assert _git(subject.repository, "rev-list", "--count", "HEAD") == "2"
+    # the running checkout's own configuration is untouched
+    assert _git(source, "config", "--get", "core.autocrlf") == "true"
+
+    shallow = tmp_path / "depth-1-clone"
+    _git(tmp_path, "clone", "-q", "--depth", "1", source.as_uri(), str(shallow))
+    materialized = _standalone_lf_exact_subject(shallow, tmp_path / "from-shallow")
+    assert _git(materialized, "rev-parse", "--is-shallow-repository") == "true"
+    with pytest.raises(candidate.CandidatePackageError, match="FULL_GIT_HISTORY_REQUIRED"):
+        candidate._read_subject(materialized)
+
+
 def test_successor_package_binds_and_exercises_this_exact_binder_source(
     tmp_path: Path,
 ) -> None:
-    repository = Path(__file__).resolve().parents[1]
-    if _git(repository, "rev-parse", "--is-shallow-repository") == "true":
+    checkout = Path(__file__).resolve().parents[1]
+    if _git(checkout, "rev-parse", "--is-shallow-repository") == "true":
         pytest.skip("exact successor package integration requires a non-shallow repository")
-    commit = _git(repository, "rev-parse", "HEAD")
-    tree = _git(repository, "rev-parse", "HEAD^{tree}")
+    commit = _git(checkout, "rev-parse", "HEAD")
+    tree = _git(checkout, "rev-parse", "HEAD^{tree}")
+    repository = _standalone_lf_exact_subject(checkout, tmp_path / "successor-subject")
+    assert (_git(repository, "rev-parse", "HEAD"), _git(repository, "rev-parse", "HEAD^{tree}")) == (
+        commit,
+        tree,
+    )
     package = tmp_path / "successor-package"
     candidate.build_package(
         repository,

@@ -5,6 +5,7 @@
  * trustworthy: `null` means NOT OBSERVED. It never means zero, healthy, or absent-therefore-fine.
  * Any renderer that turns a `null` into a green tick is a coverage-honesty defect.
  */
+import { ENGINE_VOCABULARIES } from "./vocab";
 
 /** A dotted path back into the source snapshot, e.g. `punchlist[12]` or `acls.core1.MGMT_IN[3]`. */
 export type Cite = string;
@@ -35,11 +36,14 @@ declare const UNRECOGNISED: unique symbol;
 export type Unrecognised = string & { readonly [UNRECOGNISED]: true };
 
 /*
- * THE CLOSED VOCABULARIES, owned here for Atlas Scope. Each mirrors an ENGINE constant that the engine contract
- * (contracts/engine-contract.v1.json) does not yet project, so none can be read from it: severity mirrors
- * cisco_toolkit/analyze.py `_APP_SEV_RANK`; band mirrors `_HEALTH_BANDS` (the five SCORED bands) plus the engine's
- * own not-measured band, NOT_MEASURED_BAND below; kind mirrors `_KIND_RANK` plus the "device" every collected host is
- * given. Membership is decided by the recognisers below and nowhere else.
+ * THE CLOSED VOCABULARIES are the ENGINE's (ADR 0007 D9), read from the engine contract by core/vocab.ts — never
+ * restated here. cisco_toolkit/analyze.py `engine_contract_projection` projects them into
+ * contracts/engine-contract.v1.json: severity from `_APP_SEV_RANK` (most severe first); band from `_HEALTH_BANDS`
+ * (the five SCORED bands, highest first) with the engine's own not-measured band, NOT_MEASURED_BAND below, marked
+ * apart (`HEALTH_BAND_NOT_MEASURED`); kind from `CABLE_MAP_COLLECTED_KIND` (the "device" every collected host is given)
+ * plus `_KIND_RANK`. The unions below exist so a table can be typed by a vocabulary; core/vocab.contract.test.ts fails
+ * when a union and the contract disagree, in either direction. Membership is decided by the recognisers below, which
+ * test against the contract's lists, and nowhere else.
  *
  * A grouping, tally or ordering over one of these places EVERY record (2026-10-01 refuter: the queue grouped by
  * severity dropped every finding whose severity the vocabulary does not name, and the device pane's tally read
@@ -51,20 +55,24 @@ export type Severity = "Critical" | "High" | "Medium" | "Low" | "Info";
 export type Band = "Excellent" | "Good" | "Fair" | "Poor" | "Critical";
 export type OpStatus = "up" | "down" | "unknown" | string;
 
-export const SEVERITY_ORDER: readonly Severity[] = ["Critical", "High", "Medium", "Low", "Info"];
-export const BAND_ORDER: readonly Band[] = ["Excellent", "Good", "Fair", "Poor", "Critical"];
+/** Severities in the engine's rank, most severe first (contract `severities`). */
+export const SEVERITY_ORDER: readonly Severity[] = ENGINE_VOCABULARIES.severities as readonly Severity[];
+/** The scored health bands, highest first (contract `health_bands.scored`). */
+export const BAND_ORDER: readonly Band[] = ENGINE_VOCABULARIES.scoredBands as readonly Band[];
 /**
- * The ENGINE'S OWN NOT-MEASURED BAND. cisco_toolkit/analyze.py `compute_health_scores` writes it for a host whose data
- * quality was never measured, fell below the threshold, or whose interface parse yielded nothing ("collection gap /
- * unparseable != healthy"), and `_APP_BAND_RANK` / `_CRIT_WEIGHTS` name it beside the five scored bands; the engine
- * excludes such rows from its own score statistics. It is a STATED ABSENCE of a measurement, not a health verdict and
- * not an unknown word: it is shown as "not measured" — indeterminate, never healthy, never scored (the number the
- * engine publishes beside it is not a measurement: core/band-qualification.ts `measuredScore`), never a band colour.
+ * The ENGINE'S OWN NOT-MEASURED BAND (contract `health_bands.not_measured`). cisco_toolkit/analyze.py
+ * `compute_health_scores` writes it for a host whose data quality was never measured, fell below the threshold, or
+ * whose interface parse yielded nothing ("collection gap / unparseable != healthy"), and `_APP_BAND_RANK` /
+ * `_CRIT_WEIGHTS` name it beside the five scored bands; the engine excludes such rows from its own score statistics.
+ * It is a STATED ABSENCE of a measurement, not a health verdict and not an unknown word: it is shown as "not
+ * measured" — indeterminate, never healthy, never scored (the number the engine publishes beside it is not a
+ * measurement: core/band-qualification.ts `measuredScore`), never a band colour.
  */
-export const NOT_MEASURED_BAND = "Insufficient Data";
-export type NotMeasuredBand = typeof NOT_MEASURED_BAND;
-export const DEVICE_KINDS = ["device", "switch", "router", "firewall", "ap", "phone", "endpoint", "unknown"] as const;
-export type DeviceKind = (typeof DEVICE_KINDS)[number];
+export type NotMeasuredBand = "Insufficient Data";
+export const NOT_MEASURED_BAND: NotMeasuredBand = ENGINE_VOCABULARIES.notMeasuredBand as NotMeasuredBand;
+/** The node kinds: the collected-host kind, then the engine classifier's kinds (contract `node_kinds`). */
+export type DeviceKind = "device" | "switch" | "router" | "firewall" | "ap" | "phone" | "endpoint" | "unknown";
+export const DEVICE_KINDS: readonly DeviceKind[] = ENGINE_VOCABULARIES.nodeKinds as readonly DeviceKind[];
 /** The closed vocabularies, by the name every surface uses for them. */
 export type VocabularyName = "severity" | "band" | "kind";
 
@@ -88,6 +96,12 @@ export const SEVERITY_NOT_STATED = "severity not stated";
 /** A compiled severity in words: the member itself, `unrecognised severity "…"`, or "severity not stated". */
 export const severityWords = (severity: string | null): string =>
   severity === null ? SEVERITY_NOT_STATED : recognisedSeverity(severity) ? severity : unrecognisedPhrase("severity", severity);
+/** How every surface names a device whose kind no record states: never "switch", never the engine's classifier verdict
+ *  "unknown" (which IS a statement — about a mapped neighbour it could not identify). */
+export const KIND_NOT_STATED = "kind not stated";
+/** A compiled kind in words: the member itself, `unrecognised kind "…"`, or "kind not stated". */
+export const kindWords = (kind: string | null): string =>
+  kind === null ? KIND_NOT_STATED : recognisedKind(kind) ? kind : unrecognisedPhrase("kind", kind);
 
 export interface FailureImpact {
   severity: string | null;
@@ -107,8 +121,9 @@ export interface Device {
   collected: boolean;
   /** Is there an inventory record (model/serial/software) for it? */
   inventoried: boolean;
-  /** The engine node kind (`cable_map.nodes[host=…].kind`), or an Unrecognised value it wrote (see `recognisedKind`). */
-  kind: DeviceKind | Unrecognised;
+  /** The engine node kind (`cable_map.nodes[host=…].kind`), an Unrecognised value it wrote (see `recognisedKind`), or
+   *  null when no record states one — NOT STATED, never a defaulted "switch" or "unknown" (`kindWords`, KIND_NOT_STATED). */
+  kind: DeviceKind | Unrecognised | null;
   role: string | null;
   tier: number | null;
   order: number;

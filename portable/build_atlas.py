@@ -2,16 +2,21 @@
 
     python portable/build_atlas.py [--skip-build] [--port 8479]
 
-Refuses to build with missing assets, runs PyInstaller over portable/atlas.spec, then copies the
-RESULT into an isolated field-layout directory and proves it the same way the field would:
+Refuses to build with missing assets — or with an Atlas Scope build that is not a /scope
+runtime-source hub build — naming the exact commands that produce each (:func:`build_refusal`),
+runs PyInstaller over portable/atlas.spec, then copies the RESULT into an isolated field-layout
+directory and proves it the same way the field would:
 
 1. ``Atlas.exe --selftest``     must exit 0 with every check green (fail-loud assets all bundled)
+   and print each :data:`REQUIRED_SELFTEST_LINES` line exactly, ``[ ok ] atlas-scope-dist`` among them
 2. ``Atlas.exe --version``      must report the checkout release (never stale pip metadata)
 3. ``Atlas.exe --run-engine --help``  must reach the ENGINE's argparse (the frozen dispatch child)
    while writing its audit log only under ``Atlas\\data``; every other bundle member remains exact
 4. boot the server, then over HTTP: /api/health, /api/meta (app identity block), a synthetic demo's
-   schema-validated UI projection and paging, and / must serve the SPA's index.html. The demo is
-   written only inside the temporary field-layout copy's detached runtime data.
+   schema-validated UI projection and paging, and / must serve the SPA's index.html — proving the bundled
+   webapp_dist is found via the _MEIPASS probe — and /scope/ must answer 200 with the bundled Atlas Scope
+   shell carrying the runtime-source meta (:func:`scope_shell_gap`). The demo is written only inside the
+   temporary field-layout copy's detached runtime data.
 
 Exit code is non-zero on the first failed step. The bundle lands at portable/dist/Atlas/.
 """
@@ -47,7 +52,14 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-from portable.atlas_bundle import exe_name, missing_data_sources, root_files  # noqa: E402
+from portable.atlas_bundle import (  # noqa: E402
+    BUILD_OUTPUTS,
+    SCOPE_DIST_DEST,
+    SCOPE_DIST_SOURCE,
+    exe_name,
+    missing_data_sources,
+    root_files,
+)
 from portable.windows_version_info import version_expectations, version_strings  # noqa: E402
 
 DIST = ROOT / "portable" / "dist" / exe_name()
@@ -173,6 +185,66 @@ def version_gap(stdout: str, expected: str) -> str:
     return ""
 
 
+#: Lines the frozen ``--selftest`` must print, each EXACTLY (serve.run_selftest owns every name;
+#: tests/test_atlas_bundle.py reconciles them against serve.py). Exit 0 alone is not enough: the
+#: offline boundary must be proved in its exact mode, and on a frozen bundle the Atlas Scope build
+#: must be one AssessHub would serve — a checkout-style "[ -- ] atlas-scope-dist" (not applicable)
+#: still exits 0, and would ship a stick whose /scope answers "not built".
+REQUIRED_SELFTEST_LINES = (
+    "  [ ok ] network-boundary [offline-loopback-only]",
+    "  [ ok ] atlas-scope-dist",
+    # The frozen bundle carries the reviewed jsonschema private interface the UI projection relies on.
+    "  [ ok ] ui-projection-legacy-resolver",
+)
+
+#: PyInstaller >= 6 one-folder contents directory (``sys._MEIPASS``), where the spec's datas land.
+BUNDLE_CONTENTS_DIR = "_internal"
+#: Upper bound on the /scope shell the smoke reads (the real shell is a few KiB).
+SCOPE_SHELL_READ_LIMIT = 2 * 1024 * 1024
+
+
+def selftest_gap(stdout: str) -> str:
+    """Which required selftest lines are absent from ``stdout`` (exact line match), or ""."""
+    printed = {line.rstrip() for line in (stdout or "").splitlines()}
+    absent = [line.strip() for line in REQUIRED_SELFTEST_LINES if line not in printed]
+    if not absent:
+        return ""
+    return (f"selftest did not print the required line(s) {absent!r}: the frozen offline network "
+            "boundary must be proved in its exact mode, the bundled Atlas Scope build must be one "
+            "AssessHub serves at /scope, and the frozen reviewed jsonschema private interface must "
+            "be present")
+
+
+def scope_shell_gap(status: int, content_type: str, body: bytes, bundled_shell: bytes) -> str:
+    """Why a ``GET /scope/`` answer does not prove the stick serves its own Atlas Scope view, or "".
+
+    Required: 200, an HTML document, a shell AssessHub reads as a runtime-source hub shell (its
+    own reader, ``app._scope_shell_reading`` — exactly one ``atlas-scope-snapshot-source`` meta
+    declaring ``assesshub-api-runtime``), and the byte-exact bundled ``atlas_scope_dist/index.html``
+    (so a shell served from anywhere else — or AssessHub's own SPA shell — is not taken as proof)."""
+    from webapp.backend import app as app_module  # lazy: pulls fastapi
+
+    if status != 200:
+        return f"GET /scope/ answered HTTP {status}, not 200 — the bundled Atlas Scope view is not served"
+    if content_type.split(";", 1)[0].strip().casefold() != "text/html":
+        return f"GET /scope/ answered {content_type!r}, not an HTML document"
+    if len(body) > SCOPE_SHELL_READ_LIMIT:
+        return f"GET /scope/ answered more than {SCOPE_SHELL_READ_LIMIT} bytes"
+    # The reader's own reason (VQF-2): it refuses a shell for more than a missing runtime-source
+    # meta (RQF-V2-1: markup in a raw-text element, an element that never ends, not UTF-8), so a
+    # fixed wording would name the wrong cause for a shell that carries the meta.
+    reason = app_module._scope_shell_tokens(body)
+    if isinstance(reason, str):
+        return (f"GET /scope/ did not serve a runtime-source hub shell: AssessHub's reader refuses "
+                f"it ({reason}; the hub shell declares <meta "
+                f"name=\"{app_module._SCOPE_RUNTIME_SOURCE_META}\" "
+                f"content=\"{app_module._SCOPE_RUNTIME_SOURCE_VALUE}\"> exactly once)")
+    if body != bundled_shell:
+        return (f"GET /scope/ served a shell that is not the bundled "
+                f"{SCOPE_DIST_DEST}/index.html byte for byte")
+    return ""
+
+
 def windows_version_info_gap(observed: dict, expected: dict) -> str:
     """Return why the PE string table does not match its exact source owners, or ``""``."""
     missing = {
@@ -227,11 +299,69 @@ def _windows_version_info(
     return value
 
 
+#: What produces each build output the bundle ships, as commands run one per line from the repository
+#: root (a person pastes them into Windows PowerShell 5.1, where ``&&`` is a parser error). Keyed by
+#: :data:`portable.atlas_bundle.BUILD_OUTPUTS`; ``tests/test_atlas_bundle.py`` fails when a build
+#: output has no entry here, so a new one cannot be refused without saying how to make it.
+BUILD_OUTPUT_COMMANDS = {
+    "webapp/frontend/dist": ("cd webapp/frontend", "npm ci", "npm run build"),
+    SCOPE_DIST_SOURCE: ("cd atlas-scope", "npm ci", "npm run build:hub"),
+}
+
+
+def _how_to_build(output: str) -> str:
+    return "\n".join(["  Run, from the repository root:"]
+                     + [f"    {command}" for command in BUILD_OUTPUT_COMMANDS[output]])
+
+
+def build_refusal(root: Path) -> str:
+    """Why a bundle must not be built from ``root`` (and exactly what to run), or "".
+
+    Two ways the Atlas Scope hub build can be unfit, both refused before PyInstaller runs: it is
+    absent (a missing source, as atlas.spec also refuses), or it is PRESENT but is not a /scope
+    runtime-source hub build — the standalone root-mounted build, a shell without the
+    runtime-snapshot declaration, a build carrying compiled evidence. The second is judged by the
+    very index AssessHub serves /scope from (``app._scope_file_index``), so the build refuses
+    exactly what the frozen app would refuse, rather than shipping a stick whose --selftest fails."""
+    root = Path(root)
+    missing = missing_data_sources(root)
+    reasons: list[str] = []
+    outputs_missing = set()
+    for output in BUILD_OUTPUTS:
+        base = root / output
+        absent = [path for path in missing if Path(path) == base or Path(path).is_relative_to(base)]
+        if absent:
+            outputs_missing.add(output)
+            reasons.append(f"{output} is missing ({len(absent)} required path(s) absent).\n"
+                           + _how_to_build(output))
+    others = [path for path in missing
+              if not any(Path(path) == root / output or Path(path).is_relative_to(root / output)
+                         for output in BUILD_OUTPUTS)]
+    if others:
+        # one checkout path per line, as a person would act on it (never a list repr whose doubled
+        # backslashes cannot be pasted)
+        named = [Path(path).relative_to(root).as_posix() if Path(path).is_relative_to(root) else str(path)
+                 for path in others]
+        reasons.append("tracked bundle assets are missing from this checkout:\n"
+                       + "\n".join(f"    {path}" for path in named))
+    if SCOPE_DIST_SOURCE not in outputs_missing:
+        from webapp.backend import app as app_module  # lazy: pulls fastapi
+
+        status = app_module._scope_file_index(root / SCOPE_DIST_SOURCE)[0]
+        if status != "ready":
+            reasons.append(
+                f"{SCOPE_DIST_SOURCE} is present but is not a /scope runtime-source hub build "
+                f"({status}): {app_module._SCOPE_UNAVAILABLE_DETAIL.get(status, status)}\n"
+                + _how_to_build(SCOPE_DIST_SOURCE))
+    if not reasons:
+        return ""
+    return "Refusing to build an Atlas bundle:\n" + "\n".join(f"- {reason}" for reason in reasons)
+
+
 def build() -> None:
-    missing = missing_data_sources(ROOT)
-    if missing:
-        raise SystemExit(f"missing bundle assets: {missing}\n"
-                         "Build the frontend first: cd webapp/frontend && npm ci && npm run build")
+    refusal = build_refusal(ROOT)
+    if refusal:
+        raise SystemExit(refusal)
     # A release build never consumes a prior PyInstaller analysis or mixed dist tree.
     for generated in (ROOT / "portable" / "build", DIST):
         resolved = generated.resolve(strict=False)
@@ -375,13 +505,9 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
         print("\n".join("    " + ln for ln in (p.stdout or "").strip().splitlines()))
         if p.returncode != 0:
             raise SystemExit(f"selftest FAILED (exit {p.returncode})\n{p.stderr}")
-        network_line = "  [ ok ] network-boundary [offline-loopback-only]"
-        if network_line not in p.stdout:
-            raise SystemExit(
-                "selftest did not prove the frozen offline network boundary in its exact mode"
-            )
-        if "  [ ok ] ui-projection-legacy-resolver" not in p.stdout:
-            raise SystemExit("selftest did not prove the frozen reviewed jsonschema private interface")
+        gap = selftest_gap(p.stdout)
+        if gap:
+            raise SystemExit(gap)
 
         print("[smoke 2/4] --version")
         p = _run([str(exe), "--version"], timeout=120, env=runtime_env, cwd=smoke_bundle)
@@ -463,6 +589,27 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
             if "<div id=\"root\"" not in index and "<script" not in index:
                 raise SystemExit(f"/ did not serve the SPA index: {index[:200]!r}")
             print("    / serves the bundled SPA (webapp_dist found via _MEIPASS)")
+
+            bundled_shell_path = (smoke_bundle / BUNDLE_CONTENTS_DIR / SCOPE_DIST_DEST
+                                  / "index.html")
+            if not bundled_shell_path.is_file():
+                raise SystemExit(f"the bundle carries no {SCOPE_DIST_DEST}/index.html under "
+                                 f"{BUNDLE_CONTENTS_DIR} — /scope/ has no shell to serve")
+            req = urllib.request.Request(base + "/scope/", headers={"Accept": "text/html"})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    scope_status = r.status
+                    scope_type = r.headers.get("Content-Type", "") or ""
+                    scope_body = r.read(SCOPE_SHELL_READ_LIMIT + 1)
+            except urllib.error.HTTPError as refused:
+                scope_status = refused.code
+                scope_type = (refused.headers.get("Content-Type", "") if refused.headers else "") or ""
+                scope_body = b""
+            gap = scope_shell_gap(scope_status, scope_type, scope_body,
+                                  bundled_shell_path.read_bytes())
+            if gap:
+                raise SystemExit(gap)
+            print("    /scope/ serves the bundled Atlas Scope runtime-source hub shell")
         finally:
             _stop_server(srv)
 
@@ -490,6 +637,7 @@ def smoke(port: int, *, dist: Path = DIST, environment: dict[str, str] | None = 
         "version": "pass",
         "engine_help": "pass",
         "loopback_http_api_spa": "pass",
+        "loopback_http_scope_runtime_shell": "pass",
         "standard_socket_tcp_udp_dns_denied_loopback_retained": "pass",
     }
 

@@ -38,11 +38,15 @@ CycloneDX attestations. `python portable/build_atlas.py`
 remains the focused developer build + smoke entry point.
 
 The bundle lands at `portable/dist/Atlas/`. The build **refuses** to run with missing assets
-(KB packs, explorer template, dist, sample fleet, pyproject) — the same fail-loud doctrine as
+(KB packs, explorer template, dist, sample fleet, pyproject, and the Atlas Scope hub build, which is
+refused when absent or not a /scope runtime-source build, naming `cd atlas-scope`, `npm ci` and
+`npm run build:hub` one command per line) — the same fail-loud doctrine as
 `--selftest`, applied before the field ever sees it. The smoke then proves the result like a
 hostile reviewer: `--selftest` all green, `--version` (checkout release, never stale pip metadata),
 `--run-engine --help` reaches the real engine argparse, and an HTTP pass over `/api/health`,
-`/api/meta` (app-identity block) and `/` (the bundled SPA via the `_MEIPASS/webapp_dist` probe).
+`/api/meta` (app-identity block) and `/` (the bundled SPA via the `_MEIPASS/webapp_dist` probe),
+and `/scope/` (200 with the bundled Atlas Scope runtime-source shell, byte-identical to
+`atlas_scope_dist/index.html`).
 The PE `VERSIONINFO` is generated in memory from `pyproject.toml`, the Atlas brand owner, and
 `LICENSE`; the real-binary smoke fails if Windows does not report the exact product, company,
 original filename, and release strings used by publisher/version policy.
@@ -163,8 +167,16 @@ draft-only until a separate reviewed signed-candidate/promotion contract exists.
   10/11 baseline `/o 2:10.0.0`; its receipt remains explicitly non-promoting.
 - Windows-only, x64-only (build host = target architecture). Updates are operator-initiated and
   staged; there is no unattended network updater.
-- Python/npm package license texts are embedded when installed packages omit them through two
-  source-pinned fallbacks. IANA/IEEE/Cisco dataset source/hash notices are also embedded, but IEEE
+- The production (non-dev) `package-lock.json` graphs of BOTH bundled frontends — `webapp/frontend`
+  and `atlas-scope` — are inventoried against reviewed counts and digests, together with the
+  build-attributed packages: those beyond the production graph whose code a shipped build carries
+  (today the bundler's runtime modules), derived from the built module graph and reviewed against
+  `release_contract.EXPECTED_BUILD_ONLY_NPM_PACKAGES`. Release metadata carries
+  `atlas.portable-third-party-notices/2` alongside `atlas.portable-toolchain-receipt/2` and
+  `atlas.portable-qualification/2`. A package carrying a `/1` document of any of these is refused as
+  superseded, with the stated reason, never migrated: verify it with the checkout that built it, or
+  rebuild it. Python/npm package license
+  texts are embedded when installed packages omit them through two source-pinned fallbacks. IANA/IEEE/Cisco dataset source/hash notices are also embedded, but IEEE
   OUI and Cisco-fact public redistribution authority remains an explicit legal-review gate; a draft
   candidate does not close it.
 - The `(checkout)` suffix in `--version` is honest: the bundle reports the pyproject release it

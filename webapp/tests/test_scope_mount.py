@@ -36,7 +36,8 @@ import shutil
 import subprocess
 import sys
 import urllib.parse
-from pathlib import Path
+from html.parser import HTMLParser
+from pathlib import Path, PurePosixPath
 
 import anyio
 import pytest
@@ -51,6 +52,50 @@ from frontend_fixture import write_frontend_dist  # noqa: E402
 SCOPE_MARKER = "ATLAS-SCOPE-SHELL"
 SPA_MARKER = "ASSESSHUB-SPA-SHELL"
 _NOT_BUILT = "Atlas Scope is not built in this installation"
+
+
+def _source_shell_inline_scripts() -> list[str]:
+    """The inline classic scripts of the shell the hub build is made from (atlas-scope/index.html):
+    Vite copies them verbatim into the hub shell. The fixture shell carries the same one, so the
+    fixture exercises the reader's real accept-list, not a script only a test would write."""
+    source = (Path(__file__).resolve().parents[2] / "atlas-scope" / "index.html").read_text(
+        encoding="utf-8")
+
+    class _InlineClassicScripts(HTMLParser):
+        """Collects the body of every <script> that has no ``src`` and no module ``type``. The
+        parser lower-cases tag names and reads a script's body as raw text, so an upper-case tag or a
+        ``<`` inside the body cannot make it miss a script the way a tag regex would (CodeQL
+        py/bad-tag-filter on the regex this replaces)."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.bodies: list[str] = []
+            self._open = False
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            attributes = dict(attrs)
+            classic = (attributes.get("type") or "").strip().lower() in ("", "text/javascript")
+            self._open = tag == "script" and "src" not in attributes and classic
+
+        def handle_data(self, data: str) -> None:
+            if self._open:
+                self.bodies.append(data)
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag == "script":
+                self._open = False
+
+    parser = _InlineClassicScripts()
+    parser.feed(source.replace("\r\n", "\n"))
+    parser.close()
+    assert parser.bodies, "atlas-scope/index.html carries no inline classic script for the fixture to copy"
+    return parser.bodies
+
+
+_THEME_BOOT = _source_shell_inline_scripts()[0]
+#: The fixture shell's icon: without one, a browser requests the origin's /favicon.ico -- outside
+#: /scope (measured in Chromium's full headless and headed modes; RQF-V1-4).
+_SHELL_ICON = '<link rel="icon" href="data:image/svg+xml,%3Csvg%3E%3C/svg%3E">'
 
 
 def write_scope_dist(
@@ -79,9 +124,9 @@ def write_scope_dist(
     index = (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"UTF-8\">"
         f"{meta}"
-        "<script>try{var p=localStorage.getItem('t');}catch(e){}</script>"
+        f"<script>{_THEME_BOOT}</script>"
         "<title>Atlas Scope</title>"
-        "<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg%3E%3C/svg%3E\">"
+        f"{_SHELL_ICON}"
         f'<script type="module" crossorigin src="{mount}assets/index-abc123.js"></script>'
         f'<link rel="modulepreload" crossorigin href="{mount}assets/react-def456.js">'
         f'<link rel="stylesheet" crossorigin href="{mount}assets/index-789.css">'
@@ -439,19 +484,44 @@ def test_a_scope_shell_that_declares_its_own_referrer_policy_is_refused(tmp_path
         assert c.app.state.scope_status == "ready"
 
 
-def test_any_html_document_the_scope_mount_serves_may_not_declare_a_referrer_policy(tmp_path):
+#: RQF-V1-6. An HTML page under /scope other than the shell is a page AssessHub would serve with
+#: none of the shell's accept-list -- it could load any URL (measured below in Chromium) or declare
+#: its own referrer policy. The hub build ships none (only index.html, JavaScript and CSS:
+#: test_the_hub_build_ships_no_document_but_its_shell), so every one is refused, whatever it holds
+#: -- the same decision as for XML (QF-V2-1): what AssessHub does not need, it does not judge.
+_HTML_PAGES = {
+    "referrer-meta": '<meta name="referrer" content="no-referrer">',
+    "third-party-image": '<img src="https://third-party.invalid/x">',
+    "outside-scope-script": '<script src="/outside-scope/x.js"></script>',
+    "description-only": '<meta name="description" content="x">',
+    "empty": "",
+}
+
+
+@pytest.mark.parametrize("page", sorted(_HTML_PAGES))
+def test_every_html_page_but_the_shell_is_refused_whatever_it_holds(tmp_path, page):
     """The class is every HTML document served under /scope, not only the shell: an HTML asset at
-    /scope/assets/x.html is a page under /scope too, and its own policy would strip ITS Referer."""
+    /scope/assets/x.html is a page under /scope too. It is refused for being a page at all -- a
+    clean one included -- so no rule for what a page may load or declare needs to hold there."""
+    document = ("<!doctype html><html><head><title>x</title>" + _HTML_PAGES[page]
+                + "</head><body>x</body></html>").encode("utf-8")
+    template = write_scope_dist(tmp_path / "template")
+    assert app_mod._scope_markup_refusal(_scope_members(template)) is None
+    for name in ("assets/x.html", "assets/nested/page.HTML", "assets/x.htm", "other.html"):
+        assert app_mod._scope_markup_kind(app_mod._frontend_media_type(name)) == "html", name
+        members = _scope_members({**template, name: document})
+        assert app_mod._scope_markup_refused(members), f"{name} ({page}) served ready"
+        assert app_mod._scope_markup_refusal(members) == \
+            f"{name}: {app_mod._SCOPE_REFUSED_HTML_PAGE}", (page, name)
     dist = tmp_path / "scope-dist"
-    page = (b"<!doctype html><html><head><meta name=\"referrer\" content=\"no-referrer\"></head>"
-            b"<body>x</body></html>")
-    write_scope_dist(dist, extra_asset=("x.html", page))
+    write_scope_dist(dist, extra_asset=("x.html", document))
     with _client(tmp_path, dist) as c:
-        assert c.app.state.scope_status == "invalid_build"
-    write_scope_dist(dist, extra_asset=("x.html", page.replace(b"referrer", b"description")))
+        assert c.app.state.scope_status == "invalid_build", page
+        assert c.get("/scope/assets/x.html").status_code == 503
+    # the control: the same build without the page is served
+    (dist / "assets" / "x.html").unlink()
     with _client(tmp_path, dist, db_name="control.db") as c:
         assert c.app.state.scope_status == "ready"
-        assert c.get("/scope/assets/x.html").status_code == 200
 
 
 _REPEATED_SHELL_ATTRIBUTES = {
@@ -482,81 +552,641 @@ def test_a_scope_shell_repeating_an_attribute_is_refused_because_a_browser_keeps
         assert c.app.state.scope_status == "ready"
 
 
+#: QF-V2-3. "Every URL the shell loads is a startup-indexed /scope asset" held over a closed
+#: ACCEPT-list of constructs (app._SCOPE_SHELL_ELEMENTS and its attribute rules), never over a list
+#: of URL-bearing attributes: a construct not on the list is refused whatever it is. The generator
+#: below spells a load through every URL-bearing construct enumerated here -- attributes, SVG
+#: xlink:href/href and paint servers, style attributes and elements (url(), image-set(), escapes,
+#: custom properties, @import, @font-face), meta refresh, every link relation, base, srcdoc, inline
+#: and module scripts and event handlers -- to a third-party origin, protocol-relative, and to
+#: same-origin paths outside /scope; real Chromium then proves the property with request
+#: interception (test_no_scope_shell_served_ready_makes_a_request_outside_scope).
+_SHELL_LOAD_URLS = {"third-party": "https://third-party.invalid/x",
+                    "protocol-relative": "//third-party.invalid/x",
+                    "outside-scope": "/outside-scope/x"}
+_SHELL_LOADS = {
+    "img-src": '<img src="{u}">', "img-srcset": '<img srcset="{u} 1x">',
+    "picture-source": '<picture><source srcset="{u}"><img alt=""></picture>',
+    "video-poster": '<video poster="{u}"></video>',
+    "video-src": '<video src="{u}" preload="auto"></video>',
+    "video-source": '<video preload="auto"><source src="{u}"></video>',
+    "audio-src": '<audio src="{u}" preload="auto"></audio>',
+    "track-src": '<video preload="auto"><track default src="{u}"></video>',
+    "object-data": '<object data="{u}"></object>', "embed-src": '<embed src="{u}">',
+    "iframe-src": '<iframe src="{u}"></iframe>',
+    "iframe-srcdoc": '<iframe srcdoc="&lt;img src=&quot;{u}&quot;&gt;"></iframe>',
+    "input-image": '<input type="image" src="{u}">',
+    "table-background": '<table background="{u}"><tr><td>x</td></tr></table>',
+    "td-background": '<table><tr><td background="{u}">x</td></tr></table>',
+    "body-background": '<body background="{u}">',
+    "svg-image-href": '<svg><image href="{u}" width="9" height="9"/></svg>',
+    "svg-image-xlink-href": ('<svg xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="{u}" '
+                             'width="9" height="9"/></svg>'),
+    "svg-use-href": '<svg><use href="{u}#x"/></svg>',
+    "svg-feimage": ('<svg><filter id="f"><feImage href="{u}"/></filter>'
+                    '<rect filter="url(#f)" width="9" height="9"/></svg>'),
+    "svg-paint-server": '<svg><rect fill="url({u}#g)" width="9" height="9"/></svg>',
+    "svg-script-href": '<svg><script href="{u}"></script></svg>',
+    "svg-style-element": '<svg><style>rect{{fill:url({u}#g)}}</style><rect width="9" height="9"/></svg>',
+    "style-url": '<div style="background:url({u})">x</div>',
+    "style-url-quoted": '<div style="background-image:url(&quot;{u}&quot;)">x</div>',
+    "style-image-set": '<div style="background-image:image-set(&quot;{u}&quot; 1x)">x</div>',
+    "style-webkit-image-set": '<div style="background-image:-webkit-image-set(url({u}) 1x)">x</div>',
+    "style-escaped-url": '<div style="background:u\\72l({u})">x</div>',
+    "style-commented-url": '<div style="background:u/**/rl({u})">x</div>',
+    "style-custom-property": '<div style="--x:url({u});background:var(--x)">x</div>',
+    "style-list-style-image": '<ul style="list-style-image:url({u})"><li>x</li></ul>',
+    "style-border-image": '<div style="border:1px solid;border-image:url({u}) 1">x</div>',
+    "style-mask-image": '<div style="-webkit-mask-image:url({u});mask-image:url({u})">x</div>',
+    "style-content": '<div style="content:url({u})">x</div>',
+    "style-cursor": '<div style="cursor:url({u}),auto">x</div>',
+    "style-element-url": "<style>body{{background:url({u})}}</style>",
+    "style-element-import": "<style>@import url({u});</style>",
+    "style-element-import-string": '<style>@import "{u}";</style>',
+    "style-element-font-face": ("<style>@font-face{{font-family:q;src:url({u})}}"
+                                "body{{font-family:q}}</style>"),
+    "meta-refresh": '<meta http-equiv="refresh" content="0;url={u}">',
+    "meta-link-header": '<meta http-equiv="Link" content="&lt;{u}&gt;; rel=preload; as=image">',
+    **{f"link-{rel}": f'<link rel="{rel}" href="{{u}}">'
+       for rel in ("stylesheet", "modulepreload", "prefetch", "icon", "manifest", "preconnect",
+                   "dns-prefetch", "alternate stylesheet", "apple-touch-icon", "prerender")},
+    "link-preload-image": '<link rel="preload" as="image" href="{u}">',
+    "link-preload-fetch": '<link rel="preload" as="fetch" crossorigin href="{u}">',
+    "link-preload-imagesrcset": '<link rel="preload" as="image" imagesrcset="{u} 1x">',
+    "link-stylesheet-crossorigin": '<link rel="stylesheet" crossorigin href="{u}">',
+    "base-href": '<base href="{u}/">',
+    "script-src": '<script src="{u}"></script>',
+    "script-module-src": '<script type="module" src="{u}"></script>',
+    "script-inline-fetch": '<script>fetch("{u}")</script>',
+    "script-inline-module-import": '<script type="module">import("{u}")</script>',
+    "img-onerror": '<img src="data:," onerror="fetch(&quot;{u}&quot;)">',
+    "body-onload": '<body onload="fetch(&quot;{u}&quot;)">',
+    "svg-onload": '<svg onload="fetch(&quot;{u}&quot;)"></svg>',
+    "html-manifest": '<html manifest="{u}">',
+    "a-ping": '<a href="/scope/" ping="{u}">x</a>',
+    "form-action": '<form action="{u}"><button formaction="{u}">x</button></form>',
+    "noscript-img": '<noscript><img src="{u}"></noscript>',
+    "template-img": "<template><img src=\"{u}\"></template>",
+    "math-href": '<math href="{u}"><mi>x</mi></math>',
+}
+#: Constructs the accept-list admits: they carry a URL-shaped value where no browser loads it, or
+#: load only a startup-indexed /scope asset. Each must be served ready AND load nothing outside
+#: /scope in Chromium -- the non-vacuity half (a list that refused everything would prove nothing).
+_SHELL_INERT = {
+    "data-attribute": '<div data-src="{u}">x</div>',
+    "aria-attribute": '<span aria-label="{u}">x</span>',
+    "title-attribute": '<p title="url({u})">x</p>',
+    "class-attribute": '<p id="x" class="{u}">x</p>',
+    "meta-description": '<meta name="description" content="{u}">',
+    "style-inert": '<p style="margin:0;color:var(--text,CanvasText);width:calc(100% - 2px)">x</p>',
+    "modulepreload-indexed": '<link rel="modulepreload" crossorigin href="/scope/assets/react-def456.js">',
+    "stylesheet-indexed": '<link rel="stylesheet" href="/scope/assets/index-789.css">',
+}
+
+
+def _shell_family() -> dict[str, tuple[str, bool]]:
+    """id -> (fragment for the fixture shell (_shell_with), whether the reader must REFUSE it:
+    every construct that loads -- ids `load:` -- and the few it refuses conservatively, `refused:`;
+    the inert ones, `inert:`, it must serve)."""
+    family = {}
+    for construct, template in _SHELL_LOADS.items():
+        for url_id, url in _SHELL_LOAD_URLS.items():
+            family[f"load:{construct}:{url_id}"] = (template.format(u=url), True)
+    for construct, template in _SHELL_INERT.items():
+        family[f"inert:{construct}"] = (template.format(u=_SHELL_LOAD_URLS["third-party"]), False)
+    # a relation the list does not name is refused even over a startup-indexed asset: a manifest's
+    # members name further URLs (icons, start_url) the reader never reads, and the list stays closed
+    for relation in ("manifest", "preload", "prefetch", "alternate stylesheet", "icon stylesheet"):
+        family[f"load:unlisted-relation-{relation.replace(' ', '-')}:indexed"] = (
+            f'<link rel="{relation}" href="/scope/assets/index-789.css">', True)
+    # RQF-V1-4: a shell that declares NO icon in its head makes the browser request the origin's
+    # /favicon.ico, outside /scope, by default -- a load no attribute names. Measured: an icon the
+    # browser meets only after the head has ended (behind body text, a <p>, `</head><body>`) comes
+    # too late, and the default request is made; an icon anywhere in the head is honoured.
+    family["load:icon-absent"] = (_WITHOUT_ICON, True)
+    family["load:icon-in-body"] = (_WITHOUT_ICON + "</head><body><p>x</p>" + _SHELL_ICON, True)
+    family["load:icon-after-body-text"] = (_WITHOUT_ICON + "x" + _SHELL_ICON, True)
+    family["load:icon-after-a-p"] = (_WITHOUT_ICON + "<p>x</p>" + _SHELL_ICON, True)
+    family["load:icon-after-an-empty-div"] = (_WITHOUT_ICON + "<div></div>" + _SHELL_ICON, True)
+    family["load:icon-after-an-empty-span"] = (_WITHOUT_ICON + "<span></span>" + _SHELL_ICON, True)
+    family["load:icon-after-a-body-tag"] = (_WITHOUT_ICON + "<body>" + _SHELL_ICON, True)
+    # refused CONSERVATIVELY (ids `refused:`): measured, the browser makes no default request here
+    # -- a <link> after `</head>` goes back into the head, and `</br>` or `</p>` in the head leaves
+    # the icon honoured -- but the reader keeps its head rule simple: before the icon, no end tag
+    # but the one closing a title or script (_scope_shell_declares_an_icon_in_its_head)
+    family["refused:icon-after-a-closed-head"] = (_WITHOUT_ICON + "</head>" + _SHELL_ICON, True)
+    family["refused:icon-after-a-br-end-tag"] = (_WITHOUT_ICON + "</br>" + _SHELL_ICON, True)
+    family["inert:body-content-after-the-icon"] = ("<p>x</p><div>y</div>", False)
+    # RQF-V2-1: an icon link the markup reader reads but the BROWSER does not build is no icon, and
+    # the browser requests /favicon.ico. The reader reads no element as raw text (a superset of the
+    # browser's reading, safe only for what must be ABSENT), so the shell's positive requirements
+    # must be judged on the browser's own reading. Measured in Chromium (2 of 2 runs each): an icon
+    # inside every element the browser reads as raw text or RCDATA -- with its end tag and without
+    # -- inside a comment, a template or foreign content, and an icon whose `rel` carries a
+    # non-ASCII blank (the browser splits a token list on ASCII whitespace only) all request it;
+    # an icon after a CLOSED title, a `rel` in upper case or padded with ASCII blanks, and an icon
+    # whose data: URL or indexed asset Chromium cannot decode do not (it falls back to no default).
+    for element in _RAW_TEXT_ELEMENTS:
+        family[f"load:icon-inside-{element}"] = (
+            _WITHOUT_ICON + f"<{element}>{_SHELL_ICON}</{element}>", True)
+        family[f"load:icon-inside-an-unclosed-{element}"] = (
+            _WITHOUT_ICON + f"<{element}>{_SHELL_ICON}", True)
+    family["load:icon-inside-an-upper-case-title"] = (_WITHOUT_ICON + f"<TITLE>{_SHELL_ICON}</TITLE>", True)
+    family["load:icon-inside-a-title-closed-with-a-blank"] = (
+        _WITHOUT_ICON + f"<title>{_SHELL_ICON}</title >", True)
+    family["load:icon-inside-a-title-after-its-text"] = (
+        _WITHOUT_ICON + f"<title>x {_SHELL_ICON}</title>", True)
+    family["load:icon-inside-a-comment"] = (_WITHOUT_ICON + f"<!--{_SHELL_ICON}-->", True)
+    family["load:icon-inside-a-template"] = (_WITHOUT_ICON + f"<template>{_SHELL_ICON}</template>", True)
+    family["load:icon-inside-svg"] = (_WITHOUT_ICON + f"<svg>{_SHELL_ICON}</svg>", True)
+    for name, blank in _NON_ASCII_BLANKS.items():
+        family[f"load:icon-rel-ending-in-{name}"] = (
+            _WITHOUT_ICON + _SHELL_ICON.replace('rel="icon"', f'rel="icon{blank}"'), True)
+    family["inert:icon-after-a-closed-title"] = (_WITHOUT_ICON + "<title>x</title>" + _SHELL_ICON, False)
+    family["inert:icon-rel-in-upper-case"] = (
+        _WITHOUT_ICON + _SHELL_ICON.replace('rel="icon"', 'rel="ICON"'), False)
+    family["inert:icon-rel-padded-with-ascii-blanks"] = (
+        _WITHOUT_ICON + _SHELL_ICON.replace('rel="icon"', 'rel=" icon\t"'), False)
+    for name, href in (("data-url-without-a-comma", "data:image/png"),
+                       ("data-url-with-bad-base64", "data:image/png;base64,%%%"),
+                       ("data-url-that-is-no-image", "data:image/png,notanimage"),
+                       ("indexed-asset-that-is-no-image", "/scope/assets/index-789.css")):
+        family[f"inert:icon-href-{name}"] = (
+            _WITHOUT_ICON + f'<link rel="icon" href="{href}">', False)
+    return family
+
+
+#: Blanks Python's str.split() splits on but the browser does not: HTML splits a token list (`rel`)
+#: on ASCII whitespace only, so `rel="icon<blank>"` names no icon to a browser (measured).
+_NON_ASCII_BLANKS = {"no-break-space": " ", "ideographic-space": "　", "em-space": " ",
+                     "next-line": "\x85", "line-separator": " "}
+
+
+#: A fragment starting with this REPLACES the template shell's icon link (see _shell_with).
+_WITHOUT_ICON = "<!--without-icon-->"
+
+
+def _shell_with(fragment: str, template: dict[str, bytes]) -> bytes:
+    """The template shell with ``fragment`` directly after its icon link -- still in the head, so a
+    fragment that ends the head (a <p>, an <img>) leaves the icon declared there -- or, for a
+    fragment starting with _WITHOUT_ICON, in the icon link's place."""
+    shell, icon = template["index.html"], _SHELL_ICON.encode("utf-8")
+    assert shell.count(icon) == 1
+    if fragment.startswith(_WITHOUT_ICON):
+        return shell.replace(icon, fragment[len(_WITHOUT_ICON):].encode("utf-8"), 1)
+    return shell.replace(icon, icon + fragment.encode("utf-8"), 1)
+
+
+#: RQF-V1-3. The shell links a startup-indexed stylesheet, and a stylesheet loads what it names:
+#: `@import`, url(), image-set() and every other resource function fetch from the browser exactly
+#: as a <style> element would. Every text/css member is therefore held to a closed ACCEPT-list
+#: (app._scope_css_refusal): no escape, a closed set of at-rules and of functions -- none of them a
+#: resource function -- and no `url` word, so no declaration can name a resource. The family spells
+#: a load through every resource-naming CSS construct enumerated here, each to the three URLs above;
+#: the inert half is CSS the list admits, the repository's own hub stylesheets included.
+_CSS_LOADS = {
+    "url": "body{{background:url({u})}}",
+    "url-quoted": 'body{{background-image:url("{u}")}}',
+    "url-single-quoted": "body{{background-image:url('{u}')}}",
+    "url-upper": "body{{background:URL({u})}}",
+    "import-url": "@import url({u});body{{color:red}}",
+    "import-string": '@import "{u}";body{{color:red}}',
+    "import-layer": '@import "{u}" layer(x);',
+    "import-upper": '@IMPORT "{u}";',
+    "image-set": 'body{{background-image:image-set("{u}" 1x)}}',
+    "webkit-image-set": "body{{background-image:-webkit-image-set(url({u}) 1x)}}",
+    "image-function": 'body{{background-image:image("{u}")}}',
+    "cross-fade": 'body{{background-image:-webkit-cross-fade(url({u}),url({u}),50%)}}',
+    "src-function": 'body{{background-image:src("{u}")}}',
+    "font-face": '@font-face{{font-family:q;src:url({u})}}body{{font-family:q}}',
+    "font-face-format": '@font-face{{font-family:q;src:url({u}) format("woff2")}}body{{font-family:q}}',
+    "custom-property": ":root{{--x:url({u})}}body{{background:var(--x)}}",
+    "list-style-image": "ul,body{{list-style-image:url({u})}}",
+    "border-image": "body{{border:1px solid;border-image:url({u}) 1}}",
+    "mask-image": "body{{-webkit-mask-image:url({u});mask-image:url({u})}}",
+    "cursor": "body{{cursor:url({u}),auto}}",
+    "content": "body:before{{content:url({u})}}",
+    "filter": "body{{filter:url({u}#f)}}",
+    "clip-path": "body{{clip-path:url({u}#c)}}",
+    "shape-outside": "body{{float:left;shape-outside:url({u})}}",
+    "escaped-url": "body{{background:u\\72l({u})}}",
+    "escaped-import": '@\\69mport "{u}";',
+    "escaped-string": 'body{{background-image:image-set("\\{u}" 1x)}}',
+    "namespace": "@namespace url({u});",
+    "media-nested": "@media all{{body{{background:url({u})}}}}",
+    "supports-nested": "@supports (display:grid){{body{{background:url({u})}}}}",
+    "container-nested": "@container (min-width:1px){{body{{background:url({u})}}}}",
+    "commented-around": "body{{background:/**/url({u})/**/}}",
+    "bom-prefixed": "\ufeffbody{{background:url({u})}}",
+    # CSS Values' typed attr(): `attr(name url)` would make an attribute's value a URL with no url(
+    # token at all -- refused by the word `url` itself, escaped or not
+    # a line feed ends a CSS string (a bad-string) and the declarations after it are read as code:
+    # a reader that let the string run on to its next quote would hide this url()
+    "string-broken-by-a-line-feed": 'p:after{{content:"a\n;background:url({u})}}p:before{{content:"}}',
+    "attr-url": 'p{{background-image:attr(data-src url)}}p:after{{content:"{u}"}}',
+    "attr-url-escaped": 'p{{background-image:attr(data-src u\\72l)}}p:after{{content:"{u}"}}',
+}
+_CSS_INERT = {
+    "tokens": ":root{--bg:#000;--text:#fff}body{background:var(--bg,Canvas);color:var(--text)}",
+    "gradient": "body{background:linear-gradient(90deg,rgb(0 0 0),color-mix(in srgb,red 50%,blue))}",
+    "url-in-a-string": 'body:before{content:"url(https://third-party.invalid/x)"}',
+    "url-in-a-comment": "/* url(https://third-party.invalid/x) @import */body{color:red}",
+    "attr-content": "p[data-src]:before{content:attr(data-src)}",
+    "media-container": "@media (min-width:1px){body{margin:0}}@container (min-width:1px){p{margin:0}}",
+    "font-family-string": 'body{font-family:"Inter var",system-ui,sans-serif}',
+    "bom-prefixed": "\ufeffbody{margin:0}",
+    # escapes the hub build really carries: an escaped blank in a selector's value, and string
+    # escapes -- including an escaped quote that does NOT end the string it is in
+    "escaped-ident": "[data-badge=INVALID\\ INPUT]{color:red}",
+    "string-escapes": 'p:before{content:"\\b7 \\"url(https://third-party.invalid/x)\\""}',
+}
+
+
+def _css_family() -> dict[str, tuple[str, bool]]:
+    """id -> (stylesheet text, whether it LOADS a resource)."""
+    family = {f"css-load:{construct}:{url_id}": (template.format(u=url), True)
+              for construct, template in _CSS_LOADS.items()
+              for url_id, url in _SHELL_LOAD_URLS.items()}
+    family.update({f"css-inert:{name}": (text, False) for name, text in _CSS_INERT.items()})
+    hub = app_mod._REPO_ATLAS_SCOPE_DIST
+    for path in sorted((hub / "assets").glob("*.css")) if (hub / "index.html").is_file() else []:
+        family[f"css-inert:hub-{path.stem.split('-')[0]}"] = (path.read_text(encoding="utf-8"), False)
+    return family
+
+
+#: The fixture stylesheet the template shell links (write_scope_dist).
+_LINKED_CSS = "assets/index-789.css"
+
+
+def test_every_stylesheet_that_can_name_a_resource_is_refused(tmp_path):
+    """RQF-V1-3 as a class: a build serves ready only when EVERY text/css member -- the one the
+    shell links and any other -- is on the CSS accept-list; each loading stylesheet is refused with
+    its reason, and every inert one (the hub build's own stylesheets included) is served."""
+    template = write_scope_dist(tmp_path / "template")
+    assert app_mod._scope_markup_refusal(_scope_members(template)) is None
+    family = _css_family()
+    assert len(family) >= 100, len(family)
+    wrong = []
+    for case_id, (text, loads) in family.items():
+        for member in (_LINKED_CSS, "assets/other-unlinked.css"):
+            refused = app_mod._scope_markup_refused(
+                _scope_members({**template, member: text.encode("utf-8")}))
+            if refused is not loads:
+                wrong.append((case_id, member, "refused" if refused else "served ready"))
+    assert not wrong, f"{len(wrong)} stylesheet(s) judged wrongly: {wrong[:12]}"
+    for case_id, (text, loads) in family.items():
+        refusal = app_mod._scope_css_refusal(text.encode("utf-8"))
+        assert (refusal is not None) is loads, (case_id, refusal)
+        assert refusal is None or refusal.startswith(app_mod._SCOPE_REFUSED_CSS), refusal
+    assert any(case_id.startswith("css-inert:hub-") for case_id in family) or not (
+        app_mod._REPO_ATLAS_SCOPE_DIST / "index.html").is_file()
+    # a stylesheet that is not UTF-8 (a UTF-16 BOM decides the browser's reading) is not read
+    assert app_mod._scope_css_refusal("\ufeffbody{}".encode("utf-16")) is not None
+    # the in-memory verdict IS the index's, on a stride plus the verifier's @import
+    sample = sorted(family)[::11] + ["css-load:import-url:third-party"]
+    for number, case_id in enumerate(sample):
+        dist = tmp_path / f"built-{number}"
+        write_scope_dist(dist)
+        (dist / _LINKED_CSS).write_bytes(family[case_id][0].encode("utf-8"))
+        expected = "invalid_build" if family[case_id][1] else "ready"
+        assert app_mod._scope_file_index(dist)[0] == expected, case_id
+
+
+def test_a_scope_shell_is_ready_only_in_the_constructs_the_reader_accepts(tmp_path):
+    """QF-V2-3 as a class: every generated shell that loads a URL through any construct -- other
+    than a startup-indexed /scope asset through a <script type=module src> or <link> the list
+    admits -- is refused, and its refusal names the construct; every inert construct is served."""
+    template = write_scope_dist(tmp_path / "template")
+    assert not app_mod._scope_markup_refused(_scope_members(template))
+    family = _shell_family()
+    assert len(family) >= 200, len(family)
+    wrong = []
+    for case_id, (fragment, loads) in family.items():
+        refused = app_mod._scope_markup_refused(
+            _scope_members({**template, "index.html": _shell_with(fragment, template)}))
+        if refused is not loads:
+            wrong.append((case_id, "refused" if refused else "served ready"))
+    assert not wrong, f"{len(wrong)} shell construct(s) judged wrongly: {wrong[:12]}"
+    for case_id, (fragment, loads) in family.items():
+        refusal = app_mod._scope_shell_refusal(
+            _scope_members({**template, "index.html": _shell_with(fragment, template)}))
+        assert (refusal is not None) is loads, (case_id, refusal)
+    # the in-memory verdict IS the index's, on a stride plus the constructs the verifier measured
+    sample = sorted(family)[::17] + ["load:table-background:third-party",
+                                     "load:svg-image-xlink-href:third-party", "load:style-url:third-party"]
+    for number, case_id in enumerate(sample):
+        dist = tmp_path / f"built-{number}"
+        files = write_scope_dist(dist)
+        (dist / "index.html").write_bytes(_shell_with(family[case_id][0], files))
+        expected = "invalid_build" if family[case_id][1] else "ready"
+        assert app_mod._scope_file_index(dist)[0] == expected, case_id
+
+
+def _shell_moving_into_a_title(template: dict[str, bytes], construct: bytes) -> bytes:
+    """The template shell with ``construct`` moved from its place into a <title> of its own."""
+    shell = template["index.html"]
+    assert shell.count(construct) == 1, construct
+    return shell.replace(construct, b"", 1).replace(b"</head>", b"<title>" + construct + b"</title></head>", 1)
+
+
+def test_a_shell_is_judged_on_the_browsers_reading_never_a_superset(tmp_path):
+    """RQF-V2-1 as a class, without a browser: every POSITIVE shell requirement -- an icon in the
+    head, a module entry, the runtime-source declaration -- counts elements, so the shell must be
+    read exactly as the browser reads it. An element the browser reads as raw text or RCDATA must
+    end at its own end tag with no `<` in it (plaintext never ends), and every requirement moved
+    into one is refused; the generic markup reader (a superset, used for what must be absent) still
+    reads the moved element, which is exactly the reading the shell may no longer be judged on."""
+    template = write_scope_dist(tmp_path / "template")
+    assert app_mod._scope_shell_refusal(_scope_members(template)) is None
+    constructs = {
+        "icon": _SHELL_ICON.encode("utf-8"),
+        "module-entry": b'<script type="module" crossorigin src="/scope/assets/index-abc123.js"></script>',
+        "runtime-source": (b'<meta name="atlas-scope-snapshot-source" '
+                           b'content="assesshub-api-runtime">'),
+    }
+    for name, construct in constructs.items():
+        shell = _shell_moving_into_a_title(template, construct)
+        generic = app_mod._scope_document_reading(shell, "text/html")
+        assert generic is not None and len(generic) == len(app_mod._scope_document_reading(
+            template["index.html"], "text/html")) + 1, name  # the superset reads the moved element
+        assert app_mod._scope_shell_reading(shell) is None, name
+        refusal = app_mod._scope_shell_refusal(_scope_members({**template, "index.html": shell}))
+        assert refusal is not None and "raw text" in refusal, (name, refusal)
+    # an element the browser reads as raw text, closed with nothing but text in it, is read exactly
+    titled = template["index.html"].replace(b"<title>Atlas Scope</title>",
+                                            b"<title>Atlas Scope &amp; x > y</title>", 1)
+    assert app_mod._scope_shell_refusal(_scope_members({**template, "index.html": titled})) is None
+    # PLAINTEXT never ends in a browser, whatever end tag the reader would read
+    for element in app_mod._SCOPE_HTML_RAW_TEXT_ELEMENTS:
+        wrapped = template["index.html"].replace(
+            b"</head>", f"<{element}>x</{element}></head>".encode("ascii"), 1)
+        reading = app_mod._scope_shell_reading(wrapped)
+        if element == "plaintext":
+            assert reading is None
+        else:
+            assert reading is not None, element
+    assert set(_RAW_TEXT_ELEMENTS) == set(app_mod._SCOPE_HTML_RAW_TEXT_ELEMENTS)
+
+
+def test_the_shell_reads_token_lists_and_names_as_the_browser_does():
+    """RQF-V2-1, attribute half: a `rel`, a script `type` and a meta `name` are read with the
+    browser's own rules -- split on ASCII whitespace only, compared ASCII case-insensitively -- not
+    Python's Unicode-wide str.split()/casefold(), which read an icon (or a stylesheet, via the long
+    s U+017F that casefolds to `s`) where the browser reads none."""
+    assert app_mod._scope_html_token_list(" ICON\tStyleSheet\n") == ["icon", "stylesheet"]
+    for blank in _NON_ASCII_BLANKS.values():
+        assert app_mod._scope_html_token_list(f"icon{blank}") == [f"icon{blank}"], repr(blank)
+    assert app_mod._scope_html_ascii_lower("ſtylesheet") == "ſtylesheet"
+    assert app_mod._scope_html_ascii_lower("MODULE") == "module"
+
+
+def test_the_shell_may_carry_only_the_inline_script_the_reader_pins(tmp_path):
+    """The one inline classic script (the theme boot) is admitted by its exact text: any other
+    inline script -- or the same one with anything added -- can load a URL the reader cannot see."""
+    template = write_scope_dist(tmp_path / "template")
+    shell = template["index.html"]
+    assert f"<script>{_THEME_BOOT}</script>".encode("utf-8") in shell
+    assert not app_mod._scope_markup_refused(_scope_members(template))
+    for variant in (_THEME_BOOT + ";fetch('/outside-scope/x')", _THEME_BOOT.replace("atlas-scope", "x"),
+                    " " + _THEME_BOOT, _THEME_BOOT + "<!-- -->"):
+        doctored = shell.replace(f"<script>{_THEME_BOOT}</script>".encode("utf-8"),
+                                 f"<script>{variant}</script>".encode("utf-8"), 1)
+        assert doctored != shell
+        assert app_mod._scope_markup_refused(_scope_members({**template, "index.html": doctored})), variant
+    for attributes in ('type="module"', 'type="text/javascript"', 'id="boot"', "async"):
+        doctored = shell.replace(b"<script>", f"<script {attributes}>".encode("utf-8"), 1)
+        assert app_mod._scope_markup_refused(_scope_members({**template, "index.html": doctored})), \
+            attributes
+
+
+def test_the_hub_shells_inline_script_is_the_one_the_reader_pins():
+    """Runs on every leg, without a build: the source shell's inline script (which Vite copies
+    verbatim into the hub shell) is exactly the one the reader admits, so an edit to it fails here
+    with this message, not only as an invalid_build once built. Change both together."""
+    scripts = _source_shell_inline_scripts()
+    assert scripts == [_THEME_BOOT]
+    digest = hashlib.sha256(_THEME_BOOT.encode("utf-8")).hexdigest()
+    assert app_mod._SCOPE_SHELL_INLINE_SCRIPTS == frozenset({digest}), (
+        "atlas-scope/index.html's inline script changed: set app._SCOPE_SHELL_INLINE_SCRIPTS to "
+        f"{{{digest!r}}} after reviewing that it loads nothing")
+
+
 @pytest.mark.parametrize("declaration", sorted(_REFERRER_DECLARATIONS))
-def test_an_html_asset_declaring_a_referrer_policy_in_any_form_is_refused(tmp_path, declaration):
-    """Every declaration form the shell is refused for is refused in an HTML ASSET too. An asset's
-    references are not held to the shell's /scope/assets grammar, so the shell's other refusals (an
-    unindexed reference, a duplicate attribute) cannot stand in for the referrer rule there: a form
-    with rel=noreferrer, or a duplicated meta name, must be refused on its own."""
-    dist = tmp_path / "scope-dist"
+def test_the_markup_reader_refuses_every_referrer_declaration_form_in_any_document(tmp_path,
+                                                                                 declaration):
+    """Every declaration form the shell is refused for is refused by the markup reader itself
+    (app._scope_html_refusal, the gate the shell passes first) in ANY document, not only by the
+    shell's accept-list: the accept-list's other refusals (an unindexed reference, an element it
+    does not name) cannot stand in for the referrer rule, which must bite on its own. An HTML page
+    other than the shell is refused before any of this is asked (RQF-V1-6)."""
     page = ("<!doctype html><html><head><title>x</title>" + _REFERRER_DECLARATIONS[declaration]
             + "</head><body>x</body></html>").encode("utf-8")
+    assert app_mod._scope_html_refusal(page) in (app_mod._SCOPE_REFUSED_REFERRER,
+                                                 app_mod._SCOPE_REFUSED_HTML), declaration
+    # the control: the same page with the declaration removed is read, and declares nothing
+    assert app_mod._scope_html_refusal(
+        b"<!doctype html><html><head><title>x</title></head><body>x</body></html>") is None
+    dist = tmp_path / "scope-dist"
     write_scope_dist(dist, extra_asset=("x.html", page))
     with _client(tmp_path, dist) as c:
         assert c.app.state.scope_status == "invalid_build", declaration
         assert c.get("/scope/assets/x.html").status_code == 503
-    # the control: the same page with the declaration removed is served
-    write_scope_dist(dist, extra_asset=(
-        "x.html", b"<!doctype html><html><head><title>x</title></head><body>x</body></html>"))
-    with _client(tmp_path, dist, db_name="control.db") as c:
-        assert c.app.state.scope_status == "ready"
 
 
-_SVG_NS = 'xmlns="http://www.w3.org/2000/svg"'
-_XHTML_NS = 'xmlns="http://www.w3.org/1999/xhtml"'
-#: P3F-V2-3. A browser renders every XML document (SVG, XHTML, text/xml, any */xml or *+xml type) as
-#: markup, HTML elements included, so the referrer rule covers them too — and XHTML is read by an XML
-#: parser, never an HTML one. What an XML reader cannot read the way every browser reads it (a DTD
-#: internal subset, whose entities and attribute defaults are DTD processing; a processing
-#: instruction such as an XSLT stylesheet, which a
-#: browser runs; malformed markup, which a browser renders up to the error; a non-UTF-8 declaration
-#: the served charset overrides) is refused, never passed.
-_XML_DECLARATIONS = {
-    "svg-foreignobject-xhtml-meta": ("x.svg", f"<svg {_SVG_NS}><foreignObject><meta {_XHTML_NS} "
-                                              'name="referrer" content="no-referrer"/></foreignObject></svg>'),
-    "svg-a-referrerpolicy": ("x.svg", f'<svg {_SVG_NS}><a referrerpolicy="no-referrer" href="#x">'
-                                      "<text>x</text></a></svg>"),
-    "svg-a-rel-noreferrer": ("x.svg", f'<svg {_SVG_NS}><a rel="noreferrer" href="#x"><text>x</text>'
-                                      "</a></svg>"),
-    "xhtml-meta": ("x.xhtml", f'<html {_XHTML_NS}><head><meta name="referrer" content="no-referrer"/>'
-                              "</head><body/></html>"),
-    "xml-prefixed-xhtml-meta": ("x.xml", '<r xmlns:h="http://www.w3.org/1999/xhtml"><h:meta '
-                                         'name="referrer" content="no-referrer"/></r>'),
-    "svg-internal-entity": ("x.svg", f'<!DOCTYPE svg [<!ENTITY m "x">]><svg {_SVG_NS}>&m;</svg>'),
-    "svg-internal-subset": ("x.svg", '<!DOCTYPE svg [<!ATTLIST svg data-x CDATA "1">]>'
-                                     f"<svg {_SVG_NS}/>"),
-    "svg-stylesheet-pi": ("x.svg", '<?xml-stylesheet type="text/xsl" href="t.xsl"?>'
-                                   f"<svg {_SVG_NS}/>"),
-    "svg-not-well-formed": ("x.svg", f"<svg {_SVG_NS}><g></svg>"),
-    "svg-declared-latin1": ("x.svg", f'<?xml version="1.0" encoding="ISO-8859-1"?><svg {_SVG_NS}/>'),
+_SVG_NS_URI = "http://www.w3.org/2000/svg"
+_XHTML_NS_URI = "http://www.w3.org/1999/xhtml"
+#: QF-V2-1 / P3F-V2-3. A browser renders every XML-typed member (SVG, XHTML, text/xml, any */xml or
+#: *+xml type) as markup, HTML elements included, and no XML reader available here reads one as the
+#: browser does: with an external DOCTYPE expat silently DROPS an undefined entity reference in an
+#: attribute value, while Blink expands the whole HTML named-entity table for the XHTML and MathML
+#: public identifiers -- `rel="noopener&Tab;noreferrer"` read as "noopenernoreferrer" by the reader
+#: and built as "noopener noreferrer" by Chromium, served ready. The hub build ships no XML-typed
+#: member at all (test_the_hub_build_ships_no_xml_document), so AssessHub reads none: every one is
+#: refused, with that reason, whatever it holds. The family is GENERATED -- roots x prologs x
+#: DOCTYPEs (none, bare, SYSTEM, every public identifier below, internal subsets with general and
+#: parameter entities and attribute defaults) x bodies (undefined entities in attributes and text,
+#: declared entities, character references, CDATA, PIs, comments, a live declaration, a benign
+#: element) -- and it is loaded in real Chromium below, which shows what a reader would have to match.
+_XML_PUBLIC_IDS = {
+    "xhtml10-strict": ("-//W3C//DTD XHTML 1.0 Strict//EN",
+                       "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"),
+    "xhtml10-transitional": ("-//W3C//DTD XHTML 1.0 Transitional//EN",
+                             "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"),
+    "xhtml10-frameset": ("-//W3C//DTD XHTML 1.0 Frameset//EN",
+                         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-frameset.dtd"),
+    "xhtml11": ("-//W3C//DTD XHTML 1.1//EN", "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd"),
+    "xhtml-basic10": ("-//W3C//DTD XHTML Basic 1.0//EN",
+                      "http://www.w3.org/TR/xhtml-basic/xhtml-basic10.dtd"),
+    "xhtml-basic11": ("-//W3C//DTD XHTML Basic 1.1//EN",
+                      "http://www.w3.org/TR/xhtml-basic/xhtml-basic11.dtd"),
+    "xhtml11-mathml": ("-//W3C//DTD XHTML 1.1 plus MathML 2.0//EN",
+                       "http://www.w3.org/Math/DTD/mathml2/xhtml-math11-f.dtd"),
+    "mathml2": ("-//W3C//DTD MathML 2.0//EN", "http://www.w3.org/Math/DTD/mathml2/mathml2.dtd"),
+    "svg11": ("-//W3C//DTD SVG 1.1//EN", "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"),
 }
-#: The same documents with nothing a browser applies: comments, CDATA and text carrying the words.
-_XML_CONTROLS = {
-    "x.svg": ('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" '
-              '"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">'
-              f'<svg {_SVG_NS}><!-- <meta name="referrer"/> -->'
-              '<text><![CDATA[<meta name="referrer" content="no-referrer"/>]]></text></svg>'),
-    "x.xhtml": (f'<html {_XHTML_NS}><head><meta name="description" content="x"/></head>'
-                "<body><p>referrer</p></body></html>"),
-    "x.xml": '<r xmlns:h="http://www.w3.org/1999/xhtml"><h:meta name="description" content="x"/></r>',
+_XML_DOCTYPES = {
+    "none": "", "bare": "<!DOCTYPE {root}>", "system": '<!DOCTYPE {root} SYSTEM "about:legacy-compat">',
+    **{f"public-{key}": f'<!DOCTYPE {{root}} PUBLIC "{public}" "{system}">'
+       for key, (public, system) in _XML_PUBLIC_IDS.items()},
+    "internal-entity": '<!DOCTYPE {root} [<!ENTITY r "noreferrer">]>',
+    "internal-parameter-entity": "<!DOCTYPE {root} [<!ENTITY % p \"<!ENTITY r 'noreferrer'>\"> %p;]>",
+    "internal-attribute-default": '<!DOCTYPE {root} [<!ATTLIST a rel CDATA "noreferrer">]>',
+    "public-plus-internal": ('<!DOCTYPE {root} PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" '
+                             '"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd" '
+                             '[<!ENTITY r "noreferrer">]>'),
 }
+_XML_BODIES = {
+    "rel-tab": '<a rel="noopener&Tab;noreferrer" href="/api/referrer-probe">x</a>',
+    "rel-newline": '<a rel="x&NewLine;noreferrer">x</a>',
+    "name-nbsp": '<meta name="referrer&nbsp;" content="no-referrer"/>',
+    "name-zero-width": '<meta name="&ZeroWidthSpace;referrer" content="no-referrer"/>',
+    "text-entities": "<p>&nbsp;&Tab;&r;</p>",
+    "declared-entity-rel": '<a rel="&r;">x</a>',
+    "defaulted-rel": "<a>x</a>",
+    "character-reference-rel": '<a rel="noopener&#9;noreferrer">x</a>',
+    "predefined-references": '<b title="&amp;&lt;&gt;&quot;&apos;">x</b>',
+    "cdata": '<p><![CDATA[<meta name="referrer" content="no-referrer"/>]]></p>',
+    "comment": '<!-- <meta name="referrer" content="no-referrer"/> -->',
+    "processing-instruction": "<?atlas probe?><b>x</b>",
+    "meta": '<meta name="referrer" content="no-referrer"/>',
+    "benign": '<b title="x">x</b>',
+}
+_XML_PROLOGS = {"none": "", "declaration": '<?xml version="1.0" encoding="UTF-8"?>',
+                "stylesheet-pi": '<?xml-stylesheet type="text/css" href="data:text/css,"?>'}
+_XML_ROOTS = {
+    "xhtml": ("x.xhtml", "html", f'<html xmlns="{_XHTML_NS_URI}"><head><title>x</title></head>'
+                                 "<body>{body}</body></html>"),
+    "xml": ("x.xml", "html", f'<html xmlns="{_XHTML_NS_URI}"><head><title>x</title></head>'
+                             "<body>{body}</body></html>"),
+    "svg": ("x.svg", "svg", f'<svg xmlns="{_SVG_NS_URI}"><foreignObject width="10" height="10">'
+                            f'<div xmlns="{_XHTML_NS_URI}">{{body}}</div></foreignObject></svg>'),
+}
+#: prologs are crossed with this subset of DOCTYPEs only (the full cross adds nothing a prolog changes)
+_XML_PROLOG_DOCTYPES = ("none", "public-xhtml10-strict", "internal-entity")
 
 
-@pytest.mark.parametrize("declaration", sorted(_XML_DECLARATIONS))
-def test_an_xml_document_declaring_or_hiding_a_referrer_policy_is_refused(tmp_path, declaration):
-    name, page = _XML_DECLARATIONS[declaration]
-    served = app_mod._frontend_media_type(name).split(";")[0]
-    assert served.endswith(("/xml", "+xml")), (name, served)  # the member IS an XML document
-    dist = tmp_path / "scope-dist"
-    write_scope_dist(dist, extra_asset=(name, page.encode("utf-8")))
-    with _client(tmp_path, dist) as c:
-        assert c.app.state.scope_status == "invalid_build", declaration
-        assert c.get(f"/scope/assets/{name}").status_code == 503
-    # the control: the same kind of document with nothing a browser applies is served
-    write_scope_dist(dist, extra_asset=(name, _XML_CONTROLS[name].encode("utf-8")))
-    with _client(tmp_path, dist, db_name="control.db") as c:
-        assert c.app.state.scope_status == "ready", declaration
-        assert c.get(f"/scope/assets/{name}").status_code == 200
+def _xml_family() -> dict[str, tuple[str, str]]:
+    """id -> (member name, document): the generated XML family, ids `root:prolog:doctype:body`."""
+    family = {}
+    for root_id, (name, root, template) in _XML_ROOTS.items():
+        for doctype_id, doctype in _XML_DOCTYPES.items():
+            for prolog_id, prolog in _XML_PROLOGS.items():
+                if prolog_id != "none" and (root_id != "xhtml" or doctype_id not in _XML_PROLOG_DOCTYPES):
+                    continue
+                for body_id, body in _XML_BODIES.items():
+                    family[f"{root_id}:{prolog_id}:{doctype_id}:{body_id}"] = (
+                        name, prolog + doctype.format(root=root) + template.format(body=body))
+    return family
+
+
+#: The verifier's measured bypass (QF-V2-1): served ready before this repair.
+_XML_VERIFIER_CASE = "xhtml:none:public-xhtml10-strict:rel-tab"
+
+
+def _scope_members(files: dict[str, bytes]) -> dict:
+    return {relative: app_mod._FrontendFile(content, app_mod._frontend_media_type(relative), "")
+            for relative, content in files.items()}
+
+
+def test_every_xml_document_is_refused_with_its_reason_whatever_it_holds(tmp_path):
+    """QF-V2-1, closed by construction: no XML-typed member is read, so none can be read
+    differently from the browser. Every generated member -- including the benign ones and the old
+    hand-kept 'controls' -- makes the build invalid, and its refusal says why."""
+    family = _xml_family()
+    assert len(family) >= 600 and _XML_VERIFIER_CASE in family, len(family)
+    template = write_scope_dist(tmp_path / "template")
+    assert not app_mod._scope_markup_refused(_scope_members(template))  # the control is served
+    served = []
+    for case_id, (name, page) in family.items():
+        media_type = app_mod._frontend_media_type(name)
+        assert app_mod._scope_markup_kind(media_type) == "xml", (name, media_type)
+        if not app_mod._scope_markup_refused(_scope_members({**template, f"assets/{name}":
+                                                             page.encode("utf-8")})):
+            served.append(case_id)
+    assert not served, f"{len(served)} XML member(s) served ready: {served[:12]}"
+    for case_id, (name, page) in family.items():
+        media_type = app_mod._frontend_media_type(name)
+        assert app_mod._scope_document_refusal(page.encode("utf-8"), media_type) \
+            == app_mod._SCOPE_REFUSED_XML, case_id
+        assert app_mod._scope_document_reading(page.encode("utf-8"), media_type) is None, case_id
+    # the in-memory verdict IS the index's: a stride of the family (and the verifier's case) is
+    # written out as a real build and judged by the whole _scope_file_index, each against its control
+    sample = sorted(family)[::53] + [_XML_VERIFIER_CASE]
+    for number, case_id in enumerate(sample):
+        name, page = family[case_id]
+        dist = tmp_path / f"built-{number}"
+        write_scope_dist(dist, extra_asset=(name, page.encode("utf-8")))
+        assert app_mod._scope_file_index(dist)[0] == "invalid_build", case_id
+        (dist / "assets" / name).unlink()
+        assert app_mod._scope_file_index(dist)[0] == "ready", case_id
+
+
+def test_the_hub_build_ships_no_xml_document():
+    """The evidence behind refusing every XML-typed member (QF-V2-1): the hub build's source
+    carries no static asset a build would emit as one -- nothing is imported by an XML-typed
+    suffix and there is no public/ directory -- and, when the hub build is present, none of its
+    members is XML-typed. A future build that needs one must bring a reader that reads it as the
+    browser does, not reopen this."""
+    package = _ATLAS_SCOPE_ROOT
+    xml_suffixes = _xml_typed_suffixes()
+    assert {".svg", ".xhtml", ".xml"} <= xml_suffixes, sorted(xml_suffixes)
+    assert not (package / "public").exists()
+    imports = _xml_typed_asset_references(package, xml_suffixes)
+    assert not imports, imports
+    hub = app_mod._REPO_ATLAS_SCOPE_DIST
+    if (hub / "index.html").is_file():
+        shipped = [p.relative_to(hub).as_posix() for p in hub.rglob("*") if p.is_file()
+                   and app_mod._scope_markup_kind(app_mod._frontend_media_type(p.name)) == "xml"]
+        assert not shipped, shipped
+
+
+def _xml_typed_asset_references(package: Path, xml_suffixes: set[str]) -> list[tuple[str, str]]:
+    """Every quoted string in the package's source and HTML entries that a build could emit as an XML-typed
+    asset. A build emits an asset only for a reference that reaches a file, so a string counts when it is
+    path-shaped (a separator or a leading dot: a relative, aliased or dependency path) or names a file beside
+    the referencing one; a bare identifier that merely ends in such a suffix is not one. The suffix set is the
+    host's served registry, which differs between hosts: the hosted Windows image types `.config` as XML, so
+    the command id "select.config" in commands.ts once read as an asset there and nowhere else."""
+    sources = [p for p in sorted((package / "src").rglob("*")) if p.is_file()
+               and not _SCOPE_TEST_FILE.search(p.name) and p.suffix in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".css")]
+    found = []
+    for path in sources + sorted(package.glob("*.html")):
+        for spec in re.findall(r"""["'`]([^"'`\n]+)["'`]""", path.read_text(encoding="utf-8")):
+            target = spec.split("?", 1)[0].split("#", 1)[0]
+            if (PurePosixPath(target).suffix.casefold() in xml_suffixes
+                    and not spec.startswith(("http:", "https:", "data:"))
+                    and ("/" in target or "\\" in target or target.startswith(".")
+                         or (path.parent / target).is_file())):
+                found.append((path.name, spec))
+    return found
+
+
+def test_xml_typed_asset_scan_tells_a_reference_from_an_identifier(tmp_path):
+    """Pins the scan in both directions on every host, by forcing `.config` into the suffix set as the hosted
+    Windows registry does: an identifier is not a reference, and each way a build reaches a file still is."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "beside.svg").write_text("<svg/>", encoding="utf-8")
+    (src / "commands.ts").write_text('export const ids = ["select.config", "inspect.svg"];\n', encoding="utf-8")
+    (src / "assets.ts").write_text(
+        'import a from "./icon.svg";\nimport b from "pkg/sprite.svg?url";\n'
+        'export const c = new URL("beside.svg", import.meta.url);\nexport const d = "../up.config";\n',
+        encoding="utf-8")
+    (src / "assets.test.ts").write_text('import t from "./only-in-a-test.svg";\n', encoding="utf-8")
+    (tmp_path / "index.html").write_text('<link rel="icon" href="/favicon.svg">\n', encoding="utf-8")
+    found = _xml_typed_asset_references(tmp_path, {".svg", ".config"})
+    assert sorted(found) == sorted([
+        ("assets.ts", "./icon.svg"), ("assets.ts", "pkg/sprite.svg?url"), ("assets.ts", "beside.svg"),
+        ("assets.ts", "../up.config"), ("index.html", "/favicon.svg")]), found
+
+
+def _xml_typed_suffixes() -> set[str]:
+    """Every suffix the served registry types as an XML document (derived, not listed)."""
+    import mimetypes
+
+    mimetypes.init()
+    return {suffix.casefold() for suffix in set(mimetypes.types_map) | set(app_mod._FRONTEND_PINNED_MEDIA_TYPES)
+            if app_mod._scope_markup_kind(app_mod._frontend_media_type("x" + suffix)) == "xml"}
 
 
 def test_default_scope_dist_is_the_repository_build_when_present(tmp_path, monkeypatch):
@@ -1215,7 +1845,7 @@ def _vite_build(root: Path, main_js: str) -> Path:
     (root / "index.html").write_text(
         '<!doctype html><html lang="en"><head><meta charset="UTF-8">'
         '<meta name="atlas-scope-snapshot-source" content="assesshub-api-runtime">'
-        '<title>Atlas Scope</title><script type="module" src="/main.js"></script></head>'
+        f'<title>Atlas Scope</title>{_SHELL_ICON}<script type="module" src="/main.js"></script></head>'
         '<body><div id="root"></div></body></html>', encoding="utf-8")
     (root / "main.js").write_text(main_js, encoding="utf-8")
     proc = subprocess.run([_NODE, "--input-type=module", "-e", _VITE_BUILD, str(_VITE)], cwd=root,
@@ -1338,37 +1968,8 @@ def test_the_source_shell_the_hub_build_is_made_from_is_markup_the_reader_reads(
 
 
 _SCOPE_PINS = "webapp/tests/test_scope_mount.py"
-#: pytest options whose value is the NEXT token (so it is not read as a collected path)
-_PYTEST_VALUE_OPTIONS = frozenset({"-p", "-k", "-m", "-o", "-c", "-W", "-n", "--ignore", "--deselect",
-                                   "--rootdir", "--basetemp", "--confcutdir", "--junitxml",
-                                   "--maxfail", "--durations", "--tb", "--ignore-glob"})
-
-
-def _default_testpaths() -> list[str]:
-    """What a bare `pytest` collects here: pytest.ini's testpaths (or, without one, the root)."""
-    import configparser
-
-    config = configparser.ConfigParser()
-    config.read(_REPO / "pytest.ini", encoding="utf-8")
-    return config.get("pytest", "testpaths", fallback=".").split()
-
-
-def _pytest_invocations(run: str, working_directory: str) -> list[list[str]]:
-    """Every pytest invocation in one step's script, as the repository paths it collects."""
-    invocations = []
-    for match in re.finditer(r"(?:-m\s+pytest|(?:^|[\s;&|(])pytest)(?=[\s'\"]|$)([^\n;&|'\"]*)",
-                             run, re.MULTILINE):
-        paths, value_next = [], False
-        for token in match.group(1).split():
-            if value_next:
-                value_next = False
-            elif token in _PYTEST_VALUE_OPTIONS:
-                value_next = True
-            elif not token.startswith("-"):
-                paths.append(token.split("::", 1)[0])
-        invocations.append([os.path.normpath(os.path.join(working_directory, path)).replace("\\", "/")
-                            for path in (paths or _default_testpaths())])
-    return invocations
+# The ONE reader of a step's pytest invocations, shared with tests/test_ssot_registry.py (W5b, S-CI-V2).
+from pytest_invocation_reader import pytest_invocations as _pytest_invocations  # noqa: E402
 
 
 def _collects_the_scope_pins(paths: list[str]) -> bool:
@@ -1452,7 +2053,30 @@ def test_the_ci_leg_reader_recognises_every_way_a_step_collects_these_pins():
             ("pytest -q", ".", True), ("python -m pytest tests/test_scope_mount.py", "webapp", True),
             ("python -m pytest master-reference/tests -q", ".", False),
             ("python -m pytest tests -p webapp", ".", False),
-            ("python -m pip install pytest-xdist", ".", False)]:
+            ("python -m pip install pytest-xdist", ".", False),
+            # QF-V2-4: a line continuation carries the invocation onto the next line -- bash's
+            # backslash and PowerShell's backtick, each ONLY as the last character before the line
+            # feed (RQF-V1-5, measured: bash runs `a \<blank><LF>b` as two commands, and PowerShell
+            # 5.1 runs a backtick before CR LF as two); bash deletes `\<LF>`, PowerShell reads a blank
+            ("python -m pytest \\\n  webapp/tests/test_scope_mount.py -q", ".", True),
+            ("python -m pytest master-reference/tests \\\n  webapp/tests -q", ".", True),
+            ("python -m pytest -q \\\n  -p no:cacheprovider \\\n  webapp/tests", ".", True),
+            ('& "$env:RUNNER_TEMP\\ci-venv\\Scripts\\python.exe" -m pytest `\n  webapp/tests', ".", True),
+            ("python -m pytest \\\n  master-reference/tests -q", ".", False),
+            ("python -m pytest `\n  tests/test_readme_field.py", ".", False),
+            # NOT continuations: the next line is a command of its own, which collects nothing
+            ("python -m pytest master-reference/tests -q \\  \n  webapp/tests", ".", False),
+            ("python -m pytest master-reference/tests -q \\\r\n  webapp/tests", ".", False),
+            ("python -m pytest master-reference/tests -q ` \n  webapp/tests", ".", False),
+            ("python -m pytest master-reference/tests -q `\r\n  webapp/tests", ".", False),
+            # bash deletes the backslash-newline pair outright, so `webapp\<LF>/tests` is ONE word
+            ("python -m pytest webapp\\\n/tests -q", ".", True),
+            ("python -m pytest master-reference\\\n/tests -q", ".", False),
+            # W5b (S-CI-V2): a coverage option's value is not a collected path -- the ONE shared
+            # reader (tests/pytest_invocation_reader.py) knows the --cov* options the CI legs pass
+            ("python -m pytest --cov webapp master-reference/tests", ".", False),
+            ("python -m pytest --cov-config webapp/.coveragerc master-reference/tests", ".", False),
+            ("python -m pytest --cov-report term --cov webapp webapp/tests", ".", True)]:
         found = any(_collects_the_scope_pins(p) for p in _pytest_invocations(run, wd))
         assert found is expected, (run, wd)
 
@@ -1492,6 +2116,92 @@ const load = createRequire(path.join(atlasScopeRoot, 'package.json'));
     return;
   }
   const { chromium } = load('playwright');
+  if (mode === 'requests') {
+    // QF-V2-3 / RQF-V1-3 / RQF-V1-4: every request a shell makes, as the browser issues it. Each lane
+    // runs FULL Chromium (channel 'chromium': the new headless mode, which -- like a headed browser
+    // and unlike the headless shell -- requests the default /favicon.ico) behind its OWN recording
+    // proxy, one case at a time, each case on an ORIGIN OF ITS OWN (the browser remembers a
+    // favicon it failed to fetch per origin, and a request to an origin names its case, however
+    // late it arrives). The page's own requests (every frame's) are the context's 'request'
+    // events; the proxy also sees what the BROWSER requests for the page, which no page event
+    // reports (the default favicon, a preconnect's tunnel) -- and the browser's own background
+    // traffic, which the test tells apart by host.
+    const http = require('node:http');
+    const { assets, cases } = JSON.parse(fs.readFileSync(inPath, 'utf8'));
+    const results = {};
+    const worker = async (slice) => {
+      let current = null;
+      let last = null;
+      const byHost = new Map();
+      const owner = (host) => byHost.get(host) || current || last;
+      const record = (host, url) => { const target = owner(host); if (target) target.proxy.push(url); };
+      const server = http.createServer((req, res) => {
+        let url = null;
+        try { url = new URL(req.url); } catch (error) { url = null; }
+        record(url ? url.host : '', url ? url.href : String(req.url));
+        const plain = { 'content-type': 'text/plain', 'cache-control': 'no-store' };
+        const reply = (status, headers, body) => {
+          res.writeHead(status, { ...headers, 'cache-control': 'no-store' });
+          res.end(body);
+        };
+        if (!current || !url || url.origin !== current.origin) return reply(404, plain, '');
+        if (url.pathname === current.path && !current.served) {
+          current.served = true;
+          return reply(200, current.headers, Buffer.from(current.body, 'base64'));
+        }
+        const asset = current.assets ? ((current.extra || {})[url.pathname] || assets[url.pathname])
+          : undefined;
+        if (asset) return reply(200, asset.headers, Buffer.from(asset.body, 'base64'));
+        return reply(404, plain, '');
+      });
+      server.on('connect', (req, socket) => {
+        record(req.url, 'https://' + req.url + '/');
+        socket.destroy();
+      });
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      let browser;
+      try {
+        browser = await chromium.launch({ channel: 'chromium', proxy: {
+          server: 'http://127.0.0.1:' + server.address().port, bypass: '<-loopback>' } });
+      } catch (error) {
+        server.close();
+        throw new Error('ORACLE-NO-BROWSER ' + String(error).split('\n')[0]);
+      }
+      try {
+        for (const c of slice) {
+          const state = { ...c, served: false, page: [], proxy: [] };
+          byHost.set(new URL(c.origin).host, state);
+          const context = await browser.newContext();
+          context.on('request', (request) => { state.page.push(request.url()); });
+          const page = await context.newPage();
+          current = state;
+          let rendered = true;
+          try { await page.goto(c.origin + c.path, { waitUntil: 'load', timeout: 15000 }); }
+          catch (error) { rendered = false; }
+          await page.waitForTimeout(1200);
+          // RQF-V2-1: the elements the browser BUILT, to hold the shell's own reading to
+          let dom = null;
+          try {
+            dom = await page.evaluate(() => Array.from(document.querySelectorAll('*'), (e) => [
+              e.localName, Array.from(e.attributes, (a) => [a.name, a.value])]));
+          } catch (error) { dom = null; }
+          await context.close();
+          last = state;
+          current = null;
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          results[c.id] = { rendered, page: state.page, proxy: state.proxy, dom };
+        }
+      } finally {
+        await browser.close();
+        server.close();
+      }
+    };
+    const lanes = 5;
+    await Promise.all(Array.from({ length: lanes }, (_, lane) =>
+      worker(cases.filter((_c, index) => index % lanes === lane))));
+    fs.writeFileSync(outPath, JSON.stringify(results));
+    return;
+  }
   let browser;
   try { browser = await chromium.launch(); }
   catch (error) { console.log('ORACLE-NO-BROWSER ' + String(error).split('\n')[0]); process.exit(3); }
@@ -1546,7 +2256,12 @@ const load = createRequire(path.join(atlasScopeRoot, 'package.json'));
   } finally {
     await browser.close();
   }
-})().catch((error) => { console.error(error); process.exit(1); });
+})().catch((error) => {
+  if (String(error.message || error).startsWith('ORACLE-NO-BROWSER')) {
+    console.log(String(error.message || error)); process.exit(3);
+  }
+  console.error(error); process.exit(1);
+});
 """.replace("%ORIGIN%", json.dumps(_ORACLE_ORIGIN))
 
 _XMLNS_NS = "http://www.w3.org/2000/xmlns/"
@@ -1680,30 +2395,40 @@ def _oracle_headers(name: str, served: dict) -> dict[str, str]:
     return {**served, "content-type": content_type}
 
 
-@pytest.fixture(scope="module")
-def scope_markup_oracle(tmp_path_factory):
-    if not _NODE or not (_ATLAS_SCOPE / "node_modules" / "playwright" / "package.json").is_file():
-        _oracle_prerequisite_absent("node or atlas-scope's Playwright is not installed "
-                                    "(npm ci in atlas-scope)")
-    tmp = tmp_path_factory.mktemp("scope-markup-oracle")
-    element_names = sorted({name.lower() for name in _oracle_run(tmp, "tags")} | set(_RAW_TEXT_ELEMENTS))
-    assert len(element_names) >= 100 and set(_RAW_TEXT_ELEMENTS) <= set(element_names), element_names
-
-    # the headers a real AssessHub serves /scope documents with (measured, not restated)
+def _measured_scope_headers(tmp: Path) -> dict[str, str]:
+    """The headers a real AssessHub serves /scope members with (measured, not restated): the same
+    security headers on the shell and on an asset (a ready build carries no HTML page but its shell,
+    so the asset measured is its stylesheet), each with its own Content-Type."""
     control = tmp / "control"
-    write_scope_dist(control, extra_asset=("x.html", b"<!doctype html><title>x</title>"))
+    write_scope_dist(control)
     app = create_app(db_path=str(tmp / "control.db"), dist_dir=tmp / "no-spa", scope_dist_dir=control)
     with TestClient(app, base_url="http://localhost") as c:
         assert app.state.scope_status == "ready"
-        responses = {"shell": c.get("/scope/snapshots/1/"), "asset": c.get("/scope/assets/x.html")}
+        responses = {"shell": c.get("/scope/snapshots/1/"), "asset": c.get(f"/scope/{_LINKED_CSS}")}
     served = {}
     for response in responses.values():
         assert response.status_code == 200
         for header in ("x-content-type-options", "referrer-policy", "content-security-policy",
                        "x-frame-options"):
-            served[header] = response.headers[header]
+            assert served.setdefault(header, response.headers[header]) == response.headers[header]
     assert responses["shell"].headers["content-type"] == _oracle_headers("index.html", {})["content-type"]
-    assert responses["asset"].headers["content-type"] == _oracle_headers("x.html", {})["content-type"]
+    assert responses["asset"].headers["content-type"] == _oracle_headers(_LINKED_CSS, {})["content-type"]
+    return served
+
+
+def _oracle_browser_prerequisites() -> None:
+    if not _NODE or not (_ATLAS_SCOPE / "node_modules" / "playwright" / "package.json").is_file():
+        _oracle_prerequisite_absent("node or atlas-scope's Playwright is not installed "
+                                    "(npm ci in atlas-scope)")
+
+
+@pytest.fixture(scope="module")
+def scope_markup_oracle(tmp_path_factory):
+    _oracle_browser_prerequisites()
+    tmp = tmp_path_factory.mktemp("scope-markup-oracle")
+    element_names = sorted({name.lower() for name in _oracle_run(tmp, "tags")} | set(_RAW_TEXT_ELEMENTS))
+    assert len(element_names) >= 100 and set(_RAW_TEXT_ELEMENTS) <= set(element_names), element_names
+    served = _measured_scope_headers(tmp)
 
     cases = []
     shell_template = write_scope_dist(tmp / "shell-template")
@@ -1723,7 +2448,12 @@ def scope_markup_oracle(tmp_path_factory):
         if case_id.split("|", 1)[1].startswith(("named:", "spelling:")) or len(cases) % 23 == 0:
             through_index.append((case_id, files, status))
         path = "/scope/snapshots/1/" if shell else f"/scope/assets/{name}"
-        cases.append({"id": case_id, "kind": kind, "path": path, "status": status,
+        # the markup READER's own verdict (the first gate every shell passes), apart from the index's:
+        # an HTML page other than the shell is refused outright (RQF-V1-6), but the reader's reading
+        # of the same markup must still be the browser's, since the shell is read with it
+        reader = "accepted" if kind == "html" and app_mod._scope_html_refusal(document) is None \
+            else "refused"
+        cases.append({"id": case_id, "kind": kind, "path": path, "status": status, "reader": reader,
                       "media_type": app_mod._frontend_media_type("index.html" if shell else name),
                       "headers": _oracle_headers("index.html" if shell else name, served),
                       "body": base64.b64encode(document).decode("ascii")})
@@ -1736,10 +2466,8 @@ def scope_markup_oracle(tmp_path_factory):
             shell = shell_template["index.html"].replace(
                 b"<title>", fragment.encode("utf-8") + b"<title>", 1)
             judge(f"shell|{fragment_id}", "html", "index.html", shell, shell=True)
-    for declaration, (name, page) in _XML_DECLARATIONS.items():
-        judge(f"xml|{declaration}", "xml", name, page.encode("utf-8"))
-    for name, page in _XML_CONTROLS.items():
-        judge(f"xml-control|{name}", "xml", name, page.encode("utf-8"))
+    for case_id, (name, page) in _xml_family().items():  # QF-V2-1: the generated XML family
+        judge(f"xml|{case_id}", "xml", name, page.encode("utf-8"))
     # the in-memory verdict IS the index's: a sample (every named form and spelling, and a stride of
     # the rest) is written out as a real build and judged by the whole _scope_file_index
     for number, (case_id, files, status) in enumerate(through_index):
@@ -1753,13 +2481,15 @@ def scope_markup_oracle(tmp_path_factory):
     if (hub / "index.html").is_file():  # the real hub shell, when built, is one more member
         cases.append({"id": "shell|repository-hub-build", "kind": "html", "path": "/scope/snapshots/1/",
                       "status": app_mod._scope_file_index(hub)[0],
+                      "reader": "accepted" if app_mod._scope_html_refusal(
+                          (hub / "index.html").read_bytes()) is None else "refused",
                       "media_type": app_mod._frontend_media_type("index.html"),
                       "headers": _oracle_headers("index.html", served),
                       "body": base64.b64encode((hub / "index.html").read_bytes()).decode("ascii")})
 
     # every media type the served registry can assign, each carrying well-formed markup whose meta a
     # browser shows only if it renders the type AS markup (V2-3: the markup class is not a type list)
-    probe = (f'<html {_XHTML_NS}><head><meta name="description" content="{_MEDIA_PROBE}"/></head>'
+    probe = (f'<html xmlns="{_XHTML_NS_URI}"><head><meta name="description" content="{_MEDIA_PROBE}"/></head>'
              "<body/></html>")
     by_type: dict[str, str] = {}
     import mimetypes
@@ -1791,30 +2521,36 @@ def _oracle_declarations(dom) -> list:
 
 def test_no_scope_document_served_ready_carries_a_referrer_policy_chromium_applies(
         scope_markup_oracle):
+    """Neither a document the INDEX serves ready nor one the markup READER accepts (the gate every
+    shell passes first) carries a referrer-policy declaration Chromium applies: each must send its
+    full /scope Referer on a same-origin POST."""
     cases, _media, results = scope_markup_oracle
     violations = []
     for case in cases:
-        if case["status"] != "ready":
+        if case["status"] != "ready" and case["reader"] != "accepted":
             continue
         seen = results[case["id"]]
         live = _oracle_declarations(seen["dom"])
         if not seen["rendered"] or live or seen["referer"] != _ORACLE_ORIGIN + case["path"]:
             violations.append((case["id"], live, seen["referer"],
                                base64.b64decode(case["body"])[:300]))
-    assert not violations, f"{len(violations)} served-ready document(s) Chromium reads differently: " \
-                           f"{violations[:8]}"
-    # non-vacuity: the family is not all refused, and it really carries live declarations Chromium
-    # applies — including each form the stdlib HTMLParser used to hide
-    ready = [case for case in cases if case["status"] == "ready"]
+    assert not violations, f"{len(violations)} served-ready or reader-accepted document(s) Chromium " \
+                           f"reads differently: {violations[:8]}"
+    # every HTML page other than the shell is refused by the index, whatever the reader says of it
+    assert not [case["id"] for case in cases
+                if case["id"].startswith("asset|") and case["status"] != "invalid_build"]
+    # non-vacuity: the family is not all refused by the reader, and it really carries live
+    # declarations Chromium applies — including each form the stdlib HTMLParser used to hide
+    accepted = [case for case in cases if case["reader"] == "accepted"]
     applied = {case["id"] for case in cases if results[case["id"]]["referer"] is None}
-    assert len(ready) >= 150, len(ready)
-    assert {case["id"].split("|", 1)[1].split(":", 1)[0] for case in ready} >= {
+    assert len(accepted) >= 150, len(accepted)
+    assert {case["id"].split("|", 1)[1].split(":", 1)[0] for case in accepted} >= {
         "comment", "script", "nesting", "spelling", *(f"raw-text-{t}" for t in _RAW_TEXT_ELEMENTS)}
     assert len(applied) >= 300, len(applied)
     for name in _PARSER_DIFFERENTIAL_FORMS:
         for doc in ("asset", "shell"):
             assert f"{doc}|named:{name}" in applied, (doc, name)
-    assert "xml|svg-foreignobject-xhtml-meta" in applied and "xml|xhtml-meta" in applied
+    assert {"xml|svg:none:none:meta", "xml|xhtml:none:none:meta"} <= applied  # XML is markup too
     assert any(case["id"] == "shell|repository-hub-build" and case["status"] == "ready"
                for case in cases) or not (app_mod._REPO_ATLAS_SCOPE_DIST / "index.html").is_file()
 
@@ -1847,6 +2583,248 @@ def test_every_scope_document_the_reader_accepts_is_read_as_chromium_reads_it(sc
         assert theirs <= ours, (case["id"], sorted(theirs - ours)[:6])
         checked += 1
     assert checked >= 150, checked
+
+
+def test_every_element_the_shell_may_carry_that_hides_markup_in_chromium_is_read_exactly(
+        scope_markup_oracle):
+    """RQF-V2-1, the raw-text set measured rather than trusted: over EVERY element name parse5
+    knows, Chromium shows which ones hide the markup inside them (`<t><meta name=referrer ...></t>`
+    builds no meta). Every such element the shell's accept-list admits must be one the shell reads
+    exactly -- closed at its own end tag with no `<` inside (app._SCOPE_HTML_RAW_TEXT_ELEMENTS) --
+    so no positive shell requirement can be met by markup the browser reads as text."""
+    cases, _media, results = scope_markup_oracle
+    hiding, measured = set(), 0
+    for case in cases:
+        match = re.fullmatch(r"asset\|element-(.+):0", case["id"])
+        if match is None:
+            continue
+        seen = results[case["id"]]
+        assert seen["rendered"], case["id"]
+        measured += 1
+        if not any(element == "meta" and any(name == "name" and value == "referrer"
+                                             for name, _local, value, _ns in attributes)
+                   for element, attributes in seen["dom"] or []):
+            hiding.add(match.group(1))
+    assert measured >= 100, measured
+    assert set(_RAW_TEXT_ELEMENTS) <= hiding, sorted(set(_RAW_TEXT_ELEMENTS) - hiding)
+    admitted_hiding = hiding & set(app_mod._SCOPE_SHELL_ELEMENTS)
+    assert {"title", "script"} <= admitted_hiding, sorted(admitted_hiding)
+    assert admitted_hiding <= app_mod._SCOPE_HTML_RAW_TEXT_ELEMENTS, sorted(
+        admitted_hiding - app_mod._SCOPE_HTML_RAW_TEXT_ELEMENTS)
+
+
+def _chromium_attributes(dom) -> set:
+    return {(element.lower(), (local or name).lower(), value)
+            for element, attributes in dom or [] for name, local, value, _namespace in attributes}
+
+
+def test_every_xml_document_is_refused_and_chromium_shows_why_none_may_be_read_here(
+        scope_markup_oracle):
+    """QF-V2-1 in the browser: the whole generated XML family is refused, and Chromium shows what a
+    reader would have had to match -- it renders the family as markup, applies the policies XML
+    members declare, and builds `noopener noreferrer` from an external-DOCTYPE XHTML member's
+    `&Tab;`, which expat drops in silence (the reader's reading before this repair)."""
+    cases, _media, results = scope_markup_oracle
+    xml = {case["id"]: case for case in cases if case["kind"] == "xml"}
+    assert len(xml) == len(_xml_family())
+    assert not [case_id for case_id, case in xml.items() if case["status"] != "invalid_build"]
+    rendered = [case_id for case_id in xml if results[case_id]["rendered"] and results[case_id]["dom"]]
+    assert len(rendered) >= len(xml) // 2, len(rendered)
+    verifier = _chromium_attributes(results[f"xml|{_XML_VERIFIER_CASE}"]["dom"])
+    assert ("a", "rel", "noopener noreferrer") in verifier, sorted(verifier)
+    expanded = [case_id for case_id in xml if case_id.endswith(":rel-tab") and any(
+        attribute == "rel" and {"noopener", "noreferrer"} <= set(value.split())
+        for _element, attribute, value in _chromium_attributes(results[case_id]["dom"]))]
+    # measured: 26 -- every XHTML/MathML public identifier in all three roots; not SVG 1.1's
+    assert len(expanded) >= 20, expanded
+    applied = [case_id for case_id in xml if results[case_id]["referer"] is None]
+    assert len(applied) >= 60, len(applied)  # measured: 78 of the 756
+
+
+@pytest.fixture(scope="module")
+def scope_shell_request_oracle(tmp_path_factory):
+    """Every generated shell and stylesheet (and the fixture and repository hub shells), judged by
+    the index's own markup verdict and then loaded in real Chromium with every request it makes
+    recorded -- by the page's own request events and by a recording proxy (see the harness)."""
+    _oracle_browser_prerequisites()
+    tmp = tmp_path_factory.mktemp("scope-shell-requests")
+    served = _measured_scope_headers(tmp)
+    template = write_scope_dist(tmp / "template")
+
+    def served_asset(relative: str, content: bytes) -> dict:
+        return {"headers": _oracle_headers(relative, served),
+                "body": base64.b64encode(content).decode("ascii")}
+
+    assets = {f"/scope/{relative}": served_asset(relative, content)
+              for relative, content in template.items() if relative != "index.html"}
+
+    def case(case_id: str, shell: bytes, status: str, *, with_assets: bool = True, loads=None,
+             extra=None):
+        return {"id": case_id, "path": "/scope/snapshots/1/", "status": status, "loads": loads,
+                "origin": _oracle_case_origin(len(cases)),
+                "assets": with_assets, "extra": extra or {},
+                "headers": _oracle_headers("index.html", served),
+                "body": base64.b64encode(shell).decode("ascii")}
+
+    cases: list[dict] = []
+    cases.append(case("control:template", template["index.html"],
+                      "invalid_build" if app_mod._scope_markup_refused(_scope_members(template))
+                      else "ready"))
+    for case_id, (fragment, loads) in _shell_family().items():
+        shell = _shell_with(fragment, template)
+        refused = app_mod._scope_markup_refused(_scope_members({**template, "index.html": shell}))
+        cases.append(case(case_id, shell, "invalid_build" if refused else "ready", loads=loads))
+    # RQF-V1-3: the template shell, its linked stylesheet replaced by each generated one -- with a
+    # data- attribute for attr() to read and a list for list-style-image to draw
+    css_shell = template["index.html"].replace(
+        f'<div id="root">{SCOPE_MARKER}</div>'.encode("utf-8"),
+        (f'<div id="root"><p data-src="{_SHELL_LOAD_URLS["third-party"]}">{SCOPE_MARKER}</p>'
+         "<p>x</p></div>").encode("utf-8"), 1)
+    assert css_shell != template["index.html"]
+    for case_id, (text, loads) in _css_family().items():
+        content = text.encode("utf-8")
+        refused = app_mod._scope_markup_refused(_scope_members(
+            {**template, "index.html": css_shell, _LINKED_CSS: content}))
+        cases.append(case(case_id, css_shell, "invalid_build" if refused else "ready", loads=loads,
+                          extra={f"/scope/{_LINKED_CSS}": served_asset(_LINKED_CSS, content)}))
+    hub = app_mod._REPO_ATLAS_SCOPE_DIST
+    if (hub / "index.html").is_file():  # its real assets are not served: they read /api at run time
+        cases.append(case("control:repository-hub-build", (hub / "index.html").read_bytes(),
+                          app_mod._scope_file_index(hub)[0], with_assets=False))
+    return cases, _oracle_run(tmp, "requests", {"assets": assets, "cases": cases})
+
+
+def _oracle_case_origin(number: int) -> str:
+    """The request oracle's origin for its case ``number``: one origin per case (see the harness)."""
+    return f"http://case-{number}.scope-oracle.test:8765"
+
+
+def _outside_scope(url: str, origin: str = _ORACLE_ORIGIN) -> bool:
+    parsed = urllib.parse.urlsplit(url)
+    return not (f"{parsed.scheme}://{parsed.netloc}" == origin and parsed.path.startswith("/scope/"))
+
+
+#: The hosts other than a case's own origin that a page under test can reach: every host the family
+#: names. The recording proxy also carries Chromium's OWN background traffic (component updates,
+#: account checks) -- never to one of these, and never the page's -- so a proxied request counts for
+#: a case only when it goes to its origin or to one of these hosts; the page's own requests count
+#: wherever they go.
+_ORACLE_NAMED_HOSTS = frozenset(urllib.parse.urlsplit(url).hostname
+                                for url in _SHELL_LOAD_URLS.values() if "//" in url)
+
+
+def _requests_outside_scope(seen: dict, origin: str) -> list[str]:
+    """Every request outside /scope the browser made for one case: the page's own, wherever they
+    go, and the proxied ones to the case's origin or a host the family names (the default favicon,
+    a preconnect's tunnel -- requests no page event reports)."""
+    hosts = _ORACLE_NAMED_HOSTS | {urllib.parse.urlsplit(origin).hostname}
+    proxied = [url for url in seen["proxy"] if urllib.parse.urlsplit(url).hostname in hosts]
+    return sorted({url for url in [*seen["page"], *proxied] if _outside_scope(url, origin)})
+
+
+def test_no_scope_shell_served_ready_makes_a_request_outside_scope(scope_shell_request_oracle):
+    """QF-V2-3 / RQF-V1-3 / RQF-V1-4 in the browser: a build the reader serves `ready` makes NO
+    request outside /scope -- through its shell's markup, through the stylesheets it links, or by
+    the browser's own default (the favicon) -- the property the closed accept-lists hold by
+    construction, measured with request events and a recording proxy in full Chromium."""
+    cases, results = scope_shell_request_oracle
+    violations = []
+    for case in cases:
+        if case["status"] != "ready":
+            continue
+        seen = results[case["id"]]
+        outside = _requests_outside_scope(seen, case["origin"])
+        if outside or not seen["rendered"]:
+            violations.append((case["id"], seen["rendered"], outside[:4]))
+    assert not violations, f"{len(violations)} served-ready shell(s) load outside /scope: {violations[:8]}"
+    # non-vacuity: the controls and every inert construct are served, and their indexed assets were
+    # really requested (the page events and the proxy both see the shell's loads) ...
+    ready = {case["id"] for case in cases if case["status"] == "ready"}
+    assert {"control:template", *(f"inert:{name}" for name in _SHELL_INERT), "inert:body-content-after-the-icon",
+            *(f"css-inert:{name}" for name in _CSS_INERT)} <= ready, sorted(ready)
+    for channel in ("page", "proxy"):
+        assert any(url.endswith("/scope/assets/index-abc123.js")
+                   for url in results["control:template"][channel]), channel
+        assert any(url.endswith(f"/scope/{_LINKED_CSS}")
+                   for url in results["control:template"][channel]), channel
+    hub_built = (app_mod._REPO_ATLAS_SCOPE_DIST / "index.html").is_file()
+    assert "control:repository-hub-build" in ready or not hub_built
+    assert any(case_id.startswith("css-inert:hub-") for case_id in ready) or not hub_built
+    # ... and the generator really exercises the class: Chromium loads outside /scope from the
+    # refused constructs, including each one a verifier measured served ready before its repair
+    loaded_outside = {case["id"] for case in cases
+                      if _requests_outside_scope(results[case["id"]], case["origin"])}
+    for measured in ("load:table-background:third-party", "load:svg-image-xlink-href:third-party",
+                     "load:style-url:third-party", "css-load:import-url:third-party",
+                     "css-load:url:third-party", "load:icon-absent", "load:icon-inside-title",
+                     "load:icon-inside-an-unclosed-title"):
+        assert measured in loaded_outside, (measured, results[measured])
+    # RQF-V2-1: every icon the reader could read where the browser builds none -- inside each element
+    # the browser reads as raw text or RCDATA, a comment, a template, foreign content, or behind a
+    # non-ASCII blank in its `rel` -- really makes Chromium request the default favicon, so the
+    # family exercises the class rather than asserting it
+    unread_icons = {case["id"] for case in cases
+                    if case["id"].startswith(("load:icon-inside-", "load:icon-rel-ending-in-"))}
+    assert len(unread_icons) >= 2 * len(_RAW_TEXT_ELEMENTS) + len(_NON_ASCII_BLANKS), len(unread_icons)
+    assert not sorted(unread_icons - loaded_outside), sorted(unread_icons - loaded_outside)
+    # the default favicon is a request the BROWSER makes: only the proxy sees it
+    absent = next(case for case in cases if case["id"] == "load:icon-absent")
+    assert f"{absent['origin']}/favicon.ico" in results["load:icon-absent"]["proxy"]
+    assert f"{absent['origin']}/favicon.ico" not in results["load:icon-absent"]["page"]
+    shell_loads = {case_id for case_id in loaded_outside if case_id.startswith("load:")}
+    css_loads = {case_id for case_id in loaded_outside if case_id.startswith("css-load:")}
+    assert len(shell_loads) >= 150, len(shell_loads)
+    assert len(css_loads) >= 60, len(css_loads)
+
+
+def _unbuilt_elements(reading, dom) -> list:
+    """The elements of ``reading`` (the reader's) that Chromium did not build: each must match a
+    DISTINCT element the browser built, of the same name, carrying every attribute the reader read
+    with the same value (the browser may add elements -- an implied one, `</p>` -- and attributes --
+    a script's -- but never drop one the reader counted)."""
+    built = [(name, dict(attributes)) for name, attributes in dom]
+    used: set[int] = set()
+    missing = []
+    for element in sorted(reading, key=lambda e: -len(e.attributes)):
+        match = next((index for index, (name, attributes) in enumerate(built)
+                      if index not in used and name == element.name
+                      and all(attributes.get(a) == v for a, v in element.attributes)), None)
+        if match is None:
+            missing.append((element.name, element.attributes))
+        else:
+            used.add(match)
+    return missing
+
+
+def test_every_element_a_ready_shell_is_judged_on_is_one_chromium_built(scope_shell_request_oracle):
+    """RQF-V2-1 as a class, in the browser: the shell's positive requirements count elements, so
+    the shell reading (app._scope_shell_reading) of EVERY shell served ready -- the generated shell
+    and stylesheet families, the fixture and the repository hub shell -- holds no element Chromium
+    did not build. The generic markup reader (a superset, sound only for what must be absent) is
+    shown to read an icon Chromium never built in the measured RQF-V2-1 shell, which this
+    containment would catch had the shell been judged on that reading."""
+    cases, results = scope_shell_request_oracle
+    checked, violations = 0, []
+    for case in cases:
+        if case["status"] != "ready":
+            continue
+        seen = results[case["id"]]
+        reading = app_mod._scope_shell_reading(base64.b64decode(case["body"]))
+        assert reading is not None and seen["dom"] is not None, case["id"]
+        missing = _unbuilt_elements(reading, seen["dom"])
+        if missing:
+            violations.append((case["id"], missing[:3]))
+        checked += 1
+    assert not violations, f"{len(violations)} ready shell(s) read elements Chromium did not build: " \
+                           f"{violations[:6]}"
+    # every inert shell and stylesheet construct and the fixture control at least (measured: 31 with
+    # the hub build present)
+    assert checked >= 1 + len(_SHELL_INERT) + len(_CSS_INERT), checked
+    titled = next(case for case in cases if case["id"] == "load:icon-inside-title")
+    superset = app_mod._scope_document_reading(base64.b64decode(titled["body"]), "text/html")
+    missing = _unbuilt_elements(superset, results[titled["id"]]["dom"])
+    assert [name for name, _attributes in missing] == ["link"], missing
+    assert ("rel", "icon") in missing[0][1], missing
 
 
 def test_every_media_type_chromium_renders_as_markup_is_read_as_markup(scope_markup_oracle):
