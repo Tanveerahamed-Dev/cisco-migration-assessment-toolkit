@@ -20,6 +20,7 @@
  * product comes from here, and `FORBIDDEN_CLAIM_WORDS` is greppable so a build gate can prove no
  * surface emits one.
  */
+import { collectedFigure } from "./collection";
 import { fabric } from "./data";
 import { listPhrase } from "./phrases";
 import { isRouteRecord, routeFieldReading } from "./route-fields";
@@ -792,7 +793,7 @@ export function T8_coverageLine(): string {
   const c = fabric.coverage;
   const total = fabric.devices.length;
   return (
-    `${c.devicesInventoried}/${total} collected · RIBs ${c.hostsWithRoutes}/${total} · ` +
+    `${collectedFigure()} · RIBs ${c.hostsWithRoutes}/${total} · ` +
     `ACLs ${c.hostsWithAcls}/${total} · link centrality ${c.linksWithCentrality}/${fabric.links.length} · ` +
     `snapshot ${fabric.meta.sourceSha256.slice(0, 8)} ${day(fabric.meta.collectedAt)}`
   );

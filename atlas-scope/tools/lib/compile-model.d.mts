@@ -53,6 +53,16 @@ export declare const SECTIONS_READ: readonly string[];
 export declare const META_KEYS_READ: readonly string[];
 /** Why one host's `routes` value is not a collected routing table (a list with a prefixed entry), or null when it is. */
 export declare function unusableRouteTable(rs: unknown): string | null;
+/** The blind-spot statuses the engine writes in `collection_completeness.devices`. */
+export declare const COLLECTION_BLIND_SPOT_STATUSES: readonly ("partial" | "not collected")[];
+/** The engine's collection_completeness read whole, or why it states nothing usable. */
+export declare function readCollectionCompleteness(cc: unknown):
+  | {
+      usable: true;
+      summary: { inventory: number; complete: number; partial: number; notCollected: number };
+      devices: { host: string; status: string; dataQuality: number | null; missing: string[]; index: number }[];
+    }
+  | { usable: false; why: string };
 export declare const KNOWN_SECTION_SCHEMAS: Readonly<Record<string, readonly string[]>>;
 export declare const DIGEST_FORMS: readonly SourceDigestForm[];
 export declare const SOURCE_ORIGINS: readonly SourceOrigin[];

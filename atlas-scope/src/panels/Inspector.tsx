@@ -40,6 +40,7 @@ import {
 } from "react";
 import { recordReturn, returnFocus, type ReturnRecord } from "../app/focus-return";
 import { aclUndecidability } from "../core/acl-coverage";
+import { COLLECTION_REPORT, collectionCensus } from "../core/collection";
 import { bandScored, presentBand } from "../core/band-qualification";
 import { deviceById, fabric, findingById, linkById, resolveCite } from "../core/data";
 import { own } from "../core/own";
@@ -614,14 +615,31 @@ function computeGaps(): Gap[] {
     },
     {
       key: "topology",
-      title: "Devices seen on topology only",
+      title: "Devices the collector never reached",
       meaning:
-        "These were named by a neighbour's discovery table; the collector never reached them. Everything about their internals is unobserved, and they are drawn as outlines in the fabric for that reason.",
+        `A topology-only device was named by a neighbour's discovery table and was never a collector target; an inventoried device the engine's ${COLLECTION_REPORT} lists as not collected returned no usable output. Everything about their internals is unobserved, and they are drawn as outlines in the fabric for that reason.`,
       total: nDev,
+      /* By the engine's collection state (core/collection.ts; acceptance B7): an inventoried host whose capture came
+         back empty is not "reported by a neighbour". */
       items: fabric.devices
         .filter((d) => !d.collected)
-        .map((d) => `${d.host} — reported by a neighbour, not collected`)
+        .map((d) =>
+          d.collection === "not collected"
+            ? `${d.host} — inventoried, but no usable output came back (${COLLECTION_REPORT})`
+            : `${d.host} — reported by a neighbour, not collected`,
+        )
         .sort(),
+    },
+    {
+      key: "partial",
+      title: "Devices collected only partially",
+      meaning:
+        `The engine's ${COLLECTION_REPORT} lists these as partial: they answered the collector, but essential commands returned no usable output. They are not counted as collected, and what the missing commands would show is unobserved.`,
+      total: nDev,
+      items: collectionCensus().hosts.partial.map((h) => {
+        const missing = collectionCensus().blindSpots.get(h)?.missing ?? [];
+        return missing.length === 0 ? `${h} — partial` : `${h} — partial, missing ${missing.join(", ")}`;
+      }),
     },
     {
       key: "inventory",
@@ -752,8 +770,23 @@ function reconcileCoverage(): Reconciliation[] {
       c.devicesOnTopologyOnly,
       fabric.devices.filter((d) => !d.collected).length,
       "cross-predicate",
-      "The compiler counts devices with no inventory record; this side counts devices the collector never reached. They coincide on this snapshot, but a device that answered without producing an inventory record would separate them.",
+      "The compiler counts devices with no inventory record; this side counts devices the collector never reached. They separate where a device answered without producing an inventory record, or where an inventoried device's capture returned nothing usable (the engine still writes its record).",
     ],
+    /* The engine's own collection summary against the per-host states the compiler read from its blind-spot list and
+       the device records (core/collection.ts). Same block, two readings of it: a disagreement means the summary and
+       the list it summarises do not describe the same fleet. */
+    ...(() => {
+      const census = collectionCensus();
+      const stated = census.stated;
+      const notStated = `not stated (${census.unstated ?? `no ${COLLECTION_REPORT}`})`;
+      const note =
+        `The snapshot's ${COLLECTION_REPORT} summary against the per-host states read from its blind-spot list and the device records. A disagreement means the summary and the list it summarises describe different fleets.`;
+      return [
+        ["collection report: complete", stated === null ? notStated : stated.complete, census.hosts.complete.length, "cross-predicate", note],
+        ["collection report: partial", stated === null ? notStated : stated.partial, census.hosts.partial.length, "cross-predicate", note],
+        ["collection report: not collected", stated === null ? notStated : stated.notCollected, census.hosts["not collected"].length, "cross-predicate", note],
+      ] as [string, number | string, number | string, ReconKind, string][];
+    })(),
     ["hostsWithRoutes", c.hostsWithRoutes, Object.keys(fabric.routes).length, "self-check", SELF_CHECK_NOTE],
     ["hostsWithAcls", c.hostsWithAcls, Object.keys(fabric.acls).length, "self-check", SELF_CHECK_NOTE],
     ["hostsWithObjectGroups", c.hostsWithObjectGroups, Object.keys(fabric.objectGroups).length, "self-check", SELF_CHECK_NOTE],
@@ -1418,9 +1451,10 @@ export function Inspector({
               {independentDisagreements.length === 0
                 ? "None disagree on this snapshot."
                 : `${independentDisagreements.length} disagree here, and both are real: the parser's flag, the snapshot's reachability analysis and this engine's evaluability rule pick out overlapping but different sets of access-list lines, which is why every coverage surface states their union rather than any one of them.`}{" "}
-              The snapshot&rsquo;s own <code>collection_completeness.summary</code> is not compiled
-              into this build, so its <code>not_collected</code> figure cannot be reconciled here —
-              that is a gap in this check, not an agreement.
+              The snapshot&rsquo;s own {COLLECTION_REPORT} summary is compiled and
+              reconciled below against the per-host states read from the same block — a
+              cross-predicate check, not an independent one. Where the snapshot carries no usable
+              block, those rows say <em>not stated</em>: a gap in this check, not an agreement.
             </p>
             {/* Wide content scrolls inside its own region; the page body never scrolls sideways. */}
             <div className="insp-tablewrap">

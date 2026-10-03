@@ -45,6 +45,7 @@ import {
 import { holds, own } from "../core/own";
 import { measuredScore, presentBand, unassessedScoringDomains } from "../core/band-qualification";
 import { aclUndecidability } from "../core/acl-coverage";
+import { COLLECTION_REPORT, collectionCensus } from "../core/collection";
 import { ribIncompleteness } from "../forwarding/rib-completeness";
 import { placeholderZero } from "../core/placeholders";
 import { T9_disagreement } from "../core/claims";
@@ -56,6 +57,7 @@ import { useInvestigation, type EvidenceTab } from "../core/store";
 import type {
   AclLine,
   Cite,
+  CollectionState,
   Device,
   InterfaceRecord,
   Link,
@@ -505,7 +507,46 @@ export function RecordGrid<T>({
 
 /* ══ device: identity ══════════════════════════════════════════════════════ */
 
+/** The pane subtitle's word for each collection state: a partial host is never just "assessed" (acceptance B7). */
+const COLLECTION_SUBTITLE: Readonly<Record<CollectionState, string>> = {
+  complete: "assessed",
+  partial: "assessed, partially collected",
+  "not collected": "not collected",
+  "topology only": "topology only",
+  "not stated": "collection not stated",
+};
+
 function UncollectedBanner({ device, onOpenCite }: { device: Device; onOpenCite: (c: Cite) => void }): ReactElement | null {
+  /* The engine's collection state (core/collection.ts; acceptance B7), not record presence: the engine writes a
+     device record for every inventoried host, an empty capture folder included, so "has a record" said nothing about
+     whether the collector got anything back. */
+  const blindSpot = collectionCensus().blindSpots.get(device.host);
+  const stateCite = device.fieldCites?.collection ?? device.cite;
+  if (device.collection === "partial") {
+    const missing = blindSpot?.missing ?? [];
+    return (
+      <div className="dp-banner dp-banner--partial" role="note" data-collection="partial">
+        <p className="dp-banner__title">Partial collection — answered, but incompletely</p>
+        <p className="dp-banner__text">
+          {`The engine's ${COLLECTION_REPORT} lists ${device.host} as partial: it answered the collector, but ${
+            missing.length === 0 ? "it does not name which essential evidence is missing" : `these essentials returned no usable output: ${missing.join(", ")}`
+          }. It is not counted among the collected devices, and what those commands would show is absent here, not empty.`}
+        </p>
+        <CiteButton cite={stateCite} onOpen={onOpenCite} />
+      </div>
+    );
+  }
+  if (device.collection === "not collected") {
+    return (
+      <div className="dp-banner dp-banner--uncollected" role="note" data-collection="not collected">
+        <p className="dp-banner__title">Not collected — no usable output came back</p>
+        <p className="dp-banner__text">
+          {`${device.host} is in the inventory, but the engine's ${COLLECTION_REPORT} lists it as not collected: no essential command returned usable output (unreachable, auth-failed or empty captures). The engine still writes a device record for it, so its fields are placeholders, not measurements — nothing below is a measurement of its state.`}
+        </p>
+        <CiteButton cite={stateCite} onOpen={onOpenCite} />
+      </div>
+    );
+  }
   if (device.collected) {
     return device.inventoried ? null : (
       <div className="dp-banner dp-banner--partial" role="note">
@@ -2288,7 +2329,7 @@ export function DevicePane({ onOpenCite, className }: DevicePaneProps): ReactEle
             <>
               {orNotObserved(device.kind, (k) => (recognisedKind(k) ? k : <UnrecognisedValue what="kind" value={k} compact />), { what: "kind", compact: true })} ·{" "}
               {orNotObserved(device.role, (s) => s, { what: "role", compact: true })} ·{" "}
-              {device.collected ? "assessed" : "topology only"}
+              {COLLECTION_SUBTITLE[device.collection]}
             </>
           ) : (
             <>cable · {plural(link?.members.length ?? 0, "member")}</>

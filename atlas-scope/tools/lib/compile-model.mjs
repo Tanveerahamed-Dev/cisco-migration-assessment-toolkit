@@ -164,6 +164,7 @@ export const SECTIONS_READ = Object.freeze([
   "acl_line_reachability",
   "acls",
   "cable_map",
+  "collection_completeness",
   "cross_layer",
   "devices",
   "endpoint_identity",
@@ -200,6 +201,67 @@ export function unusableRouteTable(rs) {
   if (rs.length === 0) return "an empty list";
   const prefixed = rs.some((r) => r !== null && typeof r === "object" && val(/** @type {Record<string, unknown>} */ (r).prefix) !== null);
   return prefixed ? null : `a list of ${rs.length} ${rs.length === 1 ? "entry" : "entries"}, none with a prefix`;
+}
+
+/** The blind-spot statuses the engine writes (cisco_toolkit/analyze.py `compute_collection_completeness`); a
+ *  complete host is not listed, it is counted in `summary.complete`. */
+export const COLLECTION_BLIND_SPOT_STATUSES = Object.freeze(["partial", "not collected"]);
+
+/**
+ * The engine's own authority on how completely each inventoried host was collected (acceptance B7, 2026-10
+ * refuter): `collection_completeness = {summary: {inventory, complete, partial, not_collected}, devices: [the
+ * blind spots only: {host, status, data_quality, missing}]}`, whose `summary.complete` is the canonical
+ * `n_collected` (cisco_toolkit/ssot.py CANONICAL_FACTS). A device RECORD is not that authority: the engine writes
+ * one for every inventoried host, including one whose capture folder was empty.
+ *
+ * Read whole or not at all. A block that is not exactly that shape — a count that is not a non-negative integer,
+ * a blind spot with no host, a status the engine does not write, a host listed twice — states nothing this
+ * compiler can rely on, so it is `usable: false` with the reason, and every host's collection is NOT STATED; it is
+ * never read partly and never defaulted to "complete". Shared with the validator, which warns where it applies.
+ * @param {unknown} cc  the snapshot's `collection_completeness`
+ * @returns {{ usable: true; summary: { inventory: number; complete: number; partial: number; notCollected: number };
+ *   devices: { host: string; status: string; dataQuality: number | null; missing: string[]; index: number }[] }
+ *   | { usable: false; why: string }}
+ */
+export function readCollectionCompleteness(cc) {
+  if (cc === undefined) return { usable: false, why: "the snapshot has no collection_completeness section" };
+  if (cc === null || typeof cc !== "object" || Array.isArray(cc)) {
+    return { usable: false, why: `collection_completeness is ${Array.isArray(cc) ? "a list" : cc === null ? "null" : `a ${typeof cc}`}, not an object` };
+  }
+  const c = /** @type {Record<string, unknown>} */ (cc);
+  const s = c.summary;
+  if (s === null || typeof s !== "object" || Array.isArray(s)) return { usable: false, why: "collection_completeness.summary is not an object" };
+  const sum = /** @type {Record<string, unknown>} */ (s);
+  const count = (/** @type {string} */ k) => (Number.isSafeInteger(sum[k]) && /** @type {number} */ (sum[k]) >= 0 ? /** @type {number} */ (sum[k]) : null);
+  const inventory = count("inventory");
+  const complete = count("complete");
+  const partial = count("partial");
+  const notCollected = count("not_collected");
+  if (inventory === null || complete === null || partial === null || notCollected === null) {
+    return { usable: false, why: "collection_completeness.summary does not state inventory, complete, partial and not_collected as counts" };
+  }
+  if (!Array.isArray(c.devices)) return { usable: false, why: "collection_completeness.devices is not a list" };
+  /** @type {{ host: string; status: string; dataQuality: number | null; missing: string[]; index: number }[]} */
+  const devices = [];
+  const seen = new Set();
+  for (const [index, r] of c.devices.entries()) {
+    if (r === null || typeof r !== "object" || Array.isArray(r)) return { usable: false, why: `collection_completeness.devices[${index}] is not an object` };
+    const row = /** @type {Record<string, unknown>} */ (r);
+    if (typeof row.host !== "string" || row.host.trim() === "") return { usable: false, why: `collection_completeness.devices[${index}] names no host` };
+    if (seen.has(row.host)) return { usable: false, why: `collection_completeness.devices lists ${row.host} twice` };
+    seen.add(row.host);
+    if (typeof row.status !== "string" || !COLLECTION_BLIND_SPOT_STATUSES.includes(row.status)) {
+      return { usable: false, why: `collection_completeness.devices[${index}].status is ${JSON.stringify(row.status)}, not one the engine writes (${COLLECTION_BLIND_SPOT_STATUSES.join(", ")})` };
+    }
+    devices.push({
+      host: row.host,
+      status: row.status,
+      dataQuality: Number.isFinite(row.data_quality) ? /** @type {number} */ (row.data_quality) : null,
+      missing: Array.isArray(row.missing) ? row.missing.filter((m) => typeof m === "string") : [],
+      index,
+    });
+  }
+  return { usable: true, summary: { inventory, complete, partial, notCollected }, devices };
 }
 
 /** Top-level scalars read into `meta`, which are not sections. */
@@ -944,10 +1006,46 @@ export function compileFabric(snap, binding, opts = {}) {
   const healthByHost = new Map(arr(snap.health_scores).map((h) => [h.switch, h]));
   const impactByHost = new Map(arr(snap.failure_impact).map((f) => [f.host, f]));
 
-  /* Hosts the fabric must render = cable-map nodes union inventoried devices. A cable-map-only node
-     (an AP, a phone, an uncollected neighbour) is REAL topology; dropping it would silently shrink
-     the blast radius. It is emitted with collected:false so the UI can never imply we assessed it. */
-  const hosts = [...new Set([...cableNodes.map((n) => n.host), ...Object.keys(obj(snap.devices))])].sort();
+  /* COLLECTION is the engine's statement, not record presence (acceptance B7, 2026-10 refuter). The engine writes a
+     device record for every inventoried host — an empty capture folder included — so `collected` used to be true
+     for a host its own collection_completeness calls "not collected". Each host's state is now read from that
+     block (readCollectionCompleteness): a listed blind spot is "partial" or "not collected"; an inventoried host it
+     does not list is "complete" (the engine lists only the blind spots); a host with no device record is "topology
+     only". With no usable block every inventoried host is "not stated" — the basis is absent, and record presence
+     is not promoted to collection. `collected` is true for complete and partial (the collector answered), false for
+     not collected and topology only, and keeps its record-presence reading only where the state is not stated. */
+  const completeness = readCollectionCompleteness(snap.collection_completeness);
+  /* Built, never a whole string literal: the compiler's own source must not carry a complete citation literal, which
+     is how AssessHub recognises a build that bundles compiled snapshot evidence (webapp/backend/app.py
+     `_SCOPE_RECORD_CITATION_SIGNATURE`); every other citation here is a template with a substitution too. A join,
+     not a constant template, so a minifier cannot fold it back into one literal in the shipped bundle. */
+  const COLLECTION_SUMMARY_CITE = ["collection_completeness", "summary"].join(".");
+  const blindSpots = new Map(completeness.usable ? completeness.devices.map((b) => [b.host, b]) : []);
+  /**
+   * @param {string} host
+   * @param {Record<string, any> | undefined} d
+   * @param {Record<string, any> | undefined} n
+   * @returns {"complete" | "partial" | "not collected" | "topology only" | "not stated"}
+   */
+  const collectionOf = (host, d, n) => {
+    const b = blindSpots.get(host);
+    if (b !== undefined) return b.status === "partial" ? "partial" : "not collected";
+    if (!d) return n?.collected === true && !completeness.usable ? "not stated" : "topology only";
+    return completeness.usable ? "complete" : "not stated";
+  };
+  /** @param {string} state @param {Record<string, any> | undefined} d @param {Record<string, any> | undefined} n */
+  const collectedOf = (state, d, n) =>
+    state === "complete" || state === "partial" ? true : state === "not collected" || state === "topology only" ? false : d ? true : Boolean(n?.collected);
+  /** The record a host's collection state was read from, or null when no record states it. @param {string} host @param {string} state */
+  const collectionCite = (host, state) =>
+    blindSpots.has(host) ? `collection_completeness.devices[host=${host}]` : state === "complete" ? COLLECTION_SUMMARY_CITE : null;
+
+  /* Hosts the fabric must render = cable-map nodes union inventoried devices union the engine's blind spots. A
+     cable-map-only node (an AP, a phone, an uncollected neighbour) is REAL topology; dropping it would silently
+     shrink the blast radius. It is emitted with collected:false so the UI can never imply we assessed it. A blind
+     spot with neither record is still a host the engine says it tried to collect; dropping it would shrink the
+     inventory the collection figures are stated against. */
+  const hosts = [...new Set([...cableNodes.map((n) => n.host), ...Object.keys(obj(snap.devices)), ...blindSpots.keys()])].sort();
 
   /* PER-FIELD PROVENANCE (acceptance B6). A device record is assembled from up to four source records,
      so one `cite` cannot say where each field came from. `fieldCites` names, for each compiled field,
@@ -968,11 +1066,17 @@ export function compileFabric(snap, binding, opts = {}) {
     const inv = `devices.${host}`;
     const node = `cable_map.nodes[host=${host}]`;
     const health = `health_scores[switch=${host}]`;
-    const own = d ? inv : node;
+    const own = d ? inv : n ? node : `collection_completeness.devices[host=${host}]`;
     out.id = own;
     out.host = own;
-    if (d) out.collected = inv;
+    const state = collectionOf(host, d, n);
+    const stated = collectionCite(host, state);
+    if (stated !== null) {
+      out.collected = stated;
+      out.collection = stated;
+    } else if (d) out.collected = inv;
     else if (n && typeof n.collected === "boolean") out.collected = node;
+    if (stated === null && state === "topology only" && n) out.collection = node;
     if (d) for (const f of INVENTORY_FIELDS) out[f] = inv;
     if (n) for (const f of NODE_FIELDS) out[f] = node;
     if (n && val(n.kind) !== null) out.kind = node;
@@ -990,10 +1094,12 @@ export function compileFabric(snap, binding, opts = {}) {
     const n = nodeByHost.get(host);
     const h = healthByHost.get(host);
     const fi = impactByHost.get(host);
+    const collection = collectionOf(host, d, n);
     return {
       id: host,
       host,
-      collected: d ? true : Boolean(n?.collected),
+      collected: collectedOf(collection, d, n),
+      collection,
       inventoried: Boolean(d),
       /* null = NOT STATED. The engine writes a kind only on a cable-map node (cisco_toolkit/analyze.py
          compute_cable_map: CABLE_MAP_COLLECTED_KIND for a collected host, a _KIND_RANK member for a classified
@@ -1030,7 +1136,7 @@ export function compileFabric(snap, binding, opts = {}) {
           }
         : null,
       fieldCites: deviceFieldCites(host, d, n, h),
-      cite: d ? `devices.${host}` : `cable_map.nodes[host=${host}]`,
+      cite: d ? `devices.${host}` : n ? `cable_map.nodes[host=${host}]` : `collection_completeness.devices[host=${host}]`,
     };
   });
 
@@ -1048,6 +1154,22 @@ export function compileFabric(snap, binding, opts = {}) {
     badges: strs(n.badges, `cable_map.nodes[host=${n.host}].badges`),
     cite: `cable_map.nodes[host=${n.host}]`,
   }));
+  /* The engine's collection_completeness, compiled under its source path so a device's `fieldCites.collection`
+     resolves inside the model to the record that states it. ABSENT (no key) when the snapshot carries no usable
+     block (`coverage.collectionUnstated` says why) — never an invented all-complete summary, and never a null a
+     citation of the section would resolve to as if it were a record. */
+  const collectionCompleteness = completeness.usable
+    ? {
+        summary: { ...completeness.summary, cite: COLLECTION_SUMMARY_CITE },
+        devices: completeness.devices.map((b) => ({
+          host: b.host,
+          status: b.status,
+          dataQuality: b.dataQuality,
+          missing: b.missing,
+          cite: `collection_completeness.devices[host=${b.host}]`,
+        })),
+      }
+    : undefined;
   const healthScores = arr(snap.health_scores).map((h) => ({
     switch: h.switch,
     role: val(h.role),
@@ -1357,6 +1479,8 @@ export function compileFabric(snap, binding, opts = {}) {
     aclHosts: Object.keys(acls).sort(),
     linksWithCentrality: links.filter((l) => l.betweenness !== null).length,
     aclSummary: obj(snap.acl_line_reachability?.summary),
+    /* Why the snapshot states no usable collection completeness, or null when it does (readCollectionCompleteness). */
+    collectionUnstated: completeness.usable ? null : completeness.why,
     cite: "collection_completeness / coverage_matrix",
   };
 
@@ -1395,6 +1519,9 @@ export function compileFabric(snap, binding, opts = {}) {
        every earlier model path is unchanged. */
     evidenceRecords: evidence.records,
     evidenceProjection: evidence.projection,
+    /* The engine's collection authority (acceptance B7), only when the snapshot states it. Appended last so every
+       earlier model path is unchanged. */
+    ...(collectionCompleteness === undefined ? {} : { collection_completeness: collectionCompleteness }),
   };
 }
 

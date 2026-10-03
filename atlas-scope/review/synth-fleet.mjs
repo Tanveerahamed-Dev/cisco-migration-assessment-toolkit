@@ -701,6 +701,13 @@ export function synthFleet({ devices, seed = 1 }) {
     link_centrality: linkCentrality(nodes, cables, cableMap),
     endpoint_identity: endpointIdentity,
     punchlist,
+    /* `cisco_toolkit/analyze.py :: compute_collection_completeness` for a fleet whose every inventoried device
+       returned every essential command: all complete, no blind spot listed. Without it the app states the fleet's
+       collection as not stated (acceptance B7), which is true of the file but not of the fleet it models. */
+    collection_completeness: {
+      summary: { inventory: collected.length, complete: collected.length, partial: 0, not_collected: 0 },
+      devices: [],
+    },
   };
 }
 

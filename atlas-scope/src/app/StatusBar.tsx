@@ -2,7 +2,7 @@
  * StatusBar.tsx — the permanent honesty line (acceptance B7).
  *
  * It states the denominators on every screen, for the whole life of the investigation: how many
- * devices answered the collector, how many carry a routing table, how many carry an access list,
+ * devices the engine says were collected completely (core/collection.ts), how many carry a routing table, how many carry an access list,
  * how many links have measured centrality. Those figures are the boundary of every claim the rest
  * of the application makes, and a boundary that is one click away is a boundary people forget.
  *
@@ -49,6 +49,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { aclUndecidability } from "../core/acl-coverage";
+import { collectedDescription, collectedFigure } from "../core/collection";
 import { fabric } from "../core/data";
 import { datasetNotices, isBundledSample } from "../core/dataset";
 import { DatasetBanner, digestFormLabel } from "./OpenSnapshot";
@@ -118,7 +119,6 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
   const undecidable = useMemo(() => aclUndecidability(), []);
   const totalDevices = fabric.devices.length;
   const totalLinks = fabric.links.length;
-  const collected = fabric.devices.filter((d) => d.collected).length;
 
   const deviceId = useInvestigation((s) => s.deviceId);
   const linkId = useInvestigation((s) => s.linkId);
@@ -259,8 +259,10 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
         <span className="sb__key">coverage</span>
         {denominator(
           "collected",
-          `${collected}/${totalDevices} collected`,
-          `${collected} of ${totalDevices} devices answered the collector. Open the coverage disclosure.`,
+          /* The ENGINE's count (core/collection.ts), never record presence: the engine writes a device record for
+             every inventoried host, an empty capture included (2026-10 refuter, B7). */
+          collectedFigure(),
+          `${collectedDescription()} Open the coverage disclosure.`,
         )}
         {denominator(
           "rib",

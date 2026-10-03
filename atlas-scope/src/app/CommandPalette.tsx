@@ -43,6 +43,7 @@ import {
 
 import { flushSync } from "react-dom";
 import { presentBand } from "../core/band-qualification";
+import { COLLECTION_WORDS } from "../core/collection";
 import { deviceById, fabric, findingById } from "../core/data";
 import { applyToFindings, parseQuery, rankedSearch, type SearchHit } from "../core/query";
 import { useInvestigation } from "../core/store";
@@ -211,10 +212,13 @@ function DeviceDetail({ hostId }: { hostId: string }): ReactNode {
       <span className="palette__kv">
         band <Band band={presentBand(d)} />
       </span>
-      {d.collected ? null : (
+      {/* The engine's collection state (core/collection.ts; acceptance B7): a partial or not-collected host says so. */}
+      {d.collection === "complete" ? null : d.collection === "topology only" ? (
         <span className="palette__kv palette__kv--absent">
           topology only {EM_DASH} no evidence collected
         </span>
+      ) : (
+        <span className="palette__kv palette__kv--absent">{COLLECTION_WORDS[d.collection]}</span>
       )}
     </>
   );

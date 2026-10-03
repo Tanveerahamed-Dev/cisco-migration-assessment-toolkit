@@ -22,9 +22,19 @@
  * W_SECTION_ABSENT (a section the model reads is absent, so the UI will show it as not observed) and
  * W_ROUTES_NOT_USABLE (a host's `routes` value is not a routing table, such as null, an empty list, a
  * marker string or prefix-less entries, so the model gives that host no RIB and a trace reaching it is
- * indeterminate; or the `routes` section itself is not an object, so no host has one).
+ * indeterminate; or the `routes` section itself is not an object, so no host has one) and
+ * W_COLLECTION_NOT_STATED (a `collection_completeness` section is present but is not the engine's whole
+ * {summary, devices} shape, so every host's collection is shown as not stated rather than as collected).
  */
-import { CompileError, KNOWN_SECTION_SCHEMAS, LEGACY_SCHEMA_ASSUMED, SECTIONS_READ, SUPPORTED_SCHEMAS, unusableRouteTable } from "./compile-model.mjs";
+import {
+  CompileError,
+  KNOWN_SECTION_SCHEMAS,
+  LEGACY_SCHEMA_ASSUMED,
+  readCollectionCompleteness,
+  SECTIONS_READ,
+  SUPPORTED_SCHEMAS,
+  unusableRouteTable,
+} from "./compile-model.mjs";
 
 /** The largest snapshot accepted: 256 MiB, far above a real fleet's on-disk form and below what a browser tab can parse. */
 export const DEFAULT_MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
@@ -424,6 +434,19 @@ export function validateSnapshot(bytes, opts = {}) {
           path: `/routes/${escapeToken(host)}`,
         });
       }
+    }
+  }
+  /* The engine's collection authority, read whole or not at all (compile-model.mjs `readCollectionCompleteness`, the
+     one rule). Its absence is already W_SECTION_ABSENT; a block that is present but unusable is said here, because
+     the model then states no host's collection rather than counting device records as collections (B7). */
+  if (Object.hasOwn(snap, "collection_completeness")) {
+    const cc = readCollectionCompleteness(snap.collection_completeness);
+    if (!cc.usable) {
+      warnings.push({
+        code: "W_COLLECTION_NOT_STATED",
+        message: `${cc.why}, so how completely each device was collected is not stated in this model; no device record is counted as a collection.`,
+        path: "/collection_completeness",
+      });
     }
   }
   return { ok: true, errors, warnings, snap, schemaAssumed };

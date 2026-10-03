@@ -198,7 +198,14 @@ describe("ONE contract: every vocabulary and rule the compiler enforces is the e
     /* Verifier R3-V5a: this catches one SPELLING of a hand copy only (Object.freeze([...])); a Set, a plain array
        or a switch passes it. The guard for the class is the behavioural block below ("the compile path reads the
        contract…"), which compiles against a PERTURBED contract. This stays as an early, specific signal. */
-    const text = readFileSync(resolve(REPO, "atlas-scope", "tools", "lib", "compile-model.mjs"), "utf8");
+    /* `readCollectionCompleteness` reads the engine's `collection_completeness.summary.not_collected` COUNT — a field
+       name of another engine block (acceptance B7), not a protocol-assessability state value — so its body is the
+       one span this spelling check does not read. Everything else in the file still is. */
+    const whole = readFileSync(resolve(REPO, "atlas-scope", "tools", "lib", "compile-model.mjs"), "utf8");
+    const span = /\nexport function readCollectionCompleteness\(cc\) \{\n[\s\S]*?\n\}\n/.exec(whole);
+    expect(span, "the collection-completeness reader is where this exclusion says it is").not.toBeNull();
+    expect(span![0].match(/"not_collected"/g)?.length, "it reads the summary key once, as a key").toBe(1);
+    const text = whole.replace(span![0], "\n");
     // A frozen literal list of kinds or roles is the hand copy this cluster deleted; any such list is a new one.
     expect(text).not.toMatch(/Object\.freeze\(\[\s*"(interface|acl_line|route|config_text|device_fact|analysis_row|adjacency|absence_witness)"/);
     expect(text).not.toMatch(/Object\.freeze\(\[\s*"(subject|derived_from|witness)"/);
