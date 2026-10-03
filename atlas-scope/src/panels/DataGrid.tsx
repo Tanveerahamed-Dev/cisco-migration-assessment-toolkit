@@ -1521,7 +1521,15 @@ export function DataGrid<T>({
     revealedRef.current = revealTarget;
     revealedKeyRef.current = key;
     pagedRef.current = null;
-    revealBelowHeader(scroller, headRef.current, el, restoring ? "nearest" : "centre");
+    /* A SELECTION reveal never scrolls the DOCUMENT — only the grid and its own scrolling ancestors.
+       The selection was made somewhere else on the page, and that is where the reader is looking.
+       MEASURED (acceptance A6 refuter, 390x844): a canvas click on core2 — to see its blast radius on
+       the fabric — had this reveal hand the full-height grid's remainder to the page, scrollY 0 -> 2325,
+       and 0 px of the fabric stayed on screen. The focus guard (`revealThroughAncestors`) could not
+       catch it: the canvas held focus, but the label layer over it read as a cover, so it counted as
+       0 px seen. A row this cannot bring into view stays marked where it is; the keyboard's own
+       reveal (focus moving inside the grid) still scrolls the page, because the reader is there. */
+    revealBelowHeader(scroller, headRef.current, el, restoring ? "nearest" : "centre", false);
     heldRef.current = true;
     /* The hold keeps the row the way it was placed: a row the reader was already looking at is
        restored by the least movement, and so is every later re-reveal of it (see `holdAlignRef`). */
@@ -1551,14 +1559,15 @@ export function DataGrid<T>({
 
   /* The hold itself (see `heldRef`). One re-reveal routine, three triggers: the port or its sticky
      header changing size (ResizeObserver), the rows changing (a commit that reflows what is above
-     the target), and the reader's own scrolling, which decides whether the hold still applies. */
-  const holdReveal = useCallback((page = true): void => {
+     the target), and the reader's own scrolling, which decides whether the hold still applies.
+     Like the selection reveal it keeps, the hold never scrolls the DOCUMENT (see that reveal). */
+  const holdReveal = useCallback((): void => {
     const scroller = gridRef.current;
     const id = revealTargetRef.current;
     const key = revealedKeyRef.current;
     if (!scroller || !heldRef.current || id === null || id === undefined || revealedRef.current !== id || key === null) return;
     const el = rowRefs.current.get(key);
-    if (el) revealBelowHeader(scroller, headRef.current, el, holdAlignRef.current, page);
+    if (el) revealBelowHeader(scroller, headRef.current, el, holdAlignRef.current, false);
   }, []);
 
   /**
@@ -1712,7 +1721,7 @@ export function DataGrid<T>({
        window whenever its address bar slides away under the reader's own page scroll. */
     const view = scroller.ownerDocument.defaultView;
     const onViewResize = (): void => {
-      holdReveal(false);
+      holdReveal();
       keepFocusInView();
     };
     view?.addEventListener("resize", onViewResize);
@@ -1729,7 +1738,7 @@ export function DataGrid<T>({
     const io = IO
       ? new IO(
           () => {
-            holdReveal(false);
+            holdReveal();
             keepFocusInView();
           },
           { threshold: [0, 0.5, 1] },

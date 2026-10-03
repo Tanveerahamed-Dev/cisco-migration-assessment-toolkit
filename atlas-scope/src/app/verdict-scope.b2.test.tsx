@@ -25,6 +25,12 @@
  *      fails the compile here until its family is written.
  *   3. A palette command that uses verdict vocabulary but names no traced flow is a verdict with no
  *      trace to bound it, and fails.
+ *   4. The 3-D fabric's verdict chip ("✕ blocked", "? undecided", "✓ delivered here") is a surface
+ *      too: it repeats the TRACE's verdict on the host where the packet's story ends, and on the
+ *      Evidence surface at 1000x800 the claim card is display:none, so the chip is all the reader sees
+ *      (refuted at the re-grade: a decided "✓ DELIVERED HERE" with no scope and no caveat on screen).
+ *      What the reader sees of it — the chip the label shows for its ending, and the line it carries —
+ *      answers to the same bounds as every row above.
  *
  * The companion structural guard (`src/forwarding/verdict-wording.guard.test.ts`) finds an outcome
  * value turned into text anywhere outside the owners, so a NEW surface cannot re-word a verdict
@@ -32,7 +38,7 @@
  */
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { isDecidedOutcome, undecidedOutcomeWord } from "../core/claims";
 import { fabric } from "../core/data";
@@ -40,6 +46,9 @@ import { useInvestigation } from "../core/store";
 import type { Flow, HopVerdict, Trace, TraceOutcome } from "../core/types";
 import { scopeClauseOf, suggestedFlows, traceFlow, type SuggestedFlow } from "../forwarding/engine";
 import { PathTrace } from "../panels/PathTrace";
+import type { FabricScene } from "../fabric3d/contract";
+import { fabricVerdictChipOf } from "../fabric3d/Fabric3D";
+import { createHoverChannel, FabricLabels } from "../fabric3d/FabricLabels";
 import { CommandPalette } from "./CommandPalette";
 import { allCommands, formatFlow, grammarExamples, runFlow, useCommandAnnouncement } from "./commands";
 
@@ -141,7 +150,7 @@ function flowNamedBy(text: string): Case | undefined {
 }
 
 describe("B2 preconditions: the engine's own bounds, which every surface must carry", () => {
-  it("offers suggested flows, and every one's claim opens with the 2-of-N-hosts scope clause", () => {
+  it("offers suggested flows, and every one's claim opens with the scope clause naming the collected-RIB count", () => {
     expect(cases.length).toBeGreaterThan(0);
     for (const c of cases) {
       expect(c.scope, c.s.id).toMatch(/^Under the collected RIBs of /);
@@ -273,5 +282,64 @@ describe("the Path panel's presets state a suggested flow's verdict with its bou
       ].join(" ");
     const problems = presets.flatMap((p, i) => boundsProblems(`preset button ${cases[i]!.s.id}`, announced(p), cases[i]!));
     expect(problems).toEqual([]);
+  });
+});
+
+describe("the 3-D fabric's verdict chip states a suggested flow's verdict with its bounds", () => {
+  it("every chip the label layer draws for a suggested flow — the chip its ending shows, and the line it carries", () => {
+    const pending = new Map<number, FrameRequestCallback>();
+    let nextFrame = 1;
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      pending.set(nextFrame, cb);
+      return nextFrame++;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => pending.delete(id));
+    vi.stubGlobal("ResizeObserver", class { observe(): void {} unobserve(): void {} disconnect(): void {} });
+    const flushFrames = (n: number): void => {
+      for (let i = 0; i < n; i += 1) {
+        const batch = [...pending.values()];
+        pending.clear();
+        act(() => { for (const cb of batch) cb(0); });
+      }
+    };
+    /* Every device on screen, apart: whichever host a trace ends on, its label is drawn. */
+    const scene = {
+      project: (id: string) => {
+        const i = fabric.devices.findIndex((d) => d.id === id);
+        return i < 0 ? null : { x: 60 + (i % 6) * 400, y: 300 + Math.floor(i / 6) * 300, visible: true };
+      },
+    } as unknown as FabricScene;
+    let marked = 0;
+    let drawn = 0;
+    const problems: string[] = [];
+    try {
+      for (const c of cases) {
+        const chip = fabricVerdictChipOf(c.t);
+        if (chip === null) continue;
+        marked += 1;
+        const el = mount(<FabricLabels devices={fabric.devices} sceneRef={{ current: scene }} epoch={0} hover={createHoverChannel()} selectedId={null} alarm={chip} />);
+        flushFrames(3);
+        const label = el.querySelector<HTMLElement>('.fabric3d-label[data-alarm]:not([data-alarm=""])');
+        if (label === null) {
+          problems.push(`${c.s.id}: the fabric drew no verdict chip for a trace that ends on ${chip.id}`);
+          continue;
+        }
+        drawn += 1;
+        /* What the reader sees: every chip whose modifier is this label's ending (CSS shows exactly
+           those), and every line the label carries that is not a chip, the name, or the band letter. */
+        const ending = label.dataset["alarm"] ?? "";
+        const seen = [...label.children]
+          .filter((k) => (k.classList.contains("fabric3d-label__alarm") ? k.classList.contains(`fabric3d-label__alarm--${ending}`) : k.classList.contains("fabric3d-label__bounds")))
+          .map((k) => k.textContent ?? "")
+          .join(" ");
+        problems.push(...boundsProblems(`fabric chip for ${c.s.id} on ${label.dataset["device"]} (${ending})`, seen, c));
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(problems).toEqual([]);
+    // Non-vacuity: every suggested flow whose trace ends on a host was drawn as a chip.
+    expect(marked, "no suggested flow's trace ends on a host").toBeGreaterThan(0);
+    expect(drawn).toBe(marked);
   });
 });

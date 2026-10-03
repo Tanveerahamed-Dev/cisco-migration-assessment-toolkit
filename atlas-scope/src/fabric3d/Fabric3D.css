@@ -121,6 +121,13 @@
   visibility: hidden;
 }
 
+/* A label drawn with no clear slot (FabricLabels `coveredIds`: a forced label the stage could not
+   hold, a leaving one held for its stagger) goes BENEATH every other label, so it never hides a mark
+   that was placed legibly. The stage counts it as not shown rather than as marked (acceptance A6). */
+.fabric3d-label[data-covered="yes"] {
+  z-index: -1;
+}
+
 /* A label the stage edge pushed off its anchor draws a leader from its bottom edge down to the
    device it names (FabricLabels.tsx). Without it a displaced name reads as naming whatever
    device it now happens to sit over. 2 px across, centred on the anchor's x: it is a line drawn on
@@ -282,6 +289,25 @@
   color: var(--accent);
 }
 
+/* THE VERDICT'S BOUNDS (acceptance B2). The alarmed label carries the trace's own sentence — word,
+   scope clause, badge, caveat count (ClaimCard `verdictStatement`) — as a line of its own under the
+   chip, so the fabric never states a verdict without them, even with the claim card out of view. The
+   label wraps to hold it within a readable measure; the label layer lifts it by its first row only. */
+.fabric3d-label:has(> .fabric3d-label__bounds) {
+  flex-wrap: wrap;
+  max-inline-size: min(20rem, calc(100% - 2 * var(--sp-1)));
+  row-gap: 2px;
+  padding-block-end: 2px;
+}
+.fabric3d-label__bounds {
+  flex: 1 0 100%;
+  white-space: normal;
+  font-weight: var(--fw-regular);
+  line-height: 1.3;
+  color: var(--text-muted);
+  letter-spacing: 0;
+}
+
 /* A cut point is a hypothesis about a failure that has not happened, so it is NOT painted in the
    down colour — the indeterminate token is the one this application uses for "the model says, the
    network has not". Saying "blocked" here would put a fact's word on a conditional. It has its own
@@ -396,6 +422,14 @@
 }
 .fabric3d__hud > * {
   flex-shrink: 0;
+  pointer-events: auto;
+}
+/* The row itself paints nothing: its controls are what is on the stage (FabricLabels measures them,
+   not the row, as the labels' obstacles). Between them the reader sees the fabric, so the row lets a
+   pointer through to it — MEASURED (A6, 1280x800): core1's CUT POINT mark sat legibly in the gap
+   between two HUD rows, and every hit there landed on the empty row box instead. */
+.fabric3d__hud {
+  pointer-events: none;
 }
 
 /* A6: the stranded count and the hosts out of view. The one HUD note whose length depends on the

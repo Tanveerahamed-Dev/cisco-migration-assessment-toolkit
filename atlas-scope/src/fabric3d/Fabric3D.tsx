@@ -37,6 +37,7 @@ import { prepareProceduralMaps, proceduralMapsReady } from "./materials";
 import { ALL_CHASSIS_KINDS, chassisPrepared, prepareChassis, type ChassisBuildOptions } from "./geometry/chassis";
 import { SCENE_DETAIL } from "./quality";
 import { deferPastPresentation } from "../panels/deferPastPaint";
+import { verdictStatement } from "../panels/ClaimCard";
 import { releaseFocusFrom } from "../app/focus-return";
 
 import "./Fabric3D.css";
@@ -587,6 +588,8 @@ export function blastQualifier(certainty: Certainty, count: number, alternates: 
   return others.length === 0 ? certainty : `${certainty}; ${others.join(", ")}`;
 }
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
+/** No blast-radius mark the label layer failed to draw (FabricLabels `onStrandedUnseen`). */
+const NO_MARKS_UNSEEN: { outOfView: readonly string[]; covered: readonly string[] } = { outOfView: [], covered: [] };
 
 const NO_BLOCK: Blocked = { host: null, link: null };
 
@@ -624,6 +627,20 @@ export function traceMarkOf(trace: Trace | null): TraceMark | null {
     link = match ? match.id : null;
   }
   return { host: stop.host, link, kind };
+}
+
+/**
+ * The verdict chip the label layer draws for a trace: on which host, which of the three endings, and
+ * the BOUNDS it must carry (acceptance B2). The chip repeats the trace's verdict away from its claim
+ * card — on the Evidence surface at 1000x800 the card is display:none and the fabric is what the reader
+ * sees — so it travels with the claims owner's own sentence for the trace (ClaimCard
+ * `verdictStatement(trace).sentence`: the word, the scope clause, the badge and the caveat count),
+ * never a restatement. `src/app/verdict-scope.b2.test.tsx` holds every suggested flow's chip to that.
+ */
+export function fabricVerdictChipOf(trace: Trace | null): { id: string; kind: TraceMarkKind; bounds: string } | null {
+  const mark = traceMarkOf(trace);
+  if (mark === null || trace === null) return null;
+  return { id: mark.host, kind: mark.kind, bounds: verdictStatement(trace).sentence };
 }
 
 /**
@@ -1281,13 +1298,30 @@ export function Fabric3D({
      marked 5 of its 8 stranded hosts and the other 3 projected off the canvas with no mark, no count
      and nothing saying so. The label layer reports which stranded hosts it could NOT draw this frame
      (off the canvas, behind a chassis, or dropped) — only when that set changes — and the stage
-     states the count and names them. */
-  const [strandedUnseen, setStrandedUnseen] = useState<readonly string[]>([]);
-  const onStrandedUnseen = useCallback((ids: readonly string[]) => setStrandedUnseen(ids), []);
-  const unseenHosts = useMemo(
-    () => (blast.stranded.length === 0 ? [] : strandedUnseen.filter((id) => strandedIds.has(id)).map((id) => deviceById.get(id)?.host ?? id)),
-    [blast, strandedUnseen, strandedIds],
+     states the count and names them.
+     A mark DRAWN UNDER something is not shown either (A6 refuter, 390x844: access10's and access12's
+     STRANDED? marks lay under other labels and core1's CUT POINT under the HUD while this note said
+     "all 9 marked"). The layer reports those apart, and the note names them apart. */
+  const [marksUnseen, setMarksUnseen] = useState<{ outOfView: readonly string[]; covered: readonly string[] }>(NO_MARKS_UNSEEN);
+  const onStrandedUnseen = useCallback(
+    (outOfView: readonly string[], covered: readonly string[]) => setMarksUnseen({ outOfView, covered }),
+    [],
   );
+  const hostsOf = useCallback(
+    (ids: readonly string[]): string[] =>
+      blast.stranded.length === 0 ? [] : ids.filter((id) => strandedIds.has(id)).map((id) => deviceById.get(id)?.host ?? id),
+    [blast, strandedIds],
+  );
+  const unseenHosts = useMemo(() => hostsOf(marksUnseen.outOfView), [hostsOf, marksUnseen]);
+  const coveredHosts = useMemo(() => hostsOf(marksUnseen.covered), [hostsOf, marksUnseen]);
+  /** The cut point's own mark, when the layer could not draw it legibly: how, or null when it is shown. */
+  const cutMarkUnseen = useMemo((): "out of view" | "under other labels" | null => {
+    const cutId = blast.host === null ? null : (devices.find((d) => d.host === blast.host || d.id === blast.host)?.id ?? null);
+    if (cutId === null) return null;
+    if (marksUnseen.outOfView.includes(cutId)) return "out of view";
+    if (marksUnseen.covered.includes(cutId)) return "under other labels";
+    return null;
+  }, [blast, devices, marksUnseen]);
 
   /** The traced packet's ending, decided once and shared by the canvas channel and the label layer
    *  so the two cannot tell different stories about one trace. */
@@ -1380,9 +1414,7 @@ export function Fabric3D({
      one of the two true things about that host. Each gets its own attribute on the label now, so
      neither statement can overwrite the other — the same reason `selected` and `stranded` are
      already separate channels. */
-  const labelAlarm = useMemo((): { id: string; kind: TraceMarkKind } | null =>
-    traceMark === null ? null : { id: traceMark.host, kind: traceMark.kind },
-  [traceMark]);
+  const labelAlarm = useMemo(() => fabricVerdictChipOf(trace), [trace]);
 
   const cutPointId = blast.host;
 
@@ -1625,17 +1657,29 @@ export function Fabric3D({
             role="note"
             data-blast={blast.certainty ?? ""}
             data-stranded-total={strandedIds.size}
-            data-stranded-unseen={unseenHosts.length}
-            title={
-              unseenHosts.length === 0
+            data-stranded-unseen={unseenHosts.length + coveredHosts.length}
+            data-stranded-covered={coveredHosts.length}
+            data-cut-mark={cutMarkUnseen === null ? "shown" : "not-shown"}
+            title={[
+              unseenHosts.length === 0 && coveredHosts.length === 0
                 ? `Every host that ${blast.host ?? blast.link ?? "the selection"} strands carries a stranded mark on the fabric.`
-                : `Not in view, so their stranded marks are not drawn: ${unseenHosts.join(", ")}. The camera is not moved by a selection; Reset view or the Fabric list reaches them.`
-            }
+                : "",
+              unseenHosts.length === 0
+                ? ""
+                : `Not in view, so their stranded marks are not drawn: ${unseenHosts.join(", ")}. The camera is not moved by a selection; Reset view or the Fabric list reaches them.`,
+              coveredHosts.length === 0
+                ? ""
+                : `No clear place on this stage for their stranded marks, which lie under other labels: ${coveredHosts.join(", ")}. A wider stage, a zoom or the Fabric list shows them.`,
+              cutMarkUnseen === null ? "" : `${blast.host}'s own cut-point mark is ${cutMarkUnseen}.`,
+            ]
+              .filter((t) => t !== "")
+              .join(" ")}
           >
             {`${blast.host ?? blast.link ?? "Selection"} strands ${strandedIds.size}${blast.qualifier === "" ? "" : ` (${blast.qualifier})`}`}
-            {unseenHosts.length === 0
-              ? ` · all ${strandedIds.size} marked`
-              : ` · ${unseenHosts.length} out of view: ${unseenHosts.join(", ")}`}
+            {unseenHosts.length === 0 && coveredHosts.length === 0 ? ` · all ${strandedIds.size} marked` : ""}
+            {unseenHosts.length === 0 ? "" : ` · ${unseenHosts.length} out of view: ${unseenHosts.join(", ")}`}
+            {coveredHosts.length === 0 ? "" : ` · ${coveredHosts.length} under other labels: ${coveredHosts.join(", ")}`}
+            {cutMarkUnseen === null ? "" : ` · cut-point mark ${cutMarkUnseen}`}
           </span>
         ) : null}
         <button
