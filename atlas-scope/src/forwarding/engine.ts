@@ -1572,7 +1572,8 @@ const isActive = (role: string | null): boolean => role !== null && role.toLower
 
 /**
  * The ingress-choice caveat, stated from what is known about each alternate member. An alternate the
- * flow was traced from, which ended the same way with nothing on its modelled path left open
+ * flow was traced from, which ended the same way — the same outcome, decided by the same element — with
+ * nothing on its modelled path left open
  * (`reproduced`), is named as traced; every other alternate keeps "may enter via". Before any
  * alternate is traced (`reproduced` empty) this is exactly the sentence resolveIngress always wrote.
  */
@@ -2645,7 +2646,8 @@ export function isDefiniteOnModelledPath(t: Trace): boolean {
  *    subnet by a point-in-time role, and an alternate member is NOT modelled equivalently — traced
  *    from that member the flow ends differently, or rests on inputs of its own that were never
  *    observed (no collected ACLs, an unmodelled hop). The alternate is TRACED (`traceVia`), not
- *    judged by a list of names; an alternate that reproduces the same, fully decided outcome is not
+ *    judged by a list of names; an alternate that reproduces the same, fully decided outcome, decided
+ *    by the same element (blocking host and record, or delivering host — `decidingElement`), is not
  *    a gap.
  *  - `ingress-port-unobserved`: a physical port on the gateway that the source's frames could
  *    arrive by (./bindings.ts `physicalIngressStates`) has a binding state other than an observed
@@ -2721,6 +2723,45 @@ function traceVia(flow: Flow, host: string): Trace {
   }
 }
 
+/**
+ * The trace an alternate ingress is judged by (`traceVia`), for audits and tests that check what a
+ * trace's ingress caveat says about an alternate against the alternate's own trace. Read-only: it
+ * never changes which ingress `traceFlow` chooses. Its hops start at `host` only when that host could
+ * be placed as the ingress.
+ */
+export function traceViaIngress(flow: Flow, host: string): Trace {
+  return traceVia(flow, host);
+}
+
+/**
+ * What decided a trace — the element its claim names beside the outcome word. A refusal: the blocking
+ * host and the record that blocked it (`blockingHop`). A delivery: the host it is delivered at. Any
+ * other outcome: the last hop and its deciding record. Two traces of one flow from different ingresses
+ * reproduce each other only when this agrees, not merely the outcome (acceptance A3).
+ */
+interface DecidingElement {
+  host: string | null;
+  /** The record compared: the blocking or deciding record; null for a delivery, which is compared by host. */
+  cite: Cite | null;
+  /** The record the sentence cites for this element (a delivery's delivering route), never compared. */
+  shown: Cite | null;
+}
+
+function decidingElement(t: Trace): DecidingElement {
+  const last = t.hops[t.hops.length - 1];
+  if (t.outcome === "delivered") return { host: last?.host ?? null, cite: null, shown: last?.decidedBy?.cite ?? (last === undefined ? null : `routes.${last.host}`) };
+  const b = blockingHop(t);
+  if (b !== null) return { host: b.hop.host, cite: b.evidence.cite, shown: b.evidence.cite };
+  const cite = last?.decidedBy?.cite ?? null;
+  return { host: last?.host ?? null, cite, shown: cite };
+}
+
+function decidingPhrase(outcome: Trace["outcome"], e: DecidingElement): string {
+  const at = e.host === null ? "before any hop" : `at ${e.host}`;
+  if (e.shown === null) return `${outcome} ${at}`;
+  return outcome === "delivered" ? `${outcome} ${at} (${e.shown})` : `${outcome} ${at} by ${e.shown}`;
+}
+
 /** Gaps before the modelled segment: an alternate ingress, and the gateway's physical ingress port. */
 function ingressPolicyGaps(t: Trace): PolicyGap[] {
   const first = t.hops[0];
@@ -2739,7 +2780,15 @@ function ingressPolicyGaps(t: Trace): PolicyGap[] {
       if (at.hops[0]?.host !== alt.host) continue; // the override could not place it; nothing was traced from there
       const altGaps = pathPolicyGaps(at);
       const altUndecided = at.hops.some((h) => h.verdict === "unmodeled" || h.evidence.some((e) => e.kind === "absence"));
-      if (at.outcome === t.outcome && altGaps.length === 0 && !altUndecided) {
+      /* The outcome WORD is not what a reader quotes: the claim names the line (or host) that decided it.
+         An alternate that ends "denied" too, but at another list's line, used to count as a reproduction,
+         so the caveat said "this result does not rest on that choice" beside a blocking line that the
+         choice decides (acceptance A3, 2026-10 refuter: tcp 10.0.20.50 -> 10.0.30.10:22 is denied by
+         PROTECT_SERVERS line 4 entering at core2, by VOICE_FILTER line 3 entering at core1). */
+      const mine = decidingElement(t);
+      const theirs = decidingElement(at);
+      const sameDecider = at.outcome === t.outcome && mine.host === theirs.host && mine.cite === theirs.cite;
+      if (sameDecider && altGaps.length === 0 && !altUndecided) {
         reproduced.push(alt.host); // modelled equivalently — and the caveat says so (withIngressChoiceStated)
         continue;
       }
@@ -2750,6 +2799,12 @@ function ingressPolicyGaps(t: Trace): PolicyGap[] {
       const altDecider = altLast?.decidedBy?.cite ?? (altLast === undefined ? alt.cite : `routes.${altLast.host}`);
       const altAbsence = at.hops.flatMap((h) => h.evidence.filter((e) => e.kind === "absence").map((e) => e.cite))[0] ?? altDecider;
       if (at.outcome !== t.outcome) why.push(`traced from ${alt.host} this flow is ${at.outcome}, not ${t.outcome} (${altDecider})`);
+      else if (!sameDecider) {
+        const what = t.outcome === "delivered" ? "the delivering host" : "the deciding line";
+        why.push(
+          `traced from ${alt.host} this flow is ${at.outcome} too, but ${what} depends on the ingress: entering at ${first.host} it is ${decidingPhrase(t.outcome, mine)}; entering at ${alt.host} it is ${decidingPhrase(at.outcome, theirs)}`,
+        );
+      }
       for (const g of altGaps) why.push(altGapPhrase(g));
       if (altUndecided) why.push(`the trace from ${alt.host} rests on evidence recorded as absent (${altAbsence})`);
       out.push({

@@ -181,6 +181,27 @@ export const SECTIONS_READ = Object.freeze([
   "routes",
   "routing_neighbors",
 ]);
+/**
+ * Why one host's `routes` value is NOT a collected routing table, or null when it is one. A table is a list
+ * holding at least one entry with a prefix (read through `val`, so "", "-", "N/A" and the not-observed marker
+ * are no prefix). Every other spelling (null, [], a not-collected marker string, an object, prefix-less entries)
+ * is a snapshot saying the host has no RIB, and the compiler gives it none: it used to compile to an empty
+ * table counted among the collected RIBs, so a trace reaching it was a decided "no route" drop where it is
+ * indeterminate (acceptance B3, 2026-10 refuter). Shared with the validator, which warns where it applies.
+ * @param {unknown} rs  one host's value under the snapshot's `routes`
+ * @returns {string | null}
+ */
+export function unusableRouteTable(rs) {
+  if (!Array.isArray(rs)) {
+    if (rs === null || rs === undefined) return "null";
+    if (typeof rs === "string") return `the text ${JSON.stringify(rs.length > 40 ? `${rs.slice(0, 40)}…` : rs)}`;
+    return typeof rs === "object" ? "an object, not a list" : `a ${typeof rs}, not a list`;
+  }
+  if (rs.length === 0) return "an empty list";
+  const prefixed = rs.some((r) => r !== null && typeof r === "object" && val(/** @type {Record<string, unknown>} */ (r).prefix) !== null);
+  return prefixed ? null : `a list of ${rs.length} ${rs.length === 1 ? "entry" : "entries"}, none with a prefix`;
+}
+
 /** Top-level scalars read into `meta`, which are not sections. */
 export const META_KEYS_READ = Object.freeze(["collected_at", "generated_at", "schema", "script_version"]);
 
@@ -1152,22 +1173,26 @@ export function compileFabric(snap, binding, opts = {}) {
   }));
 
   /* forwarding substrate: routes, ACLs, SVIs -------------------------------- */
-  /* Keyed by snapshot names, so built by Object.fromEntries (see `own`, THE DICTIONARY RULE). */
+  /* Keyed by snapshot names, so built by Object.fromEntries (see `own`, THE DICTIONARY RULE). A host whose
+     routes value is not a usable table (`unusableRouteTable`) gets NO key: it has no collected RIB, exactly
+     as if the snapshot had omitted it, so it is never counted among the routable hosts below. */
   /** @type {Record<string, object[]>} */
   const routes = Object.fromEntries(
-    Object.entries(obj(snap.routes)).map(([host, rs]) => [
-      host,
-      arr(rs)
-        .map((r, i) => ({
-          prefix: val(r.prefix),
-          source: val(r.source),
-          nextHop: val(r.next_hop),
-          outIntf: val(r.out_intf),
-          adminDistance: num(r.admin_distance),
-          cite: `routes.${host}[${i}]`,
-        }))
-        .filter((r) => r.prefix),
-    ]),
+    Object.entries(obj(snap.routes))
+      .filter(([, rs]) => unusableRouteTable(rs) === null)
+      .map(([host, rs]) => [
+        host,
+        arr(rs)
+          .map((r, i) => ({
+            prefix: val(r.prefix),
+            source: val(r.source),
+            nextHop: val(r.next_hop),
+            outIntf: val(r.out_intf),
+            adminDistance: num(r.admin_distance),
+            cite: `routes.${host}[${i}]`,
+          }))
+          .filter((r) => r.prefix),
+      ]),
   );
   /* A match field may name an OBJECT-GROUP instead of an address/wildcard pair; dropping it made the
      application report a model gap as a collection gap. */

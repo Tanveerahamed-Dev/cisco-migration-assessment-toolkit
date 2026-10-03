@@ -18,10 +18,13 @@
  *                        snapshot), unless the caller explicitly allows legacy input
  *   E_SECTION_SCHEMA     a section the compiler reads, at a section schema it does not know
  *
- * Warnings never block: W_COLLECTED_AT_MISSING, W_GENERATED_AT_MISSING, W_SCHEMA_ASSUMED and
- * W_SECTION_ABSENT (a section the model reads is absent, so the UI will show it as not observed).
+ * Warnings never block: W_COLLECTED_AT_MISSING, W_GENERATED_AT_MISSING, W_SCHEMA_ASSUMED,
+ * W_SECTION_ABSENT (a section the model reads is absent, so the UI will show it as not observed) and
+ * W_ROUTES_NOT_USABLE (a host's `routes` value is not a routing table, such as null, an empty list, a
+ * marker string or prefix-less entries, so the model gives that host no RIB and a trace reaching it is
+ * indeterminate; or the `routes` section itself is not an object, so no host has one).
  */
-import { CompileError, KNOWN_SECTION_SCHEMAS, LEGACY_SCHEMA_ASSUMED, SECTIONS_READ, SUPPORTED_SCHEMAS } from "./compile-model.mjs";
+import { CompileError, KNOWN_SECTION_SCHEMAS, LEGACY_SCHEMA_ASSUMED, SECTIONS_READ, SUPPORTED_SCHEMAS, unusableRouteTable } from "./compile-model.mjs";
 
 /** The largest snapshot accepted: 256 MiB, far above a real fleet's on-disk form and below what a browser tab can parse. */
 export const DEFAULT_MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
@@ -398,6 +401,29 @@ export function validateSnapshot(bytes, opts = {}) {
   for (const section of SECTIONS_READ) {
     if (!Object.hasOwn(snap, section)) {
       warnings.push({ code: "W_SECTION_ABSENT", message: `the snapshot has no ${section} section; what it would show is rendered as not observed.`, path: `/${escapeToken(section)}` });
+    }
+  }
+  /* A routing table the snapshot does not actually hold is the absence of one. The compiler gives such a
+     host no RIB (compile-model.mjs `unusableRouteTable`, the one rule); this says so where it happens,
+     rather than letting a null or a marker string pass unremarked into "no routing table collected". */
+  if (Object.hasOwn(snap, "routes")) {
+    const routes = snap.routes;
+    if (routes === null || typeof routes !== "object" || Array.isArray(routes)) {
+      warnings.push({
+        code: "W_ROUTES_NOT_USABLE",
+        message: `the routes section is ${Array.isArray(routes) ? "a list" : routes === null ? "null" : `a ${typeof routes}`}, not an object keyed by host, so no host has a collected routing table; every trace is indeterminate at its first routed hop.`,
+        path: "/routes",
+      });
+    } else {
+      for (const [host, rs] of Object.entries(routes)) {
+        const why = unusableRouteTable(rs);
+        if (why === null) continue;
+        warnings.push({
+          code: "W_ROUTES_NOT_USABLE",
+          message: `routes.${host} is ${why}, so ${host} has no collected routing table in this model; a trace that reaches it is indeterminate there, never a decided drop.`,
+          path: `/routes/${escapeToken(host)}`,
+        });
+      }
     }
   }
   return { ok: true, errors, warnings, snap, schemaAssumed };

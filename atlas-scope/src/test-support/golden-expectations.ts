@@ -74,6 +74,20 @@ export const GOLDEN_FORWARDING = {
     counterexampleDecidedBy: "routes.core1[4]",
   },
 
+  /**
+   * A denial whose deciding LINE depends on the ingress (acceptance A3, 2026-10 refuter overturn). Entering at
+   * the HSRP Active core2 it is denied by PROTECT_SERVERS, bound outbound on core1 Vlan30; entering at the
+   * Standby core1 it is denied first by VOICE_FILTER, bound inbound on core1 Vlan20. Same outcome, different line.
+   */
+  ingressDependentDenial: {
+    flow: tcp("10.0.20.50", "10.0.30.10", 22),
+    chosen: CORE2,
+    alternate: CORE1,
+    blockingHost: CORE1,
+    chosenCite: "acls.core1.PROTECT_SERVERS[3]",
+    alternateCite: "acls.core1.VOICE_FILTER[2]",
+  },
+
   /** The same denial on the port the critic used (acceptance report, R2): also decided, also answered. */
   multiHopDenialRdp: tcp("10.0.40.50", "10.0.30.10", 3389),
 
