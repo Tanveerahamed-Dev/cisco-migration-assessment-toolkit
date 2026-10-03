@@ -363,6 +363,52 @@ export const BACKDROP_DISPLAY_SPAN = {
   light: { top: 1.03, bottom: 0.965 },
 } as const;
 
+const displayLuminance = (c: Vec3): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+
+/**
+ * The ground a mark drawn over the stage has to hold its contrast against, and which way the mark
+ * must go to do it. The one ground owner for every contrast floor in the scene: the cable inks
+ * (geometry/cables.ts `cableGround`) and the receded chassis (materials.ts `CHASSIS_RECEDED_FLOOR`).
+ */
+export function stageGround(tokens: TokenPalette): { y: number; inkDarker: boolean } {
+  const s = tokens.color("--stage-bg");
+  const stageY = displayLuminance([s.r, s.g, s.b]);
+  const span = BACKDROP_DISPLAY_SPAN[tokens.theme === "dark" ? "dark" : "light"];
+  // A pale ground takes dark ink and vice versa. Decided from the ground itself, not the theme
+  // name, so a retuned stage cannot silently flip the direction the floor pushes.
+  const inkDarker = stageY > 0.18;
+  // The worst case is the end of the backdrop gradient CLOSEST to the ink: its darkest end for dark
+  // ink, its brightest end for light ink.
+  const k = inkDarker ? Math.min(span.top, span.bottom) : Math.max(span.top, span.bottom);
+  return { y: Math.min(1, stageY * k), inkDarker };
+}
+
+/** The luminance that sits exactly `floor`:1 from the ground, on the ink's side of it. */
+export function floorLuminance(groundY: number, floor: number, inkDarker: boolean): number {
+  return inkDarker
+    ? Math.max(0, (groundY + 0.05) / floor - 0.05)
+    : Math.min(1, floor * (groundY + 0.05) - 0.05);
+}
+
+/**
+ * Move `c` to luminance `y`: DOWN by scaling toward black (keeps chroma), UP by mixing toward white
+ * (the only way up that cannot leave the gamut). Chosen by the direction of travel, not by theme —
+ * the ink floor moves dark ink down on the pale stage, and recession moves light ink down on the
+ * dark one; an earlier version keyed this on the theme and silently left dark-stage recession as a
+ * no-op (the receded fan measured 8.7:1, i.e. not receded at all).
+ */
+export function toLuminance(c: Vec3, y: number): Vec3 {
+  const cy = displayLuminance(c);
+  if (y <= cy) {
+    if (cy <= 1e-6) return [y, y, y];
+    const k = y / cy;
+    return [c[0] * k, c[1] * k, c[2] * k];
+  }
+  if (cy >= 1 - 1e-6) return [1, 1, 1];
+  const t = Math.min(1, Math.max(0, (y - cy) / (1 - cy)));
+  return [c[0] + (1 - c[0]) * t, c[1] + (1 - c[1]) * t, c[2] + (1 - c[2]) * t];
+}
+
 /**
  * The backdrop: a vertical gradient, not a flat fill and emphatically not `0x000000`.
  *

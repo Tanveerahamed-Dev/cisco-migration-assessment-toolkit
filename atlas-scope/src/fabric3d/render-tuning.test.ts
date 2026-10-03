@@ -93,9 +93,14 @@ describe("per-theme render tuning", () => {
     expect(dark.contact.opacity).toBeGreaterThanOrEqual(0.6);
   });
 
-  it("recession blends toward the stage and never all the way", () => {
-    expect(RECEDE_MIX.dark).toBeLessThan(1);
-    expect(RECEDE_MIX.light).toBeLessThan(RECEDE_MIX.dark);
-    expect(RECEDE_MIX.light).toBeGreaterThan(0);
+  it("recession blends toward its floor target and never all the way", () => {
+    /* Both stages now recede toward a target AT the receded-chassis contrast floor (materials.ts
+       chassisRecedeTarget), so the blend means the same on both; the old light < dark ordering
+       existed only because the light target was an HDR pre-image several times brighter than any
+       chassis. Substantial (> 0.5) so recession reads; < 1 so a receded chassis keeps its shading. */
+    for (const theme of ["dark", "light"] as const) {
+      expect(RECEDE_MIX[theme]).toBeLessThan(1);
+      expect(RECEDE_MIX[theme]).toBeGreaterThan(0.5);
+    }
   });
 });
