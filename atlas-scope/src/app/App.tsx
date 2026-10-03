@@ -43,7 +43,7 @@ import { useSceneStats } from "../fabric3d/telemetry";
 import { StatusBar } from "./StatusBar";
 import { setThemePreference } from "./ThemeToggle";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { PaneSwitch, RailA, RailB, Stage, paneForSurface, useLadder, useRungIndex, type EvidenceView, type PaneId } from "./surfaces";
+import { PaneSwitch, RailA, RailB, Stage, paneForSurface, useLadder, useRungIndex, useStageDefault, type EvidenceView, type PaneId } from "./surfaces";
 import { useUrlSync } from "./urlSync";
 import "./App.css";
 
@@ -221,8 +221,19 @@ export function App(): ReactElement {
      Fabric3D")`. Measured on the production build at 375x812: 797,340 bytes of renderer fetched at
      +624 ms on a viewport where the stage is supposed to default to COLLAPSED and the DOM mirror
      stands in for it. `useLadder` reads `matchMedia` synchronously, so the answer IS available on
-     the first render; the effect below remains for later breakpoint crossings. */
-  const [fabricVisible, setFabricVisible] = useState(!ladder.stacked);
+     the first render; the effect below remains for later breakpoint crossings.
+     Seeded from the stage's own CSS-pixel line (`useStageDefault`, 768 px), NOT from the layout
+     ladder's `stacked` rung: that rung is in rem, and a media query's rem is the reader's default
+     font size. MEASURED (re-grade 2 refuter): keyed on `!ladder.stacked`, a 700 px load at a 12 px
+     default seeded the fabric ON and fetched three.js, and a 900 px load at 20 px never fetched it
+     (acceptance F4(c); src/app/stage-font-size.test.tsx). */
+  const stageDefault = useStageDefault();
+  const [fabricChoice, setFabricVisible] = useState(stageDefault);
+  /* What the frame shows. Only the stacked layout offers the toggle; every other layout shows the
+     stage unconditionally (it begins at 768 px or wider by construction, surfaces.tsx `atLeast`), so
+     a "hide" chosen in the stacked layout of a large default font must not leave a wider layout's
+     stage on its "Building the 3-D fabric" placeholder with no control to bring it back. */
+  const fabricVisible = fabricChoice || !ladder.stacked;
   /* Set the moment the reader uses the fabric toggle. After that the ladder stops overriding the
      choice: a control that silently undoes itself on the next breakpoint crossing is worse than
      no control. */
@@ -291,14 +302,14 @@ export function App(): ReactElement {
 
   /* Design brief 2.5, and the WCAG 1.4.10 answer for the canvas: below 768px the stage defaults to
      COLLAPSED and the DOM mirror stands in for it, because at that width a 26-node fabric is not
-     legible and drawing it anyway is decoration. The INITIAL state is seeded from the same ladder
+     legible and drawing it anyway is decoration. The INITIAL state is seeded from the same CSS-pixel line
      (see `useState` above); this effect exists for the breakpoint crossings that follow, and it is
      deliberately not the only thing that decides — by the time an effect runs, the stage has
      already latched and the renderer chunk is already on the wire. */
   useEffect(() => {
     if (fabricChosen.current) return;
-    setFabricVisible(!ladder.stacked);
-  }, [ladder.stacked]);
+    setFabricVisible(stageDefault);
+  }, [stageDefault]);
 
   /* Acceptance A4: selecting a hop must re-aim every other surface. The path panel writes only
      `hopIndex`, and the fabric and the hop list both read it — but the evidence rail is keyed on
