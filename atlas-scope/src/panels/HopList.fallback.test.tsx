@@ -63,8 +63,10 @@ describe("ACL rows on the hop card", () => {
     const row = factRows(hop).find((f) => f.dataset.decided === undefined && /INET_RETURN line 3 of 3/.test(f.textContent ?? ""));
     expect(row, "precondition: the non-deciding INET_RETURN line 3 row is on the card").toBeDefined();
     expect(row!.textContent).toContain("deny ip any any");
-    expect(row!.querySelector("[data-acl-qualifier]")?.textContent).toBe(
-      "would match, but an earlier unevaluable line may fire first",
+    /* Since the B5 re-grade (2026-10-03) the qualifier also NAMES the lines that may fire first: the
+       established line and the time-ranged line above it, each by its record. */
+    expect(row!.querySelector("[data-acl-qualifier]")?.textContent).toMatch(
+      /^would match, but earlier unevaluable lines may fire first: line 1 of 3 \(acls\.[^.]+\.INET_RETURN\[0\]\) cannot be evaluated; line 2 of 3 \(acls\.[^.]+\.INET_RETURN\[1\]\) cannot be evaluated$/,
     );
   });
 

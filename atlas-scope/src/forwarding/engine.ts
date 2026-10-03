@@ -1026,6 +1026,81 @@ interface ListRun {
 
 type BindingOf = (name: string) => AclBindingFact | null;
 
+/**
+ * Why a line that could match this flow keeps every line below it from deciding. Two different
+ * facts, and they must never share a word:
+ *   - `unevaluable`: the MODEL cannot read the line (`lineEvaluability`) — a qualifier, a time-range,
+ *     an unresolvable group. No narrower flow settles it.
+ *   - `open`: the line is evaluable, but this flow leaves a field it tests unspecified (an `ip` flow
+ *     against a tcp line, no destination port against `eq 443`). Asking a narrower flow settles it.
+ * `why` completes "could match this flow but/because …".
+ */
+export type AclBlock = { kind: "unevaluable"; why: string } | { kind: "open"; fields: string[]; why: string };
+
+interface Blocker {
+  line: AclLine;
+  block: AclBlock;
+}
+
+/** `blockOf` with the match computed here: what an earlier line that could fire says about a flow, or null. */
+export function aclLineBlock(line: AclLine, flow: Flow, srcIp: Ipv4, dstIp: Ipv4): AclBlock | null {
+  const tri = matchTri(line, flow, srcIp, dstIp);
+  return tri === "no" ? null : blockOf(line, tri, flow, srcIp, dstIp);
+}
+
+/**
+ * The block a line puts on the lines below it, given the matcher's answer for this flow: null when
+ * it does not block (it definitely matches and can be read, so it decides; a "no" is handled by the
+ * caller). The `open` fields are read from the same dimensions `matchTri` combines, so a line is
+ * called open on a field only where the flow really leaves that field unspecified.
+ */
+function blockOf(line: AclLine, tri: Exclude<Tri, "no">, flow: Flow, srcIp: Ipv4, dstIp: Ipv4): AclBlock | null {
+  const ev = lineEvaluability(line);
+  if (!ev.evaluable) return { kind: "unevaluable", why: ev.snapshotDetail ?? ev.reason ?? "this model cannot evaluate it" };
+  if (tri === "yes") return null;
+  const proto = (line.proto ?? "").toLowerCase();
+  const portsApply = proto === "tcp" || proto === "udp";
+  const open: string[] = [];
+  if (protoTri(line.proto, flow.protocol) === "maybe" && flow.protocol === "ip") open.push("protocol");
+  if (portsApply && line.sport !== null && flow.srcPort === null) open.push("source port");
+  if (portsApply && line.dport !== null && flow.dstPort === null) open.push("destination port");
+  /* A dimension that is "maybe" although the flow names it (a resolved group with a member that does
+     not parse, say) is the model's own uncertainty about an evaluable line — said as that, not as
+     an unspecified field and not as "cannot be evaluated". */
+  const host = hostOfAclLine(line);
+  const undecided: string[] = [];
+  if (addrTri(line.src, srcIp, host) === "maybe") undecided.push("source address");
+  if (addrTri(line.dst, dstIp, host) === "maybe") undecided.push("destination address");
+  const parts = [
+    ...(open.length === 0 ? [] : [`the flow does not specify its ${listPhrase(open, "fields")}, which this line matches on`]),
+    ...(undecided.length === 0 ? [] : [`this model cannot decide its ${listPhrase(undecided, "fields")} test for this flow`]),
+  ];
+  return { kind: "open", fields: open, why: parts.length === 0 ? "its match against this flow could not be decided" : parts.join(", and ") };
+}
+
+/**
+ * The matching line's qualifier when lines above it could fire first: names each one, by line and
+ * record, with its own kind — "cannot be evaluated" only for a line the model cannot read.
+ */
+function mayFireFirst(blockers: readonly Blocker[], total: number): string {
+  const n = blockers.length;
+  const unreadable = blockers.filter((b) => b.block.kind === "unevaluable").length;
+  const head =
+    unreadable === n
+      ? n === 1
+        ? "an earlier unevaluable line may fire first"
+        : "earlier unevaluable lines may fire first"
+      : unreadable === 0
+        ? n === 1
+          ? "an earlier line this flow leaves open may fire first"
+          : "earlier lines this flow leaves open may fire first"
+        : "earlier lines may fire first";
+  const clauses = blockers.map(
+    (b) => `${aclLineName(b.line.index, total)} (${b.line.cite}) ${b.block.kind === "unevaluable" ? "cannot be evaluated" : `could match because ${b.block.why}`}`,
+  );
+  return `would match, but ${head}: ${clauses.join("; ")}`;
+}
+
 function runLists(
   host: string,
   flow: Flow,
@@ -1044,7 +1119,11 @@ function runLists(
 
   for (const name of names) {
     const lines = own(named, name) ?? [];
-    let poisonedBy: { line: AclLine; why: string } | null = null;
+    /* EVERY line above the match that could fire, in list order, each with its own reason. This used
+       to keep only the first (`??=`) and give every one the "cannot be evaluated" wording, so on the
+       real PROTECT_SERVERS an `ip` flow named the evaluable `eq 443` line as unevaluable and never
+       named the echo-reply line that really blocks evaluation (re-grade B5, 2026-10-03). */
+    const blockers: Blocker[] = [];
     let decided = false;
     const setAside: string[] = [];
 
@@ -1059,18 +1138,14 @@ function runLists(
         }
         continue;
       }
-      const ev = lineEvaluability(line);
-      if (!ev.evaluable) {
+      const block = blockOf(line, tri, flow, srcIp, dstIp);
+      if (block !== null) {
         // It could match and we cannot tell: everything below it is now unprovable.
-        poisonedBy ??= { line, why: ev.snapshotDetail ?? ev.reason ?? "cannot be evaluated" };
-        continue;
-      }
-      if (tri === "maybe") {
-        poisonedBy ??= { line, why: "the flow does not specify a field this line matches on" };
+        blockers.push({ line, block });
         continue;
       }
       // tri === "yes" and the line is evaluable.
-      if (poisonedBy === null) {
+      if (blockers.length === 0) {
         const action = (line.action ?? "").toLowerCase();
         const ev2 = aclEvidence(host, name, line, lines.length, action === "deny" ? "denies this flow" : "permits this flow");
         evidence.push(ev2);
@@ -1092,22 +1167,31 @@ function runLists(
           );
         }
       } else {
-        evidence.push(aclEvidence(host, name, line, lines.length, "would match, but an earlier unevaluable line may fire first"));
+        evidence.push(aclEvidence(host, name, line, lines.length, mayFireFirst(blockers, lines.length)));
         decided = true;
       }
       break;
     }
 
-    if (poisonedBy !== null) {
-      const ev2 = aclEvidence(host, name, poisonedBy.line, lines.length, `cannot be evaluated — ${poisonedBy.why}`);
-      evidence.push(ev2);
-      if (indeterminate === null) {
-        indeterminate = ev2;
-        indeterminateDecision = { aclName: name, lineIndex: poisonedBy.line.index, lineCount: lines.length, raw: poisonedBy.line.raw, binding: bindingOf(name) };
-      }
-      caveats.push(
-        `${host} ACL ${name} ${aclLineName(poisonedBy.line.index, lines.length)} (${poisonedBy.line.cite}) "${poisonedBy.line.raw ?? "text not collected"}" could match this flow but ${poisonedBy.why}; no verdict below it can be proven.`,
+    if (blockers.length > 0) {
+      const rows = blockers.map((b) =>
+        aclEvidence(host, name, b.line, lines.length, b.block.kind === "unevaluable" ? `cannot be evaluated — ${b.block.why}` : `could match — ${b.block.why}`),
       );
+      evidence.push(...rows);
+      /* The verdict is decided by the first line the MODEL cannot read when there is one: a line the
+         flow merely leaves open is settled by asking a narrower flow, an unevaluable line is not. Every
+         other blocker is still named, in its own row and its own caveat. */
+      const at = Math.max(0, blockers.findIndex((b) => b.block.kind === "unevaluable"));
+      const decider = blockers[at]!;
+      if (indeterminate === null) {
+        indeterminate = rows[at]!;
+        indeterminateDecision = { aclName: name, lineIndex: decider.line.index, lineCount: lines.length, raw: decider.line.raw, binding: bindingOf(name) };
+      }
+      for (const b of blockers) {
+        caveats.push(
+          `${host} ACL ${name} ${aclLineName(b.line.index, lines.length)} (${b.line.cite}) "${b.line.raw ?? "text not collected"}" could match this flow ${b.block.kind === "unevaluable" ? "but" : "because"} ${b.block.why}; no verdict below it can be proven.`,
+        );
+      }
       continue;
     }
     if (!decided) {
@@ -1129,6 +1213,24 @@ function runLists(
 
 
   return { evidence, caveats, denial, indeterminate, denialDecision, indeterminateDecision };
+}
+
+/**
+ * The first-match walk both selection modes share, over exactly the lists named, with no binding
+ * consulted. Exported so a test can pose a flow to EVERY list of a snapshot — including one the
+ * specificity rule would never select for that flow — and check what the walk says about each line
+ * against `lineEvaluability` and `matchTri` read independently (re-grade B5, 2026-10-03).
+ */
+export function evaluateListsInOrder(
+  host: string,
+  flow: Flow,
+  srcIp: Ipv4,
+  dstIp: Ipv4,
+  named: NameKeyed<AclLine[]>,
+  names: readonly string[],
+): Pick<ListRun, "evidence" | "caveats" | "denial" | "indeterminate"> {
+  const { evidence, caveats, denial, indeterminate } = runLists(host, flow, srcIp, dstIp, named, names, () => null);
+  return { evidence, caveats, denial, indeterminate };
 }
 
 /**
