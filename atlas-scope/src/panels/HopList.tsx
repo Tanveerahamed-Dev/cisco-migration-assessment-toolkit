@@ -40,7 +40,7 @@ import { aclsOf, hasRib, resolveCite } from "../core/data";
 import { own } from "../core/own";
 import { ACL_LINE_NUMBERING_NOTE, aclLineName } from "../forwarding/acl-line";
 import { hopHasObservedBinding, hopUnobservedBindings } from "../forwarding/bindings";
-import { resolveEgress, unobservedPolicyInputs, type PolicyGap } from "../forwarding/engine";
+import { aclLineBlock, resolveEgress, unobservedPolicyInputs, type PolicyGap } from "../forwarding/engine";
 import { parseIpv4 } from "../forwarding/ip";
 import type { AclLine, Cite, Hop, HopEvidence, HopVerdict, RouteEntry, Trace } from "../core/types";
 import { VERDICT_ICON } from "../ui/icons";
@@ -259,6 +259,19 @@ function classify(ev: HopEvidence): Decider {
   // Otherwise `absence` is the engine's own marker for "we have no evidence here", and `svi`/`topology`
   // carry their reasoning in the label; neither has a narrower record shape worth resolving.
   return { kind: "absence", ev };
+}
+
+/**
+ * How an ACL line that left a hop undecided stands toward this trace's flow, as a predicate for
+ * "ACL <list> line N on <host> …". Read from the engine's own classification, so the card and the
+ * engine's evidence rows can never disagree about which kind of block it is.
+ */
+function aclDeciderPhrase(line: AclLine, trace: Trace): string {
+  const src = parseIpv4(trace.flow.srcIp);
+  const dst = parseIpv4(trace.flow.dstIp);
+  const block = src === null || dst === null ? null : aclLineBlock(line, trace.flow, src, dst);
+  if (block === null) return "leaves this flow undecided";
+  return block.kind === "unevaluable" ? "cannot be evaluated for this flow" : `could match this flow and is not decided for it: ${block.why}`;
 }
 
 /** The route the hop actually took, when one is recorded among its evidence. */
@@ -766,12 +779,17 @@ export function HopList({ trace, activeIndex, onSelect, onOpenCite }: HopListPro
         const fallback = fallbackLists(hop);
         const isHypothesis = (d: Decider | null): boolean => d?.kind === "acl" && fallback.includes(d.acl);
         const deciderIsHypothesis = decider !== null && isHypothesis(decider);
+        /* What the deciding line does to this flow, in the engine's own kind (aclLineBlock): "cannot
+           be evaluated" is said only of a line the model cannot read. An evaluable line the flow leaves
+           open (an `ip` flow against a tcp line, no port against `eq 443`) used to get the same words
+           (re-grade B5, 2026-10-03). */
+        const deciderPhrase = decider?.kind === "acl" ? aclDeciderPhrase(decider.line, trace) : null;
         const undecidedBy =
           hop.verdict === "unmodeled" && unmodelledCause(hop, route) === "route-decided"
             ? decider?.kind === "acl" && deciderIsHypothesis
-              ? `no observed filter binding on this hop — undecided: ${decider.acl} is bound to no interface observed here, and even as a hypothesis ACL ${decider.acl} ${aclLineName(decider.line.index, own(aclsOf(decider.host), decider.acl)?.length ?? null)} on ${decider.host} cannot be evaluated for this flow`
+              ? `no observed filter binding on this hop — undecided: ${decider.acl} is bound to no interface observed here, and even as a hypothesis ACL ${decider.acl} ${aclLineName(decider.line.index, own(aclsOf(decider.host), decider.acl)?.length ?? null)} on ${decider.host} ${deciderPhrase}`
               : decider?.kind === "acl"
-              ? `ACL ${decider.acl} ${aclLineName(decider.line.index, own(aclsOf(decider.host), decider.acl)?.length ?? null)} on ${decider.host} cannot be evaluated for this flow`
+              ? `ACL ${decider.acl} ${aclLineName(decider.line.index, own(aclsOf(decider.host), decider.acl)?.length ?? null)} on ${decider.host} ${deciderPhrase}`
               : "a condition this collection cannot settle (named under “Decided by”) keeps the outcome open"
             : null;
         const acl = actingAcl(hop);
