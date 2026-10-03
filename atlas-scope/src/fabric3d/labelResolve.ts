@@ -26,6 +26,12 @@
 /** Placement class below this is an investigation subject (selection, hover, alarm, trace, highlight). */
 export const URGENT_CLASS_BELOW = 10;
 
+/** How far above the anchor a DOM label sits, as a multiple of its own height (FabricLabels.tsx). The
+ *  blocked host's label — and a delivered one, and a cut point — clears the alarm halo entirely rather
+ *  than sitting on top of it. Exported because the trace framing (traceFraming.ts) leaves room for it. */
+export const LABEL_LIFT = 1.6;
+export const LABEL_LIFT_BLOCKED = 3;
+
 export interface LabelResolverState {
   /** Last pass's verdict per label: the hysteresis memory. Updated in place. */
   wasKept: Uint8Array;
