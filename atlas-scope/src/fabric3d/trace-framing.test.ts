@@ -167,7 +167,7 @@ function offFrame(trace: Trace, pose: CameraTarget, like: PerspectiveCamera, w: 
 function frameOf(trace: Trace, rig: ReturnType<typeof rigAt>, focusPose: (host: string) => CameraTarget | null = () => null): CameraTarget | null {
   const overlay = createFlowOverlay(readTokens("dark"));
   try {
-    overlay.setTrace(trace, 0, source);
+    overlay.setTrace(trace, source);
     return traceFramingPose({
       camera: rig.camera,
       currentTarget: rig.controls.target,

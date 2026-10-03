@@ -13,6 +13,16 @@
  *                only looping animation in the product (design brief 4.8; the dead, unrendered
  *                `stage-pending-spin` spinner that App.css used to declare is removed); it exists
  *                to distinguish a live trace overlay from a static screenshot of a path.
+ *   TRIGGER      both run once per NEW trace — a trace object this overlay is not already drawing —
+ *                and on nothing else. Re-sending the trace already drawn is a no-op: that is what
+ *                every hop step (`]` / `[`, a hop-list row) does, because the shell re-sends
+ *                `setTrace(trace, hopIndex)` on each one, and a hop step used to re-arm the draw-on
+ *                and all three packet loops (C6 refuter, 2026-10-03: alternating hops every 1.5 s
+ *                kept the canvas moving for 14 s). The overlay draws nothing per hop: the active
+ *                hop is shown by the selection the shell re-aims to its host (acceptance A4) and by
+ *                the hop list, so stepping hops moves no marker, never re-runs the draw-on, never
+ *                restarts or extends the loop, and never moves the camera (scene.ts setTrace).
+ *                An explicit re-run makes a new trace object and so draws on and loops again, once.
  *   arrowheads   not animated. Direction is permanent information and does not need movement.
  *   stop glyph   not animated. An alarm that pulses is decoration; an alarm that is simply THERE,
  *                octagonal, and red is read faster.
@@ -111,7 +121,13 @@ export interface FlowOverlay {
   group: Group;
   /** Objects allowed past the bloom threshold: the path, the arrowheads, the packet, the alarm. */
   emissiveObjects(): Object3D[];
-  setTrace(trace: Trace | null, activeHop: number | null, source: TraceSegmentSource): void;
+  /**
+   * Draw `trace` over the cables `source` resolves. Returns true when it drew a NEW trace — and so
+   * armed the draw-on and the packet run (under full motion) — and false when it cleared the trace or
+   * was handed the trace it is already drawing over the same source, which changes nothing at all
+   * (the hop-step case; see TRIGGER in the motion inventory above).
+   */
+  setTrace(trace: Trace | null, source: TraceSegmentSource): boolean;
   setResolution(width: number, height: number): void;
   setReducedMotion(reduced: boolean): void;
   retint(tokens: TokenPalette): void;
@@ -376,6 +392,9 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
   let revealing = false;
   let packetStart = 0;
   let packetRunning = false;
+  /* What is drawn, by identity: re-sending it is a no-op (TRIGGER, header). Null when nothing is. */
+  let drawnTrace: Trace | null = null;
+  let drawnSource: TraceSegmentSource | null = null;
   let undrawn: string[] = [];
   let sphere: { center: [number, number, number]; radius: number } | null = null;
   let terminalHost: string | null = null;
@@ -486,7 +505,10 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
       return [path, blocked, arrows, packet, stop, undecided];
     },
 
-    setTrace(trace: Trace | null, activeHop: number | null, source: TraceSegmentSource): void {
+    setTrace(trace: Trace | null, source: TraceSegmentSource): boolean {
+      if (trace !== null && trace === drawnTrace && source === drawnSource) return false;
+      drawnTrace = trace !== null && trace.hops.length > 0 ? trace : null;
+      drawnSource = drawnTrace === null ? null : source;
       undrawn = [];
       sphere = null;
       terminalHost = null;
@@ -502,7 +524,7 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
         packetRunning = false;
         revealing = false;
         totalLength = 0;
-        return;
+        return false;
       }
 
       /* Stitch the path out of the cables the hops actually traverse. A hop pair with no cable
@@ -646,14 +668,6 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
         blocked.visible = false;
       }
 
-      // activeHop steers the packet's resting position when the user is stepping the hop list by
-      // keyboard; it never moves the camera and never re-runs the draw-on.
-      if (activeHop !== null && totalLength > 0 && trace.hops.length > 1) {
-        const frac = Math.min(1, Math.max(0, activeHop / (trace.hops.length - 1)));
-        sampleAt(frac * totalLength, _v);
-        packet.position.copy(_v);
-      }
-
       group.visible = true;
       revealing = !reducedMotion && totalLength > 0;
       revealStart = 0;
@@ -669,6 +683,7 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
       packet.visible = packetRunning;
       // Provisional, like the glyphs above; `update` re-aims it for the real camera.
       syncTether(_qIdentity);
+      return true;
     },
 
     setResolution(width: number, height: number): void {
