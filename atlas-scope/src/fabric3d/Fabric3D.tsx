@@ -17,7 +17,6 @@ import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState, u
 import { DEFAULT_GRAPH_OPTIONS, failureImpact, linkFailureImpact, type Certainty, type ProjectionDelta } from "../analysis/blast";
 import { cableCountPhrase, hostCableAccount } from "../analysis/port-claims";
 import { presentBand } from "../core/band-qualification";
-import { bandOfHopIn, bandOfTrace } from "../core/claims";
 import { deviceById, fabric, findingsByHost, linkById, linksByHost } from "../core/data";
 import { applyToDevices, parseQuery } from "../core/query";
 import { useInvestigation, useReducedMotion } from "../core/store";
@@ -27,6 +26,7 @@ import type { FabricScene, HighlightState, PickResult, QualityTier, SceneEvent }
 import { FabricA11yTree, linkCutSentence } from "./FabricA11yTree";
 import { createHoverChannel, FabricLabels, type HoverChannel } from "./FabricLabels";
 import { publishSceneStats, releaseSceneStats } from "./telemetry";
+import { traceEndOf, type TraceMarkKind } from "./traceEnd";
 import { FabricLegend } from "./FabricLegend";
 import { CANVAS_ARIA_KEYSHORTCUTS, viewKeyMove } from "./canvasKeys";
 import { layoutJob, type FabricLayout, type LayoutJob } from "./layout";
@@ -299,30 +299,9 @@ const DIRECTIONS: Readonly<Record<string, readonly [number, number]>> = {
   ArrowDown: [0, 1],
 };
 
-/**
- * THE FABRIC HAS THREE ENDINGS FOR A TRACE, NOT TWO, AND IT DOES NOT DECIDE THEM HERE.
- *
- * It used to hold a hand-written set of "failing verdicts" with `unmodeled` folded in beside
- * `denied`. The intent was right — a hop the engine could not model is not a hop that succeeded —
- * but the rendering was not: an indeterminate hop was drawn with the denied treatment and the word
- * BLOCKED, byte-for-byte identical to a genuinely denied flow, while the side panel for the very
- * same trace said INDETERMINATE. The surface asserted a definite failure the engine had explicitly
- * refused to assert, which is the mirror image of the absence-as-health defect this product exists
- * to refuse: absence rendered as a FAULT is still absence rendered as a measurement.
- *
- * The root cause was not the missing third case; it was that this file restated the
- * verdict → disposition mapping at all. `claims.ts :: bandOfHop` is the one owner of that mapping
- * (REFUTED / UNDETERMINED / RESOLVED) and every other surface — HopList's badge, the claim badge,
- * the Inspector's treatment — already asks it. So the fabric asks it too, and a new verdict added
- * to `HopVerdict` can no longer land in this file's set by default.
- */
-export type TraceMarkKind =
-  /** REFUTED: the traced packet was stopped here, and the engine says by what. */
-  | "blocked"
-  /** UNDETERMINED: the simulation ran and declined to decide. Not a stop, not a delivery. */
-  | "undetermined"
-  /** RESOLVED: the traced packet reached its destination at this hop. */
-  | "delivered";
+/* The three endings and the rule that picks the hop they are drawn on live in ./traceEnd, which the
+   canvas glyph (flow.ts) asks too: the chip and the glyph cannot mark different hops. */
+export type { TraceMarkKind } from "./traceEnd";
 
 interface TraceMark {
   host: string;
@@ -591,39 +570,24 @@ const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 const NO_BLOCK: Blocked = { host: null, link: null };
 
 /**
- * Where the traced packet's story ends on the fabric, and WHICH of the three endings it is.
- *
- * The first hop the claim layer does not call RESOLVED is where the story ends: a packet stops at
- * the first REFUTED hop and stops being decidable at the first UNDETERMINED one, so hop order —
- * not verdict severity — picks the mark. A trace every hop of which resolved is marked at its last
- * hop, and only when that hop actually says `delivered`: a run of `forwarded` hops that simply ran
- * out is not a delivery, and marking it as one would be this defect with the sign flipped.
+ * Where the traced packet's story ends on the fabric, WHICH of the three endings it is, and — for a
+ * REFUTED ending alone — the cable the stopped packet would have taken. The hop and the ending are
+ * `traceEnd.ts :: traceEndOf`, the same rule the canvas glyph is placed by.
  */
 export function traceMarkOf(trace: Trace | null): TraceMark | null {
-  if (!trace || trace.hops.length === 0) return null;
-  /* The band of each hop IN ITS TRACE (`bandOfHopIn`), never the context-free verdict band. The
-     context-free one drew "✓ DELIVERED HERE" on core1 for a delivery whose own card and hop list
-     said filtering there was never decided (2026-09-21 critic, B1): the same trace, two answers. */
-  const stop = trace.hops.find((h) => bandOfHopIn(h, trace) !== "RESOLVED");
-  if (stop === undefined) {
-    const last = trace.hops[trace.hops.length - 1];
-    if (last === undefined || last.verdict !== "delivered") return null;
-    /* A delivery whose hops all resolved can still be undecided as a WHOLE (an alternate ingress
-       the flow may enter by instead). The mark follows the trace's band, so it cannot promise more
-       than the card. */
-    return { host: last.host, link: null, kind: bandOfTrace(trace) === "RESOLVED" ? "delivered" : "undetermined" };
-  }
-  const kind: TraceMarkKind = bandOfHopIn(stop, trace) === "REFUTED" && bandOfTrace(trace) === "REFUTED" ? "blocked" : "undetermined";
+  const end = traceEndOf(trace);
+  if (end === null || trace === null) return null;
   /* The cable is resolved for the REFUTED case alone. It feeds the scene's alarm channel, and
      alarming the cable out of a hop the engine could not decide would restate the same overclaim
      one object further along. */
   let link: string | null = null;
-  if (kind === "blocked" && stop.nextHost !== null) {
+  const stop = trace.hops[end.index];
+  if (end.kind === "blocked" && stop !== undefined && stop.nextHost !== null) {
     const candidates = linksByHost.get(stop.host) ?? [];
     const match = candidates.find((l) => l.a === stop.nextHost || l.b === stop.nextHost);
     link = match ? match.id : null;
   }
-  return { host: stop.host, link, kind };
+  return { host: end.host, link, kind: end.kind };
 }
 
 /**
