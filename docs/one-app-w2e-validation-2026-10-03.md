@@ -1,8 +1,9 @@
 # W2e: Topology & Paths validation
 
 Status: implementation, local regression checks and real browser verification
-are complete; hosted performance, privacy/publication and merge gates
-remain open. W2d merged as `828847f14c908fa7b725fe97fdff9cee5f115178`; its receipts
+passed on the recorded checkpoints. Integration with the later #582 merge,
+hosted performance, privacy/publication and merge gates remain open.
+W2d merged as `828847f14c908fa7b725fe97fdff9cee5f115178`; its receipts
 do not certify this changed source.
 
 ## Contract and source custody
@@ -206,6 +207,39 @@ at both 50 and 200 remains decisive and must pass. Float-bearing responses stay
 on Python. Neither the accepted input domain nor the threshold is widened.
 
 ## Remaining delivery gates
+
+The Scope owner subsequently merged #582 as `e50c3cde`. Its stricter shell reader,
+engine vocabulary and complete bundle dependency custody are integrated before
+publication. Earlier local results remain source-scoped. The combined source's
+fresh hub build and real desktop/mobile probe passed with the same complete
+censuses, path equality, painted WebGL, selection and clear/teardown checks,
+and zero forbidden requests. Root reviewed the fresh screenshots. The obsolete privacy run was
+intentionally stopped, and the history scan refused the base movement; neither
+is a passing publication receipt.
+
+The combined source keeps the new shell/CSS refusals and adds the capability
+declaration through that same reader. A non-ASCII long-s counterexample first
+failed (two passed, one failed); matching now uses the owner's ASCII rules.
+All 25 selected capability/mount checks passed. Upstream health-band membership
+also exposed an unhashable list/dict regression: the old owner returned
+`analysis_unavailable`, while the incoming set lookup raised `TypeError`. A
+string guard restores that behavior; ten malformed/valid-band cases passed.
+Explicit native-profile recomputation confirms the same two reviewed hashes;
+no native eligibility, provider or schema-pin change was needed.
+
+The new package module recorder correctly refuses arbitrary outside-project
+code. W2e shares one protocol source between the two frontends, so its integration
+adds only `atlas-scope/dist-hub` to
+`webapp/frontend/src/projectionEmbed.ts` as an explicit first-party relationship.
+The source must be committed, regular and free of reparse indirection; its size
+and hash are checked around recording/attribution, alongside the unchanged
+rebuilt-output equality check. Unknown siblings, outside npm code and unbound
+shared-source claims remain refused. This changes no dependency denominator.
+Independent review found that status/diff alone can miss modified bytes hidden
+by Git index flags. The correction compares the observed raw bytes directly to
+the committed HEAD blob. All 22 focused cases passed, including actual
+`assume-unchanged` and `skip-worktree` counterexamples; Ruff and diff checks passed.
+The real module-recording rebuild remains a separate integration proof.
 
 Final full hosted Scope regression, the original 36 HTTP request shapes plus new
 topology shapes, five repeats at page limits 50/200 and the unchanged hosted

@@ -241,6 +241,21 @@ def test_unknown_health_band_cannot_authorize_physical_by_silence():
     assert result["state"] == "na" and result["input_state"] == "analysis_unavailable"
 
 
+@pytest.mark.parametrize("band", [[], {}, ["Good"], {"band": "Good"}])
+def test_unhashable_health_band_cannot_authorize_physical_or_raise(band):
+    result = axes(health_scores=[{"switch": "h", "band": band, "score": 75}])
+    for name in ("Health", "Physical"):
+        assert result[name]["state"] == "na"
+        assert result[name]["input_state"] == "analysis_unavailable"
+
+
+@pytest.mark.parametrize("band", ["Excellent", "Good", "Fair", "Poor", "Critical"])
+def test_recognized_health_band_still_proves_physical_scan(band):
+    physical = axes(health_scores=[{"switch": "h", "band": band, "score": 75}])["Physical"]
+    assert physical["state"] == "ok"
+    assert physical["input_state"] == "collected_but_empty"
+
+
 def test_sanitized_parse_receipt_has_exact_custody_and_rejects_collisions(tmp_path):
     inputs = producer_config_inputs(tmp_path, host="h_1")
     for section in ("software_risk", "golden_drift", "qos_audit"):

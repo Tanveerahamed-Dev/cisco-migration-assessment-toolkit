@@ -76,6 +76,10 @@ def test_push_filter_and_classifier_share_the_exact_path_policy():
     "path",
     [
         "webapp/frontend/src/App.tsx",
+        # AssessHub serves the Atlas Scope hub build at /scope, and webapp-ci's backend leg builds
+        # it and runs the /scope pins against it: an atlas-scope change engages webapp CI too.
+        "atlas-scope/src/main.tsx",
+        "atlas-scope/index.html",
         ".design-sync/config.json",
         "cisco_toolkit/model.py",
         "reference-data/official-sources/registry.json",
@@ -93,6 +97,7 @@ def test_push_filter_and_classifier_share_the_exact_path_policy():
         "pytest.ini",
         "tests/golden/snapshot.json",
         "tests/synthetic_fixtures.py",
+        "tests/pytest_invocation_reader.py",
         "webapp/backend/export_ui_projection_openapi.py",
         ".github/workflows/webapp-ci.yml",
         ".github/scripts/classify_webapp_ci_scope.py",
@@ -108,6 +113,7 @@ def test_every_policy_arm_has_a_relevant_witness(path: str):
         "docs/design.md",
         ".github/workflows/ci.yml",
         "webapp-neighbour/file.ts",
+        "atlas-scope-neighbour/file.ts",
         "design-sync/config.json",
         "webapp\\frontend\\src\\App.tsx",
     ],
@@ -307,3 +313,24 @@ def test_one_stable_aggregate_gate_requires_exact_classified_results():
     assert 'true) expected="success"' in gate
     assert 'false) expected="skipped"' in gate
     assert 'if [[ "$result" != "$expected" ]]' in gate
+
+
+def test_every_tests_helper_a_webapp_test_imports_engages_webapp_ci():
+    """W5b: webapp/tests import helper modules from tests/ by bare name (root conftest.py puts tests/ on
+    sys.path) -- tests/synthetic_fixtures.py, tests/pytest_invocation_reader.py. A change to one changes
+    what webapp CI's suite does, so it must engage webapp CI. Derived from the webapp test modules' own
+    imports, not from a list of known helpers."""
+    import ast
+
+    helpers = set()
+    for module in sorted((ROOT / "webapp" / "tests").rglob("*.py")):
+        for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+            names = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                     else [node.module] if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module
+                     else [])
+            for name in names:
+                candidate = ROOT / "tests" / (name.split(".", 1)[0] + ".py")
+                if candidate.is_file():
+                    helpers.add(candidate.relative_to(ROOT).as_posix())
+    assert "tests/pytest_invocation_reader.py" in helpers, sorted(helpers)  # the scan is live
+    assert sorted(path for path in helpers if not SCOPE.path_is_relevant(path)) == []

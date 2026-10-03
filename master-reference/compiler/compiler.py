@@ -47,7 +47,14 @@ from .graphify import (
     verify_graphify_snapshot,
 )
 from .model import SCHEMA_VERSION, canonical_json, chunked, digest_object, sha256_bytes, stable_id
-from .parsers import ParseFailure, ParseResult, nonblank_line_records, parse_by_language, safe_decode_text
+from .parsers import (
+    ParseFailure,
+    ParseResult,
+    nonblank_line_records,
+    parse_by_language,
+    physical_lines,
+    safe_decode_text,
+)
 from .policy import (
     CENSUS_DEPTH_FULL,
     CENSUS_DEPTH_IDENTITY,
@@ -598,40 +605,30 @@ def _new_records() -> dict[str, list[dict[str, Any]]]:
 
 
 def _exact_source_lines(value: str) -> list[dict[str, Any]]:
-    """Split only CRLF/LF/CR while retaining every source character."""
+    """Split only CRLF/LF/CR while retaining every source character.
+
+    Built on ``parsers.physical_lines`` so the exact source projection and
+    every parser-side line number share one line definition.
+    """
 
     result: list[dict[str, Any]] = []
-    start = 0
-    number = 1
-    while start < len(value):
-        cr = value.find("\r", start)
-        lf = value.find("\n", start)
-        positions = [position for position in (cr, lf) if position >= 0]
-        if not positions:
-            text = value[start:]
-            terminator = ""
-            next_start = len(value)
+    for number, line in enumerate(physical_lines(value, keepends=True), start=1):
+        if line.endswith("\r\n"):
+            terminator = "\r\n"
+        elif line.endswith(("\r", "\n")):
+            terminator = line[-1]
         else:
-            end = min(positions)
-            text = value[start:end]
-            if value.startswith("\r\n", end):
-                terminator = "\r\n"
-            else:
-                terminator = value[end]
-            next_start = end + len(terminator)
-        encoded_text = text.encode("utf-8")
-        encoded_line = (text + terminator).encode("utf-8")
+            terminator = ""
+        text = line[: len(line) - len(terminator)]
         result.append(
             {
                 "number": number,
                 "text": text,
                 "terminator": terminator,
-                "text_digest": sha256_bytes(encoded_text),
-                "line_digest": sha256_bytes(encoded_line),
+                "text_digest": sha256_bytes(text.encode("utf-8")),
+                "line_digest": sha256_bytes(line.encode("utf-8")),
             }
         )
-        number += 1
-        start = next_start
     return result
 
 
@@ -707,7 +704,7 @@ def _structural_root_record(
     provides an explicit generated role and generator relationship.
     """
 
-    source_lines = text.splitlines()
+    source_lines = physical_lines(text)
     has_lines = bool(source_lines)
     location: dict[str, int | None] = {
         "start_line": 1 if has_lines else None,
@@ -1887,7 +1884,7 @@ def _ledger(
             str(line.get("text") or "") + str(line.get("terminator") or "") for line in source.get("lines") or []
         ).encode("utf-8")
         try:
-            decoded_lines = raw.decode("utf-8-sig", errors="strict").splitlines()
+            decoded_lines = physical_lines(raw.decode("utf-8-sig", errors="strict"))
         except UnicodeDecodeError:
             decoded_lines = []
         source_line_counts[path] = len(decoded_lines)
@@ -2860,10 +2857,11 @@ def compile_repository(
                     "lines": exact_lines,
                 }
             )
-            file_record["line_count"] = len(text.splitlines())
-            file_record["nonblank_line_count"] = sum(1 for line in text.splitlines() if line.strip())
+            physical_source_lines = physical_lines(text)
+            file_record["line_count"] = len(physical_source_lines)
+            file_record["nonblank_line_count"] = sum(1 for line in physical_source_lines if line.strip())
             if "documentation" in classification["roles"]:
-                status_name, reasons = documentation_status(entry.path, text.splitlines()[:80])
+                status_name, reasons = documentation_status(entry.path, physical_source_lines[:80])
                 file_record["documentation_status"] = status_name
                 file_record["documentation_status_reasons"] = reasons
             if classification["language"] in TYPESCRIPT_LANGUAGES:
@@ -3195,7 +3193,11 @@ def compile_repository(
     except CompilationError as exc:
         fatal_errors.extend(exc.errors)
     except Exception as exc:  # unexpected failures are disclosed, never silently downgraded
-        fatal_errors.append(f"unexpected compiler failure: {_sanitize_error(exc, root, output)}")
+        # The type is part of the disclosure: str() of a KeyError is only its key, which made a CI log read
+        # "unexpected compiler failure: ('<path>', 3568)" with nothing saying what failed.
+        fatal_errors.append(
+            f"unexpected compiler failure: {type(exc).__name__}: {_sanitize_error(exc, root, output)}"
+        )
 
     sanitized_errors = sorted(set(_sanitize_error(error, root, output) for error in fatal_errors))
     if graphify_metadata.get("schema_version") is None:
@@ -3244,7 +3246,7 @@ def _record_identity_text_facts(
     every line denominator excludes them by ``census_depth`` instead.
     """
 
-    source_lines = text.splitlines()
+    source_lines = physical_lines(text)
     file_record["line_count"] = len(source_lines)
     file_record["nonblank_line_count"] = sum(1 for line in source_lines if line.strip())
     if "documentation" in classification["roles"]:

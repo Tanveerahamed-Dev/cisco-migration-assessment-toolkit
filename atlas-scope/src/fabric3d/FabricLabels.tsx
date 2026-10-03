@@ -469,6 +469,9 @@ export function FabricLabels({
     const hide = (id: string, el: HTMLSpanElement) => {
       if (written.get(id) === "hidden") return;
       written.set(id, "hidden");
+      /* Fabric3D.css hides a label by this attribute (visibility: hidden): focus leaves it first through the owner
+         (focus-return.ts, third door) — a no-op while the label layer holds no focus, which is always today. */
+      releaseFocusFrom(el, null);
       el.dataset.visible = "false";
     };
 
@@ -697,6 +700,9 @@ export function FabricLabels({
           el.dataset.finding !== wantFinding ||
           el.dataset.disputed !== wantDisputed
         ) {
+          /* Each mark is a rule Fabric3D.css renders a chip by, so a changed mark can stop one rendering: focus
+             leaves the label first (focus-return.ts, third door; a no-op when it is elsewhere). */
+          releaseFocusFrom(el, null);
           el.dataset.alarm = wantAlarm;
           el.dataset.cut = wantCut;
           el.dataset.stranded = wantStranded;

@@ -39,7 +39,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_commit || github.sha }}
-          fetch-depth: 1
+          # The full history: the complete suite's history-needing tests (the SSOT renamed-owner
+          # citation check, the R2 successor and legacy package pins) skip on a depth-1 checkout.
+          # Guarded by tests/test_ssot_registry.py for every workflow leg that collects them.
+          fetch-depth: 0
       - name: Normalize the test checkout to committed bytes
         shell: pwsh
         run: |

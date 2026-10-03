@@ -22,6 +22,7 @@ from pathlib import Path
 
 RELEVANT_PATH_FILTERS = (
     "webapp/**",
+    "atlas-scope/**",
     ".design-sync/**",
     "cisco_toolkit/**",
     "reference-data/official-sources/**",
@@ -39,6 +40,7 @@ RELEVANT_PATH_FILTERS = (
     "pytest.ini",
     "tests/golden/**",
     "tests/synthetic_fixtures.py",
+    "tests/pytest_invocation_reader.py",
     ".github/workflows/webapp-ci.yml",
     ".github/scripts/classify_webapp_ci_scope.py",
 )

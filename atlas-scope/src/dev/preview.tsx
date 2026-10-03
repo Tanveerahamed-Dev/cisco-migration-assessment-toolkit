@@ -28,6 +28,7 @@ import { exposeSceneForCapture } from "../fabric3d/devHandle";
 import { FabricLabels, createHoverChannel } from "../fabric3d/FabricLabels";
 import type { FabricScene, SceneStats } from "../fabric3d/contract";
 import { fabric } from "../core/data";
+import { releaseFocusFrom } from "../app/focus-return";
 import "../core/tokens.css";
 // The app's base stylesheet: it is what puts `--font-ui` on <body>. Without it every label here
 // inherited the UA default (Times New Roman) while the app renders Inter, so any label judgement
@@ -68,6 +69,9 @@ function Preview() {
     canvas.style.height = "100%";
     canvas.style.display = "block";
     canvas.tabIndex = 0;
+    /* The slot's old contents (a previous mount's focusable canvas) go: focus leaves them first (focus-return.ts,
+       third door; a no-op when focus is elsewhere). */
+    releaseFocusFrom(slot, null);
     slot.replaceChildren(canvas);
 
     const layout = computeLayout({ devices: fabric.devices, links: fabric.links, tiers: fabric.tiers });
@@ -127,6 +131,7 @@ function Preview() {
       release();
       scene.dispose();
       sceneRef.current = null;
+      releaseFocusFrom(slot, null);
       slot.replaceChildren();
     };
   }, [hover]);

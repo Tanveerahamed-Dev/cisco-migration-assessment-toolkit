@@ -21,7 +21,7 @@ import { bandOfHopIn, bandOfTrace } from "../core/claims";
 import { deviceById, fabric, findingsByHost, linkById, linksByHost } from "../core/data";
 import { applyToDevices, parseQuery } from "../core/query";
 import { useInvestigation, useReducedMotion } from "../core/store";
-import { recognisedKind, recognisedSeverity, unrecognisedPhrase, type Device, type Link, type Trace } from "../core/types";
+import { kindWords, recognisedSeverity, type Device, type Link, type Trace } from "../core/types";
 
 import type { FabricScene, HighlightState, PickResult, QualityTier, SceneEvent } from "./contract";
 import { FabricA11yTree, linkCutSentence } from "./FabricA11yTree";
@@ -37,6 +37,7 @@ import { prepareProceduralMaps, proceduralMapsReady } from "./materials";
 import { ALL_CHASSIS_KINDS, chassisPrepared, prepareChassis, type ChassisBuildOptions } from "./geometry/chassis";
 import { SCENE_DETAIL } from "./quality";
 import { deferPastPresentation } from "../panels/deferPastPaint";
+import { releaseFocusFrom } from "../app/focus-return";
 
 import "./Fabric3D.css";
 import { own } from "../core/own";
@@ -517,7 +518,7 @@ export function describeDevice(id: string): string {
     : "Finding count not observed — this device was never collected, so a tally would count an empty search rather than an assessed device.";
   return [
     `${d.host} selected.`,
-    `${recognisedKind(d.kind) ? d.kind : unrecognisedPhrase("kind", d.kind)}.`,
+    `${kindWords(d.kind)}.`,
     d.collected ? "Collected." : "Topology only: this device was never collected.",
     /* The band as the ONE owner presents it: a favourable band on a host with unassessed scoring
        domains is announced as partial with the gaps named, exactly as DevicePane draws it (B1). */
@@ -853,7 +854,9 @@ export function Fabric3D({
     } catch (err) {
       // No WebGL, a lost context, or a driver that refuses the request. The fabric is still fully
       // available through the tree, and saying so is the honest answer; throwing here would take
-      // the whole investigation down with the renderer.
+      // the whole investigation down with the renderer. The canvas is a tab stop, so focus leaves it
+      // through the owner before it goes (focus-return.ts, third door; a no-op when it is elsewhere).
+      releaseFocusFrom(canvas, null);
       canvas.remove();
       canvasRef.current = null;
       setSceneError(err instanceof Error ? err.message : String(err));
@@ -1104,6 +1107,9 @@ export function Fabric3D({
       sceneRef.current = null;
       canvasRef.current = null;
       scene.dispose();
+      /* A rebuild (new maps, a new hover channel) removes the focusable canvas the reader may be on: focus goes
+         to the fabric's region first (focus-return.ts, third door), never to <body>. */
+      releaseFocusFrom(canvas, null);
       canvas.remove();
     };
   }, [onEvent, hover, helpId, mapsReady, layoutReady]);

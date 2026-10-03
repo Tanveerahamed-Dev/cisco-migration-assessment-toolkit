@@ -71,7 +71,9 @@
  *      `textContent`, …). The receiver is an element by its TYPE; a value or name not knowable here may
  *      hide; a temporary the function itself created and never focused is not the class. It is released
  *      only by a third-door call on the element's own access path or an ANCESTOR of it (never a
- *      descendant, never merely the same variable). MEASURED (independent verifier R5-V2):
+ *      descendant, never merely the same variable), in the write's OWN function and BEFORE it — per
+ *      site, not per file (independent verifier V1-3 of R-D3: one release in an effect's catch path
+ *      passed the effect cleanup's removal of the same canvas). MEASURED (independent verifier R5-V2):
  *      FabricLabels.tsx hid a focused off-view pointer with `el.hidden = true` when a resize or a
  *      re-projection brought its device into view, and handed focus on with a bare `canvas.focus()`
  *      that never checked the canvas took it; shapes 4 and 5 parse only JSX attributes and
@@ -848,25 +850,35 @@ export function analyseFile(program: ts.Program, rel: string, rules: readonly Re
   };
   /** Steps that go UP the tree: a door on `el.parentElement` releases everything inside it, `el` included. */
   const ANCESTOR_STEP = /^\.(parentElement|parentNode|offsetParent|closest\(\))$/;
-  const doorPaths: { root: ts.Symbol; steps: string[] }[] = [];
+  const doorPaths: { root: ts.Symbol; steps: string[]; call: ts.CallExpression }[] = [];
   const collectDoorPaths = (n: ts.Node): void => {
     if (callsThirdDoor(n) && ts.isCallExpression(n) && n.arguments[0] !== undefined) {
       const p = pathOf(n.arguments[0]);
-      if (p !== null) doorPaths.push(p);
+      if (p !== null) doorPaths.push({ ...p, call: n });
     }
     n.forEachChild(collectDoorPaths);
   };
   collectDoorPaths(sf);
-  /** Released: a door names this very path, or a path that climbs from it. */
-  const released = (target: ts.Expression): boolean => {
+  /** Released AT THIS SITE: a door names this very path, or a path that climbs from it, in the site's OWN function and
+   *  BEFORE it (independent verifier V1-3 of cluster R-D3). Bound to the element alone, one door anywhere in the file
+   *  released every hide of that element: Fabric3D's effect cleanup lost its release and the catch path's release on
+   *  the same `canvas` still passed both removals. A door in another function runs at another time (an effect body vs
+   *  its cleanup); a door after the site runs once the element is already gone. What this cannot see: a door skipped
+   *  on some path through the function before the site (an early `return`, a branch) — a statement-order check, not a
+   *  control-flow proof; `imperativeDoorPerSite` plants both kinds it does see. */
+  const released = (target: ts.Expression, site: ts.Node): boolean => {
     const p = pathOf(target);
     if (p === null) return false;
+    const scope = scopeOf(site);
+    const at = site.getStart(sf);
     return doorPaths.some(
       (d) =>
         d.root === p.root &&
         d.steps.length >= p.steps.length &&
         p.steps.every((s, i) => d.steps[i] === s) &&
-        d.steps.slice(p.steps.length).every((s) => ANCESTOR_STEP.test(s)),
+        d.steps.slice(p.steps.length).every((s) => ANCESTOR_STEP.test(s)) &&
+        scopeOf(d.call) === scope &&
+        d.call.getStart(sf) < at,
     );
   };
   /** The enclosing function of `n`, or the source file. */
@@ -910,7 +922,7 @@ export function analyseFile(program: ts.Program, rel: string, rules: readonly Re
     if (target === null) return;
     if (target !== UNKNOWN_ELEMENT && !isElement(target)) return;
     imperativeHides += 1;
-    if (target !== UNKNOWN_ELEMENT && (released(target) || isTemporary(target, site))) return;
+    if (target !== UNKNOWN_ELEMENT && (released(target, site) || isTemporary(target, site))) return;
     out.push({ file: rel, line: lineOf(site), kind: "imperative-hide-without-release", text: `${enclosingName(site)}: ${norm(site.getText(sf))}` });
   };
   /* THE STYLE OBJECT, followed to its element (independent verifier QH-V1-5: `const s = el.style; s.display =
@@ -1189,26 +1201,17 @@ const PENDING_ROUTING: readonly { file: string; kind: Violation["kind"]; text: s
      removals and content replacements of an element that can hold focus — in files other clusters own.
      Each is fixed by calling the third door on the element (`releaseFocusFrom(<it>, null, <stated
      successors>)`) before the write, a no-op when focus is elsewhere; then its entry is deleted here. */
-  { file: "src/fabric3d/Fabric3D.tsx", kind: "imperative-hide-without-release", text: "Fabric3D: canvas.remove()" }, // Q-D: the focusable canvas (tabIndex 0), removed on a failed scene and in the effect's cleanup (two sites, one key)
-  { file: "src/fabric3d/scene.ts", kind: "imperative-hide-without-release", text: "createSceneImpl: el.remove()" }, // Q-C: the tier-fade overlay's unmount
-  { file: "src/main.tsx", kind: "imperative-hide-without-release", text: "datasetReady: boot.textContent = message" }, // Q-M: the boot line's contents replaced
-  { file: "src/core/dataset/refusal.ts", kind: "imperative-hide-without-release", text: "showDatasetRefusal: boot.textContent = text" }, // Q-M: the refusal replaces the boot line's contents (moved here from main.tsx's showRefusal)
-  { file: "src/dev/preview.tsx", kind: "imperative-hide-without-release", text: "Preview: slot.replaceChildren(canvas)" }, // unowned dev preview (gate): replaces a focusable canvas
-  { file: "src/dev/preview.tsx", kind: "imperative-hide-without-release", text: "Preview: slot.replaceChildren()" }, // unowned dev preview (gate)
-  /* Shape 6, read through the STYLESHEETS (independent verifier QH-V1-5, phase 3.5 repair): a data attribute a
-     rendering rule keys on. Fabric3D.css hides `.fabric3d-label[data-visible="false"]` (visibility: hidden) and
-     SHOWS each chip only while its label carries the matching `data-alarm` / `-cut` / `-stranded` / `-finding` /
-     `-disputed` value (display: inline-flex), so each write below can stop an element rendering. The labels sit in
-     an aria-hidden layer and hold no tab stop today, which the guard cannot know from the source: the owner (Q-C,
-     FabricLabels.tsx) either routes the write through the third door (`releaseFocusFrom(el, null)`, a no-op when
-     focus is elsewhere) or makes the label layer unable to hold focus in a way the guard can read; then the entry
-     goes. */
-  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: 'hide: el.dataset.visible = "false"' }, // Q-C
-  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: "tick: el.dataset.alarm = wantAlarm" }, // Q-C
-  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: "tick: el.dataset.cut = wantCut" }, // Q-C
-  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: "tick: el.dataset.stranded = wantStranded" }, // Q-C
-  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: "tick: el.dataset.finding = wantFinding" }, // Q-C
-  { file: "src/fabric3d/FabricLabels.tsx", kind: "imperative-hide-without-release", text: "tick: el.dataset.disputed = wantDisputed" }, // Q-C
+  /* RELEASED (W5 R-D3, and the W5 engine gate for scene.ts's tier-fade overlay unmount, once scene.test.ts's C5-R2-1
+     census stated its new DOM site): the Fabric3D canvas's two removals, the dev preview's two slot replacements, the
+     tier-fade overlay's removal, and the label layer's six data-attribute writes (Fabric3D.css hides a label by `data-visible` and shows each chip by its mark)
+     now call the third door on the element first; their entries are gone. What is left cannot be released from
+     the files this entry names without breaking another owner's contract: */
+  // main.tsx and core/dataset/refusal.ts: the boot line, written before the application mounts. Both are in the ENTRY
+  // chunk, which by design imports no React (refusal.ts: "it imports nothing and stays small"; main.tsx's E5 note);
+  // focus-return.ts imports React, so the third door cannot be called from here without pulling React into the entry
+  // chunk. Released only when the door's DOM-only half lives in a React-free module the guard recognises as the owner.
+  { file: "src/main.tsx", kind: "imperative-hide-without-release", text: "datasetReady: boot.textContent = message" },
+  { file: "src/core/dataset/refusal.ts", kind: "imperative-hide-without-release", text: "showDatasetRefusal: boot.textContent = text" },
 ];
 
 const key = (v: { file: string; kind: string; text: string }): string => `${v.file}|${v.kind}|${v.text}`;
@@ -1320,11 +1323,11 @@ describe("no surface decides focus return on its own (acceptance D3)", () => {
        (verifier R5-V2) — shape 6 counted it — and releases it through `releaseFocusFrom` first. */
     const a = analysisOf("src/fabric3d/FabricLabels.tsx");
     expect(a.imperativeHides, "shape 6 inspected no imperative hide in FabricLabels.tsx").toBeGreaterThan(0);
-    /* The pointer's hide is door-bound; the file's other shape-6 sites (the label layer's data attributes, read
-       through the stylesheet since QH-V1-5) are routed debt, named one by one in PENDING_ROUTING — never absorbed. */
+    /* The pointer's hide is door-bound, and so (since W5 R-D3) are the label layer's data-attribute writes, read
+       through the stylesheet since QH-V1-5: the file has NO shape-6 site left, routed or not. */
     const shape6 = a.violations.filter((v) => v.kind === "imperative-hide-without-release");
     expect(shape6.filter((v) => v.text.startsWith("hidePointer:")), "the off-view pointer's hide is not released").toEqual([]);
-    expect(shape6.filter((v) => !pending.has(key(v))).map((v) => `${v.line} ${v.text}`)).toEqual([]);
+    expect(shape6.map((v) => `${v.line} ${v.text}`), "FabricLabels.tsx has an imperative hide the third door does not release").toEqual([]);
     const total = SOURCES.reduce((n, f) => n + analysisOf(f).imperativeHides, 0);
     expect(total, "the imperative hides shape 6 inspected across the scanned tree").toBeGreaterThanOrEqual(3);
   });
@@ -1731,6 +1734,21 @@ describe("the guard is live (planted counterexamples, compiled with the real own
         el.style.visibility = "visible";
         el.style.setProperty("--pointer-deg", "12deg");`,
       expect: [],
+    },
+    imperativeDoorPerSite: {
+      /* The door releases focus AT THE SITE, not somewhere in the file (independent verifier V1-3 of cluster R-D3:
+         with Fabric3D's cleanup-path release deleted, the catch-path release on the same `canvas` still satisfied
+         the guard for both removals). A door counts for a site only when it is in the site's own function and comes
+         before it: a door in ANOTHER function (the effect body vs its cleanup, which runs at another time) does not
+         release the cleanup's removal, and neither does a door that runs AFTER the element is already gone. */
+      src: `import { releaseFocusFrom } from "./focus-return";
+        export function mount(c: HTMLCanvasElement, fail: boolean): () => void {
+          if (fail) { releaseFocusFrom(c, null); c.remove(); return () => {}; }
+          return () => { c.remove(); };
+        }
+        export function late(el: HTMLElement): void { el.remove(); releaseFocusFrom(el, null); }
+        export function guarded(el: HTMLElement): void { if (el.contains(document.activeElement)) { releaseFocusFrom(el, null); } el.hidden = true; }`,
+      expect: ["imperative-hide-without-release", "imperative-hide-without-release"],
     },
     imperativeHideDoorOnAnotherElement: {
       /* The door released some OTHER element: this hide is still unreleased (element-bound, as shape 4). */

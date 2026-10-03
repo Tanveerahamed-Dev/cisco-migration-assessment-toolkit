@@ -61,11 +61,51 @@ function flattenMessage(message) {
   return ts.flattenDiagnosticMessageText(message, " ").replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Physical lines break only on CRLF, LF or CR -- the definition shared with Git,
+ * compiler.parsers.physical_lines and the compiler's exact source_text
+ * projection. TypeScript's own line starts also break on U+2028/U+2029
+ * (ECMAScript line terminators); a literal one inside a string would renumber
+ * every later line relative to that projection, so no emitted line number may
+ * come from sourceFile.getLineStarts() or getLineAndCharacterOfPosition().
+ */
+const PHYSICAL_LINE_STARTS = new WeakMap();
+
+function physicalLineStarts(sourceFile) {
+  let starts = PHYSICAL_LINE_STARTS.get(sourceFile);
+  if (starts) return starts;
+  const text = sourceFile.text;
+  starts = [0];
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code === 13) {
+      if (text.charCodeAt(index + 1) === 10) index += 1;
+      starts.push(index + 1);
+    } else if (code === 10) {
+      starts.push(index + 1);
+    }
+  }
+  PHYSICAL_LINE_STARTS.set(sourceFile, starts);
+  return starts;
+}
+
+function physicalLineAndCharacter(sourceFile, position) {
+  const starts = physicalLineStarts(sourceFile);
+  let low = 0;
+  let high = starts.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (starts[middle] <= position) low = middle;
+    else high = middle - 1;
+  }
+  return { line: low, character: position - starts[low] };
+}
+
 function rangeFor(sourceFile, node) {
   const start = node.getStart(sourceFile, false);
   const end = node.getEnd();
-  const from = sourceFile.getLineAndCharacterOfPosition(start);
-  const to = sourceFile.getLineAndCharacterOfPosition(end);
+  const from = physicalLineAndCharacter(sourceFile, start);
+  const to = physicalLineAndCharacter(sourceFile, end);
   return {
     start_line: from.line + 1,
     start_column: from.character,
@@ -491,7 +531,7 @@ function extractFile(sourceFile, input) {
 
   walk(sourceFile, []);
 
-  const lineStarts = sourceFile.getLineStarts();
+  const lineStarts = physicalLineStarts(sourceFile);
   for (let index = 0; index < lineStarts.length; index += 1) {
     const start = lineStarts[index];
     const end = index + 1 < lineStarts.length ? lineStarts[index + 1] : sourceFile.text.length;
@@ -594,7 +634,7 @@ function run() {
     for (const diagnostic of program.getSyntacticDiagnostics(sourceFile)) {
       const location = diagnostic.start == null
         ? { line: 0, character: 0 }
-        : sourceFile.getLineAndCharacterOfPosition(diagnostic.start);
+        : physicalLineAndCharacter(sourceFile, diagnostic.start);
       diagnostics.push({
         path: file.path,
         line: location.line + 1,

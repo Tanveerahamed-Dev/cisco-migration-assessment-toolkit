@@ -615,7 +615,7 @@ function IdentitySection({ device, onOpenCite }: { device: Device; onOpenCite: (
   const ev = (field: keyof Device): { cite: Cite } | { derived: string } => deviceFieldEvidence(device, field);
   const rows: EvidenceRow[] = [
     { k: "Host", v: <span className="dp-mono">{device.host}</span>, ...ev("host") },
-    { k: "Kind", v: recognisedKind(device.kind) ? device.kind : <UnrecognisedValue what="kind" value={device.kind} compact />, ...ev("kind") },
+    { k: "Kind", v: orNotObserved(device.kind, (k) => (recognisedKind(k) ? k : <UnrecognisedValue what="kind" value={k} compact />), { what: "kind", compact: true }), ...ev("kind") },
     {
       k: "Role",
       v: orNotObserved(device.role, (s) => s, {
@@ -2286,7 +2286,7 @@ export function DevicePane({ onOpenCite, className }: DevicePaneProps): ReactEle
         <p className="dp__sub">
           {subject === "device" && device ? (
             <>
-              {recognisedKind(device.kind) ? device.kind : <UnrecognisedValue what="kind" value={device.kind} compact />} ·{" "}
+              {orNotObserved(device.kind, (k) => (recognisedKind(k) ? k : <UnrecognisedValue what="kind" value={k} compact />), { what: "kind", compact: true })} ·{" "}
               {orNotObserved(device.role, (s) => s, { what: "role", compact: true })} ·{" "}
               {device.collected ? "assessed" : "topology only"}
             </>
