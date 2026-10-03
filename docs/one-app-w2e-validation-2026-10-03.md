@@ -334,6 +334,37 @@ for the required hosted checks. Other owners' processes were left untouched.
 W11's owner supplies the dependency remedy; #591 will integrate that merged main
 before its final exact-head validation and authorized merge.
 
+## Architecture-schema consumer follow-up
+
+Required reference run `37096035583` at `265839eb` exposed two PDF-reader checks
+that still admitted only architecture `2.0.0`, while the owner contract had moved
+to `2.1.0`. The existing shared validator did not itself check versions, so simply
+removing those checks would have weakened unsupported-format rejection.
+
+The governance owner now admits exactly the legacy and current formats and
+rejects missing, malformed or unknown versions before interpreting their fields.
+Both PDF routes retain full shared structural/path/phase validation, their exact
+raw-byte digest, and exclusive file/byte input selection. The release pipeline
+already calls this loader: its production bytes are unchanged, with no change
+to W11's bounded-substitution gate or dependency work.
+
+All 406 Master Reference release tests passed, with zero failures/errors/skips,
+using the exact pinned release toolchain (including pypdf 6.19.0 and ReportLab
+5.0.1). Eight source/toolchain inputs were hash-stable through the run. The new
+cases cover legacy/current versions, path/bytes/discovery inputs, unknown and
+malformed contracts, byte digests, and the real release-to-PDF refusal path with
+atomic output absence. Fifty-five governance/continuity tests passed before the
+final refusal correction; the three affected checks passed afterward.
+
+Independent review caught an unknown-version input with foreign field shapes
+that could reach an unintended `TypeError`. Immediate refusal closes that case
+and preserves all structural checks for supported versions. The first full
+release attempt was intentionally stopped for this correction and is retained
+as incomplete. Final full-suite logs, XML, source hashes and pinned dependency
+versions are preserved separately. Independent final source review and Ruff
+passed. Hosted verification on the new commit remains required; these results
+do not close W11, the final performance gate or the merge hold.
+
 Final full hosted Scope regression, the original 36 HTTP request shapes plus new
 topology shapes, five repeats at page limits 50/200 and the unchanged hosted
 300 ms gate remain required. Receipts report actual topology row cardinalities;

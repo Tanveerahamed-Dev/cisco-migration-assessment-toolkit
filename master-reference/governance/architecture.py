@@ -15,6 +15,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 CONTRACT_PATH = Path(__file__).with_name("architecture.json")
+# Contract versions are admitted by this owner, never inferred from a document claiming a new version.
+SUPPORTED_SCHEMA_VERSIONS = ("2.0.0", "2.1.0")
 # Suffixes TypeScript itself treats as a module file extension (``extensionsToRemove``
 # in the TypeScript compiler).  Any other final dotted segment -- ``vite.config``,
 # ``chart.worker`` -- is part of the basename, so the specifier is still
@@ -161,6 +163,9 @@ def validate_path_dispositions(
 
 def validate_contract(contract: Mapping[str, Any]) -> tuple[str, ...]:
     errors: list[str] = []
+    version = contract.get("schema_version")
+    if not isinstance(version, str) or version not in SUPPORTED_SCHEMA_VERSIONS:
+        return ("contract:schema_version:unsupported",)
     components = contract.get("components")
     exclusions = contract.get("exclusions")
     if not isinstance(components, list) or not components:

@@ -13,6 +13,7 @@ sys.path.insert(0, str(SITE_ROOT))
 
 from governance.policy import BASE_VERIFICATION_RECEIPTS, evaluate_transition, validate_claims  # noqa: E402
 from governance.architecture import (  # noqa: E402
+    SUPPORTED_SCHEMA_VERSIONS,
     build_architecture_conformance,
     component_for_path,
     load_contract,
@@ -360,7 +361,7 @@ def test_master_reference_ci_fetches_review_basis_history() -> None:
 
 def test_resolved_forbidden_import_blocks_architecture_receipt() -> None:
     contract = {
-        "schema_version": "test",
+        "schema_version": "2.0.0",
         "components": [
             {"id": "renderer", "paths": ["renderer.py"]},
             {"id": "collector", "paths": ["collector.py"]},
@@ -425,7 +426,7 @@ def test_mandatory_failure_forbids_downstream_pass_but_allows_abstention() -> No
 
 def test_namespace_package_import_resolves_to_explicit_component_prefix() -> None:
     contract = {
-        "schema_version": "test",
+        "schema_version": "2.0.0",
         "components": [
             {"id": "consumer", "paths": ["app.py"]},
             {"id": "registry", "paths": ["pkg/data/"]},
@@ -468,7 +469,7 @@ def test_namespace_package_import_resolves_to_explicit_component_prefix() -> Non
 
 def test_explicitly_excluded_test_import_does_not_define_runtime_edge() -> None:
     contract = {
-        "schema_version": "test",
+        "schema_version": "2.0.0",
         "components": [{"id": "engine", "paths": ["engine/"]}],
         "exclusions": [{"id": "tests", "paths": ["tests/"]}],
         "python_import_roots": [""],
@@ -511,7 +512,7 @@ def _single_component_ts_receipt(
     """Resolve one relative import inside a single component (no edge policy in play)."""
 
     contract = {
-        "schema_version": "test",
+        "schema_version": "2.0.0",
         "components": [{"id": "app", "paths": ["app/"]}],
         "exclusions": [],
         "python_import_roots": [""],
@@ -654,6 +655,56 @@ def _scope_frontend_edge(source: str, target: str, **overrides: object) -> dict:
         "kind": "resolved_static_import", "classification": "static_structure_only",
         **overrides,
     }
+
+
+def test_architecture_contract_versions_preserve_legacy_and_current_compatibility() -> None:
+    assert SUPPORTED_SCHEMA_VERSIONS == ("2.0.0", "2.1.0")
+    for version in SUPPORTED_SCHEMA_VERSIONS:
+        contract = copy.deepcopy(load_contract())
+        contract["schema_version"] = version
+        if version == "2.0.0":
+            contract.pop("allowed_static_path_edges")
+        assert validate_contract(contract) == ()
+        receipt = build_architecture_conformance(
+            paths=[], file_languages={}, imports=[], calls=[], contract=contract,
+            source_commit="a" * 40, source_tree_digest="b" * 64,
+        )
+        assert receipt["status"] == "passed", receipt["errors"]
+
+
+def test_architecture_contract_rejects_missing_unknown_or_malformed_versions() -> None:
+    contract = copy.deepcopy(load_contract())
+    del contract["schema_version"]
+    assert validate_contract(contract) == ("contract:schema_version:unsupported",)
+    for version in (None, True, 2, 2.1, [], {}, "", "test", "1.0.0", "2.0", "2.1.1", "3.0.0",
+                    " 2.1.0", "2.1.0 ", "2.1.0\n", "2.1.0\r", "2.1.0\u2028", "2.1.0\u2029"):
+        contract["schema_version"] = version
+        assert validate_contract(contract) == ("contract:schema_version:unsupported",), version
+    # A caller constructing a conformance receipt cannot turn an unknown version into a pass.
+    receipt = build_architecture_conformance(
+        paths=[], file_languages={}, imports=[], calls=[], contract=contract,
+        source_commit="a" * 40, source_tree_digest="b" * 64,
+    )
+    assert receipt["status"] == "failed"
+    assert "contract:schema_version:unsupported" in receipt["errors"]
+
+
+def test_unsupported_architecture_version_refuses_before_inspecting_foreign_fields() -> None:
+    for version in (None, "9.0.0", [], {}):
+        for foreign_fields in (
+            {"allowed_edges": None},
+            {"forbidden_edges": 7},
+            {"allowed_edges": [[[]]], "runtime_phases": {"future": True}},
+        ):
+            contract = {"schema_version": version, "components": [], "exclusions": [], **foreign_fields}
+            assert validate_contract(contract) == ("contract:schema_version:unsupported",)
+            del contract["schema_version"]
+            assert validate_contract(contract) == ("contract:schema_version:unsupported",)
+    # Supported versions must still reach the existing structural validation.
+    for version in SUPPORTED_SCHEMA_VERSIONS:
+        errors = validate_contract({"schema_version": version})
+        assert "contract:components_missing" in errors
+        assert "contract:runtime_phases_missing" in errors
 
 
 def test_scope_shared_contract_declares_only_exact_reviewed_file_edges() -> None:
