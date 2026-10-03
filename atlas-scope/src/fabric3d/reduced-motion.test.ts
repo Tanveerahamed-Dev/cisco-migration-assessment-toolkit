@@ -112,12 +112,12 @@ describe("prefers-reduced-motion — packet and draw-on (flow.ts)", () => {
   const camera = new PerspectiveCamera(45, 1.2, 1, 1000);
 
   /**
-   * The packet is drawn ALONG a path, so it needs two hops to exist at all — and this snapshot
-   * cannot produce a second hop (RIBs exist for 2 hosts and core1's non-connected next hops belong
-   * to no collected device). Rather than hand-write a Trace in the shape flow.ts expects, the
-   * second hop is DERIVED from the real producer's hop, so every field but the identity comes from
-   * `traceFlow`. This pins the RENDERER's reduced-motion behaviour; it does not claim the engine
-   * can currently emit a multi-hop trace, and the test below states that limit positively.
+   * The packet is drawn ALONG a path, so it needs two hops to exist at all — and THIS flow's trace
+   * has one. Rather than hand-write a Trace in the shape flow.ts expects, the second hop is DERIVED
+   * from the real producer's hop, so every field but the identity comes from `traceFlow`. This pins
+   * the RENDERER's reduced-motion behaviour for this shape. The snapshot does produce multi-hop
+   * traces (the multi-hop presets, e.g. dist1 then core1); flow-triggers.test.ts drives every one
+   * of them, at both motion settings.
    */
   const firstHop = real.hops[0];
   const trace =
@@ -137,13 +137,12 @@ describe("prefers-reduced-motion — packet and draw-on (flow.ts)", () => {
     expect(trace.hops.length).toBe(2);
   });
 
-  it("records that the real snapshot's traces are single-hop, so the packet never runs on them", () => {
-    // Not a reduced-motion assertion: it is why the fixture above has to be derived, and it fails
-    // loudly the day the snapshot grows a second RIB — at which point this file should use it.
+  it("records that this flow's real trace is single-hop, so the packet never runs on it", () => {
+    // Not a reduced-motion assertion: it is why the fixture above has to be derived.
     const overlay = createFlowOverlay(readTokens("dark"));
     try {
       overlay.setReducedMotion(false);
-      overlay.setTrace(real, 0, segmentSource());
+      overlay.setTrace(real, segmentSource());
       const packet = overlay.emissiveObjects().find((o) => o.name === "trace-packet");
       expect(real.hops.length).toBe(1);
       expect(packet?.visible).toBe(false);
@@ -156,7 +155,7 @@ describe("prefers-reduced-motion — packet and draw-on (flow.ts)", () => {
     const overlay = createFlowOverlay(readTokens("dark"));
     try {
       overlay.setReducedMotion(true);
-      overlay.setTrace(trace, 0, segmentSource());
+      overlay.setTrace(trace, segmentSource());
       const packet = overlay.emissiveObjects().find((o) => o.name === "trace-packet");
       expect(packet).toBeDefined();
       expect(packet?.visible).toBe(false);
@@ -173,7 +172,7 @@ describe("prefers-reduced-motion — packet and draw-on (flow.ts)", () => {
     const overlay = createFlowOverlay(readTokens("dark"));
     try {
       overlay.setReducedMotion(false);
-      overlay.setTrace(trace, 0, segmentSource());
+      overlay.setTrace(trace, segmentSource());
       const packet = overlay.emissiveObjects().find((o) => o.name === "trace-packet");
       expect(packet?.visible).toBe(true);
       expect(overlay.update(1000, camera)).toBe(true);
@@ -186,7 +185,7 @@ describe("prefers-reduced-motion — packet and draw-on (flow.ts)", () => {
     const overlay = createFlowOverlay(readTokens("dark"));
     try {
       overlay.setReducedMotion(false);
-      overlay.setTrace(trace, 0, segmentSource());
+      overlay.setTrace(trace, segmentSource());
       const packet = overlay.emissiveObjects().find((o) => o.name === "trace-packet");
       expect(packet?.visible).toBe(true);
       overlay.setReducedMotion(true);

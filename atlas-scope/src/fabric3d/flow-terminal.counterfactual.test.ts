@@ -130,7 +130,7 @@ function terminalOf(
       : real;
   const overlay = createFlowOverlay(readTokens("dark"));
   try {
-    overlay.setTrace(trace, 0, segmentSource());
+    overlay.setTrace(trace, segmentSource());
     const by = (name: string) => overlay.emissiveObjects().find((o) => o.name === name);
     return {
       outcome: trace.outcome,
@@ -198,9 +198,9 @@ describe("the trace's terminal mark has three states, not two", () => {
     const UNDECIDED = subjectOf(ctx, "UNDETERMINED");
     const overlay = createFlowOverlay(readTokens("dark"));
     try {
-      overlay.setTrace(traceFlow(UNDECIDED), 0, segmentSource());
+      overlay.setTrace(traceFlow(UNDECIDED), segmentSource());
       expect(overlay.emissiveObjects().find((o) => o.name === "trace-undecided")?.visible).toBe(true);
-      overlay.setTrace(null, null, segmentSource());
+      overlay.setTrace(null, segmentSource());
       expect(overlay.emissiveObjects().find((o) => o.name === "trace-undecided")?.visible).toBe(false);
       expect(overlay.emissiveObjects().find((o) => o.name === "trace-stop")?.visible).toBe(false);
     } finally {
@@ -237,7 +237,7 @@ describe("the terminal mark follows the TRACE band (C5 critic), over decided and
         // A trace with no hops draws nothing at all, so it has no terminal mark to check.
         if (trace.hops.length === 0) continue;
         const band = bandOfTrace(trace);
-        overlay.setTrace(trace, 0, segmentSource());
+        overlay.setTrace(trace, segmentSource());
         const where = `${flow.srcIp}->${flow.dstIp}:${flow.dstPort}${prev === null ? "" : ` (drawn over ${prev.where}, ${prev.band})`}`;
         expect(by("trace-stop")?.visible === true, where).toBe(band === "REFUTED");
         expect(by("trace-undecided")?.visible === true, where).toBe(band === "UNDETERMINED");
@@ -248,7 +248,7 @@ describe("the terminal mark follows the TRACE band (C5 critic), over decided and
         drawn += 1;
         // Now and then, clear mid-sweep and prove the overlay is blank before the next draw.
         if (drawn % 97 === 0) {
-          overlay.setTrace(null, null, segmentSource());
+          overlay.setTrace(null, segmentSource());
           expectCleared(`cleared after ${where}`);
           prev = null;
         }
@@ -256,7 +256,7 @@ describe("the terminal mark follows the TRACE band (C5 critic), over decided and
         else if (band === "UNDETERMINED") undetermined += 1;
         else resolved += 1;
       }
-      overlay.setTrace(null, null, segmentSource());
+      overlay.setTrace(null, segmentSource());
       expectCleared("cleared at the end of the sweep");
     } finally {
       overlay.dispose();

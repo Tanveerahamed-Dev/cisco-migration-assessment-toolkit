@@ -44,7 +44,7 @@ function sweptFlows(): Flow[] {
 function canvasEnding(flow: Flow): { host: string; glyph: "stop" | "ring" } | null {
   const overlay = createFlowOverlay(readTokens("dark"));
   try {
-    overlay.setTrace(traceFlow(flow), 0, source);
+    overlay.setTrace(traceFlow(flow), source);
     const marker = overlay.terminalMarker();
     if (marker === null) return null;
     const stop = overlay.emissiveObjects().find((o) => o.name === "trace-stop")?.visible === true;
