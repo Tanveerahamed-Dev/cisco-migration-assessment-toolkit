@@ -1670,6 +1670,24 @@ function exposeScene() {
 }
 
 /**
+ * Ask for the capture pin (src/fabric3d/capturePin.ts) — `app` and `twice` only.
+ *
+ * The quality tier and the status line's "below frame-rate bar" words are both derived from this
+ * host's rAF frame times. Without a pin a busy host stepped 08-path-indeterminate down to `balanced`
+ * on some loads and raised the bar on others, so `twice 5` exited 3 (re-grade refuter F6:
+ * 10 refused frames, each of those frame ids with 2-3 distinct hashes) — the verdict was a property of
+ * the host's load. The pin holds the probe's `high` and freezes the bar for the session, and the
+ * scene publishes it as `stats().capturePin`; each frame records that object and a frame whose pin
+ * is absent or not in force is a problem (exit 3), like a missing handle. The tier and bar checks
+ * below still run on every frame: the pin is evidence that they cannot vary, not a replacement for
+ * looking. Not set by `reduced` or by any frame-rate measurement: a pinned session's frame rate is
+ * not an E4 measurement.
+ */
+function requestCapturePin() {
+  window.__atlasCapturePin = true;
+}
+
+/**
  * The capture condition, evaluated IN THE PAGE: what the renderer says AND what the screen shows.
  *
  * Waiting on `stats().converged` alone was a race. Measured 2026-09-21 on the release build with
@@ -1817,6 +1835,7 @@ async function captureApp(outRoot = resolve(SHOTS, "app")) {
         reducedMotion: "no-preference",
       });
       await ctx.addInitScript(exposeScene);
+      await ctx.addInitScript(requestCapturePin);
       const page = await ctx.newPage();
       const consoleErrors = [];
       page.on("console", (m) => {
@@ -1910,9 +1929,19 @@ async function captureApp(outRoot = resolve(SHOTS, "app")) {
                the scene AND from the DOM, because the pixels are what is compared. */
             frameRateBelowBar: s ? s.frameRateBelowBar === true : null,
             belowBarWords: [...document.querySelectorAll(".sb__reduced")].some((n) => /below frame-rate bar/.test(n.textContent ?? "")),
+            /* The capture pin as the scene reports it (src/fabric3d/capturePin.ts): null when the
+               scene published none — a build without the pin, or a page the init script missed. */
+            capturePin: s?.capturePin ?? null,
             renderer: c && dbg ? String(c.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : null,
           };
         });
+        /* The pin the init script asked for must be IN FORCE, or the tier and the bar below were
+           free to follow this host's frame rate and the frame is not comparable. */
+        if (render.capturePin === null) {
+          problems.push("capture pin not observed: the scene published no stats().capturePin, so the tier and the frame-rate bar were free to follow this host's frame rate");
+        } else if (render.capturePin.applied !== true || render.capturePin.rateBarFrozen !== true || render.capturePin.tier !== "high") {
+          problems.push(`capture pin not in force: ${render.capturePin.reason ?? JSON.stringify(render.capturePin)}`);
+        }
         /* `null` is not a pass. It used to be skipped, so a run with no handle recorded no tier and
            no problem; an unobserved tier is now a problem in its own right. */
         if (render.quality === null) {
