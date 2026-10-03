@@ -104,6 +104,8 @@ _SCOPE_MOUNT = "/scope/"
 # a client snapshot's URL — a view of the wrong data presented as the right one.
 _SCOPE_RUNTIME_SOURCE_META = "atlas-scope-snapshot-source"
 _SCOPE_RUNTIME_SOURCE_VALUE = "assesshub-api-runtime"
+_SCOPE_ENGINE_PROJECTION_META = "atlas-scope-engine-projection"
+_SCOPE_ENGINE_PROJECTION_PROTOCOL = "atlas.ui_projection_embed/1"
 _SCOPE_DIST_DEFAULT: Any = object()
 _SHA256_HEX_TOKEN_RE = re.compile(rb"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
 _SCOPE_UNAVAILABLE_DETAIL = {
@@ -1796,6 +1798,20 @@ def _scope_shell_valid(indexed: dict[str, _FrontendFile]) -> bool:
     return module_entries >= 1
 
 
+def _scope_engine_projection_declared(indexed: dict[str, _FrontendFile]) -> bool:
+    """Admit only the one supported declaration in the validated startup shell."""
+    shell = indexed.get("index.html")
+    if shell is None:
+        return False
+    elements = _scope_shell_reading(shell.content)
+    if elements is None:
+        return False
+    declarations = [dict(element.attributes).get("content") for element in elements
+                    if element.name == "meta"
+                    and dict(element.attributes).get("name", "").casefold() == _SCOPE_ENGINE_PROJECTION_META]
+    return declarations == [_SCOPE_ENGINE_PROJECTION_PROTOCOL]
+
+
 def _scope_member_declares_referrer_policy(entry: _FrontendFile) -> bool:
     """Whether one served member is a document a browser renders as markup (_scope_markup_kind) that
     declares its own referrer policy — or that cannot be read here the way a browser reads it, which
@@ -2780,20 +2796,33 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         )
 
     @app.get("/api/snapshots/{snapshot_id}/scope-view")
-    def get_snapshot_scope_view(snapshot_id: RowId) -> Dict[str, Any]:
+    def get_snapshot_scope_view(snapshot_id: RowId, response: Response) -> Dict[str, Any]:
         """Whether this installation can show the snapshot in Atlas Scope, and the link to do it.
 
         The SPA renders its "Open in Atlas Scope" link only from ``href`` here, so the link target
         has one owner and an absent, invalid or withdrawn scope build never yields a dead link."""
         if not store.get_snapshot_meta(snapshot_id):
-            raise HTTPException(404, "Snapshot not found")
+            raise HTTPException(404, "Snapshot not found", headers={"Cache-Control": "no-store"})
+        response.headers["Cache-Control"] = "no-store"
         status = _current_scope_status()
         available = status == "ready"
+        projection_available = available and _scope_engine_projection_declared(scope_files)
         return {
             "available": available,
             "status": status,
             "href": f"{_SCOPE_MOUNT}snapshots/{snapshot_id}/" if available else None,
             "detail": _SCOPE_READY_DETAIL if available else _SCOPE_UNAVAILABLE_DETAIL[status],
+            "engine_projection": {
+                "available": projection_available,
+                "protocol": _SCOPE_ENGINE_PROJECTION_PROTOCOL,
+                "projection_schema": "ui_projection/1",
+                "style_schema": "ui_projection_topology_style/1",
+                "href": (f"{_SCOPE_MOUNT}snapshots/{snapshot_id}/?engine_projection=1"
+                         if projection_available else None),
+                "detail": ("The installed Atlas Scope hub supports the engine topology contract."
+                           if projection_available else
+                           "The engine topology adapter is unavailable in this installation."),
+            },
         }
 
     # full-snapshot parse per call

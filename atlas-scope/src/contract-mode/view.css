@@ -1,0 +1,44 @@
+.contract-scope {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(16rem, 1fr) auto auto auto auto;
+  gap: var(--sp-2);
+  height: 100vh;
+  min-height: 0;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: var(--sp-3);
+  color: var(--text);
+  background: var(--bg);
+  font-family: var(--font-ui);
+  font-size: var(--fs-2);
+}
+.contract-scope h2 { margin: 0; font-size: var(--fs-3); font-weight: var(--fw-semibold); }
+.contract-scope p { margin: 0; }
+.contract-scope-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.contract-scope-controls label { display: flex; align-items: center; gap: var(--sp-1); }
+.contract-scope-controls select, .contract-scope-controls button {
+  min-height: var(--sp-6);
+  max-width: min(24rem, 70vw);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--text);
+  background: var(--surface-1);
+  font: inherit;
+}
+.contract-scope :focus-visible { outline: 2px solid var(--accent); outline-offset: var(--sp-1); }
+.contract-scope-canvas { width: 100%; height: 100%; min-height: 16rem; border: 1px solid var(--border); border-radius: var(--radius-lg); touch-action: none; }
+.contract-scope-viewport { position: relative; min-height: 16rem; }
+.contract-scope-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.contract-scope-node-label { max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: var(--sp-1); color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: var(--fs-0); }
+.contract-scope-note, .contract-scope-records { color: var(--text-muted); font-size: var(--fs-1); }
+.contract-scope-selection { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.contract-scope-path pre { max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--fs-1); }
+.contract-scope-legend ul { padding-inline-start: var(--sp-5); }
+.contract-scope-legend li { margin-block: var(--sp-1); }
+.contract-scope-legend [data-tone="info"] { color: var(--accent); }
+.contract-scope-legend [data-tone="muted"] { color: var(--text-muted); }
+.contract-scope-legend [data-tone="warning"] { color: var(--sev-medium); }
+.contract-scope-legend [data-tone="danger"] { color: var(--sev-critical); }
+.contract-scope-legend [data-weight="strong"] { font-weight: var(--fw-semibold); }
+.contract-scope-refusal { padding: var(--sp-4); color: var(--text); background: var(--bg); font-family: var(--font-ui); }

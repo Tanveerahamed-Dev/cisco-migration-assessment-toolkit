@@ -92,6 +92,7 @@ and a withheld branch, so generated TypeScript narrows ``value`` on ``state``.
 """
 from __future__ import annotations
 
+import ipaddress
 import math
 import re
 from types import MappingProxyType
@@ -102,6 +103,16 @@ from cisco_toolkit import ssot
 
 SCHEMA = "ui_projection/1"
 SCHEMA_ID = "urn:atlas:schema:ui-projection:1"
+TOPOLOGY_STYLE_SCHEMA = "ui_projection_topology_style/1"
+TOPOLOGY_STYLE_TOKENS = (
+    "observed", "uncollected", "unverified", "not_observed", "analysis_unavailable",
+    "link_up", "link_down", "link_unknown", "structural_link", "structural_bridge",
+    "impact_high", "impact_medium", "impact_low", "impact_info", "path_reached", "path_partial_drop",
+    "path_observed_discard", "path_no_route_observed", "path_lower_bound", "path_withheld",
+)
+TOPOLOGY_GLYPHS = ("device", "router", "ap", "unknown", "none")
+IMPACT_SEVERITIES = ("High", "Medium", "Low", "Info")
+ADDRESS_ORIGINS = ("interface_svi", "local_route", "fhrp_host_route")
 
 AU = ssot.ANALYSIS_UNAVAILABLE
 _PUB = "published"
@@ -333,7 +344,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "while a failure is recorded carries this caveat.",
         ["/overview/axes", "/overview/absent_axes", "/overview/top_gating", "/overview/posture_statement",
          "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
-         "/findings/rows", "/findings/total"]),
+         "/findings/rows", "/findings/total", "/topology"]),
     _limitation(
         "axis_basis_owned_by_projection", "cisco_toolkit.ui_projection.AXIS_BASIS",
         "analyze.compute_executive_brief publishes no per-axis basis. The axis-to-input table is owned by "
@@ -477,6 +488,24 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "not_collected.",
         ["/findings/rows", "/findings/total"]),
 )
+LIMITATIONS += (
+    _limitation("topology_scanned_model", "analyze.compute_cable_map; analyze.compute_link_centrality",
+                "The graph describes captured discovery and the scanned host-pair model. A collected node is not "
+                "a health verdict; an up cable is a reported link state, not end-to-end reachability. Structural "
+                "metrics describe host pairs, not individual cable redundancy. Uncollected peers and ambiguous "
+                "endpoint joins remain visible; absent links are not proof of disconnection.", ["/topology"]),
+    _limitation("impact_scanned_scope", "analyze.compute_failure_impact",
+                "Impact is limited to the scanned VLAN/carriage model. Stranded endpoints exclude those on the "
+                "removed host itself. Info and zero are not an assessed/healthy result; retain the owner's "
+                "indeterminate coverage detail. Detail lists up to 8 per-VLAN examples and preserves the "
+                "owner's '+N more' disclosure; the row counts retain the full model totals.", ["/topology/failure_impact"]),
+    _limitation("path_route_model_only", "fib.trace_fib_path",
+                "This is an offline route-model query, not live traffic proof. It does not model VRF selection, "
+                "ports, ACLs, NAT, stateful policy or reverse paths. Source suggestions are observed addresses, "
+                "not management suitability or unique source ownership. A scoped no-route observation is not "
+                "an observed discard. Reached paths can still have dropping ECMP legs. MTU evidence is "
+                "IPv4-specific and does not establish IPv6 suitability.", ["/topology/source_addresses"]),
+)
 #: What a device document cannot claim; addressed inside a ``DeviceDocument``.
 DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
     _limitation(
@@ -535,6 +564,9 @@ _R_AU = ("analysis unavailable: the phase that computes this failed this run, so
 _RECORD_ABSENT_REASON = ("no failed-phase record: assessment_integrity.failed_phases is written only when a "
                          "phase failed, so its absence is not a statement that every phase passed")
 _SLOT_RULE = {
+    "nonnegative_number": "a finite nonnegative number within the browser's exact integer range",
+    "positive_count": "a positive integer within the browser's exact integer range",
+    "structural_ends": "an {a_host, a_port, b_host, b_port} text record",
     "count": "a non-negative integer no larger than 2^53-1, the largest integer a browser keeps exact",
     "score": "a finite number from 0 to 100",
     "text": "a string", "flag": "a boolean", "enum": "a value of its closed vocabulary",
@@ -1020,6 +1052,17 @@ def _typed(raw: Any, slot: str, vocab: Sequence[str] = ()) -> Tuple[bool, Any]:
         return _count(raw)
     if slot == "score":
         return _score(raw)
+    if slot == "nonnegative_number":
+        ok = (type(raw) in (int, float) and 0 <= raw <= JS_MAX_SAFE_INT
+              and (not isinstance(raw, float) or math.isfinite(raw)))
+        return ok, raw if ok else None
+    if slot == "positive_count":
+        ok, value = _count(raw)
+        return ok and value > 0, value if ok and value > 0 else None
+    if slot == "structural_ends":
+        fields = ("a_host", "a_port", "b_host", "b_port")
+        ok = isinstance(raw, dict) and all(_is_text(raw.get(k)) for k in fields)
+        return ok, {k: raw[k] for k in fields} if ok else None
     if slot == "text":
         ok = _is_text(raw)
         return ok, (raw if ok else None)
@@ -3530,12 +3573,446 @@ def project_devices(snap: Any, hosts: Any) -> List[Dict[str, Any]]:
             for host in (hosts if isinstance(hosts, (list, tuple)) else ())]
 
 
+def _topology_legend() -> Dict[str, Any]:
+    """Presentation vocabulary owned here; browser themes only choose colors for the supplied tone."""
+    meanings = (
+        "Observed record; not a health assurance", "Peer was not collected", "Evidence cannot be verified",
+        "Evidence was not observed", "Required analysis was unavailable", "Reported link up", "Reported link down",
+        "Link state unknown", "Scanned host-pair link", "Bridge in the scanned host-pair graph",
+        "High modelled failure impact", "Medium modelled failure impact", "Low modelled failure impact",
+        "Informational modelled impact; not a health assurance", "Route model reached destination",
+        "Route model has a reaching path and dropping ECMP legs", "Route model observed discard",
+        "No route in the captured scope; not an observed discard", "Route model is a lower bound",
+        "Path calculation withheld",
+    )
+    entries = []
+    for token, meaning in zip(TOPOLOGY_STYLE_TOKENS, meanings):
+        tone, stroke, weight = "neutral", "solid", "normal"
+        if token in ("observed", "link_up", "path_reached"):
+            tone = "info"
+        elif token in ("uncollected", "not_observed", "link_unknown"):
+            tone, stroke = "muted", "dotted"
+        elif token in ("unverified", "analysis_unavailable", "path_withheld"):
+            tone, stroke = "warning", "dashed"
+        elif token in ("link_down", "impact_high", "path_observed_discard"):
+            tone = "danger"
+        elif token in ("structural_bridge", "path_partial_drop", "impact_medium",
+                       "path_no_route_observed", "path_lower_bound"):
+            tone = "warning"
+        if token in ("structural_bridge", "impact_high", "path_observed_discard"):
+            weight = "strong"
+        entries.append({"token": token, "tone": tone, "stroke": stroke, "weight": weight, "meaning": meaning})
+    return {"schema": TOPOLOGY_STYLE_SCHEMA, "entries": entries,
+            "fallback": {"token": "unverified", "glyph": "unknown", "label": "Evidence cannot be verified"}}
+
+
+def _topology_style(facts: Sequence[Dict[str, Any]], token: str, *, glyph: str = "none") -> Dict[str, Any]:
+    """The style describes even a withheld observation, but never supplies its missing value."""
+    states = {fact["state"] for fact in facts}
+    if AU in states:
+        token = "analysis_unavailable"
+    elif _UV in states:
+        token = "unverified"
+    elif states - {_PUB}:
+        token = "not_observed"
+    refs = []
+    for fact in facts:
+        for ref in fact["refs"]:
+            if ref not in refs:
+                refs.append(dict(ref))
+    meaning = next(entry["meaning"] for entry in _topology_legend()["entries"] if entry["token"] == token)
+    return _envelope(_PUB, {"token": token, "glyph": glyph, "label": meaning}, None, refs,
+                     "ui_projection.topology_style/1", "", caveats=("topology_scanned_model",))
+
+
+def _topology_join(ctx: _Ctx, host: Any) -> Dict[str, Any]:
+    toks = ("cable_map", "nodes")
+    state, reason, raw = _topology_source(ctx, toks)
+    indices = []
+    if isinstance(raw, list) and _is_text(host) and host:
+        indices = ctx.index(toks, ("host",)).get(host, [])
+    if state in (_PUB, _CBE):
+        if not _is_text(host) or not host:
+            state, reason = _UV, "unverified: the endpoint has no nonempty exact hostname"
+        elif len(indices) > 1:
+            state, reason = _UV, "unverified: more than one node has this exact hostname"
+        elif not indices:
+            state, reason = _NC, "not collected: no cable-map node has this exact hostname"
+        else:
+            state = _PUB
+    return _listing(ctx, state, reason, toks, "ui_projection:exact cable-map hostname join",
+                    [{"index": i, "pointer": json_pointer(*toks, i)} for i in indices], sections=("cable_map",),
+                    extra=[("witness", toks + (i,)) for i in indices], caveats=("topology_scanned_model",))
+
+
+def _topology_node(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
+    row = _list_row(("cable_map", "nodes", i), raw, ("cable_map",))
+    basis = "analyze.compute_cable_map:cable_map.nodes[]."
+    out = {"index": i, "pointer": json_pointer(*row.toks)}
+    for field in ("host", "kind", "role", "collected"):
+        out[field] = _cell(ctx, row, field, "flag" if field == "collected" else "text", basis + field,
+                           pre=None if field == "collected" else _blank("not collected: the node has no observed " + field),
+                           caveats=("topology_scanned_model",))
+    glyph = out["kind"]["value"] if out["kind"]["value"] in TOPOLOGY_GLYPHS[:-1] else "unknown"
+    out["style"] = _topology_style([out["host"], out["kind"], out["collected"]],
+                                    "observed" if out["collected"]["value"] else "uncollected", glyph=glyph)
+    return out
+
+
+def _topology_cable(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
+    out = _cable_row(ctx, i, raw)
+    row = _list_row(("cable_map", "cables", i), raw, ("cable_map",))
+    state, reason, toks, members = _sub_list(ctx, row, "members")
+    items = []
+    for j, member in enumerate(members or []):
+        r = _list_row(toks + (j,), member, row.sections)
+        items.append({"index": j, "pointer": json_pointer(*r.toks),
+                      **{k: _cell(ctx, r, k, "text", "analyze.compute_cable_map:cable.members[]." + k)
+                         for k in ("a_port", "b_port")}})
+    out["members"] = _listing(ctx, state, reason, toks, "analyze.compute_cable_map:cable.members", items,
+                              sections=row.sections)
+    ends = out["ends"]["value"] or {}
+    out["a_nodes"], out["b_nodes"] = (_topology_join(ctx, ends.get(k)) for k in ("a", "b"))
+    out["style"] = _topology_style([out["ends"], out["op_status"], out["a_nodes"], out["b_nodes"]],
+                                    "link_" + (out["op_status"]["value"] or "unknown"))
+    return out
+
+
+def _topology_structural(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
+    row = _list_row(("link_centrality", i), raw, ("link_centrality",))
+    basis = "analyze.compute_link_centrality:link_centrality[]."
+    out = {"index": i, "pointer": json_pointer(*row.toks),
+           "ends": _cell(ctx, row, None, "structural_ends", basis + "endpoints")}
+    for field, slot in (("betweenness", "nonnegative_number"), ("is_bridge", "flag"),
+                        ("pairs_cut", "count"), ("rank", "positive_count")):
+        out[field] = _cell(ctx, row, field, slot, basis + field, caveats=("topology_scanned_model",))
+    ends = out["ends"]["value"] or {}
+    out["a_nodes"], out["b_nodes"] = (_topology_join(ctx, ends.get(k)) for k in ("a_host", "b_host"))
+    toks = ("cable_map", "cables")
+    state, reason, cables = _topology_source(ctx, toks)
+    pair = {ends.get("a_host"), ends.get("b_host")}
+    hits = [j for j, c in enumerate(cables or []) if isinstance(c, dict)
+            and _is_text(c.get("a")) and _is_text(c.get("b")) and {c["a"], c["b"]} == pair]
+    if out["ends"]["state"] != _PUB:
+        state, reason = out["ends"]["state"], out["ends"].get("reason")
+    out["host_pair_cable_refs"] = _listing(
+        ctx, state, reason, toks, "ui_projection:exact unordered host-pair candidates (not per-cable centrality)",
+        [{"index": j, "pointer": json_pointer(*toks, j)} for j in hits], sections=("cable_map",),
+        extra=[("witness", toks + (j,)) for j in hits], caveats=("topology_scanned_model",))
+    out["style"] = _topology_style([out["ends"], out["is_bridge"], out["a_nodes"], out["b_nodes"]],
+                                    "structural_bridge" if out["is_bridge"]["value"] else "structural_link")
+    return out
+
+
+def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
+    row = _list_row(("failure_impact", i), raw, ("failure_impact",))
+    basis = "analyze.compute_failure_impact:failure_impact[]."
+    out = {"index": i, "pointer": json_pointer(*row.toks)}
+    for field in ("host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",
+                  "off_scan_gw_vlans", "detail"):
+        slot = "text" if field in ("host", "detail") else "enum" if field == "severity" else "count"
+        out[field] = _cell(ctx, row, field, slot, basis + field, vocab=IMPACT_SEVERITIES,
+                           caveats=("impact_scanned_scope",))
+    out["node_refs"] = _topology_join(ctx, out["host"]["value"])
+    out["style"] = _topology_style([out["host"], out["severity"], out["node_refs"]],
+                                    "impact_" + (out["severity"]["value"] or "Info").lower())
+    return out
+
+
+def _address_observations(ctx: _Ctx) -> Dict[str, Any]:
+    """Select positive interface/local/FHRP observations by FIB's ownership rules; no subnet host invention."""
+    from cisco_toolkit import fib
+
+    observations, malformed = [], []
+    interfaces = ctx.s.get("interfaces")
+    for section in ("interfaces", "routes"):
+        if section in ctx.s and ctx.s[section] is not None and not isinstance(ctx.s[section], dict):
+            malformed.append((section,))
+    if isinstance(interfaces, dict):
+        for host, ports in interfaces.items():
+            if not _is_text(host) or not host or not isinstance(ports, dict):
+                malformed.append(("interfaces",))
+                continue
+            for port, record in ports.items():
+                if not _is_text(port) or not isinstance(record, dict):
+                    malformed.append(("interfaces", host))
+                    continue
+                base = ("interfaces", host, port)
+                values = [(record["svi_ip"], base + ("svi_ip",))] if "svi_ip" in record else []
+                many = record.get("svi_ips")
+                if isinstance(many, str):
+                    values += [(v, base + ("svi_ips",)) for v in many.split(";")]
+                elif isinstance(many, list):
+                    values += [(v, base + ("svi_ips", j)) for j, v in enumerate(many)]
+                elif many is not None:
+                    malformed.append(base + ("svi_ips",))
+                for raw, toks in values:
+                    text, valid = fib._safe_token(raw)
+                    if valid and not text:
+                        continue
+                    parsed = fib._ip(text.split()[0].split("/", 1)[0]) if valid and text else None
+                    if parsed is None:
+                        malformed.append(toks)
+                    else:
+                        observations.append((host, port, "interface_svi", str(parsed), toks, parsed.version))
+    routes = ctx.s.get("routes")
+    if isinstance(routes, dict):
+        for host, rows in routes.items():
+            if not _is_text(host) or not host or not isinstance(rows, list):
+                malformed.append(("routes",))
+                continue
+            for j, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    malformed.append(("routes", host, j))
+                    continue
+                source, source_valid = fib._safe_token(row.get("source"))
+                if not source_valid or not source:
+                    malformed.append(("routes", host, j) + (("source",) if "source" in row else ()))
+                    continue
+                if not fib._is_connected(source):
+                    continue
+                prefix, valid = fib._safe_token(row.get("prefix"))
+                try:
+                    network = ipaddress.ip_network(prefix, strict=False) if valid else None
+                except ValueError:
+                    network = None
+                if network is None:
+                    malformed.append(("routes", host, j))
+                    continue
+                source = source.lower().replace("*", "")
+                local = source in {"l", "local"} or source.startswith("local")
+                fhrp = any(k in source for k in ("hsrp", "vrrp", "glbp"))
+                if network.prefixlen == network.max_prefixlen and (
+                        local or (fhrp and fib._ip(row.get("next_hop")) == network.network_address)):
+                    port = row.get("out_intf") if _is_text(row.get("out_intf")) else ""
+                    observations.append((host, port, "local_route" if local else "fhrp_host_route",
+                                         str(network.network_address), ("routes", host, j, "prefix"), network.version))
+    items = []
+    for i, (host, port, origin, address, toks, family) in enumerate(sorted(observations, key=lambda x: x[:4] + (json_pointer(*x[4]),))):
+        section = toks[0]
+        witnesses = []
+        # Match ssot.abstention_reason(device=...): a fully uncollected device is a blind spot even
+        # when the section's fleet analysis failed. The enclosing list still discloses that failure.
+        if ctx.device_blind(section, host):
+            hit = (_NC, "not collected: this host is a recorded collection blind spot")
+            witnesses = ctx.cc_witness(host)
+        else:
+            hit = _secs_fail(ctx, (section,))
+        state, reason = hit or (_PUB, "")
+        refs = ctx.refs([("subject", toks)] + ctx.failure_entries((section,), state == AU) + witnesses)
+        def fact(value):
+            return _envelope(state, value, None, [dict(r) for r in refs],
+                             "fib._connected_index:positive address observation", reason,
+                             caveats=("path_route_model_only",))
+        items.append({"index": i, "pointer": json_pointer(*toks), "host": fact(host), "interface": fact(port),
+                      "address": fact(address), "family": fact(family), "origin": fact(origin),
+                      "node_refs": _topology_join(ctx, host)})
+        if not port and state == _PUB:
+            items[-1]["interface"] = _envelope(_NC, None, json_pointer(*toks), refs,
+                                                "fib._connected_index:address interface", "not collected: no interface")
+    state, reason = (_UV, "unverified: malformed address source records were not usable") if malformed else (_PUB, None)
+    return _listing(ctx, state, reason, None, "fib._connected_index:positive address observations", items,
+                    sections=("interfaces", "routes"), rollup=("interfaces", "routes"),
+                    extra=[("witness", t) for t in malformed], caveats=("path_route_model_only",))
+
+
+def _topology_source(ctx: _Ctx, toks: Tuple[str, ...]) -> Tuple[str, Optional[str], Any]:
+    state, reason, raw = _list_state(ctx, toks, (toks[0],))
+    if len(toks) > 1 and state != AU:
+        parent = ctx.s.get(toks[0])
+        if parent is not None and not isinstance(parent, dict):
+            return _UV, "unverified: the stored topology parent is not an object", None
+    return state, reason, raw
+
+
+def _topology(ctx: _Ctx) -> Dict[str, Any]:
+    out = {}
+    for field, toks, producer in (("nodes", ("cable_map", "nodes"), _topology_node),
+                                  ("cables", ("cable_map", "cables"), _topology_cable),
+                                  ("structural_links", ("link_centrality",), _topology_structural),
+                                  ("failure_impact", ("failure_impact",), _topology_impact)):
+        state, reason, rows = _topology_source(ctx, toks)
+        out[field] = _listing(ctx, state, reason, toks, "ui_projection:stored " + ".".join(toks),
+                              [producer(ctx, i, row) for i, row in enumerate(rows or [])], sections=(toks[0],),
+                              caveats=("topology_scanned_model",))
+    summary = _resolve(ctx, ("cable_map", "summary"), ("cable_map",))
+    if summary.state == _NC and ctx.s.get("cable_map") is not None and not isinstance(ctx.s["cable_map"], dict):
+        summary.state, summary.reason = _UV, "unverified: the stored topology parent is not an object"
+    out["summary"] = {}
+    for field in ("nodes", "cables"):
+        def consistent(_ctx, value, _row, name=field):
+            raw = _get(ctx.s, ("cable_map", name))
+            witness = [("witness", ("cable_map", name))]
+            if raw is _MISSING or raw is None:
+                return _NC, "not collected: summary has no observed source list", witness
+            if not isinstance(raw, list):
+                return _UV, "unverified: summary source is present but is not a list", witness
+            if value != len(raw):
+                return _UV, "unverified: stored summary contradicts the stored source list", witness
+            return None
+        out["summary"][field] = _cell(ctx, summary, "n_" + field, "count", "analyze.compute_cable_map:summary.n_" + field,
+                                      gate=consistent, caveats=("topology_scanned_model",))
+    out["source_addresses"], out["legend"] = _address_observations(ctx), _topology_legend()
+    return out
+
+
+def project_topology(snap: Any) -> Dict[str, Any]:
+    """Stored topology, exact evidence joins and engine-owned presentation; no legacy recomputation."""
+    return _topology(_Ctx(snap))
+
+
+def _fib_value(raw: Any) -> Optional[Dict[str, Any]]:
+    """Type-check the disclosed owner result without interpreting its verdict or deleting evidence."""
+    def text_record(value, fields, optional=()):
+        return (isinstance(value, dict) and set(fields) <= set(value) <= set(fields) | set(optional)
+                and all(_is_text(value[k]) for k in fields))
+
+    def hop(value):
+        return (text_record(value, ("host", "match", "next_hop", "out_intf", "source"), ("invalid_route_fields",))
+                and ("invalid_route_fields" not in value or (
+                    isinstance(value["invalid_route_fields"], list) and bool(value["invalid_route_fields"])
+                    and all(v in ("admin_distance", "source", "next_hop", "out_intf")
+                            for v in value["invalid_route_fields"] if isinstance(v, str))
+                    and all(isinstance(v, str) for v in value["invalid_route_fields"]))))
+
+    def mtu(value, required=False):
+        fields = ("host", "out_intf", "mtu", "required") if required else ("host", "out_intf", "mtu")
+        return (isinstance(value, dict) and set(value) == set(fields)
+                and all(_is_text(value[k]) for k in ("host", "out_intf"))
+                and all(_count(value[k])[0] for k in fields[2:]))
+
+    fields = ("src", "dst", "hops", "status", "computed", "reached", "drop_evidence", "ecmp_dropping_legs",
+              "ambiguous_candidate_sets", "mtu_min", "mtu_bottleneck_hop", "mtu_unobserved_hops",
+              "jumbo_blackhole", "mtu_verdict")
+    if not (isinstance(raw, dict) and set(raw) == set(fields)
+            and all(_is_text(raw[k]) for k in ("src", "dst", "status", "drop_evidence", "mtu_verdict"))
+            and all(isinstance(raw[k], bool) for k in ("computed", "reached"))
+            and all(isinstance(raw[k], list) for k in ("hops", "ecmp_dropping_legs", "ambiguous_candidate_sets",
+                                                       "mtu_unobserved_hops", "jumbo_blackhole"))
+            and all(hop(h) for h in raw["hops"])
+            and (raw["mtu_min"] is None or _count(raw["mtu_min"])[0])
+            and (raw["mtu_bottleneck_hop"] is None or mtu(raw["mtu_bottleneck_hop"]))
+            and all(mtu(m, True) for m in raw["jumbo_blackhole"])):
+        return None
+    for leg in raw["ecmp_dropping_legs"]:
+        texts = ("host", "match", "next_hop", "out_intf", "leg_status", "drop_evidence")
+        if not (text_record(leg, texts, ("resolved_hops",)) and "resolved_hops" in leg
+                and isinstance(leg["resolved_hops"], list) and all(hop(h) for h in leg["resolved_hops"])):
+            return None
+    for group in raw["ambiguous_candidate_sets"]:
+        if not (isinstance(group, dict) and set(group) == {"kind", "candidate_hosts"}
+                and _is_text(group["kind"]) and _text_list(group["candidate_hosts"])[0]):
+            return None
+    for gap in raw["mtu_unobserved_hops"]:
+        if not (text_record(gap, ("host", "out_intf"), ("reason",))
+                and ("reason" not in gap or gap["reason"] in ("malformed_hop_evidence", "egress_interface_not_observed"))):
+            return None
+    return _copy_schema(raw)
+
+
+def _path_hop_evidence(ctx: _Ctx, i: int, hop: Dict[str, Any]) -> Dict[str, Any]:
+    from cisco_toolkit import fib
+
+    host, port = hop["host"], hop["out_intf"]
+    route_toks = ("routes", host)
+    row = _resolve(ctx, ("routes",), ("routes",), key=host, want=list, host=host)
+    raw = row.raw if isinstance(row.raw, list) else []
+    hits = []
+    for j, route in enumerate(raw):
+        if not isinstance(route, dict):
+            continue
+        prefix, valid = fib._safe_token(route.get("prefix"))
+        try:
+            match = str(ipaddress.ip_network(prefix, strict=False)) if valid else None
+        except ValueError:
+            match = None
+        if match == hop["match"] and ("invalid_route_fields" in hop or all(
+                fib._safe_token(route.get(k))[0] == hop[k] and fib._safe_token(route.get(k))[1]
+                for k in ("next_hop", "out_intf", "source"))):
+            hits.append(j)
+    state, reason = row.state, row.reason
+    if state is None:
+        if len(hits) == 1 and "invalid_route_fields" not in hop:
+            state = _PUB
+        elif hits:
+            state, reason = _UV, "unverified: route evidence is ambiguous or the owner disclosed malformed fields"
+        else:
+            state, reason = _NC, "not collected: no exact stored route row matches this computed hop"
+    routes = _listing(ctx, state, reason, route_toks, "fib.trace_fib_path:exact route evidence join",
+                      [{"index": j, "pointer": json_pointer(*route_toks, j)} for j in hits], sections=("routes",),
+                      extra=[("witness", route_toks + (j,)) for j in hits], caveats=("path_route_model_only",))
+    iface_toks = ("interfaces", host, port)
+    iface = _resolve(ctx, ("interfaces",), ("interfaces",), key=host, want=dict, host=host)
+    state, reason = iface.state, iface.reason
+    refs = []
+    if state is None:
+        value = _get(ctx.s, iface_toks)
+        if isinstance(value, dict) and port:
+            state = _PUB
+            refs = [{"pointer": json_pointer(*iface_toks), "role": "witness"}]
+        elif value is not _MISSING and not isinstance(value, dict):
+            state, reason = _UV, "unverified: the hop interface record is malformed"
+        else:
+            state, reason = _NC, "not collected: no exact interface record for this computed hop"
+    interfaces = _listing(ctx, state, reason, None, "fib.trace_fib_path:exact egress-interface join", refs,
+                          sections=("interfaces",), extra=[("witness", iface_toks)],
+                          caveats=("path_route_model_only",))
+    return {"hop_index": i, "route_rows": routes, "interfaces": interfaces, "node_rows": _topology_join(ctx, host)}
+
+
+def project_path(snap: Any, src_ip: Any, dst_ip: Any) -> Dict[str, Any]:
+    """One offline, disclosed FIB query; separate from the immutable snapshot's static projection."""
+    from cisco_toolkit import fib
+
+    ctx = _Ctx(snap)
+    sections = ("routes", "interfaces", "routing_neighbors", "l3_forwarding")
+    hit = _secs_fail(ctx, sections)
+    routes = ctx.s.get("routes", _MISSING)
+    if not hit and (routes is _MISSING or routes is None):
+        hit = (_NC, "not collected: this snapshot has no routes for a path query")
+    elif not hit and not isinstance(routes, dict):
+        hit = (_UV, "unverified: the routes section is not a host map")
+    elif not hit and not routes:
+        hit = (_CBE, "collected but empty: no route hosts were recorded")
+    value = None
+    if not hit:
+        try:
+            value = _fib_value(fib.trace_fib_path(ctx.s, src_ip, dst_ip, max_hops=32, required_mtu=None, disclose=True))
+            if value is None:
+                hit = (_UV, "unverified: the FIB owner returned an unsupported result shape")
+        except _OWNER_FAULTS as exc:
+            hit = (_UV, _fault_text("fib.trace_fib_path", exc))
+    state, reason = hit or (_PUB, "")
+    refs = ctx.refs([("basis", (s,)) for s in sections] + ctx.failure_entries(sections, state == AU))
+    result = _envelope(state, value, None, refs, "fib.trace_fib_path(disclose=True)", reason,
+                       caveats=("path_route_model_only",))
+    evidence = [_path_hop_evidence(ctx, i, hop) for i, hop in enumerate(value["hops"])] if value else []
+    if state != _PUB:
+        token = "path_withheld"
+    elif value["reached"]:
+        token = "path_partial_drop" if value["ecmp_dropping_legs"] else "path_reached"
+    elif value["drop_evidence"] == "observed_discard":
+        token = "path_observed_discard"
+    elif value["drop_evidence"] == "no_route_observed":
+        token = "path_no_route_observed"
+    else:
+        token = "path_lower_bound"
+    style = _topology_style([result], token)
+    style["caveats"] = ["path_route_model_only"]
+    path = {"query": {"src_ip": src_ip if _is_text(src_ip) else "", "dst_ip": dst_ip if _is_text(dst_ip) else "",
+                       "max_hops": 32, "required_mtu": None, "disclose": True},
+            "result": result, "hop_evidence": _listing(ctx, state, reason, None, "fib.trace_fib_path:hops evidence",
+                                                       evidence, sections=sections, caveats=("path_route_model_only",)),
+            "style": style, "legend": _topology_legend()}
+    return {"schema": SCHEMA, "engine": _engine(ctx), "path": path}
+
+
 def project(snap: Any) -> Dict[str, Any]:
     """The whole ``ui_projection/1`` payload for one snapshot (device pages are separate documents:
     :func:`project_device`). Pure and total."""
     ctx = _Ctx(snap)
     return {"schema": SCHEMA, "engine": _engine(ctx), "overview": _overview(ctx), "trust": _trust(ctx),
-            "inventory": _inventory(ctx), "findings": _findings(ctx)}
+            "inventory": _inventory(ctx), "findings": _findings(ctx), "topology": _topology(ctx)}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -3858,6 +4335,92 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                       "device": _ref("DevicePage")})
 
 
+def _topology_defs(defs: Dict[str, Any]) -> None:
+    defs["TopologyStyleValue"] = _closed("TopologyStyleValue", ("token", "glyph", "label"),
+        {"token": _enum(TOPOLOGY_STYLE_TOKENS), "glyph": _enum(TOPOLOGY_GLYPHS), "label": _str()})
+    defs["TopologyStyleFact"] = _fact_def("TopologyStyleFact", _ref("TopologyStyleValue"))
+    defs["TopologyLegendEntry"] = _closed("TopologyLegendEntry", ("token", "tone", "stroke", "weight", "meaning"),
+        {"token": _enum(TOPOLOGY_STYLE_TOKENS), "tone": _enum(("neutral", "muted", "info", "warning", "danger")),
+         "stroke": _enum(("solid", "dashed", "dotted")), "weight": _enum(("normal", "strong")), "meaning": _str()})
+    defs["TopologyLegend"] = _closed("TopologyLegend", ("schema", "entries", "fallback"),
+        {"schema": {"const": TOPOLOGY_STYLE_SCHEMA}, "entries": {
+            "type": "array", "minItems": len(TOPOLOGY_STYLE_TOKENS), "maxItems": len(TOPOLOGY_STYLE_TOKENS),
+            "items": _ref("TopologyLegendEntry")}, "fallback": _ref("TopologyStyleValue")})
+    defs["StructuralEndsFact"] = _fact_def("StructuralEndsFact", _closed("StructuralEnds",
+        ("a_host", "a_port", "b_host", "b_port"), {k: _str() for k in ("a_host", "a_port", "b_host", "b_port")}))
+    defs["NonnegativeNumberFact"] = _fact_def("NonnegativeNumberFact", {"type": "number", "minimum": 0,
+                                                                                   "maximum": JS_MAX_SAFE_INT})
+    defs["PositiveCountFact"] = _fact_def("PositiveCountFact", {**_nonneg_int(), "minimum": 1})
+    defs["ImpactSeverityFact"] = _fact_def("ImpactSeverityFact", _enum(IMPACT_SEVERITIES))
+    defs["AddressFamilyFact"] = _fact_def("AddressFamilyFact", {"type": "integer", "enum": [4, 6]})
+    defs["AddressOriginFact"] = _fact_def("AddressOriginFact", _enum(ADDRESS_ORIGINS))
+    rows = {
+        "TopologyNodeRow": (("host", "TextFact"), ("kind", "TextFact"), ("role", "TextFact"),
+                            ("collected", "FlagFact"), ("style", "TopologyStyleFact")),
+        "TopologyCableMemberRow": (("a_port", "TextFact"), ("b_port", "TextFact")),
+        "TopologyCableRow": (("ends", "CableEndsFact"), ("members", "TopologyCableMemberRowList"),
+                             ("speed", "TextFact"), ("confirmation", "TextFact"), ("op_status", "OpStatusFact"),
+                             ("a_nodes", "RowRefList"), ("b_nodes", "RowRefList"), ("style", "TopologyStyleFact")),
+        "TopologyStructuralLinkRow": (("ends", "StructuralEndsFact"), ("betweenness", "NonnegativeNumberFact"),
+                                      ("is_bridge", "FlagFact"), ("pairs_cut", "CountFact"), ("rank", "PositiveCountFact"),
+                                      ("a_nodes", "RowRefList"), ("b_nodes", "RowRefList"),
+                                      ("host_pair_cable_refs", "RowRefList"), ("style", "TopologyStyleFact")),
+        "TopologyImpactRow": (("host", "TextFact"), ("node_refs", "RowRefList"), ("severity", "ImpactSeverityFact"),
+                              *((k, "CountFact") for k in ("vlans_impacted", "stranded", "hard", "backup", "fhrp", "off_scan_gw_vlans")),
+                              ("detail", "TextFact"), ("style", "TopologyStyleFact")),
+        "TopologyAddressRow": (("host", "TextFact"), ("interface", "TextFact"), ("address", "TextFact"),
+                               ("family", "AddressFamilyFact"), ("origin", "AddressOriginFact"), ("node_refs", "RowRefList")),
+    }
+    for name, cells in rows.items():
+        defs[name] = _row_def(name, _indexed(), cells)
+        defs[name + "List"] = _list_def(name + "List", _ref(name))
+    props = {"summary": _closed("TopologySummary", ("nodes", "cables"),
+                                 {k: _ref("CountFact") for k in ("nodes", "cables")})}
+    props.update({k: _ref(v + "List") for k, v in (
+        ("nodes", "TopologyNodeRow"), ("cables", "TopologyCableRow"),
+        ("structural_links", "TopologyStructuralLinkRow"), ("failure_impact", "TopologyImpactRow"),
+        ("source_addresses", "TopologyAddressRow"))})
+    props["legend"] = _ref("TopologyLegend")
+    defs["Topology"] = _closed("Topology", tuple(props), props)
+    hop_fields = ("host", "match", "next_hop", "out_intf", "source")
+    defs["FibHop"] = _closed("FibHop", hop_fields, {**{k: _str() for k in hop_fields},
+        "invalid_route_fields": {"type": "array", "minItems": 1,
+                                 "items": _enum(("admin_distance", "source", "next_hop", "out_intf"))}})
+    array_hops = {"type": "array", "items": _ref("FibHop")}
+    leg_fields = ("host", "match", "next_hop", "out_intf", "leg_status", "drop_evidence", "resolved_hops")
+    defs["FibDroppingLeg"] = _closed("FibDroppingLeg", leg_fields,
+        {**{k: _str() for k in leg_fields[:-1]}, "resolved_hops": array_hops})
+    defs["FibCandidateSet"] = _closed("FibCandidateSet", ("kind", "candidate_hosts"),
+        {"kind": _str(), "candidate_hosts": {"type": "array", "items": _str()}})
+    defs["FibMtuHop"] = _closed("FibMtuHop", ("host", "out_intf", "mtu"),
+        {"host": _str(), "out_intf": _str(), "mtu": _nonneg_int()})
+    defs["FibMtuGap"] = _closed("FibMtuGap", ("host", "out_intf"),
+        {"host": _str(), "out_intf": _str(), "reason": _enum(("malformed_hop_evidence", "egress_interface_not_observed"))})
+    defs["FibJumboBlackhole"] = _closed("FibJumboBlackhole", ("host", "out_intf", "mtu", "required"),
+        {"host": _str(), "out_intf": _str(), "mtu": _nonneg_int(), "required": _nonneg_int()})
+    props = {k: _str() for k in ("src", "dst", "status", "drop_evidence", "mtu_verdict")}
+    props.update({"hops": array_hops, "computed": _bool(), "reached": _bool(),
+                  "mtu_min": _nullable(_nonneg_int()), "mtu_bottleneck_hop": _nullable(_ref("FibMtuHop"))})
+    props.update({k: {"type": "array", "items": _ref(v)} for k, v in (
+        ("ecmp_dropping_legs", "FibDroppingLeg"), ("ambiguous_candidate_sets", "FibCandidateSet"),
+        ("mtu_unobserved_hops", "FibMtuGap"), ("jumbo_blackhole", "FibJumboBlackhole"))})
+    defs["FibResult"] = _closed("FibResult", tuple(props), props)
+    defs["FibResultFact"] = _fact_def("FibResultFact", _ref("FibResult"))
+    defs["PathInterfaceRefList"] = _list_def("PathInterfaceRefList", _ref("Ref"))
+    defs["PathHopEvidence"] = _closed("PathHopEvidence", ("hop_index", "route_rows", "interfaces", "node_rows"),
+        {"hop_index": _nonneg_int(), "route_rows": _ref("RowRefList"), "interfaces": _ref("PathInterfaceRefList"),
+         "node_rows": _ref("RowRefList")})
+    defs["PathHopEvidenceList"] = _list_def("PathHopEvidenceList", _ref("PathHopEvidence"))
+    defs["PathQuery"] = _closed("PathQuery", ("src_ip", "dst_ip", "max_hops", "required_mtu", "disclose"),
+        {"src_ip": _str(), "dst_ip": _str(), "max_hops": {"type": "integer", "const": 32},
+         "required_mtu": _null(), "disclose": {"type": "boolean", "const": True}})
+    defs["Path"] = _closed("Path", ("query", "result", "hop_evidence", "style", "legend"),
+        {"query": _ref("PathQuery"), "result": _ref("FibResultFact"), "hop_evidence": _ref("PathHopEvidenceList"),
+         "style": _ref("TopologyStyleFact"), "legend": _ref("TopologyLegend")})
+    defs["PathDocument"] = _closed("PathDocument", ("schema", "engine", "path"),
+        {"schema": {"type": "string", "const": SCHEMA}, "engine": _ref("Engine"), "path": _ref("Path")})
+
+
 def _build_schema() -> Dict[str, Any]:
     defs: Dict[str, Any] = {
         "State": {"title": "State", "type": "string", "enum": list(STATES)},
@@ -3997,10 +4560,11 @@ def _build_schema() -> Dict[str, Any]:
          "unknown_evidence": _ref("UnknownEvidence"), "ssot": _ref("Ssot"),
          "limitations": {"type": "array", "minItems": n_lims, "maxItems": n_lims, "items": _ref("Limitation")}})
     _slice2_defs(defs)
-    root = _closed("UiProjection", ("schema", "engine", "overview", "trust", "inventory", "findings"),
+    _topology_defs(defs)
+    root = _closed("UiProjection", ("schema", "engine", "overview", "trust", "inventory", "findings", "topology"),
                    {"schema": {"type": "string", "const": SCHEMA}, "engine": _ref("Engine"),
                     "overview": _ref("Overview"), "trust": _ref("Trust"), "inventory": _ref("Inventory"),
-                    "findings": _ref("Findings")})
+                    "findings": _ref("Findings"), "topology": _ref("Topology")})
     root["title"] = SCHEMA
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": SCHEMA_ID, **root, "$defs": defs}
 
@@ -4024,5 +4588,6 @@ __all__ = [
     "SELECTION_NEEDS", "SEVERITIES", "SNAPSHOT_SCHEMA", "STATES", "UE_COMPLETE_STATES", "UE_SOURCE_STATES",
     "UNKNOWN_EVIDENCE_STATES", "VLAN_FIELD_BASIS", "VLAN_READINESS", "WITHHELD_STATES", "json_pointer", "project",
     "project_device", "project_devices", "project_engine", "project_findings", "project_inventory",
-    "project_overview", "project_trust", "ui_projection_schema",
+    "project_overview", "project_trust", "project_topology", "project_path", "ui_projection_schema",
+    "TOPOLOGY_STYLE_SCHEMA", "TOPOLOGY_STYLE_TOKENS", "TOPOLOGY_GLYPHS", "IMPACT_SEVERITIES", "ADDRESS_ORIGINS",
 ]

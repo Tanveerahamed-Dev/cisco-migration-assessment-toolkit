@@ -8,6 +8,7 @@ import react from "@vitejs/plugin-react";
 /* The compiler's own list of the documents it writes: the dataset door below is derived from it, never
    from a hand-kept list of file names. */
 import { OUTPUTS, SECTIONS_READ, SUPPORTED_SCHEMAS } from "./tools/lib/compile-model.mjs";
+import { EMBED_PROTOCOL } from "../webapp/frontend/src/projectionEmbed";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -26,6 +27,7 @@ export const HUB_MODE = "hub";
 export const HUB_BASE = "/scope/";
 export const HUB_OUT_DIR = "dist-hub";
 export const RUNTIME_SOURCE_META = { name: "atlas-scope-snapshot-source", content: "assesshub-api-runtime" } as const;
+export const ENGINE_PROJECTION_META = { name: "atlas-scope-engine-projection", content: EMBED_PROTOCOL } as const;
 
 const posix = (p: string): string => p.split("\\").join("/");
 /* Module ids are compared case-insensitively on Windows (a drive letter's case varies between resolvers). */
@@ -211,7 +213,9 @@ function atlasDataset(): Plugin {
     },
     transformIndexHtml() {
       if (mode !== HUB_MODE) return undefined;
-      return [{ tag: "meta", attrs: { name: RUNTIME_SOURCE_META.name, content: RUNTIME_SOURCE_META.content }, injectTo: "head" }];
+      return [RUNTIME_SOURCE_META, ENGINE_PROJECTION_META].map((marker) => ({
+        tag: "meta", attrs: { name: marker.name, content: marker.content }, injectTo: "head" as const,
+      }));
     },
     generateBundle(_opts, bundle) {
       if (mode !== HUB_MODE) return;
