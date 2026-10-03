@@ -455,7 +455,7 @@ a {
    When the rail is too short for BOTH floors (the 1280x800 and single-column rungs) the rail
    scrolls internally rather than letting the queue paint under the status bar, so every row is
    reachable and a row a reveal scrolls to is really on screen, not under the chrome. */
-@media (min-width: 48rem) {
+@media (min-width: 48rem) and (min-width: 768px) {
   .rail--a[data-split="true"] {
     grid-template-rows:
       minmax(min(10rem, 100%), var(--rail-a-split, 60%))
@@ -534,7 +534,7 @@ a {
 
 /* >= 1600px — the Stage takes the extra width, not the rails. Rail A grows only 40px, which is
    exactly what stops a finding title truncating at 1440 (acceptance C3). */
-@media (min-width: 100rem) {
+@media (min-width: 100rem) and (min-width: 768px) {
   :root {
     --header-h: 3rem; /*      48px */
     --querybar-h: 2.75rem; /* 44px */
@@ -547,7 +547,7 @@ a {
    visible (not hidden, not dimmed — the never-applied `.stage-dim` rule was deleted as dead CSS,
    2026-09-23) and keeps >= 360px. The drawer is toggled by `E` and by any evidence
    affordance; its open state is `data-drawer="open"` on .app. */
-@media not all and (min-width: 80rem) {
+@media not all and (min-width: 80rem) and (min-width: 768px) {
   :root {
     --rail-left: 17.5rem; /* 280px */
   }
@@ -595,7 +595,7 @@ a {
 
 /* 768 up to (not including) 1024px — single column: query bar, Stage at 46vh, then one full-width panel chosen by a
    segmented control. The Inspector becomes a full-width sheet. */
-@media not all and (min-width: 64rem) {
+@media not all and (min-width: 64rem) and (min-width: 768px) {
   .app__body {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(20rem, 46vh) minmax(0, 1fr);
@@ -641,8 +641,8 @@ a {
    the rail scrolls here too, and the queue slot keeps its min-content (the chrome plus the grid's
    floor) instead of being squeezed into a port the grid then overflows. Guarded in a real browser
    by review/layout-guard.mjs invariant 5. */
-@media (min-width: 48rem) {
-  @media not all and (min-width: 64rem) {
+@media (min-width: 48rem) and (min-width: 768px) {
+  @media not all and (min-width: 64rem) and (min-width: 768px) {
     .rail--a {
       overflow-y: auto;
       overscroll-behavior: contain;
@@ -657,8 +657,13 @@ a {
 /* Below 768px (48rem, the complement of the single-column edge — never a second `max-width` number:
    a fractional width such as 767.35 px fell between the two, wave 8) down to 320 CSS px — the 1.4.10 reflow answer for the canvas. The Stage collapses and
    the DOM mirror table is shown in its place; 3-D sits behind an explicit toggle. At 320px a
-   26-node fabric is not legible, and pretending otherwise is decoration. */
-@media not all and (min-width: 48rem) {
+   26-node fabric is not legible, and pretending otherwise is decoration.
+   Every ladder edge is written `(min-width: <rem>) and (min-width: 768px)` (surfaces.tsx, `atLeast`):
+   the rem follows the reader's default font size, so with a large default this stacked layout also
+   holds above 768 CSS px — there the stage starts SHOWN (`data-fabric3d="on"`, the CSS-pixel stage
+   line, acceptance F4(c)) with "Hide the 3-D fabric" beside it; with a small default the floor keeps
+   every narrower-than-768 px viewport here, where the toggle is. */
+@media not all and (min-width: 48rem) and (min-width: 768px) {
   :root {
     --header-h: 2.75rem;
     --querybar-h: auto;

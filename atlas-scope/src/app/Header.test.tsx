@@ -390,8 +390,8 @@ describe("at a narrow viewport the header moves controls, it does not drop them"
       const real = window.matchMedia;
       window.matchMedia = ((q: string) => {
         let matches = /width/.test(q);
-        for (const m of q.matchAll(/\((min|max)-width:\s*([\d.]+)rem\)/g)) {
-          const bound = Number.parseFloat(m[2] as string) * 16;
+        for (const m of q.matchAll(/\((min|max)-width:\s*([\d.]+)(rem|px)\)/g)) {
+          const bound = Number.parseFloat(m[2] as string) * (m[3] === "px" ? 1 : 16);
           matches &&= m[1] === "min" ? width >= bound : width <= bound;
         }
         return {
