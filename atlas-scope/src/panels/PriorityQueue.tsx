@@ -47,6 +47,7 @@ import {
 import {
   applyToCrossLayer,
   applyToFindings,
+  findingSortCell,
   groupBy,
   groupItems,
   parseQuery,
@@ -192,6 +193,63 @@ type Ordering = { kind: "ranked" } | { kind: "field"; spec: SortSpec<string> };
 
 const RANKED: Ordering = { kind: "ranked" };
 
+/**
+ * THE GROUPS FOLLOW A SORT ON A FIELD THEY ARE MADE OF.
+ *
+ * D2 REFUTER, 2026-10-03 (release build, 1920x1080, the default queue): Enter on the Severity header
+ * flipped `aria-sort` between "ascending" and "descending" while not one row moved — the row-order hash
+ * was identical in every state and Critical came first every time. A sort reordered rows only WITHIN a
+ * group, and grouped by severity every row of a group has the same severity, so the sort did nothing
+ * while the header announced two opposite orders over the same rows.
+ *
+ * The condition is structural, not a list of groupings: when the sorted field holds ONE value in every
+ * populated group, ordering inside the groups is a no-op, and the only order the sort can mean is the
+ * groups' own. So the groups are put in that order — which makes the whole list sorted, exactly as
+ * `aria-sort` says. The same reading caught a case no list would have named: in this snapshot `rank`
+ * is constant within each severity, so "Rank, ascending" while grouped by severity was a no-op too.
+ *
+ *   - Groups whose one value is NOT OBSERVED sink, in their own order, in both directions — as an
+ *     unknown cell sinks in a row sort (an unrecognised severity, the Not-observed group).
+ *   - An EMPTY group ("Info · 0") has no value to read. When the populated groups already run along the
+ *     field (the severity vocabulary does), the whole sequence is kept or reversed, so an empty bucket
+ *     keeps its place in the scale; otherwise the populated groups are sorted and the empty ones follow
+ *     them. Either way it still renders: an empty bucket is a statement, never dropped.
+ *   - A field that varies inside a group leaves the groups where the grouping put them; the rows inside
+ *     each group carry the order, and the grid's order description says so in words.
+ *
+ * Returns null when the groups keep the grouping's own order.
+ */
+function groupsInSortOrder<T>(
+  groups: readonly Group<T>[],
+  field: string,
+  direction: "asc" | "desc",
+  cellOf: (t: T, field: string) => string | number | null,
+): Group<T>[] | null {
+  if (groups.length < 2) return null;
+  const value = new Map<Group<T>, string | number | null>();
+  for (const g of groups) {
+    const first = g.items[0];
+    if (first === undefined) continue;
+    const v = cellOf(first, field);
+    if (g.items.some((it) => cellOf(it, field) !== v)) return null;
+    value.set(g, v);
+  }
+  const known = groups.filter((g) => value.has(g) && value.get(g) !== null);
+  const unknown = groups.filter((g) => value.has(g) && value.get(g) === null);
+  const placed = groups.filter((g) => !unknown.includes(g));
+  const runs = (dir: "asc" | "desc"): boolean =>
+    known.every((g, i) => i === 0 || cmpCell(value.get(known[i - 1]!) ?? null, value.get(g) ?? null, dir) <= 0);
+  const body = runs(direction)
+    ? placed
+    : runs(direction === "asc" ? "desc" : "asc")
+      ? [...placed].reverse()
+      : [
+          ...[...known].sort((a, b) => cmpCell(value.get(a) ?? null, value.get(b) ?? null, direction)),
+          ...placed.filter((g) => !value.has(g)),
+        ];
+  return [...body, ...unknown];
+}
+
 /* ── corpus adapter ─────────────────────────────────────────────────────────── */
 
 type CorpusId = "findings" | "cross-layer";
@@ -211,9 +269,11 @@ interface CorpusSpec<T> {
   /** One pasteable line per row, for the batch copy. Carries the citation, always. */
   lineOf: (t: T) => string;
   columns: readonly GridColumn<T>[];
-  groupKeys: readonly { value: string; label: string; vocabulary: () => readonly string[] }[];
+  groupKeys: readonly Grouping[];
   group: (rows: readonly T[], key: string) => Group<T>[];
   sortFieldOf: (columnId: string) => string | null;
+  /** A row's value for a sort field, null meaning NOT OBSERVED: what `order` compares. */
+  cellOf: (t: T, field: string) => string | number | null;
   order: (rows: readonly T[], o: Ordering) => T[];
   filter: (rows: readonly T[], parsed: ParsedQuery) => FilterResult<T>;
   /** What the default ordering actually is, stated to the user rather than implied. */
@@ -222,6 +282,28 @@ interface CorpusSpec<T> {
 
 /** Values a grouping key can take in THIS snapshot, so empty buckets are data-driven. */
 const domainValues = (key: string): readonly string[] => (valueDomain(key) ?? []).map((d) => d.value);
+
+type Grouping = { value: string; label: string; vocabulary: () => readonly string[] };
+
+/** The groupings the Group control offers, per corpus. Exported so a guard over "every grouping" reads
+ *  the control's own list (PriorityQueue.sort-truth.test.tsx) rather than a copy of it. */
+export const QUEUE_GROUPINGS: Readonly<Record<CorpusId, readonly Grouping[]>> = {
+  findings: [
+    { value: "severity", label: "Severity", vocabulary: () => SEVERITY_ORDER.map(String) },
+    { value: "category", label: "Category", vocabulary: () => domainValues("category") },
+    { value: "host", label: "Device", vocabulary: () => domainValues("host") },
+    { value: "wave", label: "Migration wave", vocabulary: () => domainValues("wave") },
+    { value: "band", label: "Device health band", vocabulary: () => domainValues("band") },
+    { value: "role", label: "Device role", vocabulary: () => domainValues("role") },
+    { value: "none", label: "No grouping", vocabulary: () => [] },
+  ],
+  "cross-layer": [
+    { value: "severity", label: "Severity", vocabulary: () => SEVERITY_ORDER.map(String) },
+    { value: "layer", label: "Layers", vocabulary: () => domainValues("layer") },
+    { value: "host", label: "Device", vocabulary: () => domainValues("host") },
+    { value: "none", label: "No grouping", vocabulary: () => [] },
+  ],
+};
 
 /** Grouping keys that name a device or a device attribute: the attribute each one reads. */
 const DEVICE_ATTRIBUTE: Readonly<Record<string, (d: (typeof fabric.devices)[number]) => string | null>> = {
@@ -538,10 +620,18 @@ const CROSS_SORT_OF: Readonly<Record<string, string>> = {
   hosts: "hosts",
 };
 
-const crossCell = (c: CrossLayerFinding, field: string): string | number | null => {
+/** The column -> sort field maps, per corpus. Exported so the sort-truth guard enumerates the fields the
+ *  queue sorts by from the queue itself (PriorityQueue.sort-truth.test.tsx). */
+export const QUEUE_SORT_COLUMNS: Readonly<Record<CorpusId, Readonly<Record<string, string>>>> = {
+  findings: FINDING_SORT_OF,
+  "cross-layer": CROSS_SORT_OF,
+};
+
+/** A cross-layer record's value for a sort field, null meaning NOT OBSERVED; exported for the sort-truth guard. */
+export const crossSortCell = (c: CrossLayerFinding, field: string): string | number | null => {
   switch (field) {
     case "severity":
-      // As core/query.ts findingCell: an ungraded severity is not a point on the scale, so it sinks either way.
+      // As core/query.ts findingSortCell: an ungraded severity is not a point on the scale, so it sinks either way.
       return gradedSeverityRank(c.severity);
     case "id":
       return c.id;
@@ -1032,17 +1122,10 @@ export function PriorityQueue({
       citeOf: (f) => f.cite,
       lineOf: (f) => `${severityWords(f.severity)}	${f.id}	${f.title}	${f.category ?? "category not observed"}	${f.devices.length > 0 ? f.devices.join(" ") : "no device named"}	${f.cite}`,
       columns: findingColumns,
-      groupKeys: [
-        { value: "severity", label: "Severity", vocabulary: () => SEVERITY_ORDER.map(String) },
-        { value: "category", label: "Category", vocabulary: () => domainValues("category") },
-        { value: "host", label: "Device", vocabulary: () => domainValues("host") },
-        { value: "wave", label: "Migration wave", vocabulary: () => domainValues("wave") },
-        { value: "band", label: "Device health band", vocabulary: () => domainValues("band") },
-        { value: "role", label: "Device role", vocabulary: () => domainValues("role") },
-        { value: "none", label: "No grouping", vocabulary: () => [] },
-      ],
+      groupKeys: QUEUE_GROUPINGS.findings,
       group: (rows, key) => groupBy(rows, key as FindingGroupKey),
       sortFieldOf: (columnId) => own(FINDING_SORT_OF, columnId) ?? null,
+      cellOf: (f, field) => findingSortCell(f, field as FindingSortField),
       order: (rows, o) =>
         o.kind === "ranked"
           ? [...rows].sort(bySeverityThenRank)
@@ -1062,14 +1145,10 @@ export function PriorityQueue({
       citeOf: (c) => c.cite,
       lineOf: (c) => `${severityWords(c.severity)}	${c.id}	${c.title}	${c.layers ?? "layers not observed"}	${c.hosts.length > 0 ? c.hosts.join(" ") : "no host named"}	${c.cite}`,
       columns: crossColumns,
-      groupKeys: [
-        { value: "severity", label: "Severity", vocabulary: () => SEVERITY_ORDER.map(String) },
-        { value: "layer", label: "Layers", vocabulary: () => domainValues("layer") },
-        { value: "host", label: "Device", vocabulary: () => domainValues("host") },
-        { value: "none", label: "No grouping", vocabulary: () => [] },
-      ],
+      groupKeys: QUEUE_GROUPINGS["cross-layer"],
       group: groupCross,
       sortFieldOf: (columnId) => own(CROSS_SORT_OF, columnId) ?? null,
+      cellOf: crossSortCell,
       order: (rows, o) =>
         o.kind === "ranked"
           ? [...rows].sort(
@@ -1077,7 +1156,7 @@ export function PriorityQueue({
             )
           : [...rows].sort(
               (a, b) =>
-                cmpCell(crossCell(a, o.spec.field), crossCell(b, o.spec.field), o.spec.direction) ||
+                cmpCell(crossSortCell(a, o.spec.field), crossSortCell(b, o.spec.field), o.spec.direction) ||
                 cmpStr(a.id, b.id) ||
                 cmpStr(a.cite, b.cite),
             ),
@@ -1294,7 +1373,7 @@ export function PriorityQueue({
      `host:AP-floor1` and any other all-uncollected scope take the same rule (critic B1). */
   const evidenceBlind = result.clauses.some((c) => c.scope.kind === "device-scope" && c.scope.evidenceBlind);
 
-  const groups = useMemo(() => {
+  const builtGroups = useMemo(() => {
     const key = spec.groupKeys.some((g) => g.value === groupKey) ? groupKey : "severity";
     const built = spec.group(result.items, key);
     if (evidenceBlind) return built.filter((g) => g.items.length > 0);
@@ -1331,6 +1410,15 @@ export function PriorityQueue({
     const extra = [...missing].sort((a, b) => cmpStr(a.key, b.key));
     return unobserved ? [...populated, ...extra, unobserved] : [...populated, ...extra];
   }, [spec, groupKey, result.items, showEmptyGroups, evidenceBlind]);
+
+  /* A sort on a field the groups are made of orders the groups themselves (`groupsInSortOrder`). */
+  const { groups, groupsFollowSort } = useMemo(() => {
+    const sorted =
+      ordering.kind === "field"
+        ? groupsInSortOrder(builtGroups, ordering.spec.field, ordering.spec.direction, spec.cellOf)
+        : null;
+    return sorted === null ? { groups: builtGroups, groupsFollowSort: false } : { groups: sorted, groupsFollowSort: true };
+  }, [builtGroups, ordering, spec]);
 
   const nodes = useMemo<GridNode<Finding | CrossLayerFinding>[]>(() => {
     const out: GridNode<Finding | CrossLayerFinding>[] = [];
@@ -2508,7 +2596,10 @@ export function PriorityQueue({
           )?.label ?? spec.rankedLabel
         }. ${(() => {
           const g = groupOptions.find((o) => o.value === groupKey) ?? groupOptions.find((o) => o.value === "severity");
-          return !g || g.value === "none" ? "Not grouped." : `Grouped by ${g.label}, ordered within each group.`;
+          if (!g || g.value === "none") return "Not grouped.";
+          return groupsFollowSort
+            ? `Grouped by ${g.label}; the groups are in the same order.`
+            : `Grouped by ${g.label}, ordered within each group.`;
         })()}`}
         sort={gridSort}
         onSort={onSort}

@@ -2020,7 +2020,8 @@ const cmpCell = (a: Cell, b: Cell, dir: "asc" | "desc"): number => {
   return dir === "asc" ? base : -base;
 };
 
-const findingCell = (f: Finding, field: FindingSortField): Cell => {
+/** A finding's value for a sort field: what `sortBy` orders, null meaning NOT OBSERVED (it sinks either way). */
+export const findingSortCell = (f: Finding, field: FindingSortField): Cell => {
   switch (field) {
     case "severity":
       /* The graded rank; an unrecognised or unstated severity is not a point on the scale, so it sinks in either
@@ -2083,7 +2084,7 @@ const sortWith = <T>(
 
 /** Ascending severity means most-severe first: the rank, not the word, is what is ordered. */
 export const sortBy = (findings: readonly Finding[], specs: readonly SortSpec<FindingSortField>[]): Finding[] =>
-  sortWith(findings, specs, (f, field) => findingCell(f, field as FindingSortField), (f) => f.id);
+  sortWith(findings, specs, (f, field) => findingSortCell(f, field as FindingSortField), (f) => f.id);
 
 export const sortDevicesBy = (devices: readonly Device[], specs: readonly SortSpec<DeviceSortField>[]): Device[] =>
   sortWith(devices, specs, (d, field) => deviceCell(d, field as DeviceSortField), (d) => d.id);
