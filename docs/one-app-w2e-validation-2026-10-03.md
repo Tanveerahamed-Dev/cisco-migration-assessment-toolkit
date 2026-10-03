@@ -1,8 +1,8 @@
 # W2e: Topology & Paths validation
 
-Status: implementation, local regression checks and real browser verification
-passed on the recorded checkpoints. Integration with the later #582 merge,
-hosted performance, privacy/publication and merge gates remain open.
+Status: PR #591 is published at `998fa5ff`. Local integration and the exact-head
+hosted performance gate passed. Full hosted checks exposed the concrete failures
+recorded below; integration repairs and the dependency decision remain open.
 W2d merged as `828847f14c908fa7b725fe97fdff9cee5f115178`; its receipts
 do not certify this changed source.
 
@@ -240,6 +240,99 @@ by Git index flags. The correction compares the observed raw bytes directly to
 the committed HEAD blob. All 22 focused cases passed, including actual
 `assume-unchanged` and `skip-worktree` counterexamples; Ruff and diff checks passed.
 The real module-recording rebuild remains a separate integration proof.
+
+That real rebuild subsequently passed at `998fa5ff`: all 18 shipped hub files
+(2,034,979 bytes) reproduced exactly; the single 12,743-byte shared protocol
+module matched committed source. The two additional bundler-runtime packages
+were the existing reviewed Rolldown 1.2.9 and Vite 8.2.1. No new dependency
+inventory or licence denominator was introduced.
+
+## Hosted results at `998fa5ff` and open corrections
+
+PR #591 was published after full index/working-tree privacy, complete history
+and PR-body scans. The raw history scan retains matches in the generated vendor
+chunk; independent review applied only the existing owner's minified-identifier
+exclusion, retaining all other patterns. All four new commits and five complete
+parent patches (9,980,610 bytes) were accounted for; no scanner or source history
+was weakened or rewritten.
+
+Performance run `37093209993` passed. Independent verification of artifact
+`11262998230` rehashed its 28,466-byte archive (SHA-256
+`cd0bfd67b354e1cc878f44520af6befd657c37fc9bacc369d8260bbace3f4bf7`),
+all 12 source inputs, all 42 request shapes and five repeats. The unchanged
+300 ms sample gate measured a worst request of 208.8909 ms at limit 50 and
+189.2650 ms at limit 200, both topology. Source identity and response integrity
+checks passed. The earlier local 434.1103 ms miss remains source-scoped evidence.
+
+The synthetic 300-device case contains 20,100 interfaces and 9,000 endpoints,
+but its topology still has 26 nodes: device count is not topology coverage.
+Its 503.4631 ms first Device, 299.9603 ms repeated maximum and 10,725.58 ms cold
+load remain diagnostics. Sample path repeated maxima were 60.272/62.971 ms;
+the synthetic path diagnostic was absent because the first address page did
+not supply two published choices. No result is transferred to subsequent edits.
+
+Full hosted verification exposed these additional failures, retained in full:
+
+- Scope run `37092710421`: six failed assertions in five files, 7,250 passed
+  and 27 skipped. Focus custody, the initial-payload census, explicit mock
+  classification, test-support placement and wrapping policy need correction.
+- Reference run `37092710427`: exact-tree compilation refuses 15 undeclared
+  static imports from Scope to frontend protocol/type/test-fixture owners.
+  The correction must be exact-file declarations, retaining forbidden-edge
+  precedence and refusing unlisted callers or production fixture use.
+- Python 3.13 job `111116240939`: three failed, 10,569 passed, 153 skipped and
+  one expected failure. One portable shape must use its existing declaration;
+  two projection receipt-interpretation proof guards must be resolved through
+  their owner contracts. Other matrix results are tracked separately.
+- Required Dependency audit: one affected Master Reference braces chain yields
+  six high findings under [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm).
+  No patched upstream release is listed, and the latest vinext retains the chain.
+  The owner assigned its remediation to W11 in the Claude Atlas Scope session,
+  branch `claude/master-ref-bounded-braces`, and explicitly declined duplicating
+  it in #591. Merge current main after W11 lands, then rerun #591's gates.
+  No dependency patch, suppression, forced downgrade or package relabelling
+  is applied in this workstream.
+
+These failures prevent merge despite the timing and webapp passes. Final repaired
+source requires fresh exact-head checks, the full Scope run and the unchanged
+hosted performance gate; W7 follows only after the authorized green merge.
+
+## Prepared integration corrections after the hosted failures
+
+The Python correction reuses the existing canonical material shape and the
+SSOT-owned unavailable token. All 25 scoped checks passed, including the three
+failed guards and retained receipt-access/vocabulary-drift and source-byte
+counterexamples. Ruff passed. The actual sample projection document, sample
+path, unavailable path and complete owner schema are byte-equal to `998fa5ff`;
+the two native schema hashes remain unchanged. No scanner exemption or schema
+pin change was introduced.
+
+Architecture contract 2.1.0 adds only the 15 explicit source-file/target-file
+pairs needed for the shared protocol, generated types and test fixtures. It
+preserves component ownership and forbidden-edge precedence, rejects malformed,
+duplicate or unowned declarations, and disables all path allowances on a bad
+declaration even for direct validator callers. All 34 governance tests and a
+bounded actual TypeScript import replay passed: 16 source files yield exactly
+the 15 declared imports, and removing the declarations restores 15 errors.
+Independent review is clear. Full committed-tree compilation remains a hosted
+gate; this replay is not a claim about a complete compiled reference.
+
+Scope now releases focus through the existing owner before label hiding/text
+replacement, preserves wrapper classes, moves fixtures to its test-support
+boundary, honestly declares the mock-only entry tests, and contains long text
+with normal wrapping and local scrolling. The initial-payload census adds only
+the exact admission/protocol pair, backed by a guard for their closed runtime
+import graph and inert, identifier-bound const declarations. Planted declaration
+negatives include destructuring defaults, calls, mutable bindings and await-using.
+Independent source review is clear; the existing focus, wrapping, mock and
+test-support guard implementations are unchanged.
+
+The local typecheck attempt was deliberately stopped after measured free memory
+fell to about 0.45 GiB and the owned process remained silent. Its cancellation is
+retained, not a pass. No full local suite or fresh browser run was substituted
+for the required hosted checks. Other owners' processes were left untouched.
+W11's owner supplies the dependency remedy; #591 will integrate that merged main
+before its final exact-head validation and authorized merge.
 
 Final full hosted Scope regression, the original 36 HTTP request shapes plus new
 topology shapes, five repeats at page limits 50/200 and the unchanged hosted

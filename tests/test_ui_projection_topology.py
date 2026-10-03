@@ -368,6 +368,23 @@ def test_new_projections_are_offline_and_schema_outputs_detached(snap, schema, m
     validate(expected, "PathDocument", schema)
 
 
+def test_unavailable_style_follows_the_ssot_owner_at_module_binding(monkeypatch):
+    import runpy
+    from cisco_toolkit import ssot
+
+    # A fresh module binding follows the owner, rather than retaining a copied receipt-like literal.
+    sentinel = "synthetic_owner_unavailable"
+    with monkeypatch.context() as changed:
+        changed.setattr(ssot, "ANALYSIS_UNAVAILABLE", sentinel)
+        rebound = runpy.run_path(ui.__file__)
+        assert sentinel in rebound["TOPOLOGY_STYLE_TOKENS"]
+        assert "analysis_unavailable" not in rebound["TOPOLOGY_STYLE_TOKENS"]
+        entry = next(row for row in rebound["_topology_legend"]()["entries"] if row["token"] == sentinel)
+        assert (entry["tone"], entry["stroke"]) == ("warning", "dashed")
+        style = rebound["_topology_style"]([{"state": sentinel, "refs": []}], "observed")
+        assert style["value"]["token"] == sentinel
+
+
 def test_failure_impact_preserves_full_counts_and_disclosed_eight_example_detail(schema):
     from dataclasses import asdict
     import re

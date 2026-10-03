@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bootContractMode } from "./boot";
 import { ContractRefusal } from "./errors";
-import { completeFixture, typedPath } from "./testing";
+import { completeFixture, typedPath } from "../test-support/projection-contract-fixtures";
 import { EMBED_PROTOCOL, PROJECTION_SCHEMA, TOPOLOGY_STYLE_SCHEMA, type EmbedMessage } from "../../../webapp/frontend/src/projectionEmbed";
 import type { CompleteTopology, PathDocument } from "./types";
 import type { ContractView, ViewOptions } from "./view";

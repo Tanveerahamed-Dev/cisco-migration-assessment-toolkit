@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Box3, BufferGeometry, InstancedMesh, Material, Mesh, PerspectiveCamera, Raycaster, Vector3, type Camera, type Scene } from "three";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { createContractScene, type Renderer } from "./scene";
-import { completeFixture, typedPath } from "./testing";
+import { completeFixture, typedPath } from "../test-support/projection-contract-fixtures";
 
 const variables = ["--bg", "--text", "--text-muted", "--unobserved-edge", "--accent", "--sev-medium", "--sev-critical"];
 let saved: string[] = [];

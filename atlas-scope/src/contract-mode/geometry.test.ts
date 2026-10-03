@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hasSelection, pathPositions, placeNodes, suppliedStyle, uniquePosition } from "./geometry";
-import { completeFixture, rawPath, typedPath } from "./testing";
+import { completeFixture, rawPath, typedPath } from "../test-support/projection-contract-fixtures";
 import type { PathDocument, RowRefs } from "./types";
 
 describe("contract geometry never becomes a topology or forwarding owner", () => {

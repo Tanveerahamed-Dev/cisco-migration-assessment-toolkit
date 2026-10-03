@@ -32,8 +32,11 @@
 .contract-scope-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .contract-scope-node-label { max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: var(--sp-1); color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: var(--fs-0); }
 .contract-scope-note, .contract-scope-records { color: var(--text-muted); font-size: var(--fs-1); }
-.contract-scope-selection { font-family: var(--font-mono); overflow-wrap: anywhere; }
-.contract-scope-path pre { max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--fs-1); }
+/* Prose and identifiers keep their normal break opportunities. A long token scrolls inside its
+   own evidence box rather than splitting mid-token or widening the entire embedded view. */
+.contract-scope-selection { min-width: 0; max-width: 100%; overflow-x: auto; font-family: var(--font-mono); overflow-wrap: normal; }
+.contract-scope-path { min-width: 0; }
+.contract-scope-path pre { min-width: 0; max-width: 100%; max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: normal; font-family: var(--font-mono); font-size: var(--fs-1); }
 .contract-scope-legend ul { padding-inline-start: var(--sp-5); }
 .contract-scope-legend li { margin-block: var(--sp-1); }
 .contract-scope-legend [data-tone="info"] { color: var(--accent); }

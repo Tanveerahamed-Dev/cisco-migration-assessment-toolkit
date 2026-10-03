@@ -2,7 +2,7 @@ import { webcrypto } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { topologyNodeFixture } from "../../../webapp/frontend/src/test/projectionFixtures";
 import { loadCompleteTopology, loadContractPath } from "./load";
-import { completeFixture, rawPath, rawTopology } from "./testing";
+import { completeFixture, rawPath, rawTopology } from "../test-support/projection-contract-fixtures";
 
 const response = (value: unknown): Response => ({ ok: true, json: async () => value }) as Response;
 const deps = (fetcher: typeof fetch, controller = new AbortController()) => ({ fetch: fetcher, signal: controller.signal, subtle: webcrypto.subtle });

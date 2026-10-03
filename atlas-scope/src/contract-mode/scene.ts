@@ -169,9 +169,17 @@ export function createContractScene(canvas: HTMLCanvasElement, model: CompleteTo
   function updateLabel(): void {
     if (!nodeLabel) return;
     const node = hovered ?? (selected?.list === "nodes" ? nodes.get(rowKey(selected.row)) : null);
-    nodeLabel.visible = !!node;
-    if (!node) return;
-    nodeLabel.element.textContent = node.row.host.state === "published" ? node.row.host.value : node.row.host.state;
+    if (!node) {
+      releaseFocusFrom(nodeLabel.element, null, [canvas]);
+      nodeLabel.visible = false;
+      return;
+    }
+    nodeLabel.visible = true;
+    const text = node.row.host.state === "published" ? node.row.host.value : node.row.host.state;
+    if (nodeLabel.element.textContent !== text) {
+      releaseFocusFrom(nodeLabel.element, null, [canvas]);
+      nodeLabel.element.textContent = text;
+    }
     nodeLabel.position.set(node.position.x, node.position.y + 9, node.position.z);
     camera.updateMatrixWorld();
     const screen = nodeLabel.position.clone().project(camera);
@@ -290,7 +298,7 @@ export function createContractScene(canvas: HTMLCanvasElement, model: CompleteTo
     options.onSelect(node ? { list: "nodes", row: { index: node.row.index, pointer: node.row.pointer } } : null);
   }
   try {
-    labels = new CSS2DRenderer(); labels.domElement.className = "contract-scope-labels";
+    labels = new CSS2DRenderer(); labels.domElement.classList.add("contract-scope-labels");
     labels.domElement.setAttribute("aria-hidden", "true"); canvas.parentElement?.append(labels.domElement);
     const text = document.createElement("span"); text.className = "contract-scope-node-label";
     nodeLabel = new CSS2DObject(text); nodeLabel.visible = false; base.add(nodeLabel);

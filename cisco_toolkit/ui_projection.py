@@ -105,7 +105,7 @@ SCHEMA = "ui_projection/1"
 SCHEMA_ID = "urn:atlas:schema:ui-projection:1"
 TOPOLOGY_STYLE_SCHEMA = "ui_projection_topology_style/1"
 TOPOLOGY_STYLE_TOKENS = (
-    "observed", "uncollected", "unverified", "not_observed", "analysis_unavailable",
+    "observed", "uncollected", "unverified", "not_observed", ssot.ANALYSIS_UNAVAILABLE,
     "link_up", "link_down", "link_unknown", "structural_link", "structural_bridge",
     "impact_high", "impact_medium", "impact_low", "impact_info", "path_reached", "path_partial_drop",
     "path_observed_discard", "path_no_route_observed", "path_lower_bound", "path_withheld",
@@ -3592,7 +3592,7 @@ def _topology_legend() -> Dict[str, Any]:
             tone = "info"
         elif token in ("uncollected", "not_observed", "link_unknown"):
             tone, stroke = "muted", "dotted"
-        elif token in ("unverified", "analysis_unavailable", "path_withheld"):
+        elif token in ("unverified", AU, "path_withheld"):
             tone, stroke = "warning", "dashed"
         elif token in ("link_down", "impact_high", "path_observed_discard"):
             tone = "danger"
@@ -3610,7 +3610,7 @@ def _topology_style(facts: Sequence[Dict[str, Any]], token: str, *, glyph: str =
     """The style describes even a withheld observation, but never supplies its missing value."""
     states = {fact["state"] for fact in facts}
     if AU in states:
-        token = "analysis_unavailable"
+        token = AU
     elif _UV in states:
         token = "unverified"
     elif states - {_PUB}:

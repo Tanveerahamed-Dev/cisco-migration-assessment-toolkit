@@ -102,6 +102,38 @@ def component_for_path(path: str, contract: Mapping[str, Any]) -> str | None:
     return matches[0]["id"]
 
 
+def _static_path_edge_rules(
+    contract: Mapping[str, Any],
+) -> tuple[set[tuple[str, str]], tuple[str, ...]]:
+    """Exact shared-interface dependencies without opening a component-wide boundary."""
+    rows = contract.get("allowed_static_path_edges", [])
+    if not isinstance(rows, list):
+        return set(), ("contract:allowed_static_path_edges:not_list",)
+    allowed: set[tuple[str, str]] = set()
+    errors: list[str] = []
+    for index, row in enumerate(rows):
+        label = f"contract:allowed_static_path_edge:{index}"
+        if (not isinstance(row, Mapping) or set(row) != {"source_path", "target_path", "reason"}
+                or not isinstance(row.get("reason"), str) or not row["reason"].strip()):
+            errors.append(f"{label}:invalid")
+            continue
+        paths = (row["source_path"], row["target_path"])
+        if any(not isinstance(path, str) or not path or path.endswith("/")
+               or any(character in path for character in "\\*?[]")
+               or _normal_path(path) != path for path in paths):
+            errors.append(f"{label}:invalid_path")
+            continue
+        source, target = paths
+        if component_for_path(source, contract) is None or component_for_path(target, contract) is None:
+            errors.append(f"{label}:unowned_path")
+            continue
+        if paths in allowed:
+            errors.append(f"{label}:duplicate")
+            continue
+        allowed.add(paths)
+    return allowed, tuple(errors)
+
+
 def validate_path_dispositions(
     paths: Iterable[str], contract: Mapping[str, Any]
 ) -> tuple[tuple[str, ...], tuple[dict[str, str], ...]]:
@@ -166,6 +198,8 @@ def validate_contract(contract: Mapping[str, Any]) -> tuple[str, ...]:
             or row.get("to") not in component_ids
         ):
             errors.append(f"contract:forbidden_edge:{index}:invalid")
+    _paths, path_edge_errors = _static_path_edge_rules(contract)
+    errors.extend(path_edge_errors)
     phases = contract.get("runtime_phases")
     if not isinstance(phases, list) or not phases:
         errors.append("contract:runtime_phases_missing")
@@ -192,6 +226,9 @@ def validate_static_edges(
     edges: Iterable[Mapping[str, Any]], contract: Mapping[str, Any]
 ) -> tuple[str, ...]:
     allowed = {tuple(row) for row in contract.get("allowed_edges", []) if isinstance(row, list)}
+    path_edges, _path_errors = _static_path_edge_rules(contract)
+    if _path_errors:
+        path_edges = set()  # A malformed declaration cannot grant a partial path exception.
     forbidden = {
         (row["from"], row["to"]): row.get("reason", "forbidden")
         for row in contract.get("forbidden_edges", [])
@@ -213,9 +250,16 @@ def validate_static_edges(
         if target not in components:
             errors.append(f"edge:{index}:unknown_target:{target}")
             continue
+        source_path, target_path = edge.get("source_path"), edge.get("target_path")
+        declared_path = (
+            isinstance(source_path, str) and isinstance(target_path, str)
+            and (source_path, target_path) in path_edges
+            and component_for_path(source_path, contract) == source
+            and component_for_path(target_path, contract) == target
+        )
         if (source, target) in forbidden:
             errors.append(f"edge:{index}:forbidden:{source}->{target}")
-        elif source != target and (source, target) not in allowed and not dynamic:
+        elif source != target and (source, target) not in allowed and not declared_path and not dynamic:
             errors.append(f"edge:{index}:undeclared:{source}->{target}")
     return tuple(sorted(set(errors)))
 

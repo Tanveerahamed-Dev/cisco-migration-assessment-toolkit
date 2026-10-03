@@ -1461,7 +1461,7 @@ def _attributed_install_path(
     kind = next(iter(module)) if len(module) == 1 else None
     if kind == "shared":
         row = module["shared"]
-        if (not isinstance(row, Mapping) or set(row) != {"path", "bytes", "sha256"}
+        if (not _has_shape(row, TOOLCHAIN_SCHEMA, "material")
                 or row.get("path") not in _SHARED_NPM_SOURCES.get(output, ())
                 or type(row.get("bytes")) is not int or row["bytes"] < 0
                 or not isinstance(row.get("sha256"), str)):

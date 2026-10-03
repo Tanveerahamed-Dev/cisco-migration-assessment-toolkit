@@ -2,7 +2,7 @@
 import { webcrypto } from "node:crypto";
 import { topologyFixture, pathFixture } from "../../../webapp/frontend/src/test/projectionFixtures";
 import { projectionContextDigest, TOPOLOGY_LISTS } from "../../../webapp/frontend/src/projectionEmbed";
-import type { CompleteTopology, PathDocument, TopologyDocument } from "./types";
+import type { CompleteTopology, PathDocument, TopologyDocument } from "../contract-mode/types";
 
 export function rawTopology() {
   const value = topologyFixture(7);

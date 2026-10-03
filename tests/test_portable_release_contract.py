@@ -1817,7 +1817,7 @@ def test_only_the_owned_shared_protocol_reaches_first_party_attribution(tmp_path
     assert not any("projectionEmbed" in item["key"] for item in notices["components"])
 
 
-@pytest.mark.parametrize("change", ["sibling", "npm", "escape", "missing", "digest", "bytes", "boolean", "extra", "other_output"])
+@pytest.mark.parametrize("change", ["sibling", "npm", "escape", "missing", "digest", "bytes", "boolean", "extra", "missing_field", "other_output"])
 def test_shared_protocol_attribution_refuses_unowned_or_mismatched_evidence(change):
     module = _shared_protocol_module()
     proof = {key: value for key, value in module["shared"].items() if key != "path"}
@@ -1839,6 +1839,8 @@ def test_shared_protocol_attribution_refuses_unowned_or_mismatched_evidence(chan
         module["shared"]["bytes"] = True
     elif change == "extra":
         module["shared"]["approved"] = True
+    elif change == "missing_field":
+        del module["shared"]["sha256"]
     else:
         output = "webapp/frontend/dist"
     with pytest.raises(subject.PortableReleaseError, match="shared npm source"):
