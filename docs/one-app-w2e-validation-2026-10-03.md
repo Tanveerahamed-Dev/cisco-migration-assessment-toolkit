@@ -365,6 +365,36 @@ versions are preserved separately. Independent final source review and Ruff
 passed. Hosted verification on the new commit remains required; these results
 do not close W11, the final performance gate or the merge hold.
 
+## Windows shared-source checkout follow-up
+
+The Windows default-suite job `111141613684` at `18ef5354` retained one failure,
+10,683 passes, 43 skips and one expected failure. The real Scope build-attribution
+test refused `projectionEmbed.ts` because its working bytes differed from HEAD.
+All Linux matrix legs and the separately normalized portable Windows gate passed.
+
+The runner's source bytes were not retained. A read-only Git filter calculation
+and a real two-file checkout regression reproduce the leading cause exactly:
+the committed source has 12,743 bytes and 206 LF terminators; an unpinned
+`core.autocrlf=true` checkout yields 12,949 bytes and 206 CRLF pairs. That correctly
+fails the unchanged raw-HEAD-blob guard. The pre-fix test fails at byte equality,
+not setup, and its failed result is preserved.
+
+The correction adds one exact LF rule to the owned byte-custody block and updates
+only its mechanical rule/set receipts. LF coverage changes 180 to 181 files,
+and broader declared coverage 142 to 143, solely for the shared protocol. The
+38 derived owners, their digest, domains, publisher exceptions and scope, verifier
+and detached authority artifacts remain unchanged. An outside-block rule would
+still alter the effective policy domain and is deliberately rejected by the
+existing ratchet; no exception to that guard is introduced.
+
+The new actual checkout test forces `core.autocrlf=true` and `core.eol=crlf`, checks
+that exact committed bytes reach the raw source guard, and then verifies refusal
+of a deliberate mutation hidden by an index flag. Independent source/receipt
+review is clear. All nine bounded post-fix tests passed with zero skips/failures,
+including the checkout, exact-source negatives, recording mutation and both
+hidden-index flag cases. Ruff and diff checks passed. The committed HEAD/worktree
+policy gate remains required, followed by fresh hosted verification and W11 integration.
+
 Final full hosted Scope regression, the original 36 HTTP request shapes plus new
 topology shapes, five repeats at page limits 50/200 and the unchanged hosted
 300 ms gate remain required. Receipts report actual topology row cardinalities;
