@@ -40,7 +40,7 @@ import { aclsOf, hasRib, resolveCite } from "../core/data";
 import { own } from "../core/own";
 import { ACL_LINE_NUMBERING_NOTE, aclLineName } from "../forwarding/acl-line";
 import { hopHasObservedBinding, hopUnobservedBindings } from "../forwarding/bindings";
-import { resolveEgress } from "../forwarding/engine";
+import { resolveEgress, unobservedPolicyInputs, type PolicyGap } from "../forwarding/engine";
 import { parseIpv4 } from "../forwarding/ip";
 import type { AclLine, Cite, Hop, HopEvidence, HopVerdict, RouteEntry, Trace } from "../core/types";
 import { VERDICT_ICON } from "../ui/icons";
@@ -158,7 +158,11 @@ const UNDECIDED_WORD: Readonly<Record<HopUndecided, (v: HopVerdict, d: Decider |
      completed core1's table and PROTECT_SERVERS' denial became undecided by its FHRP-alternate ingress
      instead (phase 3, HopList.decider-header.test.tsx). */
   "refusal-undecided": (v, d) => `${verdictBy(v, d)} — outcome not decided`,
+  "delivery-undecided": (v, d) => `${verdictBy(v, d)} — outcome not decided`,
 };
+
+/** The trace's alternate-ingress gaps — keyed on the alternate host, so read from the trace, not the hop. */
+const ingressAlternateGaps = (trace: Trace): PolicyGap[] => unobservedPolicyInputs(trace).filter((g) => g.kind === "ingress-alternate");
 
 /* `acl-uncollected` ("no ACLs were collected") and `ingress-port-unobserved` (ACLs WERE collected,
    the arrival port was not observed) are different facts; each reason names only its own. The
@@ -195,6 +199,10 @@ const UNDECIDED_REASON: Readonly<Record<HopUndecided, (hop: Hop, trace: Trace) =
     `${outcomeUndecidingGaps(trace)
       .map((g) => g.label)
       .join("; ")} — what ${hop.host} did on the modelled path is shown below; whether this is where the flow ends was not decided`,
+  "delivery-undecided": (hop, trace) =>
+    `${ingressAlternateGaps(trace)
+      .map((g) => g.label)
+      .join("; ")} — ${hop.host} delivers it on the modelled path (below); whether the flow is delivered here was not decided`,
 };
 
 /**
@@ -205,6 +213,7 @@ const UNDECIDED_REASON: Readonly<Record<HopUndecided, (hop: Hop, trace: Trace) =
 function undecidedCites(why: HopUndecided, hop: Hop, trace: Trace): string[] {
   if (why === "input-unobserved") return hop.evidence.filter((e) => e.kind === "absence").map((e) => e.cite);
   if (why === "refusal-undecided") return outcomeUndecidingGaps(trace).map((g) => g.cite);
+  if (why === "delivery-undecided") return ingressAlternateGaps(trace).map((g) => g.cite);
   return hopUndecidedGaps(hop, trace).map((g) => g.cite);
 }
 

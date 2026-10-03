@@ -51,6 +51,8 @@ export declare const SUPPORTED_SCHEMAS: readonly string[];
 export declare const LEGACY_SCHEMA_ASSUMED: string;
 export declare const SECTIONS_READ: readonly string[];
 export declare const META_KEYS_READ: readonly string[];
+/** Why one host's `routes` value is not a collected routing table (a list with a prefixed entry), or null when it is. */
+export declare function unusableRouteTable(rs: unknown): string | null;
 export declare const KNOWN_SECTION_SCHEMAS: Readonly<Record<string, readonly string[]>>;
 export declare const DIGEST_FORMS: readonly SourceDigestForm[];
 export declare const SOURCE_ORIGINS: readonly SourceOrigin[];

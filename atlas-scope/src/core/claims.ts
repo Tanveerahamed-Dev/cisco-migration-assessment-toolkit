@@ -338,7 +338,9 @@ export type HopUndecided =
   /** A route decision — no-route, a pass, or an outbound denial reached by the route — at a host whose collected table the snapshot shows to be incomplete (`rib-partial`). */
   | "route-table-partial"
   /** The hop that ended an undecided refusal — reached only under an ingress the alternate does not reproduce. */
-  | "refusal-undecided";
+  | "refusal-undecided"
+  /** The hop a delivery ended at, when an alternate ingress does not reproduce that delivery (it ends otherwise, or another host delivers it). */
+  | "delivery-undecided";
 
 /**
  * The policy gaps that qualify THIS hop, for its reason line. `acl-uncollected` means the host has
@@ -373,6 +375,15 @@ export function hopUndecided(hop: Hop, trace: Trace): HopUndecided | null {
   if (gaps.some((g) => g.kind === "acl-uncollected")) return "filtering-unobserved";
   if (gaps.some((g) => g.kind === "ingress-port-unobserved")) return "ingress-unobserved";
   if (hop.evidence.some((e) => e.kind === "absence")) return "input-unobserved";
+  /* The mirror of `refusal-undecided` for a pass. A delivery can be undecided by its ingress choice
+     ALONE: an alternate FHRP member the flow may enter by ends otherwise, or ends delivered at another
+     host (acceptance A3 — "reproduced" means the same deciding element, not the same outcome word).
+     Every hop then banded RESOLVED under a card reading "not decided", so the hop the delivery ended at
+     says what is open. Keyed on the gap kind the engine records, never on its label. */
+  const ended = trace.hops[trace.hops.length - 1] === hop;
+  if (ended && trace.outcome === "delivered" && hop.verdict === "delivered" && unobservedPolicyInputs(trace).some((g) => g.kind === "ingress-alternate")) {
+    return "delivery-undecided";
+  }
   return null;
 }
 
