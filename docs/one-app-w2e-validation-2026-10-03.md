@@ -393,7 +393,10 @@ of a deliberate mutation hidden by an index flag. Independent source/receipt
 review is clear. All nine bounded post-fix tests passed with zero skips/failures,
 including the checkout, exact-source negatives, recording mutation and both
 hidden-index flag cases. Ruff and diff checks passed. The committed HEAD/worktree
-policy gate remains required, followed by fresh hosted verification and W11 integration.
+policy gate then passed all 14 selected cases at `62b20d68`, with zero skips or
+failures. This includes the real HEAD/worktree owner check and existing scope,
+filter, raw-blob and publisher-exception mutation controls. Fresh hosted verification
+and W11 integration remain required; local proof is not a Windows CI pass.
 
 Final full hosted Scope regression, the original 36 HTTP request shapes plus new
 topology shapes, five repeats at page limits 50/200 and the unchanged hosted
