@@ -1,7 +1,7 @@
 # W2e: Topology & Paths validation
 
-Status: implementation and focused validation in progress. Full regressions,
-real browser/build proof, hosted performance, privacy/publication and merge gates
+Status: implementation, local regression checks and real browser verification
+are complete; hosted performance, privacy/publication and merge gates
 remain open. W2d merged as `828847f14c908fa7b725fe97fdff9cee5f115178`; its receipts
 do not certify this changed source.
 
@@ -35,7 +35,8 @@ exact origin/window source, all four stored-identity fields and a canonical
 SHA-256 digest of engine/limitation metadata. Each renderer fetches facts from
 the guarded API; cross-frame messages supply coordination, not substitute facts.
 The digest compares context and does not authenticate code or qualify a network.
-Real-browser proof of this mode remains pending.
+Actual same-hub browser evidence is recorded below, separately from mocks and
+the required final-source hosted checks.
 
 Scope capability is additive to the existing legacy link and requires one exact
 supported declaration in the validated startup shell. Missing, duplicate,
@@ -113,7 +114,8 @@ Unsupported data is never coerced to gain native acceptance.
   assertions passed unchanged. The original 568-pass/six-failure receipt remains.
 - Thirty-three targeted API checks passed before the last engine-only honesty
   corrections. The subsequent full API suite passed all 143 tests in 375.38
-  seconds on the final engine and reviewed pins. It covers authority, complete
+  seconds on the reviewed pins before the final engine limitation-text/location
+  corrections (which preserve schema shapes). It covers authority, complete
   source admission, query/context mismatch, copying, retry, concurrency, the
   separate path model and retained native/private-interface regressions. A
   FastAPI test-client deprecation warning remains an environment warning.
@@ -131,8 +133,8 @@ Unsupported data is never coerced to gain native acceptance.
   preserving 46 passing files, four known failures and 182 unfinished files.
   The adapter now uses the unchanged safe-access helper, with descriptor checks
   still refusing getters. Full typecheck and 188 focused cases passed (122
-  unchanged access-guard cases and 66 adapter/legacy-entry cases). The HEAD guard
-  requires the local checkpoint. The full exact-head hosted Scope suite remains
+  unchanged access-guard cases and 66 adapter/legacy-entry cases). After the local
+  checkpoint, all nine committed-source guard cases passed. The full exact-head hosted Scope suite remains
   a mandatory merge gate; a focused pass does not close the cancelled full run.
 - The initial focused frontend batch passed 69 and failed two handshake cases.
   Synchronous listener registration corrected the missed-ready condition. The
@@ -150,7 +152,8 @@ Unsupported data is never coerced to gain native acceptance.
   source-container pointer; they are not deduplicated by pointer alone.
 - Initial actual OpenAPI export was 819,638 bytes. Generated TypeScript SHA-256
   is `bf35b81a801f83e5935bc6c998fd9982712528cb3c62719c2045eaa253ca4581`.
-  Final export/generation equality must be rechecked after integration.
+  The final actual export at `090c3bc0` passed all nine generation-policy cases
+  and byte-for-byte TypeScript equality. Scoped Ruff also passed.
 
 Local Node 24.19.0/npm 11.16.0 were acquired to an external task directory, with
 the signed Node checksums and pinned archive/executable/npm hashes verified.
@@ -163,10 +166,48 @@ Vitest. Heavy local checks paused, unrelated processes remained untouched, and
 checks resumed serially after recovery. Local timings under contention are not
 performance acceptance.
 
+## Production builds, browser evidence and presentation correction
+
+The pinned frontend production build passed with 491 modules and 79 unchanged
+inputs. Three actual-Chromium frontend integration cases passed against synthetic
+HTTP responses and a mock child window; these prove parent behavior and refusal,
+not genuine Scope rendering.
+
+The actual hub build at `a40f59ee` passed with 18 files, 2,026,805 bytes, both
+required declarations exactly once, no source maps or active source-map URLs,
+and unchanged source inputs. A fresh loopback backend served the committed sample,
+the tracked frontend build and this real hub. An independent browser probe passed
+at desktop and mobile sizes with no substituted responses or forbidden raw,
+graph or dataset requests. Both clients reconciled 26 nodes, 44 cables, 25
+structural links, 23 impact rows and 33 addresses; complete identity/context,
+selection, path-result equality, clear and teardown checks passed. Actual WebGL2
+pixels were observed in both sizes. The observed route result was
+`computed:reached`; this describes the sample computation only.
+
+Screenshot inspection nevertheless found overlapping labels and insufficient
+graph coverage. The bounded correction at `090c3bc0` changes camera fitting and
+shows one hovered-or-selected label, preserving node positions and every engine
+fact/join. The first framing run passed 190 cases and failed the unchanged 60%
+coverage assertion (59.9666%). Tightening the camera margin corrected production
+behavior without relaxing assertions; all 191 focused cases then passed. An
+additional resize/user-navigation/Reset test passed with all eight final scene
+cases, and final full typecheck passed. Independent source review is clear.
+The fresh hub build and unchanged real-browser probe at `090c3bc0` then passed
+for desktop and mobile, preserving all five censuses, painted WebGL, bidirectional
+selection, complete path equality, clear/teardown and zero forbidden requests.
+Root screenshot inspection confirmed readable framing without overlapping labels.
+The earlier functional pass and its visual defect remain in the evidence record.
+
+The local 42-shape sample diagnostic at `a40f59ee` used five repeats and page
+limit 200. Its maximum was 434.1103 ms (first Device); topology's first request
+was 365.1393 ms and repeat median 244.0536 ms. This does **not** meet the unchanged
+300 ms acceptance bound. The log is retained; the final exact-head hosted gate
+at both 50 and 200 remains decisive and must pass. Float-bearing responses stay
+on Python. Neither the accepted input domain nor the threshold is widened.
+
 ## Remaining delivery gates
 
-Final full Scope regression, genuine hub and tracked frontend
-builds, integrated browser proof, the original 36 HTTP request shapes plus new
+Final full hosted Scope regression, the original 36 HTTP request shapes plus new
 topology shapes, five repeats at page limits 50/200 and the unchanged hosted
 300 ms gate remain required. Receipts report actual topology row cardinalities;
 300 synthetic devices do not imply 300 topology nodes. Route computation is a
