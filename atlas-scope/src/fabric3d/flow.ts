@@ -37,10 +37,10 @@ import {
 } from "three";
 import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
-import { bandOfTrace } from "../core/claims";
 import type { Trace } from "../core/types";
 import { coverageGamma, createCableMaterial, MIN_STROKE_PX, setCoverageGamma } from "./geometry/cables";
 import type { TokenPalette } from "./materials";
+import { traceEndOf } from "./traceEnd";
 
 export const DRAW_ON_MS = 240;
 export const PACKET_LOOP_MS = 1600;
@@ -119,6 +119,8 @@ export interface FlowOverlay {
   update(nowMs: number, camera: PerspectiveCamera): boolean;
   /** Bounding sphere of the drawn path, for re-framing. Null when no trace is drawn. */
   pathSphere(): { center: [number, number, number]; radius: number } | null;
+  /** The drawn path's polyline (xyz triples), for re-framing. Empty when no cable was stitched. */
+  pathPoints(): Float32Array;
   /** Hops that could not be drawn because no cable joins them. Surfaced, never silently skipped. */
   undrawnHops(): string[];
   /**
@@ -132,6 +134,7 @@ export interface FlowOverlay {
 }
 
 const _v = new Vector3();
+const EMPTY_POINTS = new Float32Array(0);
 const _a = new Vector3();
 const _b = new Vector3();
 const _tangent = new Vector3();
@@ -506,6 +509,9 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
          between them leaves a GAP and is reported through undrawnHops(); it is never bridged with
          a straight line, which would draw a wire the snapshot does not contain. */
       const acc: number[] = [];
+      /* Where each hop sits on the drawn path, as a point index; -1 for a hop no drawn cable reaches.
+         The terminal segment below ends at the hop the trace's ending is drawn on. */
+      const hopPoint: number[] = trace.hops.map(() => -1);
       for (let i = 0; i < trace.hops.length - 1; i += 1) {
         const from = trace.hops[i];
         const to = trace.hops[i + 1];
@@ -516,9 +522,11 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
           continue;
         }
         const startAt = acc.length === 0 ? 0 : 3;
+        if (hopPoint[i] === -1) hopPoint[i] = acc.length === 0 ? 0 : acc.length / 3 - 1;
         for (let p = startAt; p < poly.length; p += 3) {
           acc.push(poly[p] ?? 0, poly[p + 1] ?? 0, poly[p + 2] ?? 0);
         }
+        hopPoint[i + 1] = acc.length / 3 - 1;
       }
 
       if (acc.length < 6) {
@@ -575,40 +583,47 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
         };
       }
 
-      /* THE TERMINAL TREATMENT, IN THREE STATES.
-         The terminal hop is where the answer is, and which mark it gets is decided by
-         `claims.ts :: bandOfTrace` (the band every render surface uses), not by a local test:
-           REFUTED      the 6 px terminal segment plus the octagonal alarm — a fact about the packet.
-           UNDETERMINED the open ring, in the indeterminate token, and NO alarm segment: the
+      /* THE TERMINAL TREATMENT, IN THREE STATES, ON THE HOP THE CHIP MARKS.
+         Which hop the ending is drawn on, and which ending it is, is `traceEnd.ts :: traceEndOf` —
+         the rule the label chip (Fabric3D.tsx `traceMarkOf`) uses, built on the claim layer's bands:
+           blocked      the 6 px terminal segment plus the octagonal alarm — a fact about the packet.
+           undetermined the open ring, in the indeterminate token, and NO alarm segment: the
                         simulation declined to decide, so there is nothing to alarm about yet.
-           RESOLVED     neither. An alarm on a delivered path is the inverse of the honesty rule.
+           delivered    neither. An alarm on a delivered path is the inverse of the honesty rule.
          This used to be `outcome !== "delivered"`, which handed the red stop sign to every
-         indeterminate and out-of-scope result as well. */
-      const last = trace.hops[trace.hops.length - 1];
-      const band = bandOfTrace(trace);
-      const refuted = band === "REFUTED";
-      const anchor = last === undefined ? null : source.anchorOf(last.host);
-      terminalHost = last === undefined ? null : last.host;
+         indeterminate and out-of-scope result as well; and then the trace band on the LAST hop,
+         which hung the ring over core1 while the chip said "? UNDECIDED" on core2 (A5 refuter). */
+      const end = traceEndOf(trace);
+      const refuted = end !== null && end.kind === "blocked";
+      const anchor = end === null ? null : source.anchorOf(end.host);
+      terminalHost = end === null ? null : end.host;
       terminalAnchor = anchor;
       /* Provisional placement for an unrotated camera; `update` re-places the glyph for the real
          camera before any frame is drawn (see placeTerminalGlyph). */
-      if (band === "UNDETERMINED" && anchor !== null) {
+      if (end !== null && end.kind === "undetermined" && anchor !== null) {
         placeTerminalGlyph(anchor, _qIdentity, UNDECIDED_GLYPH_RADIUS, undecided.position);
         undecided.visible = true;
       } else {
         undecided.visible = false;
       }
-      if (refuted && last !== undefined) {
+      if (refuted && end !== null) {
         if (anchor !== null) {
           placeTerminalGlyph(anchor, _qIdentity, STOP_GLYPH_RADIUS, stop.position);
           stop.visible = true;
         } else {
           stop.visible = false;
         }
-        if (totalLength > 0) {
-          const tailFrom = Math.max(0, totalLength - Math.min(totalLength * 0.5, 34));
+        /* The segment runs INTO the stopping host: it ends where the drawn path last reaches that
+           host, which for a trace the engine stops there is the end of the path. */
+        let endAt = -1;
+        for (let i = trace.hops.length - 1; i >= end.index && endAt < 0; i -= 1) {
+          if (trace.hops[i]?.host === end.host) endAt = hopPoint[i] ?? -1;
+        }
+        const endLength = endAt >= 0 ? cumulative[endAt] ?? 0 : 0;
+        if (endLength > 0) {
+          const tailFrom = Math.max(0, endLength - Math.min(endLength * 0.5, 34));
           const tail: number[] = [];
-          for (let i = 0; i < cumulative.length; i += 1) {
+          for (let i = 0; i <= endAt; i += 1) {
             if ((cumulative[i] ?? 0) >= tailFrom) {
               tail.push(points[i * 3] ?? 0, points[i * 3 + 1] ?? 0, points[i * 3 + 2] ?? 0);
             }
@@ -749,6 +764,10 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
 
     pathSphere(): { center: [number, number, number]; radius: number } | null {
       return sphere;
+    },
+
+    pathPoints(): Float32Array {
+      return group.visible && path.visible ? points : EMPTY_POINTS;
     },
 
     undrawnHops(): string[] {
