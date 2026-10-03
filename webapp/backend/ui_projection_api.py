@@ -28,9 +28,9 @@ from referencing.exceptions import NoSuchResource
 
 from . import engine, serve
 
-View = Literal["overview", "trust", "inventory", "findings", "device"]
+View = Literal["overview", "trust", "inventory", "findings", "topology", "device"]
 VIEWS = {"overview": "Overview", "trust": "Trust", "inventory": "Inventory",
-         "findings": "Findings", "device": "DevicePage"}
+         "findings": "Findings", "topology": "Topology", "device": "DevicePage"}
 TRANSPORT_SCHEMA = "ui_projection_transport/1"
 MAX_PAGE_SIZE = 200
 _OWNER = engine.ui_projection_schema()
@@ -42,12 +42,13 @@ _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
 _NATIVE_VERSION = "0.58.4"
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
-# Reviewed at 3b286f6f: compact ensure_ascii JSON plus LF, in owner key order.
+# W2e schema delta independently reviewed: compact ensure_ascii JSON plus LF,
+# in owner key order. See docs/one-app-w2e-validation-2026-10-03.md.
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "20700e5ae801a59c6e2ad13dced0b4751b3bf9fca576cebf3b8391812bbf5cd2",
-    "list": "a96b357644070a491a8c8eb0113305ad60853d209199db63b13e73a9902a9f12",
+    "view": "b7f82b857a91771f933c0487eb687327354fe49612c7ef2c16f17455fed3f3b7",
+    "list": "b9dc903eb0fa6a07379c4bcf6b83f44a8a1a8ed90f4295c0ab55aa819fe56c8d",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)
@@ -564,6 +565,7 @@ def _require_json_native(value: Any) -> None:
 
 _DOCUMENT_VALIDATOR = _compiled_validator(_OWNER)
 _DEVICE_VALIDATOR = _compiled_validator({"$ref": "#/$defs/DeviceDocument", "$defs": _DEFS})
+_PATH_DOCUMENT_VALIDATOR = _compiled_validator({"$ref": "#/$defs/PathDocument", "$defs": _DEFS})
 _PROJECTION_VERSION = (
     engine.ENGINE_SCHEMA_VERSION, serve._release_version(),
     hashlib.sha256(json.dumps(_OWNER, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
@@ -616,6 +618,27 @@ class _ProjectionCache:
             return document
 
 
+    def source_copy(self, raw: bytes, digest: str) -> dict[str, Any]:
+        """Own query input briefly; callers compute paths after both locks are released."""
+        key = (*_PROJECTION_VERSION, digest)
+        with self.lock:
+            entry = self.entries.setdefault(key, _SnapshotProjection())
+        with entry.lock:
+            if entry.snapshot is None:
+                entry.snapshot = engine.bind_ui_projection_snapshot(raw)
+            return deepcopy(entry.snapshot)
+
+
+def _common_document(document: dict[str, Any], binding: dict[str, Any], snapshot_id: int, view: str):
+    registry = document["device"]["limitations"] if view == "device" else document["trust"]["limitations"]
+    return {
+        "schema": TRANSPORT_SCHEMA, "projection_schema": document["schema"],
+        "identity": {"snapshot_id": snapshot_id, "sha256": binding["sha256"],
+                     "bytes": binding["bytes"], "digest_form": "assesshub-store-blob"},
+        "view": view, "engine": deepcopy(document["engine"]), "limitations": deepcopy(registry),
+    }
+
+
 def _source_document(store: Any, cache: _ProjectionCache, snapshot_id: int, view: View, host: str | None):
     if view == "device" and host is None:
         raise HTTPException(422, "The device view requires a host query parameter")
@@ -626,14 +649,7 @@ def _source_document(store: Any, cache: _ProjectionCache, snapshot_id: int, view
         raise HTTPException(404, "Snapshot not found")
     raw, binding = bound
     document = cache.document(raw, binding["sha256"], host if view == "device" else None)
-    registry = document["device"]["limitations"] if view == "device" else document["trust"]["limitations"]
-    common = {
-        "schema": TRANSPORT_SCHEMA, "projection_schema": document["schema"],
-        "identity": {"snapshot_id": snapshot_id, "sha256": binding["sha256"],
-                     "bytes": binding["bytes"], "digest_form": "assesshub-store-blob"},
-        "view": view, "engine": deepcopy(document["engine"]), "limitations": deepcopy(registry),
-    }
-    return document, common
+    return document, _common_document(document, binding, snapshot_id, view)
 
 
 def _list_name(schema: dict[str, Any]) -> str | None:
@@ -721,6 +737,13 @@ for _schema in (_VIEW_SCHEMA, _LIST_SCHEMA):
     Draft202012Validator.check_schema(_schema)
 _VALIDATORS = {"view": _NativeTransportValidator(_VIEW_SCHEMA, "view"),
                "list": _NativeTransportValidator(_LIST_SCHEMA, "list")}
+_PATH_SCHEMA = {
+    **_closed({**_common_schema("path"), "payload": {"$ref": "#/$defs/Path"}}),
+    "$defs": _DEFS,
+}
+Draft202012Validator.check_schema(_PATH_SCHEMA)
+# Query documents are a separate Python-validated contract, never a native profile.
+_PATH_VALIDATOR = _compiled_validator(_PATH_SCHEMA)
 
 
 class _ProjectionResponse(RootModel[dict[str, JsonValue]]):
@@ -771,6 +794,32 @@ class UiProjectionListResponse(_ProjectionResponse):
     kind = "list"
 
 
+class UiProjectionPathResponse(RootModel[dict[str, JsonValue]]):
+    """A complete query response; it has no view/list pagination assumptions."""
+    model_config = ConfigDict(strict=True, allow_inf_nan=False, revalidate_instances="always")
+
+    @model_validator(mode="before")
+    @classmethod
+    def json_native_contract(cls, value: Any) -> Any:
+        _require_json_native(value.root if isinstance(value, cls) else value)
+        return value
+
+    @model_validator(mode="after")
+    def owner_path_contract(self):
+        trace = _NATIVE_SMOKE_TRACE.get()
+        if trace is not None:
+            trace.update(native=False, complete=False)
+        try:
+            _PATH_VALIDATOR.validate(self.root)
+        except ValidationError as exc:
+            raise ValueError("Engine path transport failed its owner contract") from exc
+        return self
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, _core_schema, _handler):
+        return {"type": "object", "title": cls.__name__}
+
+
 def _at_pointer(value: Any, pointer: str) -> Any:
     for token in pointer.removeprefix("/").split("/"):
         value = value[token.replace("~1", "/").replace("~0", "~")]
@@ -800,6 +849,32 @@ def install_routes(app: FastAPI, store: Any) -> None:
     """Register guarded /api GETs; ordinary dict returns enforce declared response validation."""
     cache = _ProjectionCache()
     app.add_middleware(_NativeValidationSmoke)
+    @app.get("/api/snapshots/{snapshot_id}/ui-projection/topology/path",
+             response_model=UiProjectionPathResponse, operation_id="get_ui_projection_path")
+    def projection_path(
+        snapshot_id: Annotated[int, PathParam(ge=-(2**63), le=2**63 - 1)], response: Response,
+        src_ip: Annotated[str, Query(min_length=1, max_length=128)],
+        dst_ip: Annotated[str, Query(min_length=1, max_length=128)],
+    ) -> dict[str, Any]:
+        bound = store.get_snapshot_blob(snapshot_id)
+        if bound is None:
+            raise HTTPException(404, "Snapshot not found")
+        raw, binding = bound
+        # Admit the complete source document and preserve its global context. Query
+        # work uses a separate owned input and never holds a cache lock while tracing.
+        main = cache.document(raw, binding["sha256"], None)
+        source = cache.source_copy(raw, binding["sha256"])
+        produced = engine.ui_projection_path(source, src_ip, dst_ip)
+        _require_json_native(produced)
+        document = deepcopy(produced)
+        _PATH_DOCUMENT_VALIDATOR.validate(document)
+        expected_query = {"src_ip": src_ip, "dst_ip": dst_ip, "max_hops": 32,
+                          "required_mtu": None, "disclose": True}
+        if document["engine"] != main["engine"] or document["path"]["query"] != expected_query:
+            raise ValueError("Engine path changed its source or query context")
+        response.headers["Cache-Control"] = "no-store"
+        return {**_common_document(main, binding, snapshot_id, "path"), "payload": document["path"]}
+
     @app.get("/api/snapshots/{snapshot_id}/ui-projection/{view}",
              response_model=UiProjectionViewResponse, operation_id="get_ui_projection_view")
     def projection_view(
@@ -835,7 +910,8 @@ def install_routes(app: FastAPI, store: Any) -> None:
             schemas.update({"UiProjection1_" + name: _rewrite_refs(schema)
                             for name, schema in _TRANSPORT_DEFS.items()})
             for name, source in (("UiProjectionViewResponse", _VIEW_SCHEMA),
-                                 ("UiProjectionListResponse", _LIST_SCHEMA)):
+                                 ("UiProjectionListResponse", _LIST_SCHEMA),
+                                 ("UiProjectionPathResponse", _PATH_SCHEMA)):
                 schemas[name] = _rewrite_refs({key: value for key, value in source.items() if key != "$defs"})
                 schemas[name]["x-engine-schema-id"] = _OWNER["$id"]
             app.openapi_schema = api

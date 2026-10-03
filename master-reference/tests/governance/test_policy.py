@@ -13,9 +13,11 @@ sys.path.insert(0, str(SITE_ROOT))
 
 from governance.policy import BASE_VERIFICATION_RECEIPTS, evaluate_transition, validate_claims  # noqa: E402
 from governance.architecture import (  # noqa: E402
+    SUPPORTED_SCHEMA_VERSIONS,
     build_architecture_conformance,
     component_for_path,
     load_contract,
+    validate_contract,
     validate_path_dispositions,
     validate_runtime_trace,
     validate_static_edges,
@@ -359,7 +361,7 @@ def test_master_reference_ci_fetches_review_basis_history() -> None:
 
 def test_resolved_forbidden_import_blocks_architecture_receipt() -> None:
     contract = {
-        "schema_version": "test",
+        "schema_version": "2.0.0",
         "components": [
             {"id": "renderer", "paths": ["renderer.py"]},
             {"id": "collector", "paths": ["collector.py"]},
@@ -424,7 +426,7 @@ def test_mandatory_failure_forbids_downstream_pass_but_allows_abstention() -> No
 
 def test_namespace_package_import_resolves_to_explicit_component_prefix() -> None:
     contract = {
-        "schema_version": "test",
+        "schema_version": "2.0.0",
         "components": [
             {"id": "consumer", "paths": ["app.py"]},
             {"id": "registry", "paths": ["pkg/data/"]},
@@ -467,7 +469,7 @@ def test_namespace_package_import_resolves_to_explicit_component_prefix() -> Non
 
 def test_explicitly_excluded_test_import_does_not_define_runtime_edge() -> None:
     contract = {
-        "schema_version": "test",
+        "schema_version": "2.0.0",
         "components": [{"id": "engine", "paths": ["engine/"]}],
         "exclusions": [{"id": "tests", "paths": ["tests/"]}],
         "python_import_roots": [""],
@@ -510,7 +512,7 @@ def _single_component_ts_receipt(
     """Resolve one relative import inside a single component (no edge policy in play)."""
 
     contract = {
-        "schema_version": "test",
+        "schema_version": "2.0.0",
         "components": [{"id": "app", "paths": ["app/"]}],
         "exclusions": [],
         "python_import_roots": [""],
@@ -644,3 +646,161 @@ def test_atlas_scope_engine_fixture_edges_are_declared_and_analysis_stays_forbid
     assert validate_static_edges(
         [{"from_component": "atlas_scope", "to_component": "analysis"}], contract
     ) == ("edge:0:forbidden:atlas_scope->analysis",)
+
+
+def _scope_frontend_edge(source: str, target: str, **overrides: object) -> dict:
+    return {
+        "source_path": source, "target_path": target,
+        "from_component": "atlas_scope", "to_component": "assesshub_frontend",
+        "kind": "resolved_static_import", "classification": "static_structure_only",
+        **overrides,
+    }
+
+
+def test_architecture_contract_versions_preserve_legacy_and_current_compatibility() -> None:
+    assert SUPPORTED_SCHEMA_VERSIONS == ("2.0.0", "2.1.0")
+    for version in SUPPORTED_SCHEMA_VERSIONS:
+        contract = copy.deepcopy(load_contract())
+        contract["schema_version"] = version
+        if version == "2.0.0":
+            contract.pop("allowed_static_path_edges")
+        assert validate_contract(contract) == ()
+        receipt = build_architecture_conformance(
+            paths=[], file_languages={}, imports=[], calls=[], contract=contract,
+            source_commit="a" * 40, source_tree_digest="b" * 64,
+        )
+        assert receipt["status"] == "passed", receipt["errors"]
+
+
+def test_architecture_contract_rejects_missing_unknown_or_malformed_versions() -> None:
+    contract = copy.deepcopy(load_contract())
+    del contract["schema_version"]
+    assert validate_contract(contract) == ("contract:schema_version:unsupported",)
+    for version in (None, True, 2, 2.1, [], {}, "", "test", "1.0.0", "2.0", "2.1.1", "3.0.0",
+                    " 2.1.0", "2.1.0 ", "2.1.0\n", "2.1.0\r", "2.1.0\u2028", "2.1.0\u2029"):
+        contract["schema_version"] = version
+        assert validate_contract(contract) == ("contract:schema_version:unsupported",), version
+    # A caller constructing a conformance receipt cannot turn an unknown version into a pass.
+    receipt = build_architecture_conformance(
+        paths=[], file_languages={}, imports=[], calls=[], contract=contract,
+        source_commit="a" * 40, source_tree_digest="b" * 64,
+    )
+    assert receipt["status"] == "failed"
+    assert "contract:schema_version:unsupported" in receipt["errors"]
+
+
+def test_unsupported_architecture_version_refuses_before_inspecting_foreign_fields() -> None:
+    for version in (None, "9.0.0", [], {}):
+        for foreign_fields in (
+            {"allowed_edges": None},
+            {"forbidden_edges": 7},
+            {"allowed_edges": [[[]]], "runtime_phases": {"future": True}},
+        ):
+            contract = {"schema_version": version, "components": [], "exclusions": [], **foreign_fields}
+            assert validate_contract(contract) == ("contract:schema_version:unsupported",)
+            del contract["schema_version"]
+            assert validate_contract(contract) == ("contract:schema_version:unsupported",)
+    # Supported versions must still reach the existing structural validation.
+    for version in SUPPORTED_SCHEMA_VERSIONS:
+        errors = validate_contract({"schema_version": version})
+        assert "contract:components_missing" in errors
+        assert "contract:runtime_phases_missing" in errors
+
+
+def test_scope_shared_contract_declares_only_exact_reviewed_file_edges() -> None:
+    contract = load_contract()
+    assert validate_contract(contract) == ()
+    assert ("atlas_scope", "assesshub_frontend") not in {
+        tuple(row) for row in contract["allowed_edges"]
+    }
+    protocol = "webapp/frontend/src/projectionEmbed.ts"
+    fixture = "webapp/frontend/src/test/projectionFixtures.ts"
+    helper = "atlas-scope/src/test-support/projection-contract-fixtures.ts"
+    expected = {
+        *( (f"atlas-scope/src/contract-mode/{name}", protocol) for name in (
+            "boot.test.ts", "boot.ts", "boundary.test.ts", "entry.ts", "errors.ts",
+            "geometry.ts", "load.ts", "scene.ts", "types.ts", "view.ts",
+        )),
+        (helper, protocol), ("atlas-scope/vite.config.ts", protocol),
+        ("atlas-scope/src/contract-mode/types.ts", "webapp/frontend/src/generated/openapi.ts"),
+        ("atlas-scope/src/contract-mode/load.test.ts", fixture), (helper, fixture),
+    }
+    declared = {(row["source_path"], row["target_path"]) for row in contract["allowed_static_path_edges"]}
+    assert declared == expected
+    assert validate_static_edges([_scope_frontend_edge(*pair) for pair in sorted(expected)], contract) == ()
+
+
+def test_scope_path_declaration_does_not_admit_generic_imports_or_runtime_fixtures() -> None:
+    contract = load_contract()
+    boot = "atlas-scope/src/contract-mode/boot.ts"
+    for source, target in (
+        (boot, "webapp/frontend/src/api.ts"),
+        (boot, "webapp/frontend/src/pages/CoreSnapshot.tsx"),
+        (boot, "webapp/frontend/src/test/projectionFixtures.ts"),
+        ("atlas-scope/src/contract-mode/testing.ts", "webapp/frontend/src/test/projectionFixtures.ts"),
+        ("atlas-scope/src/app/App.tsx", "webapp/frontend/src/projectionEmbed.ts"),
+        ("atlas-scope/src/contract-mode/new-consumer.ts", "webapp/frontend/src/projectionEmbed.ts"),
+    ):
+        assert validate_static_edges([_scope_frontend_edge(source, target)], contract) == (
+            "edge:0:undeclared:atlas_scope->assesshub_frontend",
+        ), (source, target)
+    legitimate = _scope_frontend_edge(boot, "webapp/frontend/src/projectionEmbed.ts")
+    assert validate_static_edges([{**legitimate, "from_component": "assesshub_backend"}], contract) == (
+        "edge:0:undeclared:assesshub_backend->assesshub_frontend",
+    )
+    assert validate_static_edges([{key: value for key, value in legitimate.items() if key != "source_path"}], contract) == (
+        "edge:0:undeclared:atlas_scope->assesshub_frontend",
+    )
+
+
+def test_exact_path_declarations_are_closed_canonical_unique_and_owned() -> None:
+    original = load_contract()
+    good = original["allowed_static_path_edges"][1]
+    cases = [None, {}, [{**good, "future": True}], [{**good, "reason": " "}], [good, good],
+             [{**good, "source_path": "atlas-scope/"}],
+             [{**good, "source_path": "atlas-scope/src/../vite.config.ts"}],
+             [{**good, "source_path": "atlas-scope/*.ts"}],
+             [{**good, "source_path": "atlas-scope\\vite.config.ts"}],
+             [{**good, "target_path": "unowned/protocol.ts"}],
+             [{**good, "source_path": "tests/helper.py"}]]
+    for rows in cases:
+        contract = {**original, "allowed_static_path_edges": rows}
+        assert any("allowed_static_path_edge" in error for error in validate_contract(contract)), rows
+        assert validate_static_edges([_scope_frontend_edge(good["source_path"], good["target_path"])], contract) == (
+            "edge:0:undeclared:atlas_scope->assesshub_frontend",
+        ), rows
+
+
+def test_forbidden_analysis_edge_wins_over_an_exact_path_declaration() -> None:
+    contract = copy.deepcopy(load_contract())
+    source, target = "atlas-scope/src/contract-mode/boot.ts", "cisco_toolkit/ui_projection.py"
+    contract["allowed_static_path_edges"].append({
+        "source_path": source, "target_path": target, "reason": "Cannot override a forbidden component edge",
+    })
+    assert validate_static_edges([_scope_frontend_edge(source, target, to_component="analysis")], contract) == (
+        "edge:0:forbidden:atlas_scope->analysis",
+    )
+
+
+def test_real_resolved_scope_contract_imports_reconcile_without_runtime_claims() -> None:
+    contract = load_contract()
+    declarations = contract["allowed_static_path_edges"]
+    paths = sorted({row[key] for row in declarations for key in ("source_path", "target_path")})
+    # Use relative module specifiers as the TypeScript parser emits them, so the
+    # actual resolver and ownership path are exercised, not just component labels.
+    import posixpath
+
+    imports = [{
+        "id": f"import:shared:{index}", "path": row["source_path"],
+        "module": posixpath.relpath(row["target_path"], posixpath.dirname(row["source_path"])).removesuffix(".ts"),
+        "kind": "import", "names": [],
+    } for index, row in enumerate(declarations)]
+    receipt = build_architecture_conformance(
+        paths=paths, file_languages={path: "typescript" for path in paths},
+        imports=imports, calls=[], contract=contract,
+        source_commit="a" * 40, source_tree_digest="b" * 64,
+    )
+    assert receipt["status"] == "passed", receipt["errors"]
+    assert receipt["static_edge_count"] == 15
+    assert receipt["runtime_observed"] is False
+    assert all(edge["runtime_observed"] is False for edge in receipt["static_edges"])

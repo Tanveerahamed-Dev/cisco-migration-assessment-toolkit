@@ -3,6 +3,60 @@ export const published = <T,>(value: T) => ({ state: "published", value, subject
 export const withheld = () => ({ state: "not_collected", value: null, reason: "Synthetic input was not collected", subject: "/missing", refs: [], basis: "synthetic.owner" });
 const empty = (pointer: string) => ({ pointer, source_list: { state: "collected_but_empty", reason: "Synthetic source has no rows", subject: pointer, refs: [], basis: "synthetic.owner" }, page: { offset: 0, limit: 25, returned: 0, total: 0, has_more: false, items: [] } });
 const fields = (keys: string) => Object.fromEntries(keys.split(" ").map((key) => [key, withheld()]));
+const ownerList = <T,>(items: T[], subject: string) => items.length
+  ? { state: "published", subject, refs: [], basis: "synthetic.owner", items }
+  : { state: "collected_but_empty", reason: "Synthetic source has no rows", subject, refs: [], basis: "synthetic.owner", items };
+const ownerPage = <T,>(pointer: string, items: T[]) => {
+  const { items: _items, ...source_list } = ownerList(items, pointer);
+  return { pointer, source_list, page: { offset: 0, limit: 25, returned: items.length, total: items.length, has_more: false, items } };
+};
+export function topologyLegendFixture() {
+  const tokens = ["observed", "uncollected", "unverified", "not_observed", "analysis_unavailable", "link_up", "link_down", "link_unknown",
+    "structural_link", "structural_bridge", "impact_high", "impact_medium", "impact_low", "impact_info", "path_reached", "path_partial_drop",
+    "path_observed_discard", "path_no_route_observed", "path_lower_bound", "path_withheld"];
+  return { schema: "ui_projection_topology_style/1", fallback: { token: "unverified", glyph: "unknown", label: "Synthetic fallback presentation" },
+    entries: tokens.map((token) => ({ token, tone: token === "uncollected" ? "muted" : token === "unverified" ? "warning" : "info",
+      stroke: token === "uncollected" ? "dotted" : "solid", weight: "normal", meaning: `Synthetic engine meaning: ${token}` })) };
+}
+export function topologyNodeFixture(index = 0, host = "synthetic-edge-a") {
+  return { index, pointer: `/cable_map/nodes/${index}`, host: published(host), kind: published("router"), role: published("core"),
+    collected: published(true), style: published({ token: "observed", glyph: "device", label: "Synthetic engine node presentation" }) };
+}
+export function topologyFixture(sid = 1) {
+  const a = topologyNodeFixture(), b = { ...topologyNodeFixture(1, "synthetic-peer-b"), collected: published(false),
+    style: published({ token: "uncollected", glyph: "unknown", label: "Synthetic uncollected peer" }) };
+  const aRef = { index: a.index, pointer: a.pointer }, bRef = { index: b.index, pointer: b.pointer };
+  const joins = { a_nodes: ownerList([aRef], "/cable_map/nodes"), b_nodes: ownerList([bRef], "/cable_map/nodes") };
+  return { ...common(sid, "topology"), payload: {
+    summary: { nodes: published(2), cables: published(1) }, legend: topologyLegendFixture(),
+    nodes: ownerPage("/nodes", [a, b]),
+    cables: ownerPage("/cables", [{ index: 0, pointer: "/cable_map/cables/0", ends: published({ a: "synthetic-edge-a", a_port: "Gi1", b: "synthetic-peer-b", b_port: "Gi2", is_pc: false }),
+      members: ownerList([], "/cable_map/cables/0/members"), speed: published("1G"), confirmation: published("observed"), op_status: published("up"), ...joins,
+      style: published({ token: "link_unknown", glyph: "none", label: "Synthetic supplied cable style" }) }]),
+    structural_links: ownerPage("/structural_links", [{ index: 0, pointer: "/link_centrality/0", ends: published({ a_host: "synthetic-edge-a", a_port: "Gi1", b_host: "synthetic-peer-b", b_port: "Gi2" }),
+      betweenness: published(.25), is_bridge: published(true), pairs_cut: published(1), rank: published(1), ...joins,
+      host_pair_cable_refs: ownerList([{ index: 0, pointer: "/cable_map/cables/0" }], "/cable_map/cables"),
+      style: published({ token: "structural_bridge", glyph: "none", label: "Synthetic host-pair bridge" }) }]),
+    failure_impact: ownerPage("/failure_impact", [{ index: 0, pointer: "/failure_impact/0", host: published("synthetic-edge-a"), node_refs: ownerList([aRef], "/cable_map/nodes"),
+      severity: published("Info"), ...Object.fromEntries("vlans_impacted stranded hard backup fhrp off_scan_gw_vlans".split(" ").map((key) => [key, published(0)])),
+      detail: published("Synthetic scanned-model detail; no traffic assertion"), style: published({ token: "impact_info", glyph: "none", label: "Synthetic impact presentation" }) }]),
+    source_addresses: ownerPage("/source_addresses", [{ index: 0, pointer: "/interfaces/0/svi_ip", host: published("synthetic-edge-a"), interface: published("Vlan10"),
+      address: published("192.0.2.10"), family: published(4), origin: published("interface_svi"), node_refs: ownerList([aRef], "/cable_map/nodes") }]),
+  } };
+}
+export function pathFixture(sid = 1, src_ip = "192.0.2.10", dst_ip = "198.51.100.10") {
+  return { ...common(sid, "path"), payload: {
+    query: { src_ip, dst_ip, max_hops: 32, required_mtu: null, disclose: true }, legend: topologyLegendFixture(),
+    style: published({ token: "path_partial_drop", glyph: "none", label: "Synthetic owner: reached with a dropping leg" }),
+    result: published({ src: src_ip, dst: dst_ip, status: "synthetic_partial_drop", computed: true, reached: true, drop_evidence: "observed_discard",
+      hops: [{ host: "different-raw-host-label", match: "198.51.100.0/24", next_hop: "192.0.2.1", out_intf: "Gi1", source: "static" }],
+      ecmp_dropping_legs: [{ host: "synthetic-edge-a", match: "198.51.100.0/24", next_hop: "Null0", out_intf: "Null0", leg_status: "drop", drop_evidence: "observed_discard", resolved_hops: [] }],
+      ambiguous_candidate_sets: [{ kind: "synthetic", candidate_hosts: ["synthetic-edge-a", "synthetic-peer-b"] }], mtu_min: null, mtu_bottleneck_hop: null,
+      mtu_unobserved_hops: [{ host: "synthetic-edge-a", out_intf: "Gi1", reason: "egress_interface_not_observed" }], jumbo_blackhole: [], mtu_verdict: "not_assessed" }),
+    hop_evidence: ownerList([{ hop_index: 0, route_rows: ownerList([{ index: 0, pointer: "/l3_forwarding/0" }], "/l3_forwarding"),
+      interfaces: ownerList([{ pointer: "/interfaces/0", role: "basis" }], "/interfaces"), node_rows: ownerList([{ index: 0, pointer: "/cable_map/nodes/0" }], "/cable_map/nodes") }], "/l3_forwarding"),
+  } };
+}
 export function overviewFixture(sid = 1, statement = "Synthetic fleet needs review") {
   const keys = "n_devices n_collected n_endpoints n_vlans n_domains avg_health n_critical n_poor worst_band n_past_ldos n_near n_past_eos n_active n_unknown n_design_decisions";
   return { ...common(sid, "overview"), payload: {

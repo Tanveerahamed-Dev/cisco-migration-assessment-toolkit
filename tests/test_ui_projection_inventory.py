@@ -509,7 +509,7 @@ def test_i0_schema_sections_and_vocabularies():
     Draft202012Validator.check_schema(schema)
     d = schema["$defs"]
     assert schema["$id"] == uip.SCHEMA_ID and schema["title"] == uip.SCHEMA
-    assert schema["required"] == ["schema", "engine", "overview", "trust", "inventory", "findings"]
+    assert schema["required"] == ["schema", "engine", "overview", "trust", "inventory", "findings", "topology"]
     assert schema["properties"]["inventory"] == {"$ref": "#/$defs/Inventory"}
     assert schema["properties"]["findings"] == {"$ref": "#/$defs/Findings"}
     enums = {"LifecycleBandFact": uip.LIFECYCLE_BAND_ORDER, "RiskBandFact": uip.DOSSIER_BANDS,
@@ -1321,6 +1321,8 @@ CAP_SITES = {
     ("analyze.compute_migration_punchlist", "s[:n]"): "punchlist[].detail",           # _clip(..., n=400)
     ("analyze.compute_executive_brief", "flags[:4]"):
         "exempt: the posture statement says in-band how many flags it holds back",
+    ("analyze.compute_failure_impact", "pv[:8]"):
+        "exempt: detail prose says '+N more' in-band; full model counts remain separate and the projection discloses the 8-example cap",
     ("analyze._fmt_endpoint_mix", "items[:limit]"): "exempt: endpoint_mix says '+N more' in-band",
     ("analyze._classify_endpoint", "desc.strip()[:32]"):
         "exempt: a quoted fragment inside the evidence prose; the full description is on the interface record",
@@ -1357,7 +1359,7 @@ def _producer_roots():
     """Every ``<module>.<function>`` this projection names as an owner (its basis strings and limitation owners)."""
     import importlib
     import re
-    names = set(re.findall(r"\b(analyze|build|parse|coverage_matrix|html|nrfu_export|excel)\.([A-Za-z_]\w*)",
+    names = set(re.findall(r"\b(analyze|build|parse|coverage_matrix|html|nrfu_export|excel|fib)\.([A-Za-z_]\w*)",
                            inspect.getsource(uip)))
     out = set()
     for mod, fn in names:
@@ -1393,6 +1395,7 @@ def test_i12_every_engine_cap_is_registered_or_reviewed():
     an ENGINE_LIST_CAPS entry (with the producer's own constant) or a reviewed exemption."""
     hits, seen = _prefix_slices()
     assert len(seen) > 20 and ("cisco_toolkit.analyze", "_classify_endpoint") in seen    # the walk is transitive
+    assert ("cisco_toolkit.fib", "trace_fib_path") in seen  # the new path owner participates in the same guard
     assert hits - set(CAP_SITES) == set(), "unreviewed prefix slice(s): register a cap or an exemption"
     assert set(CAP_SITES) - hits == set(), "a reviewed slice no longer exists: drop it"
     registered = {v for v in CAP_SITES.values() if not v.startswith("exempt:")}

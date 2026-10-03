@@ -12818,7 +12818,7 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         # A recognized health-score record proves the physical interface scan ran; the measured labels are read
         # from their owner (_HEALTH_BAND_LABELS), so the not-measured band and any unrecognised label never
         # license an 'ok' by silence. Protocol conclusions use their separate seven-family receipt below.
-        scanned = hsr is not None and band in _HEALTH_BAND_LABELS
+        scanned = hsr is not None and isinstance(band, str) and band in _HEALTH_BAND_LABELS
         phys = [r for r in phy_by.get(host, [])
                 if r.get("severity") not in (None, "", "Info", "OK")]
         hard_phy = [r for r in phys

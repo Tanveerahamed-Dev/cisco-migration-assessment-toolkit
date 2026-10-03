@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.0.0",
+  "schema_version": "2.1.0",
   "edge_semantics": "caller_depends_on_provider",
   "static_evidence_semantics": "resolved imports and import-bound calls are static candidates, never runtime truth",
   "python_import_roots": ["", "master-reference"],
@@ -371,6 +371,23 @@
     ["research_lane", "governance"],
     ["research_lane", "sanitized_knowledge"],
     ["research_lane", "design_intelligence"]
+  ],
+  "allowed_static_path_edges": [
+    {"source_path": "atlas-scope/src/contract-mode/boot.test.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "Session contract verification uses the same closed protocol as both frames."},
+    {"source_path": "atlas-scope/src/contract-mode/boot.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "Frame coordination consumes pure closed protocol guards and identity comparison, never browser-owned assessment facts."},
+    {"source_path": "atlas-scope/src/contract-mode/boundary.test.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "The dependency-boundary test verifies the shared protocol marker."},
+    {"source_path": "atlas-scope/src/contract-mode/entry.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "Contract URL admission reuses the closed nonce and protocol constants."},
+    {"source_path": "atlas-scope/src/contract-mode/errors.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "Only the shared refusal-code type crosses this presentation boundary."},
+    {"source_path": "atlas-scope/src/contract-mode/geometry.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "Display geometry consumes shared row-reference and selection types."},
+    {"source_path": "atlas-scope/src/contract-mode/load.test.ts", "target_path": "webapp/frontend/src/test/projectionFixtures.ts", "reason": "This test alone consumes synthetic projection rows; production loader imports remain separate."},
+    {"source_path": "atlas-scope/src/contract-mode/load.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "Independent API loading verifies the same identity, context and protocol constraints as the parent."},
+    {"source_path": "atlas-scope/src/contract-mode/scene.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "The renderer shares only the selection-target type."},
+    {"source_path": "atlas-scope/src/contract-mode/types.ts", "target_path": "webapp/frontend/src/generated/openapi.ts", "reason": "Presentation types derive from the actual engine-owned API schema."},
+    {"source_path": "atlas-scope/src/contract-mode/types.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "Topology list names derive from the shared coordination contract."},
+    {"source_path": "atlas-scope/src/contract-mode/view.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "The presentation view shares only the selection-target type."},
+    {"source_path": "atlas-scope/src/test-support/projection-contract-fixtures.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "Test-only fixtures construct the same context digest and list selectors; runtime closure excludes test-support."},
+    {"source_path": "atlas-scope/src/test-support/projection-contract-fixtures.ts", "target_path": "webapp/frontend/src/test/projectionFixtures.ts", "reason": "Synthetic contract fixtures are shared only through the explicit test-support boundary."},
+    {"source_path": "atlas-scope/vite.config.ts", "target_path": "webapp/frontend/src/projectionEmbed.ts", "reason": "The hub build publishes the shared versioned capability marker."}
   ],
   "forbidden_edges": [
     {"from": "master_reference", "to": "custody_collection", "reason": "Reference cannot collect or mutate operational evidence."},

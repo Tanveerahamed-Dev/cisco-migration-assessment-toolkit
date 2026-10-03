@@ -1288,7 +1288,7 @@ def test_t11_pure_no_file_socket_or_process_io(snaps, payloads, monkeypatch):
     assert uip.project(snaps["d_real"]) == payloads["d_real"]
 
 
-def test_module_imports_only_stdlib_and_the_ssot_owner():
+def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     tree = ast.parse(MODULE_SRC.read_text(encoding="utf-8"))
     imported = set()
     for node in ast.walk(tree):
@@ -1297,8 +1297,10 @@ def test_module_imports_only_stdlib_and_the_ssot_owner():
         elif isinstance(node, ast.ImportFrom):
             base = ("." * node.level) + (node.module or "")
             imported.update(f"{base}:{alias.name}" for alias in node.names)
-    allowed = {"math", "re", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
-               "cisco_toolkit:__version__"}
+    # Topology/path projection delegates to the existing offline FIB owner, including its exact address
+    # observation rules; ipaddress canonicalizes those evidence joins. No other engine imports are admitted.
+    allowed = {"math", "re", "ipaddress", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
+               "cisco_toolkit:__version__", "cisco_toolkit:fib"}
     extra = {name for name in imported if name not in allowed and not name.startswith("typing:")}
     assert not extra, extra
     private = sorted({node.attr for node in ast.walk(tree)

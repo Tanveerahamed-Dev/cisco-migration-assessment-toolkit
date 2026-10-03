@@ -794,6 +794,23 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/snapshots/{snapshot_id}/ui-projection/topology/path": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Projection Path */
+        readonly get: operations["get_ui_projection_path"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1035,6 +1052,64 @@ export interface components {
          * @enum {string}
          */
         readonly UiProjection1_AbstentionState: "published" | "collected_but_empty" | "not_collected" | "analysis_unavailable";
+        /** AddressFamilyFact */
+        readonly UiProjection1_AddressFamilyFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            /** @enum {integer} */
+            readonly value: 4 | 6;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
+        };
+        /** AddressOriginFact */
+        readonly UiProjection1_AddressOriginFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            /** @enum {string} */
+            readonly value: "interface_svi" | "local_route" | "fhrp_host_route";
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
+        };
         /** AxisFact */
         readonly UiProjection1_AxisFact: {
             readonly basis: string;
@@ -2170,6 +2245,98 @@ export interface components {
             readonly proto: string | null;
             readonly vip: string | null;
         };
+        /** FibCandidateSet */
+        readonly UiProjection1_FibCandidateSet: {
+            readonly candidate_hosts: readonly string[];
+            readonly kind: string;
+        };
+        /** FibDroppingLeg */
+        readonly UiProjection1_FibDroppingLeg: {
+            readonly drop_evidence: string;
+            readonly host: string;
+            readonly leg_status: string;
+            readonly match: string;
+            readonly next_hop: string;
+            readonly out_intf: string;
+            readonly resolved_hops: readonly components["schemas"]["UiProjection1_FibHop"][];
+        };
+        /** FibHop */
+        readonly UiProjection1_FibHop: {
+            readonly host: string;
+            readonly invalid_route_fields?: [
+                "admin_distance" | "source" | "next_hop" | "out_intf",
+                ...("admin_distance" | "source" | "next_hop" | "out_intf")[]
+            ];
+            readonly match: string;
+            readonly next_hop: string;
+            readonly out_intf: string;
+            readonly source: string;
+        };
+        /** FibJumboBlackhole */
+        readonly UiProjection1_FibJumboBlackhole: {
+            readonly host: string;
+            readonly mtu: number;
+            readonly out_intf: string;
+            readonly required: number;
+        };
+        /** FibMtuGap */
+        readonly UiProjection1_FibMtuGap: {
+            readonly host: string;
+            readonly out_intf: string;
+            /** @enum {string} */
+            readonly reason?: "malformed_hop_evidence" | "egress_interface_not_observed";
+        };
+        /** FibMtuHop */
+        readonly UiProjection1_FibMtuHop: {
+            readonly host: string;
+            readonly mtu: number;
+            readonly out_intf: string;
+        };
+        /** FibResult */
+        readonly UiProjection1_FibResult: {
+            readonly ambiguous_candidate_sets: readonly components["schemas"]["UiProjection1_FibCandidateSet"][];
+            readonly computed: boolean;
+            readonly drop_evidence: string;
+            readonly dst: string;
+            readonly ecmp_dropping_legs: readonly components["schemas"]["UiProjection1_FibDroppingLeg"][];
+            readonly hops: readonly components["schemas"]["UiProjection1_FibHop"][];
+            readonly jumbo_blackhole: readonly components["schemas"]["UiProjection1_FibJumboBlackhole"][];
+            readonly mtu_bottleneck_hop: components["schemas"]["UiProjection1_FibMtuHop"] | null;
+            readonly mtu_min: number | null;
+            readonly mtu_unobserved_hops: readonly components["schemas"]["UiProjection1_FibMtuGap"][];
+            readonly mtu_verdict: string;
+            readonly reached: boolean;
+            readonly src: string;
+            readonly status: string;
+        };
+        /** FibResultFact */
+        readonly UiProjection1_FibResultFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: components["schemas"]["UiProjection1_FibResult"];
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
+        };
         /** FindingRow */
         readonly UiProjection1_FindingRow: {
             readonly category: components["schemas"]["UiProjection1_TextFact"];
@@ -2273,6 +2440,35 @@ export interface components {
             readonly not_assessed_reason: ("no_health_rows" | "all_insufficient_data" | "no_scored_rows") | null;
             readonly reason: string;
             readonly state: components["schemas"]["UiProjection1_WithheldState"];
+        };
+        /** ImpactSeverityFact */
+        readonly UiProjection1_ImpactSeverityFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            /** @enum {string} */
+            readonly value: "High" | "Medium" | "Low" | "Info";
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
         };
         /** IndexList */
         readonly UiProjection1_IndexList: readonly number[];
@@ -2434,7 +2630,7 @@ export interface components {
          * LimitationId
          * @enum {string}
          */
-        readonly UiProjection1_LimitationId: "census_present_keys_only" | "failure_record_written_only_on_failure" | "one_hop_failure_attribution" | "axis_basis_owned_by_projection" | "reconcile_checks_only_with_raw_basis" | "measured_zero_mapping" | "abstention_addresses_dict_paths_only" | "coverage_matrix_shown_as_published" | "projection_owned_verdicts" | "device_physical_defaults_not_observed" | "health_scored_without_security" | "health_scored_over_partial_collection" | "dossier_band_over_unassessed_axes" | "engine_list_capped" | "move_group_label_absent" | "vlan_cutover_universe" | "vlan_field_basis_owned_by_projection" | "vlan_readiness_scope" | "punch_rows_carry_no_evidence_pointers" | "row_selection_by_exact_key" | "fleet_lists_exclude_blind_devices" | "findings_without_running_config" | "deduction_refs_are_subsequence" | "routes_in_scope_only" | "interface_default_not_observed" | "routing_neighbors_empty_is_ambiguous";
+        readonly UiProjection1_LimitationId: "census_present_keys_only" | "failure_record_written_only_on_failure" | "one_hop_failure_attribution" | "axis_basis_owned_by_projection" | "reconcile_checks_only_with_raw_basis" | "measured_zero_mapping" | "abstention_addresses_dict_paths_only" | "coverage_matrix_shown_as_published" | "projection_owned_verdicts" | "device_physical_defaults_not_observed" | "health_scored_without_security" | "health_scored_over_partial_collection" | "dossier_band_over_unassessed_axes" | "engine_list_capped" | "move_group_label_absent" | "vlan_cutover_universe" | "vlan_field_basis_owned_by_projection" | "vlan_readiness_scope" | "punch_rows_carry_no_evidence_pointers" | "row_selection_by_exact_key" | "fleet_lists_exclude_blind_devices" | "findings_without_running_config" | "topology_scanned_model" | "impact_scanned_scope" | "path_route_model_only" | "deduction_refs_are_subsequence" | "routes_in_scope_only" | "interface_default_not_observed" | "routing_neighbors_empty_is_ambiguous";
         /** NeighborGroup */
         readonly UiProjection1_NeighborGroup: {
             readonly neighbors: components["schemas"]["UiProjection1_NeighborRowList"];
@@ -2512,6 +2708,34 @@ export interface components {
             readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
             readonly state: components["schemas"]["UiProjection1_WithheldState"];
             readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** NonnegativeNumberFact */
+        readonly UiProjection1_NonnegativeNumberFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: number;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
         };
         /** NrfuCaseList */
         readonly UiProjection1_NrfuCaseList: {
@@ -2903,6 +3127,66 @@ export interface components {
             readonly pointer: string;
             readonly source_list: components["schemas"]["UiProjection1_Source_TopGatingList"];
         };
+        readonly UiProjection1_Page_TopologyAddressRowList: {
+            readonly page: {
+                readonly has_more: boolean;
+                readonly items: readonly components["schemas"]["UiProjection1_TopologyAddressRow"][];
+                readonly limit: number;
+                readonly offset: number;
+                readonly returned: number;
+                readonly total: number;
+            };
+            readonly pointer: string;
+            readonly source_list: components["schemas"]["UiProjection1_Source_TopologyAddressRowList"];
+        };
+        readonly UiProjection1_Page_TopologyCableRowList: {
+            readonly page: {
+                readonly has_more: boolean;
+                readonly items: readonly components["schemas"]["UiProjection1_TopologyCableRow"][];
+                readonly limit: number;
+                readonly offset: number;
+                readonly returned: number;
+                readonly total: number;
+            };
+            readonly pointer: string;
+            readonly source_list: components["schemas"]["UiProjection1_Source_TopologyCableRowList"];
+        };
+        readonly UiProjection1_Page_TopologyImpactRowList: {
+            readonly page: {
+                readonly has_more: boolean;
+                readonly items: readonly components["schemas"]["UiProjection1_TopologyImpactRow"][];
+                readonly limit: number;
+                readonly offset: number;
+                readonly returned: number;
+                readonly total: number;
+            };
+            readonly pointer: string;
+            readonly source_list: components["schemas"]["UiProjection1_Source_TopologyImpactRowList"];
+        };
+        readonly UiProjection1_Page_TopologyNodeRowList: {
+            readonly page: {
+                readonly has_more: boolean;
+                readonly items: readonly components["schemas"]["UiProjection1_TopologyNodeRow"][];
+                readonly limit: number;
+                readonly offset: number;
+                readonly returned: number;
+                readonly total: number;
+            };
+            readonly pointer: string;
+            readonly source_list: components["schemas"]["UiProjection1_Source_TopologyNodeRowList"];
+        };
+        readonly UiProjection1_Page_TopologyStructuralLinkRowList: {
+            readonly page: {
+                readonly has_more: boolean;
+                readonly items: readonly components["schemas"]["UiProjection1_TopologyStructuralLinkRow"][];
+                readonly limit: number;
+                readonly offset: number;
+                readonly returned: number;
+                readonly total: number;
+            };
+            readonly pointer: string;
+            readonly source_list: components["schemas"]["UiProjection1_Source_TopologyStructuralLinkRowList"];
+        };
         readonly UiProjection1_Page_TrunkNativeList: {
             readonly page: {
                 readonly has_more: boolean;
@@ -2938,6 +3222,100 @@ export interface components {
             };
             readonly pointer: string;
             readonly source_list: components["schemas"]["UiProjection1_Source_VlanRowList"];
+        };
+        /** Path */
+        readonly UiProjection1_Path: {
+            readonly hop_evidence: components["schemas"]["UiProjection1_PathHopEvidenceList"];
+            readonly legend: components["schemas"]["UiProjection1_TopologyLegend"];
+            readonly query: components["schemas"]["UiProjection1_PathQuery"];
+            readonly result: components["schemas"]["UiProjection1_FibResultFact"];
+            readonly style: components["schemas"]["UiProjection1_TopologyStyleFact"];
+        };
+        /** PathDocument */
+        readonly UiProjection1_PathDocument: {
+            readonly engine: components["schemas"]["UiProjection1_Engine"];
+            readonly path: components["schemas"]["UiProjection1_Path"];
+            /** @constant */
+            readonly schema: "ui_projection/1";
+        };
+        /** PathHopEvidence */
+        readonly UiProjection1_PathHopEvidence: {
+            readonly hop_index: number;
+            readonly interfaces: components["schemas"]["UiProjection1_PathInterfaceRefList"];
+            readonly node_rows: components["schemas"]["UiProjection1_RowRefList"];
+            readonly route_rows: components["schemas"]["UiProjection1_RowRefList"];
+        };
+        /** PathHopEvidenceList */
+        readonly UiProjection1_PathHopEvidenceList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: [
+                components["schemas"]["UiProjection1_PathHopEvidence"],
+                ...components["schemas"]["UiProjection1_PathHopEvidence"][]
+            ];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: readonly components["schemas"]["UiProjection1_PathHopEvidence"][];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** PathInterfaceRefList */
+        readonly UiProjection1_PathInterfaceRefList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: [
+                components["schemas"]["UiProjection1_Ref"],
+                ...components["schemas"]["UiProjection1_Ref"][]
+            ];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** PathQuery */
+        readonly UiProjection1_PathQuery: {
+            /** @constant */
+            readonly disclose: true;
+            readonly dst_ip: string;
+            /** @constant */
+            readonly max_hops: 32;
+            readonly required_mtu: null;
+            readonly src_ip: string;
         };
         /** PeerList */
         readonly UiProjection1_PeerList: {
@@ -2979,6 +3357,34 @@ export interface components {
         };
         /** Pointer */
         readonly UiProjection1_Pointer: string;
+        /** PositiveCountFact */
+        readonly UiProjection1_PositiveCountFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: number;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
+        };
         /** ReadinessFact */
         readonly UiProjection1_ReadinessFact: {
             readonly basis: string;
@@ -4056,6 +4462,136 @@ export interface components {
             readonly state: components["schemas"]["UiProjection1_WithheldState"];
             readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
         };
+        /** TopologyAddressRowList */
+        readonly UiProjection1_Source_TopologyAddressRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** TopologyCableRowList */
+        readonly UiProjection1_Source_TopologyCableRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** TopologyImpactRowList */
+        readonly UiProjection1_Source_TopologyImpactRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** TopologyNodeRowList */
+        readonly UiProjection1_Source_TopologyNodeRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** TopologyStructuralLinkRowList */
+        readonly UiProjection1_Source_TopologyStructuralLinkRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
         /** TrunkNativeList */
         readonly UiProjection1_Source_TrunkNativeList: {
             readonly basis: string;
@@ -4352,6 +4888,40 @@ export interface components {
             readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
             readonly value: null;
         };
+        /** StructuralEndsFact */
+        readonly UiProjection1_StructuralEndsFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            /** StructuralEnds */
+            readonly value: {
+                readonly a_host: string;
+                readonly a_port: string;
+                readonly b_host: string;
+                readonly b_port: string;
+            };
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
+        };
         /** TextFact */
         readonly UiProjection1_TextFact: {
             readonly basis: string;
@@ -4482,6 +5052,353 @@ export interface components {
             readonly state: components["schemas"]["UiProjection1_WithheldState"];
             readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
         };
+        /** Topology */
+        readonly UiProjection1_Topology: {
+            readonly cables: components["schemas"]["UiProjection1_TopologyCableRowList"];
+            readonly failure_impact: components["schemas"]["UiProjection1_TopologyImpactRowList"];
+            readonly legend: components["schemas"]["UiProjection1_TopologyLegend"];
+            readonly nodes: components["schemas"]["UiProjection1_TopologyNodeRowList"];
+            readonly source_addresses: components["schemas"]["UiProjection1_TopologyAddressRowList"];
+            readonly structural_links: components["schemas"]["UiProjection1_TopologyStructuralLinkRowList"];
+            /** TopologySummary */
+            readonly summary: {
+                readonly cables: components["schemas"]["UiProjection1_CountFact"];
+                readonly nodes: components["schemas"]["UiProjection1_CountFact"];
+            };
+        };
+        /** TopologyAddressRow */
+        readonly UiProjection1_TopologyAddressRow: {
+            readonly address: components["schemas"]["UiProjection1_TextFact"];
+            readonly family: components["schemas"]["UiProjection1_AddressFamilyFact"];
+            readonly host: components["schemas"]["UiProjection1_TextFact"];
+            readonly index: number;
+            readonly interface: components["schemas"]["UiProjection1_TextFact"];
+            readonly node_refs: components["schemas"]["UiProjection1_RowRefList"];
+            readonly origin: components["schemas"]["UiProjection1_AddressOriginFact"];
+            readonly pointer: components["schemas"]["UiProjection1_Pointer"];
+        };
+        /** TopologyAddressRowList */
+        readonly UiProjection1_TopologyAddressRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: [
+                components["schemas"]["UiProjection1_TopologyAddressRow"],
+                ...components["schemas"]["UiProjection1_TopologyAddressRow"][]
+            ];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: readonly components["schemas"]["UiProjection1_TopologyAddressRow"][];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** TopologyCableMemberRow */
+        readonly UiProjection1_TopologyCableMemberRow: {
+            readonly a_port: components["schemas"]["UiProjection1_TextFact"];
+            readonly b_port: components["schemas"]["UiProjection1_TextFact"];
+            readonly index: number;
+            readonly pointer: components["schemas"]["UiProjection1_Pointer"];
+        };
+        /** TopologyCableMemberRowList */
+        readonly UiProjection1_TopologyCableMemberRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: [
+                components["schemas"]["UiProjection1_TopologyCableMemberRow"],
+                ...components["schemas"]["UiProjection1_TopologyCableMemberRow"][]
+            ];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: readonly components["schemas"]["UiProjection1_TopologyCableMemberRow"][];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** TopologyCableRow */
+        readonly UiProjection1_TopologyCableRow: {
+            readonly a_nodes: components["schemas"]["UiProjection1_RowRefList"];
+            readonly b_nodes: components["schemas"]["UiProjection1_RowRefList"];
+            readonly confirmation: components["schemas"]["UiProjection1_TextFact"];
+            readonly ends: components["schemas"]["UiProjection1_CableEndsFact"];
+            readonly index: number;
+            readonly members: components["schemas"]["UiProjection1_TopologyCableMemberRowList"];
+            readonly op_status: components["schemas"]["UiProjection1_OpStatusFact"];
+            readonly pointer: components["schemas"]["UiProjection1_Pointer"];
+            readonly speed: components["schemas"]["UiProjection1_TextFact"];
+            readonly style: components["schemas"]["UiProjection1_TopologyStyleFact"];
+        };
+        /** TopologyCableRowList */
+        readonly UiProjection1_TopologyCableRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: [
+                components["schemas"]["UiProjection1_TopologyCableRow"],
+                ...components["schemas"]["UiProjection1_TopologyCableRow"][]
+            ];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: readonly components["schemas"]["UiProjection1_TopologyCableRow"][];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** TopologyImpactRow */
+        readonly UiProjection1_TopologyImpactRow: {
+            readonly backup: components["schemas"]["UiProjection1_CountFact"];
+            readonly detail: components["schemas"]["UiProjection1_TextFact"];
+            readonly fhrp: components["schemas"]["UiProjection1_CountFact"];
+            readonly hard: components["schemas"]["UiProjection1_CountFact"];
+            readonly host: components["schemas"]["UiProjection1_TextFact"];
+            readonly index: number;
+            readonly node_refs: components["schemas"]["UiProjection1_RowRefList"];
+            readonly off_scan_gw_vlans: components["schemas"]["UiProjection1_CountFact"];
+            readonly pointer: components["schemas"]["UiProjection1_Pointer"];
+            readonly severity: components["schemas"]["UiProjection1_ImpactSeverityFact"];
+            readonly stranded: components["schemas"]["UiProjection1_CountFact"];
+            readonly style: components["schemas"]["UiProjection1_TopologyStyleFact"];
+            readonly vlans_impacted: components["schemas"]["UiProjection1_CountFact"];
+        };
+        /** TopologyImpactRowList */
+        readonly UiProjection1_TopologyImpactRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: [
+                components["schemas"]["UiProjection1_TopologyImpactRow"],
+                ...components["schemas"]["UiProjection1_TopologyImpactRow"][]
+            ];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: readonly components["schemas"]["UiProjection1_TopologyImpactRow"][];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** TopologyLegend */
+        readonly UiProjection1_TopologyLegend: {
+            readonly entries: [
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"],
+                components["schemas"]["UiProjection1_TopologyLegendEntry"]
+            ];
+            readonly fallback: components["schemas"]["UiProjection1_TopologyStyleValue"];
+            /** @constant */
+            readonly schema: "ui_projection_topology_style/1";
+        };
+        /** TopologyLegendEntry */
+        readonly UiProjection1_TopologyLegendEntry: {
+            readonly meaning: string;
+            /** @enum {string} */
+            readonly stroke: "solid" | "dashed" | "dotted";
+            /** @enum {string} */
+            readonly token: "observed" | "uncollected" | "unverified" | "not_observed" | "analysis_unavailable" | "link_up" | "link_down" | "link_unknown" | "structural_link" | "structural_bridge" | "impact_high" | "impact_medium" | "impact_low" | "impact_info" | "path_reached" | "path_partial_drop" | "path_observed_discard" | "path_no_route_observed" | "path_lower_bound" | "path_withheld";
+            /** @enum {string} */
+            readonly tone: "neutral" | "muted" | "info" | "warning" | "danger";
+            /** @enum {string} */
+            readonly weight: "normal" | "strong";
+        };
+        /** TopologyNodeRow */
+        readonly UiProjection1_TopologyNodeRow: {
+            readonly collected: components["schemas"]["UiProjection1_FlagFact"];
+            readonly host: components["schemas"]["UiProjection1_TextFact"];
+            readonly index: number;
+            readonly kind: components["schemas"]["UiProjection1_TextFact"];
+            readonly pointer: components["schemas"]["UiProjection1_Pointer"];
+            readonly role: components["schemas"]["UiProjection1_TextFact"];
+            readonly style: components["schemas"]["UiProjection1_TopologyStyleFact"];
+        };
+        /** TopologyNodeRowList */
+        readonly UiProjection1_TopologyNodeRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: [
+                components["schemas"]["UiProjection1_TopologyNodeRow"],
+                ...components["schemas"]["UiProjection1_TopologyNodeRow"][]
+            ];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: readonly components["schemas"]["UiProjection1_TopologyNodeRow"][];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** TopologyStructuralLinkRow */
+        readonly UiProjection1_TopologyStructuralLinkRow: {
+            readonly a_nodes: components["schemas"]["UiProjection1_RowRefList"];
+            readonly b_nodes: components["schemas"]["UiProjection1_RowRefList"];
+            readonly betweenness: components["schemas"]["UiProjection1_NonnegativeNumberFact"];
+            readonly ends: components["schemas"]["UiProjection1_StructuralEndsFact"];
+            readonly host_pair_cable_refs: components["schemas"]["UiProjection1_RowRefList"];
+            readonly index: number;
+            readonly is_bridge: components["schemas"]["UiProjection1_FlagFact"];
+            readonly pairs_cut: components["schemas"]["UiProjection1_CountFact"];
+            readonly pointer: components["schemas"]["UiProjection1_Pointer"];
+            readonly rank: components["schemas"]["UiProjection1_PositiveCountFact"];
+            readonly style: components["schemas"]["UiProjection1_TopologyStyleFact"];
+        };
+        /** TopologyStructuralLinkRowList */
+        readonly UiProjection1_TopologyStructuralLinkRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: [
+                components["schemas"]["UiProjection1_TopologyStructuralLinkRow"],
+                ...components["schemas"]["UiProjection1_TopologyStructuralLinkRow"][]
+            ];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: readonly components["schemas"]["UiProjection1_TopologyStructuralLinkRow"][];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** TopologyStyleFact */
+        readonly UiProjection1_TopologyStyleFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: components["schemas"]["UiProjection1_TopologyStyleValue"];
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
+        };
+        /** TopologyStyleValue */
+        readonly UiProjection1_TopologyStyleValue: {
+            /** @enum {string} */
+            readonly glyph: "device" | "router" | "ap" | "unknown" | "none";
+            readonly label: string;
+            /** @enum {string} */
+            readonly token: "observed" | "uncollected" | "unverified" | "not_observed" | "analysis_unavailable" | "link_up" | "link_down" | "link_unknown" | "structural_link" | "structural_bridge" | "impact_high" | "impact_medium" | "impact_low" | "impact_info" | "path_reached" | "path_partial_drop" | "path_observed_discard" | "path_no_route_observed" | "path_lower_bound" | "path_withheld";
+        };
         /** TrunkNativeFact */
         readonly UiProjection1_TrunkNativeFact: {
             readonly basis: string;
@@ -4562,6 +5479,9 @@ export interface components {
             readonly coverage_matrix: components["schemas"]["UiProjection1_CoverageMatrix"];
             readonly failures: components["schemas"]["UiProjection1_Failures"];
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -4772,6 +5692,9 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_AxisList"] & {
@@ -4794,6 +5717,9 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -4858,6 +5784,9 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_CensusRowList"] & {
@@ -4880,6 +5809,9 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -4944,6 +5876,9 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_SourceList"] & {
@@ -4966,6 +5901,9 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -5030,6 +5968,9 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_DeviceRowList"] & {
@@ -5052,6 +5993,9 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -5116,6 +6060,9 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_EndpointRowList"] & {
@@ -5138,6 +6085,9 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -5202,6 +6152,9 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_DualHomedList"] & {
@@ -5224,6 +6177,9 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -5288,6 +6244,9 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_FindingRowList"] & {
@@ -5300,6 +6259,236 @@ export interface components {
             readonly schema: "ui_projection_transport/1";
             /** @constant */
             readonly view: "findings";
+        } | {
+            readonly engine: components["schemas"]["UiProjection1_Engine"];
+            readonly identity: {
+                readonly bytes: number;
+                /** @constant */
+                readonly digest_form: "assesshub-store-blob";
+                readonly sha256: string;
+                readonly snapshot_id: number;
+            };
+            readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"]
+            ];
+            readonly list: components["schemas"]["UiProjection1_Page_TopologyNodeRowList"] & {
+                /** @constant */
+                readonly pointer?: "/nodes";
+            };
+            /** @constant */
+            readonly projection_schema: "ui_projection/1";
+            /** @constant */
+            readonly schema: "ui_projection_transport/1";
+            /** @constant */
+            readonly view: "topology";
+        } | {
+            readonly engine: components["schemas"]["UiProjection1_Engine"];
+            readonly identity: {
+                readonly bytes: number;
+                /** @constant */
+                readonly digest_form: "assesshub-store-blob";
+                readonly sha256: string;
+                readonly snapshot_id: number;
+            };
+            readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"]
+            ];
+            readonly list: components["schemas"]["UiProjection1_Page_TopologyCableRowList"] & {
+                /** @constant */
+                readonly pointer?: "/cables";
+            };
+            /** @constant */
+            readonly projection_schema: "ui_projection/1";
+            /** @constant */
+            readonly schema: "ui_projection_transport/1";
+            /** @constant */
+            readonly view: "topology";
+        } | {
+            readonly engine: components["schemas"]["UiProjection1_Engine"];
+            readonly identity: {
+                readonly bytes: number;
+                /** @constant */
+                readonly digest_form: "assesshub-store-blob";
+                readonly sha256: string;
+                readonly snapshot_id: number;
+            };
+            readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"]
+            ];
+            readonly list: components["schemas"]["UiProjection1_Page_TopologyStructuralLinkRowList"] & {
+                /** @constant */
+                readonly pointer?: "/structural_links";
+            };
+            /** @constant */
+            readonly projection_schema: "ui_projection/1";
+            /** @constant */
+            readonly schema: "ui_projection_transport/1";
+            /** @constant */
+            readonly view: "topology";
+        } | {
+            readonly engine: components["schemas"]["UiProjection1_Engine"];
+            readonly identity: {
+                readonly bytes: number;
+                /** @constant */
+                readonly digest_form: "assesshub-store-blob";
+                readonly sha256: string;
+                readonly snapshot_id: number;
+            };
+            readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"]
+            ];
+            readonly list: components["schemas"]["UiProjection1_Page_TopologyImpactRowList"] & {
+                /** @constant */
+                readonly pointer?: "/failure_impact";
+            };
+            /** @constant */
+            readonly projection_schema: "ui_projection/1";
+            /** @constant */
+            readonly schema: "ui_projection_transport/1";
+            /** @constant */
+            readonly view: "topology";
+        } | {
+            readonly engine: components["schemas"]["UiProjection1_Engine"];
+            readonly identity: {
+                readonly bytes: number;
+                /** @constant */
+                readonly digest_form: "assesshub-store-blob";
+                readonly sha256: string;
+                readonly snapshot_id: number;
+            };
+            readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"]
+            ];
+            readonly list: components["schemas"]["UiProjection1_Page_TopologyAddressRowList"] & {
+                /** @constant */
+                readonly pointer?: "/source_addresses";
+            };
+            /** @constant */
+            readonly projection_schema: "ui_projection/1";
+            /** @constant */
+            readonly schema: "ui_projection_transport/1";
+            /** @constant */
+            readonly view: "topology";
         } | {
             readonly engine: components["schemas"]["UiProjection1_Engine"];
             readonly identity: {
@@ -5826,6 +7015,50 @@ export interface components {
             /** @constant */
             readonly view: "device";
         };
+        readonly UiProjectionPathResponse: {
+            readonly engine: components["schemas"]["UiProjection1_Engine"];
+            readonly identity: {
+                readonly bytes: number;
+                /** @constant */
+                readonly digest_form: "assesshub-store-blob";
+                readonly sha256: string;
+                readonly snapshot_id: number;
+            };
+            readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"]
+            ];
+            readonly payload: components["schemas"]["UiProjection1_Path"];
+            /** @constant */
+            readonly projection_schema: "ui_projection/1";
+            /** @constant */
+            readonly schema: "ui_projection_transport/1";
+            /** @constant */
+            readonly view: "path";
+        };
         readonly UiProjectionViewResponse: {
             readonly engine: components["schemas"]["UiProjection1_Engine"];
             readonly identity: {
@@ -5836,6 +7069,9 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -5912,6 +7148,9 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             /** Trust */
@@ -5944,6 +7183,9 @@ export interface components {
                     readonly unattributed: boolean;
                 };
                 readonly limitations: [
+                    components["schemas"]["UiProjection1_Limitation"],
+                    components["schemas"]["UiProjection1_Limitation"],
+                    components["schemas"]["UiProjection1_Limitation"],
                     components["schemas"]["UiProjection1_Limitation"],
                     components["schemas"]["UiProjection1_Limitation"],
                     components["schemas"]["UiProjection1_Limitation"],
@@ -6012,6 +7254,9 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -6124,6 +7369,9 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             /** Findings */
@@ -6141,6 +7389,77 @@ export interface components {
             readonly schema: "ui_projection_transport/1";
             /** @constant */
             readonly view: "findings";
+        } | {
+            readonly engine: components["schemas"]["UiProjection1_Engine"];
+            readonly identity: {
+                readonly bytes: number;
+                /** @constant */
+                readonly digest_form: "assesshub-store-blob";
+                readonly sha256: string;
+                readonly snapshot_id: number;
+            };
+            readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"]
+            ];
+            /** Topology */
+            readonly payload: {
+                readonly cables: components["schemas"]["UiProjection1_Page_TopologyCableRowList"] & {
+                    /** @constant */
+                    readonly pointer?: "/cables";
+                };
+                readonly failure_impact: components["schemas"]["UiProjection1_Page_TopologyImpactRowList"] & {
+                    /** @constant */
+                    readonly pointer?: "/failure_impact";
+                };
+                readonly legend: components["schemas"]["UiProjection1_TopologyLegend"];
+                readonly nodes: components["schemas"]["UiProjection1_Page_TopologyNodeRowList"] & {
+                    /** @constant */
+                    readonly pointer?: "/nodes";
+                };
+                readonly source_addresses: components["schemas"]["UiProjection1_Page_TopologyAddressRowList"] & {
+                    /** @constant */
+                    readonly pointer?: "/source_addresses";
+                };
+                readonly structural_links: components["schemas"]["UiProjection1_Page_TopologyStructuralLinkRowList"] & {
+                    /** @constant */
+                    readonly pointer?: "/structural_links";
+                };
+                /** TopologySummary */
+                readonly summary: {
+                    readonly cables: components["schemas"]["UiProjection1_CountFact"];
+                    readonly nodes: components["schemas"]["UiProjection1_CountFact"];
+                };
+            };
+            /** @constant */
+            readonly projection_schema: "ui_projection/1";
+            /** @constant */
+            readonly schema: "ui_projection_transport/1";
+            /** @constant */
+            readonly view: "topology";
         } | {
             readonly engine: components["schemas"]["UiProjection1_Engine"];
             readonly identity: {
@@ -7857,7 +9176,7 @@ export interface operations {
             readonly header?: never;
             readonly path: {
                 readonly snapshot_id: number;
-                readonly view: "overview" | "trust" | "inventory" | "findings" | "device";
+                readonly view: "overview" | "trust" | "inventory" | "findings" | "topology" | "device";
             };
             readonly cookie?: never;
         };
@@ -7894,7 +9213,7 @@ export interface operations {
             readonly header?: never;
             readonly path: {
                 readonly snapshot_id: number;
-                readonly view: "overview" | "trust" | "inventory" | "findings" | "device";
+                readonly view: "overview" | "trust" | "inventory" | "findings" | "topology" | "device";
             };
             readonly cookie?: never;
         };
@@ -7907,6 +9226,40 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["UiProjectionListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly get_ui_projection_path: {
+        readonly parameters: {
+            readonly query: {
+                readonly dst_ip: string;
+                readonly src_ip: string;
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly snapshot_id: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["UiProjectionPathResponse"];
                 };
             };
             /** @description Validation Error */

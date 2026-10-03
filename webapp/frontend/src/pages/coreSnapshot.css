@@ -42,6 +42,49 @@
 .projection-shell details > summary { cursor: pointer; color: var(--text); padding: 12px 0; font-weight: 650; }
 .projection-engineering[open] { display: grid; gap: 18px; }
 .projection-source { margin-top: 24px; }
+.topology-workspace { display: grid; grid-template-columns: minmax(0,2fr) minmax(280px,1fr); gap: 20px; }
+.topology-map-panel { min-width: 0; }
+.topology-map-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.topology-map-toolbar h2 { flex: 1; margin: 0; }
+.topology-map-toolbar label { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.topology-map { width: 100%; min-height: 330px; max-height: 620px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); margin-top: 16px; }
+.topology-tone-neutral { --topology-tone: var(--text-dim); }
+.topology-tone-muted { --topology-tone: var(--text-dim); opacity: .72; }
+.topology-tone-info { --topology-tone: var(--accent); }
+.topology-tone-warning { --topology-tone: var(--warn, #d99a32); }
+.topology-tone-danger { --topology-tone: var(--crit); }
+.topology-edge { fill: none; stroke: var(--topology-tone); stroke-width: 3; cursor: pointer; }
+.topology-edge[data-weight="strong"] { stroke-width: 5; }
+.topology-edge[data-stroke="dashed"], .topology-node[data-stroke="dashed"] { stroke-dasharray: 6 4; }
+.topology-edge[data-stroke="dotted"], .topology-node[data-stroke="dotted"] { stroke-dasharray: 1 5; stroke-linecap: round; }
+.topology-edge.selected, .topology-edge:focus { outline: none; stroke-width: 8; }
+.topology-node { color: var(--topology-tone); fill: var(--surface); stroke: currentColor; stroke-width: 2; cursor: pointer; }
+.topology-node[data-weight="strong"] { stroke-width: 3; }
+.topology-node text { fill: var(--text); stroke: none; font: 12px var(--sans); }
+.topology-node .topology-node-halo { fill: none; stroke: var(--accent); opacity: 0; stroke-dasharray: none; }
+.topology-node.selected .topology-node-halo, .topology-node:focus .topology-node-halo { opacity: 1; stroke-width: 3; }
+.topology-node.path-node .topology-node-halo { opacity: 1; stroke-dasharray: 3 3; }
+.topology-node:focus { outline: none; }
+.topology-inspector { max-height: 920px; overflow: auto; overflow-wrap: anywhere; }
+.topology-inspector .projection-fact-grid { grid-template-columns: 1fr; }
+.topology-census { display: flex; gap: 8px 24px; flex-wrap: wrap; padding-left: 18px; font-size: 12px; color: var(--text-dim); }
+.topology-legend ul { display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 10px; list-style: none; padding: 0; }
+.topology-legend li { display: flex; gap: 9px; align-items: baseline; font-size: 12px; }
+.topology-legend code { font-size: 10px; }
+.topology-legend-swatch { display: inline-block; flex: 0 0 22px; border-top: 2px solid var(--topology-tone); }
+.topology-legend-swatch[data-stroke="dashed"] { border-top-style: dashed; }
+.topology-legend-swatch[data-stroke="dotted"] { border-top-style: dotted; }
+.topology-legend-swatch[data-weight="strong"] { border-top-width: 4px; }
+.topology-path-form form { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+.topology-path-form label { display: grid; gap: 6px; flex: 1; min-width: 220px; color: var(--text-dim); font-size: 13px; }
+.topology-path-form input { width: 100%; min-height: 42px; }
+.topology-hops { display: grid; gap: 14px; padding-left: 24px; }
+.topology-hops > li { padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
+.topology-address-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.topology-records > .projection-list { margin-top: 16px; }
+.topology-scope iframe { width: 100%; height: 600px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.topology-scope-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+@media (max-width: 1050px) { .topology-workspace { grid-template-columns: 1fr; } .topology-inspector { max-height: none; } }
 .projection-cap { padding: 8px 16px; border: 1px dashed var(--border-strong); border-radius: 8px; }
 .projection-record { display: grid; gap: 6px; margin: 0; }
 .projection-record > div { display: grid; grid-template-columns: minmax(80px,130px) minmax(0,1fr); gap: 12px; }

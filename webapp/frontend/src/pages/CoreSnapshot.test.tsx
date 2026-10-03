@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CoreSnapshot from "./CoreSnapshot";
-import { overviewFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, published } from "../test/projectionFixtures";
+import { overviewFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, published, topologyFixture } from "../test/projectionFixtures";
 
 function Harness() {
   const navigate = useNavigate();
@@ -32,6 +32,21 @@ describe("Core snapshot route", () => {
     fireEvent.click(screen.getByRole("link", { name: "Trust" }));
     await screen.findByRole("heading", { name: "Evidence coverage" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+  it("opens the fifth Topology & Paths tab through the projection without a legacy graph or snapshot fetch", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/ui-projection/overview?")) return new Response(JSON.stringify(overviewFixture()));
+      if (url.includes("/ui-projection/topology?")) return new Response(JSON.stringify(topologyFixture()));
+      if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false, href: null }));
+      throw new Error(`Unexpected legacy request: ${url}`);
+    });
+    show(); await screen.findByText("Synthetic fleet needs review");
+    fireEvent.click(screen.getByRole("link", { name: "Topology & Paths" }));
+    await screen.findByRole("img", { name: "Engine topology diagram" });
+    expect(screen.getByRole("heading", { name: "Investigate an IP path" })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "Topology & Paths" })).toHaveLength(1);
+    expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
   });
   it("suppresses a late old-snapshot response", async () => {
     let resolveOld!: (response: Response) => void;

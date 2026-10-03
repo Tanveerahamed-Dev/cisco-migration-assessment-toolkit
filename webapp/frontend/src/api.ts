@@ -163,6 +163,15 @@ export interface ScopeView {
     | string;
   href: string | null;
   detail: string;
+  /** Current same-hub engine-contract capability; legacy href above is independent. */
+  engine_projection?: {
+    available: boolean;
+    protocol: string;
+    projection_schema: string;
+    style_schema: string;
+    href: string | null;
+    detail: string;
+  };
 }
 
 export interface CurrentBaselineBlocker {
@@ -1472,7 +1481,7 @@ export const api = {
   causalFlows: (id: number) => fetch(`/api/snapshots/${id}/causal_flows`).then((r) => j<CausalFlows>(r)),
   cableMap: (id: number) => fetch(`/api/snapshots/${id}/cable_map`).then((r) => j<CableMap>(r)),
   explorerUrl: (id: number) => `/api/snapshots/${id}/explorer`,
-  scopeView: (id: number) => fetch(`/api/snapshots/${id}/scope-view`).then((r) => j<ScopeView>(r)),
+  scopeView: (id: number) => fetch(`/api/snapshots/${id}/scope-view`, { cache: "no-store" }).then((r) => j<ScopeView>(r)),
   deliverableUrl: (id: number, kind: string) => `/api/snapshots/${id}/deliverable/${kind}`,
   compare: (
     oldId: number,

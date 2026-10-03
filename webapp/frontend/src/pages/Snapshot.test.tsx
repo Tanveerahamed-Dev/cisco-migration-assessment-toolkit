@@ -624,14 +624,14 @@ describe("Open in Atlas Scope", () => {
     // top-level navigation in this browsing context — not a new-window opener, not an iframe
     expect(link).not.toHaveAttribute("target");
     expect(document.querySelector('iframe[src^="/scope"]')).toBeNull();
-    expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view");
+    expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view", { cache: "no-store" });
   });
 
   it("renders no link when the server reports the scope view unavailable", async () => {
     mockScope({ available: false, status: "not_built", href: null, detail: "Atlas Scope is not built in this installation." });
     renderSnap();
     await screen.findByRole("heading", { name: "Demo Fleet" });
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view"));
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view", { cache: "no-store" }));
     expect(screen.queryByRole("link", { name: /Atlas Scope/ })).toBeNull();
   });
 
@@ -639,7 +639,7 @@ describe("Open in Atlas Scope", () => {
     mockScope({ detail: "Snapshot not found" }, 404);
     renderSnap();
     await screen.findByRole("heading", { name: "Demo Fleet" });
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view"));
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view", { cache: "no-store" }));
     expect(screen.queryByRole("link", { name: /Atlas Scope/ })).toBeNull();
   });
 
@@ -667,7 +667,7 @@ describe("Open in Atlas Scope", () => {
     );
     expect(await screen.findByRole("link", { name: /Open in Atlas Scope/ })).toHaveAttribute("href", "/scope/snapshots/1/");
     fireEvent.click(screen.getByRole("button", { name: "go-two" }));
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/2/scope-view"));
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/2/scope-view", { cache: "no-store" }));
     await waitFor(() => expect(screen.queryByRole("link", { name: /Atlas Scope/ })).toBeNull());
   });
 
@@ -675,7 +675,7 @@ describe("Open in Atlas Scope", () => {
     mockScope({ available: true, status: "ready", href: "https://evil.example/scope/", detail: "" });
     renderSnap();
     await screen.findByRole("heading", { name: "Demo Fleet" });
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view"));
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith("/api/snapshots/1/scope-view", { cache: "no-store" }));
     expect(screen.queryByRole("link", { name: /Atlas Scope/ })).toBeNull();
   });
 });
