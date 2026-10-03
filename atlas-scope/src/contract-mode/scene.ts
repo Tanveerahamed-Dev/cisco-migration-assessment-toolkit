@@ -1,8 +1,8 @@
 /** Same Scope geometry, engine-owned encodings. No legacy scene, cable classifier or forwarding imports. */
 import {
-  AmbientLight, BoxGeometry, BufferGeometry, Color, DirectionalLight, EdgesGeometry,
+  AmbientLight, Box3, BoxGeometry, BufferGeometry, Color, DirectionalLight, EdgesGeometry,
   Group, InstancedMesh, LineBasicMaterial, LineSegments, Matrix4, MeshStandardMaterial,
-  OctahedronGeometry, PerspectiveCamera, Raycaster, Scene, Vector2, WebGLRenderer,
+  OctahedronGeometry, PerspectiveCamera, Raycaster, Scene, Vector2, Vector3, WebGLRenderer,
   type Material,
 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -75,6 +75,8 @@ export function createContractScene(canvas: HTMLCanvasElement, model: CompleteTo
   const linkTargets = new Map<LineSegments2, readonly SelectionTarget[]>();
   let disposed = false, initializing = true, frame: number | null = null;
   let labels: CSS2DRenderer | null = null;
+  let nodeLabel: CSS2DObject | null = null, hovered: PositionedNode | null = null;
+  let autoFit = true, fitting = false;
   let currentLayer: LinkLayer = "cables";
   let currentPath: PathDocument | null = null;
   let selected: SelectionTarget | null = null;
@@ -93,7 +95,7 @@ export function createContractScene(canvas: HTMLCanvasElement, model: CompleteTo
   }
   function render(): void {
     if (disposed) return;
-    try { renderer.render(scene, camera); labels?.render(scene, camera); }
+    try { renderer.render(scene, camera); updateLabel(); labels?.render(scene, camera); }
     catch {
       if (initializing) throw new ContractRefusal("RENDER_FAILED");
       dispose(); options.onFailure();
@@ -103,6 +105,7 @@ export function createContractScene(canvas: HTMLCanvasElement, model: CompleteTo
     if (disposed || frame !== null) return;
     frame = requestAnimationFrame(() => { frame = null; render(); });
   }
+  function controlsChanged(): void { if (!fitting) autoFit = false; requestRender(); }
   function dispose(): void {
     if (disposed) return;
     disposed = true;
@@ -111,14 +114,17 @@ export function createContractScene(canvas: HTMLCanvasElement, model: CompleteTo
     resizeObserver?.disconnect();
     window.removeEventListener("resize", resize);
     canvas.removeEventListener("click", clicked);
+    canvas.removeEventListener("pointermove", moved);
+    canvas.removeEventListener("pointerleave", left);
     canvas.removeEventListener("webglcontextlost", contextLost);
-    controls.removeEventListener("change", requestRender);
+    controls.removeEventListener("change", controlsChanged);
     controls.dispose();
     for (const geometry of geometries) geometry.dispose();
     for (const material of materials) material.dispose();
     geometries.clear(); materials.clear(); scene.clear();
     linkTargets.clear();
     if (labels) { releaseFocusFrom(labels.domElement, null); labels.domElement.remove(); labels = null; }
+    nodeLabel = null; hovered = null;
     try { renderer.dispose(); } finally { renderer.forceContextLoss(); }
   }
   function contextLost(event: Event): void { event.preventDefault(); if (!disposed) { dispose(); options.onFailure(); } }
@@ -129,15 +135,47 @@ export function createContractScene(canvas: HTMLCanvasElement, model: CompleteTo
     renderer.setSize(width, height, false);
     labels?.setSize(width, height);
     for (const material of materials) if (material instanceof LineMaterial) material.resolution.set(width, height);
-    camera.aspect = width / height; camera.updateProjectionMatrix(); requestRender();
+    camera.aspect = width / height; camera.updateProjectionMatrix();
+    if (autoFit) fitCamera();
+    requestRender();
   }
   const resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(resize) : null;
+  /** Fit the display geometry, not a network property. Corner depths matter in perspective. */
+  function fitCamera(): void {
+    const bounds = new Box3().setFromObject(base);
+    if (bounds.isEmpty()) bounds.set(new Vector3(-16, 0, -16), new Vector3(16, 24, 16));
+    bounds.expandByScalar(2);
+    bounds.max.y = Math.max(bounds.max.y, 24); // Existing link/path arcs peak at 22 display units.
+    const center = bounds.getCenter(new Vector3()), direction = new Vector3(0.6, 0.85, 1.05).normalize();
+    camera.position.copy(center).add(direction); camera.lookAt(center);
+    const inverse = camera.quaternion.clone().invert(), tangent = Math.tan(camera.fov * Math.PI / 360);
+    let distance = 1;
+    for (const x of [bounds.min.x, bounds.max.x]) for (const y of [bounds.min.y, bounds.max.y]) for (const z of [bounds.min.z, bounds.max.z]) {
+      const point = new Vector3(x, y, z).sub(center).applyQuaternion(inverse);
+      distance = Math.max(distance, point.z + Math.abs(point.x) / (tangent * camera.aspect * 0.9),
+        point.z + Math.abs(point.y) / (tangent * 0.9));
+    }
+    camera.position.copy(center).addScaledVector(direction, distance);
+    camera.far = distance + bounds.getSize(new Vector3()).length() * 4;
+    camera.updateProjectionMatrix(); camera.updateMatrixWorld();
+    controls.target.copy(center); controls.minDistance = Math.min(20, distance / 3); controls.maxDistance = Math.max(100, distance * 4);
+    fitting = true;
+    try { controls.update(); } finally { fitting = false; }
+  }
   function reset(): void {
     if (disposed) return;
-    const span = Math.max(40, ...[...nodes.values()].flatMap(({ position }) => [Math.abs(position.x) * 2 + 32, Math.abs(position.z) * 2 + 30]));
-    controls.target.set(0, 0, 0); camera.position.set(span * 0.6, span * 0.85, span * 1.05);
-    camera.far = span * 10; camera.updateProjectionMatrix();
-    controls.minDistance = 20; controls.maxDistance = span * 4; controls.update(); render();
+    autoFit = true; fitCamera(); render();
+  }
+  function updateLabel(): void {
+    if (!nodeLabel) return;
+    const node = hovered ?? (selected?.list === "nodes" ? nodes.get(rowKey(selected.row)) : null);
+    nodeLabel.visible = !!node;
+    if (!node) return;
+    nodeLabel.element.textContent = node.row.host.state === "published" ? node.row.host.value : node.row.host.state;
+    nodeLabel.position.set(node.position.x, node.position.y + 9, node.position.z);
+    camera.updateMatrixWorld();
+    const screen = nodeLabel.position.clone().project(camera);
+    nodeLabel.center.set(screen.x < -0.4 ? 0 : screen.x > 0.4 ? 1 : 0.5, 1.15);
   }
   function line(group: Group, coordinates: readonly number[], entry: Entry): LineSegments2 | null {
     if (!coordinates.length) return null;
@@ -226,12 +264,23 @@ export function createContractScene(canvas: HTMLCanvasElement, model: CompleteTo
     }
     drawLinks(); drawPath(); drawSelection(); render();
   }
-  function clicked(event: MouseEvent): void {
-    if (disposed) return;
+  function positionRay(event: Pick<MouseEvent, "clientX" | "clientY">): boolean {
     const bounds = canvas.getBoundingClientRect();
-    if (bounds.width <= 0 || bounds.height <= 0) return;
+    if (bounds.width <= 0 || bounds.height <= 0) return false;
     pointer.set((event.clientX - bounds.left) / bounds.width * 2 - 1, -(event.clientY - bounds.top) / bounds.height * 2 + 1);
     ray.setFromCamera(pointer, camera);
+    return true;
+  }
+  function moved(event: PointerEvent): void {
+    if (disposed) return;
+    const hit = event.buttons === 0 && positionRay(event) ? ray.intersectObjects(pickables, false)[0] : undefined;
+    const batch = hit && batches.find((candidate) => candidate.mesh === hit.object);
+    const next = batch && hit.instanceId !== undefined ? batch.nodes[hit.instanceId] ?? null : null;
+    if (next !== hovered) { hovered = next; requestRender(); }
+  }
+  function left(): void { if (hovered) { hovered = null; requestRender(); } }
+  function clicked(event: MouseEvent): void {
+    if (disposed || !positionRay(event)) return;
     const hit = ray.intersectObjects([...pickables, ...linkTargets.keys()], false)[0];
     if (hit?.object instanceof LineSegments2 && hit.faceIndex !== undefined && hit.faceIndex !== null) {
       options.onSelect(linkTargets.get(hit.object)?.[hit.faceIndex] ?? null); return;
@@ -243,14 +292,13 @@ export function createContractScene(canvas: HTMLCanvasElement, model: CompleteTo
   try {
     labels = new CSS2DRenderer(); labels.domElement.className = "contract-scope-labels";
     labels.domElement.setAttribute("aria-hidden", "true"); canvas.parentElement?.append(labels.domElement);
+    const text = document.createElement("span"); text.className = "contract-scope-node-label";
+    nodeLabel = new CSS2DObject(text); nodeLabel.visible = false; base.add(nodeLabel);
     const grouped = new Map<Style["glyph"], PositionedNode[]>();
     for (const node of nodes.values()) {
       const style = suppliedStyle(node.row.style, legend); entryFor(style);
       if (!["device", "router", "ap", "unknown", "none"].includes(style.glyph)) throw new ContractRefusal("UNSUPPORTED_CONTRACT");
       const list = grouped.get(style.glyph) ?? []; list.push(node); grouped.set(style.glyph, list);
-      const text = document.createElement("span"); text.className = "contract-scope-node-label";
-      text.textContent = node.row.host.state === "published" ? node.row.host.value : node.row.host.state;
-      const label = new CSS2DObject(text); label.position.set(node.position.x, node.position.y + 7, node.position.z); base.add(label);
     }
     for (const [glyph, batch] of grouped) {
       const parts = glyph === "device" || glyph === "router" || glyph === "ap" ? buildChassis(glyph, { bevelSegments: 2, fineDetail: false }) : null;
@@ -263,14 +311,15 @@ export function createContractScene(canvas: HTMLCanvasElement, model: CompleteTo
       }
     }
     canvas.addEventListener("click", clicked); canvas.addEventListener("webglcontextlost", contextLost);
-    controls.addEventListener("change", requestRender); window.addEventListener("resize", resize); resizeObserver?.observe(canvas);
+    canvas.addEventListener("pointermove", moved); canvas.addEventListener("pointerleave", left);
+    controls.addEventListener("change", controlsChanged); window.addEventListener("resize", resize); resizeObserver?.observe(canvas);
     controls.listenToKeyEvents(canvas);
-    reset(); resize(); theme(); initializing = false;
+    resize(); reset(); theme(); initializing = false;
   } catch (error) { dispose(); throw error instanceof ContractRefusal ? error : new ContractRefusal("RENDER_FAILED"); }
   return {
     select(target) {
       if (disposed) return;
-      selected = target;
+      selected = target; hovered = null;
       if (target?.list === "cables" || target?.list === "structural_links") { currentLayer = target.list; drawLinks(); }
       drawSelection(); render();
     },

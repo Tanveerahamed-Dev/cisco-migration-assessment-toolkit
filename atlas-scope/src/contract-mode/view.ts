@@ -42,7 +42,7 @@ export function createContractView(root: HTMLElement, model: CompleteTopology, o
   const selection = document.createElement("p"); selection.className = "contract-scope-selection"; selection.setAttribute("role", "status");
   const path = document.createElement("div"); path.className = "contract-scope-path"; path.setAttribute("aria-live", "polite");
   const note = document.createElement("p"); note.className = "contract-scope-note";
-  note.textContent = "Only unambiguous engine endpoint joins are drawn. All records remain available in the 2D view. Path arcs show hop order, not physical cable attribution.";
+  note.textContent = "Hover or select a node to show its name. Only unambiguous engine endpoint joins are drawn. All records remain available in the 2D view. Path arcs show hop order, not physical cable attribution.";
   const legend = document.createElement("details"); legend.className = "contract-scope-legend";
   const legendTitle = document.createElement("summary"); legendTitle.textContent = "Engine legend and limitations";
   const list = document.createElement("ul");
