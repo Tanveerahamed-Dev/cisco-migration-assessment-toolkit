@@ -64,8 +64,10 @@ test("the lock resolves the Vinext image-size edge only to the tracked local pac
   const lock = JSON.parse(readFileSync(path.join(projectRoot, "package-lock.json"), "utf8"));
 
   assert.equal(manifest.overrides["image-size"], undefined);
+  // The exact Vinext override object: this edge plus the bounded braces edge, nothing else.
   assert.deepEqual(manifest.overrides["vinext@0.0.50"], {
     "image-size": "file:vendor/bounded-image-size",
+    braces: "file:vendor/bounded-braces",
   });
   assert.deepEqual(lock.packages["node_modules/image-size"], {
     resolved: "vendor/bounded-image-size",
@@ -330,8 +332,8 @@ test("application source contains no Vinext or Next image-parser entry points", 
   }
 
   const pathSetDigest = createHash("sha256").update(`${JSON.stringify(scannedPaths)}\n`).digest("hex");
-  assert.equal(scannedPaths.length, 71);
-  assert.equal(pathSetDigest, "12682640a3ca942a280c7c46aee34027eb51c18889584ffd6d9cdebc9716c1db");
+  assert.equal(scannedPaths.length, 72);
+  assert.equal(pathSetDigest, "772dd9755e812c3397f00b4239c4b03e23b5fa6d5739dfcc4b200c76da5d2b8a");
   assert.deepEqual(findings.sort(), []);
 });
 

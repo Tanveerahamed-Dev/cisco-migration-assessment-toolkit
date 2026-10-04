@@ -111,6 +111,9 @@ master-reference/**/*.css text eol=lf
 # receipt is computed over selected Git blobs, so every checkout must
 # materialize the same LF bytes for local verification and package tests.
 master-reference/vendor/bounded-image-size/** text eol=lf
+# The bounded braces package is published braces 3.0.3 plus a recorded patch;
+# its contract test rebuilds the published bytes, which are LF, from it.
+master-reference/vendor/bounded-braces/** text eol=lf
 
 # Local source archives are allowlisted for product source, not engagement or
 # operator-state material. This does not rewrite Git history; it prevents

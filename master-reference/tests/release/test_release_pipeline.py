@@ -2236,15 +2236,27 @@ def test_dependency_assessment_preserves_the_next_vendored_parser_block(version:
     assert "current source-authenticated advisory" in limits[2]
 
 
+def _registry_entry(package: str) -> object:
+    entries = [entry for entry in release_pipeline._BOUNDED_LOCAL_SUBSTITUTIONS if entry.package == package]
+    assert len(entries) == 1
+    return entries[0]
+
+
+def _registered_vendor_paths(repo: Path) -> list[str]:
+    return sorted(
+        path.relative_to(repo).as_posix()
+        for entry in release_pipeline._BOUNDED_LOCAL_SUBSTITUTIONS
+        for path in (repo / entry.source_prefix).rglob("*")
+        if path.is_file()
+    )
+
+
 def _tracked_dependency_sbom() -> dict[str, object]:
     repo = MASTER_REFERENCE.parent
     sources = {
         relative: (repo / relative).read_bytes()
-        for relative in (*_tracked_npm_lockfiles(repo), *PYTHON_DECLARATIONS)
+        for relative in (*_tracked_npm_lockfiles(repo), *PYTHON_DECLARATIONS, *_registered_vendor_paths(repo))
     }
-    vendor_root = MASTER_REFERENCE / "vendor" / "bounded-image-size"
-    for source_path in sorted(path for path in vendor_root.rglob("*") if path.is_file()):
-        sources[source_path.relative_to(repo).as_posix()] = source_path.read_bytes()
     return build_cyclonedx(sources, "a" * 40, "b" * 64)
 
 
@@ -2266,29 +2278,33 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
         component["name"]: (component, release_pipeline._sbom_component_properties(component))
         for component in sbom["components"]
         if component.get("name")
-        in {"bounded-image-size", "image-size", "next", "node-html-parser", "vinext"}
+        in {"bounded-braces", "bounded-image-size", "braces", "image-size", "next", "node-html-parser", "vinext"}
     }
     fflate_rows = {
         (release_pipeline._sbom_component_properties(component).get("atlas:lockfile"), component.get("version"))
         for component in sbom["components"]
         if component.get("name") == "fflate"
     }
+    vite_versions = sorted(
+        str(component.get("version")) for component in sbom["components"] if component.get("name") == "vite"
+    )
 
-    assert gate == "blocked_external_current_advisory_applicability_review_required"
-    assert len(limits) == 3
+    # Both bounded substitutions verify; Vite's compiled braces copies keep the gate blocked.
+    assert gate == "blocked_compiled_braces_copy_outside_npm_resolution_and_external_review_required"
+    assert len(limits) == 5
     assert release_pipeline._verified_miniflare_sharp_closure(sbom) is True
     assert "next" not in component_rows
-    assert component_rows["image-size"][0].get("version") is None
-    assert component_rows["bounded-image-size"][0]["licenses"] == [
-        {"expression": "LicenseRef-Proprietary"}
-    ]
-    assert component_rows["bounded-image-size"][1]["atlas:localPackageSourceDigest"] == (
-        release_pipeline._BOUNDED_IMAGE_PACKAGE_SOURCE_DIGEST
-    )
-    assert component_rows["bounded-image-size"][1]["atlas:localPackageSourceFiles"] == "4"
-    assert component_rows["bounded-image-size"][1]["atlas:localPackageSourceBytes"] == (
-        release_pipeline._BOUNDED_IMAGE_PACKAGE_SOURCE_BYTES
-    )
+    for package in ("image-size", "braces"):
+        entry = _registry_entry(package)
+        group, name = entry.target_name.split("/", 1)
+        component, properties = component_rows[name]
+        assert component_rows[package][0].get("version") is None
+        assert (component["group"], component["version"]) == (group, entry.target_version)
+        assert component["licenses"] == [{"expression": entry.target_license}]
+        assert properties["atlas:localPackageSourceDigest"] == entry.source_digest
+        assert properties["atlas:localPackageSourceFiles"] == entry.source_files
+        assert properties["atlas:localPackageSourceBytes"] == entry.source_bytes
+    assert component_rows["bounded-braces"][0]["licenses"] == [{"expression": "MIT"}]
     assert component_rows["node-html-parser"][0]["version"] == "9.0.3"
     assert component_rows["node-html-parser"][1]["atlas:developmentOnly"] == "true"
     # Every tracked lockfile is inventoried, including atlas-scope/'s.
@@ -2297,9 +2313,14 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
         ("master-reference/package-lock.json", "0.7.5"),
         ("webapp/frontend/package-lock.json", "0.8.3"),
     }
+    assert vite_versions == ["8.2.0", "8.2.1", "8.2.2"]
     assert "GHSA-w3rx-r6r6-pgpr" not in " ".join(limits)
     assert "GHSA-rgj7-g3m4-5g8c in the current build graph only" in limits[0]
-    assert "current source-authenticated advisory" in limits[2]
+    assert limits[1] == _registry_entry("image-size").limitation
+    assert limits[2] == _registry_entry("braces").limitation
+    assert all(version in limits[3] for version in vite_versions)
+    assert "outside npm override resolution" in limits[3]
+    assert "current source-authenticated advisory" in limits[4]
 
 
 @pytest.mark.parametrize(
@@ -2372,11 +2393,9 @@ def test_dependency_sources_preserve_the_scoped_override_and_full_local_package(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = MASTER_REFERENCE.parent
-    vendor_paths = sorted(
-        path.relative_to(repo).as_posix()
-        for path in (MASTER_REFERENCE / "vendor" / "bounded-image-size").rglob("*")
-        if path.is_file()
-    )
+    vendor_paths = _registered_vendor_paths(repo)
+    assert any("/bounded-image-size/" in path for path in vendor_paths)
+    assert any("/bounded-braces/" in path for path in vendor_paths)
     expected = set(_tracked_npm_lockfiles(repo)) | set(PYTHON_DECLARATIONS) | {
         "master-reference/package.json",
         *vendor_paths,
@@ -2420,6 +2439,580 @@ def test_dependency_sources_reject_an_unscoped_override_even_when_the_lock_alias
 
     monkeypatch.setattr(release_pipeline, "read_bound_source_blob", selected_blob)
     with pytest.raises(ReleaseInputError, match="not scoped to exact Vinext 0.0.50"):
+        release_pipeline._dependency_sources(repo, bundle)
+
+
+# The bounded local substitutions are one closed registry: the source/lock binding, the SBOM topology
+# check and the honest limits all iterate it, and an unregistered or missing substitution refuses.
+
+_BRACES_PATCH_PROVENANCE = (
+    "micromatch/braces#72",
+    "d0d575e55e74a4e0218e5248fafb79efc3e54ebb",
+    "FSDevelop",
+    "OPEN and unmerged",
+    "2026-10-03T03:19:55Z",
+)
+_VINEXT_INTEGRITY = (
+    "sha512-uo72YNnq94NtogETWnhMdFSrkMLwWgeXh5PS6qh8ksajuvAaZX50bXYJ4a6dERQ/AnnXAlNByAGHCjjNxQrvig=="
+)
+_MICROMATCH_INTEGRITY = (
+    "sha512-PXwfBhYu0hBCPw8Dn0E+WDYb7af3dSLVWKi3HGv84IdF4TyFoC0ysxFd0Goxw7nSv4T/PzEJQxsYsEiFCKo2BA=="
+)
+_VITE_INTEGRITIES = {
+    "8.2.0": "sha512-pn+CFpM0lwDeKwmOq1ZaBK/9sjorZcgqxki6MbY/jPEVd9vichIlmlD4HmQ5wdP5EgqQCFRaACBxMC7uEGc6lQ==",
+    "8.2.1": "sha512-EU/eS7BH3XROHh2YnBefjM6DBKA6ZeMZEYQbj7NLWg5wHYlhB8B/Mayd5XsgWq+NFYccDOTemRpdETWR6Ka/lw==",
+    "8.2.2": "sha512-cFKLV/PRgAUlIRm5WjMjJ86jrftzpqcgH+Us+DS8mI3CDNiH30Whrz8uHL3+MOLPAgqbMBAqWdAHAphOAM+z/Q==",
+}
+_BRACES_GATE = "blocked_braces_unpatched_build_time_high_advisory"
+_COMPILED_BRACES_GATE = "blocked_compiled_braces_copy_outside_npm_resolution_and_external_review_required"
+_GENERIC_GATE = "blocked_external_current_advisory_applicability_review_required"
+
+
+def _npm_component(
+    ref: str,
+    name: str,
+    version: str,
+    lock_path: str,
+    integrity: str | None = None,
+    lockfile: str = "master-reference/package-lock.json",
+) -> dict[str, object]:
+    properties = [
+        {"name": "atlas:lockfile", "value": lockfile},
+        {"name": "atlas:lockfilePath", "value": lock_path},
+        {"name": "atlas:recordKind", "value": "resolved-third-party-component"},
+    ]
+    if integrity is not None:
+        properties.append({"name": "atlas:npmIntegrity", "value": integrity})
+    return {
+        "bom-ref": ref,
+        "group": "",
+        "name": name,
+        "version": version,
+        "externalReferences": [
+            {"type": "distribution", "url": f"https://registry.npmjs.org/{name}/-/{name}-{version}.tgz"}
+        ],
+        "properties": properties,
+    }
+
+
+def _bounded_braces_replacement_sbom() -> dict[str, object]:
+    entry = _registry_entry("braces")
+    group, name = entry.target_name.split("/", 1)
+    return {
+        "components": [
+            {
+                "bom-ref": "lock-root",
+                "name": "enhancements-master-reference",
+                "version": "0.1.0",
+                "properties": [
+                    {"name": "atlas:lockfile", "value": "master-reference/package-lock.json"},
+                    {"name": "atlas:lockfilePath", "value": "<root>"},
+                    {"name": "atlas:recordKind", "value": "first-party-workspace"},
+                ],
+            },
+            _npm_component("vinext", "vinext", "0.0.50", "node_modules/vinext", _VINEXT_INTEGRITY),
+            _npm_component("commonjs", "vite-plugin-commonjs", "0.10.4", "node_modules/vite-plugin-commonjs"),
+            _npm_component(
+                "dynamic-import", "vite-plugin-dynamic-import", "1.6.0", "node_modules/vite-plugin-dynamic-import"
+            ),
+            _npm_component(
+                "fast-glob", "fast-glob", "3.3.3", "node_modules/vite-plugin-dynamic-import/node_modules/fast-glob"
+            ),
+            _npm_component("micromatch", "micromatch", "4.0.8", "node_modules/micromatch", _MICROMATCH_INTEGRITY),
+            {
+                "bom-ref": "braces-alias",
+                "group": "",
+                "name": "braces",
+                "properties": [
+                    {"name": "atlas:lockfile", "value": "master-reference/package-lock.json"},
+                    {"name": "atlas:lockfilePath", "value": "node_modules/braces"},
+                    {"name": "atlas:recordKind", "value": "local-link-record"},
+                    {"name": "atlas:resolution", "value": "lockfile-local-link"},
+                ],
+            },
+            {
+                "bom-ref": "braces-target",
+                "group": group,
+                "name": name,
+                "version": entry.target_version,
+                "licenses": [{"expression": "MIT"}],
+                "properties": [
+                    {"name": "atlas:lockfile", "value": "master-reference/package-lock.json"},
+                    {"name": "atlas:lockfilePath", "value": "vendor/bounded-braces"},
+                    {"name": "atlas:recordKind", "value": "local-package-record"},
+                    {"name": "atlas:resolution", "value": "lockfile-local-package"},
+                    {"name": "atlas:localPackageSourceDigest", "value": entry.source_digest},
+                    {"name": "atlas:localPackageSourceFiles", "value": entry.source_files},
+                    {"name": "atlas:localPackageSourceBytes", "value": entry.source_bytes},
+                ],
+            },
+        ],
+        "dependencies": [
+            {"ref": "lock-root", "dependsOn": ["vinext"]},
+            {"ref": "vinext", "dependsOn": ["commonjs"]},
+            {"ref": "commonjs", "dependsOn": ["dynamic-import"]},
+            {"ref": "dynamic-import", "dependsOn": ["fast-glob"]},
+            {"ref": "fast-glob", "dependsOn": ["micromatch"]},
+            {"ref": "micromatch", "dependsOn": ["braces-alias"]},
+            {"ref": "braces-alias", "dependsOn": ["braces-target"]},
+            {"ref": "braces-target", "dependsOn": []},
+        ],
+    }
+
+
+def _set_component_property(sbom: dict[str, object], ref: str, name: str, value: str) -> None:
+    component = next(item for item in sbom["components"] if item["bom-ref"] == ref)  # type: ignore[index]
+    matches = [item for item in component["properties"] if item["name"] == name]
+    assert len(matches) == 1
+    matches[0]["value"] = value
+
+
+def _dependency_row(sbom: dict[str, object], ref: str) -> dict[str, object]:
+    return next(item for item in sbom["dependencies"] if item["ref"] == ref)  # type: ignore[index]
+
+
+def test_bounded_substitutions_are_one_registry_that_every_check_iterates() -> None:
+    registry = release_pipeline._BOUNDED_LOCAL_SUBSTITUTIONS
+    assert [entry.package for entry in registry] == ["image-size", "braces"]
+    # The pre-registry image-size special case is gone rather than kept beside the registry.
+    assert [name for name in dir(release_pipeline) if name.startswith("_BOUNDED_IMAGE")] == []
+    assert not hasattr(release_pipeline, "_verified_bounded_image_replacement_aliases")
+    repo = MASTER_REFERENCE.parent
+    manifest = json.loads((MASTER_REFERENCE / "package.json").read_text(encoding="utf-8"))
+    lock = json.loads((MASTER_REFERENCE / "package-lock.json").read_text(encoding="utf-8"))
+    for entry in registry:
+        assert (entry.manifest, entry.lockfile) == (
+            "master-reference/package.json",
+            "master-reference/package-lock.json",
+        )
+        assert entry.override_selector == "vinext@0.0.50"
+        assert entry.override_spec == f"file:{entry.target}"
+        assert manifest["overrides"][entry.override_selector][entry.package] == entry.override_spec
+        assert entry.package not in manifest["overrides"]
+        assert lock["packages"][entry.alias_lock_path] == {"resolved": entry.target, "link": True}
+        target = lock["packages"][entry.target]
+        assert (target["name"], target["version"], target["license"]) == (
+            entry.target_name,
+            entry.target_version,
+            entry.target_license,
+        )
+        vendor_files = [path for path in (repo / entry.source_prefix).rglob("*") if path.is_file()]
+        assert str(len(vendor_files)) == entry.source_files
+        assert str(sum(path.stat().st_size for path in vendor_files)) == entry.source_bytes
+        assert entry.advisories
+        assert "not an externally source-authenticated" in entry.limitation
+    braces = _registry_entry("braces")
+    assert braces.consumer.name == "micromatch" and braces.scope.name == "vinext"
+    assert braces.target_license == "MIT"
+    for text in (braces.limitation, braces.provenance):
+        assert all(fact in text for fact in _BRACES_PATCH_PROVENANCE)
+        assert "not a braces release" in text
+    assert "current lock/install graph only" in braces.limitation
+    assert _registry_entry("image-size").provenance == ""
+
+
+def test_sbom_records_the_braces_patch_provenance_only_on_a_verified_component() -> None:
+    sbom = _tracked_dependency_sbom()
+    release_pipeline._annotate_bounded_substitutions(sbom)
+    rows = {
+        component["name"]: release_pipeline._sbom_component_properties(component)
+        for component in sbom["components"]
+        if component.get("name") in {"bounded-braces", "bounded-image-size"}
+    }
+    assert rows["bounded-braces"]["atlas:substitutionProvenance"] == _registry_entry("braces").provenance
+    assert "atlas:substitutionProvenance" not in rows["bounded-image-size"]
+    # Annotating does not disturb the verification that the gate performs afterwards.
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+    assert gate == _COMPILED_BRACES_GATE
+    assert _registry_entry("braces").limitation in limits
+
+    drifted = copy.deepcopy(_tracked_dependency_sbom())
+    target_ref = _component_ref_for_lock_path(drifted, "vendor/bounded-braces")
+    _set_component_property(drifted, target_ref, "atlas:localPackageSourceDigest", "0" * 64)
+    release_pipeline._annotate_bounded_substitutions(drifted)
+    target = next(item for item in drifted["components"] if item["bom-ref"] == target_ref)
+    assert "atlas:substitutionProvenance" not in release_pipeline._sbom_component_properties(target)
+
+
+def test_dependency_assessment_recognizes_the_exact_bounded_braces_substitution() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(_bounded_braces_replacement_sbom())
+
+    assert gate == _GENERIC_GATE
+    assert len(limits) == 2
+    assert limits[0] == _registry_entry("braces").limitation
+    assert "closes GHSA-vfj7-8cjw-p6xm" in limits[0]
+    assert "current source-authenticated advisory" in limits[1]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "alias_lock_path",
+        "source_digest",
+        "source_files",
+        "source_bytes",
+        "target_license",
+        "target_version",
+        "missing_alias_edge",
+        "second_alias_consumer",
+        "second_consumer_inside_scope",
+        "second_target_inbound",
+        "scope_bypass",
+        "consumer_identity",
+        "scope_identity",
+        "duplicate_scope_component",
+    ),
+)
+def test_dependency_assessment_fails_closed_when_the_bounded_braces_substitution_drifts(mutation: str) -> None:
+    sbom = _bounded_braces_replacement_sbom()
+    if mutation == "alias_lock_path":
+        _set_component_property(sbom, "braces-alias", "atlas:lockfilePath", "node_modules/not-braces")
+    elif mutation == "source_digest":
+        _set_component_property(sbom, "braces-target", "atlas:localPackageSourceDigest", "0" * 64)
+    elif mutation == "source_files":
+        _set_component_property(sbom, "braces-target", "atlas:localPackageSourceFiles", "9")
+    elif mutation == "source_bytes":
+        _set_component_property(sbom, "braces-target", "atlas:localPackageSourceBytes", "1")
+    elif mutation == "target_license":
+        next(item for item in sbom["components"] if item["bom-ref"] == "braces-target")["licenses"] = [
+            {"expression": "LicenseRef-Proprietary"}
+        ]
+    elif mutation == "target_version":
+        next(item for item in sbom["components"] if item["bom-ref"] == "braces-target")["version"] = "3.0.4"
+    elif mutation == "missing_alias_edge":
+        _dependency_row(sbom, "braces-alias")["dependsOn"] = []
+    elif mutation == "second_alias_consumer":
+        sbom["components"].append(_npm_component("other", "other", "1.0.0", "node_modules/other"))
+        sbom["dependencies"].append({"ref": "other", "dependsOn": ["braces-alias"]})
+    elif mutation == "second_consumer_inside_scope":
+        # Still reached only through Vinext, so only the single-consumer check can refuse it.
+        _dependency_row(sbom, "dynamic-import")["dependsOn"] = ["braces-alias", "fast-glob"]
+    elif mutation == "second_target_inbound":
+        _dependency_row(sbom, "micromatch")["dependsOn"] = ["braces-alias", "braces-target"]
+    elif mutation == "scope_bypass":
+        # A second path from the lock root reaches micromatch without passing through Vinext.
+        _dependency_row(sbom, "lock-root")["dependsOn"] = ["micromatch", "vinext"]
+    elif mutation == "consumer_identity":
+        _set_component_property(sbom, "micromatch", "atlas:npmIntegrity", _VINEXT_INTEGRITY)
+    elif mutation == "scope_identity":
+        _set_component_property(sbom, "vinext", "atlas:npmIntegrity", _MICROMATCH_INTEGRITY)
+    else:
+        sbom["components"].append(
+            _npm_component("vinext-copy", "vinext", "0.0.50", "node_modules/vinext", _VINEXT_INTEGRITY)
+        )
+        sbom["dependencies"].append({"ref": "vinext-copy", "dependsOn": []})
+
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+
+    assert gate == _BRACES_GATE
+    assert len(limits) == 1
+    assert "GHSA-vfj7-8cjw-p6xm" in limits[0]
+    assert "<unversioned-local-link>" in limits[0]
+    assert "not a vulnerability waiver" in limits[0]
+
+
+@pytest.mark.parametrize(
+    ("version", "affected"),
+    (
+        ("3.0.3", True),
+        ("3.0.0", True),
+        ("2.3.2", True),
+        ("1.8.5", True),
+        ("3.0.3-rc.1", True),
+        ("unparseable", True),
+        ("3.0.4", False),
+        ("4.0.0", False),
+    ),
+)
+def test_dependency_assessment_models_the_braces_advisory_range_fail_closed(version: str, affected: bool) -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {"components": [{"bom-ref": "braces", "name": "braces", "version": version}]}
+    )
+
+    if affected:
+        assert gate == _BRACES_GATE
+        assert len(limits) == 1
+        assert version in limits[0]
+        assert "<=3.0.3" in limits[0]
+    else:
+        assert gate == _GENERIC_GATE
+        assert len(limits) == 1
+
+
+def test_dependency_assessment_cannot_hide_braces_behind_another_unremediated_advisory() -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {
+            "components": [
+                {"bom-ref": "braces", "name": "braces", "version": "3.0.3"},
+                {"bom-ref": "image-size", "name": "image-size", "version": "2.0.2"},
+            ]
+        }
+    )
+
+    assert gate == "blocked_multiple_unremediated_dependency_advisories"
+    assert any("GHSA-vfj7-8cjw-p6xm" in limit for limit in limits)
+    assert any("GHSA-5p2g-fcmc-qvqq" in limit for limit in limits)
+
+
+def _vite_component(version: str, integrity: str, lockfile: str = "master-reference/package-lock.json") -> dict:
+    return _npm_component(f"vite-{version}", "vite", version, "node_modules/vite", integrity, lockfile)
+
+
+def test_dependency_assessment_names_vite_compiled_braces_copies_outside_npm_resolution() -> None:
+    sbom = _bounded_braces_replacement_sbom()
+    for version, integrity in _VITE_INTEGRITIES.items():
+        sbom["components"].append(_vite_component(version, integrity))
+        sbom["dependencies"].append({"ref": f"vite-{version}", "dependsOn": []})
+
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+
+    assert gate == _COMPILED_BRACES_GATE
+    assert len(limits) == 3
+    assert limits[0] == _registry_entry("braces").limitation
+    for fact in ("8.2.0, 8.2.1, 8.2.2", "chokidar 3.6.0", "disableGlobbing", "not a vulnerability waiver"):
+        assert fact in limits[1]
+    assert "current source-authenticated advisory" in limits[2]
+
+
+@pytest.mark.parametrize(
+    ("version", "integrity"),
+    (("9.0.0", _VITE_INTEGRITIES["8.2.0"]), ("8.2.0", _VITE_INTEGRITIES["8.2.1"])),
+)
+def test_dependency_assessment_treats_an_unreviewed_vite_distribution_as_an_unassessed_copy(
+    version: str,
+    integrity: str,
+) -> None:
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {"components": [_vite_component(version, integrity)], "dependencies": []}
+    )
+
+    assert gate == _COMPILED_BRACES_GATE
+    assert len(limits) == 2
+    assert version in limits[0]
+    assert "no exact compiled-package assessment" in limits[0]
+
+
+def test_dependency_assessment_reports_next_and_vite_compiled_copies_together() -> None:
+    sbom = _bounded_image_replacement_sbom()
+    sbom["components"].extend([_next_vendored_sbom_component(), _vite_component("8.2.0", _VITE_INTEGRITIES["8.2.0"])])
+    sbom["dependencies"].extend([{"ref": "next", "dependsOn": []}, {"ref": "vite-8.2.0", "dependsOn": []}])
+
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+
+    assert gate == "blocked_multiple_compiled_vendored_copies_and_external_review_required"
+    assert any("every Next component as unassessed" in limit for limit in limits)
+    assert any("chokidar 3.6.0" in limit for limit in limits)
+
+
+@pytest.mark.parametrize("package", ("image-size", "braces"))
+@pytest.mark.parametrize("mutation", ("alias_edge_removed", "source_digest_changed", "extra_alias_consumer"))
+def test_tracked_sbom_refuses_each_registered_substitution_when_its_binding_drifts(
+    package: str,
+    mutation: str,
+) -> None:
+    sbom = copy.deepcopy(_tracked_dependency_sbom())
+    entry = _registry_entry(package)
+    other = _registry_entry("braces" if package == "image-size" else "image-size")
+    alias_ref = _component_ref_for_lock_path(sbom, entry.alias_lock_path)
+    target_ref = _component_ref_for_lock_path(sbom, entry.target)
+    if mutation == "alias_edge_removed":
+        _dependency_row(sbom, alias_ref)["dependsOn"] = []
+    elif mutation == "source_digest_changed":
+        _set_component_property(sbom, target_ref, "atlas:localPackageSourceDigest", "f" * 64)
+    else:
+        row = _dependency_row(sbom, _component_ref_for_lock_path(sbom, "node_modules/node-html-parser"))
+        row["dependsOn"] = sorted([*row["dependsOn"], alias_ref])
+
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(sbom)
+
+    assert gate == {
+        "image-size": "blocked_image_size_unpatched_build_time_high_advisories",
+        "braces": _BRACES_GATE,
+    }[package]
+    assert all(advisory in " ".join(limits) for advisory in entry.advisories)
+    assert entry.limitation not in limits
+    assert other.limitation in limits
+
+
+def _real_tree_bundle(*, without_prefix: str | None = None) -> tuple[Path, SimpleNamespace]:
+    repo = MASTER_REFERENCE.parent
+    paths = [
+        path
+        for path in _git_tracked_paths(repo)
+        if without_prefix is None or not path.startswith(without_prefix)
+    ]
+    return repo, SimpleNamespace(records={"files": [{"path": path} for path in paths]})
+
+
+def _json_mutations(
+    mutations: dict[str, Callable[[dict], object]] | None = None,
+) -> Callable[[Path, object, str], bytes]:
+    repo = MASTER_REFERENCE.parent
+
+    def selected_blob(_repo: Path, _bundle: object, relative: str) -> bytes:
+        raw = (repo / relative).read_bytes()
+        mutate = (mutations or {}).get(relative)
+        if mutate is None:
+            return raw
+        value = json.loads(raw)
+        mutate(value)
+        return canonical_json(value)
+
+    return selected_blob
+
+
+_MASTER_MANIFEST = "master-reference/package.json"
+_MASTER_LOCK = "master-reference/package-lock.json"
+
+
+def test_dependency_sources_accept_the_complete_registry_on_the_tracked_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo, bundle = _real_tree_bundle()
+    monkeypatch.setattr(release_pipeline, "read_bound_source_blob", _json_mutations())
+    sources = release_pipeline._dependency_sources(repo, bundle)
+
+    for manifest in ("atlas-scope/package.json", "master-reference/package.json", "webapp/frontend/package.json"):
+        assert manifest in sources
+    assert set(_registered_vendor_paths(repo)) <= set(sources)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "mutate"),
+    (
+        (_MASTER_MANIFEST, lambda value: value["overrides"]["vinext@0.0.50"].update(picomatch="file:vendor/x")),
+        (_MASTER_MANIFEST, lambda value: value["overrides"].update({"left-pad": "1.3.0"})),
+        (_MASTER_MANIFEST, lambda value: value["overrides"].update(nanoid="3.3.19")),
+        (_MASTER_MANIFEST, lambda value: value["overrides"].update({"vite@8.2.0": {"braces": "3.0.3"}})),
+        ("atlas-scope/package.json", lambda value: value["overrides"].update(esbuild="0.25.0")),
+        ("webapp/frontend/package.json", lambda value: value["overrides"].update(braces="3.0.3")),
+    ),
+)
+def test_dependency_sources_refuse_an_override_that_is_not_registered(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: str,
+    mutate: Callable[[dict], None],
+) -> None:
+    repo, bundle = _real_tree_bundle()
+    monkeypatch.setattr(release_pipeline, "read_bound_source_blob", _json_mutations({manifest: mutate}))
+    with pytest.raises(ReleaseInputError, match="not in the reviewed dependency substitution registry"):
+        release_pipeline._dependency_sources(repo, bundle)
+
+
+def _add_unregistered_local_link(value: dict) -> None:
+    value["packages"]["node_modules/left-pad"] = {"resolved": "vendor/left-pad", "link": True}
+    value["packages"]["vendor/left-pad"] = {"name": "left-pad", "version": "1.3.0", "dev": True}
+
+
+@pytest.mark.parametrize(
+    "lockfile",
+    (_MASTER_LOCK, "webapp/frontend/package-lock.json", "atlas-scope/package-lock.json"),
+)
+def test_dependency_sources_refuse_an_unregistered_local_lock_substitution(
+    monkeypatch: pytest.MonkeyPatch,
+    lockfile: str,
+) -> None:
+    repo, bundle = _real_tree_bundle()
+    monkeypatch.setattr(
+        release_pipeline,
+        "read_bound_source_blob",
+        _json_mutations({lockfile: _add_unregistered_local_link}),
+    )
+    with pytest.raises(ReleaseInputError, match="not in the reviewed dependency substitution registry"):
+        release_pipeline._dependency_sources(repo, bundle)
+
+
+@pytest.mark.parametrize("package", ("image-size", "braces"))
+def test_dependency_sources_refuse_a_registered_substitution_whose_lock_alias_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+    package: str,
+) -> None:
+    entry = _registry_entry(package)
+    repo, bundle = _real_tree_bundle()
+    monkeypatch.setattr(
+        release_pipeline,
+        "read_bound_source_blob",
+        _json_mutations({_MASTER_LOCK: lambda value: value["packages"].pop(entry.alias_lock_path)}),
+    )
+    with pytest.raises(ReleaseInputError, match="registered dependency substitution is absent"):
+        release_pipeline._dependency_sources(repo, bundle)
+
+
+@pytest.mark.parametrize("package", ("image-size", "braces"))
+def test_dependency_sources_refuse_a_registered_substitution_whose_target_record_drifts(
+    monkeypatch: pytest.MonkeyPatch,
+    package: str,
+) -> None:
+    entry = _registry_entry(package)
+    repo, bundle = _real_tree_bundle()
+    monkeypatch.setattr(
+        release_pipeline,
+        "read_bound_source_blob",
+        _json_mutations({_MASTER_LOCK: lambda value: value["packages"][entry.target].update(version="9.9.9")}),
+    )
+    with pytest.raises(ReleaseInputError, match="registered dependency substitution target differs"):
+        release_pipeline._dependency_sources(repo, bundle)
+
+
+@pytest.mark.parametrize("package", ("image-size", "braces"))
+@pytest.mark.parametrize("placement", ("removed", "unscoped", "scoped_elsewhere"))
+def test_dependency_sources_refuse_each_registered_override_outside_its_exact_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    package: str,
+    placement: str,
+) -> None:
+    entry = _registry_entry(package)
+
+    def mutate(value: dict) -> None:
+        overrides = value["overrides"]
+        if placement == "removed":
+            overrides[entry.override_selector].pop(entry.package)
+        elif placement == "unscoped":
+            overrides[entry.package] = entry.override_spec
+        else:
+            overrides[entry.override_selector].pop(entry.package)
+            overrides["vinext@0.0.51"] = {entry.package: entry.override_spec}
+
+    repo, bundle = _real_tree_bundle()
+    monkeypatch.setattr(release_pipeline, "read_bound_source_blob", _json_mutations({_MASTER_MANIFEST: mutate}))
+    with pytest.raises(ReleaseInputError, match=f"{entry.label} override is not scoped to exact Vinext 0.0.50"):
+        release_pipeline._dependency_sources(repo, bundle)
+
+
+@pytest.mark.parametrize("package", ("image-size", "braces"))
+def test_dependency_sources_refuse_a_registered_substitution_without_source_bound_files(
+    monkeypatch: pytest.MonkeyPatch,
+    package: str,
+) -> None:
+    entry = _registry_entry(package)
+    repo, bundle = _real_tree_bundle(without_prefix=entry.source_prefix)
+    monkeypatch.setattr(release_pipeline, "read_bound_source_blob", _json_mutations())
+    with pytest.raises(ReleaseInputError, match=f"{entry.label} has no source-bound package files"):
+        release_pipeline._dependency_sources(repo, bundle)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "key_path"),
+    (
+        (_MASTER_MANIFEST, ("undici",)),
+        (_MASTER_MANIFEST, ("miniflare@5.20260801.1-alpha", "sharp")),
+        ("webapp/frontend/package.json", ("nanoid",)),
+    ),
+)
+def test_dependency_sources_refuse_a_registered_version_override_that_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+    manifest: str,
+    key_path: tuple[str, ...],
+) -> None:
+    def mutate(value: dict) -> None:
+        container = value["overrides"]
+        for key in key_path[:-1]:
+            container = container[key]
+        container.pop(key_path[-1])
+        if not container and len(key_path) > 1:
+            value["overrides"].pop(key_path[0])
+
+    repo, bundle = _real_tree_bundle()
+    monkeypatch.setattr(release_pipeline, "read_bound_source_blob", _json_mutations({manifest: mutate}))
+    with pytest.raises(ReleaseInputError, match="registered dependency substitution is absent"):
         release_pipeline._dependency_sources(repo, bundle)
 
 

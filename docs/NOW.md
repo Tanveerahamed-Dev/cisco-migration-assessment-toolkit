@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-10-03** (Codex). Reasoning behind the current direction:
+Last reconciled: **2026-10-04** (Codex). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -69,7 +69,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
-| W2e | Topology & Paths | `codex/topology-paths`; [PR #591](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/591); active `.claude/worktrees/ui-projection-2` checkout | Codex | Published `998fa5ff` after privacy and independent review. Hosted 300 ms gates passed: 208.8909 ms at 50 rows, 189.2650 ms at 200 rows. Local repairs now pass 25 Python and 34 architecture checks plus independent review; Scope corrections are source-reviewed, with runtime validation deferred under measured host memory pressure. The architecture-schema consumer repair passes all 406 release tests. Hosted Scope is green; a Windows shared-source checkout fix now passes nine targeted cases and passes all 14 commit-bound policy/mutation checks; fresh CI closure remains open. W11 remains the dependency owner. [Validation](one-app-w2e-validation-2026-10-03.md). (2026-10-03) | Publish the reviewed integration repairs after privacy checks; require fresh hosted closure without weakening guards. Braces remediation belongs to W11; merge current main after that owner's PR lands. Require all protected checks, full Scope workflow and hosted performance on the final changed head before merge. |
+| W2e | Topology & Paths | `codex/topology-paths`; [PR #591](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/591); active `.claude/worktrees/ui-projection-2` checkout | Codex | W11 [#594](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/594) merged as `0fba4f45`. Current main is integrated into published W2e `48307d7e`; only this board conflicted, and both handoff histories are retained. Earlier full Windows and Scope checks passed on their recorded sources; final combined-source verification is pending. [Validation](one-app-w2e-validation-2026-10-03.md). (2026-10-04) | Finish independent integration review and focused checks; commit, run privacy/history/body gates and push. Require every protected exact-head check, full hosted Scope workflow and the unchanged hosted 300 ms performance gate before the authorized merge commit. Earlier receipts do not transfer to changed source. |
 | W7 | Atlas release candidate | `codex/atlas-release-candidate`; reuse `.claude/worktrees/ui-projection-2` after W2e | Codex | Queued after W2e. The Scope owner's merged #582 closes the earlier dependency inventory/notices and lock-material omission; its source supersedes the old correction plan. Pinned Node/npm is ready. (2026-10-03) | Reconcile the candidate version and final merged source, then build with `python -m portable.build_release`, independently verify the candidate and provide stick-update steps. |
 
 ## Owner decisions
@@ -142,6 +142,17 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- 2026-10-04, Codex (W11 merged; W2e integration resumed): W11 #594 merged as `0fba4f45b9258733b25e5796c1589589b6d798af` at 18:19:22 UTC. Merged current main into #591 from `48307d7e`; kept the newer W2e/W7 rows and both complete handoff histories. W0/W2d/W5 remain removed, and the now-merged W11 row is removed under rule 8. W11 production code and its closed bounded-substitution registry remain upstream-owned; Vite compiled-copy and external-review release BLOCK states remain. Independent integration review, focused compatibility checks and all fresh final-head hosted gates precede merge. No receipt is transferred across the changed source.
+
+- 2026-10-04, Claude Code (W5 merged; W11 opened):
+  - #582 (W5) merged as `e50c3cde` on 2026-10-03 once all 15 required checks were green on the exact head
+    `2709ec1e`; `main^{tree}` equals that head's tree. W5's row is deleted (rule 8).
+  - `main`'s required Dependency audit then went red for every PR: GHSA-vfj7-8cjw-p6xm was re-ranged on 2026-10-02 to
+    every published braces release, reached only through master-reference's Vinext build tooling. W11 repairs it with
+    the bounded-vendor method `CLAUDE.md` prescribes (no waiver, suppression or downgrade); the owner gave a direct
+    merge go once the required checks are green.
+  - The re-grade report (#590, W9) and the overturn repairs (W10) carry their own rows in their own pull requests.
 
 - 2026-10-03, Codex (W2e Windows shared-source byte fix): Windows job `111141613684` at `18ef5354` retained one failure, 10,683 passes, 43 skips and one expected failure. Git and a real checkout reproduce the unpinned shared source's LF-to-CRLF conversion; the runner bytes were not retained, so that is reproduction rather than direct capture. Added one exact LF rule inside the owned policy and reconciled its mechanical receipt: 180 to 181 LF paths, 142 to 143 broader paths, unchanged 38 derived owners, domains and publisher exceptions. The raw HEAD-blob guard and all scope/mutation checks remain unchanged. The pre-fix failure is retained; all nine targeted post-fix cases, Ruff and independent review passed. All 14 commit-bound policy/mutation checks passed at `62b20d68`; publication gates follow before push; W11 remains with its owner and all final combined-source checks are still required.
 

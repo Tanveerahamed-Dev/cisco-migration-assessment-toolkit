@@ -252,6 +252,13 @@ def _npm_record_evidence(
     )
 
 
+def npm_record_is_local(node_path: str, item: dict[str, Any]) -> bool:
+    """Whether a lock record is a local link or local package, by this SBOM's own classification."""
+
+    record_kind, _, _ = _npm_record_evidence(node_path, item, None)
+    return record_kind in {"local-link-record", "local-package-record"}
+
+
 def _npm_name(node_path: str, item: dict[str, Any]) -> str | None:
     explicit = item.get("name")
     if isinstance(explicit, str) and explicit:

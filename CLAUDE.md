@@ -134,6 +134,10 @@ remain absent; any future Next component fails closed for a new exact compiled-p
 closes the known vendored-parser source blocker, but not the fresh externally authenticated current
 advisory/applicability review. The release gate remains blocked on that external boundary, and a zero-result
 npm audit does not supersede it.
+Vinext 0.0.50's `braces` edge (GHSA-vfj7-8cjw-p6xm, no patched release) resolves to the tracked
+`@atlas/bounded-braces`: released braces 3.0.3 plus the unmerged third-party depth patch micromatch/braces#72, one
+entry of the closed bounded-substitution registry in `master-reference/release/pipeline.py`; Vite's compiled braces
+copies stay outside npm resolution and keep the release gate blocked.
 
 ## Shared Git and host operating doctrine
 
