@@ -1,0 +1,15 @@
+{
+  "name": "@atlas/bounded-braces",
+  "version": "3.0.3",
+  "description": "Released braces 3.0.3 plus the unmerged third-party nesting-depth patch from micromatch/braces#72, for the Atlas Vinext build edge only",
+  "private": true,
+  "type": "commonjs",
+  "main": "index.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "fill-range": "^7.1.1"
+  },
+  "license": "MIT"
+}

@@ -65,6 +65,40 @@ registry finding, do not supply an externally authenticated current-advisory or
 applicability/VEX review. That independent review gate remains explicitly
 blocked.
 
+### Braces dependency boundary
+
+Vinext 0.0.50 reaches `braces` through vite-plugin-commonjs,
+vite-plugin-dynamic-import, its nested fast-glob 3.3.3 and micromatch 4.0.8.
+GHSA-vfj7-8cjw-p6xm covers every published braces release and none is patched,
+so the `vinext@0.0.50` override object also maps `braces` to the private,
+tracked `vendor/bounded-braces` package: released braces 3.0.3 plus only the
+`lib/` hunks of micromatch/braces#72, an OPEN, unmerged third-party pull
+request (head `d0d575e55e74a4e0218e5248fafb79efc3e54ebb`, author FSDevelop).
+It is not a braces release. Its README records the provenance and the line
+review, including the patch's `escapeInvalid` and fractional `maxDepth` side
+effects. Contract tests rebuild the published 3.0.3 files from the vendored
+bytes and the recorded patch, refuse nesting deeper than 100 through the real
+consumer chain on a default and a 128 KB stack, compare ordinary patterns with
+released 3.0.3 across upstream's own test inputs, and pin the single lock edge.
+
+npm 11 builds a new node for a nested `file:` override relative to the
+dependent package but validates the edge relative to the project root, so a
+plain regeneration writes the link under micromatch to a path that does not
+exist; the source and release tests refuse that lock. The lock was produced in
+two `npm install --package-lock-only --ignore-scripts` passes: the first with a
+temporary root devDependency `"braces": "file:vendor/bounded-braces"`, the
+second without it, which keeps the root-relative link `node_modules/braces` ->
+`vendor/bounded-braces`.
+
+The release gate holds both bounded substitutions in one closed registry: any
+other local link or override entry, and any registered one that is missing,
+refuses the release. The verified braces component in the SBOM carries the
+patch provenance as `atlas:substitutionProvenance`, and the release limits name
+it. Vite 8.2.x compiles its own unbounded braces 3.0.3 copy
+(for its bundled chokidar 3.6.0) where no override or `npm audit` reaches; the
+gate names it and stays blocked. Closing the advisory on the npm-resolved edge
+is not external applicability or VEX review.
+
 Production builds also create a lossless internal-reference artifact. The canonical
 projection and compression JSON receipts remain byte-for-byte reconstructable,
 but `dist` stores only their deterministic `.json.gz` representations; the
