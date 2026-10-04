@@ -77,6 +77,15 @@ per change, with verification evidence) lives in
   standing risk of a manually maintained barrel.
 
 ### Changed
+- **Prepare Atlas `3.33.0rc4` from the merged core-screens milestone.** The candidate version maps
+  to `v3.33.0-rc.4` and includes validated engine projections, the AssessHub core screens and
+  Topology & Paths, pinned native schema validation with Python fallback, and the integrated Scope
+  hub with both frontend dependency inventories, notices and source-material bindings. Master
+  Reference validation retains its integrity and privacy checks independently of hosting size.
+  Exact-source candidate construction and independent artifact verification follow this metadata
+  change; earlier build receipts do not certify it. Existing RC1, RC2 and RC3 drafts and assets stay
+  unchanged. The snapshot schema remains `3.23.0`; signing, external qualification and publication
+  remain separate from this candidate preparation.
 - **Release-candidate identity advances to `3.33.0rc3` after the integrated Release-1 closure
   work.** A successor portable draft must use `v3.33.0-rc.3` and rebuild every package, portable
   member, manifest, digest, attestation, and receipt from the later exact `main`; the existing RC1
