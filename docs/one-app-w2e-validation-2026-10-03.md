@@ -440,3 +440,43 @@ final published head. Full default Windows/source checks and packaging remain
 hosted under observed workstation memory pressure. All earlier failures and
 incomplete runs remain evidence. No release publication, tag, signing, Site
 deployment, device or vault write is part of this integration.
+
+## Final hosted acceptance and merge (2026-10-04)
+
+At final head `05464ac4b56550ca0c00ec6ada8cf1d53baec1a8`, all 15
+protected checks from app 15368 passed, using their pull-request jobs. All six
+applicable workflows passed, including full Scope with every build and browser
+mount step, CodeQL, webapp, reference, portable and CI. The separate full CI
+measurement workflow also passed. No final-head check failed or remained pending.
+
+Fresh hosted measurement run `37226499789`, job `111507131780`, passed the
+unchanged 300 ms sample gates: 198.4147 ms maximum at limit 50 and 200.8995 ms
+at limit 200, over 42 shapes and five repeats. Independent artifact verification
+closed all 15 members, the API/archive digest and all 12 source hashes. Artifact
+`11311544150` is 28,654 bytes with SHA-256
+`12f6941c8e18ca1c0cc76151d23847ed0008ae2a1fbee587d6b731010bbe6ca9`.
+The archive contains response lengths and hashes rather than body bytes or
+per-request native-hit counters. Synthetic cold/first-device/path observations
+remain diagnostics. Earlier local misses and failed/incomplete runs remain.
+
+Portable run `37226436792` passed both required jobs. Independent review
+rehashes 865 runtime members (103,629,733 bytes), eight embedded metadata
+files and the closed 12-file release set. API artifact `11312053407` has
+SHA-256 `f5d2e8e1e3201d48520e48053730fd5a2ade4ea17eb731df210aa3d147b32ead`;
+the inner 51,580,516-byte ZIP has SHA-256
+`bfbb345044661d19e653b66be522c4132b1105fc38b3b1abae1e36d411fca1f7`.
+Native wheel/payload, metadata, MIT notice, upstream SBOM and toolchain inputs
+join current Git blobs; two frozen 13/13 selftests and both native HTTP/private
+resolver smoke runs are recorded. Direct Git-byte material proof is used;
+`--source-root` is not claimed for this different-head checkout, and strict
+CycloneDX validation is hosted evidence rather than a local stdlib rerun.
+The package remains unsigned with every one of its 14 external gates pending.
+
+The owner-authorized exact-head admin merge committed #591 as
+`583552ad888d73f51eaf28181c17f127cc285b2a` at 20:24:06 UTC. Its tree
+`e67d7de5bf54043266859fc0fb6b5133520a3315` equals approved head and tested
+merge `a805f5deba9a0cd5ac12cdb118e41c2588edf3e8`; parents match the checked
+base and head. Formal approving review remains absent; the explicitly granted
+admin exception is recorded separately from the independent technical review.
+This is verified technical integration, not release qualification, signing or
+publication. W7 rebuilds and verifies its own changed exact source.
