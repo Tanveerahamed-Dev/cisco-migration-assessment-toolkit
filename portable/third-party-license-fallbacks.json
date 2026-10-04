@@ -2,6 +2,13 @@
   "schema": "atlas.portable-license-fallbacks/1",
   "entries": [
     {
+      "key": "pypi:jsonschema-rs@0.58.4",
+      "license_file": "portable/third-party-licenses/jsonschema-rs-LICENSE",
+      "license_sha256": "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038",
+      "source": "https://raw.githubusercontent.com/Stranger6667/jsonschema/f864033d8ae481b5c96985a4ca6990e4375614ac/LICENSE",
+      "source_identity": "jsonschema-rs 0.58.4 upstream commit f864033d8ae481b5c96985a4ca6990e4375614ac; package MIT text only, not individual Rust component license texts"
+    },
+    {
       "key": "npm:node_modules/react-force-graph-3d@1.29.1",
       "license_file": "portable/third-party-licenses/react-force-graph-LICENSE",
       "license_sha256": "5b6dc9ce44c7b73620b191c567339212bd00537af46fdedaf98304c34214cc9c",

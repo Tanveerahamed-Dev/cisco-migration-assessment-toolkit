@@ -39,6 +39,11 @@ def ui_projection_schema() -> Dict[str, Any]:
     return _ui_projection.ui_projection_schema()
 
 
+def bind_ui_projection_snapshot(raw: bytes) -> Dict[str, Any]:
+    """Preserve the exact-byte snapshot custody used by the store's bound reader."""
+    return _protocol_assurance.bind_snapshot_json_bytes(raw)
+
+
 # Canonical hostname normalisation — reuse the engine's own so the web layer groups hosts identically.
 canon_host = _analyze._canon_host
 as_num = _as_num   # fail-soft leaf-count coercion (rejects the JSON Infinity/NaN a raw int() would 500 on)

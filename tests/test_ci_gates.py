@@ -700,6 +700,43 @@ def test_jsonschema_dependency_contract_rejects_mutations(mutation):
         _assert_jsonschema_dependency_contract(**values)
 
 
+def _assert_native_validator_dependency_contract(owners):
+    for owner in owners:
+        for name, pin in (("jsonschema-rs", "jsonschema-rs==0.58.4"),
+                          ("referencing", "referencing==0.37.0")):
+            assert [item for item in owner if _requirement_name(item) == name] == [pin], (
+                "native response validation and offline registry require exact direct runtime pins"
+            )
+
+
+def test_native_validator_and_offline_registry_pins_are_runtime_only():
+    project = tomllib.loads(_read("pyproject.toml"))["project"]
+    _assert_native_validator_dependency_contract([
+        project["dependencies"], _noncomment_requirements("requirements.txt"),
+        _noncomment_requirements(os.path.join("webapp", "requirements.txt")),
+    ])
+    for owner in (project["optional-dependencies"]["dev"],
+                  _noncomment_requirements(os.path.join("master-reference", "requirements-release.txt"))):
+        assert "jsonschema-rs" not in {_requirement_name(item) for item in owner}
+    assert _noncomment_requirements("requirements-dev.txt") == ["-e .[dev]"]
+
+
+@pytest.mark.parametrize("name", ["jsonschema-rs", "referencing"])
+@pytest.mark.parametrize("owner", [0, 1, 2])
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "unbounded"])
+def test_native_validator_dependency_contract_rejects_drift(name, owner, mutation):
+    owners = [["jsonschema-rs==0.58.4", "referencing==0.37.0"] for _ in range(3)]
+    pin = next(item for item in owners[owner] if _requirement_name(item) == name)
+    if mutation == "missing":
+        owners[owner].remove(pin)
+    elif mutation == "duplicate":
+        owners[owner].append(pin)
+    else:
+        owners[owner][owners[owner].index(pin)] = name + ">=0.1"
+    with pytest.raises(AssertionError):
+        _assert_native_validator_dependency_contract(owners)
+
+
 def _assert_transition_profile_is_test_only(rows, runtime_dependencies, runtime_requirements):
     _assert_no_runtime_requirement_includes(runtime_requirements)
     profile = {row["name"]: row["version"] for row in rows}
@@ -1024,6 +1061,21 @@ def test_installed_transition_ci_contract_rejects_commented_positive_smoke():
         _assert_ci_owns_installed_transition_smoke(mutated)
 
 
+def _mutate_installed_transition_job(ci, addition):
+    """Target the owned job even when other jobs use the same hosted runner."""
+    matches = list(re.finditer(
+        r"(?ms)^  installed-transition-runtime:\n"
+        r"(?P<job>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", ci,
+    ))
+    assert len(matches) == 1, "the mutation needs one uniquely named installed-runtime job"
+    match = matches[0]
+    job = match.group("job")
+    marker = "    runs-on: windows-2025\n"
+    assert job.count(marker) == 1, "the owned job's runner is absent or ambiguous"
+    return (ci[:match.start("job")] + job.replace(marker, marker + addition, 1)
+            + ci[match.end("job"):])
+
+
 @pytest.mark.parametrize(
     "addition",
     [
@@ -1039,11 +1091,37 @@ def test_installed_transition_ci_contract_rejects_commented_positive_smoke():
 )
 def test_installed_transition_ci_contract_rejects_disabled_or_softened_job(addition):
     ci = _read(".github", "workflows", "ci.yml")
-    marker = "    runs-on: windows-2025\n"
-    assert ci.count(marker) == 1
-    mutated = ci.replace(marker, marker + addition)
+    mutated = _mutate_installed_transition_job(ci, addition)
     with pytest.raises(AssertionError):
         _assert_ci_owns_installed_transition_smoke(mutated)
+
+
+def test_installed_transition_mutation_targets_named_owner_among_other_hosted_jobs():
+    ci = _read(".github", "workflows", "ci.yml")
+    header = "  installed-transition-runtime:\n"
+    extra = ("  additional-hosted-proof:\n"
+             "    runs-on: windows-2025\n"
+             "    steps:\n"
+             "      - name: Independent hosted job\n"
+             "        run: echo independent\n\n")
+    fixture = ci.replace(header, extra + header, 1)
+    _assert_ci_owns_installed_transition_smoke(fixture)
+    addition = "    if: ${{ false }}\n"
+    mutated = _mutate_installed_transition_job(fixture, addition)
+    prefix, owned = fixture.split(header, 1)
+    assert mutated.startswith(prefix + header), "an unrelated hosted job was changed"
+    assert extra in mutated
+    with pytest.raises(AssertionError):
+        _assert_ci_owns_installed_transition_smoke(mutated)
+    # A runner declaration elsewhere cannot supply the missing owned-job proof,
+    # nor can it become the mutation target when that owned declaration is absent.
+    missing_runner = prefix + header + owned.replace("    runs-on: windows-2025\n", "", 1)
+    with pytest.raises(AssertionError):
+        _assert_ci_owns_installed_transition_smoke(missing_runner)
+    with pytest.raises(AssertionError):
+        _mutate_installed_transition_job(missing_runner, addition)
+    with pytest.raises(AssertionError):
+        _mutate_installed_transition_job(prefix, addition)
 
 
 @pytest.mark.parametrize(
