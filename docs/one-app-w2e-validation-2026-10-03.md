@@ -405,3 +405,38 @@ topology shapes, five repeats at page limits 50/200 and the unchanged hosted
 separate diagnostic. Publication requires fresh stable-tree, full-history and
 PR-body privacy gates. Merge requires all exact-head required checks, independent
 review and tested-tree reconciliation. W7 follows the authorized W2e merge.
+
+## Post-W11 integration (2026-10-04)
+
+The W11 owner merged #594 at 18:19:22 UTC as
+`0fba4f45b9258733b25e5796c1589589b6d798af`. Integration checkpoint
+`c8863bc081728ec429cf35579baecd9928b34d53` joins that main to W2e
+`48307d7e`; its tree is `3d3b1b9b89c07728ac003fdf1db2d0bf2e0e4858`.
+Only the board conflicted. Every nonblank handoff line from both parents is
+retained, the newer W2e/W7 rows win, and completed W0/W2d/W5/W11 rows are absent.
+
+Independent review found no integration defect. W11's production pipeline,
+SBOM, vendor package and dependency manifests match upstream bytes exactly;
+W2e's governance validator, PDF consumers and LF policy retain their prior
+bytes. The automatically merged release tests preserve both parents' cases.
+The closed bounded-substitution registry and the Vite compiled-copy/external
+review release BLOCK remain; npm audit silence cannot close those boundaries.
+No braces implementation was authored in this workstream.
+
+The pinned release interpreter passed 105 focused compatibility cases covering
+governance versions, actual PDF consumers, both real release-to-PDF refusal
+branches, W11's registry/source/SBOM drift controls and Vite BLOCK semantics.
+All 14 commit-bound byte-custody owner/mutation tests then passed serially.
+These 119 cases have zero failures, errors or skips; all recorded source hashes
+remained stable through both stages. The focused run used synthetic compiler
+records and did not invoke a compiler, render a PDF or run a Node build. Its
+receipt SHA-256 is
+`57cdd3eb865c2cd9fe12f773b80cf9b8ce2cd821098420e5416564909dfab9a9`.
+
+This checkpoint does not transfer earlier hosted receipts onto the combined
+source. Every protected exact-head check, the complete hosted Scope workflow
+and the unchanged hosted 300 ms projection measurement still must pass on the
+final published head. Full default Windows/source checks and packaging remain
+hosted under observed workstation memory pressure. All earlier failures and
+incomplete runs remain evidence. No release publication, tag, signing, Site
+deployment, device or vault write is part of this integration.
