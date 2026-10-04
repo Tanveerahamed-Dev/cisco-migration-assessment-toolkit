@@ -41,6 +41,7 @@ import {
   routesOf,
   bySeverityThenRank,
 } from "../core/data";
+import { COLLECTION_REPORT, collectionCensus } from "../core/collection";
 import { own } from "../core/own";
 import { useInvestigation, type EvidenceTab } from "../core/store";
 import type {
@@ -1913,8 +1914,20 @@ export function statedDenominator(finding: Finding): number | null {
 
 function FleetDenominator({ finding }: { finding: Finding }): ReactElement {
   const stated = statedDenominator(finding);
-  const total = fabric.devices.length;
-  const collected = fabric.devices.filter((d) => d.collected).length;
+  /* The collected count is the ENGINE's (core/collection.ts; acceptance B7), never a count of device records:
+     the engine writes a record for every inventoried host, an empty capture included. */
+  const census = collectionCensus();
+  const total = census.total;
+  if (census.stated === null) {
+    return (
+      <p className="ev-step__text ev-step__text--absent">
+        {stated === null ? "It states no denominator of its own, and" : `It states ${stated} assessable devices, but`} this snapshot does
+        not state how many of its {total} devices were collected ({census.unstated ?? `no ${COLLECTION_REPORT}`}), so how many it swept
+        cannot be reconciled with the collection and is not observed.
+      </p>
+    );
+  }
+  const collected = census.stated.complete;
   if (stated === null) {
     return (
       <p className="ev-step__text ev-step__text--absent">
@@ -1931,7 +1944,7 @@ function FleetDenominator({ finding }: { finding: Finding }): ReactElement {
       </li>
       <li>
         <span className="ev-mono">{collected}</span> of <span className="ev-mono">{total}</span> devices collected
-        in this snapshot
+        completely in this snapshot (the engine&rsquo;s {COLLECTION_REPORT})
       </li>
       {outside !== 0 ? (
         <li data-disagreement="true">

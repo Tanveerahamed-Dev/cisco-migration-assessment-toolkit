@@ -37,6 +37,7 @@ import {
 
 import { linkFailureImpact, type LinkFailureResult } from "../analysis/blast";
 import { bandScored, presentBand } from "../core/band-qualification";
+import { COLLECTION_WORDS } from "../core/collection";
 import { classifyLink } from "./geometry/cables";
 import { useInvestigation } from "../core/store";
 import type { Device, Link } from "../core/types";
@@ -146,11 +147,13 @@ function buildModel(
          user navigating rows never hears the preamble's count again. */
       meta: dev
         ? dev.collected
-          ? presentBand(dev).short
-          : "topology only — never collected"
+          ? dev.collection === "partial"
+            ? `${presentBand(dev).short} · ${COLLECTION_WORDS.partial}`
+            : presentBand(dev).short
+          : COLLECTION_WORDS[dev.collection]
         : "no device record",
       /* A qualified band is partly an absence of evidence, so it is styled as a claim too (B1). */
-      metaUnobserved: !dev || !dev.collected || !bandScored(dev) || presentBand(dev).qualified,
+      metaUnobserved: !dev || !dev.collected || dev.collection === "partial" || !bandScored(dev) || presentBand(dev).qualified,
       targetId: dev ? dev.id : null,
       childKeys,
       orphan: !dev,
@@ -504,6 +507,8 @@ export function FabricA11yTree({
   };
 
   const uncollected = devices.filter((d) => !d.collected).length;
+  const deadInventoried = devices.filter((d) => d.collection === "not collected").length;
+  const partial = devices.filter((d) => d.collection === "partial").length;
   /* Tiers that are collapsed right now and hold devices, so the reader is told what is not listed. */
   const collapsed = model.roots
     .map((k) => model.rows.get(k))
@@ -595,7 +600,9 @@ export function FabricA11yTree({
           mapping was only discoverable by reading this file, so it is now stated to every user and
           wired as the tree's description. Pinned by FabricA11yTree.parity.test.tsx. */}
       <p className="fabric3d__tree-foot">
-        {devices.length} devices, {links.length} links. {uncollected} not collected (topology only).{" "}
+        {devices.length} devices, {links.length} links. {uncollected} not collected
+        {deadInventoried === 0 ? " (topology only)" : ` (${deadInventoried} inventoried with no usable output, the rest topology only)`}
+        {partial === 0 ? "" : `, ${partial} collected only partially`}.{" "}
         {unmeasured} links have no centrality measurement, so whether cutting them partitions the
         fabric is unknown.
       </p>

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState, u
 import { DEFAULT_GRAPH_OPTIONS, failureImpact, linkFailureImpact, type Certainty, type ProjectionDelta } from "../analysis/blast";
 import { cableCountPhrase, hostCableAccount } from "../analysis/port-claims";
 import { presentBand } from "../core/band-qualification";
+import { collectionSentence } from "../core/collection";
 import { deviceById, fabric, findingsByHost, linkById, linksByHost } from "../core/data";
 import { applyToDevices, parseQuery } from "../core/query";
 import { useInvestigation, useReducedMotion } from "../core/store";
@@ -499,7 +500,8 @@ export function describeDevice(id: string): string {
   return [
     `${d.host} selected.`,
     `${kindWords(d.kind)}.`,
-    d.collected ? "Collected." : "Topology only: this device was never collected.",
+    /* The engine's collection state (core/collection.ts; acceptance B7): partial and not collected are said as such. */
+    collectionSentence(d),
     /* The band as the ONE owner presents it: a favourable band on a host with unassessed scoring
        domains is announced as partial with the gaps named, exactly as DevicePane draws it (B1). */
     presentBand(d).sentence,

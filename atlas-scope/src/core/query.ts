@@ -47,6 +47,7 @@ import {
   measuredScore,
   presentBand,
 } from "./band-qualification";
+import { COLLECTION_WORDS } from "./collection";
 import { fabric, findingsByHost, gradedSeverityRank, hasRib, linksByHost } from "./data";
 import type { Band, Cite, CrossLayerFinding, Device, Finding, Severity, VocabularyName } from "./types";
 import { recognisedKind, recognisedSeverity, SEVERITY_ORDER, unrecognisedPhrase } from "./types";
@@ -220,7 +221,11 @@ const hostDomain = memo((): DomainValue[] =>
       count: null,
       source: "devices",
       detail: d.collected
-        ? nonEmpty([d.role, bandKey(d) !== null || presentBand(d).notMeasured ? `band ${presentBand(d).short}` : presentBand(d).legendKey === "unrecognised" ? presentBand(d).short : null]).join(" · ") || "collected"
+        ? nonEmpty([
+            d.role,
+            bandKey(d) !== null || presentBand(d).notMeasured ? `band ${presentBand(d).short}` : presentBand(d).legendKey === "unrecognised" ? presentBand(d).short : null,
+            d.collection === "complete" ? null : COLLECTION_WORDS[d.collection],
+          ]).join(" · ") || "collected"
         : "not collected — findings unknown",
     }))
     .sort((a, b) => cmpStr(a.value, b.value)),
@@ -239,8 +244,11 @@ const bridgeTri = (d: Device): Tri =>
   anyTri((linksByHost.get(d.host) ?? []).map((l) => (l.isBridge === null ? "unknown" : l.isBridge ? "yes" : "no")));
 
 const IS_PREDICATES: Record<string, PredicateDef> = {
-  collected: { help: "the collector reached this device", fn: (d) => (d.collected ? "yes" : "no") },
-  uncollected: { help: "topology-only; no evidence collected", fn: (d) => (d.collected ? "no" : "yes") },
+  /* The engine's collection state (core/collection.ts; acceptance B7). Where the snapshot does not state it, whether
+     the collector reached a device is not decided — a device record is not proof of a collection. */
+  collected: { help: "the collector reached this device", fn: (d) => (d.collection === "not stated" ? "unknown" : d.collected ? "yes" : "no") },
+  uncollected: { help: "not collected, or topology-only; no evidence collected", fn: (d) => (d.collection === "not stated" ? "unknown" : d.collected ? "no" : "yes") },
+  partial: { help: "the engine lists its collection as partial: it answered, but essentials are missing", fn: (d) => (d.collection === "not stated" ? "unknown" : d.collection === "partial" ? "yes" : "no") },
   inventoried: { help: "an inventory record exists", fn: (d) => (d.inventoried ? "yes" : "no") },
   uninventoried: { help: "no model/serial/software record", fn: (d) => (d.inventoried ? "no" : "yes") },
   bridge: { help: "touches a link whose loss partitions the fabric", fn: bridgeTri },
@@ -1959,10 +1967,16 @@ export function groupDevicesBy(devices: readonly Device[], key: DeviceGroupKey):
     case "platform":
       return groupItems(devices, (d) => (d.platform === null ? null : [d.platform]), null);
     case "collected":
-      return groupItems(devices, (d) => [d.collected ? "Collected" : "Not collected"], [
-        "Collected",
-        "Not collected",
-      ]);
+      /* By the engine's collection state: a partial host is its own group, never folded into "Collected", and a
+         snapshot that does not state collection places its devices under Not observed. */
+      return groupItems(
+        devices,
+        (d) =>
+          d.collection === "not stated"
+            ? null
+            : [d.collection === "complete" ? "Collected" : d.collection === "partial" ? "Partially collected" : "Not collected"],
+        ["Collected", "Partially collected", "Not collected"],
+      );
     case "none":
       return [{ key: "all", label: "All devices", observed: true, items: [...devices] }];
   }

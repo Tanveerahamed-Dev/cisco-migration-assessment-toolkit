@@ -114,11 +114,28 @@ export interface FailureImpact {
   cite: Cite;
 }
 
+/**
+ * How completely the collector captured a host, as the ENGINE states it (`collection_completeness`, cisco_toolkit/
+ * analyze.py `compute_collection_completeness`; acceptance B7):
+ *   complete       an inventoried host every essential command returned usable output for (the canonical n_collected)
+ *   partial        it answered, but some essentials are missing — answered, incomplete, never counted as complete
+ *   not collected  no usable essential output at all (unreachable, auth-failed, empty captures) — never "answered"
+ *   topology only  no device record: a neighbour's cable map names it; never a collector target
+ *   not stated     the snapshot carries no usable collection_completeness, so the basis is absent — NOT collected
+ */
+export type CollectionState = "complete" | "partial" | "not collected" | "topology only" | "not stated";
+
 export interface Device {
   id: string;
   host: string;
-  /** Did the collector actually reach this device? A topology-only neighbour has collected:false. */
+  /**
+   * Did the collector answer for this device? True for a `collection` of complete or partial, false for not collected
+   * and topology only. Where the snapshot does not state collection (`collection` "not stated"), this is the presence
+   * of a device record — evidence exists to show, but no surface may count it as a collection (core/collection.ts).
+   */
   collected: boolean;
+  /** The engine's own collection state for this host (`CollectionState`); the collected-host figures read this. */
+  collection: CollectionState;
   /** Is there an inventory record (model/serial/software) for it? */
   inventoried: boolean;
   /** The engine node kind (`cable_map.nodes[host=…].kind`), an Unrecognised value it wrote (see `recognisedKind`), or
@@ -547,7 +564,26 @@ export interface Coverage {
   aclHosts: string[];
   linksWithCentrality: number;
   aclSummary: NameKeyed<number>;
+  /** Why the snapshot states no usable collection completeness, or null when it does. */
+  collectionUnstated: string | null;
   cite: Cite;
+}
+
+/** One blind spot of the engine's `collection_completeness.devices`, compiled under its source path. */
+export interface CollectionBlindSpot {
+  host: string;
+  status: "partial" | "not collected";
+  /** The engine's share (0-100) of essential commands that returned usable output. */
+  dataQuality: number | null;
+  /** The essential evidence the engine names as missing for this host. */
+  missing: string[];
+  cite: Cite;
+}
+
+/** The engine's `collection_completeness` (the SSOT owner of the collected count), compiled under its source path. */
+export interface CollectionCompleteness {
+  summary: { inventory: number; complete: number; partial: number; notCollected: number; cite: Cite };
+  devices: CollectionBlindSpot[];
 }
 
 /** The byte form `sourceSha256` is taken over. */
@@ -662,6 +698,8 @@ export interface Fabric {
    */
   evidenceRecords?: EvidenceRecord[];
   evidenceProjection?: EvidenceProjection;
+  /** The engine's collection authority; absent when the snapshot carries no usable block (`coverage.collectionUnstated`). */
+  collection_completeness?: CollectionCompleteness;
 }
 
 /* ── forwarding simulation contract ─────────────────────────────────────────

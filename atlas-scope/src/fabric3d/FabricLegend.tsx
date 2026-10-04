@@ -254,6 +254,9 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
   const roleOther = roleCount("other");
   const roleUnobserved = roleCount("unobserved");
   const uncollected = devices.filter((d) => !d.collected).length;
+  const partial = devices.filter((d) => d.collection === "partial").length;
+  const notStated = devices.filter((d) => d.collection === "not stated" && d.collected).length;
+  const deadInventoried = devices.filter((d) => d.collection === "not collected").length;
   const stateUnknown = devices.filter((d) => d.opStatus === "unknown").length;
   const stateDown = devices.filter((d) => d.opStatus === "down").length;
   const linksDown = links.filter((l) => l.opStatus === "down").length;
@@ -419,12 +422,31 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
       <div className="fabric3d-legend__group">
         <h3 className="fabric3d-legend__legend">Surface — collection</h3>
         <ul className="fabric3d-legend__list">
+          {/* The solid surface is `collected` (the collector answered); its rows split it by the engine's collection
+              state (core/collection.ts; acceptance B7), so a partial host is never counted as Collected here while the
+              status bar counts it apart, and a host whose capture came back empty is not described as a neighbour. */}
           <Row
             swatch={chassis()}
             name="Collected"
             meaning="The collector reached this device."
-            count={devices.length - uncollected}
+            count={devices.filter((d) => d.collection === "complete").length}
           />
+          {partial === 0 ? null : (
+            <Row
+              swatch={chassis()}
+              name="Partially collected"
+              meaning="The collector answered, but the engine lists essential evidence as missing."
+              count={partial}
+            />
+          )}
+          {notStated === 0 ? null : (
+            <Row
+              swatch={chassis()}
+              name="Collection not stated"
+              meaning="A device record is present; the snapshot does not state how completely it was collected."
+              count={notStated}
+            />
+          )}
           <Row
             swatch={
               <>
@@ -433,7 +455,11 @@ export function FabricLegend({ id, devices, links }: FabricLegendProps) {
               </>
             }
             name="Topology only — not collected"
-            meaning="Seen as a neighbour. Nothing about its state was observed."
+            meaning={
+              deadInventoried === 0
+                ? "Seen as a neighbour. Nothing about its state was observed."
+                : "Seen as a neighbour, or inventoried but no usable output came back. Nothing about its state was observed."
+            }
             count={uncollected}
           />
         </ul>

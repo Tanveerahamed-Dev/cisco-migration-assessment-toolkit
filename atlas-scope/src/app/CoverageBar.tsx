@@ -25,6 +25,7 @@
 import { useMemo, type ReactElement } from "react";
 import { aclUndecidability, undecidableAclSentence } from "../core/acl-coverage";
 import { bandScored } from "../core/band-qualification";
+import { COLLECTION_REPORT, collectionCensus, type CollectionCensus } from "../core/collection";
 import { fabric, hasRib } from "../core/data";
 import { own } from "../core/own";
 import { missingInventoryFields } from "../core/claims";
@@ -107,26 +108,34 @@ export function coverageRows(): CoverageRow[] {
     };
   };
 
-  const collected = devices.filter((d) => d.collected).length;
+  /* The ENGINE's collection authority (core/collection.ts), never record presence. This row counted
+     `d.collected` — a device record — and so listed a host whose capture folder was empty under "Collector
+     reached the device" (2026-10 refuter, B7). It now counts the hosts the engine's collection_completeness
+     calls complete and compares that with the engine's own summary.complete; partial and not-collected
+     hosts are named in the Collection note below the table. With no usable block nothing is counted as
+     collected: the row says the basis is not stated. */
+  const census = collectionCensus();
+  const complete = census.hosts.complete.length;
 
   return [
     {
       id: "collected",
-      label: "Collector reached the device",
-      meaning: "the device answered the collector in this run",
+      label: "Collected completely",
+      meaning:
+        census.stated === null
+          ? `not stated — ${census.unstated ?? `the snapshot carries no ${COLLECTION_REPORT}`}; a device record is not counted as a collection`
+          : `every essential command returned usable output, as the engine's ${COLLECTION_REPORT} states it`,
       unit: "devices",
-      observed: collected,
-      /* The first row is the one place n/a is structurally zero: a device that was not reached is
+      observed: complete,
+      /* The first row is the one place n/a is structurally zero: a device that was not collected is
          exactly what this row measures, so routing it into n/a would make the row measure
-         nothing. Every later row defers its uncollected members to this count. */
-      absent: total - collected,
+         nothing. Every later row defers its uncollected members to the collector's answer. */
+      absent: total - complete,
       notApplicable: 0,
       total,
-      /* The snapshot publishes the complement rather than the count, so the comparison is made
-         against what it actually states instead of against a number we wish it stated. */
-      stated: total - c.devicesOnTopologyOnly,
-      statedField: "coverage.devicesOnTopologyOnly",
-      cite: c.cite,
+      stated: census.stated === null ? null : census.stated.complete,
+      statedField: census.stated === null ? null : "collection_completeness.summary.complete",
+      cite: census.stated === null ? c.cite : census.stated.cite,
     },
     /* The flag says a record was RETURNED; it does not say the record is complete. This row used to
        read "a model, serial and software record exists" over `d.inventoried`, and counted core2 —
@@ -213,6 +222,54 @@ export function coverageRows(): CoverageRow[] {
 
 const pct = (n: number, of: number): number => (of <= 0 ? 0 : (n / of) * 100);
 
+/**
+ * Every device's collection state, by name, as the engine states it: complete, partial (answered,
+ * incomplete — with what is missing), not collected (no usable output), on the cable map only. A partial
+ * host is never folded into the complete count, and a not-collected host is never described as having
+ * answered (acceptance B7). With no usable collection_completeness the note says the basis is not stated.
+ */
+function CollectionNote({ census }: { census: CollectionCensus }): ReactElement {
+  const named = (hosts: readonly string[]): string => (hosts.length === 0 ? "" : `: ${hosts.join(", ")}`);
+  const withMissing = (h: string): string => {
+    const missing = census.blindSpots.get(h)?.missing ?? [];
+    return missing.length === 0 ? h : `${h} (missing ${missing.join(", ")})`;
+  };
+  const topo = census.hosts["topology only"];
+  return (
+    <div className="cov__note" data-tone={census.stated === null ? "indeterminate" : undefined}>
+      <dt>Collection</dt>
+      <dd>
+        {census.stated === null ? (
+          `Not stated: ${census.unstated ?? `the snapshot carries no ${COLLECTION_REPORT}`}. ${census.hosts["not stated"].length} of ${census.total} devices have a device record; the engine writes one for every inventoried device whether or not the collector reached it, so no device is counted as collected here.`
+        ) : (
+          <>
+            {`Read from the engine's ${COLLECTION_REPORT} (${census.stated.inventory} inventoried).`}
+            {census.disagreement === null ? null : <span data-disagreement="true">{` ${census.disagreement}`}</span>}
+          </>
+        )}
+        <ul className="cov__members">
+          {census.stated === null ? null : (
+            <li data-collection="complete">{`${census.hosts.complete.length} complete — every essential command returned usable output`}</li>
+          )}
+          {census.hosts.partial.length === 0 ? null : (
+            <li data-collection="partial">
+              {`${census.hosts.partial.length} partial — answered the collector, but incompletely, so not counted as collected: ${census.hosts.partial.map(withMissing).join("; ")}`}
+            </li>
+          )}
+          {census.hosts["not collected"].length === 0 ? null : (
+            <li data-collection="not collected">
+              {`${census.hosts["not collected"].length} not collected — inventoried, but no usable output came back (unreachable, auth-failed or empty captures)${named(census.hosts["not collected"])}`}
+            </li>
+          )}
+          {topo.length === 0 ? null : (
+            <li data-collection="topology only">{`${topo.length} on the cable map only — never a collector target${named(topo)}`}</li>
+          )}
+        </ul>
+      </dd>
+    </div>
+  );
+}
+
 export interface CoverageBarProps {
   /** Row to mark as the one the reader arrived for, e.g. from the status bar's `RIBs 2/26`. */
   highlight?: string | null;
@@ -227,6 +284,7 @@ export function CoverageBar({
   className,
 }: CoverageBarProps): ReactElement {
   const rows = useMemo(() => coverageRows(), []);
+  const census = collectionCensus();
   const c = fabric.coverage;
   /* NOT `c.aclLinesUnevaluable`. That field counts only the producer's own flag; the set that
      bounds a rendered verdict is the union of three sets, and on this snapshot the producer's
@@ -339,6 +397,7 @@ export function CoverageBar({
       </table>
 
       <dl className="cov__notes">
+        <CollectionNote census={census} />
         <div className="cov__note">
           <dt>Not applicable</dt>
           <dd>

@@ -179,10 +179,10 @@ _SCOPE_COMPILED_MODEL_SIGNATURE = tuple(
 # literals (`interfaces.${host}.${port}`), which never match. Pinned to SECTIONS_READ and to the
 # compiler's real output, member by member, by webapp/tests/test_scope_mount.py.
 _SCOPE_SNAPSHOT_SECTIONS = (
-    "acl_line_reachability", "acls", "cable_map", "cross_layer", "devices", "endpoint_identity",
-    "failure_impact", "health_scores", "interfaces", "l3_forwarding", "link_centrality",
-    "object_groups", "overlay", "physical_health", "protocol_assessability", "protocol_health",
-    "punchlist", "routes", "routing_neighbors",
+    "acl_line_reachability", "acls", "cable_map", "collection_completeness", "cross_layer", "devices",
+    "endpoint_identity", "failure_impact", "health_scores", "interfaces", "l3_forwarding",
+    "link_centrality", "object_groups", "overlay", "physical_health", "protocol_assessability",
+    "protocol_health", "punchlist", "routes", "routing_neighbors",
 )
 # An engine snapshot itself (the very file a client uploads) is evidence too: it binds `schema` to
 # the engine's snapshot schema family (the compiler's exported SUPPORTED_SCHEMAS, versions dropped).
