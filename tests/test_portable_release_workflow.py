@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shlex
@@ -408,6 +409,48 @@ def _project_output(field: str) -> tuple[str, str]:
                if output.rsplit("/", 1)[0] == project]
     assert len(outputs) == 1, outputs
     return project, outputs[0]
+
+
+def test_shared_protocol_autocrlf_checkout_preserves_committed_byte_custody(tmp_path: Path) -> None:
+    """The actual shared source must survive Windows checkout without relaxing its byte guard."""
+    relative = "webapp/frontend/src/projectionEmbed.ts"
+    committed = subprocess.run(
+        ["git", "cat-file", "blob", f"HEAD:{relative}"],
+        cwd=ROOT, capture_output=True, check=True, timeout=30,
+    ).stdout
+    assert b"\n" in committed and b"\r" not in committed
+    repository = tmp_path / "checkout"
+    source = repository / relative
+    source.parent.mkdir(parents=True)
+    source.write_bytes(committed)
+    (repository / ".gitattributes").write_bytes((ROOT / ".gitattributes").read_bytes())
+
+    def git(*arguments: str) -> bytes:
+        return subprocess.run(
+            ["git", *arguments], cwd=repository, capture_output=True, check=True, timeout=30,
+        ).stdout
+
+    git("init", "--quiet")
+    git("config", "core.autocrlf", "true")
+    git("config", "core.eol", "crlf")
+    git("add", "--", ".gitattributes", relative)
+    git("-c", "user.name=Byte custody test", "-c", "user.email=test@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Shared protocol checkout")
+    assert git("cat-file", "blob", f"HEAD:{relative}") == committed
+    source.unlink()
+    git("checkout", "--", relative)
+    assert source.read_bytes() == committed
+    assert release_contract._shared_npm_source_receipts(repository, "atlas-scope/dist-hub") == {
+        relative: {"bytes": len(committed), "sha256": hashlib.sha256(committed).hexdigest()},
+    }
+
+    # A checkout fix must not admit changed bytes, even if Git's index hides the edit.
+    git("update-index", "--assume-unchanged", "--", relative)
+    source.write_bytes(committed + b"// intentional custody mutation\n")
+    assert git("diff", "--name-only", "HEAD", "--", relative) == b""
+    with pytest.raises(release_contract.PortableReleaseError,
+                       match="shared npm source bytes differ from committed blob"):
+        release_contract._shared_npm_source_receipts(repository, "atlas-scope/dist-hub")
 
 
 @pytest.mark.parametrize("field", sorted(release_contract._NPM_INVENTORIES))

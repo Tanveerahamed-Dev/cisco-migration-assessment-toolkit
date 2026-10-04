@@ -88,6 +88,7 @@ def _write(root: Path, relative: str, value: str) -> None:
 
 def _architecture() -> dict[str, Any]:
     return {
+        "schema_version": "2.0.0",
         "components": [
             {
                 "id": "engine",

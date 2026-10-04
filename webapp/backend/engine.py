@@ -39,6 +39,11 @@ def ui_projection_schema() -> Dict[str, Any]:
     return _ui_projection.ui_projection_schema()
 
 
+def ui_projection_path(snapshot: Any, src_ip: str, dst_ip: str) -> Dict[str, Any]:
+    """Delegate route investigation and every disclosed result to its engine owner."""
+    return _ui_projection.project_path(snapshot, src_ip, dst_ip)
+
+
 def bind_ui_projection_snapshot(raw: bytes) -> Dict[str, Any]:
     """Preserve the exact-byte snapshot custody used by the store's bound reader."""
     return _protocol_assurance.bind_snapshot_json_bytes(raw)

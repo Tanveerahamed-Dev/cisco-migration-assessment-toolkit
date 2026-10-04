@@ -50,14 +50,15 @@ def test_guard_runs_before_snapshot_or_projection(client, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("guard must precede source read")
     monkeypatch.setattr(client.app.state.store, "get_snapshot_blob", forbidden)
-    for path in (url(991), url(991, "inventory") + "/lists?pointer=/devices/rows"):
+    for path in (url(991), url(991, "inventory") + "/lists?pointer=/devices/rows",
+                 url(991, "topology") + "/path?src_ip=192.0.2.1&dst_ip=198.51.100.1"):
         assert client.get(path, headers={"sec-fetch-site": "cross-site"}).status_code == 403
         assert client.get(path, headers={"host": "evil.example"}).status_code == 403
 
 
 def test_routes_declare_response_models(client):
     paths = [r for r in client.app.routes if "ui-projection" in getattr(r, "path", "")]
-    assert len(paths) == 2
+    assert len(paths) == 3
     assert all(r.response_model is not None for r in paths)
 
 
@@ -101,7 +102,7 @@ def resolve(value, pointer):
     return value
 
 
-@pytest.mark.parametrize("view", ["overview", "trust", "inventory", "findings", "device"])
+@pytest.mark.parametrize("view", ["overview", "trust", "inventory", "findings", "topology", "device"])
 def test_view_preserves_owner_data_and_exact_store_identity(client, sample, view):
     from backend.ui_projection_api import LIST_CATALOG
     sid = seed(client, sample)
@@ -469,7 +470,7 @@ def test_cache_computes_and_validates_once_across_views_pages_and_exact_hosts(cl
     monkeypatch.setattr(engine, "bind_ui_projection_snapshot", binding)
     monkeypatch.setattr(api, "_DOCUMENT_VALIDATOR", Validator(api._DOCUMENT_VALIDATOR, "document"))
     monkeypatch.setattr(api, "_DEVICE_VALIDATOR", Validator(api._DEVICE_VALIDATOR, "device"))
-    for view in ("overview", "trust", "inventory", "findings", "overview"):
+    for view in ("overview", "trust", "inventory", "findings", "topology", "overview"):
         assert client.get(url(sid, view), params={"limit": 1}).status_code == 200
         for pointer in api.LIST_CATALOG[view]:
             for offset in (0, 1, 100):
@@ -1423,3 +1424,195 @@ def test_native_smoke_proof_is_request_local_and_requires_complete_validation(tm
                     base_url="http://localhost", client=("127.0.0.1", 50000)) as normal:
         monkeypatch.setattr(api, "_page_view", original)
         assert proof not in normal.get(url(seed(normal, sample)), headers=headers).headers
+
+
+def path_url(sid):
+    return url(sid, "topology") + "/path"
+
+
+_PATH_QUERY = {"src_ip": "192.0.2.1", "dst_ip": "198.51.100.9"}
+
+
+def test_path_transport_preserves_owner_result_and_topology_context(client, sample):
+    sid = seed(client, sample)
+    response = client.get(path_url(sid), params=_PATH_QUERY)
+    assert response.status_code == 200, response.text[:200]
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    topology = client.get(url(sid, "topology")).json()
+    raw, _ = client.app.state.store.get_snapshot_blob(sid)
+    expected = owner.project_path(engine.bind_ui_projection_snapshot(raw), **_PATH_QUERY)
+    assert body["view"] == "path"
+    assert body["payload"] == expected["path"]
+    assert body["engine"] == expected["engine"] == topology["engine"]
+    assert body["identity"] == topology["identity"]
+    assert body["limitations"] == topology["limitations"]
+    assert body["projection_schema"] == expected["schema"]
+    assert "X-Atlas-Native-Validation" not in response.headers
+
+
+@pytest.mark.parametrize("params", [
+    {}, {"src_ip": "192.0.2.1"}, {"dst_ip": "198.51.100.9"},
+    {"src_ip": "", "dst_ip": "198.51.100.9"},
+    {"src_ip": "a" * 129, "dst_ip": "198.51.100.9"},
+    {"src_ip": "192.0.2.1", "dst_ip": "a" * 129},
+])
+def test_path_query_bounds_precede_store_access(client, monkeypatch, params):
+    def forbidden(*_args):
+        pytest.fail("Malformed query reached the store")
+    monkeypatch.setattr(client.app.state.store, "get_snapshot_blob", forbidden)
+    assert client.get(path_url(991), params=params).status_code == 422
+
+
+@pytest.mark.parametrize("view", ["topology", "topology/path"])
+@pytest.mark.parametrize("failure", ["deleted", "bytes_changed", "authority_changed"])
+def test_topology_and_path_reread_authority_after_warming(client, view, failure):
+    sid = seed(client)
+    path = url(sid, view)
+    params = _PATH_QUERY if view.endswith("/path") else {}
+    assert client.get(path, params=params).status_code == 200
+    store = client.app.state.store
+    if failure == "deleted":
+        assert store.delete_snapshot(sid)
+        expected = 404
+    else:
+        with store._lock:
+            if failure == "bytes_changed":
+                store._conn.execute("UPDATE snapshots SET snapshot_json = ? WHERE id = ?", ('{"changed":true}', sid))
+            else:
+                store._conn.execute("DELETE FROM snapshot_authority WHERE snapshot_id = ?", (sid,))
+            store._conn.commit()
+        expected = 409
+    response = client.get(path, params=params)
+    assert response.status_code == expected
+    assert "payload" not in response.json()
+
+
+def test_path_queries_are_not_cached_and_cannot_poison_private_source(client, monkeypatch):
+    sid = seed(client, {"devices": {"edge": {}}, "script_version": "3.23.0"})
+    original = engine.ui_projection_path
+    inputs, outputs = [], []
+    def retained(snapshot, src_ip, dst_ip):
+        inputs.append(snapshot)
+        result = original(snapshot, src_ip, dst_ip)
+        outputs.append(result)
+        return result
+    monkeypatch.setattr(engine, "ui_projection_path", retained)
+    first = client.get(path_url(sid), params=_PATH_QUERY)
+    assert first.status_code == 200
+    pristine = deepcopy(inputs[0])
+    inputs[0]["script_version"] = "changed retained query input"
+    outputs[0]["path"]["query"]["src_ip"] = "changed retained result"
+    second = client.get(path_url(sid), params=_PATH_QUERY)
+    assert second.status_code == 200 and second.content == first.content
+    assert len(inputs) == 2 and inputs[1] == pristine
+    assert inputs[1] is not inputs[0]
+
+
+def test_cached_views_finish_while_path_computation_is_held(client, monkeypatch):
+    sid = seed(client)
+    assert client.get(url(sid, "topology")).status_code == 200
+    original = engine.ui_projection_path
+    entered, release = Event(), Event()
+    def held(*args):
+        entered.set()
+        assert release.wait(20)
+        return original(*args)
+    monkeypatch.setattr(engine, "ui_projection_path", held)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        pending = pool.submit(client.get, path_url(sid), params=_PATH_QUERY)
+        try:
+            assert entered.wait(20)
+            for view in ("overview", "topology"):
+                assert pool.submit(client.get, url(sid, view)).result(timeout=10).status_code == 200
+        finally:
+            release.set()
+        assert pending.result(timeout=20).status_code == 200
+
+
+def test_path_admits_complete_source_before_query_selection(client, monkeypatch):
+    sid = seed(client)
+    document = owner.project({})
+    document["overview"]["facts"]["avg_health"]["fact"]["value"] = float("nan")
+    monkeypatch.setattr(engine, "ui_projection", lambda *_args: document)
+    def forbidden(*_args):
+        pytest.fail("Path ran before invalid source admission was refused")
+    monkeypatch.setattr(engine, "ui_projection_path", forbidden)
+    transport = TestClient(client.app, base_url="http://localhost", client=("127.0.0.1", 50000),
+                           raise_server_exceptions=False)
+    try:
+        response = transport.get(path_url(sid), params=_PATH_QUERY)
+        assert response.status_code == 500 and response.content == b"Internal Server Error"
+    finally:
+        transport.close()
+
+
+@pytest.mark.parametrize("corruption", ["query", "engine", "extra", "nan", "tuple"])
+def test_path_refuses_corrupt_or_wrong_context_results_and_retries(client, monkeypatch, corruption):
+    sid = seed(client)
+    original = engine.ui_projection_path
+    def corrupt(*args):
+        result = original(*args)
+        if corruption == "query":
+            result["path"]["query"]["src_ip"] = "203.0.113.10"
+        elif corruption == "engine":
+            result["engine"]["code_schema_version"] = "different engine"
+        elif corruption == "extra":
+            result["path"]["unowned"] = True
+        elif corruption == "nan":
+            result["path"]["result"]["value"] = float("nan")
+        else:
+            result["path"]["hop_evidence"]["items"] = ()
+        return result
+    transport = TestClient(client.app, base_url="http://localhost", client=("127.0.0.1", 50000),
+                           raise_server_exceptions=False)
+    try:
+        with monkeypatch.context() as changed:
+            changed.setattr(engine, "ui_projection_path", corrupt)
+            refused = transport.get(path_url(sid), params=_PATH_QUERY)
+            assert refused.status_code == 500 and refused.content == b"Internal Server Error"
+        accepted = transport.get(path_url(sid), params=_PATH_QUERY)
+        assert accepted.status_code == 200
+        assert accepted.json()["payload"]["query"]["src_ip"] == _PATH_QUERY["src_ip"]
+    finally:
+        transport.close()
+
+
+def test_path_response_has_its_own_complete_python_validation(client):
+    from backend import ui_projection_api as api
+    from pydantic import ValidationError as ModelValidationError
+    sid = seed(client)
+    body = client.get(path_url(sid), params=_PATH_QUERY).json()
+    trace = {"native": True, "complete": True}
+    token = api._NATIVE_SMOKE_TRACE.set(trace)
+    try:
+        assert api.UiProjectionPathResponse.model_validate(body).root == body
+        assert trace == {"native": False, "complete": False}
+        forged = deepcopy(body)
+        forged["payload"]["query"]["disclose"] = False
+        with pytest.raises(ModelValidationError):
+            api.UiProjectionPathResponse.model_validate(forged)
+    finally:
+        api._NATIVE_SMOKE_TRACE.reset(token)
+
+
+def test_reaudited_topology_lists_use_native_and_float_views_stay_python(tmp_path, sample, monkeypatch):
+    monkeypatch.setenv("ASSESSHUB_NATIVE_VALIDATION_SMOKE", "1")
+    monkeypatch.setenv("ASSESSHUB_INSTANCE_NONCE", "topology-schema-delta-proof")
+    headers = {"X-Atlas-Native-Smoke-Nonce": "topology-schema-delta-proof"}
+    proof = "X-Atlas-Native-Validation"
+    app = create_app(db_path=str(tmp_path / "native-topology.db"), scope_dist_dir=None)
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000)) as client:
+        sid = seed(client, sample)
+        for pointer in ("/nodes", "/cables", "/failure_impact", "/source_addresses"):
+            response = client.get(url(sid, "topology") + "/lists", params={"pointer": pointer, "limit": 50},
+                                  headers=headers)
+            assert response.status_code == 200
+            assert response.headers.get(proof) == "jsonschema-rs/0.58.4", pointer
+        topology = client.get(url(sid, "topology"), params={"limit": 200}, headers=headers)
+        structural = client.get(url(sid, "topology") + "/lists", params={"pointer": "/structural_links"},
+                                headers=headers)
+        assert topology.status_code == structural.status_code == 200
+        assert proof not in topology.headers and proof not in structural.headers
+        path = client.get(path_url(sid), params=_PATH_QUERY, headers=headers)
+        assert path.status_code == 200 and proof not in path.headers

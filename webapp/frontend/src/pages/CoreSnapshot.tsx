@@ -4,9 +4,10 @@ import { api } from "../api";
 import { loadProjection, type Fact, type Projection, type Schemas, type View, type ViewDocument } from "../projection";
 import { EvidenceProvider, FactView, ListState, StateLabel, ValueText } from "./core/ProjectionEvidence";
 import { ProjectionList } from "./core/ProjectionList";
+import { TopologyPaths } from "./core/TopologyPaths";
 import "./coreSnapshot.css";
 
-const titles = { overview: "Overview", trust: "Trust", inventory: "Inventory", findings: "Findings", device: "Device" };
+const titles = { overview: "Overview", trust: "Trust", inventory: "Inventory", findings: "Findings", topology: "Topology & Paths", device: "Device" };
 const factLabel = (key: string) => key.replaceAll("_", " ");
 function FactGrid({ facts, order }: { facts: Readonly<Record<string, Fact>>; order?: readonly string[] }) {
   const entries = order ? order.map((key) => [key, facts[key]] as const) : Object.entries(facts);
@@ -249,7 +250,7 @@ export default function CoreSnapshot() {
     <header className="page-head"><div><h1>{view === "device" ? host ?? "Device" : `Snapshot ${id}`}</h1>
       <p className="sub">Evidence-led migration assessment</p></div><span className="spacer" /><ScopeLink key={sid} sid={sid} />
       <Link className="btn" to={`/snapshots/${id}/tools`}>Tools and downloads</Link></header>
-    <nav className="projection-nav" aria-label="Snapshot views">{(["overview", "trust", "inventory", "findings"] as const).map((item) =>
+    <nav className="projection-nav" aria-label="Snapshot views">{(["overview", "trust", "inventory", "findings", "topology"] as const).map((item) =>
       <Link key={item} aria-current={view === item || (view === "device" && item === "inventory") ? "page" : undefined}
         to={`/snapshots/${id}?view=${item}`}>{titles[item]}</Link>)}</nav>
     {failure?.key === key ? <section className="panel projection-error" role="alert"><h2>View unavailable</h2><p>{failure.message}</p>
@@ -261,6 +262,7 @@ export default function CoreSnapshot() {
             {document.view === "trust" && <Trust document={document} />}
             {document.view === "inventory" && <Inventory document={document} />}
             {document.view === "findings" && <Findings document={document} />}
+            {document.view === "topology" && <TopologyPaths document={document} reload={() => setRetry((n) => n + 1)} />}
             {document.view === "device" && <Device document={document} />}
           </div>
           <details className="panel projection-source"><summary>Snapshot and engine identity</summary>

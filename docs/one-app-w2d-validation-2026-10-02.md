@@ -601,14 +601,48 @@ build on the memory-constrained workstation, will establish the committed-source
 asset, executable, actual-native HTTP and private-version proof. The unchanged
 hosted benchmark must separately establish both sample page-size gates.
 
-## Closing evidence still required
+## Final W2d closure — 2026-10-03
 
-- Required hosted repository, distribution, reference and portable checks.
-- New exact-source hosted sample 50/200-row snapshot-warm maxima below 300 ms,
-  with the 300-device diagnostic retained.
-- Repository privacy and complete new-commit message/patch scan before push.
-- Every required hosted check green on the final PR head, followed by the
-  authorized exact-head admin merge commit and tree reconciliation.
+W2d merged in [PR #586](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/586)
+as `828847f14c908fa7b725fe97fdff9cee5f115178`. All 15 required contexts from
+GitHub Actions app 15368 and all six latest applicable workflows passed on
+`18fac335e76cdeab530203bebfc9cd6a489e857f`. The exact-head admin merge used the
+owner's standing authority; branch policy was not changed. Merged-main tree
+`179710d24c3eb11772d6223bbae4ec252deab155` equals the tested head and PR merge tree.
+
+The unchanged [hosted performance gate](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/37067520985)
+passed with sample maxima of **91.8337 ms at 50 rows** and **143.6550 ms at
+200 rows**. Independent review bound all source hashes and 36 request shapes with
+five repeats per dataset. All 108 response sizes/hashes equal the earlier failed
+`2a50978a` hosted baseline. Artifact 11252693973 is 25,084 bytes, SHA-256
+`20dac193fd3631cc26efffc5612057bdc8240581dc4c37c97726adf639a70166`.
+Sample cold Overview remains outside the existing gate (444.2991/446.7840 ms).
+The synthetic 300-device profile is diagnostic: 104.3249 ms repeated maximum,
+577.1617 ms first Device and 10,193.1427 ms cold Overview. These distinctions and
+all earlier failed measurements remain part of the record.
+
+The [portable workflow](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/37067501879)
+passed both the full source/frontend gate and real Windows binary build. Its
+producer is the tested PR merge `875847749cc665e868487881028edf576fa45238`, whose
+tree equals the approved head. Independent review rehashed all 860 runtime members
+and eight receipts, checked the pinned native binary/MIT/upstream SBOM custody,
+and confirmed two frozen native/private-version HTTP smoke runs. Artifact
+11253677200 is 51,629,250 bytes, SHA-256
+`56269770950bfb48a0aa21d454c2544dac1999181ca537f7d757279e8fa0142d`.
+It remains unsigned with 14 external qualification gates pending; its supplied
+203-component native SBOM is still an upstream declaration, not legal or linked
+component closure.
+
+Publication followed terminal stable-index/working-tree privacy verification,
+all 14 new commits and 16 parent-relative patches (791,721 bytes, zero marker
+matches), and a separate PR-body scan. The first same-head webapp run was
+automatically superseded after the PR-body update; its cancellation and failed
+dependent checks remain preserved alongside the successful replacement. A local
+review parser's editable-install assumption was also corrected without changing
+the benchmark. No CI rerun or cancellation was used to discard negative evidence.
+
+This closes W2d at the exact source above. Its receipts do not certify later W2e
+schema or feature changes, which require their own validation and hosted gate.
 
 The canonical Graphify graph was used only for navigation. It belongs to the
 protected main checkout, not this linked checkout; no graph refresh or claim of

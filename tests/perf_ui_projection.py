@@ -62,7 +62,7 @@ def measure(snapshot, repeats, limit, all_lists):
         host = sorted(snapshot["devices"])[len(snapshot["devices"]) // 2]
         base = f"/api/snapshots/{sid}/ui-projection"
         requests = [(view, f"{base}/{view}", {"limit": limit})
-                    for view in ("overview", "trust", "inventory", "findings")]
+                    for view in ("overview", "trust", "inventory", "findings", "topology")]
         requests += [("device", f"{base}/device", {"host": host, "limit": limit}),
                      ("inventory_page", f"{base}/inventory/lists",
                       {"pointer": "/devices/rows", "offset": 10, "limit": limit}),
@@ -78,6 +78,8 @@ def measure(snapshot, repeats, limit, all_lists):
                         params["host"] = host
                     requests.append((f"{view}:{pointer}", f"{base}/{view}/lists", params))
         rows = []
+        topology = None
+        path_diagnostic = None
         memory_before = resident_bytes()
         with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000)) as client:
             for name, path, params in requests:
@@ -97,14 +99,46 @@ def measure(snapshot, repeats, limit, all_lists):
                 rows.append({"endpoint": name, "first_ms": samples[0], "warm_ms": warm,
                              "warm_median_ms": statistics.median(warm), "warm_max_ms": max(warm),
                              "response_bytes": len(response.content), "response_sha256": digest})
+                if name == "topology":
+                    topology = response.json()["payload"]
                 print(f"{len(snapshot['devices'])} devices {name}: first={samples[0]:.1f} ms, "
                       f"warm median={statistics.median(warm):.1f} ms, max={max(warm):.1f} ms", flush=True)
+            # Query computation has a different workload and remains outside the
+            # existing sample view/page gate. These are observed address choices,
+            # not a claim that the route is reachable or uniquely attributable.
+            addresses = [row["address"]["value"] for row in topology["source_addresses"]["page"]["items"]
+                         if row["address"]["state"] == "published"]
+            if len(addresses) >= 2:
+                query = {"src_ip": addresses[0], "dst_ip": addresses[-1]}
+                samples = []
+                digest = None
+                for _ in range(repeats + 1):
+                    start = time.perf_counter()
+                    response = client.get(f"{base}/topology/path", params=query)
+                    elapsed = 1000 * (time.perf_counter() - start)
+                    response.raise_for_status()
+                    actual = hashlib.sha256(response.content).hexdigest()
+                    if digest is not None and digest != actual:
+                        raise AssertionError("Path response changed between identical requests")
+                    digest = actual
+                    samples.append(elapsed)
+                result = response.json()["payload"]["result"]
+                path_diagnostic = {"query": query, "first_ms": samples[0], "repeated_ms": samples[1:],
+                                   "repeated_max_ms": max(samples[1:]), "result_state": result["state"],
+                                   "route_status": result["value"]["status"] if result["value"] is not None else None,
+                                   "response_bytes": len(response.content), "response_sha256": digest,
+                                   "scope": "diagnostic; first and last published address on the first topology page"}
             memory_warm = resident_bytes()
         return {"devices": len(snapshot["devices"]),
                 "interfaces": sum(len(value) for value in snapshot.get("interfaces", {}).values()),
                 "endpoints": len(snapshot.get("endpoint_identity", [])),
                 "stored_bytes": len(raw), "stored_sha256": binding["sha256"],
                 "process_rss_before_requests": memory_before, "process_rss_warm": memory_warm,
+                "process_rss_warm_scope": "after view/page and optional path probes; not cache-only allocation",
+                "topology_lists": {key: {"rows": topology[key]["page"]["total"],
+                                         "state": topology[key]["source_list"]["state"]}
+                                   for key in ("nodes", "cables", "structural_links", "failure_impact", "source_addresses")},
+                "path_diagnostic": path_diagnostic,
                 "requests": rows}
 
 
@@ -120,7 +154,7 @@ def main():
     if args.repeats < 1:
         parser.error("--repeats must be positive")
     sample = json.loads((ROOT / "webapp/sample_data/sample_fleet.snapshot.json").read_bytes())
-    sources = ("cisco_toolkit/ui_projection.py", "cisco_toolkit/protocol_assurance.py",
+    sources = ("cisco_toolkit/ui_projection.py", "cisco_toolkit/protocol_assurance.py", "cisco_toolkit/fib.py",
                "webapp/backend/ui_projection_api.py", "webapp/backend/engine.py",
                "webapp/backend/storage.py", "webapp/backend/app.py", "webapp/backend/serve.py",
                "webapp/sample_data/sample_fleet.snapshot.json",

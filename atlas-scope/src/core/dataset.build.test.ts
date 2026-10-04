@@ -187,12 +187,18 @@ describe("F4 chunk graph, both builds: the entry imports no application code and
       expect(upFront.filter((m) => /\/node_modules\/(three|postprocessing)\//.test(m)), "no three.js in the initial payload").toEqual([]);
       /* The class, not a list of the modules that must stay out: every authored module in the initial
          payload must be one the boot entry is meant to carry (itself, its two stylesheets, the theme
-         preference, and the two tiny dataset helpers it calls synchronously). Anything else — the
+         preference, the two tiny dataset helpers it calls synchronously, and the exact pure
+         contract-mode admission pair). The pair's runtime closure and inert top-level declarations
+         are pinned by contract-mode/boundary.test.ts. Anything else — the
          runtime-dataset code (boot, hub, opened, the compile client), the compiler, the application —
          is loaded on demand, and a new module that slips into the entry fails here by default. */
-      const ENTRY_MAY_CARRY = /\/src\/(main\.tsx|app\/theme-preference\.ts|core\/tokens\.css|app\/shell\.css|core\/dataset\/(marker|refusal)\.ts)$/;
+      const ENTRY_MAY_CARRY = new Set([
+        "src/main.tsx", "src/app/theme-preference.ts", "src/core/tokens.css", "src/app/shell.css",
+        "src/core/dataset/marker.ts", "src/core/dataset/refusal.ts", "src/contract-mode/entry.ts",
+        "../webapp/frontend/src/projectionEmbed.ts",
+      ].map((file) => resolve(PKG, file).split("\\").join("/")));
       expect(
-        upFront.map((m) => m.replace(/[?#].*$/, "")).filter((m) => /\/src\//.test(m) && !ENTRY_MAY_CARRY.test(m)),
+        upFront.map((m) => m.replace(/[?#].*$/, "")).filter((m) => /\/src\//.test(m) && !ENTRY_MAY_CARRY.has(m)),
         "only the boot entry's own modules are in the initial payload",
       ).toEqual([]);
       expect(upFront.some((m) => /\/src\/main\.tsx$/.test(m)), "positive control: the entry itself is in the initial payload").toBe(true);

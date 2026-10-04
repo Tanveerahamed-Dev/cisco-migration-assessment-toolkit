@@ -22,6 +22,7 @@ import release.pdf_report as pdf_report  # noqa: E402
 from release.compiler_bundle import CompilerBundle  # noqa: E402
 from release.content_bundle import ContentBundle, load_content_bundle  # noqa: E402
 from release.model import canonical_json  # noqa: E402
+from governance.architecture import load_contract, validate_contract  # noqa: E402
 from release.pdf_report import (  # noqa: E402
     _load_architecture,
     build_master_reference_pdf,
@@ -529,8 +530,88 @@ def test_tracked_architecture_contract_is_supported_and_validated(tmp_path: Path
         MASTER_REFERENCE / "governance" / "architecture.json",
     )
     assert architecture is not None
-    assert architecture["schema_version"] == "2.0.0"
-    assert len(digest) == 64
+    assert architecture == load_contract()
+    assert validate_contract(architecture) == ()
+    assert digest == hashlib.sha256((MASTER_REFERENCE / "governance" / "architecture.json").read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("mode", ["path", "bytes", "discovered"])
+@pytest.mark.parametrize("schema_version", ["2.0.0", "2.1.0"])
+def test_pdf_architecture_consumers_follow_governance_version_support(
+    tmp_path: Path, mode: str, schema_version: str,
+) -> None:
+    content = _content(tmp_path)
+    path = _architecture(tmp_path)
+    contract = pdf_report._load_json_object(path)
+    contract["schema_version"] = schema_version
+    if schema_version == "2.1.0":
+        contract["allowed_static_path_edges"] = [{
+            "source_path": "master-reference/app/fixture.ts",
+            "target_path": "docs/owner.py",
+            "reason": "Synthetic interface-owner fixture.",
+        }]
+    raw = canonical_json(contract)
+    path.write_bytes(raw)
+    architecture, digest = _load_architecture(
+        content, path if mode == "path" else None,
+        raw if mode == "bytes" else None,
+    )
+    assert architecture == contract
+    assert digest == hashlib.sha256(raw).hexdigest()
+
+
+@pytest.mark.parametrize("mode", ["path", "bytes", "discovered"])
+@pytest.mark.parametrize("mutation", [
+    "missing_version", "unknown_version", "unknown_version_foreign_fields", "null_version", "list_version",
+    "malformed_path", "duplicate_path", "unowned_path", "empty_components", "empty_phases",
+])
+def test_pdf_architecture_consumers_retain_shared_validation(
+    tmp_path: Path, mode: str, mutation: str,
+) -> None:
+    content = _content(tmp_path)
+    path = _architecture(tmp_path)
+    contract = pdf_report._load_json_object(path)
+    contract["schema_version"] = "2.1.0"
+    rule = {
+        "source_path": "master-reference/app/fixture.ts",
+        "target_path": "docs/owner.py",
+        "reason": "Synthetic interface-owner fixture.",
+    }
+    contract["allowed_static_path_edges"] = [rule]
+    if mutation == "missing_version":
+        del contract["schema_version"]
+    elif mutation == "unknown_version":
+        contract["schema_version"] = "9.0.0"
+    elif mutation == "unknown_version_foreign_fields":
+        contract["schema_version"] = "9.0.0"
+        contract["allowed_edges"] = None
+    elif mutation == "null_version":
+        contract["schema_version"] = None
+    elif mutation == "list_version":
+        contract["schema_version"] = ["2.1.0"]
+    elif mutation == "malformed_path":
+        rule["target_path"] = "../escape.py"
+    elif mutation == "duplicate_path":
+        contract["allowed_static_path_edges"].append(dict(rule))
+    elif mutation == "unowned_path":
+        rule["target_path"] = "unowned/fixture.py"
+    elif mutation == "empty_components":
+        contract["components"] = []
+    else:
+        contract["runtime_phases"] = []
+    raw = canonical_json(contract)
+    path.write_bytes(raw)
+    errors = validate_contract(contract)
+    assert errors
+    with pytest.raises(ValueError) as failure:
+        _load_architecture(content, path if mode == "path" else None, raw if mode == "bytes" else None)
+    assert str(failure.value) == f"architecture contract is invalid: {'; '.join(errors)}"
+
+
+def test_pdf_architecture_input_selection_remains_exclusive(tmp_path: Path) -> None:
+    path = _architecture(tmp_path)
+    with pytest.raises(ValueError, match="choose architecture_path or architecture_bytes"):
+        _load_architecture(_content(tmp_path), path, path.read_bytes())
 
 
 def test_pdf_is_deterministic_source_bound_polished_and_never_embeds_source(tmp_path: Path) -> None:

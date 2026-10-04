@@ -4861,6 +4861,48 @@ def test_pdf_is_only_hash_bound_as_external_unreviewed_input(tmp_path: Path) -> 
     _assert_pdf_gate_core_source_oid_tamper_rejected(repo, gate)
 
 
+@pytest.mark.parametrize("mutation", ["unknown_version", "invalid_path_rule"])
+def test_release_pdf_branch_uses_shared_architecture_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str,
+) -> None:
+    from governance.architecture import validate_contract
+    from release import pdf_report
+
+    repo, compiler = _fixture_repo(tmp_path)
+    output = tmp_path / "release"
+    bound_owner = release_pipeline._bound_architecture
+    loader_owner = pdf_report._load_architecture
+    expected_errors: list[str] = []
+    observed: list[bytes] = []
+
+    def invalid_bound_input(root: Path, bundle: compiler_bundle.CompilerBundle) -> bytes:
+        # This seam supplies an invalid bound input to the consumer. Unrelated tests
+        # retain the real Git-byte custody checks; they cannot prove schema refusal.
+        contract = json.loads(bound_owner(root, bundle))
+        if mutation == "unknown_version":
+            contract["schema_version"] = "9.0.0"
+        else:
+            contract["allowed_static_path_edges"] = [{
+                "source_path": "../escape.py", "target_path": "docs/owner.py",
+                "reason": "Synthetic invalid-bound-input fixture.",
+            }]
+        expected_errors.extend(validate_contract(contract))
+        assert expected_errors
+        return canonical_json(contract)
+
+    def observe_real_loader(content, architecture_path, architecture_bytes=None):
+        observed.append(architecture_bytes)
+        return loader_owner(content, architecture_path, architecture_bytes)
+
+    monkeypatch.setattr(release_pipeline, "_bound_architecture", invalid_bound_input)
+    monkeypatch.setattr(pdf_report, "_load_architecture", observe_real_loader)
+    with pytest.raises(ReleaseError) as failure:
+        build_release(repo, compiler, output, generate_pdf=True)
+    assert str(failure.value) == f"architecture contract is invalid: {'; '.join(expected_errors)}"
+    assert len(observed) == 1 and isinstance(observed[0], bytes)
+    assert not output.exists()
+
+
 def test_release_can_generate_source_bound_pdf_but_keeps_review_blocked(tmp_path: Path) -> None:
     pytest.importorskip("reportlab")
     pypdf = pytest.importorskip("pypdf")

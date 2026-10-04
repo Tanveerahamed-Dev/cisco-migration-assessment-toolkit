@@ -105,6 +105,7 @@ def write_scope_dist(
     runtime_source: str | None = "assesshub-api-runtime",
     entry_bytes: bytes = b"export const scope = true;",
     extra_asset: tuple[str, bytes] | None = None,
+    projection_markers: tuple[str, ...] = (),
 ) -> dict[str, bytes]:
     """A small, complete Vite-shaped Atlas Scope build: an inline classic theme-boot script, one
     module entry, a modulepreload and a stylesheet, all referenced under ``mount``."""
@@ -121,6 +122,8 @@ def write_scope_dist(
         (dist / rel).write_bytes(content)
     meta = (f'<meta name="atlas-scope-snapshot-source" content="{runtime_source}">'
             if runtime_source is not None else "")
+    meta += "".join(f'<meta name="atlas-scope-engine-projection" content="{value}">'
+                    for value in projection_markers)
     index = (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"UTF-8\">"
         f"{meta}"
@@ -1325,12 +1328,20 @@ def test_scope_view_capability_reports_availability_and_owns_the_href(tmp_path):
         sid = c.post("/api/demo/seed").json()["snapshot"]["id"]
         r = c.get(f"/api/snapshots/{sid}/scope-view")
         assert r.status_code == 200
+        assert r.headers["cache-control"] == "no-store"
         body = r.json()
         assert body == {"available": True, "status": "ready",
-                        "href": f"/scope/snapshots/{sid}/", "detail": body["detail"]}
+                        "href": f"/scope/snapshots/{sid}/", "detail": body["detail"],
+                        "engine_projection": {
+                            "available": False, "protocol": "atlas.ui_projection_embed/1",
+                            "projection_schema": "ui_projection/1",
+                            "style_schema": "ui_projection_topology_style/1", "href": None,
+                            "detail": "The engine topology adapter is unavailable in this installation.",
+                        }}
         # the href it hands out is live: it serves the scope shell
         assert SCOPE_MARKER in c.get(body["href"]).text
-        assert c.get("/api/snapshots/424242/scope-view").status_code == 404
+        missing = c.get("/api/snapshots/424242/scope-view")
+        assert missing.status_code == 404 and missing.headers["cache-control"] == "no-store"
         # it is on the guarded /api surface
         assert c.get(f"/api/snapshots/{sid}/scope-view",
                      headers={"sec-fetch-site": "cross-site"}).status_code == 403
@@ -1344,6 +1355,59 @@ def test_scope_view_capability_is_false_when_the_build_is_absent(tmp_path):
         assert body["href"] is None
         assert body["status"] == "not_built"
         assert _NOT_BUILT in body["detail"]
+        assert body["engine_projection"]["available"] is False
+        assert body["engine_projection"]["href"] is None
+
+
+@pytest.mark.parametrize("markers,available", [
+    ((), False), (("atlas.ui_projection_embed/1",), True),
+    (("atlas.ui_projection_embed/2",), False), (("",), False),
+    (("atlas.ui_projection_embed/1", "atlas.ui_projection_embed/1"), False),
+    (("atlas.ui_projection_embed/1", "atlas.ui_projection_embed/2"), False),
+])
+def test_engine_projection_capability_requires_one_supported_declaration(tmp_path, markers, available):
+    write_scope_dist(tmp_path / "scope-dist", projection_markers=markers)
+    with _client(tmp_path, tmp_path / "scope-dist") as c:
+        campaign = c.app.state.store.create_campaign("Contract capability")
+        sid = c.app.state.store.add_snapshot(campaign["id"], "Fixture", {}, {})["id"]
+        result = c.get(f"/api/snapshots/{sid}/scope-view")
+        assert result.status_code == 200
+        assert result.headers["cache-control"] == "no-store"
+        body = result.json()
+        assert body["available"] is True
+        assert body["href"] == f"/scope/snapshots/{sid}/"
+        capability = body["engine_projection"]
+        assert capability["available"] is available
+        assert capability["protocol"] == "atlas.ui_projection_embed/1"
+        assert capability["projection_schema"] == "ui_projection/1"
+        assert capability["style_schema"] == "ui_projection_topology_style/1"
+        expected = f"/scope/snapshots/{sid}/?engine_projection=1" if available else None
+        assert capability["href"] == expected
+        if expected:
+            assert SCOPE_MARKER in c.get(expected).text
+            assert c.get(expected, headers={"sec-fetch-site": "cross-site"}).status_code == 403
+
+
+@pytest.mark.parametrize("name,available", [
+    ("ATLAS-SCOPE-ENGINE-PROJECTION", True),
+    ("atla\u017f-scope-engine-projection", False),
+    ("atlas-scope-engine-projection\u00a0", False),
+])
+def test_engine_projection_capability_uses_the_shells_ascii_name_rules(tmp_path, name, available):
+    dist = tmp_path / "scope-dist"
+    files = write_scope_dist(dist, projection_markers=("atlas.ui_projection_embed/1",))
+    shell = files["index.html"].replace(
+        b'name="atlas-scope-engine-projection"', f'name="{name}"'.encode("utf-8"))
+    (dist / "index.html").write_bytes(shell)
+    with _client(tmp_path, dist) as c:
+        campaign = c.app.state.store.create_campaign("Contract capability names")
+        sid = c.app.state.store.add_snapshot(campaign["id"], "Fixture", {}, {})["id"]
+        body = c.get(f"/api/snapshots/{sid}/scope-view").json()
+        # An inert unknown meta name does not disable the ordinary Scope shell.
+        assert body["available"] is True
+        assert body["engine_projection"]["available"] is available
+        assert body["engine_projection"]["href"] == (
+            f"/scope/snapshots/{sid}/?engine_projection=1" if available else None)
 
 
 # ── R5: read-only ───────────────────────────────────────────────────────────────────────────────
@@ -3450,7 +3514,8 @@ def test_a_snapshot_stored_through_another_store_withdraws_a_running_build(tmp_p
     never sees it; the next scope request or capability read must, not the next restart."""
     digest = _demo_blob_sha256()
     dist = tmp_path / "scope-dist"
-    write_scope_dist(dist, extra_asset=("mount-x.js", f'export const s="{digest}";'.encode()))
+    write_scope_dist(dist, extra_asset=("mount-x.js", f'export const s="{digest}";'.encode()),
+                     projection_markers=("atlas.ui_projection_embed/1",))
     with _client(tmp_path, dist, db_name="shared.db") as c:
         assert c.get("/scope/assets/mount-x.js").status_code == 200  # nothing stored yet
         sid = _store_sample_through_another_store(tmp_path / "shared.db")
@@ -3460,6 +3525,8 @@ def test_a_snapshot_stored_through_another_store_withdraws_a_running_build(tmp_p
         r = c.get("/scope/assets/mount-x.js")
         assert r.status_code == 503 and digest not in r.text and "stored snapshot" in r.text
         assert c.get("/scope/snapshots/1/").status_code == 503
+        capability = c.get(f"/api/snapshots/{sid}/scope-view").json()["engine_projection"]
+        assert capability["available"] is False and capability["href"] is None
 
 
 def test_with_hex_tokens_the_scope_routes_only_run_the_digest_recheck(tmp_path):
