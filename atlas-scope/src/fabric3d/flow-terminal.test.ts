@@ -82,7 +82,7 @@ function terminalOf(
       : real;
   const overlay = createFlowOverlay(readTokens("dark"));
   try {
-    overlay.setTrace(trace, 0, segmentSource());
+    overlay.setTrace(trace, segmentSource());
     const by = (name: string) => overlay.emissiveObjects().find((o) => o.name === name);
     return {
       outcome: trace.outcome,

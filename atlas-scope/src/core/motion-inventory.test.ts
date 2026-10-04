@@ -1076,6 +1076,125 @@ describe("the one looping animation", () => {
   });
 });
 
+/* ── what STARTS the one loop (C6, independent refuter 2026-10-03) ──────────────────────────────
+ *
+ * Everything above pins the loop's WORDING and its bound. It never asked what starts it, and that is
+ * where the inventory was false: a hop step (`]` / `[`, a hop-list row) re-sends the trace to the
+ * scene, and the overlay re-armed the draw-on and all three packet loops on every re-send, while
+ * flow.ts said a hop step "never re-runs the draw-on" and §4.8 said the packet "stops after 3 loops".
+ * A reader stepping hops kept the bounded loop running indefinitely.
+ *
+ * So the trigger is pinned three ways: the inventory STATES it (both inventories, in words a reader
+ * can check); the code that ARMS motion is reachable only past the overlay's new-trace test (found
+ * from the syntax tree, every assignment that can switch the draw-on or the packet on, not a list of
+ * the ones seen); and the scene's camera framing is reachable only for a trace the overlay reports
+ * newly drawn. flow-triggers.test.ts drives the real overlay with the real producer's traces. */
+describe("C6: the one loop's TRIGGER is the trigger the inventory states", () => {
+  const FLOW = "src/fabric3d/flow.ts";
+  const SCENE = "src/fabric3d/scene.ts";
+  const parse = (f: string) => ts.createSourceFile(f, readFileSync(resolve(PKG, f), "utf8"), ts.ScriptTarget.Latest, true);
+  /** The `setTrace` member of the object literal a file returns (the overlay / the scene handle). */
+  function setTraceMethod(sf: ts.SourceFile): ts.MethodDeclaration[] {
+    const out: ts.MethodDeclaration[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isMethodDeclaration(n) && n.name.getText(sf) === "setTrace" && n.body !== undefined) out.push(n);
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+    return out;
+  }
+  const packetRow = () => rowNaming("PACKET_LOOP_MS");
+  const drawOnRow = () => rowNaming("DRAW_ON_MS");
+
+  it("§4.8 states the trigger of the draw-on and the packet: a NEW trace, and a hop step re-runs neither", () => {
+    for (const row of [packetRow(), drawOnRow()]) {
+      expect(row, "§4.8 has the row").toBeDefined();
+      expect(row!.raw, `${row!.names[0]}: names its trigger`).toMatch(/\bnew trace\b/i);
+      expect(row!.raw, `${row!.names[0]}: says what a hop step does`).toMatch(/hop step[^|]*(re-runs|restarts) (neither|nothing|no)/i);
+    }
+    // The row the refuter found stale: the packet IS exercised on the shipped snapshot (2-hop presets).
+    expect(packetRow()!.raw).not.toMatch(/NOT OBSERVED|unexercisable/i);
+  });
+
+  it("flow.ts's own inventory states the same trigger, and claims no per-hop marker the code does not draw", () => {
+    const header = readFileSync(resolve(PKG, FLOW), "utf8").split("*/")[0]!.replace(/\s*\*\s*/g, " ").replace(/\s+/g, " ");
+    expect(header).toMatch(/TRIGGER both run once per NEW trace/);
+    expect(header).toMatch(/never re-runs the draw-on, never restarts or extends the loop, and never moves the camera/);
+    // The old promise, never kept on screen: a "resting position" a hop step steered.
+    expect(readFileSync(resolve(PKG, FLOW), "utf8")).not.toMatch(/resting position/);
+  });
+
+  it("every assignment that can switch the draw-on or the packet ON sits past setTrace's new-trace test", () => {
+    const sf = parse(FLOW);
+    const [method] = setTraceMethod(sf);
+    expect(method, "flow.ts has a setTrace").toBeDefined();
+    const body = method!.body!;
+    /* The new-trace test: the method's FIRST statement returns false when handed the drawn trace. */
+    const first = body.statements[0];
+    expect(first !== undefined && ts.isIfStatement(first), "setTrace opens with its identity test").toBe(true);
+    const guard = first as ts.IfStatement;
+    expect(guard.expression.getText(sf)).toMatch(/trace === drawnTrace/);
+    expect(guard.expression.getText(sf)).toMatch(/source === drawnSource/);
+    expect(guard.thenStatement.getText(sf)).toMatch(/return false/);
+    /* The class, from the tree: every write to a motion-arming flag or its start time, anywhere in the
+       file. A write of the literal `false` disarms; anything else can arm, and may only happen inside
+       setTrace past the guard — or, for the start times, inside update() where a running run is
+       stamped, never restarted (`if (x === 0) x = nowMs`). */
+    const ARMING = new Set(["revealing", "packetRunning", "revealStart", "packetStart"]);
+    const arming: { name: string; where: string; pos: number; text: string }[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left) && ARMING.has(n.left.text)) {
+        if (n.right.kind !== ts.SyntaxKind.FalseKeyword) {
+          let owner: ts.Node | undefined = n.parent;
+          while (owner !== undefined && !ts.isMethodDeclaration(owner)) owner = owner.parent;
+          arming.push({ name: n.left.text, where: owner === undefined ? "<module>" : owner.name.getText(sf), pos: n.getStart(sf), text: n.getText(sf) });
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+    expect(arming.length, "the scan finds the arming writes (it is not vacuous)").toBeGreaterThanOrEqual(4);
+    const bad = arming.filter((a) => {
+      if (a.where === "setTrace") return a.pos <= guard.getEnd();
+      if (a.where === "update") return !/^(revealStart|packetStart) = nowMs$/.test(a.text);
+      return true;
+    });
+    expect(bad.map((a) => `${a.where}: ${a.text}`), "a write that can start motion outside a new trace").toEqual([]);
+    /* The update() stamps start a run only once: each is guarded by `=== 0`, which setTrace alone resets. */
+    const flowText = readFileSync(resolve(PKG, FLOW), "utf8");
+    expect(flowText).toMatch(/if \(revealStart === 0\) revealStart = nowMs;/);
+    expect(flowText).toMatch(/if \(packetStart === 0\) packetStart = nowMs;/);
+  });
+
+  it("the overlay takes no hop: nothing it draws can depend on which hop is active", () => {
+    const [method] = setTraceMethod(parse(FLOW));
+    expect(method!.parameters.map((p) => p.name.getText())).toEqual(["trace", "source"]);
+  });
+
+  it("scene.ts frames the camera, and re-derives emphasis, only for a trace the overlay reports newly drawn", () => {
+    const sf = parse(SCENE);
+    const methods = setTraceMethod(sf);
+    expect(methods).toHaveLength(1);
+    const body = methods[0]!.body!;
+    const text = body.getText(sf);
+    // The overlay's answer is bound, and an early return on "not new, same trace" precedes every effect.
+    const call = /const (\w+) = flow\.setTrace\(next, traceSource\);/.exec(text);
+    expect(call, "scene.setTrace binds the overlay's new-trace answer").not.toBeNull();
+    const flag = call![1]!;
+    const early = text.search(new RegExp(`if \\(!${flag} && next !== null && next === trace\\) return;`));
+    expect(early, "scene.setTrace returns early for the trace already drawn").toBeGreaterThan(0);
+    for (const effect of ["cameraRig.moveTo(", "recomputeEmphasis(", "markEmphasisDirty(", "trace = next"]) {
+      const at = text.indexOf(effect);
+      expect(at, `${effect} is in scene.setTrace`).toBeGreaterThan(0);
+      expect(at, `${effect} comes after the early return`).toBeGreaterThan(early);
+    }
+    // The hop parameter reaches nothing: a hop step cannot change the picture through this method.
+    const hopParam = methods[0]!.parameters[1]!.name.getText(sf);
+    expect(hopParam.startsWith("_"), "the hop parameter is declared unused").toBe(true);
+    expect(text.includes(hopParam)).toBe(false);
+  });
+});
+
 /* ── rAF-driven eases (C6, independent refuter 2026-09-22) ─────────────────────────────────────
  *
  * WHY. Everything above sees only what CSS animates. The fades a reader actually notices on the

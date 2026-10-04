@@ -1724,7 +1724,6 @@ const createSceneImpl = (
   let hoverLink: string | null = null;
   let highlight: HighlightState | null = null;
   let trace: Trace | null = null;
-  let activeHop: number | null = null;
 
   let emphasis: EmphasisState = createEmphasisState(graph.order.length);
   /* The halo and hover-rim opacities, each a finite ease from the owner (SELECT_EASE, HOVER_EASE). */
@@ -3877,10 +3876,16 @@ const createSceneImpl = (
       yieldToPage = true;
     },
 
-    setTrace(next: Trace | null, hop: number | null): void {
+    setTrace(next: Trace | null, _activeHop: number | null): void {
+      /* A HOP STEP IS NOT A NEW TRACE (C6, refuter 2026-10-03). The shell re-sends this call on every
+         hop change; the active hop is drawn by the selection it re-aims to the hop's host (App.tsx,
+         acceptance A4), not here. So the trace already drawn, re-sent, changes nothing: no draw-on, no
+         packet run (flow.ts TRIGGER), no emphasis churn and — below — no camera move. Only a trace the
+         overlay reports as newly drawn reaches the framing. (A zero-hop trace is not drawn at all, so
+         the identity test is the scene's own as well as the overlay's.) */
+      const drewNew = flow.setTrace(next, traceSource);
+      if (!drewNew && next !== null && next === trace) return;
       trace = next;
-      activeHop = hop;
-      flow.setTrace(next, activeHop, traceSource);
       post.setBloomObjects([...graph.emissiveObjects, ...flow.emissiveObjects()]);
       recomputeEmphasis();
       markEmphasisDirty(emphasis);

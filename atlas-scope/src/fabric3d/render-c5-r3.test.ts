@@ -161,7 +161,7 @@ describe("the undecided terminal glyph is a designed, tethered mark", () => {
     const overlay = createFlowOverlay(readTokens("dark"));
     const camera = new PerspectiveCamera();
     try {
-      overlay.setTrace(traceFlow(UNDECIDED), 0, source);
+      overlay.setTrace(traceFlow(UNDECIDED), source);
       const ring = overlay.group.children.find((o) => o.name === "trace-undecided") as Mesh | undefined;
       const tether = overlay.group.children.find((o) => o.name === "trace-tether");
       expect(ring?.visible).toBe(true);
