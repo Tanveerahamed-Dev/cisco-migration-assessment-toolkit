@@ -132,6 +132,13 @@ _NPM_INVENTORIES = {
     "bundled_scope_frontend": ("atlas-scope", "atlas-scope/"),
 }
 
+# One first-party runtime module is deliberately shared by the two UI builds. This is
+# an exact output/file allowance, never permission to treat arbitrary repository or
+# sibling node_modules code as first-party. Source and rebuilt output bytes still bind.
+_SHARED_NPM_SOURCES = {
+    "atlas-scope/dist-hub": ("webapp/frontend/src/projectionEmbed.ts",),
+}
+
 
 #: The reviewed (count, digest) of each npm inventory of a real release, one row per field.
 _REVIEWED_NPM_INVENTORIES = {
@@ -1205,10 +1212,27 @@ def _npm_production_packages(root: Path, project: str) -> list[dict[str, Any]]:
 #: caller can check that the npm script really writes the output the bundle ships.
 _BUILD_MODULE_RECORDER = r"""
 import { createRequire } from "node:module";
-import { writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-const [project, outDir, mode, graphPath] = process.argv.slice(2);
+const [project, outDir, mode, repository, sharedJSON, graphPath] = process.argv.slice(2);
+const shared = Object.entries(JSON.parse(sharedJSON));
+const sharedSource = (relative, expected) => {
+  let filename = repository;
+  for (const part of relative.split("/")) {
+    filename = path.join(filename, part);
+    if (lstatSync(filename).isSymbolicLink()) throw new Error("Shared source crosses a symbolic link");
+  }
+  if (!lstatSync(filename).isFile() || path.relative(filename, realpathSync(filename)) !== "") {
+    throw new Error("Shared source is not its declared regular file");
+  }
+  const bytes = readFileSync(filename);
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  if (bytes.length !== expected.bytes || sha256 !== expected.sha256) throw new Error("Shared source bytes changed");
+  return { path: relative, bytes: bytes.length, sha256 };
+};
+for (const [relative, expected] of shared) sharedSource(relative, expected);
 const require = createRequire(path.join(project, "package.json"));
 const vite = await import(pathToFileURL(require.resolve("vite")).href);
 const buildMode = mode === "" ? undefined : mode;
@@ -1220,7 +1244,10 @@ const classify = (id) => {
   const bare = strip(id);
   if (bare.startsWith("\0") || !path.isAbsolute(bare)) return { virtual: bare.replace(/^\0+/, "") };
   const rel = path.relative(project, bare);
-  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return { outside: true };
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+    const match = shared.find(([relative]) => path.relative(path.resolve(repository, relative), bare) === "");
+    return match ? { shared: sharedSource(...match) } : { outside: true };
+  }
   return { path: rel.split(path.sep).join("/") };
 };
 const recorder = () => ({
@@ -1248,10 +1275,53 @@ await vite.build({
   plugins: [recorder()],
   worker: { plugins: () => [recorder()] },
 });
+for (const [relative, expected] of shared) sharedSource(relative, expected);
 const resolvedOut = path.relative(project, path.resolve(project, resolved.build.outDir));
 writeFileSync(graphPath, JSON.stringify({ resolvedOutDir: resolvedOut.split(path.sep).join("/"), outputs }));
 process.exit(0);
 """
+
+
+def _shared_npm_source_receipts(root: Path, output: str) -> dict[str, dict[str, Any]]:
+    """Bind allowed shared source to its tracked regular repository file, not an outside alias.
+
+    A synthetic repository may omit it; then no shared module can be admitted. The
+    caller compares this observation before/after recording, in addition to the
+    controller's clean exact-source checks and the rebuilt-output byte comparison.
+    """
+    root = Path(root).resolve(strict=True)
+    result = {}
+    for relative in _SHARED_NPM_SOURCES.get(output, ()):
+        parts = PurePosixPath(safe_relative(relative)).parts
+        source = root.joinpath(*parts)
+        if not source.exists() and not source.is_symlink():
+            continue
+        cursor = root
+        for part in parts:
+            cursor = cursor / part
+            metadata = cursor.lstat()
+            if cursor.is_symlink() or _is_reparse(metadata):
+                raise PortableReleaseError(f"shared npm source crosses a reparse point: {relative}")
+        if not stat.S_ISREG(metadata.st_mode) or source.resolve(strict=True) != source:
+            raise PortableReleaseError(f"shared npm source is not its declared regular file: {relative}")
+        entries = _git(root, "ls-files", "--stage", "--", relative).splitlines()
+        if (len(entries) != 1 or entries[0].partition("\t")[2] != relative
+                or not re.fullmatch(r"100(?:644|755) [0-9a-f]{40} 0", entries[0].partition("\t")[0])):
+            raise PortableReleaseError(f"shared npm source is not a tracked regular source: {relative}")
+        if _git(root, "diff", "--no-ext-diff", "--name-only", "HEAD", "--", relative):
+            raise PortableReleaseError(f"shared npm source differs from committed source: {relative}")
+        value, _ = _same_read(source)
+        # Index flags can hide worktree edits from status/diff. Bind the bytes read,
+        # without text/line-ending conversion, to the actual committed Git blob.
+        committed_blob = _git(root, "rev-parse", "--verify", f"HEAD:{relative}")
+        observed_blob = hashlib.sha1(
+            b"blob " + str(len(value)).encode("ascii") + b"\0" + value,
+            usedforsecurity=False,
+        ).hexdigest()
+        if observed_blob != committed_blob:
+            raise PortableReleaseError(f"shared npm source bytes differ from committed blob: {relative}")
+        result[relative] = {"bytes": len(value), "sha256": hashlib.sha256(value).hexdigest()}
+    return result
 
 
 def _project_build_output(field: str) -> tuple[str, str]:
@@ -1317,13 +1387,16 @@ def _record_build_modules(root: Path, project: str, output: str, scratch: Path) 
     mode = arguments[1] if arguments else ""
     # The recorder resolves its project through createRequire, which needs an absolute path:
     # resolve here instead of relying on every caller to have resolved the root already.
-    project_root = Path(root).resolve(strict=True).joinpath(*PurePosixPath(project).parts)
+    repository = Path(root).resolve(strict=True)
+    project_root = repository.joinpath(*PurePosixPath(project).parts)
+    shared = _shared_npm_source_receipts(repository, output)
     scratch = Path(scratch).resolve(strict=True)
     script = scratch.parent / "atlas-module-recorder.mjs"
     graph_path = scratch.parent / "atlas-module-graph.json"
     script.write_text(_BUILD_MODULE_RECORDER, encoding="utf-8")
     result = subprocess.run(
-        [node, str(script), str(project_root), str(scratch), mode, str(graph_path)],
+        [node, str(script), str(project_root), str(scratch), mode, str(repository),
+         json.dumps(shared, separators=(",", ":")), str(graph_path)],
         cwd=project_root, stdin=subprocess.DEVNULL, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=900, check=False,
     )
@@ -1332,6 +1405,8 @@ def _record_build_modules(root: Path, project: str, output: str, scratch: Path) 
             f"the module-recording rebuild of {output} failed (exit {result.returncode}): "
             + (result.stderr or result.stdout or "")[-2000:]
         )
+    if _shared_npm_source_receipts(repository, output) != shared:
+        raise PortableReleaseError(f"{output}: shared npm source changed during recording")
     try:
         return json.loads(graph_path.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -1376,11 +1451,25 @@ def _bundled_output_files(build_root: Path, output: str) -> dict[str, str]:
 
 def _attributed_install_path(
     module: Mapping[str, Any], lock: Mapping[str, Mapping[str, Any]], output: str,
+    shared_sources: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str | None:
     """The lock install path that owns one recorded module, or None for first-party project code.
     A module no single lock package owns refuses: an unknown owner is never first-party. A recorded
-    module is exactly one of ``{"path": ...}``, ``{"virtual": ...}`` or ``{"outside": ...}``."""
+    module is path, virtual, outside, or the exact reviewed shared first-party source.
+    The shared form additionally binds its bytes to the repository observation.
+    """
     kind = next(iter(module)) if len(module) == 1 else None
+    if kind == "shared":
+        row = module["shared"]
+        if (not _has_shape(row, TOOLCHAIN_SCHEMA, "material")
+                or row.get("path") not in _SHARED_NPM_SOURCES.get(output, ())
+                or type(row.get("bytes")) is not int or row["bytes"] < 0
+                or not isinstance(row.get("sha256"), str)):
+            raise PortableReleaseError(f"{output}: unreviewed shared npm source")
+        expected = (shared_sources or {}).get(row["path"])
+        if expected is None or {"bytes": row["bytes"], "sha256": row["sha256"]} != expected:
+            raise PortableReleaseError(f"{output}: shared npm source differs from repository bytes")
+        return None
     if kind == "path" and isinstance(module.get("path"), str):
         relative = safe_relative(module["path"])
         if "node_modules/" not in f"/{relative}":
@@ -1433,11 +1522,14 @@ def _npm_build_attribution(
             {"status": "not_applicable_synthetic_bundle", "output": output, "additional_rows": []},
             TOOLCHAIN_SCHEMA, "npm_build_attribution", "not_applicable_synthetic_bundle")
     arguments = _vite_build_arguments(root, output)
+    shared_sources = _shared_npm_source_receipts(root, output)
     with tempfile.TemporaryDirectory(prefix="atlas-module-graph-") as temporary:
         scratch = Path(temporary) / "out"
         scratch.mkdir()
         graph = _record_build_modules(root, project, output, scratch)
         rebuilt = _tree_digests(scratch)
+    if _shared_npm_source_receipts(root, output) != shared_sources:
+        raise PortableReleaseError(f"{output}: shared npm source changed during attribution")
     if not isinstance(graph, Mapping) or graph.get("resolvedOutDir") != PurePosixPath(output).name:
         written = graph.get("resolvedOutDir") if isinstance(graph, Mapping) else None
         raise PortableReleaseError(f"{project}'s build writes {written!r}, not the shipped {output}")
@@ -1479,7 +1571,7 @@ def _npm_build_attribution(
         for module in modules_by_file.get(relative, []):
             if not isinstance(module, Mapping):
                 raise PortableReleaseError(f"the module graph of {output} is malformed")
-            owner = _attributed_install_path(module, lock, output)
+            owner = _attributed_install_path(module, lock, output, shared_sources)
             if owner is None:
                 first_party += 1
                 continue

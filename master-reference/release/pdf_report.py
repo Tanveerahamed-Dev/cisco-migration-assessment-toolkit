@@ -1767,8 +1767,6 @@ def _load_architecture(
             raise ValueError("architecture bytes are not valid UTF-8 JSON") from exc
         if not isinstance(value, dict):
             raise ValueError("architecture contract is not an object")
-        if value.get("schema_version") != "2.0.0":
-            raise ValueError("architecture contract has an unsupported schema")
         errors = validate_contract(value)
         if errors:
             raise ValueError(f"architecture contract is invalid: {'; '.join(errors)}")
@@ -1788,8 +1786,6 @@ def _load_architecture(
         raise ValueError("architecture contract is not valid UTF-8 JSON") from exc
     if not isinstance(value, dict):
         raise ValueError("architecture contract is not an object")
-    if value.get("schema_version") != "2.0.0":
-        raise ValueError("architecture contract has an unsupported schema")
     errors = validate_contract(value)
     if errors:
         raise ValueError(f"architecture contract is invalid: {'; '.join(errors)}")

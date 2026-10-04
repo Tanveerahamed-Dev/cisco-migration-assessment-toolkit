@@ -217,6 +217,6 @@ describe("api.scopeView", () => {
     const view = { available: true, status: "ready", href: "/scope/snapshots/7/", detail: "ok" };
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(view), { status: 200 }));
     await expect(api.scopeView(7)).resolves.toEqual(view);
-    expect(spy).toHaveBeenCalledWith("/api/snapshots/7/scope-view");
+    expect(spy).toHaveBeenCalledWith("/api/snapshots/7/scope-view", { cache: "no-store" });
   });
 });

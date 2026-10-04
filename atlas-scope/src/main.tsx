@@ -3,6 +3,7 @@ import "./app/shell.css";
 import { applyTheme, readThemePreference } from "./app/theme-preference";
 import { hasOpenedMarker } from "./core/dataset/marker";
 import { showDatasetRefusal } from "./core/dataset/refusal";
+import { readContractMode } from "./contract-mode/entry";
 
 /* ── The reader's theme, before ANYTHING can paint in the wrong one (acceptance C4) ─────────────
  *
@@ -23,6 +24,27 @@ applyTheme(readThemePreference());
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("#root missing from index.html");
 const el: HTMLElement = rootEl;
+
+// The leaf theme/marker/refusal helpers above import no dataset or application code.
+// An attempted engine mode, including an invalid one, never enters ordinary dataset boot.
+const contractMode = readContractMode(window.location, import.meta.env.MODE);
+if (contractMode.selected) {
+  if (!contractMode.valid) {
+    const boot = el.querySelector(".boot");
+    if (boot) showDatasetRefusal(boot, new Error("E_CONTRACT_MODE: Open the 3D view from AssessHub's Topology & Paths screen."));
+  } else {
+    void import("./contract-mode/boot")
+      .then(({ bootContractMode }) => { bootContractMode(el, contractMode); })
+      .catch((error: unknown) => {
+        const boot = el.querySelector(".boot");
+        if (boot) showDatasetRefusal(boot, error);
+      });
+  }
+} else {
+  startOrdinaryScope();
+}
+
+function startOrdinaryScope(): void {
 
 /* ── Paint the boot line BEFORE the application evaluates ──────────────────────────────────────
  *
@@ -148,3 +170,4 @@ Promise.all([afterBootLinePainted(), datasetReady()])
     if (boot) showDatasetRefusal(boot, err);
     throw err;
   });
+}

@@ -1785,6 +1785,120 @@ def test_a_shipped_module_no_lock_package_owns_is_refused(tmp_path: Path, monkey
         subject.toolchain_receipt(repository)
 
 
+_SHARED_PROTOCOL = "webapp/frontend/src/projectionEmbed.ts"
+_SHARED_PROTOCOL_BYTES = b'export const protocol = "synthetic shared contract";\n'
+
+
+def _shared_protocol(repository: Path, *, commit: bool = True) -> Path:
+    source = repository / _SHARED_PROTOCOL
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(_SHARED_PROTOCOL_BYTES)
+    if commit:
+        _git(repository, "add", _SHARED_PROTOCOL)
+        _git(repository, "commit", "-qm", "shared first-party fixture")
+    return source
+
+
+def _shared_protocol_module() -> dict:
+    return {"shared": {"path": _SHARED_PROTOCOL, "bytes": len(_SHARED_PROTOCOL_BYTES),
+                       "sha256": hashlib.sha256(_SHARED_PROTOCOL_BYTES).hexdigest()}}
+
+
+def test_only_the_owned_shared_protocol_reaches_first_party_attribution(tmp_path, monkeypatch):
+    graph = copy.deepcopy(_HUB_GRAPH)
+    graph["outputs"][0]["modules"].append(_shared_protocol_module())
+    repository = _hub_repository(tmp_path, monkeypatch, graph=graph)
+    _shared_protocol(repository)
+    notices, _sbom, toolchain = _hub_release(tmp_path, repository, _hub_bundle(tmp_path))
+    attribution = toolchain["npm_build_attribution"]["bundled_scope_frontend"]
+    assert attribution["first_party_modules"] == 2
+    assert {row["install_path"] for row in attribution["packages"]} == {
+        "node_modules/react", "node_modules/vite", "node_modules/rolldown"}
+    assert not any("projectionEmbed" in item["key"] for item in notices["components"])
+
+
+@pytest.mark.parametrize("change", ["sibling", "npm", "escape", "missing", "digest", "bytes", "boolean", "extra", "missing_field", "other_output"])
+def test_shared_protocol_attribution_refuses_unowned_or_mismatched_evidence(change):
+    module = _shared_protocol_module()
+    proof = {key: value for key, value in module["shared"].items() if key != "path"}
+    expected = {_SHARED_PROTOCOL: proof}
+    output = "atlas-scope/dist-hub"
+    if change == "sibling":
+        module["shared"]["path"] = "webapp/frontend/src/another.ts"
+    elif change == "npm":
+        module["shared"]["path"] = "webapp/frontend/node_modules/react/index.js"
+    elif change == "escape":
+        module["shared"]["path"] = "../webapp/frontend/src/projectionEmbed.ts"
+    elif change == "missing":
+        expected = {}
+    elif change == "digest":
+        module["shared"]["sha256"] = "0" * 64
+    elif change == "bytes":
+        module["shared"]["bytes"] += 1
+    elif change == "boolean":
+        module["shared"]["bytes"] = True
+    elif change == "extra":
+        module["shared"]["approved"] = True
+    elif change == "missing_field":
+        del module["shared"]["sha256"]
+    else:
+        output = "webapp/frontend/dist"
+    with pytest.raises(subject.PortableReleaseError, match="shared npm source"):
+        subject._attributed_install_path(module, {}, output, expected)
+    # Even a matching receipt cannot convert an ordinary outside marker into approval.
+    with pytest.raises(subject.PortableReleaseError, match="outside"):
+        subject._attributed_install_path({"outside": True}, {}, output, expected)
+
+
+@pytest.mark.parametrize("condition", ["missing", "untracked", "modified", "directory", "reparse"])
+def test_shared_protocol_requires_the_exact_regular_committed_source(tmp_path, monkeypatch, condition):
+    graph = copy.deepcopy(_HUB_GRAPH)
+    graph["outputs"][0]["modules"].append(_shared_protocol_module())
+    repository = _hub_repository(tmp_path, monkeypatch, graph=graph)
+    if condition != "missing":
+        source = _shared_protocol(repository, commit=condition not in {"untracked", "directory"})
+        if condition == "modified":
+            source.write_bytes(_SHARED_PROTOCOL_BYTES + b"// changed\n")
+        elif condition == "directory":
+            source.unlink()
+            source.mkdir()
+        elif condition == "reparse":
+            original = subject._is_reparse
+            inode = source.parent.stat().st_ino
+            monkeypatch.setattr(subject, "_is_reparse", lambda value: value.st_ino == inode or original(value))
+    with pytest.raises(subject.PortableReleaseError, match="shared npm source"):
+        subject._npm_build_attribution(repository, "bundled_scope_frontend", required=True)
+
+
+def test_shared_protocol_changed_during_recording_refuses_attribution(tmp_path, monkeypatch):
+    graph = copy.deepcopy(_HUB_GRAPH)
+    graph["outputs"][0]["modules"].append(_shared_protocol_module())
+    repository = _hub_repository(tmp_path, monkeypatch, graph=graph)
+    source = _shared_protocol(repository)
+    original = subject._record_build_modules
+
+    def mutate(*args):
+        recorded = original(*args)
+        source.write_bytes(_SHARED_PROTOCOL_BYTES + b"// changed during build\n")
+        return recorded
+
+    monkeypatch.setattr(subject, "_record_build_modules", mutate)
+    with pytest.raises(subject.PortableReleaseError, match="shared npm source"):
+        subject._npm_build_attribution(repository, "bundled_scope_frontend", required=True)
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_shared_protocol_index_flags_cannot_hide_changed_source_bytes(tmp_path, monkeypatch, flag):
+    repository = _hub_repository(tmp_path, monkeypatch)
+    source = _shared_protocol(repository)
+    _git(repository, "update-index", flag, _SHARED_PROTOCOL)
+    source.write_bytes(_SHARED_PROTOCOL_BYTES + b"// hidden worktree change\n")
+    assert subject._git(repository, "status", "--porcelain") == ""
+    assert subject._git(repository, "diff", "--name-only", "HEAD", "--", _SHARED_PROTOCOL) == ""
+    with pytest.raises(subject.PortableReleaseError, match="shared npm source bytes differ from committed blob"):
+        subject._shared_npm_source_receipts(repository, "atlas-scope/dist-hub")
+
+
 def test_a_bundle_without_the_attributed_hub_files_is_refused(tmp_path: Path, monkeypatch) -> None:
     """The attributed files are the files the BUNDLE ships: a bundle whose atlas_scope_dist member
     differs from the attributed output is refused (the graph would describe other bytes)."""

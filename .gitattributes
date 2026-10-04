@@ -47,6 +47,7 @@ tools/**/*.py text eol=lf
 tools/requirements-transition-runtime-test.txt text eol=lf
 webapp/backend/**/*.py text eol=lf
 webapp/frontend/src/api.ts text eol=lf
+webapp/frontend/src/projectionEmbed.ts text eol=lf
 # END ATLAS_R1_R2_BYTE_CUSTODY_POLICY
 
 # The installed-wheel/Atlas EoL fixture is an exact byte-for-byte copy of the
