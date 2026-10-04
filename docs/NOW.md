@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-10-03** (Claude Code). Reasoning behind the current direction:
+Last reconciled: **2026-10-04** (Claude Code). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -73,8 +73,8 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | W2d | Projection performance | `codex/ui-projection-performance`; [PR #586](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/586); active `.claude/worktrees/ui-projection-2` checkout | Codex | Published `2a50978a` has all 15 required checks green but still fails the 200-row timing target. Local correctness fix `3b286f6f` passes 106 API tests and independent review. Owner approved pinned jsonschema-rs with Python fallback, private-version guard and lock/notice/SBOM custody; final validation and publication preparation continue (2026-10-03). [Validation](one-app-w2d-validation-2026-10-02.md). | Finish the guard/filter replay and review, commit, run privacy gates, push, then require every exact-head check, hosted frozen proof and the unchanged hosted 300 ms gate before the authorized merge. The dependency hold is lifted; diagnostic timings are not acceptance. |
 | W2e | Topology & Paths | `codex/topology-paths`; reuse `.claude/worktrees/ui-projection-2` after W2d | Codex | Queued after W2d. Fifth core screen with contract-owned 2-D facts and embedded Atlas Scope 3-D hub in the bundle. (2026-10-02) | Start after W2d merges; independent review and exact-head required checks before its own merge commit. #582 remains with the Scope session. |
 | W7 | Atlas release candidate | `codex/atlas-release-candidate`; reuse `.claude/worktrees/ui-projection-2` after W2e | Codex | Queued after W6, W2d and W2e. Read-only preflight found the release dependency inventory/notices and material receipt omit the bundled Scope lock; bounded correction is required before the new candidate. (2026-10-02) | Reconcile both frontend dependency roots in `portable/release_contract.py`, prepare the pinned Node/npm toolchain, then build with `python -m portable.build_release`, verify the candidate and provide stick-update steps. |
-| W9 | Atlas Scope re-grade report: the 39-criterion independent re-grade of the #582 tree, every first-pass PASS attacked by its own refuter | `claude/scope-regrade-report` (pushed), against `main` | Claude Code session (the Atlas Scope session) | Report written and cross-checked: all 39 scorecard rows match the graders' and refuters' final verdicts. 12 PASS, 24 FAIL, 3 UNPROVEN; 16 of 28 first-pass PASSes overturned with proof (2026-10-03). | The owner authorized merging this report PR once green (2026-10-03, in this Claude Code session): merge with `--admin --match-head-commit <exact green head>`. The next session deletes this row. |
-| W10 | Atlas Scope overturn fixes: repair every PASS the re-grade overturned (A3, A5, A6, B2, B3 in wave 1; B5, B7, C4, C6, D2, D4, E4, E5, F2, F4, F6 in wave 2) and record them in `atlas-scope/docs/open-issues.md` | `fix/scope-regrade-overturns` (local only, not pushed) in `.claude/worktrees/scope-fix-int` | Claude Code session (the Atlas Scope session) | Wave 1 integrated at `6a27b625`: typecheck, the full vitest suite (7,226 passed), both builds and a byte-identical recompile green; independent verification is running. Wave 2 is starting (2026-10-03). | Finish wave 2 test-first, independent refutation of every fix, merge `main`, rule-7 gates, then push and open the PR. Merging that PR needs the owner's explicit go; it is not covered by the W9 authority. |
+| W9 | Atlas Scope re-grade report: the 39-criterion independent re-grade of the #582 tree, every first-pass PASS attacked by its own refuter | `claude/scope-regrade-report` (pushed), [PR #590](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/590), against `main` | Claude Code session (the Atlas Scope session) | Report cross-checked: all 39 scorecard rows match the graders' and refuters' final verdicts; 12 PASS, 24 FAIL, 3 UNPROVEN, 16 of 28 first-pass PASSes overturned with proof. `main` merged in after W11 so the Dependency audit can pass (2026-10-04). | The owner ordered the merge (2026-10-04): merge with `--admin --match-head-commit <exact head>` once every required check is green on that head. The next session deletes this row. |
+| W10 | Atlas Scope overturn fixes: repair every PASS the re-grade overturned (A3, A5, A6, B2, B3 in wave 1; B5, B7, C4, C6, D2, D4, E4, E5, F2, F4, F6 in wave 2) and record them in `atlas-scope/docs/open-issues.md` | `fix/scope-regrade-overturns` (pushed 2026-10-04 at `5abad966`, no PR yet) in `.claude/worktrees/scope-fix-int` | Claude Code session (the Atlas Scope session) | Wave 1 verified: gates, engine and browser replays hold, with one major (A5 x B2: the multi-line verdict label covers its own hop's chassis at 1280 px and below). Wave-2 fixes for B5, B7, C4/D4, C6, D2, F4 and F6/F2 are merged into the branch; only F4's has been upheld by its refuter. E4 and E5 are uncommitted in their worktrees. PAUSED by the owner on 2026-10-03 because the laptop was overloaded (2026-10-04). | On the owner's go, at most a few agents at once: refute the wave-2 fixes, fix A5 x B2, finish E4 and E5 (their acceptance timing needs the reference laptop idle), write the open-issues record, then open the PR. Merge under the owner's standing authority (2026-10-03) once every required check is green on the exact head. |
 
 ## Owner decisions
 
@@ -141,6 +141,24 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- 2026-10-04, Claude Code (W11 merged; #590 brought up to date):
+  - #594 (W11) merged as `0fba4f45` under the owner's direct go, once all 15 required checks were green on the exact
+    head `09d857ca`; `main^{tree}` equals that head's tree (`09d0659a`). W11's row is deleted (rule 8). `main`'s
+    braces advisory (GHSA-vfj7-8cjw-p6xm) is closed on the current lock graph; Vite's own compiled braces copy keeps
+    the master-reference release gate blocked, as W11 records.
+  - `main` merged into #590 so its Dependency audit and master-reference contracts can pass; the owner ordered the
+    merge once every required check is green.
+  - The owner paused all other work on 2026-10-03 because the laptop was overloaded; W10 resumes only on the owner's go.
+
+- 2026-10-04, Claude Code (W5 merged; W11 opened):
+  - #582 (W5) merged as `e50c3cde` on 2026-10-03 once all 15 required checks were green on the exact head
+    `2709ec1e`; `main^{tree}` equals that head's tree. W5's row is deleted (rule 8).
+  - `main`'s required Dependency audit then went red for every PR: GHSA-vfj7-8cjw-p6xm was re-ranged on 2026-10-02 to
+    every published braces release, reached only through master-reference's Vinext build tooling. W11 repairs it with
+    the bounded-vendor method `CLAUDE.md` prescribes (no waiver, suppression or downgrade); the owner gave a direct
+    merge go once the required checks are green.
+  - The re-grade report (#590, W9) and the overturn repairs (W10) carry their own rows in their own pull requests.
 
 - 2026-10-03, Claude Code (W5 merged; W9 and W10 opened):
   - #582 (W5) merged as `e50c3cde` under the owner's 2026-10-02 authority, once all 15 required checks were green

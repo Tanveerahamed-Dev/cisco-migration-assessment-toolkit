@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
@@ -52,7 +53,7 @@ from .model import (
     write_bytes,
 )
 from .provenance import provenance_statement
-from .sbom import PYTHON_DECLARATIONS, build_cyclonedx, npm_lockfiles
+from .sbom import PYTHON_DECLARATIONS, build_cyclonedx, npm_lockfiles, npm_record_is_local
 from .schema_validation import validate_release_object
 from .source_binding import read_bound_source_blob, validate_exact_source
 
@@ -70,15 +71,6 @@ MEDIA_TYPES = {
 }
 
 TEXT_SCAN_SUFFIXES = frozenset({".json", ".md", ".html", ".txt"})
-
-_BOUNDED_IMAGE_LOCKFILE = "master-reference/package-lock.json"
-_BOUNDED_IMAGE_MANIFEST = "master-reference/package.json"
-_BOUNDED_IMAGE_TARGET = "vendor/bounded-image-size"
-_BOUNDED_IMAGE_SOURCE_PREFIX = "master-reference/vendor/bounded-image-size/"
-# Updated only after reviewing every tracked file under the source prefix.
-_BOUNDED_IMAGE_PACKAGE_SOURCE_DIGEST = "65078d74a80fed5bc34cace43cbe0fc1103c11abc86cf90a08dcbf9e8d980f7f"
-_BOUNDED_IMAGE_PACKAGE_SOURCE_FILES = "4"
-_BOUNDED_IMAGE_PACKAGE_SOURCE_BYTES = "6787"
 
 PLANNED_ALWAYS_MEMBERS = frozenset(
     {
@@ -171,6 +163,168 @@ _SEMVER_RE = re.compile(
 )
 _FOREIGN_UNSCOPED_SHARP_PURL_RE = re.compile(
     r"^pkg:(?!npm(?:/|$))[a-z][a-z0-9.+-]*/sharp@[A-Za-z0-9][A-Za-z0-9._+!-]*$"
+)
+# CVE-2026-93687 / CWE-674: every published braces release (<=3.0.3) can exhaust the call stack on
+# deeply nested patterns. No patched npm release exists at this source state.
+_BRACES_HIGH_ADVISORY = "GHSA-vfj7-8cjw-p6xm"
+# Exact distributions whose compiled bundle embeds braces outside npm resolution, each reviewed by
+# exact package inspection: Vite bundles braces 3.0.3 for its own copy of chokidar 3.6.0. An npm
+# override cannot alter those bytes and npm audit cannot see them. Every Vite component is modeled as
+# such a carrier; a version or integrity outside this map is reported as unassessed.
+_VITE_BUNDLED_BRACES_REVIEWED = {
+    "8.2.0": "sha512-pn+CFpM0lwDeKwmOq1ZaBK/9sjorZcgqxki6MbY/jPEVd9vichIlmlD4HmQ5wdP5EgqQCFRaACBxMC7uEGc6lQ==",
+    "8.2.1": "sha512-EU/eS7BH3XROHh2YnBefjM6DBKA6ZeMZEYQbj7NLWg5wHYlhB8B/Mayd5XsgWq+NFYccDOTemRpdETWR6Ka/lw==",
+    "8.2.2": "sha512-cFKLV/PRgAUlIRm5WjMjJ86jrftzpqcgH+Us+DS8mI3CDNiH30Whrz8uHL3+MOLPAgqbMBAqWdAHAphOAM+z/Q==",
+}
+
+
+@dataclass(frozen=True)
+class _NpmLockIdentity:
+    """One exact, distribution-bound record in the Master Reference npm lock."""
+
+    name: str
+    version: str
+    lockfile_path: str
+    integrity: str
+
+    @property
+    def distribution_url(self) -> str:
+        return f"https://registry.npmjs.org/{self.name}/-/{self.name.rsplit('/', 1)[-1]}-{self.version}.tgz"
+
+
+@dataclass(frozen=True)
+class _BoundedLocalSubstitution:
+    """A registry package replaced on one exact override edge by a tracked, source-bound local package.
+
+    The scope is the package whose npm override owns the substitution: every inbound dependency path
+    to the replaced package must pass through it. The consumer is the replaced package's only direct
+    dependent. The source receipt is updated only after reviewing every tracked file under the prefix.
+    """
+
+    label: str
+    package: str
+    scope: _NpmLockIdentity
+    scope_label: str
+    consumer: _NpmLockIdentity
+    target: str
+    target_name: str
+    target_version: str
+    target_license: str
+    source_digest: str
+    source_files: str
+    source_bytes: str
+    advisories: tuple[str, ...]
+    limitation: str
+    manifest: str = "master-reference/package.json"
+    lockfile: str = "master-reference/package-lock.json"
+    # Upstream origin recorded on the verified SBOM component; empty for Atlas-authored packages.
+    provenance: str = ""
+
+    @property
+    def override_selector(self) -> str:
+        return f"{self.scope.name}@{self.scope.version}"
+
+    @property
+    def override_spec(self) -> str:
+        return f"file:{self.target}"
+
+    @property
+    def alias_lock_path(self) -> str:
+        return f"node_modules/{self.package}"
+
+    @property
+    def source_prefix(self) -> str:
+        return f"{PurePosixPath(self.lockfile).parent.as_posix()}/{self.target}/"
+
+
+_VINEXT_0_0_50 = _NpmLockIdentity(
+    name="vinext",
+    version="0.0.50",
+    lockfile_path="node_modules/vinext",
+    integrity="sha512-uo72YNnq94NtogETWnhMdFSrkMLwWgeXh5PS6qh8ksajuvAaZX50bXYJ4a6dERQ/AnnXAlNByAGHCjjNxQrvig==",
+)
+_MICROMATCH_4_0_8 = _NpmLockIdentity(
+    name="micromatch",
+    version="4.0.8",
+    lockfile_path="node_modules/micromatch",
+    integrity="sha512-PXwfBhYu0hBCPw8Dn0E+WDYb7af3dSLVWKi3HGv84IdF4TyFoC0ysxFd0Goxw7nSv4T/PzEJQxsYsEiFCKo2BA==",
+)
+
+# The one registry of bounded local substitutions. The source/lock binding, the SBOM topology check
+# and the release limits iterate it, and it is closed: a local substitution or override entry outside
+# it, or an entry whose substitution is missing, refuses the release.
+_BOUNDED_LOCAL_SUBSTITUTIONS: tuple[_BoundedLocalSubstitution, ...] = (
+    _BoundedLocalSubstitution(
+        label="bounded image replacement",
+        package="image-size",
+        scope=_VINEXT_0_0_50,
+        scope_label="Vinext 0.0.50",
+        consumer=_VINEXT_0_0_50,
+        target="vendor/bounded-image-size",
+        target_name="@atlas/bounded-image-size",
+        target_version="1.0.0",
+        target_license="LicenseRef-Proprietary",
+        source_digest="65078d74a80fed5bc34cace43cbe0fc1103c11abc86cf90a08dcbf9e8d980f7f",
+        source_files="4",
+        source_bytes="6787",
+        advisories=_IMAGE_SIZE_HIGH_ADVISORIES,
+        limitation=(
+            "The Vinext image-size dependency edge resolves to the tracked local "
+            "@atlas/bounded-image-size 1.0.0 package. That package bounds its accepted buffer and "
+            "dimensions, validates PNG IHDR metadata, recognizes only a bounded SVG prefix, and "
+            "rejects every other image family. It removes the advisory-named HEIF, JXL and ICNS "
+            "parsers from that Vinext edge; JP2 and JPEG are independently unsupported. The tracked "
+            "source/lock binding and tests exercise the local replacement behavior, but they are not "
+            "an externally source-authenticated current advisory or applicability/VEX review."
+        ),
+    ),
+    _BoundedLocalSubstitution(
+        label="bounded braces replacement",
+        package="braces",
+        scope=_VINEXT_0_0_50,
+        scope_label="Vinext 0.0.50",
+        consumer=_MICROMATCH_4_0_8,
+        target="vendor/bounded-braces",
+        target_name="@atlas/bounded-braces",
+        target_version="3.0.3",
+        target_license="MIT",
+        source_digest="404d828fe39b042ef982e5038c26f4f782c75996ce0373be80c558cbfa48b70c",
+        source_files="10",
+        source_bytes="29684",
+        advisories=(_BRACES_HIGH_ADVISORY,),
+        provenance=(
+            "Released npm braces 3.0.3 (tarball "
+            "sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==) "
+            "with only the lib/ hunks of micromatch/braces#72 applied: head "
+            "d0d575e55e74a4e0218e5248fafb79efc3e54ebb, author FSDevelop, OPEN and unmerged when retrieved on "
+            "2026-10-03T03:19:55Z. Unmerged third-party code; not a braces release."
+        ),
+        limitation=(
+            "The Vinext braces dependency edge (vite-plugin-commonjs 0.10.4, vite-plugin-dynamic-import "
+            "1.6.0, fast-glob 3.3.3, micromatch 4.0.8) resolves to the tracked local @atlas/bounded-braces "
+            "package: released braces 3.0.3 with the lib/ hunks of micromatch/braces#72 applied on top. "
+            "That pull request is an unmerged third-party patch (head "
+            "d0d575e55e74a4e0218e5248fafb79efc3e54ebb, author FSDevelop, OPEN and unmerged when retrieved "
+            "on 2026-10-03T03:19:55Z); the package is not a braces release or a maintainer-reviewed fix. "
+            "It bounds brace and parenthesis nesting at 100 in parse, compile, expand and stringify and "
+            "caps options.maxDepth at 100; its changes outside that bound are pinned by tests and are not "
+            "reachable from the installed consumers. The tracked source/lock binding and tests exercise "
+            "the local replacement behavior, and this closes GHSA-vfj7-8cjw-p6xm on that npm-resolved "
+            "edge of the current lock/install graph only. They are not an externally source-authenticated "
+            "current advisory or applicability/VEX review."
+        ),
+    ),
+)
+
+# Every other npm override in a tracked root manifest, as reviewed: (manifest, selector path, spec).
+_REVIEWED_VERSION_OVERRIDES: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("atlas-scope/package.json", ("nanoid",), "3.3.18"),
+    ("master-reference/package.json", ("browserslist",), "4.28.7"),
+    ("master-reference/package.json", ("fast-uri",), "3.1.8"),
+    ("master-reference/package.json", (f"miniflare@{_SHARP_MINIFLARE_VERSION}", "sharp"), _SHARP_PATCHED_VERSION),
+    ("master-reference/package.json", ("nanoid",), "3.3.18"),
+    ("master-reference/package.json", ("undici",), "7.29.1"),
+    ("webapp/frontend/package.json", ("nanoid",), "3.3.18"),
 )
 
 RENDERED_SINK_LINEAGE_CONTRACT_PATH = "master-reference/governance/rendered-sink-lineage-contract.json"
@@ -421,7 +575,46 @@ def _verified_miniflare_sharp_closure(sbom: dict[str, Any]) -> bool:
     return True
 
 
-def _verified_bounded_image_replacement_aliases(sbom: dict[str, Any]) -> set[str]:
+def _lock_identity_matches(component: dict[str, Any], identity: _NpmLockIdentity, lockfile: str) -> bool:
+    properties = _sbom_component_properties(component)
+    group, _, name = identity.name.rpartition("/")
+    return (
+        component.get("group", "") == group
+        and component.get("name") == name
+        and component.get("version") == identity.version
+        and component.get("externalReferences") == [{"type": "distribution", "url": identity.distribution_url}]
+        and properties.get("atlas:lockfile") == lockfile
+        and properties.get("atlas:lockfilePath") == identity.lockfile_path
+        and properties.get("atlas:recordKind") == "resolved-third-party-component"
+        and properties.get("atlas:npmIntegrity") == identity.integrity
+    )
+
+
+def _reached_only_through(target_ref: str, gate_refs: set[str], inbound: dict[str, set[str]]) -> bool:
+    """True when every dependency path that reaches ``target_ref`` passes through a gate component."""
+
+    seen = {target_ref}
+    pending = [target_ref]
+    gate_reached = False
+    while pending:
+        sources = inbound.get(pending.pop(), set())
+        if not sources:
+            return False
+        for source_ref in sources:
+            if source_ref in gate_refs:
+                gate_reached = True
+            elif source_ref not in seen:
+                seen.add(source_ref)
+                pending.append(source_ref)
+    return gate_reached
+
+
+def _verified_bounded_substitution_aliases(
+    sbom: dict[str, Any],
+    substitution: _BoundedLocalSubstitution,
+) -> set[str]:
+    """The one SBOM alias that proves ``substitution`` exactly, or an empty set."""
+
     components = {
         component.get("bom-ref"): component
         for component in sbom.get("components", [])
@@ -434,19 +627,30 @@ def _verified_bounded_image_replacement_aliases(sbom: dict[str, Any]) -> set[str
     }
     inbound: dict[str, set[str]] = {}
     for source_ref, target_refs in dependencies.items():
-        if not isinstance(target_refs, list):
-            continue
         for target_ref in target_refs:
             if isinstance(target_ref, str):
                 inbound.setdefault(target_ref, set()).add(source_ref)
+    scope_refs = {
+        ref
+        for ref, candidate in components.items()
+        if _lock_identity_matches(candidate, substitution.scope, substitution.lockfile)
+    }
+    consumer_refs = {
+        ref
+        for ref, candidate in components.items()
+        if _lock_identity_matches(candidate, substitution.consumer, substitution.lockfile)
+    }
+    if len(scope_refs) != 1 or len(consumer_refs) != 1:
+        return set()
+    target_group, target_name = substitution.target_name.split("/", 1)
     verified: set[str] = set()
     for alias_ref, component in components.items():
         properties = _sbom_component_properties(component)
         if not (
-            component.get("name") == "image-size"
+            component.get("name") == substitution.package
             and "version" not in component
-            and properties.get("atlas:lockfile") == "master-reference/package-lock.json"
-            and properties.get("atlas:lockfilePath") == "node_modules/image-size"
+            and properties.get("atlas:lockfile") == substitution.lockfile
+            and properties.get("atlas:lockfilePath") == substitution.alias_lock_path
             and properties.get("atlas:recordKind") == "local-link-record"
             and properties.get("atlas:resolution") == "lockfile-local-link"
         ):
@@ -457,45 +661,74 @@ def _verified_bounded_image_replacement_aliases(sbom: dict[str, Any]) -> set[str
         target = components.get(target_refs[0])
         if target is None:
             continue
-        vinext_refs = {
-            ref
-            for ref, candidate in components.items()
-            if candidate.get("name") == "vinext"
-            and candidate.get("version") == "0.0.50"
-            and candidate.get("externalReferences")
-            == [{"type": "distribution", "url": "https://registry.npmjs.org/vinext/-/vinext-0.0.50.tgz"}]
-            and _sbom_component_properties(candidate).get("atlas:lockfile")
-            == "master-reference/package-lock.json"
-            and _sbom_component_properties(candidate).get("atlas:lockfilePath") == "node_modules/vinext"
-            and _sbom_component_properties(candidate).get("atlas:recordKind")
-            == "resolved-third-party-component"
-            and _sbom_component_properties(candidate).get("atlas:npmIntegrity")
-            == "sha512-uo72YNnq94NtogETWnhMdFSrkMLwWgeXh5PS6qh8ksajuvAaZX50bXYJ4a6dERQ/AnnXAlNByAGHCjjNxQrvig=="
-        }
-        if len(vinext_refs) != 1 or inbound.get(alias_ref, set()) != vinext_refs:
+        if inbound.get(alias_ref, set()) != consumer_refs:
             continue
         if inbound.get(target_refs[0], set()) != {alias_ref}:
             continue
+        if not _reached_only_through(alias_ref, scope_refs, inbound):
+            continue
         target_properties = _sbom_component_properties(target)
         if not (
-            target.get("group") == "@atlas"
-            and target.get("name") == "bounded-image-size"
-            and target.get("version") == "1.0.0"
-            and target_properties.get("atlas:lockfile") == "master-reference/package-lock.json"
-            and target_properties.get("atlas:lockfilePath") == "vendor/bounded-image-size"
+            target.get("group") == target_group
+            and target.get("name") == target_name
+            and target.get("version") == substitution.target_version
+            and target_properties.get("atlas:lockfile") == substitution.lockfile
+            and target_properties.get("atlas:lockfilePath") == substitution.target
             and target_properties.get("atlas:recordKind") == "local-package-record"
             and target_properties.get("atlas:resolution") == "lockfile-local-package"
-            and target_properties.get("atlas:localPackageSourceDigest")
-            == _BOUNDED_IMAGE_PACKAGE_SOURCE_DIGEST
-            and target_properties.get("atlas:localPackageSourceFiles")
-            == _BOUNDED_IMAGE_PACKAGE_SOURCE_FILES
-            and target_properties.get("atlas:localPackageSourceBytes")
-            == _BOUNDED_IMAGE_PACKAGE_SOURCE_BYTES
-            and target.get("licenses") == [{"expression": "LicenseRef-Proprietary"}]
+            and target_properties.get("atlas:localPackageSourceDigest") == substitution.source_digest
+            and target_properties.get("atlas:localPackageSourceFiles") == substitution.source_files
+            and target_properties.get("atlas:localPackageSourceBytes") == substitution.source_bytes
+            and target.get("licenses") == [{"expression": substitution.target_license}]
         ):
             continue
         verified.add(alias_ref)
     return verified if len(verified) == 1 else set()
+
+
+def _annotate_bounded_substitutions(sbom: dict[str, Any]) -> None:
+    """Record each verified substitution's upstream provenance on its local package component."""
+
+    components = {
+        component.get("bom-ref"): component
+        for component in sbom.get("components", [])
+        if isinstance(component, dict) and isinstance(component.get("bom-ref"), str)
+    }
+    dependencies = {
+        row.get("ref"): row.get("dependsOn")
+        for row in sbom.get("dependencies", [])
+        if isinstance(row, dict) and isinstance(row.get("ref"), str)
+    }
+    for substitution in _BOUNDED_LOCAL_SUBSTITUTIONS:
+        if not substitution.provenance:
+            continue
+        for alias_ref in sorted(_verified_bounded_substitution_aliases(sbom, substitution)):
+            target = components[dependencies[alias_ref][0]]
+            target.setdefault("properties", []).append(
+                {"name": "atlas:substitutionProvenance", "value": substitution.provenance}
+            )
+
+
+def _is_affected_braces(value: object) -> bool:
+    comparison = _semver_compare_to_stable(value, (3, 0, 3))
+    return comparison is None or comparison <= 0
+
+
+def _vite_bundled_braces_carriers(components: list[Any]) -> tuple[list[str], list[str]]:
+    """(reviewed, unassessed) Vite versions whose compiled bundle carries its own braces copy."""
+
+    reviewed: set[str] = set()
+    unassessed: set[str] = set()
+    for component in components:
+        if not isinstance(component, dict) or component.get("name") != "vite" or component.get("group", "") != "":
+            continue
+        version = component.get("version")
+        integrity = _sbom_component_properties(component).get("atlas:npmIntegrity")
+        if isinstance(version, str) and _VITE_BUNDLED_BRACES_REVIEWED.get(version) == integrity:
+            reviewed.add(version)
+        else:
+            unassessed.add(str(version) if version is not None else "<unversioned-vite-component>")
+    return sorted(reviewed), sorted(unassessed)
 
 
 def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, list[str]]:
@@ -515,7 +748,10 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
         for component in components
     )
     sharp_closure_verified = sharp_context_present and _verified_miniflare_sharp_closure(sbom)
-    bounded_image_aliases = _verified_bounded_image_replacement_aliases(sbom)
+    bounded_aliases = {
+        substitution.package: _verified_bounded_substitution_aliases(sbom, substitution)
+        for substitution in _BOUNDED_LOCAL_SUBSTITUTIONS
+    }
     next_component_versions = sorted(
         {
             (
@@ -528,6 +764,8 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
         }
     )
     next_vendored_image_parser = bool(next_component_versions)
+    reviewed_vite, unassessed_vite = _vite_bundled_braces_carriers(components)
+    compiled_braces_copy = bool(reviewed_vite or unassessed_vite)
     affected_image_size_versions = sorted(
         {
             (
@@ -538,11 +776,25 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             for component in components
             if isinstance(component, dict)
             and component.get("name") == "image-size"
-            and component.get("bom-ref") not in bounded_image_aliases
+            and component.get("bom-ref") not in bounded_aliases["image-size"]
             and (
                 (comparison := _semver_compare_to_stable(component.get("version"), (2, 0, 2))) is None
                 or comparison <= 0
             )
+        }
+    )
+    affected_braces_versions = sorted(
+        {
+            (
+                str(component.get("version"))
+                if component.get("version") is not None
+                else "<unversioned-local-link>"
+            )
+            for component in components
+            if isinstance(component, dict)
+            and component.get("name") == "braces"
+            and component.get("bom-ref") not in bounded_aliases["braces"]
+            and _is_affected_braces(component.get("version"))
         }
     )
     affected_nanoid_versions = sorted(
@@ -585,6 +837,17 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             "Public release remains blocked pending a patched upstream or independently "
             "verified replacement and a fresh applicability review."
         )
+    if affected_braces_versions:
+        limits.append(
+            "The whole-repository SBOM contains braces version(s) "
+            f"{', '.join(affected_braces_versions)} within the affected <=3.0.3 range for "
+            f"high-severity advisory {_BRACES_HIGH_ADVISORY} (CVE-2026-93687, uncontrolled recursion "
+            "in the brace AST walkers); no patched npm release was available at this source state. "
+            "The package is currently pulled through Vinext build tooling rather than the deployed "
+            "runtime, but that reachability boundary is not a vulnerability waiver. Public release "
+            "remains blocked pending a patched upstream release or the exact, source-bound bounded "
+            "substitution, and a fresh applicability review."
+        )
     if affected_nanoid_versions:
         limits.append(
             "The whole-repository SBOM contains vulnerable Nano ID version(s) "
@@ -622,16 +885,9 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             "check closes GHSA-rgj7-g3m4-5g8c in the current build graph only; it is not an "
             "externally authenticated applicability/VEX review."
         )
-    if bounded_image_aliases:
-        limits.append(
-            "The Vinext image-size dependency edge resolves to the tracked local "
-            "@atlas/bounded-image-size 1.0.0 package. That package bounds its accepted buffer and "
-            "dimensions, validates PNG IHDR metadata, recognizes only a bounded SVG prefix, and "
-            "rejects every other image family. It removes the advisory-named HEIF, JXL and ICNS "
-            "parsers from that Vinext edge; JP2 and JPEG are independently unsupported. The tracked "
-            "source/lock binding and tests exercise the local replacement behavior, but they are not "
-            "an externally source-authenticated current advisory or applicability/VEX review."
-        )
+    for substitution in _BOUNDED_LOCAL_SUBSTITUTIONS:
+        if bounded_aliases[substitution.package]:
+            limits.append(substitution.limitation)
     if next_vendored_image_parser:
         limits.append(
             "The whole-repository SBOM contains Next component version(s) "
@@ -642,19 +898,53 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
             "waiver. This gate therefore treats every Next component as unassessed until exact source "
             "removes the distribution or an independently reviewable compiled-package assessment is supplied."
         )
+    if compiled_braces_copy:
+        carriers: list[str] = []
+        if reviewed_vite:
+            carriers.append(
+                f"The whole-repository SBOM contains Vite version(s) {', '.join(reviewed_vite)}, whose "
+                "exactly inspected distributions compile braces 3.0.3 into dist/node/chunks/node.js for "
+                "Vite's own bundled chokidar 3.6.0."
+            )
+        if unassessed_vite:
+            carriers.append(
+                f"Vite version(s) {', '.join(unassessed_vite)} have no exact compiled-package assessment "
+                "and are treated as carrying the same unbounded braces copy."
+            )
+        limits.append(
+            " ".join(carriers)
+            + " That copy sits outside npm override resolution: no npm override, including the bounded "
+            "braces substitution, can alter those bytes, and npm audit cannot see them, so "
+            f"{_BRACES_HIGH_ADVISORY} stays open for it. Vite's dev server passes disableGlobbing: true "
+            "to that watcher, the only bundled caller of braces.expand, unless a project's server.watch "
+            "setting re-enables globbing; that reachability boundary is not a vulnerability waiver. The "
+            "copy stays open until a Vite release bounds or drops it and an exact compiled-package "
+            "assessment confirms that."
+        )
+    compiled_copy_present = next_vendored_image_parser or compiled_braces_copy
+    if affected_braces_versions and (
+        affected_image_size_versions
+        or affected_nanoid_versions
+        or affected_fflate_versions
+        or affected_sharp_versions
+        or next_vendored_image_parser
+    ):
+        return "blocked_multiple_unremediated_dependency_advisories", limits
     if affected_sharp_versions and (
         affected_image_size_versions
         or affected_nanoid_versions
         or affected_fflate_versions
-        or next_vendored_image_parser
+        or compiled_copy_present
     ):
         return "blocked_multiple_unremediated_dependency_advisories", limits
     if affected_fflate_versions and (
-        affected_image_size_versions or affected_nanoid_versions or next_vendored_image_parser
+        affected_image_size_versions or affected_nanoid_versions or compiled_copy_present
     ):
         return "blocked_multiple_unremediated_dependency_advisories", limits
     if affected_image_size_versions and affected_nanoid_versions:
         return "blocked_multiple_unremediated_high_dependency_advisories", limits
+    if affected_braces_versions:
+        return "blocked_braces_unpatched_build_time_high_advisory", limits
     if affected_image_size_versions:
         return "blocked_image_size_unpatched_build_time_high_advisories", limits
     if affected_nanoid_versions:
@@ -669,8 +959,12 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
         "SBOM inventory does not assert vulnerability absence; a current source-authenticated "
         "advisory and applicability/VEX review is not embedded in this release."
     )
+    if next_vendored_image_parser and compiled_braces_copy:
+        return "blocked_multiple_compiled_vendored_copies_and_external_review_required", limits
     if next_vendored_image_parser:
         return "blocked_next_vendored_image_parser_and_external_review_required", limits
+    if compiled_braces_copy:
+        return "blocked_compiled_braces_copy_outside_npm_resolution_and_external_review_required", limits
     return "blocked_external_current_advisory_applicability_review_required", limits
 
 
@@ -798,51 +1092,172 @@ def _validate_output_contract(content: Any, *, pdf_included: bool) -> set[str]:
     return expected
 
 
+def _npm_lock_packages(sources: dict[str, bytes], lockfile: str) -> dict[str, Any]:
+    try:
+        lock = json.loads(sources[lockfile].decode("utf-8", errors="strict"))
+    except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseInputError(f"could not inspect the npm lock substitution binding: {lockfile}") from exc
+    packages = lock.get("packages") if isinstance(lock, dict) else None
+    if not isinstance(packages, dict):
+        raise ReleaseInputError(f"could not inspect the npm lock substitution binding: {lockfile}")
+    return packages
+
+
+def _npm_manifest_overrides(raw: bytes, manifest: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReleaseInputError(f"could not inspect the npm override manifest: {manifest}") from exc
+    overrides = value.get("overrides", {}) if isinstance(value, dict) else None
+    if not isinstance(overrides, dict):
+        raise ReleaseInputError(f"npm overrides are malformed: {manifest}")
+    return overrides
+
+
+def _flatten_npm_overrides(
+    overrides: dict[str, Any],
+    manifest: str,
+    prefix: tuple[str, ...] = (),
+) -> dict[tuple[str, ...], str]:
+    entries: dict[tuple[str, ...], str] = {}
+    for key, value in overrides.items():
+        key_path = (*prefix, str(key))
+        if isinstance(value, str):
+            entries[key_path] = value
+        elif isinstance(value, dict):
+            entries.update(_flatten_npm_overrides(value, manifest, key_path))
+        else:
+            raise ReleaseInputError(f"npm override entry is malformed: {manifest}:{'>'.join(key_path)}")
+    return entries
+
+
+def _bind_bounded_substitution(
+    repo_root: Path,
+    bundle: CompilerBundle,
+    sources: dict[str, bytes],
+    tracked_paths: frozenset[str],
+    lock_packages: dict[str, dict[str, Any]],
+    substitution: _BoundedLocalSubstitution,
+) -> None:
+    """Bind one present substitution's scoped override and complete local source to the release."""
+
+    alias = lock_packages.get(substitution.lockfile, {}).get(substitution.alias_lock_path)
+    if not (isinstance(alias, dict) and alias.get("link") is True and alias.get("resolved") == substitution.target):
+        # Absence is decided by the closed registry check, which refuses a missing registered entry.
+        return
+    manifest_raw = sources.get(substitution.manifest) or read_bound_source_blob(
+        repo_root, bundle, substitution.manifest
+    )
+    overrides = _npm_manifest_overrides(manifest_raw, substitution.manifest)
+    scoped = overrides.get(substitution.override_selector)
+    if not (
+        isinstance(scoped, dict)
+        and scoped.get(substitution.package) == substitution.override_spec
+        and substitution.package not in overrides
+    ):
+        raise ReleaseInputError(f"{substitution.label} override is not scoped to exact {substitution.scope_label}")
+    sources[substitution.manifest] = manifest_raw
+    source_paths = sorted(path for path in tracked_paths if path.startswith(substitution.source_prefix))
+    if not source_paths:
+        raise ReleaseInputError(f"{substitution.label} has no source-bound package files")
+    for relative in source_paths:
+        sources[relative] = read_bound_source_blob(repo_root, bundle, relative)
+
+
+def _verify_dependency_substitution_registry(
+    repo_root: Path,
+    bundle: CompilerBundle,
+    sources: dict[str, bytes],
+    tracked_paths: frozenset[str],
+    lock_packages: dict[str, dict[str, Any]],
+) -> None:
+    """Refuse any substitution outside the reviewed registry, and any registered one that is missing.
+
+    The surface is every override entry in a tracked root manifest beside a tracked lockfile and every
+    local link or local package record in every tracked lockfile, as the SBOM classifies records.
+    Registry entries apply where their owning manifest is part of the compiled tree.
+    """
+
+    observed_overrides: dict[tuple[str, tuple[str, ...]], str] = {}
+    for lockfile in sorted(lock_packages):
+        manifest = (PurePosixPath(lockfile).parent / "package.json").as_posix()
+        if manifest not in tracked_paths:
+            continue
+        if manifest not in sources:
+            sources[manifest] = read_bound_source_blob(repo_root, bundle, manifest)
+        overrides = _npm_manifest_overrides(sources[manifest], manifest)
+        for key_path, spec in _flatten_npm_overrides(overrides, manifest).items():
+            observed_overrides[(manifest, key_path)] = spec
+    applicable = [entry for entry in _BOUNDED_LOCAL_SUBSTITUTIONS if entry.manifest in tracked_paths]
+    registered_overrides = {
+        **{
+            (manifest, key_path): spec
+            for manifest, key_path, spec in _REVIEWED_VERSION_OVERRIDES
+            if manifest in tracked_paths
+        },
+        **{(entry.manifest, (entry.override_selector, entry.package)): entry.override_spec for entry in applicable},
+    }
+    observed_local = {
+        (lockfile, node_path)
+        for lockfile, packages in lock_packages.items()
+        for node_path, record in packages.items()
+        if isinstance(record, dict) and npm_record_is_local(node_path, record)
+    }
+    registered_local = {(entry.lockfile, path) for entry in applicable for path in (entry.alias_lock_path, entry.target)}
+    unregistered = sorted(
+        [
+            f"{manifest}:{'>'.join(key_path)}"
+            for (manifest, key_path), spec in observed_overrides.items()
+            if registered_overrides.get((manifest, key_path)) != spec
+        ]
+        + [f"{lockfile}:{node_path}" for lockfile, node_path in observed_local - registered_local]
+    )
+    if unregistered:
+        raise ReleaseInputError(
+            "dependency substitution is not in the reviewed dependency substitution registry: "
+            + ", ".join(unregistered)
+        )
+    missing = sorted(
+        [
+            f"{manifest}:{'>'.join(key_path)}"
+            for manifest, key_path in registered_overrides
+            if (manifest, key_path) not in observed_overrides
+        ]
+        + [f"{lockfile}:{node_path}" for lockfile, node_path in registered_local - observed_local]
+    )
+    if missing:
+        raise ReleaseInputError("registered dependency substitution is absent: " + ", ".join(missing))
+    for entry in applicable:
+        packages = lock_packages[entry.lockfile]
+        target = packages.get(entry.target)
+        if packages.get(entry.alias_lock_path) != {"resolved": entry.target, "link": True} or not (
+            isinstance(target, dict)
+            and target.get("name") == entry.target_name
+            and target.get("version") == entry.target_version
+            and target.get("license") == entry.target_license
+        ):
+            raise ReleaseInputError(
+                f"registered dependency substitution target differs from the registry: {entry.lockfile}:{entry.target}"
+            )
+
+
 def _dependency_sources(repo_root: Path, bundle: CompilerBundle) -> dict[str, bytes]:
     # Every npm lockfile in the compiled Git tree, by npm's own file names: the
     # SBOM and its vulnerability gate never depend on a hand-kept lockfile list.
-    tracked_lockfiles = npm_lockfiles(
+    tracked_paths = frozenset(
         str(item["path"])
         for item in bundle.records["files"]
         if isinstance(item, dict) and isinstance(item.get("path"), str)
     )
+    tracked_lockfiles = npm_lockfiles(tracked_paths)
     sources = {
         relative: read_bound_source_blob(repo_root, bundle, relative)
         for relative in sorted(set(tracked_lockfiles) | set(PYTHON_DECLARATIONS))
     }
-    try:
-        lock = json.loads(sources[_BOUNDED_IMAGE_LOCKFILE].decode("utf-8", errors="strict"))
-        packages = lock.get("packages") if isinstance(lock, dict) else None
-        alias = packages.get("node_modules/image-size") if isinstance(packages, dict) else None
-    except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ReleaseInputError("could not inspect the bounded image replacement lock binding") from exc
-    if isinstance(alias, dict) and alias.get("link") is True and alias.get("resolved") == _BOUNDED_IMAGE_TARGET:
-        manifest_raw = read_bound_source_blob(repo_root, bundle, _BOUNDED_IMAGE_MANIFEST)
-        try:
-            manifest = json.loads(manifest_raw.decode("utf-8", errors="strict"))
-            overrides = manifest.get("overrides") if isinstance(manifest, dict) else None
-            vinext_override = overrides.get("vinext@0.0.50") if isinstance(overrides, dict) else None
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ReleaseInputError("could not inspect the bounded image replacement manifest binding") from exc
-        if not (
-            isinstance(overrides, dict)
-            and isinstance(vinext_override, dict)
-            and vinext_override == {"image-size": "file:vendor/bounded-image-size"}
-            and "image-size" not in overrides
-        ):
-            raise ReleaseInputError("bounded image replacement override is not scoped to exact Vinext 0.0.50")
-        sources[_BOUNDED_IMAGE_MANIFEST] = manifest_raw
-        source_paths = sorted(
-            str(item.get("path"))
-            for item in bundle.records["files"]
-            if isinstance(item, dict)
-            and isinstance(item.get("path"), str)
-            and str(item["path"]).startswith(_BOUNDED_IMAGE_SOURCE_PREFIX)
-        )
-        if not source_paths:
-            raise ReleaseInputError("bounded image replacement has no source-bound package files")
-        for relative in source_paths:
-            sources[relative] = read_bound_source_blob(repo_root, bundle, relative)
+    lock_packages = {lockfile: _npm_lock_packages(sources, lockfile) for lockfile in tracked_lockfiles}
+    for substitution in _BOUNDED_LOCAL_SUBSTITUTIONS:
+        _bind_bounded_substitution(repo_root, bundle, sources, tracked_paths, lock_packages, substitution)
+    _verify_dependency_substitution_registry(repo_root, bundle, sources, tracked_paths, lock_packages)
     return sources
 
 
@@ -1248,6 +1663,7 @@ def build_release(
         architecture_bytes = _bound_architecture(repo_root, bundle)
         _bind_tracked_inputs(bundle, [*content.receipts, *dependency_receipts])
         sbom = build_cyclonedx(dependency_sources, bundle.source_commit, bundle.source_tree_digest)
+        _annotate_bounded_substitutions(sbom)
         if _dependency_receipts(_dependency_sources(repo_root, bundle)) != dependency_receipts:
             raise ReleaseInputError("dependency inputs changed during SBOM generation")
         if pdf_path is not None and generate_pdf:
