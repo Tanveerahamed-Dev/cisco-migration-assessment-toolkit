@@ -336,10 +336,12 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
 
         {/* determinism: the tier word (`stats.quality`) and "below frame-rate bar"
             (`stats.frameRateBelowBar`) below are WORDS derived from this host's rAF frame times, and
-            they sit on the permanent chrome. They are allowed here only because the capture harness
-            refuses a frame that carries either one: review/capture.mjs records both and fails any
-            capture whose tier is not "high" or whose status line reads "below frame-rate bar", so a
-            comparable capture always draws the same words (acceptance F6). */}
+            they sit on the permanent chrome. They are allowed here only because a capture holds both
+            still: review/capture.mjs opens the page with the capture pin (fabric3d/capturePin.ts —
+            the tier pinned at "high", the frame-rate bar frozen), records the pin on every frame,
+            and fails any capture without it in force, whose tier is not "high" or whose status line
+            reads "below frame-rate bar", so a comparable capture always draws the same words
+            (acceptance F6). */}
         {stats === null ? (
           <p className="sb__scene" data-tier="unknown">
             <span className="sb__key">fabric</span>

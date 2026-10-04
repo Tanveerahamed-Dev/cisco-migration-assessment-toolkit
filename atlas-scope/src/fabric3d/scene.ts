@@ -159,6 +159,7 @@ import {
   type QualityProfile,
 } from "./quality";
 import type { FabricLayout, FabricTierBounds } from "./layout";
+import { capturePinRequested, freezeFrameRateBar, pinForCapture, type CapturePin } from "./capturePin";
 
 /**
  * Draw-call budget for one COMPOSED frame, asserted after every render.
@@ -476,6 +477,12 @@ export interface SceneStatsEx extends SceneStats {
    * not been measured yet.
    */
   frameRateBelowBar: boolean;
+  /**
+   * The capture harness's pin (./capturePin), or null when the page was not opened with it — which
+   * is every ordinary session. Optional only so a hand-built reading in a test need not name it;
+   * the scene always publishes it.
+   */
+  capturePin?: CapturePin | null;
   /**
    * The history weight the last presented frame used (postfx.ts HISTORY_AA) and the camera step that
    * decided it, in drawing-buffer px. 0 = that frame was the plain chain's output, which every
@@ -1665,9 +1672,16 @@ const createSceneImpl = (
   renderer.info.autoReset = false;
 
   const caps = probeCapabilities(renderer);
+  /* Pure and clock-free (it reads capabilities only), so asking it when a caller pinned the tier costs nothing. */
+  const probed = chooseQuality(caps);
+  /* A capture harness's declared pin (./capturePin): the probe's `high` held as a pin and the
+     frame-rate bar frozen, so the two clock-derived things the chrome draws cannot vary between
+     captures. Null — the adaptive tier, the reporting bar — unless the page was opened with it. A
+     caller's tier is the caller's, and is never replaced by it. */
+  const capture = opts.quality === undefined && capturePinRequested() ? pinForCapture(probed) : null;
   let decision: QualityDecision =
     opts.quality === undefined
-      ? chooseQuality(caps)
+      ? (capture?.decision ?? probed)
       : { tier: opts.quality, reasons: [`quality tier "${opts.quality}" requested by the caller`], auto: false };
   let profile = profileFor(decision.tier);
   renderer.shadowMap.enabled = profile.shadows;
@@ -1675,7 +1689,7 @@ const createSceneImpl = (
      the tier actually in force (quality.ts `probeReasonsAt`), and the automatic tier changes since,
      in order. Reasons are COMPOSED from these two, never accumulated by copying the previous
      decision's list — which is how "full quality: ..." survived a step-down to low. */
-  const probeDecision: QualityDecision = decision;
+  const probeDecision: QualityDecision = opts.quality === undefined ? probed : decision;
   let tierLog: string[] = [];
 
   let theme = opts.theme;
@@ -3264,7 +3278,7 @@ const createSceneImpl = (
   let prevIdle = false;
   /* The E4 bar, reported on its own — see `frameRateBelowBar`. Fed every rendered frame at every
      tier, auto or pinned, because the report is about the frames the user saw, not about the rule. */
-  const rateBar = createFrameRateBar();
+  const rateBar = capture?.pin.rateBarFrozen === true ? freezeFrameRateBar(createFrameRateBar()) : createFrameRateBar();
   /* Which slow frames were the FABRIC's — see `createForeignWorkLedger` in ./stepdown for the
      measurement that made this necessary. Long-task entries arrive asynchronously, after the task
      they describe, so a rendered frame waits in `judgeQueue` for ATTRIBUTION_LAG_MS before the
@@ -3376,9 +3390,12 @@ const createSceneImpl = (
    * changes the post chain and labels, so a clock-derived value can change what is
    * rendered. Nothing else is steered: `dt` advances animators that the capture harness waits out
    * via `converged`, and no timing value reaches geometry, colour or layout. Acceptance F6's
-   * byte-identity therefore holds only AT A PINNED TIER, and that pin is enforced outside this file:
-   * review/capture.mjs records every frame's tier and refuses (exit 3) any frame not rendered at
-   * `high`. A caller-pinned tier (`quality` prop → `setQuality`) is not auto and is never moved.
+   * byte-identity therefore holds only AT A PINNED TIER. A capture asks for that pin before the app
+   * mounts (./capturePin, `window.__atlasCapturePin`): the probe's `high` held with `auto: false` and
+   * the frame-rate bar frozen, published as `stats().capturePin`; review/capture.mjs records it and
+   * the tier on every frame and refuses (exit 3) a frame without the pin in force or not at `high`.
+   * Without that flag the tier adapts and the bar reports, as below. A caller-pinned tier (`quality`
+   * prop → `setQuality`) is not auto and is never moved.
    * If a frame-timing value ever starts deciding anything besides the tier, this note is false.
    */
   function frame(now: number): void {
@@ -3781,6 +3798,7 @@ const createSceneImpl = (
       warmupTimedOut,
       framesTimed,
       frameRateBelowBar: rateBar.below(),
+      capturePin: capture?.pin ?? null,
       historyWeight: post.historyWeightUsed(),
       historyCameraStepPx: Number.isFinite(lastCameraStep) ? Math.round(lastCameraStep * 10000) / 10000 : null,
     };

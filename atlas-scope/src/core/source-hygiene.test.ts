@@ -34,8 +34,10 @@
  * the repository, minus the directories that hold generated or third-party bytes, and the
  * extension list is "text formats this project authors".
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -86,11 +88,75 @@ function walk(dir: string, out: string[] = []): string[] {
 /* Constructed, never embedded: a file that hunts control characters must not contain one. */
 const REPLACEMENT_CHAR = String.fromCharCode(0xfffd);
 
-const files = walk(ROOT);
+/**
+ * WHAT THE BYTE SCANS READ: the files Git calls part of the tree — tracked, plus untracked files no
+ * ignore rule claims (an authored file not yet added is in scope; declared scratch is not).
+ *
+ * It was `walk(ROOT)` minus SKIP_DIRS, and that scope was set by the directories that happened to
+ * exist rather than by the property. Git-ignored scratch kept appearing under names the list did not
+ * hold — `.local-data/` (other agents' builds, captures and compiled snapshots), `dist-hub/` — so the
+ * scans read them. Measured by acceptance F2's re-grade: 1,398 files / 130.2 MB read, of
+ * which 408 files / 10.7 MB were tracked; the NUL test took 0.9 s, 5.8 s and 70.6 s on three runs as
+ * that scratch grew, and timed out at 30 s once — a verdict that measured other agents' leftovers,
+ * and a NUL in a scratch file nobody diffs would have turned the product suite red. Being ignored is
+ * the declaration that a file is not authored here (.gitignore says so in as many words), so Git's
+ * own answer is the denominator: it moves with .gitignore, never with a hand-kept list.
+ *
+ * Outside a Git checkout there is no such answer. The run then fails (see "finds files to check")
+ * unless ATLAS_SCOPE_NO_GIT=1 acknowledges it, in which case the old directory walk stands in.
+ */
+function authoredTextFiles(): { files: string[]; gitError: string | null } {
+  let listed: string;
+  try {
+    listed = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (e) {
+    return { files: process.env.ATLAS_SCOPE_NO_GIT === "1" ? walk(ROOT) : [], gitError: String(e).slice(0, 300) };
+  }
+  const files = listed
+    .split("\0")
+    .filter((r) => r.length > 0 && (TEXT_EXTENSIONS.has(extname(r)) || TEXT_NAMES.has(basename(r))))
+    .map((r) => resolve(ROOT, r))
+    /* A tracked file deleted in the working tree is listed by `--cached` and has no bytes to read. */
+    .filter((f) => existsSync(f));
+  return { files, gitError: null };
+}
+
+const authored = authoredTextFiles();
+const files = authored.files;
+/**
+ * What the runner collects and the build executes, ignored by Git or not: `src/` and `tools/`,
+ * walked. The gates below that ask "will this RUN?" read this set, because vitest's glob does not
+ * consult .gitignore — a probe parked in an ignored path under `src/` still runs.
+ */
+const runnable = [...walk(SRC), ...walk(resolve(ROOT, "tools"))];
 const rel = (f: string): string => relative(ROOT, f).split("\\").join("/");
+
+/** Each file among `paths` holding a byte for which `bad` is true, with the count — the NUL scan's detector. */
+function byteOffenders(paths: readonly string[], bad: (b: number) => boolean): string[] {
+  const out: string[] = [];
+  for (const f of paths) {
+    let count = 0;
+    for (const b of readFileSync(f)) if (bad(b)) count++;
+    if (count > 0) out.push(`${rel(f)} — ${count} NUL byte(s)`);
+  }
+  return out;
+}
+const isNul = (b: number): boolean => b === 0;
 
 describe("authored files stay text", () => {
   it("finds files to check — an empty scan is not a pass", () => {
+    if (authored.gitError !== null) {
+      expect(
+        process.env.ATLAS_SCOPE_NO_GIT,
+        `git could not list the authored files (${authored.gitError}); set ATLAS_SCOPE_NO_GIT=1 to acknowledge ` +
+          "that this run scanned a directory walk instead",
+      ).toBe("1");
+    }
     expect(files.length).toBeGreaterThan(60);
   });
 
@@ -106,14 +172,28 @@ describe("authored files stay text", () => {
     expect(files.some((f) => rel(f) === "review/capture.mjs")).toBe(true);
   });
 
-  it("contains no literal NUL byte", () => {
-    const offenders: string[] = [];
-    for (const f of files) {
-      const buf = readFileSync(f);
-      let count = 0;
-      for (const b of buf) if (b === 0) count++;
-      if (count > 0) offenders.push(`${rel(f)} — ${count} NUL byte(s)`);
+  it("reads what Git calls authored, and no Git-ignored scratch", () => {
+    /* Asked of Git independently of how the list was made: `check-ignore` names every path among
+       them that an ignore rule claims (a tracked path is never reported). Red on the old walk, which
+       read the builds and captures under `.local-data/` — 18 of them in the run that wrote this. */
+    if (authored.gitError !== null) {
+      expect(process.env.ATLAS_SCOPE_NO_GIT).toBe("1");
+      return;
     }
+    const asked = spawnSync("git", ["check-ignore", "--stdin", "-z"], {
+      cwd: ROOT,
+      input: files.map(rel).join("\0"),
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    /* Exit 0: at least one path is ignored (they are printed); 1: none is; anything else: Git failed. */
+    expect([0, 1], `git check-ignore failed: ${asked.stderr ?? String(asked.error)}`).toContain(asked.status);
+    const ignored = asked.stdout.split("\0").filter((r) => r.length > 0);
+    expect(ignored.slice(0, 10), `${ignored.length} Git-ignored file(s) in the byte scans`).toEqual([]);
+  });
+
+  it("contains no literal NUL byte", () => {
+    const offenders = byteOffenders(files, isNul);
     expect(
       offenders,
       `these files contain literal NUL bytes and will be treated as BINARY by git, grep and most\n` +
@@ -154,11 +234,21 @@ describe("authored files stay text", () => {
   });
 
   it("the gate is live — it detects a planted NUL", () => {
-    // Proves the detector fires. A gate whose failure path was never executed is not a gate.
-    const planted = Buffer.from(`const k = \`a${String.fromCharCode(0)}b\`;`, "utf8");
-    let count = 0;
-    for (const b of planted) if (b === 0) count++;
-    expect(count).toBe(1);
+    /* Proves the detector the scan USES fires, on a real file: this used to count NULs in a buffer
+       with a loop of its own, which proved that loop, not the gate. A clean twin is the control.
+       Planted outside the tree, so the run writes nothing a scan or a commit can pick up. */
+    const dir = mkdtempSync(join(tmpdir(), "atlas-nul-"));
+    try {
+      const dirty = join(dir, "planted.ts");
+      const clean = join(dir, "clean.ts");
+      writeFileSync(dirty, Buffer.from(`const k = \`a${String.fromCharCode(0)}b\`;`, "utf8"));
+      writeFileSync(clean, "const k = `a\\u0000b`;\n");
+      const found = byteOffenders([dirty, clean], isNul);
+      expect(found).toHaveLength(1);
+      expect(found[0]).toMatch(/planted\.ts — 1 NUL byte\(s\)$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("leaves no scratch, probe or temporary file where the build or the test glob will find it", () => {
@@ -181,7 +271,7 @@ describe("authored files stay text", () => {
        with zero assertions, every one of them counted as a PASS — sat in `src/` while this test was
        green. The structural check below is the one that closes the class; this one stays because it
        is free and it catches a leftover the moment it lands, before anyone runs it. */
-    const watched = files.filter((f) => {
+    const watched = runnable.filter((f) => {
       const r = rel(f);
       return r.startsWith("src/") || r.startsWith("tools/");
     });
@@ -400,11 +490,11 @@ describe("every test the runner collects asserts something", () => {
        empty in the authored tree and the exclusion only ever bites scratch. */
     expect(vitestConfig).toContain(`exclude: [...configDefaults.exclude, "src/**/_*/**", "src/**/_*"]`);
     expect(vitestConfig.match(/\bexclude\s*:/g) ?? []).toHaveLength(1);
-    const underscored = files.map(rel).filter((f) => f.startsWith("src/") && f.split("/").some((seg) => seg.startsWith("_")));
+    const underscored = runnable.map(rel).filter((f) => f.startsWith("src/") && f.split("/").some((seg) => seg.startsWith("_")));
     expect(underscored, `files under src/ the runner now skips:\n${underscored.join("\n")}`).toEqual([]);
   });
 
-  const collected = files
+  const collected = runnable
     .map(rel)
     .filter((f) => f.startsWith("src/") && (f.endsWith(".test.ts") || f.endsWith(".test.tsx")));
 
