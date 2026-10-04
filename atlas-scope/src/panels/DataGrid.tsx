@@ -278,24 +278,35 @@ type NavRow<T> = { kind: "header" } | { kind: "group"; node: Extract<GridNode<T>
 const PAGE_ROWS_FALLBACK = 5;
 
 /**
- * How far PageUp / PageDown travel.
+ * How far PageUp / PageDown travel, from row `from` (a navigation index: 0 is the header row).
  *
  * A11Y AUDIT FIX, 2026-09-21 (D2). This was a fixed 5 on the grounds that a measurement "reads 0
  * in a test environment", which is true and is why the fallback above still exists — but it made
- * the keys nearly useless on the surface they exist for. Measured in the browser: grid client
- * height 661 px over 51 px data rows = 12.96 visible rows, so a "page" moved under half a screen
- * and crossing 146 findings took ~29 presses. APG leaves the page size to the author precisely so
- * it can be the visible row count; its own data-grid examples derive it the same way.
+ * the keys nearly useless on the surface they exist for. APG leaves the page size to the author
+ * precisely so it can follow what the reader sees.
  *
- * `visible - 1` keeps one row of context across the jump, which is what lets a reader join the
- * new screen to the old one instead of landing cold. The measurement is taken at KEYPRESS time,
- * never cached, so
- * a resize needs no invalidation. Anything unmeasurable falls back rather than paging by 0.
+ * D2 REFUTER, 2026-10-03: A PAGE IS THE ROWS THAT FIT, MEASURED ROW BY ROW. The step used to be
+ * `floor(band / height of the FIRST data row) - 1`, which assumes every row is that tall. They are
+ * not: a folded second line, a group header and a one-line row differ (measured 1920x1080: 98 rows at
+ * 56 px, 26 at 40.4, 11 at 41.4, 5 group rows at 32), so the first row's 40.4 px sized a 15-row page
+ * where about 12 rows of 56 px fit. PageDown then passed rows the reader saw neither before nor after
+ * the press — 12 over one walk at 1920x1080, 8 at 430x932 with a 25-row step, 3 at 577x630.
+ *
+ * So the step is read from the rows themselves: the farthest row such that the span from the focused
+ * row's top to that row's bottom (PageDown; mirrored for PageUp) fits in the visible band — the rows
+ * actually laid out, whatever their heights. Focus reveals NEAREST, so the target
+ * comes into view at the band's edge with the old row still on screen across from it — every row
+ * between is visible after the press (one row of context, kept by construction), whatever the row
+ * heights. The header row is drawn over the band, not in it, and revealing it scrolls nothing in the
+ * grid's own port, so it is never a page's far end: PageUp reaches it from the first body row, and
+ * PageDown from it measures from the first body row — or steps to that row alone when it is not on
+ * screen, so the rows above the band are not passed unseen. A row the window has not rendered cannot
+ * be measured and ends the page there: a shorter page never hides a row. At least one row, always.
+ * Taken at KEYPRESS time, never cached, so a resize needs no invalidation; anything unmeasurable falls
+ * back rather than paging by 0.
  */
-const pageRows = (scroller: HTMLElement | null, head: HTMLElement | null): number => {
+const pageStep = (scroller: HTMLElement | null, head: HTMLElement | null, from: number, dir: 1 | -1, rowCount: number): number => {
   if (!scroller) return PAGE_ROWS_FALLBACK;
-  const row = scroller.querySelector<HTMLElement>('[role="row"].ag__row--data');
-  const rowH = row?.getBoundingClientRect().height ?? 0;
   /* A "page" is what the reader can SEE, not the grid's own box. MEASURED (critic, 2026-09-22): at
      577x630 and 400x800 the grid is not its own scroll port — it lays out at its full 5,008 px and
      an ancestor (or the window) scrolls it — so clientHeight counted every row and one PageDown
@@ -303,8 +314,25 @@ const pageRows = (scroller: HTMLElement | null, head: HTMLElement | null): numbe
      grid's box below the sticky header, intersected with every clip and the viewport. */
   const band = visibleBand(scroller, head);
   const portH = band.bottom - band.top;
-  if (rowH < 1 || portH < 1) return PAGE_ROWS_FALLBACK;
-  return Math.max(1, Math.floor(portH / rowH) - 1);
+  const box = (i: number): DOMRect | null => {
+    const el = scroller.querySelector<HTMLElement>(`[role="row"][aria-rowindex="${i + 1}"]`);
+    const r = el?.getBoundingClientRect();
+    return r && r.height >= 1 ? r : null;
+  };
+  /* The header is drawn over the band, not in it: measure from the first body row. */
+  const anchor = from === 0 && dir === 1 ? 1 : from;
+  const ref = box(anchor);
+  if (ref === null || portH < 1) return PAGE_ROWS_FALLBACK;
+  if (anchor !== from && (ref.top < band.top - 0.5 || ref.bottom > band.bottom + 0.5)) return 1;
+  let last = anchor;
+  for (let i = anchor + dir; i >= 1 && i < rowCount; i += dir) {
+    const r = box(i);
+    if (r === null) break;
+    const span = dir === 1 ? r.bottom - ref.top : ref.bottom - r.top;
+    if (span > portH + 0.5) break;
+    last = i;
+  }
+  return Math.max(1, Math.abs(last - from));
 };
 
 const RESIZE_STEP_PX = 8;
@@ -1983,14 +2011,14 @@ export function DataGrid<T>({
         return;
       case "PageDown": {
         e.preventDefault();
-        const step = pageRows(gridRef.current, headRef.current);
+        const step = pageStep(gridRef.current, headRef.current, row, 1, rows.length);
         if (e.shiftKey && onSelectRange) extendTo(row + step, desiredCol.current);
         else move(row + step, desiredCol.current, true);
         return;
       }
       case "PageUp": {
         e.preventDefault();
-        const step = pageRows(gridRef.current, headRef.current);
+        const step = pageStep(gridRef.current, headRef.current, row, -1, rows.length);
         if (e.shiftKey && onSelectRange) extendTo(row - step, desiredCol.current);
         else move(row - step, desiredCol.current, true);
         return;

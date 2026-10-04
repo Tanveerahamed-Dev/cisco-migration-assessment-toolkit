@@ -1499,7 +1499,7 @@ A 146-row grid is **one** tab stop, not 876.
 | `End` | Last cell in the row that contains focus. |
 | `Ctrl + Home` | First cell of the first row. |
 | `Ctrl + End` | Last cell of the last row. |
-| `Page Down` | Down **one visible page** — the measured visible-row count minus one, so a row of context carries across the jump. Where the viewport cannot be measured (jsdom, a hidden ancestor, first paint) it falls back to **5 rows**. In the last row, focus does not move. |
+| `Page Down` | Down **one visible page** — the rows that fit in the visible band, measured row by row from the focused row (rows differ in height: group headers, folded second lines), so the row left stays on screen as context and no row is passed unseen. Where the viewport cannot be measured (jsdom, a hidden ancestor, first paint) it falls back to **5 rows**. In the last row, focus does not move. |
 | `Page Up` | Up the same page. In the first row, focus does not move. |
 | `Enter` or `F2` | Enter cell edit/expand mode; focus moves into the control inside the cell. |
 | `F2` or `Esc` | Exit that mode; grid navigation restored, focus returned to the cell. |

@@ -358,33 +358,149 @@ describe("APG keyboard contract", () => {
     expect(position(container)).toEqual([1, 1]);
   });
 
-  /* The page step is MEASURED (visible rows − 1) and only falls back to five when there is
-     nothing to measure, which in jsdom is always. A test run entirely in the fallback would
-     assert the fallback and call it the contract, so the measured path is given real geometry
-     here and asserted on its own. 12 visible rows over a 600px port ⇒ a step of 11. */
-  const withGeometry = (container: HTMLElement, portPx: number, headPx: number, rowPx: number): void => {
+  /* The page step is MEASURED from the rows as laid out, and only falls back to five when there is
+     nothing to measure, which in jsdom is always. A test run entirely in the fallback would assert
+     the fallback and call it the contract, so the measured path is given a real layout here: a grid
+     that is its own scroll port, a sticky header on its top edge, and every row stacked below it at
+     its own height and the live scrollTop.
+
+     D2 REFUTER, 2026-10-03: this block used to stub EVERY row with the same 50 px box at y=0 and
+     assert "visible rows - 1". The running app's rows are not one height (measured 1920x1080: 56,
+     41.4, 40.4 px data rows and 32 px group rows), the step was sized from the FIRST data row, and
+     PageDown passed rows the reader never saw — 12 over one walk at 1920x1080, 8 at 430x932. A model
+     with one row height could not see it. */
+  const PORT = 600;
+  const HEAD = 50;
+  let restoreLayout: (() => void) | null = null;
+  afterEach(() => {
+    restoreLayout?.();
+    restoreLayout = null;
+  });
+
+  /** Lays the grid out: rows stacked under the header, each at `heightOf(its row element)`. */
+  const layOut = (container: HTMLElement, heightOf: (row: HTMLElement) => number): HTMLElement => {
     const grid = container.querySelector<HTMLElement>('[role="grid"]')!;
-    Object.defineProperty(grid, "clientHeight", { value: portPx, configurable: true });
-    const stub = (el: Element, h: number): void => {
-      el.getBoundingClientRect = () => ({ x: 0, y: 0, width: 200, height: h, top: 0, left: 0, right: 200, bottom: h, toJSON: () => ({}) }) as DOMRect;
+    const body = (): HTMLElement[] => [...grid.querySelectorAll<HTMLElement>('.ag__body > [role="row"]')];
+    const total = (): number => body().reduce((sum, r) => sum + heightOf(r), 0);
+    let scrollTop = 0;
+    Object.defineProperty(grid, "clientHeight", { configurable: true, get: () => PORT });
+    Object.defineProperty(grid, "scrollHeight", { configurable: true, get: () => HEAD + total() });
+    Object.defineProperty(grid, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (v: number) => {
+        scrollTop = Math.max(0, Math.min(v, HEAD + total() - PORT));
+      },
+    });
+    const box = (top: number, h: number): DOMRect =>
+      ({ x: 0, y: top, width: 200, height: h, top, left: 0, right: 200, bottom: top + h, toJSON: () => ({}) }) as DOMRect;
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement): DOMRect {
+      if (!grid.contains(this)) return original.call(this) as DOMRect;
+      if (this === grid) return box(0, PORT);
+      if (this.closest(".ag__head")) return box(0, HEAD);
+      const row = this.closest<HTMLElement>('[role="row"]');
+      if (row === null) return original.call(this) as DOMRect;
+      let top = HEAD - scrollTop;
+      for (const r of body()) {
+        if (r === row) break;
+        top += heightOf(r);
+      }
+      return box(top, heightOf(row));
     };
-    /* The page is the VISIBLE band (the grid's box below its header, inside every clip and the
-       viewport), read from layout rects rather than clientHeight — so the port gets a box too. */
-    stub(grid, portPx);
-    stub(container.querySelector(".ag__head")!, headPx);
-    for (const r of container.querySelectorAll(".ag__row--data")) stub(r, rowPx);
+    restoreLayout = () => {
+      HTMLElement.prototype.getBoundingClientRect = original;
+    };
+    return grid;
+  };
+
+  /** aria-rowindex of every body row the reader sees whole: below the header, inside the port. */
+  const seen = (grid: HTMLElement): Set<number> =>
+    new Set(
+      [...grid.querySelectorAll<HTMLElement>('.ag__body > [role="row"]')]
+        .filter((r) => {
+          const b = r.getBoundingClientRect();
+          return b.top >= HEAD - 0.5 && b.bottom <= PORT + 0.5;
+        })
+        .map((r) => Number(r.getAttribute("aria-rowindex"))),
+    );
+
+  /** Presses `k` until focus stops moving; records every row a press passed that was on screen neither
+   *  before nor after it, and checks the row it left is still on screen (one row of context). */
+  const walk = (container: HTMLElement, grid: HTMLElement, k: "PageDown" | "PageUp"): { steps: number[]; unseen: number[] } => {
+    const steps: number[] = [];
+    const unseen: number[] = [];
+    for (let press = 0; press < 200; press += 1) {
+      const before = seen(grid);
+      const [from] = position(container);
+      key(document.activeElement!, k);
+      const [to] = position(container);
+      if (to === from) break;
+      const after = seen(grid);
+      steps.push(to - from);
+      for (let r = Math.min(from, to) + 1; r < Math.max(from, to); r += 1) if (!before.has(r) && !after.has(r)) unseen.push(r);
+      // The header row is always on screen; a body row the press left must still be.
+      if (from > 1 && to > 1) expect(after.has(from), `${k} ${from}->${to}: the row it left is still on screen`).toBe(true);
+    }
+    return { steps, unseen };
   };
 
   it("PageDown and PageUp step by the MEASURED page, keeping one row of context", () => {
     const { container } = setup({ nodes: dataNodes(manyRows) });
-    withGeometry(container, 600, 50, 50);
-    // (600 - 50) / 50 = 11 visible rows, minus one for context = a step of 10.
+    layOut(container, () => 50);
+    // (600 - 50) / 50 = 11 rows fit: the page keeps the row it leaves, a step of 10.
     key(document.activeElement!, "PageDown");
     expect(position(container)).toEqual([12, 1]);
     key(document.activeElement!, "PageDown");
     expect(position(container)).toEqual([22, 1]);
     key(document.activeElement!, "PageUp");
     expect(position(container)).toEqual([12, 1]);
+  });
+
+  /* The shape the refuter measured: groups, a short first row and taller rows after it. Sized from
+     the first data row (40.4 px), the old page was floor(550 / 40.4) - 1 = 12 rows where about 9 of
+     56 px fit, and the press skipped the rows between. Every press here, both directions, end to end. */
+  const MIXED: GridNode<Row>[] = [
+    { kind: "group", id: "g1", label: "First", count: 3, observed: true, collapsed: false },
+    ...manyRows.slice(0, 3).map((r) => ({ kind: "row" as const, id: r.id, item: r })),
+    { kind: "group", id: "g2", label: "Second", count: 30, observed: true, collapsed: false },
+    ...manyRows.slice(3, 33).map((r) => ({ kind: "row" as const, id: r.id, item: r })),
+    { kind: "group", id: "g3", label: "Third", count: 7, observed: true, collapsed: false },
+    ...manyRows.slice(33).map((r) => ({ kind: "row" as const, id: r.id, item: r })),
+  ];
+  const mixedHeight = (row: HTMLElement): number => {
+    if (row.classList.contains("ag__row--group")) return 32;
+    const i = Number(row.getAttribute("aria-rowindex"));
+    return i === 3 ? 40.4 : i % 7 === 0 ? 41.4 : 56;
+  };
+
+  it("PageDown and PageUp never pass a row the reader has not seen, over rows of different heights", () => {
+    const { container } = mount(<DataGrid<Row> label="Rows" columns={columns} nodes={MIXED} template={TEMPLATE} />);
+    focus(at(container, 3, 1));
+    const grid = layOut(container, mixedHeight);
+    const down = walk(container, grid, "PageDown");
+    expect(down.unseen, "rows PageDown passed that were on screen neither before nor after the press").toEqual([]);
+    expect(position(container)[0], "PageDown reaches the last row").toBe(MIXED.length + 1);
+    expect(down.steps.length, "and pages there, not one row at a time").toBeLessThan(MIXED.length / 4);
+    const up = walk(container, grid, "PageUp");
+    expect(up.unseen, "rows PageUp passed that were on screen neither before nor after the press").toEqual([]);
+    expect(position(container), "PageUp reaches the header row").toEqual([1, 1]);
+  });
+
+  it("PageDown from the header row, with the rows scrolled away, does not pass the rows above the port", () => {
+    const { container } = mount(<DataGrid<Row> label="Rows" columns={columns} nodes={MIXED} template={TEMPLATE} />);
+    focus(at(container, 1, 1));
+    const grid = layOut(container, mixedHeight);
+    act(() => {
+      grid.scrollTop = 400;
+    });
+    const before = seen(grid);
+    key(document.activeElement!, "PageDown");
+    const [to] = position(container);
+    const after = seen(grid);
+    const passed = Array.from({ length: Math.max(0, to - 2) }, (_, i) => i + 2).filter((r) => !before.has(r) && !after.has(r));
+    expect(to, "PageDown moved").toBeGreaterThan(1);
+    expect(passed).toEqual([]);
   });
 
   it("falls back to five rows when the viewport cannot be measured", () => {
