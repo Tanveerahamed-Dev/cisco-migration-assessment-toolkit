@@ -134,9 +134,21 @@ export const GOLDEN_FORWARDING = {
       permit443Cite: "acls.core1.PROTECT_SERVERS[0]",
       permit443Raw: "permit tcp 10.0.10.0 0.0.0.255 10.0.30.0 0.0.0.255 eq 443",
       permit443Index: 0,
+      permit22Cite: "acls.core1.PROTECT_SERVERS[1]",
       echoReplyCite: "acls.core1.PROTECT_SERVERS[2]",
       denyAllCite: "acls.core1.PROTECT_SERVERS[3]",
       denyAllIndex: 3,
+      /**
+       * The re-grade's B5 counterexamples (2026-10-03): flows the catch-all deny matches below lines that
+       * could fire first. From Vlan10 an `ip` flow leaves lines 1-2 undecided (protocol and port not given)
+       * AND the echo-reply line unevaluable; from 10.0.40.5 only the echo-reply line can fire first; a
+       * portless tcp flow leaves lines 1-2 undecided while the echo-reply line is excluded by protocol.
+       */
+      blockerFlows: {
+        ipFromVlan10: ipAny(HEADLINE_SRC, "10.0.30.20"),
+        ipFromOutside: ipAny("10.0.40.5", "10.0.30.20"),
+        portlessTcp: { srcIp: HEADLINE_SRC, dstIp: "10.0.30.20", protocol: "tcp", dstPort: null, srcPort: null } as Flow,
+      },
     },
     /** A list bound on none of core1's interfaces: `permit tcp any any established`, then a time-ranged line. */
     inetReturn: {
