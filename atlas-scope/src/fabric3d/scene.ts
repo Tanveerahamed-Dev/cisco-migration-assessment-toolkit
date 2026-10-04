@@ -625,7 +625,37 @@ export interface FabricGraph {
   neighbours: Map<string, string[]>;
   linkEnds: Map<string, { a: string; b: string }>;
   emissiveObjects: Object3D[];
+  /** Every per-instance colour the palette decides, painted by `paintInstances` alone (see InstancePaint). */
+  instancePaints: InstancePaint[];
   dispose(): void;
+}
+
+/**
+ * One instanced mesh whose per-instance colour is derived from the palette: the mesh, the device each
+ * instance draws (by instance index; a hole is an id the layout did not place), and the tint.
+ *
+ * WHY a registry (C4 re-grade, 2026-10-03): the state rings' colour was written once at build and the
+ * live theme switch re-tinted the bodies and LEDs from a second, hand-kept list that did not name the
+ * rings, so after a switch every ring kept the previous theme's colour until a reload (light ring
+ * 1.87:1 on the ground against 4.1:1 fresh). A mesh that takes a palette colour per instance is
+ * registered here where it is built, and `paintInstances` is the only code that writes those
+ * colours: at build, on a theme switch and on a same-topology data update alike.
+ */
+interface InstancePaint {
+  mesh: InstancedMesh;
+  members: ReadonlyArray<DeviceSlot | undefined>;
+  tint(device: Device, tokens: TokenPalette, out: Color): Color;
+}
+
+function paintInstances(paints: readonly InstancePaint[], tokens: TokenPalette): void {
+  for (const paint of paints) {
+    for (let i = 0; i < paint.members.length; i += 1) {
+      const s = paint.members[i];
+      if (s === undefined) continue;
+      paint.mesh.setColorAt(i, paint.tint(s.device, tokens, _colour));
+    }
+    if (paint.mesh.instanceColor !== null) paint.mesh.instanceColor.needsUpdate = true;
+  }
 }
 
 const _m = new Matrix4();
@@ -1017,7 +1047,8 @@ export function buildFabricGraph(opts: BuildGraphOptions): FabricGraph {
     place(group.ghostIds, true);
   }
 
-  // Instance matrices and colours, once the slot table is complete.
+  // Instance matrices, once the slot table is complete. Colours are painted by `paintInstances`.
+  const instancePaints: InstancePaint[] = [];
   for (const s of order) {
     _pos.set(s.centre[0], s.centre[1], s.centre[2]);
     _scale.set(1, 1, 1);
@@ -1027,23 +1058,18 @@ export function buildFabricGraph(opts: BuildGraphOptions): FabricGraph {
       if (target !== null) target.setMatrixAt(s.slot, _m);
     } else {
       for (const mesh of s.group.meshes) mesh.setMatrixAt(s.slot, _m);
-      if (s.group.body !== null) {
-        s.group.body.setColorAt(s.slot, bandTint(s.device, tokens, _colour));
-      }
-      if (s.group.led !== null) {
-        // The LED strip carries the band at its TRUE hue, as emission on a near-black recess, which is
-        // what makes it legible at overview distance and what makes the encoding real; the body carries
-        // the same band as a hue at fixed luminance. See BODY_BAND_TINT.
-        s.group.led.setColorAt(s.slot, bandEmissive(s.device, tokens, _colour));
-      }
     }
   }
   for (const group of groups.values()) {
-    for (const mesh of group.meshes) {
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
-    }
+    for (const mesh of group.meshes) mesh.instanceMatrix.needsUpdate = true;
     if (group.ghost !== null) group.ghost.instanceMatrix.needsUpdate = true;
+    const solid = new Array<DeviceSlot | undefined>(group.solidIds.length);
+    for (const s of order) if (s.group === group && !s.ghost) solid[s.slot] = s;
+    // The body carries the band as a hue at fixed luminance (BODY_BAND_TINT); the LED strip carries it
+    // at its TRUE hue, as emission on a near-black recess, which is what makes it legible at overview
+    // distance and what makes the encoding real.
+    if (group.body !== null) instancePaints.push({ mesh: group.body, members: solid, tint: bandTint });
+    if (group.led !== null) instancePaints.push({ mesh: group.led, members: solid, tint: bandEmissive });
   }
 
   /* Every per-device instanced mesh built outside the chassis groups carries the recession
@@ -1106,10 +1132,9 @@ export function buildFabricGraph(opts: BuildGraphOptions): FabricGraph {
       _pos.set(s.centre[0], s.centre[1] - chassisSpec(s.kind).height / 2 + Y_STATE_RING, s.centre[2]);
       _scale.set(s.half[0] * 1.42, 1, s.half[2] * 1.62);
       mesh.setMatrixAt(i, _m.compose(_pos, _rot, _scale));
-      mesh.setColorAt(i, stateTint(s.device.opStatus, tokens, _colour));
     }
     mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
+    instancePaints.push({ mesh, members, tint: (device, t, out) => stateTint(device.opStatus, t, out) });
     stateRings.push(mesh);
     scene.add(mesh);
   }
@@ -1340,6 +1365,7 @@ export function buildFabricGraph(opts: BuildGraphOptions): FabricGraph {
     neighbours,
     linkEnds,
     emissiveObjects,
+    instancePaints,
     dispose(): void {
       // Idempotent by a flag, not by hope: BufferGeometry.dispose() fires its event every time it
       // is called, so a double dispose would re-notify every listener and, worse, hide a real
@@ -1398,7 +1424,26 @@ export function buildFabricGraph(opts: BuildGraphOptions): FabricGraph {
       scene.clear();
     },
   };
+  /* Every palette-derived value is written by the same function the live theme switch runs, so a fresh
+     build and a switch cannot disagree (theme-retint.test.ts compares the two over the whole graph). */
+  retintFabricGraph(graph, tokens);
   return graph;
+}
+
+/**
+ * Write every palette-derived value in a built graph. The ONE owner: `buildFabricGraph` ends by
+ * calling it and the live theme switch (`applyTheme`) calls it, so the two cannot drift. Before, the
+ * switch re-tinted from a list of its own and missed the state rings' instance colours and the
+ * uncollected wireframe's coverage gamma (C4 re-grade; theme-retint.test.ts).
+ */
+export function retintFabricGraph(graph: FabricGraph, tokens: TokenPalette): void {
+  graph.tokens = tokens;
+  retintMaterials(graph.materials, tokens);
+  (graph.blockedShell.material as MeshBasicMaterial).color.copy(tokens.color("--sev-critical"));
+  (graph.selectionShell.material as MeshBasicMaterial).color.copy(tokens.color("--accent"));
+  graph.cables.retint(tokens);
+  if (graph.ghostEdges !== null) tintGhostLineMaterial(graph.ghostEdges.material, tokens);
+  paintInstances(graph.instancePaints, tokens);
 }
 
 /**
@@ -1478,10 +1523,14 @@ function invisibleMaterial(): MeshBasicMaterial {
  *  the factory now floors every stroke, so asking for less would be a request it silently raises). */
 function buildGhostLineMaterial(tokens: TokenPalette): LineMaterial {
   const mat = createCableMaterial("solid", MIN_STROKE_PX, 0.95, { vertexColors: false });
+  tintGhostLineMaterial(mat, tokens);
+  return mat;
+}
+
+function tintGhostLineMaterial(mat: LineMaterial, tokens: TokenPalette): void {
   mat.color.copy(tokens.color("--claim-indeterminate"));
   // Display-linear edge coverage, as every cable stroke (geometry/cables.ts coverageGamma).
   setCoverageGamma(mat, coverageGamma(tokens));
-  return mat;
 }
 
 /* ── the scene handle ──────────────────────────────────────────────────────── */
@@ -2413,31 +2462,10 @@ const createSceneImpl = (
   function applyTheme(next: "dark" | "light"): void {
     theme = next;
     const tokens = readTokens(theme);
-    graph.tokens = tokens;
-    retintMaterials(graph.materials, tokens);
-    (graph.blockedShell.material as MeshBasicMaterial).color.copy(tokens.color("--sev-critical"));
-    (graph.selectionShell.material as MeshBasicMaterial).color.copy(tokens.color("--accent"));
-    graph.cables.retint(tokens);
-    if (graph.ghostEdges !== null) graph.ghostEdges.material.color.copy(tokens.color("--claim-indeterminate"));
+    retintFabricGraph(graph, tokens);
     lightingModule.retint(tokens);
     post.retint(tokens);
     flow.retint(tokens);
-
-    for (const s of graph.order) {
-      if (s.ghost) continue;
-      if (s.group.body !== null) s.group.body.setColorAt(s.slot, bandTint(s.device, tokens, _colour));
-      if (s.group.led !== null) {
-        s.group.led.setColorAt(s.slot, bandEmissive(s.device, tokens, _colour));
-      }
-    }
-    for (const group of graph.groups.values()) {
-      for (const mesh of group.meshes) {
-        if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
-      }
-    }
-    for (const ring of graph.stateRings) {
-      if (ring.instanceColor !== null) ring.instanceColor.needsUpdate = true;
-    }
 
     backdrop.texture.dispose();
     backdrop.texture = createBackdrop(tokens);
@@ -3823,18 +3851,8 @@ const createSceneImpl = (
           const next = devices.find((d) => d.id === s.id);
           if (next === undefined) continue;
           s.device = next;
-          if (!s.ghost && s.group.body !== null) {
-            s.group.body.setColorAt(s.slot, bandTint(next, graph.tokens, _colour));
-          }
-          if (!s.ghost && s.group.led !== null) {
-            s.group.led.setColorAt(s.slot, bandEmissive(next, graph.tokens, _colour));
-          }
         }
-        for (const group of graph.groups.values()) {
-          for (const mesh of group.meshes) {
-            if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
-          }
-        }
+        paintInstances(graph.instancePaints, graph.tokens);
         markDirty();
         return;
       }

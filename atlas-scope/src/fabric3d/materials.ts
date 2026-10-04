@@ -30,7 +30,7 @@ import {
   type Material,
   type Texture,
 } from "three";
-import { agxInverse } from "./env";
+import { agxInverse, floorLuminance, stageGround, toLuminance } from "./env";
 import { own } from "../core/own";
 
 /* ── token bridge ──────────────────────────────────────────────────────────── */
@@ -689,6 +689,7 @@ const EMPHASIS_FRAG_DECL = `
 varying float vRecede;
 uniform vec3 uRecedeTarget;
 uniform float uRecedeMix;
+uniform float uRecedeInkDarker;
 `;
 
 /*
@@ -699,13 +700,19 @@ uniform float uRecedeMix;
  * about 0.41 — which is the brief's "non-matching nodes drop to 35 % chassis" rendered as
  * radiance rather than as alpha, so an opaque material honours it too. It never reaches zero: the
  * alternate path you can no longer see is the one you needed.
+ *
+ * Recession is colour, never ALPHA (D4 re-grade, 2026-10-03). It also thinned alpha by up to 45 %,
+ * which on an opaque chassis does nothing and on the one translucent patched surface, the
+ * uncollected shell, composited the state indicator into the ground: with a subject selected the
+ * ghost fill measured 1.9-2.2:1 (light) where §9 of render-decisions.md had raised it to 4.1:1. The
+ * dim term below holds a contrast floor in colour; an alpha term would let the ground bleed through
+ * it, so there is none.
  */
 const EMPHASIS_FRAG_APPLY = `
 {
   float r = clamp(vRecede, 0.0, 1.0);
   float lum = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(lum), r);
-  diffuseColor.a *= 1.0 - r * 0.45;
 }
 `;
 
@@ -720,21 +727,65 @@ const EMPHASIS_FRAG_APPLY = `
  * It used to MULTIPLY toward black (`*= 1 - r * 0.8`). On the dark stage that is a recession; on
  * the light stage it is the opposite — a darker chassis on a near-white ground gains contrast and
  * pulls MORE attention — and in measurement it barely registered (render audit: selecting core1
- * moved a neighbouring chassis 3 % in luma, a non-neighbour 9-13 % in light). The target is now the
- * stage as the post chain will display it: `uRecedeTarget` is the AgX pre-image of `--stage-bg`
- * (env.ts `agxInverse`, set per theme by `retintMaterials`), so recession converges on the
- * backdrop in both themes. `RECEDE_MIX` < 1 keeps it from ever arriving: the alternate path you can
- * no longer see is the one you needed.
+ * moved a neighbouring chassis 3 % in luma, a non-neighbour 9-13 % in light). It then converged on
+ * the stage itself (the AgX pre-image of `--stage-bg`), which is the right direction and the wrong
+ * destination: a chassis is a STATE INDICATOR (its fill says collected / band / never collected),
+ * and with any subject on screen the rest of the fabric receded under the 3:1 a state indicator
+ * needs — MEASURED (D4 re-grade, release build, 1440x900, median fill against the ground beside
+ * it): light, never-collected AP-floor3-01 4.30:1 -> 1.98:1 (core1 selected) -> 1.89:1 (a path);
+ * collected dist2 4.42 -> 1.72; dark, dist2 4.11 -> 2.51-2.64.
+ *
+ * The target is now the stage's own colour moved along its luminance axis to the point that sits
+ * exactly CHASSIS_RECEDED_FLOOR:1 from the worst-case ground (env.ts `stageGround`, the same ground
+ * the cable inks hold their floor against) — "as close to the backdrop as a state indicator may
+ * go". A fragment on the ink side of that point recedes TOWARD it and so can never cross it; a
+ * fragment already nearer the ground (a highlight on the light stage, a shadowed face on the dark
+ * one) is left as lit and recedes by chroma alone, so receding never makes anything louder —
+ * the same rule as the cable inks (geometry/cables.ts `cableInk`). `RECEDE_MIX` < 1 keeps it from
+ * ever arriving, so a receded chassis keeps a trace of its own shading.
  */
-/** Per theme: the light target is an HDR pre-image several times brighter than any lit chassis, so
- *  the same linear blend reads far stronger there. Tuned by measurement, see `retintMaterials`. */
-export const RECEDE_MIX = { dark: 0.85, light: 0.15 } as const;
-/** Shared by every emphasis-patched program; `retintMaterials` writes it per theme. */
+/** Per theme, how far toward the floor target a fully receded fragment travels. The two used to
+ *  differ by 5.7x because the light target was an HDR pre-image several times brighter than any lit
+ *  chassis; both targets now sit at the floor, so the blend means the same thing on both stages. */
+export const RECEDE_MIX = { dark: 0.9, light: 0.9 } as const;
+/**
+ * The contrast a receded chassis fill keeps against the stage ground — the receded-hardware sibling
+ * of geometry/cables.ts `CABLE_RECEDED_FLOOR` (4.0 for 1-2 px strokes). 3:1 is the WCAG 1.4.11
+ * floor for a state indicator; the margin is for the ground a chassis really stands on, which is
+ * its tier deck, not the backdrop the floor is computed against: MEASURED (release build, high,
+ * 1440x900, ground 2-6 px outside each chassis), the light deck reads luminance 0.73-0.82 against
+ * the backdrop's worst end 0.85, and the dark one up to 0.015 against 0.005, so a fill sitting
+ * exactly ON the target reads about 3.1:1 against the worst deck in either theme. A receded fill
+ * only travels RECEDE_MIX x RECEDE_DEPTH of the way there, so it lands above that.
+ */
+export const CHASSIS_RECEDED_FLOOR = 3.6;
+/** Shared by every emphasis-patched program; `retintMaterials` writes them per theme. */
 const recedeTarget = { value: new Color(0, 0, 0) };
 const recedeMix = { value: RECEDE_MIX.dark as number };
+/** 1 when the ground is pale and a state indicator is drawn DARKER than it (the light stage). */
+const recedeInkDarker = { value: 0 };
 const EMPHASIS_FRAG_DIM = `
-gl_FragColor.rgb = mix(gl_FragColor.rgb, uRecedeTarget, clamp(vRecede, 0.0, 1.0) * uRecedeMix);
+{
+  const vec3 _w = vec3(0.2126, 0.7152, 0.0722);
+  vec3 _lit = gl_FragColor.rgb;
+  vec3 _rec = mix(_lit, uRecedeTarget, clamp(vRecede, 0.0, 1.0) * uRecedeMix);
+  float _yl = dot(_lit, _w);
+  if ((uRecedeInkDarker > 0.5) == (_yl > dot(uRecedeTarget, _w))) _rec = _lit;
+  gl_FragColor.rgb = _rec;
+}
 `;
+
+/**
+ * The display colour (linear sRGB) a fully receded chassis converges on: `--stage-bg`, moved along
+ * its own luminance axis to sit exactly CHASSIS_RECEDED_FLOOR:1 from the stage's worst-case ground.
+ * Pure given the palette; `retintMaterials` hands its AgX pre-image to the shader.
+ */
+export function chassisRecedeTarget(tokens: TokenPalette): { display: [number, number, number]; inkDarker: boolean } {
+  const stage = tokens.color("--stage-bg");
+  const ground = stageGround(tokens);
+  const y = floorLuminance(ground.y, CHASSIS_RECEDED_FLOOR, ground.inkDarker);
+  return { display: toLuminance([stage.r, stage.g, stage.b], y), inkDarker: ground.inkDarker };
+}
 
 /**
  * Patch a standard-lit material so it honours the per-instance `aEmphasis` attribute. Applied via
@@ -778,6 +829,7 @@ export function withEmphasis<M extends MeshStandardMaterial>(
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uRecedeTarget = recedeTarget;
     shader.uniforms.uRecedeMix = recedeMix;
+    shader.uniforms.uRecedeInkDarker = recedeInkDarker;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>${EMPHASIS_VERT_DECL}`)
       .replace("#include <begin_vertex>", "#include <begin_vertex>\n  vRecede = aRecede;");
@@ -1390,9 +1442,11 @@ export function retintMaterials(lib: MaterialLibrary, tokens: TokenPalette): voi
     LinearSRGBColorSpace,
   );
   lib.stateRim.emissiveIntensity = light ? 0.16 : 0.55;
-  const [tr, tg, tb] = agxInverse([stage.r, stage.g, stage.b]);
+  const floorTarget = chassisRecedeTarget(tokens);
+  const [tr, tg, tb] = agxInverse(floorTarget.display);
   recedeTarget.value.setRGB(tr, tg, tb, LinearSRGBColorSpace);
   recedeMix.value = RECEDE_MIX[light ? "light" : "dark"];
+  recedeInkDarker.value = floorTarget.inkDarker ? 1 : 0;
   for (const m of lib.all()) m.needsUpdate = true;
 }
 

@@ -35,7 +35,7 @@ import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js
 import type { Link } from "../../core/types";
 import { RECEDE_ATTRIBUTE, type TokenPalette } from "../materials";
 import { RECEDE_DEPTH } from "../emphasis";
-import { BACKDROP_DISPLAY_SPAN, agxForward, agxInverse } from "../env";
+import { agxForward, agxInverse, floorLuminance, stageGround, toLuminance } from "../env";
 import type { Vec3 } from "../layout";
 
 /* ── cable ink: the contrast floor, as a property of the colour pipeline ─────────────────────────
@@ -80,44 +80,10 @@ export function contrastOfLuminance(a: number, b: number): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-/** The ground a cable has to hold its contrast against, and which way the ink must go to do it. */
+/** The ground a cable has to hold its contrast against, and which way the ink must go to do it.
+ *  The stage's own ground (env.ts `stageGround`), shared with the receded-chassis floor. */
 export function cableGround(tokens: TokenPalette): { y: number; inkDarker: boolean } {
-  const s = tokens.color("--stage-bg");
-  const stageY = luminance([s.r, s.g, s.b]);
-  const span = BACKDROP_DISPLAY_SPAN[tokens.theme === "dark" ? "dark" : "light"];
-  // A pale ground takes dark ink and vice versa. Decided from the ground itself, not the theme
-  // name, so a retuned stage cannot silently flip the direction the floor pushes.
-  const inkDarker = stageY > 0.18;
-  // The worst case is the end of the backdrop gradient CLOSEST to the ink: its darkest end for dark
-  // ink, its brightest end for light ink.
-  const k = inkDarker ? Math.min(span.top, span.bottom) : Math.max(span.top, span.bottom);
-  return { y: Math.min(1, stageY * k), inkDarker };
-}
-
-/**
- * Move `c` to luminance `y`: DOWN by scaling toward black (keeps chroma), UP by mixing toward white
- * (the only way up that cannot leave the gamut). Chosen by the direction of travel, not by theme —
- * the ink floor moves dark ink down on the pale stage, and recession moves light ink down on the
- * dark one; an earlier version keyed this on the theme and silently left dark-stage recession as a
- * no-op (the receded fan measured 8.7:1, i.e. not receded at all).
- */
-function toLuminance(c: Vec3, y: number): Vec3 {
-  const cy = luminance(c);
-  if (y <= cy) {
-    if (cy <= 1e-6) return [y, y, y];
-    const k = y / cy;
-    return [c[0] * k, c[1] * k, c[2] * k];
-  }
-  if (cy >= 1 - 1e-6) return [1, 1, 1];
-  const t = Math.min(1, Math.max(0, (y - cy) / (1 - cy)));
-  return [c[0] + (1 - c[0]) * t, c[1] + (1 - c[1]) * t, c[2] + (1 - c[2]) * t];
-}
-
-/** The luminance that sits exactly `floor`:1 from the ground, on the ink's side of it. */
-function floorLuminance(groundY: number, floor: number, inkDarker: boolean): number {
-  return inkDarker
-    ? Math.max(0, (groundY + 0.05) / floor - 0.05)
-    : Math.min(1, floor * (groundY + 0.05) - 0.05);
+  return stageGround(tokens);
 }
 
 export interface CableInk {

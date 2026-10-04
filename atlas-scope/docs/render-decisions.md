@@ -264,6 +264,62 @@ measured the fill back down to 2.4-2.8:1). Measured after: AP-floor1 4.14:1, AP-
 wan-edge-rtr1.lab 5.06:1 (`materials.ts :: LIGHT_GHOST_DEEPEN`, `LIGHT_GHOST_OPACITY`). Dark theme was
 already 4.54-5.78:1 and is unchanged.
 
+### 9a. The floor holds in every recede state, both themes (D4 re-grade, 2026-10-03)
+
+That measurement was taken with nothing selected, and it was the only state it held in. The D4
+re-grade measured the same chassis with a subject on screen — the product's main workflow — and
+recession pulled the fill straight back under the bar: AP-floor3-01 4.30:1 -> 1.98:1 with core1
+selected, collected dist2 4.42 -> 1.72. Two things in the emphasis patch did it. The final radiance
+was blended toward the stage's HDR pre-image (light: ~4.4 linear, several times any lit chassis),
+and the albedo's alpha was thinned by up to 45 %, which on the one translucent patched surface (the
+uncollected shell) composited the indicator into the ground.
+
+Now (`materials.ts :: CHASSIS_RECEDED_FLOOR`, `chassisRecedeTarget`, `EMPHASIS_FRAG_DIM`): the
+recede target is `--stage-bg` moved along its own luminance axis to sit exactly 3.6:1 from the
+stage's worst-case ground (`env.ts :: stageGround`, the same ground the cable inks hold
+`CABLE_RECEDED_FLOOR` against); a fragment on the ink side of it recedes toward it and cannot cross
+it, a fragment already nearer the ground is left as lit (receding never makes anything louder);
+`RECEDE_MIX` is 0.9 on both stages; and recession thins no alpha. The 3.6 carries the margin for
+the deck a chassis really stands on (light deck luminance 0.73-0.82 against the modelled 0.85, dark
+up to 0.015 against 0.005). `recede-floor.test.ts` ratchets it for every fill class in the real
+sample with the uniforms the compiled shader receives; the numbers below are the evidence.
+
+Instrument: the D4 refuter's probe (`devs.mjs`), release build, `vite preview`, Playwright
+Chromium (ANGLE), 1440x900, DSF 1, tier `high`, converged, DOM labels hidden; each device's mask
+from `__atlasScene.pick()`, fill = the mask eroded 3 px, ground = the median of pick-null pixels
+2-16 px outside it (the refuter's 2-6 px band read a neighbour's state ring as "ground" for
+access2: 1.91:1 / 1.28:1 in BOTH builds with nothing selected); pixels under DOM chrome excluded,
+and a device whose mask touches DOM or the canvas edge reported as clipped rather than measured.
+States: fabric; `d=core1`; indeterminate path `10.0.40.50>10.0.30.10 tcp 443`; blocked path
+`10.0.10.50>10.0.30.10 tcp 3389`. Lowest collected median, and every ghost:
+
+| state | light before | light after | dark before | dark after |
+| --- | --- | --- | --- | --- |
+| fabric, collected min | 4.32 | 4.32 | 4.13 | 4.13 |
+| fabric, ghosts | 4.27 / 4.34 / 5.54 | 4.27 / 4.34 / 5.54 | 4.66 / 5.05 / 6.41 | 4.66 / 5.05 / 6.41 |
+| core1 selected, collected min | 1.74 (13 of 23 under 3) | 3.74 | 2.67 (11 under 3) | 3.59 |
+| core1 selected, ghosts | 1.95 / 2.00 / 3.23 | 3.80 / 3.86 / 4.84 | 3.89 / 4.26 / 4.98 | 4.14 / 4.54 / 5.45 |
+| indeterminate path, collected min | 1.63 (9 of 10 under 3) | 3.51 | 2.59 (9 under 3) | 3.49 |
+| indeterminate path, wan-edge-rtr1.lab | 2.11 | 4.51 | 4.80 | 5.24 |
+| blocked path, collected min | 1.66 (all 11 under 3) | 3.56 | 2.70 (4 under 3) | 3.61 |
+| blocked path, wan-edge-rtr1.lab (clipped by the panel edge; its visible part) | 2.32 | 3.48 | 3.10 | 3.52 |
+
+Ghosts are AP-floor1 / AP-floor3-01 / wan-edge-rtr1.lab. The path states frame the trace, so
+fewer devices are wholly on screen (11 measured, clipped ones listed by the probe). One sliver is not a fill: dist2 at the bottom edge of
+the indeterminate framing (207 px, mostly under the status bar) reads 1.38 light / 1.65 dark —
+the same 1.34-1.38 / 1.12-1.14 it read before the change, i.e. lid-edge pixels recession does not
+move; dist2 measured whole in the blocked framing is 3.56 / 3.54.
+
+Recession still reads. With core1 selected, the eleven non-neighbour chassis (depth 0.62) went
+from 4.65:1 and median saturation 0.40 (same devices, nothing selected) to 3.89:1 and 0.06 in
+light, and 4.43 / 0.41 to 3.69 / 0.13 in dark, while the subject keeps its band hue (core1 4.83:1,
+saturation 0.39 light; 6.02:1, 0.35 dark) plus the selection rim and halo. Before the change those
+chassis fell to 1.80:1 (light) and 2.76:1 (dark): the recession was being bought with the state
+channel. It is now carried by the hue (saturation down 85 % light, 69 % dark) and an ~16 % contrast
+step, not by erasing the fill.
+The cable floors are untouched (cables are not emphasis-patched; `cables.mjs` before and after in
+the same four states is recorded with the change).
+
 ## 10. Edge sparkle under a creeping camera (C5) — a reprojection-free history blend while the camera creeps
 
 **What flickers, classified.** `review/capture-motion.mjs` classifies every flip-flopping pixel by
