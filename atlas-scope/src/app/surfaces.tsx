@@ -84,20 +84,42 @@ const Fabric3D = lazy(() => whenInputIdle().then(() => import("../fabric3d/Fabri
 /* ── viewport ladder (design brief 2.5), read live ─────────────────────────── */
 
 /**
- * THE ONE OWNER of the viewport ladder's boundaries, in rem (a media query's rem is the initial
- * 16 px, whatever the page's own root size). Each is the FIRST width of a rung, and a rung runs up
- * to, but not including, the next boundary — so the rungs partition the width line by construction.
+ * THE ONE OWNER of the viewport ladder's boundaries, in rem. Each is the FIRST width of a rung, and
+ * a rung runs up to, but not including, the next boundary — so the rungs partition the width line by
+ * construction.
+ *
+ * WHY REM, AND WHAT IT IS NOT. A media query's rem is the browser's INITIAL font size — the reader's
+ * own default-font-size setting (Chrome: Settings > Appearance > Font size, 9 to 72 px; 16 is only
+ * "Medium"), whatever the page's own root size. That is the point of writing the layout ladder in
+ * rem: a reader who enlarges their default text gets the narrower layout earlier, because the
+ * regions hold the same rem-sized text in fewer CSS pixels (at a 20 px default, 1280 px holds 64rem
+ * — the drawer layout's text width, not the reference layout's). The LAYOUT follows text size.
+ *
+ * The 3-D STAGE does not. Whether the fabric is legible and worth ~0.8 MB of renderer is a question
+ * of CSS pixels — design brief 2.5's "≤ 767 px down to 320 CSS px", the WCAG 1.4.10 reflow answer for
+ * the canvas — and acceptance F4(c) is worded in CSS pixels. Keyed on 48rem it was neither: MEASURED
+ * (re-grade 2 refuter, headed Chromium with a real profile font setting) a 700 px load at "Small"
+ * (12 px) fetched three.js with no "Show the 3-D fabric" button, and a 900 px load at "Large" (20 px)
+ * never fetched it. So the stage has its own line, `STAGE_MIN_PX`, and every rung above the stacked
+ * one is floored at it (`atLeast`): the layouts that always show the stage (they have no fabric
+ * toggle) begin at max(their rem edge, 768 px). Below 768 CSS px the frame is therefore always the
+ * stacked layout, which carries the toggle; at 768 px and wider the stage defaults ON in whichever
+ * layout the text size chose — in the stacked layout (a large default font) that is the stage shown
+ * above the rails with "Hide the 3-D fabric" beside it.
  *
  * Every width condition in this app — `useLadder` below, the header's compact rung, and every
- * `@media` rule in every stylesheet — is `(min-width: <one of these>rem)` or its exact complement
- * (`not all and (min-width: …)` in CSS, `!` in JavaScript). Never a second number beside it: the
+ * `@media` rule in every stylesheet — is `atLeast(<one of these>)`, i.e. `(min-width: <rem>rem) and
+ * (min-width: 768px)`, or its exact complement (`not all and (min-width: …) and (min-width: 768px)`
+ * in CSS, `!` in JavaScript); the stage's own `STAGE_QUERY` is the one other. Never a second number
+ * beside them: the
  * ladder used to write its narrow side as `(max-width: 47.9375rem)`, one sixteenth of a rem below
  * `(min-width: 48rem)`, and a media width is a real number, not an integer. MEASURED by the
  * independent refuter (wave 8, headed Chromium at device scale factor 1.5): mediaWidth 767.349 px
  * matched neither, so the frame was in no rung — the fabric mounted, three.js was fetched at 985 ms
  * where the brief collapses the stage, the Finding/Device controls overlapped the first grid row
  * and the status bar was clipped. The same gap sat at 1023–1024 and 1279–1280.
- * `src/core/breakpoint-ladder.test.ts` proves every stylesheet rule and this hook tile the line.
+ * `src/core/breakpoint-ladder.test.ts` proves every stylesheet rule and this hook tile the line at
+ * every default font size from 9 to 32 px; `src/app/stage-font-size.test.tsx` holds F4(c) there.
  */
 export const LADDER_REM = {
   /** >= 48rem (768px): the frame leaves the stacked phone layout for one column. */
@@ -110,16 +132,57 @@ export const LADDER_REM = {
   wide: 100,
 } as const;
 
-/** The only form a width query takes in this app's TypeScript: the lower edge of a rung. */
-export const atLeast = (rem: number): string => `(min-width: ${rem}rem)`;
+/**
+ * The stage's own line, in CSS pixels (design brief 2.5; acceptance F4(c)): at this width and wider
+ * the 3-D stage is the main view and defaults ON; below it the stage starts collapsed behind "Show
+ * the 3-D fabric" and the renderer is not fetched. Independent of the reader's default font size.
+ */
+export const STAGE_MIN_PX = 768;
+
+/** The stage-default query: the only width query in the app that is not a ladder edge. */
+export const STAGE_QUERY = `(min-width: ${STAGE_MIN_PX}px)`;
 
 /**
- * Is the viewport at least `rem` wide? With no `matchMedia` to ask (server render, a bare test
+ * The only form a ladder width query takes in this app's TypeScript: the lower edge of a rung,
+ * floored at the stage's CSS-pixel line so no layout without a fabric toggle can begin below it.
+ */
+export const atLeast = (rem: number): string => `(min-width: ${rem}rem) and (min-width: ${STAGE_MIN_PX}px)`;
+
+/**
+ * THE GATE, as a pure function of what the media queries answer — so it can be checked at any width
+ * and default font size without a browser. `matches` is `window.matchMedia(q).matches` in the app.
+ *
+ *   - the ladder rungs, chained exactly as `useLadder` chains them;
+ *   - `fabricDefault`: whether the stage starts ON (and so whether the renderer is fetched on load);
+ *   - `fabricToggle`: whether the frame offers the "Show / Hide the 3-D fabric" control.
+ *
+ * By construction `!fabricDefault` implies `stacked` (every non-stacked edge is floored at the stage
+ * line), so wherever the stage starts collapsed its toggle is on screen.
+ */
+export interface FrameGate extends Ladder {
+  fabricDefault: boolean;
+  fabricToggle: boolean;
+}
+export function ladderOf(atSingle: boolean, atDrawerEdge: boolean, atReferenceEdge: boolean): Ladder {
+  const atDrawer = atDrawerEdge && atSingle;
+  const atReference = atReferenceEdge && atDrawer;
+  return { drawer: atDrawer && !atReference, singleColumn: atSingle && !atDrawer, stacked: !atSingle };
+}
+export function frameGate(matches: (query: string) => boolean): FrameGate {
+  const ladder = ladderOf(
+    matches(atLeast(LADDER_REM.singleColumn)),
+    matches(atLeast(LADDER_REM.drawer)),
+    matches(atLeast(LADDER_REM.reference)),
+  );
+  return { ...ladder, fabricDefault: matches(STAGE_QUERY), fabricToggle: ladder.stacked };
+}
+
+/**
+ * Does the viewport match `query`? With no `matchMedia` to ask (server render, a bare test
  * environment) the answer is YES: the reference layout of design brief 2.1, which is the layout the
  * frame fell back to there before the ladder was written as lower edges only.
  */
-function useAtLeast(rem: number): boolean {
-  const query = atLeast(rem);
+function useMatches(query: string): boolean {
   const subscribe = useCallback(
     (cb: () => void) => {
       const mq = typeof window !== "undefined" && window.matchMedia ? window.matchMedia(query) : null;
@@ -145,6 +208,16 @@ function useAtLeast(rem: number): boolean {
   return useSyncExternalStore(subscribe, get, () => true);
 }
 
+/** Is the viewport at least `rem` wide (and at least the stage line)? See `atLeast`. */
+const useAtLeast = (rem: number): boolean => useMatches(atLeast(rem));
+
+/**
+ * Should the 3-D stage be ON by default — is the viewport at least `STAGE_MIN_PX` CSS px wide, at any
+ * default font size? The App seeds the fabric from this on the first render and follows its crossings
+ * until the reader chooses with the toggle.
+ */
+export const useStageDefault = (): boolean => useMatches(STAGE_QUERY);
+
 /**
  * The three rungs are mutually exclusive, and each matches a block in shell.css exactly: each is
  * derived from the owner's lower edges only, so exactly one of stacked / singleColumn / drawer /
@@ -154,19 +227,19 @@ function useAtLeast(rem: number): boolean {
  * ladder: the widest rule wins in CSS and the narrowest in JavaScript, and nothing reports it.
  */
 export interface Ladder {
-  /** 1024–1279.99px: Rail B is an overlay drawer over the stage rather than a column. */
+  /** [64rem, 80rem) (1024–1279.99px at a 16 px default): Rail B is an overlay drawer over the stage. */
   drawer: boolean;
-  /** 768–1023.99px: one column, and a segmented control chooses which region occupies it. */
+  /** [48rem, 64rem) (768–1023.99px at 16 px): one column, a segmented control chooses its region. */
   singleColumn: boolean;
-  /** below 768px: every rail is a stacked full-width section and the fabric is behind a toggle. */
+  /**
+   * Below 48rem, and always below 768 CSS px: every rail is a stacked full-width section and the
+   * fabric is behind a toggle (collapsed by default below 768 px, shown by default at or above it).
+   */
   stacked: boolean;
 }
 
 export function useLadder(): Ladder {
-  const atSingle = useAtLeast(LADDER_REM.singleColumn);
-  const atDrawer = useAtLeast(LADDER_REM.drawer) && atSingle;
-  const atReference = useAtLeast(LADDER_REM.reference) && atDrawer;
-  return { drawer: atDrawer && !atReference, singleColumn: atSingle && !atDrawer, stacked: !atSingle };
+  return ladderOf(useAtLeast(LADDER_REM.singleColumn), useAtLeast(LADDER_REM.drawer), useAtLeast(LADDER_REM.reference));
 }
 
 /** Every edge the owner declares, ascending. */
@@ -901,7 +974,7 @@ export interface PaneSwitchProps {
   showPanes: boolean;
   fabricVisible: boolean;
   onToggleFabric: () => void;
-  /** True below 768px, where the fabric is behind an explicit toggle (WCAG 1.4.10 reflow). */
+  /** True in the stacked layout (always below 768 CSS px), where the fabric is behind an explicit toggle (WCAG 1.4.10 reflow). */
   fabricOptional: boolean;
 }
 

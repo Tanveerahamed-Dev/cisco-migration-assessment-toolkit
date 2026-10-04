@@ -210,7 +210,7 @@
    puts the stage first VISUALLY while the DOM keeps the focus order of design brief 2.4.3 —
    header, query bar, Rail A, stage, Rail B. Reordering the DOM instead would make the tab order
    disagree with the reading order, which WCAG 2.4.3 exists to prevent. */
-@media not all and (min-width: 64rem) {
+@media not all and (min-width: 64rem) and (min-width: 768px) {
   .app__body {
     display: flex;
     flex-direction: column;
@@ -245,7 +245,7 @@
 
 /* Below 768px the page itself scrolls (shell.css lifts `overflow: hidden` from the body), so the
    rails size to their content and the stage keeps its declared height only while it is shown. */
-@media not all and (min-width: 48rem) {
+@media not all and (min-width: 48rem) and (min-width: 768px) {
   .rail--a,
   .rail--b {
     flex: none;

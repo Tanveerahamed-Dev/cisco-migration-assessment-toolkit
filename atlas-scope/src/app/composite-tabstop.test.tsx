@@ -73,8 +73,8 @@ function setViewport(width: number): () => void {
   const px = (rem: string): number => Number.parseFloat(rem) * 16;
   window.matchMedia = ((q: string) => {
     let matches = true;
-    for (const m of q.matchAll(/\((min|max)-width:\s*([\d.]+)rem\)/g)) {
-      const bound = px(m[2] as string);
+    for (const m of q.matchAll(/\((min|max)-width:\s*([\d.]+)(rem|px)\)/g)) {
+      const bound = m[3] === "px" ? Number.parseFloat(m[2] as string) : px(m[2] as string);
       matches &&= m[1] === "min" ? width >= bound : width <= bound;
     }
     if (/prefers-reduced-motion/.test(q)) matches = false;
