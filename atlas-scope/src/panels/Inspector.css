@@ -676,7 +676,7 @@
 /* ── responsive ────────────────────────────────────────────────────────────
    Below the two-rail breakpoint the inspector is a full-width sheet (design brief §2.5). It keeps
    its own height and its own scrolling; the page body never scrolls in two dimensions. */
-@media not all and (min-width: 64rem) {
+@media not all and (min-width: 64rem) and (min-width: 768px) {
   .insp-kv,
   .insp-kv--wide {
     grid-template-columns: minmax(0, 1fr);

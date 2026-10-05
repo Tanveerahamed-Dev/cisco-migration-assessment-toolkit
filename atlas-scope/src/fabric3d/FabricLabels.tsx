@@ -22,7 +22,7 @@ import type { Device } from "../core/types";
 
 import type { FabricScene } from "./contract";
 import { LABEL_DROP_EVERY_FRAMES } from "./emphasis";
-import { labelDwellVerdict, labelSettleMayReverse, labelUrgent } from "./labelResolve";
+import { LABEL_LIFT, LABEL_LIFT_BLOCKED, labelDwellVerdict, labelSettleMayReverse, labelUrgent } from "./labelResolve";
 
 /** Gutter (CSS px) between two placed label boxes, side by side. Below this they read as one smear. */
 const DECLUTTER_GUTTER = 4;
@@ -176,10 +176,9 @@ export interface FabricLabelsProps {
   onPointerFocusLost?: () => readonly (HTMLElement | null | undefined)[] | void;
 }
 
-/** How far above the anchor a label sits, as a multiple of its own height. The blocked host's
- *  label clears the alarm halo entirely rather than sitting on top of it. */
-const LIFT = 1.6;
-const LIFT_BLOCKED = 3;
+/** How far above the anchor a label sits, as a multiple of its own height (owned by ./labelResolve). */
+const LIFT = LABEL_LIFT;
+const LIFT_BLOCKED = LABEL_LIFT_BLOCKED;
 /** Where an off-canvas finding pointer's CENTRE is pinned, in from the stage edge, px. Wider than
  *  tall because the pointer is a horizontal chip. Only the DIRECTION's anchor: the placed box is then
  *  kept inside the stage by its measured size, and clear of every other layer on the stage. */
@@ -809,6 +808,21 @@ export function FabricLabels({
           blocksOwn: false,
         });
       }
+      /* The trace's terminal glyph floats clear of its chassis (flow.ts placeTerminalGlyph) and is
+         an obstacle like a chassis body, for every label INCLUDING its own host's. Its host's name is
+         anchored above the glyph (scene.ts projectLabelAnchor), so it only meets it when the
+         top-edge rule flips it below that anchor — which drew core1's name straight across the
+         UNDECIDED ring after Reset view (A5 refuter, r8-zoom.png). */
+      const glyphOf = (scene as FabricScene & {
+        terminalGlyphScreenBox?: () => { host: string; x0: number; y0: number; x1: number; y1: number } | null;
+      }).terminalGlyphScreenBox;
+      const glyph = typeof glyphOf === "function" ? glyphOf.call(scene) : null;
+      let glyphBox: Box | null = null;
+      if (glyph !== null && glyph.x1 > glyph.x0 && glyph.y1 > glyph.y0) {
+        const host = devices.find((d) => d.id === glyph.host || d.host === glyph.host);
+        glyphBox = { x: glyph.x0 - originX, y: glyph.y0 - originY, w: glyph.x1 - glyph.x0, h: glyph.y1 - glyph.y0 };
+        chassis.push({ id: host?.id ?? glyph.host, ...glyphBox, blocksOwn: true });
+      }
       const onChassis = (b: Box, own: string): boolean =>
         chassis.some(
           (c) =>
@@ -1035,13 +1049,15 @@ export function FabricLabels({
              chassis bodies within three rows, so it "kept its own anchor" — squarely over
              access14's STRANDED? chip, truncating it to "STI". A name drawn across a chassis body
              still reads; a chip drawn under another label does not. So the final search accepts a
-             slot over hardware, reaching further, and refuses only other labels and the stage's
-             own keep-out chrome. */
+             slot over hardware, reaching further, and refuses only other labels, the stage's own
+             keep-out chrome — and the trace's terminal glyph: a name across the verdict ring hides
+             the verdict (A5, MEASURED at 390x844 with the toolbar wrapped over the chip's home). */
           if (!found && forced) {
             for (const k of [...ks, -4, 4, -5, 5]) {
               const t: Box = { ...test, y: test.y + k * step };
               if (t.y + m < 0 || !bound(k)) continue;
               if (placed.some((b) => intersects(t, b)) || keepouts.some((b) => intersects(t, b))) continue;
+              if (glyphBox !== null && intersects(t, glyphBox)) continue;
               dy = k * step;
               found = true;
               break;

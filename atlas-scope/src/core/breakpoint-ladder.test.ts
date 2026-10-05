@@ -34,6 +34,15 @@
  * else (an `or`, a nested condition, `device-width`, an unknown unit), so an unmodelled shape is
  * reported as a violation instead of being skipped.
  *
+ * AT EVERY DEFAULT FONT SIZE (re-grade 2). A media query's rem is the browser's default font size, a
+ * reader setting (Chrome: 9 to 72 px; "Small" 12, "Medium" 16, "Large" 20), so the line is tiled at
+ * each of `FONTS`, not only at 16 px. Every ladder edge is `atLeast(rem)` = `(min-width: <rem>rem) and
+ * (min-width: 768px)`: the rem follows text size, the 768 CSS px floor is the stage's line
+ * (`STAGE_MIN_PX`), below which the frame must be the stacked layout that carries the fabric toggle
+ * (acceptance F4(c)). At font f the owner's rungs therefore begin at max(rem x f, 768) px — and at a
+ * small default two edges can coincide (12 px: 48rem and 64rem both floor to 768 px), leaving that
+ * rung empty, which still partitions the line.
+ *
  * NOT IN SCOPE: `@container` queries (PathTrace.css). They measure a container's inline size, a
  * different line from the viewport's, and the viewport ladder does not apply to them.
  */
@@ -45,7 +54,7 @@ import { createRoot } from "react-dom/client";
 import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { LADDER_REM, atLeast, useLadder, type Ladder } from "../app/surfaces";
+import { LADDER_REM, STAGE_MIN_PX, STAGE_QUERY, atLeast, frameGate, useLadder, type Ladder } from "../app/surfaces";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -58,11 +67,18 @@ const SRC = join(ROOT, "src");
 
 /* ══ the owner's rungs ═══════════════════════════════════════════════════════════════════════════ */
 
-/** One rem in a media query is the initial font size, 16 CSS px, whatever the page's own root size. */
+/**
+ * One rem in a media query is the browser's default font size, whatever the page's own root size: a
+ * reader setting. `FONTS` spans Chrome's presets (9, 12, 16, 20, 24) and values between and beyond.
+ */
 const REM_PX = 16;
-const BOUNDS = Object.values(LADDER_REM)
-  .map((rem) => rem * REM_PX)
-  .sort((a, b) => a - b);
+const FONTS = [9, 10, 12, 14, 16, 18, 20, 24, 32] as const;
+/** The owner's rung edges at a default font of `font` px: every edge floored at the stage line. */
+const boundsAt = (font: number): number[] =>
+  Object.values(LADDER_REM)
+    .map((rem) => Math.max(rem * font, STAGE_MIN_PX))
+    .sort((a, b) => a - b);
+const BOUNDS = boundsAt(REM_PX);
 
 /** Which rung `w` is in: the number of boundaries at or below it (a rung includes its lower edge). */
 const rungOf = (w: number, bounds: readonly number[] = BOUNDS): number => bounds.filter((b) => b <= w).length;
@@ -79,7 +95,8 @@ const OFFSETS = [-0.99, -0.5, -0.01, 0, 0.01, 0.5, 0.99];
 function samplesFor(bounds: readonly number[]): number[] {
   const out: number[] = [...MEASURED];
   for (const b of bounds) for (const d of OFFSETS) out.push(Math.round((b + d) * 1000) / 1000);
-  for (let i = 0; i <= (2000 - 300) * 20; i += 1) out.push(300 + i / 20);
+  const top = Math.max(2000, (bounds[bounds.length - 1] as number) + 400);
+  for (let i = 0; i <= (top - 300) * 20; i += 1) out.push(300 + i / 20);
   return [...new Set(out)];
 }
 const SAMPLES = samplesFor(BOUNDS);
@@ -90,38 +107,36 @@ type WidthPred = (w: number) => boolean;
 /** `null`: the query has no width condition, or never applies to a screen (print). */
 type Parsed = WidthPred | null;
 
-const UNIT: Readonly<Record<string, number>> = { px: 1, rem: REM_PX, em: REM_PX };
-
-function lengthPx(v: string): number {
+function lengthPx(v: string, font: number): number {
   const m = /^(\d+(?:\.\d+)?|\.\d+)(px|rem|em)$/.exec(v.trim());
   if (!m) throw new Error(`unmodelled length "${v}"`);
-  return Number(m[1]) * (UNIT[m[2] as string] as number);
+  return Number(m[1]) * (m[2] === "px" ? 1 : font);
 }
 
 const cmp = (a: number, op: string, b: number): boolean =>
   op === "<" ? a < b : op === "<=" ? a <= b : op === ">" ? a > b : op === ">=" ? a >= b : a === b;
 
 /** One parenthesised feature: a width predicate, or "other" for a non-width feature. */
-function feature(inner: string): WidthPred | "other" {
+function feature(inner: string, font: number): WidthPred | "other" {
   const s = inner.trim();
   let m = /^(min|max)-width\s*:\s*(\S+)$/.exec(s);
   if (m) {
-    const b = lengthPx(m[2] as string);
+    const b = lengthPx(m[2] as string, font);
     return m[1] === "min" ? (w) => w >= b : (w) => w <= b;
   }
   m = /^width\s*(<=|>=|<|>|=)\s*(\S+)$/.exec(s);
   if (m) {
-    const [op, b] = [m[1] as string, lengthPx(m[2] as string)];
+    const [op, b] = [m[1] as string, lengthPx(m[2] as string, font)];
     return (w) => cmp(w, op, b);
   }
   m = /^(\S+)\s*(<=|>=|<|>|=)\s*width$/.exec(s);
   if (m) {
-    const [b, op] = [lengthPx(m[1] as string), m[2] as string];
+    const [b, op] = [lengthPx(m[1] as string, font), m[2] as string];
     return (w) => cmp(b, op, w);
   }
   m = /^(\S+)\s*(<=|<)\s*width\s*(<=|<)\s*(\S+)$/.exec(s);
   if (m) {
-    const [lo, op1, op2, hi] = [lengthPx(m[1] as string), m[2] as string, m[3] as string, lengthPx(m[4] as string)];
+    const [lo, op1, op2, hi] = [lengthPx(m[1] as string, font), m[2] as string, m[3] as string, lengthPx(m[4] as string, font)];
     return (w) => cmp(lo, op1, w) && cmp(w, op2, hi);
   }
   if (/width/.test(s)) throw new Error(`unmodelled width feature "(${s})"`);
@@ -130,7 +145,7 @@ function feature(inner: string): WidthPred | "other" {
 }
 
 /** ONE media query (no top-level comma). Throws on any shape this evaluator does not model. */
-function parseQuery(query: string): Parsed {
+function parseQuery(query: string, font: number = REM_PX): Parsed {
   let s = query.trim().toLowerCase().replace(/\s+/g, " ");
   let negate = false;
   let type = "all";
@@ -165,7 +180,7 @@ function parseQuery(query: string): Parsed {
       }
     }
     if (end < 0) throw new Error(`unbalanced query "${query}"`);
-    const f = feature(s.slice(1, end));
+    const f = feature(s.slice(1, end), font);
     if (f === "other") others += 1;
     else preds.push(f);
     s = s.slice(end + 1).trim();
@@ -202,12 +217,17 @@ const queriesOf = (list: string): string[] => {
 };
 
 /** Violations of "a union of rungs" for one media query list, located at `where`. */
-function checkList(where: string, list: string, bounds: readonly number[] = BOUNDS, samples: readonly number[] = SAMPLES): string[] {
+const SAMPLES_AT = new Map<number, number[]>(FONTS.map((f) => [f, f === REM_PX ? SAMPLES : samplesFor(boundsAt(f))]));
+
+/** Violations at ONE default font size (16 px unless given). */
+function checkList(where: string, list: string, font: number = REM_PX): string[] {
+  const bounds = boundsAt(font);
+  const samples = SAMPLES_AT.get(font) ?? samplesFor(bounds);
   const out: string[] = [];
   for (const q of queriesOf(list)) {
     let p: Parsed;
     try {
-      p = parseQuery(q);
+      p = parseQuery(q, font);
     } catch (e) {
       out.push(`${where} ${q}: ${(e as Error).message}`);
       continue;
@@ -216,7 +236,7 @@ function checkList(where: string, list: string, bounds: readonly number[] = BOUN
     const off = samples.filter((w) => p(w) !== p(repOf(rungOf(w, bounds), bounds)));
     if (off.length > 0) {
       const shown = off.slice(0, 4).map((w) => `${w}px ${p(w) ? "matches" : "does not match"}`);
-      out.push(`${where} ${q}: not a union of ladder rungs — ${shown.join(", ")} (${off.length} sample(s)), unlike the rest of its rung`);
+      out.push(`${where} ${q}: not a union of ladder rungs at a ${font} px default font — ${shown.join(", ")} (${off.length} sample(s)), unlike the rest of its rung`);
     }
   }
   return out;
@@ -258,8 +278,10 @@ const PRELUDES = [
 /* ══ the TypeScript ══════════════════════════════════════════════════════════════════════════════ */
 
 const WIDTH_FEATURE = /\(\s*(?:[\d.]+[a-z]*\s*[<>]=?\s*)?(?:(?:min|max)-)?(?:device-)?width\s*(?::|[<>]=?|=)/;
-/** The owner's builder, as its template literal reads with the substitution elided. */
-const OWNER_TEMPLATE = "(min-width: ${}rem)";
+/** The owner's builder, as its template literal reads with the substitutions elided. */
+const OWNER_TEMPLATE = "(min-width: ${}rem) and (min-width: ${}px)";
+/** The stage's own CSS-pixel query (`STAGE_QUERY`), the one width query that is not a ladder edge. */
+const STAGE_TEMPLATE = "(min-width: ${}px)";
 const OWNER_FILE = "src/app/surfaces.tsx";
 
 type Literal = { where: string; text: string; template: boolean };
@@ -287,8 +309,8 @@ function widthLiterals(file: string, code: string): Literal[] {
 
 function checkLiterals(file: string, lits: readonly Literal[]): string[] {
   return lits.flatMap((l) => {
-    if (!l.template) return checkList(l.where, l.text);
-    if (l.text === OWNER_TEMPLATE && file === OWNER_FILE) return [];
+    if (!l.template) return FONTS.flatMap((f) => checkList(l.where, l.text, f));
+    if ((l.text === OWNER_TEMPLATE || l.text === STAGE_TEMPLATE) && file === OWNER_FILE) return [];
     return [`${l.where} \`${l.text}\`: a width query built at runtime outside the ladder's owner (${OWNER_FILE}) cannot be proved to tile the line`];
   });
 }
@@ -306,13 +328,13 @@ afterEach(() => {
   for (const u of mountedRoots.splice(0)) u();
 });
 
-function probeLadder(widths: readonly number[]): { asked: Set<string>; wrong: string[] } {
+function probeLadder(widths: readonly number[], font: number = REM_PX): { asked: Set<string>; wrong: string[] } {
   const real = window.matchMedia;
   let width = widths[0] ?? 0;
   const asked = new Set<string>();
   window.matchMedia = ((q: string) => {
     asked.add(q);
-    const p = queriesOf(q).map(parseQuery);
+    const p = queriesOf(q).map((x) => parseQuery(x, font));
     const matches = p.some((x) => x !== null && x(width));
     return {
       matches,
@@ -349,9 +371,9 @@ function probeLadder(widths: readonly number[]): { asked: Set<string>; wrong: st
     const l = seen as Ladder | null;
     if (l === null) throw new Error("the probe never rendered");
     const on = [l.stacked, l.singleColumn, l.drawer, !l.stacked && !l.singleColumn && !l.drawer];
-    const want = Math.min(rungOf(w), 3);
+    const want = Math.min(rungOf(w, boundsAt(font)), 3);
     const got = on.flatMap((v, i) => (v ? [NAMES[i]] : []));
-    if (got.length !== 1 || !on[want]) wrong.push(`${w}px: useLadder says [${got.join(", ")}], the owner's rung is ${NAMES[want]}`);
+    if (got.length !== 1 || !on[want]) wrong.push(`${w}px @ ${font}px font: useLadder says [${got.join(", ")}], the owner's rung is ${NAMES[want]}`);
   }
   return { asked, wrong };
 }
@@ -366,21 +388,26 @@ describe("the viewport ladder tiles the width line (F4, fractional widths)", () 
     expect(widthRules.length, "no width-conditioned @media rule found at all").toBeGreaterThan(5);
     const owner = LITERALS.find((l) => l.file === OWNER_FILE)?.lits ?? [];
     expect(owner.map((l) => l.text), "the owner's own query builder was not found by the scan").toContain(OWNER_TEMPLATE);
-    expect(atLeast(LADDER_REM.singleColumn)).toBe("(min-width: 48rem)");
+    expect(atLeast(LADDER_REM.singleColumn)).toBe("(min-width: 48rem) and (min-width: 768px)");
+    expect(STAGE_QUERY).toBe("(min-width: 768px)");
   });
 
-  it("every width condition in every stylesheet is a union of the owner's rungs", () => {
-    expect(PRELUDES.flatMap((p) => (/width/.test(p.list) ? checkList(p.where, p.list) : []))).toEqual([]);
-  });
+  for (const font of FONTS) {
+    it(`every width condition in every stylesheet is a union of the owner's rungs at a ${font} px default font`, () => {
+      expect(PRELUDES.flatMap((p) => (/width/.test(p.list) ? checkList(p.where, p.list, font) : []))).toEqual([]);
+    });
+  }
 
   it("every width query in the application's TypeScript is the owner's builder or a union of its rungs", () => {
     expect(LITERALS.flatMap((l) => checkLiterals(l.file, l.lits))).toEqual([]);
   });
 
   it("every owner boundary is an edge of some stylesheet rule, so the CSS ladder has the JS ladder's rungs", () => {
-    const preds = PRELUDES.flatMap((p) => queriesOf(p.list).map(parseQuery)).filter((p): p is WidthPred => p !== null);
-    const unused = BOUNDS.filter((b) => !preds.some((p) => p(b - 0.01) !== p(b)));
-    expect(unused, "an owner boundary no stylesheet rule changes at").toEqual([]);
+    for (const font of FONTS) {
+      const preds = PRELUDES.flatMap((p) => queriesOf(p.list).map((q) => parseQuery(q, font))).filter((p): p is WidthPred => p !== null);
+      const unused = boundsAt(font).filter((b) => !preds.some((p) => p(b - 0.01) !== p(b)));
+      expect(unused, `an owner boundary no stylesheet rule changes at (${font} px default font)`).toEqual([]);
+    }
   });
 
   it("useLadder asks only the owner's queries and puts every sampled width in exactly the owner's rung", () => {
@@ -394,6 +421,55 @@ describe("the viewport ladder tiles the width line (F4, fractional widths)", () 
     expect([...asked].filter((q) => !owner.has(q)), "useLadder asked a width query the owner does not define").toEqual([]);
     expect(asked.size).toBeGreaterThanOrEqual(3);
     expect(wrong).toEqual([]);
+  });
+
+  it("useLadder puts every width in the owner's rung at every other default font size too", () => {
+    /* The hook's answer changes only where one of the owner's queries does, so every edge at the
+       stated offsets plus a coarse sweep is exhaustive at each font. */
+    const wrong: string[] = [];
+    for (const font of FONTS) {
+      if (font === REM_PX) continue;
+      const bounds = boundsAt(font);
+      const widths = [...MEASURED, ...bounds.flatMap((b) => OFFSETS.map((d) => b + d))];
+      for (let w = 300; w <= (bounds[bounds.length - 1] as number) + 400; w += 4) widths.push(w);
+      for (const u of mountedRoots.splice(0)) u();
+      wrong.push(...probeLadder(widths, font).wrong);
+    }
+    expect(wrong).toEqual([]);
+  });
+});
+
+/* ══ the stage gate, F4(c): CSS pixels at every default font size ═══════════════════════════════ */
+
+describe("the stage gate follows CSS pixels, and the layout keeps a toggle wherever the stage is collapsed (F4(c))", () => {
+  const gateAt = (w: number, font: number): ReturnType<typeof frameGate> =>
+    frameGate((q) =>
+      queriesOf(q).some((x) => {
+        const p = parseQuery(x, font);
+        return p !== null && p(w);
+      }),
+    );
+
+  it("at every font and every sampled width the stage defaults ON iff >= 768 CSS px, and is never collapsed without its toggle", () => {
+    const bad: string[] = [];
+    for (const font of FONTS) {
+      for (const w of SAMPLES_AT.get(font) ?? []) {
+        const g = gateAt(w, font);
+        if (g.fabricDefault !== w >= STAGE_MIN_PX) bad.push(`${w}px @ ${font}px: fabricDefault ${g.fabricDefault}`);
+        if (g.fabricToggle !== g.stacked) bad.push(`${w}px @ ${font}px: the toggle is offered off the stacked layout`);
+        if (!g.fabricDefault && !g.fabricToggle) bad.push(`${w}px @ ${font}px: the stage starts collapsed with no toggle to open it`);
+      }
+    }
+    expect(bad.slice(0, 12)).toEqual([]);
+  });
+
+  it("positive control: the pre-fix gate (stage = not stacked, unfloored rem edge) is caught where the refuter measured", () => {
+    const oldDefault = (w: number, font: number): boolean => (parseQuery("(min-width: 48rem)", font) as WidthPred)(w);
+    expect(oldDefault(700, 12), "700 px at Small: the old gate fetched three.js").toBe(true);
+    expect(oldDefault(900, 20), "900 px at Large: the old gate never fetched it").toBe(false);
+    expect(oldDefault(700, 12) !== 700 >= STAGE_MIN_PX && oldDefault(900, 20) !== 900 >= STAGE_MIN_PX).toBe(true);
+    expect(gateAt(700, 12)).toMatchObject({ stacked: true, fabricDefault: false, fabricToggle: true });
+    expect(gateAt(900, 20)).toMatchObject({ stacked: true, fabricDefault: true, fabricToggle: true });
   });
 });
 
@@ -439,9 +515,14 @@ describe("the detectors fire on the shapes they exist for (positive controls)", 
     const lits = widthLiterals("src/app/planted.tsx", code);
     expect(lits.map((l) => l.text)).toEqual(["(max-width: 47.9375rem)", "(max-width: ${}rem)", "(min-width: 64rem)"]);
     const bad = checkLiterals("src/app/planted.tsx", lits);
-    expect(bad.length).toBe(2);
-    expect(bad[0]).toMatch(/planted\.tsx:1 .*767\.349px does not match/);
-    expect(bad[1]).toMatch(/planted\.tsx:2 .*built at runtime outside the ladder's owner/);
+    /* The gap literal fails at every default font; the runtime-built query once; and the unfloored
+       `(min-width: 64rem)` — clean at 16 px — fails where a small default font puts 64rem below the
+       768 px stage line (9 and 10 px), which is the font-size class this scan now covers. */
+    expect(bad.filter((b) => /planted\.tsx:1 /.test(b)).length).toBe(FONTS.length);
+    expect(bad.find((b) => /planted\.tsx:1 /.test(b))).toMatch(/767\.349px does not match/);
+    expect(bad.filter((b) => /planted\.tsx:2 .*built at runtime outside the ladder's owner/.test(b)).length).toBe(1);
+    expect(bad.filter((b) => /planted\.tsx:3 /.test(b)).map((b) => /at a (\d+) px default font/.exec(b)?.[1])).toEqual(["9", "10"]);
+    expect(bad.length).toBe(FONTS.length + 3);
   });
 
   it("the hook probe reports a ladder whose rungs leave a gap (the pre-wave-8 queries)", () => {

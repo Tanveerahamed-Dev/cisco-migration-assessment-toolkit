@@ -89,7 +89,13 @@ export interface FabricScene {
   setHover(deviceId: string | null, linkId: string | null): void;
   /** Emphasis without selection — used by filters and the blast-radius overlay. */
   setHighlight(h: HighlightState | null): void;
-  /** Draw a forwarding trace as an animated path. null clears it. */
+  /**
+   * Draw a forwarding trace as an animated path. null clears it. Only a NEW PICTURE — compared by
+   * content, never by object — draws on, runs the packet and frames the camera: the same trace re-sent
+   * with another `activeHop` (every hop step), or a new object of the same answer (a history step, a
+   * re-run), changes nothing on the canvas, because the active hop is shown by the selection the shell
+   * re-aims to its host (design-brief.md §4.8, acceptance C6).
+   */
   setTrace(trace: Trace | null, activeHop: number | null): void;
   /** Ease the camera to frame one device and its neighbours. Respects reducedMotion. */
   focusDevice(deviceId: string | null, opts?: { immediate?: boolean }): void;

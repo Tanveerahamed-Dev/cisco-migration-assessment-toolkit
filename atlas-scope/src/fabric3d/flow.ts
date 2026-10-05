@@ -13,6 +13,29 @@
  *                only looping animation in the product (design brief 4.8; the dead, unrendered
  *                `stage-pending-spin` spinner that App.css used to declare is removed); it exists
  *                to distinguish a live trace overlay from a static screenshot of a path.
+ *   TRIGGER      both run once per NEW PICTURE — a trace whose drawn path, gaps and ending differ
+ *                from what this overlay is drawing (`pictureKeyOf`, by content, not by object) —
+ *                and on nothing else. Handing over the picture already drawn is a no-op, whatever
+ *                object carries it:
+ *                  - a hop step (`]` / `[`, a hop-list row): the shell re-sends `setTrace(trace,
+ *                    hopIndex)` on each one. Until 2026-10-03 that re-armed the draw-on and all three
+ *                    packet loops (C6 refuter: alternating hops every 1.5 s kept the canvas moving
+ *                    for 14 s);
+ *                  - browser Back / Forward across a hop step: the history entry names the same
+ *                    flow, and the store keeps the trace it holds (urlSync.ts applyHistoryState),
+ *                    so only the hop and the device move. Until the C6 round-2 refuter (2026-10-03)
+ *                    a pop reset the trace and re-traced it into a new object, which an identity
+ *                    test took for a new trace: alternating Back and Forward kept the canvas moving
+ *                    for 15 s;
+ *                  - a re-run of the same question, or any other new object of the same answer: the
+ *                    path panel acknowledges the run; the fabric does not re-animate a picture that
+ *                    has not changed.
+ *                The overlay draws nothing per hop: the active hop is shown by the selection the
+ *                shell re-aims to its host (acceptance A4) and by the hop list, so stepping hops —
+ *                by key, by row or through history — moves no marker, never re-runs the draw-on,
+ *                never restarts or extends the loop, and never moves the camera (scene.ts setTrace).
+ *                A trace that was cleared and is drawn again, or a different path, is a new picture
+ *                and draws on and loops once.
  *   arrowheads   not animated. Direction is permanent information and does not need movement.
  *   stop glyph   not animated. An alarm that pulses is decoration; an alarm that is simply THERE,
  *                octagonal, and red is read faster.
@@ -37,10 +60,10 @@ import {
 } from "three";
 import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
-import { bandOfTrace } from "../core/claims";
 import type { Trace } from "../core/types";
 import { coverageGamma, createCableMaterial, MIN_STROKE_PX, setCoverageGamma } from "./geometry/cables";
 import type { TokenPalette } from "./materials";
+import { traceEndOf, type TraceEnd } from "./traceEnd";
 
 export const DRAW_ON_MS = 240;
 export const PACKET_LOOP_MS = 1600;
@@ -111,7 +134,14 @@ export interface FlowOverlay {
   group: Group;
   /** Objects allowed past the bloom threshold: the path, the arrowheads, the packet, the alarm. */
   emissiveObjects(): Object3D[];
-  setTrace(trace: Trace | null, activeHop: number | null, source: TraceSegmentSource): void;
+  /**
+   * Draw `trace` over the cables `source` resolves. Returns true when it drew a NEW picture — and so
+   * armed the draw-on and the packet run (under full motion) — and false when it cleared the trace or
+   * was handed the picture it is already drawing (by content: the same trace re-sent on a hop step, or
+   * a new object of the same answer after a history step or a re-run), which changes nothing at all
+   * (see TRIGGER in the motion inventory above).
+   */
+  setTrace(trace: Trace | null, source: TraceSegmentSource): boolean;
   setResolution(width: number, height: number): void;
   setReducedMotion(reduced: boolean): void;
   retint(tokens: TokenPalette): void;
@@ -119,6 +149,8 @@ export interface FlowOverlay {
   update(nowMs: number, camera: PerspectiveCamera): boolean;
   /** Bounding sphere of the drawn path, for re-framing. Null when no trace is drawn. */
   pathSphere(): { center: [number, number, number]; radius: number } | null;
+  /** The drawn path's polyline (xyz triples), for re-framing. Empty when no cable was stitched. */
+  pathPoints(): Float32Array;
   /** Hops that could not be drawn because no cable joins them. Surfaced, never silently skipped. */
   undrawnHops(): string[];
   /**
@@ -132,6 +164,7 @@ export interface FlowOverlay {
 }
 
 const _v = new Vector3();
+const EMPTY_POINTS = new Float32Array(0);
 const _a = new Vector3();
 const _b = new Vector3();
 const _tangent = new Vector3();
@@ -247,6 +280,59 @@ export function tetherEnds(
   out[4] = glyphCentre.y - ux.y * glyphRadius;
   out[5] = glyphCentre.z - ux.z * glyphRadius;
   return out;
+}
+
+/**
+ * Stitch a trace's path out of the cables its hops actually traverse. A hop pair with no cable
+ * between them leaves a GAP (reported through undrawnHops()); it is never bridged with a straight
+ * line, which would draw a wire the snapshot does not contain. `hopPoint` is where each hop sits on
+ * the drawn path, as a point index, or -1 for a hop no drawn cable reaches; the terminal segment ends
+ * at the hop the trace's ending is drawn on.
+ */
+function stitchPath(trace: Trace, source: TraceSegmentSource): { acc: number[]; hopPoint: number[]; gaps: string[] } {
+  const acc: number[] = [];
+  const gaps: string[] = [];
+  const hopPoint: number[] = trace.hops.map(() => -1);
+  for (let i = 0; i < trace.hops.length - 1; i += 1) {
+    const from = trace.hops[i];
+    const to = trace.hops[i + 1];
+    if (from === undefined || to === undefined) continue;
+    const poly = source.polylineBetween(from.host, to.host);
+    if (poly === null) {
+      gaps.push(`${from.host} -> ${to.host}`);
+      continue;
+    }
+    const startAt = acc.length === 0 ? 0 : 3;
+    if (hopPoint[i] === -1) hopPoint[i] = acc.length === 0 ? 0 : acc.length / 3 - 1;
+    for (let p = startAt; p < poly.length; p += 3) {
+      acc.push(poly[p] ?? 0, poly[p + 1] ?? 0, poly[p + 2] ?? 0);
+    }
+    hopPoint[i + 1] = acc.length / 3 - 1;
+  }
+  return { acc, hopPoint, gaps };
+}
+
+/**
+ * The picture a trace puts on screen, as a string: the hop hosts in order (what scene.ts lifts and
+ * frames for it), every stitched point, every gap, which ending is drawn on which hop, and the
+ * chassis it is anchored to. Two traces with the same key draw the same pixels, whatever object
+ * carries them — which is what the TRIGGER (header) is about: a Back / Forward
+ * across a hop step, a restore and a re-run of the same question all hand over a NEW Trace object of
+ * the SAME answer (C6 refuter round 2, 2026-10-03: an identity test treated each as a new trace and
+ * re-ran the draw-on and all three loops). Built from what is DRAWN rather than from the flow, so a
+ * re-stitch over changed cables (scene.setData) is still a new picture.
+ */
+function pictureKeyOf(
+  trace: Trace,
+  acc: readonly number[],
+  gaps: readonly string[],
+  end: TraceEnd | null,
+  anchor: TerminalAnchor | null,
+): string {
+  const hosts = trace.hops.map((h) => h.host).join(">");
+  const ending = end === null ? "-" : `${end.kind}@${end.host}#${end.index}`;
+  const at = anchor === null ? "-" : `${anchor.x},${anchor.y},${anchor.z},${anchor.top},${(anchor.half ?? []).join(",")}`;
+  return `${hosts}|${acc.join(",")}|${gaps.join(";")}|${ending}|${at}`;
 }
 
 export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
@@ -373,6 +459,9 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
   let revealing = false;
   let packetStart = 0;
   let packetRunning = false;
+  /* The picture on screen, by CONTENT (`pictureKeyOf`): handing over the same picture again is a
+     no-op (TRIGGER, header). Null when nothing is drawn. */
+  let drawnKey: string | null = null;
   let undrawn: string[] = [];
   let sphere: { center: [number, number, number]; radius: number } | null = null;
   let terminalHost: string | null = null;
@@ -483,12 +572,13 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
       return [path, blocked, arrows, packet, stop, undecided];
     },
 
-    setTrace(trace: Trace | null, activeHop: number | null, source: TraceSegmentSource): void {
-      undrawn = [];
-      sphere = null;
-      terminalHost = null;
-      terminalAnchor = null;
+    setTrace(trace: Trace | null, source: TraceSegmentSource): boolean {
       if (trace === null || trace.hops.length === 0) {
+        drawnKey = null;
+        undrawn = [];
+        sphere = null;
+        terminalHost = null;
+        terminalAnchor = null;
         group.visible = false;
         path.visible = false;
         blocked.visible = false;
@@ -499,27 +589,22 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
         packetRunning = false;
         revealing = false;
         totalLength = 0;
-        return;
+        return false;
       }
 
-      /* Stitch the path out of the cables the hops actually traverse. A hop pair with no cable
-         between them leaves a GAP and is reported through undrawnHops(); it is never bridged with
-         a straight line, which would draw a wire the snapshot does not contain. */
-      const acc: number[] = [];
-      for (let i = 0; i < trace.hops.length - 1; i += 1) {
-        const from = trace.hops[i];
-        const to = trace.hops[i + 1];
-        if (from === undefined || to === undefined) continue;
-        const poly = source.polylineBetween(from.host, to.host);
-        if (poly === null) {
-          undrawn.push(`${from.host} -> ${to.host}`);
-          continue;
-        }
-        const startAt = acc.length === 0 ? 0 : 3;
-        for (let p = startAt; p < poly.length; p += 3) {
-          acc.push(poly[p] ?? 0, poly[p + 1] ?? 0, poly[p + 2] ?? 0);
-        }
-      }
+      /* Everything this overlay draws for the trace, worked out BEFORE anything on screen changes, so
+         that the same picture handed over again changes nothing: the stitched path, the gaps, and the
+         ending with the chassis it is drawn on. */
+      const { acc, hopPoint, gaps } = stitchPath(trace, source);
+      const end = traceEndOf(trace);
+      const anchor = end === null ? null : source.anchorOf(end.host);
+      const key = pictureKeyOf(trace, acc, gaps, end, anchor);
+      if (key === drawnKey) return false;
+      drawnKey = key;
+      undrawn = gaps;
+      sphere = null;
+      terminalHost = null;
+      terminalAnchor = null;
 
       if (acc.length < 6) {
         // A single-hop or fully-undrawable trace still has an answer to show; there is simply no
@@ -575,40 +660,45 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
         };
       }
 
-      /* THE TERMINAL TREATMENT, IN THREE STATES.
-         The terminal hop is where the answer is, and which mark it gets is decided by
-         `claims.ts :: bandOfTrace` (the band every render surface uses), not by a local test:
-           REFUTED      the 6 px terminal segment plus the octagonal alarm — a fact about the packet.
-           UNDETERMINED the open ring, in the indeterminate token, and NO alarm segment: the
+      /* THE TERMINAL TREATMENT, IN THREE STATES, ON THE HOP THE CHIP MARKS.
+         Which hop the ending is drawn on, and which ending it is, is `traceEnd.ts :: traceEndOf` —
+         the rule the label chip (Fabric3D.tsx `traceMarkOf`) uses, built on the claim layer's bands:
+           blocked      the 6 px terminal segment plus the octagonal alarm — a fact about the packet.
+           undetermined the open ring, in the indeterminate token, and NO alarm segment: the
                         simulation declined to decide, so there is nothing to alarm about yet.
-           RESOLVED     neither. An alarm on a delivered path is the inverse of the honesty rule.
+           delivered    neither. An alarm on a delivered path is the inverse of the honesty rule.
          This used to be `outcome !== "delivered"`, which handed the red stop sign to every
-         indeterminate and out-of-scope result as well. */
-      const last = trace.hops[trace.hops.length - 1];
-      const band = bandOfTrace(trace);
-      const refuted = band === "REFUTED";
-      const anchor = last === undefined ? null : source.anchorOf(last.host);
-      terminalHost = last === undefined ? null : last.host;
+         indeterminate and out-of-scope result as well; and then the trace band on the LAST hop,
+         which hung the ring over core1 while the chip said "? UNDECIDED" on core2 (A5 refuter). */
+      const refuted = end !== null && end.kind === "blocked";
+      terminalHost = end === null ? null : end.host;
       terminalAnchor = anchor;
       /* Provisional placement for an unrotated camera; `update` re-places the glyph for the real
          camera before any frame is drawn (see placeTerminalGlyph). */
-      if (band === "UNDETERMINED" && anchor !== null) {
+      if (end !== null && end.kind === "undetermined" && anchor !== null) {
         placeTerminalGlyph(anchor, _qIdentity, UNDECIDED_GLYPH_RADIUS, undecided.position);
         undecided.visible = true;
       } else {
         undecided.visible = false;
       }
-      if (refuted && last !== undefined) {
+      if (refuted && end !== null) {
         if (anchor !== null) {
           placeTerminalGlyph(anchor, _qIdentity, STOP_GLYPH_RADIUS, stop.position);
           stop.visible = true;
         } else {
           stop.visible = false;
         }
-        if (totalLength > 0) {
-          const tailFrom = Math.max(0, totalLength - Math.min(totalLength * 0.5, 34));
+        /* The segment runs INTO the stopping host: it ends where the drawn path last reaches that
+           host, which for a trace the engine stops there is the end of the path. */
+        let endAt = -1;
+        for (let i = trace.hops.length - 1; i >= end.index && endAt < 0; i -= 1) {
+          if (trace.hops[i]?.host === end.host) endAt = hopPoint[i] ?? -1;
+        }
+        const endLength = endAt >= 0 ? cumulative[endAt] ?? 0 : 0;
+        if (endLength > 0) {
+          const tailFrom = Math.max(0, endLength - Math.min(endLength * 0.5, 34));
           const tail: number[] = [];
-          for (let i = 0; i < cumulative.length; i += 1) {
+          for (let i = 0; i <= endAt; i += 1) {
             if ((cumulative[i] ?? 0) >= tailFrom) {
               tail.push(points[i * 3] ?? 0, points[i * 3 + 1] ?? 0, points[i * 3 + 2] ?? 0);
             }
@@ -631,14 +721,6 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
         blocked.visible = false;
       }
 
-      // activeHop steers the packet's resting position when the user is stepping the hop list by
-      // keyboard; it never moves the camera and never re-runs the draw-on.
-      if (activeHop !== null && totalLength > 0 && trace.hops.length > 1) {
-        const frac = Math.min(1, Math.max(0, activeHop / (trace.hops.length - 1)));
-        sampleAt(frac * totalLength, _v);
-        packet.position.copy(_v);
-      }
-
       group.visible = true;
       revealing = !reducedMotion && totalLength > 0;
       revealStart = 0;
@@ -654,6 +736,7 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
       packet.visible = packetRunning;
       // Provisional, like the glyphs above; `update` re-aims it for the real camera.
       syncTether(_qIdentity);
+      return true;
     },
 
     setResolution(width: number, height: number): void {
@@ -749,6 +832,10 @@ export function createFlowOverlay(tokens: TokenPalette): FlowOverlay {
 
     pathSphere(): { center: [number, number, number]; radius: number } | null {
       return sphere;
+    },
+
+    pathPoints(): Float32Array {
+      return group.visible && path.visible ? points : EMPTY_POINTS;
     },
 
     undrawnHops(): string[] {

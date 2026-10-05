@@ -38,9 +38,9 @@ describe("priority queue layout boundary (tripwire: source text)", () => {
     /* Size containment collapses a box that sizes from its content, which the queue does below the
        shell's single-column breakpoint (measured: 12px tall at 390x844). The rule must live inside
        the fixed-frame query, never at top level. */
-    const scoped = /@media \(min-width: 48rem\)\s*\{\s*\.pq \.ag__grid\s*\{([^}]*)\}\s*\}/.exec(code);
-    expect(scoped, "`.pq .ag__grid` containment must be scoped to @media (min-width: 48rem)").not.toBeNull();
-    const unscoped = code.replace(/@media \(min-width: 48rem\)\s*\{\s*\.pq \.ag__grid\s*\{[^}]*\}\s*\}/, "");
+    const scoped = /@media \(min-width: 48rem\) and \(min-width: 768px\)\s*\{\s*\.pq \.ag__grid\s*\{([^}]*)\}\s*\}/.exec(code);
+    expect(scoped, "`.pq .ag__grid` containment must be scoped to @media (min-width: 48rem) and (min-width: 768px)").not.toBeNull();
+    const unscoped = code.replace(/@media \(min-width: 48rem\) and \(min-width: 768px\)\s*\{\s*\.pq \.ag__grid\s*\{[^}]*\}\s*\}/, "");
     expect(unscoped).not.toMatch(/\.pq \.ag__grid\s*\{[^}]*contain/);
     const rule = scoped;
     expect(rule, "a `.pq .ag__grid` rule must exist").not.toBeNull();

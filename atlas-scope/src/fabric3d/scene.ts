@@ -97,7 +97,8 @@ import {
   type EnvironmentHandle,
   type EnvironmentPrefilter,
 } from "./env";
-import { createFlowOverlay, type FlowOverlay } from "./flow";
+import { createFlowOverlay, type FlowOverlay, type TerminalAnchor, type TraceSegmentSource } from "./flow";
+import { traceFramingPose } from "./traceFraming";
 import {
   buildChassis,
   buildRoleGlyph,
@@ -844,6 +845,35 @@ export interface BuildGraphOptions {
 }
 
 /**
+ * The drawn cable between two adjacent trace hops in `graph`, oriented `from` -> `to`, or null when
+ * the snapshot holds no cable between them (flow.ts draws a GAP for it, never a made-up wire).
+ */
+export function tracePolylineIn(graph: Pick<FabricGraph, "linkEnds" | "cables">, from: string, to: string): Float32Array | null {
+  for (const [id, ends] of graph.linkEnds) {
+    if (ends.a === from && ends.b === to) return graph.cables.polylines.get(id) ?? null;
+    if (ends.b === from && ends.a === to) {
+      const poly = graph.cables.polylines.get(id);
+      if (poly === undefined) return null;
+      const out = new Float32Array(poly.length);
+      const n = poly.length / 3;
+      for (let i = 0; i < n; i += 1) {
+        out[i * 3] = poly[(n - 1 - i) * 3] ?? 0;
+        out[i * 3 + 1] = poly[(n - 1 - i) * 3 + 1] ?? 0;
+        out[i * 3 + 2] = poly[(n - 1 - i) * 3 + 2] ?? 0;
+      }
+      return out;
+    }
+  }
+  return null;
+}
+
+/** The terminal-glyph anchor of `host` in `graph` (flow.ts `TerminalAnchor`), or null when unplaced. */
+export function traceAnchorIn(graph: Pick<FabricGraph, "slots">, host: string): TerminalAnchor | null {
+  const s = graph.slots.get(host);
+  return s === undefined ? null : { x: s.centre[0], y: s.centre[1], z: s.centre[2], top: s.top, half: s.half };
+}
+
+/**
  * Assemble the whole scene graph. No renderer, no WebGL context, no clock — which is what makes it
  * testable, and also what makes it safe to call again on a data change without tearing the loop
  * down first.
@@ -1495,6 +1525,13 @@ export interface FabricSceneEx extends FabricScene {
    */
   chassisScreenBox(deviceId: string): { x0: number; y0: number; x1: number; y1: number } | null;
   /**
+   * The screen rectangle the trace's terminal glyph (flow.ts: the stop octagon or the undecided ring)
+   * covers right now, with the host it marks, in the same space as `project()`; null when no glyph
+   * is drawn. The DOM label layer keeps every name off it — the glyph's own host's included, whose
+   * name, flipped below its anchor near the stage top, used to land straight across the ring (A5).
+   */
+  terminalGlyphScreenBox(): { host: string; x0: number; y0: number; x1: number; y1: number } | null;
+  /**
    * True once the scene is idle and its label resolver has run the history-free SETTLED pass over
    * the final camera (./labelResolve). The DOM label layer switches its own hysteresis and staggered
    * drops off on the same signal, so the label set a capture photographs is a pure function of the
@@ -1687,7 +1724,6 @@ const createSceneImpl = (
   let hoverLink: string | null = null;
   let highlight: HighlightState | null = null;
   let trace: Trace | null = null;
-  let activeHop: number | null = null;
 
   let emphasis: EmphasisState = createEmphasisState(graph.order.length);
   /* The halo and hover-rim opacities, each a finite ease from the owner (SELECT_EASE, HOVER_EASE). */
@@ -2325,31 +2361,10 @@ const createSceneImpl = (
   }
 
   /* ── trace ─────────────────────────────────────────────────────────────── */
-  const traceSource = {
-    polylineBetween(from: string, to: string): Float32Array | null {
-      for (const [id, ends] of graph.linkEnds) {
-        if (ends.a === from && ends.b === to) return graph.cables.polylines.get(id) ?? null;
-        if (ends.b === from && ends.a === to) {
-          const poly = graph.cables.polylines.get(id);
-          if (poly === undefined) return null;
-          const out = new Float32Array(poly.length);
-          const n = poly.length / 3;
-          for (let i = 0; i < n; i += 1) {
-            out[i * 3] = poly[(n - 1 - i) * 3] ?? 0;
-            out[i * 3 + 1] = poly[(n - 1 - i) * 3 + 1] ?? 0;
-            out[i * 3 + 2] = poly[(n - 1 - i) * 3 + 2] ?? 0;
-          }
-          return out;
-        }
-      }
-      return null;
-    },
-    anchorOf(host: string) {
-      const s = graph.slots.get(host);
-      return s === undefined
-        ? null
-        : { x: s.centre[0], y: s.centre[1], z: s.centre[2], top: s.top, half: s.half };
-    },
+  /* Read through `graph` on every call: setData replaces the graph, and the source must follow it. */
+  const traceSource: TraceSegmentSource = {
+    polylineBetween: (from: string, to: string) => tracePolylineIn(graph, from, to),
+    anchorOf: (host: string) => traceAnchorIn(graph, host),
   };
 
   /* ── resize ────────────────────────────────────────────────────────────── */
@@ -3861,39 +3876,40 @@ const createSceneImpl = (
       yieldToPage = true;
     },
 
-    setTrace(next: Trace | null, hop: number | null): void {
+    setTrace(next: Trace | null, _activeHop: number | null): void {
+      /* A HOP STEP IS NOT A NEW TRACE (C6, refuters 2026-10-03). The shell re-sends this call on every
+         hop change, and a Back / Forward across a hop step, a restore or a re-run of the same question
+         hands over a new object of the same answer. The active hop is drawn by the selection the shell
+         re-aims to the hop's host (App.tsx, acceptance A4), not here. So the picture already drawn —
+         compared by CONTENT in the overlay (flow.ts TRIGGER, `pictureKeyOf`: the hop hosts, the path,
+         the ending), never by object — changes nothing: no draw-on, no packet run, no emphasis churn
+         (the emphasis reads only the hop hosts, which the key holds) and — below — no camera move. Only
+         a picture the overlay reports as newly drawn reaches the framing. A zero-hop trace draws no
+         picture at all, so for it the object test is the scene's own. */
+      const drewNew = flow.setTrace(next, traceSource);
+      if (!drewNew && next !== null && (next.hops.length > 0 || next === trace)) {
+        trace = next;
+        return;
+      }
       trace = next;
-      activeHop = hop;
-      flow.setTrace(next, activeHop, traceSource);
       post.setBloomObjects([...graph.emissiveObjects, ...flow.emissiveObjects()]);
       recomputeEmphasis();
       markEmphasisDirty(emphasis);
-      /* The drawn path's sphere, or — when no cable was stitched (a flow delivered at its first
-         hop, or every hop pair undrawn) — the hop DEVICES themselves. The trace used to reframe
-         only when a path was drawn, so a one-device trace (MEASURED, C5 audit: delivered at core1,
-         hop 0) was left on the overview with core1 flush to the canvas top, its "delivered here"
-         chip on its own chassis and core2's name under the toolbar. */
-      const s = flow.pathSphere();
-      if (s !== null) {
-        _world.set(s.center[0], s.center[1], s.center[2]);
-        cameraRig.moveTo(
-          frameSphereFromCurrentView(cameraRig.camera, cameraRig.controls.target, _world, s.radius, 1.35),
-        );
-      } else if (next !== null) {
-        // One distinct hop device frames exactly as focusing it would (the device and the
-        // neighbourhood it sits in); several with no stitched cable frame their union.
-        const hosts = new Set(next.hops.map((h) => h.host));
-        const only = hosts.size === 1 ? [...hosts][0] : undefined;
-        const pose = only !== undefined ? focusFramingFor(only) : null;
-        const hs = pose === null ? hopDeviceSphere(next) : null;
-        if (pose !== null) {
-          cameraRig.moveTo(pose);
-        } else if (hs !== null) {
-          _world.set(hs.center[0], hs.center[1], hs.center[2]);
-          cameraRig.moveTo(
-            frameSphereFromCurrentView(cameraRig.camera, cameraRig.controls.target, _world, hs.radius, 1.35),
-          );
-        }
+      /* Every hop DEVICE, the drawn path and the terminal glyph, from the current view direction
+         (traceFraming.ts). The trace used to reframe only when a path was drawn, so a one-device
+         trace (MEASURED, C5 audit: delivered at core1, hop 0) was left on the overview with core1
+         flush to the canvas top; and then framed only the drawn cable's sphere, which zoomed onto
+         the short core2 -> core1 cable with both chassis off the canvas (A5 refuter). */
+      if (next !== null) {
+        const pose = traceFramingPose({
+          camera: cameraRig.camera,
+          currentTarget: cameraRig.controls.target,
+          trace: next,
+          pathPoints: flow.pathPoints(),
+          boxOf: (host) => graph.slots.get(host) ?? null,
+          focusPose: focusFramingFor,
+        });
+        if (pose !== null) cameraRig.moveTo(pose);
       }
       markDirty();
       yieldToPage = true;
@@ -4029,6 +4045,37 @@ const createSceneImpl = (
       return { x0: x0 * fx, y0: y0 * fy, x1: x1 * fx, y1: y1 * fy };
     },
 
+    terminalGlyphScreenBox(): { host: string; x0: number; y0: number; x1: number; y1: number } | null {
+      const marker = flow.terminalMarker();
+      if (marker === null) return null;
+      const cam = cameraRig.camera;
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      // The glyph faces the camera, so its screen extent is its centre +/- the camera's UP and RIGHT
+      // times its radius.
+      for (let k = 0; k < 4; k += 1) {
+        _world.set(k < 2 ? 0 : k === 2 ? 1 : -1, k === 0 ? 1 : k === 1 ? -1 : 0, 0);
+        _world.applyQuaternion(cam.quaternion).multiplyScalar(marker.radius);
+        _world.x += marker.center[0];
+        _world.y += marker.center[1];
+        _world.z += marker.center[2];
+        _world.project(cam);
+        if (!(_world.z > -1 && _world.z < 1)) return null;
+        const sx = (_world.x * 0.5 + 0.5) * width;
+        const sy = (-_world.y * 0.5 + 0.5) * height;
+        x0 = Math.min(x0, sx);
+        y0 = Math.min(y0, sy);
+        x1 = Math.max(x1, sx);
+        y1 = Math.max(y1, sy);
+      }
+      // The same CSS stretch `project()` applies while a resize is owed.
+      const fx = pendingSize === null ? 1 : Math.max(1, Math.round(pendingSize.w)) / width;
+      const fy = pendingSize === null ? 1 : Math.max(1, Math.round(pendingSize.h)) / height;
+      return { host: marker.host, x0: x0 * fx, y0: y0 * fy, x1: x1 * fx, y1: y1 * fy };
+    },
+
     project(deviceId: string): { x: number; y: number; visible: boolean } | null {
       const p = projectLabelAnchor(deviceId);
       if (p === null) return null;
@@ -4082,33 +4129,6 @@ const createSceneImpl = (
       renderer.forceContextLoss();
     },
   };
-
-  /** A sphere over the trace's hop devices, sized like a device focus so one hop is not a close-up. */
-  function hopDeviceSphere(t: Trace): { center: [number, number, number]; radius: number } | null {
-    let minX = Infinity;
-    let minY = Infinity;
-    let minZ = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    let maxZ = -Infinity;
-    let own = 0;
-    for (const hop of t.hops) {
-      const s = graph.slots.get(hop.host);
-      if (s === undefined) continue;
-      minX = Math.min(minX, s.centre[0] - s.half[0]);
-      maxX = Math.max(maxX, s.centre[0] + s.half[0]);
-      minY = Math.min(minY, s.centre[1] - s.half[1]);
-      maxY = Math.max(maxY, s.centre[1] + s.half[1]);
-      minZ = Math.min(minZ, s.centre[2] - s.half[2]);
-      maxZ = Math.max(maxZ, s.centre[2] + s.half[2]);
-      own = Math.max(own, Math.hypot(s.half[0], s.half[1], s.half[2]));
-    }
-    if (!Number.isFinite(minX)) return null;
-    return {
-      center: [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2],
-      radius: Math.max(Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2, own * 3),
-    };
-  }
 
   function focusFramingFor(deviceId: string): { position: [number, number, number]; target: [number, number, number] } | null {
     const slot = graph.slots.get(deviceId);
