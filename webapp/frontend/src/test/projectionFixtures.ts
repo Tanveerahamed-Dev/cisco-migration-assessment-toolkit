@@ -137,7 +137,9 @@ export function coverageRollupFixture(mode: "published" | "unverified" | "not_co
   const evidence = { subject: "/coverage_matrix/by_device/edge~1a~0b",
     refs: [{ pointer: "/coverage_matrix/rows/4", role: "basis" }], basis: "synthetic.owner:device_coverage" };
   if (mode === "published") return {
-    worst: { ...published("unverified"), ...evidence }, n_abstained: { ...published(7), ...evidence },
+    // Only collection/capture/parse can abstain for an admitted device; architecture
+    // abstentions are fleet-only. Three core abstentions coexist with six covered axes.
+    worst: { ...published("unverified"), ...evidence }, n_abstained: { ...published(3), ...evidence },
   };
   const state = mode === "not_collected" ? "not_collected" : "unverified";
   const reason = mode === "all_covered" ? "Synthetic source silence does not prove complete device coverage"
@@ -146,17 +148,19 @@ export function coverageRollupFixture(mode: "published" | "unverified" | "not_co
   return { worst: { ...evidence, state, value: null, reason }, n_abstained: { ...evidence, state, value: null, reason } };
 }
 export function coverageAxisFixture(axis = "capture", mode: "published" | "unverified" | "not_collected" | "covered" = "published", index = 4) {
+  const pointer = `/coverage_matrix/by_device/edge~1a~0b/${axis.replaceAll("~", "~0").replaceAll("/", "~1")}`;
   const evidence = { subject: `/coverage_matrix/rows/${index}`, refs: [{ pointer: `/coverage_matrix/rows/${index}`, role: "basis" }],
     basis: "synthetic.owner:exact_device_axis" };
   if (mode === "published" || mode === "covered") return {
-    axis, fact: { ...published({ axis, state: mode === "covered" ? "covered" : "unverified" }), ...evidence },
-    dimension: { ...published("capture"), ...evidence }, verdict_source: { ...published("capture_integrity"), ...evidence },
+    axis, pointer, fact: { ...published({ axis, state: mode === "covered" ? "covered" : axis === "parse" ? "unparsed" : "unverified" }), ...evidence },
+    dimension: { ...published(axis === "parse" ? "parse" : "capture"), ...evidence },
+    verdict_source: { ...published(axis === "parse" ? "parse_yield" : "capture_integrity"), ...evidence },
     is_abstention: { ...published(mode !== "covered"), ...evidence },
   };
   const reason = mode === "unverified" ? "Synthetic exact device and axis join is ambiguous"
     : "Synthetic device coverage inputs were not collected";
   const fact = { ...evidence, state: mode, value: null, reason };
-  return { axis, fact, dimension: fact, verdict_source: fact, is_abstention: fact };
+  return { axis, pointer, fact, dimension: fact, verdict_source: fact, is_abstention: fact };
 }
 export function inventoryFixture(sid = 1, findings = findingsRollupFixture("not_collected"), coverage = coverageRollupFixture("not_collected")) {
   const row = { host: "edge/a~b", pointer: "/devices/edge~1a~0b", findings, coverage, ...fields("model platform sw_version serial_number role health_score health_band lifecycle_band risk_band move_group collection_status") };
@@ -173,10 +177,15 @@ export function deviceFixture(sid = 1, host = "edge/a~b", findings_rollup = find
     ? { pointer: "/findings", source_list: { state: "published", subject: "/punchlist", refs: [], basis: "synthetic.owner:exact_host_refs" },
       page: { offset: 0, limit: 1, returned: 1, total: 3, has_more: true, items: [{ index: 7, pointer: "/punchlist/7" }] } }
     : empty("/findings");
+  // Seven abstaining axes belong to the full nine-axis source, not the single visible row.
+  const coverage = coverage_rollup.worst.state === "published" && coverage_rollup.n_abstained.state === "published"
+    ? { pointer: "/coverage", source_list: { state: "published", subject: "/coverage_matrix/by_device/edge~1a~0b", refs: [], basis: "synthetic.owner:exact_device_axis" },
+      page: { offset: 0, limit: 1, returned: 1, total: 9, has_more: true, items: [coverageAxisFixture()] } }
+    : empty("/coverage");
   return { ...common(sid, "device"), payload: { host, findings_rollup, coverage_rollup, move_group: withheld(), identity: fields("model platform reported_hostname serial_number chassis_serial system_mac sw_version uptime"),
     physical: fields("active_ports total_ports num_modules num_power_supplies ps_status temperature_status fan_status power_capacity_w power_drawn_w power_remaining_w"), collection: fields("status missing data_quality"), lifecycle: fields("band status conf eos ldos source citation_status"),
     health: { ...fields("score band role"), deductions: empty("/health/deductions"), deduction_refs: empty("/health/deduction_refs"), deductions_cap: cap, deduction_refs_cap: cap },
-    dossier: { risk_band: withheld(), exposures: empty("/dossier/exposures"), compound: empty("/dossier/compound") }, coverage: empty("/coverage"),
+    dossier: { risk_band: withheld(), exposures: empty("/dossier/exposures"), compound: empty("/dossier/compound") }, coverage,
     interfaces: { rows: empty("/interfaces/rows") }, links: empty("/links"), routes: empty("/routes"), routing_neighbors: empty("/routing_neighbors"),
     security: { summary: withheld(), checks: empty("/security/checks") }, native_vlan_mismatches: empty("/native_vlan_mismatches"),
     remediation: { banner: withheld(), items: empty("/remediation/items") }, nrfu_cases: empty("/nrfu_cases"), findings, endpoints: empty("/endpoints"),

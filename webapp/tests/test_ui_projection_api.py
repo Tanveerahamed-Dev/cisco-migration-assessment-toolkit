@@ -1401,6 +1401,59 @@ def test_native_w13_coverage_matches_stock_on_real_views_lists_and_refusals(clie
     assert _validation_errors(native, body) == _validation_errors(stock, body)
 
 
+@pytest.mark.parametrize("mutation", ["missing_dimension", "extra_metadata", "bad_dimension", "bad_source",
+                                     "integer_flag", "withheld_value", "missing_reason"])
+def test_native_w13_coverage_metadata_list_matches_stock_and_retains_withheld_values(client, mutation):
+    from backend import ui_projection_api as api
+    from cisco_toolkit.coverage_matrix import compute_coverage_matrix
+    host = "native-coverage-list"
+    snapshot = {"devices": {host: {"hostname": host}},
+                "collection_completeness": {"devices": [], "summary": {"inventory": 1, "collected": 1}},
+                "capture_integrity": {"findings": [{"host": host, "status": "empty", "reason": "synthetic"}]},
+                "parse_yield": {"events": []}, "architecture_coverage": {"classes": []}}
+    snapshot["coverage_matrix"] = compute_coverage_matrix(snapshot)
+    sid = seed(client, snapshot)
+    body = client.get(url(sid, "device") + "/lists",
+                      params={"host": host, "pointer": "/coverage", "limit": 1}).json()
+    schema = deepcopy(api._LIST_SCHEMA)
+    native = api._NativeTransportValidator(schema, "list")
+    stock = api._stock_validator(schema)
+    assert native._NativeTransportValidator__native is not None
+    assert api._native_instance_allowed(body)
+    assert native.is_valid(body) and stock.is_valid(body)
+    item = body["list"]["page"]["items"][0]
+    assert item["axis"] == "capture" and item["dimension"]["value"] == "capture"
+    # A duplicate exact join returns withheld cells on the real list route, not a fabricated
+    # shape. Retain the same native LIST validator; a view verdict cannot certify this branch.
+    duplicate = next(row for row in snapshot["coverage_matrix"]["rows"]
+                     if row["device"] == host and row["axis"] == item["axis"])
+    snapshot["coverage_matrix"]["rows"].append(deepcopy(duplicate))
+    held_sid = seed(client, snapshot)
+    held_body = client.get(url(held_sid, "device") + "/lists",
+                           params={"host": host, "pointer": "/coverage", "limit": 1}).json()
+    held_item = held_body["list"]["page"]["items"][0]
+    for field in ("fact", "dimension", "verdict_source", "is_abstention"):
+        assert held_item[field]["state"] == "unverified" and held_item[field]["value"] is None
+    assert api._native_instance_allowed(held_body)
+    assert native.is_valid(held_body) and stock.is_valid(held_body)
+    if mutation == "missing_dimension":
+        del item["dimension"]
+    elif mutation == "extra_metadata":
+        item["assurance"] = True
+    elif mutation == "bad_dimension":
+        item["dimension"]["value"] = "risk"
+    elif mutation == "bad_source":
+        item["verdict_source"]["value"] = "foreign"
+    elif mutation == "integer_flag":
+        item["is_abstention"]["value"] = 0
+    elif mutation == "withheld_value":
+        item["dimension"].update(state="unverified", reason="synthetic withheld")
+    else:
+        item["dimension"].update(state="unverified", value=None)
+    assert not native.is_valid(body) and not stock.is_valid(body)
+    assert _validation_errors(native, body) == _validation_errors(stock, body)
+
+
 def test_native_schema_version_and_owned_copy_are_checked_before_compilation(monkeypatch):
     from backend import ui_projection_api as api
     provider = api._native_provider()

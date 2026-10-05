@@ -57,3 +57,32 @@ merge, save W13 at a clean commit and switch to W10b's independently split B3/A6
 repairs and the C6 documentation correction. Then resume W13, then #593.
 Release publication, qualification, signing, tags, deployment, devices and the vault are
 outside this work.
+
+## Bootstrap evidence and proof corrections
+
+Draft #600 published bootstrap `2df3bb57` after index/stable-tree privacy,
+every new commit message/per-parent patch and PR-body marker gates passed.
+The complete hosted webapp run `37343049346` passed, including backend,
+frontend unit/type/build, browser and Windows visual jobs. Protected distribution
+job `111874671698` failed immutable-byte checks on stale tracked SPA output;
+portable job `111874670995` also exited on regenerated frontend differences.
+The old failure logs remain retained; neither is waived.
+
+Before reading artifact receipts, independently selected producer `29516390`,
+tree `1efd0590`, bootstrap head and all 144 Git input hashes. Hosted artifact
+`11358808660` passes API/archive digest, the closed seven-file inventory, five
+generated member hashes, source records and independently retrieved Node
+24.19.0/npm 11.17.0 setup evidence. Archive SHA-256:
+`4c60c670f0a77bbd6ab2953d60e72c23319e54f8fd5fc2abede0fd809b70bc17`,
+552,136 bytes. It remains review input for that immutable bootstrap only;
+it was not imported or transferred to the follow-up source.
+
+Independent source review then found invalid mocked coverage rows (missing
+required pointers and a parse/source/state mismatch) and a native parity gap
+for the real coverage-list branch. Corrected fixtures keep three core-axis
+abstentions inside a nine-axis denominator; architecture abstentions are fleet-only.
+Additional real-list controls retain the list
+validator for valid, withheld and hostile metadata. These proof corrections
+require fresh hosted execution and a newly source-bound SPA before import;
+the bootstrap passes do not certify them. Local targeted lint/typechecking
+passes; runtime tests remain unverified on the correction.

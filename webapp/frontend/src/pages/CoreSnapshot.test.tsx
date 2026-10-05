@@ -276,7 +276,7 @@ describe("Core snapshot route", () => {
       const abstained = rollup.getByRole("button", { name: "Evidence for Abstaining coverage axes" }).closest(".projection-fact")! as HTMLElement;
       expect(within(worst).getByText("unverified", { exact: true })).toBeInTheDocument();
       expect(within(worst).getByText("Published", { exact: true })).toBeInTheDocument();
-      expect(within(abstained).getByText("7", { exact: true })).toBeInTheDocument();
+      expect(within(abstained).getByText("3", { exact: true })).toBeInTheDocument();
       expect(rollup.queryByText("0", { exact: true })).not.toBeInTheDocument();
       fireEvent.click(within(abstained).getByRole("button", { name: "Evidence for Abstaining coverage axes" }));
       const drawer = screen.getByRole("dialog");
@@ -305,10 +305,11 @@ describe("Core snapshot route", () => {
   });
   describe("device coverage metadata", () => {
     function serveRow(row: ReturnType<typeof coverageAxisFixture>) {
-      const document = deviceFixture(1, "edge/a~b", findingsRollupFixture("not_collected"), coverageRollupFixture());
+      const mode = row.fact.state === "published" ? "published" : row.fact.state === "not_collected" ? "not_collected" : "unverified";
+      const document = deviceFixture(1, "edge/a~b", findingsRollupFixture("not_collected"), coverageRollupFixture(mode));
       const source_list = { state: "published", subject: "/coverage_matrix", refs: [], basis: "synthetic.owner:exact_device_axis" };
       const coverage = { pointer: "/coverage", source_list,
-        page: { offset: 0, limit: 1, returned: 1, total: 1, has_more: false, items: [row] } };
+        page: { offset: 0, limit: 1, returned: 1, total: mode === "published" ? 9 : 1, has_more: mode === "published", items: [row] } };
       const current = { ...document, payload: { ...document.payload, coverage } };
       vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
         const url = String(input);
@@ -364,7 +365,7 @@ describe("Core snapshot route", () => {
       const coverage = { pointer: "/coverage", source_list,
         page: { offset: 0, limit: 1, returned: 1, total: 9, has_more: true, items: [coverageAxisFixture()] } };
       const current = { ...document, payload: { ...document.payload, coverage } };
-      const nextRow = { ...coverageAxisFixture("parse", "published", 8), dimension: published("parse"), verdict_source: published("parse_yield") };
+      const nextRow = coverageAxisFixture("parse", "published", 8);
       const next = { ...coverage, page: { offset: 1, limit: 1, returned: 1, total: 9, has_more: true, items: [nextRow] } };
       const { payload: _payload, ...envelope } = current;
       const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
@@ -378,11 +379,13 @@ describe("Core snapshot route", () => {
       const list = within(await screen.findByRole("region", { name: "Device coverage" }));
       const rollup = within(screen.getByRole("group", { name: "Device coverage summary" }));
       expect(list.getByRole("group", { name: "Coverage axis capture" })).toBeInTheDocument();
-      expect(rollup.getByText("7", { exact: true })).toBeInTheDocument();
+      expect(rollup.getByText("3", { exact: true })).toBeInTheDocument();
       fireEvent.click(list.getByRole("button", { name: "Next Device coverage page" }));
-      await list.findByRole("group", { name: "Coverage axis parse" });
+      const nextAxis = within(await list.findByRole("group", { name: "Coverage axis parse" }));
+      expect(nextAxis.getByText("unparsed", { exact: true })).toBeInTheDocument();
+      expect(nextAxis.getByText("parse_yield", { exact: true })).toBeInTheDocument();
       expect(list.queryByRole("group", { name: "Coverage axis capture" })).not.toBeInTheDocument();
-      expect(rollup.getByText("7", { exact: true })).toBeInTheDocument();
+      expect(rollup.getByText("3", { exact: true })).toBeInTheDocument();
       expect(rollup.getByText("unverified", { exact: true })).toBeInTheDocument();
       expect(rollup.queryByText("1", { exact: true })).not.toBeInTheDocument();
       expect(rollup.queryByText("9", { exact: true })).not.toBeInTheDocument();
