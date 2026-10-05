@@ -115,6 +115,8 @@ const HOME_POLAR_HEADROOM = 8 * DEG;
 
 /** Insets as fractions of the viewport, keyed by camera: set by the rig, read by every framing. */
 const safeFrameByCamera = new WeakMap<PerspectiveCamera, SafeFrame>();
+/** The viewport's CSS height, keyed by camera, so a framing can turn a pixel room into a fraction. */
+const viewHeightByCamera = new WeakMap<PerspectiveCamera, number>();
 
 /** Fractions of the viewport the framing must keep clear, per edge. */
 export interface SafeFrame {
@@ -605,6 +607,7 @@ export function createCameraRig(
   let viewH = opts.height;
   const refreshSafeFrame = (): void => {
     safeFrameByCamera.set(camera, safeFrameFor(viewW, viewH, occlusionByCanvas.get(canvas) ?? null));
+    viewHeightByCamera.set(camera, viewH);
   };
   refreshSafeFrame();
   occlusionListeners.set(canvas, refreshSafeFrame);
@@ -1113,6 +1116,94 @@ export function frameSphereFromCurrentView(
     safeFrameByCamera.get(camera) ?? NO_INSET,
     margin,
   );
+}
+
+/**
+ * The unit target -> eye direction of `camera` about `currentTarget`, and the screen RIGHT and UP a
+ * pose fitted from that direction will look with (`fitPointsInSafeFrame` levels the camera to world
+ * up, so these are exactly its basis). Written into the three `out` vectors.
+ */
+export function currentViewBasis(
+  camera: PerspectiveCamera,
+  currentTarget: Vector3,
+  outDir: Vector3,
+  outRight: Vector3,
+  outUp: Vector3,
+): void {
+  outDir.copy(camera.position).sub(currentTarget);
+  if (outDir.lengthSq() < 1e-6) outDir.set(0, 1, 1);
+  outDir.normalize();
+  outRight.crossVectors(WORLD_UP, outDir);
+  if (outRight.lengthSq() < 1e-8) outRight.set(1, 0, 0);
+  outRight.normalize();
+  outUp.crossVectors(outDir, outRight).normalize();
+}
+
+/**
+ * Frame a set of world points from the current view direction, inside the same safe frame as every
+ * other framing (FRAME_SAFE_INSET_PX), with `margin` applied to their projected span.
+ *
+ * The points themselves, not a sphere around them: a sphere is the right subject for one device and
+ * the wrong one for a trace, whose extent is the union of the chassis it crosses. Framing the drawn
+ * cable's sphere instead zoomed onto the short core2 -> core1 cable and left both chassis, both
+ * names and the terminal glyph off the canvas (A5 refuter, 2026-10-02).
+ */
+export function framePointsFromCurrentView(
+  camera: PerspectiveCamera,
+  currentTarget: Vector3,
+  points: readonly Vector3[],
+  margin: number,
+  extraTopPx = 0,
+): CameraTarget {
+  const dir = new Vector3();
+  currentViewBasis(camera, currentTarget, dir, new Vector3(), new Vector3());
+  const box = new Box3().setFromPoints(points as Vector3[]);
+  return fitPointsInSafeFrame(
+    points,
+    box.getCenter(new Vector3()),
+    dir,
+    camera.fov,
+    camera.aspect,
+    withExtraTop(safeFrameByCamera.get(camera) ?? NO_INSET, extraTopPx, viewHeightByCamera.get(camera)),
+    margin,
+  );
+}
+
+/**
+ * The safe frame with `extraTopPx` more kept clear at the top — the room a subject's own label needs
+ * above it when the subject is the topmost thing framed — never taking more than half the stage.
+ */
+function withExtraTop(safe: SafeFrame, extraTopPx: number, viewH: number | undefined): SafeFrame {
+  if (!(extraTopPx > 0) || viewH === undefined || !(viewH > 0)) return safe;
+  const top = Math.min(safe.top + extraTopPx / viewH, Math.max(safe.top, 0.5 - safe.bottom));
+  return { ...safe, top };
+}
+
+/** True when `pose` projects every one of `points` inside `camera`'s safe frame (in front of the eye),
+    with `extraTopPx` more kept clear at the top (see framePointsFromCurrentView). */
+export function poseKeepsInSafeFrame(
+  camera: PerspectiveCamera,
+  pose: CameraTarget,
+  points: readonly Vector3[],
+  extraTopPx = 0,
+): boolean {
+  const safe = withExtraTop(safeFrameByCamera.get(camera) ?? NO_INSET, extraTopPx, viewHeightByCamera.get(camera));
+  _fitCam.fov = camera.fov;
+  _fitCam.aspect = camera.aspect;
+  _fitCam.near = 0.01;
+  _fitCam.far = 1e7;
+  _fitCam.updateProjectionMatrix();
+  _fitCam.position.set(...pose.position);
+  _fitCam.up.set(0, 1, 0);
+  _fitCam.lookAt(...pose.target);
+  _fitCam.updateMatrixWorld();
+  for (const p of points) {
+    _fitP.copy(p).project(_fitCam);
+    if (!(_fitP.z > -1 && _fitP.z < 1)) return false;
+    if (_fitP.x < -1 + 2 * safe.left || _fitP.x > 1 - 2 * safe.right) return false;
+    if (_fitP.y < -1 + 2 * safe.bottom || _fitP.y > 1 - 2 * safe.top) return false;
+  }
+  return true;
 }
 
 /**

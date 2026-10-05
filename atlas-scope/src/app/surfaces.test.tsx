@@ -64,8 +64,8 @@ function setViewport(width: number): () => void {
   window.matchMedia = ((q: string) => {
     /* Evaluate the real min-width/max-width rem queries this app uses against `width`. */
     let matches = true;
-    for (const m of q.matchAll(/\((min|max)-width:\s*([\d.]+)rem\)/g)) {
-      const bound = px(m[2] as string);
+    for (const m of q.matchAll(/\((min|max)-width:\s*([\d.]+)(rem|px)\)/g)) {
+      const bound = m[3] === "px" ? Number.parseFloat(m[2] as string) : px(m[2] as string);
       matches &&= m[1] === "min" ? width >= bound : width <= bound;
     }
     if (/prefers-reduced-motion/.test(q)) matches = false;

@@ -694,7 +694,7 @@
    scrolling document and the queue grows with its content; size containment there collapsed it
    to 12px (measured at 390x844 on four surfaces; box geometry checked identical with and without
    containment at 40 viewport/route combinations from 800x600 to 1920x1080). Hence the query. */
-@media (min-width: 48rem) {
+@media (min-width: 48rem) and (min-width: 768px) {
   .pq .ag__grid {
     contain: size layout;
   }
@@ -892,7 +892,7 @@
    rung above at exactly 768 px (wave 8). The declaration restates the grid's own `overflow: auto`
    (DataGrid.css), so moving the edge changes no computed value at any width. */
 
-@media not all and (min-width: 48rem) {
+@media not all and (min-width: 48rem) and (min-width: 768px) {
   .pq .ag__grid {
     overflow-x: auto;
   }

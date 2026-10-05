@@ -1006,7 +1006,7 @@
    coverage table drops its widest columns rather than scrolling the page in two dimensions, and
    nothing is removed that was not moved somewhere reachable. */
 
-@media not all and (min-width: 80rem) {
+@media not all and (min-width: 80rem) and (min-width: 768px) {
   .hdr-snap {
     max-width: 16rem;
   }
@@ -1016,7 +1016,7 @@
   }
 }
 
-@media not all and (min-width: 64rem) {
+@media not all and (min-width: 64rem) and (min-width: 768px) {
   .hdr-brand__name {
     /* The mark stays; the wordmark is the first thing a dense bar can afford to lose. */
     display: none;
@@ -1031,7 +1031,7 @@
      on a small screen; the table scrolls inside its own region instead. */
 }
 
-@media not all and (min-width: 48rem) {
+@media not all and (min-width: 48rem) and (min-width: 768px) {
   /* 320px budget: mark 32 + identity 90 + query 96 + More 60 + three 12px gaps = 314. */
   .hdr-query {
     flex-basis: 8rem;

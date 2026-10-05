@@ -5,6 +5,72 @@ evidence exists, because an issue asserted without evidence is a rumour.
 
 ## Resolved
 
+> **W10 — the repairs of the 2026-10-03 re-grade's overturned PASSes, shipped UPHELD-ONLY (recorded 2026-10-05).** The
+> re-grade (`docs/acceptance-report.md`, merged in #590) overturned 16 first-pass PASSes. Each repair was attacked by an
+> independent refuter in its own checkout, then repaired again where it failed. Under the owner-delegated time-box (board
+> rule 6, merge small and often), this pull request carries ONLY the four repairs a refuter UPHELD: A5 (R142), B5 (R143),
+> C6 (R144) and F4 (R145). Every other overturn stays open in O79 with its last refuter verdict quoted, and moves to the
+> W10b follow-up (held by Codex). **The upheld fixes were rebuilt onto current `main`** by cherry-picking only their commits,
+> because every wave-2 fix had branched from a commit that also carried the refuted wave-1 work for A3, B3, A6 and B2; the
+> only conflicts were two import lines (B5's HopList import drops the A3 helpers; App.tsx keeps F4's `useStageDefault` and
+> C6's `RestoredAim`). **Not a re-grade:** A5, B5, C6 and F4 stay FAIL in the acceptance report until a re-grade measures
+> them; "upheld" below means an independent refuter could not break the repair, not that the criterion passed a grade.
+> **Final verification of this rebuilt head belongs to Codex** (an independent refutation on the exact head, required
+> before merge), with the hosted required checks.
+
+### R142. A5 — every trace crossing core2 → core1 framed its hosts and its verdict mark off-canvas, and the glyph and the chip marked different hosts — FIXED IN CODE (W10 wave 1; upheld by a wave-1 re-attack on the integration head, with one minor and two nits); NOT RE-GRADED
+**What was fixed.** `src/fabric3d/traceFraming.ts` frames every hop host's chassis (with room for its label and the verdict
+glyph) inside the canvas for every flow and supported viewport, without changing the Reset/home/focus camera contracts; and
+`src/fabric3d/traceEnd.ts` (`traceEndOf`) is the one rule both the glyph and the chip use: for a REFUTED trace the ending
+is its first REFUTED hop, otherwise its first non-RESOLVED hop, otherwise its last hop. Proof replayed by the independent
+browser verifier on the integration head: r7 "flows 74 with a hop host off-canvas 0" at 1920×1080 and 1280×800; r9 "rows
+50 with a problem 0" at 1920/1440/1280/768/390.
+**Upheld** by a fresh adversary that tried hop indices beyond 0/1, the 3,249-flow depth-ratchet space, reduced motion, the
+low tier, every viewport and the camera contracts.
+**Residual (the refuter's findings, not fixed here):** (minor) the `traceEndOf` REFUTED-trace rule has no test that pins
+it — reverting it to the old rule keeps every related test green, and no real trace in the depth-ratchet space reaches the
+branch; add the synthetic decided-denial case to `trace-end.test.ts`. (nit) `docs/acceptance.md`'s A5 evidence note still
+says every reachable trace is single-hop. (nit) after an orbit, narrow stages can lose core1's name — the A5×B2 composition
+fix in W10b heals it; see O79.
+
+### R143. B5 — an indeterminate ACL result named the wrong line as the blocker, and called an evaluable line "cannot be evaluated" — FIXED IN CODE (W10 wave 2; upheld, with three minors); NOT RE-GRADED
+**What was fixed.** `src/forwarding/engine.ts` `runLists` records EVERY line that could fire before the matching line,
+each with its true kind — an unevaluable line (what the model cannot evaluate) or an evaluable line the flow leaves open
+(the unspecified field, e.g. protocol or destination port) — and decides by the first unevaluable blocker; `mayFireFirst`
+names each blocker by line and cite with its own kind, and `HopList` builds its phrase from the engine's `aclLineBlock`.
+The refuter's flows now read: ip 10.0.10.50 → 10.0.30.20 indeterminate, decided by `acls.core1.PROTECT_SERVERS[2]`
+"cannot be evaluated — cannot model ACL match qualifier(s): icmp_type", lines 1–2 "could match — the flow does not
+specify its protocol and destination port"; portless tcp says "earlier lines this flow leaves open", never "unevaluable".
+**Upheld** by an independent refuter: its mutation runs fail the new tests when the fix is reverted (the list × protocol ×
+port sweep and the traceFlow sweep both fail; their oracle reads `matchTri`/`lineEvaluability` per line, not `runLists`).
+**Residual (minors, not fixed here):** a fully specified flow through an object-group line with an unparseable member is
+headed "an earlier line this flow leaves open" though the MODEL, not the flow, is undecided (add a third block kind);
+across several lists the first list to go indeterminate sets `decidedBy` even if a later list holds the truly unevaluable
+blocker, and that rule is pinned by one golden-only test; the specificity rule's deny-outranks-indeterminate outcome word
+(VOICE_FILTER case) belongs to B6/A2, not B5.
+
+### R144. C6 — stepping hops, or Back and Forward across a hop step, restarted the trace's "bounded" packet loop and draw-on — FIXED IN CODE (W10 wave 2, two rounds; round 2 upheld, with one minor and one nit); NOT RE-GRADED
+**What was fixed.** A hop change on the same picture only steers: `flow.setTrace` no longer re-runs the draw-on or re-arms
+the three packet loops, and the packet rests visibly at the active hop. Round 1 closed re-sending the same trace object;
+the round-1 refuter found Browser Back/Forward across a hop-step history entry still restarted everything, so round 2 keys
+the "new picture" decision on the flow, not the object, through the restored history aim (`RestoredAim`). The flow.ts
+motion inventory and design-brief §4.8 now state the true triggers.
+**Upheld** by the round-2 refuter.
+**Residual (not fixed here):** (minor) only an exact-source-text assertion pins the scene's camera-and-emphasis skip on a
+same-picture step — add a behavioural scene test that a hop step, Back/Forward and a same-flow re-trace leave the camera
+target and emphasis unchanged. (nit) design-brief §4.8 should add that a history step to an entry naming a DIFFERENT flow
+is a new picture and runs once.
+
+### R145. F4 — the 3-D stage default and the three.js fetch followed the browser's default font size instead of 768 CSS px — FIXED IN CODE (W10 wave 2; upheld, with one minor and two nits); NOT RE-GRADED
+**What was fixed.** The stage default and the three.js fetch are keyed on CSS pixels at every default font size
+(`useStageDefault`, `src/test-support/media-at.ts`), while the rem layout ladder keeps its text-size behaviour; at 12 px a
+700 px load no longer fetches three.js, and at 20 px a 900 px load does, after first paint.
+**Upheld** by an independent refuter.
+**Residual (not fixed here):** (minor) design brief 2.5 and the F4 evidence column still describe the stacked rung in
+default-font pixels only; name `stage-font-size.test.tsx` and `breakpoint-ladder.test.ts` as the font-size evidence. (nit)
+several comments describe rungs in default-font pixels only. (nit) at Chrome's maximum default font (72 px) the stage sits
+below the fold at 768 px, though three.js is still fetched after first paint, so (c) holds.
+
 > **W5b of the Atlas Scope program — the follow-up of the W5 repair wave (recorded 2026-10-01; an
 > UNCOMMITTED working tree on top of `22373163`, the merge that brought W5's commit `2145187a` onto this
 > branch).** Six clusters, each followed by an independent verifier: **S-CI** (the successor-package test
@@ -6929,3 +6995,77 @@ Observed from `review/shots/fabric-check.png`, 1600×900, dark theme, SwiftShade
 
 None of these is a correctness defect. They are craft items, which is exactly the category the
 blind comparison exists to adjudicate.
+
+### O79. The re-grade's overturned PASSes that W10 did NOT close — still PASS-overturned (FAIL, F2 UNPROVEN), each with its last independent refuter verdict — OPEN, moved to W10b (held by Codex)
+**How found.** The 2026-10-03 re-grade (`docs/acceptance-report.md`) overturned 16 first-pass PASSes. W10 repaired each
+test-first and had every repair attacked by an independent refuter in its own checkout, with repair rounds where it
+failed. Four were upheld and ship in W10 (R142 A5, R143 B5, R144 C6, R145 F4). The rest below were refuted, or their last
+repair was never refuted, when the owner-delegated time-box ended the rounds; they stay FAIL (F2 UNPROVEN) in the report.
+**Where the latest attempts are (local branches in this repository's shared `.git`, not merged, not on `main`).** Each
+branch's last commit is the newest attempt; commits titled `wip(atlas-scope): unverified partial …` are preserved partial
+work that NO refuter or gate has checked. Wave-1 attempts: `fix/scope-regrade-overturns` (pushed at `5abad966`, wave 1 plus
+the first wave-2 commits) and `fix/scope-regrade1-repair` (`ab690edf`). Wave-2 attempts: `fix/scope-regrade2-coverage`
+(`da63a5ac`), `-grid` (`7c642f10` + WIP `93f4f5b6`), `-determinism` (`0adea948` + WIP `21c7a7fb`), `-coldload` (`41ce10d0`
++ WIP `86120382`), `-a5b2` (`ba0113bf` + WIP `afee00a9`), `-theme` (`9cfa7d96`), `-frametime` (`4a4dceab`). The refuters'
+full verdicts (findings with proof, and what they did not examine) are in each run's journal; the quotes below are their
+claims, shortened.
+
+- **A3 (FAIL) — refuted twice, last on the wave-1 repair `ab690edf`: BLOCKER.** "A list observed bound only on an interface
+  the path never crosses is still named as the blocker": tcp 10.0.20.50 → 10.0.40.50:22 enters at core2 and reaches core1
+  by Vlan10, yet the specificity fallback names VOICE_FILTER (observed bound inbound on Vlan20 only); the repair's own
+  residual admits the transit hop asks about the original source's attachment port. `ab690edf` did repair the two earlier
+  findings from the integration head (the comparator now carries how the deciding line reached its hop, `via`; and a
+  shared-subnet delivery reproduced by the alternate with nothing open is a reproduction again, with the delivering hosts
+  stated), and a minor remains (an l3_forwarding record is still called "the deciding line"). Fix direction for the blocker:
+  when every interface a hop's path crosses has an observed binding state, the specificity fallback must never pick a list
+  observed only elsewhere.
+- **B3 (FAIL until shipped) — repaired in `ab690edf`; its refuter raised only a MINOR for B3.** The repair makes one
+  usable-prefix rule shared with the engine (`usableRoutePrefix` restates `parsePrefix`'s grammar, pinned equal by a test),
+  so a table with no readable prefix gets no RIB and `W_ROUTES_NOT_USABLE`; partly unreadable tables publish their dropped
+  entries' cites per host (`coverage.unreadableRouteEntries`) with a per-entry warning; non-string prefixes are dropped and
+  `parsePrefix` refuses a non-string. The remaining minor: the no-RIB claim still cites the generic coverage records, not
+  `routes.<host>` with its reason. The refuter did not open the variants through the rendered page. It is NOT shipped here:
+  `ab690edf` bundles it with the refuted A3 and B2 repairs, and the wave-1 engine commit `0ae53139` bundles B3 with A3, so
+  shipping B3 needs a split and its own re-verification — the first candidate for W10b. (Before the repair, on the
+  integration head: BLOCKER — tables of unparseable prefixes compiled as usable RIBs; MAJORS — silent partial drops, and a
+  numeric prefix crashed the engine at module load.)
+- **A6 (FAIL until shipped) — repaired in `ab690edf`; its refuter found the rendered behaviour held, with one MINOR.** The
+  repair bounds every column and last-resort search by the stage's bottom edge and names a mark out of view when its drawn
+  box is not wholly inside the stage. The minor: the regression test pins only the conjunction of the bound and the report.
+  NOT shipped here for the same bundling reason (the wave-1 labels commit `48321102` bundles A6 with B2); a split candidate
+  for W10b. (Before the repair, on the integration head: BLOCKER — the HUD said "all N marked" while stranded marks were cut
+  off at the stage's bottom after a camera move.)
+- **B2 (FAIL) — repaired in `ab690edf` (the chip's `bounds` is now required and an empty one is refused; the structural guard
+  now covers the verdict-type family); refuted on it: MAJOR.** The widened guard still exempts JSX attributes and author
+  literals, so a surface that states the ending the way the chip does — a verdict-typed `data-alarm` with literal words that
+  CSS selects — would go unflagged; its live test pins `data-band={bandOfTrace(t)}` as NOT flagged.
+- **A5 × B2 composition (a new defect between two wave-1 repairs) — refuted, last on `ba0113bf`: MAJOR.** The multi-line
+  verdict label covered its own hop host's chassis at narrow viewports (390×844: 50 of 74 flows); the repair adds framing
+  room and a label-layer chassis refusal, but no test pins the refusal: disabling it keeps every test green, while in the
+  browser a small orbit brings the defect back on 12 of 74 flows.
+- **B7 (FAIL) — three rounds; last on `da63a5ac`: MAJOR.** On an unstated collection basis the fabric list footer still
+  prints a bare "0 not collected", telling the reader every host was collected (absence rendered as health). Minors: the
+  partial-only fleet rule is unpinned; "not collected" counts different sets on different surfaces; the per-clause device
+  scope still keys on the `collected` flag.
+- **D2 (FAIL) — two rounds; last on `7c642f10`: BLOCKER.** In the windowed grid (compact density grouped by Device, 369 rows,
+  over the 200-row threshold) a focused row scrolled away by the mouse wheel unmounts, focus drops to `<body>`, the grid
+  has no tabindex=0 cell, and PageDown/ArrowDown do nothing. A third repair was interrupted (WIP `93f4f5b6`, unverified).
+- **F6 / F2 (FAIL / UNPROVEN) — two rounds; last on `0adea948`: BLOCKER (F2).** "`npx vitest run` green" is still not shown:
+  load timeouts still turn the suite red on a contended host, including two new slices, and the only full-suite run on this
+  lineage exited 1. Minor (F6): the harness side of the capture pin has no unit test. A third repair was interrupted (WIP
+  `21c7a7fb`, unverified).
+- **E5 (FAIL) — last on `41ce10d0`: BLOCKER.** The criterion's own command (`ATLAS_RUNS=8 audit-e5-coldload.mjs`) still finds
+  keystrokes well over 200 ms after first paint on every pass (laboratory figures; no quiet-host run exists either way).
+  MAJORS: the claimed first-commit improvement does not reproduce in an A/B; a keystroke during staging now pays the
+  deferred commit synchronously; a cold load restored to `?s=path` still runs the whole suggestion search in render. A
+  second repair was interrupted (WIP `86120382`, unverified).
+- **C4 / D4 (FAIL) — the round-3 commit `9cfa7d96` was never refuted.** The round-2 refuter (MAJOR) found the theme-retint
+  guard skipped the theme-derived shader uniforms bound in `onBeforeCompile` (the D4 recession floor among them); (minor)
+  the recede-floor sweep covers only the sample's fill classes; (nit) the guard writes a sub-3:1 (2.895:1) hue-band floor
+  into the D4 tripwire.
+- **E4 (FAIL) — the round-2 commit `4a4dceab` was never refuted.** The round-1 refuter (MAJORS) found deliberate input holds
+  fed into the renderer's frame-rate bar (a hold later reported as a renderer shortfall), the scene's behaviour pinned only
+  by source-text regexes, and the ≥ 55 fps bar not re-established under the changed instrument on a quiet host.
+**Acceptance-grade timing.** E4 and E5 need measurements on the reference laptop with the host quiet (≤ 25 % busy); none
+were possible while the work ran on the shared host.
+**Owner:** W10b (Codex), continuing from `main` after W10 merges.

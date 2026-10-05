@@ -533,7 +533,7 @@
    dropped — the citation is the row's evidence, and a narrow screen is not a reason to stop
    citing. */
 
-@media not all and (min-width: 48rem) {
+@media not all and (min-width: 48rem) and (min-width: 768px) {
   .ui-dialog.palette {
     width: 100vw;
     top: 0;
