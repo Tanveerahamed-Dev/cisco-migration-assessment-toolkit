@@ -120,9 +120,17 @@ function Trust({ document }: { document: ViewDocument<"trust"> }) {
   </>;
 }
 
+function FindingRollup({ rollup, label }: { rollup: Schemas["UiProjection1_DeviceRow"]["findings"]; label: string }) {
+  return <div className="projection-fact-grid" role="group" aria-label={label}>
+    <FactView label="Worst finding severity" fact={rollup.worst} compact />
+    <FactView label="Findings by severity" fact={rollup.by_severity} compact />
+  </div>;
+}
+
 function DeviceCard({ row, sid }: { row: Schemas["UiProjection1_DeviceRow"]; sid: number }) {
   return <article><h3><Link to={deviceUrl(sid, row.host)}>{row.host} ↗</Link></h3><Pointer pointer={row.pointer} />
     <FactGrid facts={{ model: row.model, health_band: row.health_band, move_group: row.move_group }} />
+    <FindingRollup label={`Finding severity for ${row.host}`} rollup={row.findings} />
     <details><summary>Collection, identity and risk</summary><FactGrid facts={{ health_score: row.health_score, risk_band: row.risk_band,
       collection: row.collection_status, platform: row.platform, software: row.sw_version,
       serial: row.serial_number, role: row.role, lifecycle: row.lifecycle_band }} /></details>
@@ -198,6 +206,7 @@ function Device({ document }: { document: ViewDocument<"device"> }) {
     <div className="projection-two"><Panel title="Health"><FactGrid facts={{ score: p.health.score, band: p.health.band, role: p.health.role }} /></Panel>
       <Panel title="Collection"><FactGrid facts={p.collection} /></Panel></div>
     <div className="projection-two"><Panel title="Physical"><FactGrid facts={p.physical} /></Panel><Panel title="Lifecycle"><FactGrid facts={p.lifecycle} /></Panel></div>
+    <Panel title="Finding severity"><FindingRollup label="Device finding severity" rollup={p.findings_rollup} /></Panel>
     <Panel title="Risk register"><FactView label="Risk band" fact={p.dossier.risk_band} /></Panel>
     <ProjectionList title="Exposure axes" document={document} host={host} initial={p.dossier.exposures} renderRow={(row) => <FactView label={`Exposure ${row.index}`} fact={row.fact} />} />
     <ProjectionList title="Compound findings" document={document} host={host} initial={p.dossier.compound} renderRow={(row) => <FactView label={`Compound ${row.index}`} fact={row.fact} />} />

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CoreSnapshot from "./CoreSnapshot";
-import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, published, topologyFixture } from "../test/projectionFixtures";
+import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, findingsRollupFixture, published, topologyFixture } from "../test/projectionFixtures";
 
 function Harness() {
   const navigate = useNavigate();
@@ -142,6 +142,118 @@ describe("Core snapshot route", () => {
     const link = await screen.findByRole("link", { name: "edge/a~b ↗" });
     expect(new URL(link.getAttribute("href")!, "http://localhost").searchParams.get("host")).toBe("edge/a~b");
     expect(screen.getAllByText("Synthetic input was not collected").length).toBeGreaterThan(0);
+  });
+  describe.each([
+    { view: "inventory", path: "/snapshots/1?view=inventory", label: "Finding severity for edge/a~b" },
+    { view: "device", path: "/snapshots/1?view=device&host=edge%2Fa%7Eb", label: "Device finding severity" },
+  ] as const)("$view finding rollup", ({ view, path, label }) => {
+    function serve(rollup: ReturnType<typeof findingsRollupFixture>) {
+      const document = view === "inventory" ? inventoryFixture(1, rollup) : deviceFixture(1, "edge/a~b", rollup);
+      return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes(`/ui-projection/${view}?`)) return new Response(JSON.stringify(document));
+        if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false, href: null }));
+        throw new Error(`Unexpected non-projection request: ${url}`);
+      });
+    }
+    it("renders supplied worst severity and ordered counts with their own evidence", async () => {
+      const fetcher = serve(findingsRollupFixture());
+      show(path);
+      const rollup = within(await screen.findByRole("group", { name: label }));
+      const worst = rollup.getByRole("button", { name: "Evidence for Worst finding severity" }).closest(".projection-fact")! as HTMLElement;
+      const counts = rollup.getByRole("button", { name: "Evidence for Findings by severity" }).closest(".projection-fact")! as HTMLElement;
+      expect(within(worst).getByText("High", { exact: true })).toBeInTheDocument();
+      expect(within(worst).queryByText("Critical", { exact: true })).not.toBeInTheDocument();
+      expect(within(counts).getAllByRole("term").map((node) => node.textContent)).toEqual(["Critical", "High", "Medium", "Low", "Info"]);
+      expect(within(counts).getAllByRole("definition").map((node) => node.textContent)).toEqual(["0", "2", "0", "1", "0"]);
+      expect(within(counts).getAllByText("0", { exact: true })).toHaveLength(3);
+      fireEvent.click(within(counts).getByRole("button", { name: "Evidence for Findings by severity" }));
+      let drawer = screen.getByRole("dialog");
+      expect(drawer).toHaveTextContent("synthetic.owner:device_findings");
+      expect(drawer).toHaveTextContent("/punchlist/7");
+      expect(drawer).toHaveTextContent("/devices/edge~1a~0b");
+      expect(drawer).toHaveTextContent(`sha256:${"a".repeat(64)}`);
+      fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
+      fireEvent.click(within(worst).getByRole("button", { name: "Evidence for Worst finding severity" }));
+      drawer = screen.getByRole("dialog");
+      expect(drawer).toHaveTextContent("High");
+      expect(drawer).toHaveTextContent("/punchlist/7");
+      expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
+    });
+    it.each([
+      ["unverified", "Unverified", "Synthetic canonical finding custody is missing or malformed"],
+      ["not_collected", "Not collected", "Synthetic canonical finding custody reports incomplete capture"],
+      ["configless", "Not collected", "Synthetic running configuration was not collected"],
+    ] as const)("keeps %s facts withheld without inferred zeros or a severity", async (mode, state, reason) => {
+      serve(findingsRollupFixture(mode)); show(path);
+      const rollup = within(await screen.findByRole("group", { name: label }));
+      expect(rollup.getAllByText(state, { exact: true })).toHaveLength(2);
+      expect(rollup.getAllByText(reason, { exact: true })).toHaveLength(2);
+      expect(rollup.queryByText("0", { exact: true })).not.toBeInTheDocument();
+      expect(rollup.queryByText("High", { exact: true })).not.toBeInTheDocument();
+      expect(rollup.queryByRole("definition")).not.toBeInTheDocument();
+      fireEvent.click(rollup.getByRole("button", { name: "Evidence for Findings by severity" }));
+      const drawer = screen.getByRole("dialog");
+      expect(drawer).toHaveTextContent(reason);
+      expect(drawer).toHaveTextContent("/devices/edge~1a~0b");
+      expect(drawer).toHaveTextContent("synthetic.owner:device_findings");
+    });
+    it("keeps assessed-empty worst severity empty while showing five published zeros", async () => {
+      serve(findingsRollupFixture("assessed_empty")); show(path);
+      const rollup = within(await screen.findByRole("group", { name: label }));
+      const worst = rollup.getByRole("button", { name: "Evidence for Worst finding severity" }).closest(".projection-fact")! as HTMLElement;
+      const counts = rollup.getByRole("button", { name: "Evidence for Findings by severity" }).closest(".projection-fact")! as HTMLElement;
+      expect(within(worst).getByText("Collected, empty")).toBeInTheDocument();
+      expect(within(worst).getByText("Synthetic captured assessment has no findings")).toBeInTheDocument();
+      expect(within(worst).queryByText("0", { exact: true })).not.toBeInTheDocument();
+      expect(within(worst).queryByText("Info", { exact: true })).not.toBeInTheDocument();
+      expect(within(counts).getByText("Published", { exact: true })).toBeInTheDocument();
+      expect(within(counts).getAllByRole("term").map((node) => node.textContent)).toEqual(["Critical", "High", "Medium", "Low", "Info"]);
+      expect(within(counts).getAllByRole("definition").map((node) => node.textContent)).toEqual(["0", "0", "0", "0", "0"]);
+      expect(within(counts).getAllByText("0", { exact: true })).toHaveLength(5);
+    });
+  });
+  it.each(["unverified", "not_collected", "configless"] as const)("retains independently paginated finding references while the rollup is %s", async (mode) => {
+    const document = deviceFixture(1, "edge/a~b", findingsRollupFixture(mode));
+    const qualification = { id: "findings_without_running_config", owner: "synthetic.owner:exact_host_refs", applies_to: ["/device/findings"],
+      text: "Synthetic observed references do not establish assessed severity" };
+    const references = { pointer: "/findings", source_list: { state: "published", subject: "/punchlist", refs: [],
+      basis: "synthetic.owner:exact_host_refs", caveats: [qualification.id] },
+      page: { offset: 0, limit: 1, returned: 1, total: 2, has_more: true, items: [{ index: 7, pointer: "/punchlist/7" }] } };
+    const current = { ...document, limitations: [qualification], payload: { ...document.payload, findings: references } };
+    const next = { ...references, page: { offset: 1, limit: 1, returned: 1, total: 2, has_more: false, items: [{ index: 93, pointer: "/punchlist/93" }] } };
+    const { payload: _payload, ...envelope } = current;
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/device/lists?")) return new Response(JSON.stringify({ ...envelope, list: next }));
+      if (url.includes("/device?")) return new Response(JSON.stringify(current));
+      if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false, href: null }));
+      throw new Error(`Unexpected non-projection request: ${url}`);
+    });
+    show("/snapshots/1?view=device&host=edge%2Fa%7Eb");
+    const referencesRegion = await screen.findByRole("region", { name: "Device finding references" });
+    const first = within(referencesRegion).getByRole("link", { name: "Open referenced finding ↗" });
+    let query = new URL(first.getAttribute("href")!, "http://localhost").searchParams;
+    expect(query.get("ref")).toBe("/punchlist/7"); expect(query.get("row")).toBe("7");
+    expect(query.get("source")).toBe(`sha256:${"a".repeat(64)}`); expect(query.get("source_bytes")).toBe("42");
+    fireEvent.click(within(referencesRegion).getByRole("button", { name: "Evidence for Device finding references" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("synthetic.owner:exact_host_refs");
+    fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
+    fireEvent.click(within(referencesRegion).getByRole("button", { name: "Qualifications for Device finding references" }));
+    expect(screen.getByRole("dialog")).toHaveTextContent(qualification.text);
+    fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
+    fireEvent.click(within(referencesRegion).getByRole("button", { name: "Next Device finding references page" }));
+    await within(referencesRegion).findByText("Finding source index 93");
+    expect(within(referencesRegion).queryByText("Finding source index 7")).not.toBeInTheDocument();
+    query = new URL(within(referencesRegion).getByRole("link", { name: "Open referenced finding ↗" }).getAttribute("href")!, "http://localhost").searchParams;
+    expect(query.get("ref")).toBe("/punchlist/93"); expect(query.get("row")).toBe("93");
+    expect(query.get("source")).toBe(`sha256:${"a".repeat(64)}`);
+    const requested = fetcher.mock.calls.map(([input]) => String(input)).find((url) => url.includes("/device/lists?"))!;
+    const pageQuery = new URL(requested, "http://localhost").searchParams;
+    expect(pageQuery.get("pointer")).toBe("/findings"); expect(pageQuery.get("offset")).toBe("1"); expect(pageQuery.get("host")).toBe("edge/a~b");
+    const rollup = within(screen.getByRole("group", { name: "Device finding severity" }));
+    expect(rollup.getAllByText(mode === "unverified" ? "Unverified" : "Not collected", { exact: true })).toHaveLength(2);
+    expect(rollup.queryByText("0", { exact: true })).not.toBeInTheDocument();
   });
   it("keeps Findings compact and expands owner issue/remediation text", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/findings?") ? findingsFixture() : { available: false })));

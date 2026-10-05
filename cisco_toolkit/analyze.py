@@ -1568,6 +1568,38 @@ def _fmt_endpoint_mix(classes: Dict[str, int], limit: int = 4) -> str:
     return s + (f" · +{extra} more" if extra > 0 else "")
 
 
+def vlan_cutover_host_index(all_interfaces: Any, stp_roots: Any = None) -> Dict[int, set]:
+    """Pure VLAN-to-host universe shared by the cutover producer and its wave admission.
+
+    Keep the producer's Access-VLAN, SVI-name and non-MST STP rules exactly. Serialized
+    interface dictionaries read the same fields as InterfaceData records, so projection
+    admission can join the stored capture without reconstructing a different universe.
+    This is membership, not input-shape or collection qualification; those gates remain
+    the caller's responsibility. The producer's wave excludes hosts in no move group.
+    """
+    def value(record: Any, key: str) -> Any:
+        return record.get(key, "") if isinstance(record, dict) else getattr(record, key, "")
+
+    vlan_hosts: Dict[int, set] = {}
+    for host in sorted(all_interfaces or {}):
+        for port, record in (all_interfaces[host] or {}).items():
+            vlan = (value(record, "vlan") or "").strip()
+            if (value(record, "switchport_mode") or "") == "Access" and vlan.isdigit():
+                vlan_hosts.setdefault(int(vlan), set()).add(host)
+            match = re.match(r"^Vlan0*(\d+)$", str(port), re.IGNORECASE)
+            if match:
+                vlan_hosts.setdefault(int(match.group(1)), set()).add(host)
+    # MST keys name instances, not VLANs. Preserve the root producer's admission rule.
+    for host in sorted(stp_roots or {}):
+        per_host = stp_roots[host]
+        for vlan, record in (per_host.items() if isinstance(per_host, dict) else []):
+            number = _election_priority(vlan)
+            if number is None or number < 0 or (isinstance(record, dict) and record.get("is_mst")):
+                continue
+            vlan_hosts.setdefault(number, set()).add(host)
+    return vlan_hosts
+
+
 def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceData]],
                                 stp_roots: Optional[Dict[str, dict]] = None,
                                 fhrp_detail: Optional[Dict[str, list]] = None,
@@ -1587,7 +1619,7 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
     from cisco_toolkit.parse import _parse_fhrp
 
     # ---- VLAN universe: access-port presence + gateway SVIs (+ names) -------------------------
-    vlan_hosts: Dict[int, set] = {}
+    vlan_hosts = vlan_cutover_host_index(all_interfaces, stp_roots)
     names: Dict[int, str] = {}
     gws: Dict[int, List[tuple]] = {}                 # vid -> [(host, InterfaceData)] gateway SVIs
     for host in sorted(all_interfaces or {}):
@@ -1595,7 +1627,6 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
             v = (getattr(d, "vlan", "") or "").strip()
             if (getattr(d, "switchport_mode", "") or "") == "Access" and v.isdigit():
                 vid = int(v)
-                vlan_hosts.setdefault(vid, set()).add(host)
                 nm = (getattr(d, "vlan_name", "") or "").strip()
                 if nm:
                     names.setdefault(vid, nm)
@@ -1603,23 +1634,13 @@ def compute_vlan_cutover_matrix(all_interfaces: Dict[str, Dict[str, InterfaceDat
             if not m:
                 continue
             vid = int(m.group(1))
-            vlan_hosts.setdefault(vid, set()).add(host)
             nm = (getattr(d, "vlan_name", "") or "").strip()
             if nm:
                 names.setdefault(vid, nm)
             if (getattr(d, "svi_ip", "") or "").strip() or (getattr(d, "hsrp_behavior", "") or "").strip():
                 gws.setdefault(vid, []).append((host, d))
-    # STP root evidence adds VLAN presence too (a trunk-carried VLAN still runs an STP instance on
-    # its root even where no local access port / SVI was collected). MST keys are INSTANCE numbers,
-    # not VLAN ids -- excluded, mirroring stp_root_findings. WHO the root is comes from the one owner
-    # (G15): a VLAN several bridges claim is ambiguous, never "first sorted claimant wins".
-    for host in sorted(stp_roots or {}):
-        per_host = stp_roots[host]
-        for vlan, rec in (per_host.items() if isinstance(per_host, dict) else []):
-            number = _election_priority(vlan)
-            if number is None or number < 0 or (isinstance(rec, dict) and rec.get("is_mst")):
-                continue
-            vlan_hosts.setdefault(number, set()).add(host)
+    # VLAN presence is shared through vlan_cutover_host_index; root election
+    # remains the one G15 owner, never "first sorted claimant wins".
     election = classify_stp_root_election(stp_roots)["pvst_vlan"]
 
     # ---- join indexes over the precomputed axes ------------------------------------------------
@@ -7846,6 +7867,9 @@ def compute_operational_drift(all_interfaces: Dict[str, Dict[str, InterfaceData]
 
 
 _PUNCH_RANK = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+# Closed device-rollup vocabulary follows the punch-list owner's rank order;
+# Info is already produced with its existing implicit rank zero.
+PUNCH_SEVERITIES: Tuple[str, ...] = tuple(_PUNCH_RANK) + ("Info",)
 
 # W2-3 (framework-mapping matrix): the engine's existing config-hardening checks (parse._SEC_CHECKS) mapped to the
 # control each one EVIDENCES in NIST 800-53r5 / PCI-DSS v4.0 / DISA Cisco IOS NDM STIG (the CIS ref already rides on
@@ -8293,6 +8317,57 @@ def _usable_text(value) -> str:
     basis; everything else is treated exactly like a missing one (i.e. FAIL CLOSED to the sentinel).
     """
     return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+def compute_device_findings(punchlist: Any, hosts: Any) -> dict:
+    """Pure, unpersisted partition of stored punch-list rows for exact requested hosts.
+
+    Admit the complete source list before exposing any partition. Only severity and
+    devices belong to this fold; unrelated legacy row fields retain their own guards.
+    A malformed row, unknown severity or unreadable membership returns a problem and
+    no usable partition. Each original row contributes once per host even when its
+    devices repeat; distinct rows remain distinct. Empty means no stored findings,
+    not a claim that the device was collected or its inputs were successfully assessed.
+    The projection owns those capture and phase gates before publishing these counts.
+    """
+    def problem(reason: str) -> dict:
+        return {"problem": reason, "per_device": {}}
+
+    if not isinstance(hosts, (list, tuple)):
+        return problem("requested hosts are not an ordered list or tuple")
+    if any(not isinstance(host, str) or not host.strip() for host in hosts):
+        return problem("requested hosts contain an unreadable or blank identity")
+    if len(set(hosts)) != len(hosts):
+        return problem("requested hosts contain duplicate exact identities")
+    if not isinstance(punchlist, list):
+        return problem("punch-list is not a complete list")
+    for index, row in enumerate(punchlist):
+        if not isinstance(row, dict):
+            return problem(f"punch-list row {index} is not a record")
+        severity = row.get("severity")
+        if not isinstance(severity, str) or severity not in PUNCH_SEVERITIES:
+            return problem(f"punch-list row {index} has an unsupported severity")
+        devices = row.get("devices")
+        if (not isinstance(devices, list)
+                or any(not isinstance(host, str) or not host.strip() for host in devices)):
+            return problem(f"punch-list row {index} has unreadable device membership")
+
+    per_device: Dict[str, dict] = {
+        host: {"worst": None, "by_severity": dict.fromkeys(PUNCH_SEVERITIES, 0), "indices": []}
+        for host in hosts
+    }
+    for index, row in enumerate(punchlist):
+        severity = row["severity"]
+        for host in set(row["devices"]):
+            if host not in per_device:
+                continue
+            device = per_device[host]
+            device["by_severity"][severity] += 1
+            device["indices"].append(index)
+            previous = device["worst"]
+            if previous is None or _PUNCH_RANK.get(severity, 0) > _PUNCH_RANK.get(previous, 0):
+                device["worst"] = severity
+    return {"problem": None, "per_device": per_device}
 
 
 def compute_migration_punchlist(cross_layer: List[dict],
@@ -12490,6 +12565,20 @@ def _dossier_hygiene_screened_empty(parse_yield: Any, host: str, hosts: list) ->
     return calls >= 1 and zero_yield >= 1 and errors == 0 and calls == with_entities + zero_yield + errors
 
 
+def device_config_capture(software_record: Any, qos_record: Any) -> Optional[bool]:
+    """Exact canonical capture flag, with QoS fallback only when its software row is absent.
+
+    A present canonical row dominates even when False, empty or malformed. Record
+    matching and duplicate/shape custody remain with the caller; None alone means
+    there is no canonical row. No truthiness or string/number coercion proves capture.
+    """
+    if software_record is not None:
+        capture = software_record.get("config_assessable") if isinstance(software_record, dict) else None
+    else:
+        capture = qos_record.get("assessable") if isinstance(qos_record, dict) else None
+    return capture if type(capture) is bool else None
+
+
 def compute_device_dossiers(health_scores: Optional[list] = None,
                             failure_impact: Optional[list] = None,
                             lifecycle_risk: Optional[dict] = None,
@@ -12626,10 +12715,8 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
 
         swr = sw_by.get(host)
         qar = qa_by.get(host)
-        # Exact boolean records only. A present canonical record dominates its fallback even False.
-        capture = swr.get("config_assessable") if swr is not None else (qar or {}).get("assessable")
-        if not isinstance(capture, bool):
-            capture = None
+        # Canonical capture precedence is shared with the ephemeral device findings projection.
+        capture = device_config_capture(swr, qar)
 
         def config_gap(axis: str, record: Any) -> bool:
             if capture is False:
