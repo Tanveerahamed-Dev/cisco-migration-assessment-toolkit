@@ -70,7 +70,25 @@ hosts and generic non-route paths. Real compile/install/resolver controls add
 bracket-root and equivalent leading-separator aliases. Independent source review
 upholds this bounded correction; its runtime result remains pending.
 
-All fresh changed-source execution, browser proof and final independent
-refutation are pending. Earlier failures, partial checks and old repair receipts
-remain preserved. No release publication, signing, tags, deployment, device or
-vault action is authorized.
+Follow-up `23b0fcc0` was independently reproduced by fresh hosted family
+artifact `11371952822`, six-file ZIP
+`d0ee599e714fe6dc433bf239e72e26c11ba968a925d9da5209b95d823c563f68`.
+All 447 preselected inputs, four prior outputs and seven bindings match;
+all four generated members are byte-identical to committed 23. Browser and
+opt-in measurement steps passed on 23, with the complete workflows and final
+artifact reviews still pending at this checkpoint.
+
+CodeQL nevertheless found two actual OPEN/high source alerts on that exact
+source: #77 `js/file-system-race` (a material pathname checked then read) and
+#76 `js/insecure-temporary-file` (temporary snapshot not exclusively/private
+created). Its JavaScript analysis completed normally; the source is held.
+The bounded harness correction opens material no-follow before descriptor
+admission, reads within 16 MiB and checks stable descriptor/path identity. A
+private mode-0700 scratch directory holds exclusively created no-follow
+mode-0600 snapshots. All six domain and custody controls remain; no alert or
+query is dismissed. Local syntax checks are source-only evidence.
+
+All fresh corrected-source execution, hosted CodeQL resolution, browser proof
+and final independent refutation are pending. Earlier failures, partial checks
+and old repair receipts remain preserved. No release publication, signing,
+tags, deployment, device or vault action is authorized.

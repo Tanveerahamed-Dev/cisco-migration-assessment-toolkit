@@ -7015,6 +7015,13 @@ a separately reviewed minimal route-root guard and actual installed-resolver con
 literal-host paths or generic non-route semantics. Fresh changed-source hosted execution, rendered proof and final
 independent refutation are required; old passes do not transfer. The aggregate no-RIB citation minor and FAIL grade remain.
 
+**B3 harness correction, 2026-10-06:** exact follow-up `23b0fcc0` was reproduced by independently verified hosted family
+bytes and passed its actual browser and measurement steps, but CodeQL found two actual OPEN/high alerts (#77 material
+check/read race, #76 insecure temporary snapshot); complete workflow/final review was still pending at this checkpoint.
+The harness now uses bounded, identity-stable no-follow descriptor reads and private exclusive scratch snapshot files.
+All six domain/custody controls remain. Syntax-only checks do not resolve the hosted alerts: corrected-source CodeQL,
+complete workflows, browser evidence and independent final refutation are required. No old source receipt or grade transfers.
+
 **How found.** The 2026-10-03 re-grade (`docs/acceptance-report.md`) overturned 16 first-pass PASSes. W10 repaired each
 test-first and had every repair attacked by an independent refuter in its own checkout, with repair rounds where it
 failed. Four were upheld and ship in W10 (R142 A5, R143 B5, R144 C6, R145 F4). The rest below were refuted, or their last

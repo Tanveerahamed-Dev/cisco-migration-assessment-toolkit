@@ -17,7 +17,7 @@
 import { chromium, expect } from "@playwright/test";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,6 +67,46 @@ function outsideProtected(input) {
   for (const root of protectedPaths()) check(!inside(root, path) && !inside(path, root),
     "evidence/scratch paths may not overlap any managed worktree or the common Git directory");
   return path;
+}
+const sameFileIdentity = (a, b) => ["dev", "ino", "mode", "nlink", "size", "mtimeNs", "ctimeNs"]
+  .every((key) => typeof a[key] === "bigint" && typeof b[key] === "bigint" && a[key] === b[key]);
+/** Admit the open object, not a pathname checked before the read (CodeQL js/file-system-race). */
+function readOrdinaryMaterial(path) {
+  check(typeof constants.O_NOFOLLOW === "number" && typeof constants.O_NONBLOCK === "number",
+    "hosted Linux no-follow/nonblocking file opening is required");
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    check(before.isFile() && before.nlink === 1n && before.size >= 0n && before.size <= BigInt(MAX_MATERIAL_BYTES)
+      && canonicalPath(path) === resolve(path), "source material is non-ordinary, hardlinked, aliased or exceeds the bounded read");
+    const chunk = Buffer.alloc(64 * 1024);
+    const parts = [];
+    let total = 0;
+    while (total <= MAX_MATERIAL_BYTES) {
+      const count = readSync(descriptor, chunk, 0, Math.min(chunk.length, MAX_MATERIAL_BYTES + 1 - total), null);
+      if (count === 0) break;
+      parts.push(Buffer.from(chunk.subarray(0, count)));
+      total += count;
+    }
+    check(total <= MAX_MATERIAL_BYTES, "source material exceeded the bounded descriptor read");
+    const after = fstatSync(descriptor, { bigint: true });
+    const named = lstatSync(path, { bigint: true });
+    check(named.isFile() && !named.isSymbolicLink() && named.nlink === 1n
+      && sameFileIdentity(before, after) && sameFileIdentity(before, named)
+      && total === Number(before.size) && canonicalPath(path) === resolve(path), "source descriptor/path identity changed during the read");
+    return Buffer.concat(parts, total);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+/** Exclusive owner-only snapshots in the owned private directory (CodeQL js/insecure-temporary-file). */
+function writePrivateSnapshot(path, bytes) {
+  const descriptor = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    writeFileSync(descriptor, bytes);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 function arg(name) {
   const at = process.argv.indexOf(name);
@@ -175,9 +215,7 @@ function materialHashes() {
   check(Object.keys(head).length > 0 && Object.hasOwn(head, "atlas-scope/review/verify-b3-route-admission.mjs"), "harness/source materials must be tracked in the selected commit");
   return Object.fromEntries(Object.entries(head).map(([path, identity]) => {
     const local = join(REPO, path);
-    const stat = lstatSync(local);
-    check(stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_MATERIAL_BYTES && canonicalPath(local) === resolve(local), "source material is non-ordinary, aliased or exceeds the bounded read");
-    const bytes = readFileSync(local);
+    const bytes = readOrdinaryMaterial(local);
     const committed = gitBytes("cat-file", "blob", `HEAD:${path}`);
     check(bytes.length === committed.length && sha(bytes) === sha(committed), "source material bytes differ from the selected HEAD blob, regardless of clean-status flags");
     return [path, { ...identity, bytes: bytes.length, sha256: sha(bytes) }];
@@ -245,14 +283,14 @@ try {
   statusBefore = git("status", "--porcelain");
   check(statusBefore === "", "B3 requires a clean selected source checkout before browser verification");
   before = materialHashes();
-  const raw = readFileSync(join(REPO, SAMPLE_REL));
+  const raw = readOrdinaryMaterial(join(REPO, SAMPLE_REL));
   const snapshot = JSON.parse(raw.toString("utf8"));
   const subject = chooseSubject(snapshot);
   report.source = { commit, tree: git("rev-parse", "HEAD^{tree}"), githubSha: process.env.GITHUB_SHA,
     githubHeadRef: process.env.GITHUB_HEAD_REF ?? "", runId: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT,
     runnerEnvironment: process.env.RUNNER_ENVIRONMENT, nodeVersion: process.version, platform: process.platform,
     playwrightVersion: JSON.parse(readFileSync(join(PKG, "node_modules/@playwright/test/package.json"), "utf8")).version,
-    harnessSha256: sha(readFileSync(fileURLToPath(import.meta.url))), sourceSnapshotSha256: sha(raw),
+    harnessSha256: sha(readOrdinaryMaterial(fileURLToPath(import.meta.url))), sourceSnapshotSha256: sha(raw),
     sourceMaterials: before, sourceStatus: statusBefore };
   report.subject = subject;
   scratchParent = canonicalPath(tmpdir());
@@ -260,7 +298,7 @@ try {
   for (const root of protectedPaths()) check(!inside(root, scratchParent), "ephemeral temp parent is inside a managed worktree/common Git directory");
   const plannedScratch = outsideProtected(join(scratchParent, `atlas-b3-browser-${randomUUID()}`));
   check(!existsSync(plannedScratch), "selected scratch directory must be fresh");
-  mkdirSync(plannedScratch);
+  mkdirSync(plannedScratch, { mode: 0o700 });
   scratch = plannedScratch;
   const variants = [
     { name: "positive", kind: "positive", change: null },
@@ -304,7 +342,7 @@ try {
       const bytes = variant.change === null ? raw : Buffer.from(`${JSON.stringify(clone, null, 1)}\n`);
       const fileName = `b3-${variant.name}.snapshot.json`;
       const path = join(scratch, fileName);
-      writeFileSync(path, bytes);
+      writePrivateSnapshot(path, bytes);
       currentCase.snapshot = { fileName, bytes: bytes.length, sha256: sha(bytes), sourceExactSha256: `sha256:${sha(bytes)}` };
       page = await ctx.newPage();
       page.setDefaultTimeout(WAIT_MS);
