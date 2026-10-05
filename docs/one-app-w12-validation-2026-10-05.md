@@ -160,3 +160,78 @@ all 31 focused smoke-contract cases passed, including 13 new readiness page
 mutations; lint and whitespace checks passed. This was a bounded mocked-response
 test, with no local Atlas build, binary execution or HTTP server. Hosted frozen
 execution remains required on the corrected source.
+
+## PR-A verified merge and PR-B boundary
+
+PR-A #597 merged as `d0035a65` from `b7933a73`, with tree `a3ff215a` equal to
+tested merge `1712e7c6` and the final head. All 15 protected app-15368 checks,
+five applicable PR workflows and the complete manual workflow passed. The first
+manual Windows job lost hosted-runner communication and had no completed suite
+verdict; failed log retrievals and that incomplete evidence are preserved. Only
+the failed job was rerun on the unchanged source, and attempt 2 completed green.
+Its independently reviewed sample maxima were 264.4771/239.3539 ms. Synthetic
+717.4737/424.3017 ms timings remain diagnostic, retaining 26 topology nodes.
+Formal approving review is not supplied by this technical review or inferred
+from the owner's authorized admin merge mechanism.
+
+PR-B's drafts were prepared externally while PR-A stayed clean, and applied
+only after actual merge-tree reconciliation. The engine fold is pure and
+unpersisted; complete severity/membership admission precedes publication.
+Same-row repeated hosts count once, distinct rows remain distinct, and original
+indices witness counts. Positive capture custody and scoped input gates precede
+every count, including zero. Missing, malformed and duplicate canonical records
+cannot fall back to positive QoS evidence; exact False is not collected.
+Unknown/non-text host facts retain the existing bare-reference boundary.
+
+The device page keeps its existing paginated finding references and adds the
+same rollup as Inventory. Worst is empty for an assessed-empty captured scope;
+the five-count map remains ordered and rejects bool/float aliases. Counts across
+devices are not distinct fleet findings. VLAN waves now use the pure producer
+membership helper and `_mg_pre`, validate written labels first, compare complete
+ordered strings and omit unmatched hosts. Commas in labels are never split.
+
+The first 147 focused engine/projection/VLAN cases passed, with zero failures,
+errors or skips. Narrow cap, vocabulary, owner-signature and import checks passed.
+Canonical offline OpenAPI export and type generation completed. The exact schema
+delta adds `DeviceFindingsRollup`/`SeverityCountsFact`, changes DevicePage,
+DeviceRow, LimitationId and Trust, and removes no definition. Static independent
+review found no new keyword/domain or resource-scope feature; prospective
+native/stock execution still precedes changing literal pins. Full hosted suites,
+tracked SPA regeneration, fresh final privacy and source-bound 300 ms acceptance
+remain required. PR-A's receipts do not transfer to these changed bytes.
+
+The first prospective native batch completed with 42 failures: its positive
+empty-count fixture declared `synthetic.owner`, outside the existing closed
+engine-state owner enum. This was a fixture error, with native rejection intact;
+the full log/XML and the memory-pressure observation remain preserved. An
+initial bookkeeping description called the run incomplete before discovering
+its already-completed verdict; the superseding receipt explicitly corrects that
+description. No failed verdict is hidden or counted as a pass.
+
+The corrected fixture uses the registered owner and keeps an unknown-owner
+refusal. A bounded one-host real HTTP fixture replaces the unrelated full fleet
+to keep local work light. All 45 native/stock view/list cases passed, covering
+published, withheld and assessed-empty envelopes, five-key order, type/bounds,
+missing/extra fields, paired engine state/owner, caveats and global limitation
+count. Independent static review is clear for both new definitions and all four
+changed definitions; no new keyword/pattern/resource scope or provider/domain
+feature is admitted. Literal reviewed pins are now:
+
+- view: `d51552f6cc7cebba66e941b1f67cab1a6bb8b04278aba5458b30dbfc6919e597`
+- list: `a9bcf1f76fb94daec79f7a4fbb0308b6ff4d919bd30a0ef9c4a5af45c092bf47`
+
+Private resolver/version, native provider, input-domain admission, offline
+fallback, complete validation, paging and error guards remain unchanged. Fresh
+final-source hosted evidence still precedes merge; these focused working-tree
+checks do not replace it.
+
+The eight focused private-resolver/version/native construction checks passed,
+and all 29 CoreSnapshot renderer cases passed, including 13 new rollup cases.
+The frontend fixture's published count sum was reconciled to its three finding
+references before execution; held partial-reference cases remain separate. The
+closed dependency-reader proof admits only the exact new section assignment,
+its single `_Row` consumer and the `_rolled` read. Added alias/rebind/index/scope
+mutants remain refused, and independent fixed-SSOT family/all-family controls
+passed. Lint and whitespace checks passed. These are focused working-source
+checks; the tracked SPA still needs fresh hosted regeneration, and every final
+head requires its own complete workflows, privacy and performance evidence.

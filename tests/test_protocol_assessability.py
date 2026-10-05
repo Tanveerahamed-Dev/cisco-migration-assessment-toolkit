@@ -769,6 +769,41 @@ def _assert_section_dependency_reader(text):
         if isinstance(node, (ast.Global, ast.Nonlocal)):
             assert not registry_names.intersection(node.names), "dependency registry scope was redirected"
     parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    # The device counter keeps one local section tuple for its two synthetic facts. Admit only
+    # that literal assignment and its single _Row argument; the local name is not a receipt alias.
+    rollup_functions = [node for node in tree.body
+                        if isinstance(node, ast.FunctionDef) and node.name == "_device_finding_rollup"]
+    assert len(rollup_functions) == 1, "the device finding section consumer is absent or duplicated"
+    rollup_function = rollup_functions[0]
+    section_bindings = [node for node in rollup_function.body if isinstance(node, ast.Assign)
+                        and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                        and node.targets[0].id == "sections"]
+    assert len(section_bindings) == 1, "device finding sections must have one direct literal binding"
+    section_binding = section_bindings[0]
+    assert ast.unparse(section_binding.value) == "('punchlist',) + PUNCHLIST_INPUTS", (
+        "device finding sections must bind only the declared punch-list inputs")
+    local_uses = []
+    for node in ast.walk(rollup_function):
+        field = binding_fields.get(type(node).__name__)
+        bound = getattr(node, field, None) if field else None
+        if isinstance(node, ast.alias):
+            bound = node.asname or node.name.split(".")[0]
+        assert bound != "sections", "device finding sections were shadowed or rebound"
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            assert "sections" not in node.names, "device finding sections scope was redirected"
+        if not isinstance(node, ast.Name) or node.id != "sections":
+            continue
+        if not isinstance(node.ctx, ast.Load):
+            assert node is section_binding.targets[0], "device finding sections were rebound"
+            continue
+        call = parents.get(node)
+        assert isinstance(call, ast.Call), "indirect device finding section use"
+        local_uses.extend((ast.unparse(call.func), str(index), ast.unparse(value))
+                          for index, value in enumerate(call.args) if node is value)
+        local_uses.extend((ast.unparse(call.func), keyword.arg, ast.unparse(keyword.value))
+                          for keyword in call.keywords if node is keyword.value)
+    assert local_uses == [("_Row", "4", "sections")], (
+        "device finding sections may only reach the declared row-state consumer")
     uses = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Name) or node.id not in registry_names:
@@ -783,6 +818,11 @@ def _assert_section_dependency_reader(text):
                 call = enclosing
             if isinstance(enclosing, ast.FunctionDef):
                 break
+        if call is None:
+            assert enclosing is rollup_function and node is section_binding.value.right, (
+                "indirect dependency-registry use")
+            uses.append((enclosing.name, "assignment", "sections", ast.unparse(section_binding.value)))
+            continue
         assert call is not None and isinstance(enclosing, ast.FunctionDef), "indirect dependency-registry use"
         arguments = [(str(i), value) for i, value in enumerate(call.args)]
         arguments += [(kw.arg, kw.value) for kw in call.keywords]
@@ -795,6 +835,8 @@ def _assert_section_dependency_reader(text):
         ("_findings", "_total", "sections", "toks + PUNCHLIST_INPUTS"),
         ("_device_page", "_rolled", "4", "PUNCHLIST_INPUTS"),
         ("_device_page", "_selection_rows", "sections", "('punchlist',) + PUNCHLIST_INPUTS"),
+        ("_device_finding_rollup", "assignment", "sections", "('punchlist',) + PUNCHLIST_INPUTS"),
+        ("_device_finding_rollup", "_rolled", "4", "PUNCHLIST_INPUTS"),
         ("_readiness", "_secs_fail", "1", "READINESS_INPUTS"),
         ("_readiness", "_Row", "extra", readiness_refs),
         ("_readiness", "_listing", "extra", readiness_refs),
@@ -928,6 +970,21 @@ def test_section_dependency_proof_rejects_receipt_reads_and_owner_vocabulary_dri
         text + "\ndef bad(s):\n    return _secs_fail(s, READINESS_INPUTS)\n",
         text + "\ndef bad(s):\n    return s[READINESS_INPUTS[7]]\n",
         text + "\nREADINESS_INPUTS = ()\n",
+        text + "\nPUNCHLIST_INPUTS = ()\n",
+        text.replace('sections = ("punchlist",) + PUNCHLIST_INPUTS',
+                     'sections = ("security",) + PUNCHLIST_INPUTS'),
+        text.replace('sections = ("punchlist",) + PUNCHLIST_INPUTS',
+                     'sections = ("punchlist",) + PUNCHLIST_INPUTS\n    hidden_alias = sections'),
+        text.replace('sections = ("punchlist",) + PUNCHLIST_INPUTS',
+                     'sections = ("punchlist",) + PUNCHLIST_INPUTS\n    hidden_row = ctx.s[sections[-3]]["rows"][0]'),
+        text.replace('sections = ("punchlist",) + PUNCHLIST_INPUTS',
+                     'sections = ("punchlist",) + PUNCHLIST_INPUTS\n    sections = ()'),
+        text.replace('def _device_finding_rollup(ctx: _Ctx, host: Any,',
+                     'def _device_finding_rollup(ctx: _Ctx, host: Any, sections=(),'),
+        text.replace('state, reason = _rolled(ctx, base, reason, ("punchlist",), PUNCHLIST_INPUTS)',
+                     'state, reason = _rolled(ctx, base, reason, ("punchlist",), sections)'),
+        text.replace('sections = ("punchlist",) + PUNCHLIST_INPUTS',
+                     'global sections\n    sections = ("punchlist",) + PUNCHLIST_INPUTS'),
     )
     for mutant in mutants:
         assert mutant != text
@@ -1023,6 +1080,98 @@ def test_section_dependency_projection_follows_ssot_not_receipt_states(monkeypat
 
     with pytest.raises(AssertionError, match="projection ignored SSOT section state"):
         _assert_section_projection_delegates(aggregate_receipt_reader, monkeypatch)
+
+
+def _assert_device_finding_section_projection_delegates(project_rollups, monkeypatch):
+    """Fixed SSOT states govern both rollups; no receipt family or aggregate authorizes a count."""
+    from cisco_toolkit import ssot, ui_projection
+
+    snap = {name: [] for name in ui_projection.PUNCHLIST_INPUTS}
+    snap.update(devices={"sw1": {"hostname": "sw1"}},
+                interfaces={"sw1": {"Gi1/0/1": {"switchport_mode": "Access", "vlan": "10"}}},
+                security={"sw1": {"findings": []}},
+                software_risk={"per_device": [{"host": "sw1", "config_assessable": True}]},
+                qos_audit={"per_device": []},
+                punchlist=[{"severity": "Low", "devices": ["sw1"]}])
+    receipt = compute_protocol_assessability(["sw1"], {"sw1": {}}, {"sw1": {}}, [])
+    receipt["rows"][0]["state"] = "assessed"
+    snap["protocol_assessability"] = receipt
+    original = ssot.abstention_reason
+    baseline = project_rollups(snap)
+    assert set(baseline) == {"inventory", "device"}
+    for rollup in baseline.values():
+        assert rollup["worst"]["state"] == "published" and rollup["worst"]["value"] == "Low"
+        assert rollup["by_severity"]["state"] == "published"
+        assert rollup["by_severity"]["value"] == {
+            "Critical": 0, "High": 0, "Medium": 0, "Low": 1, "Info": 0,
+        }  # positive capture/count control prevents a different gap from masking receipt readers
+    for owner_state in ssot.ABSTENTION_STATES:
+        calls = []
+
+        def section_state(value, subject, *args, **kwargs):
+            if subject == "protocol_assessability":
+                calls.append(subject)
+                return owner_state
+            return original(value, subject, *args, **kwargs)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(ssot, "abstention_reason", section_state)
+            expected = None
+            probes = [(row,) for row in receipt["rows"]] + [tuple(receipt["rows"])]
+            for rows in probes:
+                baseline_states = [row["state"] for row in rows]
+                for receipt_state in (*PROTOCOL_ASSESSABILITY_STATES, "future_unknown_state"):
+                    for row in rows:
+                        row["state"] = receipt_state
+                    actual = project_rollups(snap)
+                    assert calls, "the finding rollups must consult the SSOT section owner"
+                    calls.clear()
+                    want = "published" if owner_state == "collected_but_empty" else owner_state
+                    for rollup in actual.values():
+                        for fact in rollup.values():
+                            assert fact["state"] == want, "projection ignored SSOT section state"
+                    if expected is None:
+                        expected = actual
+                    assert actual == expected, f"finding rollup interpreted receipt row state {receipt_state}"
+                for row, baseline_state in zip(rows, baseline_states):
+                    row["state"] = baseline_state
+
+
+def test_device_finding_section_dependency_follows_ssot_not_receipt_states(monkeypatch):
+    from cisco_toolkit import ui_projection
+
+    def project_rollups(snap):
+        inventory = ui_projection.project_inventory(snap)
+        rows = inventory["devices"]["rows"]["items"]
+        assert len(rows) == 1 and rows[0]["host"] == "sw1"
+        return {"inventory": rows[0]["findings"],
+                "device": ui_projection.project_device(snap, "sw1")["device"]["findings_rollup"]}
+
+    _assert_device_finding_section_projection_delegates(project_rollups, monkeypatch)
+    receipt_key = ui_projection.PUNCHLIST_INPUTS[-3]
+    assert receipt_key == "protocol_assessability"
+
+    def aliased_receipt_reader(snap):
+        result = project_rollups(snap)
+        if snap[receipt_key]["rows"][0]["state"] != "assessed":
+            result["inventory"]["worst"]["state"] = "unverified"
+        return result
+
+    def later_family_reader(snap):
+        result = project_rollups(snap)
+        if snap[receipt_key]["rows"][-1]["state"] == "assessed":
+            result["device"]["by_severity"]["state"] = "unverified"
+        return result
+
+    def aggregate_receipt_reader(snap):
+        result = project_rollups(snap)
+        if all(row["state"] == "assessed" for row in snap[receipt_key]["rows"]):
+            result["inventory"]["by_severity"]["state"] = "unverified"
+        return result
+
+    for mutant in (aliased_receipt_reader, later_family_reader, aggregate_receipt_reader):
+        with pytest.raises(AssertionError, match="projection ignored SSOT section state"):
+            _assert_device_finding_section_projection_delegates(mutant, monkeypatch)
 
 
 def _assert_readiness_section_projection_delegates(project_overview, monkeypatch):

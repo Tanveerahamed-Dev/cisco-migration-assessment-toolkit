@@ -1221,6 +1221,116 @@ def test_native_w12a_closed_rollups_match_stock_on_valid_and_rejected_shapes(nat
     assert _validation_errors(native, altered) == _validation_errors(stock, altered)
 
 
+@pytest.mark.parametrize("surface", ["inventory", "inventory_list", "device"])
+@pytest.mark.parametrize("mutation", ["missing_rollup", "missing_severity", "extra_severity", "bool_count",
+                                     "fractional_count", "negative_count", "oversized_count", "unknown_worst", "extra_rollup",
+                                     "withheld_value", "missing_reason", "engine_state_pair", "unknown_caveat",
+                                     "unknown_engine_owner", "global_limitation_count"])
+def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(client, monkeypatch, surface, mutation):
+    """The new nested record is admitted natively on real transport shapes, including list rows."""
+    from backend import ui_projection_api as api
+    # Independently selected prospective pins let parity run before production pins change.
+    prospective = {"view": "d51552f6cc7cebba66e941b1f67cab1a6bb8b04278aba5458b30dbfc6919e597",
+                   "list": "a9bcf1f76fb94daec79f7a4fbb0308b6ff4d919bd30a0ef9c4a5af45c092bf47"}
+    assert {kind: api._native_schema_hash(schema) for kind, schema in
+            (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
+    monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)
+
+    def fact(value):
+        return {"state": "published", "value": value, "subject": None, "refs": [], "basis": "synthetic.owner"}
+
+    from cisco_toolkit.parse import parse_security
+    host = "native-device"
+    snapshot = {section: [] for section in owner.PUNCHLIST_INPUTS}
+    snapshot.update({
+        "devices": {host: {"hostname": host}},
+        "interfaces": {host: {"Gi1/0/1": {"switchport_mode": "Access", "vlan": "10"}}},
+        "punchlist": [{"severity": "High", "devices": [host]}],
+        "security": {host: parse_security("hostname " + host + "\n")},
+        "software_risk": {"per_device": [{"host": host, "config_assessable": True}]},
+        "qos_audit": {"per_device": []}, "syslog_intelligence": {"per_device": []},
+        "platform_health": {"per_device": []}, "device_dossiers": {"per_device": []},
+        "protocol_assessability": {}, "vtp_safety_baseline": {}, "ipv6_routing_adjacency_baseline": {},
+        "collection_completeness": {"devices": [], "summary": {"inventory": 1, "collected": 1}},
+        "stp_roots": {}, "vlan_cutover": [],
+    })
+    sid = seed(client, snapshot)
+    inventory = client.get(url(sid, "inventory"), params={"limit": 1}).json()
+    first = inventory["payload"]["devices"]["rows"]["page"]["items"][0]
+    if surface == "device":
+        body = client.get(url(sid, "device"), params={"host": first["host"], "limit": 1}).json()
+        target, field, kind = body["payload"], "findings_rollup", "view"
+    elif surface == "inventory_list":
+        body = client.get(url(sid, "inventory") + "/lists", params={"pointer": "/devices/rows", "limit": 1}).json()
+        target, field, kind = body["list"]["page"]["items"][0], "findings", "list"
+    else:
+        body = inventory
+        target, field, kind = first, "findings", "view"
+    target[field] = {"worst": fact("High"),
+                     "by_severity": fact({"Critical": 0, "High": 1, "Medium": 0, "Low": 0, "Info": 0})}
+    schema = deepcopy(api._VIEW_SCHEMA if kind == "view" else api._LIST_SCHEMA)
+    native = api._NativeTransportValidator(schema, kind)
+    assert native._NativeTransportValidator__native is not None
+    stock = api._stock_validator(schema)
+    assert api._native_instance_allowed(body)
+    assert native.is_valid(body) and stock.is_valid(body)
+
+    def selected(document):
+        if surface == "device":
+            return document["payload"]["findings_rollup"]
+        if surface == "inventory_list":
+            return document["list"]["page"]["items"][0]["findings"]
+        return document["payload"]["devices"]["rows"]["page"]["items"][0]["findings"]
+
+    for state in ("not_collected", "unverified", "collected_but_empty"):
+        held = deepcopy(body)
+        declared = selected(held)
+        if state == "collected_but_empty":
+            declared["by_severity"]["value"] = dict.fromkeys(("Critical", "High", "Medium", "Low", "Info"), 0)
+            declared["by_severity"]["engine_state"] = "collected_but_empty"
+            declared["by_severity"]["engine_state_owner"] = "ssot.abstention_reason"
+            declared["by_severity"]["caveats"] = ["device_findings_scope"]
+            declared["worst"].update(state=state, value=None, reason="synthetic stored selection empty")
+        else:
+            for envelope in declared.values():
+                envelope.update(state=state, value=None, reason="synthetic capture custody withheld")
+        assert native.is_valid(held) and stock.is_valid(held)
+    rollup = target[field]
+    counts = rollup["by_severity"]
+    if mutation == "missing_rollup":
+        del target[field]
+    elif mutation == "missing_severity":
+        counts["value"].pop("Info")
+    elif mutation == "extra_severity":
+        counts["value"]["Unknown"] = 0
+    elif mutation == "bool_count":
+        counts["value"]["High"] = True
+    elif mutation == "fractional_count":
+        counts["value"]["High"] = 0.5
+    elif mutation == "negative_count":
+        counts["value"]["High"] = -1
+    elif mutation == "oversized_count":
+        counts["value"]["High"] = 2**53
+    elif mutation == "unknown_worst":
+        rollup["worst"] = fact("Poor")
+    elif mutation == "extra_rollup":
+        rollup["invented"] = True
+    elif mutation == "withheld_value":
+        counts.update(state="not_collected", reason="synthetic capture absent")
+    elif mutation == "missing_reason":
+        counts.update(state="not_collected", value=None)
+    elif mutation == "engine_state_pair":
+        counts["engine_state"] = "collected_but_empty"
+    elif mutation == "unknown_caveat":
+        counts["caveats"] = ["unregistered_scope"]
+    elif mutation == "unknown_engine_owner":
+        counts.update(engine_state="collected_but_empty", engine_state_owner="synthetic.owner")
+    else:
+        body["limitations"].pop()
+    assert not native.is_valid(body) and not stock.is_valid(body)
+    assert _validation_errors(native, body) == _validation_errors(stock, body)
+
+
 def test_native_schema_version_and_owned_copy_are_checked_before_compilation(monkeypatch):
     from backend import ui_projection_api as api
     provider = api._native_provider()
