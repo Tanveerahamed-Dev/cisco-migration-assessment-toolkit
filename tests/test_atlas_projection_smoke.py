@@ -10,6 +10,7 @@ import pytest
 
 from cisco_toolkit.ui_projection import project
 from portable import build_atlas
+from webapp.backend.ui_projection_api import _page, _page_view
 
 
 @pytest.fixture(scope="module")
@@ -22,16 +23,10 @@ def projection_responses():
                "identity": {"snapshot_id": 7, "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
                             "bytes": len(raw), "digest_form": "assesshub-store-blob"},
                "view": "overview", "engine": source["engine"], "limitations": source["trust"]["limitations"]}
-    def page(name, offset):
-        value = source["overview"][name]
-        selected = value["items"][offset:offset + 1]
-        return {"pointer": "/" + name, "source_list": {k: v for k, v in value.items() if k != "items"},
-                "page": {"offset": offset, "limit": 1, "returned": len(selected), "total": len(value["items"]),
-                         "has_more": offset + len(selected) < len(value["items"]), "items": selected}}
-    overview = deepcopy(source["overview"])
-    for name in ("axes", "top_gating"):
-        overview[name] = page(name, 0)
-    return raw, context, overview, page("axes", 1)
+    # Exercise the real transport adapter against the independently built smoke
+    # expectation, so a shared omission of a newly pageable list cannot pass.
+    overview = _page_view(source["overview"], "overview", 1)
+    return raw, context, overview, _page(source["overview"]["axes"], "/axes", 1, 1)
 
 
 def run_projection_smoke(monkeypatch, projection_responses, mutate=None):
@@ -61,6 +56,10 @@ def run_projection_smoke(monkeypatch, projection_responses, mutate=None):
 
 
 def test_projection_smoke_checks_exact_blob_and_owner_rows_on_two_pages(monkeypatch, projection_responses):
+    groups = projection_responses[2]["readiness"]["groups"]
+    assert groups["pointer"] == "/readiness/groups"
+    assert groups["page"]["total"] > groups["page"]["returned"] == 1
+    assert groups["page"]["has_more"] is True
     calls = run_projection_smoke(monkeypatch, projection_responses)
     assert [call[:2] for call in calls] == [
         ("http://127.0.0.1:8479/api/demo/seed", "POST"),
@@ -106,5 +105,32 @@ def test_projection_smoke_refuses_drift(monkeypatch, projection_responses, mutat
         elif mutation == "native_missing_list": responses[3][1].pop("x-atlas-native-validation")
         elif mutation == "native_wrong_version": responses[2][1]["x-atlas-native-validation"] = "jsonschema-rs/0.58.3"
         elif mutation == "native_stock": responses[2][1]["x-atlas-native-validation"] = "jsonschema/4.26.0"
+    with pytest.raises(SystemExit, match="frozen UI projection smoke failed"):
+        run_projection_smoke(monkeypatch, projection_responses, mutate)
+
+
+@pytest.mark.parametrize("mutation", [
+    "unpaged", "pointer", "row_value", "row_pointer", "source_state", "source_metadata",
+    "offset", "limit", "returned", "total", "has_more", "items", "extra_row",
+])
+def test_projection_smoke_refuses_readiness_page_drift(monkeypatch, projection_responses, mutation):
+    def mutate(responses):
+        readiness = responses[2][0]["payload"]["readiness"]
+        groups = readiness["groups"]
+        page = groups["page"]
+        if mutation == "unpaged":
+            readiness["groups"] = {**groups["source_list"], "items": page["items"]}
+        elif mutation == "pointer": groups["pointer"] = "/axes"
+        elif mutation == "row_value": page["items"][0]["group"]["value"] = "invented"
+        elif mutation == "row_pointer": page["items"][0]["pointer"] = "/migration_readiness/999"
+        elif mutation == "source_state": groups["source_list"]["state"] = "invented"
+        elif mutation == "source_metadata": groups["source_list"]["invented"] = True
+        elif mutation == "offset": page["offset"] = 1
+        elif mutation == "limit": page["limit"] = 2
+        elif mutation == "returned": page["returned"] = 0
+        elif mutation == "total": page["total"] += 1
+        elif mutation == "has_more": page["has_more"] = False
+        elif mutation == "items": page["items"] = []
+        elif mutation == "extra_row": page["items"].append(deepcopy(page["items"][0]))
     with pytest.raises(SystemExit, match="frozen UI projection smoke failed"):
         run_projection_smoke(monkeypatch, projection_responses, mutate)

@@ -134,3 +134,29 @@ files removed. These are review inputs; the changed final source must reproduce
 them under fresh protected CI and the unchanged hosted latency gate. No old
 receipt transfers and no local SPA, release, frozen smoke, deployment or device
 execution occurred.
+
+## Published generated-SPA checkpoint: preserved frozen-smoke failure
+
+Head `64266e67` passed the complete hosted webapp workflow and distribution
+contract. The independently reviewed hosted measurement passed the unchanged
+strict 300 ms sample gate at limits 50 and 200: maxima 239.7438 and 233.5012 ms.
+The synthetic 300-device profile remains diagnostic (704.9067 ms later-first,
+427.6949 ms repeated maximum); it retains 26 topology nodes and does not prove a
+300-node topology gate. These receipts remain bound to `64266e67` only.
+
+Portable run `37284403553`, binary job `111689640380`, built Atlas and passed all
+13 self-tests, then failed its frozen projection HTTP smoke. The smoke's expected
+Overview paged only axes and top-gating lists; the new readiness groups are also
+paged by the real transport. Its mocked test mirrored the old incomplete
+expectation. Correct the independent expectation to include the nested group
+page and drive test responses through the actual transport, with hostile group
+page mutations. Keep exact body, stored-source and native-provider checks intact.
+The failure remains preserved; a focused correction does not replace a fresh
+hosted frozen binary, complete exact-head checks or a new latency receipt.
+
+The real-transport fixture reproduced the obsolete expectation's exact owner
+comparison failure before the fix. After the explicit nested-page correction,
+all 31 focused smoke-contract cases passed, including 13 new readiness page
+mutations; lint and whitespace checks passed. This was a bounded mocked-response
+test, with no local Atlas build, binary execution or HTTP server. Hosted frozen
+execution remains required on the corrected source.
