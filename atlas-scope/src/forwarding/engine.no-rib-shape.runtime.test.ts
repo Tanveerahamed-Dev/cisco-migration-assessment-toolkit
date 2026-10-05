@@ -235,6 +235,10 @@ describe("B3: the actual cite resolver joins ORIGINAL source indices after compi
       for (const original of [0, 1, 2, 3]) {
         expect(data.resolveCite(`routes.${host}.${original}`)).toBeUndefined();
         expect(data.resolveCite(`routes.${host}.${original}.prefix`)).toBeUndefined();
+        for (const root of [`routes[${host}]`, `.routes[${host}]`, `[routes][${host}]`]) {
+          expect(data.resolveCite(`${root}[${original}]`)).toBeUndefined();
+          expect(data.resolveCite(`${root}[${original}].prefix`)).toBeUndefined();
+        }
       }
       for (const alias of ["01", "+1", "1.0", "1e0", "-1", "١", "9007199254740993"]) {
         expect(data.resolveCite(`routes.${host}[${alias}]`)).toBeUndefined();
@@ -244,6 +248,7 @@ describe("B3: the actual cite resolver joins ORIGINAL source indices after compi
       expect(warnings.filter((warning) => warning.code === "W_ROUTE_ENTRY_UNREADABLE").map((warning) => warning.path))
         .toEqual([`/routes/${escaped}/0`, `/routes/${escaped}/2`]);
       expect(data.resolveCite(`routes.${host}`)).toBe(rows);
+      expect(data.resolveCite("routes")).toBe(data.fabric.routes);
       expect(data.resolveCite("coverage.hostsWithRoutes")).toBe(data.fabric.coverage.hostsWithRoutes);
     });
   }

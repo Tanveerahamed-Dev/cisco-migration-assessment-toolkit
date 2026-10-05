@@ -7006,6 +7006,15 @@ The generic entirely-unusable-RIB citation remains an open minor. The canonical 
 real upload/trace browser controls are hosted-only and pending. No old repair receipt certifies this source and B3 stays
 FAIL until a measured re-grade. A6 follows independently; its preserved patch is not imported into this B3 branch.
 
+**B3 follow-up, 2026-10-06:** draft #601's bootstrap `b8af5c7b` passed its 57 new compiler/runtime tests but the complete
+Scope workflow failed seven stale-fabric reproducibility/provenance assertions; builds and browser remained unrun.
+The hosted canonical family was independently received against 447 preselected inputs, closed members and all seven
+sample bindings. Its import adds only an empty unreadable-route map to fabric; the other three members are byte-identical.
+Further source refutation found bracket-root citation aliases still reached generic array positions. This follow-up adds
+a separately reviewed minimal route-root guard and actual installed-resolver controls, without changing canonical
+literal-host paths or generic non-route semantics. Fresh changed-source hosted execution, rendered proof and final
+independent refutation are required; old passes do not transfer. The aggregate no-RIB citation minor and FAIL grade remain.
+
 **How found.** The 2026-10-03 re-grade (`docs/acceptance-report.md`) overturned 16 first-pass PASSes. W10 repaired each
 test-first and had every repair attacked by an independent refuter in its own checkout, with repair rounds where it
 failed. Four were upheld and ship in W10 (R142 A5, R143 B5, R144 C6, R145 F4). The rest below were refuted, or their last

@@ -47,7 +47,30 @@ compiled reason dictionary or borrow A3's comparator to claim that minor fixed.
 Acceptance B3 remains FAIL until a measured re-grade; source implementation,
 runtime/refutation evidence, technical merge and acceptance remain distinct.
 
-At this source checkpoint all hosted execution, compiled-family custody,
-browser proof and final independent refutation are pending. Earlier failures,
-partial checks and old repair receipts remain preserved. No release publication,
-signing, tags, deployment, device or vault action is authorized.
+Bootstrap `b8af5c7b` completed hosted Scope run `37374583875`: typecheck and
+the 35 compiler/22 runtime B3 tests passed, while seven reproducibility and
+provenance assertions failed because tracked fabric had not been regenerated.
+The full suite failed (7,473 passed, 27 existing skips); builds and browser
+verification did not run. Its terminal failure is retained.
+
+Before artifact receipt, 447 input hashes and four tracked-output hashes were
+selected independently from exact Git/source bytes. Artifact `11371300113`,
+six-file ZIP SHA-256 `b218147d5c88b0697d609443c46fee43e6d1405ea9982b8358ad5e11c6a06da7`,
+matched those expectations, all seven sample bindings, the tested merge
+`0a85b4cf` and Node 24.19.0/npm 11.17.0. Independent review confirmed the four
+generated members: three byte-identical, fabric adding only the empty
+`coverage.unreadableRouteEntries` map (28 bytes). They are imported as review
+input; this changed source must be rebuilt and verified on hosted CI.
+
+Further source refutation found `routes[host][0]` bypassed the dotted route
+branch and reached generic filtered-array position zero. The minimal correction
+checks the tokenized root before generic walking and refuses every noncanonical
+route spelling, while retaining the whole `routes` parent, canonical literal
+hosts and generic non-route paths. Real compile/install/resolver controls add
+bracket-root and equivalent leading-separator aliases. Independent source review
+upholds this bounded correction; its runtime result remains pending.
+
+All fresh changed-source execution, browser proof and final independent
+refutation are pending. Earlier failures, partial checks and old repair receipts
+remain preserved. No release publication, signing, tags, deployment, device or
+vault action is authorized.

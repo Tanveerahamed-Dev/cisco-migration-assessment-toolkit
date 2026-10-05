@@ -270,5 +270,8 @@ export function resolveCite(path: string): unknown {
   /* A cite's parts are snapshot names (`routes.<host>[0]`), so each step reads an OWN member only (core/own.ts):
      `routes.__proto__`, for a host the dictionary does not hold, resolved to Object.prototype — and a host so
      named then rendered, wherever prose mentioned it, as a citation of that. */
-  return walkCite(fabric, citeParts(path));
+  const parts = citeParts(path);
+  // Bracket-root and other noncanonical route spellings must never regain positional lookup.
+  if (parts[0] === "routes" && path !== "routes") return undefined;
+  return walkCite(fabric, parts);
 }
