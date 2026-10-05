@@ -77,6 +77,14 @@ Status stays `UNSIGNED_RELEASE_CANDIDATE` /
 `AUTOMATED_PASS_EXTERNAL_GATES_PENDING`, with all 14 external gates pending.
 No tag/release, attestation, signing, deployment, device or vault write occurred.
 Byte/source consistency is not externally authenticated publication or field
-qualification. This later LOCAL-ONLY documentation record is not the evaluated
-source and receives no build receipt; selected candidate remains pinned to
-`fa384d2d`. Documentation publication/main reconciliation is separate.
+qualification. This later documentation record is not the evaluated source and receives no
+build receipt; the frozen candidate remains pinned to `fa384d2d`. The owner
+authorized a small docs PR, fresh privacy/history gates and a merge commit only
+after all required exact-head checks pass. No candidate rebuild or release
+promotion is implied by publishing these records.
+
+Hosted artifact `11319223055` expires on **2026-11-04**. The API expiry is
+`2026-11-04T00:18:16Z` (03:18:16 in Asia/Qatar), verified during closeout.
+The verified local ZIP and complete delivery/receipt set remain preserved
+independently of the hosted retention window. Tag, draft prerelease, signing
+and publication remain the owner's decision after a real-fleet trial.
