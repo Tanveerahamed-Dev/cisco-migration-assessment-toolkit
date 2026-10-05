@@ -235,3 +235,32 @@ mutants remain refused, and independent fixed-SSOT family/all-family controls
 passed. Lint and whitespace checks passed. These are focused working-source
 checks; the tracked SPA still needs fresh hosted regeneration, and every final
 head requires its own complete workflows, privacy and performance evidence.
+
+## PR-B hosted generated inputs
+
+Bootstrap `4ba65c4c` passed the entire hosted webapp workflow `37313628262`.
+Independently selected producer `3f7b1df9dd738c8e31966f746136f95515025444`, tree
+`5563948b5430e8dc1da3099beed4e062a3067da1` and all 144 committed input hashes were
+captured before reading artifact receipts. Artifact `11346304922` is 552,026
+bytes, API/raw ZIP SHA-256
+`ea42ad8e871a24131967066bc6e8748d8aa0533ec89bbed158ccfdd75387d4ab`.
+The closed seven files, five generated members, all source/material hashes,
+Node 24.19.0/npm 11.17.0 job context, canonical marker policy and index asset
+links independently pass. No generated JavaScript was executed by the receiver.
+
+The local helper's unchanged physical input boundary also discovered three
+older ignored Playwright/test-result outputs outside its admitted generated
+directories. Those ordinary files were preserved externally with source/dest
+hashes, sizes and timestamps, then moved individually; no recursive operation,
+tracked edit or ignore exception was used. The canonical local before-phase
+selector and independent physical/Git input check now pass. Initial isolated
+script-path and missing declared-context invocation errors are diagnostic
+setup errors, not source-gate passes or failures; no hosted authority is inferred
+from the local declared-head check.
+
+Five verified review-input members were imported and three obsolete regular
+generated files removed. Bootstrap distribution/portable jobs had correctly
+rejected stale tracked bytes; their logs remain preserved. The changed final
+source must reproduce the imported output under fresh complete exact-head
+checks and unchanged hosted 300 ms sample acceptance before merge. These
+generated-input receipts grant no release or final-source qualification.
