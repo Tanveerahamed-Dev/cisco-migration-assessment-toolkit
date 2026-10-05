@@ -3877,14 +3877,20 @@ const createSceneImpl = (
     },
 
     setTrace(next: Trace | null, _activeHop: number | null): void {
-      /* A HOP STEP IS NOT A NEW TRACE (C6, refuter 2026-10-03). The shell re-sends this call on every
-         hop change; the active hop is drawn by the selection it re-aims to the hop's host (App.tsx,
-         acceptance A4), not here. So the trace already drawn, re-sent, changes nothing: no draw-on, no
-         packet run (flow.ts TRIGGER), no emphasis churn and — below — no camera move. Only a trace the
-         overlay reports as newly drawn reaches the framing. (A zero-hop trace is not drawn at all, so
-         the identity test is the scene's own as well as the overlay's.) */
+      /* A HOP STEP IS NOT A NEW TRACE (C6, refuters 2026-10-03). The shell re-sends this call on every
+         hop change, and a Back / Forward across a hop step, a restore or a re-run of the same question
+         hands over a new object of the same answer. The active hop is drawn by the selection the shell
+         re-aims to the hop's host (App.tsx, acceptance A4), not here. So the picture already drawn —
+         compared by CONTENT in the overlay (flow.ts TRIGGER, `pictureKeyOf`: the hop hosts, the path,
+         the ending), never by object — changes nothing: no draw-on, no packet run, no emphasis churn
+         (the emphasis reads only the hop hosts, which the key holds) and — below — no camera move. Only
+         a picture the overlay reports as newly drawn reaches the framing. A zero-hop trace draws no
+         picture at all, so for it the object test is the scene's own. */
       const drewNew = flow.setTrace(next, traceSource);
-      if (!drewNew && next !== null && next === trace) return;
+      if (!drewNew && next !== null && (next.hops.length > 0 || next === trace)) {
+        trace = next;
+        return;
+      }
       trace = next;
       post.setBloomObjects([...graph.emissiveObjects, ...flow.emissiveObjects()]);
       recomputeEmphasis();

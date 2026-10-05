@@ -44,7 +44,7 @@ import { StatusBar } from "./StatusBar";
 import { setThemePreference } from "./ThemeToggle";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { PaneSwitch, RailA, RailB, Stage, paneForSurface, useLadder, useRungIndex, useStageDefault, type EvidenceView, type PaneId } from "./surfaces";
-import { useUrlSync } from "./urlSync";
+import { useUrlSync, type RestoredAim } from "./urlSync";
 import "./App.css";
 
 /* The investigation log is append-only and bounded. Unbounded, it would grow for the length of a
@@ -198,7 +198,15 @@ export function App(): ReactElement {
   useGlobalKeyboard();
   useAppCommands();
 
-  const urlProblem = useUrlSync();
+  /* The restored (flow, hop) landing the hop re-aim below must leave alone — see that effect. A
+     history step that keeps its trace reports one through `onRestoredAim` (urlSync.ts
+     applyHistoryState, acceptance C6 round 2): there the store never passes through "flow, no
+     trace", so the render-time recording below cannot see it. */
+  const restoredAim = useRef<string | null>(null);
+  const onRestoredAim = useCallback((aim: RestoredAim) => {
+    restoredAim.current = `${flowKey(aim.flow)}#${aim.hop}`;
+  }, []);
+  const urlProblem = useUrlSync({ onRestoredAim });
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   const status = useCommandAnnouncement();
 
@@ -325,7 +333,6 @@ export function App(): ReactElement {
      from this render's values, and the hop effect below skips exactly that one landing. A link
      with no `d=` is not recorded, so the device still defaults to the hop's host. Consumed once:
      a later re-run of the same flow, or a hop step, re-aims as before. */
-  const restoredAim = useRef<string | null>(null);
   useEffect(() => {
     if (flow === null || trace !== null) return;
     restoredAim.current = deviceId === null ? null : `${flowKey(flow)}#${hopIndex ?? 0}`;

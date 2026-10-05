@@ -11,10 +11,18 @@
  * loops". The "resting position" a hop step was said to steer was overwritten on the next frame and
  * hidden after the loops: never on screen.
  *
- * THE RULE THESE TESTS HOLD: the draw-on and the packet loop are started by a NEW trace — a trace the
- * overlay is not already drawing — and by nothing else. Re-sending the trace already drawn (which is
- * what every hop step does) changes nothing on the overlay and owes no frame. Under reduced motion a
- * new trace is drawn complete and the packet never runs.
+ * ROUND 2 (independent refuter, 2026-10-03): the first repair compared the Trace OBJECT, and every
+ * "hop step" case here re-sent that identical object — the implementation's own definition, so the
+ * tests agreed with it by construction. Browser Back / Forward across a hop step hand over a NEW
+ * object of the SAME answer (`traceFlow` again), which the object test took for a new trace: the
+ * draw-on and all three loops re-ran on every history step.
+ *
+ * THE RULE THESE TESTS HOLD: the draw-on and the packet loop are started by a NEW PICTURE — a trace
+ * whose drawn path, gaps and ending differ from what the overlay is drawing, by content — and by
+ * nothing else. Re-sending the trace already drawn (every hop step), or a distinct object of the same
+ * answer (a history step, a re-run), changes nothing on the overlay and owes no frame; every different
+ * path, and a trace drawn again after it was cleared, draws on. Under reduced motion a new picture is
+ * drawn complete and the packet never runs.
  *
  * The traces are the REAL producer's (`traceFlow` over the compiled snapshot, every suggested flow and
  * a sweep) drawn over the REAL cables; the class is every one of them the overlay draws a path for.
@@ -150,11 +158,52 @@ describe.each(drawable)("C6 triggers — $label", ({ flow }) => {
     }
   });
 
-  it("a NEW trace object for the same flow (an explicit re-run) draws on and loops again, once", () => {
+  it("a re-trace of the same flow — a DISTINCT trace object with the same answer — re-runs nothing", () => {
+    /* What a history Back / Forward across a hop step, an explicit re-run of the same question and a
+       restore all hand the overlay: `traceFlow(flow)` again, a new object whose drawn picture is the
+       one already on screen. The refuter (C6 round 2, 2026-10-03) measured Back/Forward restarting
+       the draw-on and all three loops because the overlay compared object identity. */
+    const o = createFlowOverlay(readTokens("dark"));
+    try {
+      const first = traceFlow(flow);
+      o.setTrace(first, source);
+      run(o, 1000, RUN_MS + 500);
+      const full = pathMaterialOf(o).dashSize;
+      for (let again = 0; again < 3; again += 1) {
+        const same = traceFlow(flow);
+        expect(same, "the producer returns a new object (the case is real)").not.toBe(first);
+        expect(o.setTrace(same, source), "the same picture is not a new drawing").toBe(false);
+        expect(pathMaterialOf(o).dashSize).toBe(full);
+        expect(packetOf(o).visible).toBe(false);
+        expect(run(o, 20_000 + again * 20_000, RUN_MS + 2000), `re-trace ${again} owed frames`).toEqual([]);
+      }
+    } finally {
+      o.dispose();
+    }
+  });
+
+  it("a re-trace DURING the run neither restarts the draw-on nor extends the loop", () => {
+    const o = createFlowOverlay(readTokens("dark"));
+    try {
+      o.setTrace(traceFlow(flow), source);
+      run(o, 1000, 2000);
+      const full = pathMaterialOf(o).dashSize;
+      expect(o.setTrace(traceFlow(flow), source)).toBe(false);
+      expect(pathMaterialOf(o).dashSize).toBe(full);
+      const owed = run(o, 1000 + 2000 + FRAME, RUN_MS + 2000).map((t) => t + 2000 + FRAME);
+      expect(Math.max(...owed)).toBeLessThan(RUN_MS + FRAME);
+      expect(packetOf(o).visible).toBe(false);
+    } finally {
+      o.dispose();
+    }
+  });
+
+  it("once the trace is CLEARED, the same flow traced again is a new picture: it draws on and loops once", () => {
     const o = createFlowOverlay(readTokens("dark"));
     try {
       o.setTrace(traceFlow(flow), source);
       run(o, 1000, RUN_MS + 500);
+      expect(o.setTrace(null, source)).toBe(false);
       expect(o.setTrace(traceFlow(flow), source)).toBe(true);
       expect(packetOf(o).visible).toBe(true);
       expect(pathMaterialOf(o).dashSize).toBe(0);
@@ -188,7 +237,28 @@ describe.each(drawable)("C6 triggers — $label", ({ flow }) => {
   });
 });
 
-describe("C6 triggers — no sequence of hop steps and preference changes restarts the loop", () => {
+describe("C6 triggers — a DIFFERENT picture is a new trace, whatever drew before it", () => {
+  /* The other side of the content key: it must not swallow a real change. Every ordered pair of
+     drawable traces whose drawn paths differ: drawing B over A draws on, and A again over B draws on. */
+  const pairs: { a: Flow; b: Flow; label: string }[] = [];
+  for (const x of drawable) for (const y of drawable) if (x !== y) pairs.push({ a: x.flow, b: y.flow, label: `${x.label} then ${y.label}` });
+  it.each(pairs)("$label", ({ a, b }) => {
+    const o = createFlowOverlay(readTokens("dark"));
+    try {
+      o.setTrace(traceFlow(a), source);
+      run(o, 1000, RUN_MS + 500);
+      expect(o.setTrace(traceFlow(b), source), "another path is a new drawing").toBe(true);
+      expect(pathMaterialOf(o).dashSize).toBe(0);
+      run(o, 20_000, RUN_MS + 500);
+      expect(o.setTrace(traceFlow(a), source), "and back to the first path is a new drawing again").toBe(true);
+      expect(packetOf(o).visible).toBe(true);
+    } finally {
+      o.dispose();
+    }
+  });
+});
+
+describe("C6 triggers — no sequence of hop steps, re-traces and preference changes restarts the loop", () => {
   it("a seeded walk over every non-new-trace input owes no frame once the run is over", () => {
     let seed = 0x6c6;
     const rand = () => {
@@ -207,8 +277,9 @@ describe("C6 triggers — no sequence of hop steps and preference changes restar
           const r = rand();
           const where = `step ${step} on ${trace.hops.map((h) => h.host).join(">")}`;
           if (r < 0.6) {
-            // The hop step: not one frame owed.
-            o.setTrace(trace, source);
+            /* The hop step (the trace re-sent) or a re-trace of the same flow (Back / Forward, a re-run):
+               not one frame owed. */
+            o.setTrace(r < 0.3 ? trace : traceFlow(flow), source);
             expect(run(o, t, 400), where).toEqual([]);
           } else {
             if (r < 0.75) o.setReducedMotion(rand() < 0.5);

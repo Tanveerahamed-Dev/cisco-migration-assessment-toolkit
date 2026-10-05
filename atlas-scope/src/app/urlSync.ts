@@ -33,7 +33,7 @@ import {
   type EvidenceTab,
   type InvestigationState,
 } from "../core/store";
-import type { SurfaceId } from "../core/types";
+import type { Flow, SurfaceId } from "../core/types";
 
 /** Bumped only when the field grammar changes meaning. An unknown value is refused, not guessed. */
 export const URL_SCHEMA_VERSION = 1;
@@ -54,9 +54,12 @@ export const snapshotTag = (): string => fabric.meta.sourceSha256.slice(0, SNAP_
  */
 const NAVIGATION_FIELDS = ["deviceId", "linkId", "findingId", "hopIndex", "surface"] as const;
 
+/** A flow as the link's grammar writes it: two flows with the same text are the same question. */
+const flowText = (f: Flow): string => `${f.srcIp}>${f.dstIp}>${f.protocol}>${f.dstPort ?? ""}`;
+
 const navigationSignature = (s: InvestigationState): string => {
   const f = s.flow;
-  const flow = f === null ? "" : `${f.srcIp}>${f.dstIp}>${f.protocol}>${f.dstPort ?? ""}`;
+  const flow = f === null ? "" : flowText(f);
   /* WHO made the device selection is part of the step (store.ts SelectionOrigin): choosing the
      trace's own hop host from the palette changes the question on the fabric (its blast radius is
      drawn) and adds `d=` to the link, so Back must be able to return to the trace's picture. */
@@ -140,9 +143,22 @@ export function readUrl(search: string): UrlRead {
 
 /* ── the hook ──────────────────────────────────────────────────────────────── */
 
+/** A history step that kept its trace and landed on a hop whose device the entry names itself. */
+export interface RestoredAim {
+  flow: Flow;
+  hop: number;
+}
+
 interface SyncOptions {
   /** Test seam. Defaults to `requestAnimationFrame`, so writes coalesce to at most one a frame. */
   schedule?: (fn: () => void) => () => void;
+  /**
+   * Called, synchronously inside the popstate handler, when a history step kept the trace and moved
+   * the active hop to one whose device the entry names with `d=` (see `applyHistoryState`). The
+   * shell's hop re-aim (App.tsx) would otherwise answer that hop change by overwriting the entry's
+   * device with the hop's host — the A4 "a link loses its device" defect, through Back.
+   */
+  onRestoredAim?: (aim: RestoredAim) => void;
 }
 
 /**
@@ -184,13 +200,51 @@ const DEFAULT_TAB: EvidenceTab = "summary";
  * view fields the URL does carry are restored to their defaults here before the patch is applied.
  * Without this, walking Back from an evidence-tab link leaves the rail on a tab that entry never
  * named — a state that never existed in the history the reader is walking.
+ *
+ * A HISTORY STEP BETWEEN ENTRIES NAMING THE SAME FLOW KEEPS THE TRACE (acceptance C6, refuter round 2,
+ * 2026-10-03). `hop` is a navigation field, so every `]` pushes an entry and Back is the ordinary way
+ * to undo it. Back used to `reset()` the trace and let the path panel re-trace the flow a frame later
+ * into a NEW object of the same answer: the fabric was handed "no trace" (the drawn path erased) and
+ * then a new one (the draw-on and all three packet loops again), so alternating Back and Forward kept
+ * the canvas moving for 15 s. A trace is a function of its flow over the loaded snapshot (the link's
+ * `snap=` binding refuses any other), so the entry's flow, unchanged, has the answer the store holds.
+ *
+ * What it lands on is what a COLD LOAD of that entry gives (PathTrace's restore + App's hop re-aim,
+ * acceptance A4): the named hop when it is a hop of the trace, else hop 0; the entry's `d=` kept as
+ * the reader's explicit choice when that named hop is the one landed on; otherwise the active hop's
+ * host, as the trace's own selection.
  */
-function applyHistoryState(patch: Partial<InvestigationState>): void {
+function applyHistoryState(patch: Partial<InvestigationState>): RestoredAim | null {
   const s = useInvestigation.getState();
+  const before = s.hopIndex;
+  const kept =
+    s.trace !== null && patch.flow !== undefined && patch.flow !== null && flowText(patch.flow) === flowText(s.trace.flow)
+      ? s.trace
+      : null;
+  const keptFlow = kept !== null && s.flow !== null && flowText(s.flow) === flowText(kept.flow) ? s.flow : null;
   s.reset();
   s.setSurface(patch.surface ?? DEFAULT_SURFACE);
   s.setEvidenceTab(patch.evidenceTab ?? DEFAULT_TAB);
-  if (Object.keys(patch).length > 0) s.hydrate(patch);
+  if (kept === null) {
+    if (Object.keys(patch).length > 0) s.hydrate(patch);
+    return null;
+  }
+
+  const named = patch.hopIndex ?? null;
+  const hop = kept.hops.length === 0 ? null : named !== null && named > 0 && named < kept.hops.length ? named : 0;
+  s.hydrate({ ...patch, flow: keptFlow ?? patch.flow, trace: kept, hopIndex: hop });
+  if (hop === null) return null;
+  const host = kept.hops[hop]?.host;
+  if (host === undefined) return null;
+  /* The entry's own device survives only on the hop it named — as on a cold load, where a `d=` beside
+     a hop the trace does not have is re-aimed like any landing. */
+  if (patch.deviceId !== undefined && (named ?? 0) === hop) {
+    return hop !== before ? { flow: kept.flow, hop } : null;
+  }
+  const st = useInvestigation.getState();
+  if (st.deviceId === host) st.hydrate({ deviceOrigin: "hop" });
+  else st.selectDevice(host, { origin: "hop" });
+  return null;
 }
 
 /**
@@ -204,6 +258,11 @@ function applyHistoryState(patch: Partial<InvestigationState>): void {
 export function useUrlSync(opts: SyncOptions = {}): UrlProblem | null {
   const schedule = opts.schedule ?? rafSchedule;
   const [problem, setProblem] = useState<UrlProblem | null>(null);
+  /* Read at pop time, so a new callback identity never re-subscribes the history listener. */
+  const onRestoredAim = useRef(opts.onRestoredAim);
+  useEffect(() => {
+    onRestoredAim.current = opts.onRestoredAim;
+  }, [opts.onRestoredAim]);
 
   /* Set while a popstate is being applied to the store, so the subscription below does not write
      the URL back and turn a Back press into a no-op the user has to press twice. */
@@ -268,14 +327,16 @@ export function useUrlSync(opts: SyncOptions = {}): UrlProblem | null {
       const back = readUrl(window.location.search);
       setProblem(back.problem);
       applying.current = true;
+      let aim: RestoredAim | null = null;
       try {
-        applyHistoryState(back.patch);
+        aim = applyHistoryState(back.patch);
       } finally {
         applying.current = false;
       }
       const s = store.getState();
       lastNav.current = navigationSignature(s);
       lastSearch.current = encodeUrl(s);
+      if (aim !== null) onRestoredAim.current?.(aim);
     };
 
     window.addEventListener("popstate", onPop);

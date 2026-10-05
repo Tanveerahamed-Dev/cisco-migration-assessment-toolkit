@@ -1084,11 +1084,20 @@ describe("the one looping animation", () => {
  * flow.ts said a hop step "never re-runs the draw-on" and §4.8 said the packet "stops after 3 loops".
  * A reader stepping hops kept the bounded loop running indefinitely.
  *
- * So the trigger is pinned three ways: the inventory STATES it (both inventories, in words a reader
- * can check); the code that ARMS motion is reachable only past the overlay's new-trace test (found
- * from the syntax tree, every assignment that can switch the draw-on or the packet on, not a list of
- * the ones seen); and the scene's camera framing is reachable only for a trace the overlay reports
- * newly drawn. flow-triggers.test.ts drives the real overlay with the real producer's traces. */
+ * The first repair (158a846) keyed "new" on the Trace OBJECT, and the round-2 refuter walked through
+ * the door that left open: browser Back / Forward across a hop step reset the trace and re-traced the
+ * same flow into a new object, which re-ran the draw-on and all three loops (15 s of motion from
+ * alternating Back and Forward). An object test is the implementation's own definition of "the same
+ * trace", so the tests that re-sent the identical object agreed with it by construction.
+ *
+ * So the trigger is pinned four ways: the inventory STATES it (both inventories, in words a reader
+ * can check, history steps included); the code that ARMS motion is reachable only past the overlay's
+ * same-PICTURE test, which compares content and never the object (found from the syntax tree, every
+ * assignment that can switch the draw-on or the packet on, not a list of the ones seen); the scene's
+ * camera framing is reachable only for a picture the overlay reports newly drawn; and BEHAVIOUR is
+ * held elsewhere on the real producer's output — flow-triggers.test.ts (distinct objects of the same
+ * answer owe no frame; every different path draws on) and src/app/history-hop-step.c6.test.tsx (the
+ * real App's popstate handler never hands the fabric "no trace" or another object). */
 describe("C6: the one loop's TRIGGER is the trigger the inventory states", () => {
   const FLOW = "src/fabric3d/flow.ts";
   const SCENE = "src/fabric3d/scene.ts";
@@ -1106,11 +1115,17 @@ describe("C6: the one loop's TRIGGER is the trigger the inventory states", () =>
   const packetRow = () => rowNaming("PACKET_LOOP_MS");
   const drawOnRow = () => rowNaming("DRAW_ON_MS");
 
-  it("§4.8 states the trigger of the draw-on and the packet: a NEW trace, and a hop step re-runs neither", () => {
+  it("§4.8 states the trigger of the draw-on and the packet: a NEW picture, and neither a hop step nor Back / Forward re-runs either", () => {
     for (const row of [packetRow(), drawOnRow()]) {
       expect(row, "§4.8 has the row").toBeDefined();
-      expect(row!.raw, `${row!.names[0]}: names its trigger`).toMatch(/\bnew trace\b/i);
+      expect(row!.raw, `${row!.names[0]}: names its trigger`).toMatch(/\bnew picture\b/i);
+      expect(row!.raw, `${row!.names[0]}: says the test is by content, not by object`).toMatch(/by content/i);
       expect(row!.raw, `${row!.names[0]}: says what a hop step does`).toMatch(/hop step[^|]*(re-runs|restarts) (neither|nothing|no)/i);
+      expect(row!.raw, `${row!.names[0]}: says what browser Back / Forward across a hop step does`).toMatch(
+        /Back[^|]*Forward[^|]*(re-runs|restarts) (neither|nothing|no)/i,
+      );
+      // The first repair's claim, false for Back / Forward: "a new object" is not what starts it.
+      expect(row!.raw, `${row!.names[0]}: no object-identity trigger`).not.toMatch(/builds a new trace and runs once more/i);
     }
     // The row the refuter found stale: the packet IS exercised on the shipped snapshot (2-hop presets).
     expect(packetRow()!.raw).not.toMatch(/NOT OBSERVED|unexercisable/i);
@@ -1118,24 +1133,41 @@ describe("C6: the one loop's TRIGGER is the trigger the inventory states", () =>
 
   it("flow.ts's own inventory states the same trigger, and claims no per-hop marker the code does not draw", () => {
     const header = readFileSync(resolve(PKG, FLOW), "utf8").split("*/")[0]!.replace(/\s*\*\s*/g, " ").replace(/\s+/g, " ");
-    expect(header).toMatch(/TRIGGER both run once per NEW trace/);
-    expect(header).toMatch(/never re-runs the draw-on, never restarts or extends the loop, and never moves the camera/);
+    expect(header).toMatch(/TRIGGER both run once per NEW PICTURE/);
+    expect(header).toMatch(/by content, not by object/);
+    expect(header).toMatch(/browser Back \/ Forward across a hop step/);
+    expect(header).toMatch(
+      /by key, by row or through history — moves no marker, never re-runs the draw-on, never restarts or extends the loop, and never moves the camera/,
+    );
+    expect(header).not.toMatch(/explicit re-run makes a new trace object and so draws on/);
     // The old promise, never kept on screen: a "resting position" a hop step steered.
     expect(readFileSync(resolve(PKG, FLOW), "utf8")).not.toMatch(/resting position/);
   });
 
-  it("every assignment that can switch the draw-on or the packet ON sits past setTrace's new-trace test", () => {
+  it("every assignment that can switch the draw-on or the packet ON sits past setTrace's same-picture test", () => {
     const sf = parse(FLOW);
     const [method] = setTraceMethod(sf);
     expect(method, "flow.ts has a setTrace").toBeDefined();
     const body = method!.body!;
-    /* The new-trace test: the method's FIRST statement returns false when handed the drawn trace. */
-    const first = body.statements[0];
-    expect(first !== undefined && ts.isIfStatement(first), "setTrace opens with its identity test").toBe(true);
-    const guard = first as ts.IfStatement;
-    expect(guard.expression.getText(sf)).toMatch(/trace === drawnTrace/);
-    expect(guard.expression.getText(sf)).toMatch(/source === drawnSource/);
-    expect(guard.thenStatement.getText(sf)).toMatch(/return false/);
+    /* The same-picture test: a top-level statement of the method that returns false when the key of
+       what this trace would draw equals the key of what is drawn. */
+    const guards = body.statements.filter(
+      (st): st is ts.IfStatement =>
+        ts.isIfStatement(st) && /\bdrawnKey\b/.test(st.expression.getText(sf)) && /return false/.test(st.thenStatement.getText(sf)),
+    );
+    expect(guards, "setTrace has exactly one same-picture test").toHaveLength(1);
+    const guard = guards[0]!;
+    const keyName = /^(\w+) === drawnKey$/.exec(guard.expression.getText(sf))?.[1];
+    expect(keyName, "the test compares a key with the drawn key").toBeDefined();
+    /* The key is the picture's CONTENT, built from the trace it is handed — never the object. */
+    const keyDecl = body.statements.find(
+      (st) => ts.isVariableStatement(st) && st.declarationList.declarations.some((d) => d.name.getText(sf) === keyName),
+    );
+    expect(keyDecl?.getText(sf) ?? "", "the key is pictureKeyOf(trace, ...)").toMatch(new RegExp(`const ${keyName} = pictureKeyOf\\(trace,`));
+    expect(body.getText(sf), "no object-identity test of the trace in setTrace").not.toMatch(/\btrace (===|!==) (drawn|last|prev)\w*/);
+    expect(readFileSync(resolve(PKG, FLOW), "utf8"), "no object-held 'drawn trace' left to compare against").not.toMatch(
+      /\bdrawnTrace\b|\bdrawnSource\b/,
+    );
     /* The class, from the tree: every write to a motion-arming flag or its start time, anywhere in the
        file. A write of the literal `false` disarms; anything else can arm, and may only happen inside
        setTrace past the guard — or, for the start times, inside update() where a running run is
@@ -1171,22 +1203,30 @@ describe("C6: the one loop's TRIGGER is the trigger the inventory states", () =>
     expect(method!.parameters.map((p) => p.name.getText())).toEqual(["trace", "source"]);
   });
 
-  it("scene.ts frames the camera, and re-derives emphasis, only for a trace the overlay reports newly drawn", () => {
+  it("scene.ts frames the camera, and re-derives emphasis, only for a picture the overlay reports newly drawn", () => {
     const sf = parse(SCENE);
     const methods = setTraceMethod(sf);
     expect(methods).toHaveLength(1);
     const body = methods[0]!.body!;
     const text = body.getText(sf);
-    // The overlay's answer is bound, and an early return on "not new, same trace" precedes every effect.
+    // The overlay's answer is bound, and an early return on "not newly drawn" precedes every effect.
     const call = /const (\w+) = flow\.setTrace\(next, traceSource\);/.exec(text);
-    expect(call, "scene.setTrace binds the overlay's new-trace answer").not.toBeNull();
+    expect(call, "scene.setTrace binds the overlay's new-picture answer").not.toBeNull();
     const flag = call![1]!;
-    const early = text.search(new RegExp(`if \\(!${flag} && next !== null && next === trace\\) return;`));
-    expect(early, "scene.setTrace returns early for the trace already drawn").toBeGreaterThan(0);
-    for (const effect of ["cameraRig.moveTo(", "recomputeEmphasis(", "markEmphasisDirty(", "trace = next"]) {
-      const at = text.indexOf(effect);
-      expect(at, `${effect} is in scene.setTrace`).toBeGreaterThan(0);
-      expect(at, `${effect} comes after the early return`).toBeGreaterThan(early);
+    const callAt = body.statements.findIndex((st) => st.getText(sf).startsWith(`const ${flag} = flow.setTrace(`));
+    const early = body.statements[callAt + 1];
+    expect(early !== undefined && ts.isIfStatement(early), "the statement after the overlay call is the early return").toBe(true);
+    /* Not newly drawn and a trace WITH hops: the overlay already shows this picture, whatever object
+       carries it — the scene does not ask whether it is the same object. A zero-hop trace draws no
+       picture, so only for it may the object decide. */
+    expect((early as ts.IfStatement).expression.getText(sf)).toBe(`!${flag} && next !== null && (next.hops.length > 0 || next === trace)`);
+    const then = (early as ts.IfStatement).thenStatement.getText(sf).replace(/\s+/g, " ");
+    expect(then, "the early branch only records the trace and returns").toBe("{ trace = next; return; }");
+    const before = body.statements.slice(0, callAt + 2).map((st) => st.getText(sf)).join("\n");
+    const after = body.statements.slice(callAt + 2).map((st) => st.getText(sf)).join("\n");
+    for (const effect of ["cameraRig.moveTo(", "recomputeEmphasis(", "markEmphasisDirty(", "post.setBloomObjects("]) {
+      expect(after.includes(effect), `${effect} comes after the early return`).toBe(true);
+      expect(before.includes(effect), `${effect} before or inside the early return`).toBe(false);
     }
     // The hop parameter reaches nothing: a hop step cannot change the picture through this method.
     const hopParam = methods[0]!.parameters[1]!.name.getText(sf);

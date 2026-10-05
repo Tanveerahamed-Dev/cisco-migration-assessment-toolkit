@@ -90,10 +90,11 @@ export interface FabricScene {
   /** Emphasis without selection — used by filters and the blast-radius overlay. */
   setHighlight(h: HighlightState | null): void;
   /**
-   * Draw a forwarding trace as an animated path. null clears it. Only a NEW trace draws on, runs the
-   * packet and frames the camera: the same trace re-sent with another `activeHop` (every hop step)
-   * changes nothing on the canvas, because the active hop is shown by the selection the shell re-aims
-   * to its host (design-brief.md §4.8, acceptance C6).
+   * Draw a forwarding trace as an animated path. null clears it. Only a NEW PICTURE — compared by
+   * content, never by object — draws on, runs the packet and frames the camera: the same trace re-sent
+   * with another `activeHop` (every hop step), or a new object of the same answer (a history step, a
+   * re-run), changes nothing on the canvas, because the active hop is shown by the selection the shell
+   * re-aims to its host (design-brief.md §4.8, acceptance C6).
    */
   setTrace(trace: Trace | null, activeHop: number | null): void;
   /** Ease the camera to frame one device and its neighbours. Respects reducedMotion. */
