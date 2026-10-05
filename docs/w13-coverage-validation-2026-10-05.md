@@ -86,3 +86,17 @@ validator for valid, withheld and hostile metadata. These proof corrections
 require fresh hosted execution and a newly source-bound SPA before import;
 the bootstrap passes do not certify them. Local targeted lint/typechecking
 passes; runtime tests remain unverified on the correction.
+
+Correction `281da097` obtained a fresh successful hosted frontend job
+`111885233304` in run `37346164243`; frontend browser/Windows visual jobs also
+passed. Independently selected tested producer `4920d7b2`, equal tree `ce9bee14`
+and all 144 committed inputs before reading receipts. Artifact `11360228164`
+passes API/archive SHA-256
+`bf9ad6f36ba4f88a791e07a66eedcb6ccd49d9c3fc0241ddfeae6bc321ff9b29`,
+552,136 bytes, the closed seven-file/five-member set, source records, member
+hashes, privacy/index references and independently fetched Node 24.19/npm 11.17
+job logs. The consumer's exact clean frontend inputs matched before import.
+Imported only the five verified generated members and removed three obsolete
+ordinary generated files inside the owned dist directory. The changed final
+source requires a new hosted rebuild, all exact-head gates and a fresh 300 ms
+receipt; no old acceptance or qualification is transferred.
