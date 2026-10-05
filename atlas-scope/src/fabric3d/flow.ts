@@ -331,7 +331,7 @@ function pictureKeyOf(
 ): string {
   const hosts = trace.hops.map((h) => h.host).join(">");
   const ending = end === null ? "-" : `${end.kind}@${end.host}#${end.index}`;
-  const at = anchor === null ? "-" : `${anchor.x},${anchor.y},${anchor.z},${anchor.top},${anchor.half?.join(",") ?? ""}`;
+  const at = anchor === null ? "-" : `${anchor.x},${anchor.y},${anchor.z},${anchor.top},${(anchor.half ?? []).join(",")}`;
   return `${hosts}|${acc.join(",")}|${gaps.join(";")}|${ending}|${at}`;
 }
 
