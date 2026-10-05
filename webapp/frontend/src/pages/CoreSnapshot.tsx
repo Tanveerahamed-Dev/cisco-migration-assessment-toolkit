@@ -59,7 +59,12 @@ function Overview({ document }: { document: ViewDocument<"overview"> }) {
         {p.fleet_health.not_assessed_reason && <p>{p.fleet_health.not_assessed_reason}</p>}
         <FactGrid facts={{ scored: p.fleet_health.n_scored, source_rows: p.fleet_health.n_rows,
           critical: p.facts.n_critical.fact, poor: p.facts.n_poor.fact, worst_band: p.facts.worst_band.fact }} />
-        <Disclosure>A complete health-band partition is not published by this contract.</Disclosure>
+        <div className="projection-list-items">{p.fleet_health.bands.map((band) => <article key={band.band}
+          className="projection-list-item" aria-label={`${band.band} health band`}>
+          <h3>{band.band}</h3><FactGrid facts={{ count: band.n, hosts: band.hosts }} />
+          {band.hosts.state === "published" && <div className="projection-device-links">{band.hosts.value.map((host) =>
+            <Link key={host} to={deviceUrl(document.identity.snapshot_id, host)}>{host} ↗</Link>)}</div>}
+        </article>)}</div>
       </Panel>
       <Panel title="Lifecycle"><FactView label="Assets in lifecycle assessment" fact={p.lifecycle.of} />
         <div className="projection-fact-grid">{p.lifecycle.bands.map((band) => <FactView key={band.band} label={band.band} fact={p.facts[band.fact_name].fact} compact />)}</div>
@@ -71,8 +76,21 @@ function Overview({ document }: { document: ViewDocument<"overview"> }) {
     <ProjectionList title="Assessment axes" document={document} initial={p.axes} renderRow={(row) => <>
       <FactView label={row.axis ?? "Unnamed axis"} fact={row.fact} /><span className="dim">Basis sections: {row.basis_sections.join(", ")}</span></>} />
     {p.absent_axes.length > 0 && <Panel title="Axes without a published result">{p.absent_axes.map((row) => <FactView key={row.axis} label={row.axis} fact={row.fact} />)}</Panel>}
+    <ProjectionList title="Move-group readiness" document={document} initial={p.readiness.groups} renderRow={(row) =>
+        <div role="group" aria-label={`Move-group source row ${row.index}`}>
+          <FactGrid facts={{ group: row.group, readiness: row.readiness, switches: row.switches,
+            endpoints: row.endpoints, failed_checks: row.n_fail, warning_checks: row.n_warn }} />
+          {row.switches.state === "published" && <div className="projection-device-links">{row.switches.value.map((host) =>
+            <Link key={host} to={deviceUrl(document.identity.snapshot_id, host)}>{host} ↗</Link>)}</div>}
+          <details><summary>Readiness checks and evidence</summary>
+            <ListState label={`Readiness checks for source row ${row.index}`} source={row.checks} />
+            {row.checks.state === "published" && row.checks.items.map((check) => <div key={check.pointer} className="projection-list-item">
+              <FactGrid facts={{ check: check.check, status: check.status, note: check.note, phase: check.phase }} />
+              <Pointer pointer={check.pointer} /></div>)}
+          </details><Pointer pointer={row.pointer} />
+        </div>} />
     <Panel title="Decisions"><FactView label="Design decisions" fact={p.facts.n_design_decisions.fact} />
-      <Disclosure>Decision details and move-group readiness are available in Tools; they have no core-screen projection yet.</Disclosure></Panel>
+      <Disclosure>Design-decision details are available in Tools; they have no core-screen projection yet.</Disclosure></Panel>
   </>;
 }
 

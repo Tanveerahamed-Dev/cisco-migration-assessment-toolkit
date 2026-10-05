@@ -1174,6 +1174,53 @@ def test_native_refuses_unsupported_instances_before_acceptance(native_body):
     assert api._native_instance_allowed({"okay": [True, False, None, 2**53 - 1, -(2**53 - 1), "\U0001f600"]})
 
 
+@pytest.mark.parametrize("mutation", ["missing_readiness", "boolean_count", "host_not_list", "missing_band",
+                                     "extra_group_field", "unknown_check_status", "missing_check_phase"])
+def test_native_w12a_closed_rollups_match_stock_on_valid_and_rejected_shapes(native_body, mutation):
+    """Exercise every new readiness level and health bucket through the audited transport schema."""
+    from backend import ui_projection_api as api
+
+    def fact(value):
+        return {"state": "published", "value": value, "subject": None, "refs": [], "basis": "synthetic.owner"}
+
+    check = {"index": 0, "pointer": "/migration_readiness/0/checks/0", "check": fact("synthetic check"),
+             "status": fact("pass"), "note": fact("synthetic bounded observation"), "phase": fact("Pre-change")}
+    checks = {"state": "published", "subject": "/migration_readiness/0/checks", "refs": [],
+              "basis": "synthetic.owner", "items": [check]}
+    group = {"index": 0, "pointer": "/migration_readiness/0", "group": fact("synthetic group"),
+             "readiness": fact("READY"), "switches": fact(["synthetic-host"]), "endpoints": fact(0),
+             "n_fail": fact(0), "n_warn": fact(0), "checks": checks}
+    body = deepcopy(native_body)
+    body["payload"]["readiness"] = {"groups": {"pointer": "/readiness/groups",
+        "source_list": {"state": "published", "subject": "/migration_readiness", "refs": [], "basis": "synthetic.owner"},
+        "page": {"offset": 0, "limit": 25, "returned": 1, "total": 1, "has_more": False, "items": [group]}}}
+    schema = deepcopy(api._VIEW_SCHEMA)
+    native = api._NativeTransportValidator(schema, "view")
+    assert native._NativeTransportValidator__native is not None
+    stock = api._stock_validator(schema)
+    assert native.is_valid(body) and stock.is_valid(body)
+    altered = deepcopy(body)
+    changed_group = altered["payload"]["readiness"]["groups"]["page"]["items"][0]
+    changed_check = changed_group["checks"]["items"][0]
+    band = altered["payload"]["fleet_health"]["bands"][0]
+    if mutation == "missing_readiness":
+        del altered["payload"]["readiness"]
+    elif mutation == "boolean_count":
+        band["n"] = fact(True)
+    elif mutation == "host_not_list":
+        band["hosts"] = fact("synthetic-host")
+    elif mutation == "missing_band":
+        altered["payload"]["fleet_health"]["bands"].pop()
+    elif mutation == "extra_group_field":
+        changed_group["invented"] = 1
+    elif mutation == "unknown_check_status":
+        changed_check["status"] = fact("PASS")
+    else:
+        del changed_check["phase"]
+    assert not native.is_valid(altered) and not stock.is_valid(altered)
+    assert _validation_errors(native, altered) == _validation_errors(stock, altered)
+
+
 def test_native_schema_version_and_owned_copy_are_checked_before_compilation(monkeypatch):
     from backend import ui_projection_api as api
     provider = api._native_provider()
