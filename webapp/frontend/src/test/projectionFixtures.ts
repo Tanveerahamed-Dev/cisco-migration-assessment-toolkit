@@ -61,8 +61,45 @@ export function overviewFixture(sid = 1, statement = "Synthetic fleet needs revi
   const keys = "n_devices n_collected n_endpoints n_vlans n_domains avg_health n_critical n_poor worst_band n_past_ldos n_near n_past_eos n_active n_unknown n_design_decisions";
   return { ...common(sid, "overview"), payload: {
     facts: Object.fromEntries(keys.split(" ").map((key) => [key, { path: `/facts/${key}`, concept: key, fact: key === "worst_band" ? published("Poor") : published(0) }])),
-    posture_statement: published(statement), fleet_health: { state: "not_assessed", reason: "Synthetic health not assessed", not_assessed_reason: "No scoring inputs", n_scored: withheld(), n_rows: published(0) },
+    posture_statement: published(statement), fleet_health: { state: "not_assessed", engine_state: "not_assessed", reason: "Synthetic health not assessed", not_assessed_reason: "no_health_rows", n_scored: withheld(), n_rows: published(0),
+      bands: ["Excellent", "Good", "Fair", "Poor", "Critical", "Insufficient Data"].map((band) => ({ band, n: withheld(), hosts: withheld() })) },
+    readiness: { groups: { ...ownerPage("/readiness/groups", []), source_list: { state: "not_collected",
+      reason: "Synthetic readiness inputs were not collected", subject: "/migration_readiness", refs: [], basis: "synthetic.owner" } } },
     lifecycle: { bands: [], of: published(0), asof: withheld() }, axes: empty("/axes"), top_gating: empty("/top_gating"), absent_axes: [],
+  } };
+}
+export function overviewRollupsFixture(sid = 1) {
+  const doc = overviewFixture(sid);
+  const caveat = "move_group_endpoints_not_distinct";
+  const groups = [
+    { index: 3, pointer: "/migration_readiness/3", group: { ...published("Synthetic group B"), subject: "/migration_readiness/3/group" },
+      readiness: published("CAUTION"), switches: published(["edge/a~b", "synthetic-peer"]),
+      endpoints: { ...published(6), subject: "/migration_readiness/3/endpoints", caveats: [caveat],
+        refs: [{ pointer: "/move_groups/3/endpoints", role: "witness" }] },
+      n_fail: published(0), n_warn: published(1), checks: ownerList([
+        { index: 4, pointer: "/migration_readiness/3/checks/4", check: published("Synthetic check B"), status: published("warn"), note: published("Synthetic owner check note"), phase: published("Rollback") },
+        { index: 1, pointer: "/migration_readiness/3/checks/1", check: published("Synthetic check A"), status: published("pass"), note: published("Synthetic retained check order"), phase: published("Inventory") },
+      ], "/migration_readiness/3/checks") },
+    { index: 0, pointer: "/migration_readiness/0", group: published("Synthetic group A"), readiness: published("READY"),
+      switches: published(["synthetic-ready"]), endpoints: { ...published(0), caveats: [caveat] }, n_fail: published(0), n_warn: published(0),
+      checks: ownerList([{ index: 0, pointer: "/migration_readiness/0/checks/0", check: published("Synthetic ready check"),
+        status: published("pass"), note: published("Synthetic assessed input"), phase: published("Inventory") }], "/migration_readiness/0/checks") },
+  ];
+  const bands = [
+    { band: "Excellent", hosts: ["synthetic-healthy"] }, { band: "Good", hosts: [] },
+    { band: "Fair", hosts: [] }, { band: "Poor", hosts: [] },
+    { band: "Critical", hosts: ["edge/a~b"] }, { band: "Insufficient Data", hosts: ["synthetic-blind"] },
+  ];
+  const groupPage = ownerPage("/readiness/groups", groups);
+  return { ...doc, limitations: [{ id: caveat, owner: "analyze.compute_move_groups", applies_to: ["/overview/readiness/groups"],
+    text: "Endpoints is the sum of per-switch distinct learned MAC addresses on eligible access ports, not distinct endpoints across a move group; one MAC observed on multiple switches can be counted more than once." }], payload: { ...doc.payload,
+    facts: { ...doc.payload.facts, n_critical: { ...doc.payload.facts.n_critical, fact: published(1) }, n_poor: { ...doc.payload.facts.n_poor, fact: published(0) },
+      worst_band: { ...doc.payload.facts.worst_band, fact: published("Critical") } },
+    fleet_health: { state: "published", engine_state: "measured", not_assessed_reason: null, n_scored: published(2), n_rows: published(3),
+      bands: bands.map(({ band, hosts }) => ({ band, n: published(hosts.length),
+        hosts: hosts.length ? published(hosts) : { state: "collected_but_empty", value: null,
+          reason: "Synthetic source contains no hosts in this band", subject: "/health_scores", refs: [], basis: "synthetic.owner" } })) },
+    readiness: { groups: { ...groupPage, source_list: { ...groupPage.source_list, caveats: [caveat] } } },
   } };
 }
 export function common(sid: number, view: string) {

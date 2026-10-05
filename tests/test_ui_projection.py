@@ -1428,3 +1428,224 @@ def test_t13_real_engine_failed_phases(snaps, payloads, validator):
     assert record == [lab if isinstance(lab, str) else None for lab in labels]
     for where, fact in _walk_facts(p):
         assert "raised" not in fact.get("reason", ""), (where, fact["reason"])   # no owner fault on real output
+
+
+# --------------------------------------------------------------------------------------------------
+# W12-A -- decision rollups are typed, coverage-honest, unpersisted views of their existing owners
+# --------------------------------------------------------------------------------------------------
+def _decision_snapshot():
+    groups = [{"group": "Move Group 8", "switches": ["sw.b", "sw/a"], "endpoints": 2},
+              {"group": "Move Group 2", "switches": ["edge"], "endpoints": 0}]
+    rows = []
+    for group, statuses in zip(groups, (("pass", "warn", "info"), ("fail", "info"))):
+        rows.append({**copy.deepcopy(group), "readiness": "NOT READY" if "fail" in statuses else "CAUTION",
+                     "n_fail": statuses.count("fail"), "n_warn": statuses.count("warn"),
+                     "checks": [{"check": f"Check {i}", "status": status, "note": "owner evidence",
+                                 "phase": "Inventory"} for i, status in enumerate(statuses)]})
+    return {"move_groups": groups, "migration_readiness": rows,
+            "interfaces": {host: {"Gi1/0/1": {"status": "up"}} for g in groups for host in g["switches"]},
+            "health_scores": [{"switch": "sw.b", "band": "Critical", "score": 20},
+                              {"switch": "sw/a", "band": "Poor", "score": 40},
+                              {"switch": "edge", "band": "Insufficient Data", "score": None}],
+            "executive_brief": {"posture": {"avg_health": 30, "n_critical": 1, "n_poor": 1,
+                                             "worst_band": "Critical"}}}
+
+
+def _assert_overview_schema(overview):
+    schema = uip.ui_projection_schema()
+    Draft202012Validator({"$ref": "#/$defs/Overview", "$defs": schema["$defs"]}).validate(overview)
+
+
+def test_w12a_readiness_preserves_written_identity_and_check_evidence():
+    snap = _decision_snapshot()
+    before = copy.deepcopy(snap)
+    ov = uip.project_overview(snap)
+    _assert_overview_schema(ov)
+    groups = ov["readiness"]["groups"]
+    assert groups["state"] == PUB
+    assert [r["group"]["value"] for r in groups["items"]] == [g["group"] for g in snap["move_groups"]]
+    for i, row in enumerate(groups["items"]):
+        owner = snap["migration_readiness"][i]
+        for key in ("group", "readiness", "switches", "endpoints", "n_fail", "n_warn"):
+            assert _sv(row[key]) == (PUB, owner[key]), key
+        assert row["checks"]["state"] == PUB
+        assert "move_group_endpoints_not_distinct" in row["endpoints"]["caveats"]
+        assert {"pointer": f"/move_groups/{i}/endpoints", "role": "witness"} in row["endpoints"]["refs"]
+        for j, check in enumerate(row["checks"]["items"]):
+            for key in ("check", "status", "note", "phase"):
+                assert _sv(check[key]) == (PUB, owner["checks"][j][key])
+    for _where, fact in _walk_facts(ov):
+        for ref in fact["refs"]:
+            assert _resolve(snap, ref["pointer"]) is not _MISSING, ref
+    assert snap == before
+    _mutate_everything(ov)
+    assert snap == before
+
+
+def test_w12a_reversed_readiness_and_move_groups_keep_their_labels():
+    snap = _decision_snapshot()
+    snap["move_groups"].reverse()
+    result = uip.project_overview(snap)["readiness"]["groups"]
+    assert result["state"] == PUB
+    assert [r["group"]["value"] for r in result["items"]] == ["Move Group 8", "Move Group 2"]
+    snap["migration_readiness"].reverse()
+    result = uip.project_overview(snap)["readiness"]["groups"]
+    assert result["state"] == PUB
+    assert [r["group"]["value"] for r in result["items"]] == ["Move Group 2", "Move Group 8"]
+
+
+@pytest.mark.parametrize("edit", [
+    lambda s: s["migration_readiness"][0].update(readiness="READY"),
+    lambda s: s["migration_readiness"][0].update(n_fail=1),
+    lambda s: s["migration_readiness"][0].update(n_warn=True),
+    lambda s: s["migration_readiness"][0].update(endpoints=0),
+    lambda s: s["migration_readiness"][0].update(switches=["edge"]),
+    lambda s: s["migration_readiness"].append(copy.deepcopy(s["migration_readiness"][0])),
+    lambda s: s["migration_readiness"].pop(),
+    lambda s: s["migration_readiness"][0]["checks"][0].update(status="healthy"),
+    lambda s: s["migration_readiness"][0].update(checks=[]),
+    lambda s: s["move_groups"][1].update(group=s["move_groups"][0]["group"]),
+    lambda s: s["move_groups"][1].update(switches=["sw.b"]),
+    lambda s: s["move_groups"][0].update(group=""),
+    lambda s: s["move_groups"][0].update(endpoints="2"),
+])
+def test_w12a_malformed_or_contradictory_readiness_never_publishes_a_verdict(edit):
+    snap = _decision_snapshot()
+    edit(snap)
+    ov = uip.project_overview(snap)
+    _assert_overview_schema(ov)
+    groups = ov["readiness"]["groups"]
+    assert groups["state"] == UV
+    assert all(_sv(r["readiness"]) == (UV, None) for r in groups["items"])
+
+
+@pytest.mark.parametrize("edit", [
+    lambda s: s.pop("migration_readiness"),
+    lambda s: s.pop("move_groups"),
+    lambda s: [g.pop("group") for g in s["move_groups"]],
+    lambda s: s["migration_readiness"][0].pop("readiness"),
+    lambda s: s["move_groups"][0].pop("endpoints"),
+    lambda s: s.pop("interfaces"),
+    lambda s: s.pop("health_scores"),
+    lambda s: s.update(health_scores=[]),
+])
+def test_w12a_missing_readiness_evidence_is_not_collected(edit):
+    snap = _decision_snapshot()
+    edit(snap)
+    ov = uip.project_overview(snap)
+    _assert_overview_schema(ov)
+    groups = ov["readiness"]["groups"]
+    assert groups["state"] == NC
+    assert all(_sv(r["readiness"]) == (NC, None) for r in groups["items"])
+
+
+@pytest.mark.parametrize("integrity, pointer", [
+    ({"failed_phases": ["Migration Readiness"]}, "/assessment_integrity/failed_phases/0"),
+    ({"move_groups": "failed"}, "/assessment_integrity/move_groups"),
+    ({"failed_phases": ["Health Scores"]}, "/assessment_integrity/failed_phases/0"),
+    ({"failed_phases": ["Protocol Health"]}, "/assessment_integrity/failed_phases/0"),
+    ({"failed_phases": ["FHRP configured-group baseline"]}, "/assessment_integrity/failed_phases/0"),
+])
+def test_w12a_failed_readiness_or_move_group_section_withholds_the_stored_rows(integrity, pointer):
+    snap = _decision_snapshot()
+    snap["assessment_integrity"] = integrity
+    groups = uip.project_overview(snap)["readiness"]["groups"]
+    assert groups["state"] == AU
+    assert groups["items"] and all(_sv(r["readiness"]) == (AU, None) for r in groups["items"])
+    assert {"pointer": pointer, "role": "failure_record"} in groups["refs"]
+
+
+def test_w12a_readiness_input_vocabulary_is_complete_against_the_producer_signature():
+    params = set(inspect.signature(analyze.compute_migration_readiness).parameters)
+    transient = {"config", "dep_map", "vtp_safety_subject_scope", "ipv6_routing_subject_scope"}
+    sections = {"interfaces" if p == "all_interfaces" else p for p in params - transient}
+    assert set(uip.READINESS_INPUTS) == sections
+    assert set(uip.READINESS_CHECK_STATUSES) == {"pass", "warn", "fail", "info"}
+    schema = uip.ui_projection_schema()["$defs"]
+    assert _branches(schema["CheckStatusFact"])[0]["properties"]["value"]["enum"] == list(uip.READINESS_CHECK_STATUSES)
+
+
+def test_w12a_real_move_group_and_readiness_producers_supply_the_published_values():
+    from cisco_toolkit.model import InterfaceData
+
+    ifaces = {host: {"Gi1/0/1": InterfaceData(port="Gi1/0/1", switchport_mode="Access", vlan="20",
+                                             end_host_mac="0011.2233.4455")} for host in ("a", "b")}
+    groups = analyze.compute_move_groups(ifaces)
+    assert len(groups) == 1 and groups[0]["endpoints"] == 2  # the same MAC is observed on both switches
+    dep = {"single_fiber": [], "errdis": [], "halfdup_up": [], "sole_gw": {}, "orphan": [],
+           "access_by_vlan": {}, "model": {"hosts": ["a", "b"]}}
+    health = [{"switch": host, "band": "Good", "score": 90} for host in ifaces]
+    readiness = analyze.compute_migration_readiness(ifaces, groups, health, [], [], [], [], dep)
+    snap = {"move_groups": groups, "migration_readiness": readiness, "health_scores": health,
+            "interfaces": {host: {port: vars(value) for port, value in ports.items()} for host, ports in ifaces.items()}}
+    projected = uip.project_overview(snap)["readiness"]["groups"]
+    assert projected["state"] == PUB
+    assert projected["items"][0]["readiness"]["value"] == readiness[0]["readiness"]
+    assert projected["items"][0]["endpoints"]["value"] == 2
+    assert "move_group_endpoints_not_distinct" in projected["items"][0]["endpoints"]["caveats"]
+    assert {c["status"]["value"] for c in projected["items"][0]["checks"]["items"]} <= set(uip.READINESS_CHECK_STATUSES)
+
+
+def test_w12a_health_partition_order_counts_and_members_are_owned_by_ssot():
+    snap = _decision_snapshot()
+    before = copy.deepcopy(snap)
+    ov = uip.project_overview(snap)
+    _assert_overview_schema(ov)
+    bands = ov["fleet_health"]["bands"]
+    assert [r["band"] for r in bands] == list(ssot._HEALTH_BAND_ORDER) + [ssot._HEALTH_BAND_NOT_SCORED]
+    expected = ssot.health_band_partition(snap)["bands"]
+    assert [(r["band"], r["n"]["value"], r["hosts"]["value"]) for r in bands] == [
+        (r["band"], r["n"], r["hosts"] or None) for r in expected]
+    assert all(r["hosts"]["state"] == (PUB if source["hosts"] else CBE) for r, source in zip(bands, expected))
+    assert bands[0]["n"]["value"] == ssot.canonical_facts(snap)["n_critical"]
+    assert bands[1]["n"]["value"] == ssot.canonical_facts(snap)["n_poor"]
+    assert snap == before
+    bands[0]["hosts"]["value"].append("mutated")
+    assert snap == before
+
+
+@pytest.mark.parametrize("edit", [
+    lambda s: s["health_scores"].append(copy.deepcopy(s["health_scores"][0])),
+    lambda s: s["health_scores"][0].update(band="Healthy"),
+    lambda s: s["health_scores"][0].update(switch=""),
+    lambda s: s["health_scores"].append(42),
+    lambda s: s.update(health_scores={}),
+    lambda s: s["executive_brief"]["posture"].update(n_critical=0),
+    lambda s: s["executive_brief"]["posture"].update(n_poor=True),
+])
+def test_w12a_health_partition_withholds_counts_and_hosts_on_malformed_or_canonical_drift(edit):
+    snap = _decision_snapshot()
+    edit(snap)
+    ov = uip.project_overview(snap)
+    _assert_overview_schema(ov)
+    assert all(_sv(r[key]) == (UV, None) for r in ov["fleet_health"]["bands"] for key in ("n", "hosts"))
+
+
+def test_w12a_missing_health_and_failed_health_never_publish_zero_or_host_lists():
+    absent = _decision_snapshot()
+    absent.pop("health_scores")
+    assert all(_sv(r[key]) == (NC, None) for r in uip.project_overview(absent)["fleet_health"]["bands"]
+               for key in ("n", "hosts"))
+    failed = _decision_snapshot()
+    failed["assessment_integrity"] = {"failed_phases": ["Health Scores"]}
+    assert all(_sv(r[key]) == (AU, None) for r in uip.project_overview(failed)["fleet_health"]["bands"]
+               for key in ("n", "hosts"))
+
+
+def test_w12a_unscored_band_membership_survives_average_abstention_and_overlap_absence_stays_withheld():
+    snap = _decision_snapshot()
+    for row in snap["health_scores"]:
+        row.update(band="Insufficient Data", score=None)
+    snap["executive_brief"]["posture"].update(avg_health=None, n_critical=0, n_poor=0, worst_band="")
+    ov = uip.project_overview(snap)
+    assert ov["fleet_health"]["state"] == NA
+    bands = ov["fleet_health"]["bands"]
+    assert all(_sv(r["n"]) == (NA, None) for r in bands[:-1])
+    assert _sv(bands[-1]["n"]) == (PUB, 3)
+    assert _sv(bands[-1]["hosts"]) == (PUB, [r["switch"] for r in snap["health_scores"]])
+    snap = _decision_snapshot()
+    snap["executive_brief"]["posture"].pop("n_critical")
+    bands = uip.project_overview(snap)["fleet_health"]["bands"]
+    assert _sv(bands[0]["n"]) == (NC, None)
+    assert _sv(bands[0]["hosts"]) == (NC, None)
+    assert _sv(bands[1]["n"]) == (PUB, 1)

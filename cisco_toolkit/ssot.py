@@ -32,7 +32,7 @@ from __future__ import annotations
 import math
 import reprlib
 from fractions import Fraction
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 from .textutils import is_finite_num   # shared finite-number filter (rejects Infinity/NaN AND the huge int)
 
 # Canonical facts: name -> (dotted snapshot path of the published value, one-line concept).
@@ -187,6 +187,80 @@ def canonical_facts(snap: Dict[str, Any]) -> Dict[str, Any]:
         raw = _dotted(snap, path)
         out[name] = raw if name == "worst_band" else _as_int(raw)
     return out
+
+
+def health_band_partition(snap: Any) -> Dict[str, Any]:
+    """Pure membership fold over published health rows, never a persisted assessment section.
+
+    Ordering and vocabulary belong to this module. The denominator is health records, not
+    the inventory or an inferred set of blind devices. Failure/collection qualification belongs
+    to the consuming projection; a readable band is not evidence that a health score was assessed.
+    Duplicate or unreadable subjects invalidate the whole partition, rather than silently
+    deduplicating its host list or assigning an unknown row to a healthy bucket.
+    """
+    health = snap.get("health_scores") if isinstance(snap, dict) else None
+    if health is None:
+        return {"state": "not_collected", "reason": "not collected: no health-score list was published",
+                "bands": []}
+    if not isinstance(health, list):
+        return {"state": "unverified", "reason": "unverified: health_scores is not a list", "bands": []}
+    order = _HEALTH_BAND_ORDER + (_HEALTH_BAND_NOT_SCORED,)
+    hosts: Dict[str, List[str]] = {band: [] for band in order}
+    seen: Set[str] = set()
+    for row in health:
+        if not isinstance(row, dict):
+            problem = "a health row is not a record"
+        else:
+            host, band = row.get("switch"), row.get("band")
+            if type(host) is not str or not host.strip():
+                problem = "a health row has no non-empty host identity"
+            elif host in seen:
+                problem = "a host occurs more than once in the health records"
+            elif type(band) is not str or band not in _HEALTH_BAND_VOCABULARY:
+                problem = "a health row carries no recognised band"
+            else:
+                seen.add(host)
+                hosts[band].append(host)
+                continue
+        return {"state": "unverified", "reason": "unverified: " + problem, "bands": []}
+    return {"state": "published", "reason": None,
+            "bands": [{"band": band, "n": len(hosts[band]), "hosts": hosts[band]} for band in order]}
+
+
+def reconcile_health_band_partition(snap: Any, partition: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Guard an ephemeral partition against its source and overlapping canonical facts.
+
+    Kept separate from the persisted assessment's reconcile census: W12 adds a UI contract,
+    not a new snapshot section or a change to historical summary/check counts. A canonical
+    abstention remains an abstention; callers must withhold the overlapping projected facts
+    when canonical_facts returns None, never promote a derived zero in its place.
+    """
+    expected = health_band_partition(snap)
+    actual = expected if partition is None else partition
+    if expected["state"] != "published":
+        return [] if actual == expected else ["health_band_partition=unverified: source membership is unavailable"]
+    native = (type(actual) is dict and set(actual) == {"state", "reason", "bands"}
+              and type(actual["state"]) is str and actual["reason"] is None
+              and type(actual["bands"]) is list
+              and all(type(row) is dict and set(row) == {"band", "n", "hosts"}
+                      and type(row["band"]) is str and type(row["n"]) is int and row["n"] >= 0
+                      and type(row["hosts"]) is list and all(type(host) is str for host in row["hosts"])
+                      for row in actual["bands"]))
+    if not native:
+        return ["health_band_partition=unverified: partition has a non-native membership or count"]
+    if actual != expected:
+        return ["health_band_partition=unverified: partition differs from its health-score membership"]
+    canonical = canonical_facts(snap)
+    counts = {row["band"]: row["n"] for row in expected["bands"]}
+    violations: List[str] = []
+    for name, band in (("n_critical", _HEALTH_BAND_CRITICAL), ("n_poor", _HEALTH_BAND_POOR)):
+        path = CANONICAL_FACTS[name][0]
+        raw = _dotted(snap, path)
+        if raw is None:
+            continue  # canonical absence is not a measured zero, nor a contradiction
+        if type(raw) is not int or raw < 0 or canonical[name] != counts[band]:
+            violations.append(f"{path}=unverified: health-band partition does not reconcile to the canonical count")
+    return violations
 
 
 def _scored_health_rows(health: Any) -> Optional[int]:

@@ -3,7 +3,7 @@ name: webapp-ci
 on:
   push:
     branches: [main]
-    paths: ["webapp/**", "atlas-scope/**", ".design-sync/**", "cisco_toolkit/**", "reference-data/official-sources/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "README.md", "LICENSE", ".gitattributes", "pytest.ini", "tests/golden/**", "tests/synthetic_fixtures.py", "tests/pytest_invocation_reader.py", ".github/workflows/webapp-ci.yml", ".github/scripts/classify_webapp_ci_scope.py"]
+    paths: ["webapp/**", "atlas-scope/**", ".design-sync/**", "cisco_toolkit/**", "reference-data/official-sources/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "README.md", "LICENSE", ".gitattributes", "pytest.ini", "tests/golden/**", "tests/synthetic_fixtures.py", "tests/pytest_invocation_reader.py", ".github/workflows/webapp-ci.yml", ".github/scripts/classify_webapp_ci_scope.py", ".github/scripts/frontend_build_handoff.py", ".github/scripts/verify_repository_privacy.py"]
   # Required checks from a workflow skipped by a top-level path filter remain Pending forever.
   # Start every PR, then skip individual jobs only after the fail-closed classifier below succeeds.
   # `edited` is required because retargeting a PR changes its three-dot base
@@ -160,7 +160,24 @@ jobs:
       - run: npm ci
       - run: npm run api:check
       - run: npm test
+      - name: Bind immutable frontend inputs before the SPA build
+        working-directory: .
+        run: python .github/scripts/frontend_build_handoff.py before --output "${{ runner.temp }}/frontend-dist-handoff"
       - run: npm run build
+      - name: Verify privacy and capture the generated SPA for review
+        working-directory: .
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python -I -B .github/scripts/verify_repository_privacy.py --root .
+          python .github/scripts/frontend_build_handoff.py after --output "${{ runner.temp }}/frontend-dist-handoff"
+      - name: Preserve the source-bound SPA build handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontend-dist-handoff-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/frontend-dist-handoff/
+          if-no-files-found: error
+          retention-days: 14
 
   e2e:
     needs: scope

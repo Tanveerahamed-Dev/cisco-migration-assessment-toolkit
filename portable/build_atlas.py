@@ -433,7 +433,9 @@ def _smoke_ui_projection(base: str, instance_nonce: str) -> None:
                    "limitations": source["trust"]["limitations"]}
 
         def page(name: str, offset: int):
-            value = source["overview"][name]
+            value = source["overview"]
+            for part in name.split("/"):
+                value = value[part]
             selected = value["items"][offset:offset + 1]
             return {"pointer": "/" + name,
                     "source_list": {key: item for key, item in value.items() if key != "items"},
@@ -447,6 +449,8 @@ def _smoke_ui_projection(base: str, instance_nonce: str) -> None:
         expected = deepcopy(source["overview"])
         for name in ("axes", "top_gating"):
             expected[name] = page(name, 0)
+        # Keep this owner-derived expectation independent of the HTTP pager.
+        expected["readiness"]["groups"] = page("readiness/groups", 0)
         body, headers = request(prefix + "/ui-projection/overview?limit=1")
         if headers.get("cache-control") != "no-store":
             raise ValueError("projection response is cacheable")

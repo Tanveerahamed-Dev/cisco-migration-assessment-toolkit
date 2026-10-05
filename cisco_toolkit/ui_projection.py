@@ -219,6 +219,14 @@ STP_ROOT_ELECTION_REASONS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 STP_ROOT_REASONS: Tuple[str, ...] = tuple(r for reasons in STP_ROOT_ELECTION_REASONS.values() for r in reasons)
 STP_DEFAULT_BRIDGE_PRIORITY = 32768  # stp_topology._DEFAULT_BRIDGE_PRIORITY; validation only
 VLAN_READINESS: Tuple[str, ...] = ("NOT READY", "CAUTION", "READY")     # analyze._VLAN_CUTOVER_READY_RANK
+READINESS_CHECK_STATUSES: Tuple[str, ...] = ("pass", "warn", "fail", "info")  # analyze.compute_migration_readiness
+# Snapshot sections supplied to compute_migration_readiness; dep_map and subject scopes are transient.
+# These gate recorded failures, not the owner's intentional optional/direct-caller omission paths.
+READINESS_INPUTS: Tuple[str, ...] = (
+    "interfaces", "move_groups", "health_scores", "physical_health", "l3_forwarding", "cross_layer",
+    "protocol_health", "protocol_assessability", "stp_roots", "bgp_configured_peer_baseline",
+    "fhrp_configured_group_baseline", "fhrp_redundancy_domain_baseline", "vtp_safety_baseline",
+    "ipv6_routing_adjacency_baseline")
 ENDPOINT_CONFIDENCES: Tuple[str, ...] = ("Inferred-high", "Inferred-medium", "Unknown")    # analyze._EP_CONF
 #: The statuses analyze.compute_collection_completeness lists (it lists only blind spots, never 'complete').
 CC_STATUSES: Tuple[str, ...] = ("not collected", "partial")
@@ -343,6 +351,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "when failure_impact fails. Every brief value, and every row value computed by an analysis phase, published "
         "while a failure is recorded carries this caveat.",
         ["/overview/axes", "/overview/absent_axes", "/overview/top_gating", "/overview/posture_statement",
+         "/overview/fleet_health/bands", "/overview/readiness/groups",
          "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
          "/findings/rows", "/findings/total", "/topology"]),
     _limitation(
@@ -440,7 +449,27 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "Legacy move-group rows have no stored 'group' labels. This projection does not invent positional labels "
         "or use partially labelled, duplicate or malformed groups to assert a device's identity. Values depending "
         "on those labels are withheld; current snapshots retain the labels their producer writes.",
-        ["/findings/rows", "/inventory/endpoints/dual_homed", "/inventory/devices"]),
+        ["/findings/rows", "/inventory/endpoints/dual_homed", "/inventory/devices", "/overview/readiness/groups"]),
+    _limitation(
+        "move_group_endpoints_not_distinct", "analyze.compute_move_groups",
+        "Endpoints is the sum of per-switch distinct learned MAC addresses on eligible access ports, not "
+        "distinct endpoints across a move group; one MAC observed on multiple switches can be counted more "
+        "than once. This is a blast-radius proxy.",
+        ["/overview/readiness/groups"]),
+    _limitation(
+        "migration_readiness_check_scope", "analyze.compute_migration_readiness",
+        "Readiness follows the published checks: fail means NOT READY, warn means CAUTION, and pass/info "
+        "alone mean READY. An info check can state that evidence was not assessable or a manual action remains; "
+        "its note is preserved and READY does not turn that abstention into verified coverage. An IPv6 adjacency "
+        "note names at most eight blocker subjects, then discloses the exact omitted count and their authoritative "
+        "Cutover Validation/NRFU records; it does not present the named subjects as the complete blocker list.",
+        ["/overview/readiness/groups"]),
+    _limitation(
+        "health_band_partition_rows_only", "ssot.health_band_partition",
+        "Band counts and membership partition the published health records, not every inventory or blind "
+        "device. An omitted health record contributes no member and is not proof that its device is healthy. "
+        "Insufficient Data retains its observed membership while measured-band facts abstain over an unscored fleet.",
+        ["/overview/fleet_health/bands"]),
     _limitation(
         "vlan_cutover_universe", "analyze.compute_vlan_cutover_matrix",
         "The VLAN rows are the cutover matrix's universe (access ports, SVIs and STP roots), not the headline VLAN "
@@ -1448,7 +1477,171 @@ def _fleet_health(ctx: _Ctx, avg: Dict[str, Any]) -> Dict[str, Any]:
         refs = ctx.refs(entries + ctx.failure_entries(("health_scores",), state == AU))
         block[key] = _envelope(state, value, None, refs, f"ssot.fleet_avg_health:{key}",
                                reason or _state_reason(ctx, state, "count", ("health_scores",)))
+    block["bands"] = _health_bands(ctx)
     return block
+
+
+def _health_bands(ctx: _Ctx) -> List[Dict[str, Any]]:
+    """The SSOT owner's unpersisted partition, separate from the fleet-average domain state."""
+    order = HEALTH_BANDS + (HEALTH_BAND_NOT_SCORED,)
+    state, reason, raw = _PUB, None, None
+    hit = _secs_fail(ctx, ("health_scores",))
+    if hit:
+        state, reason = hit
+    else:
+        try:
+            partition = ssot.health_band_partition(ctx.s)
+            violations = ssot.reconcile_health_band_partition(ctx.s, partition)
+            state, reason, raw = partition["state"], partition["reason"], partition["bands"]
+            if violations:
+                state, reason = _UV, "unverified: ssot.reconcile_health_band_partition rejects the partition: " + "; ".join(violations)
+        except _OWNER_FAULTS as exc:
+            state, reason = _UV, _fault_text("ssot.health_band_partition", exc)
+    if state not in (_PUB, _NC, _UV, AU):
+        state, reason = _UV, "unverified: the health partition owner returned an unknown evidence state"
+    valid = (isinstance(raw, list) and len(raw) == len(order)
+             and all(isinstance(r, dict) and r.get("band") == band and _count(r.get("n"))[0]
+                     and _text_list(r.get("hosts"))[0] and r["n"] == len(r["hosts"])
+                     for band, r in zip(order, raw)))
+    if state == _PUB and not valid:
+        state, reason = _UV, "unverified: the health partition owner returned malformed bands"
+    rows: List[Dict[str, Any]] = []
+    for i, band in enumerate(order):
+        band_state, band_reason = state, reason
+        if state == _PUB and band != HEALTH_BAND_NOT_SCORED and ctx.fh.get("n_scored") == 0:
+            band_state, band_reason = _NA, _not_assessed_reason(ctx)
+        elif state == _PUB and band in ("Critical", "Poor"):
+            name = "n_critical" if band == "Critical" else "n_poor"
+            path = ssot.CANONICAL_FACTS[name][0]
+            canonical = _scalar(ctx, path, "count", "ssot.canonical_facts:" + path, posture_name=name)
+            if canonical["state"] != _PUB:
+                band_state, band_reason = canonical["state"], canonical["reason"]
+        refs = ctx.refs([("basis", ("health_scores",))]
+                        + ctx.failure_entries(("health_scores",), band_state == AU))
+        rec = raw[i] if valid else {}
+        host_state = _CBE if band_state == _PUB and not rec.get("hosts") else band_state
+        host_reason = _R_CBE if host_state == _CBE else band_reason
+        caveats = ("health_band_partition_rows_only",) + _one_hop(ctx, band_state, ("health_scores",))
+        rows.append({"band": band,
+                     "n": _envelope(band_state, _count(rec.get("n"))[1], None, refs,
+                                    "ssot.health_band_partition:n",
+                                    band_reason or _state_reason(ctx, band_state, "count", ("health_scores",)),
+                                    caveats=caveats if band_state == _PUB else ()),
+                     "hosts": _envelope(host_state, list(rec.get("hosts", [])), None, refs,
+                                        "ssot.health_band_partition:hosts",
+                                        host_reason or _state_reason(ctx, host_state, "text_list", ("health_scores",)),
+                                        caveats=caveats if host_state in (_PUB, _CBE) else ())})
+    return rows
+
+
+def _readiness_problem(raw: Any, groups: Any) -> Optional[Tuple[str, str]]:
+    """A published checklist must join by the written identity and obey the producer's verdict rule."""
+    problem = _move_group_problem(groups)
+    if problem:
+        return problem
+    if not isinstance(raw, list):
+        return _NC, "not collected: no migration-readiness list was published"
+    labels = [r.get("group") if isinstance(r, dict) else None for r in raw]
+    if (not all(_is_text(label) and label.strip() for label in labels)
+            or len(set(labels)) != len(labels)):
+        return _UV, "unverified: migration-readiness identities are malformed or duplicated"
+    expected = {g[MOVE_GROUP_LABEL]: g for g in groups}
+    if set(labels) != set(expected):
+        return _UV, "unverified: migration-readiness rows do not cover exactly the published move groups"
+    for rec in raw:
+        group = expected[rec["group"]]
+        if not group["switches"] or rec.get("switches") != group["switches"]:
+            return _UV, "unverified: migration-readiness membership contradicts the labelled move group"
+        if "endpoints" not in group or "endpoints" not in rec:
+            return _NC, "not collected: the labelled move group or readiness row carries no endpoint count"
+        if (not _count(group["endpoints"])[0] or not _count(rec["endpoints"])[0]
+                or rec["endpoints"] != group["endpoints"]):
+            return _UV, "unverified: migration-readiness endpoints contradict the labelled move group"
+        if any(key not in rec for key in ("readiness", "n_fail", "n_warn", "checks")):
+            return _NC, "not collected: the migration-readiness row carries no complete verdict and checklist"
+        checks = rec["checks"]
+        if not isinstance(checks, list) or not checks:
+            return _UV, "unverified: migration readiness has no readable, non-empty checklist"
+        if not all(isinstance(c, dict) and _is_text(c.get("check")) and c["check"].strip()
+                   and isinstance(c.get("status"), str) and c["status"] in READINESS_CHECK_STATUSES
+                   and _is_text(c.get("note")) and _is_text(c.get("phase")) for c in checks):
+            return _UV, "unverified: a migration-readiness check is malformed"
+        if len({c["check"] for c in checks}) != len(checks):
+            return _UV, "unverified: a migration-readiness check identity is duplicated"
+        statuses = [c["status"] for c in checks]
+        verdict = "NOT READY" if "fail" in statuses else "CAUTION" if "warn" in statuses else "READY"
+        if (not _count(rec["n_fail"])[0] or not _count(rec["n_warn"])[0]
+                or rec["n_fail"] != statuses.count("fail") or rec["n_warn"] != statuses.count("warn")
+                or rec["readiness"] != verdict):
+            return _UV, "unverified: migration-readiness counts or verdict contradict the published checks"
+    return None
+
+
+def _readiness(ctx: _Ctx) -> Dict[str, Any]:
+    """Publish the owner's checklist without inventing labels or repairing a verdict."""
+    sections = ("migration_readiness", "move_groups")
+    state, reason, raw = _list_state(ctx, ("migration_readiness",), sections)
+    failure = _secs_fail(ctx, READINESS_INPUTS)
+    if failure:
+        state, reason = failure
+    problem = _readiness_problem(raw, ctx.s.get("move_groups")) if state in (_PUB, _CBE) else None
+    if problem:
+        state, reason = problem
+    if state in (_PUB, _CBE) and raw:
+        for section, want in (("interfaces", dict), ("health_scores", list)):
+            value = ctx.s.get(section)
+            if value is None or (isinstance(value, want) and not value):
+                state, reason = _NC, f"not collected: migration-readiness core input {section} carries no evidence"
+                break
+            if not isinstance(value, want):
+                state, reason = _UV, f"unverified: migration-readiness core input {section} is malformed"
+                break
+    rows: List[Dict[str, Any]] = []
+    groups = ctx.s.get("move_groups")
+    labels = ({g[MOVE_GROUP_LABEL]: i for i, g in enumerate(groups)}
+              if isinstance(groups, list) and _move_group_problem(groups) is None else {})
+    for i, rec in enumerate(raw if isinstance(raw, list) else ()):
+        toks = ("migration_readiness", i)
+        row = _Row(None if state == _PUB else state, reason, toks, rec, sections,
+                   extra=[("basis", (s,)) for s in READINESS_INPUTS]
+                   + ctx.failure_entries(READINESS_INPUTS, state == AU))
+        if row.state is None and not isinstance(rec, dict):
+            row = _Row(_UV, _R_NOT_OBJECT, toks, rec, sections)
+        item: Dict[str, Any] = {"index": i, "pointer": json_pointer(*toks)}
+        for field, slot, vocab in (("group", "text", ()), ("readiness", "enum", VLAN_READINESS),
+                                   ("switches", "text_list", ()), ("endpoints", "count", ()),
+                                   ("n_fail", "count", ()), ("n_warn", "count", ())):
+            witness: List[Tuple[str, Sequence[Any]]] = []
+            label = rec.get("group") if isinstance(rec, dict) else None
+            if isinstance(label, str) and label in labels:
+                joined_field = field if field in ("group", "switches", "endpoints") else "group"
+                witness.append(("witness", ("move_groups", labels[label], joined_field)))
+            item[field] = _cell(ctx, row, field, slot, "analyze.compute_migration_readiness:" + field,
+                                vocab=vocab, witness=witness,
+                                published_caveats=(("move_group_endpoints_not_distinct",) if field == "endpoints"
+                                                   else ("migration_readiness_check_scope",) if field == "readiness"
+                                                   else ()))
+        cs, cr, ct, checks = _sub_list(ctx, row, "checks")
+        check_rows: List[Dict[str, Any]] = []
+        for j, check in enumerate(checks if isinstance(checks, list) else ()):
+            tt = toks + ("checks", j)
+            check_row = _Row(None if cs == _PUB else cs, cr, tt, check, sections)
+            entry = {"index": j, "pointer": json_pointer(*tt)}
+            for field in ("check", "status", "note", "phase"):
+                entry[field] = _cell(ctx, check_row, field, "enum" if field == "status" else "text",
+                                     "analyze.compute_migration_readiness:checks." + field,
+                                     vocab=READINESS_CHECK_STATUSES if field == "status" else ())
+            check_rows.append(entry)
+        item["checks"] = _listing(ctx, cs, cr, ct, "analyze.compute_migration_readiness:checks",
+                                   check_rows, sections=sections)
+        rows.append(item)
+    caveats = ("move_group_endpoints_not_distinct", "migration_readiness_check_scope") + (
+        ("move_group_label_absent",) if ctx.mg_legacy else ())
+    return {"groups": _listing(ctx, state, reason, ("migration_readiness",),
+                                "analyze.compute_migration_readiness", rows, sections=sections,
+                                rollup=("move_groups",), caveats=caveats,
+                                extra=[("basis", (s,)) for s in READINESS_INPUTS]
+                                + ctx.failure_entries(READINESS_INPUTS, state == AU))}
 
 
 def _axes(ctx: _Ctx) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Any, str]:
@@ -1578,6 +1771,7 @@ def _overview(ctx: _Ctx) -> Dict[str, Any]:
     return {
         "facts": facts,
         "fleet_health": _fleet_health(ctx, facts["avg_health"]["fact"]),
+        "readiness": _readiness(ctx),
         "axes": axes,
         "absent_axes": _absent_axes(ctx, axis_items, axes_base),
         "posture_statement": _scalar(ctx, "executive_brief.posture_statement", "text",
@@ -4149,6 +4343,7 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     """Inventory, Findings and the device page: typed facts, rows, lists and sections."""
     for name, vocab in (("LifecycleBandFact", LIFECYCLE_BAND_ORDER), ("RiskBandFact", DOSSIER_BANDS),
                         ("SeverityFact", SEVERITIES), ("ReadinessFact", VLAN_READINESS),
+                        ("CheckStatusFact", READINESS_CHECK_STATUSES),
                         ("EndpointConfidenceFact", ENDPOINT_CONFIDENCES), ("CollectionStatusFact", CC_STATUSES),
                         ("OpStatusFact", OP_STATUSES), ("EvidenceBasisFact", PUNCH_EVIDENCE_BASES),
                         ("StpRootStateFact", STP_ROOT_ELECTION_STATES), ("StpRootReasonFact", STP_ROOT_REASONS)):
@@ -4163,6 +4358,19 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                   {"limit": {"const": PUNCH_EVIDENCE_REFS_CAP},
                                    "reached": _nullable(_bool()), "total": _ref("CountFact")})
     defs["TextListFact"] = _fact_def("TextListFact", {"type": "array", "items": _str()})
+    defs["ReadinessCheckRow"] = _row_def("ReadinessCheckRow", _indexed(),
+                                          (("check", _TEXT), ("status", "CheckStatusFact"),
+                                           ("note", _TEXT), ("phase", _TEXT)))
+    defs["ReadinessCheckList"] = _list_def("ReadinessCheckList", _ref("ReadinessCheckRow"))
+    defs["ReadinessGroupRow"] = _row_def("ReadinessGroupRow", _indexed(),
+                                          (("group", _TEXT), ("readiness", "ReadinessFact"),
+                                           ("switches", "TextListFact"), ("endpoints", "CountFact"),
+                                           ("n_fail", "CountFact"), ("n_warn", "CountFact")),
+                                          {"checks": _ref("ReadinessCheckList")})
+    defs["ReadinessGroupList"] = _list_def("ReadinessGroupList", _ref("ReadinessGroupRow"))
+    defs["Readiness"] = _closed("Readiness", ("groups",), {"groups": _ref("ReadinessGroupList")})
+    defs["HealthBandRow"] = _row_def("HealthBandRow", {"band": _enum(HEALTH_BANDS + (HEALTH_BAND_NOT_SCORED,))},
+                                      (("n", "CountFact"), ("hosts", "TextListFact")))
     priority = {"type": "integer", "minimum": -JS_MAX_SAFE_INT, "maximum": JS_MAX_SAFE_INT}
     defs["StpRootIdentity"] = _closed("StpRootIdentity", (
         "root_address", "root_priority", "root_priorities", "claimants", "observers"), {
@@ -4504,8 +4712,10 @@ def _build_schema() -> Dict[str, Any]:
         {name: _ref("CanonBand" if name == "worst_band" else "CanonScore" if name == "avg_health" else "CanonCount")
          for name in ssot.CANONICAL_FACTS})
     fh_common = {"engine_state": {"type": "string", "enum": list(FLEET_HEALTH_STATES)},
-                 "n_scored": _ref("CountFact"), "n_rows": _ref("CountFact")}
-    fh_required = ["state", "engine_state", "not_assessed_reason", "n_scored", "n_rows"]
+                 "n_scored": _ref("CountFact"), "n_rows": _ref("CountFact"),
+                 "bands": {"type": "array", "minItems": len(HEALTH_BANDS) + 1,
+                           "maxItems": len(HEALTH_BANDS) + 1, "items": _ref("HealthBandRow")}}
+    fh_required = ["state", "engine_state", "not_assessed_reason", "n_scored", "n_rows", "bands"]
     defs["FleetHealth"] = {"title": "FleetHealth", "oneOf": [
         _closed("FleetHealthPublished", fh_required,
                 {"state": {"const": _PUB}, "not_assessed_reason": _null(), **fh_common}),
@@ -4519,8 +4729,9 @@ def _build_schema() -> Dict[str, Any]:
                                            "items": _ref("LifecycleBand")},
                                  "of": _ref("CountFact"), "asof": _ref("TextFact")})
     defs["Overview"] = _closed(
-        "Overview", ("facts", "fleet_health", "axes", "absent_axes", "posture_statement", "top_gating", "lifecycle"),
+        "Overview", ("facts", "fleet_health", "readiness", "axes", "absent_axes", "posture_statement", "top_gating", "lifecycle"),
         {"facts": _ref("OverviewFacts"), "fleet_health": _ref("FleetHealth"), "axes": _ref("AxisList"),
+         "readiness": _ref("Readiness"),
          "absent_axes": {"type": "array", "items": _ref("AbsentAxis")}, "posture_statement": _ref("TextFact"),
          "top_gating": _ref("TopGatingList"), "lifecycle": _ref("Lifecycle")})
     defs["CensusSummary"] = _closed("CensusSummary", _CENSUS_SUMMARY_KEYS,
@@ -4583,6 +4794,7 @@ __all__ = [
     "IF_COLUMNS", "JS_MAX_SAFE_INT", "LIFECYCLE_BAND_FACTS", "LIFECYCLE_BAND_FACTS_BY_BAND", "LIFECYCLE_BAND_ORDER",
     "LIMITATIONS", "MOVE_GROUP_LABEL", "NOT_ASSESSED_REASONS", "NOT_OBSERVED_SENTINEL", "NRFU_NOT_OBSERVED",
     "OP_STATUSES", "PHASE_CLASSIFICATIONS", "PHYSICAL_TEXT_FIELDS", "POSTURE_STATEMENT_BASIS", "PUNCHLIST_INPUTS",
+    "READINESS_CHECK_STATUSES", "READINESS_INPUTS",
     "PUNCH_BASIS_UNPUBLISHED", "PUNCH_CONFIDENCE_UNPUBLISHED", "PUNCH_DETAIL_CLIP_MARKER", "PUNCH_RANK",
     "RECONCILED_PATHS", "REF_ROLES", "SCHEMA", "SCHEMA_ID", "SEC_GRADES", "SEC_SEVERITIES", "SEC_STATUSES",
     "SELECTION_NEEDS", "SEVERITIES", "SNAPSHOT_SCHEMA", "STATES", "UE_COMPLETE_STATES", "UE_SOURCE_STATES",
