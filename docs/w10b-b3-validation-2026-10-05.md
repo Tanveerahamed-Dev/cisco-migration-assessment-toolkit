@@ -92,3 +92,16 @@ All fresh corrected-source execution, hosted CodeQL resolution, browser proof
 and final independent refutation are pending. Earlier failures, partial checks
 and old repair receipts remain preserved. No release publication, signing,
 tags, deployment, device or vault action is authorized.
+
+Corrected `536c9936` subsequently passed CodeQL and the complete Scope/webapp
+workflows. Its independently reviewed strict sample maxima are
+259.0925/254.2573 ms. Independent actual six-case B3 refutation upholds the
+bounded split with the existing aggregate-citation minor, without re-grade,
+canvas, fleet or whole-source approval.
+
+Its Python 3.13 and 3.14 suites each failed one registry-path assertion:
+`review/verify-b3-route-admission.mjs` was cited relative to Scope rather than
+the repository. This documentation correction makes every Scope path in the
+new SSOT row repository-relative. The failed terminal logs and passing/skipped
+counts remain evidence for 536 only; no guard is relaxed. Fresh changed-source
+hosted tests and custody remain required before merge.
