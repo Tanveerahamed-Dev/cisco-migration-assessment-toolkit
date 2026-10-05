@@ -16,7 +16,8 @@ abstention state (`not_collected` / `partial` / `unverified` / `unparsed` / `not
 `is_abstention=True`, never silently a pass.
 """
 from collections import Counter
-from typing import Any, Dict, List
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Set, Tuple, TypeGuard
 
 # capture-integrity statuses, worst first — IMPORTED from the owner, not restated (Law 1). This was a
 # hand-written tuple ("error", "incomplete", "unverified_prompt", "empty") and had drifted twice: it
@@ -33,6 +34,130 @@ _AXIS_ORDER = ("collection", "capture", "parse")
 # the synthetic device key for a fleet-level (not-observed architecture) abstention row -- NOT a real device,
 # so it is emitted as a row but deliberately kept OUT of the per-device by_device view / n_devices count.
 _FLEET = "(fleet)"
+
+# Conservative evidence-limit precedence for a DEVICE rollup, not a risk or health ranking.
+# A covered cell remains only the matrix producer's published verdict: capture/parse silence
+# is not positive proof that those owners ran, and projection publication retains that caveat.
+COVERAGE_STATE_ORDER = ("not_collected", "unverified", "unparsed", "partial", "not_observed", "covered")
+COVERAGE_DIMENSIONS = ("collection", "capture", "parse", "architecture")
+COVERAGE_VERDICT_SOURCES = ("collection_completeness", "capture_integrity", "parse_yield", "architecture_coverage")
+
+
+@dataclass
+class CoverageRowIndex:
+    """One pure stored-row index; unreadable identities cannot be assigned to any safe subject."""
+    problem: Optional[str]
+    by_key: Dict[Tuple[str, str], List[Tuple[int, Dict[str, Any]]]]
+    axes_by_device: Dict[str, Set[str]]
+    unreadable_indices: Tuple[int, ...] = ()
+
+
+def _coverage_identity(value: Any) -> TypeGuard[str]:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeError:
+        return False
+    return True
+
+
+def index_coverage_rows(raw: Any) -> CoverageRowIndex:
+    """Index exact device/axis identities once, retaining duplicates and original row indices.
+
+    Payload validation belongs to the exact cell match. A known different subject's bad payload
+    need not poison this one; an unreadable subject or non-record row might be this one and makes
+    the whole index unusable. Nothing is recomputed or persisted, and no identity is normalized.
+    """
+    by_key: Dict[Tuple[str, str], List[Tuple[int, Dict[str, Any]]]] = {}
+    axes_by_device: Dict[str, Set[str]] = {}
+    if not isinstance(raw, list):
+        return CoverageRowIndex("coverage rows are missing or not a list", by_key, axes_by_device)
+    unreadable: List[int] = []
+    for index, record in enumerate(raw):
+        host = record.get("device") if isinstance(record, dict) else None
+        axis = record.get("axis") if isinstance(record, dict) else None
+        if not _coverage_identity(host) or not _coverage_identity(axis):
+            unreadable.append(index)
+            continue
+        # Copy only the row dictionary, never arbitrary unvalidated subtrees. The index retains
+        # source metadata for refusals; matched output contains only admitted scalar fields below.
+        copied = dict(record)
+        by_key.setdefault((host, axis), []).append((index, copied))
+        axes_by_device.setdefault(host, set()).add(axis)
+    problem = (f"coverage rows have {len(unreadable)} unreadable device/axis identities or non-record rows"
+               if unreadable else None)
+    return CoverageRowIndex(problem, by_key, axes_by_device, tuple(unreadable))
+
+
+def match_coverage_cell(index: Optional[CoverageRowIndex], host: Any, axis: Any,
+                        expected_state: Any) -> Optional[Tuple[int, Dict[str, Any]]]:
+    """One unambiguous, producer-compatible row for the stored by-device cell, or no usable join."""
+    if (not isinstance(index, CoverageRowIndex) or index.problem is not None
+            or not _coverage_identity(host) or not _coverage_identity(axis) or host == _FLEET
+            or not isinstance(expected_state, str) or expected_state not in COVERAGE_STATE_ORDER):
+        return None
+    matches = index.by_key.get((host, axis), [])
+    if len(matches) != 1:
+        return None
+    position, record = matches[0]
+    state, dimension, source = record.get("state"), record.get("dimension"), record.get("verdict_source")
+    abstained = record.get("is_abstention")
+    if (record.get("device") != host or record.get("axis") != axis
+            or not isinstance(state, str) or state not in COVERAGE_STATE_ORDER or state != expected_state
+            or not isinstance(dimension, str) or dimension not in COVERAGE_DIMENSIONS
+            or not isinstance(source, str) or source not in COVERAGE_VERDICT_SOURCES
+            or type(abstained) is not bool or abstained is not (state != "covered")):
+        return None
+    # The current producer's exact state/source combinations. A capture/parse cell may cite the
+    # collection owner only when it explicitly says this device was never collected.
+    if dimension == "collection":
+        valid = axis == "collection" and source == "collection_completeness" and state in (
+            "covered", "partial", "not_collected")
+    elif dimension == "capture":
+        valid = axis == "capture" and (
+            (source == "capture_integrity" and state in ("covered", "unverified"))
+            or (source == "collection_completeness" and state == "not_collected"))
+    elif dimension == "parse":
+        valid = axis == "parse" and (
+            (source == "parse_yield" and state in ("covered", "unparsed"))
+            or (source == "collection_completeness" and state == "not_collected"))
+    else:
+        valid = (axis not in _AXIS_ORDER and source == "architecture_coverage"
+                 and state == "covered")
+    if not valid:
+        return None
+    return position, {key: record[key] for key in (
+        "device", "axis", "state", "dimension", "verdict_source", "is_abstention")}
+
+
+def compute_device_coverage(by_device: Any, index: Optional[CoverageRowIndex],
+                            host: Any) -> Optional[Dict[str, Any]]:
+    """Pure unpersisted rollup of one exact nonempty, fully reconciled stored device mapping.
+
+    Require all three core axes and exactly the source row universe for this host. Zero abstained
+    axes and worst=covered are mathematical folds of nominal stored states, not proof of complete
+    collection; the projection must withhold/qualify them under its existing silence caveat.
+    """
+    if (not isinstance(by_device, dict) or not isinstance(index, CoverageRowIndex)
+            or index.problem is not None or not _coverage_identity(host) or host == _FLEET):
+        return None
+    cells = by_device.get(host)
+    if (not isinstance(cells, dict) or not cells
+            or not all(_coverage_identity(axis) for axis in cells)
+            or not set(_AXIS_ORDER).issubset(cells)
+            or set(cells) != index.axes_by_device.get(host, set())):
+        return None
+    rows: List[Tuple[int, Dict[str, Any]]] = []
+    for axis, state in cells.items():
+        match = match_coverage_cell(index, host, axis, state)
+        if match is None:
+            return None
+        rows.append(match)
+    states = {record["state"] for _position, record in rows}
+    worst = next(state for state in COVERAGE_STATE_ORDER if state in states)
+    return {"worst": worst, "n_abstained": sum(record["state"] != "covered" for _position, record in rows),
+            "row_indices": sorted(position for position, _record in rows)}
 
 _NOTE = ("Each row is one (device, axis) coverage verdict COMPOSED from the four published coverage "
          "sources; no device state is recomputed. 'not_collected' / 'partial' / 'unverified' / "

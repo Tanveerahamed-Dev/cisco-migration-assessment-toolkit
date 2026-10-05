@@ -1230,8 +1230,8 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    prospective = {"view": "d51552f6cc7cebba66e941b1f67cab1a6bb8b04278aba5458b30dbfc6919e597",
-                   "list": "a9bcf1f76fb94daec79f7a4fbb0308b6ff4d919bd30a0ef9c4a5af45c092bf47"}
+    prospective = {"view": "f235a3e2299ce759cb7e217d460637d86621f604ab88cb55c8b107e0f5d4102b",
+                   "list": "dad24260d96b9bd51f4426b98201c650f953a777db7305178e4aabba1d993476"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)
@@ -1327,6 +1327,129 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
         counts.update(engine_state="collected_but_empty", engine_state_owner="synthetic.owner")
     else:
         body["limitations"].pop()
+    assert not native.is_valid(body) and not stock.is_valid(body)
+    assert _validation_errors(native, body) == _validation_errors(stock, body)
+
+
+@pytest.mark.parametrize("surface", ["inventory", "inventory_list", "device"])
+@pytest.mark.parametrize("mutation", ["missing_rollup", "extra_rollup", "unknown_worst", "bool_count", "negative_count",
+                                     "oversized_count", "withheld_value", "missing_dimension", "bad_dimension",
+                                     "bad_source", "integer_flag", "extra_metadata"])
+def test_native_w13_coverage_matches_stock_on_real_views_lists_and_refusals(client, surface, mutation):
+    from backend import ui_projection_api as api
+    from cisco_toolkit.coverage_matrix import compute_coverage_matrix
+    host = "native-coverage"
+    snapshot = {
+        "devices": {host: {"hostname": host}},
+        "collection_completeness": {"devices": [], "summary": {"inventory": 1, "collected": 1}},
+        "capture_integrity": {"findings": [{"host": host, "status": "empty", "reason": "synthetic"}]},
+        "parse_yield": {"events": []}, "architecture_coverage": {"classes": []},
+    }
+    snapshot["coverage_matrix"] = compute_coverage_matrix(snapshot)
+    sid = seed(client, snapshot)
+    inventory = client.get(url(sid, "inventory"), params={"limit": 1}).json()
+    if surface == "device":
+        body = client.get(url(sid, "device"), params={"host": host, "limit": 1}).json()
+        target, field, kind = body["payload"], "coverage_rollup", "view"
+    elif surface == "inventory_list":
+        body = client.get(url(sid, "inventory") + "/lists", params={"pointer": "/devices/rows", "limit": 1}).json()
+        target, field, kind = body["list"]["page"]["items"][0], "coverage", "list"
+    else:
+        body = inventory
+        target, field, kind = body["payload"]["devices"]["rows"]["page"]["items"][0], "coverage", "view"
+    rollup = target[field]
+    assert rollup["worst"]["value"] == "unverified"
+    assert rollup["n_abstained"]["value"] == 1
+    schema = deepcopy(api._VIEW_SCHEMA if kind == "view" else api._LIST_SCHEMA)
+    native = api._NativeTransportValidator(schema, kind)
+    assert native._NativeTransportValidator__native is not None
+    stock = api._stock_validator(schema)
+    assert api._native_instance_allowed(body)
+    assert native.is_valid(body) and stock.is_valid(body)
+    # Metadata shape controls use a real, paged device coverage response, even when the
+    # rollup surface being checked is Inventory or its list transport.
+    if mutation in ("missing_dimension", "bad_dimension", "bad_source", "integer_flag", "extra_metadata"):
+        body = client.get(url(sid, "device"), params={"host": host, "limit": 1}).json()
+        native = api._NativeTransportValidator(deepcopy(api._VIEW_SCHEMA), "view")
+        stock = api._stock_validator(deepcopy(api._VIEW_SCHEMA))
+        item = body["payload"]["coverage"]["page"]["items"][0]
+        if mutation == "missing_dimension":
+            del item["dimension"]
+        elif mutation == "bad_dimension":
+            item["dimension"]["value"] = "risk"
+        elif mutation == "bad_source":
+            item["verdict_source"]["value"] = "foreign"
+        elif mutation == "integer_flag":
+            item["is_abstention"]["value"] = 0
+        else:
+            item["assurance"] = True
+    elif mutation == "missing_rollup":
+        del target[field]
+    elif mutation == "extra_rollup":
+        rollup["assurance"] = True
+    elif mutation == "unknown_worst":
+        rollup["worst"]["value"] = "healthy"
+    elif mutation == "bool_count":
+        rollup["n_abstained"]["value"] = True
+    elif mutation == "negative_count":
+        rollup["n_abstained"]["value"] = -1
+    elif mutation == "oversized_count":
+        rollup["n_abstained"]["value"] = 2**53
+    else:
+        rollup["worst"].update(state="not_collected", reason="synthetic withheld")
+    assert not native.is_valid(body) and not stock.is_valid(body)
+    assert _validation_errors(native, body) == _validation_errors(stock, body)
+
+
+@pytest.mark.parametrize("mutation", ["missing_dimension", "extra_metadata", "bad_dimension", "bad_source",
+                                     "integer_flag", "withheld_value", "missing_reason"])
+def test_native_w13_coverage_metadata_list_matches_stock_and_retains_withheld_values(client, mutation):
+    from backend import ui_projection_api as api
+    from cisco_toolkit.coverage_matrix import compute_coverage_matrix
+    host = "native-coverage-list"
+    snapshot = {"devices": {host: {"hostname": host}},
+                "collection_completeness": {"devices": [], "summary": {"inventory": 1, "collected": 1}},
+                "capture_integrity": {"findings": [{"host": host, "status": "empty", "reason": "synthetic"}]},
+                "parse_yield": {"events": []}, "architecture_coverage": {"classes": []}}
+    snapshot["coverage_matrix"] = compute_coverage_matrix(snapshot)
+    sid = seed(client, snapshot)
+    body = client.get(url(sid, "device") + "/lists",
+                      params={"host": host, "pointer": "/coverage", "limit": 1}).json()
+    schema = deepcopy(api._LIST_SCHEMA)
+    native = api._NativeTransportValidator(schema, "list")
+    stock = api._stock_validator(schema)
+    assert native._NativeTransportValidator__native is not None
+    assert api._native_instance_allowed(body)
+    assert native.is_valid(body) and stock.is_valid(body)
+    item = body["list"]["page"]["items"][0]
+    assert item["axis"] == "capture" and item["dimension"]["value"] == "capture"
+    # A duplicate exact join returns withheld cells on the real list route, not a fabricated
+    # shape. Retain the same native LIST validator; a view verdict cannot certify this branch.
+    duplicate = next(row for row in snapshot["coverage_matrix"]["rows"]
+                     if row["device"] == host and row["axis"] == item["axis"])
+    snapshot["coverage_matrix"]["rows"].append(deepcopy(duplicate))
+    held_sid = seed(client, snapshot)
+    held_body = client.get(url(held_sid, "device") + "/lists",
+                           params={"host": host, "pointer": "/coverage", "limit": 1}).json()
+    held_item = held_body["list"]["page"]["items"][0]
+    for field in ("fact", "dimension", "verdict_source", "is_abstention"):
+        assert held_item[field]["state"] == "unverified" and held_item[field]["value"] is None
+    assert api._native_instance_allowed(held_body)
+    assert native.is_valid(held_body) and stock.is_valid(held_body)
+    if mutation == "missing_dimension":
+        del item["dimension"]
+    elif mutation == "extra_metadata":
+        item["assurance"] = True
+    elif mutation == "bad_dimension":
+        item["dimension"]["value"] = "risk"
+    elif mutation == "bad_source":
+        item["verdict_source"]["value"] = "foreign"
+    elif mutation == "integer_flag":
+        item["is_abstention"]["value"] = 0
+    elif mutation == "withheld_value":
+        item["dimension"].update(state="unverified", reason="synthetic withheld")
+    else:
+        item["dimension"].update(state="unverified", value=None)
     assert not native.is_valid(body) and not stock.is_valid(body)
     assert _validation_errors(native, body) == _validation_errors(stock, body)
 

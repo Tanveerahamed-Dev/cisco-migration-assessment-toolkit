@@ -103,6 +103,10 @@ from cisco_toolkit import ssot
 from cisco_toolkit.analyze import (
     PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index,
 )
+from cisco_toolkit.coverage_matrix import (
+    COVERAGE_DIMENSIONS, COVERAGE_STATE_ORDER, COVERAGE_VERDICT_SOURCES, CoverageRowIndex,
+    compute_device_coverage, index_coverage_rows, match_coverage_cell,
+)
 
 SCHEMA = "ui_projection/1"
 SCHEMA_ID = "urn:atlas:schema:ui-projection:1"
@@ -393,7 +397,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "engine emits 'covered' where a coverage source (capture_integrity, parse_yield) is silent, so a "
         "covered row is not proof that those sources ran, and a zero count from it is withheld as "
         "unverified.",
-        ["/trust/coverage_matrix"]),
+        ["/trust/coverage_matrix", "/inventory/devices/rows"]),
     _limitation(
         "projection_owned_verdicts", "cisco_toolkit.ui_projection",
         "These verdicts are this projection's, not an engine owner's: census matches_live (rows compared by "
@@ -574,9 +578,10 @@ DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
 DEVICE_CITED_LIMITATIONS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "one_hop_failure_attribution": ("/device/collection", "/device/health", "/device/lifecycle", "/device/dossier",
                                     "/device/coverage", "/device/links", "/device/remediation", "/device/nrfu_cases",
-                                    "/device/findings", "/device/endpoints", "/device/move_group", "/device/findings_rollup"),
+                                    "/device/findings", "/device/endpoints", "/device/move_group", "/device/findings_rollup",
+                                    "/device/coverage_rollup"),
     "device_findings_scope": ("/device/findings_rollup",),
-    "coverage_matrix_shown_as_published": ("/device/coverage",),
+    "coverage_matrix_shown_as_published": ("/device/coverage", "/device/coverage_rollup"),
     "projection_owned_verdicts": ("/device/health/deductions_cap", "/device/remediation/items", "/device/links",
                                   "/device/native_vlan_mismatches", "/device/findings", "/device/endpoints"),
     "device_physical_defaults_not_observed": ("/device/physical",),
@@ -768,6 +773,28 @@ class _Ctx:
         self._no_config: Optional[List[str]] = None
         self._device_findings: Any = _UNSET
         self._vlan_hosts: Any = _UNSET
+        self._coverage_rows: Any = _UNSET
+        self._device_coverage: Dict[str, Optional[Dict[str, Any]]] = {}
+
+    @property
+    def coverage_rows(self) -> Optional[CoverageRowIndex]:
+        """One exact device/axis index over the retained rows, shared by every device fact."""
+        if self._coverage_rows is _UNSET:
+            self._coverage_rows = self._call(
+                "coverage_matrix.index_coverage_rows",
+                lambda snap: index_coverage_rows(_get(snap, ("coverage_matrix", "rows"))), None,
+            )
+        return self._coverage_rows
+
+    def coverage_for(self, host: str) -> Optional[Dict[str, Any]]:
+        if host not in self._device_coverage:
+            rows = self.coverage_rows
+            self._device_coverage[host] = self._call(
+                "coverage_matrix.compute_device_coverage",
+                lambda snap: compute_device_coverage(_get(snap, ("coverage_matrix", "by_device")), rows, host),
+                None,
+            ) if rows is not None else None
+        return self._device_coverage[host]
 
     def _call(self, owner: str, fn: Callable[[Any], Any], fallback: Any) -> Any:
         try:
@@ -2817,6 +2844,75 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
     }
 
 
+def _coverage_scope(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]] = None) -> _Row:
+    return _resolve(ctx, ("coverage_matrix", "by_device"), ("coverage_matrix",), key=host,
+                    host=host, forced=forced,
+                    absent=(_NC, "not collected: coverage_matrix carries no row for this device"))
+
+
+def _coverage_join(ctx: _Ctx, cov: _Row, host: str, axis: str) -> _Row:
+    """Metadata and the displayed cell admit the same unique, exact owner row."""
+    extra: List[Tuple[str, Sequence[Any]]] = [
+        ("basis", ("coverage_matrix", "rows")), ("witness", cov.toks + (axis,)),
+    ] if cov.toks is not None else []
+    index = ctx.coverage_rows
+    matched = None
+    if index is not None:
+        extra += [("witness", ("coverage_matrix", "rows", i)) for i, _raw in index.by_key.get((host, axis), ())]
+        extra += [("witness", ("coverage_matrix", "rows", i)) for i in index.unreadable_indices]
+        try:
+            matched = match_coverage_cell(index, host, axis, cov.raw[axis])
+        except _OWNER_FAULTS as exc:
+            ctx.faults["coverage_matrix.match_coverage_cell"] = _fault_text("coverage_matrix.match_coverage_cell", exc)
+    if matched is None:
+        return _Row(_UV, "unverified: no unique, consistent coverage row joins this exact device and axis",
+                    None, None, ("coverage_matrix",), extra)
+    i, raw = matched
+    return _Row(None, None, ("coverage_matrix", "rows", i), raw, ("coverage_matrix",), extra)
+
+
+def _device_coverage_rollup(ctx: _Ctx, host: Any,
+                            forced: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
+    """The complete stored axis fold, with no zero/all-covered assurance from silent sources."""
+    cov = _coverage_scope(ctx, host, forced)
+    state, reason = cov.state, cov.reason
+    values: Dict[str, Any] = {}
+    witness: List[Tuple[str, Sequence[Any]]] = []
+    if not cov.bare:
+        witness = [("basis", ("coverage_matrix", "rows")), ("basis", ("coverage_matrix", "by_device"))]
+        if cov.toks is not None:
+            witness.append(("witness", cov.toks))
+    if state is None:
+        if not cov.raw:
+            state, reason = _NC, "not collected: no device coverage axes were retained; absence is not zero abstentions"
+        else:
+            folded = ctx.coverage_for(host)
+            if not isinstance(folded, dict):
+                state, reason = _UV, "unverified: the device coverage axis set cannot be joined uniquely and consistently"
+            else:
+                indices = folded.get("row_indices")
+                rows = _get(ctx.s, ("coverage_matrix", "rows"))
+                if (not isinstance(indices, list) or not isinstance(rows, list)
+                        or any(type(i) is not int or not 0 <= i < len(rows) for i in indices)):
+                    state, reason = _UV, "unverified: the device coverage fold has unreadable source indices"
+                else:
+                    witness += [("witness", ("coverage_matrix", "rows", i)) for i in indices]
+                    if folded.get("worst") == "covered" or folded.get("n_abstained") == 0:
+                        state, reason = _UV, ("unverified: covered rows may come from silent coverage sources, so zero "
+                                              "abstentions and an all-covered device are not verified")
+                    else:
+                        values = folded
+    row = _Row(state, reason, None, values, ("coverage_matrix",), cov.extra,
+               basis_refs=not cov.bare, bare=cov.bare)
+    basis = "coverage_matrix.compute_device_coverage:stored matrix rows by exact device."
+    return {
+        "worst": _cell(ctx, row, "worst", "enum", basis + "worst", vocab=COVERAGE_STATE_ORDER,
+                       witness=witness, caveats=("coverage_matrix_shown_as_published",)),
+        "n_abstained": _cell(ctx, row, "n_abstained", "count", basis + "n_abstained",
+                             witness=witness, caveats=("coverage_matrix_shown_as_published",)),
+    }
+
+
 def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_norm: Mapping[str, List[int]]) -> Dict[str, Any]:
     j = _joins(ctx, host)
     in_devices = host in dev_keys
@@ -2831,6 +2927,7 @@ def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_norm: Mapping[
         "collection_status": _cell(ctx, j["collection"], "status", "enum", _B_CC + "status", vocab=CC_STATUSES),
         "move_group": _move_group_fact(ctx, host),
         "findings": _device_finding_rollup(ctx, host),
+        "coverage": _device_coverage_rollup(ctx, host),
     }
     for field in ("model", "platform", "sw_version", "serial_number"):
         row[field] = _cell(ctx, j["devices"], field, "text", _dev_basis(field), pre=_default_text)
@@ -3843,16 +3940,28 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
                                                                     "exposure axis (not a blind spot)"))
     cs, cr, ct, craw = _sub_list(ctx, dd, "compound", empty=(_CBE, "collected but empty: no compound risk pattern "
                                                                    "coincides on this device (not a blind spot)"))
-    cov = _resolve(ctx, ("coverage_matrix", "by_device"), ("coverage_matrix",), key=host, host=host, forced=forced,
-                   absent=(_NC, "not collected: coverage_matrix carries no row for this device"))
+    cov = _coverage_scope(ctx, host, forced)
     cov_items: List[Dict[str, Any]] = []
     for axis in (sorted(k for k in cov.raw if _is_text(k)) if cov.state is None else ()):
         crow = _Row(None, None, cov.toks + (axis,), cov.raw[axis], ("coverage_matrix",))
+        joined = _coverage_join(ctx, cov, host, axis)
+        if joined.state is not None:
+            crow = _Row(joined.state, joined.reason, crow.toks, None, crow.sections, joined.extra)
         fact = _cell(ctx, crow, None, "coverage_cell", "coverage_matrix.compute_coverage_matrix:by_device{}{}",
-                     published_caveats=("coverage_matrix_shown_as_published",))
+                     witness=joined.extra, published_caveats=("coverage_matrix_shown_as_published",))
         if fact["state"] == _PUB:
             fact["value"] = {"axis": axis, "state": fact["value"]}
-        cov_items.append({"axis": axis, "pointer": json_pointer(*crow.toks), "fact": fact})
+        cav = ("coverage_matrix_shown_as_published",)
+        basis = "coverage_matrix.compute_coverage_matrix:rows[]."
+        cov_items.append({
+            "axis": axis, "pointer": json_pointer(*crow.toks), "fact": fact,
+            "dimension": _cell(ctx, joined, "dimension", "enum", basis + "dimension",
+                               vocab=COVERAGE_DIMENSIONS, published_caveats=cav),
+            "verdict_source": _cell(ctx, joined, "verdict_source", "enum", basis + "verdict_source",
+                                    vocab=COVERAGE_VERDICT_SOURCES, published_caveats=cav),
+            "is_abstention": _cell(ctx, joined, "is_abstention", "flag", basis + "is_abstention",
+                                   published_caveats=cav),
+        })
     cov_state, cov_reason = (cov.state, cov.reason) if cov.state else (_PUB if cov_items else _CBE, None)
     punch_base, punch_reason, _praw = _list_state(ctx, ("punchlist",), ("punchlist",))
     punch_state = _rolled(ctx, punch_base, punch_reason, ("punchlist",), PUNCHLIST_INPUTS)
@@ -3861,6 +3970,7 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
         "rosters": rosters,
         "move_group": _move_group_fact(ctx, host, forced),
         "findings_rollup": _device_finding_rollup(ctx, host, forced),
+        "coverage_rollup": _device_coverage_rollup(ctx, host, forced),
         "identity": {f: _cell(ctx, dev, f, "text", _dev_basis(f), pre=_default_text) for f in IDENTITY_FIELDS},
         "physical": physical,
         "collection": {"status": _cell(ctx, cc, "status", "enum", _B_CC + "status", vocab=CC_STATUSES),
@@ -4520,6 +4630,8 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                         ("CheckStatusFact", READINESS_CHECK_STATUSES),
                         ("EndpointConfidenceFact", ENDPOINT_CONFIDENCES), ("CollectionStatusFact", CC_STATUSES),
                         ("OpStatusFact", OP_STATUSES), ("EvidenceBasisFact", PUNCH_EVIDENCE_BASES),
+                        ("CoverageStateFact", COVERAGE_STATE_ORDER), ("CoverageDimensionFact", COVERAGE_DIMENSIONS),
+                        ("CoverageVerdictSourceFact", COVERAGE_VERDICT_SOURCES),
                         ("StpRootStateFact", STP_ROOT_ELECTION_STATES), ("StpRootReasonFact", STP_ROOT_REASONS)):
         defs[name] = _fact_def(name, _enum(vocab))
     defs["EvidenceRefValue"] = _closed("EvidenceRefValue", ("kind", "host", "ref", "role", "cite"),
@@ -4539,6 +4651,10 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     defs["DeviceFindingsRollup"] = _closed(
         "DeviceFindingsRollup", ("worst", "by_severity"),
         {"worst": _ref("SeverityFact"), "by_severity": _ref("SeverityCountsFact")},
+    )
+    defs["DeviceCoverageRollup"] = _closed(
+        "DeviceCoverageRollup", ("worst", "n_abstained"),
+        {"worst": _ref("CoverageStateFact"), "n_abstained": _ref("CountFact")},
     )
     defs["ReadinessCheckRow"] = _row_def("ReadinessCheckRow", _indexed(),
                                           (("check", _TEXT), ("status", "CheckStatusFact"),
@@ -4594,8 +4710,12 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                         ("SecurityCheckItem", "SecurityCheckFact"), ("TrunkNativeItem", "TrunkNativeFact"),
                         ("SharedIpItem", "SharedIpFact")):
         defs[title] = _item_def(title, fact)
-    defs["CoverageItem"] = _closed("CoverageItem", ("axis", "pointer", "fact"),
-                                   {"axis": _str(), "pointer": _ref("Pointer"), "fact": _ref("CoverageCellFact")})
+    defs["CoverageItem"] = _closed("CoverageItem", ("axis", "pointer", "fact", "dimension", "verdict_source",
+                                                   "is_abstention"),
+                                   {"axis": _str(), "pointer": _ref("Pointer"), "fact": _ref("CoverageCellFact"),
+                                    "dimension": _ref("CoverageDimensionFact"),
+                                    "verdict_source": _ref("CoverageVerdictSourceFact"),
+                                    "is_abstention": _ref("FlagFact")})
     defs["DeviceRosters"] = _closed("DeviceRosters", ("devices", "collection_completeness"),
                                     {"devices": _bool(), "collection_completeness": _bool()})
     defs["DeviceRowRefs"] = _closed("DeviceRowRefs", ("health", "lifecycle", "dossier", "collection"),
@@ -4603,7 +4723,8 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                                                              "collection")})
     defs["DeviceRow"] = _row_def("DeviceRow", {"host": _str(), "pointer": _nullable(_ref("Pointer")),
                                                "rosters": _ref("DeviceRosters"), "rows": _ref("DeviceRowRefs"),
-                                               "findings": _ref("DeviceFindingsRollup")},
+                                               "findings": _ref("DeviceFindingsRollup"),
+                                               "coverage": _ref("DeviceCoverageRollup")},
                                  _DEVICE_ROW_CELLS)
     defs["VlanSelections"] = _closed("VlanSelections", ("stp_roots", "gateways", "endpoints"),
                                      {"stp_roots": _nullable({"type": "array", "items": _ref("Pointer")}),
@@ -4685,10 +4806,11 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     defs["DevicePage"] = _closed("DevicePage", (
         "host", "rosters", "identity", "physical", "collection", "health", "lifecycle", "dossier", "coverage",
         "interfaces", "links", "routes", "routing_neighbors", "security", "native_vlan_mismatches", "remediation",
-        "nrfu_cases", "findings", "endpoints", "limitations", "move_group", "findings_rollup"), {
+        "nrfu_cases", "findings", "endpoints", "limitations", "move_group", "findings_rollup", "coverage_rollup"), {
         "host": _nullable(_str()),
         "move_group": _ref(_TEXT),
         "findings_rollup": _ref("DeviceFindingsRollup"),
+        "coverage_rollup": _ref("DeviceCoverageRollup"),
         "rosters": _closed("DevicePageRosters", ("devices", "collection_completeness", "cable_map"),
                            {"devices": _bool(), "collection_completeness": _bool(), "cable_map": _bool()}),
         "identity": identity,

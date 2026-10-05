@@ -1603,11 +1603,43 @@ export interface components {
             /** @enum {string} */
             readonly state: "covered" | "not_collected" | "partial" | "unverified" | "unparsed" | "not_observed";
         };
+        /** CoverageDimensionFact */
+        readonly UiProjection1_CoverageDimensionFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            /** @enum {string} */
+            readonly value: "collection" | "capture" | "parse" | "architecture";
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
+        };
         /** CoverageItem */
         readonly UiProjection1_CoverageItem: {
             readonly axis: string;
+            readonly dimension: components["schemas"]["UiProjection1_CoverageDimensionFact"];
             readonly fact: components["schemas"]["UiProjection1_CoverageCellFact"];
+            readonly is_abstention: components["schemas"]["UiProjection1_FlagFact"];
             readonly pointer: components["schemas"]["UiProjection1_Pointer"];
+            readonly verdict_source: components["schemas"]["UiProjection1_CoverageVerdictSourceFact"];
         };
         /** CoverageList */
         readonly UiProjection1_CoverageList: {
@@ -1650,6 +1682,69 @@ export interface components {
             readonly n_rows: components["schemas"]["UiProjection1_CountFact"];
             readonly note: components["schemas"]["UiProjection1_TextFact"];
         };
+        /** CoverageStateFact */
+        readonly UiProjection1_CoverageStateFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            /** @enum {string} */
+            readonly value: "not_collected" | "unverified" | "unparsed" | "partial" | "not_observed" | "covered";
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
+        };
+        /** CoverageVerdictSourceFact */
+        readonly UiProjection1_CoverageVerdictSourceFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            /** @enum {string} */
+            readonly value: "collection_completeness" | "capture_integrity" | "parse_yield" | "architecture_coverage";
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
+        };
+        /** DeviceCoverageRollup */
+        readonly UiProjection1_DeviceCoverageRollup: {
+            readonly n_abstained: components["schemas"]["UiProjection1_CountFact"];
+            readonly worst: components["schemas"]["UiProjection1_CoverageStateFact"];
+        };
         /** DeviceDocument */
         readonly UiProjection1_DeviceDocument: {
             readonly device: components["schemas"]["UiProjection1_DevicePage"];
@@ -1671,6 +1766,7 @@ export interface components {
                 readonly status: components["schemas"]["UiProjection1_CollectionStatusFact"];
             };
             readonly coverage: components["schemas"]["UiProjection1_CoverageList"];
+            readonly coverage_rollup: components["schemas"]["UiProjection1_DeviceCoverageRollup"];
             /** DeviceDossier */
             readonly dossier: {
                 readonly compound: components["schemas"]["UiProjection1_CompoundList"];
@@ -1796,6 +1892,7 @@ export interface components {
         /** DeviceRow */
         readonly UiProjection1_DeviceRow: {
             readonly collection_status: components["schemas"]["UiProjection1_CollectionStatusFact"];
+            readonly coverage: components["schemas"]["UiProjection1_DeviceCoverageRollup"];
             readonly findings: components["schemas"]["UiProjection1_DeviceFindingsRollup"];
             readonly health_band: components["schemas"]["UiProjection1_BandFact"];
             readonly health_score: components["schemas"]["UiProjection1_ScoreFact"];
@@ -7895,6 +7992,7 @@ export interface components {
                     /** @constant */
                     readonly pointer?: "/coverage";
                 };
+                readonly coverage_rollup: components["schemas"]["UiProjection1_DeviceCoverageRollup"];
                 /** DeviceDossier */
                 readonly dossier: {
                     readonly compound: components["schemas"]["UiProjection1_Page_CompoundList"] & {

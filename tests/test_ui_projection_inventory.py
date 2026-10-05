@@ -35,7 +35,7 @@ import time
 import pytest
 from jsonschema import Draft202012Validator
 
-from cisco_toolkit import analyze, nrfu_export, ssot, stp_topology
+from cisco_toolkit import analyze, coverage_matrix, nrfu_export, ssot, stp_topology
 from cisco_toolkit import parse as parse_mod
 from cisco_toolkit import ui_projection as uip
 from cisco_toolkit.model import DevicePhysical, InterfaceData
@@ -515,7 +515,9 @@ def test_i0_schema_sections_and_vocabularies():
     enums = {"LifecycleBandFact": uip.LIFECYCLE_BAND_ORDER, "RiskBandFact": uip.DOSSIER_BANDS,
              "SeverityFact": uip.SEVERITIES, "ReadinessFact": uip.VLAN_READINESS,
              "EndpointConfidenceFact": uip.ENDPOINT_CONFIDENCES, "CollectionStatusFact": uip.CC_STATUSES,
-             "OpStatusFact": uip.OP_STATUSES}
+             "OpStatusFact": uip.OP_STATUSES, "CoverageStateFact": uip.COVERAGE_STATE_ORDER,
+             "CoverageDimensionFact": uip.COVERAGE_DIMENSIONS,
+             "CoverageVerdictSourceFact": uip.COVERAGE_VERDICT_SOURCES}
     for name, vocab in enums.items():
         assert _value_schema(d, name) == {"type": "string", "enum": list(vocab)}, name
     assert _value_schema(d, "TextListFact") == {"type": "array", "items": {"type": "string"}}
@@ -525,6 +527,20 @@ def test_i0_schema_sections_and_vocabularies():
     assert d["SecurityCheckValue"]["properties"]["status"]["enum"] == list(uip.SEC_STATUSES)
     assert d["SecuritySummaryValue"]["properties"]["grade"]["enum"] == list(uip.SEC_GRADES)
     assert d["CoverageCellValue"]["properties"]["state"]["enum"] == list(uip.COVERAGE_STATES)
+    assert d["CoverageItem"]["required"] == ["axis", "pointer", "fact", "dimension", "verdict_source", "is_abstention"]
+    assert d["CoverageItem"]["properties"] == {
+        "axis": {"type": "string"}, "pointer": {"$ref": "#/$defs/Pointer"},
+        "fact": {"$ref": "#/$defs/CoverageCellFact"},
+        "dimension": {"$ref": "#/$defs/CoverageDimensionFact"},
+        "verdict_source": {"$ref": "#/$defs/CoverageVerdictSourceFact"},
+        "is_abstention": {"$ref": "#/$defs/FlagFact"},
+    }
+    assert d["DeviceCoverageRollup"]["required"] == ["worst", "n_abstained"]
+    assert d["DeviceCoverageRollup"]["properties"] == {
+        "worst": {"$ref": "#/$defs/CoverageStateFact"}, "n_abstained": {"$ref": "#/$defs/CountFact"},
+    }
+    assert d["DeviceRow"]["properties"]["coverage"] == {"$ref": "#/$defs/DeviceCoverageRollup"}
+    assert d["DevicePage"]["properties"]["coverage_rollup"] == {"$ref": "#/$defs/DeviceCoverageRollup"}
     assert list(d["InterfaceCells"]["properties"]) == list(uip.IF_COLUMNS)
     assert d["InterfaceCells"]["required"] == list(uip.IF_COLUMNS)
     ids = [lim["id"] for lim in uip.LIMITATIONS] + [lim["id"] for lim in uip.DEVICE_LIMITATIONS]
@@ -539,7 +555,7 @@ def test_i0_schema_sections_and_vocabularies():
     assert d["DeviceDocument"]["properties"]["schema"]["const"] == uip.SCHEMA
     for name in ("Inventory", "Findings", "DevicePage", "DeviceRow", "VlanRow", "EndpointRow", "FindingRow",
                  "DualHomedRow", "InterfaceRow", "CableRow", "RouteRow", "NeighborRow", "RemediationRow",
-                 "NrfuCaseRow", "Cap", "RowRef", "FhrpValue", "FhrpMember"):
+                 "NrfuCaseRow", "Cap", "RowRef", "FhrpValue", "FhrpMember", "CoverageItem", "DeviceCoverageRollup"):
         assert d[name]["type"] == "object" and d[name]["additionalProperties"] is False, name
     for name in ("DeviceRowList", "VlanRowList", "EndpointRowList", "FindingRowList", "SharedIpList",
                  "DualHomedList", "PeerList", "InterfaceRowList", "CableRowList", "RouteRowList",
@@ -777,7 +793,14 @@ def test_i3_device_page_values_come_from_the_owners(snaps, docs):
             assert page["security"]["checks"]["state"] == NC
         cm = snap["coverage_matrix"]["by_device"][host]
         assert [it["axis"] for it in page["coverage"]["items"]] == sorted(cm)
-        assert all(it["fact"]["value"] == {"axis": it["axis"], "state": cm[it["axis"]]} for it in page["coverage"]["items"])
+        for item in page["coverage"]["items"]:
+            source_rows = [row for row in snap["coverage_matrix"]["rows"]
+                           if isinstance(row, dict) and row.get("device") == host and row.get("axis") == item["axis"]]
+            assert len(source_rows) == 1, (host, item["axis"], source_rows)
+            source = source_rows[0]
+            assert _sv(item["fact"]) == (PUB, {"axis": item["axis"], "state": cm[item["axis"]]})
+            for field in ("dimension", "verdict_source", "is_abstention"):
+                assert _sv(item[field]) == (PUB, source[field]), (host, item["axis"], field)
         ifs = snap["interfaces"][host]
         assert [r["port"] for r in page["interfaces"]["rows"]["items"]] == sorted(ifs)
         assert page["interfaces"]["columns"] == list(uip.IF_COLUMNS)
@@ -1255,6 +1278,13 @@ def test_i12_vocabularies_equal_their_owners():
     assert uip.PUNCH_CONFIDENCE_UNPUBLISHED == analyze.PUNCH_CONFIDENCE_UNPUBLISHED
     assert uip.HEALTH_BAND_NOT_SCORED == ssot._HEALTH_BAND_NOT_SCORED
     assert uip.ESSENTIAL_LABELS == analyze._ESSENTIAL_LABELS
+    assert uip.COVERAGE_STATE_ORDER == coverage_matrix.COVERAGE_STATE_ORDER == (
+        "not_collected", "unverified", "unparsed", "partial", "not_observed", "covered")
+    assert set(uip.COVERAGE_STATE_ORDER) == set(uip.COVERAGE_STATES)
+    assert uip.COVERAGE_DIMENSIONS == coverage_matrix.COVERAGE_DIMENSIONS
+    assert uip.COVERAGE_VERDICT_SOURCES == coverage_matrix.COVERAGE_VERDICT_SOURCES
+    assert len(uip.COVERAGE_DIMENSIONS) == len(set(uip.COVERAGE_DIMENSIONS)) == 4
+    assert len(uip.COVERAGE_VERDICT_SOURCES) == len(set(uip.COVERAGE_VERDICT_SOURCES)) == 4
     for block, needs in uip.SELECTION_NEEDS.items():
         assert set(needs) <= set(uip.ESSENTIAL_LABELS), block
     assert set(uip.ANALYSIS_SECTIONS) == {s for secs in ssot.PHASE_SECTIONS.values() for s in secs}
@@ -1271,6 +1301,18 @@ def test_i12_vocabularies_equal_their_owners():
 
 
 def test_i12_literal_vocabularies_are_held_against_the_producer_source():
+    dimensions, sources, non_literal_coverage = set(), set(), []
+    for node in ast.walk(_function_ast(coverage_matrix.compute_coverage_matrix)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_row":
+            for index, found in ((2, dimensions), (4, sources)):
+                arg = node.args[index] if len(node.args) > index else None
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    found.add(arg.value)
+                else:
+                    non_literal_coverage.append(ast.dump(node)[:120])
+    assert not non_literal_coverage, non_literal_coverage
+    assert dimensions == set(uip.COVERAGE_DIMENSIONS)
+    assert sources == set(uip.COVERAGE_VERDICT_SOURCES)
     exposure, non_literal = set(), []
     for node in ast.walk(_function_ast(analyze.compute_device_dossiers)):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "ax":
@@ -1480,18 +1522,84 @@ def test_i12_tables_are_held_against_the_producer_signatures():
 # --------------------------------------------------------------------------------------------------
 # I13 -- no invented numbers
 # --------------------------------------------------------------------------------------------------
+def _independent_coverage_abstention_count(snap, host):
+    """Reconcile only the new device fold's count directly with original matrix row flags.
+
+    This never calls the index, matcher, projection, or engine fold under test. Duplicate, missing,
+    orphan, malformed or contradictory rows cannot supply a positive count witness.
+    """
+    assert isinstance(host, str)
+    matrix = snap["coverage_matrix"]
+    cells = matrix["by_device"][host]
+    rows = matrix["rows"]
+    assert isinstance(cells, dict) and cells and isinstance(rows, list)
+    assert {"collection", "capture", "parse"} <= set(cells)
+    assert host != coverage_matrix._FLEET
+    for row in rows:
+        assert isinstance(row, dict)
+        for identity in ("device", "axis"):
+            assert isinstance(row.get(identity), str) and row[identity].strip()
+            row[identity].encode("utf-8")
+    source_rows = [row for row in rows if isinstance(row, dict) and row.get("device") == host]
+    assert len(source_rows) == len(cells), (host, source_rows, cells)
+    flags = []
+    for axis, state in cells.items():
+        assert isinstance(axis, str) and axis and state in coverage_matrix.COVERAGE_STATE_ORDER
+        matches = [row for row in source_rows if row.get("axis") == axis]
+        assert len(matches) == 1, (host, axis, matches)
+        row = matches[0]
+        assert row["state"] == state
+        assert row["dimension"] in coverage_matrix.COVERAGE_DIMENSIONS
+        assert row["verdict_source"] in coverage_matrix.COVERAGE_VERDICT_SOURCES
+        assert type(row["is_abstention"]) is bool and row["is_abstention"] == (state != "covered")
+        if axis in {"collection", "capture", "parse"}:
+            assert row["dimension"] == axis
+        else:
+            assert row["dimension"] == "architecture"
+        if row["verdict_source"] == "collection_completeness":
+            assert state in ({"covered", "partial", "not_collected"} if axis == "collection"
+                             else {"not_collected"})
+            assert row["dimension"] in {"collection", "capture", "parse"}
+        else:
+            source, states = {
+                "capture": ("capture_integrity", {"covered", "unverified"}),
+                "parse": ("parse_yield", {"covered", "unparsed"}),
+                "architecture": ("architecture_coverage", {"covered"}),
+            }[row["dimension"]]
+            assert row["verdict_source"] == source and state in states
+        flags.append(row["is_abstention"])
+    count = sum(flags)
+    assert count > 0, "zero abstentions cannot prove a fully covered device through silence"
+    return count
+
+
 @pytest.mark.parametrize("name", ("a", "bl", "mg", "real", "g_phys_bad", "g_poison_str"))
 def test_i13_every_published_number_is_the_owners(name, snaps, payloads, docs):
     snap = snaps[name] if isinstance(snaps[name], dict) else {}
-    roots = [payloads[name]["inventory"], payloads[name]["findings"]] + [d["device"] for _h, d in docs[name]]
+    inventory = payloads[name]["inventory"]
+    coverage_counts = {f"/devices/rows/items/{index}/coverage/n_abstained": row["host"]
+                       for index, row in enumerate(inventory["devices"]["rows"]["items"])}
+    roots = [(inventory, coverage_counts), (payloads[name]["findings"], {})] + [
+        (doc["device"], {"/coverage_rollup/n_abstained": doc["device"]["host"]}) for _host, doc in docs[name]]
     n = 0
-    for root in roots:
+    for root, folded_coverage_paths in roots:
         for where, fact in _walk_facts(root):
             value = fact.get("value")
             if fact["state"] != PUB or isinstance(value, bool) or not isinstance(value, (int, float)):
                 continue
             n += 1
-            if fact["subject"] is not None:
+            if where in folded_coverage_paths:
+                assert fact["subject"] is None
+                assert fact["basis"] == "coverage_matrix.compute_device_coverage:stored matrix rows by exact device.n_abstained"
+                assert type(value) is int
+                host = folded_coverage_paths[where]
+                assert value == _independent_coverage_abstention_count(snap, host), (where, host, value)
+                witnesses = [ref["pointer"] for ref in fact["refs"] if ref["role"] == "witness"]
+                assert _ptr("coverage_matrix", "by_device", host) in witnesses
+                expected_rows = [index for index, row in enumerate(snap["coverage_matrix"]["rows"])
+                                 if isinstance(row, dict) and row.get("device") == host]
+                assert {_ptr("coverage_matrix", "rows", index) for index in expected_rows} <= set(witnesses)
+            elif fact["subject"] is not None:
                 assert _resolve(snap, fact["subject"]) == value, (where, fact["subject"], value)
             else:
                 witness = [r["pointer"] for r in fact["refs"] if r["role"] == "witness"]
