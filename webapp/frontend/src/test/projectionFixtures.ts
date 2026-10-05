@@ -85,15 +85,19 @@ export function overviewRollupsFixture(sid = 1) {
       checks: ownerList([{ index: 0, pointer: "/migration_readiness/0/checks/0", check: published("Synthetic ready check"),
         status: published("pass"), note: published("Synthetic assessed input"), phase: published("Inventory") }], "/migration_readiness/0/checks") },
   ];
-  const hosts = [["synthetic-healthy"], [], [], [], ["edge/a~b"], ["synthetic-blind"]];
+  const bands = [
+    { band: "Excellent", hosts: ["synthetic-healthy"] }, { band: "Good", hosts: [] },
+    { band: "Fair", hosts: [] }, { band: "Poor", hosts: [] },
+    { band: "Critical", hosts: ["edge/a~b"] }, { band: "Insufficient Data", hosts: ["synthetic-blind"] },
+  ];
   const groupPage = ownerPage("/readiness/groups", groups);
   return { ...doc, limitations: [{ id: caveat, owner: "analyze.compute_move_groups", applies_to: ["/overview/readiness/groups"],
     text: "Endpoints is the sum of per-switch distinct learned MAC addresses on eligible access ports, not distinct endpoints across a move group; one MAC observed on multiple switches can be counted more than once." }], payload: { ...doc.payload,
     facts: { ...doc.payload.facts, n_critical: { ...doc.payload.facts.n_critical, fact: published(1) }, n_poor: { ...doc.payload.facts.n_poor, fact: published(0) },
       worst_band: { ...doc.payload.facts.worst_band, fact: published("Critical") } },
     fleet_health: { state: "published", engine_state: "measured", not_assessed_reason: null, n_scored: published(2), n_rows: published(3),
-      bands: ["Excellent", "Good", "Fair", "Poor", "Critical", "Insufficient Data"].map((band, index) => ({ band, n: published(hosts[index].length),
-        hosts: hosts[index].length ? published(hosts[index]) : { state: "collected_but_empty", value: null,
+      bands: bands.map(({ band, hosts }) => ({ band, n: published(hosts.length),
+        hosts: hosts.length ? published(hosts) : { state: "collected_but_empty", value: null,
           reason: "Synthetic source contains no hosts in this band", subject: "/health_scores", refs: [], basis: "synthetic.owner" } })) },
     readiness: { groups: { ...groupPage, source_list: { ...groupPage.source_list, caveats: [caveat] } } },
   } };

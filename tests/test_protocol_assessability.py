@@ -737,15 +737,22 @@ def _assert_section_dependency_reader(text):
     tree = ast.parse(text)
     declarations = {n.target.id: n for n in tree.body
                     if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)}
-    dependency = declarations["PUNCHLIST_INPUTS"].value
-    assert isinstance(dependency, ast.Tuple) and all(
+    registry_names = {"PUNCHLIST_INPUTS", "READINESS_INPUTS"}
+    assert registry_names <= set(declarations), "a required literal dependency registry is absent"
+    dependencies = {name: declarations[name].value for name in registry_names}
+    assert all(isinstance(dependency, ast.Tuple) and all(
         isinstance(n, ast.Constant) and isinstance(n.value, str) for n in dependency.elts)
+               for dependency in dependencies.values())
     receipt_mentions = [n for n in ast.walk(tree)
                         if (isinstance(n, ast.Constant) and isinstance(n.value, str)
                             and _RECEIPT_NAME.search(n.value))
                         or (isinstance(n, ast.Name) and _RECEIPT_NAME.search(n.id))
                         or (isinstance(n, ast.Attribute) and _RECEIPT_NAME.search(n.attr))]
-    assert len(receipt_mentions) == 1 and receipt_mentions[0] in dependency.elts, (
+    registered_mentions = [n for dependency in dependencies.values() for n in dependency.elts
+                           if _RECEIPT_NAME.search(n.value)]
+    assert all(sum(bool(_RECEIPT_NAME.search(n.value)) for n in dependency.elts) == 1
+               for dependency in dependencies.values())
+    assert len(registered_mentions) == len(registry_names) and set(receipt_mentions) == set(registered_mentions), (
         "receipt access outside the literal section-dependency registry")
     # The registry itself may only flow to these section/rollup arguments. Indexing it to hide a
     # raw receipt read behind an alias, iterating it elsewhere, or adding another use fails here.
@@ -758,16 +765,16 @@ def _assert_section_dependency_reader(text):
         bound = getattr(node, field, None) if field else None
         if isinstance(node, ast.alias):
             bound = node.asname or node.name.split(".")[0]
-        assert bound != "PUNCHLIST_INPUTS", "dependency registry was shadowed or rebound"
+        assert bound not in registry_names, "dependency registry was shadowed or rebound"
         if isinstance(node, (ast.Global, ast.Nonlocal)):
-            assert "PUNCHLIST_INPUTS" not in node.names, "dependency registry scope was redirected"
+            assert not registry_names.intersection(node.names), "dependency registry scope was redirected"
     parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
     uses = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Name) or node.id != "PUNCHLIST_INPUTS":
+        if not isinstance(node, ast.Name) or node.id not in registry_names:
             continue
         if not isinstance(node.ctx, ast.Load):
-            assert node is declarations["PUNCHLIST_INPUTS"].target, "dependency registry was rebound"
+            assert node is declarations[node.id].target, "dependency registry was rebound"
             continue
         enclosing, call = node, None
         while enclosing in parents:
@@ -776,17 +783,23 @@ def _assert_section_dependency_reader(text):
                 call = enclosing
             if isinstance(enclosing, ast.FunctionDef):
                 break
-        assert (call is not None and isinstance(call.func, ast.Name)
-                and isinstance(enclosing, ast.FunctionDef)), "indirect dependency-registry use"
+        assert call is not None and isinstance(enclosing, ast.FunctionDef), "indirect dependency-registry use"
         arguments = [(str(i), value) for i, value in enumerate(call.args)]
         arguments += [(kw.arg, kw.value) for kw in call.keywords]
-        uses.extend((enclosing.name, call.func.id, slot, ast.unparse(value))
+        uses.extend((enclosing.name, ast.unparse(call.func), slot, ast.unparse(value))
                     for slot, value in arguments if node in ast.walk(value))
+    readiness_refs = ("[('basis', (s,)) for s in READINESS_INPUTS] + "
+                      "ctx.failure_entries(READINESS_INPUTS, state == AU)")
     assert sorted(uses) == sorted([
         ("_findings", "_listing", "rollup", "PUNCHLIST_INPUTS"),
         ("_findings", "_total", "sections", "toks + PUNCHLIST_INPUTS"),
         ("_device_page", "_rolled", "4", "PUNCHLIST_INPUTS"),
         ("_device_page", "_selection_rows", "sections", "('punchlist',) + PUNCHLIST_INPUTS"),
+        ("_readiness", "_secs_fail", "1", "READINESS_INPUTS"),
+        ("_readiness", "_Row", "extra", readiness_refs),
+        ("_readiness", "_listing", "extra", readiness_refs),
+        ("_readiness", "ctx.failure_entries", "0", "READINESS_INPUTS"),
+        ("_readiness", "ctx.failure_entries", "0", "READINESS_INPUTS"),
     ]), "dependency registry must only be forwarded to the declared section-state consumers"
     owned = {"COVERAGE_STATES": unknown_evidence._COVERAGE_STATES,
              "UE_SOURCE_STATES": unknown_evidence._SOURCE_STATES}
@@ -900,6 +913,21 @@ def test_section_dependency_proof_rejects_receipt_reads_and_owner_vocabulary_dri
         text + "\nmatch value:\n    case PUNCHLIST_INPUTS:\n        pass\n",
         text.replace('("covered", "not_collected", "partial",', '("covered", "not_collected", "wrong",'),
         text.replace('("observed", "observed_empty", "partial",', '("observed", "observed_empty", "wrong",'),
+        text + "\ndef bad(s):\n    return s[READINESS_INPUTS[7]]['rows'][0]['state']\n",
+        text + "\nREADINESS_ALIAS = READINESS_INPUTS\n",
+        text + "\ndef bad(s):\n    return [s[key] for key in READINESS_INPUTS]\n",
+        text.replace("def _readiness(ctx: _Ctx)", "def _readiness(ctx: _Ctx, READINESS_INPUTS=())"),
+        text + "\ndef READINESS_INPUTS():\n    pass\n",
+        text + "\nclass READINESS_INPUTS:\n    pass\n",
+        text + "\nfrom other_module import value as READINESS_INPUTS\n",
+        text + "\nimport READINESS_INPUTS\n",
+        text + "\ntry:\n    pass\nexcept Exception as READINESS_INPUTS:\n    pass\n",
+        text + "\nmatch value:\n    case READINESS_INPUTS:\n        pass\n",
+        text + "\nOTHER_INPUTS: Tuple[str, ...] = ('protocol_assessability',)\n",
+        text + "\ndef bad(s):\n    return s.protocolAssessability\n",
+        text + "\ndef bad(s):\n    return _secs_fail(s, READINESS_INPUTS)\n",
+        text + "\ndef bad(s):\n    return s[READINESS_INPUTS[7]]\n",
+        text + "\nREADINESS_INPUTS = ()\n",
     )
     for mutant in mutants:
         assert mutant != text
@@ -995,6 +1023,86 @@ def test_section_dependency_projection_follows_ssot_not_receipt_states(monkeypat
 
     with pytest.raises(AssertionError, match="projection ignored SSOT section state"):
         _assert_section_projection_delegates(aggregate_receipt_reader, monkeypatch)
+
+
+def _assert_readiness_section_projection_delegates(project_overview, monkeypatch):
+    """Readiness follows section failures while receipt-family row states remain opaque.
+
+    This owner is optional for direct callers, so an NC/empty receipt section does not invent a
+    new readiness disposition. An attributed section failure still withholds the whole checklist.
+    """
+    from cisco_toolkit import ssot
+
+    snap = {"interfaces": {"sw1": {"Gi1/0/1": {"status": "up"}}},
+            "move_groups": [{"group": "Move Group 1", "switches": ["sw1"], "endpoints": 0}],
+            "health_scores": [{"switch": "sw1", "band": "Good", "score": 90}],
+            "migration_readiness": [{"group": "Move Group 1", "switches": ["sw1"], "endpoints": 0,
+                                     "readiness": "READY", "n_fail": 0, "n_warn": 0,
+                                     "checks": [{"check": "Device health floor", "status": "pass",
+                                                 "note": "published owner evidence", "phase": "Pilot/cutover"}]}]}
+    receipt = compute_protocol_assessability(["sw1"], {"sw1": {}}, {"sw1": {}}, [])
+    receipt["rows"][0]["state"] = "assessed"
+    snap["protocol_assessability"] = receipt
+    original = ssot.abstention_reason
+    assert project_overview(snap)["readiness"]["groups"]["state"] == "published"
+    for owner_state in ssot.ABSTENTION_STATES:
+        calls = []
+
+        def section_state(value, subject, *args, **kwargs):
+            if subject == "protocol_assessability":
+                calls.append(subject)
+                return owner_state
+            return original(value, subject, *args, **kwargs)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(ssot, "abstention_reason", section_state)
+            expected = None
+            probes = [(row,) for row in receipt["rows"]] + [tuple(receipt["rows"])]
+            for rows in probes:
+                baseline_states = [row["state"] for row in rows]
+                for receipt_state in (*PROTOCOL_ASSESSABILITY_STATES, "future_unknown_state"):
+                    for row in rows:
+                        row["state"] = receipt_state
+                    actual = project_overview(snap)["readiness"]["groups"]
+                    assert calls, "the readiness projection must consult the SSOT section owner"
+                    calls.clear()
+                    expected_state = "analysis_unavailable" if owner_state == "analysis_unavailable" else "published"
+                    assert actual["state"] == expected_state, "projection ignored SSOT section state"
+                    if expected is None:
+                        expected = actual
+                    assert actual == expected, f"readiness projection interpreted receipt row state {receipt_state}"
+                for row, baseline_state in zip(rows, baseline_states):
+                    row["state"] = baseline_state
+
+
+def test_readiness_section_dependency_follows_ssot_not_receipt_states(monkeypatch):
+    from cisco_toolkit import ui_projection
+
+    _assert_readiness_section_projection_delegates(ui_projection.project_overview, monkeypatch)
+    receipt_key = ui_projection.READINESS_INPUTS[7]
+    assert receipt_key == "protocol_assessability"
+
+    def aliased_receipt_reader(snap):
+        result = ui_projection.project_overview(snap)
+        if snap[receipt_key]["rows"][0]["state"] != "assessed":
+            result["readiness"]["groups"]["state"] = "unverified"
+        return result
+
+    def later_family_reader(snap):
+        result = ui_projection.project_overview(snap)
+        if snap[receipt_key]["rows"][-1]["state"] == "assessed":
+            result["readiness"]["groups"]["state"] = "unverified"
+        return result
+
+    def aggregate_receipt_reader(snap):
+        result = ui_projection.project_overview(snap)
+        if all(row["state"] == "assessed" for row in snap[receipt_key]["rows"]):
+            result["readiness"]["groups"]["state"] = "unverified"
+        return result
+
+    for mutant in (aliased_receipt_reader, later_family_reader, aggregate_receipt_reader):
+        with pytest.raises(AssertionError, match="projection ignored SSOT section state"):
+            _assert_readiness_section_projection_delegates(mutant, monkeypatch)
 
 
 def test_the_census_vocabulary_is_told_apart_from_the_receipt_vocabulary(tmp_path):

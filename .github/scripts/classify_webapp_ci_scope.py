@@ -43,6 +43,8 @@ RELEVANT_PATH_FILTERS = (
     "tests/pytest_invocation_reader.py",
     ".github/workflows/webapp-ci.yml",
     ".github/scripts/classify_webapp_ci_scope.py",
+    ".github/scripts/frontend_build_handoff.py",
+    ".github/scripts/verify_repository_privacy.py",
 )
 
 _OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.IGNORECASE)

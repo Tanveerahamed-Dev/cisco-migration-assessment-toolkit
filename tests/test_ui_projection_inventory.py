@@ -1321,6 +1321,8 @@ CAP_SITES = {
     ("analyze.compute_migration_punchlist", "s[:n]"): "punchlist[].detail",           # _clip(..., n=400)
     ("analyze.compute_executive_brief", "flags[:4]"):
         "exempt: the posture statement says in-band how many flags it holds back",
+    ("analyze.compute_migration_readiness", "subjects[:8]"):
+        "exempt: the IPv6 check note discloses exact '+N' omitted subjects and their full Cutover Validation/NRFU sinks",
     ("analyze.compute_failure_impact", "pv[:8]"):
         "exempt: detail prose says '+N more' in-band; full model counts remain separate and the projection discloses the 8-example cap",
     ("analyze._fmt_endpoint_mix", "items[:limit]"): "exempt: endpoint_mix says '+N more' in-band",
@@ -1410,6 +1412,33 @@ def test_i12_every_engine_cap_is_registered_or_reviewed():
     default = clip.args.defaults[names.index("n") - (len(names) - len(clip.args.defaults))]
     assert ast.literal_eval(default) == uip.ENGINE_LIST_CAPS["punchlist[].detail"]
     assert uip.PUNCH_DETAIL_CLIP_MARKER in _str_constants(clip)
+
+
+def test_i12_readiness_ipv6_subject_preview_keeps_its_exact_omission_and_source_disclosure():
+    """Execute the actual producer's pure nested helpers, without hand-restating their clipping rule.
+
+    The owner integration suite additionally proves full Validation/NRFU blocker retention in
+    test_ipv6_routing_engine.test_readiness_note_is_bounded_but_validation_and_nrfu_keep_every_blocker.
+    This proof targets the one new preview exemption and the projection's source disclosure.
+    """
+    tree = _function_ast(analyze.compute_migration_readiness)
+    helpers = [copy.deepcopy(node) for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+               and node.name in {"ipv6_subject", "ipv6_subject_summary"}]
+    assert {node.name for node in helpers} == {"ipv6_subject", "ipv6_subject_summary"}
+    namespace = {"_strict_protocol_text": analyze._strict_protocol_text, "List": list}
+    module = ast.fix_missing_locations(ast.Module(body=helpers, type_ignores=[]))
+    exec(compile(module, "<readiness-owner-subject-summary>", "exec"), namespace)
+    rows = [{"protocol": "OSPFv3", "peer": f"2001:db8::{i:04x}", "state_raw": "DOWN"} for i in range(12)]
+    before = copy.deepcopy(rows)
+    rendered = namespace["ipv6_subject_summary"](rows)
+    assert all(row["peer"] in rendered for row in rows[:8])
+    assert all(row["peer"] not in rendered for row in rows[8:])
+    assert "+4 additional blocker row(s) retained in Cutover Validation and NRFU" in rendered
+    assert rows == before and len(rows) == 12
+    scope = next(lim for lim in uip.LIMITATIONS if lim["id"] == "migration_readiness_check_scope")
+    assert "eight blocker subjects" in scope["text"] and "exact omitted count" in scope["text"]
+    assert "Cutover Validation/NRFU" in scope["text"]
+    assert "/overview/readiness/groups" in scope["applies_to"]
 
 
 def test_i12_caps_and_move_group_label_are_held_against_the_producer_source():

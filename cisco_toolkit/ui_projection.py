@@ -351,6 +351,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "when failure_impact fails. Every brief value, and every row value computed by an analysis phase, published "
         "while a failure is recorded carries this caveat.",
         ["/overview/axes", "/overview/absent_axes", "/overview/top_gating", "/overview/posture_statement",
+         "/overview/fleet_health/bands", "/overview/readiness/groups",
          "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
          "/findings/rows", "/findings/total", "/topology"]),
     _limitation(
@@ -459,7 +460,9 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "migration_readiness_check_scope", "analyze.compute_migration_readiness",
         "Readiness follows the published checks: fail means NOT READY, warn means CAUTION, and pass/info "
         "alone mean READY. An info check can state that evidence was not assessable or a manual action remains; "
-        "its note is preserved and READY does not turn that abstention into verified coverage.",
+        "its note is preserved and READY does not turn that abstention into verified coverage. An IPv6 adjacency "
+        "note names at most eight blocker subjects, then discloses the exact omitted count and their authoritative "
+        "Cutover Validation/NRFU records; it does not present the named subjects as the complete blocker list.",
         ["/overview/readiness/groups"]),
     _limitation(
         "health_band_partition_rows_only", "ssot.health_band_partition",
