@@ -100,3 +100,29 @@ Imported only the five verified generated members and removed three obsolete
 ordinary generated files inside the owned dist directory. The changed final
 source requires a new hosted rebuild, all exact-head gates and a fresh 300 ms
 receipt; no old acceptance or qualification is transferred.
+
+## Current-main integration and preserved manual-run negatives
+
+#599 owner-merged as `3f8ce101`. Integration merge `beaa9929` has parents
+`2c3e955f` and `3f8ce101`; only NOW required manual resolution. Independent
+Git-tree review confirms every other blob matches automatic parent selection,
+all 441 Scope paths equal main, both parent handoff histories survive, W10 is
+removed and W10b/W13 remain. The latest owner instruction requires #600 to
+finish before W10b; old source receipts do not certify this integrated source.
+
+The earlier manual run `37348127602` passed its performance job but failed the
+distribution frontend test and Windows suite job. The latter's check annotation
+reports hosted-runner communication loss; its suite step remained nonterminal
+and logs returned 404 twice, so no complete test-assertion verdict is established.
+The distribution log records a real pagination-test failure: the first coverage
+page remained visible while the test timed out finding the parse-axis group.
+Root cause is unconfirmed; observing mounted DOM before the reset/abort effect
+settles is the leading timing hypothesis. Preserve the failing log and the
+separate passing PR/frontend runs.
+
+The test now awaits React mount/click work, holds the page response explicitly,
+checks one exact device/pointer/offset request and an un-aborted signal, then
+releases the response and retains all existing row, metadata and full-rollup
+assertions. Default timeouts remain unchanged. This is a test-fixture correction,
+not evidence that production pagination was defective. Targeted typechecking
+passes; hosted runtime verification remains required on the new source.
