@@ -154,7 +154,8 @@ def main():
     if args.repeats < 1:
         parser.error("--repeats must be positive")
     sample = json.loads((ROOT / "webapp/sample_data/sample_fleet.snapshot.json").read_bytes())
-    sources = ("cisco_toolkit/ui_projection.py", "cisco_toolkit/protocol_assurance.py", "cisco_toolkit/fib.py",
+    sources = ("cisco_toolkit/ui_projection.py", "cisco_toolkit/coverage_matrix.py",
+               "cisco_toolkit/protocol_assurance.py", "cisco_toolkit/fib.py",
                "webapp/backend/ui_projection_api.py", "webapp/backend/engine.py",
                "webapp/backend/storage.py", "webapp/backend/app.py", "webapp/backend/serve.py",
                "webapp/sample_data/sample_fleet.snapshot.json",

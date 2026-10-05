@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CoreSnapshot from "./CoreSnapshot";
-import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, findingsRollupFixture, published, topologyFixture } from "../test/projectionFixtures";
+import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, findingsRollupFixture, coverageRollupFixture, coverageAxisFixture, published, topologyFixture } from "../test/projectionFixtures";
 
 function Harness() {
   const navigate = useNavigate();
@@ -254,6 +254,142 @@ describe("Core snapshot route", () => {
     const rollup = within(screen.getByRole("group", { name: "Device finding severity" }));
     expect(rollup.getAllByText(mode === "unverified" ? "Unverified" : "Not collected", { exact: true })).toHaveLength(2);
     expect(rollup.queryByText("0", { exact: true })).not.toBeInTheDocument();
+  });
+  describe.each([
+    { view: "inventory", path: "/snapshots/1?view=inventory", label: "Coverage for edge/a~b" },
+    { view: "device", path: "/snapshots/1?view=device&host=edge%2Fa%7Eb", label: "Device coverage summary" },
+  ] as const)("$view coverage rollup", ({ view, path, label }) => {
+    function serve(rollup: ReturnType<typeof coverageRollupFixture>) {
+      const document = view === "inventory" ? inventoryFixture(1, findingsRollupFixture("not_collected"), rollup)
+        : deviceFixture(1, "edge/a~b", findingsRollupFixture("not_collected"), rollup);
+      return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes(`/ui-projection/${view}?`)) return new Response(JSON.stringify(document));
+        if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false, href: null }));
+        throw new Error(`Unexpected non-projection request: ${url}`);
+      });
+    }
+    it("renders the owner's worst state and abstention total with their own evidence", async () => {
+      const fetcher = serve(coverageRollupFixture()); show(path);
+      const rollup = within(await screen.findByRole("group", { name: label }));
+      const worst = rollup.getByRole("button", { name: "Evidence for Worst coverage state" }).closest(".projection-fact")! as HTMLElement;
+      const abstained = rollup.getByRole("button", { name: "Evidence for Abstaining coverage axes" }).closest(".projection-fact")! as HTMLElement;
+      expect(within(worst).getByText("unverified", { exact: true })).toBeInTheDocument();
+      expect(within(worst).getByText("Published", { exact: true })).toBeInTheDocument();
+      expect(within(abstained).getByText("7", { exact: true })).toBeInTheDocument();
+      expect(rollup.queryByText("0", { exact: true })).not.toBeInTheDocument();
+      fireEvent.click(within(abstained).getByRole("button", { name: "Evidence for Abstaining coverage axes" }));
+      const drawer = screen.getByRole("dialog");
+      expect(drawer).toHaveTextContent("synthetic.owner:device_coverage");
+      expect(drawer).toHaveTextContent("/coverage_matrix/by_device/edge~1a~0b");
+      expect(drawer).toHaveTextContent("/coverage_matrix/rows/4");
+      expect(drawer).toHaveTextContent(`sha256:${"a".repeat(64)}`);
+      expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
+    });
+    it.each([
+      ["unverified", "Unverified", "Synthetic device coverage custody is missing or ambiguous"],
+      ["not_collected", "Not collected", "Synthetic device coverage inputs were not collected"],
+      ["all_covered", "Unverified", "Synthetic source silence does not prove complete device coverage"],
+    ] as const)("keeps %s rollups withheld without inventing covered or zero", async (mode, state, reason) => {
+      serve(coverageRollupFixture(mode)); show(path);
+      const rollup = within(await screen.findByRole("group", { name: label }));
+      expect(rollup.getAllByText(state, { exact: true })).toHaveLength(2);
+      expect(rollup.getAllByText(reason, { exact: true })).toHaveLength(2);
+      expect(rollup.queryByText("covered", { exact: true })).not.toBeInTheDocument();
+      expect(rollup.queryByText("0", { exact: true })).not.toBeInTheDocument();
+      expect(rollup.queryByText("No", { exact: true })).not.toBeInTheDocument();
+      fireEvent.click(rollup.getByRole("button", { name: "Evidence for Worst coverage state" }));
+      expect(screen.getByRole("dialog")).toHaveTextContent(reason);
+      expect(screen.getByRole("dialog")).toHaveTextContent("synthetic.owner:device_coverage");
+    });
+  });
+  describe("device coverage metadata", () => {
+    function serveRow(row: ReturnType<typeof coverageAxisFixture>) {
+      const document = deviceFixture(1, "edge/a~b", findingsRollupFixture("not_collected"), coverageRollupFixture());
+      const source_list = { state: "published", subject: "/coverage_matrix", refs: [], basis: "synthetic.owner:exact_device_axis" };
+      const coverage = { pointer: "/coverage", source_list,
+        page: { offset: 0, limit: 1, returned: 1, total: 1, has_more: false, items: [row] } };
+      const current = { ...document, payload: { ...document.payload, coverage } };
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/ui-projection/device?")) return new Response(JSON.stringify(current));
+        if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false, href: null }));
+        throw new Error(`Unexpected non-projection request: ${url}`);
+      });
+    }
+    it("shows supplied dimension, verdict source and true abstention beside the axis", async () => {
+      serveRow(coverageAxisFixture()); show("/snapshots/1?view=device&host=edge%2Fa%7Eb");
+      const row = within(await screen.findByRole("group", { name: "Coverage axis capture" }));
+      const factFor = (label: string) => within(row.getByRole("button", { name: `Evidence for ${label}` }).closest(".projection-fact")! as HTMLElement);
+      expect(factFor("dimension").getByText("capture", { exact: true })).toBeInTheDocument();
+      expect(factFor("verdict source").getByText("capture_integrity", { exact: true })).toBeInTheDocument();
+      expect(factFor("is abstention").getByText("Yes", { exact: true })).toBeInTheDocument();
+      expect(factFor("capture").getByText("unverified", { exact: true })).toBeInTheDocument();
+      fireEvent.click(row.getByRole("button", { name: "Evidence for verdict source" }));
+      expect(screen.getByRole("dialog")).toHaveTextContent("synthetic.owner:exact_device_axis");
+      expect(screen.getByRole("dialog")).toHaveTextContent("/coverage_matrix/rows/4");
+    });
+    it.each([
+      ["unverified", "Unverified", "Synthetic exact device and axis join is ambiguous"],
+      ["not_collected", "Not collected", "Synthetic device coverage inputs were not collected"],
+    ] as const)("keeps %s metadata withheld instead of false, covered or zero", async (mode, state, reason) => {
+      serveRow(coverageAxisFixture("capture", mode)); show("/snapshots/1?view=device&host=edge%2Fa%7Eb");
+      const row = within(await screen.findByRole("group", { name: "Coverage axis capture" }));
+      expect(row.getAllByText(state, { exact: true })).toHaveLength(4);
+      expect(row.getAllByText(reason, { exact: true })).toHaveLength(4);
+      expect(row.queryByText("covered", { exact: true })).not.toBeInTheDocument();
+      expect(row.queryByText("No", { exact: true })).not.toBeInTheDocument();
+      expect(row.queryByText("0", { exact: true })).not.toBeInTheDocument();
+      expect(row.queryByRole("term")).not.toBeInTheDocument();
+    });
+    it("renders an explicit false abstention while keeping the all-covered rollup unverified", async () => {
+      const document = deviceFixture(1, "edge/a~b", findingsRollupFixture("not_collected"), coverageRollupFixture("all_covered"));
+      const coverage = { pointer: "/coverage", source_list: { state: "published", subject: "/coverage_matrix", refs: [], basis: "synthetic.owner" },
+        page: { offset: 0, limit: 1, returned: 1, total: 1, has_more: false, items: [coverageAxisFixture("capture", "covered")] } };
+      const current = { ...document, payload: { ...document.payload, coverage } };
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/ui-projection/device?") ? current : { available: false })));
+      show("/snapshots/1?view=device&host=edge%2Fa%7Eb");
+      const row = within(await screen.findByRole("group", { name: "Coverage axis capture" }));
+      const abstention = within(row.getByRole("button", { name: "Evidence for is abstention" }).closest(".projection-fact")! as HTMLElement);
+      expect(abstention.getByText("No", { exact: true })).toBeInTheDocument();
+      expect(abstention.getByText("Published", { exact: true })).toBeInTheDocument();
+      const rollup = within(screen.getByRole("group", { name: "Device coverage summary" }));
+      expect(rollup.getAllByText("Unverified", { exact: true })).toHaveLength(2);
+      expect(rollup.queryByText("covered", { exact: true })).not.toBeInTheDocument();
+      expect(rollup.queryByText("0", { exact: true })).not.toBeInTheDocument();
+    });
+    it("retains the full owner rollup while paging individual coverage axes", async () => {
+      const document = deviceFixture(1, "edge/a~b", findingsRollupFixture("not_collected"), coverageRollupFixture());
+      const source_list = { state: "published", subject: "/coverage_matrix", refs: [], basis: "synthetic.owner:exact_device_axis" };
+      const coverage = { pointer: "/coverage", source_list,
+        page: { offset: 0, limit: 1, returned: 1, total: 9, has_more: true, items: [coverageAxisFixture()] } };
+      const current = { ...document, payload: { ...document.payload, coverage } };
+      const nextRow = { ...coverageAxisFixture("parse", "published", 8), dimension: published("parse"), verdict_source: published("parse_yield") };
+      const next = { ...coverage, page: { offset: 1, limit: 1, returned: 1, total: 9, has_more: true, items: [nextRow] } };
+      const { payload: _payload, ...envelope } = current;
+      const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/device/lists?")) return new Response(JSON.stringify({ ...envelope, list: next }));
+        if (url.includes("/ui-projection/device?")) return new Response(JSON.stringify(current));
+        if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false, href: null }));
+        throw new Error(`Unexpected non-projection request: ${url}`);
+      });
+      show("/snapshots/1?view=device&host=edge%2Fa%7Eb");
+      const list = within(await screen.findByRole("region", { name: "Device coverage" }));
+      const rollup = within(screen.getByRole("group", { name: "Device coverage summary" }));
+      expect(list.getByRole("group", { name: "Coverage axis capture" })).toBeInTheDocument();
+      expect(rollup.getByText("7", { exact: true })).toBeInTheDocument();
+      fireEvent.click(list.getByRole("button", { name: "Next Device coverage page" }));
+      await list.findByRole("group", { name: "Coverage axis parse" });
+      expect(list.queryByRole("group", { name: "Coverage axis capture" })).not.toBeInTheDocument();
+      expect(rollup.getByText("7", { exact: true })).toBeInTheDocument();
+      expect(rollup.getByText("unverified", { exact: true })).toBeInTheDocument();
+      expect(rollup.queryByText("1", { exact: true })).not.toBeInTheDocument();
+      expect(rollup.queryByText("9", { exact: true })).not.toBeInTheDocument();
+      const requested = fetcher.mock.calls.map(([input]) => String(input)).find((url) => url.includes("/device/lists?"))!;
+      const query = new URL(requested, "http://localhost").searchParams;
+      expect(query.get("host")).toBe("edge/a~b"); expect(query.get("pointer")).toBe("/coverage"); expect(query.get("offset")).toBe("1");
+    });
   });
   it("keeps Findings compact and expands owner issue/remediation text", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/findings?") ? findingsFixture() : { available: false })));

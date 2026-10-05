@@ -1299,12 +1299,16 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
             imported.update(f"{base}:{alias.name}" for alias in node.names)
     # Topology/path projection delegates to the existing offline FIB owner, including its exact address
     # observation rules; ipaddress canonicalizes those evidence joins. Decision rollups admit only the
-    # existing public vocabulary, stored-row fold, capture-flag precedence and VLAN membership owners.
-    # No module-wide analyze import or private/other owner imports are admitted.
+    # existing public vocabulary, stored-row folds, capture-flag precedence and VLAN membership owners.
+    # Coverage joins/folds are admitted by their exact public names; neither a module-wide analyze or
+    # coverage_matrix import nor private/other owner imports are admitted.
     allowed = {"math", "re", "ipaddress", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:__version__", "cisco_toolkit:fib", "cisco_toolkit.analyze:PUNCH_SEVERITIES",
                "cisco_toolkit.analyze:compute_device_findings", "cisco_toolkit.analyze:device_config_capture",
-               "cisco_toolkit.analyze:vlan_cutover_host_index"}
+               "cisco_toolkit.analyze:vlan_cutover_host_index", "cisco_toolkit.coverage_matrix:CoverageRowIndex",
+               "cisco_toolkit.coverage_matrix:index_coverage_rows", "cisco_toolkit.coverage_matrix:match_coverage_cell",
+               "cisco_toolkit.coverage_matrix:compute_device_coverage", "cisco_toolkit.coverage_matrix:COVERAGE_STATE_ORDER",
+               "cisco_toolkit.coverage_matrix:COVERAGE_DIMENSIONS", "cisco_toolkit.coverage_matrix:COVERAGE_VERDICT_SOURCES"}
     extra = {name for name in imported if name not in allowed and not name.startswith("typing:")}
     assert not extra, extra
     private = sorted({node.attr for node in ast.walk(tree)

@@ -133,14 +133,39 @@ export function findingsRollupFixture(mode: "published" | "unverified" | "not_co
       : "Synthetic canonical finding custody reports incomplete capture";
   return { worst: { ...evidence, state, value: null, reason }, by_severity: { ...evidence, state, value: null, reason } };
 }
-export function inventoryFixture(sid = 1, findings = findingsRollupFixture("not_collected")) {
-  const row = { host: "edge/a~b", pointer: "/devices/edge~1a~0b", findings, ...fields("model platform sw_version serial_number role health_score health_band lifecycle_band risk_band move_group collection_status") };
+export function coverageRollupFixture(mode: "published" | "unverified" | "not_collected" | "all_covered" = "published") {
+  const evidence = { subject: "/coverage_matrix/by_device/edge~1a~0b",
+    refs: [{ pointer: "/coverage_matrix/rows/4", role: "basis" }], basis: "synthetic.owner:device_coverage" };
+  if (mode === "published") return {
+    worst: { ...published("unverified"), ...evidence }, n_abstained: { ...published(7), ...evidence },
+  };
+  const state = mode === "not_collected" ? "not_collected" : "unverified";
+  const reason = mode === "all_covered" ? "Synthetic source silence does not prove complete device coverage"
+    : mode === "not_collected" ? "Synthetic device coverage inputs were not collected"
+      : "Synthetic device coverage custody is missing or ambiguous";
+  return { worst: { ...evidence, state, value: null, reason }, n_abstained: { ...evidence, state, value: null, reason } };
+}
+export function coverageAxisFixture(axis = "capture", mode: "published" | "unverified" | "not_collected" | "covered" = "published", index = 4) {
+  const evidence = { subject: `/coverage_matrix/rows/${index}`, refs: [{ pointer: `/coverage_matrix/rows/${index}`, role: "basis" }],
+    basis: "synthetic.owner:exact_device_axis" };
+  if (mode === "published" || mode === "covered") return {
+    axis, fact: { ...published({ axis, state: mode === "covered" ? "covered" : "unverified" }), ...evidence },
+    dimension: { ...published("capture"), ...evidence }, verdict_source: { ...published("capture_integrity"), ...evidence },
+    is_abstention: { ...published(mode !== "covered"), ...evidence },
+  };
+  const reason = mode === "unverified" ? "Synthetic exact device and axis join is ambiguous"
+    : "Synthetic device coverage inputs were not collected";
+  const fact = { ...evidence, state: mode, value: null, reason };
+  return { axis, fact, dimension: fact, verdict_source: fact, is_abstention: fact };
+}
+export function inventoryFixture(sid = 1, findings = findingsRollupFixture("not_collected"), coverage = coverageRollupFixture("not_collected")) {
+  const row = { host: "edge/a~b", pointer: "/devices/edge~1a~0b", findings, coverage, ...fields("model platform sw_version serial_number role health_score health_band lifecycle_band risk_band move_group collection_status") };
   return { ...common(sid, "inventory"), payload: {
     devices: { total: published(1), rows: { ...empty("/devices/rows"), source_list: { state: "published", subject: "/devices", refs: [], basis: "synthetic.owner" }, page: { offset: 0, limit: 25, returned: 1, total: 1, has_more: false, items: [row] } } },
     vlans: { total: published(0), rows: empty("/vlans/rows") }, endpoints: { total: published(0), rows: empty("/endpoints/rows"), shared_ip: empty("/endpoints/shared_ip"), dual_homed: empty("/endpoints/dual_homed") }, uncollected_peers: empty("/uncollected_peers"),
   } };
 }
-export function deviceFixture(sid = 1, host = "edge/a~b", findings_rollup = findingsRollupFixture("not_collected")) {
+export function deviceFixture(sid = 1, host = "edge/a~b", findings_rollup = findingsRollupFixture("not_collected"), coverage_rollup = coverageRollupFixture("not_collected")) {
   const cap = { limit: 64, reached: false, total: withheld() };
   // This synthetic published rollup represents three stored rows (High, High, Low).
   // Only the first reference is on this page; the row total is not a UI calculation.
@@ -148,7 +173,7 @@ export function deviceFixture(sid = 1, host = "edge/a~b", findings_rollup = find
     ? { pointer: "/findings", source_list: { state: "published", subject: "/punchlist", refs: [], basis: "synthetic.owner:exact_host_refs" },
       page: { offset: 0, limit: 1, returned: 1, total: 3, has_more: true, items: [{ index: 7, pointer: "/punchlist/7" }] } }
     : empty("/findings");
-  return { ...common(sid, "device"), payload: { host, findings_rollup, move_group: withheld(), identity: fields("model platform reported_hostname serial_number chassis_serial system_mac sw_version uptime"),
+  return { ...common(sid, "device"), payload: { host, findings_rollup, coverage_rollup, move_group: withheld(), identity: fields("model platform reported_hostname serial_number chassis_serial system_mac sw_version uptime"),
     physical: fields("active_ports total_ports num_modules num_power_supplies ps_status temperature_status fan_status power_capacity_w power_drawn_w power_remaining_w"), collection: fields("status missing data_quality"), lifecycle: fields("band status conf eos ldos source citation_status"),
     health: { ...fields("score band role"), deductions: empty("/health/deductions"), deduction_refs: empty("/health/deduction_refs"), deductions_cap: cap, deduction_refs_cap: cap },
     dossier: { risk_band: withheld(), exposures: empty("/dossier/exposures"), compound: empty("/dossier/compound") }, coverage: empty("/coverage"),
