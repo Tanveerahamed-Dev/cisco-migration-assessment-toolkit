@@ -76,6 +76,7 @@ export const COMPILED_NAME_KEYED_PATHS: readonly string[] = Object.freeze([
   "fabric.objectGroups.*",
   "fabric.interfaces",
   "fabric.coverage.aclSummary",
+  "fabric.coverage.unreadableRouteEntries",
   "fabric.evidenceRecords[].value",
   "fabric.evidenceRecords[].cut",
   "aclBindings.hosts",
