@@ -42,13 +42,13 @@ _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
 _NATIVE_VERSION = "0.58.4"
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
-# W12 PR-A schema delta independently reviewed: compact ensure_ascii JSON plus LF,
+# W12 PR-B schema delta independently reviewed: compact ensure_ascii JSON plus LF,
 # in owner key order. See docs/one-app-w12-validation-2026-10-05.md.
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "2c54b69ca7cdf706aefa4e181cc3181156eff55989114882a5c80300153b269b",
-    "list": "339a56549ba1fde1f346a5451710a395e4859f054895197d0456f37aba1ca329",
+    "view": "d51552f6cc7cebba66e941b1f67cab1a6bb8b04278aba5458b30dbfc6919e597",
+    "list": "a9bcf1f76fb94daec79f7a4fbb0308b6ff4d919bd30a0ef9c4a5af45c092bf47",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)

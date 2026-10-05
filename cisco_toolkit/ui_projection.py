@@ -32,8 +32,8 @@ the owner's device scope, its row join by exact key (two rows naming a key are `
 between), then its own not-observed rule and type check. Engine defaults that mean "not observed" (the
 DevicePhysical ``""`` and ``0``, the ``[NOT OBSERVED]`` markers, sparse interface fields, empty routing
 neighbour lists) are withheld, never published as values. A list the engine caps says so, and its total
-is never computed. Nothing is aggregated here: the engine publishes no per-device finding counts or
-severity facets, so neither appears. Published finding evidence pointers, their basis and capped totals,
+is never computed. Per-device finding rollups use the engine's pure, unpersisted fold of stored punch-list
+rows; unknown capture custody withholds every rollup, including a zero. Published finding evidence pointers, their basis and capped totals,
 and the separate health deduction-reference subsequence retain the engine's values and ordering.
 
 Every fact travels in one envelope::
@@ -100,6 +100,9 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Opti
 
 from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
 from cisco_toolkit import ssot
+from cisco_toolkit.analyze import (
+    PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index,
+)
 
 SCHEMA = "ui_projection/1"
 SCHEMA_ID = "urn:atlas:schema:ui-projection:1"
@@ -143,7 +146,7 @@ REF_ROLES: Tuple[str, ...] = ("subject", "basis", "failure_record", "witness", "
 JS_MAX_SAFE_INT = 2 ** 53 - 1
 
 # Local copies of engine vocabularies; tests/test_ui_projection.py holds each equal to its owner.
-SEVERITIES: Tuple[str, ...] = ("Critical", "High", "Medium", "Low", "Info")     # analyze._APP_SEV_RANK
+SEVERITIES: Tuple[str, ...] = PUNCH_SEVERITIES
 HEALTH_BANDS: Tuple[str, ...] = ("Critical", "Poor", "Fair", "Good", "Excellent")   # ssot health-band order
 COVERAGE_STATES: Tuple[str, ...] = ("covered", "not_collected", "partial", "unverified", "unparsed",
                                     "not_observed")                             # unknown_evidence._COVERAGE_STATES
@@ -311,7 +314,8 @@ VLAN_FIELD_BASIS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "gateway_svi_hosts": ("interfaces",), "endpoint_count": ("endpoint_identity",),
     "endpoint_mix": ("endpoint_identity",), "app_domain": ("application_intelligence",),
     "criticality": ("application_intelligence",), "dependencies": ("multicast_intelligence", "interfaces"),
-    "wave": ("move_groups", "wave_sequencing"), "scenario": ("move_groups", "wave_sequencing"),
+    "wave": ("move_groups", "wave_sequencing", "interfaces", "stp_roots"),
+    "scenario": ("move_groups", "wave_sequencing"),
     "readiness": ("move_groups", "migration_readiness"), "cutover_window": (), "rollback_owner": (),
 })
 #: The ``compute_migration_punchlist`` inputs that are snapshot sections (its rows roll up over them).
@@ -518,6 +522,11 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         ["/findings/rows", "/findings/total"]),
 )
 LIMITATIONS += (
+    _limitation("device_findings_scope", "analyze.compute_device_findings",
+                "Counts cover stored punch-list rows once per named device. A multi-device row contributes "
+                "to each named device, so device totals are not distinct fleet findings. An assessed-empty "
+                "count is not a clean bill of health; capture custody and input qualification remain visible.",
+                ["/inventory/devices/rows"]),
     _limitation("topology_scanned_model", "analyze.compute_cable_map; analyze.compute_link_centrality",
                 "The graph describes captured discovery and the scanned host-pair model. A collected node is not "
                 "a health verdict; an up cable is a reported link state, not end-to-end reachability. Structural "
@@ -565,7 +574,8 @@ DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
 DEVICE_CITED_LIMITATIONS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "one_hop_failure_attribution": ("/device/collection", "/device/health", "/device/lifecycle", "/device/dossier",
                                     "/device/coverage", "/device/links", "/device/remediation", "/device/nrfu_cases",
-                                    "/device/findings", "/device/endpoints", "/device/move_group"),
+                                    "/device/findings", "/device/endpoints", "/device/move_group", "/device/findings_rollup"),
+    "device_findings_scope": ("/device/findings_rollup",),
     "coverage_matrix_shown_as_published": ("/device/coverage",),
     "projection_owned_verdicts": ("/device/health/deductions_cap", "/device/remediation/items", "/device/links",
                                   "/device/native_vlan_mismatches", "/device/findings", "/device/endpoints"),
@@ -601,6 +611,7 @@ _SLOT_RULE = {
     "text": "a string", "flag": "a boolean", "enum": "a value of its closed vocabulary",
     "axis": "a {severity, headline, detail} record with a known severity",
     "by_state": "a mapping of coverage states to counts",
+    "severity_counts": "a closed mapping of every punch-list severity to exact nonnegative integer counts",
     "stamp": "a {verified, n_facts, n_checked, n_violations} record",
     "source": "a {section, state, records_examined, detail_complete} record",
     "list": "a list",
@@ -755,6 +766,8 @@ class _Ctx:
         self._cc_witness: Dict[str, List[Tuple[str, Sequence[Any]]]] = {}
         self._blind_rows: Optional[List[int]] = None
         self._no_config: Optional[List[str]] = None
+        self._device_findings: Any = _UNSET
+        self._vlan_hosts: Any = _UNSET
 
     def _call(self, owner: str, fn: Callable[[Any], Any], fallback: Any) -> Any:
         try:
@@ -762,6 +775,43 @@ class _Ctx:
         except _OWNER_FAULTS as exc:
             self.faults[owner] = _fault_text(owner, exc)
             return fallback
+
+    @property
+    def device_findings(self) -> Any:
+        if self._device_findings is _UNSET:
+            devices = self.s.get("devices")
+            hosts = sorted(k for k in devices if _is_text(k) and k.strip()) if isinstance(devices, dict) else []
+            self._device_findings = self._call(
+                "analyze.compute_device_findings",
+                lambda snap: compute_device_findings(snap.get("punchlist"), hosts),
+                {"problem": "the engine finding fold failed; its partition is unverified", "per_device": {}},
+            )
+        return self._device_findings
+
+    @property
+    def vlan_hosts(self) -> Any:
+        if self._vlan_hosts is _UNSET:
+            interfaces, roots = self.s.get("interfaces"), self.s.get("stp_roots")
+            valid = isinstance(interfaces, dict) and isinstance(roots, dict)
+            if valid:
+                valid = all(
+                    _is_text(host) and bool(host.strip()) and isinstance(ports, dict)
+                    and all(_is_text(port) and isinstance(record, dict)
+                            and all(record.get(field) is None or _is_text(record[field])
+                                    for field in ("vlan", "switchport_mode"))
+                            for port, record in ports.items())
+                    for host, ports in interfaces.items()
+                ) and all(
+                    _is_text(host) and bool(host.strip()) and isinstance(records, dict)
+                    and all(isinstance(record, dict)
+                            and ("is_mst" not in record or type(record["is_mst"]) is bool)
+                            for record in records.values())
+                    for host, records in roots.items()
+                )
+            self._vlan_hosts = self._call(
+                "analyze.vlan_cutover_host_index", lambda _snap: vlan_cutover_host_index(interfaces, roots), None,
+            ) if valid else None
+        return self._vlan_hosts
 
     @property
     def fh(self) -> Dict[str, Any]:
@@ -1111,6 +1161,13 @@ def _typed(raw: Any, slot: str, vocab: Sequence[str] = ()) -> Tuple[bool, Any]:
         return ok, (raw if ok else None)
     if not isinstance(raw, dict):
         return False, None
+    if slot == "severity_counts":
+        if set(raw) != set(SEVERITIES) or any(type(raw[severity]) is not int for severity in SEVERITIES):
+            return False, None
+        values = {severity: _count(raw[severity]) for severity in SEVERITIES}
+        if not all(ok for ok, _value in values.values()):
+            return False, None
+        return True, {severity: value for severity, (_ok, value) in values.items()}
     if slot == "evidence_ref":
         keys = ("kind", "host", "ref", "role", "cite")
         host = raw.get("host")
@@ -2484,7 +2541,8 @@ def _not_scored(_raw: Any, row: _Row) -> Optional[Tuple[str, str]]:
     return (_NA, _R_NOT_SCORED) if isinstance(band, str) and band == HEALTH_BAND_NOT_SCORED else None
 
 
-def _mg_pre(ctx: _Ctx, field: str = "wave", host: Any = None) -> _Pre:
+def _mg_pre(ctx: _Ctx, field: str = "wave", host: Any = None, *,
+            subjects: Optional[Callable[[_Row], Any]] = None, include_unscheduled: bool = True) -> _Pre:
     """Validate a stored derived field's join to stored labels; never emit a repaired/positional value."""
     def pre(raw: Any, row: _Row) -> Optional[Tuple[str, str]]:
         groups = ctx.s.get("move_groups")
@@ -2492,7 +2550,9 @@ def _mg_pre(ctx: _Ctx, field: str = "wave", host: Any = None) -> _Pre:
         if problem:
             return problem
         rec = row.raw if isinstance(row.raw, dict) else {}
-        if host is not None:
+        if subjects is not None:
+            hosts = subjects(row)
+        elif host is not None:
             hosts = [host] if rec.get("device") == host else None
         else:
             hosts = rec.get("devices" if field == "wave" else "switches")
@@ -2502,7 +2562,7 @@ def _mg_pre(ctx: _Ctx, field: str = "wave", host: Any = None) -> _Pre:
         labels = [g[MOVE_GROUP_LABEL] for g in groups if any(h in g["switches"] for h in hosts)]
         if field == "wave":
             known = {h for g in groups for h in g["switches"]}
-            if any(h not in known for h in hosts) and MOVE_GROUP_UNSCHEDULED not in labels:
+            if include_unscheduled and any(h not in known for h in hosts) and MOVE_GROUP_UNSCHEDULED not in labels:
                 labels.append(MOVE_GROUP_UNSCHEDULED)
             expected: Any = ", ".join(labels)
         elif field == "move_groups":
@@ -2664,6 +2724,99 @@ def _risk_band(ctx: _Ctx, dossier: _Row) -> Dict[str, Any]:
                  published_caveats=cav, witness=wit)
 
 
+def _capture_record(ctx: _Ctx, section: str, host: str) -> Tuple[Any, Any, Optional[str]]:
+    """Exact capture-row custody; missing rows may fall back, malformed rows never do."""
+    root = ctx.s.get(section, _MISSING)
+    if root is _MISSING:
+        return None, None, None
+    if not isinstance(root, dict):
+        return None, (section,), f"unverified: {section} capture owner is not a record"
+    records = root.get("per_device", _MISSING)
+    if records is _MISSING:
+        return None, None, None
+    if not isinstance(records, list):
+        return None, (section, "per_device"), f"unverified: {section} capture rows are unreadable"
+    selected = []
+    for index, record in enumerate(records):
+        name = record.get("host") if isinstance(record, dict) else None
+        if not _is_text(name) or not name.strip():
+            return None, (section, "per_device", index), f"unverified: {section} capture row has no readable host"
+        if name == host:
+            selected.append((record, (section, "per_device", index)))
+    if len(selected) > 1:
+        return None, (section, "per_device"), f"unverified: multiple {section} capture rows name this exact host"
+    return (*selected[0], None) if selected else (None, None, None)
+
+
+def _device_finding_rollup(ctx: _Ctx, host: Any,
+                           forced: Optional[Tuple[str, str]] = None) -> Dict[str, Any]:
+    """Publish the pure owner fold only after scoped input and positive capture custody."""
+    sections = ("punchlist",) + PUNCHLIST_INPUTS
+    base, reason, _raw = _list_state(ctx, ("punchlist",), ("punchlist",))
+    state, reason = _rolled(ctx, base, reason, ("punchlist",), PUNCHLIST_INPUTS)
+    witness: List[Tuple[str, Sequence[Any]]] = [("basis", ("punchlist",))]
+    values: Dict[str, Any] = {"worst": None, "by_severity": None}
+    if forced is not None:
+        state, reason = forced
+    elif not _is_text(host) or not host.strip():
+        state, reason = _UV, "unverified: no exact device identity selects this finding rollup"
+    elif state in (_PUB, _CBE):
+        gap = _device_gap(ctx, host, "punchlist", SELECTION_NEEDS["findings"], config=True)
+        if gap is not None:
+            why, extra = gap
+            state, reason = _NC, f"not collected: finding counts may be incomplete: {why}"
+            witness += extra
+        else:
+            software, sw_toks, problem = _capture_record(ctx, "software_risk", host)
+            qos, qa_toks = None, None
+            if problem is None and software is None:
+                qos, qa_toks, problem = _capture_record(ctx, "qos_audit", host)
+            if sw_toks is not None:
+                witness.append(("witness", sw_toks))
+            if qa_toks is not None:
+                witness.append(("witness", qa_toks))
+            capture = device_config_capture(software, qos) if problem is None else None
+            security = _get(ctx.s, ("security", host))
+            if problem is not None:
+                state, reason = _UV, problem
+            elif capture is False:
+                state, reason = _NC, "not collected: the canonical capture owner reports no running-config"
+            elif capture is not True:
+                state, reason = _UV, "unverified: running-config capture custody is missing or not an exact boolean"
+            elif not isinstance(security, dict) or not security:
+                state, reason = _UV, "unverified: the captured running-config has no readable security assessment"
+                witness.append(("witness", ("security", host)))
+            else:
+                folded = ctx.device_findings
+                partition = folded.get("per_device") if isinstance(folded, dict) else None
+                result = partition.get(host) if isinstance(partition, dict) else None
+                problem = folded.get("problem") if isinstance(folded, dict) else "unreadable owner output"
+                if problem is not None or not isinstance(result, dict):
+                    state, reason = _UV, f"unverified: the engine finding partition is unavailable ({problem or 'no scoped host'})"
+                else:
+                    indices = result.get("indices")
+                    if (not isinstance(indices, list) or not isinstance(_raw, list)
+                            or any(type(index) is not int or not 0 <= index < len(_raw) for index in indices)):
+                        state, reason = _UV, "unverified: the engine finding partition has unreadable source indices"
+                    else:
+                        values = result
+                        witness += [("witness", ("punchlist", index)) for index in indices]
+    held = None if state in (_PUB, _CBE) else state
+    row = _Row(held, reason, None, values, sections, basis_refs=forced is None, bare=forced is not None)
+
+    def empty_worst(raw: Any, _row: _Row) -> Optional[Tuple[str, str]]:
+        return (_CBE, "collected but empty: no stored punch-list finding names this captured device; not a clean bill of health") \
+            if raw is None else None
+
+    basis = "analyze.compute_device_findings:stored punch-list rows by exact device."
+    return {
+        "worst": _cell(ctx, row, "worst", "enum", basis + "worst", vocab=SEVERITIES, pre=empty_worst,
+                       witness=witness, published_caveats=("device_findings_scope",)),
+        "by_severity": _cell(ctx, row, "by_severity", "severity_counts", basis + "by_severity",
+                             witness=witness, published_caveats=("device_findings_scope",)),
+    }
+
+
 def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_norm: Mapping[str, List[int]]) -> Dict[str, Any]:
     j = _joins(ctx, host)
     in_devices = host in dev_keys
@@ -2677,6 +2830,7 @@ def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_norm: Mapping[
         "rows": {name: _row_pointer(j[name]) for name in ("health", "lifecycle", "dossier", "collection")},
         "collection_status": _cell(ctx, j["collection"], "status", "enum", _B_CC + "status", vocab=CC_STATUSES),
         "move_group": _move_group_fact(ctx, host),
+        "findings": _device_finding_rollup(ctx, host),
     }
     for field in ("model", "platform", "sw_version", "serial_number"):
         row[field] = _cell(ctx, j["devices"], field, "text", _dev_basis(field), pre=_default_text)
@@ -2952,6 +3106,25 @@ def _source(ctx: _Ctx, toks: Tuple[str, ...], sections: Sequence[str], basis: st
     return out, state in (_PUB, _CBE)
 
 
+def _vlan_wave_pre(ctx: _Ctx) -> _Pre:
+    """VLANs use the producer's captured universe and exclude unscheduled hosts."""
+    def subjects(row: _Row) -> Any:
+        valid, number = _count(row.raw.get("vlan")) if isinstance(row.raw, dict) else (False, None)
+        hosts = ctx.vlan_hosts
+        if not valid or not isinstance(hosts, dict):
+            return None
+        values = hosts.get(number, set())
+        return sorted(values) if isinstance(values, set) and all(_is_text(host) for host in values) else None
+
+    joined = _mg_pre(ctx, subjects=subjects, include_unscheduled=False)
+    blank = _blank(_R_NO_GROUP)
+
+    def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
+        return joined(raw, row) or blank(raw, row)
+
+    return pre
+
+
 def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
     toks = ("vlan_cutover",)
     base, reason, raw = _list_state(ctx, toks, toks)
@@ -2970,7 +3143,7 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
                             "analyze.compute_endpoint_identity:endpoint_identity[]")
     roots, gateways, endpoints = _stp_root_index(ctx), _vid_index(ctx, ("l3_forwarding",)), _vid_index(
         ctx, ("endpoint_identity",))
-    pres = {"dependencies": _vlan_deps_pre(ctx)}
+    pres = {"dependencies": _vlan_deps_pre(ctx), "wave": _vlan_wave_pre(ctx)}
     capped = ENGINE_LIST_CAPS["vlan_cutover[].app_domain"]
     owner_rows: Dict[int, List[int]] = {}
     for index, record in enumerate(raw if isinstance(raw, list) else ()):
@@ -3687,6 +3860,7 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
         "host": host if _is_text(host) else None,
         "rosters": rosters,
         "move_group": _move_group_fact(ctx, host, forced),
+        "findings_rollup": _device_finding_rollup(ctx, host, forced),
         "identity": {f: _cell(ctx, dev, f, "text", _dev_basis(f), pre=_default_text) for f in IDENTITY_FIELDS},
         "physical": physical,
         "collection": {"status": _cell(ctx, cc, "status", "enum", _B_CC + "status", vocab=CC_STATUSES),
@@ -4358,6 +4532,14 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                   {"limit": {"const": PUNCH_EVIDENCE_REFS_CAP},
                                    "reached": _nullable(_bool()), "total": _ref("CountFact")})
     defs["TextListFact"] = _fact_def("TextListFact", {"type": "array", "items": _str()})
+    defs["SeverityCountsFact"] = _fact_def(
+        "SeverityCountsFact",
+        _closed("SeverityCountsValue", SEVERITIES, {severity: _nonneg_int() for severity in SEVERITIES}),
+    )
+    defs["DeviceFindingsRollup"] = _closed(
+        "DeviceFindingsRollup", ("worst", "by_severity"),
+        {"worst": _ref("SeverityFact"), "by_severity": _ref("SeverityCountsFact")},
+    )
     defs["ReadinessCheckRow"] = _row_def("ReadinessCheckRow", _indexed(),
                                           (("check", _TEXT), ("status", "CheckStatusFact"),
                                            ("note", _TEXT), ("phase", _TEXT)))
@@ -4420,7 +4602,8 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                     {k: _nullable(_ref("Pointer")) for k in ("health", "lifecycle", "dossier",
                                                                              "collection")})
     defs["DeviceRow"] = _row_def("DeviceRow", {"host": _str(), "pointer": _nullable(_ref("Pointer")),
-                                               "rosters": _ref("DeviceRosters"), "rows": _ref("DeviceRowRefs")},
+                                               "rosters": _ref("DeviceRosters"), "rows": _ref("DeviceRowRefs"),
+                                               "findings": _ref("DeviceFindingsRollup")},
                                  _DEVICE_ROW_CELLS)
     defs["VlanSelections"] = _closed("VlanSelections", ("stp_roots", "gateways", "endpoints"),
                                      {"stp_roots": _nullable({"type": "array", "items": _ref("Pointer")}),
@@ -4502,9 +4685,10 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     defs["DevicePage"] = _closed("DevicePage", (
         "host", "rosters", "identity", "physical", "collection", "health", "lifecycle", "dossier", "coverage",
         "interfaces", "links", "routes", "routing_neighbors", "security", "native_vlan_mismatches", "remediation",
-        "nrfu_cases", "findings", "endpoints", "limitations", "move_group"), {
+        "nrfu_cases", "findings", "endpoints", "limitations", "move_group", "findings_rollup"), {
         "host": _nullable(_str()),
         "move_group": _ref(_TEXT),
+        "findings_rollup": _ref("DeviceFindingsRollup"),
         "rosters": _closed("DevicePageRosters", ("devices", "collection_completeness", "cable_map"),
                            {"devices": _bool(), "collection_completeness": _bool(), "cable_map": _bool()}),
         "identity": identity,

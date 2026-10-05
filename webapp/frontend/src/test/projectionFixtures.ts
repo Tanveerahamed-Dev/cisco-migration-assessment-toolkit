@@ -116,22 +116,45 @@ export function trustFixture(sid = 1) {
     failures: { record: empty("/failures/record"), direct_sections: [], unattributed: false },
   } };
 }
-export function inventoryFixture(sid = 1) {
-  const row = { host: "edge/a~b", pointer: "/devices/edge~1a~0b", ...fields("model platform sw_version serial_number role health_score health_band lifecycle_band risk_band move_group collection_status") };
+export function findingsRollupFixture(mode: "published" | "unverified" | "not_collected" | "configless" | "assessed_empty" = "published") {
+  const evidence = { subject: "/punchlist", refs: [{ pointer: "/devices/edge~1a~0b", role: "witness" }], basis: "synthetic.owner:device_findings" };
+  if (mode === "published") {
+    const observed = { ...evidence, refs: [{ pointer: "/punchlist/7", role: "basis" }, ...evidence.refs] };
+    return { worst: { ...published("High"), ...observed },
+      by_severity: { ...published({ Critical: 0, High: 2, Medium: 0, Low: 1, Info: 0 }), ...observed } };
+  }
+  if (mode === "assessed_empty") return {
+    worst: { ...evidence, state: "collected_but_empty", value: null, reason: "Synthetic captured assessment has no findings" },
+    by_severity: { ...published({ Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 }), ...evidence },
+  };
+  const state = mode === "unverified" ? "unverified" : "not_collected";
+  const reason = mode === "unverified" ? "Synthetic canonical finding custody is missing or malformed"
+    : mode === "configless" ? "Synthetic running configuration was not collected"
+      : "Synthetic canonical finding custody reports incomplete capture";
+  return { worst: { ...evidence, state, value: null, reason }, by_severity: { ...evidence, state, value: null, reason } };
+}
+export function inventoryFixture(sid = 1, findings = findingsRollupFixture("not_collected")) {
+  const row = { host: "edge/a~b", pointer: "/devices/edge~1a~0b", findings, ...fields("model platform sw_version serial_number role health_score health_band lifecycle_band risk_band move_group collection_status") };
   return { ...common(sid, "inventory"), payload: {
     devices: { total: published(1), rows: { ...empty("/devices/rows"), source_list: { state: "published", subject: "/devices", refs: [], basis: "synthetic.owner" }, page: { offset: 0, limit: 25, returned: 1, total: 1, has_more: false, items: [row] } } },
     vlans: { total: published(0), rows: empty("/vlans/rows") }, endpoints: { total: published(0), rows: empty("/endpoints/rows"), shared_ip: empty("/endpoints/shared_ip"), dual_homed: empty("/endpoints/dual_homed") }, uncollected_peers: empty("/uncollected_peers"),
   } };
 }
-export function deviceFixture(sid = 1, host = "edge/a~b") {
+export function deviceFixture(sid = 1, host = "edge/a~b", findings_rollup = findingsRollupFixture("not_collected")) {
   const cap = { limit: 64, reached: false, total: withheld() };
-  return { ...common(sid, "device"), payload: { host, move_group: withheld(), identity: fields("model platform reported_hostname serial_number chassis_serial system_mac sw_version uptime"),
+  // This synthetic published rollup represents three stored rows (High, High, Low).
+  // Only the first reference is on this page; the row total is not a UI calculation.
+  const findings = findings_rollup.worst.state === "published" && findings_rollup.by_severity.state === "published"
+    ? { pointer: "/findings", source_list: { state: "published", subject: "/punchlist", refs: [], basis: "synthetic.owner:exact_host_refs" },
+      page: { offset: 0, limit: 1, returned: 1, total: 3, has_more: true, items: [{ index: 7, pointer: "/punchlist/7" }] } }
+    : empty("/findings");
+  return { ...common(sid, "device"), payload: { host, findings_rollup, move_group: withheld(), identity: fields("model platform reported_hostname serial_number chassis_serial system_mac sw_version uptime"),
     physical: fields("active_ports total_ports num_modules num_power_supplies ps_status temperature_status fan_status power_capacity_w power_drawn_w power_remaining_w"), collection: fields("status missing data_quality"), lifecycle: fields("band status conf eos ldos source citation_status"),
     health: { ...fields("score band role"), deductions: empty("/health/deductions"), deduction_refs: empty("/health/deduction_refs"), deductions_cap: cap, deduction_refs_cap: cap },
     dossier: { risk_band: withheld(), exposures: empty("/dossier/exposures"), compound: empty("/dossier/compound") }, coverage: empty("/coverage"),
     interfaces: { rows: empty("/interfaces/rows") }, links: empty("/links"), routes: empty("/routes"), routing_neighbors: empty("/routing_neighbors"),
     security: { summary: withheld(), checks: empty("/security/checks") }, native_vlan_mismatches: empty("/native_vlan_mismatches"),
-    remediation: { banner: withheld(), items: empty("/remediation/items") }, nrfu_cases: empty("/nrfu_cases"), findings: empty("/findings"), endpoints: empty("/endpoints"),
+    remediation: { banner: withheld(), items: empty("/remediation/items") }, nrfu_cases: empty("/nrfu_cases"), findings, endpoints: empty("/endpoints"),
   } };
 }
 export function findingsFixture(sid = 1, offset = 0) {
