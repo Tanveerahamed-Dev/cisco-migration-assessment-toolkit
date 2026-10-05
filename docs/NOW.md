@@ -70,6 +70,8 @@ There is **one application**: the `main` branch of this repository on GitHub.
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
 | W7 | Atlas release candidate | `codex/atlas-release-candidate`; active `.claude/worktrees/ui-projection-2` checkout | Codex | Active from W2e merged main `583552ad`. Fresh version selection is `3.33.0rc4`, mapped candidate name `v3.33.0-rc.4`; seven focused metadata checks and independent scope review pass. Schema `3.23.0`, prior drafts, dependencies and runtime behavior remain unchanged. [Validation](one-app-w7-validation-2026-10-04.md). (2026-10-04) | Publish the reviewed metadata after privacy/history/body gates; require every protected exact-head check before the merge commit. Build the exact current merged main through the existing hosted `portable.build_release` workflow with `attach_draft=false`, independently verify source/package custody and provide stick-update instructions. No tag, signing, publication, deployment, device or vault writes. |
+| W9 | Atlas Scope re-grade report: the 39-criterion independent re-grade of the #582 tree, every first-pass PASS attacked by its own refuter | `claude/scope-regrade-report` (pushed), [PR #590](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/590), against `main` | Claude Code session (the Atlas Scope session) | Report cross-checked: all 39 scorecard rows match the graders' and refuters' final verdicts; 12 PASS, 24 FAIL, 3 UNPROVEN, 16 of 28 first-pass PASSes overturned with proof. `main` merged in after W11 so the Dependency audit can pass (2026-10-04). | The owner ordered the merge (2026-10-04): merge with `--admin --match-head-commit <exact head>` once every required check is green on that head. The next session deletes this row. |
+| W10 | Atlas Scope overturn fixes: repair every PASS the re-grade overturned (A3, A5, A6, B2, B3 in wave 1; B5, B7, C4, C6, D2, D4, E4, E5, F2, F4, F6 in wave 2) and record them in `atlas-scope/docs/open-issues.md` | `fix/scope-regrade-overturns` (pushed 2026-10-04 at `5abad966`, no PR yet) in `.claude/worktrees/scope-fix-int` | Claude Code session (the Atlas Scope session) | Wave 1 verified: gates, engine and browser replays hold, with one major (A5 x B2: the multi-line verdict label covers its own hop's chassis at 1280 px and below). Wave-2 fixes for B5, B7, C4/D4, C6, D2, F4 and F6/F2 are merged into the branch; only F4's has been upheld by its refuter. E4 and E5 are uncommitted in their worktrees. Paused by the owner on 2026-10-03 (laptop overloaded); RESUMED on the owner's go on 2026-10-04 with at most 3 agents and a free-memory guard; the continuation run is refuting and finishing the fixes. #591 is on `main`, so `main` may now be merged into the integration branch (2026-10-04). | On the owner's go, at most a few agents at once: refute the wave-2 fixes, fix A5 x B2, finish E4 and E5 (their acceptance timing needs the reference laptop idle), write the open-issues record, then open the PR. Merge under the owner's standing authority (2026-10-03) once every required check is green on the exact head. |
 
 ## Owner decisions
 
@@ -142,13 +144,33 @@ protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
 
+- 2026-10-05, Claude Code (#595 merged into #590):
+  - #595 (W7 release preparation) merged as `d326a0d9` while #590 waited on its last green run, so `main` is merged in
+    a third time. Main's rows are kept as `main` has them (Codex removed W2e after #591), with this branch's W9 and W10
+    rows, and every handoff line from both sides.
+
 - 2026-10-04, Codex (W2e merged; W7 active): #591 merged as `583552ad888d73f51eaf28181c17f127cc285b2a` after all 15 protected contexts from app 15368, all six applicable workflows and the manual performance workflow passed at exact head `05464ac4`. Its tree `e67d7de5bf54043266859fc0fb6b5133520a3315` equals both tested merge `a805f5de` and approved head. Full Scope passed every step; sample gates passed at 198.4147/200.8995 ms under the unchanged 300 ms threshold. Independent package review rehashed 865 runtime members and eight metadata files; actual producer is the tested merge, with direct committed-byte material proof and explicit source-root/local-schema limits. It remains unsigned with 14 external gates pending. Removed W2e under rule 8 and activated reserved W7 in the same checkout.
 
 - 2026-10-04, Codex (W7 candidate metadata checkpoint): Fresh release/tag checks found RC4 unused; prepare `3.33.0rc4` with candidate name `v3.33.0-rc.4`, preserving schema `3.23.0` and all previous draft assets. Seven lightweight version/schema/example/PE checks and independent metadata review pass. The earlier root Vitest cache is preserved byte-for-byte outside the checkout for exact-source verification; no ignore rule or custody check is weakened. The owner's delegated supervisor directs heavy release construction and frozen smoke to GitHub-hosted runners while W10 uses the laptop; local work stays light, and any heavy local step waits below 1.5 GB free RAM. Full publication privacy gates and fresh exact-head CI precede merge. The canonical final build uses `attach_draft=false`; independent source/package verification and stick-update instructions remain open. No release publication, tag, signing, deployment or device/vault write is authorized.
 
+- 2026-10-04, Claude Code (#591 merged into #590; W10 resumed):
+  - #591 (W2e) merged as `583552ad`. Merged it into #590 again, keeping Codex's W2e and W7 rows as `main` has them,
+    this branch's W9 and W10 rows with their newest status, and every handoff line from both sides.
+  - The owner resumed W10 on 2026-10-04 ("resume as the supervisor described"): at most 3 agents, heavy work behind a
+    2-slot lock that waits while the host has under 1.5 GB free. `main` is merged into W10 only now that #591 has landed.
+
 - 2026-10-04, Codex (W2e post-W11 validation checkpoint): Integration `c8863bc0` preserves W11 production and registry bytes exactly from `0fba4f45`, W2e governance/PDF owners and the LF policy, and both parents' test coverage. Independent source review is clear. The pinned release interpreter passed 105 focused version/PDF-loader/release-refusal/registry/SBOM/Vite BLOCK cases and all 14 commit-bound byte-policy cases, zero failures/errors/skips, with stable source hashes. Host memory pressure excludes another full local build; no hosted gate is waived. Final privacy/history/body scans, publication, every protected check, full Scope workflow and a fresh unchanged 300 ms measurement remain required. W7 stays queued; its current preflight confirms both frontend inventories are already owned by merged #582 and the next candidate version must be rechecked at the cut.
 
 - 2026-10-04, Codex (W11 merged; W2e integration resumed): W11 #594 merged as `0fba4f45b9258733b25e5796c1589589b6d798af` at 18:19:22 UTC. Merged current main into #591 from `48307d7e`; kept the newer W2e/W7 rows and both complete handoff histories. W0/W2d/W5 remain removed, and the now-merged W11 row is removed under rule 8. W11 production code and its closed bounded-substitution registry remain upstream-owned; Vite compiled-copy and external-review release BLOCK states remain. Independent integration review, focused compatibility checks and all fresh final-head hosted gates precede merge. No receipt is transferred across the changed source.
+
+- 2026-10-04, Claude Code (W11 merged; #590 brought up to date):
+  - #594 (W11) merged as `0fba4f45` under the owner's direct go, once all 15 required checks were green on the exact
+    head `09d857ca`; `main^{tree}` equals that head's tree (`09d0659a`). W11's row is deleted (rule 8). `main`'s
+    braces advisory (GHSA-vfj7-8cjw-p6xm) is closed on the current lock graph; Vite's own compiled braces copy keeps
+    the master-reference release gate blocked, as W11 records.
+  - `main` merged into #590 so its Dependency audit and master-reference contracts can pass; the owner ordered the
+    merge once every required check is green.
+  - The owner paused all other work on 2026-10-03 because the laptop was overloaded; W10 resumes only on the owner's go.
 
 - 2026-10-04, Claude Code (W5 merged; W11 opened):
   - #582 (W5) merged as `e50c3cde` on 2026-10-03 once all 15 required checks were green on the exact head
@@ -189,6 +211,13 @@ protected-PR change is part of the resumed W6 scope.
   - Hosted performance run `37067520985` passed the unchanged sample gates: 50-row maximum 91.8337 ms; 200-row maximum 143.6550 ms. Independent review verified all source hashes, five repeats of 36 request shapes per dataset and 108 response bodies identical to the earlier failed hosted baseline. Cold loading and the synthetic 300-device profile retain their separate diagnostic scope; no earlier failure is erased.
   - Portable run `37067501879` passed both source/frontend and actual-binary jobs. Independent custody rehashed 860 members and eight receipts, bound the native binary/MIT/upstream SBOM, and verified two real frozen native/private-guard HTTP runs. Its actual producer was the tested PR merge `87584774`, with the same tree as the approved head. The candidate remains unsigned with its 14 external gates pending. The older same-head webapp cancellation and failed dependent checks are preserved, superseded by the successful current run.
   - Reused the existing checkout for reserved W2e from merged main. Engine/transport, AssessHub and same-hub Scope work have separate file owners; schema-pin updates require explicit delta review, and path validation starts on Python. The existing untracked root test cache is preserved. W7 follows W2e; W5/#582 and W8/#587 remain with their owner.
+
+- 2026-10-03, Claude Code (W5 merged; W9 and W10 opened):
+  - #582 (W5) merged as `e50c3cde` under the owner's 2026-10-02 authority, once all 15 required checks were green
+    on the exact head `2709ec1e`. `main^{tree}` equals that head's tree (`d9e9588b`). W5's row is deleted (rule 8).
+  - W9 lands the 39-criterion re-grade report. The graded `atlas-scope/` tree and sample data are unchanged from
+    the graded `de6b9b76` through `e50c3cde`, so the report describes `main`'s Atlas Scope.
+  - W10 repairs the 16 overturned PASSes on a local branch; it is not pushed yet.
 
 - 2026-10-03, Claude Code (W5 brought up to date after W2d):
   - #586 (W2d) merged as `828847f1`. Merged it into #582 in a separate checkout (the re-grade's refuters were still
