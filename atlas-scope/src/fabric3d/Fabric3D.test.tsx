@@ -26,6 +26,7 @@ import { prepareProceduralMaps } from "./materials";
 import { ALL_CHASSIS_KINDS, prepareChassis } from "./geometry/chassis";
 import { SCENE_DETAIL } from "./quality";
 import { CANVAS_KEYS, KEY_ORBIT_STEP, KEY_PAN_STEP } from "./canvasKeys";
+import { LABEL_MIN_DWELL_PASSES } from "./labelResolve";
 import { bandOfHopIn, bandOfTrace } from "../core/claims";
 import { describeGolden } from "../test-support/golden-sample";
 
@@ -1398,7 +1399,9 @@ describe("the blast radius is wired to the scene contract and the label layer", 
       Object.defineProperty(name, "offsetWidth", { configurable: true, get: () => 152 });
     }
     act(() => {
-      flushFrames(4);
+      // A ready report also requires the real DOM-label dwell to finish after
+      // the fixture gains measured geometry; use its owner, not a longer timeout.
+      flushFrames(LABEL_MIN_DWELL_PASSES + 2);
     });
 
     const note = m.container.querySelector<HTMLElement>("[data-stranded-total]");

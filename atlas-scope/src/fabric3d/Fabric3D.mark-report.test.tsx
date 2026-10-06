@@ -66,7 +66,7 @@ function metadata(state: MarkReport["state"]): MarkReport {
   const props = labels();
   const cut = props.devices.find((d) => d.host === props.cutPointId || d.id === props.cutPointId)?.id;
   return { ids: [...new Set([...(props.strandedIds ?? []), ...(cut === undefined ? [] : [cut])])].sort(),
-    scope: markReportScope(cut ?? null, props.strandedIds ?? [], props.strandedQualifier ?? ""), epoch: props.epoch, state };
+    scope: markReportScope(cut ?? null, props.strandedIds ?? [], props.strandedQualifier ?? ""), epoch: props.epoch, generation: 1, state };
 }
 function report(outOfView: readonly string[], covered: readonly string[], state: MarkReport["state"] = "ready", supplied = metadata(state)): void {
   const callback = labels().onStrandedUnseen;
@@ -91,6 +91,25 @@ afterEach(() => {
 });
 
 describe("actual Fabric3D report wiring", () => {
+  it("commits changed frame publications before the caller can observe stale ready counts", () => {
+    const container = mount(<Fabric3D />);
+    act(() => { useInvestigation.getState().selectDevice(fabric.devices[0]!.id); });
+    const callback = labels().onStrandedUnseen;
+    if (!callback) throw new Error("actual Fabric3D did not install the report callback");
+    const ready = { ...metadata("ready"), generation: 11 };
+    act(() => {
+      callback([], [], ready, "frame");
+      expect(container.querySelector<HTMLElement>("[data-stranded-total]")!.dataset.markReport).toBe("ready");
+      expect(container.querySelector<HTMLElement>(".fabric3d")!.dataset.markReportGeneration).toBe("11");
+      callback([], [], { ...ready, state: "pending", generation: 12 }, "frame");
+      const pending = container.querySelector<HTMLElement>("[data-stranded-total]")!;
+      expect(pending.dataset.markReport).toBe("pending");
+      expect(pending.hasAttribute("data-stranded-shown")).toBe(false);
+      expect(container.querySelector<HTMLElement>(".fabric3d")!.dataset.markReportGeneration).toBe("12");
+      callback([], [], { ...ready, generation: 13 }, "frame");
+      expect(container.querySelector<HTMLElement>("[data-stranded-total]")!.dataset.strandedShown).toBe("2");
+    });
+  });
   it("names disjoint out-of-view and covered hosts, preserving cut-ID normalization and exact counts", () => {
     const [cut, off, covered] = fabric.devices;
     expect(cut!.id).not.toBe(cut!.host);

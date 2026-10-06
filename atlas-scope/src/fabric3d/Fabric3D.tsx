@@ -3,9 +3,9 @@
  *
  * The division of labour is the one `contract.ts` describes: React owns the DOM and the
  * investigation state, the scene owns the canvas, and this file translates between them with
- * imperative calls. Nothing here schedules React work per frame, and no pointer or key event is
- * routed through a reconciler before it reaches the scene — that is what keeps the INP budget and
- * the frame budget independent of each other.
+ * imperative calls. Only changed mark reports synchronize a frame-originated React publication;
+ * no pointer or key event is routed through a reconciler before it reaches the scene. The INP budget
+ * and the frame budget remain independent of each other.
  *
  * Three decisions in here are load-bearing and are explained where they are made:
  *   1. the canvas element is created imperatively, one per scene instance (StrictMode safety),
@@ -13,6 +13,7 @@
  *   3. the keyboard contract is a first-class input path, not a fallback for the mouse.
  */
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 
 import { DEFAULT_GRAPH_OPTIONS, failureImpact, linkFailureImpact, type Certainty, type ProjectionDelta } from "../analysis/blast";
 import { cableCountPhrase, hostCableAccount } from "../analysis/port-claims";
@@ -1294,7 +1295,14 @@ export function Fabric3D({
      states the count and names them. */
   const [marksUnseen, setMarksUnseen] = useState<(MarkReport & { outOfView: readonly string[]; covered: readonly string[] }) | null>(null);
   const onStrandedUnseen = useCallback(
-    (outOfView: readonly string[], covered: readonly string[], report: MarkReport) => setMarksUnseen({ ...report, outOfView, covered }),
+    (outOfView: readonly string[], covered: readonly string[], report: MarkReport, phase?: "frame"): void => {
+      const commit = (): void => { setMarksUnseen({ ...report, outOfView, covered }); };
+      // Only the label loop's changed rAF publications use this boundary. Initial
+      // effects and ResizeObserver callbacks enqueue normally; the next label
+      // frame confirms their pending report before it can change geometry.
+      if (phase === "frame") flushSync(commit);
+      else commit();
+    },
     [],
   );
   const cutId = blast.host === null ? null : (devices.find((d) => d.host === blast.host || d.id === blast.host)?.id ?? null);
@@ -1556,6 +1564,9 @@ export function Fabric3D({
       data-mark-report-subject={JSON.stringify(markIds)}
       data-mark-report-scope={reportScope}
       data-mark-report-epoch={sceneEpoch}
+      data-mark-report-generation={reportCurrent ? marksUnseen.generation : undefined}
+      data-mark-report-out-of-view-count={reportCurrent ? marksUnseen.outOfView.length : undefined}
+      data-mark-report-covered-count={reportCurrent ? marksUnseen.covered.length : undefined}
     >
 
       {/* React never puts children in this slot, so the imperatively-owned canvas cannot collide

@@ -74,7 +74,11 @@ function ordinary(path, maximum = MAX_INPUT) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = fstatSync(fd, { bigint: true });
-    check(before.isFile() && before.nlink === 1n && before.size <= BigInt(maximum) && canonical(path) === resolve(path), "nonordinary/aliased/oversized input");
+    check(before.isFile() && before.nlink === 1n && before.size <= BigInt(maximum) && canonical(path) === resolve(path),
+      `nonordinary/aliased/oversized input: ${basename(path)}`, {
+        member: basename(path), isFile: before.isFile(), links: String(before.nlink),
+        bytes: String(before.size), maximumBytes: maximum, canonicalPath: canonical(path) === resolve(path),
+      });
     const chunk = Buffer.alloc(65536); const parts = []; let bytes = 0;
     while (bytes <= maximum) {
       const n = readSync(fd, chunk, 0, Math.min(chunk.length, maximum + 1 - bytes), null);
@@ -83,7 +87,7 @@ function ordinary(path, maximum = MAX_INPUT) {
     }
     const after = fstatSync(fd, { bigint: true }); const named = lstatSync(path, { bigint: true });
     check(bytes <= maximum && bytes === Number(before.size) && named.isFile() && !named.isSymbolicLink()
-      && stable(before, after) && stable(before, named) && canonical(path) === resolve(path), "source identity changed while reading");
+      && stable(before, after) && stable(before, named) && canonical(path) === resolve(path), `source identity changed while reading: ${basename(path)}`);
     return Buffer.concat(parts, bytes);
   } finally { closeSync(fd); }
 }
@@ -126,7 +130,8 @@ const report = {
     "B3 capture and existing complete A5/B5/C6/F4 unit/contracts remain separate hosted gates; no old receipt transfers.",
     "Pointer-inert labels temporarily receive pointer-events:auto during measurement, then restore exactly, solely to query actual browser paint order without moving/resizing/relabeling them."],
 };
-const save = () => writeFileSync(join(output, "a6-mark-visibility.json"), `${JSON.stringify(report, null, 2)}\n`);
+// Preserve every field and observation while keeping the unchanged transfer bounds.
+const save = () => writeFileSync(join(output, "a6-mark-visibility.json"), `${JSON.stringify(report)}\n`);
 const failures = (error, where) => {
   report.failures.push({ where, error: String(error), ...(error?.a6Diagnostic === undefined ? {} : { diagnostic: error.a6Diagnostic }) });
   save();
@@ -224,6 +229,11 @@ function observeScene() {
     reportBinding: [stage, stage.querySelector(".fabric3d__labels")].map((node) => node ? {
       className: node.className, state: node.getAttribute("data-mark-report"), subject: node.getAttribute("data-mark-report-subject"),
       scope: node.getAttribute("data-mark-report-scope"), epoch: node.getAttribute("data-mark-report-epoch"),
+      generation: node.getAttribute("data-mark-report-generation"), outOfViewCount: node.getAttribute("data-mark-report-out-of-view-count"),
+      coveredCount: node.getAttribute("data-mark-report-covered-count"), placementGeneration: node.getAttribute("data-mark-placement-generation"),
+      cameraMoving: node.getAttribute("data-mark-camera-moving"), sceneSettled: node.getAttribute("data-mark-scene-settled"),
+      settledNow: node.getAttribute("data-mark-settled-now"), labelsConverging: node.getAttribute("data-mark-label-converging"),
+      measurementDeferred: node.getAttribute("data-mark-measurement-deferred"),
     } : null),
     controls: controls.map((node) => ({ text: text(node), rect: rect(node), pointerEvents: getComputedStyle(node).pointerEvents })),
     url: location.href, canonicalRows: canonicalRows.length };
@@ -294,10 +304,24 @@ async function observations(page, target, name, frames = 12) {
   save();
   return values.at(-1);
 }
-async function settle(page) {
-  await page.waitForFunction(() => window.__atlasScene?.stats?.().converged === true, null, { timeout: WAIT });
-  // Every fresh navigation/theme context reaches this before gestures or captures; later settles reuse the terminal phase.
-  await awaitPaletteWarm(page);
+async function settle(page, phase) {
+  let waitingFor = "scene-converged";
+  try {
+    await page.waitForFunction(() => window.__atlasScene?.stats?.().converged === true, null, { timeout: WAIT });
+    // Every fresh navigation/theme context reaches this before gestures or captures; later settles reuse the terminal phase.
+    waitingFor = "palette-warm";
+    await awaitPaletteWarm(page);
+  } catch (error) {
+    let snapshot = null, viewport = null, captureError = null;
+    try {
+      snapshot = await page.evaluate(() => ({ url: location.href, stats: window.__atlasScene?.stats?.() ?? null,
+        observation: window.__a6ObserveScene?.() ?? null }));
+      viewport = await viewportState(page);
+    } catch (diagnosticError) { captureError = String(diagnosticError); }
+    error.a6Diagnostic = { criterion: "settled-scene", phase, waitingFor, sceneTimeoutMs: WAIT,
+      snapshot, viewport, captureError };
+    throw error;
+  }
 }
 async function select(page, id) {
   if (id.startsWith("L")) {
@@ -364,8 +388,13 @@ async function viewportState(page) {
     const visibleWidth = Math.max(0, Math.min(innerWidth, r.right) - Math.max(0, r.left));
     const visibleHeight = Math.max(0, Math.min(innerHeight, r.bottom) - Math.max(0, r.top));
     const query = document.querySelector("#query-bar");
-    const querybar = query ? { rect: box(query), text: (query.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 2048),
-      hasEmptySentence: Boolean(query.querySelector(".qbar__empty")), hasTokens: Boolean(query.querySelector(".qbar__tokens")) } : null;
+    const sentence = query?.querySelector(".qbar__empty");
+    const sentenceVisible = Boolean(sentence && getComputedStyle(sentence).visibility === "visible"
+      && getComputedStyle(sentence).display !== "none" && sentence.getAttribute("aria-hidden") !== "true");
+    const querybar = query ? { rect: box(query), text: (query.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 2048),
+      hasEmptySentence: sentenceVisible, hasTokens: Boolean(query.querySelector(".qbar__tokens")),
+      sentenceReservation: sentence ? { rect: box(sentence), visible: sentenceVisible,
+        ariaHidden: sentence.getAttribute("aria-hidden"), inert: sentence.hasAttribute("inert") } : null } : null;
     const app = document.querySelector(".app"), body = document.querySelector(".app__body"), dock = document.querySelector("#inspector");
     return { canvas: box(canvas), stage: box(stage), onScreenPixels: visibleWidth * visibleHeight, ports, querybar,
       layout: { app: app ? box(app) : null, appRows: app ? getComputedStyle(app).gridTemplateRows : null,
@@ -416,7 +445,7 @@ async function canvasSelect(page, id) {
     const selected = new URL(location.href).searchParams;
     return !selected.has("d") && !selected.has("l");
   }, null, { timeout: WAIT });
-  await settle(page);
+  await settle(page, `canvas-${id}-after-cleared-selection`);
   const points = await page.evaluate((target) => {
     const canvas = document.querySelector(".fabric3d canvas"), scene = window.__atlasScene, b = scene?.chassisScreenBox?.(target);
     if (!canvas || !b || typeof scene.pick !== "function") return { points: [], candidates: [] };
@@ -466,7 +495,7 @@ async function ensureFabric(page) {
   if (await show.count()) await show.click();
   await expect(page.locator(".fabric3d canvas")).toBeVisible();
   await page.locator(".fabric3d canvas").scrollIntoViewIfNeeded();
-  await settle(page);
+  await settle(page, "initial-fabric-visible");
 }
 async function keyboardReveal(page, name) {
   const grid = page.locator("#rail-queue .ag__grid");
@@ -626,17 +655,17 @@ let server, browser, before;
         const current = { name, target, viewport, theme, status: "FAIL", gestures: [], failures: [] }; report.cases.push(current);
         try {
           if (!target.startsWith("L")) {
-            await page.locator(".fabric3d canvas").evaluate((node) => node.focus({ preventScroll: true })); await page.keyboard.press("Home"); await settle(page);
+            await page.locator(".fabric3d canvas").evaluate((node) => node.focus({ preventScroll: true })); await page.keyboard.press("Home"); await settle(page, `${name}-before-canvas-selection-home`);
             current.canvasSelection = await canvasSelect(page, target);
           } else await select(page, target);
           await observations(page, target, `${name}-selection-transition`);
-          await settle(page); const baseline = await page.evaluate(observeScene); assertObservation(baseline, target, name);
+          await settle(page, `${name}-after-selection`); const baseline = await page.evaluate(observeScene); assertObservation(baseline, target, name);
           check(baseline.canonicalRows === 1, `${name}: separate canonical pane did not identify its radius`);
           if (!target.startsWith("L")) check(baseline.universe?.length > 0, `${name}: mandatory device articulation control has no readable positive radius`);
           if (baseline.universe?.length > 0) check(baseline.reportState === "ready", `${name}: settled positive radius never obtained a fresh ready report`);
           report.counters.subjects += 1;
           await page.locator(".fabric3d canvas").evaluate((node) => node.focus({ preventScroll: true }));
-          await page.keyboard.press("Home"); await settle(page);
+          await page.keyboard.press("Home"); await settle(page, `${name}-home-baseline`);
           const homeBaseline = await observableCamera(page);
           for (const action of ["enter", "zoom", "orbit", "home"]) {
             const canvas = page.locator(".fabric3d canvas"); await canvas.evaluate((node) => node.focus({ preventScroll: true }));
@@ -646,7 +675,7 @@ let server, browser, before;
             if (action === "enter") route = await enter(page, target);
             else await page.keyboard.press(action === "zoom" ? "+" : action === "orbit" ? "Shift+ArrowLeft" : "Home");
             await observations(page, target, `${name}-${action}-transition`);
-            await settle(page); const state = await page.evaluate(observeScene); assertObservation(state, target, `${name}-${action}`);
+            await settle(page, `${name}-after-${action}`); const state = await page.evaluate(observeScene); assertObservation(state, target, `${name}-${action}`);
             if (state.universe?.length > 0) check(state.reportState === "ready", `${name}-${action}: settled positive report remains pending/unmeasured`);
             const scrollAfter = await viewportState(page);
             const poseAfter = await observableCamera(page);
@@ -667,10 +696,10 @@ let server, browser, before;
         }
       }
       // Predeclared non-articulation controls. No dynamic cherry-picking of a convenient pixel comparison.
-      await page.locator(".fabric3d canvas").evaluate((node) => node.focus({ preventScroll: true })); await page.keyboard.press("Escape"); await page.keyboard.press("Home"); await settle(page);
+      await page.locator(".fabric3d canvas").evaluate((node) => node.focus({ preventScroll: true })); await page.keyboard.press("Escape"); await page.keyboard.press("Home"); await settle(page, `${prefix}-pixel-baseline`);
       const base = await rawCanvas(page, `${prefix}-pixel-baseline`); const probes = {};
       for (const target of ["core1", ...PIXEL_CONTROLS]) {
-        await select(page, target); await page.locator(".fabric3d canvas").evaluate((node) => node.focus({ preventScroll: true })); await page.keyboard.press("Home"); await settle(page);
+        await select(page, target); await page.locator(".fabric3d canvas").evaluate((node) => node.focus({ preventScroll: true })); await page.keyboard.press("Home"); await settle(page, `${prefix}-pixel-${target}`);
         const oracle = await page.evaluate(observeScene);
         check(oracle.universe !== null && (target === "core1" ? oracle.universe.length > 0 : oracle.universe.length === 0), `${prefix}: predeclared pixel articulation/control premise failed`);
         probes[target] = await rawCanvas(page, `${prefix}-pixel-${target}`);

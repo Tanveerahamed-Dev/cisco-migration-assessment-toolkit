@@ -4,8 +4,8 @@
  * Canvas text at 11 px is the single loudest "this is a demo" tell: it is resampled by the
  * composer, it fights SMAA, and it cannot use the UI font stack. DOM labels stay crisp, inherit the
  * type tokens, and cost nothing on the GPU. The price is that they must be positioned every frame,
- * which is why nothing in this file re-renders React on a frame tick — the loop writes transforms
- * straight to the element.
+ * which is why placement writes transforms straight to the element. Only a changed mark-report
+ * state/set publishes to React; frame-originated publications precede or follow those writes atomically.
  *
  * Declutter drops labels rather than overlapping them. Half-legible overlapping text reads as
  * unfinished, and fading to 50 % opacity produces the muddy result the brief rejects by name. The
@@ -140,7 +140,8 @@ export interface FabricLabelsProps {
    * beneath other labels or a stage control (A6 refuter, 390x844: two of nine STRANDED? marks under
    * other labels while the stage said "all 9 marked"). Never called per frame with an unchanged answer.
    */
-  onStrandedUnseen?: (outOfView: readonly string[], covered: readonly string[], report: MarkReport) => void;
+  onStrandedUnseen?: (outOfView: readonly string[], covered: readonly string[], report: MarkReport,
+    phase?: "frame") => void;
   /**
    * The selected finding and the hosts it names (acceptance A4). A finding is a THIRD kind of
    * subject, distinct from the device selection: selecting F030 used to call setHighlight with
@@ -184,6 +185,8 @@ export interface MarkReport {
   ids: readonly string[];
   scope: string;
   epoch: number;
+  /** Monotone publication identity within this scene's label loop, not a clock. */
+  generation: number;
   state: "pending" | "unmeasured" | "ready";
 }
 
@@ -444,19 +447,33 @@ export function FabricLabels({
     /* The height too, for the off-canvas finding pointers below — same observer, same reason. */
     let stageHeight = host ? host.getBoundingClientRect().height : 0;
     let unseenKey: string | null = null;
-    const publishReport = (state: MarkReport["state"], outOfView: readonly string[] = [], covered: readonly string[] = []): void => {
+    let reportGeneration = 0;
+    let lifecycleReportNeedsFrameCommit = false;
+    let placementGeneration = 0;
+    let previousLabelConverging = true;
+    let reportedOutOfView: readonly string[] = [];
+    let reportedCovered: readonly string[] = [];
+    const publishReport = (state: MarkReport["state"], outOfView: readonly string[] = [], covered: readonly string[] = [],
+      phase?: "frame"): void => {
       const ids = [...new Set([...strandedRef.current, ...(cutRef.current === null ? [] : [cutRef.current])])].sort();
       const scope = markReportScope(cutRef.current, strandedRef.current, qualifierRef.current);
       const key = JSON.stringify([scope, ids, epoch, state, outOfView, covered]);
-      if (key === unseenKey) return;
+      if (key === unseenKey && (phase !== "frame" || !lifecycleReportNeedsFrameCommit)) return;
       unseenKey = key;
+      reportGeneration += 1;
+      lifecycleReportNeedsFrameCommit = phase !== "frame";
+      reportedOutOfView = outOfView;
+      reportedCovered = covered;
       if (host) {
         host.dataset.markReport = state;
         host.dataset.markReportSubject = JSON.stringify(ids);
         host.dataset.markReportScope = scope;
         host.dataset.markReportEpoch = String(epoch);
+        host.dataset.markReportGeneration = String(reportGeneration);
+        host.dataset.markReportOutOfViewCount = String(outOfView.length);
+        host.dataset.markReportCoveredCount = String(covered.length);
       }
-      unseenCbRef.current?.(outOfView, covered, { ids, scope, epoch, state });
+      unseenCbRef.current?.(outOfView, covered, { ids, scope, epoch, generation: reportGeneration, state }, phase);
     };
 
     /* KEEP-OUT REGIONS. The stage's own overlays — the toolbar chips across the top, the Legend
@@ -518,7 +535,7 @@ export function FabricLabels({
       }
     };
     measureKeepouts();
-    publishReport("pending");
+    publishReport(stageWidth > 0 && stageHeight > 0 ? "pending" : "unmeasured");
 
     let ro: ResizeObserver | null = null;
     let mo: MutationObserver | null = null;
@@ -534,7 +551,7 @@ export function FabricLabels({
           stageWidth = w;
           stageHeight = h;
         }
-        if (resized) publishReport("pending");
+        if (resized) publishReport(stageWidth > 0 && stageHeight > 0 ? "pending" : "unmeasured");
         measureKeepouts();
       });
       ro.observe(host);
@@ -808,7 +825,41 @@ export function FabricLabels({
       coveredIds.clear();
       drawnAt.clear();
 
-      /* PASS 1 — WRITES ONLY. Project every anchor, hide the invisible ones and apply the marks.
+      // Establish the existing pose/scene settle predicate BEFORE changing label DOM.
+      // A changed frame-originated report commits through the parent synchronously;
+      // a still-pending report is otherwise deduplicated rather than rendered every frame.
+      projected.length = seq.length;
+      for (let i = 0; i < seq.length; i += 1) {
+        const id = seq[i];
+        projected[i] = id !== undefined && els.has(id) ? scene.project(id) : null;
+      }
+      pose.length = 0;
+      pose.push(stageW);
+      for (const q of projected) {
+        if (q === null) pose.push(NaN, NaN, -1);
+        else pose.push(q.x, q.y, q.visible ? 1 : 0);
+      }
+      const sceneIdle = (scene as FabricScene & { labelsSettled?: () => boolean }).labelsSettled;
+      const still = poseHeld(seq.join("|"));
+      const sceneSettled = typeof sceneIdle !== "function" || sceneIdle.call(scene);
+      cameraMoving = !still;
+      settledNow = still && sceneSettled;
+      const unreadyState = stageW > 0 && stageHeightNow() > 0 ? "pending" : "unmeasured";
+      if (settledNow) ticksSinceDrop = LABEL_DROP_EVERY_FRAMES;
+      placementGeneration += 1;
+      if (host) {
+        host.dataset.markPlacementGeneration = String(placementGeneration);
+        host.dataset.markCameraMoving = String(cameraMoving);
+        host.dataset.markSceneSettled = String(sceneSettled);
+        host.dataset.markSettledNow = String(settledNow);
+        host.dataset.markLabelConverging = String(previousLabelConverging);
+        host.dataset.markMeasurementDeferred = "false";
+      }
+      if (!settledNow || previousLabelConverging || lifecycleReportNeedsFrameCommit) {
+        publishReport(unreadyState, reportedOutOfView, reportedCovered, "frame");
+      }
+
+      /* PASS 1 — WRITES ONLY. Hide invisible anchors and apply the marks.
          Nothing in this pass reads layout.
 
          THE MARKS ARE APPLIED BEFORE THE BOX IS MEASURED, and this order is load-bearing. The
@@ -828,17 +879,14 @@ export function FabricLabels({
          which is the same frame the scene itself spends yielding to the page (scene.ts). */
       let wroteMarks = false;
       let needsMeasure = false;
-      projected.length = seq.length;
       for (let i = 0; i < seq.length; i += 1) {
         const id = seq[i];
-        projected[i] = null;
         if (id === undefined) continue;
         const el = els.get(id);
         if (!el) continue;
 
-        const p = scene.project(id);
-        projected[i] = p;
-        const onScreen = p !== null && p.visible;
+        const p = projected[i];
+        const onScreen = p !== undefined && p !== null && p.visible;
 
         /* The marks are the LABEL's state, written whether or not the label is drawn this pass. They
            used to be written only for an on-screen anchor, so a label that left the view kept the
@@ -858,6 +906,7 @@ export function FabricLabels({
           el.dataset.finding !== wantFinding ||
           el.dataset.disputed !== wantDisputed
         ) {
+          publishReport(unreadyState, reportedOutOfView, reportedCovered, "frame");
           /* Each mark is a rule Fabric3D.css renders a chip by, so a changed mark can stop one rendering: focus
              leaves the label first (focus-return.ts, third door; a no-op when it is elsewhere). */
           releaseFocusFrom(el, null);
@@ -885,24 +934,12 @@ export function FabricLabels({
       }
       placePointers(stageW, container);
 
-      pose.length = 0;
-      pose.push(stageW);
-      for (const q of projected) {
-        if (q === null) pose.push(NaN, NaN, -1);
-        else pose.push(q.x, q.y, q.visible ? 1 : 0);
-      }
-      const sceneIdle = (scene as FabricScene & { labelsSettled?: () => boolean }).labelsSettled;
-      const still = poseHeld(seq.join("|"));
-      cameraMoving = !still;
-      settledNow = still && (typeof sceneIdle !== "function" || sceneIdle.call(scene));
-      // A fresh start for the stagger: the next drop after the camera moves again is paced from here.
-      if (settledNow) ticksSinceDrop = LABEL_DROP_EVERY_FRAMES;
-
       /* Never two deferrals in a row: a label that measures 0 wide (a collapsed stage) stays
          uncached, and it must not keep the whole layer from being placed. */
       if (wroteMarks && needsMeasure && !deferredLast) {
         deferredLast = true;
-        publishReport("pending");
+        if (host) host.dataset.markMeasurementDeferred = "true";
+        publishReport(unreadyState, reportedOutOfView, reportedCovered, "frame");
         return;
       }
       deferredLast = false;
@@ -1355,9 +1392,9 @@ export function FabricLabels({
          the canvas past its edge — so such a label is often placed half off the bottom. It is named as out of
          view, read off the box this pass drew, never re-derived. A mark drawn whole inside the stage is
          legible even when its device sits just past the edge: its leader points there. */
+      const outOfView: string[] = [];
+      const coveredMarks: string[] = [];
       {
-        const outOfView: string[] = [];
-        const coveredMarks: string[] = [];
         const shownWhole = (id: string): boolean => {
           const b = drawnAt.get(id);
           if (b === undefined) return false;
@@ -1371,7 +1408,6 @@ export function FabricLabels({
           if (els.get(id)?.dataset.visible !== "true" || !shownWhole(id)) outOfView.push(id);
           else if (coveredIds.has(id)) coveredMarks.push(id);
         }
-        publishReport(stageW > 0 && stageHeightNow() > 0 ? "ready" : "unmeasured", outOfView, coveredMarks);
       }
 
       /* STILL CONVERGING (acceptance C5, the settle's half of the dwell — labelResolve
@@ -1397,6 +1433,12 @@ export function FabricLabels({
         if (!labelSettleMayReverse(age)) converging = true;
       }
       (scene as FabricScene & { reportLabelsConverging?: (b: boolean) => void }).reportLabelsConverging?.(converging);
+      previousLabelConverging = converging;
+      if (host) host.dataset.markLabelConverging = String(converging);
+      const reportState = stageW > 0 && stageHeightNow() > 0
+        ? settledNow && !converging ? "ready" : "pending"
+        : "unmeasured";
+      publishReport(reportState, outOfView, coveredMarks, "frame");
     };
 
     frame = requestAnimationFrame(tick);

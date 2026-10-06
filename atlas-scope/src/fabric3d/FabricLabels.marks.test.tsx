@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fabric } from "../core/data";
 import type { FabricScene } from "./contract";
 import { createHoverChannel, FabricLabels, rescueSlot, type MarkReport } from "./FabricLabels";
+import { LABEL_MIN_DWELL_PASSES } from "./labelResolve";
 
 type Box = { x: number; y: number; w: number; h: number };
 type Projection = { x: number; y: number; visible: boolean };
@@ -36,6 +37,7 @@ function mountStage(projections: Map<string, Projection>, options: {
   stage?: { w: number; h: number };
   report?: boolean;
   settled?: boolean;
+  domDwell?: boolean;
   stranded?: readonly string[];
   obstacles?: readonly Box[];
   glyph?: Box;
@@ -46,8 +48,11 @@ function mountStage(projections: Map<string, Projection>, options: {
     if (this.dataset.box !== undefined) return rect(JSON.parse(this.dataset.box) as Box);
     return originalRect.call(this);
   };
+  let sceneSettled = options.settled ?? false;
+  let labelConverging = false;
   const scene = { project: (id: string) => projections.get(id) ?? null,
-    labelsSettled: () => options.settled ?? false, chassisScreenBox: () => null,
+    labelsSettled: () => sceneSettled && (!options.domDwell || !labelConverging),
+    reportLabelsConverging: (value: boolean): void => { labelConverging = value; }, chassisScreenBox: () => null,
     terminalGlyphScreenBox: () => options.glyph === undefined ? null : {
       host: CUT.host, x0: options.glyph.x, y0: options.glyph.y,
       x1: options.glyph.x + options.glyph.w, y1: options.glyph.y + options.glyph.h,
@@ -55,8 +60,11 @@ function mountStage(projections: Map<string, Projection>, options: {
   const sceneRef: RefObject<FabricScene | null> = { current: scene };
   let last = { outOfView: [] as readonly string[], covered: [] as readonly string[],
     metadata: null as MarkReport | null };
-  const report = (outOfView: readonly string[], covered: readonly string[], metadata: MarkReport): void => {
+  const publications: { metadata: MarkReport; phase: "frame" | undefined; cutVisible: string | undefined }[] = [];
+  const report = (outOfView: readonly string[], covered: readonly string[], metadata: MarkReport, phase?: "frame"): void => {
     last = { outOfView, covered, metadata };
+    publications.push({ metadata, phase, cutVisible: [...container.querySelectorAll<HTMLElement>(".fabric3d-label")]
+      .find((node) => node.dataset.device === CUT.id)?.dataset.visible });
   };
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -86,7 +94,8 @@ function mountStage(projections: Map<string, Projection>, options: {
     if (!match) throw new Error(`A6 placement transform missing: ${transform}`);
     return { x: Number(match[1]), y: Number(match[2]) + Number(match[3]) * HEIGHT / 100, w: WIDTH, h: HEIGHT };
   };
-  return { stage, label, drawn, get report() { return last; } };
+  return { stage, label, drawn, publications, overlay: () => container.querySelector<HTMLElement>(".fabric3d__labels")!,
+    setSceneSettled: (value: boolean): void => { sceneSettled = value; }, get report() { return last; } };
 }
 
 beforeEach(() => {
@@ -220,5 +229,74 @@ describe("small fit and impossible-fit rescue", () => {
   it.each([{ w: 390, h: 8 }, { w: 8, h: 390 }])("refuses a physically impossible stage %j", (stage) => {
     expect(rescueSlot({ test: { x: 5, y: 5, w: 16, h: 16 }, stage, anchor: { x: 8, y: 8 },
       taken: () => false, leaderClear: () => true, readsAsOwn: () => true })).toBeNull();
+  });
+});
+
+describe("mark report readiness follows the existing motion and dwell gates", () => {
+  it("confirms lifecycle publication once then deduplicates unchanged unmeasured frames", () => {
+    const h = mountStage(new Map([[CUT.id, { x: 0, y: 0, visible: true }]]), { stage: { w: 0, h: 0 } });
+    const initial = h.publications[0];
+    expect(initial?.metadata.state).toBe("unmeasured");
+    expect(initial?.phase).toBeUndefined();
+    flush(6);
+    const confirmation = h.publications.find((row) => row.phase === "frame");
+    expect(confirmation?.metadata.state).toBe("unmeasured");
+    expect(confirmation!.metadata.generation).toBeGreaterThan(initial!.metadata.generation);
+    expect(h.report.metadata?.state).toBe("unmeasured");
+    expect(h.report.outOfView).toEqual([CUT.id]);
+    const stablePublications = h.publications.length;
+    const stableGeneration = h.report.metadata?.generation;
+    flush(6);
+    expect(h.publications.length, "unchanged zero-size frames cannot alternate pending and unmeasured").toBe(stablePublications);
+    expect(h.report.metadata?.generation).toBe(stableGeneration);
+    expect(h.publications.some((row) => row.metadata.state === "ready")).toBe(false);
+  });
+  it("publishes pending before moving label DOM and positively recovers ready on a stable scene", () => {
+    const projections = new Map([[CUT.id, { x: 195, y: 160, visible: true }]]);
+    const h = mountStage(projections, { settled: true });
+    flush(6);
+    expect(h.report.metadata?.state).toBe("ready");
+    const before = h.publications.length;
+    projections.set(CUT.id, { x: 195, y: 160, visible: false });
+    flush(1);
+    const first = h.publications[before];
+    expect(first?.metadata.state).toBe("pending");
+    expect(first?.phase).toBe("frame");
+    expect(first?.cutVisible, "withhold before imperative hiding, not after it").toBe("true");
+    expect(h.label().dataset.visible).toBe("false");
+    expect(h.report.metadata?.state).toBe("pending");
+    expect(h.overlay().dataset.markCameraMoving).toBe("true");
+    projections.set(CUT.id, { x: 195, y: 160, visible: true });
+    flush(2);
+    expect(h.report.metadata?.state).toBe("ready");
+    expect(h.report.outOfView).toEqual([]);
+    expect(h.overlay().dataset.markCameraMoving).toBe("false");
+    expect(h.overlay().dataset.markLabelConverging).toBe("false");
+    expect(h.overlay().dataset.markReportGeneration).toBe(String(h.report.metadata?.generation));
+    const stablePublications = h.publications.length;
+    flush(3);
+    expect(h.publications.length, "unchanged stable frames do not republish to React").toBe(stablePublications);
+  });
+  it("cannot publish ready from a still projection while the scene has not settled", () => {
+    const h = mountStage(new Map([[CUT.id, { x: 195, y: 160, visible: true }]]));
+    flush(6);
+    expect(h.overlay().dataset.markCameraMoving).toBe("false");
+    expect(h.overlay().dataset.markSceneSettled).toBe("false");
+    expect(h.report.metadata?.state).toBe("pending");
+    h.setSceneSettled(true);
+    flush(1);
+    expect(h.report.metadata?.state).toBe("ready");
+  });
+  it("withholds through the existing DOM-label dwell and recovers without an always-pending workaround", () => {
+    const other = DEVICES[1]!;
+    const h = mountStage(new Map([[CUT.id, { x: 100, y: 160, visible: true }],
+      [other.id, { x: 310, y: 220, visible: true }]]), { settled: true, domDwell: true });
+    flush(3);
+    expect(h.label(other.id).dataset.visible).toBe("true");
+    expect(h.overlay().dataset.markLabelConverging).toBe("true");
+    expect(h.report.metadata?.state).toBe("pending");
+    flush(LABEL_MIN_DWELL_PASSES + 2);
+    expect(h.overlay().dataset.markLabelConverging).toBe("false");
+    expect(h.report.metadata?.state).toBe("ready");
   });
 });

@@ -79,8 +79,8 @@ const mutations = [
   },
   {
     id: "reporting-only",
-    before: 'publishReport(stageW > 0 && stageHeightNow() > 0 ? "ready" : "unmeasured", outOfView, coveredMarks);',
-    after: 'publishReport(stageW > 0 && stageHeightNow() > 0 ? "ready" : "unmeasured", [], []);',
+    before: 'publishReport(reportState, outOfView, coveredMarks, "frame");',
+    after: 'publishReport(reportState, [], [], "frame");',
     witness: "names a physically clipped cut mark when no whole placement can exist",
     marker: "A6_REPORTING_PHYSICAL_CLIP",
   },
