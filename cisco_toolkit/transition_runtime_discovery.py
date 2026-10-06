@@ -8832,6 +8832,13 @@ def _receive_debug_helper_frame(
         elif helper.sentinel in ready:
             try:
                 helper.join(0)
+                if helper.exitcode != 0:
+                    _fail("WINDOWS_DEBUG_HELPER_PROCESS_FAILED")
+                # Process exit does not make a pipe readable: a spawn child can
+                # die before taking its duplicated sender. Keep the same deadline
+                # and wait only on the pipe, preserving normal EOF readiness.
+                if not _wait_for_debug_helper([receiver], deadline_ns):
+                    _fail("WINDOWS_DEBUG_HELPER_TIMEOUT")
                 frame = receiver.recv_bytes(PROVISIONAL_MAX_CANONICAL_BYTES)
             except (AssertionError, EOFError, OSError, ValueError):
                 _fail("WINDOWS_DEBUG_HELPER_PROCESS_FAILED")
@@ -8853,7 +8860,13 @@ def _receive_debug_helper_frame(
         if helper.sentinel in ready:
             try:
                 helper.join(0)
+                if helper.exitcode != 0:
+                    _fail("WINDOWS_DEBUG_HELPER_PROCESS_FAILED")
                 if not pipe_eof:
+                    # A returned frame still needs bounded EOF confirmation;
+                    # the already-signaled process sentinel cannot supply it.
+                    if not _wait_for_debug_helper([receiver], deadline_ns):
+                        _fail("WINDOWS_DEBUG_HELPER_TIMEOUT")
                     try:
                         receiver.recv_bytes(PROVISIONAL_MAX_CANONICAL_BYTES)
                     except EOFError:
