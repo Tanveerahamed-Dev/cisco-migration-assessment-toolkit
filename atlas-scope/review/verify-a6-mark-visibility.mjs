@@ -31,7 +31,13 @@ const VIEWPORTS = [{ width: 390, height: 844 }, { width: 768, height: 1024 }, { 
 const TARGETS = ["core1", "core2", "L18", "L33"];
 const PIXEL_CONTROLS = ["dist1", "dist2"];
 const THEME = ["light", "dark"];
-const check = (ok, why) => { if (!ok) throw new Error(why); };
+const check = (ok, why, diagnostic) => {
+  if (!ok) {
+    const error = new Error(why);
+    if (diagnostic !== undefined) error.a6Diagnostic = diagnostic;
+    throw error;
+  }
+};
 const sha = (raw) => createHash("sha256").update(raw).digest("hex");
 const inside = (parent, child) => {
   const path = relative(parent, child);
@@ -121,7 +127,10 @@ const report = {
     "Pointer-inert labels temporarily receive pointer-events:auto during measurement, then restore exactly, solely to query actual browser paint order without moving/resizing/relabeling them."],
 };
 const save = () => writeFileSync(join(output, "a6-mark-visibility.json"), `${JSON.stringify(report, null, 2)}\n`);
-const failures = (error, where) => { report.failures.push({ where, error: String(error) }); save(); };
+const failures = (error, where) => {
+  report.failures.push({ where, error: String(error), ...(error?.a6Diagnostic === undefined ? {} : { diagnostic: error.a6Diagnostic }) });
+  save();
+};
 save();
 
 /** This executes only in the hosted browser: actual boxes/paint order, not report flags as oracle. */
@@ -143,7 +152,8 @@ function observeScene() {
     return { el, id: el.getAttribute("data-device"), host: text(el.querySelector(".fabric3d-label__name")), box, shown, whole, viewportWhole,
       strandedCuePainted: Boolean(el.querySelector(".fabric3d-label__stranded") && drawn(el.querySelector(".fabric3d-label__stranded"))),
       cutCuePainted: Boolean(el.querySelector(".fabric3d-label__alarm--cut") && drawn(el.querySelector(".fabric3d-label__alarm--cut"))),
-      cutClaim: el.getAttribute("data-cut"), strandedClaim: el.getAttribute("data-stranded"), diagnosticCoveredFlag: el.getAttribute("data-covered"), expectedProbes: 0, skippedProbes: [], hits: [], occluders: [] };
+      cutClaim: el.getAttribute("data-cut"), strandedClaim: el.getAttribute("data-stranded"), diagnosticCoveredFlag: el.getAttribute("data-covered"),
+      diagnosticClippedFlag: el.getAttribute("data-clipped"), expectedProbes: 0, skippedProbes: [], hits: [], occluders: [] };
   });
   const old = all.map((el) => ({ el, value: el.style.getPropertyValue("pointer-events"), priority: el.style.getPropertyPriority("pointer-events") }));
   try {
@@ -211,6 +221,10 @@ function observeScene() {
       outOfView: attr("data-stranded-out-of-view"), unseen: attr("data-stranded-unseen"), covered: attr("data-stranded-covered"),
       cut: attr("data-cut-mark"), outNames: categoryNames("out of view"), coveredNames: categoryNames("covered") } : null,
     reportState: state, glyph: glyphBox, sceneConverged: window.__atlasScene?.stats?.().converged === true,
+    reportBinding: [stage, stage.querySelector(".fabric3d__labels")].map((node) => node ? {
+      className: node.className, state: node.getAttribute("data-mark-report"), subject: node.getAttribute("data-mark-report-subject"),
+      scope: node.getAttribute("data-mark-report-scope"), epoch: node.getAttribute("data-mark-report-epoch"),
+    } : null),
     controls: controls.map((node) => ({ text: text(node), rect: rect(node), pointerEvents: getComputedStyle(node).pointerEvents })),
     url: location.href, canonicalRows: canonicalRows.length };
 }
@@ -227,6 +241,16 @@ function assertObservation(observation, target, phase) {
   const category = (row, cue) => !row[cue] ? "out-of-view" : row.category;
   const buckets = Object.fromEntries(["shown", "out-of-view", "covered"].map((key) => [key, rows.filter((r) => category(r, "strandedCuePainted") === key).map((r) => r.host).sort()]));
   const hud = observation.hud;
+  const diagnostic = { phase, target, claimed: hud, actualBuckets: buckets, universe: wanted,
+    stage: observation.stage, canvas: observation.canvas, documentScroll: observation.documentScroll,
+    reportBinding: observation.reportBinding, controls: observation.controls.slice(0, 32),
+    labels: rows.filter(Boolean).slice(0, 64).map((row) => ({ id: row.id, host: row.host, box: row.box,
+      shown: row.shown, stageWhole: row.whole, viewportWhole: row.viewportWhole, category: row.category,
+      strandedCuePainted: row.strandedCuePainted, coveredFlagDiagnostic: row.diagnosticCoveredFlag,
+      clippedFlagDiagnostic: row.diagnosticClippedFlag, occluders: row.occluders, hitCoverage: row.hitCoverage,
+      hitCount: row.hits?.length ?? row.hitSummary?.count ?? 0,
+      ownHitCount: row.hits?.filter((hit) => hit.own).length ?? row.hitSummary?.own ?? 0 })),
+    labelsOmitted: Math.max(0, rows.filter(Boolean).length - 64) };
   if (wanted.length === 0 && !hud) return; // genuine NO_BLAST, not fabricated cut-only coverage
   check(hud, `${phase}: actual positive radius has no reporting HUD`);
   if (hud.state === "pending" || hud.state === "unmeasured") {
@@ -238,9 +262,9 @@ function assertObservation(observation, target, phase) {
   check(rows.every((row) => row.category !== "paint-unavailable"), `${phase}: ready stranded marks have unavailable/partial actual paint coverage; legibility not verified`);
   check(Number(hud.total) === wanted.length && Number(hud.shown) === buckets.shown.length
     && Number(hud.outOfView) === buckets["out-of-view"].length && Number(hud.covered) === buckets.covered.length,
-  `${phase}: HUD counts disagree with actual rendered geometry/paint order`);
+  `${phase}: HUD counts disagree with actual rendered geometry/paint order`, diagnostic);
   check(JSON.stringify([...hud.outNames].sort()) === JSON.stringify(buckets["out-of-view"])
-    && JSON.stringify([...hud.coveredNames].sort()) === JSON.stringify(buckets.covered), `${phase}: HUD host lists disagree with actual marks`);
+    && JSON.stringify([...hud.coveredNames].sort()) === JSON.stringify(buckets.covered), `${phase}: HUD host lists disagree with actual marks`, diagnostic);
   const cut = !target.startsWith("L") && wanted.length > 0 ? observation.labels.find((r) => r.host === target) : null;
   if (cut) {
     check(cut.category !== "paint-unavailable", `${phase}: cut mark paint coverage is unavailable/partial`);
@@ -276,15 +300,57 @@ async function settle(page) {
   await awaitPaletteWarm(page);
 }
 async function select(page, id) {
+  if (id.startsWith("L")) {
+    const row = await linkInFabricList(page, id);
+    await row.click();
+    await page.waitForFunction((target) => new URL(location.href).searchParams.get("l") === target, id, { timeout: WAIT });
+    await closeFabricList(page);
+    return;
+  }
   await page.keyboard.press("Control+k");
-  const input = page.getByRole("combobox").last(); await input.fill(id);
-  const options = page.getByRole("option"); await expect(options.first()).toBeVisible();
+  const dialog = page.getByRole("dialog", { name: "Command palette", exact: true });
+  await expect(dialog).toBeVisible();
+  const input = dialog.getByRole("combobox", { name: "Search commands, devices, findings and paths", exact: true });
+  await input.fill(id);
+  const results = dialog.getByRole("listbox", { name: "Results", exact: true });
+  const options = results.getByRole("option"); await expect(options.first()).toBeVisible();
   const at = await options.evaluateAll((nodes, target) => nodes.findIndex((node) => {
     const text = node.querySelector(".palette__row-label")?.textContent?.trim() ?? "";
     return text === target || text.startsWith(`${target} `) || text.startsWith(`${target}\u00a0`);
   }), id);
   check(at >= 0, `real palette has no named ${id} option`); await options.nth(at).click();
   await page.waitForFunction((target) => new URL(location.href).searchParams.get(target.startsWith("L") ? "l" : "d") === target, id, { timeout: WAIT });
+}
+async function linkInFabricList(page, id) {
+  const stage = page.locator(".fabric3d");
+  const toggle = stage.getByRole("button", { name: "Fabric list", exact: true });
+  if (await toggle.getAttribute("aria-pressed") !== "true") await toggle.click();
+  const panel = stage.getByTestId("fabric3d-tree");
+  await expect(panel).toHaveAttribute("data-hidden", "false");
+  const tree = panel.getByRole("tree", { name: "Fabric list", exact: true });
+  await expect(tree).toBeVisible();
+  const row = tree.locator('[role="treeitem"][data-kind="link"][data-target="' + id + '"]').first();
+  if (await row.count() === 0) {
+    for (const kind of ["tier", "device"]) {
+      const parents = tree.locator('[role="treeitem"][data-kind="' + kind + '"]');
+      const count = await parents.count();
+      for (let i = 0; i < count; i += 1) {
+        const parent = parents.nth(i);
+        if (await parent.getAttribute("aria-expanded") !== "false") continue;
+        await parent.focus(); await page.keyboard.press("ArrowRight");
+        await expect(parent).toHaveAttribute("aria-expanded", "true");
+      }
+    }
+  }
+  await expect(row).toBeVisible();
+  check(await row.getAttribute("aria-disabled") !== "true", `real Fabric list link ${id} is disabled`);
+  return row;
+}
+async function closeFabricList(page) {
+  const panel = page.locator(".fabric3d").getByTestId("fabric3d-tree");
+  if (await panel.getAttribute("data-hidden") !== "false") return;
+  await panel.getByRole("button", { name: "Hide", exact: true }).click();
+  await expect(panel).toHaveAttribute("data-hidden", "true");
 }
 async function viewportState(page) {
   return page.evaluate(() => {
@@ -297,7 +363,15 @@ async function viewportState(page) {
     }
     const visibleWidth = Math.max(0, Math.min(innerWidth, r.right) - Math.max(0, r.left));
     const visibleHeight = Math.max(0, Math.min(innerHeight, r.bottom) - Math.max(0, r.top));
-    return { canvas: box(canvas), stage: box(stage), onScreenPixels: visibleWidth * visibleHeight, ports,
+    const query = document.querySelector("#query-bar");
+    const querybar = query ? { rect: box(query), text: (query.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 2048),
+      hasEmptySentence: Boolean(query.querySelector(".qbar__empty")), hasTokens: Boolean(query.querySelector(".qbar__tokens")) } : null;
+    const app = document.querySelector(".app"), body = document.querySelector(".app__body"), dock = document.querySelector("#inspector");
+    return { canvas: box(canvas), stage: box(stage), onScreenPixels: visibleWidth * visibleHeight, ports, querybar,
+      layout: { app: app ? box(app) : null, appRows: app ? getComputedStyle(app).gridTemplateRows : null,
+        body: body ? box(body) : null, inspector: dock ? { rect: box(dock), display: getComputedStyle(dock).display } : null },
+      activeElement: { tag: document.activeElement?.tagName ?? null, id: document.activeElement?.id ?? null },
+      url: location.href,
       document: { left: document.scrollingElement?.scrollLeft ?? 0, top: document.scrollingElement?.scrollTop ?? 0 } };
   });
 }
@@ -333,51 +407,58 @@ function assertCanvasNotScrolled(before, after, name) {
       && port.left === next.left && port.top === next.top;
   }), `${name}: outer canvas-carrying scrollport moved`);
   check(Math.abs(after.canvas.x - before.canvas.x) <= 1 && Math.abs(after.canvas.y - before.canvas.y) <= 1,
-    `${name}: canvas on-screen origin moved despite unchanged document scroll`);
+    `${name}: canvas on-screen origin moved despite unchanged document scroll`, { criterion: "canvas-origin", before, after });
 }
 async function canvasSelect(page, id) {
   // Clear before locating chassis geometry, so a changed selection cannot make the points stale.
-  await page.locator(".fabric3d canvas").evaluate((node) => node.focus({ preventScroll: true })); await page.keyboard.press("Escape"); await settle(page);
+  await page.locator(".fabric3d canvas").evaluate((node) => node.focus({ preventScroll: true })); await page.keyboard.press("Escape");
+  await page.waitForFunction(() => {
+    const selected = new URL(location.href).searchParams;
+    return !selected.has("d") && !selected.has("l");
+  }, null, { timeout: WAIT });
+  await settle(page);
   const points = await page.evaluate((target) => {
-    const canvas = document.querySelector(".fabric3d canvas"), b = window.__atlasScene?.chassisScreenBox?.(target);
-    if (!canvas || !b) return [];
-    const r = canvas.getBoundingClientRect(); const out = [];
+    const canvas = document.querySelector(".fabric3d canvas"), scene = window.__atlasScene, b = scene?.chassisScreenBox?.(target);
+    if (!canvas || !b || typeof scene.pick !== "function") return { points: [], candidates: [] };
+    const r = canvas.getBoundingClientRect(); const out = [], candidates = [];
     for (const x of [0.5, 0.3, 0.7]) for (const y of [0.65, 0.5, 0.8]) {
       const point = { x: r.left + b.x0 + (b.x1 - b.x0) * x, y: r.top + b.y0 + (b.y1 - b.y0) * y };
-      if (document.elementFromPoint(point.x, point.y) === canvas) out.push(point);
+      const top = document.elementFromPoint(point.x, point.y);
+      const pick = top === canvas ? scene.pick(point.x, point.y) : null;
+      const genuine = top === canvas && pick?.kind === "device" && pick.id === target;
+      candidates.push({ ...point, hitTag: top?.tagName ?? null, hitClass: typeof top?.className === "string" ? top.className : null, pick, genuine });
+      if (genuine) out.push(point);
     }
-    return out;
+    return { points: out, candidates };
   }, id);
-  check(points.length > 0, `mandatory ${id} canvas selection has no actual hit-testable chassis point`);
+  check(points.points.length > 0, `mandatory ${id} canvas selection has no actual hit-testable chassis point`, { target: id, candidates: points.candidates });
   const before = await viewportState(page);
-  // The cleared URL means an unchanged prior selection cannot make an ineffective click pass.
-  let selected = false;
-  for (const point of points) {
-    await page.mouse.click(point.x, point.y);
-    selected = await page.evaluate((target) => new URL(location.href).searchParams.get("d") === target, id);
-    if (selected) break;
+  const point = points.points[0];
+  report.observations.push({ name: `canvas-selection-${id}-before`, before, selectedPoint: point, candidates: points.candidates }); save();
+  // One actual click, then the product's deferred cross-surface/URL commit.
+  // A protocol roundtrip immediately after pointerup is not that commit.
+  await page.mouse.click(point.x, point.y);
+  try {
+    await page.waitForFunction((target) => new URL(location.href).searchParams.get("d") === target, id, { timeout: WAIT });
+  } catch (error) {
+    let after = null, captureError = null;
+    try { after = await viewportState(page); } catch (diagnosticError) { captureError = String(diagnosticError); }
+    error.a6Diagnostic = { criterion: "deferred-canvas-selection", target: id, point, before, after, captureError };
+    throw error;
   }
-  check(selected, `mandatory actual canvas click did not select ${id}`);
   const after = await viewportState(page);
   assertCanvasNotScrolled(before, after, `canvas selection of ${id}`);
   report.counters.canvasSelections += 1;
-  return { before, after, hitTestablePoints: points.length };
+  return { before, after, selectedPoint: point, hitTestablePoints: points.points.length };
 }
 async function enter(page, target) {
   const canvas = page.locator(".fabric3d canvas");
   if (!target.startsWith("L")) { await canvas.evaluate((node) => node.focus({ preventScroll: true })); await page.keyboard.press("Enter"); return "canvas Enter"; }
   // Canvas Enter frames devices. Links use their real Fabric-list Enter route, not a fake device pin.
-  await page.getByRole("button", { name: "Fabric list", exact: true }).click();
-  const tree = page.locator('[role="treeitem"][data-target="' + target + '"]').first();
-  if (!(await tree.count())) {
-    const tiers = page.locator('[role="treeitem"][data-kind="tier"]');
-    for (let i = 0; i < await tiers.count(); i += 1) { await tiers.nth(i).focus(); await page.keyboard.press("ArrowRight"); }
-    const parents = page.locator('[role="treeitem"][data-kind="device"]');
-    for (let i = 0; i < await parents.count(); i += 1) { await parents.nth(i).focus(); await page.keyboard.press("ArrowRight"); }
-  }
+  const tree = await linkInFabricList(page, target);
   await expect(tree).toBeVisible(); await tree.focus(); await page.keyboard.press("Enter");
-  const hide = page.getByRole("button", { name: /Hide.*fabric list/i });
-  if (await hide.count()) await hide.first().click(); else await page.getByRole("button", { name: "Fabric list", exact: true }).click();
+  await page.waitForFunction((id) => new URL(location.href).searchParams.get("l") === id, target, { timeout: WAIT });
+  await closeFabricList(page);
   return "Fabric-list link Enter (actual selection route; current product does not frame links on Enter)";
 }
 async function ensureFabric(page) {
@@ -392,21 +473,53 @@ async function keyboardReveal(page, name) {
   await expect(grid).toBeAttached();
   const entry = grid.locator('[tabindex="0"]').first();
   await expect(entry).toBeAttached(); await entry.focus();
-  const before = await grid.evaluate((g) => ({ own: g.scrollTop, doc: scrollY }));
-  await page.keyboard.press("Control+End");
+  // Ctrl+Home selects the logical header (ARIA1); End selects the last body row.
+  // A roving stop
+  // left near the end by selection is not a declared positive scroll challenge.
+  await page.keyboard.press("Control+Home");
   await page.waitForFunction(() => {
+    const active = document.activeElement, g = document.querySelector("#rail-queue .ag__grid");
+    const header = active?.closest('[role="columnheader"]'), row = header?.closest('[role="row"]');
+    return Boolean(active && g?.contains(active) && header && row?.classList.contains("ag__row--head")
+      && row.getAttribute("aria-rowindex") === "1");
+  }, null, { timeout: WAIT });
+  const state = () => grid.evaluate((g) => {
+    const active = document.activeElement, cell = active?.closest('[role="gridcell"],[role="rowheader"],[role="columnheader"]');
+    const r = active?.getBoundingClientRect(); const ports = [];
+    for (let node = g; node; node = node.parentElement) {
+      const cs = getComputedStyle(node), b = node.getBoundingClientRect();
+      ports.push({ id: node.id, tag: node.tagName, className: node.className, left: node.scrollLeft, top: node.scrollTop,
+        overflowY: cs.overflowY, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight,
+        rect: { x: b.x, y: b.y, w: b.width, h: b.height } });
+    }
+    return { own: g.scrollTop, doc: scrollY, ports, rowCount: Number(g.getAttribute("aria-rowcount")),
+      rowIndex: Number(active?.closest('[role="row"]')?.getAttribute("aria-rowindex")),
+      colIndex: Number(cell?.getAttribute("aria-colindex")), cellRole: cell?.getAttribute("role") ?? null,
+      headerRow: Boolean(cell?.closest('[role="row"]')?.classList.contains("ag__row--head")), inGrid: Boolean(active && g.contains(active)),
+      top: r?.top, bottom: r?.bottom, activeText: active?.textContent?.slice(0, 512), viewport: innerHeight };
+  });
+  const before = await state();
+  check(before.inGrid && before.rowIndex === 1 && before.cellRole === "columnheader" && before.headerRow && before.rowCount > 1,
+    `${name}: mandatory keyboard Home header start premise failed`, before);
+  await page.keyboard.press("Control+End");
+  await page.waitForFunction((lastRow) => {
     const active = document.activeElement, grid = document.querySelector("#rail-queue .ag__grid");
     if (!active || !grid?.contains(active)) return false;
-    const r = active.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight;
-  }, null, { timeout: WAIT });
-  const after = await page.evaluate(() => {
-    const active = document.activeElement, grid = document.querySelector("#rail-queue .ag__grid");
-    const r = active?.getBoundingClientRect();
-    return { own: grid?.scrollTop, doc: scrollY, inGrid: Boolean(active && grid?.contains(active)),
-      top: r?.top, bottom: r?.bottom, activeText: active?.textContent, viewport: innerHeight };
-  });
+    const cell = active.closest('[role="gridcell"],[role="rowheader"]');
+    const row = cell?.closest('[role="row"]');
+    const r = active.getBoundingClientRect();
+    return Boolean(cell && row && Number(row.getAttribute("aria-rowindex")) === lastRow
+      && r.top >= 0 && r.bottom <= innerHeight);
+  }, before.rowCount, { timeout: WAIT });
+  const after = await state();
   check(after.inGrid && after.top >= 0 && after.bottom <= after.viewport, `${name}: keyboard focus did not reveal a whole cell`);
-  check(after.own !== before.own || after.doc !== before.doc, `${name}: mandatory keyboard reveal did not exercise a scroll`);
+  check(after.rowCount === before.rowCount && after.rowIndex === after.rowCount,
+    `${name}: actual Control+End did not reach the predeclared last row`, { before, after });
+  check(before.ports.length === after.ports.length && before.ports.every((port, i) => {
+    const next = after.ports[i]; return port.id === next.id && port.tag === next.tag && port.className === next.className;
+  }), `${name}: keyboard scrollport denominator changed`, { before, after });
+  check(after.doc !== before.doc || after.ports.some((port, i) => port.top !== before.ports[i].top || port.left !== before.ports[i].left),
+    `${name}: mandatory keyboard reveal did not exercise a scroll`, { before, after });
   report.counters.keyboardReveal += 1;
   report.observations.push({ name: `${name}-keyboard-positive`, before, after }); save();
 }
