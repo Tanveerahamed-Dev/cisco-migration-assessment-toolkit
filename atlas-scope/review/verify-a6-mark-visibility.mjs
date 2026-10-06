@@ -20,6 +20,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 import { checkBuildFreshness } from "./build-freshness.mjs";
+import { awaitPaletteWarm } from "./palette-warm.mjs";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = realpathSync(resolve(PKG, ".."));
@@ -271,6 +272,8 @@ async function observations(page, target, name, frames = 12) {
 }
 async function settle(page) {
   await page.waitForFunction(() => window.__atlasScene?.stats?.().converged === true, null, { timeout: WAIT });
+  // Every fresh navigation/theme context reaches this before gestures or captures; later settles reuse the terminal phase.
+  await awaitPaletteWarm(page);
 }
 async function select(page, id) {
   await page.keyboard.press("Control+k");

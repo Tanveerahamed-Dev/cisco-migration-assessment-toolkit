@@ -71,7 +71,7 @@ function metadata(state: MarkReport["state"]): MarkReport {
 function report(outOfView: readonly string[], covered: readonly string[], state: MarkReport["state"] = "ready", supplied = metadata(state)): void {
   const callback = labels().onStrandedUnseen;
   if (!callback) throw new Error("actual Fabric3D did not install the report callback");
-  act(() => callback(outOfView, covered, supplied));
+  act(() => { callback(outOfView, covered, supplied); });
 }
 beforeEach(() => {
   mock.labels = null; frames = new Map(); frameId = 0;
@@ -95,7 +95,7 @@ describe("actual Fabric3D report wiring", () => {
     const [cut, off, covered] = fabric.devices;
     expect(cut!.id).not.toBe(cut!.host);
     const container = mount(<Fabric3D />);
-    act(() => useInvestigation.getState().selectDevice(cut!.id));
+    act(() => { useInvestigation.getState().selectDevice(cut!.id); });
     expect(labels().cutPointId).toBe(cut!.host);
     const before = container.querySelector<HTMLElement>("[data-stranded-total]")!;
     expect(before.dataset.markReport).toBe("pending");
@@ -115,11 +115,11 @@ describe("actual Fabric3D report wiring", () => {
   it("refuses a previous selection report and withholds whole counts until the current report arrives", () => {
     const [cut, next] = fabric.devices;
     const container = mount(<Fabric3D />);
-    act(() => useInvestigation.getState().selectDevice(cut!.id));
+    act(() => { useInvestigation.getState().selectDevice(cut!.id); });
     const previous = metadata("ready");
     report([], []);
     expect(container.querySelector("[data-stranded-total]")!.textContent).toContain("all 2 marked");
-    act(() => useInvestigation.getState().selectDevice(next!.id));
+    act(() => { useInvestigation.getState().selectDevice(next!.id); });
     expect(metadata("ready").ids).toEqual(previous.ids); // Same union, different cut/stranded roles.
     report([], [], "ready", previous);
     const pending = container.querySelector<HTMLElement>("[data-stranded-total]")!;
@@ -137,13 +137,13 @@ describe("actual Fabric3D report wiring", () => {
   });
   it("does not invent a cut-point overlay for a genuinely zero-impact selection", () => {
     const container = mount(<Fabric3D />);
-    act(() => useInvestigation.getState().selectDevice(fabric.devices[4]!.id));
+    act(() => { useInvestigation.getState().selectDevice(fabric.devices[4]!.id); });
     expect(labels().cutPointId).toBeNull();
     expect(container.querySelector("[data-stranded-total]")).toBeNull();
   });
   it("refuses an epoch-only stale report even when its mark roles are unchanged", () => {
     const container = mount(<Fabric3D />);
-    act(() => useInvestigation.getState().selectDevice(fabric.devices[0]!.id));
+    act(() => { useInvestigation.getState().selectDevice(fabric.devices[0]!.id); });
     const old = { ...metadata("ready"), epoch: labels().epoch - 1 };
     report([], [], "ready", old);
     const note = container.querySelector<HTMLElement>("[data-stranded-total]")!;
@@ -152,7 +152,7 @@ describe("actual Fabric3D report wiring", () => {
   });
   it("names an unresolved stranded host as not drawn rather than certifying all resolved labels", () => {
     const container = mount(<Fabric3D />);
-    act(() => useInvestigation.getState().selectDevice(fabric.devices[3]!.id));
+    act(() => { useInvestigation.getState().selectDevice(fabric.devices[3]!.id); });
     report([], []);
     const note = container.querySelector<HTMLElement>("[data-stranded-total]")!;
     expect(note.dataset.strandedTotal).toBe("2");
@@ -163,7 +163,7 @@ describe("actual Fabric3D report wiring", () => {
   });
   it("gives out-of-view precedence over overlapping callback categories without double counting", () => {
     const container = mount(<Fabric3D />);
-    act(() => useInvestigation.getState().selectDevice(fabric.devices[0]!.id));
+    act(() => { useInvestigation.getState().selectDevice(fabric.devices[0]!.id); });
     const [cut, off, covered] = fabric.devices;
     report([cut!.id, off!.id], [cut!.id, off!.id, covered!.id]);
     const note = container.querySelector<HTMLElement>("[data-stranded-total]")!;
