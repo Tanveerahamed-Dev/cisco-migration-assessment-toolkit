@@ -11,9 +11,14 @@ import stat
 import subprocess
 import sys
 
-# The workflow invokes this with -I; the only sibling import is the committed guard.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from verify_repository_privacy import _is_reparse_point, _read_bounded
+# The workflow invokes this with -I; expose the committed guard only while importing it.
+_guard_import_path = sys.path[:]
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from verify_repository_privacy import _is_reparse_point, _read_bounded
+finally:
+    sys.path[:] = _guard_import_path
+del _guard_import_path
 
 MAX_INPUT_BYTES = 64 * 1024 * 1024
 MAX_MEMBER_BYTES = 8 * 1024 * 1024
@@ -267,8 +272,13 @@ def _members(root: Path, output: Path, contract: dict, binding: dict) -> dict:
     expected = {row["file"] for row in contract["outputs"]}
     if {p.name for p in members_dir.iterdir()} != expected:
         raise ValueError("Compiled member family is not closed")
-    sys.path.insert(0, str(root))
-    from cisco_toolkit.distribution_verify import _client_marker_patterns
+    import_path = sys.path[:]
+    try:
+        sys.path.insert(0, str(root))
+        from cisco_toolkit.distribution_verify import _client_marker_patterns
+    finally:
+        # Spawned children inherit sys.path: no temporary checkout may escape this import.
+        sys.path[:] = import_path
 
     patterns = _client_marker_patterns()
     records = {}
