@@ -144,7 +144,12 @@ copies stay outside npm resolution and keep the release gate blocked.
 - **Standing owner rule, 2026-10-06 — GITHUB-ONLY:** all execution and verification, including
   targeted reproductions and custody/receipt verification, runs on GitHub-hosted runners. Locally
   only edit, use Git/GitHub operations, and run cheap static checks such as syntax or lint on touched
-  files. Do not run local pytest, Vitest, npm builds, Playwright/browser checks, benchmarks,
+  files. Rule 7's pre-push repository privacy and client-marker history scans are explicitly
+  permitted local static text checks: run `py -3.12 -I -B .github/scripts/verify_repository_privacy.py --root .`
+  and scan every new commit's message and patch (`git log -p origin/main..HEAD`) with
+  `cisco_toolkit.distribution_verify._client_marker_patterns()` before the first public push.
+  The privacy order is unchanged; a post-push hosted check cannot replace it.
+  Do not run local pytest, Vitest, npm builds, Playwright/browser checks, benchmarks,
   verification controllers or subagents executing them. This supersedes local execution examples
   elsewhere in this document; it does not relax privacy, source custody, tests or thresholds.
   The supervisor reviews each green PR and performs its merge after the ready-for-review handoff.
