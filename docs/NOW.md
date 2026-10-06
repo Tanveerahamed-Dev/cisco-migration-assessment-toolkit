@@ -9,7 +9,7 @@ whether it runs in Claude Code or Codex.
 - Read the board from `main` (`git show origin/main:docs/NOW.md`). A work branch's copy may be
   behind.
 
-Last reconciled: **2026-10-05** (Codex). Reasoning behind the current direction:
+Last reconciled: **2026-10-06** (Codex). Reasoning behind the current direction:
 `docs/ui-direction-verdict-2026-09-29.md` (dated record).
 
 ---
@@ -69,10 +69,15 @@ There is **one application**: the `main` branch of this repository on GitHub.
 
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
-| W13 | Coverage honesty: G42 exact device/axis row joins and G12 per-device coverage rollup | `codex/coverage-rollups` in `.claude/worktrees/ui-projection-2` | Codex session | #600 includes main `3f8ce101` through audited merge `beaa9929`; only NOW required resolution, and both handoff histories survive. Old manual CI negatives are preserved: hosted Windows communication loss with incomplete suite evidence, and a coverage-paging test timeout. Its fixture now explicitly controls response/React timing and asserts exact request/cancellation behavior without relaxing assertions or timeouts. Integrated-source acceptance is pending. | Finish #600 first: ready the PR after publication gates, then require all protected/applicable exact-head hosted checks, binary qualification and a fresh unchanged 300 ms gate before its merge commit and tree reconciliation. W10b follows from main with independently refuted B3/A6 splits and the C6 sentence fix; then #593. |
-| W10b | Atlas Scope overturns still open (O79): A3, B3, A6, B2, the A5 x B2 composition, B7, D2, F6/F2, E5, C4/D4 and E4 | from `main` after W10 merges; the latest attempts are the local branches listed in O79 | Codex | Moved from W10 by the owner-delegated time-box (2026-10-05). B3's and A6's repairs drew only minors in their last refutation but are bundled with the refuted A3 and B2 work, so they are the first split candidates. | Continue from `main`; ship each repair only when an independent refuter upholds it on the exact head; E4 and E5 acceptance timing needs the reference laptop quiet. |
+| W10b | Atlas Scope overturn repairs from O79: B3, then A6 and remaining independent repairs | `codex/scope-b3` in `.claude/worktrees/ui-projection-2` | Codex | #601 is frozen at `8acf3187` while complete hosted Windows diagnostics run. Bounded B3 compiler/browser review is upheld with the carried aggregate-citation minor; acceptance re-grade remains FAIL. The new dependency advisory is assigned separately to W12; the strict 300 ms measurement also remains failed and preserved. | Keep #601 untouched during W12. After the supervisor merges W12, merge current main into #601, preserve both board histories, and obtain entirely fresh exact-head checks, custody and unchanged performance evidence. A6 and other O79 repairs follow separately, then #593. |
+| W12 | Dependency advisory: source-map-js GHSA-68fv-2mgg-jv7q | `codex/source-map-js-advisory` in `.codex/worktrees/source-map-js-advisory/engine-defects` | Codex; supervisor merges | Separate worktree from current main `c7695638`; narrowly update the three npm locks from affected 1.2.1 to official 1.2.2. Existing parent ranges admit the patch. No tests, thresholds or audit exceptions change. | Publish a small PR after privacy/history/body gates. Use existing GitHub-hosted builds to refresh any required SPA, Scope toolchain or Master Reference source/SBOM binding; require all 15 protected checks green on its exact head. Supervisor performs the merge, then #601 integrates main. |
 
 ## Owner decisions
+
+**Decided — W12 dependency advisory is separate from #601 (delegated owner, 2026-10-06):**
+- Keep #601 and its worktree frozen while the Windows diagnostics run. Address GHSA-68fv-2mgg-jv7q in a new worktree and small PR from current main, updating only the required source-map-js 1.2.2 lock and source-bound build records.
+- Preserve every test, threshold and audit safeguard. Verification and any generated-record refresh run on GitHub-hosted CI only.
+- The supervisor merges this dependency PR after all 15 required exact-head checks pass. Then #601 merges current main and obtains fresh source-bound evidence; this PR grants no release or deployment authority.
 
 **Decided — finish W13 before W10b (delegated owner, 2026-10-05):**
 - #599 merged as `3f8ce101`; the Claude Atlas Scope session has stood down. Merge that current main into #600 with a merge commit, resolving only this board: delete W10 under rule 8, retain W10b/W13 and every handoff line from both parents.
@@ -158,6 +163,8 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- 2026-10-06, Codex (W12 dependency advisory split): The delegated owner assigned GHSA-68fv-2mgg-jv7q to a separate PR from `c7695638`, leaving #601 at clean `8acf3187` in its existing worktree. Created `codex/source-map-js-advisory` in a separate managed worktree and selected the official 1.2.2 patch for all three source-map-js lock entries; every current parent range admits it. No dependency override, audit exception, test or threshold change is needed. Existing hosted frontend handoff, Scope build/binding and Master Reference SBOM/lock contracts determine any generated-record refresh. Privacy/history/body scans precede publication; all 15 protected exact-head checks must pass before the supervisor merges. Retired W13 under rule 8 because #600 is already merged as `c7695638`; its former evidence remains bound to its original source. #601 then integrates main with both handoff histories and fresh receipts.
 
 - 2026-10-05, Codex (W13 integrated-source fixture correction): Main integration `beaa9929` has parents `2c3e955f`/`3f8ce101`, tree `7135d667`; independent review confirms only NOW was manually resolved, every other blob matches auto-merge, all 441 Scope paths match main, and every parent handoff occurrence survives. The previous manual performance job passed but its run was not all-green: Windows job `111891850470` lost hosted-runner communication, retained a nonterminal suite step and unavailable logs; distribution job `111891850222` timed out on the coverage paging test. Its source now controls mount/click/response timing and tests exact request, un-aborted signal, pending original row/rollup and final page without changing timeouts or weakening assertions. Runtime root cause remains unconfirmed; all negatives remain distinct. Latest owner order is finish #600 with fresh exact-head hosted CI/300 ms and merge-tree reconciliation, then W10b from main, then #593. No Scope repair, old receipt transfer or release action is included in this correction.
 
