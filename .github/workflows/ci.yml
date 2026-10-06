@@ -69,6 +69,10 @@ jobs:
       - run: python -m pip install --upgrade pip
       - name: Install complete runtime and test dependencies
         run: python -m pip install -r requirements-dev.txt
+      # Run the import-state contract before the expensive suite; the complete default
+      # suite still collects these tests again with the subsequent Windows spawn tests.
+      - name: Scope handoff import-state contracts
+        run: python -m pytest tests/test_scope_compile_handoff.py
       - name: Install reviewed Graphify producer for its exact-runtime integration
         if: matrix.python-version == '3.12'
         run: python -m pip install "graphifyy==0.9.51"
@@ -93,31 +97,7 @@ jobs:
         env:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
           ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
-          # Passive diagnostics only; the default full-suite selection is unchanged.
-          PYTHONUNBUFFERED: "1"
-          PYTEST_ADDOPTS: ${{ runner.os == 'Windows' && '-vv --full-trace -o faulthandler_timeout=300 -o faulthandler_exit_on_timeout=False' || '' }}
         run: python -m pytest
-
-  windows-helper-diagnostic:
-    name: Windows helper diagnostic (additional to full suite)
-    runs-on: windows-2025
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12.10"
-      - run: python -m pip install --upgrade 'pip==26.2.1'
-      - run: python -m pip install -r requirements-dev.txt
-      # This fixed reproducer does not replace any required full-suite invocation.
-      # The passive dump covers this process's threads, not child-process stacks.
-      - name: Observe the suspected Windows parent gate test
-        run: >-
-          python -u -m pytest -vv --full-trace
-          -o faulthandler_timeout=60 -o faulthandler_exit_on_timeout=False
-          tests/test_transition_runtime_discovery.py::test_debug_helper_spawn_requires_parent_go_before_request[False-WINDOWS_DEBUG_HELPER_GATE_INVALID]
 
   typecheck:
     name: mypy

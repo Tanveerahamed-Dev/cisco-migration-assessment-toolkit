@@ -1,7 +1,9 @@
 """Hostile source/member mutations cannot promote a Scope review handoff."""
 from __future__ import annotations
 
+import builtins
 import hashlib
+import importlib
 import importlib.util
 import json
 import os
@@ -14,14 +16,48 @@ from types import SimpleNamespace
 import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / ".github/scripts"
-spec = importlib.util.spec_from_file_location("scope_compile_handoff", SCRIPTS / "scope_compile_handoff.py")
-assert spec and spec.loader
-handoff = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(handoff)
+
+
+def _load_handoff():
+    spec = importlib.util.spec_from_file_location("scope_compile_handoff", SCRIPTS / "scope_compile_handoff.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _restore_sys_path(original, contents):
+    original[:] = contents
+    sys.path = original
+
+
+def _load_handoff_for_collection():
+    # Collection must not contaminate unrelated tests while the regression is red.
+    original, contents = sys.path, list(sys.path)
+    try:
+        return _load_handoff()
+    finally:
+        _restore_sys_path(original, contents)
+
+
+handoff = _load_handoff_for_collection()
+
+
+@pytest.fixture(autouse=True)
+def isolate_sys_path():
+    original, contents = sys.path, list(sys.path)
+    try:
+        yield
+    finally:
+        # Restore only after assertions; within-test path leaks remain observable.
+        _restore_sys_path(original, contents)
 
 
 @pytest.fixture
 def family(tmp_path, monkeypatch):
+    # These synthetic cisco_toolkit files remain deliberately invalid witness
+    # bytes. Bind the real scanner before a synthetic root can enter sys.path.
+    importlib.import_module("cisco_toolkit.distribution_verify")
     root = tmp_path / "checkout"
     root.mkdir()
     (root / ".git").mkdir()
@@ -130,6 +166,92 @@ def family(tmp_path, monkeypatch):
                            ignored=ignored, worktrees=worktrees, run=run, compile=compile_members,
                            owner=owner, monkeypatch=monkeypatch, modes=modes, staged_modes=staged_modes,
                            staged_blobs=staged_blobs, staged_stages=staged_stages, node_exports_calls=node_exports_calls)
+
+
+def test_loading_handoff_preserves_sys_path_identity_and_contents():
+    original, contents = sys.path, list(sys.path)
+    loaded = _load_handoff()
+    assert callable(loaded.main)
+    assert sys.path is original
+    assert sys.path == contents
+
+
+@pytest.mark.parametrize("phase", ["before", "after"])
+def test_successful_handoff_preserves_sys_path_identity_and_contents(family, phase):
+    if phase == "after":
+        family.run("before")
+        family.compile()
+    original, contents = sys.path, list(sys.path)
+    family.run(phase)
+    assert (family.target / ("source-before.json" if phase == "before" else "handoff.json")).is_file()
+    assert sys.path is original
+    assert sys.path == contents
+
+
+def test_member_refusal_after_scanner_import_preserves_sys_path(family, monkeypatch):
+    family.run("before")
+    family.compile()
+    member_path = family.target / "members/part0.json"
+    member = json.loads(member_path.read_bytes())
+    member["meta"]["sourceSha256"] = "wrong-source"
+    member_path.write_text(json.dumps(member), encoding="utf-8")
+    imported = []
+    real_import = builtins.__import__
+
+    def observe_import(name, *args, **kwargs):
+        if name == "cisco_toolkit.distribution_verify":
+            imported.append(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", observe_import)
+    original, contents = sys.path, list(sys.path)
+    with pytest.raises(ValueError, match="binding"):
+        family.run("after")
+    assert imported, "the member refusal must follow the canonical scanner import"
+    assert not (family.target / "handoff.json").exists()
+    assert sys.path is original
+    assert sys.path == contents
+
+
+def test_loading_handoff_import_failure_preserves_sys_path(monkeypatch):
+    attempted = []
+    real_import = builtins.__import__
+
+    def refuse_import(name, *args, **kwargs):
+        if name == "verify_repository_privacy":
+            attempted.append(name)
+            raise ImportError("synthetic guard import refusal")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", refuse_import)
+    original, contents = sys.path, list(sys.path)
+    with pytest.raises(ImportError, match="synthetic guard import refusal"):
+        _load_handoff()
+    assert attempted == ["verify_repository_privacy"]
+    assert sys.path is original
+    assert sys.path == contents
+
+
+def test_scanner_import_failure_preserves_sys_path(family, monkeypatch):
+    family.run("before")
+    family.compile()
+    attempted = []
+    real_import = builtins.__import__
+
+    def refuse_import(name, *args, **kwargs):
+        if name == "cisco_toolkit.distribution_verify":
+            attempted.append(name)
+            raise ImportError("synthetic scanner import refusal")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", refuse_import)
+    original, contents = sys.path, list(sys.path)
+    with pytest.raises(ImportError, match="synthetic scanner import refusal"):
+        family.run("after")
+    assert attempted == ["cisco_toolkit.distribution_verify"]
+    assert not (family.target / "handoff.json").exists()
+    assert sys.path is original
+    assert sys.path == contents
 
 
 def test_complete_family_is_source_bound_closed_and_nonpromoting(family):
