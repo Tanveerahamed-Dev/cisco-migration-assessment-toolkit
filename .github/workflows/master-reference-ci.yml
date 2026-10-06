@@ -5,15 +5,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      prepare_sharp_lock:
-        description: "Prepare the scoped W15 lock update on a hosted runner"
-        type: boolean
-        default: false
-      expected_source_commit:
-        description: "Full source commit required for W15 lock preparation"
-        type: string
-        default: ""
 
 permissions:
   contents: read
@@ -23,62 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  prepare-sharp-lock:
-    name: Prepare scoped Sharp lock update
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepare_sharp_lock }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24.18.0"
-      - name: Require the selected immutable source
-        env:
-          EXPECTED_SOURCE: ${{ inputs.expected_source_commit }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$EXPECTED_SOURCE" =~ ^[0-9a-f]{40}$ ]]
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
-          test -z "$(git status --porcelain)"
-          git rev-parse HEAD 'HEAD^{tree}'
-      - name: Resolve only the reviewed Sharp family without lifecycle scripts
-        working-directory: master-reference
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-      - name: Require unchanged unrelated packages and report the exact lock patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          import { execFileSync } from 'node:child_process';
-          import { createHash } from 'node:crypto';
-          const path = 'master-reference/package-lock.json';
-          const before = JSON.parse(execFileSync('git', ['show', `HEAD:${path}`], { encoding: 'utf8' }));
-          const bytes = readFileSync(path);
-          const after = JSON.parse(bytes);
-          assert.deepEqual(Object.keys(after).sort(), Object.keys(before).sort());
-          for (const key of Object.keys(before)) if (key !== 'packages') assert.deepEqual(after[key], before[key]);
-          assert.deepEqual(Object.keys(after.packages).sort(), Object.keys(before.packages).sort());
-          const family = Object.keys(before.packages).filter(p => p === 'node_modules/sharp' || p.startsWith('node_modules/@img/sharp-'));
-          assert.equal(family.length, 27);
-          for (const [name, row] of Object.entries(after.packages)) {
-            if (!family.includes(name)) { assert.deepEqual(row, before.packages[name], name); continue; }
-            const version = name.includes('/sharp-libvips-') ? '1.3.4' : '0.35.5';
-            assert.equal(row.version, version, name);
-            assert.ok(row.resolved.startsWith('https://registry.npmjs.org/'), name);
-            assert.match(row.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/);
-            console.log(JSON.stringify({ path: name, version, resolved: row.resolved, integrity: row.integrity }));
-          }
-          assert.deepEqual(execFileSync('git', ['diff', '--name-only'], { encoding: 'utf8' }).trim().split('\n'), [path]);
-          const patch = execFileSync('git', ['diff', '--no-ext-diff', '--no-textconv', '--binary', '--full-index', '--', path]);
-          console.log(JSON.stringify({ source: process.env.GITHUB_SHA, lock_sha256: createHash('sha256').update(bytes).digest('hex'), patch_sha256: createHash('sha256').update(patch).digest('hex') }));
-          console.log('W15_LOCK_PATCH_BASE64=' + patch.toString('base64'));
-          NODE
   verify:
     name: Exact-source compiler, reference, and release contracts
     runs-on: ubuntu-latest

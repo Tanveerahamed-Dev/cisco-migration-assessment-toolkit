@@ -97,24 +97,24 @@ test("the exact Miniflare edge resolves only the patched sharp release", () => {
 
   assert.equal(manifest.overrides.sharp, undefined);
   assert.deepEqual(manifest.overrides["miniflare@5.20260801.1-alpha"], {
-    sharp: "0.35.4",
+    sharp: "0.35.5",
   });
   assert.equal(miniflare.version, "5.20260801.1-alpha");
   assert.equal(miniflare.dependencies.sharp, "0.35.2");
-  assert.equal(sharp.version, "0.35.4");
+  assert.equal(sharp.version, "0.35.5");
   assert.deepEqual(
     Object.entries(lock.packages)
       .filter(([key]) => key === "node_modules/sharp" || key.endsWith("/node_modules/sharp"))
       .map(([key, value]) => ({ path: key, version: value.version })),
-    [{ path: "node_modules/sharp", version: "0.35.4" }],
+    [{ path: "node_modules/sharp", version: "0.35.5" }],
   );
   assert.equal(
     sharp.resolved,
-    "https://registry.npmjs.org/sharp/-/sharp-0.35.4.tgz",
+    "https://registry.npmjs.org/sharp/-/sharp-0.35.5.tgz",
   );
   assert.equal(
     sharp.integrity,
-    "sha512-n++8XWcj+jCOr2IOl7h8LbKnGBDY4aPbmprMONBNFdn0ImXqpGVv5zliDs0V9HbmbCQLpbuo2ej9rAoOQTvMDA==",
+    "sha512-Ywn4OnzGukp7CDMrp08RQ50YKmuwG47brZgIVPTvBaaAfQlRlygrRqSrxdCiL9M+LlzLBiJ68IR1QqvzHyjC7g==",
   );
 
   const miniflareRequire = createRequire(path.join(projectRoot, "node_modules/miniflare/package.json"));
@@ -122,7 +122,7 @@ test("the exact Miniflare edge resolves only the patched sharp release", () => {
     path.join(path.dirname(miniflareRequire.resolve("sharp")), "..", "package.json"),
     "utf8",
   ));
-  assert.equal(installedSharp.version, "0.35.4");
+  assert.equal(installedSharp.version, "0.35.5");
   assert.deepEqual(installedSharp.optionalDependencies, sharp.optionalDependencies);
 
   const optionalClosure = Object.entries(sharp.optionalDependencies);
@@ -131,7 +131,7 @@ test("the exact Miniflare edge resolves only the patched sharp release", () => {
     assert.ok(name.startsWith("@img/sharp-"));
     assert.equal(
       version,
-      name.startsWith("@img/sharp-libvips-") ? "1.3.3" : "0.35.4",
+      name.startsWith("@img/sharp-libvips-") ? "1.3.4" : "0.35.5",
     );
     assert.equal(lock.packages[`node_modules/${name}`].version, version);
   }
@@ -143,13 +143,13 @@ test("the exact Miniflare edge resolves only the patched sharp release", () => {
   assert.equal(sharpClosureRows.length, 27);
   for (const [key, value] of sharpClosureRows) {
     if (key === "node_modules/sharp") {
-      assert.equal(value.version, "0.35.4");
+      assert.equal(value.version, "0.35.5");
       continue;
     }
     assert.ok(key.startsWith("node_modules/@img/sharp-"));
     assert.equal(
       value.version,
-      key.includes("/sharp-libvips-") ? "1.3.3" : "0.35.4",
+      key.includes("/sharp-libvips-") ? "1.3.4" : "0.35.5",
     );
   }
 });
@@ -180,6 +180,11 @@ test("the exact Miniflare edge resolves only the patched undici release", () => 
 
 test("the patched Miniflare sharp edge loads its native binding", async () => {
   const miniflareRequire = createRequire(path.join(projectRoot, "node_modules/miniflare/package.json"));
+  const installedSharp = JSON.parse(readFileSync(
+    path.join(path.dirname(miniflareRequire.resolve("sharp")), "..", "package.json"),
+    "utf8",
+  ));
+  assert.equal(installedSharp.version, "0.35.5");
   const sharpLibrary = miniflareRequire("sharp");
   const metadata = await sharpLibrary(
     path.join(projectRoot, "public/atlas-social-card.png"),
