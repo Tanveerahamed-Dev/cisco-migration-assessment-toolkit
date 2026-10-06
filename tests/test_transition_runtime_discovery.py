@@ -9,7 +9,9 @@ import multiprocessing
 import os
 from pathlib import Path, PureWindowsPath
 import re
+import subprocess
 import sys
+import textwrap
 import time
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -2031,6 +2033,244 @@ def test_debug_helper_receive_rejects_missing_extra_and_nonzero_exit(
         discovery._receive_debug_helper_frame(  # type: ignore[arg-type]
             Helper(), receiver, time.monotonic_ns() + 1_000_000_000
         )
+
+
+@pytest.mark.parametrize("has_frame", [False, True], ids=["initial", "after-frame"])
+@pytest.mark.parametrize(
+    ("exitcode", "error_code"),
+    [(1, "WINDOWS_DEBUG_HELPER_PROCESS_FAILED"),
+     (None, "WINDOWS_DEBUG_HELPER_PROCESS_FAILED"),
+     (0, "WINDOWS_DEBUG_HELPER_TIMEOUT")],
+    ids=["nonzero", "unknown", "zero"],
+)
+def test_debug_helper_receive_never_reads_unready_dead_helper_pipe(
+        monkeypatch: pytest.MonkeyPatch,
+        has_frame: bool,
+        exitcode: int | None,
+        error_code: str,
+        ) -> None:
+    sentinel = object()
+    clock = [10_000_000_000]
+    deadline = clock[0] + 1_000_000_000
+    frames = [b"first"] if has_frame else []
+    reads: list[bytes] = []
+    unready_reads: list[int] = []
+    readiness_checks: list[str] = []
+
+    class Receiver:
+        def poll(self, timeout: float = 0) -> bool:
+            readiness_checks.append("poll")
+            assert timeout == pytest.approx((deadline - clock[0]) / 1_000_000_000)
+            clock[0] = deadline
+            return False
+
+        def recv_bytes(self, maxlength: int) -> bytes:
+            assert maxlength == contract.PROVISIONAL_MAX_CANONICAL_BYTES
+            if frames:
+                value = frames.pop(0)
+                reads.append(value)
+                return value
+            # A real retained sender blocks here. Use a call witness because the
+            # old receiver catches ValueError and can report the expected code.
+            unready_reads.append(maxlength)
+            raise ValueError("synthetic unready pipe receive")
+
+    receiver = Receiver()
+
+    class Helper:
+        def __init__(self) -> None:
+            self.sentinel = sentinel
+            self.exitcode = exitcode
+
+        def join(self, timeout: float) -> None:
+            assert timeout == 0
+
+    def wait(objects: list[Any], selected_deadline: int) -> list[Any]:
+        assert selected_deadline == deadline, "readiness must retain the original deadline"
+        if objects == [receiver]:
+            readiness_checks.append("wait")
+            clock[0] = deadline
+            return []
+        assert objects == [receiver, sentinel]
+        clock[0] += 100_000_000
+        return [receiver] if frames else [sentinel]
+
+    monkeypatch.setattr(discovery.time, "monotonic_ns", lambda: clock[0])
+    monkeypatch.setattr(discovery, "_wait_for_debug_helper", wait)
+    with pytest.raises(discovery.RuntimeDiscoveryError, match=f"^{error_code}$"):
+        discovery._receive_debug_helper_frame(  # type: ignore[arg-type]
+            Helper(), receiver, deadline
+        )
+    assert unready_reads == [], "process death is not proof that a pipe frame or EOF is readable"
+    assert reads == ([b"first"] if has_frame else [])
+    if exitcode == 0:
+        assert readiness_checks
+        assert clock[0] == deadline, "zero-exit readiness refusal must consume only the remaining budget"
+    else:
+        assert readiness_checks == [], "failed helper must be rejected without another pipe wait"
+
+
+def test_debug_helper_receive_preserves_buffered_frame_and_normal_eof(
+        monkeypatch: pytest.MonkeyPatch,
+        ) -> None:
+    sentinel = object()
+    frame = b"exact single frame"
+    messages: list[bytes | EOFError] = [frame, EOFError()]
+    reads: list[bytes | str] = []
+    deadline = time.monotonic_ns() + 1_000_000_000
+
+    class Receiver:
+        def poll(self, timeout: float = 0) -> bool:
+            assert 0 <= timeout <= 1
+            return bool(messages)
+
+        def recv_bytes(self, maxlength: int) -> bytes:
+            assert maxlength == contract.PROVISIONAL_MAX_CANONICAL_BYTES
+            assert messages, "a verified EOF must never be read twice"
+            value = messages.pop(0)
+            if isinstance(value, EOFError):
+                reads.append("EOF")
+                raise value
+            reads.append(value)
+            return value
+
+    receiver = Receiver()
+    helper = SimpleNamespace(sentinel=sentinel, exitcode=0, join=lambda timeout: None)
+
+    def wait(objects: list[Any], selected_deadline: int) -> list[Any]:
+        assert selected_deadline == deadline
+        if objects == [receiver]:
+            return [receiver] if messages else []
+        if objects == [sentinel]:
+            return [sentinel]
+        assert objects == [receiver, sentinel]
+        return [sentinel]
+
+    monkeypatch.setattr(discovery, "_wait_for_debug_helper", wait)
+    assert discovery._receive_debug_helper_frame(helper, receiver, deadline) == frame  # type: ignore[arg-type]
+    assert reads == [frame, "EOF"] and messages == []
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or sys.platform != "win32",
+    reason="spawn handle duplication and child bootstrap failure are Windows-specific",
+)
+@pytest.mark.parametrize("mode", ["normal-import", "import-death"])
+def test_debug_helper_receive_bounds_windows_spawn_import_death(
+        tmp_path: Path,
+        mode: str,
+        ) -> None:
+    # The dangerous receive is in a disposable subprocess, never pytest itself.
+    # Its child is proved dead before the receive begins, so killing a stalled
+    # probe cannot strand that child or its leaked duplicated handles in pytest.
+    probe = tmp_path / "receiver_probe.py"
+    probe.write_text(textwrap.dedent('''\
+        import json
+        import multiprocessing
+        from pathlib import Path
+        import sys
+        import time
+
+        def main():
+            root, mode, shadow = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+            sys.path.insert(0, str(root))
+            from cisco_toolkit import transition_runtime_discovery as discovery
+            context = multiprocessing.get_context("spawn")
+            gate_receiver, gate_sender = context.Pipe(duplex=False)
+            receiver, sender = context.Pipe(duplex=False)
+            helper = context.Process(
+                target=discovery._debug_capture_helper_main,
+                args=(gate_receiver, sender, sys.executable, str(root), [],
+                      "sha256:" + "a" * 64, "sha256:" + "b" * 64,
+                      "a" * 40, "b" * 40, str(shadow.parent), str(shadow.parent),
+                      time.monotonic_ns() + 10_000_000_000),
+                daemon=False,
+            )
+            if mode == "import-death":
+                # The parent already bound the actual module. Only fresh spawn
+                # imports see this shadow, before target/pipe args are unpickled.
+                sys.path.insert(0, str(shadow))
+            try:
+                helper.start()
+                gate_receiver.close()
+                sender.close()
+                gate_sender.close()  # Normal control returns the existing gate error.
+                helper.join(8)
+                assert not helper.is_alive(), "spawn child did not exit within setup budget"
+                ready = receiver.poll(0)
+                if mode == "import-death":
+                    assert helper.exitcode != 0
+                    assert ready is False, "duplicated unclaimed sender precondition absent"
+                else:
+                    assert helper.exitcode == 0 and ready is True
+                print(json.dumps({"stage": "child-exited", "mode": mode,
+                                  "exitcode": helper.exitcode, "receiver_ready": ready}), flush=True)
+                # Start this budget AFTER spawn/import death; an already expired
+                # deadline would let old code escape without its unsafe receive.
+                started = time.monotonic_ns()
+                try:
+                    frame = discovery._receive_debug_helper_frame(
+                        helper, receiver, started + 500_000_000)
+                except discovery.RuntimeDiscoveryError as error:
+                    outcome = {"error_code": error.code, "decoded": None}
+                else:
+                    outcome = {"error_code": None,
+                               "decoded": discovery._decode_debug_helper_response(frame)}
+                print(json.dumps({"stage": "receive-returned", "mode": mode,
+                                  "elapsed_ns": time.monotonic_ns() - started, **outcome}), flush=True)
+            finally:
+                for connection in (gate_receiver, gate_sender, receiver, sender):
+                    connection.close()
+                if helper.pid is not None:
+                    if helper.is_alive():
+                        helper.terminate()
+                        helper.join(2)
+                    if helper.is_alive():
+                        helper.kill()
+                        helper.join(2)
+                    assert not helper.is_alive(), "probe child cleanup failed"
+                    helper.close()
+
+        if __name__ == "__main__":
+            main()
+        '''), encoding="utf-8", newline="\n")
+    shadow = tmp_path / "shadow"
+    package = shadow / "cisco_toolkit"
+    package.mkdir(parents=True)
+    marker = "W14_SYNTHETIC_CHILD_IMPORT_REFUSAL"
+    (package / "__init__.py").write_text(
+        f"raise RuntimeError({marker!r})\n", encoding="utf-8", newline="\n"
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-B", str(probe), str(ROOT), mode, str(shadow)],
+            cwd=ROOT, stdin=subprocess.DEVNULL, capture_output=True, timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        stdout = (error.stdout or b"").decode("utf-8", errors="replace")
+        stderr = (error.stderr or b"").decode("utf-8", errors="replace")
+        pytest.fail(
+            "debug helper receive exceeded the independent 20s probe bound; "
+            f"mode={mode}; stdout={stdout!r}; stderr={stderr!r}"
+        )
+    stdout = completed.stdout.decode("utf-8", errors="replace")
+    stderr = completed.stderr.decode("utf-8", errors="replace")
+    assert completed.returncode == 0, f"probe failed: stdout={stdout!r}; stderr={stderr!r}"
+    records = [json.loads(line) for line in stdout.splitlines()]
+    assert len(records) == 2 and [row["stage"] for row in records] == ["child-exited", "receive-returned"]
+    assert all(row["mode"] == mode for row in records)
+    assert records[1]["elapsed_ns"] < 2_000_000_000
+    if mode == "import-death":
+        assert marker in stderr, "the child must actually die at the injected module import"
+        assert records[0]["exitcode"] != 0 and records[0]["receiver_ready"] is False
+        assert records[1]["error_code"] == "WINDOWS_DEBUG_HELPER_PROCESS_FAILED"
+        assert records[1]["decoded"] is None
+    else:
+        assert marker not in stderr
+        assert records[0]["exitcode"] == 0 and records[0]["receiver_ready"] is True
+        assert records[1]["error_code"] is None
+        assert records[1]["decoded"] == ["ERROR", "WINDOWS_DEBUG_HELPER_GATE_INVALID"]
 
 
 @pytest.mark.skipif(

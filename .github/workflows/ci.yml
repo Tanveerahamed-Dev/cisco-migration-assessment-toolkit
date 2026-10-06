@@ -73,6 +73,10 @@ jobs:
       # suite still collects these tests again with the subsequent Windows spawn tests.
       - name: Scope handoff import-state contracts
         run: python -m pytest tests/test_scope_compile_handoff.py
+      # Fail promptly on receive liveness regressions; the unchanged complete
+      # suite below still collects these transport contracts on every platform.
+      - name: Debug helper receive deadline contracts
+        run: python -m pytest tests/test_transition_runtime_discovery.py -k debug_helper_receive
       - name: Install reviewed Graphify producer for its exact-runtime integration
         if: matrix.python-version == '3.12'
         run: python -m pip install "graphifyy==0.9.51"
