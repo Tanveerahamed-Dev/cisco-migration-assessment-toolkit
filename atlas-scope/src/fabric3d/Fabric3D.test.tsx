@@ -26,6 +26,7 @@ import { prepareProceduralMaps } from "./materials";
 import { ALL_CHASSIS_KINDS, prepareChassis } from "./geometry/chassis";
 import { SCENE_DETAIL } from "./quality";
 import { CANVAS_KEYS, KEY_ORBIT_STEP, KEY_PAN_STEP } from "./canvasKeys";
+import { LABEL_MIN_DWELL_PASSES } from "./labelResolve";
 import { bandOfHopIn, bandOfTrace } from "../core/claims";
 import { describeGolden } from "../test-support/golden-sample";
 
@@ -1377,8 +1378,35 @@ describe("the blast radius is wired to the scene contract and the label layer", 
       flushFrames(4);
     });
 
+    // jsdom has no layout: missing stage measurements must remain honestly unmeasured.
+    const unmeasured = m.container.querySelector<HTMLElement>("[data-stranded-total]")!;
+    expect(unmeasured.dataset["markReport"]).toBe("unmeasured");
+    expect(unmeasured.hasAttribute("data-stranded-unseen")).toBe(false);
+    expect(unmeasured.textContent).not.toContain(`all ${stranded.length} marked`);
+    // Supply finite synthetic geometry to the real label/report pipeline, not a fake report.
+    const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]')!;
+    const stageWidth = 6 * 260;
+    const stageHeight = Math.max(900, Math.ceil(fabric.devices.length / 6) * 180);
+    overlay.getBoundingClientRect = (): DOMRect => ({
+      x: 0, y: 0, left: 0, top: 0, right: stageWidth, bottom: stageHeight,
+      width: stageWidth, height: stageHeight, toJSON: () => ({}),
+    }) as DOMRect;
+    for (const label of overlay.querySelectorAll<HTMLElement>(".fabric3d-label")) {
+      Object.defineProperty(label, "offsetWidth", { configurable: true, get: () => 160 });
+      Object.defineProperty(label, "offsetHeight", { configurable: true, get: () => 24 });
+      const name = label.firstElementChild as HTMLElement;
+      Object.defineProperty(name, "offsetLeft", { configurable: true, get: () => 4 });
+      Object.defineProperty(name, "offsetWidth", { configurable: true, get: () => 152 });
+    }
+    act(() => {
+      // A ready report also requires the real DOM-label dwell to finish after
+      // the fixture gains measured geometry; use its owner, not a longer timeout.
+      flushFrames(LABEL_MIN_DWELL_PASSES + 2);
+    });
+
     const note = m.container.querySelector<HTMLElement>("[data-stranded-total]");
     expect(note, "a stranded count must be on the fabric whenever a blast radius is drawn").not.toBeNull();
+    expect(note!.dataset["markReport"]).toBe("ready");
     const marked = [...m.container.querySelectorAll<HTMLElement>('[data-stranded="yes"]')].filter(
       (el) => el.dataset["visible"] === "true",
     );

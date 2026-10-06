@@ -121,6 +121,9 @@
   visibility: hidden;
 }
 
+/* A6: covered labels never obscure placed labels. */
+.fabric3d-label[data-covered="yes"], .fabric3d-label[data-clipped="yes"] { z-index: -1; }
+
 /* A label the stage edge pushed off its anchor draws a leader from its bottom edge down to the
    device it names (FabricLabels.tsx). Without it a displaced name reads as naming whatever
    device it now happens to sit over. 2 px across, centred on the anchor's x: it is a line drawn on
@@ -396,7 +399,10 @@
 }
 .fabric3d__hud > * {
   flex-shrink: 0;
+  pointer-events: auto;
 }
+/* A6: only painted HUD children hit-test, not the transparent row. */
+.fabric3d__hud { pointer-events: none; }
 
 /* A6: the stranded count and the hosts out of view. The one HUD note whose length depends on the
    data, so the one allowed to wrap — as a readable measure (never a column narrower than 20rem, or

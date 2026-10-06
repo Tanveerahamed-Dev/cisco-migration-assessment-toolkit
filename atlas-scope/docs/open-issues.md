@@ -6998,6 +6998,15 @@ None of these is a correctness defect. They are craft items, which is exactly th
 blind comparison exists to adjudicate.
 
 ### O79. The re-grade's overturned PASSes that W10 did NOT close — still PASS-overturned (FAIL, F2 UNPROVEN), each with its last independent refuter verdict — OPEN, moved to W10b (held by Codex)
+**A6 split preparation, 2026-10-06 (Codex; not a re-grade).** B3/#601 and its separate successor W14/#603 are merged;
+the owner merged W14 as `629deb66`. W10b resumes on `codex/scope-a6` from that main. The A6-only extraction retains
+the historical `ab690edf` refuter quotation below, but no old rendered receipt certifies this source. Fresh source
+challenge also identified wrong physical-edge signs under hysteresis, a small-but-fit rescue interval missed by the
+sampled search, and a document scrollport reached before the old `page=false` check. The split addresses those paths
+and separates placement, visibility reporting and actual HUD wiring controls; semantic mutations and rendered browser
+observations must run on hosted CI. B2 alarm/verdict/multiline changes, A3 forwarding work, D2 focus repair and acceptance
+promotion remain excluded. A6 stays FAIL until fresh measured re-grade; source/static checks alone are not rendered proof.
+
 **W10b source checkpoint, 2026-10-05 (Codex; not a re-grade).** W13/#600 is merged. The first small repair is
 `codex/scope-b3`: usable route-table/prefix admission, original dropped-entry disclosure and an exact retained-route
 citation join, without the bundled A3/B2/B7 changes. Independent source review refuted positional citation resolution

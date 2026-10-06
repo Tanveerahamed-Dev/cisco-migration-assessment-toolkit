@@ -72,6 +72,16 @@ jobs:
         run: npm run typecheck
       - name: Unit and contract tests (vitest)
         run: npm test
+      - name: Independently challenge A6 placement and reporting guards
+        run: node review/verify-a6-guard-mutations.mjs --expected-commit "${{ github.sha }}" --output "${{ runner.temp }}/a6-mutations"
+      - name: Preserve A6 guard mutation observations
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scope-a6-mutations-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/a6-mutations/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Standalone build (the bundled sample fleet, dist/)
         run: npm run build
       - name: AssessHub hub build (base /scope/, no compiled dataset, no sourcemaps, dist-hub/)
@@ -102,6 +112,16 @@ jobs:
         with:
           name: scope-b3-browser-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/b3-browser/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Verify A6 marks through the actual rendered controls
+        run: node review/verify-a6-mark-visibility.mjs --expected-commit "${{ github.sha }}" --output "${{ runner.temp }}/a6-browser"
+      - name: Preserve A6 browser verification evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scope-a6-browser-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/a6-browser/
           if-no-files-found: ignore
           retention-days: 14
       - name: AssessHub serves this hub build at /scope (every /scope refusal and pin)

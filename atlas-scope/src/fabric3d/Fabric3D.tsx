@@ -3,9 +3,9 @@
  *
  * The division of labour is the one `contract.ts` describes: React owns the DOM and the
  * investigation state, the scene owns the canvas, and this file translates between them with
- * imperative calls. Nothing here schedules React work per frame, and no pointer or key event is
- * routed through a reconciler before it reaches the scene — that is what keeps the INP budget and
- * the frame budget independent of each other.
+ * imperative calls. Only changed mark reports synchronize a frame-originated React publication;
+ * no pointer or key event is routed through a reconciler before it reaches the scene. The INP budget
+ * and the frame budget remain independent of each other.
  *
  * Three decisions in here are load-bearing and are explained where they are made:
  *   1. the canvas element is created imperatively, one per scene instance (StrictMode safety),
@@ -13,6 +13,7 @@
  *   3. the keyboard contract is a first-class input path, not a fallback for the mouse.
  */
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 
 import { DEFAULT_GRAPH_OPTIONS, failureImpact, linkFailureImpact, type Certainty, type ProjectionDelta } from "../analysis/blast";
 import { cableCountPhrase, hostCableAccount } from "../analysis/port-claims";
@@ -24,7 +25,7 @@ import { kindWords, recognisedSeverity, type Device, type Link, type Trace } fro
 
 import type { FabricScene, HighlightState, PickResult, QualityTier, SceneEvent } from "./contract";
 import { FabricA11yTree, linkCutSentence } from "./FabricA11yTree";
-import { createHoverChannel, FabricLabels, type HoverChannel } from "./FabricLabels";
+import { createHoverChannel, FabricLabels, markReportScope, type HoverChannel, type MarkReport } from "./FabricLabels";
 import { publishSceneStats, releaseSceneStats } from "./telemetry";
 import { traceEndOf, type TraceMarkKind } from "./traceEnd";
 import { FabricLegend } from "./FabricLegend";
@@ -566,6 +567,52 @@ export function blastQualifier(certainty: Certainty, count: number, alternates: 
   return others.length === 0 ? certainty : `${certainty}; ${others.join(", ")}`;
 }
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
+type CutMarkState = "none" | "pending" | "unmeasured" | "shown" | "out-of-view" | "covered";
+
+/** The HUD renderer is shared with the cut-only control; it derives no network facts. */
+export function BlastMarkNote({ subject, qualifier, certainty, strandedHosts, outOfView, covered, cutHost, cutState, state }: {
+  subject: string;
+  qualifier: string;
+  certainty: Certainty | null;
+  strandedHosts: readonly string[];
+  outOfView: readonly string[];
+  covered: readonly string[];
+  cutHost: string | null;
+  cutState: CutMarkState;
+  state: MarkReport["state"];
+}) {
+  if (strandedHosts.length === 0 && cutHost === null) return null;
+  const ready = state === "ready";
+  const shownCut = cutHost === null ? "none" : ready ? cutState : state;
+  const shownHosts = strandedHosts.filter((host) => !outOfView.includes(host) && !covered.includes(host));
+  const shown = shownHosts.length;
+  return <span className="fabric3d__quality" role="note"
+    data-blast={certainty ?? ""} data-mark-report={state} data-stranded-total={strandedHosts.length}
+    data-stranded-shown={ready ? shown : undefined}
+    data-stranded-shown-hosts={ready ? JSON.stringify(shownHosts) : undefined}
+    data-stranded-unseen={ready ? outOfView.length + covered.length : undefined}
+    data-stranded-out-of-view={ready ? outOfView.length : undefined}
+    data-stranded-covered={ready ? covered.length : undefined}
+    data-stranded-out-of-view-hosts={ready ? JSON.stringify(outOfView) : undefined}
+    data-stranded-covered-hosts={ready ? JSON.stringify(covered) : undefined}
+    data-cut-mark={shownCut}
+    title={ready ? [
+      outOfView.length === 0 ? "" : `Stranded marks not drawn in view: ${outOfView.join(", ")}. Reset view or the Fabric list reaches them.`,
+      covered.length === 0 ? "" : `Whole stranded marks without a clear place on this stage: ${covered.join(", ")}. A wider stage, a zoom or the Fabric list may reveal them.`,
+      cutHost === null ? "" : `${cutHost}'s cut-point mark: ${shownCut}.`,
+    ].filter(Boolean).join(" ") : "Mark visibility has not been verified for this placement pass."}
+  >
+    {strandedHosts.length > 0
+      ? `${subject} strands ${strandedHosts.length}${qualifier === "" ? "" : ` (${qualifier})`}`
+      : `${subject} cut-point mark`}
+    {!ready ? ` · mark placement ${state}` : <>
+      {strandedHosts.length === 0 ? "" : outOfView.length === 0 && covered.length === 0 ? ` · all ${shown} marked` : ` · ${shown} marked`}
+      {outOfView.length === 0 ? "" : ` · ${outOfView.length} out of view: ${outOfView.join(", ")}`}
+      {covered.length === 0 ? "" : ` · ${covered.length} covered: ${covered.join(", ")}`}
+      {cutHost === null ? "" : ` · cut-point mark ${shownCut}`}
+    </>}
+  </span>;
+}
 
 const NO_BLOCK: Blocked = { host: null, link: null };
 
@@ -1246,12 +1293,41 @@ export function Fabric3D({
      and nothing saying so. The label layer reports which stranded hosts it could NOT draw this frame
      (off the canvas, behind a chassis, or dropped) — only when that set changes — and the stage
      states the count and names them. */
-  const [strandedUnseen, setStrandedUnseen] = useState<readonly string[]>([]);
-  const onStrandedUnseen = useCallback((ids: readonly string[]) => setStrandedUnseen(ids), []);
-  const unseenHosts = useMemo(
-    () => (blast.stranded.length === 0 ? [] : strandedUnseen.filter((id) => strandedIds.has(id)).map((id) => deviceById.get(id)?.host ?? id)),
-    [blast, strandedUnseen, strandedIds],
+  const [marksUnseen, setMarksUnseen] = useState<(MarkReport & { outOfView: readonly string[]; covered: readonly string[] }) | null>(null);
+  const onStrandedUnseen = useCallback(
+    (outOfView: readonly string[], covered: readonly string[], report: MarkReport, phase?: "frame"): void => {
+      const commit = (): void => { setMarksUnseen({ ...report, outOfView, covered }); };
+      // Only the label loop's changed rAF publications use this boundary. Initial
+      // effects and ResizeObserver callbacks enqueue normally; the next label
+      // frame confirms their pending report before it can change geometry.
+      if (phase === "frame") flushSync(commit);
+      else commit();
+    },
+    [],
   );
+  const cutId = blast.host === null ? null : (devices.find((d) => d.host === blast.host || d.id === blast.host)?.id ?? null);
+  const markIds = [...new Set([...strandedIds, ...(cutId === null ? [] : [cutId])])].sort();
+  const reportScope = markReportScope(cutId, strandedIds, blast.qualifier);
+  const reportCurrent = layoutReady && sceneRef.current !== null && sceneError === null
+    && marksUnseen !== null && marksUnseen.epoch === sceneEpoch
+    && marksUnseen.scope === reportScope
+    && JSON.stringify(marksUnseen.ids) === JSON.stringify(markIds);
+  const markReportState = reportCurrent ? marksUnseen.state : "pending";
+  const hostsOf = useCallback(
+    (ids: readonly string[]): string[] =>
+      blast.stranded.length === 0 ? [] : ids.filter((id) => strandedIds.has(id)).map((id) => deviceById.get(id)?.host ?? id),
+    [blast, strandedIds],
+  );
+  const unresolvedHosts = blast.stranded.filter((host) => !devices.some((d) => d.host === host || d.id === host));
+  const outIds = reportCurrent ? marksUnseen.outOfView : [];
+  const coveredIds = reportCurrent ? marksUnseen.covered.filter((id) => !outIds.includes(id)) : [];
+  const unseenHosts = [...new Set([...hostsOf(outIds), ...unresolvedHosts])];
+  const coveredHosts = [...new Set(hostsOf(coveredIds))];
+  /** The cut point's own mark is verified only by the current placement report. */
+  const cutMarkState: CutMarkState = blast.host === null ? "none"
+    : markReportState !== "ready" ? markReportState
+      : cutId === null || outIds.includes(cutId) ? "out-of-view"
+        : coveredIds.includes(cutId) ? "covered" : "shown";
 
   /** The traced packet's ending, decided once and shared by the canvas channel and the label layer
    *  so the two cannot tell different stories about one trace. */
@@ -1484,6 +1560,13 @@ export function Fabric3D({
          then), "ready" once its layout does. The stage's warm-up wording can say "laying out" rather
          than "starting the renderer" from this (verifier V2-3), and review/measure-scale.mjs waits on it. */
       data-layout={layoutReady ? "ready" : "pending"}
+      data-mark-report={markReportState}
+      data-mark-report-subject={JSON.stringify(markIds)}
+      data-mark-report-scope={reportScope}
+      data-mark-report-epoch={sceneEpoch}
+      data-mark-report-generation={reportCurrent ? marksUnseen.generation : undefined}
+      data-mark-report-out-of-view-count={reportCurrent ? marksUnseen.outOfView.length : undefined}
+      data-mark-report-covered-count={reportCurrent ? marksUnseen.covered.length : undefined}
     >
 
       {/* React never puts children in this slot, so the imperatively-owned canvas cannot collide
@@ -1579,28 +1662,15 @@ export function Fabric3D({
           <span className="fabric3d__quality" role="note" data-blast="not-determinable" title={blast.undetermined.why}>
             {`Blast radius not determinable: ${blast.undetermined.subject} ${blast.undetermined.short}`}
           </span>
-        ) : blast.stranded.length > 0 ? (
+        ) : blast.stranded.length > 0 || blast.host !== null ? (
           /* The count, on the fabric, whenever a blast radius is drawn — and every stranded host the
              label layer could not draw, named (A6). Marked + out of view = the whole set, so the
              stage always accounts for all of it. The certainty clause stays attached to the count it
              qualifies. */
-          <span
-            className="fabric3d__quality"
-            role="note"
-            data-blast={blast.certainty ?? ""}
-            data-stranded-total={strandedIds.size}
-            data-stranded-unseen={unseenHosts.length}
-            title={
-              unseenHosts.length === 0
-                ? `Every host that ${blast.host ?? blast.link ?? "the selection"} strands carries a stranded mark on the fabric.`
-                : `Not in view, so their stranded marks are not drawn: ${unseenHosts.join(", ")}. The camera is not moved by a selection; Reset view or the Fabric list reaches them.`
-            }
-          >
-            {`${blast.host ?? blast.link ?? "Selection"} strands ${strandedIds.size}${blast.qualifier === "" ? "" : ` (${blast.qualifier})`}`}
-            {unseenHosts.length === 0
-              ? ` · all ${strandedIds.size} marked`
-              : ` · ${unseenHosts.length} out of view: ${unseenHosts.join(", ")}`}
-          </span>
+          <BlastMarkNote subject={blast.host ?? blast.link ?? "Selection"} qualifier={blast.qualifier}
+            certainty={blast.certainty} strandedHosts={blast.stranded}
+            outOfView={unseenHosts} covered={coveredHosts} cutHost={blast.host}
+            cutState={cutMarkState} state={markReportState} />
         ) : null}
         <button
           type="button"

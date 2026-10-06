@@ -336,6 +336,46 @@ a {
   overflow: hidden;
 }
 
+/* Selection must not move the canvas by replacing a wrapped scope sentence with a shorter
+   chip row. Both occupy one intrinsic grid cell: the complete sentence remains a text-only
+   reservation when inactive. No measured or fixed height, clipping or shortened text is needed.
+   The minimum is the chip's existing target floor plus its borders, so a one-line sentence also
+   reserves the selected row. The actual token strip alone scrolls; every active control remains
+   mounted and reachable, while the reservation is inert and absent from the accessibility tree. */
+.app__query .qbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  overflow: visible;
+}
+.qbar__content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-block-size: calc(var(--target-min) + var(--hairline) + var(--hairline));
+}
+.qbar__content > .qbar__empty,
+.qbar__selection {
+  grid-area: 1 / 1;
+  align-self: center;
+}
+/* Visual hiding follows the focus owner's release-then-inert transition. ARIA only describes
+   accessibility: making it a rendering switch also changes D3's cross-stylesheet hide analysis
+   for unrelated aria-hidden writes, such as the contract renderer's decorative label layer. */
+.qbar__empty[inert] {
+  visibility: hidden;
+}
+.qbar__selection {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.qbar__selection::-webkit-scrollbar {
+  height: 0;
+}
+
 /* B7: the coverage line is PERMANENTLY visible, at every width. Two things used to defeat that:
    the whole bar was one horizontal scroll region, so at 390px the ACL and centrality denominators
    sat off-screen (x369-418 at 390x844); and at 768px the queue's rows, overflowing their track,
