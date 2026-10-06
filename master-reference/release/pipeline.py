@@ -101,12 +101,12 @@ _IMAGE_SIZE_HIGH_ADVISORIES = (
     "GHSA-w3rx-r6r6-pgpr",
 )
 _NANOID_HIGH_ADVISORY = "GHSA-2v37-7h3g-55p8"
-_SHARP_HIGH_ADVISORY = "GHSA-rgj7-g3m4-5g8c"
+_SHARP_HIGH_ADVISORY = "GHSA-wq5f-xc86-pv6w"
 _SHARP_MINIFLARE_VERSION = "5.20260801.1-alpha"
-_SHARP_PATCHED_VERSION = "0.35.4"
-_SHARP_LIBVIPS_PATCHED_VERSION = "1.3.3"
+_SHARP_PATCHED_VERSION = "0.35.5"
+_SHARP_LIBVIPS_PATCHED_VERSION = "1.3.4"
 _SHARP_INTEGRITY = (
-    "sha512-n++8XWcj+jCOr2IOl7h8LbKnGBDY4aPbmprMONBNFdn0ImXqpGVv5zliDs0V9HbmbCQLpbuo2ej9rAoOQTvMDA=="
+    "sha512-Ywn4OnzGukp7CDMrp08RQ50YKmuwG47brZgIVPTvBaaAfQlRlygrRqSrxdCiL9M+LlzLBiJ68IR1QqvzHyjC7g=="
 )
 _SHARP_MINIFLARE_INTEGRITY = (
     "sha512-BHPVzIDA6mbx7LefxpvkXW7DHx9FKB9GorZatbnrrFTt3CVMU8zuUpbgyCuebwDKcTTOZos43ta8GQ0eMVEpxA=="
@@ -396,7 +396,7 @@ def _is_affected_fflate(value: object) -> bool:
 
 
 def _is_affected_sharp(value: object) -> bool:
-    comparison = _semver_compare_to_stable(value, (0, 35, 4))
+    comparison = _semver_compare_to_stable(value, (0, 35, 5))
     return comparison is None or comparison < 0
 
 
@@ -866,7 +866,7 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
     if affected_sharp_versions:
         limits.append(
             "The whole-repository SBOM contains sharp version(s) "
-            f"{', '.join(affected_sharp_versions)} below the patched 0.35.4 boundary for "
+            f"{', '.join(affected_sharp_versions)} below the patched 0.35.5 boundary for "
             f"high-severity advisory {_SHARP_HIGH_ADVISORY}. The edge is introduced by Miniflare "
             "build tooling rather than the deployed runtime, but build-time-only reachability "
             "does not waive the finding. Update the exact owning lockfile before treating the "
@@ -874,15 +874,16 @@ def _dependency_vulnerability_assessment(sbom: dict[str, Any]) -> tuple[str, lis
         )
     if sharp_context_present and not sharp_closure_verified:
         limits.append(
-            "The Master Reference SBOM does not prove the exact Miniflare-to-Sharp 0.35.4 "
+            "The Master Reference SBOM does not prove the exact Miniflare-to-Sharp 0.35.5 "
             "edge and complete patched @img/sharp native dependency family. A patched top-level "
             "version cannot hide a missing, stale, nested or misdirected native component."
         )
     elif sharp_closure_verified:
         limits.append(
-            "The exact Miniflare build-tool edge resolves to Sharp 0.35.4 and its complete "
+            "The exact Miniflare build-tool edge resolves to Sharp 0.35.5 and its complete "
             "patched @img/sharp native dependency family. This source/lock/SBOM consistency "
-            "check closes GHSA-rgj7-g3m4-5g8c in the current build graph only; it is not an "
+            "check closes GHSA-wq5f-xc86-pv6w in the current build graph only and retains "
+            "the earlier GHSA-rgj7-g3m4-5g8c remediation; it is not an "
             "externally authenticated applicability/VEX review."
         )
     for substitution in _BOUNDED_LOCAL_SUBSTITUTIONS:

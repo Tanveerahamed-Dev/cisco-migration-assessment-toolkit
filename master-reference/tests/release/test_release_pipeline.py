@@ -2315,7 +2315,8 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
     }
     assert vite_versions == ["8.2.0", "8.2.1", "8.2.2"]
     assert "GHSA-w3rx-r6r6-pgpr" not in " ".join(limits)
-    assert "GHSA-rgj7-g3m4-5g8c in the current build graph only" in limits[0]
+    assert "GHSA-wq5f-xc86-pv6w in the current build graph only" in limits[0]
+    assert "retains the earlier GHSA-rgj7-g3m4-5g8c remediation" in limits[0]
     assert limits[1] == _registry_entry("image-size").limitation
     assert limits[2] == _registry_entry("braces").limitation
     assert all(version in limits[3] for version in vite_versions)
@@ -2332,6 +2333,9 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
         "misdirected_native_wrapper_edge",
         "stale_native_version",
         "stale_libvips_version",
+        "previous_native_version",
+        "previous_libvips_version",
+        "previous_sharp_integrity",
         "nested_native_duplicate",
     ),
 )
@@ -2358,14 +2362,38 @@ def test_dependency_assessment_rejects_incomplete_sharp_native_closure(mutation:
         )
         row = next(item for item in sbom["dependencies"] if item["ref"] == wrapper_ref)  # type: ignore[index]
         row["dependsOn"] = [wrong_child_ref]
-    elif mutation in {"stale_native_version", "stale_libvips_version"}:
-        target_name = (
-            "sharp-win32-x64" if mutation == "stale_native_version" else "sharp-libvips-linux-x64"
-        )
+    elif mutation in {
+        "stale_native_version",
+        "stale_libvips_version",
+        "previous_native_version",
+        "previous_libvips_version",
+    }:
+        stale_versions = {
+            "stale_native_version": ("sharp-win32-x64", "0.35.2"),
+            "stale_libvips_version": ("sharp-libvips-linux-x64", "1.3.1"),
+            "previous_native_version": ("sharp-win32-x64", "0.35.4"),
+            "previous_libvips_version": ("sharp-libvips-linux-x64", "1.3.3"),
+        }
+        target_name, stale_version = stale_versions[mutation]
         component = next(  # type: ignore[index]
             item for item in sbom["components"] if item.get("name") == target_name
         )
-        component["version"] = "0.35.2" if mutation == "stale_native_version" else "1.3.1"
+        component["version"] = stale_version
+        component["purl"] = f"pkg:npm/%40img/{target_name}@{stale_version}"
+        component["externalReferences"] = [{
+            "type": "distribution",
+            "url": f"https://registry.npmjs.org/@img/{target_name}/-/{target_name}-{stale_version}.tgz",
+        }]
+    elif mutation == "previous_sharp_integrity":
+        component = next(  # type: ignore[index]
+            item for item in sbom["components"] if item.get("bom-ref") == sharp_ref
+        )
+        integrity_property = next(
+            item for item in component["properties"] if item.get("name") == "atlas:npmIntegrity"
+        )
+        integrity_property["value"] = (
+            "sha512-n++8XWcj+jCOr2IOl7h8LbKnGBDY4aPbmprMONBNFdn0ImXqpGVv5zliDs0V9HbmbCQLpbuo2ej9rAoOQTvMDA=="
+        )
     else:
         original = next(  # type: ignore[index]
             item for item in sbom["components"] if item.get("name") == "sharp-win32-x64"
@@ -2386,7 +2414,7 @@ def test_dependency_assessment_rejects_incomplete_sharp_native_closure(mutation:
 
     assert release_pipeline._verified_miniflare_sharp_closure(sbom) is False
     assert gate == "blocked_sharp_dependency_topology_unverified"
-    assert any("does not prove the exact Miniflare-to-Sharp 0.35.4 edge" in limit for limit in limits)
+    assert any("does not prove the exact Miniflare-to-Sharp 0.35.5 edge" in limit for limit in limits)
 
 
 def test_dependency_sources_preserve_the_scoped_override_and_full_local_package(
@@ -3122,8 +3150,12 @@ def test_dependency_assessment_does_not_flag_patched_nanoid_only() -> None:
         ("0.35.2", True),
         ("0.35.3+build.1", True),
         ("0.35.4-beta.1", True),
-        ("0.35.4", False),
-        ("0.35.4+build.1", False),
+        ("0.35.4", True),
+        ("0.35.4+build.1", True),
+        ("0.35.5-0", True),
+        ("0.35.5-beta.1", True),
+        ("0.35.5", False),
+        ("0.35.5+build.1", False),
         ("0.36.0", False),
         ("unparseable", True),
         (None, True),
@@ -3136,31 +3168,35 @@ def test_dependency_assessment_models_sharp_advisory_boundary_fail_closed(
     assert release_pipeline._is_affected_sharp(version) is affected
 
 
-def test_dependency_assessment_cannot_hide_vulnerable_sharp_behind_patched_copy() -> None:
+@pytest.mark.parametrize("affected_version", ("0.35.2", "0.35.4", "0.35.4+build.1"))
+def test_dependency_assessment_cannot_hide_vulnerable_sharp_behind_patched_copy(
+    affected_version: str,
+) -> None:
     gate, limits = release_pipeline._dependency_vulnerability_assessment(
         {
             "components": [
-                {"name": "sharp", "version": "0.35.2"},
-                {"name": "sharp", "version": "0.35.4"},
+                {"name": "sharp", "version": affected_version},
+                {"name": "sharp", "version": "0.35.5"},
             ]
         }
     )
 
     assert gate == "blocked_sharp_unremediated_high_advisory"
     assert len(limits) == 1
-    assert "GHSA-rgj7-g3m4-5g8c" in limits[0]
-    assert "sharp version(s) 0.35.2 below" in limits[0]
-    assert "0.35.2, 0.35.4" not in limits[0]
+    assert "GHSA-wq5f-xc86-pv6w" in limits[0]
+    assert f"sharp version(s) {affected_version} below" in limits[0]
+    assert f"{affected_version}, 0.35.5" not in limits[0]
 
 
-def test_dependency_assessment_does_not_flag_patched_sharp_only() -> None:
+@pytest.mark.parametrize("patched_version", ("0.35.5", "0.35.5+build.1"))
+def test_dependency_assessment_does_not_flag_patched_sharp_only(patched_version: str) -> None:
     gate, limits = release_pipeline._dependency_vulnerability_assessment(
-        {"components": [{"name": "sharp", "version": "0.35.4"}]}
+        {"components": [{"name": "sharp", "version": patched_version}]}
     )
 
     assert gate == "blocked_external_current_advisory_applicability_review_required"
     assert len(limits) == 1
-    assert "GHSA-rgj7-g3m4-5g8c" not in limits[0]
+    assert "GHSA-wq5f-xc86-pv6w" not in limits[0]
 
 
 @pytest.mark.parametrize(
@@ -3188,7 +3224,7 @@ def test_dependency_assessment_does_not_apply_npm_sharp_advisory_to_namesakes(
     )
 
     assert gate == "blocked_external_current_advisory_applicability_review_required"
-    assert "GHSA-rgj7-g3m4-5g8c" not in " ".join(limits)
+    assert "GHSA-wq5f-xc86-pv6w" not in " ".join(limits)
 
 
 @pytest.mark.parametrize(
@@ -3213,7 +3249,7 @@ def test_dependency_assessment_keeps_ambiguous_unscoped_sharp_fail_closed(
     )
 
     assert gate == "blocked_sharp_unremediated_high_advisory"
-    assert "GHSA-rgj7-g3m4-5g8c" in " ".join(limits)
+    assert "GHSA-wq5f-xc86-pv6w" in " ".join(limits)
 
 
 def test_dependency_assessment_reports_sharp_with_another_modeled_blocker() -> None:
@@ -3227,7 +3263,7 @@ def test_dependency_assessment_reports_sharp_with_another_modeled_blocker() -> N
     )
 
     assert gate == "blocked_multiple_unremediated_dependency_advisories"
-    assert any("GHSA-rgj7-g3m4-5g8c" in limit for limit in limits)
+    assert any("GHSA-wq5f-xc86-pv6w" in limit for limit in limits)
     assert any("GHSA-2v37-7h3g-55p8" in limit for limit in limits)
 
 
