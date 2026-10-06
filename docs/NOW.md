@@ -69,9 +69,18 @@ There is **one application**: the `main` branch of this repository on GitHub.
 
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
-| W14 | Windows debug helper receive deadline | `codex/windows-helper-deadline` in `.claude/worktrees/ui-projection-2` | Codex | Draft #603 test-first head `b1acdee3` reproduced the Windows import-death hang in hosted CI `37436471929`: seven focused failures and five passes, including the normal-import control. The repair now rejects failed helpers and waits on pipe readiness within the original deadline in both sentinel branches. Tests and thresholds are unchanged. | Obtain fresh hosted GREEN for receive contracts and complete suites, independent source review, distribution/portable qualification and the unchanged strict 300 ms sample gate. Preserve the failing baseline; then merge only on green exact-head checks. A6/O79 and #593 follow. |
+| W10b | Atlas Scope O79 repairs: A6 split, remaining overturns retained | `codex/scope-a6` in `.claude/worktrees/ui-projection-2` | Codex | Started from owner-merged main `629deb66`. A6 is being extracted from preserved `ab690edf` and its independent refuter records; old findings and receipts remain source-bound. Remaining O79 repairs stay on this workstream. | Produce the small A6 split and fresh independent refutation using GitHub-hosted verification only; hand the green PR to the supervisor for review and merge. Then triage #593 and pin/prove the Ubuntu runner before 2026-10-19 without dropping checks. |
 
 ## Owner decisions
+
+**Pending — publication-check timing under GITHUB-ONLY (2026-10-06):**
+- Rule 7 currently places full privacy/history scans before the first public push. No existing hosted workflow can inspect unpublished source, and the new owner rule forbids the local verifier. A6 source preparation continues, but its first push waits for the owner's explicit timing decision.
+- Proposed hosted replacement retains the canonical index/worktree, raw commit/message/every-parent patch and PR-body content rules as blocking hosted checks before review/merge. It occurs after the first public push and must never be described as pre-push privacy proof. No scan rule or threshold is waived.
+
+**Decided — GITHUB-ONLY and supervisor merge ownership (delegated owner, 2026-10-06):**
+- All execution and verification, including targeted reproductions and custody/receipt verification, runs on GitHub-hosted runners. Locally only edit, use Git/GitHub operations, and run cheap static checks such as syntax or lint on touched files. No local product tests, builds, browser execution, benchmarks, verification controllers or subagents executing them.
+- The supervisor reviews every PR when its exact head is green and merges after the ready-for-review handoff. No automatic merge by this chat; preserve all existing checks, source/privacy safeguards and merge-commit discipline.
+- Retire merged W14 immediately and reopen W10b from main for A6, preserving the remaining O79 queue. Dependabot #593 follows. Before 2026-10-19, pin `ubuntu-24.04` or prove the complete suite green on the new image; no check may be dropped. This is the owner's deadline, not a claim that image migration has been independently verified.
 
 **Decided — repair the introduced handoff path leak in #601; runtime liveness follows separately (delegated owner, 2026-10-06):**
 - Add path-preservation regressions first, isolate the helper tests' import state, and restore temporary sys.path changes on successful and failed helper imports. Remove the temporary Windows diagnostic job and verbose flags; no runtime pipe/deadline change belongs in #601.
@@ -167,6 +176,8 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- 2026-10-06, Codex (W14 owner merge; W10b A6 resumed): Supervisor merged #603 as `629deb66` with parents `c27a39b1` and `2fb1a2c3`; fresh Git confirms tree `ef065c16`, equal to the exact head and tested merge. All 15 required checks and complete hosted workflows were green before the owner merge; the supervisor also recorded 41/41 green check-runs. Prior RED, cancelled baseline, historical performance failures and external qualification limits remain preserved. Deleted W14 under rule 8 and immediately opened W10b on `codex/scope-a6` from that main. A6 starts from the preserved `ab690edf` work and its independent challenges, not transferred browser or acceptance proof. The current GITHUB-ONLY rule and supervisor review/merge ownership now control this queue. #593 and the Ubuntu runner decision follow in the owner's stated order.
 
 - 2026-10-06, Codex (W14 actual RED and readiness repair): Draft #603 at `b1acdee3` ran the new regressions on GitHub-hosted CI `37436471929`. Windows job `112179403832` printed seven failures, five passes and 108 deselections in 21.46 seconds: the six unready-read cases failed, and the real import-death case hit the named 20-second outer bound after proving exit code 1, an unreadable receiver and the injected import refusal. The same-harness normal-import and buffered-frame/EOF controls passed. Both sentinel branches now reject nonzero/unknown exit and require receiver-only readiness within the original deadline before any remaining read. Reusing the existing wait preserves its Windows EOF normalization; no deadline reset, new protocol status, frame/size/EOF relaxation or cleanup change was added. Local validation is source lint only; fresh repaired-source hosted GREEN remains required. No old receipt certifies this changed source.
 

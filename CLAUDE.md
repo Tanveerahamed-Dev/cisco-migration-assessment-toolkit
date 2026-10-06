@@ -141,6 +141,14 @@ copies stay outside npm resolution and keep the release gate blocked.
 
 ## Shared Git and host operating doctrine
 
+- **Standing owner rule, 2026-10-06 — GITHUB-ONLY:** all execution and verification, including
+  targeted reproductions and custody/receipt verification, runs on GitHub-hosted runners. Locally
+  only edit, use Git/GitHub operations, and run cheap static checks such as syntax or lint on touched
+  files. Do not run local pytest, Vitest, npm builds, Playwright/browser checks, benchmarks,
+  verification controllers or subagents executing them. This supersedes local execution examples
+  elsewhere in this document; it does not relax privacy, source custody, tests or thresholds.
+  The supervisor reviews each green PR and performs its merge after the ready-for-review handoff.
+  Do not auto-merge or treat CI success as formal approval, release or deployment authority.
 - This repository currently preserves PR work with merge commits. Do not assume squash semantics;
   inspect `git log --merges origin/main` and preserve the established method unless the user explicitly
   chooses another. When hosted required checks are structurally dead (`steps: 0`), an admin bypass still

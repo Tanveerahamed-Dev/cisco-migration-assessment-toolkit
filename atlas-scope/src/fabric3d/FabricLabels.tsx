@@ -132,12 +132,15 @@ export interface FabricLabelsProps {
    *  mark drawn from an uncertain radius says so on the mark itself (2026-09-22 critic, B1). */
   strandedQualifier?: string;
   /**
-   * Told which stranded hosts this layer could NOT draw — their anchor is off the canvas or hidden,
-   * or the declutter dropped them — as device ids in placement order, whenever that set changes
-   * (acceptance A6: with the camera on a trace, 3 of core2's 8 stranded hosts were off the canvas
-   * and nothing on the fabric said so). Never called per frame with an unchanged answer.
+   * Told which blast-radius marks (the stranded hosts' and the cut point's) this layer could NOT draw
+   * legibly, as device ids in placement order, whenever either set changes (acceptance A6: with the
+   * camera on a trace, 3 of core2's 8 stranded hosts were off the canvas and nothing on the fabric
+   * said so). `outOfView`: the label is not drawn whole — its anchor is off the canvas or hidden,
+   * it is physically clipped, or the declutter dropped it. `covered`: it is drawn whole, but no slot on the stage was clear, so it lies
+   * beneath other labels or a stage control (A6 refuter, 390x844: two of nine STRANDED? marks under
+   * other labels while the stage said "all 9 marked"). Never called per frame with an unchanged answer.
    */
-  onStrandedUnseen?: (ids: readonly string[]) => void;
+  onStrandedUnseen?: (outOfView: readonly string[], covered: readonly string[], report: MarkReport) => void;
   /**
    * The selected finding and the hosts it names (acceptance A4). A finding is a THIRD kind of
    * subject, distinct from the device selection: selecting F030 used to call setHighlight with
@@ -176,6 +179,18 @@ export interface FabricLabelsProps {
   onPointerFocusLost?: () => readonly (HTMLElement | null | undefined)[] | void;
 }
 
+/** A placement report describes this exact mark set and scene, never a previous selection. */
+export interface MarkReport {
+  ids: readonly string[];
+  scope: string;
+  epoch: number;
+  state: "pending" | "unmeasured" | "ready";
+}
+
+/** Mark roles/wording can change while their union of device IDs stays identical. */
+export const markReportScope = (cut: string | null, stranded: Iterable<string>, qualifier: string): string =>
+  JSON.stringify([cut, [...stranded].sort(), qualifier]);
+
 /** How far above the anchor a label sits, as a multiple of its own height (owned by ./labelResolve). */
 const LIFT = LABEL_LIFT;
 const LIFT_BLOCKED = LABEL_LIFT_BLOCKED;
@@ -197,6 +212,105 @@ const CHASSIS_UP = 0.1;
 const CHASSIS_DOWN = 1.1;
 /** Pixels trimmed off each side of a projected chassis box: its corners are mostly empty screen. */
 const CHASSIS_INSET_PX = 3;
+
+/** A rescued box keeps its anchor's x at least this far in from either end, so the vertical leader
+ *  meets the box itself, never a rounded corner or empty space beside it, px. */
+const RESCUE_LEADER_INSET = 6;
+/** How finely a rescue samples sideways shifts, px. */
+const RESCUE_DX_STEP = 8;
+
+/**
+ * How long a vertical leader from box `b` to an anchor at height `y` is: from the edge FACING the
+ * anchor. Null when the box straddles the anchor's height — there is no such edge, and no leader.
+ */
+export function leaderLength(b: Box, y: number): number | null {
+  if (b.y + b.h <= y) return y - (b.y + b.h);
+  if (b.y >= y) return b.y - y;
+  return null;
+}
+
+export interface RescueInput {
+  /** The physical label box at its own slot (home, or flipped below its anchor). */
+  test: Box;
+  anchor: { x: number; y: number };
+  /** The measured stage size; unknown or physically impossible bounds admit no rescue. */
+  stage: { w: number; h: number };
+  /** The slot is on a drawn label or a stage control: never a candidate. */
+  taken: (b: Box) => boolean;
+  /** Neither on an earlier label's leader, nor with its own leader across an earlier label. */
+  leaderClear: (b: Box) => boolean;
+  /** No other device's anchor is nearer the name than its own (FabricLabels BINDING). */
+  readsAsOwn: (b: Box) => boolean;
+}
+
+/**
+ * THE MARK'S RESCUE: the nearest slot anywhere on the stage for a marked label every column search
+ * has failed, as an offset from `test`, or null when the stage holds none. Rows half a label-row
+ * apart, every row the stage holds; sideways as far as the anchor's x stays over the box (so the
+ * leader still reaches it). A slot is never on a drawn label, a stage control or across the stage
+ * edge. Among the rest: one that reads as its own with a clear leader beats one with a clear leader
+ * only, which beats any other; nearest first within each. Best-first, so an easy rescue stops after
+ * a few rows: rows are walked by distance, and a row stops at its first winning slot.
+ */
+export function rescueSlot(r: RescueInput): { dx: number; dy: number } | null {
+  const { test: t, anchor, stage } = r;
+  const lo = LABEL_EDGE_PX;
+  const rowStep = (t.h + DECLUTTER_ROW_GUTTER) / 2;
+  if (!(t.w > 0 && t.h > 0 && stage.w > 0 && stage.h > 0)
+      || ![t.x, t.y, t.w, t.h, stage.w, stage.h, anchor.x, anchor.y].every(Number.isFinite)) return null;
+  if (t.w > stage.w || t.h > stage.h) return null;
+  const xp = stage.w > 2 * lo + t.w ? lo : 0;
+  const yp = stage.h > 2 * lo + t.h ? lo : 0;
+  const xMin = xp;
+  const xMax = stage.w - xp - t.w;
+  const yMin = yp;
+  const yMax = stage.h - yp - t.h;
+  // Include legal edges and the nearest clamp, even when no home-relative
+  // sample reaches a tiny fit interval (height17, label16, starting y5).
+  const ys = new Set([t.y, yMin, yMax, Math.min(Math.max(t.y, yMin), yMax)]);
+  for (let y = yMin; y <= yMax; y += rowStep) ys.add(y);
+  const reach = Math.ceil(stage.h / rowStep);
+  for (let k = 1; k <= reach; k += 1) { ys.add(t.y - k * rowStep); ys.add(t.y + k * rowStep); }
+  const dys = [...ys].filter((y) => y >= yMin && y <= yMax).map((y) => y - t.y)
+    .sort((a, b) => Math.abs(a) - Math.abs(b) || a - b);
+  /* Sideways: the anchor's x stays inside the box by the inset. A box narrower than two insets
+     cannot move sideways at all. */
+  const dxLo = Math.ceil(anchor.x + RESCUE_LEADER_INSET - t.w - t.x);
+  const dxHi = Math.floor(anchor.x - RESCUE_LEADER_INSET - t.x);
+  const dxs: number[] = [0];
+  if (dxLo <= dxHi) {
+    for (let d = RESCUE_DX_STEP; d <= Math.max(Math.abs(dxLo), Math.abs(dxHi)); d += RESCUE_DX_STEP) {
+      if (-d >= dxLo) dxs.push(-d);
+      if (d <= dxHi) dxs.push(d);
+    }
+    for (const d of [dxLo, dxHi]) if (d !== 0 && !dxs.includes(d)) dxs.push(d);
+    for (const x of [xMin, xMax, Math.min(Math.max(t.x, xMin), xMax)]) {
+      const d = x - t.x;
+      if (d >= dxLo && d <= dxHi && !dxs.includes(d)) dxs.push(d);
+    }
+    dxs.sort((a, b) => Math.abs(a) - Math.abs(b));
+  }
+  let best: { dx: number; dy: number; tier: number; cost: number } | null = null;
+  for (const dy of dys) {
+    if (best !== null && best.tier === 0 && Math.abs(dy) >= best.cost) break;
+    const y = t.y + dy;
+    if (y < yMin || y > yMax) continue;
+    for (const dx of dxs) {
+      if (dx === 0 && dy === 0) continue;
+      const cost = Math.hypot(dx, dy);
+      if (best !== null && best.tier === 0 && cost >= best.cost) break;
+      const x = t.x + dx;
+      if (x < xMin || x > xMax) continue;
+      const b: Box = { x, y, w: t.w, h: t.h };
+      if (r.taken(b)) continue;
+      const leaderOk = r.leaderClear(b);
+      const tier = leaderOk && r.readsAsOwn(b) ? 0 : leaderOk ? 1 : 2;
+      if (best === null || tier < best.tier || (tier === best.tier && cost < best.cost)) best = { dx, dy, tier, cost };
+      if (tier === 0) break;
+    }
+  }
+  return best === null ? null : { dx: best.dx, dy: best.dy };
+}
 
 export function FabricLabels({
   devices,
@@ -261,6 +375,8 @@ export function FabricLabels({
   cutRef.current = cutPoint;
   const strandedRef = useRef(stranded);
   strandedRef.current = stranded;
+  const qualifierRef = useRef(strandedQualifier);
+  qualifierRef.current = strandedQualifier;
   const unseenCbRef = useRef(onStrandedUnseen);
   unseenCbRef.current = onStrandedUnseen;
 
@@ -309,6 +425,7 @@ export function FabricLabels({
     const sizes = sizesRef.current;
     const written = writtenRef.current;
     const placed: Box[] = [];
+    const placedMarks = new Set<Box>();
     /* Every leader line drawn this pass, as a thin box. A leader is ink on the stage like the label
        it belongs to: it was left out of the declutter, and MEASURED (C5 critic) wan-edge-rtr1.lab's
        leader struck straight through the 'AP-floor3-01' text. */
@@ -326,6 +443,21 @@ export function FabricLabels({
     let stageWidth = host ? host.getBoundingClientRect().width : 0;
     /* The height too, for the off-canvas finding pointers below — same observer, same reason. */
     let stageHeight = host ? host.getBoundingClientRect().height : 0;
+    let unseenKey: string | null = null;
+    const publishReport = (state: MarkReport["state"], outOfView: readonly string[] = [], covered: readonly string[] = []): void => {
+      const ids = [...new Set([...strandedRef.current, ...(cutRef.current === null ? [] : [cutRef.current])])].sort();
+      const scope = markReportScope(cutRef.current, strandedRef.current, qualifierRef.current);
+      const key = JSON.stringify([scope, ids, epoch, state, outOfView, covered]);
+      if (key === unseenKey) return;
+      unseenKey = key;
+      if (host) {
+        host.dataset.markReport = state;
+        host.dataset.markReportSubject = JSON.stringify(ids);
+        host.dataset.markReportScope = scope;
+        host.dataset.markReportEpoch = String(epoch);
+      }
+      unseenCbRef.current?.(outOfView, covered, { ids, scope, epoch, state });
+    };
 
     /* KEEP-OUT REGIONS. The stage's own overlays — the toolbar chips across the top, the Legend
        button — float over the canvas, and a name placed under one is a name nobody can read.
@@ -337,6 +469,16 @@ export function FabricLabels({
     const keepouts: Box[] = [];
     const keepoutEls = (): HTMLElement[] =>
       host?.parentElement ? Array.from(host.parentElement.querySelectorAll<HTMLElement>("[data-label-keepout]")) : [];
+    /* What a keep-out PAINTS. A keep-out with children is a transparent row of controls (the HUD), and
+       its own box is the bounding box of the whole row: at 390 px the HUD wraps to three rows across
+       the full stage width, and its box took the top ~90 px of a 389 px canvas, empty space between
+       the controls included (A6 refuter: no slot left for core1's CUT POINT mark but under the HUD).
+       Its children are the obstacles; a childless keep-out is one itself. */
+    const paintedParts = (el: HTMLElement): HTMLElement[] => {
+      if (!el.hasAttribute("data-label-keepout")) return [el];
+      const kids = Array.from(el.children).filter((c): c is HTMLElement => c instanceof HTMLElement);
+      return kids.length === 0 ? [el] : kids;
+    };
     /* THE POINTER'S OBSTACLES are wider than the labels' keep-outs: every OTHER LAYER on the stage —
        each child of the stage except the canvas's own host and these two overlay layers — whatever
        it is called and whether or not it opted in with `data-label-keepout`. The pointer is a control:
@@ -362,12 +504,12 @@ export function FabricLabels({
       pointerObstacles.length = 0;
       if (!host) return;
       const c = host.getBoundingClientRect();
-      for (const el of keepoutEls()) {
+      for (const el of keepoutEls().flatMap(paintedParts)) {
         const r = el.getBoundingClientRect();
-        if (r.width <= 0 || r.height <= 0) continue;
+        if (r.width < 2 || r.height < 2) continue;
         keepouts.push({ x: r.left - c.left, y: r.top - c.top, w: r.width, h: r.height });
       }
-      for (const el of new Set([...keepoutEls(), ...overlayEls()])) {
+      for (const el of new Set([...keepoutEls(), ...overlayEls()].flatMap(paintedParts))) {
         const r = el.getBoundingClientRect();
         if (r.width < 2 || r.height < 2) continue;
         const cs = typeof getComputedStyle === "function" ? getComputedStyle(el) : null;
@@ -376,17 +518,23 @@ export function FabricLabels({
       }
     };
     measureKeepouts();
+    publishReport("pending");
 
     let ro: ResizeObserver | null = null;
     let mo: MutationObserver | null = null;
     if (host && typeof ResizeObserver !== "undefined") {
       ro = new ResizeObserver((entries) => {
+        let resized = false;
         for (const entry of entries) {
           if (entry.target !== host) continue;
           const box = entry.borderBoxSize?.[0];
-          stageWidth = box ? box.inlineSize : entry.contentRect.width;
-          stageHeight = box ? box.blockSize : entry.contentRect.height;
+          const w = box ? box.inlineSize : entry.contentRect.width;
+          const h = box ? box.blockSize : entry.contentRect.height;
+          resized ||= w !== stageWidth || h !== stageHeight;
+          stageWidth = w;
+          stageHeight = h;
         }
+        if (resized) publishReport("pending");
         measureKeepouts();
       });
       ro.observe(host);
@@ -436,8 +584,6 @@ export function FabricLabels({
        and the stage width folded in, so a change of priority or of stage reads as movement. */
     const pose: number[] = [];
     let prevPose: number[] = [];
-    /** The unseen-stranded answer last reported (A6), so an unchanged one is never re-sent. */
-    let unseenKey: string | null = null;
     let prevSeq = "";
     let settledNow = false;
     /* THE DWELL (acceptance C5, label popping). Whether a name may appear or leave THIS pass, given
@@ -456,6 +602,8 @@ export function FabricLabels({
     const pendingIds = new Set<string>();
     /** The names forced (urgent) on this pass: the settled pass cannot move them (see STILL CONVERGING). */
     const forcedIds = new Set<string>();
+    const coveredIds = new Set<string>();
+    const drawnAt = new Map<string, Box>();
     let cameraMoving = true;
     const poseHeld = (seqKey: string): boolean => {
       const same =
@@ -619,6 +767,14 @@ export function FabricLabels({
         stageW = container.getBoundingClientRect().width;
       }
 
+      /* The stage HEIGHT is needed only by a marked label's rescue (below), so it is asked of layout
+         only then, and only while the observer has not reported it — never on an ordinary tick. */
+      let stageH = coordinateSpace === "client" ? 0 : stageHeight;
+      const stageHeightNow = (): number => {
+        if (stageH <= 0) stageH = container.getBoundingClientRect().height;
+        return stageH;
+      };
+
       const sel = selectedRef.current;
       const hov = hoveredRef.current;
       const alm = alarmRef.current;
@@ -646,8 +802,11 @@ export function FabricLabels({
       for (const id of baseOrder) if (str.has(id)) push(id);
       for (const id of baseOrder) push(id);
       placed.length = 0;
+      placedMarks.clear();
       leaders.length = 0;
       forcedIds.clear();
+      coveredIds.clear();
+      drawnAt.clear();
 
       /* PASS 1 — WRITES ONLY. Project every anchor, hide the invisible ones and apply the marks.
          Nothing in this pass reads layout.
@@ -743,6 +902,7 @@ export function FabricLabels({
          uncached, and it must not keep the whole layer from being placed. */
       if (wroteMarks && needsMeasure && !deferredLast) {
         deferredLast = true;
+        publishReport("pending");
         return;
       }
       deferredLast = false;
@@ -910,6 +1070,7 @@ export function FabricLabels({
         const wantStranded = str.has(id) ? "yes" : "";
         const wantFinding = fnd.has(id) ? "yes" : "";
         const wantDisputed = id === dsp ? "yes" : "";
+        const marked = wantAlarm !== "" || isCut || wantStranded !== "" || wantFinding !== "" || wantDisputed !== "";
 
         let size = sizes.get(id);
         if (!size) {
@@ -937,9 +1098,10 @@ export function FabricLabels({
            — and the suffix ran off the canvas edge. When the stage edge forces the pill off its
            anchor anyway, a leader line (data-leader, CSS) ties it back to the device it names. */
         const rawLeft = Math.round(x - size.nameC);
+        const edgeX = stageW >= 2 * LABEL_EDGE_PX + size.w ? LABEL_EDGE_PX : 0;
         const clampedLeft =
-          stageW > 2 * LABEL_EDGE_PX + size.w
-            ? Math.round(Math.min(Math.max(LABEL_EDGE_PX, rawLeft), stageW - LABEL_EDGE_PX - size.w))
+          stageW > 0 && stageW >= size.w
+            ? Math.min(Math.max(edgeX, rawLeft), stageW - edgeX - size.w)
             : rawLeft;
         const left = clampedLeft;
         /* The same rule on the VERTICAL axis. A label is lifted above its anchor, so a device near
@@ -988,27 +1150,41 @@ export function FabricLabels({
         const step = size.h + DECLUTTER_ROW_GUTTER;
         const clamped = left !== rawLeft;
         let dy = 0;
+        let dx = 0;
         /* The leader this label would draw at box b: a vertical line from the box edge nearest the
            anchor to the anchor itself (see the --leader-len arithmetic below). */
         const leaderFor = (b: Box, off: boolean): Box | null => {
           if (!off) return null;
-          const edge = flipped ? b.y : b.y + b.h;
-          const len = Math.abs(edge - y);
-          return len < 1 ? null : { x: x - 1, y: Math.min(edge, y), w: 2, h: len };
+          const len = leaderLength(b, y);
+          return len === null || len < 1 ? null : { x: x - 1, y: b.y >= y ? y : b.y + b.h, w: 2, h: len };
         };
         const nameOffAnchor = Math.abs(left + size.nameC - x) > LEADER_MIN_PX || flipped;
         /* A displaced slot is only a candidate while the name there still reads as THIS device's
            (see BINDING above). */
         const nameC = size.nameC;
         const bound = (k: number): boolean => readsAsOwn({ ...box, y: box.y + k * step }, nameC, flipped, id);
+        const onControl = (t: Box): boolean =>
+          keepouts.some((b) => intersects(t, b)) || (marked && pointerObstacles.some((b) => intersects(t, b)));
+        const physicalBox = (t: Box): Box => ({ x: t.x - m, y: t.y - m, w: t.w + 2 * m, h: t.h + 2 * m });
+        const outsideStage = (t: Box): boolean => {
+          const h = stageHeightNow();
+          const b = physicalBox(t);
+          // Hysteresis is only overlap geometry. Every edge uses the actual box,
+          // for shown(+3), hidden(-3), and settled(0) labels alike.
+          return b.x < 0 || b.y < 0 || (stageW > 0 && b.x + b.w > stageW) || (h > 0 && b.y + b.h > h);
+        };
         const blocked = (t: Box, off: boolean, strict = true): boolean => {
-          if (placed.some((b) => intersects(t, b)) || keepouts.some((b) => intersects(t, b)) || onChassis(t, id)) {
+          const ink = marked ? physicalBox(t) : t;
+          // placed[] holds physical boxes. Ordinary-only comparisons retain
+          // hysteresis; a relationship involving a mark uses both physical boxes.
+          if (placed.some((b) => intersects(marked || placedMarks.has(b) ? physicalBox(t) : t, b)) || onControl(ink) || onChassis(ink, id)
+              || (glyphBox !== null && intersects(physicalBox(t), glyphBox)) || (marked && outsideStage(t))) {
             return true;
           }
           if (!strict) return false;
           // Neither across an earlier label's leader, nor with our own leader across an earlier label.
-          if (leaders.some((l) => touches(t, l))) return true;
-          const own = leaderFor(t, off);
+          if (leaders.some((l) => touches(ink, l))) return true;
+          const own = leaderFor(ink, off);
           return own !== null && placed.some((b) => touches(own, b));
         };
         let clear = true;
@@ -1023,7 +1199,7 @@ export function FabricLabels({
           const ks = forced || clamped ? [-1, 1, -2, 2, -3, 3] : [-1, 1];
           for (const k of ks) {
             const t: Box = { ...test, y: test.y + k * step };
-            if (t.y + m >= 0 && bound(k) && !blocked(t, true) && !inNeighbourHome(t, id)) {
+            if (!outsideStage(t) && bound(k) && !blocked(t, true) && !inNeighbourHome(t, id)) {
               dy = k * step;
               found = true;
               break;
@@ -1036,7 +1212,7 @@ export function FabricLabels({
           if (!found && forced) {
             for (const k of ks) {
               const t: Box = { ...test, y: test.y + k * step };
-              if (t.y + m >= 0 && bound(k) && !blocked(t, true, false)) {
+              if (!outsideStage(t) && bound(k) && !blocked(t, true, false)) {
                 dy = k * step;
                 found = true;
                 break;
@@ -1055,12 +1231,45 @@ export function FabricLabels({
           if (!found && forced) {
             for (const k of [...ks, -4, 4, -5, 5]) {
               const t: Box = { ...test, y: test.y + k * step };
-              if (t.y + m < 0 || !bound(k)) continue;
-              if (placed.some((b) => intersects(t, b)) || keepouts.some((b) => intersects(t, b))) continue;
-              if (glyphBox !== null && intersects(t, glyphBox)) continue;
+              if (outsideStage(t) || !bound(k)) continue;
+              const ink = marked ? physicalBox(t) : t;
+              if (placed.some((b) => intersects(marked || placedMarks.has(b) ? physicalBox(t) : t, b)) || onControl(ink)) continue;
+              if (glyphBox !== null && intersects(physicalBox(t), glyphBox)) continue;
               dy = k * step;
               found = true;
               break;
+            }
+          }
+          /* THE MARK'S RESCUE (acceptance A6, refuted at 390x844). Every search above moves a label
+             only up or down its own column, and only to a row that still reads as its own. On a
+             phone-width stage neither holds: core1 projects under the HUD and every row below it is
+             nearer core2, and nine stranded hosts sit in a column of anchors ~20 px apart. MEASURED:
+             the CUT POINT mark under the HUD (10 of 10 hit points on the HUD) and access10's and
+             access12's STRANDED? marks under access8's and access4's labels — while the stage said
+             "all 9 marked". A mark is the answer to the question on screen, so before it is drawn
+             over anything it is offered EVERY slot on the stage: any row (half a row apart), shifted
+             sideways as far as its own leader can still reach it (the anchor's x stays over the
+             box). Hard limits: inside the stage, clear of every drawn label and every stage control.
+             Nearest first, preferring a slot that still reads as its own and whose leader crosses no
+             label; the leader ties any other one back to its device. */
+          if (!found && forced && marked) {
+            const r = rescueSlot({
+              test: box, // Physical geometry, not hysteresis-shrunk geometry.
+              anchor: { x, y },
+              stage: { w: stageW, h: stageHeightNow() },
+              taken: (b) => placed.some((q) => intersects(b, q)) || onControl(b)
+                || (glyphBox !== null && intersects(b, glyphBox)), // Preserve upheld A5 glyph refusal.
+              leaderClear: (b) => {
+                if (leaders.some((l) => touches(b, l))) return false;
+                const own = leaderFor(b, true);
+                return own === null || !placed.some((q) => touches(own, q));
+              },
+              readsAsOwn: (b) => readsAsOwn(b, nameC, b.y >= y, id),
+            });
+            if (r !== null) {
+              dx = r.dx;
+              dy = r.dy;
+              found = true;
             }
           }
           /* If nothing clears, a forced label keeps its own anchor — overlapping is the lesser
@@ -1092,11 +1301,19 @@ export function FabricLabels({
           }
           /* Its turn in the stagger has not come: held for a later frame at its own anchor. */
           dy = 0;
+          dx = 0;
         }
-        box = dy === 0 ? box : { ...box, y: box.y + dy };
-        const offAnchor = Math.abs(left + size.nameC - x) > LEADER_MIN_PX || dy !== 0 || flipped;
-        placed.push(box);
-        if (dy !== 0 || flipped) releaseHome(id);
+        box = dy === 0 && dx === 0 ? box : { ...box, x: box.x + dx, y: box.y + dy };
+        const h = marked ? stageHeightNow() : stageH;
+        const whole = stageW > 0 && h > 0 && box.w > 0 && box.h > 0
+          && box.x >= 0 && box.y >= 0 && box.x + box.w <= stageW && box.y + box.h <= h;
+        const covered = !clear && (!marked || whole);
+        const clipped = marked && !whole;
+        if (covered) coveredIds.add(id);
+        const offAnchor = Math.abs(left + dx + size.nameC - x) > LEADER_MIN_PX || dy !== 0 || flipped;
+        placed.push(box); drawnAt.set(id, box);
+        if (marked) placedMarks.add(box);
+        if (dy !== 0 || dx !== 0 || flipped) releaseHome(id);
         const drawnLeader = leaderFor(box, offAnchor);
         if (drawnLeader !== null) leaders.push(drawnLeader);
 
@@ -1104,20 +1321,19 @@ export function FabricLabels({
            written above, because a host can be selected and alarmed at once and neither statement
            may overwrite the other. */
         const state = id === sel ? "selected" : id === hov ? "hover" : "";
-        const key = `${x}:${left}:${y}:${dy}:${flipDy}:${state}:${wantStranded}:${wantCut}:${wantAlarm}:${wantFinding}:${wantDisputed}`;
+        const key = `${x}:${left}:${y}:${dx}:${dy}:${flipDy}:${state}:${covered}:${clipped}:${wantStranded}:${wantCut}:${wantAlarm}:${wantFinding}:${wantDisputed}`;
         if (written.get(id) === key) continue;
         written.set(id, key);
         el.dataset.visible = "true";
         el.dataset.state = state;
-        el.style.transform = `translate3d(${left}px, ${y + flipDy + dy}px, 0) translate(0, ${-100 * lift}%)`;
-        if (offAnchor) {
-          /* "up" = the label sits below its device and the leader rises from its top edge. */
-          el.dataset.leader = flipped ? "up" : "yes";
-          el.style.setProperty("--leader-x", `${x - left}px`);
-          el.style.setProperty(
-            "--leader-len",
-            `${Math.max(0, flipped ? size.h * (lift - 1) + dy : size.h * (lift - 1) - dy)}px`,
-          );
+        el.dataset.covered = covered ? "yes" : "";
+        el.dataset.clipped = clipped ? "yes" : "";
+        el.style.transform = `translate3d(${left + dx}px, ${y + flipDy + dy}px, 0) translate(0, ${-100 * lift}%)`;
+        const len = offAnchor ? leaderLength(box, y) : null;
+        if (len !== null) {
+          el.dataset.leader = box.y >= y ? "up" : "yes";
+          el.style.setProperty("--leader-x", `${x - left - dx}px`);
+          el.style.setProperty("--leader-len", `${Math.max(0, len)}px`);
         } else if (el.dataset.leader !== "") {
           el.dataset.leader = "";
         }
@@ -1129,17 +1345,33 @@ export function FabricLabels({
          scene without it simply keeps its resolver's count. */
       (scene as FabricScene & { reportLabelsShown?: (n: number) => void }).reportLabelsShown?.(placed.length);
 
-      /* A6: the stranded hosts this pass could not draw — read off what the pass actually drew
-         (`data-visible`), not re-derived, so the count the stage states is the picture's own. */
-      const report = unseenCbRef.current;
-      if (report !== undefined) {
-        const unseen: string[] = [];
-        for (const id of seq) if (str.has(id) && els.get(id)?.dataset.visible !== "true") unseen.push(id);
-        const key = unseen.join("|");
-        if (key !== unseenKey) {
-          unseenKey = key;
-          report(unseen);
+      /* A6: the blast radius's marks (every stranded host's, and the cut point's) this pass could not
+         draw legibly — read off what the pass actually drew (`data-visible`, and `coveredIds` for one
+         drawn without a clear box), not re-derived, so the count the stage states is the picture's
+         own. A mark drawn UNDER something is not a mark the reader can see: MEASURED (A6 refuter,
+         390x844) the stage said "all 9 marked" with two of the nine under other labels. */
+      /* A mark drawn but not WHOLE on the stage is not shown either (A6, wave-1 refuter): its box crosses a
+         stage edge, and the stage clips it. The scene calls an anchor within 1.15 NDC visible — up to 7.5% of
+         the canvas past its edge — so such a label is often placed half off the bottom. It is named as out of
+         view, read off the box this pass drew, never re-derived. A mark drawn whole inside the stage is
+         legible even when its device sits just past the edge: its leader points there. */
+      {
+        const outOfView: string[] = [];
+        const coveredMarks: string[] = [];
+        const shownWhole = (id: string): boolean => {
+          const b = drawnAt.get(id);
+          if (b === undefined) return false;
+          const h = stageHeightNow();
+          // No measured stage supplies no boundary to certify a whole mark.
+          if (h <= 0 || stageW <= 0) return false;
+          return b.w > 0 && b.h > 0 && b.x >= 0 && b.y >= 0 && b.x + b.w <= stageW && b.y + b.h <= h;
+        };
+        for (const id of seq) {
+          if (!str.has(id) && id !== cut) continue;
+          if (els.get(id)?.dataset.visible !== "true" || !shownWhole(id)) outOfView.push(id);
+          else if (coveredIds.has(id)) coveredMarks.push(id);
         }
+        publishReport(stageW > 0 && stageHeightNow() > 0 ? "ready" : "unmeasured", outOfView, coveredMarks);
       }
 
       /* STILL CONVERGING (acceptance C5, the settle's half of the dwell — labelResolve
@@ -1176,12 +1408,12 @@ export function FabricLabels({
     // `epoch` is a dependency so a replaced scene gets a fresh loop rather than a stale handle.
   }, [baseOrder, coordinateSpace, epoch, sceneRef]);
 
-  /* The finding mark's text is the finding id, so a new finding can change a label's width. */
+  /* Finding IDs and the certainty suffix can change a marked label's width. */
   useEffect(() => {
     sizesRef.current.clear();
     writtenRef.current.clear();
     pointerSizesRef.current.clear();
-  }, [finding]);
+  }, [finding, strandedQualifier]);
 
   /* Web-font metrics land after first paint; a stale width makes the declutter reject labels that
      would in fact fit. Clearing the cache is enough — the next tick re-measures. */
@@ -1221,6 +1453,7 @@ export function FabricLabels({
             data-cut=""
             data-alarm=""
             data-disputed=""
+            data-covered=""
             data-leader=""
             ref={(el) => {
               if (el) elsRef.current.set(d.id, el);
