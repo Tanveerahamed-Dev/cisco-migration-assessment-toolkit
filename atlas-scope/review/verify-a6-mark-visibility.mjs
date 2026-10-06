@@ -137,10 +137,12 @@ function observeScene() {
   const marked = all.map((el) => {
     const box = rect(el); const shown = drawn(el);
     const whole = box.x >= sr.x - 0.5 && box.y >= sr.y - 0.5 && box.x + box.w <= sr.x + sr.w + 0.5 && box.y + box.h <= sr.y + sr.h + 0.5;
-    return { el, id: el.getAttribute("data-device"), host: text(el.querySelector(".fabric3d-label__name")), box, shown, whole,
+    // Document viewport containment has zero CSS-pixel tolerance: interior hits cannot prove an absent edge.
+    const viewportWhole = box.x >= 0 && box.y >= 0 && box.x + box.w <= innerWidth && box.y + box.h <= innerHeight;
+    return { el, id: el.getAttribute("data-device"), host: text(el.querySelector(".fabric3d-label__name")), box, shown, whole, viewportWhole,
       strandedCuePainted: Boolean(el.querySelector(".fabric3d-label__stranded") && drawn(el.querySelector(".fabric3d-label__stranded"))),
       cutCuePainted: Boolean(el.querySelector(".fabric3d-label__alarm--cut") && drawn(el.querySelector(".fabric3d-label__alarm--cut"))),
-      cutClaim: el.getAttribute("data-cut"), strandedClaim: el.getAttribute("data-stranded"), diagnosticCoveredFlag: el.getAttribute("data-covered"), hits: [], occluders: [] };
+      cutClaim: el.getAttribute("data-cut"), strandedClaim: el.getAttribute("data-stranded"), diagnosticCoveredFlag: el.getAttribute("data-covered"), expectedProbes: 0, skippedProbes: [], hits: [], occluders: [] };
   });
   const old = all.map((el) => ({ el, value: el.style.getPropertyValue("pointer-events"), priority: el.style.getPropertyPriority("pointer-events") }));
   try {
@@ -155,8 +157,12 @@ function observeScene() {
         const top = Math.max(row.box.y, other.box.y), bottom = Math.min(row.box.y + row.box.h, other.box.y + other.box.h);
         tests.push({ x: (left + right) / 2, y: (top + bottom) / 2 });
       }
+      row.expectedProbes = tests.length;
       for (const point of tests) {
-        if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight) continue;
+        if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight) {
+          row.skippedProbes.push({ ...point, reason: "outside-document-viewport" });
+          continue;
+        }
         const hit = document.elementFromPoint(point.x, point.y);
         const own = hit !== null && row.el.contains(hit);
         row.hits.push({ ...point, own, topTag: hit?.tagName ?? null, topClass: typeof hit?.className === "string" ? hit.className : null });
@@ -169,9 +175,10 @@ function observeScene() {
     for (const { el, value, priority } of old) { if (value) el.style.setProperty("pointer-events", value, priority); else el.style.removeProperty("pointer-events"); }
   }
   for (const row of marked) {
-    row.category = !row.shown || !row.whole ? "out-of-view" : row.occluders.length > 0 ? "covered"
-      : row.hits.length > 0 && row.hits.every((hit) => hit.own) ? "shown" : "paint-unavailable";
-    row.hitCoverage = row.hits.length > 0 ? "observed" : "outside-current-document-viewport";
+    const completeProbes = row.expectedProbes > 0 && row.skippedProbes.length === 0 && row.hits.length === row.expectedProbes;
+    row.category = !row.shown || !row.whole || !row.viewportWhole ? "out-of-view" : row.occluders.length > 0 ? "covered"
+      : completeProbes && row.hits.every((hit) => hit.own) ? "shown" : "paint-unavailable";
+    row.hitCoverage = row.expectedProbes === 0 ? "not-measured" : completeProbes ? "complete" : "partial";
     delete row.el;
   }
   // Read the separate canonical pane, stripping its computed-by annotation, not HUD/mark flags.
