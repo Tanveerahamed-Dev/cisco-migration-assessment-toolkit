@@ -358,7 +358,10 @@ a {
   grid-area: 1 / 1;
   align-self: center;
 }
-.qbar__empty[aria-hidden="true"] {
+/* Visual hiding follows the focus owner's release-then-inert transition. ARIA only describes
+   accessibility: making it a rendering switch also changes D3's cross-stylesheet hide analysis
+   for unrelated aria-hidden writes, such as the contract renderer's decorative label layer. */
+.qbar__empty[inert] {
   visibility: hidden;
 }
 .qbar__selection {
