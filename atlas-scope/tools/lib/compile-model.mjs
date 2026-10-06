@@ -181,6 +181,70 @@ export const SECTIONS_READ = Object.freeze([
   "routes",
   "routing_neighbors",
 ]);
+/** One IPv4 octet as the engine reads it (src/forwarding/ip.ts `OCTET`): no leading zero, at most three digits. */
+const ROUTE_OCTET = /^(0|[1-9][0-9]{0,2})$/;
+/**
+ * A route entry's prefix as the ENGINE will read it — the trimmed text — or null when the engine cannot
+ * read it. This is src/forwarding/ip.ts `parsePrefix`'s grammar restated for the compiler, which cannot
+ * import TypeScript ("a.b.c.d/len": four decimal octets 0-255 without leading zeros, a length 0-32 of one or
+ * two digits); src/core/compile-no-rib.test.ts holds the two equal over the sample, every unreadable
+ * spelling it names and the grammar's edge cases. A prefix the engine cannot parse is no route: counting
+ * it made a table of mask-notation, IPv6, free-text, /33, object or number prefixes a "collected RIB" that
+ * matched nothing, and a number crashed the engine at module load (acceptance B3, 2026-10 wave-1 refuter).
+ * @param {unknown} v  an entry's `prefix` as the snapshot wrote it
+ * @returns {string | null}
+ */
+export function usableRoutePrefix(v) {
+  const text = val(v);
+  if (typeof text !== "string") return null;
+  const m = /^([0-9.]+)\/(\d{1,2})$/.exec(text);
+  if (m === null) return null;
+  const parts = /** @type {string} */ (m[1]).split(".");
+  if (parts.length !== 4 || !parts.every((o) => ROUTE_OCTET.test(o) && Number(o) <= 255)) return null;
+  return Number(m[2]) <= 32 ? text : null;
+}
+
+/**
+ * Why one host's `routes` value is NOT a collected routing table, or null when it is one. A table is a list
+ * holding at least one entry whose prefix the engine can read (`usableRoutePrefix`, so "", "-", "N/A", the
+ * not-observed marker, mask notation, IPv6, free text, an out-of-range length, an object and a number are no
+ * prefix). Every other spelling (null, [], a not-collected marker string, an object, entries with no readable
+ * prefix) is a snapshot saying the host has no RIB the model can use, and the compiler gives it none: it used
+ * to compile to a table counted among the collected RIBs, so a trace reaching it was a decided "no route"
+ * drop where it is indeterminate (acceptance B3, 2026-10 refuter and wave-1 refuter). Shared with the
+ * validator, which warns where it applies.
+ * @param {unknown} rs  one host's value under the snapshot's `routes`
+ * @returns {string | null}
+ */
+export function unusableRouteTable(rs) {
+  if (!Array.isArray(rs)) {
+    if (rs === null || rs === undefined) return "null";
+    if (typeof rs === "string") return `the text ${JSON.stringify(rs.length > 40 ? `${rs.slice(0, 40)}…` : rs)}`;
+    return typeof rs === "object" ? "an object, not a list" : `a ${typeof rs}, not a list`;
+  }
+  if (rs.length === 0) return "an empty list";
+  const prefixed = rs.some((r) => unreadableRouteEntry(r) === null);
+  return prefixed ? null : `a list of ${rs.length} ${rs.length === 1 ? "entry" : "entries"}, none with a prefix the model can read (an IPv4 a.b.c.d/len)`;
+}
+
+/**
+ * Why one entry of a usable routing table is dropped — it holds no prefix the engine can read — or null when
+ * it is a route. Shared by the compiler, which publishes each dropped entry's cite under
+ * `coverage.unreadableRouteEntries` (a reason the table is incomplete: src/forwarding/rib-completeness.ts), and
+ * the validator, which warns at the entry's path. A dropped entry used to vanish in silence, and a "no route"
+ * beside it read as a decided absence even when the dropped entry was the default route.
+ * @param {unknown} r  one entry of a host's `routes` list
+ * @returns {string | null}
+ */
+export function unreadableRouteEntry(r) {
+  if (r === null || typeof r !== "object" || Array.isArray(r)) return `${Array.isArray(r) ? "a list" : r === null ? "null" : `a ${typeof r}`}, not a route record`;
+  const p = /** @type {Record<string, unknown>} */ (r).prefix;
+  if (usableRoutePrefix(p) !== null) return null;
+  if (val(p) === null) return "no prefix";
+  const shown = typeof p === "string" ? JSON.stringify(p.length > 40 ? `${p.slice(0, 40)}…` : p) : typeof p === "object" ? (Array.isArray(p) ? "a list" : "an object") : `the ${typeof p} ${String(p)}`;
+  return `the prefix ${shown}, which is not an IPv4 a.b.c.d/len the model can read`;
+}
+
 /** Top-level scalars read into `meta`, which are not sections. */
 export const META_KEYS_READ = Object.freeze(["collected_at", "generated_at", "schema", "script_version"]);
 
@@ -1152,22 +1216,37 @@ export function compileFabric(snap, binding, opts = {}) {
   }));
 
   /* forwarding substrate: routes, ACLs, SVIs -------------------------------- */
-  /* Keyed by snapshot names, so built by Object.fromEntries (see `own`, THE DICTIONARY RULE). */
+  /* Keyed by snapshot names, so built by Object.fromEntries (see `own`, THE DICTIONARY RULE). A host whose
+     routes value is not a usable table (`unusableRouteTable`) gets NO key: it has no collected RIB, exactly
+     as if the snapshot had omitted it, so it is never counted among the routable hosts below. */
+  /* An entry with no prefix the engine can read is dropped from the table, and its cite is kept under
+     `coverage.unreadableRouteEntries` (keyed by host, only hosts that dropped one) — never in silence. */
+  const usableRouteHosts = Object.entries(obj(snap.routes)).filter(([, rs]) => unusableRouteTable(rs) === null);
   /** @type {Record<string, object[]>} */
   const routes = Object.fromEntries(
-    Object.entries(obj(snap.routes)).map(([host, rs]) => [
+    usableRouteHosts.map(([host, rs]) => [
       host,
-      arr(rs)
-        .map((r, i) => ({
-          prefix: val(r.prefix),
-          source: val(r.source),
-          nextHop: val(r.next_hop),
-          outIntf: val(r.out_intf),
-          adminDistance: num(r.admin_distance),
-          cite: `routes.${host}[${i}]`,
-        }))
-        .filter((r) => r.prefix),
+      arr(rs).flatMap((r, i) =>
+        unreadableRouteEntry(r) !== null
+          ? []
+          : [
+              {
+                prefix: usableRoutePrefix(r.prefix),
+                source: val(r.source),
+                nextHop: val(r.next_hop),
+                outIntf: val(r.out_intf),
+                adminDistance: num(r.admin_distance),
+                cite: `routes.${host}[${i}]`,
+              },
+            ],
+      ),
     ]),
+  );
+  /** @type {Record<string, string[]>} */
+  const unreadableRouteEntries = Object.fromEntries(
+    usableRouteHosts
+      .map(([host, rs]) => /** @type {[string, string[]]} */ ([host, arr(rs).flatMap((r, i) => (unreadableRouteEntry(r) === null ? [] : [`routes.${host}[${i}]`]))]))
+      .filter(([, cites]) => cites.length > 0),
   );
   /* A match field may name an OBJECT-GROUP instead of an address/wildcard pair; dropping it made the
      application report a model gap as a collection gap. */
@@ -1329,6 +1408,9 @@ export function compileFabric(snap, binding, opts = {}) {
     aclLinesTotal: Object.values(acls).flatMap((n) => Object.values(n).flat()).length,
     hostsWithInterfaces: Object.keys(interfaces).length,
     routableHosts: Object.keys(routes).sort(),
+    /* Per routable host, the cites of the entries of its routes list that hold no prefix the engine can read
+       and were dropped (`unreadableRouteEntry`); a host that dropped none has no key. */
+    unreadableRouteEntries,
     aclHosts: Object.keys(acls).sort(),
     linksWithCentrality: links.filter((l) => l.betweenness !== null).length,
     aclSummary: obj(snap.acl_line_reachability?.summary),

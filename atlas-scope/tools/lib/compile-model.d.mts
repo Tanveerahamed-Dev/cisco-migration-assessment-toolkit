@@ -50,6 +50,12 @@ export declare const PROTOCOL_ASSESSABILITY_STATES: readonly string[];
 export declare const SUPPORTED_SCHEMAS: readonly string[];
 export declare const LEGACY_SCHEMA_ASSUMED: string;
 export declare const SECTIONS_READ: readonly string[];
+/** A route entry's prefix as the engine will read it (the trimmed text), or null when src/forwarding/ip.ts `parsePrefix` cannot read it. */
+export declare function usableRoutePrefix(v: unknown): string | null;
+/** Why one host's `routes` value is not a collected routing table (a list with an entry whose prefix the engine reads), or null when it is. */
+export declare function unusableRouteTable(rs: unknown): string | null;
+/** Why one entry of a usable routing table is left out (no prefix the engine can read), or null when it is a route. */
+export declare function unreadableRouteEntry(r: unknown): string | null;
 export declare const META_KEYS_READ: readonly string[];
 export declare const KNOWN_SECTION_SCHEMAS: Readonly<Record<string, readonly string[]>>;
 export declare const DIGEST_FORMS: readonly SourceDigestForm[];

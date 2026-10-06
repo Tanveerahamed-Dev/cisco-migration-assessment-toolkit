@@ -544,6 +544,12 @@ export interface Coverage {
   hostsWithInterfaces: number;
   /** The exact hosts whose RIB we hold. Forwarding claims are scoped to THIS list and no wider. */
   routableHosts: string[];
+  /**
+   * Per routable host, the cites of the entries of its snapshot routes list that hold no prefix the engine can
+   * read and were left out of its table; a host that dropped none has no key. A reason the table is
+   * incomplete (src/forwarding/rib-completeness.ts).
+   */
+  unreadableRouteEntries: NameKeyed<Cite[]>;
   aclHosts: string[];
   linksWithCentrality: number;
   aclSummary: NameKeyed<number>;

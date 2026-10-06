@@ -51,7 +51,8 @@ blocker, and that rule is pinned by one golden-only test; the specificity rule's
 
 ### R144. C6 — stepping hops, or Back and Forward across a hop step, restarted the trace's "bounded" packet loop and draw-on — FIXED IN CODE (W10 wave 2, two rounds; round 2 upheld, with one minor and one nit); NOT RE-GRADED
 **What was fixed.** A hop change on the same picture only steers: `flow.setTrace` no longer re-runs the draw-on or re-arms
-the three packet loops, and the packet rests visibly at the active hop. Round 1 closed re-sending the same trace object;
+the three packet loops. The shell's selection identifies the active hop; the packet is hidden when its loops finish.
+Round 1 closed re-sending the same trace object;
 the round-1 refuter found Browser Back/Forward across a hop-step history entry still restarted everything, so round 2 keys
 the "new picture" decision on the flow, not the object, through the restored history aim (`RestoredAim`). The flow.ts
 motion inventory and design-brief §4.8 now state the true triggers.
@@ -6997,6 +6998,30 @@ None of these is a correctness defect. They are craft items, which is exactly th
 blind comparison exists to adjudicate.
 
 ### O79. The re-grade's overturned PASSes that W10 did NOT close — still PASS-overturned (FAIL, F2 UNPROVEN), each with its last independent refuter verdict — OPEN, moved to W10b (held by Codex)
+**W10b source checkpoint, 2026-10-05 (Codex; not a re-grade).** W13/#600 is merged. The first small repair is
+`codex/scope-b3`: usable route-table/prefix admission, original dropped-entry disclosure and an exact retained-route
+citation join, without the bundled A3/B2/B7 changes. Independent source review refuted positional citation resolution
+after filtering and a literal-host/row ambiguity; these are being corrected with actual compile/install/resolver controls.
+The generic entirely-unusable-RIB citation remains an open minor. The canonical four-member family, complete tests and
+real upload/trace browser controls are hosted-only and pending. No old repair receipt certifies this source and B3 stays
+FAIL until a measured re-grade. A6 follows independently; its preserved patch is not imported into this B3 branch.
+
+**B3 follow-up, 2026-10-06:** draft #601's bootstrap `b8af5c7b` passed its 57 new compiler/runtime tests but the complete
+Scope workflow failed seven stale-fabric reproducibility/provenance assertions; builds and browser remained unrun.
+The hosted canonical family was independently received against 447 preselected inputs, closed members and all seven
+sample bindings. Its import adds only an empty unreadable-route map to fabric; the other three members are byte-identical.
+Further source refutation found bracket-root citation aliases still reached generic array positions. This follow-up adds
+a separately reviewed minimal route-root guard and actual installed-resolver controls, without changing canonical
+literal-host paths or generic non-route semantics. Fresh changed-source hosted execution, rendered proof and final
+independent refutation are required; old passes do not transfer. The aggregate no-RIB citation minor and FAIL grade remain.
+
+**B3 harness correction, 2026-10-06:** exact follow-up `23b0fcc0` was reproduced by independently verified hosted family
+bytes and passed its actual browser and measurement steps, but CodeQL found two actual OPEN/high alerts (#77 material
+check/read race, #76 insecure temporary snapshot); complete workflow/final review was still pending at this checkpoint.
+The harness now uses bounded, identity-stable no-follow descriptor reads and private exclusive scratch snapshot files.
+All six domain/custody controls remain. Syntax-only checks do not resolve the hosted alerts: corrected-source CodeQL,
+complete workflows, browser evidence and independent final refutation are required. No old source receipt or grade transfers.
+
 **How found.** The 2026-10-03 re-grade (`docs/acceptance-report.md`) overturned 16 first-pass PASSes. W10 repaired each
 test-first and had every repair attacked by an independent refuter in its own checkout, with repair rounds where it
 failed. Four were upheld and ship in W10 (R142 A5, R143 B5, R144 C6, R145 F4). The rest below were refuted, or their last

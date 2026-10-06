@@ -2420,6 +2420,9 @@ export function traceFlow(flow: Flow): Trace {
     }
 
     if (route === null) {
+      /* Entries of this host's table the compiler could not read (coverage.unreadableRouteEntries): any of
+         them may be the route — the default included — so the sentence never says the table holds none. */
+      const unreadable = own(fabric.coverage.unreadableRouteEntries, host) ?? [];
       hops.push({
         index,
         host,
@@ -2429,7 +2432,10 @@ export function traceFlow(flow: Flow): Trace {
         verdict: "no-route",
         decidedBy: {
           kind: "absence",
-          label: `no prefix in ${host}'s collected RIB (${routesOf(host).length} routes, including no default route) matches ${flow.dstIp}`,
+          label:
+            unreadable.length === 0
+              ? `no prefix in ${host}'s collected RIB (${routesOf(host).length} routes, including no default route) matches ${flow.dstIp}`
+              : `no prefix in ${host}'s collected RIB (${routesOf(host).length} readable routes, none of them a default; ${unreadable.length} more could not be read: ${citeList(unreadable)}) matches ${flow.dstIp}`,
           raw: null,
           cite: `routes.${host}`,
         },
@@ -2437,7 +2443,10 @@ export function traceFlow(flow: Flow): Trace {
         alternatives: [],
       });
       outcome = "dropped";
-      claim = `${SCOPE_PHRASE}, ${flowPhrase(flow)} is dropped at ${host}: no prefix in its collected RIB (routes.${host}) matches ${flow.dstIp} and it carries no default route.`;
+      claim =
+        unreadable.length === 0
+          ? `${SCOPE_PHRASE}, ${flowPhrase(flow)} is dropped at ${host}: no prefix in its collected RIB (routes.${host}) matches ${flow.dstIp} and it carries no default route.`
+          : `${SCOPE_PHRASE}, ${flowPhrase(flow)} is dropped at ${host}: no prefix the model could read in its collected RIB (routes.${host}) matches ${flow.dstIp}, and none of those is a default route; ${unreadable.length} ${unreadable.length === 1 ? "entry" : "entries"} of it could not be read (${citeList(unreadable)}).`;
       caveats.push(
         `The drop at ${host} rests on the RIB as collected (routes.${host}); a route learned after collection, or a VRF not collected, would change it.`,
       );

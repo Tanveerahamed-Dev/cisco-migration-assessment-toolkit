@@ -190,18 +190,24 @@ export function tallySeverities(items: readonly { severity: Severity | string | 
 
 /* ── resolving a citation back to the raw evidence it names ────────────────── */
 
-/**
- * Resolve a `cite` path against the compiled model so the Inspector can show the exact record a
- * claim rests on. Supports `a.b[0]`, `a.b[host=core1]` and plain dotted paths. Returns `undefined`
- * when the path does not resolve — the Inspector renders that as a broken-provenance warning
- * rather than an empty panel, because a claim whose evidence cannot be found is a defect.
- */
-export function resolveCite(path: string): unknown {
-  const parts = path.split(/[.[]/).map((p) => p.replace(/]$/, "")).filter(Boolean);
-  /* A cite's parts are snapshot names (`routes.<host>[0]`), so each step reads an OWN member only (core/own.ts):
-     `routes.__proto__`, for a host the dictionary does not hold, resolved to Object.prototype — and a host so
-     named then rendered, wherever prose mentioned it, as a citation of that. */
-  let cur: unknown = fabric;
+/* A route's cite names its ORIGINAL snapshot index, not its position in the filtered compiled array.
+   Keep an exact index once at load; even identical duplicate cites are ambiguous, never first-wins. */
+const ROUTE_BY_CITE: ReadonlyMap<string, RouteEntry | null> = (() => {
+  const rows = new Map<string, RouteEntry | null>();
+  for (const host of Object.keys(fabric.routes)) {
+    for (const row of own(fabric.routes, host) ?? []) {
+      if (row === null || typeof row !== "object" || typeof row.cite !== "string"
+          || !/^routes\..+\[(?:0|[1-9][0-9]*)\]$/.test(row.cite)) continue;
+      rows.set(row.cite, rows.has(row.cite) ? null : row);
+    }
+  }
+  return rows;
+})();
+
+const citeParts = (path: string): string[] => path.split(/[.[]/).map((p) => p.replace(/]$/, "")).filter(Boolean);
+
+/** Walk field suffixes through OWN members, retaining the generic resolver's non-route semantics. */
+function walkCite(cur: unknown, parts: readonly string[], canonicalIndices = false): unknown {
   for (const part of parts) {
     if (cur === null || cur === undefined) return undefined;
     const kv = /^([A-Za-z_][\w]*)=(.*)$/.exec(part);
@@ -211,6 +217,11 @@ export function resolveCite(path: string): unknown {
       continue;
     }
     if (Array.isArray(cur)) {
+      if (canonicalIndices) {
+        if (!/^(?:0|[1-9][0-9]*)$/.test(part)) return undefined;
+        cur = own(cur as unknown as Record<string, unknown>, part);
+        continue;
+      }
       const i = Number(part);
       cur = Number.isInteger(i) ? cur[i] : undefined;
       continue;
@@ -222,4 +233,45 @@ export function resolveCite(path: string): unknown {
     return undefined;
   }
   return cur;
+}
+
+/**
+ * Resolve a `cite` path against the compiled model so the Inspector can show the exact record a
+ * claim rests on. Supports `a.b[0]`, `a.b[host=core1]` and plain dotted paths. Returns `undefined`
+ * when the path does not resolve — the Inspector renders that as a broken-provenance warning
+ * rather than an empty panel, because a claim whose evidence cannot be found is a defect.
+ */
+export function resolveCite(path: string): unknown {
+  if (path.startsWith("routes.")) {
+    const parent = own(fabric.routes, path.slice("routes.".length));
+    const exact = ROUTE_BY_CITE.get(path);
+    if (ROUTE_BY_CITE.has(path)) return parent === undefined && exact !== null && exact?.cite === path ? exact : undefined;
+    /* A host may literally contain dots, slashes, brackets or reserved names. Identify it against the
+       owned dictionary before tokenising a field suffix; no name is normalised into another subject.
+       More than one plausible host/row boundary is ambiguous and therefore resolves nothing. */
+    const matches: { cite: string; fields: string }[] = [];
+    for (let at = path.indexOf("[", "routes.".length); at >= 0; at = path.indexOf("[", at + 1)) {
+      const host = path.slice("routes.".length, at);
+      if (!holds(fabric.routes, host)) continue;
+      const index = /^\[(0|[1-9][0-9]*)\](?=$|\.)/.exec(path.slice(at));
+      if (index !== null) matches.push({ cite: path.slice(0, at + index[0].length), fields: path.slice(at + index[0].length) });
+    }
+    if (matches.length > 0) {
+      if (parent !== undefined || matches.length !== 1) return undefined;
+      const match = matches[0]!;
+      const row = ROUTE_BY_CITE.get(match.cite);
+      if (row === null || row === undefined || row.cite !== match.cite) return undefined;
+      return walkCite(row, citeParts(match.fields), true);
+    }
+    if (parent !== undefined) return parent;
+    // No unmatched route spelling may fall through to generic array-position resolution.
+    return undefined;
+  }
+  /* A cite's parts are snapshot names (`routes.<host>[0]`), so each step reads an OWN member only (core/own.ts):
+     `routes.__proto__`, for a host the dictionary does not hold, resolved to Object.prototype — and a host so
+     named then rendered, wherever prose mentioned it, as a citation of that. */
+  const parts = citeParts(path);
+  // Bracket-root and other noncanonical route spellings must never regain positional lookup.
+  if (parts[0] === "routes" && path !== "routes") return undefined;
+  return walkCite(fabric, parts);
 }

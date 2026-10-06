@@ -58,6 +58,11 @@ export function maskOf(bits: number): Ipv4 | null {
 }
 
 export function parsePrefix(text: string): Prefix | null {
+  /* Typed as text, but a compiled table is data: a number prefix reached this at engine module load and
+     threw, taking every consumer of the engine down with it (acceptance B3, 2026-10 wave-1 refuter). The
+     compiler now drops such an entry (tools/lib/compile-model.mjs `usableRoutePrefix`, held equal to this
+     grammar); this refuses one that arrives anyway. */
+  if (typeof text !== "string") return null;
   const m = /^([0-9.]+)\/(\d{1,2})$/.exec(text.trim());
   if (!m) return null;
   const ip = parseIpv4(m[1]!);

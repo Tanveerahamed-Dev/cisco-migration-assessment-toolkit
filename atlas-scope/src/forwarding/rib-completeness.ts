@@ -290,6 +290,20 @@ function reasonsOf(host: string): Reason[] {
 
 function computeReasons(host: string): Reason[] {
   const out: Reason[] = [];
+  /* Entries of the snapshot's table that the compiler could not read as a prefix and left out
+     (coverage.unreadableRouteEntries). What they route is missing from the table as compiled, whatever the
+     protocol receipts say — one of them may be the default route (acceptance B3, 2026-10 wave-1 refuter). */
+  const unreadable = own(fabric.coverage.unreadableRouteEntries, host) ?? [];
+  const first = unreadable[0];
+  if (first !== undefined) {
+    const n = unreadable.length;
+    const shown = n > 4 ? [...unreadable.slice(0, 4), `${n - 4} more`] : unreadable;
+    out.push({
+      label: `${n} ${n === 1 ? "entry" : "entries"} of routes.${host} could not be read as an IPv4 prefix and ${n === 1 ? "was" : "were"} left out (${listPhrase(shown)}), so what ${n === 1 ? "it routes" : "they route"} is missing from the table`,
+      cite: first,
+      family: null,
+    });
+  }
   if (!RIB_EVIDENCE_TRUSTED) {
     out.push({
       label: `the routing-completeness record was compiled from different snapshot bytes (${FILE.meta.sourceSha256.slice(0, 8)}) than this build's data, so whether ${host}'s table is complete is unknown`,

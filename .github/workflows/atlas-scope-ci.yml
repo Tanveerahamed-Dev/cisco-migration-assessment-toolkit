@@ -14,9 +14,9 @@ name: atlas-scope-ci
 on:
   push:
     branches: [main]
-    paths: ["atlas-scope/**", "webapp/sample_data/sample_fleet.snapshot.json", ".github/workflows/atlas-scope-ci.yml"]
+    paths: ["atlas-scope/**", "webapp/sample_data/sample_fleet.snapshot.json", ".github/workflows/atlas-scope-ci.yml", ".github/scripts/scope_compile_handoff.py", "tests/test_scope_compile_handoff.py"]
   pull_request:
-    paths: ["atlas-scope/**", "webapp/sample_data/sample_fleet.snapshot.json", ".github/workflows/atlas-scope-ci.yml"]
+    paths: ["atlas-scope/**", "webapp/sample_data/sample_fleet.snapshot.json", ".github/workflows/atlas-scope-ci.yml", ".github/scripts/scope_compile_handoff.py", "tests/test_scope_compile_handoff.py"]
   workflow_dispatch:
 
 permissions:
@@ -47,6 +47,27 @@ jobs:
           cache-dependency-path: atlas-scope/package-lock.json
       - name: Install the locked toolchain
         run: npm ci
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Bind immutable compiler inputs before exporting the family
+        working-directory: .
+        run: python -I -B .github/scripts/scope_compile_handoff.py before --output "${{ runner.temp }}/scope-compiler-handoff"
+      - name: Export the canonical one-read family without changing tracked outputs
+        run: node tools/compile-all.mjs --out "${{ runner.temp }}/scope-compiler-handoff/members"
+      - name: Verify and capture the bounded compiler family for independent review
+        working-directory: .
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python -I -B .github/scripts/scope_compile_handoff.py after --output "${{ runner.temp }}/scope-compiler-handoff"
+      - name: Preserve the source-bound compiler family before the freshness gates
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scope-compiler-handoff-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/scope-compiler-handoff/
+          if-no-files-found: error
+          retention-days: 14
       - name: Type-check the app, its scripts and its build config
         run: npm run typecheck
       - name: Unit and contract tests (vitest)
@@ -66,15 +87,23 @@ jobs:
           fi
           grep -q 'name="atlas-scope-snapshot-source" content="assesshub-api-runtime"' dist-hub/index.html \
             || { echo "dist-hub/index.html does not declare the runtime snapshot source" >&2; exit 1; }
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
       - name: Install AssessHub and its test dependencies
         working-directory: .
         run: python -m pip install -e ".[dev]"
       - name: Install Playwright Chromium (the /scope markup oracle)
         run: npx playwright install --with-deps chromium
+      - name: Bind the standalone build used by the B3 browser verifier
+        run: node review/build-freshness.mjs --stamp
+      - name: Verify route admission through the actual snapshot-upload and trace surfaces
+        run: node review/verify-b3-route-admission.mjs --output "${{ runner.temp }}/b3-browser" --expected-commit "${{ github.sha }}"
+      - name: Preserve B3 browser verification evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scope-b3-browser-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/b3-browser/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: AssessHub serves this hub build at /scope (every /scope refusal and pin)
         working-directory: .
         env:
