@@ -70,6 +70,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG = resolve(HERE, "..");
 const SNAPSHOT = resolve(PKG, "..", "webapp", "sample_data", "sample_fleet.snapshot.json");
 const DOC = resolve(PKG, "docs", "refutation.md");
+// vitest.config.ts merges vite.config.ts, which imports the real shared embed protocol.
+// Keep its type-only owner too; neither sibling imports any further runtime owner.
+// This single list owns both scratch copies and strict before/after source bindings.
+const CONFIG_SIBLING_INPUTS = [
+  "webapp/frontend/src/projectionEmbed.ts",
+  "webapp/frontend/src/generated/openapi.ts",
+];
 
 /**
  * @typedef {{ file: string, find: string, replace: string }} Edit
@@ -748,7 +755,7 @@ if (strictMode) {
     ...strictSelected.flatMap((m) => [...m.edits.map((ed) => ed.file), ...m.tests]),
   ]);
   const paths = [...packageInputs].map((path) => `atlas-scope/${path}`);
-  paths.push("webapp/sample_data/sample_fleet.snapshot.json");
+  paths.push("webapp/sample_data/sample_fleet.snapshot.json", ...CONFIG_SIBLING_INPUTS);
   for (const path of paths.sort()) {
     const absolute = join(repo, path);
     const bytes = ordinaryBytes(absolute);
@@ -808,6 +815,17 @@ mkdirSync(scratch, { recursive: true });
 for (const dir of ["src", "tools", "contracts"]) cpSync(join(PKG, dir), join(scratch, dir), { recursive: true });
 for (const f of ["package.json", "vite.config.ts", "vitest.config.ts", "tsconfig.json", "tsconfig.scripts.json", "index.html"]) {
   if (existsSync(join(PKG, f))) cpSync(join(PKG, f), join(scratch, f));
+}
+for (const path of CONFIG_SIBLING_INPUTS) {
+  const source = resolve(PKG, "..", path);
+  const target = join(root, path);
+  mkdirSync(dirname(target), { recursive: true });
+  if (strictMode) {
+    const bytes = checkoutInputs.get(source);
+    need(bytes !== undefined, `config sibling was not selected before scratch construction: ${path}`);
+    writeFileSync(target, /** @type {Buffer} */ (bytes), { flag: "wx", mode: 0o600 });
+    need(ordinaryBytes(target).equals(bytes), `config sibling scratch bytes differ from selected source: ${path}`);
+  } else cpSync(source, target);
 }
 /** @type {{ path: string, target: string }[]} */
 const dependencyLinks = [];
