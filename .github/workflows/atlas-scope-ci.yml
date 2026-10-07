@@ -72,6 +72,21 @@ jobs:
         run: npm run typecheck
       - name: Unit and contract tests (vitest)
         run: npm test
+      - name: Refute alternate-ingress refusal claim regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node review/mutation-check.mjs --only a3-outcome-only --only a3-binding-ignored --only a3-always-false --only a3-chosen-path-ignored --output "${{ runner.temp }}/a3-refusal-mutations" 2>&1 | tee "${{ runner.temp }}/a3-refusal-mutations.log"
+      - name: Preserve alternate-ingress mutation observations
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scope-a3-mutations-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/a3-refusal-mutations/
+            ${{ runner.temp }}/a3-refusal-mutations.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Standalone build (the bundled sample fleet, dist/)
         run: npm run build
       - name: AssessHub hub build (base /scope/, no compiled dataset, no sourcemaps, dist-hub/)

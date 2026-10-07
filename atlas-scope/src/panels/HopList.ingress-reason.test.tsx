@@ -18,10 +18,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { fabric } from "../core/data";
 import type { Flow, Trace } from "../core/types";
 import { describeGolden } from "../test-support/golden-sample";
-import { traceFlow, unobservedPolicyInputs } from "../forwarding/engine";
+import { traceFlow, traceViaIngress, unobservedPolicyInputs } from "../forwarding/engine";
 import { ClaimCard } from "./ClaimCard";
 import { HopList } from "./HopList";
 import { firstTrace, need } from "../test-support/trace-universe";
+import { GOLDEN_FORWARDING as G } from "../test-support/golden-expectations";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -173,5 +174,31 @@ describe("the undecided trace headline is built from the actual cause", () => {
     expect(word).toMatch(/^denied by list text — not decided/);
     expect(word).not.toMatch(/binding not observed/);
     for (const g of gaps.filter((x) => x.kind === "ingress-alternate")) expect(word).toContain(`ingress via ${g.host}`);
+  });
+});
+
+describeGolden("A3: the alternate-ingress refusal is shown with both actual deciding records", () => {
+  it("renders the real different-line denial and both source controls without the reproduction claim", () => {
+    const f = { ...G.fhrpVlan20.hostFlow, dstPort: G.headline.ssh.dstPort };
+    const chosen = traceFlow(f);
+    const alternate = traceViaIngress(f, G.fhrpVlan20.standby);
+    expect(chosen.hops[0]?.host).toBe(G.fhrpVlan20.active);
+    expect(alternate.hops[0]?.host).toBe(G.fhrpVlan20.standby);
+    expect([chosen.outcome, alternate.outcome]).toEqual(["denied", "denied"]);
+    const chosenCite = chosen.hops.at(-1)?.decidedBy?.cite;
+    const alternateCite = alternate.hops.at(-1)?.decidedBy?.cite;
+    expect(chosenCite).toBeDefined();
+    expect(alternateCite).toBeDefined();
+    expect(chosenCite, "the input must exercise different actual refusing records").not.toBe(alternateCite);
+    const gap = unobservedPolicyInputs(chosen).find((g) => g.kind === "ingress-alternate" && g.host === G.fhrpVlan20.standby);
+    expect(gap?.label).toContain("the same deciding refusal was not established across the ingresses");
+    const host = render(f);
+    const text = host.textContent ?? "";
+    expect(text).toContain("the same deciding refusal was not established across the ingresses");
+    expect(text).not.toContain("does not rest on that choice");
+    expect(host.querySelector(".claim__outcome-word")?.textContent).toMatch(/denied by list text — not decided/);
+    const controls = [...host.querySelectorAll<HTMLButtonElement>("button[aria-label]")].map((b) => b.getAttribute("aria-label"));
+    expect(controls).toContain(`Open source record ${chosenCite}`);
+    expect(controls).toContain(`Open source record ${alternateCite}`);
   });
 });

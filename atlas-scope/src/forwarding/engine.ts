@@ -796,6 +796,11 @@ export interface AclBindingFact {
   cite: Cite;
 }
 
+/** The evaluator's actual selected denial, retained through both transit and device-receive hops.
+ * Evidence identity survives those hops' copies; no consumer reconstructs the decision from prose.
+ */
+const ACL_DENIAL_DECISIONS = new WeakMap<HopEvidence, NonNullable<AclEval["decision"]>>();
+
 function aclEvidence(host: string, name: string, line: AclLine, total: number, note: string): HopEvidence {
   return {
     kind: "acl",
@@ -1152,6 +1157,7 @@ function runLists(
         if (action === "deny" && denial === null) {
           denial = ev2;
           denialDecision = { aclName: name, lineIndex: line.index, lineCount: lines.length, raw: line.raw, binding: bindingOf(name) };
+          ACL_DENIAL_DECISIONS.set(ev2, denialDecision);
         }
         decided = true;
         const snapshotVerdict = ACL_FINDING_BY_CITE.get(line.cite);
@@ -1207,6 +1213,7 @@ function runLists(
       if (denial === null) {
         denial = ev2;
         denialDecision = { aclName: name, lineIndex: null, lineCount: lines.length, raw: null, binding: bindingOf(name) };
+        ACL_DENIAL_DECISIONS.set(ev2, denialDecision);
       }
     }
   }
@@ -2832,6 +2839,61 @@ function traceVia(flow: Flow, host: string): Trace {
   }
 }
 
+/** Counterfactual ingress trace, using the same bounded, cached walk as the ingress qualification.
+ * Taking an ingress here does not establish that the packet actually arrived through that host.
+ */
+export function traceViaIngress(flow: Flow, host: string): Trace {
+  return traceVia(flow, host);
+}
+
+/** A unique observed path binding of the evaluator's selected denial. The evaluator can encounter
+ * one ACL on several interfaces; its first binding is not evidence that only that interface decided
+ * the refusal. Ambiguous and missing provenance must not certify an alternate as equivalent.
+ */
+function observedDenialBinding(hop: Hop): AclBindingFact | null {
+  const evidence = hop.decidedBy;
+  if (evidence === null || evidence.kind !== "acl") return null;
+  const decision = ACL_DENIAL_DECISIONS.get(evidence);
+  const binding = decision?.binding;
+  if (decision === undefined || binding === null || binding === undefined || decision.lineIndex === null) return null;
+  if (evidence.cite !== `acls.${hop.host}.${decision.aclName}[${decision.lineIndex}]`) return null;
+  const prefix = `interfaces.${hop.host}.`;
+  if (binding.cite !== `${prefix}${binding.intf}`) return null;
+  const matches = new Set(hop.evidence.filter((e) =>
+    e.kind === "topology" && e.cite.startsWith(prefix) &&
+    (e.raw === `acl_in: ${decision.aclName}` || e.raw === `acl_out: ${decision.aclName}`),
+  ).map((e) => JSON.stringify([e.cite, e.raw])));
+  if (matches.size !== 1 || !matches.has(JSON.stringify([binding.cite, `acl_${binding.dir}: ${decision.aclName}`]))) return null;
+  return binding;
+}
+
+/** Equal ACL-denial words do not mean the same element refused the packet. Use the TERMINAL hop:
+ * blockingHop can instead name an earlier unmodelled host before a later ACL denial. Other outcomes
+ * retain their existing qualification: in particular, two complete paths may deliver at different
+ * routers on a shared subnet. Dropped-outcome identity remains a separate, unrepaired boundary.
+ */
+function sameRefusalDecision(chosen: Trace, alternate: Trace): boolean {
+  if (chosen.outcome !== "denied") return true;
+  const a = chosen.hops.at(-1);
+  const b = alternate.hops.at(-1);
+  if (a === undefined || b === undefined || a.decidedBy === null || b.decidedBy === null) return false;
+  if (a.host !== b.host || a.verdict !== b.verdict || a.decidedBy.kind !== b.decidedBy.kind || a.decidedBy.cite !== b.decidedBy.cite) return false;
+  if (a.verdict !== "denied") return false;
+  const ab = observedDenialBinding(a);
+  const bb = observedDenialBinding(b);
+  return ab !== null && bb !== null && ab.intf === bb.intf && ab.dir === bb.dir && ab.cite === bb.cite;
+}
+
+function refusalDecisionPhrase(t: Trace): string {
+  const hop = t.hops.at(-1);
+  if (hop === undefined || hop.decidedBy === null) return "no terminal deciding record was observed";
+  const binding = t.outcome === "denied" ? observedDenialBinding(hop) : null;
+  const provenance = t.outcome !== "denied" ? "" : binding === null
+    ? ", without a unique observed path binding"
+    : `, bound ${binding.dir === "in" ? "inbound" : "outbound"} on ${binding.intf} (${binding.cite})`;
+  return `${hop.verdict} at ${hop.host} by ${hop.decidedBy.cite}${provenance}`;
+}
+
 /** Gaps before the modelled segment: an alternate ingress, and the gateway's physical ingress port. */
 function ingressPolicyGaps(t: Trace): PolicyGap[] {
   const first = t.hops[0];
@@ -2840,6 +2902,15 @@ function ingressPolicyGaps(t: Trace): PolicyGap[] {
   const out: PolicyGap[] = [];
   const reproduced: string[] = [];
   REPRODUCED.set(t, reproduced);
+
+  /* An identical terminal denial cannot certify a chosen path whose earlier inputs are open.
+     This symmetric qualification is intentionally bounded to ACL denials, not other outcomes. */
+  const chosenDenialGaps = t.outcome === "denied" ? pathPolicyGaps(t) : [];
+  const chosenDenialEvidence = t.outcome !== "denied" ? [] : t.hops.flatMap((h) => [
+    ...(h.verdict === "unmodeled" ? [h.decidedBy?.cite ?? fabric.coverage.cite] : []),
+    ...h.evidence.filter((e) => e.kind === "absence").map((e) => e.cite),
+  ]);
+  const chosenDenialOpen = chosenDenialGaps.length > 0 || chosenDenialEvidence.length > 0;
 
   const cands = ingressCandidates(src);
   const chosen = cands.find((c) => c.host === first.host);
@@ -2850,7 +2921,8 @@ function ingressPolicyGaps(t: Trace): PolicyGap[] {
       if (at.hops[0]?.host !== alt.host) continue; // the override could not place it; nothing was traced from there
       const altGaps = pathPolicyGaps(at);
       const altUndecided = at.hops.some((h) => h.verdict === "unmodeled" || h.evidence.some((e) => e.kind === "absence"));
-      if (at.outcome === t.outcome && altGaps.length === 0 && !altUndecided) {
+      const sameDecision = sameRefusalDecision(t, at);
+      if (at.outcome === t.outcome && sameDecision && !chosenDenialOpen && altGaps.length === 0 && !altUndecided) {
         reproduced.push(alt.host); // modelled equivalently — and the caveat says so (withIngressChoiceStated)
         continue;
       }
@@ -2861,6 +2933,11 @@ function ingressPolicyGaps(t: Trace): PolicyGap[] {
       const altDecider = altLast?.decidedBy?.cite ?? (altLast === undefined ? alt.cite : `routes.${altLast.host}`);
       const altAbsence = at.hops.flatMap((h) => h.evidence.filter((e) => e.kind === "absence").map((e) => e.cite))[0] ?? altDecider;
       if (at.outcome !== t.outcome) why.push(`traced from ${alt.host} this flow is ${at.outcome}, not ${t.outcome} (${altDecider})`);
+      else if (!sameDecision) why.push(`the same deciding refusal was not established across the ingresses: via ${first.host}, ${refusalDecisionPhrase(t)}; via ${alt.host}, ${refusalDecisionPhrase(at)}`);
+      if (chosenDenialOpen) {
+        const cites = [...new Set([...chosenDenialGaps.map((g) => g.cite), ...chosenDenialEvidence])];
+        why.push(`the chosen trace via ${first.host} has unobserved or unmodelled inputs (${citeList(cites)}), so its terminal denial alone cannot establish ingress equivalence`);
+      }
       for (const g of altGaps) why.push(altGapPhrase(g));
       if (altUndecided) why.push(`the trace from ${alt.host} rests on evidence recorded as absent (${altAbsence})`);
       out.push({
