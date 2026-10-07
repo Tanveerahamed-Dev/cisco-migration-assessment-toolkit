@@ -478,7 +478,10 @@ def source_record(expect):
 
 def bridge(root, work, name, payload, evidence=None):
     payload_path = work / (name + "-payload.json")
-    record(payload_path, payload)
+    # Unlike sorted evidence records, this is a semantic input to JSON.stringify:
+    # preserve the selected Git manifest's insertion order through the Node bridge.
+    # Exact candidate bytes remain mandatory; do not canonicalize them to hide drift.
+    write_new(payload_path, (json.dumps(payload, sort_keys=False, indent=2, allow_nan=False) + "\n").encode())
     env = clean_env() | {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted"}
     result = subprocess.run(["node", str(root / BRIDGE), str(payload_path)], capture_output=True, env=env, timeout=60, check=False)
     evidence = work if evidence is None else evidence

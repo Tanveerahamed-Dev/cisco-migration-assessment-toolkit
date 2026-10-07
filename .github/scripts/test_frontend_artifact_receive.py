@@ -416,6 +416,54 @@ class IndependentRegistryTests(unittest.TestCase):
             receive.independent_metadata_match(forged_summary, official)
 
 
+class RealBridgeManifestOrderTests(unittest.TestCase):
+    def test_real_current_node_bridge_preserves_nonlexical_manifest_bytes(self):
+        # These deliberately nonlexical keys model the actual committed manifest.
+        # The JSON receiver -> Node boundary, not a mocked serializer, is exercised.
+        before = {
+            "name": "synthetic-frontend", "private": True, "version": "1.0.0", "type": "module",
+            "description": "Synthetic bridge — ordering control", "engines": {"node": ">=24.18.0 <25"},
+            "scripts": {"z-last": "unchanged-z", "a-first": "unchanged-a"},
+            "dependencies": {"z-kept": "1.0.0", "changed-dep": "1.0.0"},
+            "devDependencies": {"z-tool": "4.0.0", "a-tool": "1.0.0"},
+        }
+        plan = {"schema": "frontend-dependency-plan/1", "changes": [
+            {"section": "dependencies", "name": "changed-dep", "from": "1.0.0", "to": "2.0.0", "version": "2.0.0"},
+        ]}
+        sri = "sha512-" + base64.b64encode(bytes([3]) * 64).decode()
+        def row(name, version):
+            return {"version": version, "resolved": f"https://registry.npmjs.org/{name}/-/{name}-{version}.tgz",
+                    "integrity": sri, "license": "MIT"}
+        before_lock = {"name": before["name"], "version": before["version"], "lockfileVersion": 3, "requires": True,
+                       "packages": {"": {"name": before["name"], "version": before["version"], "engines": before["engines"],
+                                          "dependencies": before["dependencies"], "devDependencies": before["devDependencies"]}}}
+        for section in ("dependencies", "devDependencies"):
+            for name, version in before[section].items():
+                before_lock["packages"]["node_modules/" + name] = row(name, version)
+        wanted = copy.deepcopy(before)
+        wanted["dependencies"]["changed-dep"] = "2.0.0"
+        candidate_lock = copy.deepcopy(before_lock)
+        candidate_lock["packages"][""]["dependencies"] = wanted["dependencies"]
+        candidate_lock["packages"]["node_modules/changed-dep"] = row("changed-dep", "2.0.0")
+        metadata = {"name": "changed-dep", "version": "2.0.0", "license": "MIT",
+                    "dist": {"tarball": candidate_lock["packages"]["node_modules/changed-dep"]["resolved"], "integrity": sri}}
+        payload = {"mode": "candidate", "plan": plan, "before_manifest": before, "before_lock": before_lock,
+                   "candidate_manifest": wanted, "candidate_lock": candidate_lock, "metadata": [metadata]}
+        expected = (json.dumps(wanted, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(prefix="receiver-real-bridge-order-") as directory:
+            work = Path(directory)
+            actual = receive.bridge(root, work, "original-order", payload)
+            self.assertEqual(actual["manifest_text"].encode("utf-8"), expected,
+                             "The real bridge must preserve original nonlexical root and nested manifest order")
+            # Sorting just the original manifest recreates the lost information.
+            # Policy equality still accepts the same values, but exact bytes must differ.
+            sorted_control = copy.deepcopy(payload)
+            sorted_control["before_manifest"] = json.loads(json.dumps(before, sort_keys=True))
+            reordered = receive.bridge(root, work, "sorted-order-control", sorted_control)
+            self.assertNotEqual(reordered["manifest_text"].encode("utf-8"), expected)
+
+
 class DistTests(unittest.TestCase):
     def fixture(self):
         s = selected()
