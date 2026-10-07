@@ -16,16 +16,16 @@ NODE = shutil.which("node")
 NODE_ENGINE = ">=24.18.0 <25"
 HOSTED_NODE = "24.19.0"
 RUNTIME_PACKAGES = {
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "react-router": "8.3.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-router": "8.4.0",
 }
 DEVELOPMENT_PACKAGES = {
-    "@types/node": "24.13.3",
-    "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.4",
-    "@vitejs/plugin-react": "6.1.0",
-    "vite": "8.2.2",
+    "@types/node": "24.19.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "vite": "8.2.4",
 }
 
 

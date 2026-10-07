@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
+from itertools import combinations
 import json
 import subprocess
 from pathlib import Path
@@ -101,6 +103,20 @@ def test_push_filter_and_classifier_share_the_exact_path_policy():
         "webapp/backend/export_ui_projection_openapi.py",
         ".github/workflows/webapp-ci.yml",
         ".github/scripts/classify_webapp_ci_scope.py",
+        ".github/frontend-dependency-plan.json",
+        ".github/scripts/frontend_dependency_prepare.mjs",
+        ".github/scripts/frontend_dependency_prepare.test.mjs",
+        ".github/scripts/frontend_artifact_receive.py",
+        ".github/scripts/frontend_candidate_admit.mjs",
+        ".github/scripts/test_frontend_artifact_receive.py",
+        ".github/scripts/observe_vite_distribution.py",
+        ".github/scripts/test_observe_vite_distribution.py",
+        ".github/scripts/frontend_candidate_materials.py",
+        ".github/scripts/test_frontend_candidate_materials.py",
+        "master-reference/release/pipeline.py",
+        "portable/release_contract.py",
+        "tests/test_webapp_ci_scope.py",
+        "tests/test_frontend_artifact_workflow_contract.py",
     ],
 )
 def test_every_policy_arm_has_a_relevant_witness(path: str):
@@ -334,3 +350,105 @@ def test_every_tests_helper_a_webapp_test_imports_engages_webapp_ci():
                     helpers.add(candidate.relative_to(ROOT).as_posix())
     assert "tests/pytest_invocation_reader.py" in helpers, sorted(helpers)  # the scan is live
     assert sorted(path for path in helpers if not SCOPE.path_is_relevant(path)) == []
+
+
+MANUAL_FLAGS = ("prepare_frontend_dependencies", "receive_frontend_artifact", "observe_vite_distribution", "refresh_visual_baselines")
+CANONICAL_TEST_SRI = "sha512-" + base64.b64encode(bytes(64)).decode()
+
+
+def _manual_values(operation=None):
+    values = {name: "false" for name in MANUAL_FLAGS}
+    values.update(frontend_artifact_selection="", vite_distribution_integrity="")
+    if operation:
+        values[operation] = "true"
+    if operation == "receive_frontend_artifact":
+        # Preflight checks the bounded envelope; the receiver owns the full exact-source schema.
+        values["frontend_artifact_selection"] = '{"schema":"frontend-artifact-selection/1","profile":"dependency-candidate"}'
+    if operation == "observe_vite_distribution":
+        values["vite_distribution_integrity"] = CANONICAL_TEST_SRI
+    return values
+
+
+@pytest.mark.parametrize("operation", [None, *MANUAL_FLAGS])
+def test_manual_preflight_admits_only_one_explicit_operation_or_normal_ci(operation):
+    assert SCOPE.MANUAL_FLAGS == MANUAL_FLAGS
+    assert SCOPE.validate_manual_operations("workflow_dispatch", _manual_values(operation)) == (operation or "none")
+
+
+@pytest.mark.parametrize("first,second", list(combinations(MANUAL_FLAGS, 2)))
+def test_manual_preflight_refuses_every_pair_of_operations(first, second):
+    values = _manual_values(first)
+    values[second] = "true"
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        SCOPE.validate_manual_operations("workflow_dispatch", values)
+
+
+@pytest.mark.parametrize("value", ["", "True", "TRUE", "0", " false", False])
+def test_manual_flags_are_typed_environment_booleans(value):
+    values = _manual_values()
+    values["prepare_frontend_dependencies"] = value
+    with pytest.raises(ValueError):
+        SCOPE.validate_manual_operations("workflow_dispatch", values)
+
+
+@pytest.mark.parametrize("field", ["frontend_artifact_selection", "vite_distribution_integrity"])
+def test_disabled_manual_operation_refuses_even_whitespace_extra_data(field):
+    values = _manual_values()
+    values[field] = " "
+    with pytest.raises(ValueError, match="supplied without"):
+        SCOPE.validate_manual_operations("workflow_dispatch", values)
+
+
+@pytest.mark.parametrize("selection", ["", " ", "{}", "[]", "not-json", '{"a":1,"a":2}', '{"a":1,"\\u0061":2}',
+                                       '{"a":NaN}', '{"a":1e999}', '{"a":"' + "x" * 4096 + '"}'])
+def test_receive_preflight_requires_bounded_nonempty_json_without_duplicate_or_nonfinite_data(selection):
+    values = _manual_values("receive_frontend_artifact")
+    values["frontend_artifact_selection"] = selection
+    with pytest.raises(ValueError):
+        SCOPE.validate_manual_operations("workflow_dispatch", values)
+
+
+@pytest.mark.parametrize("integrity", ["", "sha256-abc", CANONICAL_TEST_SRI + "\n", "sha512-" + "A" * 85 + "B=="])
+def test_observer_preflight_requires_canonical_exact_sha512(integrity):
+    values = _manual_values("observe_vite_distribution")
+    values["vite_distribution_integrity"] = integrity
+    with pytest.raises(ValueError):
+        SCOPE.validate_manual_operations("workflow_dispatch", values)
+
+
+def test_manual_preflight_refuses_cross_operation_payloads_and_wrong_event():
+    receive = _manual_values("receive_frontend_artifact")
+    receive["vite_distribution_integrity"] = CANONICAL_TEST_SRI
+    observe = _manual_values("observe_vite_distribution")
+    observe["frontend_artifact_selection"] = '{"unexpected":"payload"}'
+    for values in (receive, observe):
+        with pytest.raises(ValueError):
+            SCOPE.validate_manual_operations("workflow_dispatch", values)
+    with pytest.raises(ValueError, match="workflow_dispatch"):
+        SCOPE.validate_manual_operations("pull_request", _manual_values())
+
+
+def test_manual_input_census_is_closed():
+    for mode in ("missing", "extra"):
+        values = _manual_values()
+        if mode == "missing":
+            del values["refresh_visual_baselines"]
+        else:
+            values["arbitrary_command"] = "not accepted"
+        with pytest.raises(ValueError, match="census"):
+            SCOPE.validate_manual_operations("workflow_dispatch", values)
+
+
+def test_manual_cli_only_validates_env_data_and_does_not_classify_or_write_output(monkeypatch, tmp_path):
+    values = _manual_values("receive_frontend_artifact")
+    values["frontend_artifact_selection"] = '{"quoted":"$(this remains inert data)"}'
+    for name, value in values.items():
+        monkeypatch.setenv("WEBAPP_MANUAL_" + name.upper(), value)
+    output = tmp_path / "classification-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    def forbidden(*args, **kwargs):
+        pytest.fail("manual preflight must not classify Git or execute a subprocess")
+    monkeypatch.setattr(SCOPE, "classify", forbidden)
+    monkeypatch.setattr(SCOPE.subprocess, "run", forbidden)
+    assert SCOPE.main(["--event-name", "workflow_dispatch", "--validate-manual-operations"]) == 0
+    assert not output.exists()

@@ -2313,7 +2313,7 @@ def test_tracked_lock_and_local_source_exclude_the_vendored_next_parser() -> Non
         ("master-reference/package-lock.json", "0.7.5"),
         ("webapp/frontend/package-lock.json", "0.8.3"),
     }
-    assert vite_versions == ["8.2.0", "8.2.1", "8.2.2"]
+    assert vite_versions == ["8.2.0", "8.2.1", "8.2.4"]
     assert "GHSA-w3rx-r6r6-pgpr" not in " ".join(limits)
     assert "GHSA-wq5f-xc86-pv6w in the current build graph only" in limits[0]
     assert "retains the earlier GHSA-rgj7-g3m4-5g8c remediation" in limits[0]
@@ -2490,6 +2490,7 @@ _VITE_INTEGRITIES = {
     "8.2.0": "sha512-pn+CFpM0lwDeKwmOq1ZaBK/9sjorZcgqxki6MbY/jPEVd9vichIlmlD4HmQ5wdP5EgqQCFRaACBxMC7uEGc6lQ==",
     "8.2.1": "sha512-EU/eS7BH3XROHh2YnBefjM6DBKA6ZeMZEYQbj7NLWg5wHYlhB8B/Mayd5XsgWq+NFYccDOTemRpdETWR6Ka/lw==",
     "8.2.2": "sha512-cFKLV/PRgAUlIRm5WjMjJ86jrftzpqcgH+Us+DS8mI3CDNiH30Whrz8uHL3+MOLPAgqbMBAqWdAHAphOAM+z/Q==",
+    "8.2.4": "sha512-lfauXnrf2x0p+UoA+wXh0dgFWnUjCyG6Js95KBkgaCwUU9k0DAHI4W6Q0WCx+h+5g+Alce1y4Zi2QjjK0UvGBw==",
 }
 _BRACES_GATE = "blocked_braces_unpatched_build_time_high_advisory"
 _COMPILED_BRACES_GATE = "blocked_compiled_braces_copy_outside_npm_resolution_and_external_review_required"
@@ -2782,7 +2783,7 @@ def test_dependency_assessment_cannot_hide_braces_behind_another_unremediated_ad
     assert any("GHSA-5p2g-fcmc-qvqq" in limit for limit in limits)
 
 
-def _vite_component(version: str, integrity: str, lockfile: str = "master-reference/package-lock.json") -> dict:
+def _vite_component(version: str, integrity: str | None, lockfile: str = "master-reference/package-lock.json") -> dict:
     return _npm_component(f"vite-{version}", "vite", version, "node_modules/vite", integrity, lockfile)
 
 
@@ -2797,18 +2798,24 @@ def test_dependency_assessment_names_vite_compiled_braces_copies_outside_npm_res
     assert gate == _COMPILED_BRACES_GATE
     assert len(limits) == 3
     assert limits[0] == _registry_entry("braces").limitation
-    for fact in ("8.2.0, 8.2.1, 8.2.2", "chokidar 3.6.0", "disableGlobbing", "not a vulnerability waiver"):
+    for fact in ("8.2.0, 8.2.1, 8.2.2, 8.2.4", "chokidar 3.6.0", "disableGlobbing", "not a vulnerability waiver"):
         assert fact in limits[1]
     assert "current source-authenticated advisory" in limits[2]
 
 
 @pytest.mark.parametrize(
     ("version", "integrity"),
-    (("9.0.0", _VITE_INTEGRITIES["8.2.0"]), ("8.2.0", _VITE_INTEGRITIES["8.2.1"])),
+    (
+        ("9.0.0", _VITE_INTEGRITIES["8.2.0"]),
+        ("8.2.0", _VITE_INTEGRITIES["8.2.1"]),
+        ("8.2.4", _VITE_INTEGRITIES["8.2.2"]),
+        ("8.2.4", None),
+        ("8.2.5", _VITE_INTEGRITIES["8.2.4"]),
+    ),
 )
 def test_dependency_assessment_treats_an_unreviewed_vite_distribution_as_an_unassessed_copy(
     version: str,
-    integrity: str,
+    integrity: str | None,
 ) -> None:
     gate, limits = release_pipeline._dependency_vulnerability_assessment(
         {"components": [_vite_component(version, integrity)], "dependencies": []}
@@ -2818,6 +2825,23 @@ def test_dependency_assessment_treats_an_unreviewed_vite_distribution_as_an_unas
     assert len(limits) == 2
     assert version in limits[0]
     assert "no exact compiled-package assessment" in limits[0]
+
+
+def test_assesshub_vite_824_reviewed_identity_still_blocks_compiled_braces_and_external_review() -> None:
+    component = _vite_component("8.2.4", _VITE_INTEGRITIES["8.2.4"], "webapp/frontend/package-lock.json")
+    assert release_pipeline._vite_bundled_braces_carriers([component]) == (["8.2.4"], [])
+
+    gate, limits = release_pipeline._dependency_vulnerability_assessment(
+        {"components": [component], "dependencies": []}
+    )
+
+    assert gate == _COMPILED_BRACES_GATE
+    assert len(limits) == 2
+    assert "8.2.4" in limits[0]
+    assert "chokidar 3.6.0" in limits[0]
+    assert "not a vulnerability waiver" in limits[0]
+    assert "no exact compiled-package assessment" not in limits[0]
+    assert "current source-authenticated advisory" in limits[1]
 
 
 def test_dependency_assessment_reports_next_and_vite_compiled_copies_together() -> None:
