@@ -44,6 +44,9 @@ RELEVANT_PATH_FILTERS = (
     ".github/workflows/webapp-ci.yml",
     ".github/scripts/classify_webapp_ci_scope.py",
     ".github/scripts/frontend_build_handoff.py",
+    ".github/frontend-dependency-plan.json",
+    ".github/scripts/frontend_dependency_prepare.mjs",
+    ".github/scripts/frontend_dependency_prepare.test.mjs",
     ".github/scripts/verify_repository_privacy.py",
 )
 

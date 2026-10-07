@@ -3,7 +3,7 @@ name: webapp-ci
 on:
   push:
     branches: [main]
-    paths: ["webapp/**", "atlas-scope/**", ".design-sync/**", "cisco_toolkit/**", "reference-data/official-sources/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "README.md", "LICENSE", ".gitattributes", "pytest.ini", "tests/golden/**", "tests/synthetic_fixtures.py", "tests/pytest_invocation_reader.py", ".github/workflows/webapp-ci.yml", ".github/scripts/classify_webapp_ci_scope.py", ".github/scripts/frontend_build_handoff.py", ".github/scripts/verify_repository_privacy.py"]
+    paths: ["webapp/**", "atlas-scope/**", ".design-sync/**", "cisco_toolkit/**", "reference-data/official-sources/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "README.md", "LICENSE", ".gitattributes", "pytest.ini", "tests/golden/**", "tests/synthetic_fixtures.py", "tests/pytest_invocation_reader.py", ".github/workflows/webapp-ci.yml", ".github/scripts/classify_webapp_ci_scope.py", ".github/scripts/frontend_build_handoff.py", ".github/frontend-dependency-plan.json", ".github/scripts/frontend_dependency_prepare.mjs", ".github/scripts/frontend_dependency_prepare.test.mjs", ".github/scripts/verify_repository_privacy.py"]
   # Required checks from a workflow skipped by a top-level path filter remain Pending forever.
   # Start every PR, then skip individual jobs only after the fail-closed classifier below succeeds.
   # `edited` is required because retargeting a PR changes its three-dot base
@@ -12,6 +12,11 @@ on:
     types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
     inputs:
+      prepare_frontend_dependencies:
+        description: Resolve the reviewed dependency plan in scratch for review only
+        required: false
+        default: false
+        type: boolean
       refresh_visual_baselines:
         description: Capture reviewed-candidate pixels from the Windows 2025 oracle
         required: false
@@ -157,6 +162,21 @@ jobs:
           cache: npm
           cache-dependency-path: webapp/frontend/package-lock.json
       - run: npm run verify:node
+      - name: Test hosted dependency preparation refusals
+        working-directory: .
+        run: node --test .github/scripts/frontend_dependency_prepare.test.mjs
+      - name: Prepare the reviewed dependency candidate without changing checkout
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepare_frontend_dependencies }}
+        working-directory: .
+        run: node .github/scripts/frontend_dependency_prepare.mjs
+      - name: Preserve dependency preparation candidates and failures
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.prepare_frontend_dependencies }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontend-dependency-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/frontend-dependency-preparation/
+          if-no-files-found: error
+          retention-days: 14
       - run: npm ci
       - run: npm run api:check
       - run: npm test

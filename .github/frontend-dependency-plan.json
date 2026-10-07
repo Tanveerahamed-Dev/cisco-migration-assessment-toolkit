@@ -1,0 +1,15 @@
+{
+  "schema": "frontend-dependency-plan/1",
+  "changes": [
+    { "section": "dependencies", "name": "react", "from": "19.2.8", "to": "19.3.0", "version": "19.3.0" },
+    { "section": "dependencies", "name": "react-dom", "from": "19.2.8", "to": "19.3.0", "version": "19.3.0" },
+    { "section": "dependencies", "name": "react-force-graph-3d", "from": "^1.29.1", "to": "^1.29.2", "version": "1.29.2" },
+    { "section": "dependencies", "name": "react-router", "from": "8.3.0", "to": "8.4.0", "version": "8.4.0" },
+    { "section": "devDependencies", "name": "@testing-library/react", "from": "^16.3.2", "to": "^16.3.3", "version": "16.3.3" },
+    { "section": "devDependencies", "name": "@types/node", "from": "24.13.3", "to": "24.19.1", "version": "24.19.1" },
+    { "section": "devDependencies", "name": "@types/react", "from": "19.2.18", "to": "19.3.0", "version": "19.3.0" },
+    { "section": "devDependencies", "name": "@types/react-dom", "from": "19.2.4", "to": "19.3.0", "version": "19.3.0" },
+    { "section": "devDependencies", "name": "@vitejs/plugin-react", "from": "6.1.0", "to": "6.1.1", "version": "6.1.1" },
+    { "section": "devDependencies", "name": "vite", "from": "8.2.2", "to": "8.2.4", "version": "8.2.4" }
+  ]
+}

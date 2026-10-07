@@ -101,6 +101,9 @@ def test_push_filter_and_classifier_share_the_exact_path_policy():
         "webapp/backend/export_ui_projection_openapi.py",
         ".github/workflows/webapp-ci.yml",
         ".github/scripts/classify_webapp_ci_scope.py",
+        ".github/frontend-dependency-plan.json",
+        ".github/scripts/frontend_dependency_prepare.mjs",
+        ".github/scripts/frontend_dependency_prepare.test.mjs",
     ],
 )
 def test_every_policy_arm_has_a_relevant_witness(path: str):
