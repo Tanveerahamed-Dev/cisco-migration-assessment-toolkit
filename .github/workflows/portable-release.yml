@@ -225,7 +225,7 @@ jobs:
     name: Reverify candidate and current-main gates (unprivileged runner)
     if: github.event_name == 'workflow_dispatch' && inputs.attach_draft
     needs: [gate, portable]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       checks: read
@@ -299,7 +299,7 @@ jobs:
     name: Attest and attach the exact draft assets
     if: github.event_name == 'workflow_dispatch' && inputs.attach_draft
     needs: [portable, verify_candidate]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       id-token: write

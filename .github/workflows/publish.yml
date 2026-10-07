@@ -18,7 +18,7 @@ concurrency:
 jobs:
   pypi-publish:
     name: Promote exact GitHub Release assets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     environment:

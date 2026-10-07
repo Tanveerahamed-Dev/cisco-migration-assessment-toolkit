@@ -16,7 +16,7 @@ jobs:
   release:
     name: Verify tag and create immutable release assets
     if: ${{ !contains(github.ref_name, '-rc.') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
