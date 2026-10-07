@@ -1747,6 +1747,77 @@ test("outer deployment refuses a local identity inside a receipted gzip before m
   }
 });
 
+test("source projections refuse a host-bound command fixture and accept a neutral scratch fixture", async () => {
+  let scratch;
+  let failureToReport;
+  let phase = "host layout precondition";
+  try {
+    const home = os.homedir();
+    const portableHome = home.replaceAll("\\", "/");
+    assert.equal(/(?:^|\/)(?:home|users)\/[^/]+/i.test(portableHome), true,
+      "the hosted discriminator requires a recognized home layout");
+    scratch = await mkdtemp(join(home, ".atlas-source-fixture-privacy-"));
+    phase = "fixture setup";
+    const fixture = await initializeFixture(scratch);
+    const marker = join(home, "work", "_temp", "frontend-dependency-scratch-fixture").replaceAll("\\", "/");
+    const sourceModule = (root) => Buffer.from(
+      `export const source = ${JSON.stringify({ lines: [{ text: `private = ${JSON.stringify(root)}` }] })};\n`,
+    );
+    const sensitive = await writeDist(fixture.repo, "dist-sensitive", {
+      projectionModule: sourceModule(marker),
+      projectionModulePath: "source/chunks/command-fixture.mjs",
+      graphSensitive: false,
+    });
+    phase = "host-bound source refusal";
+    let refusal;
+    try {
+      await buildDeploymentManifest({ distDir: sensitive.dist, repoRoot: fixture.repo });
+    } catch (error) {
+      refusal = error;
+    }
+    assert.equal(refusal instanceof Error, true, "host-bound source must be refused");
+    assert.equal(
+      /^deployment projection privacy scan failed: rule=local_home_path; category=compressed-projection-module; index=0$/.test(refusal.message),
+      true,
+      "the unchanged home-path guard must be the refusal owner",
+    );
+    assert.equal(refusal.message.includes(marker), false, "refusal must not echo the source marker");
+    assert.equal(typeof refusal.stack === "string" && !refusal.stack.includes(marker), true,
+      "refusal stack must not echo the source marker");
+    assert.equal(refusal.cause === undefined, true, "refusal must not retain an unsafe cause");
+    let missing = false;
+    try {
+      await readFile(join(sensitive.dist, DEPLOYMENT_MANIFEST_NAME));
+    } catch (error) {
+      missing = error.code === "ENOENT";
+    }
+    assert.equal(missing, true, "refused source must not create a manifest");
+
+    phase = "neutral source success";
+    const neutral = await writeDist(fixture.repo, "dist-neutral", {
+      projectionModule: sourceModule("/tmp/frontend-dependency-scratch-fixture"),
+      projectionModulePath: "source/chunks/command-fixture.mjs",
+      graphSensitive: false,
+    });
+    await buildDeploymentManifestPublic({ distDir: neutral.dist, repoRoot: fixture.repo });
+    await verifyDeploymentManifestPublic({ distDir: neutral.dist, repoRoot: fixture.repo });
+    assert.equal((await readFile(join(neutral.dist, DEPLOYMENT_MANIFEST_NAME))).byteLength > 0, true,
+      "neutral source must produce a verified manifest");
+  } catch {
+    // The phase is one of the fixed labels above; never print a private marker, path or raw cause.
+    failureToReport = new Error(`source fixture privacy discriminator failed: ${phase}`);
+  } finally {
+    if (scratch) {
+      try {
+        await rm(scratch, { recursive: true, force: true });
+      } catch {
+        failureToReport ??= new Error("source fixture privacy discriminator cleanup failed");
+      }
+    }
+  }
+  if (failureToReport) throw failureToReport;
+});
+
 test("outer deployment rejects foreign user-home identities in graph-only modules", async (context) => {
   for (const [name, marker, rule, graphModuleKind] of [
     [

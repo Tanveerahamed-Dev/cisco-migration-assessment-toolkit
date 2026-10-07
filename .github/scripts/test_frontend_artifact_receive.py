@@ -347,7 +347,7 @@ class CommandReceiptTests(unittest.TestCase):
     def fixture(self):
         tool = {"node": "/opt/hostedtoolcache/node/24.19.0/x64/bin/node", "node_version": "v24.19.0",
                 "npm_cli": "/opt/hostedtoolcache/node/24.19.0/x64/lib/node_modules/npm/bin/npm-cli.js", "npm_version": "11.17.0"}
-        private = "/home/runner/work/_temp/frontend-dependency-scratch-fixture"
+        private = "/tmp/frontend-dependency-scratch-fixture"
         options = ["--registry=https://registry.npmjs.org/", "--userconfig=" + private + "/config/user.npmrc",
                    "--globalconfig=" + private + "/config/global.npmrc", "--cache=" + private + "/cache",
                    "--git=/usr/bin/false", "--engine-strict", "--ignore-scripts", "--audit=false", "--fund=false",
