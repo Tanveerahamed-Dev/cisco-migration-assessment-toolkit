@@ -9,11 +9,11 @@
       "source_identity": "jsonschema-rs 0.58.4 upstream commit f864033d8ae481b5c96985a4ca6990e4375614ac; package MIT text only, not individual Rust component license texts"
     },
     {
-      "key": "npm:node_modules/react-force-graph-3d@1.29.1",
+      "key": "npm:node_modules/react-force-graph-3d@1.29.2",
       "license_file": "portable/third-party-licenses/react-force-graph-LICENSE",
       "license_sha256": "5b6dc9ce44c7b73620b191c567339212bd00537af46fdedaf98304c34214cc9c",
-      "source": "https://raw.githubusercontent.com/vasturiano/react-force-graph/5ee21b693d83f62da569cba6e3cdf31e028406e1/LICENSE",
-      "source_identity": "npm gitHead 5ee21b693d83f62da569cba6e3cdf31e028406e1"
+      "source": "https://raw.githubusercontent.com/vasturiano/react-force-graph/d59a72d24d310567a05d1622fd1f9f2fd13bc8fd/LICENSE",
+      "source_identity": "npm registry react-force-graph-3d@1.29.2 declares gitHead d59a72d24d310567a05d1622fd1f9f2fd13bc8fd; root LICENSE blob a36ddd4facd859fe483a78ca9f5caaaac4193cd3; upstream subpackage manifest at that commit remains 1.29.1, so this is npm-declared license provenance, not clean release-source equivalence"
     },
     {
       "key": "pypi:pyserial@3.5",
