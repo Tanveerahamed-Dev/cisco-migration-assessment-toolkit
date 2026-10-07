@@ -175,17 +175,21 @@ export function Gauge({ value, max = 100, size = 132, color, label }: { value: n
   const stroke = 11;
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
-  const frac = Math.max(0, Math.min(1, value / max));
+  // Unknown is not a measured zero (or a full ring): only a valid measurement
+  // and scale can supply an arc. Keep the neutral track visible without one.
+  const frac = Number.isFinite(value) && Number.isFinite(max) && max > 0
+    ? Math.max(0, Math.min(1, value / max))
+    : null;
   return (
     <div className="gauge" style={{ width: size, height: size }}>
       <svg width={size} height={size}>
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--surface-3)" strokeWidth={stroke} />
-        <circle
+        {frac !== null && <circle
           cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={stroke}
           strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c * (1 - frac)}
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
           style={{ transition: "stroke-dashoffset .7s ease" }}
-        />
+        />}
       </svg>
       <div className="num">
         <b>{Number.isFinite(value) ? <CountUp value={value} /> : "—"}</b>

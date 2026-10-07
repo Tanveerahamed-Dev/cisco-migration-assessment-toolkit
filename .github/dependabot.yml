@@ -27,6 +27,18 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # 2026-10-08 owner deferral after #609 superseded grouped proposal #593.
+      # Review r186 rendering and Playwright 1.63 browser/visual-baseline changes separately.
+      # Keep these specific lines deferred; other maintenance updates remain eligible.
+      - dependency-name: "three"
+        versions: ["0.186.x"]
+      - dependency-name: "@types/three"
+        versions: ["0.186.x"]
+      - dependency-name: "@playwright/test"
+        versions: ["1.63.x"]
+      # Defer only Vite 8.3.x pending separate review; later lines remain eligible.
+      - dependency-name: "vite"
+        versions: ["8.3.x"]
 
   - package-ecosystem: github-actions
     directory: /
