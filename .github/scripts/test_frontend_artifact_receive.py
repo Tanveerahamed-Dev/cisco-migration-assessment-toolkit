@@ -367,12 +367,19 @@ class RealGitPostImportTests(unittest.TestCase):
             prefix + "assets/graph-old.js": old_graph,
             prefix + "assets/main-old.js": b'const legacy = "' + b"A" * 2048 + b'";\n',
         }
+        # Different repeated bytes alone did not keep Git at the intended two
+        # renames. Make the new main larger than
+        # twice EVERY old family member, excluding all such 50% rename pairs by
+        # size while retaining the two deliberately high-similarity chunk pairs.
+        new_main = b'const future = "' + b"Z" * (2 * max(map(len, before.values())) + 1) + b'";\n'
+        self.assertTrue(all(len(new_main) > 2 * len(data) for data in before.values()),
+                        "replacement main must be outside the 50% rename size bound for every old member")
         desired = {
             prefix + "index.html": b'<script src="assets/main-new.js"></script>\n',
             prefix + "assets/shell.css": before[prefix + "assets/shell.css"],
             prefix + "assets/topology-new.js": old_topology.replace(b"topology99 = 99", b"topology99 = 100"),
             prefix + "assets/graph-new.js": old_graph.replace(b"graph99 = 99", b"graph99 = 100"),
-            prefix + "assets/main-new.js": b'const future = "' + b"Z" * 2048 + b'";\n',
+            prefix + "assets/main-new.js": new_main,
         }
         sources = {receive.PACKAGE: b'{"name":"fixture"}\n', receive.LOCK: b'{"packages":{}}\n',
                    "webapp/frontend/src/view.ts": b"export const fixture = true;\n",
