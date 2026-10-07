@@ -111,9 +111,9 @@ EXPECTED_BUNDLED_PYTHON = {
     "websockets": "17.1",
     "xlsxwriter": "3.2.9",
 }
-EXPECTED_BUNDLED_FRONTEND_COUNT = 49
+EXPECTED_BUNDLED_FRONTEND_COUNT = 50
 EXPECTED_BUNDLED_FRONTEND_DIGEST = (
-    "c4f69366b66de816e6cc779041c42ff51c9f055f71b35c116dccbf0a5b2669a3"
+    "a91d0620a641b0210134f1d238c9cd8729d609df19e4d807048eb40fc4b45ca5"
 )
 #: The reviewed Atlas Scope production lock graph (atlas-scope/package-lock.json, derived by
 #: _bundled_scope_frontend_packages). Like the SPA's, a lock change must be reviewed here before a

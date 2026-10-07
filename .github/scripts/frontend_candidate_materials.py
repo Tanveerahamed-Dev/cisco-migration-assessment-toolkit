@@ -1,4 +1,4 @@
-"""Hosted installed-Vite byte check and canonical frontend inventory observation.
+"""Hosted installed-Vite, graph-package license and canonical inventory observations.
 
 No npm/package code executes. The release inventory/attribution gates remain unchanged;
 an observed inventory digest is review input, never a replacement acceptance pin.
@@ -20,6 +20,9 @@ import tempfile
 import types
 
 VERSION = "8.2.4"
+GRAPH_PACKAGE = "react-force-graph-3d"
+GRAPH_VERSION = "1.29.2"
+GRAPH_INSTALL = "node_modules/" + GRAPH_PACKAGE
 MANIFEST = "webapp/frontend/package.json"
 LOCK = "webapp/frontend/package-lock.json"
 PIPELINE = "master-reference/release/pipeline.py"
@@ -204,6 +207,98 @@ def observe_inventory(owner, admitted_lock, scratch_parent):
             "pin_disposition": "Existing acceptance guards remain blocking; this observation does not change or waive them"}
 
 
+def graph_package_census(package_root):
+    """Bounded physical root census only; no descent into or execution of package code."""
+    need(package_root.resolve() == package_root.absolute(), "Indirect installed graph package root")
+    root_stat = package_root.lstat()
+    need(stat.S_ISDIR(root_stat.st_mode), "Installed graph package root is not a directory")
+    def identity(metadata):
+        return (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_nlink,
+                metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
+    entries = {}
+    with os.scandir(package_root) as iterator:
+        for entry in iterator:
+            need(len(entries) < 1024 and len(entry.name.encode("utf-8")) <= 255,
+                 "Installed graph package root census exceeds observation bound")
+            entries[entry.name] = identity(entry.stat(follow_symlinks=False))
+    return {"root": identity(root_stat), "entries": entries}
+
+
+def observe_graph_license(owner, root, manifest, lock):
+    """Reuse the admitted portable license owner for this one installed candidate.
+
+    Lock integrity is recorded, not claimed to be an independently verified tarball
+    identity of the installed directory. Missing text is evidence for human review.
+    """
+    need(type(manifest) is dict and manifest.get("dependencies", {}).get(GRAPH_PACKAGE) == "^" + GRAPH_VERSION,
+         "Graph manifest candidate differs")
+    need(type(lock) is dict and lock.get("lockfileVersion") == 3 and type(lock.get("packages")) is dict,
+         "Graph lock structure differs")
+    packages = lock["packages"]
+    need(packages.get("", {}).get("dependencies", {}).get(GRAPH_PACKAGE) == "^" + GRAPH_VERSION,
+         "Graph root-lock candidate differs")
+    selected = packages.get(GRAPH_INSTALL)
+    need(type(selected) is dict and selected.get("version") == GRAPH_VERSION
+         and not selected.get("link") and selected.get("dev") is not True
+         and selected.get("resolved") == f"https://registry.npmjs.org/{GRAPH_PACKAGE}/-/{GRAPH_PACKAGE}-{GRAPH_VERSION}.tgz"
+         and type(selected.get("license")) is str and type(selected.get("integrity")) is str,
+         "Graph locked distribution identity differs")
+    integrity = selected["integrity"]
+    need(re.fullmatch(r"sha512-[A-Za-z0-9+/]{86}==", integrity), "Graph lock integrity is not canonical SHA-512")
+    need(base64.b64encode(base64.b64decode(integrity[7:], validate=True)).decode() == integrity[7:],
+         "Graph lock integrity encoding differs")
+    package_root = root / "webapp/frontend" / GRAPH_INSTALL
+    before = graph_package_census(package_root)
+    package_bytes = ordinary(package_root / "package.json")
+    installed = strict_json(package_bytes)
+    need(type(installed) is dict and installed.get("name") == GRAPH_PACKAGE
+         and installed.get("version") == GRAPH_VERSION and installed.get("license") == selected["license"],
+         "Installed graph package identity differs")
+    files = []
+    selected_bytes = {}
+    total = 0
+    for name in sorted(before["entries"], key=str.casefold):
+        if not owner._license_filename(name):
+            continue
+        mode = before["entries"][name][2]
+        if stat.S_ISDIR(mode):
+            continue  # Same root-file denominator as third_party_notices; no recursion.
+        need(stat.S_ISREG(mode), "Installed graph license entry is indirect or nonregular")
+        need(len(files) < 32, "Installed graph license file census exceeds observation bound")
+        raw = ordinary(package_root / name)
+        total += len(raw)
+        need(len(raw) <= 2 * 1024 * 1024 and total <= 8 * 1024 * 1024,
+             "Installed graph license bytes exceed observation bound")
+        payload = owner._license_payload(package_root / name, name, package_root)
+        # Retain the owner's full original content/encoding, not a reconstructed notice.
+        need(payload["path"] == name and payload["bytes"] == len(raw) and payload["sha256"] == sha(raw),
+             "Installed graph license owner read differs from admitted bytes")
+        encoding = payload["encoding"]
+        recovered = (payload["content"].encode("utf-8") if encoding == "utf-8"
+                     else base64.b64decode(payload["content"], validate=True) if encoding == "base64" else None)
+        need(recovered == raw, "Installed graph license content differs from original bytes")
+        files.append({**payload, "origin": "installed_package"})
+        selected_bytes[name] = raw
+    need(ordinary(package_root / "package.json") == package_bytes, "Installed graph package identity changed during observation")
+    for name, raw in selected_bytes.items():
+        need(ordinary(package_root / name) == raw, "Installed graph license changed during observation")
+    need(graph_package_census(package_root) == before, "Installed graph package census changed during observation")
+    nonempty = sum(bool(raw) for raw in selected_bytes.values())
+    return {
+        "schema": "installed_graph_license_observation/1",
+        "status": "INSTALLED_LICENSE_TEXT_OBSERVED_REVIEW_REQUIRED" if nonempty else "INSTALLED_LICENSE_TEXT_ABSENT_REVIEW_REQUIRED",
+        "owner": "portable.release_contract._license_filename + _license_payload",
+        "package": GRAPH_PACKAGE, "install_path": "webapp/frontend/" + GRAPH_INSTALL,
+        "manifest_spec": manifest["dependencies"][GRAPH_PACKAGE], "lock_identity": selected,
+        "installed_identity": {key: installed[key] for key in ("name", "version", "license")},
+        "installed_package_json": {"bytes": len(package_bytes), "sha256": sha(package_bytes)},
+        "root_entry_names": sorted(before["entries"]), "license_files": files,
+        "license_file_count": len(files), "nonempty_license_file_count": nonempty,
+        "review_required": True, "license_acceptance": False, "fallback_consulted": False,
+        "limits": "One installed package's root license-file observation; no fallback reuse, whole tarball integrity claim, whole portable notices/SBOM, compatibility or legal/release approval. Existing owner gates remain blocking.",
+    }
+
+
 def git(root, *args):
     result = subprocess.run(["git", "--no-optional-locks", "-C", str(root), *args], capture_output=True, check=False, timeout=30)
     need(result.returncode == 0 and len(result.stdout) <= MAX_FILE, "Source Git read failed: " + args[0])
@@ -234,9 +329,10 @@ def main():
     output.mkdir(mode=0o700)
     report = {"schema": "frontend_candidate_materials/1", "status": "INCOMPLETE_OR_FAILED", "source": None,
               "run_id": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"], "job": os.environ["GITHUB_JOB"],
-              "installed_vite_matches_reviewed_bytes": False, "inventory_observed": False, "errors": [],
+              "installed_vite_matches_reviewed_bytes": False, "inventory_observed": False,
+              "graph_license_observed": False, "errors": [],
               "review_required": True, "compatibility": False, "release_authority": False, "inventory_gate_waived": False,
-              "limits": "Two selected installed Vite files plus package/lock identity; not the whole installed package, a new tarball receipt, security clearance, build attribution, notices/SBOM or dependency compatibility. Compiled-braces and external-review BLOCK remain."}
+              "limits": "Two selected installed Vite files plus package/lock identity and one installed graph-package license observation; not whole package/tarball integrity, security clearance, build attribution, notices/SBOM or compatibility. License review, compiled-braces and external-review BLOCK remain."}
     before = None
     try:
         before, source = source_identity(root, os.environ.get("GITHUB_SHA", ""))
@@ -273,6 +369,10 @@ def main():
         for path, row in observed.items():
             need(sha(ordinary(installed_root / path)) == row["sha256"], "Installed Vite member changed during observation")
         report["installed_vite_matches_reviewed_bytes"] = True
+        graph_license = observe_graph_license(owner, root, manifest, lock)
+        emit(output / "installed-graph-license-observation.json", {"source": before, **graph_license})
+        report["graph_license_observed"] = True
+        report["graph_license_status"] = graph_license["status"]
     except Exception as error:
         report["errors"].append(str(error))
     finally:
@@ -282,7 +382,7 @@ def main():
             report["source_after"] = after
         except Exception as error:
             report["errors"].append("Final source binding: " + str(error))
-        if not report["errors"] and report["installed_vite_matches_reviewed_bytes"] and report["inventory_observed"]:
+        if not report["errors"] and report["installed_vite_matches_reviewed_bytes"] and report["inventory_observed"] and report["graph_license_observed"]:
             report["status"] = "MATERIALS_OBSERVED_REVIEW_REQUIRED"
         emit(output / "result.json", report)
         print(json.dumps(report, sort_keys=True, allow_nan=False))

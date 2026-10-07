@@ -164,6 +164,7 @@ def assert_wiring(doc):
     for step in (preflight, receiver, observer):
         assert "${{" not in step["run"], "untrusted input must be passed through env, never inserted into shell source"
     assert all("continue-on-error" not in step for step in front_steps)
+    assert_e2e_evidence_wiring(doc)
 
 
 def test_optional_hosted_data_wiring_keeps_read_only_finite_operations_and_existing_gates():
@@ -230,5 +231,41 @@ def test_candidate_material_wiring_refuses_missing_optional_or_misordered_eviden
 def test_candidate_material_direct_owner_paths_cannot_fall_out_of_hosted_coverage(owner_path):
     doc = copy.deepcopy(document())
     doc["on"]["push"]["paths"].remove(owner_path)
+    with pytest.raises(AssertionError):
+        assert_wiring(doc)
+
+
+def assert_e2e_evidence_wiring(doc):
+    steps = doc["jobs"]["e2e"]["steps"]
+    test_steps = [step for step in steps if step.get("run") == "npm run test:e2e"]
+    assert len(test_steps) == 1 and test_steps[0] == {"run": "npm run test:e2e"}
+    upload = named(steps, "Preserve frontend E2E results and partial evidence")
+    assert upload == {
+        "name": "Preserve frontend E2E results and partial evidence",
+        "if": "${{ always() }}", "uses": UPLOAD,
+        "with": {
+            "name": "frontend-e2e-results-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path": "webapp/frontend/test-results",
+            "if-no-files-found": "error", "retention-days": 14,
+        },
+    }
+    assert steps.index(upload) == steps.index(test_steps[0]) + 1
+
+
+@pytest.mark.parametrize("mutation", ["missing", "success-only", "before-test", "wrong-root"])
+def test_e2e_evidence_retention_guard_rejects_lost_or_misdirected_failure_evidence(mutation):
+    doc = copy.deepcopy(document())
+    steps = doc["jobs"]["e2e"]["steps"]
+    upload = named(steps, "Preserve frontend E2E results and partial evidence")
+    if mutation == "missing":
+        steps.remove(upload)
+    elif mutation == "success-only":
+        upload["if"] = "${{ success() }}"
+    elif mutation == "before-test":
+        steps.remove(upload)
+        command = next(step for step in steps if step.get("run") == "npm run test:e2e")
+        steps.insert(steps.index(command), upload)
+    else:
+        upload["with"]["path"] = "webapp/frontend/dist"
     with pytest.raises(AssertionError):
         assert_wiring(doc)

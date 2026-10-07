@@ -225,6 +225,144 @@ class CanonicalInventoryTests(unittest.TestCase):
             subject.observe_inventory(owner, admitted, Path(directory))
 
 
+class GraphLicenseObservationTests(unittest.TestCase):
+    def owner(self):
+        path = ROOT / "portable/release_contract.py"
+        return subject.load_inventory_owner(subject.ordinary(path), path)
+
+    def fixture(self, root, files=None):
+        package_root = root / "webapp/frontend" / subject.GRAPH_INSTALL
+        package_root.mkdir(parents=True)
+        installed = {"name": subject.GRAPH_PACKAGE, "version": subject.GRAPH_VERSION, "license": "MIT",
+                     "scripts": {"postinstall": "throw-if-executed"}}
+        (package_root / "package.json").write_text(json.dumps(installed), encoding="utf-8")
+        (package_root / "index.mjs").write_text("throw new Error('package code must not execute');\n", encoding="utf-8")
+        for name, raw in (files or {}).items():
+            (package_root / name).write_bytes(raw)
+        manifest = {"dependencies": {subject.GRAPH_PACKAGE: "^" + subject.GRAPH_VERSION}}
+        row = {"version": subject.GRAPH_VERSION, "license": "MIT", "integrity": SRI,
+               "resolved": f"https://registry.npmjs.org/{subject.GRAPH_PACKAGE}/-/{subject.GRAPH_PACKAGE}-{subject.GRAPH_VERSION}.tgz"}
+        lock = {"lockfileVersion": 3, "packages": {"": copy.deepcopy(manifest), subject.GRAPH_INSTALL: row}}
+        return manifest, lock, package_root
+
+    def test_real_owner_preserves_all_selected_text_and_binary_bytes_without_claiming_acceptance(self):
+        owner = self.owner()
+        originals = {"LICENSE": b"Synthetic license fixture\r\nCopyright fixture\n", "NOTICE.binary": b"\xff\x00\x81"}
+        with tempfile.TemporaryDirectory(prefix="graph-license-present-") as directory:
+            root = Path(directory)
+            manifest, lock, package_root = self.fixture(root, {**originals, "README.md": b"not a root license filename"})
+            with patch.object(owner, "_license_payload", wraps=owner._license_payload) as payloads:
+                result = subject.observe_graph_license(owner, root, manifest, lock)
+            self.assertEqual(payloads.call_count, 2)
+            self.assertEqual({call.args[0] for call in payloads.call_args_list}, {package_root / name for name in originals})
+            self.assertTrue(all(call.args[2] == package_root for call in payloads.call_args_list))
+            self.assertEqual(result["status"], "INSTALLED_LICENSE_TEXT_OBSERVED_REVIEW_REQUIRED")
+            self.assertEqual(result["lock_identity"], lock["packages"][subject.GRAPH_INSTALL])
+            self.assertEqual(result["installed_identity"], {"name": subject.GRAPH_PACKAGE, "version": subject.GRAPH_VERSION, "license": "MIT"})
+            self.assertEqual(result["license_file_count"], 2)
+            self.assertEqual(result["nonempty_license_file_count"], 2)
+            for row in result["license_files"]:
+                raw = row["content"].encode("utf-8") if row["encoding"] == "utf-8" else base64.b64decode(row["content"], validate=True)
+                self.assertEqual(raw, originals[row["path"]])
+                self.assertEqual(row["sha256"], subject.sha(raw))
+                self.assertEqual(row["bytes"], len(raw))
+                self.assertEqual(row["origin"], "installed_package")
+            self.assertFalse(result["license_acceptance"])
+            self.assertFalse(result["fallback_consulted"])
+            self.assertTrue(result["review_required"])
+            self.assertEqual(set(result["root_entry_names"]), {"package.json", "index.mjs", "README.md", *originals})
+
+    def test_absent_or_empty_text_is_explicit_and_never_reuses_an_old_fallback(self):
+        owner = self.owner()
+        for files in ({}, {"LICENSE": b""}):
+            with self.subTest(empty_file=bool(files)), tempfile.TemporaryDirectory(prefix="graph-license-absent-") as directory:
+                root = Path(directory)
+                manifest, lock, package_root = self.fixture(root, files)
+                (package_root / "LICENSES").mkdir()  # Canonical owner examines root files, not nested directories.
+                with patch.object(owner, "_license_fallbacks", side_effect=AssertionError("fallback registry must not be consulted")):
+                    result = subject.observe_graph_license(owner, root, manifest, lock)
+                self.assertEqual(result["status"], "INSTALLED_LICENSE_TEXT_ABSENT_REVIEW_REQUIRED")
+                self.assertEqual(result["nonempty_license_file_count"], 0)
+                self.assertEqual(result["license_file_count"], len(files))
+                self.assertFalse(result["license_acceptance"])
+                self.assertFalse(result["fallback_consulted"])
+                self.assertEqual(result["installed_identity"]["license"], "MIT")
+
+    def test_wrong_installed_identity_and_unselected_lock_identity_refuse_before_reading_licenses(self):
+        owner = self.owner()
+        for installed_field, value in (("name", "another-package"), ("version", "1.29.1"), ("license", "other-declaration")):
+            with self.subTest(field=installed_field), tempfile.TemporaryDirectory(prefix="graph-license-identity-") as directory:
+                root = Path(directory)
+                manifest, lock, package_root = self.fixture(root, {"LICENSE": b"fixture"})
+                installed = json.loads((package_root / "package.json").read_bytes())
+                installed[installed_field] = value
+                (package_root / "package.json").write_text(json.dumps(installed), encoding="utf-8")
+                with patch.object(owner, "_license_payload", side_effect=AssertionError("identity must precede license read")), \
+                        self.assertRaisesRegex(ValueError, "Installed graph package identity differs"):
+                    subject.observe_graph_license(owner, root, manifest, lock)
+        for field, value in (("version", "1.29.3"), ("resolved", "https://example.invalid/package.tgz"),
+                             ("integrity", "sha512-short"), ("link", True), ("dev", True)):
+            with self.subTest(lock_field=field), tempfile.TemporaryDirectory(prefix="graph-license-lock-") as directory:
+                root = Path(directory)
+                manifest, lock, _ = self.fixture(root)
+                lock["packages"][subject.GRAPH_INSTALL][field] = value
+                with self.assertRaises(ValueError):
+                    subject.observe_graph_license(owner, root, manifest, lock)
+
+    def test_linked_package_and_linked_or_shared_license_files_refuse(self):
+        owner = self.owner()
+        with tempfile.TemporaryDirectory(prefix="graph-license-indirect-root-") as directory:
+            root = Path(directory)
+            manifest, lock, package_root = self.fixture(root, {"LICENSE": b"fixture"})
+            physical = package_root.with_name("other-physical-package")
+            package_root.rename(physical)
+            package_root.symlink_to(physical, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "Indirect"):
+                subject.observe_graph_license(owner, root, manifest, lock)
+        for kind in ("symlink", "hardlink"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix="graph-license-indirect-file-") as directory:
+                root = Path(directory)
+                manifest, lock, package_root = self.fixture(root)
+                target = root / "outside-license"
+                target.write_bytes(b"fixture")
+                if kind == "symlink":
+                    (package_root / "LICENSE").symlink_to(target)
+                else:
+                    os.link(target, package_root / "LICENSE")
+                with self.assertRaises(ValueError):
+                    subject.observe_graph_license(owner, root, manifest, lock)
+
+    def test_license_identity_and_census_changes_during_owner_read_refuse(self):
+        owner = self.owner()
+        for change in ("license", "identity", "new-license"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory(prefix="graph-license-drift-") as directory:
+                root = Path(directory)
+                manifest, lock, package_root = self.fixture(root, {"LICENSE": b"original fixture"})
+                read_payload = owner._license_payload
+                def drift(path, relative, owned_root):
+                    result = read_payload(path, relative, owned_root)
+                    target = {"license": "LICENSE", "identity": "package.json", "new-license": "NOTICE"}[change]
+                    (package_root / target).write_bytes(b"changed while observing")
+                    return result
+                with patch.object(owner, "_license_payload", side_effect=drift), self.assertRaisesRegex(ValueError, "changed"):
+                    subject.observe_graph_license(owner, root, manifest, lock)
+
+    def test_mismatched_owner_payload_and_oversized_license_refuse(self):
+        owner = self.owner()
+        with tempfile.TemporaryDirectory(prefix="graph-license-owner-drift-") as directory:
+            root = Path(directory)
+            manifest, lock, package_root = self.fixture(root, {"LICENSE": b"original fixture"})
+            read_payload = owner._license_payload
+            def wrong_payload(path, relative, owned_root):
+                return {**read_payload(path, relative, owned_root), "content": "different content"}
+            with patch.object(owner, "_license_payload", side_effect=wrong_payload), self.assertRaisesRegex(ValueError, "content differs"):
+                subject.observe_graph_license(owner, root, manifest, lock)
+            with (package_root / "LICENSE").open("wb") as stream:
+                stream.truncate(2 * 1024 * 1024 + 1)
+            with self.assertRaisesRegex(ValueError, "observation bound"):
+                subject.observe_graph_license(owner, root, manifest, lock)
+
+
 class RealGitSourceBindingTests(unittest.TestCase):
     def git(self, root, *arguments):
         return subprocess.check_output(["git", "-C", str(root), "-c", "core.hooksPath=/dev/null", *arguments], text=True).strip()
