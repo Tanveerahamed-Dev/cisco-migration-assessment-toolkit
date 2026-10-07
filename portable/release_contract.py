@@ -163,7 +163,7 @@ def _reviewed_npm_inventory(field: str) -> tuple[int, str]:
 #: production-graph pins above, a change must be reviewed here before a release:
 #: tests/test_portable_release_workflow.py derives both sets from real builds.
 EXPECTED_BUILD_ONLY_NPM_PACKAGES = {
-    "bundled_frontend": ("node_modules/rolldown@1.2.5", "node_modules/vite@8.2.2"),
+    "bundled_frontend": ("node_modules/rolldown@1.2.5", "node_modules/vite@8.2.4"),
     "bundled_scope_frontend": ("node_modules/rolldown@1.2.9", "node_modules/vite@8.2.1"),
 }
 

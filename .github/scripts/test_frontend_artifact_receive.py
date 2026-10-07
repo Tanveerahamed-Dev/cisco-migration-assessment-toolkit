@@ -326,8 +326,8 @@ class PatchAndImportTests(unittest.TestCase):
             if args[0] == "rev-parse":
                 return s["import_commit"].encode()
             if args[-1] == "webapp/frontend":
-                return ("\n".join(changed) + "\n").encode()
-            return ("\n".join(changed + ["docs/NOW.md"]) + "\n").encode()
+                return ("\0".join(changed) + "\0").encode()
+            return ("\0".join(changed + ["docs/NOW.md"]) + "\0").encode()
         def fake_blob(root, sha, path):
             return (imported if sha == s["import_commit"] else before)[path]
         with patch.dict(os.environ, {"GITHUB_SHA": s["import_commit"]}), patch.object(receive, "git", fake_git), \
@@ -345,6 +345,104 @@ class PatchAndImportTests(unittest.TestCase):
             modes[receive.PACKAGE]["mode"] = "120000"
             with self.assertRaisesRegex(ValueError, "path/mode census"):
                 receive.post_import(None, s, "dependency-candidate", desired, {})
+
+
+class RealGitPostImportTests(unittest.TestCase):
+    def git(self, root, *args):
+        return receive.git(root, "-c", "user.name=Receiver Fixture", "-c", "user.email=receiver@example.invalid",
+                           "-c", "commit.gpgsign=false", *args)
+
+    def fixture(self, root, mutation=None):
+        self.git(root, "init", "--quiet")
+        self.git(root, "config", "core.autocrlf", "false")
+        self.git(root, "config", "core.fileMode", "true")
+        self.git(root, "config", "diff.renames", "true")
+        prefix = receive.DIST
+        old_topology = b"".join(f"export const topology{index} = {index};\n".encode() for index in range(100))
+        old_graph = b"".join(f"export const graph{index} = {index};\n".encode() for index in range(100))
+        before = {
+            prefix + "index.html": b'<script src="assets/main-old.js"></script>\n',
+            prefix + "assets/shell.css": b"body { color: black; }\n",
+            prefix + "assets/topology-old.js": old_topology,
+            prefix + "assets/graph-old.js": old_graph,
+            prefix + "assets/main-old.js": b'const legacy = "' + b"A" * 2048 + b'";\n',
+        }
+        desired = {
+            prefix + "index.html": b'<script src="assets/main-new.js"></script>\n',
+            prefix + "assets/shell.css": before[prefix + "assets/shell.css"],
+            prefix + "assets/topology-new.js": old_topology.replace(b"topology99 = 99", b"topology99 = 100"),
+            prefix + "assets/graph-new.js": old_graph.replace(b"graph99 = 99", b"graph99 = 100"),
+            prefix + "assets/main-new.js": b'const future = "' + b"Z" * 2048 + b'";\n',
+        }
+        sources = {receive.PACKAGE: b'{"name":"fixture"}\n', receive.LOCK: b'{"packages":{}}\n',
+                   "webapp/frontend/src/view.ts": b"export const fixture = true;\n",
+                   ".github/scripts/frontend_build_handoff.py": b"# fixture processor input\n"}
+        for path, data in (before | sources).items():
+            target = root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        self.git(root, "add", "--all")
+        self.git(root, "commit", "--quiet", "-m", "producer fixture")
+        source = self.git(root, "rev-parse", "HEAD").decode().strip()
+        for path in before:
+            (root / path).unlink()
+        for path, data in desired.items():
+            (root / path).write_bytes(data)
+        unrelated = "docs/line\nwith\ttab.md"
+        (root / unrelated).parent.mkdir(parents=True)
+        (root / unrelated).write_bytes(b"unrelated review note\n")
+        if mutation == "extra-dist":
+            (root / (prefix + "assets/extra.js")).write_bytes(b"unrequested\n")
+        elif mutation == "leftover":
+            (root / (prefix + "assets/topology-old.js")).write_bytes(old_topology)
+        elif mutation == "changed-bytes":
+            (root / (prefix + "assets/graph-new.js")).write_bytes(b"wrong admitted bytes\n")
+        elif mutation == "mode":
+            (root / (prefix + "assets/graph-new.js")).chmod(0o755)
+        elif mutation == "extra-frontend":
+            (root / "webapp/frontend/src/unrequested.ts").write_bytes(b"unrequested frontend source\n")
+        elif mutation == "producer-input":
+            (root / ".github/scripts/frontend_build_handoff.py").write_bytes(b"# changed processor input\n")
+        self.git(root, "add", "--all")
+        self.git(root, "commit", "--quiet", "-m", "import fixture")
+        imported = self.git(root, "rev-parse", "HEAD").decode().strip()
+        s = selected() | {"profile": "post-import", "artifact_profile": "frontend-dist", "source_sha": source,
+                          "head_sha": source, "import_commit": imported}
+        expected_changes = {path for path in before.keys() | desired.keys() if before.get(path) != desired.get(path)}
+        return s, desired, sources, expected_changes, unrelated
+
+    def test_actual_five_file_dist_import_counts_seven_paths_even_when_git_detects_two_renames(self):
+        with tempfile.TemporaryDirectory(prefix="receiver-dist-renames-") as temporary:
+            root = Path(temporary)
+            s, desired, sources, expected_changes, unrelated = self.fixture(root)
+            self.assertEqual(len(desired), 5)
+            self.assertEqual(len(expected_changes), 7)
+            rename_display = self.git(root, "diff", "--name-status", "-z", "--find-renames=50%",
+                                      s["source_sha"], s["import_commit"], "--", "webapp/frontend")
+            self.assertEqual(sum(re.fullmatch(rb"R[0-9]{3}", token) is not None for token in rename_display.split(b"\0")), 2)
+            old_names = self.git(root, "diff", "--name-only", s["source_sha"], s["import_commit"], "--", "webapp/frontend")
+            self.assertEqual(len(old_names.decode().splitlines()), 5, "the old display-based census must actually lose rename source paths")
+            with patch.dict(os.environ, {"GITHUB_SHA": s["import_commit"]}):
+                result = receive.post_import(root, s, "frontend-dist", desired, sources)
+            self.assertEqual(result["frontend_changed_paths"], sorted(expected_changes))
+            self.assertEqual(set(result["all_repository_changed_paths"]), expected_changes | {unrelated})
+            self.assertEqual(len(result["all_repository_changed_paths"]), 8)
+            self.assertIn("unrelated repository changes are not certified", result["scope"])
+
+    def test_real_dist_import_still_refuses_extra_leftover_bytes_modes_and_source_drift(self):
+        for mutation, refusal in (("extra-dist", "path/mode census"), ("leftover", "path/mode census"),
+                                  ("changed-bytes", "Imported Git bytes"), ("mode", "path/mode census"),
+                                  ("extra-frontend", "change census"), ("producer-input", "non-dist producer input")):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(prefix="receiver-dist-refusal-") as temporary:
+                root = Path(temporary)
+                s, desired, sources, _, _ = self.fixture(root, mutation)
+                with patch.dict(os.environ, {"GITHUB_SHA": s["import_commit"]}), self.assertRaisesRegex(ValueError, refusal):
+                    receive.post_import(root, s, "frontend-dist", desired, sources)
+
+    def test_changed_path_decoder_refuses_incomplete_empty_and_duplicate_nul_frames(self):
+        for raw in (b"one\n", b"one\0\0", b"one\0one\0"):
+            with self.subTest(raw=raw), patch.object(receive, "git", return_value=raw), self.assertRaises(ValueError):
+                receive.changed_git_paths(None, "before", "after")
 
 
 class CommandReceiptTests(unittest.TestCase):

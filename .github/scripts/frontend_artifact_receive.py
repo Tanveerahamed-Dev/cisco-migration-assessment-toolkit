@@ -785,6 +785,18 @@ def patch(work, old, desired, producer_patch=None):
     return git(repo, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", before_tree)
 
 
+def changed_git_paths(root, before, after, *scope):
+    # An import census counts both removed and added names, never a rename display.
+    # NUL framing also preserves a literal LF/TAB in informational unrelated paths.
+    raw = git(root, "diff", "--no-renames", "--name-only", "-z", before, after, "--", *scope)
+    if not raw:
+        return []
+    need(raw.endswith(b"\0"), "Changed Git paths are not NUL terminated")
+    paths = [path.decode("utf-8", errors="strict") for path in raw[:-1].split(b"\0")]
+    need(all(paths) and len(paths) == len(set(paths)), "Changed Git path census is malformed")
+    return paths
+
+
 def post_import(root, s, profile, desired, sources):
     imported = s["import_commit"]
     need(imported == os.environ.get("GITHUB_SHA") and git(root, "rev-parse", "HEAD").decode().strip() == imported, "Import comparison is not current hosted exact source")
@@ -795,7 +807,7 @@ def post_import(root, s, profile, desired, sources):
     need(set(actual) == expected_paths and all(row["mode"] == "100644" for row in actual.values()), "Imported output path/mode census differs")
     for path, data in desired.items():
         need(blob(root, imported, path) == data, "Imported Git bytes differ from admitted artifact")
-    changed = set(filter(None, git(root, "diff", "--name-only", s["source_sha"], imported, "--", "webapp/frontend").decode().splitlines()))
+    changed = set(changed_git_paths(root, s["source_sha"], imported, "webapp/frontend"))
     old_paths = {PACKAGE, LOCK} if profile == "dependency-candidate" else set(tree(root, s["source_sha"], DIST))
     expected_changed = {path for path in old_paths | set(desired)
                         if path not in old_paths or path not in desired or blob(root, s["source_sha"], path) != desired[path]}
@@ -804,7 +816,7 @@ def post_import(root, s, profile, desired, sources):
         for path, data in sources.items():
             need(blob(root, imported, path) == data, "Dist import changed a non-dist producer input; rebuild from new source required")
     return {"import_commit": imported, "frontend_changed_paths": sorted(changed),
-            "all_repository_changed_paths": git(root, "diff", "--name-only", s["source_sha"], imported).decode().splitlines(),
+            "all_repository_changed_paths": changed_git_paths(root, s["source_sha"], imported),
             "scope": "Imported bytes only; unrelated repository changes are not certified; final exact-source rebuild remains required"}
 
 
