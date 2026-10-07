@@ -24,7 +24,7 @@ import { kindWords, recognisedSeverity, type Device, type Link, type Trace } fro
 
 import type { FabricScene, HighlightState, PickResult, QualityTier, SceneEvent } from "./contract";
 import { FabricA11yTree, linkCutSentence } from "./FabricA11yTree";
-import { createHoverChannel, FabricLabels, type HoverChannel } from "./FabricLabels";
+import { createHoverChannel, FabricLabels, strandedMeasurementScope, type HoverChannel, type StrandedMeasurement } from "./FabricLabels";
 import { publishSceneStats, releaseSceneStats } from "./telemetry";
 import { traceEndOf, type TraceMarkKind } from "./traceEnd";
 import { FabricLegend } from "./FabricLegend";
@@ -1246,11 +1246,19 @@ export function Fabric3D({
      and nothing saying so. The label layer reports which stranded hosts it could NOT draw this frame
      (off the canvas, behind a chassis, or dropped) — only when that set changes — and the stage
      states the count and names them. */
-  const [strandedUnseen, setStrandedUnseen] = useState<readonly string[]>([]);
-  const onStrandedUnseen = useCallback((ids: readonly string[]) => setStrandedUnseen(ids), []);
+  const [strandedReport, setStrandedReport] = useState<{ ids: readonly string[]; measurement: StrandedMeasurement } | null>(null);
+  const onStrandedUnseen = useCallback((ids: readonly string[], measurement: StrandedMeasurement): void => {
+    setStrandedReport({ ids, measurement });
+  }, []);
+  const measuredCut = blast.host === null ? null : (devices.find((d) => d.id === blast.host || d.host === blast.host)?.id ?? null);
+  const measuredScope = strandedMeasurementScope(measuredCut, strandedIds, blast.qualifier);
+  const visibilityMeasured = layoutReady && sceneRef.current !== null && sceneError === null
+    && strandedReport !== null && strandedReport.measurement.state === "measured"
+    && strandedReport.measurement.source === devices && strandedReport.measurement.epoch === sceneEpoch
+    && strandedReport.measurement.scope === measuredScope;
   const unseenHosts = useMemo(
-    () => (blast.stranded.length === 0 ? [] : strandedUnseen.filter((id) => strandedIds.has(id)).map((id) => deviceById.get(id)?.host ?? id)),
-    [blast, strandedUnseen, strandedIds],
+    () => (blast.stranded.length === 0 ? [] : (strandedReport?.ids ?? []).filter((id) => strandedIds.has(id)).map((id) => deviceById.get(id)?.host ?? id)),
+    [blast, strandedReport, strandedIds],
   );
 
   /** The traced packet's ending, decided once and shared by the canvas channel and the label layer
@@ -1589,15 +1597,20 @@ export function Fabric3D({
             role="note"
             data-blast={blast.certainty ?? ""}
             data-stranded-total={strandedIds.size}
-            data-stranded-unseen={unseenHosts.length}
+            data-mark-measurement={visibilityMeasured ? "measured" : "unmeasured"}
+            data-stranded-unseen={visibilityMeasured ? unseenHosts.length : undefined}
             title={
-              unseenHosts.length === 0
+              !visibilityMeasured
+                ? "Stage or visible label dimensions are unmeasured for this selection."
+                : unseenHosts.length === 0
                 ? `Every host that ${blast.host ?? blast.link ?? "the selection"} strands carries a stranded mark on the fabric.`
                 : `Not in view, so their stranded marks are not drawn: ${unseenHosts.join(", ")}. The camera is not moved by a selection; Reset view or the Fabric list reaches them.`
             }
           >
             {`${blast.host ?? blast.link ?? "Selection"} strands ${strandedIds.size}${blast.qualifier === "" ? "" : ` (${blast.qualifier})`}`}
-            {unseenHosts.length === 0
+            {!visibilityMeasured
+              ? " · mark visibility unmeasured"
+              : unseenHosts.length === 0
               ? ` · all ${strandedIds.size} marked`
               : ` · ${unseenHosts.length} out of view: ${unseenHosts.join(", ")}`}
           </span>

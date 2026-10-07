@@ -1377,8 +1377,34 @@ describe("the blast radius is wired to the scene contract and the label layer", 
       flushFrames(4);
     });
 
+    // jsdom supplies no layout: an absent measurement must not claim zero unseen.
+    const unmeasured = m.container.querySelector<HTMLElement>("[data-stranded-total]")!;
+    expect(unmeasured.dataset["markMeasurement"]).toBe("unmeasured");
+    expect(unmeasured.hasAttribute("data-stranded-unseen")).toBe(false);
+    expect(unmeasured.textContent).not.toContain(`all ${stranded.length} marked`);
+    // Give the real label/callback pipeline finite instance geometry. This remains
+    // a scene-wiring fixture, not proof of actual browser placement or convergence.
+    const overlay = m.container.querySelector<HTMLElement>('[data-testid="fabric3d-labels"]')!;
+    const stageWidth = 6 * 260;
+    const stageHeight = Math.max(900, Math.ceil(fabric.devices.length / 6) * 180);
+    overlay.getBoundingClientRect = (): DOMRect => ({
+      x: 0, y: 0, left: 0, top: 0, right: stageWidth, bottom: stageHeight,
+      width: stageWidth, height: stageHeight, toJSON: () => ({}),
+    }) as DOMRect;
+    for (const label of overlay.querySelectorAll<HTMLElement>(".fabric3d-label")) {
+      Object.defineProperty(label, "offsetWidth", { configurable: true, get: () => 160 });
+      Object.defineProperty(label, "offsetHeight", { configurable: true, get: () => 24 });
+      const name = label.firstElementChild as HTMLElement;
+      Object.defineProperty(name, "offsetLeft", { configurable: true, get: () => 4 });
+      Object.defineProperty(name, "offsetWidth", { configurable: true, get: () => 152 });
+    }
+    act(() => {
+      flushFrames(4);
+    });
+
     const note = m.container.querySelector<HTMLElement>("[data-stranded-total]");
     expect(note, "a stranded count must be on the fabric whenever a blast radius is drawn").not.toBeNull();
+    expect(note!.dataset["markMeasurement"]).toBe("measured");
     const marked = [...m.container.querySelectorAll<HTMLElement>('[data-stranded="yes"]')].filter(
       (el) => el.dataset["visible"] === "true",
     );

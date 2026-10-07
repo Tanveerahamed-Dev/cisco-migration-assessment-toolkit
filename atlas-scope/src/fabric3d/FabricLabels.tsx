@@ -137,7 +137,7 @@ export interface FabricLabelsProps {
    * (acceptance A6: with the camera on a trace, 3 of core2's 8 stranded hosts were off the canvas
    * and nothing on the fabric said so). Never called per frame with an unchanged answer.
    */
-  onStrandedUnseen?: (ids: readonly string[]) => void;
+  onStrandedUnseen?: (ids: readonly string[], measurement: StrandedMeasurement) => void;
   /**
    * The selected finding and the hosts it names (acceptance A4). A finding is a THIRD kind of
    * subject, distinct from the device selection: selecting F030 used to call setHighlight with
@@ -175,6 +175,18 @@ export interface FabricLabelsProps {
    */
   onPointerFocusLost?: () => readonly (HTMLElement | null | undefined)[] | void;
 }
+
+/** Measurement availability for the existing unseen-label count, not an occlusion or settle verdict. */
+export interface StrandedMeasurement {
+  state: "measured" | "unmeasured";
+  source: readonly Device[];
+  epoch: number;
+  scope: string;
+}
+
+/** Roles and wording can change even when the stranded ID set stays the same. */
+export const strandedMeasurementScope = (cut: string | null, stranded: Iterable<string>, qualifier: string): string =>
+  JSON.stringify([cut, [...stranded].sort(), qualifier]);
 
 /** How far above the anchor a label sits, as a multiple of its own height (owned by ./labelResolve). */
 const LIFT = LABEL_LIFT;
@@ -261,6 +273,8 @@ export function FabricLabels({
   cutRef.current = cutPoint;
   const strandedRef = useRef(stranded);
   strandedRef.current = stranded;
+  const qualifierRef = useRef(strandedQualifier);
+  qualifierRef.current = strandedQualifier;
   const unseenCbRef = useRef(onStrandedUnseen);
   unseenCbRef.current = onStrandedUnseen;
 
@@ -326,6 +340,16 @@ export function FabricLabels({
     let stageWidth = host ? host.getBoundingClientRect().width : 0;
     /* The height too, for the off-canvas finding pointers below — same observer, same reason. */
     let stageHeight = host ? host.getBoundingClientRect().height : 0;
+    let unseenKey: string | null = null;
+    const publishMeasurement = (state: StrandedMeasurement["state"], ids: readonly string[]): void => {
+      const scope = strandedMeasurementScope(cutRef.current, strandedRef.current, qualifierRef.current);
+      const key = JSON.stringify([state, scope, ids]);
+      if (key === unseenKey) return;
+      unseenKey = key;
+      unseenCbRef.current?.(ids, { state, source: devices, epoch, scope });
+    };
+    // No completed placement has measured the visible labels for this source yet.
+    publishMeasurement("unmeasured", []);
 
     /* KEEP-OUT REGIONS. The stage's own overlays — the toolbar chips across the top, the Legend
        button — float over the canvas, and a name placed under one is a name nobody can read.
@@ -387,6 +411,7 @@ export function FabricLabels({
           stageWidth = box ? box.inlineSize : entry.contentRect.width;
           stageHeight = box ? box.blockSize : entry.contentRect.height;
         }
+        if (!(stageWidth > 0 && stageHeight > 0)) publishMeasurement("unmeasured", []);
         measureKeepouts();
       });
       ro.observe(host);
@@ -436,8 +461,6 @@ export function FabricLabels({
        and the stage width folded in, so a change of priority or of stage reads as movement. */
     const pose: number[] = [];
     let prevPose: number[] = [];
-    /** The unseen-stranded answer last reported (A6), so an unchanged one is never re-sent. */
-    let unseenKey: string | null = null;
     let prevSeq = "";
     let settledNow = false;
     /* THE DWELL (acceptance C5, label popping). Whether a name may appear or leave THIS pass, given
@@ -608,15 +631,19 @@ export function FabricLabels({
       let originX = 0;
       let originY = 0;
       let stageW = stageWidth;
+      let stageH = stageHeight;
       if (coordinateSpace === "client") {
         const rect = container.getBoundingClientRect();
         originX = rect.left;
         originY = rect.top;
         stageW = rect.width;
-      } else if (stageW <= 0) {
+        stageH = rect.height;
+      } else if (!(stageW > 0 && stageH > 0)) {
         /* Not reported yet (the observer delivers after the first layout) or a collapsed stage:
            ask layout directly, and keep asking only for as long as there is no answer. */
-        stageW = container.getBoundingClientRect().width;
+        const rect = container.getBoundingClientRect();
+        stageW = rect.width;
+        stageH = rect.height;
       }
 
       const sel = selectedRef.current;
@@ -743,6 +770,7 @@ export function FabricLabels({
          uncached, and it must not keep the whole layer from being placed. */
       if (wroteMarks && needsMeasure && !deferredLast) {
         deferredLast = true;
+        publishMeasurement("unmeasured", []);
         return;
       }
       deferredLast = false;
@@ -759,7 +787,7 @@ export function FabricLabels({
           const nameEl = el.firstElementChild as HTMLElement | null;
           const nameC = nameEl ? nameEl.offsetLeft + nameEl.offsetWidth / 2 : el.offsetWidth / 2;
           const measured = { w: el.offsetWidth, h: el.offsetHeight, nameC };
-          if (measured.w > 0) sizes.set(id, measured);
+          if (measured.w > 0 && measured.h > 0) sizes.set(id, measured);
         }
       }
       /* EVERY visible device is an obstacle, not only every placed label. The declutter used to
@@ -918,7 +946,7 @@ export function FabricLabels({
           const nameEl = el.firstElementChild as HTMLElement | null;
           const nameC = nameEl ? nameEl.offsetLeft + nameEl.offsetWidth / 2 : el.offsetWidth / 2;
           size = { w: el.offsetWidth, h: el.offsetHeight, nameC };
-          if (size.w > 0) sizes.set(id, size);
+          if (size.w > 0 && size.h > 0) sizes.set(id, size);
         }
 
         const x = Math.round(p.x - originX);
@@ -1134,12 +1162,18 @@ export function FabricLabels({
       const report = unseenCbRef.current;
       if (report !== undefined) {
         const unseen: string[] = [];
-        for (const id of seq) if (str.has(id) && els.get(id)?.dataset.visible !== "true") unseen.push(id);
-        const key = unseen.join("|");
-        if (key !== unseenKey) {
-          unseenKey = key;
-          report(unseen);
+        let measured = stageW > 0 && stageH > 0;
+        for (const id of seq) {
+          if (!str.has(id)) continue;
+          const el = els.get(id);
+          if (el?.dataset.visible !== "true") unseen.push(id);
+          else {
+            const size = sizes.get(id);
+            if (size === undefined || !(size.w > 0 && size.h > 0)) measured = false;
+          }
+          if (el === undefined) measured = false;
         }
+        publishMeasurement(measured ? "measured" : "unmeasured", unseen);
       }
 
       /* STILL CONVERGING (acceptance C5, the settle's half of the dwell — labelResolve
@@ -1176,12 +1210,12 @@ export function FabricLabels({
     // `epoch` is a dependency so a replaced scene gets a fresh loop rather than a stale handle.
   }, [baseOrder, coordinateSpace, epoch, sceneRef]);
 
-  /* The finding mark's text is the finding id, so a new finding can change a label's width. */
+  /* Finding identity and stranded qualification text can change a label's measured width. */
   useEffect(() => {
     sizesRef.current.clear();
     writtenRef.current.clear();
     pointerSizesRef.current.clear();
-  }, [finding]);
+  }, [finding, strandedQualifier]);
 
   /* Web-font metrics land after first paint; a stale width makes the declutter reject labels that
      would in fact fit. Clearing the cache is enough — the next tick re-measures. */
