@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -21,6 +22,160 @@ _ALTERNATE_DISTRIBUTION_BUILD = re.compile(
     r"\bsetup\.py\b.{0,80}\b(?:sdist|bdist_wheel)\b"
     r")"
 )
+
+# Runner selectors and job names are a closed census, not an allowlist which could
+# silently lose a job or add a new matrix axis. The Linux display alias preserves
+# existing branch-protection contexts; it never selects the execution image.
+_LINUX_IMAGE = "ubuntu-24.04"
+_MATRIX_RUNNER = "${{ matrix.os }}"
+_MATRIX_DISPLAY = "${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-latest' || matrix.os }}"
+_TEST_JOB_NAME = "Tests · py${{ matrix.python-version }} · " + _MATRIX_DISPLAY
+_RUNNER_JOBS = {
+    "atlas-scope-ci.yml": {
+        "atlas-scope": ("Atlas Scope typecheck + vitest + build + hub build", _LINUX_IMAGE),
+    },
+    "ci.yml": {
+        "lint": ("Ruff lint", _LINUX_IMAGE),
+        "test": (_TEST_JOB_NAME, _MATRIX_RUNNER),
+        "typecheck": ("mypy", _LINUX_IMAGE),
+        "coverage": ("Coverage", _LINUX_IMAGE),
+        "dependency-audit": ("Dependency audit", _LINUX_IMAGE),
+        "package": ("Distribution contract", _LINUX_IMAGE),
+        "projection-performance": ("Projection HTTP performance · opt-in measurement", _MATRIX_RUNNER),
+        "installed-transition-runtime": ("Installed transition runtime · pinned Windows profile", "windows-2025"),
+    },
+    "master-reference-ci.yml": {
+        "verify": ("Exact-source compiler, reference, and release contracts", _LINUX_IMAGE),
+    },
+    "portable-release.yml": {
+        "gate": ("Full source and frontend gate (unprivileged runner)", "windows-2025"),
+        "portable": ("Build and qualify Atlas.exe", "windows-2025"),
+        "verify_candidate": ("Reverify candidate and current-main gates (unprivileged runner)", _LINUX_IMAGE),
+        "draft": ("Attest and attach the exact draft assets", _LINUX_IMAGE),
+    },
+    "publish.yml": {
+        "pypi-publish": ("Promote exact GitHub Release assets", _LINUX_IMAGE),
+    },
+    "release.yml": {
+        "release": ("Verify tag and create immutable release assets", _LINUX_IMAGE),
+    },
+    "webapp-ci.yml": {
+        "scope": ("Webapp CI change scope", _LINUX_IMAGE),
+        "backend": ("Backend e2e tests", _LINUX_IMAGE),
+        "frontend": ("Frontend test + type-check + build", _LINUX_IMAGE),
+        "e2e": ("Frontend E2E", _LINUX_IMAGE),
+        "visual": ("Design visual regression · Windows 2025 x64 Chromium", "windows-2025"),
+        "gate": ("Webapp CI gate", _LINUX_IMAGE),
+    },
+}
+_TEST_CONTEXTS = (
+    "Tests · py3.10 · ubuntu-latest",
+    "Tests · py3.11 · ubuntu-latest",
+    "Tests · py3.12 · ubuntu-latest",
+    "Tests · py3.13 · ubuntu-latest",
+    "Tests · py3.14 · ubuntu-latest",
+    "Tests · py3.12 · windows-latest",
+)
+_REQUIRED_NON_MATRIX_CONTEXTS = {
+    "Build and qualify Atlas.exe",
+    "Coverage",
+    "Dependency audit",
+    "Distribution contract",
+    "Exact-source compiler, reference, and release contracts",
+    "Full source and frontend gate (unprivileged runner)",
+    "Installed transition runtime · pinned Windows profile",
+    "Ruff lint",
+    "mypy",
+}
+
+
+class _RunnerWorkflowLoader(yaml.SafeLoader):
+    """Read GitHub's `on` key as text and reject duplicate keys at every depth."""
+
+
+# Copy resolver lists: changing SafeLoader itself would affect unrelated contracts.
+_RunnerWorkflowLoader.yaml_implicit_resolvers = {
+    key: [(tag, pattern) for tag, pattern in resolvers if tag != "tag:yaml.org,2002:bool"]
+    for key, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_RunnerWorkflowLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"), list("tTfF")
+)
+
+
+def _runner_mapping(loader, node, deep=False):
+    seen = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, str) or key in seen:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"non-string or duplicate workflow key {key!r}", key_node.start_mark
+            )
+        seen.add(key)
+    return loader.construct_mapping(node, deep=deep)
+
+
+_RunnerWorkflowLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _runner_mapping)
+
+
+def _runner_documents() -> dict:
+    return {name: yaml.load(_workflow(name), Loader=_RunnerWorkflowLoader) for name in _RUNNER_JOBS}
+
+
+def _required_main_contexts() -> list[str]:
+    contract = json.loads((ROOT / ".github" / "portable-required-main-checks.json").read_text(encoding="utf-8"))
+    assert contract["schema"] == "atlas.portable-required-main-checks/1"
+    return contract["contexts"]
+
+
+def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]) -> None:
+    """Structural runner/name coverage; existing contracts still own commands and trust boundaries."""
+    assert set(documents) == set(_RUNNER_JOBS), "workflow census changed"
+    strategies = {
+        ("ci.yml", "test"): {
+            "fail-fast": False,
+            "matrix": {
+                "os": [_LINUX_IMAGE],
+                "python-version": ["3.10", "3.11", "3.12", "3.13", "3.14"],
+                "include": [{"os": "windows-latest", "python-version": "3.12"}],
+            },
+        },
+        ("ci.yml", "projection-performance"): {"matrix": {"os": ["windows-latest"]}},
+    }
+    direct_names = []
+    linux_selectors = 0
+    for filename, expected_jobs in _RUNNER_JOBS.items():
+        document = documents[filename]
+        assert isinstance(document, dict) and isinstance(document.get("on"), dict), filename
+        jobs = document.get("jobs")
+        assert isinstance(jobs, dict) and set(jobs) == set(expected_jobs), f"{filename}: job census changed"
+        for job_id, (name, runner) in expected_jobs.items():
+            job = jobs[job_id]
+            assert isinstance(job, dict), f"{filename}:{job_id}"
+            assert (job.get("name"), job.get("runs-on")) == (name, runner), f"{filename}:{job_id}: name/runner"
+            assert job.get("strategy") == strategies.get((filename, job_id)), f"{filename}:{job_id}: strategy"
+            assert isinstance(job.get("steps"), list) and job["steps"], f"{filename}:{job_id}: steps"
+            linux_selectors += runner == _LINUX_IMAGE
+            if (filename, job_id) != ("ci.yml", "test"):
+                direct_names.append(job["name"])
+    assert linux_selectors == 16
+    test_job = documents["ci.yml"]["jobs"]["test"]
+    matrix = test_job["strategy"]["matrix"]
+    legs = [
+        {"os": image, "python-version": version}
+        for image in matrix["os"] for version in matrix["python-version"]
+    ] + matrix["include"]
+    # Evaluate only the exact, source-asserted display expression above, not arbitrary Actions code.
+    contexts = tuple(
+        test_job["name"].replace("${{ matrix.python-version }}", leg["python-version"]).replace(
+            _MATRIX_DISPLAY, "ubuntu-latest" if leg["os"] == _LINUX_IMAGE else leg["os"]
+        )
+        for leg in legs
+    )
+    assert contexts == _TEST_CONTEXTS
+    assert len(set(direct_names + list(contexts))) == len(direct_names) + len(contexts)
+    assert _REQUIRED_NON_MATRIX_CONTEXTS <= set(direct_names)
+    assert required_contexts == sorted(_REQUIRED_NON_MATRIX_CONTEXTS | set(_TEST_CONTEXTS))
 
 
 def _workflow(name: str) -> str:
@@ -159,9 +314,117 @@ def test_pull_request_workflows_cannot_select_self_hosted_runners():
         ]
         assert runs_on
         assert all(
-            value in {"ubuntu-latest", "windows-2025", "${{ matrix.os }}"}
+            value in {"ubuntu-24.04", "windows-2025", "${{ matrix.os }}"}
             for value in runs_on
         )
+
+
+def test_hosted_runner_pins_preserve_jobs_matrix_and_protected_contexts():
+    assert {path.name for path in _workflow_paths()} == set(_RUNNER_JOBS) | {
+        "main-selfhosted.yml", "release-selfhosted.yml",
+    }
+    _assert_hosted_runner_contract(_runner_documents(), _required_main_contexts())
+
+
+@pytest.mark.parametrize("filename,job_id,field,value", [
+    ("atlas-scope-ci.yml", "atlas-scope", "runs-on", "ubuntu-latest"),
+    ("ci.yml", "lint", "runs-on", ["self-hosted", "Linux", "X64"]),
+    ("ci.yml", "test", "runs-on", "ubuntu-24.04"),
+    ("ci.yml", "test", "name", "Tests · py${{ matrix.python-version }} · ${{ matrix.os }}"),
+    ("ci.yml", "installed-transition-runtime", "runs-on", "windows-latest"),
+    ("ci.yml", "dependency-audit", "name", "Dependency audit (optional)"),
+    ("master-reference-ci.yml", "verify", "runs-on", "${{ vars.CI_RUNNER }}"),
+    ("portable-release.yml", "portable", "runs-on", "ubuntu-24.04"),
+    ("portable-release.yml", "verify_candidate", "runs-on", "ubuntu-latest"),
+    ("portable-release.yml", "draft", "runs-on", {"group": "local-fleet"}),
+    ("publish.yml", "pypi-publish", "runs-on", "ubuntu-26.04"),
+    ("release.yml", "release", "runs-on", "ubuntu-latest"),
+    ("webapp-ci.yml", "visual", "runs-on", "windows-latest"),
+    ("webapp-ci.yml", "gate", "runs-on", "ubuntu-latest"),
+    ("webapp-ci.yml", "frontend", "steps", []),
+])
+def test_hosted_runner_contract_rejects_selector_name_and_job_body_drift(filename, job_id, field, value):
+    documents = _runner_documents()
+    documents[filename]["jobs"][job_id][field] = value
+    with pytest.raises(AssertionError):
+        _assert_hosted_runner_contract(documents, _required_main_contexts())
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing_workflow", "extra_workflow", "missing_job", "extra_job", "moved_job", "missing_context", "renamed_context",
+])
+def test_hosted_runner_contract_rejects_census_drift(mutation):
+    documents = _runner_documents()
+    contexts = _required_main_contexts()
+    if mutation == "missing_workflow":
+        del documents["publish.yml"]
+    elif mutation == "extra_workflow":
+        documents["extra.yml"] = documents["publish.yml"]
+    elif mutation == "missing_job":
+        del documents["portable-release.yml"]["jobs"]["draft"]
+    elif mutation == "extra_job":
+        documents["ci.yml"]["jobs"]["replacement"] = documents["ci.yml"]["jobs"]["lint"]
+    elif mutation == "moved_job":
+        documents["webapp-ci.yml"]["jobs"]["lint"] = documents["ci.yml"]["jobs"].pop("lint")
+    elif mutation == "missing_context":
+        contexts.remove("Tests · py3.14 · ubuntu-latest")
+    else:
+        contexts[contexts.index("Tests · py3.12 · ubuntu-latest")] = "Tests · py3.12 · ubuntu-24.04"
+    with pytest.raises(AssertionError):
+        _assert_hosted_runner_contract(documents, contexts)
+
+
+@pytest.mark.parametrize("mutation", [
+    "floating_linux", "dropped_python", "dropped_windows", "extra_include", "extra_axis", "excluded_leg",
+    "fail_fast", "windows_image", "performance_linux", "extra_job_strategy",
+])
+def test_hosted_runner_contract_rejects_matrix_drift(mutation):
+    documents = _runner_documents()
+    jobs = documents["ci.yml"]["jobs"]
+    strategy = jobs["test"]["strategy"]
+    matrix = strategy["matrix"]
+    if mutation == "floating_linux":
+        matrix["os"] = ["ubuntu-latest"]
+    elif mutation == "dropped_python":
+        matrix["python-version"].remove("3.14")
+    elif mutation == "dropped_windows":
+        del matrix["include"]
+    elif mutation == "extra_include":
+        matrix["include"].append({"os": "self-hosted", "python-version": "3.12"})
+    elif mutation == "extra_axis":
+        matrix["runner"] = ["self-hosted"]
+    elif mutation == "excluded_leg":
+        matrix["exclude"] = [{"os": "ubuntu-24.04", "python-version": "3.14"}]
+    elif mutation == "fail_fast":
+        strategy["fail-fast"] = True
+    elif mutation == "windows_image":
+        matrix["include"][0]["os"] = "windows-2025"
+    elif mutation == "performance_linux":
+        jobs["projection-performance"]["strategy"]["matrix"]["os"] = ["ubuntu-24.04"]
+    else:
+        jobs["lint"]["strategy"] = {"matrix": {"os": ["self-hosted"]}}
+    with pytest.raises(AssertionError):
+        _assert_hosted_runner_contract(documents, _required_main_contexts())
+
+
+def test_runner_yaml_loader_preserves_event_keys_and_boolean_values():
+    document = yaml.load("on:\n  push:\njobs:\n  test:\n    strategy:\n      fail-fast: false\n", Loader=_RunnerWorkflowLoader)
+    assert set(document) == {"on", "jobs"}
+    assert document["jobs"]["test"]["strategy"]["fail-fast"] is False
+
+
+@pytest.mark.parametrize("original,replacement", [
+    ("jobs:\n", "jobs: {}\njobs:\n"),
+    ("  lint:\n", "  lint: {}\n  lint:\n"),
+    ("    runs-on: ubuntu-24.04\n", "    runs-on: self-hosted\n    runs-on: ubuntu-24.04\n"),
+    ("      matrix:\n", "      matrix: {}\n      matrix:\n"),
+    ("        os: [ubuntu-24.04]\n", "        os: [self-hosted]\n        os: [ubuntu-24.04]\n"),
+])
+def test_runner_yaml_loader_refuses_shadowed_keys(original, replacement):
+    source = _workflow("ci.yml")
+    assert original in source
+    with pytest.raises(yaml.constructor.ConstructorError, match="duplicate workflow key"):
+        yaml.load(source.replace(original, replacement, 1), Loader=_RunnerWorkflowLoader)
 
 
 def test_tracked_literal_self_hosted_workflows_are_manual_dispatch_only():

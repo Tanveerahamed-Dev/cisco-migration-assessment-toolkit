@@ -52,7 +52,7 @@ RUN_UNLESS_CANCELLED = "!cancelled()"
 UNINSTALL_PROJECT = f"python -m pip uninstall --yes {PROJECT_DISTRIBUTION}"
 BUILD_TRIO = ("pip", "setuptools", "wheel")
 
-# The audit job's interpreter: actions/setup-python 3.12 on ubuntu-latest. Markers are evaluated against it.
+# The audit job's interpreter: actions/setup-python 3.12 on ubuntu-24.04. Markers are evaluated against it.
 AUDIT_MARKER_ENVIRONMENT = {
     **default_environment(),
     "implementation_name": "cpython", "platform_python_implementation": "CPython", "os_name": "posix",
@@ -318,8 +318,8 @@ def _python_audit_gaps(ci: str, files: dict[str, str], workflows: dict[str, str]
     unexpected = set(job) - {"name", "runs-on", "steps", "timeout-minutes", "permissions"}
     if unexpected:
         gaps.append(f"the {AUDIT_JOB} job sets {sorted(unexpected)}")
-    if job.get("name") != AUDIT_JOB_NAME or job.get("runs-on") != "ubuntu-latest":
-        gaps.append(f"the {AUDIT_JOB} job is not named {AUDIT_JOB_NAME!r} on ubuntu-latest")
+    if job.get("name") != AUDIT_JOB_NAME or job.get("runs-on") != "ubuntu-24.04":
+        gaps.append(f"the {AUDIT_JOB} job is not named {AUDIT_JOB_NAME!r} on ubuntu-24.04")
     holders, referenced = [], set()
     for path, text in {**{p: t for p, t in workflows.items() if p != CI_PATH}, CI_PATH: ci}.items():
         referenced.update(_workflow_file_references(text))
@@ -712,7 +712,7 @@ _MUTATIONS = {
     "job_env": _ci(lambda ci: ci.replace("    name: Dependency audit\n", "    name: Dependency audit\n    env:\n      PIP_AUDIT_VULNERABILITY_SERVICE: osv\n", 1)),
     "job_container": _ci(lambda ci: ci.replace("    name: Dependency audit\n", "    name: Dependency audit\n    container: ghcr.io/example/shim:1\n", 1)),
     "stub_takes_required_name": _ci(lambda ci: ci.replace("    name: Dependency audit\n", "    name: Dependency audit (full)\n", 1).replace(
-        "\n  dependency-audit:\n", "\n  audit-stub:\n    name: Dependency audit\n    runs-on: ubuntu-latest\n    steps:\n      - run: \"true\"\n\n  dependency-audit:\n", 1)),
+        "\n  dependency-audit:\n", "\n  audit-stub:\n    name: Dependency audit\n    runs-on: ubuntu-24.04\n    steps:\n      - run: \"true\"\n\n  dependency-audit:\n", 1)),
     "nonaudit_step_truncates_manifest": _ci(lambda ci: _before_step(
         ci, "Audit the Master Reference release toolchain", "      - name: Prepare\n        run: printf '' > master-reference/requirements-release.txt\n")),
     "nonaudit_step_truncates_by_basename": _ci(lambda ci: _before_step(
