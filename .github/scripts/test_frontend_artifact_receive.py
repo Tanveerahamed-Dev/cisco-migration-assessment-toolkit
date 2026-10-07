@@ -2,13 +2,17 @@
 import copy
 import base64
 import io
+import importlib.util
 import json
 import os
 from pathlib import Path
+import py_compile
 import re
 import stat
 import struct
 import tempfile
+import sys
+import types
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -500,6 +504,180 @@ class DistTests(unittest.TestCase):
         changed["inputs"]["webapp/frontend/package.json"]["sha256"] = "d" * 64
         with self.assertRaises(ValueError):
             receive.dist(files, changed, s, lambda path: [])
+
+
+class BoundMarkerPolicyTests(unittest.TestCase):
+    def sources(self):
+        root = Path(__file__).resolve().parents[2]
+        data = {path: (root / path).read_bytes() for _, path in receive.MARKER_CLOSURE}
+        return root, data, {path: receive.digest(raw) for path, raw in data.items()}
+
+    def with_content(self, relative, content):
+        s, expected, report, files = DistTests("test_exact_nonpromoting_dist_is_edit_data").fixture()
+        files["dist/" + relative] = content
+        report["members"][relative] = {"bytes": len(content), "sha256": receive.digest(content)}
+        files["handoff.json"] = json.dumps(report).encode()
+        return s, expected, files
+
+    def test_actual_canonical_policy_keeps_all_patterns_and_only_the_existing_bare_alias_exception(self):
+        root, sources, expected = self.sources()
+        original_path = list(sys.path)
+        with receive.bound_marker_policy(root, sources, expected) as policy:
+            prefix = policy.__package__
+            self.assertEqual(sys.modules[prefix].__path__, ())
+            self.assertEqual(policy.PackIntegrityError.__module__, prefix + ".registry_integrity")
+            self.assertEqual(policy.verify_retained_eol_source_chain.__module__, prefix + ".eoldb")
+            full = policy._client_marker_patterns()
+            self.assertEqual(len(full), 12)
+            ordinary = policy._marker_patterns_for("webapp/frontend/dist/index.html")
+            asset = policy._marker_patterns_for("webapp/frontend/dist/assets/index-Ab12.js")
+            lookalike = policy._marker_patterns_for("webapp/frontend/dist/assets/nested/index-Ab12.js")
+            self.assertEqual(len(ordinary), 12)
+            self.assertEqual(len(lookalike), 12)
+            self.assertEqual(len(asset), 11)
+            self.assertTrue(any(pattern is policy._BARE_INITIALS_MARKER for pattern in ordinary))
+            self.assertFalse(any(pattern is policy._BARE_INITIALS_MARKER for pattern in asset))
+            initials = "a" + "j"
+            alias = ("export { value as " + initials + " };").encode()
+            s, expectation, files = self.with_content("assets/index-Ab12.js", alias)
+            desired, _ = receive.dist(files, expectation, s, policy._marker_patterns_for)
+            self.assertIn("webapp/frontend/dist/assets/index-Ab12.js", desired)
+            # Marker-bearing probes are assembled from existing policy-owner fragments and
+            # never printed or used as assertion messages/artifact payloads by this test.
+            for name, content in (("index.html", ("<!-- " + initials + " -->").encode()),
+                                  ("assets/nested/index-Ab12.js", alias),
+                                  ("assets/index-Ab12.js", ("/* " + "syn" + "tys" + "-core */").encode())):
+                s, expectation, files = self.with_content(name, content)
+                with self.assertRaisesRegex(ValueError, "canonical marker"):
+                    receive.dist(files, expectation, s, policy._marker_patterns_for)
+        self.assertEqual(sys.path, original_path)
+        self.assertFalse(any(name == prefix or name.startswith(prefix + ".") for name in sys.modules))
+
+    def test_preloaded_canonical_modules_cannot_replace_or_suppress_admitted_policy(self):
+        root, sources, expected = self.sources()
+        keys = ["cisco_toolkit" + ("." + suffix if suffix else "") for suffix, _ in receive.MARKER_CLOSURE]
+        missing = object()
+        prior = {key: sys.modules.get(key, missing) for key in keys}
+        fake = {key: types.ModuleType(key) for key in keys}
+        called = []
+        def permissive(_):
+            called.append("unselected cached module")
+            return ()
+        fake["cisco_toolkit"].__path__ = ()
+        fake["cisco_toolkit.distribution_verify"].__file__ = str(root / "cisco_toolkit/distribution_verify.py")
+        fake["cisco_toolkit.distribution_verify"]._marker_patterns_for = permissive
+        fake["cisco_toolkit.distribution_verify"]._client_marker_patterns = lambda: ()
+        try:
+            sys.modules.update(fake)
+            with receive.bound_marker_policy(root, sources, expected) as policy:
+                self.assertIsNot(policy, fake["cisco_toolkit.distribution_verify"])
+                self.assertEqual(len(policy._marker_patterns_for("webapp/frontend/dist/index.html")), 12)
+                self.assertEqual(policy.PackIntegrityError.__module__, policy.__package__ + ".registry_integrity")
+            self.assertEqual(called, [])
+            for key in keys:
+                self.assertIs(sys.modules[key], fake[key])
+        finally:
+            for key, value in prior.items():
+                if value is missing:
+                    sys.modules.pop(key, None)
+                else:
+                    sys.modules[key] = value
+
+    def test_matching_poisoned_pycs_for_initializer_sibling_and_policy_are_never_executed(self):
+        _, sources, expected = self.sources()
+        for _, poisoned in receive.MARKER_CLOSURE:
+            with self.subTest(member=poisoned), tempfile.TemporaryDirectory(prefix="marker-policy-pyc-") as directory:
+                root = Path(directory)
+                for path, data in sources.items():
+                    target = root / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(data)
+                path = root / poisoned
+                prefix = b"raise RuntimeError('unselected cached fixture')\n#"
+                poison = prefix + b"x" * (len(sources[poisoned]) - len(prefix) - 1) + b"\n"
+                self.assertEqual(len(poison), len(sources[poisoned]))
+                path.write_bytes(poison)
+                before = path.stat()
+                py_compile.compile(str(path), doraise=True, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+                path.write_bytes(sources[poisoned])
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+                # Prove this is an accepted timestamp/size cache, not a vacuous invalid pyc.
+                spec = importlib.util.spec_from_file_location("synthetic_marker_cache_control", path)
+                cached = importlib.util.module_from_spec(spec)
+                with self.assertRaisesRegex(RuntimeError, "unselected cached fixture"):
+                    spec.loader.exec_module(cached)
+                with receive.bound_marker_policy(root, sources, expected) as policy:
+                    self.assertEqual(len(policy._client_marker_patterns()), 12)
+                    self.assertEqual(len(policy._marker_patterns_for("webapp/frontend/dist/assets/app.js")), 11)
+
+    def test_changed_or_missing_bound_sibling_refuses_without_fallback(self):
+        root, sources, expected = self.sources()
+        before = {name for name in sys.modules if name.startswith("_atlas_bound_marker_")}
+        for path in expected:
+            changed = dict(sources)
+            changed[path] += b"\nraise RuntimeError('changed closure must not execute')\n"
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, "closure bytes"):
+                with receive.bound_marker_policy(root, changed, expected):
+                    self.fail("changed source was admitted")
+            missing = dict(sources)
+            del missing[path]
+            with self.subTest(missing=path), self.assertRaisesRegex(ValueError, "closure census"):
+                with receive.bound_marker_policy(root, missing, expected):
+                    self.fail("missing source used a fallback")
+        self.assertEqual({name for name in sys.modules if name.startswith("_atlas_bound_marker_")}, before)
+
+    def test_new_relative_or_canonical_import_fails_and_private_namespace_is_cleaned(self):
+        root, sources, _ = self.sources()
+        original_path = list(sys.path)
+        for extra in (b"\nfrom .unadmitted import unexpected\n", b"\nimport cisco_toolkit.registry_integrity\n"):
+            changed = dict(sources)
+            changed["cisco_toolkit/eoldb.py"] += extra
+            expected = {path: receive.digest(data) for path, data in changed.items()}
+            before = {name for name in sys.modules if name.startswith("_atlas_bound_marker_")}
+            with self.assertRaisesRegex(ValueError, "import"):
+                with receive.bound_marker_policy(root, changed, expected):
+                    self.fail("unselected project import was admitted")
+            self.assertEqual({name for name in sys.modules if name.startswith("_atlas_bound_marker_")}, before)
+        self.assertEqual(sys.path, original_path)
+
+    def test_private_namespace_collision_preserves_the_preexisting_entry(self):
+        root, sources, expected = self.sources()
+        suffix = "f" * 32
+        name = "_atlas_bound_marker_" + suffix
+        previous = types.ModuleType(name)
+        self.assertNotIn(name, sys.modules)
+        sys.modules[name] = previous
+        try:
+            with patch.object(receive.uuid, "uuid4", return_value=types.SimpleNamespace(hex=suffix)), self.assertRaisesRegex(ValueError, "not fresh"):
+                with receive.bound_marker_policy(root, sources, expected):
+                    self.fail("occupied private namespace was admitted")
+            self.assertIs(sys.modules[name], previous)
+        finally:
+            sys.modules.pop(name, None)
+
+    def test_missing_direct_exports_and_policy_functions_refuse_without_getter_fallback(self):
+        root, sources, _ = self.sources()
+        for path, export, message in (
+            ("cisco_toolkit/registry_integrity.py", "source_freshness", "relative export is missing"),
+            ("cisco_toolkit/eoldb.py", "verify_retained_eol_source_chain", "relative export is missing"),
+            ("cisco_toolkit/distribution_verify.py", "_marker_patterns_for", "Canonical marker functions are missing"),
+            ("cisco_toolkit/distribution_verify.py", "_client_marker_patterns", "Canonical marker functions are missing"),
+        ):
+            changed = dict(sources)
+            # A deliberate admitted-source fixture: if the old attribute-based
+            # admission invokes this fallback, the distinct sentinel fails the
+            # expected missing-direct-export refusal rather than passing silently.
+            changed[path] += (
+                f"\ndel {export}\n"
+                "def __getattr__(name):\n"
+                "    raise RuntimeError('missing export getter executed')\n"
+            ).encode()
+            expected = {member: receive.digest(data) for member, data in changed.items()}
+            before = {name for name in sys.modules if name.startswith("_atlas_bound_marker_")}
+            with self.subTest(member=path, export=export), self.assertRaisesRegex(ValueError, message):
+                with receive.bound_marker_policy(root, changed, expected):
+                    self.fail("missing direct export was admitted")
+            self.assertEqual({name for name in sys.modules if name.startswith("_atlas_bound_marker_")}, before)
 
 
 if __name__ == "__main__":

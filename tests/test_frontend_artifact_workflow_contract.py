@@ -19,6 +19,9 @@ RECEIVE = "Receive finite reviewed frontend edit data"
 OBSERVE = "Observe the independently selected Vite distribution bytes"
 RECEIVE_TEST = "Test finite frontend artifact receipt refusals"
 OBSERVE_TEST = "Test fixed Vite distribution observation refusals"
+MATERIAL_TEST = "Test candidate material observation contracts"
+MATERIAL_CHECK = "Check installed Vite bytes and observe the canonical frontend inventory"
+MATERIAL_UPLOAD = "Preserve candidate material observations and failures"
 FLAGS = ("prepare_frontend_dependencies", "receive_frontend_artifact", "observe_vite_distribution", "refresh_visual_baselines")
 DATA = ("frontend_artifact_selection", "vite_distribution_integrity")
 REVIEW_PATHS = (
@@ -26,6 +29,8 @@ REVIEW_PATHS = (
     ".github/scripts/test_frontend_artifact_receive.py", ".github/scripts/observe_vite_distribution.py",
     ".github/scripts/test_observe_vite_distribution.py", "tests/test_webapp_ci_scope.py",
     "tests/test_frontend_artifact_workflow_contract.py",
+    ".github/scripts/frontend_candidate_materials.py", ".github/scripts/test_frontend_candidate_materials.py",
+    "master-reference/release/pipeline.py", "portable/release_contract.py",
 )
 
 
@@ -93,6 +98,27 @@ def assert_wiring(doc):
         assert len(matches) == 1 and set(matches[0]) == {"run"}
         ordinary_order.append(front_steps.index(matches[0]))
     assert ordinary_order == sorted(ordinary_order)
+    material_test = named(front_steps, MATERIAL_TEST)
+    material_check = named(front_steps, MATERIAL_CHECK)
+    material_upload = named(front_steps, MATERIAL_UPLOAD)
+    assert material_test == {
+        "name": MATERIAL_TEST, "working-directory": ".",
+        "run": "python -I -B -m unittest discover -s .github/scripts -p test_frontend_candidate_materials.py",
+    }
+    assert material_check == {
+        "name": MATERIAL_CHECK, "working-directory": ".",
+        "run": "python -I -B .github/scripts/frontend_candidate_materials.py",
+    }
+    assert material_upload == {
+        "name": MATERIAL_UPLOAD, "if": "${{ always() }}", "uses": UPLOAD,
+        "with": {
+            "name": "frontend-candidate-materials-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path": "${{ runner.temp }}/frontend-candidate-materials/",
+            "if-no-files-found": "error", "retention-days": 14,
+        },
+    }
+    assert (ordinary_order[0] < front_steps.index(material_test) < front_steps.index(material_check)
+            < front_steps.index(material_upload) < ordinary_order[1])
     before = named(front_steps, "Bind immutable frontend inputs before the SPA build")
     after = named(front_steps, "Verify privacy and capture the generated SPA for review")
     assert front_steps.index(before) < ordinary_order[-1] < front_steps.index(after)
@@ -177,5 +203,32 @@ def test_wiring_guard_detects_real_privilege_input_scope_and_gate_regressions(mu
         steps.remove(next(step for step in steps if step.get("run") == "npm test"))
     else:
         del doc["jobs"]["e2e"]
+    with pytest.raises(AssertionError):
+        assert_wiring(doc)
+
+
+@pytest.mark.parametrize("mutation", ["missing-check", "optional-control", "success-only-evidence", "before-install"])
+def test_candidate_material_wiring_refuses_missing_optional_or_misordered_evidence(mutation):
+    doc = copy.deepcopy(document())
+    steps = doc["jobs"]["frontend"]["steps"]
+    if mutation == "missing-check":
+        steps.remove(named(steps, MATERIAL_CHECK))
+    elif mutation == "optional-control":
+        named(steps, MATERIAL_TEST)["if"] = "${{ inputs.receive_frontend_artifact }}"
+    elif mutation == "success-only-evidence":
+        named(steps, MATERIAL_UPLOAD)["if"] = "${{ success() }}"
+    else:
+        check = named(steps, MATERIAL_CHECK)
+        steps.remove(check)
+        install = next(step for step in steps if step.get("run") == "npm ci")
+        steps.insert(steps.index(install), check)
+    with pytest.raises(AssertionError):
+        assert_wiring(doc)
+
+
+@pytest.mark.parametrize("owner_path", ["master-reference/release/pipeline.py", "portable/release_contract.py"])
+def test_candidate_material_direct_owner_paths_cannot_fall_out_of_hosted_coverage(owner_path):
+    doc = copy.deepcopy(document())
+    doc["on"]["push"]["paths"].remove(owner_path)
     with pytest.raises(AssertionError):
         assert_wiring(doc)

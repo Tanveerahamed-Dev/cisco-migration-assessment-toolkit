@@ -25,6 +25,7 @@ import {
   buildDeploymentManifest as buildDeploymentManifestPublic,
   buildDeploymentManifestWithReport,
   deploymentManifestTestOnly,
+  getDeploymentRefusalDiagnostic,
   verifyDeploymentManifest as verifyDeploymentManifestPublic,
 } from "../../build/deployment-manifest.mjs";
 import {
@@ -564,6 +565,222 @@ test("finalizer and manifest CLI report verified physical bytes without assertin
     assert.equal(cliReport.bundleDigest, receipt.bundleDigest);
     assert.equal(cliReport.physicalBundleBytes, receipt.totalBytes + cliOuterBytes);
     assert.equal(cliReport.hostingEligibility, "not_evaluated");
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("diagnostic extraction ignores forged fields, getters, proxy traps and primitive errors", () => {
+  let reads = 0;
+  const trap = () => { reads += 1; throw new Error("diagnostic property must not be read"); };
+  const forged = Object.create(null);
+  for (const name of ["message", "stack", "cause", "kind", "rule", "category", "member", "index"]) {
+    Object.defineProperty(forged, name, { get: trap });
+  }
+  const proxy = new Proxy({}, { get: trap, getPrototypeOf: trap, ownKeys: trap });
+  const revocable = Proxy.revocable({}, {});
+  revocable.revoke();
+  for (const value of [
+    null, undefined, true, 1, "untrusted text", Symbol("unknown"), forged, proxy, revocable.proxy,
+    { kind: "privacy_refusal", rule: "local_home_path", category: "projection-member", member: "forged.mjs", index: 0 },
+    new Error("unclassified"),
+  ]) assert.equal(getDeploymentRefusalDiagnostic(value), null);
+  assert.equal(reads, 0);
+});
+
+test("public build and verify preserve private path refusal details without disclosing the path", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-diagnostic-path-"));
+  try {
+    const fixture = await initializeFixture(scratch);
+    const marker = "home_foreign_owner_checkout_atlas";
+    const member = `graph/shards/${marker}-nodes.mjs`;
+    const sensitive = await writeDist(fixture.repo, "dist-sensitive", {
+      projectionModulePath: member, graphSensitive: true,
+    });
+    const verified = await writeDist(fixture.repo, "dist-verified");
+    await buildDeploymentManifestPublic({ distDir: verified.dist, repoRoot: fixture.repo });
+    const originalReceipt = await replaceReceiptedProjectionModulePath(verified.dist, member);
+    for (const [operation, dist, message] of [
+      [buildDeploymentManifestPublic, sensitive.dist, "deployment manifest build failed"],
+      [verifyDeploymentManifestPublic, verified.dist, "deployment manifest verification failed"],
+    ]) {
+      let failure;
+      try { await operation({ distDir: dist, repoRoot: fixture.repo }); } catch (error) { failure = error; }
+      assert.equal(failure?.message, message);
+      assert.equal(failure.cause, undefined);
+      const diagnostic = getDeploymentRefusalDiagnostic(failure);
+      assert.deepEqual(diagnostic, {
+        kind: "privacy_refusal", rule: "generic_collapsed_user_home_path",
+        category: "projection-declaration", member: null, index: 0, memberLocation: "withheld",
+      });
+      assert.equal(JSON.stringify(diagnostic).includes(marker), false, "private member must be withheld");
+      assert.equal(Object.isFrozen(diagnostic), true);
+      assert.throws(() => { diagnostic.member = member; }, TypeError);
+      assert.equal(getDeploymentRefusalDiagnostic(failure).member, null);
+    }
+    assert.deepEqual(await readFile(join(verified.dist, DEPLOYMENT_MANIFEST_NAME)), originalReceipt);
+    await assert.rejects(readFile(join(sensitive.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("public metadata diagnostics name only the fixed receipt and do not attach to later unknown errors", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-diagnostic-metadata-"));
+  try {
+    const fixture = await initializeFixture(scratch);
+    const sensitive = await writeDist(fixture.repo, "dist-sensitive");
+    const marker = "home_foreign_owner_checkout_atlas";
+    await addReceiptedProjectionMetadata(sensitive.dist, "producer_note", marker);
+    let refusal;
+    try { await buildDeploymentManifestWithReport({ distDir: sensitive.dist, repoRoot: fixture.repo }); }
+    catch (error) { refusal = error; }
+    assert.equal(refusal?.message, "deployment manifest build failed");
+    const expected = {
+      kind: "privacy_refusal", rule: "generic_collapsed_user_home_path",
+      category: "projection-manifest", member: PROJECTION_MANIFEST_REPRESENTATION,
+      index: null, memberLocation: "relative_member",
+    };
+    assert.deepEqual(getDeploymentRefusalDiagnostic(refusal), expected);
+    assert.equal(JSON.stringify(getDeploymentRefusalDiagnostic(refusal)).includes(marker), false);
+    const neutral = await writeDist(fixture.repo, "dist-neutral");
+    await buildDeploymentManifestPublic({ distDir: neutral.dist, repoRoot: fixture.repo });
+    await verifyDeploymentManifestPublic({ distDir: neutral.dist, repoRoot: fixture.repo });
+    let unknown;
+    try { await buildDeploymentManifestPublic({ forbidden: true }); } catch (error) { unknown = error; }
+    assert.equal(unknown?.message, "deployment manifest build failed");
+    assert.equal(unknown.cause, undefined);
+    assert.equal(getDeploymentRefusalDiagnostic(unknown), null);
+    assert.deepEqual(getDeploymentRefusalDiagnostic(refusal), expected);
+    await assert.rejects(readFile(join(sensitive.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+async function makeFinalizerFixtureRaw(deployment, modulePath) {
+  for (const path of [PROJECTION_MANIFEST_NAME, `${modulePath}.gz`]) {
+    const fullPath = join(deployment.projectionRoot, ...path.split("/"));
+    await writeFile(fullPath.slice(0, -3), gunzipSync(await readFile(fullPath)));
+    await unlink(fullPath);
+  }
+  await unlink(join(deployment.projectionRoot, COMPRESSION_MANIFEST_NAME));
+}
+
+test("content diagnostic withholds a filesystem-valid member outside the safe display alphabet", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-deployment-diagnostic-display-"));
+  try {
+    const fixture = await initializeFixture(scratch);
+    const deployment = await writeDist(fixture.repo, "dist", {
+      projectionModulePath: "source/chunks/space name.mjs",
+      projectionModule: Buffer.from(`export const privateRoot = ${JSON.stringify(fixture.repo)};\n`),
+    });
+    let failure;
+    try { await buildDeploymentManifestPublic({ distDir: deployment.dist, repoRoot: fixture.repo }); }
+    catch (error) { failure = error; }
+    assert.equal(failure?.message, "deployment manifest build failed");
+    const diagnostic = getDeploymentRefusalDiagnostic(failure);
+    assert.deepEqual(diagnostic, {
+      kind: "privacy_refusal", rule: "local_repository_path", category: "compressed-projection-module",
+      member: null, index: 0, memberLocation: "withheld",
+    });
+    assert.equal(JSON.stringify(diagnostic).includes(fixture.repo), false, "private content must not reach diagnostics");
+    await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("real finalizer names the refused safe source member and never its private content", async () => {
+  let scratch;
+  let safeFailure;
+  let phase = "host layout precondition";
+  try {
+    const home = os.homedir();
+    assert.equal(/(?:^|\/)(?:home|users)\/[^/]+/i.test(home.replaceAll("\\", "/")), true,
+      "the hosted discriminator requires a recognized home layout");
+    scratch = await mkdtemp(join(home, ".atlas-finalizer-diagnostic-"));
+    phase = "fixture setup";
+    const fixture = await initializeFixture(scratch);
+    const referenceRoot = join(fixture.repo, "master-reference");
+    await mkdir(referenceRoot);
+    const marker = join(home, "work", "_temp", "private-command-fixture").replaceAll("\\", "/");
+    const modulePath = "source/chunks/command-fixture.mjs";
+    const deployment = await writeDist(referenceRoot, "dist", {
+      projectionModulePath: modulePath,
+      projectionModule: Buffer.from(`export const source = ${JSON.stringify(marker)};\n`),
+    });
+    // First prove the actual public wrapper, then the actual subprocess path.
+    phase = "public content diagnostic";
+    let refusal;
+    try { await buildDeploymentManifestWithReport({ distDir: deployment.dist, repoRoot: fixture.repo }); }
+    catch (error) { refusal = error; }
+    assert.equal(refusal?.message, "deployment manifest build failed");
+    assert.equal(refusal.cause, undefined);
+    const expected = {
+      kind: "privacy_refusal", rule: "local_home_path", category: "compressed-projection-module",
+      member: `${PROJECTION_DIRECTORY}/${modulePath}.gz`, index: 0, memberLocation: "relative_member",
+    };
+    assert.deepEqual(getDeploymentRefusalDiagnostic(refusal), expected);
+    phase = "subprocess privacy refusal";
+    await makeFinalizerFixtureRaw(deployment, modulePath);
+    let result;
+    try {
+      await execFileAsync(process.execPath, [
+        fileURLToPath(new URL("../../build/finalize-deployment.mjs", import.meta.url)),
+      ], { cwd: referenceRoot, encoding: "utf8" });
+    } catch (error) { result = error; }
+    assert.equal(result?.code, 1, "finalizer must fail closed");
+    assert.equal(result.stdout, "", "refusal must not publish success JSON");
+    const lines = result.stderr.trimEnd().split("\n");
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0], "deployment finalization failed");
+    assert.deepEqual(JSON.parse(lines[1]), { phase: "deployment_manifest", ...expected });
+    assert.equal(`${result.stdout}${result.stderr}`.includes(marker), false, "private content must not reach output");
+    assert.equal(`${result.stdout}${result.stderr}`.includes(home), false, "home must not reach output");
+    await assert.rejects(readFile(join(deployment.dist, DEPLOYMENT_MANIFEST_NAME)), /ENOENT/);
+  } catch {
+    // Keep failed assertions/fixture exceptions from printing any host identity.
+    safeFailure = new Error(`finalizer diagnostic discriminator failed: ${phase}`);
+  } finally {
+    if (scratch) {
+      try { await rm(scratch, { recursive: true, force: true }); }
+      catch { safeFailure ??= new Error("finalizer diagnostic discriminator cleanup failed"); }
+    }
+  }
+  if (safeFailure) throw safeFailure;
+});
+
+test("real finalizer marks nonprivacy compression failure unclassified and retains safe formatter fallback", async () => {
+  const scratch = await mkdtemp(join(os.tmpdir(), "atlas-finalizer-unclassified-"));
+  try {
+    const fixture = await initializeFixture(scratch);
+    const referenceRoot = join(fixture.repo, "master-reference");
+    await mkdir(referenceRoot);
+    // No dist: a genuine unclassified compression failure, not a forged brand.
+    const finalizer = fileURLToPath(new URL("../../build/finalize-deployment.mjs", import.meta.url));
+    let failure;
+    try { await execFileAsync(process.execPath, [finalizer], { cwd: referenceRoot, encoding: "utf8" }); }
+    catch (error) { failure = error; }
+    assert.equal(failure?.code, 1);
+    assert.equal(failure.stdout, "");
+    assert.equal(failure.stderr, 'deployment finalization failed\n{"phase":"projection_compression","kind":"unclassified"}\n');
+    // Actual subprocess with a failing diagnostic renderer. The poison applies
+    // only to the closed phase record, not to fixture/receipt serialization.
+    const preload = join(scratch, "reject-diagnostic-format.mjs");
+    await writeFile(preload, [
+      "const original = JSON.stringify;",
+      "JSON.stringify = function (value, ...rest) {",
+      "  if (value?.phase === 'projection_compression') throw new Error('private formatter input');",
+      "  return original.call(this, value, ...rest);",
+      "};",
+    ].join("\n"));
+    let fallback;
+    try { await execFileAsync(process.execPath, ["--import", preload, finalizer], { cwd: referenceRoot, encoding: "utf8" }); }
+    catch (error) { fallback = error; }
+    assert.equal(fallback?.code, 1);
+    assert.equal(fallback.stdout, "");
+    assert.equal(fallback.stderr, "deployment finalization failed\n");
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }

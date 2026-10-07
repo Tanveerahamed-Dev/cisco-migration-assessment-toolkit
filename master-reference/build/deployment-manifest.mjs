@@ -46,6 +46,24 @@ const MAX_EXPANDED_PROJECTION_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_DEPLOYMENT_MEMBER_BYTES = 248 * 1024 * 1024;
 const MAX_RUNTIME_VERSION_BYTES = 64;
 const PUBLIC_OPTIONS_KEYS = new Set(["distDir", "repoRoot"]);
+// A private brand, not an error-property protocol. Never retain refused input.
+const PRIVACY_REFUSALS = new WeakMap();
+const PRIVACY_DIAGNOSTIC_RULES = new Set([
+  "local_repository_path", "local_home_path", "local_repository_collapsed_path",
+  "local_home_collapsed_path", "local_user_identity_component",
+  "generic_windows_user_home_path", "generic_posix_user_home_path",
+  "generic_collapsed_user_home_path",
+]);
+const PRIVACY_DIAGNOSTIC_CATEGORIES = new Set([
+  "projection-declaration", "compression-original", "compression-member",
+  "projection-member", "deployment-member", "projection-manifest",
+  "compression-manifest", "deployment-manifest", "compressed-projection-module",
+]);
+const PRIVACY_RECEIPT_MEMBERS = Object.freeze({
+  "projection-manifest": PROJECTION_MANIFEST_REPRESENTATION,
+  "compression-manifest": PROJECTION_MEMBER_AUTHORITY,
+  "deployment-manifest": MANIFEST_NAME,
+});
 const GENERIC_AUTOMATION_USERS = new Set([
   "actions",
   "agent",
@@ -569,11 +587,51 @@ function generatedPathIdentityRule(value, contract) {
   return localIdentityRule(value, contract) ?? genericHomeIdentityRule(value);
 }
 
+function diagnosticMember(value, contract) {
+  // Logging eligibility only: a valid bundle name may still be withheld here.
+  if (typeof value !== "string" || !contract || value.length > 240
+      || !/^[A-Za-z0-9._/-]+$/.test(value)
+      || value.split("/").some((part) => !part || part === "." || part === "..")
+      || generatedPathIdentityRule(value, contract) !== null) return null;
+  return value;
+}
+
+function privacyRefusal(message, rule, category, index = null, member = null, contract = null) {
+  const error = new Error(message);
+  if (!PRIVACY_DIAGNOSTIC_RULES.has(rule) || !PRIVACY_DIAGNOSTIC_CATEGORIES.has(category)
+      || (index !== null && (!Number.isSafeInteger(index) || index < 0))) return error;
+  const safeMember = diagnosticMember(member, contract);
+  PRIVACY_REFUSALS.set(error, Object.freeze({
+    kind: "privacy_refusal",
+    rule,
+    category,
+    member: safeMember,
+    index,
+    memberLocation: safeMember === null ? "withheld" : "relative_member",
+  }));
+  return error;
+}
+
+// WeakMap key lookup does not inspect properties, prototypes or proxy traps.
+// Unknown values (including forged diagnostics) deliberately carry no detail.
+export function getDeploymentRefusalDiagnostic(error) {
+  return PRIVACY_REFUSALS.get(error) ?? null;
+}
+
+function publicRefusal(error, message) {
+  const wrapped = new Error(message);
+  const diagnostic = getDeploymentRefusalDiagnostic(error);
+  if (diagnostic !== null) PRIVACY_REFUSALS.set(wrapped, diagnostic);
+  return wrapped;
+}
+
 function assertGeneratedPathPrivacy(value, contract, category, index) {
   const rule = generatedPathIdentityRule(value, contract);
   if (rule !== null) {
-    throw new Error(
+    // The refused path is itself private; do not pass it to the diagnostic.
+    throw privacyRefusal(
       `deployment path privacy scan failed: rule=${rule}; category=${category}; index=${index}`,
+      rule, category, index,
     );
   }
 }
@@ -611,8 +669,9 @@ function assertGeneratedReceiptPrivacy(bytes, contract, category) {
   const text = STRICT_UTF8.decode(bytes);
   const rule = localIdentityRule(text, contract) ?? genericHomeIdentityRule(text);
   if (rule !== null) {
-    throw new Error(
+    throw privacyRefusal(
       `deployment generated-metadata privacy scan failed: rule=${rule}; category=${category}`,
+      rule, category, null, PRIVACY_RECEIPT_MEMBERS[category] ?? null, contract,
     );
   }
 }
@@ -837,8 +896,10 @@ async function validateCompressedProjection({
         ? genericHomeIdentityRule(text)
         : null;
       if (rule !== null || genericRule !== null) {
-        throw new Error(
+        throw privacyRefusal(
           `deployment projection privacy scan failed: rule=${rule ?? genericRule}; category=compressed-projection-module; index=${index}`,
+          rule ?? genericRule, "compressed-projection-module", index,
+          `${PROJECTION_DIRECTORY}/${record.compressedPath}`, privacyContract,
         );
       }
     },
@@ -1489,8 +1550,8 @@ function snapshotPublicOptions(options) {
 export async function verifyDeploymentManifest(options = {}) {
   try {
     return await verifyDeploymentManifestReceipt(snapshotPublicOptions(options));
-  } catch {
-    throw new Error("deployment manifest verification failed");
+  } catch (error) {
+    throw publicRefusal(error, "deployment manifest verification failed");
   }
 }
 
@@ -1503,8 +1564,8 @@ export async function buildDeploymentManifest(options = {}) {
 export async function buildDeploymentManifestWithReport(options = {}) {
   try {
     return await buildDeploymentManifestResult(snapshotPublicOptions(options));
-  } catch {
-    throw new Error("deployment manifest build failed");
+  } catch (error) {
+    throw publicRefusal(error, "deployment manifest build failed");
   }
 }
 

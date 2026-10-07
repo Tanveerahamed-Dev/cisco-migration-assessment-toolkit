@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import http.client
-import importlib
+import builtins
+from contextlib import contextmanager
+from importlib.machinery import ModuleSpec
 import io
 import json
 import math
@@ -20,9 +22,11 @@ import struct
 import subprocess
 import sys
 import tempfile
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import zipfile
 import zlib
 
@@ -43,6 +47,18 @@ DIST = "webapp/frontend/dist/"
 PREP_INPUTS = (PLAN, PACKAGE, LOCK, PREP, PREP_TEST, WORKFLOW)
 DIST_PROCESSORS = (".github/scripts/frontend_build_handoff.py", ".github/scripts/verify_repository_privacy.py",
                    ".github/scripts/classify_webapp_ci_scope.py", WORKFLOW, "cisco_toolkit/distribution_verify.py")
+MARKER_CLOSURE = (
+    ("", "cisco_toolkit/__init__.py"),
+    ("registry_integrity", "cisco_toolkit/registry_integrity.py"),
+    ("eoldb", "cisco_toolkit/eoldb.py"),
+    ("distribution_verify", "cisco_toolkit/distribution_verify.py"),
+)
+MARKER_IMPORTS = {
+    "": {}, "registry_integrity": {},
+    "eoldb": {"registry_integrity": frozenset(("MAX_MANIFEST_BYTES", "PackIntegrityError", "SOURCE_INVENTORY_RELATIVE_PATH", "source_freshness"))},
+    "distribution_verify": {"registry_integrity": frozenset(("PackIntegrityError", "verify_retained_source_chain")),
+                            "eoldb": frozenset(("verify_retained_eol_source_chain",))},
+}
 MAX_ARCHIVE = 128 * 1024 * 1024
 MAX_TOTAL = 80 * 1024 * 1024
 MAX_MEMBER = 64 * 1024 * 1024
@@ -175,6 +191,74 @@ def write_new(path, data, maximum=MAX_MEMBER):
 
 def record(path, value):
     write_new(path, (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n").encode())
+
+
+@contextmanager
+def bound_marker_policy(root, admitted, expected_sha256):
+    """Execute only the four admitted CURRENT project sources; not a Python sandbox.
+
+    Standard-library imports retain their standard interpreter behavior. Project
+    relatives have no filesystem, bytecode-cache or canonical-module-cache fallback.
+    """
+    paths = {path for _, path in MARKER_CLOSURE}
+    need(type(admitted) is dict and type(expected_sha256) is dict and set(admitted) == paths
+         and set(expected_sha256) == paths, "Marker closure census differs")
+    need(sys.version_info[:2] == (3, 12), "Marker closure requires the reviewed Python 3.12 profile")
+    for path in paths:
+        data = admitted[path]
+        need(type(data) is bytes and len(data) <= MAX_MEMBER and type(expected_sha256[path]) is str
+             and HEX64.fullmatch(expected_sha256[path]) and digest(data) == expected_sha256[path],
+             "Marker closure bytes differ from their admitted source")
+    prefix = "_atlas_bound_marker_" + uuid.uuid4().hex
+    need(not any(name == prefix or name.startswith(prefix + ".") for name in sys.modules), "Private marker namespace is not fresh")
+    modules = {}
+    loaded = set()
+    owned_names = []
+    original_import = builtins.__import__
+
+    def controlled_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if level:
+            caller_name = globals.get("__name__") if type(globals) is dict else None
+            caller = next((key for key, module in modules.items() if module.__name__ == caller_name and module.__dict__ is globals), None)
+            need(level == 1 and caller in MARKER_IMPORTS and name in MARKER_IMPORTS[caller]
+                 and name in loaded and type(fromlist) in (tuple, list) and bool(fromlist)
+                 and frozenset(fromlist) == MARKER_IMPORTS[caller][name], "Marker relative import escaped the admitted closure")
+            module = modules[name]
+            namespace = module.__dict__
+            need(type(namespace) is dict and all(item in namespace for item in fromlist),
+                 "Bound marker relative export is missing")
+            return module
+        need(type(name) is str and name.split(".", 1)[0] in sys.stdlib_module_names,
+             "Marker absolute import is not standard library; no project fallback")
+        return original_import(name, globals, locals, fromlist, 0)
+
+    try:
+        for suffix, path in MARKER_CLOSURE:
+            name = prefix + ("." + suffix if suffix else "")
+            module = types.ModuleType(name)
+            module.__file__ = str(root / path)
+            module.__package__ = prefix
+            module.__spec__ = ModuleSpec(name, loader=None, is_package=not suffix)
+            if not suffix:
+                module.__path__ = ()  # No directory to search for another project sibling.
+            module.__builtins__ = {**vars(builtins), "__import__": controlled_import}
+            modules[suffix] = module
+            sys.modules[name] = module
+            owned_names.append(name)
+            exec(compile(admitted[path], str(root / path), "exec", dont_inherit=True), module.__dict__)
+            loaded.add(suffix)
+            if suffix:
+                setattr(modules[""], suffix, module)
+        policy = modules["distribution_verify"]
+        namespace = policy.__dict__
+        need(type(namespace) is dict and all(name in namespace and callable(namespace[name])
+             for name in ("_marker_patterns_for", "_client_marker_patterns")), "Canonical marker functions are missing")
+        yield policy
+    finally:
+        # Only this invocation's fresh private names are removed. Canonical cisco_toolkit
+        # entries, sys.path and unrelated/preexisting modules are never rewritten.
+        for name in reversed(owned_names):
+            sys.modules.pop(name, None)
 
 
 def member_bytes(compressed, method, declared_size, declared_crc, remaining):
@@ -745,12 +829,14 @@ def main():
         receiver_head = git(root, "rev-parse", "HEAD").decode().strip()
         need(receiver_head == os.environ.get("GITHUB_SHA") and HEX40.fullmatch(receiver_head), "Receiver source not current workflow SHA")
         need(git(root, "status", "--porcelain=v1", "--untracked-files=no") == b"", "Receiver checkout not clean")
-        trusted_paths = (SELF, BRIDGE, PREP, "cisco_toolkit/__init__.py", "cisco_toolkit/distribution_verify.py")
+        trusted_paths = (SELF, BRIDGE, PREP, *(path for _, path in MARKER_CLOSURE))
         receiver_inputs = {}
+        receiver_sources = {}
         for path in trusted_paths:
             data = ordinary(root / path)
             need(data == blob(root, receiver_head, path), "Receiver-current source is not immutable Git")
             receiver_inputs[path] = digest(data)
+            receiver_sources[path] = data
         need(git(root, "rev-parse", receiver_head + ":" + PREP).decode().strip() == ADMISSION_BLOB, "Pure admission helper changed; fresh review/pin required")
         need(os.environ.get("GITHUB_REPOSITORY") == REPO and os.environ.get("GITHUB_JOB") == "frontend"
              and re.fullmatch(r"[1-9][0-9]*", os.environ.get("GITHUB_RUN_ID", ""))
@@ -773,14 +859,10 @@ def main():
             desired, supplied_patch = candidate(root, work, files, expect, sources, s, registry_expected, output)
             old = {p: sources[p] for p in (PACKAGE, LOCK)}
         else:
-            prior = list(sys.path)
-            try:
-                sys.path.insert(0, str(root))
-                policy = importlib.import_module("cisco_toolkit.distribution_verify")
-            finally:
-                sys.path[:] = prior
-            need(Path(policy.__file__).resolve() == root / "cisco_toolkit/distribution_verify.py", "Marker policy resolved outside reviewed receiver")
-            desired, supplied_patch = dist(files, expect, s, policy._marker_patterns_for)
+            policy_sources = {path: receiver_sources[path] for _, path in MARKER_CLOSURE}
+            policy_expectations = {path: receiver_inputs[path] for _, path in MARKER_CLOSURE}
+            with bound_marker_policy(root, policy_sources, policy_expectations) as policy:
+                desired, supplied_patch = dist(files, expect, s, policy.__dict__["_marker_patterns_for"])
             old = {p: blob(root, s["source_sha"], p) for p in tree(root, s["source_sha"], DIST)}
         admitted_patch = patch(work, old, desired, supplied_patch)
         write_new(output / "admitted.patch", admitted_patch)

@@ -39,9 +39,14 @@ ledger shas predating §13.11 refer to superseded history); the master reference
   (2026-08-03, handoff §13.16: migrated to `react-router@7.18.2` — the future flags were
   already live in production, so the swap was the package rename; verified through unit,
   build and real-browser E2E). **Every carried question is now closed.** The subsequent frontend
-  platform migration is also complete: Node 24, React/React DOM 19.2.8, React Router 8.3.0,
-  Vite 8.2.1, and `@vitejs/plugin-react` 6.0.5. It removed the temporary RSC-only npm-audit
-  exception; this is current repository state, not a reopened item from the historical review.
+  platform migration removed the temporary RSC-only npm-audit exception. AssessHub's tracked
+  platform now declares Node 24, React/React DOM 19.3.0, React Router 8.4.0, Vite 8.2.4 and
+  `@vitejs/plugin-react` 6.1.1. Exact versions and distribution identities belong to
+  `webapp/frontend/package.json` and `package-lock.json`, reconciled by
+  `tests/test_frontend_platform_contract.py`; other npm projects retain their own version owners.
+  W19's candidate qualification, installed bytes, inventory and final SPA rebuild remain separate
+  hosted gates. The reviewed Vite 8.2.4 distribution still carries unbounded compiled braces;
+  its carrier-map entry does not waive the existing compiled-copy or external-review release BLOCK.
 
 The 2026-08-07 lifecycle-authority closure is also complete. Repository installs, wheels, sdists,
 and Atlas bundles carry and verify the exact 13,261-byte `eol-bulletins.json` fixture; self-test and
