@@ -13,6 +13,9 @@ still exposes the deleted source path and keeps the gate engaged.
 from __future__ import annotations
 
 import argparse
+import base64
+import json
+import math
 import os
 import re
 import subprocess
@@ -47,10 +50,74 @@ RELEVANT_PATH_FILTERS = (
     ".github/frontend-dependency-plan.json",
     ".github/scripts/frontend_dependency_prepare.mjs",
     ".github/scripts/frontend_dependency_prepare.test.mjs",
+    ".github/scripts/frontend_artifact_receive.py",
+    ".github/scripts/frontend_candidate_admit.mjs",
+    ".github/scripts/test_frontend_artifact_receive.py",
+    ".github/scripts/observe_vite_distribution.py",
+    ".github/scripts/test_observe_vite_distribution.py",
+    "tests/test_webapp_ci_scope.py",
+    "tests/test_frontend_artifact_workflow_contract.py",
     ".github/scripts/verify_repository_privacy.py",
 )
 
 _OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.IGNORECASE)
+MANUAL_FLAGS = (
+    "prepare_frontend_dependencies", "receive_frontend_artifact",
+    "observe_vite_distribution", "refresh_visual_baselines",
+)
+MANUAL_INPUTS = (*MANUAL_FLAGS, "frontend_artifact_selection", "vite_distribution_integrity")
+
+
+def validate_manual_operations(event_name: str, values: dict[str, str]) -> str:
+    """Pure dispatch-input admission; full artifact selectors stay receiver-owned."""
+    if event_name != "workflow_dispatch":
+        raise ValueError("manual preflight requires workflow_dispatch")
+    if type(values) is not dict or set(values) != set(MANUAL_INPUTS):
+        raise ValueError("manual input census differs")
+    if not all(type(value) is str for value in values.values()):
+        raise ValueError("manual inputs must be environment strings")
+    if any(values[name] not in ("true", "false") for name in MANUAL_FLAGS):
+        raise ValueError("manual operation flags must be exactly true or false")
+    selected = [name for name in MANUAL_FLAGS if values[name] == "true"]
+    if len(selected) > 1:
+        raise ValueError("manual preparation, receipt, observation and refresh are mutually exclusive")
+    operation = selected[0] if selected else "none"
+    selection = values["frontend_artifact_selection"]
+    integrity = values["vite_distribution_integrity"]
+    if operation == "receive_frontend_artifact":
+        if not selection or len(selection.encode("utf-8")) > 4096:
+            raise ValueError("receipt requires a bounded nonempty selection")
+        def pairs(items):
+            result = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("duplicate selection JSON key")
+                result[key] = value
+            return result
+        def constant(_):
+            raise ValueError("nonfinite selection JSON")
+        def finite_float(raw):
+            value = float(raw)
+            if not math.isfinite(value):
+                raise ValueError("nonfinite selection JSON")
+            return value
+        try:
+            parsed = json.loads(selection, object_pairs_hook=pairs, parse_constant=constant, parse_float=finite_float)
+        except (json.JSONDecodeError, RecursionError) as error:
+            raise ValueError("selection must be bounded JSON data") from error
+        if type(parsed) is not dict or not parsed:
+            raise ValueError("selection must be a nonempty JSON object")
+    elif selection:
+        raise ValueError("selection supplied without receipt operation")
+    if operation == "observe_vite_distribution":
+        if not re.fullmatch(r"sha512-[A-Za-z0-9+/]{86}==", integrity):
+            raise ValueError("observation requires canonical SHA-512 integrity")
+        raw = base64.b64decode(integrity[7:], validate=True)
+        if len(raw) != 64 or base64.b64encode(raw).decode() != integrity[7:]:
+            raise ValueError("noncanonical SHA-512 integrity")
+    elif integrity:
+        raise ValueError("integrity supplied without observation operation")
+    return operation
 
 
 def path_is_relevant(path: str) -> bool:
@@ -135,12 +202,17 @@ def _parser() -> argparse.ArgumentParser:
         default=os.environ.get("GITHUB_OUTPUT", ""),
     )
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--validate-manual-operations", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.validate_manual_operations:
+            values = {name: os.environ.get("WEBAPP_MANUAL_" + name.upper(), "") for name in MANUAL_INPUTS}
+            validate_manual_operations(args.event_name, values)
+            return 0
         if not args.github_output:
             raise ValueError("GITHUB_OUTPUT is missing")
         relevant = classify(

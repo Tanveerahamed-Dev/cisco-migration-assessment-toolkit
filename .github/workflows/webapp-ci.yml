@@ -3,7 +3,7 @@ name: webapp-ci
 on:
   push:
     branches: [main]
-    paths: ["webapp/**", "atlas-scope/**", ".design-sync/**", "cisco_toolkit/**", "reference-data/official-sources/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "README.md", "LICENSE", ".gitattributes", "pytest.ini", "tests/golden/**", "tests/synthetic_fixtures.py", "tests/pytest_invocation_reader.py", ".github/workflows/webapp-ci.yml", ".github/scripts/classify_webapp_ci_scope.py", ".github/scripts/frontend_build_handoff.py", ".github/frontend-dependency-plan.json", ".github/scripts/frontend_dependency_prepare.mjs", ".github/scripts/frontend_dependency_prepare.test.mjs", ".github/scripts/verify_repository_privacy.py"]
+    paths: ["webapp/**", "atlas-scope/**", ".design-sync/**", "cisco_toolkit/**", "reference-data/official-sources/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "README.md", "LICENSE", ".gitattributes", "pytest.ini", "tests/golden/**", "tests/synthetic_fixtures.py", "tests/pytest_invocation_reader.py", ".github/workflows/webapp-ci.yml", ".github/scripts/classify_webapp_ci_scope.py", ".github/scripts/frontend_build_handoff.py", ".github/frontend-dependency-plan.json", ".github/scripts/frontend_dependency_prepare.mjs", ".github/scripts/frontend_dependency_prepare.test.mjs", ".github/scripts/frontend_artifact_receive.py", ".github/scripts/frontend_candidate_admit.mjs", ".github/scripts/test_frontend_artifact_receive.py", ".github/scripts/observe_vite_distribution.py", ".github/scripts/test_observe_vite_distribution.py", "tests/test_webapp_ci_scope.py", "tests/test_frontend_artifact_workflow_contract.py", ".github/scripts/verify_repository_privacy.py"]
   # Required checks from a workflow skipped by a top-level path filter remain Pending forever.
   # Start every PR, then skip individual jobs only after the fail-closed classifier below succeeds.
   # `edited` is required because retargeting a PR changes its three-dot base
@@ -17,6 +17,26 @@ on:
         required: false
         default: false
         type: boolean
+      receive_frontend_artifact:
+        description: Receive one exact hosted candidate or dist as review input only
+        required: false
+        default: false
+        type: boolean
+      frontend_artifact_selection:
+        description: Closed finite source run attempt job artifact and tool selection JSON
+        required: false
+        default: ""
+        type: string
+      observe_vite_distribution:
+        description: Inspect the selected Vite 8.2.4 distribution as data only
+        required: false
+        default: false
+        type: boolean
+      vite_distribution_integrity:
+        description: Exact SHA-512 SRI from the independently admitted candidate
+        required: false
+        default: ""
+        type: string
       refresh_visual_baselines:
         description: Capture reviewed-candidate pixels from the Windows 2025 oracle
         required: false
@@ -47,6 +67,16 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - name: Validate exclusive manual operations and bound data inputs
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          WEBAPP_MANUAL_PREPARE_FRONTEND_DEPENDENCIES: ${{ inputs.prepare_frontend_dependencies }}
+          WEBAPP_MANUAL_RECEIVE_FRONTEND_ARTIFACT: ${{ inputs.receive_frontend_artifact }}
+          WEBAPP_MANUAL_OBSERVE_VITE_DISTRIBUTION: ${{ inputs.observe_vite_distribution }}
+          WEBAPP_MANUAL_REFRESH_VISUAL_BASELINES: ${{ inputs.refresh_visual_baselines }}
+          WEBAPP_MANUAL_FRONTEND_ARTIFACT_SELECTION: ${{ inputs.frontend_artifact_selection }}
+          WEBAPP_MANUAL_VITE_DISTRIBUTION_INTEGRITY: ${{ inputs.vite_distribution_integrity }}
+        run: python -I -B .github/scripts/classify_webapp_ci_scope.py --validate-manual-operations
       - name: Classify paths that can affect webapp CI
         id: classify
         shell: bash
@@ -136,6 +166,9 @@ jobs:
     if: ${{ always() && (needs.scope.result != 'success' || needs.scope.outputs.relevant == 'true') }}
     name: Frontend test + type-check + build
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
     defaults:
       run:
         working-directory: webapp/frontend
@@ -145,6 +178,7 @@ jobs:
         run: exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -165,6 +199,12 @@ jobs:
       - name: Test hosted dependency preparation refusals
         working-directory: .
         run: node --test .github/scripts/frontend_dependency_prepare.test.mjs
+      - name: Test finite frontend artifact receipt refusals
+        working-directory: .
+        run: python -I -B -m unittest discover -s .github/scripts -p test_frontend_artifact_receive.py
+      - name: Test fixed Vite distribution observation refusals
+        working-directory: .
+        run: python -I -B -m unittest discover -s .github/scripts -p test_observe_vite_distribution.py
       - name: Prepare the reviewed dependency candidate without changing checkout
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepare_frontend_dependencies }}
         working-directory: .
@@ -175,6 +215,35 @@ jobs:
         with:
           name: frontend-dependency-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/frontend-dependency-preparation/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Receive finite reviewed frontend edit data
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.receive_frontend_artifact }}
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FRONTEND_ARTIFACT_SELECTION: ${{ inputs.frontend_artifact_selection }}
+        run: python -I -B .github/scripts/frontend_artifact_receive.py
+      - name: Preserve frontend receiver results and failures
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.receive_frontend_artifact }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontend-artifact-receive-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/frontend-artifact-receive/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Observe the independently selected Vite distribution bytes
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.observe_vite_distribution }}
+        working-directory: .
+        env:
+          VITE_SELECTED_INTEGRITY: ${{ inputs.vite_distribution_integrity }}
+        run: python -I -B .github/scripts/observe_vite_distribution.py --integrity "$VITE_SELECTED_INTEGRITY"
+      - name: Preserve Vite distribution observation and failures
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.observe_vite_distribution }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vite-distribution-observation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vite-distribution-observation/
           if-no-files-found: error
           retention-days: 14
       - run: npm ci
