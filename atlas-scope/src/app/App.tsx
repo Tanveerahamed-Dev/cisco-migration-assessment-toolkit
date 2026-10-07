@@ -24,7 +24,7 @@ import { OPEN_CITE_EVENT } from "../panels/DevicePane";
 import { openInspector, setInspectorCite } from "../panels/Inspector";
 import { flowKey } from "../panels/PathTrace";
 import { Chip } from "../ui/primitives";
-import { handOffFocus, keepFocusSeen, releaseFocusLeftUnseen, returnFocus, useReleaseFocusOnLayoutChange } from "./focus-return";
+import { handOffFocus, keepFocusSeen, releaseFocusLeftUnseen, returnFocus, useReleaseFocusOnHide, useReleaseFocusOnLayoutChange } from "./focus-return";
 import { CommandPalette } from "./CommandPalette";
 import {
   announce,
@@ -58,7 +58,8 @@ const LOG_LIMIT = 24;
 const QUERY_FIELD = '#app-header form[role="search"] input';
 const queryField = (): HTMLInputElement | null => document.querySelector<HTMLInputElement>(QUERY_FIELD);
 
-function QueryBar(): ReactElement {
+export function QueryBar(): ReactElement {
+  const summaryRef = useRef<HTMLParagraphElement | null>(null);
   const query = useInvestigation((s) => s.query);
   const severities = useInvestigation((s) => s.severities);
   const roles = useInvestigation((s) => s.roles);
@@ -157,6 +158,10 @@ function QueryBar(): ReactElement {
     );
   }
 
+  /* The same exact paragraph is handed to the focus owner's third door. It releases any focus
+     before making the inactive reservation inert, and removes only the inert it set on return. */
+  useReleaseFocusOnHide(summaryRef, tokens.length === 0, () => [queryField()]);
+
   const clearAll = (): void => {
     useInvestigation.getState().reset();
     announce("Investigation scope cleared. The whole snapshot is in view again.");
@@ -168,20 +173,24 @@ function QueryBar(): ReactElement {
         <span className="qbar__label" id="qbar-label">
           Scope
         </span>
-        {tokens.length === 0 ? (
-          <p className="qbar__empty">
+        <div className="qbar__content">
+          {/* Both states share this sentence's intrinsic, wrapped block size. The inactive
+              reservation contains text only: no hidden button can receive focus or speak a
+              whole-snapshot claim while the real selection controls are in view. */}
+          <p ref={summaryRef} className="qbar__empty" aria-hidden={tokens.length > 0 ? true : undefined}>
             {`Nothing is selected and no filter is applied, so every record in this snapshot is in scope: all ${fabric.devices.length} devices and all ${fabric.findings.length} findings.`}
           </p>
-        ) : (
-          <div className="qbar__tokens" role="group" aria-labelledby="qbar-label">
-            {tokens}
-          </div>
-        )}
-        {tokens.length === 0 ? null : (
-          <button type="button" className="qbar__clear" onClick={(e) => handOffFocus(e.currentTarget, clearAll, [queryField])}>
-            Clear scope
-          </button>
-        )}
+          {tokens.length === 0 ? null : (
+            <div className="qbar__selection">
+              <div className="qbar__tokens" role="group" aria-labelledby="qbar-label">
+                {tokens}
+              </div>
+              <button type="button" className="qbar__clear" onClick={(e) => handOffFocus(e.currentTarget, clearAll, [queryField])}>
+                Clear scope
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

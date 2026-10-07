@@ -142,6 +142,16 @@ copies stay outside npm resolution and keep the release gate blocked.
 
 ## Shared Git and host operating doctrine
 
+- **Standing owner rule, 2026-10-06 — GITHUB-ONLY:** runtime verification, targeted
+  reproductions, tests, builds, browser checks, measurements and custody/receipt verification run
+  on GitHub-hosted runners. Locally only edit, use Git/GitHub operations and cheap touched-file
+  syntax/lint. Rule 7's pre-push repository privacy and client-marker history scans are explicitly
+  permitted local static checks: run `py -3.12 -I -B .github/scripts/verify_repository_privacy.py --root .`
+  and scan every new commit/message/per-parent patch and publication body with
+  `cisco_toolkit.distribution_verify._client_marker_patterns()`, including `git log -p origin/main..HEAD`,
+  before publication. No local test/build/browser/Graphify or verification-controller execution,
+  including by subagents; older local examples below do not override this rule. The supervisor
+  reviews and merges each green PR. Do not auto-merge or treat CI success as acceptance or release authority.
 - This repository currently preserves PR work with merge commits. Do not assume squash semantics;
   inspect `git log --merges origin/main` and preserve the established method unless the user explicitly
   chooses another. When hosted required checks are structurally dead (`steps: 0`), an admin bypass still

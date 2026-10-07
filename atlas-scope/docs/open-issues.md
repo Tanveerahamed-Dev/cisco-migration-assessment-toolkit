@@ -6998,6 +6998,21 @@ None of these is a correctness defect. They are craft items, which is exactly th
 blind comparison exists to adjudicate.
 
 ### O79. The re-grade's overturned PASSes that W10 did NOT close — still PASS-overturned (FAIL, F2 UNPROVEN), each with its last independent refuter verdict — OPEN, moved to W10b (held by Codex)
+
+**A6 disposition, 2026-10-07 (owner-selected W16 split; not a re-grade):** #604's final permitted
+source `29ee4816` passed its unit/mutation steps but failed the actual rendered witness in
+[run 37527594020](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/37527594020):
+21 required ready-report failures, three post-orbit convergence timeouts and an incomplete census.
+The [preserved artifact](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/actions/runs/37527594020/artifacts/11443614284)
+has only one rounded camera-step endpoint for each of the three timeouts; its DOM transition records
+do not contain a same-orbit camera-delta series. It cannot support the owner's conditional
+asymptotic-damping repair. The broader witness is parked as a blocked diagnostic on W10b, with all
+criteria and negative evidence retained. W16 starts separately from main with only the intrinsic
+QueryBar height reservation, its D3-clean focus-owner visibility and honest unmeasured label/HUD
+state plus unit controls. Historical passing click controls do not certify that new source or the
+excluded scroll/placement/convergence work. **A6 remains FAIL**; no pixel, frame-rate, fleet or
+acceptance promotion follows from the small split.
+
 **W10b source checkpoint, 2026-10-05 (Codex; not a re-grade).** W13/#600 is merged. The first small repair is
 `codex/scope-b3`: usable route-table/prefix admission, original dropped-entry disclosure and an exact retained-route
 citation join, without the bundled A3/B2/B7 changes. Independent source review refuted positional citation resolution
