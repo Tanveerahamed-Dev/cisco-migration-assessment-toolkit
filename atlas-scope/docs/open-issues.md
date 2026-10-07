@@ -7050,6 +7050,17 @@ the first wave-2 commits) and `fix/scope-regrade1-repair` (`ab690edf`). Wave-2 a
 full verdicts (findings with proof, and what they did not examine) are in each run's journal; the quotes below are their
 claims, shortened.
 
+**A3 narrow follow-up, 2026-10-07 (W18; source preparation, not a re-grade):** Current main still
+compares alternate outcomes without retaining the actual deciding ACL binding for the reproduction
+claim. The fresh `codex/scope-ingress-refusal` split addresses only deciding-row and observed
+interface/direction identity, with positive delivery controls and independent hosted mutation
+witnesses required. It does not import the bundled historical repair or alter ACL path eligibility.
+The off-path specificity finding below and other refusal-class comparisons remain outside this
+ACL-denial slice; A3 remains FAIL. Missing provenance cannot be described as proof of dependence.
+Actual-record direction-applicability and ambiguity controls do not invent a unique direction-only
+comparison that the current fixed-flow path model cannot produce. Source review and authored tests
+are not hosted execution, rendered proof or acceptance.
+
 - **A3 (FAIL) — refuted twice, last on the wave-1 repair `ab690edf`: BLOCKER.** "A list observed bound only on an interface
   the path never crosses is still named as the blocker": tcp 10.0.20.50 → 10.0.40.50:22 enters at core2 and reaches core1
   by Vlan10, yet the specificity fallback names VOICE_FILTER (observed bound inbound on Vlan20 only); the repair's own

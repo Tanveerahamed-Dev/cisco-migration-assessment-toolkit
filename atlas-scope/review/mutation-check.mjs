@@ -43,6 +43,7 @@
  *
  * Usage:  node review/mutation-check.mjs            every mutation
  *         node review/mutation-check.mjs --only ID  one (repeatable), still baseline-checked
+ *         ... --only a3-outcome-only --output <fresh RUNNER_TEMP directory>
  *         node review/mutation-check.mjs --list
  *         node review/mutation-check.mjs --history   per mutation, from git: the first commit whose
  *                                                    file holds each guard text, and whether the root does
@@ -51,18 +52,31 @@
  *         1 any mutation SURVIVED, was MISATTRIBUTED (red, but not by `killedBy`, or only by an error
  *           message), was INVALID, or its baseline was not green; or an engine the document names has
  *           no mutation
- * Never touches the working tree: every edit happens inside the scratch copy, which is deleted.
+ * A3 strict profiles additionally require complete identical JSON case censuses without skips,
+ * and the named real assertion in BOTH JSON and the default reporter's source frame. Raw reports,
+ * stdout/stderr and a nonpromoting terminal summary survive scratch cleanup under --output.
+ * They run only on GitHub-hosted Linux. The default all-mutation selection now also requires
+ * --output and that hosted environment; explicitly selected legacy-only commands remain unchanged.
+ * Never targets checkout source for edits: every mutation happens inside the scratch copy.
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, constants, cpSync, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG = resolve(HERE, "..");
 const SNAPSHOT = resolve(PKG, "..", "webapp", "sample_data", "sample_fleet.snapshot.json");
 const DOC = resolve(PKG, "docs", "refutation.md");
+// vitest.config.ts merges vite.config.ts, which imports the real shared embed protocol.
+// Keep its type-only owner too; neither sibling imports any further runtime owner.
+// This single list owns both scratch copies and strict before/after source bindings.
+const CONFIG_SIBLING_INPUTS = [
+  "webapp/frontend/src/projectionEmbed.ts",
+  "webapp/frontend/src/generated/openapi.ts",
+];
 
 /**
  * @typedef {{ file: string, find: string, replace: string }} Edit
@@ -70,6 +84,7 @@ const DOC = resolve(PKG, "docs", "refutation.md");
  *   id: string, engine: string, record: string, what: string,
  *   edits: Edit[], tests: string[], pattern?: string, rebuild?: string[],
  *   killedBy: RegExp,
+ *   strictWitness?: { testName: string, marker: string },
  *   expect?: "killed" | "survives", why?: string
  * }} Mutation
  *
@@ -81,6 +96,62 @@ const DOC = resolve(PKG, "docs", "refutation.md");
 /** @type {Mutation[]} */
 const MUTATIONS = [
   /* ── forwarding — src/forwarding/engine.ts (refutation §1; open-issues R17, R19) ─────────────── */
+  {
+    id: "a3-chosen-path-ignored",
+    engine: "src/forwarding/engine.ts",
+    record: "O79 A3 chosen-path qualification (W18)",
+    what: "an identical terminal refusal hides an earlier unmodeled chosen hop",
+    edits: [{ file: "src/forwarding/engine.ts",
+      find: "const chosenDenialOpen = chosenDenialGaps.length > 0 || chosenDenialEvidence.length > 0;",
+      replace: "const chosenDenialOpen = false;" }],
+    tests: ["src/forwarding/engine.ingress-decider.test.ts"],
+    killedBy: /chosen-path witness: an earlier unmodeled hop cannot be hidden by an identical terminal denial[\s\S]*AssertionError: chosen-path witness[\s\S]*expect\(/,
+    strictWitness: {
+      testName: "chosen-path witness: an earlier unmodeled hop cannot be hidden by an identical terminal denial",
+      marker: "chosen-path witness",
+    },
+  },
+  {
+    id: "a3-outcome-only",
+    engine: "src/forwarding/engine.ts",
+    record: "O79 A3 narrow refusal identity (W18)",
+    what: "matching outcome words alone certify an alternate with a different deciding ACL row",
+    edits: [{ file: "src/forwarding/engine.ts", find: "const sameDecision = sameRefusalDecision(t, at);", replace: "const sameDecision = true;" }],
+    tests: ["src/forwarding/engine.ingress-decider.test.ts"],
+    killedBy: /outcome-only witness: different deciding ACL lines cannot certify reproduction[\s\S]*AssertionError: outcome-only witness[\s\S]*expect\(/,
+    strictWitness: {
+      testName: "outcome-only witness: different deciding ACL lines cannot certify reproduction",
+      marker: "outcome-only witness",
+    },
+  },
+  {
+    id: "a3-binding-ignored",
+    engine: "src/forwarding/engine.ts",
+    record: "O79 A3 narrow refusal binding provenance (W18)",
+    what: "an equal deciding ACL row is credited despite different observed interface bindings",
+    edits: [{ file: "src/forwarding/engine.ts",
+      find: "return ab !== null && bb !== null && ab.intf === bb.intf && ab.dir === bb.dir && ab.cite === bb.cite;",
+      replace: "return true;" }],
+    tests: ["src/forwarding/engine.ingress-decider.test.ts"],
+    killedBy: /binding witness: the same ACL line through different observed interfaces is not reproduced[\s\S]*AssertionError: binding witness[\s\S]*expect\(/,
+    strictWitness: {
+      testName: "binding witness: the same ACL line through different observed interfaces is not reproduced",
+      marker: "binding witness",
+    },
+  },
+  {
+    id: "a3-always-false",
+    engine: "src/forwarding/engine.ts",
+    record: "O79 A3 positive refusal-reproduction control (W18)",
+    what: "every alternate is declined, including an identical uniquely observed refusal",
+    edits: [{ file: "src/forwarding/engine.ts", find: "const sameDecision = sameRefusalDecision(t, at);", replace: "const sameDecision = false;" }],
+    tests: ["src/forwarding/engine.ingress-decider.test.ts"],
+    killedBy: /positive witness: identical uniquely observed refusals still reproduce[\s\S]*AssertionError: positive witness[\s\S]*expect\(/,
+    strictWitness: {
+      testName: "positive witness: identical uniquely observed refusals still reproduce",
+      marker: "positive witness",
+    },
+  },
   {
     id: "fwd-received-at-owner",
     engine: "src/forwarding/engine.ts",
@@ -594,6 +665,121 @@ if (unknown.length > 0) {
   process.exit(1);
 }
 const selected = only.length === 0 ? MUTATIONS : MUTATIONS.filter((m) => only.includes(m.id));
+const strictSelected = selected.filter((m) => m.strictWitness !== undefined);
+const strictMode = strictSelected.length > 0;
+const need = (/** @type {unknown} */ ok, /** @type {string} */ message) => { if (!ok) throw new Error(message); };
+const sha = (/** @type {Buffer | string} */ bytes) => createHash("sha256").update(bytes).digest("hex");
+const inside = (/** @type {string} */ parent, /** @type {string} */ child) => {
+  const path = relative(parent, child);
+  return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`));
+};
+const stripAnsi = (/** @type {string} */ text) => text.replace(/\u001b\[[0-9;]*m/g, "");
+const posix = (/** @type {string} */ path) => path.split(sep).join("/");
+const ordinaryBytes = (/** @type {string} */ path, maximum = 64 * 1024 * 1024) => {
+  need(realpathSync(path) === resolve(path), "strict input path is indirect");
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(fd);
+    need(before.isFile() && before.nlink === 1 && before.size <= maximum, "strict input is nonregular, hardlinked or oversized");
+    const chunks = [];
+    const chunk = Buffer.alloc(65536);
+    let size = 0;
+    while (size <= maximum) {
+      const n = readSync(fd, chunk, 0, Math.min(chunk.length, maximum + 1 - size), null);
+      if (n === 0) break;
+      chunks.push(Buffer.from(chunk.subarray(0, n))); size += n;
+    }
+    const after = fstatSync(fd);
+    need(size <= maximum && size === before.size && after.size === before.size && after.mtimeMs === before.mtimeMs
+      && after.ctimeMs === before.ctimeMs && after.nlink === 1, "strict input changed or exceeded its bound during read");
+    return Buffer.concat(chunks, size);
+  } finally { closeSync(fd); }
+};
+const strictGit = (/** @type {string[]} */ ...args) => {
+  const result = spawnSync("git", ["--no-optional-locks", "-C", PKG, ...args], { maxBuffer: 64 * 1024 * 1024 });
+  need(result.status === 0 && !result.error, `source Git read failed: ${args[0]}`);
+  return result.stdout;
+};
+/** @type {string | null} */
+let strictOutput = null;
+/** @type {Map<string, Buffer>} */
+const checkoutInputs = new Map();
+/** @type {Record<string, unknown> | null} */
+let sourceBefore = null;
+/** @type {{ id: string, status: string, [key: string]: unknown }[]} */
+const strictObservations = [];
+/** @type {Record<string, unknown>[]} */
+const strictBaselines = [];
+/** @type {string[]} */
+const strictProblems = [];
+let strictSourceAfterPreserved = false;
+let strictScratchRestored = false;
+const saveStrict = () => {
+  if (strictOutput === null) return;
+  const complete = strictObservations.length === strictSelected.length
+    && strictObservations.every((row) => row.status === "KILLED_BY_DISTINCT_ASSERTION")
+    && strictProblems.length === 0 && strictSourceAfterPreserved && strictScratchRestored;
+  writeFileSync(join(strictOutput, "summary.json"), `${JSON.stringify({
+    schema: "atlas-scope.a3-refusal-mutations/1", status: complete ? "BOUNDED_SYNTHETIC_WITNESSES_PASS" : "INCOMPLETE_OR_FAILED",
+    selected: strictSelected.map((m) => ({ id: m.id, tests: m.tests, witness: m.strictWitness })),
+    sourceBefore, baselines: strictBaselines, observations: strictObservations, problems: strictProblems,
+    checkoutSelectedInputsPreserved: strictSourceAfterPreserved, scratchPristineRestored: strictScratchRestored,
+    qualification: false, acceptanceRegrade: false, historicalRedRecreated: false,
+    limits: "Current synthetic engine assertions only; not rendered A3 acceptance, independent archive custody or historical pre-fix execution.",
+  }, null, 2)}\n`, { mode: 0o600 });
+};
+
+if (strictMode) {
+  need(process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted"
+    && process.platform === "linux", "A3 strict mutation execution requires GitHub-hosted Linux");
+  const options = argv.flatMap((value, index) => value === "--output" ? [argv[index + 1]] : []);
+  need(options.length === 1 && typeof options[0] === "string" && isAbsolute(options[0]), "A3 strict profiles require one absolute --output");
+  const output = resolve(/** @type {string} */ (options[0]));
+  const runnerTemp = realpathSync(process.env.RUNNER_TEMP ?? "");
+  const repo = realpathSync(strictGit("rev-parse", "--show-toplevel").toString().trim());
+  need(!existsSync(output) && realpathSync(dirname(output)) === dirname(output) && inside(runnerTemp, output)
+    && !inside(repo, output), "A3 evidence must be a fresh external runner-temp directory");
+  need(!process.env.ATLAS_DATASET_DIR?.trim(), "A3 strict source selection does not admit an external dataset override");
+  mkdirSync(output, { mode: 0o700 });
+  strictOutput = output;
+  // An admission failure still leaves a visibly incomplete record beside the caller's log.
+  saveStrict();
+  const commit = strictGit("rev-parse", "HEAD").toString().trim();
+  const tree = strictGit("rev-parse", "HEAD^{tree}").toString().trim();
+  need(/^[0-9a-f]{40}$/.test(commit) && commit === process.env.GITHUB_SHA, "A3 checkout must match the workflow's full SHA");
+  need(strictGit("status", "--porcelain=v1", "--untracked-files=all").length === 0, "A3 checkout must start clean");
+  /** @type {Record<string, unknown>} */
+  const inputs = {};
+  const packageInputs = new Set([
+    "review/mutation-check.mjs", "package.json", "package-lock.json", "vite.config.ts", "vitest.config.ts", "tsconfig.json",
+    ...strictSelected.flatMap((m) => [...m.edits.map((ed) => ed.file), ...m.tests]),
+  ]);
+  const paths = [...packageInputs].map((path) => `atlas-scope/${path}`);
+  paths.push("webapp/sample_data/sample_fleet.snapshot.json", ...CONFIG_SIBLING_INPUTS);
+  for (const path of paths.sort()) {
+    const absolute = join(repo, path);
+    const bytes = ordinaryBytes(absolute);
+    need(bytes.equals(strictGit("cat-file", "blob", `${commit}:${path}`)), `A3 input differs from selected Git: ${path}`);
+    checkoutInputs.set(absolute, bytes);
+    inputs[path] = { bytes: bytes.length, sha256: sha(bytes), gitBlob: strictGit("rev-parse", `${commit}:${path}`).toString().trim() };
+  }
+  let prHead = null;
+  if (process.env.GITHUB_EVENT_PATH) {
+    const eventPath = process.env.GITHUB_EVENT_PATH;
+    const event = JSON.parse(ordinaryBytes(eventPath, 4 * 1024 * 1024).toString("utf8"));
+    const selectedHead = event.pull_request?.head?.sha;
+    if (selectedHead !== undefined) {
+      need(typeof selectedHead === "string" && /^[0-9a-f]{40}$/.test(selectedHead), "A3 PR head metadata is invalid");
+      prHead = selectedHead;
+    }
+  }
+  sourceBefore = { commit, tree, githubSha: process.env.GITHUB_SHA, prHead,
+    runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT, job: process.env.GITHUB_JOB,
+    runnerEnvironment: process.env.RUNNER_ENVIRONMENT, node: process.version, inputs };
+  writeFileSync(join(output, "source-before.json"), `${JSON.stringify(sourceBefore, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  console.log(`A3 SOURCE checkout/tested=${commit} tree=${tree} PR-head=${prHead ?? "not-a-PR"}; evidence=${output}`);
+  saveStrict();
+}
 
 console.log("mutation-check — F3 'failed before the fix', executed against TODAY's source");
 console.log("LIMIT: this does NOT recreate pre-fix history. Each mutation reverts one recorded guard in a scratch");
@@ -630,20 +816,121 @@ for (const dir of ["src", "tools", "contracts"]) cpSync(join(PKG, dir), join(scr
 for (const f of ["package.json", "vite.config.ts", "vitest.config.ts", "tsconfig.json", "tsconfig.scripts.json", "index.html"]) {
   if (existsSync(join(PKG, f))) cpSync(join(PKG, f), join(scratch, f));
 }
-symlinkSync(join(PKG, "node_modules"), join(scratch, "node_modules"), "junction");
+for (const path of CONFIG_SIBLING_INPUTS) {
+  const source = resolve(PKG, "..", path);
+  const target = join(root, path);
+  mkdirSync(dirname(target), { recursive: true });
+  if (strictMode) {
+    const bytes = checkoutInputs.get(source);
+    need(bytes !== undefined, `config sibling was not selected before scratch construction: ${path}`);
+    writeFileSync(target, /** @type {Buffer} */ (bytes), { flag: "wx", mode: 0o600 });
+    need(ordinaryBytes(target).equals(bytes), `config sibling scratch bytes differ from selected source: ${path}`);
+  } else cpSync(source, target);
+}
+/** @type {{ path: string, target: string }[]} */
+const dependencyLinks = [];
+if (strictMode) {
+  // A whole node_modules junction lets Vite's .vite/.vite-temp writes reach the
+  // source checkout. Keep the container (and each @scope container) scratch-owned,
+  // linking only dependency entries. Never link hidden cache/metadata directories.
+  const installed = join(PKG, "node_modules");
+  const dependencies = join(scratch, "node_modules");
+  mkdirSync(dependencies);
+  const link = (/** @type {string} */ from, /** @type {string} */ to) => {
+    const target = realpathSync(from);
+    symlinkSync(target, to, lstatSync(target).isDirectory() ? "junction" : "file");
+    dependencyLinks.push({ path: to, target });
+  };
+  for (const name of readdirSync(installed).filter((name) => !name.startsWith(".")).sort()) {
+    if (name.startsWith("@")) {
+      const scope = join(dependencies, name);
+      mkdirSync(scope);
+      for (const member of readdirSync(join(installed, name)).filter((member) => !member.startsWith(".")).sort()) {
+        link(join(installed, name, member), join(scope, member));
+      }
+    } else link(join(installed, name), join(dependencies, name));
+  }
+} else symlinkSync(join(PKG, "node_modules"), join(scratch, "node_modules"), "junction");
 mkdirSync(join(root, "webapp", "sample_data"), { recursive: true });
 cpSync(SNAPSHOT, join(root, "webapp", "sample_data", "sample_fleet.snapshot.json"));
 const VITEST = join(PKG, "node_modules", "vitest", "vitest.mjs");
 
-/** @param {string[]} tests @param {string | undefined} pattern */
-function runTests(tests, pattern) {
-  const args = [VITEST, "run", ...tests, ...(pattern === undefined ? [] : ["-t", pattern])];
+/** @param {string[]} tests @param {string | undefined} pattern @param {string | undefined} strictLabel */
+function runTests(tests, pattern, strictLabel) {
+  /** @type {string | null} */
+  let evidence = null;
+  if (strictLabel !== undefined) {
+    need(strictOutput !== null && /^[a-z0-9-]+$/.test(strictLabel), "strict evidence label is invalid");
+    evidence = join(/** @type {string} */ (strictOutput), strictLabel);
+    mkdirSync(evidence, { mode: 0o700 });
+  }
+  const reportPath = evidence === null ? null : join(evidence, "vitest.json");
+  const args = [VITEST, "run", ...tests, ...(pattern === undefined ? [] : ["-t", pattern]),
+    ...(reportPath === null ? [] : ["--reporter=default", "--reporter=json", `--outputFile.json=${reportPath}`, "--cache=false"])];
   const r = spawnSync(process.execPath, args, { cwd: scratch, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`.replace(/\u001b\[[0-9;]*m/g, "");
+  const out = stripAnsi(`${r.stdout ?? ""}\n${r.stderr ?? ""}`);
   const failed = Number(/Tests\s+(\d+) failed/.exec(out)?.[1] ?? 0);
   const passed = Number(/(\d+) passed/.exec(/Tests\s+[^\n]*/.exec(out)?.[0] ?? "")?.[1] ?? 0);
   const firstFailure = /(AssertionError[^\n]*|Error:[^\n]*)/.exec(out)?.[1] ?? "";
-  return { code: r.status ?? -1, failed, passed, firstFailure: firstFailure.slice(0, 160), failures: parseFailures(out), out };
+  let strictError = null;
+  /** @type {{ census: string[], cases: { file: string, fullName: string, title: string, status: string, failureMessages: string[] }[], success: boolean } | null} */
+  let jsonResult = null;
+  if (evidence !== null && reportPath !== null) {
+    writeFileSync(join(evidence, "stdout.log"), r.stdout ?? "", { flag: "wx", mode: 0o600 });
+    writeFileSync(join(evidence, "stderr.log"), r.stderr ?? "", { flag: "wx", mode: 0o600 });
+    try {
+      need(!r.error && r.signal === null && (r.status === 0 || r.status === 1), "strict test process did not exit normally");
+      jsonResult = readStrictCases(reportPath, tests, failed, passed);
+      need(jsonResult.success === (r.status === 0), "strict JSON success and process exit disagree");
+    } catch (error) {
+      strictError = error instanceof Error ? error.message : String(error);
+    }
+    writeFileSync(join(evidence, "execution.json"), `${JSON.stringify({
+      code: r.status, signal: r.signal, spawnError: r.error?.message ?? null, failed, passed,
+      strictError, census: jsonResult?.census ?? null, args: args.slice(1),
+    }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  }
+  return { code: r.status ?? -1, failed, passed, firstFailure: firstFailure.slice(0, 160), failures: parseFailures(out), out,
+    strictError, jsonResult, evidence: strictLabel ?? null };
+}
+
+/** Read one complete default+JSON report; a skipped, duplicate or missing case is not a mutation verdict.
+ * @param {string} reportPath @param {string[]} tests @param {number} failed @param {number} passed
+ */
+function readStrictCases(reportPath, tests, failed, passed) {
+  const report = JSON.parse(ordinaryBytes(reportPath).toString("utf8"));
+  need(typeof report.success === "boolean" && Array.isArray(report.testResults)
+    && report.testResults.length === tests.length, "strict JSON has an incomplete suite census");
+  /** @type {{ file: string, fullName: string, title: string, status: string, failureMessages: string[] }[]} */
+  const cases = [];
+  /** @type {string[]} */
+  const suites = [];
+  for (const suite of report.testResults) {
+    need(typeof suite.name === "string" && Array.isArray(suite.assertionResults), "strict JSON suite identity is unreadable");
+    const file = posix(relative(scratch, resolve(suite.name)));
+    need(tests.includes(file) && !suites.includes(file), "strict JSON names a missing, repeated or unselected suite");
+    suites.push(file);
+    for (const entry of suite.assertionResults) {
+      need(typeof entry.fullName === "string" && entry.fullName.length > 0 && typeof entry.title === "string" && entry.title.length > 0
+        && (entry.status === "passed" || entry.status === "failed")
+        && Array.isArray(entry.failureMessages) && entry.failureMessages.every((/** @type {unknown} */ text) => typeof text === "string"),
+      "strict JSON case is unreadable, pending, skipped or todo");
+      const messages = entry.failureMessages.map((/** @type {string} */ text) => stripAnsi(text));
+      need(entry.status !== "failed" || messages.some((/** @type {string} */ text) => /\bAssertionError:/.test(text)),
+        "strict case failed without an actual assertion (import/runtime/timeout is not a witness)");
+      cases.push({ file, fullName: entry.fullName, title: entry.title, status: entry.status, failureMessages: messages });
+    }
+  }
+  const census = cases.map((entry) => JSON.stringify([entry.file, entry.fullName])).sort();
+  need(census.length > 0 && new Set(census).size === census.length, "strict JSON case census is empty or ambiguous");
+  need(report.numTotalTests === cases.length && report.numPendingTests === 0 && (report.numTodoTests ?? 0) === 0
+    && report.numFailedTests === failed && report.numPassedTests === passed
+    && failed === cases.filter((entry) => entry.status === "failed").length
+    && passed === cases.filter((entry) => entry.status === "passed").length, "strict JSON/default case counts disagree");
+  need((report.numRuntimeErrorTestSuites ?? 0) === 0 && (report.numUnhandledErrors ?? 0) === 0
+    && (report.unhandledErrors === undefined || Array.isArray(report.unhandledErrors) && report.unhandledErrors.length === 0),
+  "strict JSON records an unhandled runtime failure");
+  return { census, cases, success: report.success };
 }
 
 /**
@@ -702,27 +989,55 @@ function rebuild(scripts) {
 /** @type {Map<string, Buffer>} */
 const pristine = new Map();
 const touch = (/** @type {string} */ rel) => {
-  if (!pristine.has(rel)) pristine.set(rel, readFileSync(join(scratch, rel)));
+  if (!pristine.has(rel)) pristine.set(rel, strictMode ? ordinaryBytes(join(scratch, rel)) : readFileSync(join(scratch, rel)));
 };
 for (const m of selected) for (const e of m.edits) touch(e.file);
 const REBUILT_OUTPUTS = ["src/data/fabric.json"];
 if (selected.some((m) => m.rebuild !== undefined)) for (const f of REBUILT_OUTPUTS) touch(f);
+const writeScratch = (/** @type {string} */ rel, /** @type {Buffer} */ bytes) => {
+  const path = resolve(scratch, rel);
+  need(inside(scratch, path) && realpathSync(path) === path, "strict write is not an ordinary scratch path");
+  const fd = openSync(path, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    need(stat.isFile() && stat.nlink === 1, "strict write refuses a nonregular or shared scratch file");
+    ftruncateSync(fd, 0);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const n = writeSync(fd, bytes, offset, bytes.length - offset, offset);
+      need(n > 0, "strict scratch write made no progress"); offset += n;
+    }
+  } finally { closeSync(fd); }
+  need(ordinaryBytes(path).equals(bytes), "strict scratch write did not preserve the selected bytes");
+};
 const restoreAll = () => {
-  for (const [rel, bytes] of pristine) writeFileSync(join(scratch, rel), bytes);
+  for (const [rel, bytes] of pristine) {
+    if (strictMode) writeScratch(rel, bytes);
+    else writeFileSync(join(scratch, rel), bytes);
+  }
 };
 
 /* ── baselines: every (tests, pattern) the mutations use must be green, and non-vacuous, unmutated ── */
 /** @param {Mutation} m */
-const keyOf = (m) => JSON.stringify([m.tests, m.pattern ?? null]);
+const keyOf = (m) => JSON.stringify([m.tests, m.pattern ?? null, m.strictWitness !== undefined]);
 /** @type {Map<string, ReturnType<typeof runTests>>} */
 const baselines = new Map();
 let bad = 0;
 for (const m of selected) {
   const key = keyOf(m);
   if (baselines.has(key)) continue;
-  const b = runTests(m.tests, m.pattern);
+  const b = runTests(m.tests, m.pattern, m.strictWitness === undefined ? undefined : `baseline-${strictBaselines.length + 1}`);
   baselines.set(key, b);
-  const ok = b.code === 0 && b.failed === 0 && b.passed > 0;
+  let ok = b.code === 0 && b.failed === 0 && b.passed > 0;
+  if (m.strictWitness !== undefined) {
+    const witnesses = strictSelected.filter((candidate) => keyOf(candidate) === key).map((candidate) => candidate.strictWitness?.testName);
+    ok = ok && b.strictError === null && b.jsonResult?.success === true
+      && witnesses.every((name) => b.jsonResult?.cases.filter((entry) => entry.title === name && entry.status === "passed").length === 1);
+    strictBaselines.push({ tests: m.tests, evidence: b.evidence, status: ok ? "GREEN" : "FAILED_OR_INCOMPLETE",
+      census: b.jsonResult?.census ?? null, passed: b.passed, failed: b.failed, error: b.strictError });
+    if (!ok) strictProblems.push("strict unmutated baseline or required positive witness was not complete and green");
+    saveStrict();
+  }
   console.log(`${ok ? "BASELINE green" : "BASELINE RED  "}  ${m.tests.join(" ")}${m.pattern === undefined ? "" : ` -t "${m.pattern}"`}  (${b.passed} passed, ${b.failed} failed, exit ${b.code})`);
   if (!ok) bad += 1;
 }
@@ -732,13 +1047,69 @@ console.log("");
 /** @type {Map<string, { killed: number, total: number, problems: string[] }>} */
 const byEngine = new Map();
 for (const m of selected) {
-  restoreAll();
   const e = byEngine.get(m.engine) ?? { killed: 0, total: 0, problems: [] };
   byEngine.set(m.engine, e);
   const expectSurvive = m.expect === "survives";
   if (!expectSurvive) e.total += 1;
 
   const baseline = baselines.get(keyOf(m));
+  if (m.strictWitness !== undefined) {
+    const witness = m.strictWitness;
+    /** @type {{ id: string, status: string, [key: string]: unknown }} */
+    const observation = { id: m.id, status: "INCOMPLETE", restored: false };
+    try {
+      restoreAll();
+      need(baseline !== undefined && baseline.code === 0 && baseline.failed === 0 && baseline.passed > 0
+        && baseline.strictError === null && baseline.jsonResult?.success === true, "strict baseline was not complete and green");
+      const base = /** @type {NonNullable<typeof baseline>} */ (baseline);
+      need(base.jsonResult?.cases.filter((entry) => entry.title === witness.testName && entry.status === "passed").length === 1,
+        "strict baseline did not execute the unique positive control");
+      for (const ed of m.edits) {
+        const text = ordinaryBytes(join(scratch, ed.file)).toString("utf8");
+        const count = text.split(ed.find).length - 1;
+        need(count === 1, `strict guard anchor occurs ${count} times in ${ed.file}; expected exactly one`);
+        writeScratch(ed.file, Buffer.from(text.replace(ed.find, () => ed.replace)));
+      }
+      const r = runTests(m.tests, m.pattern, m.id);
+      observation.evidence = r.evidence;
+      observation.code = r.code; observation.passed = r.passed; observation.failed = r.failed;
+      observation.census = r.jsonResult?.census ?? null;
+      need(r.strictError === null && r.jsonResult !== null, r.strictError ?? "strict JSON result is unavailable");
+      const json = /** @type {NonNullable<typeof r.jsonResult>} */ (r.jsonResult);
+      need(JSON.stringify(json.census) === JSON.stringify(base.jsonResult?.census), "strict mutant changed the complete test census");
+      if (r.code === 0) {
+        observation.status = "SURVIVED";
+      } else {
+        need(r.code === 1 && r.failed > 0 && json.success === false, "strict mutant did not produce a normal assertion failure");
+        const exact = json.cases.filter((entry) => entry.title === witness.testName && entry.status === "failed");
+        const frames = r.failures.filter((f) => f.test.endsWith(` > ${witness.testName}`)
+          && m.tests.some((file) => f.at.startsWith(`${file}:`) || f.at.startsWith(`${join(scratch, file)}:`))
+          && f.message.startsWith(`AssertionError: ${witness.marker}`) && !messageOnly(f.message)
+          && f.source.includes("expect(") && f.source.includes(witness.marker)
+          && m.killedBy.test(`${f.test}\n${f.message}\n${f.source}`));
+        const jsonWitness = exact.length === 1 && exact[0]?.failureMessages.some((message) =>
+          message.includes(`AssertionError: ${witness.marker}`) && !messageOnly(message));
+        observation.witness = frames;
+        observation.status = jsonWitness && frames.length === 1 ? "KILLED_BY_DISTINCT_ASSERTION" : "MISATTRIBUTED";
+      }
+    } catch (error) {
+      observation.status = "INVALID_OR_INCONCLUSIVE";
+      observation.error = error instanceof Error ? error.message : String(error);
+    } finally {
+      try { restoreAll(); observation.restored = true; }
+      catch (error) {
+        observation.restored = false; observation.status = "RESTORATION_FAILED";
+        strictProblems.push(`${m.id} restoration failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      strictObservations.push(observation);
+      saveStrict();
+    }
+    if (observation.status === "KILLED_BY_DISTINCT_ASSERTION") e.killed += 1;
+    else { e.problems.push(`${m.id} ${observation.status}`); bad += 1; }
+    console.log(`${observation.status} ${m.id}: ${JSON.stringify(observation)}`);
+    continue;
+  }
+  restoreAll();
   let invalid = baseline === undefined || baseline.code !== 0 || baseline.passed === 0 ? "its baseline was not green" : null;
   for (const ed of m.edits) {
     if (invalid !== null) break;
@@ -802,11 +1173,44 @@ for (const m of selected) {
     bad += 1;
   }
 }
-restoreAll();
-/* Remove the node_modules JUNCTION itself first (rmdir removes the link, never its target), so the
-   recursive delete below cannot reach the real node_modules through it. */
-rmdirSync(join(scratch, "node_modules"));
-rmSync(root, { recursive: true, force: true });
+if (strictMode) {
+  try {
+    restoreAll();
+    strictScratchRestored = strictObservations.every((row) => row.restored === true)
+      && [...pristine].every(([rel, bytes]) => ordinaryBytes(join(scratch, rel)).equals(bytes));
+    need(strictScratchRestored, "one or more strict scratch restorations remain incomplete");
+    for (const [path, bytes] of checkoutInputs) need(ordinaryBytes(path).equals(bytes), "selected checkout input changed during scratch execution");
+    need(strictGit("rev-parse", "HEAD").toString().trim() === sourceBefore?.commit
+      && strictGit("rev-parse", "HEAD^{tree}").toString().trim() === sourceBefore?.tree
+      && strictGit("status", "--porcelain=v1", "--untracked-files=all").length === 0,
+    "checkout identity or tracked/untracked state changed during scratch execution");
+    strictSourceAfterPreserved = true;
+  } catch (error) {
+    strictProblems.push(error instanceof Error ? error.message : String(error)); bad += 1;
+  }
+  try {
+    // Unlink only entries this process created. Never descend into dependency targets.
+    // Node's rm does not follow remaining symlinks; the recursive target is the owned scratch root.
+    need(realpathSync(root) === root && dirname(root) === realpathSync(tmpdir())
+      && root.startsWith(join(realpathSync(tmpdir()), "atlas-mutation-"))
+      && realpathSync(scratch) === scratch, "refusing cleanup outside the owned scratch root");
+    for (const entry of dependencyLinks) {
+      need(inside(scratch, entry.path) && lstatSync(entry.path).isSymbolicLink()
+        && realpathSync(entry.path) === entry.target, "scratch dependency link changed before cleanup");
+      unlinkSync(entry.path);
+    }
+    rmSync(root, { recursive: true, force: true });
+  } catch (error) {
+    strictProblems.push(`scratch cleanup failed: ${error instanceof Error ? error.message : String(error)}`); bad += 1;
+  }
+  saveStrict();
+} else {
+  restoreAll();
+  /* Remove the node_modules JUNCTION itself first (rmdir removes the link, never its target), so the
+     recursive delete below cannot reach the real node_modules through it. */
+  rmdirSync(join(scratch, "node_modules"));
+  rmSync(root, { recursive: true, force: true });
+}
 
 /* ── one verdict line per engine the document names ────────────────────────────────────────────── */
 console.log("");
