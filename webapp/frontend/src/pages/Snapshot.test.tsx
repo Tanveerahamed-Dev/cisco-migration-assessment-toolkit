@@ -170,6 +170,11 @@ describe("Snapshot cockpit", () => {
     // the health gauge shows the em-dash unknown state, never a measured-looking 0
     const gauge = screen.getByText("avg health").closest(".gauge");
     expect(gauge?.textContent).toContain("—");
+    // The unassessed fleet must not retain a filled/invalid progress arc behind the dash.
+    expect(gauge?.querySelectorAll("circle")).toHaveLength(1);
+    expect(gauge?.querySelector("circle")).toHaveAttribute("stroke", "var(--surface-3)");
+    expect(gauge?.querySelector("[stroke-dashoffset]")).toBeNull();
+    expect(gauge?.querySelector("svg")?.innerHTML).not.toMatch(/NaN|Infinity/);
     // and the critical KPI card is tone-NEUTRAL, so "0 critical" doesn't read as a verified-clean fleet
     const card = screen.getByText("Critical-band switches").closest(".kpi");
     expect(card?.className).not.toMatch(/\b(ok|crit|watch)\b/);

@@ -1,7 +1,7 @@
 import { render, renderHook, screen, act, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  Bars, CountUp, SegBar, SevChip, Skeleton, SkelLines, SkelTable, useAsync, usePositionTween,
+  Bars, CountUp, Gauge, SegBar, SevChip, Skeleton, SkelLines, SkelTable, useAsync, usePositionTween,
   useToast, useViewTransition, type Pt,
 } from "./ui";
 
@@ -101,6 +101,92 @@ describe("CountUp", () => {
   it("renders the honest dash for a non-finite value", () => {
     render(<CountUp value={NaN} />);
     expect(screen.getByText("—")).toBeInTheDocument();
+  });
+});
+
+describe("Gauge", () => {
+  it.each([NaN, Infinity, -Infinity])("renders %s as unknown with only a neutral track and finite SVG geometry", (value) => {
+    const { container } = render(<Gauge value={value} color="var(--crit)" label="avg health" />);
+    const svg = container.querySelector("svg")!;
+    expect(container.querySelector(".num b")).toHaveTextContent(/^—$/);
+    expect(screen.getByText("avg health")).toBeInTheDocument();
+    expect(svg.querySelectorAll("circle")).toHaveLength(1);
+    const track = svg.querySelector("circle")!;
+    expect(track).toHaveAttribute("stroke", "var(--surface-3)");
+    expect(track).toHaveAttribute("fill", "none");
+    expect(svg.querySelector("[stroke-dashoffset]")).toBeNull();
+    for (const name of ["cx", "cy", "r", "stroke-width"]) {
+      expect(track).toHaveAttribute(name);
+      expect(Number.isFinite(Number(track.getAttribute(name)))).toBe(true);
+    }
+    expect(svg.innerHTML).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("retains a measured zero and its zero-length progress arc, distinct from unknown", () => {
+    const { container } = render(<Gauge value={0} color="var(--ok)" />);
+    expect(container.querySelector(".num b")).toHaveTextContent(/^0$/);
+    expect(container.querySelectorAll("circle")).toHaveLength(2);
+    const progress = container.querySelector("circle[stroke-dashoffset]")!;
+    const circumference = Number(progress.getAttribute("stroke-dasharray"));
+    expect(Number.isFinite(circumference)).toBe(true);
+    expect(circumference).toBeGreaterThan(0);
+    expect(Number(progress.getAttribute("stroke-dashoffset"))).toBeCloseTo(circumference);
+    expect(progress).toHaveAttribute("stroke", "var(--ok)");
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { value: 50, fraction: 0.25 },
+    { value: 200, fraction: 1 },
+    { value: 300, fraction: 1 },
+    { value: -20, fraction: 0 },
+  ])("preserves finite/clamped $value on a custom scale and size", ({ value, fraction }) => {
+    const { container } = render(<Gauge value={value} max={200} size={211} color="var(--watch)" />);
+    expect(container.querySelectorAll("circle")).toHaveLength(2);
+    expect(container.querySelector("svg")).toHaveAttribute("width", "211");
+    expect(container.querySelector("svg")).toHaveAttribute("height", "211");
+    const progress = container.querySelector("circle[stroke-dashoffset]")!;
+    expect(progress).toHaveAttribute("r", "100");
+    expect(Number(progress.getAttribute("stroke-dasharray"))).toBeCloseTo(200 * Math.PI);
+    expect(Number(progress.getAttribute("stroke-dashoffset"))).toBeCloseTo(200 * Math.PI * (1 - fraction));
+    expect(progress).toHaveAttribute("stroke", "var(--watch)");
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { value: Number.MAX_VALUE, fraction: 1 },
+    { value: -Number.MAX_VALUE, fraction: 0 },
+  ])("keeps a finite measurement $value when its intermediate ratio overflows", ({ value, fraction }) => {
+    const { container } = render(<Gauge value={value} max={Number.MIN_VALUE} color="var(--watch)" />);
+    const progress = container.querySelector("circle[stroke-dashoffset]")!;
+    expect(container.querySelectorAll("circle")).toHaveLength(2);
+    const circumference = Number(progress.getAttribute("stroke-dasharray"));
+    expect(Number(progress.getAttribute("stroke-dashoffset"))).toBeCloseTo(circumference * (1 - fraction));
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+    expect(container.querySelector("svg")!.innerHTML).not.toMatch(/NaN|Infinity/);
+  });
+
+  it.each([0, -1, NaN, Infinity])("does not derive an arc from an invalid maximum %s", (max) => {
+    const { container } = render(<Gauge value={0} max={max} color="var(--ok)" />);
+    expect(container.querySelectorAll("circle")).toHaveLength(1);
+    expect(container.querySelector("[stroke-dashoffset]")).toBeNull();
+    expect(container.querySelector("svg")!.innerHTML).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("removes a measured arc immediately when unknown and recovers the real finite value", async () => {
+    const { container, rerender } = render(<Gauge value={100} color="var(--ok)" />);
+    expect(container.querySelector("circle[stroke-dashoffset]")).toHaveAttribute("stroke-dashoffset", "0");
+    rerender(<Gauge value={NaN} color="var(--border)" />);
+    expect(container.querySelector(".num b")).toHaveTextContent(/^—$/);
+    expect(container.querySelectorAll("circle")).toHaveLength(1);
+    expect(container.querySelector("[stroke-dashoffset]")).toBeNull();
+    rerender(<Gauge value={50} color="var(--watch)" />);
+    const progress = container.querySelector("circle[stroke-dashoffset]")!;
+    expect(container.querySelectorAll("circle")).toHaveLength(2);
+    expect(Number(progress.getAttribute("stroke-dashoffset")))
+      .toBeCloseTo(Number(progress.getAttribute("stroke-dasharray")) / 2);
+    await waitFor(() => expect(container.querySelector(".num b")).toHaveTextContent(/^50$/));
+    expect(container.querySelector("svg")!.innerHTML).not.toMatch(/NaN|Infinity/);
   });
 });
 
