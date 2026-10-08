@@ -122,6 +122,54 @@ are left as a follow-up. `openapi.ts` is type-only and the fixture is test-only,
 tracked `webapp/frontend/dist` is expected to be byte-identical. Hosted evidence must
 confirm this.
 
+## Combined with W23 (main `d0e10888`)
+
+#616 (W23) merged as `d0e10888`. W23 added `DevicePage.failure_impact` and `structural_links`,
+the impact holds, and device limitations growing from 15 to 18. This branch merged that main
+with a merge commit and re-pinned on the combined schema. The W28-only pair above
+(`081929d8…`/`66cd55b4…`) is superseded.
+
+**Merge consistency.** `cisco_toolkit/ui_projection.py`, `openapi.ts` and the fixtures merged
+without conflict, and each merged delta over main equals this branch's own delta. W23 adds no
+limitation ID, so:
+- `LIMITATIONS` has 30 entries, and the Trust registry and all 27 non-device copies stay
+  `readonly Limitation[]` arrays.
+- The device registry now has 18 entries, still rendered as tuples (18 < 30), in all 20 device
+  copies. These include W23's two new device list variants.
+- `trust_inputs_scope` is not device-cited, so the device document's order still equals W23's
+  hand-written list.
+
+**Delta over main.**
+- Added definitions: `TrustInput`, `TrustInputHost` and `TrustInputHostList`.
+- `Trust` gains the required `inputs` property.
+- `LimitationId` grows from 33 to 34 IDs.
+- Every Trust-limitation copy grows from 29 to 30 (`minItems` = `maxItems`).
+- No definition is removed, and no device or topology definition changes.
+
+The added parts use only keywords already in main's view and list profile: `$ref`,
+`additionalProperties`, `allOf` (the existing payload wrapper), `anyOf`, `const`,
+`dependentRequired`, `enum`, `items`, `maxItems`, `minItems`, `minLength`, `oneOf`,
+`properties`, `required`, `title`, `type` and `uniqueItems`.
+
+**Hashes.** These are compact `ensure_ascii` JSON plus LF, in owner key order. They were computed
+statically with `ui_projection_api._native_schema_hash`, with the modules imported from this
+worktree (`__file__` asserted). As a method check, an extract of main reproduces main's own
+pins: view `a2fd2b99…` and list `c47a6cef…`.
+
+The combined W23 + W28 pins are now in `_NATIVE_SCHEMA_HASHES` and in the W12b prospective pair:
+- view: `59e4a53fbc475221a8368a25da0aea618b920bf2a4694657a61b56addffac7ec`
+- list: `ef3906d3ae6793f589cf1b1bcbaaa433ff84865a16971a19252683a715852c33`
+
+**Second merge (W24 or W28).** W24 (`claude/vocab-rank`, #617, G43) also moves these pins.
+Whichever of W24 and W28 merges second must:
+- re-pin again on top of the other;
+- regenerate `openapi.ts` on that combined schema;
+- classify `TrustInputHost.custody` in W24's vocab catalogue.
+
+That custody enum's token set matches no G43 vocabulary, so `tests/test_ui_projection_vocab.py`
+v1 would report it unclassified. `TrustInput.input` reuses the `dossier_axis` token set. Neither
+pin set here is valid for that combination.
+
 ## Verification boundary
 
 Local evidence:
