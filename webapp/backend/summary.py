@@ -4,11 +4,12 @@ This is a *read-only projection* of the snapshot the engine already computed —
 analysis. It rolls the headline numbers (re-using the engine's own `_trend_point`) plus the
 breakdowns the cockpit needs: health bands, punch-list by severity/category, keystone devices by
 blast radius, readiness, and which detail sections actually carry data (so the UI hides empty tabs).
+Failure impact is read from the engine-owned projection (``impact_view``), never from the raw stored rows.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import engine  # noqa: F401  (also bootstraps sys.path for the cisco_toolkit import below)
 from . import protocol_portfolio
@@ -113,11 +114,169 @@ def _count_by(items: List[dict], key: str, order: List[str] | None = None) -> Di
     return dict(sorted(out.items(), key=lambda kv: -kv[1]))
 
 
-def _keystones(snap: Dict[str, Any], top: int = 8) -> List[Dict[str, Any]]:
+# ---- failure impact: read from the engine-owned projection, never from the raw stored rows (W27) ----------
+# analyze.compute_failure_impact writes Info with zero counts and a clean-bill detail for a switch it could not
+# simulate, and a partial simulation or an uncollected neighbour makes a low band or a zero only a lower bound.
+# ui_projection's shared failure-impact row builder (the row the fleet topology and the device page publish)
+# withholds exactly those cells, each with its state and reason. Every AssessHub surface that shows or ranks
+# failure impact (the keystones below, cutover's worst-case blast radius, the snapshot "Failure impact" tab and
+# the /graph keystone badge) reads that projection through impact_view, so a withheld cell is never shown as a
+# measurement and never feeds a ranking.
+
+#: ui_projection's one published state: an envelope carries a ``value`` only in this state. Compared for equality
+#: only, so any other state, an unknown one included, or a cell that is not an envelope, is withheld.
+_PUBLISHED = "published"
+#: ui_projection's state for a list it read and found empty (a published list is never empty).
+_COLLECTED_BUT_EMPTY = "collected_but_empty"
+#: The failure-impact cells, in the order the projection builds them (ui_projection._topology_impact), which is
+#: also the producer's own field order.
+IMPACT_FIELDS = ("host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",
+                 "off_scan_gw_vlans", "detail")
+#: A row enters a ranking (the keystones, a wave's worst case) only when the projection publishes all three.
+_IMPACT_RANK_FIELDS = ("host", "severity", "stranded")
+#: What a surface shows where the engine withholds every blast radius it could rank: the cutover module's own
+#: not-assessed token (cutover.GATE_NOT_ASSESSED), which the SPA's chips and the documents colour neutral.
+IMPACT_NOT_ASSESSED = "NOT ASSESSED"
+#: The fleet qualifier ui_projection puts on the failure-impact list while collection_completeness lists a blind
+#: spot: every row was computed over the scanned model without that device's evidence.
+_IMPACT_BLIND_CAVEAT = "fleet_lists_exclude_blind_devices"
+_IMPACT_BLIND_WITNESS = "/collection_completeness/devices/"
+#: The keystone ranking's contract. 2: ranked only from engine-published failure-impact cells (W27). A cached
+#: summary without it was ranked from the raw stored rows and is recomputed on read (app._summary_freshened).
+KEYSTONE_CONTRACT_VERSION = 2
+#: Cap on the names one disclosure sentence lists per reason, so a fleet-wide hold stays one readable sentence.
+_IMPACT_NAME_CAP = 10
+_R_IMPACT_FAULT = ("unverified: the engine failure-impact projection (ui_projection) could not be built for this "
+                   "snapshot, so no row's severity or counts can be read")
+_R_IMPACT_NO_REASON = "withheld by the engine projection, which published no reason"
+_R_IMPACT_NO_ROW = ("not collected: no failure_impact row names this switch. analyze.compute_failure_impact writes one "
+                    "row per scanned host, so its blast radius was never simulated, and an absent row is not 'no "
+                    "impact'")
+_R_IMPACT_BLIND = ("collection_completeness lists {n} device(s) as partial or not collected: every failure-impact row "
+                   "was computed without their evidence, and a device the collection never reached has no row")
+
+#: One projected cell: ``(published, value, reason)``. ``value`` is set only when published; ``reason`` only when not.
+ImpactCell = Tuple[bool, Any, str]
+
+
+def _impact_cell(fact: Any) -> ImpactCell:
+    """One projection envelope as ``(published, value, reason)``; anything not published is withheld with the
+    projection's own reason (which opens with its state)."""
+    if isinstance(fact, dict) and fact.get("state") == _PUBLISHED:
+        return True, fact.get("value"), ""
+    reason = fact.get("reason") if isinstance(fact, dict) else None
+    if isinstance(reason, str) and reason.strip():
+        return False, None, reason
+    state = fact.get("state") if isinstance(fact, dict) else None
+    return False, None, (f"{state}: {_R_IMPACT_NO_REASON}" if isinstance(state, str) and state else _R_IMPACT_NO_REASON)
+
+
+def impact_view(snap: Dict[str, Any]) -> Dict[str, Any]:
+    """The engine-owned failure-impact rows (engine.failure_impact_projection), ready for a table or a ranking.
+
+    ``rows``: one entry per projected row, in stored order, each with ``pointer``; ``key``, the stored row's exact
+    host text when it is text (used only to say which device a withheld row may describe, never shown as a
+    measurement); ``cells``, field -> :data:`ImpactCell`; ``ranked``, true when the list is published and the
+    projection publishes the row's host, severity and stranded count; and ``reason``, why it is not ranked.
+    ``withheld``: the list's own reason when the list is not published (a failed phase, a malformed or absent
+    section, or an owner fault), else "". ``blind``: the blind spots the projection's fleet qualifier cites."""
+    try:
+        listing = engine.failure_impact_projection(snap)
+    except Exception:   # noqa: BLE001 -- the projection is total by contract; a fault withholds every row
+        listing = None
+    if not isinstance(listing, dict) or not isinstance(listing.get("items"), list):
+        return {"rows": [], "withheld": _R_IMPACT_FAULT, "blind": 0}
+    items = listing["items"]
+    state = listing.get("state")
+    withheld = ""
+    if state != _PUBLISHED and not (state == _COLLECTED_BUT_EMPTY and not items):
+        withheld = _impact_cell(listing)[2]
+    blind = 0
+    if isinstance(listing.get("caveats"), list) and _IMPACT_BLIND_CAVEAT in listing["caveats"]:
+        blind = max(1, sum(1 for ref in _as_list(listing.get("refs")) if isinstance(ref, dict)
+                           and isinstance(ref.get("pointer"), str)
+                           and ref["pointer"].startswith(_IMPACT_BLIND_WITNESS)))
+    stored = _as_list(snap.get("failure_impact")) if isinstance(snap, dict) else []
+    rows: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        i = item.get("index")
+        src = stored[i] if type(i) is int and 0 <= i < len(stored) else None
+        key = src.get("host") if isinstance(src, dict) and isinstance(src.get("host"), str) else None
+        cells = {field: _impact_cell(item.get(field)) for field in IMPACT_FIELDS}
+        held = [cells[f][2] for f in _IMPACT_RANK_FIELDS if not cells[f][0]]
+        ranked = not withheld and not held
+        rows.append({"pointer": item["pointer"] if isinstance(item.get("pointer"), str) else "",
+                     "key": key, "cells": cells, "ranked": ranked,
+                     "reason": "" if ranked else (held[0] if held else withheld)})
+    return {"rows": rows, "withheld": withheld, "blind": blind}
+
+
+def impact_row_label(row: Dict[str, Any]) -> str:
+    """How a disclosure names a projected row: its stored host text, else its pointer."""
+    return row["key"] if row["key"] else (row["pointer"] or "a failure_impact row")
+
+
+def impact_disclosure(entries: List[Tuple[str, str]]) -> str:
+    """``name, name (+N more) -- reason; ...``: rows grouped by the projection's exact reason, in first-seen order."""
+    groups: Dict[str, List[str]] = {}
+    for name, reason in entries:
+        groups.setdefault(reason, []).append(name)
+    parts = []
+    for reason, names in groups.items():
+        more = f" (+{len(names) - _IMPACT_NAME_CAP} more)" if len(names) > _IMPACT_NAME_CAP else ""
+        parts.append(f"{', '.join(names[:_IMPACT_NAME_CAP])}{more} — {reason}")
+    return "; ".join(parts)
+
+
+def impact_blind_note(view: Dict[str, Any]) -> str:
+    """The projection's fleet qualifier as one clause ("" when the failure-impact list carries none)."""
+    return _R_IMPACT_BLIND.format(n=view["blind"]) if view["blind"] else ""
+
+
+def impact_rank_key(row: Dict[str, Any]) -> Tuple[int, float]:
+    """Worst first: the published severity's rank, then the published stranded count, descending."""
+    return (_SEV_RANK.get(_hkey(row["cells"]["severity"][1]), 99), -engine.as_num(row["cells"]["stranded"][1]))
+
+
+def impact_entry(row: Dict[str, Any]) -> Dict[str, Any]:
+    """A ranked row in the keystone / blast-radius shape: its published values; a withheld VLAN count is None
+    (rendered as absent), and a withheld detail shows the projection's reason instead of the stored text."""
+    cells = row["cells"]
+    vlans_ok, vlans, _ = cells["vlans_impacted"]
+    detail_ok, detail, detail_reason = cells["detail"]
+    return {"host": cells["host"][1], "severity": cells["severity"][1], "stranded": cells["stranded"][1],
+            "vlans_impacted": vlans if vlans_ok else None, "detail": detail if detail_ok else detail_reason}
+
+
+def failure_impact_table(snap: Dict[str, Any]) -> Any:
+    """The snapshot's "Failure impact" tab: one row per stored row, in stored order, with the producer's fields in
+    :data:`IMPACT_FIELDS` order. A cell the engine projection publishes keeps its value; a withheld cell shows the
+    projection's reason, which opens with its state, instead of the stored Info, zero or clean-bill text. A section
+    that is not a list has no row to project and is returned as stored."""
+    raw = snap.get("failure_impact")
+    if not isinstance(raw, list):
+        return raw
+    view = impact_view(snap)
+    if len(view["rows"]) != len(raw):     # an owner fault: withhold every row, never fall back to the raw values
+        why = view["withheld"] or _R_IMPACT_FAULT
+        return [{field: why for field in IMPACT_FIELDS} for _ in raw]
+    return [{field: (value if ok else reason) for field, (ok, value, reason) in row["cells"].items()}
+            for row in view["rows"]]
+
+
+def _keystones(snap: Dict[str, Any], top: int = 8,
+               view: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """The few devices the fleet most depends on, by migration blast radius.
 
-    Prefer the engine's own executive-brief keystones; else derive from failure_impact
-    (stranded endpoints, severity), which is always present."""
+    Prefer the engine's own executive-brief keystones; else rank the engine-owned failure-impact projection
+    (severity, then stranded endpoints). Only rows whose host, severity and stranded count the projection
+    publishes are ranked: a row it withholds (could not simulate, predates its marker, lacks the scoped
+    running-config, a partial simulation below High, an uncollected neighbour, a duplicated host) is never shown
+    as Info or zero and never ranked. When any row is not ranked, the list is not published, or a blind spot
+    qualifies it, one last ``NOT ASSESSED`` entry with no host says so and why, so an all-withheld fleet never
+    reads as "no keystone"."""
     eb = snap.get("executive_brief")
     eb = eb if isinstance(eb, dict) else {}      # a truthy non-dict section must not raise (malformed upload)
     # Validate each ELEMENT is a dict, not just the container: a keystones list carrying a non-dict (a bare
@@ -128,18 +287,24 @@ def _keystones(snap: Dict[str, Any], top: int = 8) -> List[Dict[str, Any]]:
     ks = [k for k in eb["keystones"] if isinstance(k, dict)] if isinstance(eb.get("keystones"), list) else []
     if ks:
         return ks[:top]
-    fi = [r for r in _as_list(snap.get("failure_impact")) if isinstance(r, dict)]
-    # fail-soft: a malformed stranded (the JSON Infinity a raw int() would 500 on) degrades to 0 in the sort
-    # key -- this runs on EVERY unauthenticated snapshot upload (POST /snapshots -> summarize).
-    fi.sort(key=lambda r: (_SEV_RANK.get(_hkey(r.get("severity", "")), 99),
-                           -engine.as_num(r.get("stranded"))))
-    return [{
-        "host": r.get("host", ""),
-        "severity": r.get("severity", ""),
-        "stranded": r.get("stranded", 0),
-        "vlans_impacted": r.get("vlans_impacted", 0),
-        "detail": r.get("detail", ""),
-    } for r in fi[:top]]
+    view = impact_view(snap) if view is None else view
+    # stable sort over the stored order, as before: only the engine's published severity and stranded count rank
+    ranked = sorted((row for row in view["rows"] if row["ranked"]), key=impact_rank_key)
+    out = [impact_entry(row) for row in ranked[:top]]
+    unranked = [(impact_row_label(row), row["reason"]) for row in view["rows"] if not row["ranked"]]
+    parts = []
+    if view["withheld"] and not view["rows"]:
+        parts.append(f"No failure-impact row could be ranked: {view['withheld']}")
+    if unranked:
+        parts.append(f"{len(unranked)} failure-impact row(s) were not ranked because the engine withholds their "
+                     "host, severity or stranded count, so any of them could rank above the devices shown: "
+                     + impact_disclosure(unranked))
+    if view["blind"]:
+        parts.append(f"The ranking is a lower bound: {impact_blind_note(view)}")
+    if parts:
+        out.append({"host": "", "severity": IMPACT_NOT_ASSESSED, "stranded": None, "vlans_impacted": None,
+                    "detail": ". ".join(parts) + ".", "n_not_ranked": len(unranked)})
+    return out
 
 
 def _section_index(snap: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -488,6 +653,9 @@ def summarize(snap: Dict[str, Any]) -> Dict[str, Any]:
         },
         "readiness": readiness,
         "keystones": _keystones(snap),
+        # Which keystone ranking produced the list above; a cached summary from an older one is recomputed on
+        # read (app._summary_freshened), so a stored raw-row ranking cannot outlive the fix.
+        "keystone_contract": KEYSTONE_CONTRACT_VERSION,
         "lifecycle": _lifecycle(lr) if lr else {},
         "verification": snapshot_verification(snap),
         "sections": _section_index(snap),
