@@ -456,7 +456,9 @@ def _smoke_ui_projection(base: str, instance_nonce: str) -> None:
             raise ValueError("projection response is cacheable")
         if headers.get("x-atlas-native-validation") != "jsonschema-rs/0.58.5":
             raise ValueError("frozen view did not prove actual native validation")
-        equal(json.loads(body), {**context, "payload": expected})
+        # A whole-view response carries the owner's constant vocabulary block (G43) from the same owner call the
+        # handler makes; the paged list below carries none, so the shared context stays without it.
+        equal(json.loads(body), {**context, "vocab": source["vocab"], "payload": expected})
         body, headers = request(prefix + "/ui-projection/overview/lists?pointer=/axes&offset=1&limit=1")
         if headers.get("cache-control") != "no-store":
             raise ValueError("projection list response is cacheable")

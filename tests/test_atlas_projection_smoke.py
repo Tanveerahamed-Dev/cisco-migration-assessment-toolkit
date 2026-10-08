@@ -10,7 +10,7 @@ import pytest
 
 from cisco_toolkit.ui_projection import project
 from portable import build_atlas
-from webapp.backend.ui_projection_api import _page, _page_view
+from webapp.backend.ui_projection_api import UiProjectionListResponse, UiProjectionViewResponse, _page, _page_view
 
 
 @pytest.fixture(scope="module")
@@ -26,17 +26,23 @@ def projection_responses():
     # Exercise the real transport adapter against the independently built smoke
     # expectation, so a shared omission of a newly pageable list cannot pass.
     overview = _page_view(source["overview"], "overview", 1)
-    return raw, context, overview, _page(source["overview"]["axes"], "/axes", 1, 1)
+    later = _page(source["overview"]["axes"], "/axes", 1, 1)
+    # The mocked positives must be responses the real transport contracts admit: a whole view carries the
+    # owner's vocabulary block (G43) and a paged list carries none. Validating both here keeps an omission
+    # shared by this mock and the smoke's own expectation (a missing vocab) from passing.
+    UiProjectionViewResponse.model_validate(json.loads(json.dumps({**context, "vocab": source["vocab"], "payload": overview})))
+    UiProjectionListResponse.model_validate(json.loads(json.dumps({**context, "list": later})))
+    return raw, context, overview, later, source["vocab"]
 
 
 def run_projection_smoke(monkeypatch, projection_responses, mutate=None):
-    raw, context, overview, later = deepcopy(projection_responses)
+    raw, context, overview, later, vocab = deepcopy(projection_responses)
     responses = [
         [{"snapshot": {"id": 7}}, {}],
         [raw, {"x-snapshot-sha256": hashlib.sha256(raw).hexdigest(), "x-snapshot-bytes": str(len(raw)),
                "x-snapshot-digest-form": "assesshub-store-blob", "cache-control": "no-store"}],
-        [{**context, "payload": overview}, {"cache-control": "no-store",
-                                            "x-atlas-native-validation": "jsonschema-rs/0.58.5"}],
+        [{**context, "vocab": vocab, "payload": overview}, {"cache-control": "no-store",
+                                                            "x-atlas-native-validation": "jsonschema-rs/0.58.5"}],
         [{**context, "list": later}, {"cache-control": "no-store",
                                       "x-atlas-native-validation": "jsonschema-rs/0.58.5"}],
     ]
@@ -84,12 +90,14 @@ def test_projection_smoke_requires_nonce_before_any_request(monkeypatch):
     "source_state", "source_metadata", "page_total", "page_items", "later_rows", "cache",
     "native_missing_view", "native_missing_list", "native_wrong_version", "native_stock",
     "native_previous_version_view", "native_previous_version_list",
+    "vocab_missing", "vocab_ranked_class", "vocab_unranked_token", "vocab_extra_member", "vocab_on_list",
 ])
 def test_projection_smoke_refuses_drift(monkeypatch, projection_responses, mutation):
     def mutate(responses):
         headers = responses[1][1]
         body = responses[2][0]
         axes = body["payload"]["axes"]
+        vocab = body["vocab"]
         if mutation == "raw_digest": headers["x-snapshot-sha256"] = "0" * 64
         elif mutation == "raw_bytes": headers["x-snapshot-bytes"] = "0"
         elif mutation == "raw_form": headers["x-snapshot-digest-form"] = "invented"
@@ -108,8 +116,26 @@ def test_projection_smoke_refuses_drift(monkeypatch, projection_responses, mutat
         elif mutation == "native_previous_version_view": responses[2][1]["x-atlas-native-validation"] = "jsonschema-rs/0.58.4"
         elif mutation == "native_previous_version_list": responses[3][1]["x-atlas-native-validation"] = "jsonschema-rs/0.58.4"
         elif mutation == "native_stock": responses[2][1]["x-atlas-native-validation"] = "jsonschema/4.26.0"
+        elif mutation == "vocab_missing": body.pop("vocab")
+        elif mutation == "vocab_ranked_class": next(iter(vocab["ranked"].values()))["items"][0]["class"] = "invented"
+        elif mutation == "vocab_unranked_token": next(iter(vocab["unranked"].values()))["tokens"].pop()
+        elif mutation == "vocab_extra_member": vocab["invented"] = True
+        elif mutation == "vocab_on_list": responses[3][0]["vocab"] = deepcopy(vocab)
     with pytest.raises(SystemExit, match="frozen UI projection smoke failed"):
         run_projection_smoke(monkeypatch, projection_responses, mutate)
+
+
+def test_projection_smoke_view_carries_the_owner_vocab_and_the_list_none(monkeypatch, projection_responses):
+    """G43: the whole-view expectation holds the owner's constant vocabulary block, never a copy the smoke keeps;
+    the paged list stays without it, so the shared transport context must not carry it either."""
+    _raw, context, _overview, later, vocab = projection_responses
+    assert vocab == project({})["vocab"] and vocab["ranked"] and vocab["unranked"]
+    assert "vocab" not in context and "vocab" not in later
+    seen = []
+    def mutate(responses):
+        seen.append((deepcopy(responses[2][0]["vocab"]), "vocab" in responses[3][0]))
+    run_projection_smoke(monkeypatch, projection_responses, mutate)
+    assert seen == [(vocab, False)]
 
 
 @pytest.mark.parametrize("mutation", [
