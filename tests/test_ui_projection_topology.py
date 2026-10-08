@@ -33,7 +33,7 @@ def snap():
                              "betweenness": 321.5, "is_bridge": True, "pairs_cut": 3, "rank": 1}],
         "failure_impact": [{"host": "a/b~c.d", "severity": "Info", "vlans_impacted": 0, "stranded": 0,
                             "hard": 0, "backup": 0, "fhrp": 0, "off_scan_gw_vlans": 0,
-                            "detail": "INDETERMINATE -- no VLAN carriage evidence"}],
+                            "detail": "No reachability impact from removing this switch (within the scan)."}],
     }
 
 

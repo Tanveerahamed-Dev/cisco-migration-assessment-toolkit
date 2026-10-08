@@ -32,7 +32,8 @@ frontend type-check and build job also passed, including the generated-type `api
 ### Reviewed structural delta of the transport schemas
 
 The delta adds no keyword outside the established domain. It uses only `$ref`, `properties`,
-`required`, `additionalProperties`, `minItems`, `maxItems` and `oneOf`:
+`required`, `additionalProperties`, `minItems`, `maxItems`, `oneOf`, `allOf`, `const` and `type`.
+The last three come from the existing transport wrappers in `_view_schema` and `_LIST_SCHEMA`:
 
 1. `DevicePage` gains two required properties, `failure_impact` and `structural_links`. They
    are `$ref`s to the existing `TopologyImpactRowList` and `TopologyStructuralLinkRowList`
@@ -58,7 +59,8 @@ instance domain (`_native_instance_allowed`) and the offline Python fallback are
 ### Hashes
 
 The hashes are compact `ensure_ascii` JSON plus LF, in owner key order. Values are taken from
-the hosted assertion output of the jobs above and were not computed locally:
+the hosted assertion output of the jobs above and were not computed locally. The follow-up pair
+below supersedes them:
 
 - view: `ccce3f33ce10533fad39e9bf9b33ee677497b3cbbcc6ad78a3a5feb2d4adc866`
 - list: `110640131dd9e789538b4ce43dcc02a75128e8bc25d94906e1829739ab440c11`
@@ -69,3 +71,49 @@ of the combined schema with its own reviewed delta.
 
 All required hosted checks on the exact final head remain mandatory, and so does independent
 refutation by Codex.
+
+## Follow-up delta after independent refutation
+
+An independent refuter reviewed head `e174471f`. This delta answers its findings P2-1 and P3-2
+through P3-8. It is behavioural first; the schema change is one more fixed limitation item.
+
+**Behaviour**
+- Both producers compute over every scanned device's evidence. While `collection_completeness`
+  lists any blind spot, `/topology/failure_impact`, `/topology/structural_links` and the two
+  device selections carry `fleet_lists_exclude_blind_devices`, with a witness ref to each
+  blind-spot row. An empty list is then `not_collected`, never "nothing found". This is the
+  `_fleet_qualify` precedent already used by the VLAN, endpoint and findings lists. Nodes and
+  cables stay unqualified: they are discovery observations, and an uncollected peer stays a row.
+- Structural links take the qualifier too. A missing peer can only make a link look like a
+  bridge, so `is_bridge: false` holds. But `pairs_cut`, `betweenness` and `rank` can move either
+  way when a device behind the link was not collected.
+- The device `failure_impact` gap check also requires the running-config (`config=True`).
+  `build.py` takes `svi_ip`, the simulation's gateway input, only from the running-config parse.
+- A row that opens with the producer's `Blast radius INDETERMINATE` marker withholds its
+  severity and counts as `not_collected`, with a witness to `detail`. So does a row whose
+  positive `off_scan_gw_vlans` comes with no simulated VLAN. Its style is `not_observed`, never
+  `impact_info`. A row that simulated some VLANs and also counts off-scan ones keeps its
+  measured values as lower bounds. Each value cites `off_scan_gw_vlans`, following the
+  dossier-band precedent. A test drives the real `analyze.compute_failure_impact` to pin the
+  marker.
+- A one-row-per-device selection with a capture gap now says the row's values may be
+  unreliable. A duplicate row keeps the device's gap reason and witnesses. A row the exact-key
+  join cannot read makes both new selections `unverified`, with a witness to that row.
+
+**Transport schema delta**
+1. The device limitations array grows from 17 to 18 fixed items (`minItems` = `maxItems`). The
+   change reaches `DevicePage` and every device view and list variant's `limitations` copy. The
+   added entry re-addresses the existing payload limitation `fleet_lists_exclude_blind_devices`.
+   It adds no new limitation ID, property or keyword.
+2. Limitation `text` and `applies_to` values are instance data, not schema. Two texts changed
+   (`fleet_lists_exclude_blind_devices` and `impact_scanned_scope`), and the first gained the two
+   topology paths.
+3. Each of the 20 device limitation tuples in `openapi.ts` gains one item by hand. The hosted
+   `api:check` decides exactness.
+
+**Hashes.** These were computed locally by deterministic serialisation only. The script called
+`_native_schema_hash` on `_VIEW_SCHEMA` and `_LIST_SCHEMA`, imported from this worktree. It ran no
+test, build or validator. The hosted pin and prospective-parity tests confirm them:
+
+- view: `a2fd2b9994569b2fd3a3df72e3410ae1b74ff41c26833a62239514c677f9de32`
+- list: `c47a6ceff24a7392fa9b248ece33b36381f9fd27fc67d3d52ea3d8238a37e0c9`

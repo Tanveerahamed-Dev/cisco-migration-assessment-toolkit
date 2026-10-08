@@ -1230,8 +1230,8 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    prospective = {"view": "ccce3f33ce10533fad39e9bf9b33ee677497b3cbbcc6ad78a3a5feb2d4adc866",
-                   "list": "110640131dd9e789538b4ce43dcc02a75128e8bc25d94906e1829739ab440c11"}
+    prospective = {"view": "a2fd2b9994569b2fd3a3df72e3410ae1b74ff41c26833a62239514c677f9de32",
+                   "list": "c47a6ceff24a7392fa9b248ece33b36381f9fd27fc67d3d52ea3d8238a37e0c9"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)

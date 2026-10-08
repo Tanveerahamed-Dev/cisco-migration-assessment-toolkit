@@ -9,25 +9,47 @@ never re-simulates, and an empty selection is never a clean result:
 * ``analyze.compute_link_centrality`` keeps only CDP/LLDP links whose two ends were both scanned, so a device absent
   from it may face an unscanned peer or lack CDP/LLDP evidence -- never proof that it has no inter-switch link.
 
+Both producers compute over every scanned device's evidence, so a blind spot ANYWHERE in the fleet qualifies their
+rows, on the fleet topology and on the device page alike. A row the producer says it could not simulate (its
+INDETERMINATE detail) withholds its severity and counts rather than show Info and zero as measurements.
+
 Every value is checked against an INDEPENDENT lookup in the snapshot, never the module's own join.
 """
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import pathlib
+from dataclasses import asdict
 
 import pytest
 from jsonschema import Draft202012Validator
 
 from cisco_toolkit import analyze
 from cisco_toolkit import ui_projection as ui
+from cisco_toolkit.model import InterfaceData
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SAMPLE = ROOT / "webapp" / "sample_data" / "sample_fleet.snapshot.json"
 PUB, CBE, NC, AU, UV = "published", "collected_but_empty", "not_collected", "analysis_unavailable", "unverified"
 SECTIONS = ("failure_impact", "structural_links")
 ENDS = ("a_host", "b_host")
+#: The failure-impact cells that measure a simulated blast radius (host, off_scan_gw_vlans and detail do not).
+MEASURES = ("severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp")
+#: The device document's limitations, in document order, written out by hand rather than taken from the module's
+#: own formula: its four own limitations, then each payload limitation a device page cites, in payload order.
+DEVICE_DOC_LIMITATION_IDS = (
+    "deduction_refs_are_subsequence", "routes_in_scope_only", "interface_default_not_observed",
+    "routing_neighbors_empty_is_ambiguous", "one_hop_failure_attribution", "coverage_matrix_shown_as_published",
+    "projection_owned_verdicts", "device_physical_defaults_not_observed", "health_scored_without_security",
+    "health_scored_over_partial_collection", "dossier_band_over_unassessed_axes", "engine_list_capped",
+    "move_group_label_absent", "row_selection_by_exact_key", "fleet_lists_exclude_blind_devices",
+    "device_findings_scope", "topology_scanned_model", "impact_scanned_scope",
+)
+#: Two blind spots, neither of them core1 or dist2: one device never reached, one reached in part.
+BLIND = [{"host": "ghost1", "status": "not collected", "data_quality": 0, "missing": ["version/inventory"]},
+         {"host": "access2", "status": "partial", "data_quality": 75, "missing": ["interface status"]}]
 
 
 @pytest.fixture(scope="module")
@@ -36,10 +58,19 @@ def sample():
 
 
 @pytest.fixture(scope="module")
-def doc_validator():
-    schema = ui.ui_projection_schema()
+def schema():
+    return ui.ui_projection_schema()
+
+
+@pytest.fixture(scope="module")
+def doc_validator(schema):
     return Draft202012Validator({"$schema": schema["$schema"], "$defs": schema["$defs"],
                                  "$ref": "#/$defs/DeviceDocument"})
+
+
+@pytest.fixture(scope="module")
+def topology_validator(schema):
+    return Draft202012Validator({"$ref": "#/$defs/Topology", "$defs": schema["$defs"]})
 
 
 def _page(snap, host, validator):
@@ -49,6 +80,14 @@ def _page(snap, host, validator):
     assert not errors, (host, [(list(e.absolute_path), e.message[:200]) for e in errors[:5]])
     json.dumps(doc, allow_nan=False)
     return doc["device"]
+
+
+def _topology(snap, validator):
+    topology = ui.project_topology(snap)
+    errors = sorted(validator.iter_errors(topology), key=lambda e: list(e.absolute_path))
+    assert not errors, [(list(e.absolute_path), e.message[:200]) for e in errors[:5]]
+    json.dumps(topology, allow_nan=False)
+    return topology
 
 
 def _naming(rows, host, fields):
@@ -72,10 +111,16 @@ def _facts(obj, where=""):
             yield from _facts(val, f"{where}/{i}")
 
 
+def _no_interface_parse(snap, host):
+    """Independent: the snapshot carries no non-empty interface parse for `host`."""
+    row = snap.get("interfaces", {}).get(host)
+    return not (isinstance(row, dict) and row)
+
+
 # --------------------------------------------------------------------------------------------------
 # the closed schema and the module tables carry both selections
 # --------------------------------------------------------------------------------------------------
-def test_device_page_schema_and_tables_carry_both_selections():
+def test_device_page_schema_and_tables_carry_both_selections(sample):
     d = ui.ui_projection_schema()["$defs"]
     page = d["DevicePage"]
     assert page["additionalProperties"] is False
@@ -89,12 +134,17 @@ def test_device_page_schema_and_tables_carry_both_selections():
     cited = ui.DEVICE_CITED_LIMITATIONS
     for section in SECTIONS:
         for lid in ("one_hop_failure_attribution", "row_selection_by_exact_key", "topology_scanned_model",
-                    "projection_owned_verdicts"):
+                    "projection_owned_verdicts", "fleet_lists_exclude_blind_devices"):
             assert "/device/" + section in cited[lid], (lid, section)
     assert tuple(cited["impact_scanned_scope"]) == ("/device/failure_impact",)
-    n = len(ui.DEVICE_LIMITATIONS) + sum(1 for lim in ui.LIMITATIONS if lim["id"] in cited)
+    # the count and order come from the hand-written list above, never from the module's own formula
     lims = page["properties"]["limitations"]
-    assert lims["minItems"] == lims["maxItems"] == n
+    assert lims["minItems"] == lims["maxItems"] == len(DEVICE_DOC_LIMITATION_IDS)
+    doc = ui.project_device(sample, "core1")["device"]["limitations"]
+    assert [lim["id"] for lim in doc] == list(DEVICE_DOC_LIMITATION_IDS)
+    payload = {lim["id"]: lim for lim in ui.LIMITATIONS}
+    for path in ("/topology/failure_impact", "/topology/structural_links"):
+        assert path in payload["fleet_lists_exclude_blind_devices"]["applies_to"], path
 
 
 # --------------------------------------------------------------------------------------------------
@@ -105,14 +155,22 @@ def test_a_simulated_device_selects_exactly_its_fleet_rows(sample, doc_validator
     impact, structural = topology["failure_impact"]["items"], topology["structural_links"]["items"]
     assert [it["index"] for it in impact] == list(range(len(sample["failure_impact"])))
     assert [it["index"] for it in structural] == list(range(len(sample["link_centrality"])))
+    lacking = []
     for host in sorted(sample["devices"]):
         page = _page(sample, host, doc_validator)
         rows = _naming(sample["failure_impact"], host, ("host",))
         assert len(rows) == 1, host                                 # the producer writes one row per scanned host
         sel = page["failure_impact"]
-        assert sel["state"] == PUB, (host, sel.get("reason"))
         assert sel["subject"] == "/failure_impact"
         assert sel["items"] == [impact[rows[0]]], host               # the fleet row itself, same pointer and values
+        if host in sample["security"]:
+            assert sel["state"] == PUB, (host, sel.get("reason"))
+        else:
+            # no captured running-config: build.py takes SVI gateways only from it, so this device's own gateway
+            # role never reached the simulation that wrote its row
+            lacking.append(host)
+            assert sel["state"] == NC and "security carries no row" in sel["reason"], (host, sel)
+            assert "values may be unreliable" in sel["reason"], sel["reason"]
         row = sel["items"][0]
         assert row["pointer"] == f"/failure_impact/{rows[0]}"
         assert row["host"]["value"] == host
@@ -125,6 +183,7 @@ def test_a_simulated_device_selects_exactly_its_fleet_rows(sample, doc_validator
         assert want and links["state"] == PUB, (host, links.get("reason"))
         assert links["subject"] == "/link_centrality"
         assert links["items"] == [structural[i] for i in want], host
+    assert lacking and lacking == sorted(set(sample["devices"]) - set(sample["security"]))
 
 
 def test_d_structural_links_name_the_device_from_either_end_and_nothing_else(sample, doc_validator):
@@ -159,7 +218,45 @@ def test_two_rows_naming_one_device_are_unverified_never_picked_between(sample, 
     assert sel["state"] == UV and "2 rows" in sel["reason"], sel
     assert {(f"/failure_impact/{first}", "witness"), (f"/failure_impact/{dup}", "witness")} <= _refs(sel)
     assert [it["index"] for it in sel["items"]] == [first, dup]
-    assert _page(snap, "core2", doc_validator)["failure_impact"]["state"] == PUB
+    assert "collection gap" not in sel["reason"]
+    assert _page(snap, "dist1", doc_validator)["failure_impact"]["state"] == PUB
+    # the duplicate keeps the device's own collection gap, and its witness, beside the ambiguity
+    snap["collection_completeness"]["devices"] = [
+        {"host": "core1", "status": "partial", "data_quality": 75, "missing": ["switchport"]}]
+    sel = _page(snap, "core1", doc_validator)["failure_impact"]
+    assert sel["state"] == UV and "2 rows" in sel["reason"], sel
+    assert "collection gap" in sel["reason"] and "switchport" in sel["reason"], sel["reason"]
+    assert ("/collection_completeness/devices/0/missing", "witness") in _refs(sel)
+
+
+@pytest.mark.parametrize("bad", ["not a row", None, {"severity": "High"}, {"host": 7}, {"host": ["core1"]}])
+def test_an_unreadable_impact_row_makes_every_selection_unverified(sample, doc_validator, topology_validator, bad):
+    """The join cannot read the row, so it could be the device's own: never 'not simulated', never picked past."""
+    snap = copy.deepcopy(sample)
+    snap["failure_impact"] = [r for r in snap["failure_impact"] if r["host"] != "core1"] + [bad]
+    k = len(snap["failure_impact"]) - 1
+    sel = _page(snap, "core1", doc_validator)["failure_impact"]
+    assert sel["state"] == UV and "could name this device" in sel["reason"], sel
+    assert "an absent row is not 'no impact'" not in sel["reason"]
+    assert (f"/failure_impact/{k}", "witness") in _refs(sel)
+    assert sel["items"] == []
+    kept = _page(snap, "dist1", doc_validator)["failure_impact"]          # a device that still has its row
+    assert kept["state"] == UV and (f"/failure_impact/{k}", "witness") in _refs(kept)
+    assert [it["index"] for it in kept["items"]] == _naming(snap["failure_impact"], "dist1", ("host",))
+    fleet = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    assert fleet["host"]["state"] != PUB                                 # the fleet shows the same row withheld
+
+
+def test_an_unreadable_structural_row_makes_every_selection_unverified(sample, doc_validator):
+    snap = copy.deepcopy(sample)
+    snap["link_centrality"].append({"a_host": None, "b_host": "core1", "betweenness": 1.0, "is_bridge": False,
+                                    "pairs_cut": 0, "rank": 99})
+    k = len(snap["link_centrality"]) - 1
+    for host in ("core1", "podacc1"):
+        sel = _page(snap, host, doc_validator)["structural_links"]
+        assert sel["state"] == UV and "could name this device" in sel["reason"], (host, sel)
+        assert (f"/link_centrality/{k}", "witness") in _refs(sel)
+        assert [it["index"] for it in sel["items"]] == _naming(snap["link_centrality"], host, ENDS), host
 
 
 # --------------------------------------------------------------------------------------------------
@@ -173,20 +270,45 @@ def test_b_a_device_with_no_simulation_row_is_not_collected_never_no_impact(samp
     assert sel["state"] not in (PUB, CBE)
     assert "an absent row is not 'no impact'" in sel["reason"]
     assert sel["subject"] == "/failure_impact"
-    other = _page(snap, "core2", doc_validator)["failure_impact"]
-    assert other["state"] == PUB and [it["host"]["value"] for it in other["items"]] == ["core2"]
+    other = _page(snap, "dist1", doc_validator)["failure_impact"]
+    assert other["state"] == PUB and [it["host"]["value"] for it in other["items"]] == ["dist1"]
     snap["failure_impact"] = []                                  # an empty simulation, no failure recorded
     sel = _page(snap, "core1", doc_validator)["failure_impact"]
     assert sel["state"] == NC and "an absent row is not 'no impact'" in sel["reason"]
 
 
-def test_b_no_device_selection_is_ever_a_clean_absence(sample, doc_validator):
-    hosts = set(sample["devices"]) | {n["host"] for n in sample["cable_map"]["nodes"]}
-    for host in sorted(hosts):
-        page = _page(sample, host, doc_validator)
+def test_b_no_device_selection_is_ever_a_clean_absence(sample, monkeypatch):
+    """Every host's empty selection is not_collected for the concrete reason that applies to it -- and the check
+    is shown able to fail: an absence rule mutated into a plain 'nothing found' turns those selections CBE."""
+    hosts = sorted(set(sample["devices"]) | {n["host"] for n in sample["cable_map"]["nodes"]})
+    snap = copy.deepcopy(sample)
+    snap["failure_impact"], snap["link_centrality"] = [], []         # read, present, and naming nobody
+
+    def pages():
+        return {(host, section): ui.project_device(snap, host)["device"][section]
+                for host in hosts for section in SECTIONS}
+
+    expected = {"failure_impact": "an absent row is not 'no impact'",
+                "structural_links": "not proof that the device has no inter-switch link"}
+    for (host, section), sel in pages().items():
+        assert sel["state"] == NC and sel["items"] == [], (host, section, sel)
+        assert "not a blind spot" not in sel["reason"], (host, section)
+        if _no_interface_parse(snap, host):
+            assert "no interface parse result" in sel["reason"], (host, section, sel["reason"])
+        elif section == "failure_impact" and host not in snap["security"]:
+            assert "security carries no row" in sel["reason"], (host, section, sel["reason"])
+        else:
+            assert expected[section] in sel["reason"], (host, section, sel["reason"])
+    monkeypatch.setattr(ui, "_ABSENT_IMPACT", "no simulation row names this device")
+    monkeypatch.setattr(ui, "_ABSENT_STRUCTURAL", "no structural link names this device")
+    mutated = pages()
+    assert {section for (_h, section), sel in mutated.items() if sel["state"] == CBE} == set(SECTIONS)
+    # and on the sample itself, every selection is published or a reasoned not_collected
+    for host in hosts:
+        page = ui.project_device(sample, host)["device"]
         for section in SECTIONS:
             sel = page[section]
-            assert sel["state"] != CBE, (host, section, sel.get("reason"))
+            assert sel["state"] in (PUB, NC), (host, section, sel.get("reason"))
             if sel["state"] != PUB:
                 assert "not a blind spot" not in sel["reason"], (host, section)
 
@@ -215,11 +337,20 @@ def test_c_a_missing_needed_capture_makes_the_selection_incomplete(sample, doc_v
         assert rows and [it["index"] for it in sel["items"]] == rows, section     # shown, then qualified
         if gap:
             assert sel["state"] == NC, (section, sel)
-            assert missing in sel["reason"] and "may be incomplete" in sel["reason"], (section, sel["reason"])
+            assert missing in sel["reason"], (section, sel["reason"])
+            if section == "failure_impact":
+                # one row per device: the row's own values are in doubt, not the list's completeness
+                assert "values may be unreliable" in sel["reason"], sel["reason"]
+                assert "the rows shown are the ones other evidence names" not in sel["reason"]
+            else:
+                assert "may be incomplete" in sel["reason"], sel["reason"]
             assert witness in _refs(sel), section
         else:
+            # the device's own partial row is a fleet blind spot: published, and qualified by it
             assert sel["state"] == PUB, (section, sel.get("reason"))
             assert witness not in _refs(sel), section
+            assert "fleet_lists_exclude_blind_devices" in sel["caveats"], section
+            assert ("/collection_completeness/devices/0", "witness") in _refs(sel), section
 
 
 def test_c_a_device_the_collection_never_reached_is_not_collected(sample, doc_validator):
@@ -252,6 +383,143 @@ def test_an_unknown_or_non_text_host_claims_nothing(sample, doc_validator, host,
     for section in SECTIONS:
         sel = page[section]
         assert sel["state"] == want and sel["items"] == [] and sel["refs"] == [], (section, sel)
+
+
+# --------------------------------------------------------------------------------------------------
+# (g) a blind spot elsewhere qualifies both producers' rows, on the fleet topology and on the device page
+# --------------------------------------------------------------------------------------------------
+def test_g_blind_spots_elsewhere_qualify_impact_and_structural_rows_on_both_surfaces(sample, doc_validator,
+                                                                                     topology_validator):
+    snap = copy.deepcopy(sample)
+    snap["collection_completeness"]["devices"] = copy.deepcopy(BLIND)
+    witness = {("/collection_completeness/devices/0", "witness"), ("/collection_completeness/devices/1", "witness")}
+    topology = _topology(snap, topology_validator)
+    for key in SECTIONS:
+        fleet = topology[key]
+        assert fleet["state"] == PUB and "fleet_lists_exclude_blind_devices" in fleet["caveats"], key
+        assert witness <= _refs(fleet), key
+    for key in ("nodes", "cables"):                  # discovery observations: their uncollected peers stay as rows
+        assert "fleet_lists_exclude_blind_devices" not in topology[key].get("caveats", ()), key
+    clean = _topology(sample, topology_validator)    # the control: no blind spot, no qualifier
+    for key in SECTIONS:
+        assert "fleet_lists_exclude_blind_devices" not in clean[key].get("caveats", ()), key
+        assert not witness & _refs(clean[key]), key
+    for host in ("core1", "dist2"):                  # neither is a blind spot; their rows are computed over them
+        doc = ui.project_device(snap, host)
+        assert not list(doc_validator.iter_errors(doc))
+        lims = {lim["id"]: lim["applies_to"] for lim in doc["device"]["limitations"]}
+        for key, source, fields in (("failure_impact", "failure_impact", ("host",)),
+                                    ("structural_links", "link_centrality", ENDS)):
+            sel = doc["device"][key]
+            assert sel["state"] == PUB and "fleet_lists_exclude_blind_devices" in sel["caveats"], (host, key)
+            assert witness <= _refs(sel), (host, key)
+            assert "/device/" + key in lims["fleet_lists_exclude_blind_devices"], key
+            # the rows are untouched: still exactly the fleet rows naming the device
+            assert sel["items"] == [topology[key]["items"][i] for i in _naming(snap[source], host, fields)]
+        assert not witness & _refs(ui.project_device(sample, host)["device"]["failure_impact"])
+    # an empty list under blind spots is never 'nothing found'; without them it is collected_but_empty
+    for base, blind in ((snap, True), (sample, False)):
+        empty = copy.deepcopy(base)
+        empty["failure_impact"], empty["link_centrality"] = [], []
+        topology = _topology(empty, topology_validator)
+        for key in SECTIONS:
+            if blind:
+                assert topology[key]["state"] == NC, (key, topology[key])
+                assert "collection_completeness lists 2 device(s)" in topology[key]["reason"], key
+            else:
+                assert topology[key]["state"] == CBE, (key, topology[key])
+
+
+# --------------------------------------------------------------------------------------------------
+# (h) a switch the REAL producer could not simulate never shows Info and zero as measurements
+# --------------------------------------------------------------------------------------------------
+def _unsimulatable_fleet():
+    """Captures the real producer reads, built so that it cannot simulate every switch: `acc` carries VLAN 20,
+    whose gateway was never scanned, and nothing it can simulate; `gw` gateways VLAN 10 for `acc` (a measured hard
+    partition) and also carries VLAN 20; `x1` and `x2` share a trunk with no VLAN-carriage evidence on either end."""
+    def trunk(peer, vlans=""):
+        return InterfaceData(port="Gi1", status="connected", switchport_mode="Trunk", cdp_neighbor=peer,
+                             neighbor_port="Gi1", endpoint_type="Switch", trunk_allowed_vlans=vlans,
+                             stp_fwd_vlans=vlans)
+
+    def access(port, vid, mac):
+        return InterfaceData(port=port, status="connected", switchport_mode="Access", vlan=str(vid), end_host_mac=mac)
+
+    return {"gw": {"Gi1": trunk("acc", "10,20"), "Vlan10": InterfaceData(port="Vlan10", svi_ip="10.10.0.1/24")},
+            "acc": {"Gi1": trunk("gw", "10,20"), "Gi10": access("Gi10", 10, "0000.0000.000a"),
+                    "Gi20": access("Gi20", 20, "0000.0000.0014")},
+            "x1": {"Gi1": trunk("x2")}, "x2": {"Gi1": trunk("x1")}}
+
+
+def _impact_snapshot(interfaces, impact):
+    return {"schema": "collect_parse_snapshot/1", "devices": {host: {"hostname": host} for host in interfaces},
+            "interfaces": {host: {port: asdict(row) for port, row in ports.items()}
+                           for host, ports in interfaces.items()},
+            "failure_impact": impact, "cable_map": analyze.compute_cable_map(interfaces), "routes": {}}
+
+
+def test_h_an_unsimulated_switch_withholds_its_severity_and_counts(doc_validator, topology_validator):
+    interfaces = _unsimulatable_fleet()
+    impact = analyze.compute_failure_impact(interfaces)               # the REAL producer, never a hand-written row
+    by_host = {row["host"]: row for row in impact}
+    assert set(by_host) == set(interfaces)
+    # the producer's own disclosure, pinned: both INDETERMINATE branches open with the projection's marker
+    for host, off_scan in (("acc", 1), ("x1", 0), ("x2", 0)):
+        row = by_host[host]
+        assert row["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX), (host, row["detail"])
+        assert ("off-scan gateway" in row["detail"]) == bool(off_scan), (host, row["detail"])
+        assert row["severity"] == "Info" and row["off_scan_gw_vlans"] == off_scan, row
+        assert all(row[f] == 0 for f in MEASURES[1:]), row                # zeros that look like measurements
+    gw = by_host["gw"]
+    assert not gw["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX)
+    assert gw["severity"] == "High" and gw["hard"] == gw["vlans_impacted"] == 1 and gw["off_scan_gw_vlans"] == 1
+    snap = _impact_snapshot(interfaces, impact)
+    topology = _topology(snap, topology_validator)
+    rows = {row["host"]["value"]: row for row in topology["failure_impact"]["items"]}
+    for host in ("acc", "x1", "x2"):
+        row = rows[host]
+        for field in MEASURES:
+            fact = row[field]
+            assert fact["state"] == NC and fact["value"] is None, (host, field, fact)
+            assert "could not simulate" in fact["reason"], (host, field, fact["reason"])
+            assert (row["pointer"] + "/detail", "witness") in _refs(fact), (host, field)
+        for field in ("host", "off_scan_gw_vlans", "detail"):
+            assert row[field]["state"] == PUB and row[field]["value"] == by_host[host][field], (host, field)
+        assert row["style"]["value"]["token"] == "not_observed", (host, row["style"])
+    row = rows["gw"]                     # simulated in part: measured values kept, each citing the off-scan count
+    for field in MEASURES:
+        assert row[field]["state"] == PUB and row[field]["value"] == gw[field], field
+        assert (row["pointer"] + "/off_scan_gw_vlans", "witness") in _refs(row[field]), field
+    assert row["style"]["value"]["token"] == "impact_high"
+    # the device page shows the same rows: a published selection whose row withholds what was not simulated
+    for host in ("acc", "gw", "x1"):
+        sel = _page(snap, host, doc_validator)["failure_impact"]
+        assert sel["state"] == PUB and sel["items"] == [rows[host]], (host, sel.get("reason"))
+
+
+def test_h_the_off_scan_count_alone_withholds_and_a_bad_count_is_unverified(topology_validator):
+    interfaces = _unsimulatable_fleet()
+    snap = _impact_snapshot(interfaces, analyze.compute_failure_impact(interfaces))
+    k = next(i for i, row in enumerate(snap["failure_impact"]) if row["host"] == "acc")
+    pointer = f"/failure_impact/{k}"
+    # the same producer row without its prose marker: the count still says nothing was simulated
+    snap["failure_impact"][k]["detail"] = "No reachability impact from removing this switch (within the scan)."
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    for field in MEASURES:
+        assert row[field]["state"] == NC and "simulated none" in row[field]["reason"], (field, row[field])
+        assert (pointer + "/off_scan_gw_vlans", "witness") in _refs(row[field]), field
+    assert row["style"]["value"]["token"] == "not_observed"
+    snap["failure_impact"][k]["off_scan_gw_vlans"] = "1"
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    assert row["off_scan_gw_vlans"]["state"] == UV
+    for field in MEASURES:
+        assert row[field]["state"] == UV and "off_scan_gw_vlans is not a count" in row[field]["reason"], field
+    assert row["style"]["value"]["token"] == "unverified"
+    # the control: a clean bill the producer could fully simulate stays a published Info row
+    snap["failure_impact"][k]["off_scan_gw_vlans"] = 0
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    assert all(row[field]["state"] == PUB for field in MEASURES)
+    assert row["severity"]["value"] == "Info" and row["style"]["value"]["token"] == "impact_info"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -296,16 +564,60 @@ def test_e_a_failed_or_malformed_source_is_never_an_empty_page(sample, doc_valid
                 assert all(item[f]["state"] == AU for f in fields), (mode, host, item["pointer"])
 
 
-def test_the_device_page_never_recomputes_the_simulation(sample, monkeypatch):
-    expected = ui.project_device(sample, "core1")
+# --------------------------------------------------------------------------------------------------
+# a selection is never a re-simulation: the projection names no topology producer or model helper
+# --------------------------------------------------------------------------------------------------
+#: The producers whose stored rows the topology and device pages select, and the model helpers they compute over.
+SIMULATION_NAMES = frozenset({
+    "compute_failure_impact", "compute_link_centrality", "build_network_model", "_topology_adjacency",
+    "compute_topology_links", "compute_cable_map", "compute_causality_chains", "_vlan_components", "_link_carries",
+    "_carry", "_link_has_vlan_evidence"})
+_DYNAMIC_LOOKUPS = ("getattr", "hasattr", "__import__", "import_module", "vars", "globals", "eval", "exec")
 
-    def forbidden(*_a, **_kw):
-        raise AssertionError("a device page selects stored rows; it never re-simulates")
 
-    for name in ("compute_failure_impact", "build_network_model", "compute_link_centrality",
-                 "compute_topology_links", "_topology_adjacency", "compute_cable_map"):
-        monkeypatch.setattr(analyze, name, forbidden)
-    assert ui.project_device(sample, "core1") == expected
+def _reachable_names(node):
+    """Every identifier code under `node` can reach a callable by: names, attributes, imported names and aliases,
+    and the string arguments of a dynamic lookup."""
+    out = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name):
+            out.add(sub.id)
+        elif isinstance(sub, ast.Attribute):
+            out.add(sub.attr)
+        elif isinstance(sub, ast.alias):
+            out.update(n for n in (sub.name.rsplit(".", 1)[-1], sub.asname) if n)
+        if isinstance(sub, ast.Call) and getattr(sub.func, "id", getattr(sub.func, "attr", "")) in _DYNAMIC_LOOKUPS:
+            out.update(a.value for a in sub.args if isinstance(a, ast.Constant) and isinstance(a.value, str))
+    return out
+
+
+def test_the_projection_source_never_names_a_topology_producer():
+    source = pathlib.Path(ui.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assert not _reachable_names(tree) & SIMULATION_NAMES
+    # no module object through which a producer could be reached under another spelling
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            assert not any(a.name.startswith("cisco_toolkit.analyze") for a in node.names), ast.unparse(node)
+        elif isinstance(node, ast.ImportFrom):
+            assert not (node.module == "cisco_toolkit" and any(a.name == "analyze" for a in node.names)), (
+                ast.unparse(node))
+    assert not {"getattr", "__import__", "import_module", "eval", "exec"} & _reachable_names(tree)
+    # one level down: the analyze functions the projection does import name no producer either
+    imported = {a.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                and node.module == "cisco_toolkit.analyze" for a in node.names}
+    owner = ast.parse(pathlib.Path(analyze.__file__).read_text(encoding="utf-8"))
+    functions = {node.name: node for node in owner.body if isinstance(node, ast.FunctionDef)}
+    checked = [name for name in sorted(imported) if name in functions]
+    assert checked, imported
+    for name in checked:
+        assert not _reachable_names(functions[name]) & SIMULATION_NAMES, name
+    # the scan is able to fail: a direct call, an aliased import and a dynamic lookup are each caught
+    for mutant in ("\n_x = compute_failure_impact\n",
+                   "\nfrom cisco_toolkit.analyze import build_network_model as _bnm\n",
+                   "\nimport cisco_toolkit.analyze as _a\n_y = _a.compute_link_centrality\n",
+                   "\n_z = getattr(_a, '_vlan_components')\n"):
+        assert _reachable_names(ast.parse(source + mutant)) & SIMULATION_NAMES, mutant
 
 
 # --------------------------------------------------------------------------------------------------
@@ -314,6 +626,7 @@ def test_the_device_page_never_recomputes_the_simulation(sample, monkeypatch):
 def test_new_sections_cite_only_limitations_their_document_defines(sample, doc_validator):
     snap = copy.deepcopy(sample)
     snap["assessment_integrity"] = {"failed_phases": ["Health Scores"]}   # any failure adds the one-hop caveat
+    snap["collection_completeness"]["devices"] = copy.deepcopy(BLIND)     # blind spots add the fleet qualifier
     doc = ui.project_device(snap, "core1")
     assert not list(doc_validator.iter_errors(doc))
     lims = {lim["id"]: lim["applies_to"] for lim in doc["device"]["limitations"]}
@@ -326,4 +639,4 @@ def test_new_sections_cite_only_limitations_their_document_defines(sample, doc_v
                 assert cav in lims, (where, cav)
                 assert any(where == p or where.startswith(p + "/") for p in lims[cav]), (where, cav)
     assert {"row_selection_by_exact_key", "topology_scanned_model", "impact_scanned_scope",
-            "one_hop_failure_attribution"} <= seen
+            "one_hop_failure_attribution", "fleet_lists_exclude_blind_devices"} <= seen

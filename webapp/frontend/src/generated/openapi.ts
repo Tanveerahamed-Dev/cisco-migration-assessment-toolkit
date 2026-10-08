@@ -1849,6 +1849,7 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly links: components["schemas"]["UiProjection1_CableRowList"];
@@ -6963,6 +6964,7 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_TextItemList"] & {
@@ -6985,6 +6987,7 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -7039,6 +7042,7 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_ExposureList"] & {
@@ -7061,6 +7065,7 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -7115,6 +7120,7 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_CoverageList"] & {
@@ -7137,6 +7143,7 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -7191,6 +7198,7 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_CableRowList"] & {
@@ -7213,6 +7221,7 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -7267,6 +7276,7 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_NeighborGroupList"] & {
@@ -7289,6 +7299,7 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -7343,6 +7354,7 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_TrunkNativeList"] & {
@@ -7365,6 +7377,7 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -7419,6 +7432,7 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_NrfuCaseList"] & {
@@ -7441,6 +7455,7 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -7495,6 +7510,7 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_RowRefList"] & {
@@ -7533,6 +7549,7 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             readonly list: components["schemas"]["UiProjection1_Page_TopologyImpactRowList"] & {
@@ -7555,6 +7572,7 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: [
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
@@ -8090,6 +8108,7 @@ export interface components {
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"],
+                components["schemas"]["UiProjection1_Limitation"],
                 components["schemas"]["UiProjection1_Limitation"]
             ];
             /** DevicePage */
@@ -8195,6 +8214,7 @@ export interface components {
                     readonly status: components["schemas"]["UiProjection1_TextFact"];
                 };
                 readonly limitations: [
+                    components["schemas"]["UiProjection1_Limitation"],
                     components["schemas"]["UiProjection1_Limitation"],
                     components["schemas"]["UiProjection1_Limitation"],
                     components["schemas"]["UiProjection1_Limitation"],
