@@ -29,6 +29,21 @@ Slice 2 adds the row screens:
   failure-impact and structural-link rows naming it -- selected, never re-simulated; a device with no
   simulation row is a blind spot, never "no impact").
 
+Every standalone document (the fleet payload, a ``DeviceDocument``, a ``PathDocument``) also carries ``vocab``
+(:data:`VOCAB_SCHEMA`), the engine-owned display rank and severity class of every closed string vocabulary the
+schema publishes (G43), so a glyph's level is the engine's and never a page mapping. ``vocab.ranked.<name>``
+lists ``{token, rank, class}`` in rank order with the owner that fixed the order (``analyze._LIFECYCLE_BAND_RANK``,
+``analyze._APP_SEV_RANK``, ``coverage_matrix.COVERAGE_STATE_ORDER``, ...; this module where no engine owner
+ranks the vocabulary, as with :func:`_topology_legend`) and the basis of every class. ``vocab.unranked.<name>``
+names every other closed vocabulary (evidence states, reasons, roles, names, presentation tokens) with why it
+carries no level, so a vocabulary cannot be omitted silently: ``tests/test_ui_projection_vocab.py`` derives the
+set of string enums from the schema itself and requires each to be classified exactly once. ``class`` is one of
+:data:`VOCAB_CLASSES`: ``pass`` (the owner asserts a measured, acceptable condition), ``watch`` (a determined
+condition that needs attention but does not gate), ``risk`` (a gating or elevated risk), ``critical`` (the
+owner's most severe tier) and ``undetermined`` (the owner determines no level: absence, insufficiency, unknown,
+unassessed or informational -- a glyph draws no level for it, never ``pass``). ``rank`` is the owner's display
+order, 0 first; tokens the owner does not order apart share a rank.
+
 A row cell never goes through a dotted path (a hostname can contain a dot): it takes its section's state,
 the owner's device scope, its row join by exact key (two rows naming a key are ``unverified``, never picked
 between), then its own not-observed rule and type check. Engine defaults that mean "not observed" (the
@@ -121,8 +136,16 @@ TOPOLOGY_STYLE_TOKENS = (
     "path_observed_discard", "path_no_route_observed", "path_lower_bound", "path_withheld",
 )
 TOPOLOGY_GLYPHS = ("device", "router", "ap", "unknown", "none")
-IMPACT_SEVERITIES = impact_assessability.IMPACT_SEVERITIES      # the failure-impact owner's bands, worst first
+#: The legend's presentation dimensions (``_topology_legend`` owns the token -> tone/stroke/weight table).
+TOPOLOGY_TONES = ("neutral", "muted", "info", "warning", "danger")
+TOPOLOGY_STROKES = ("solid", "dashed", "dotted")
+TOPOLOGY_WEIGHTS = ("normal", "strong")
+#: The failure-impact owner's bands, worst first (analyze.compute_failure_impact sev_rank order).
+IMPACT_SEVERITIES = impact_assessability.IMPACT_SEVERITIES
 ADDRESS_ORIGINS = ("interface_svi", "local_route", "fhrp_host_route")
+#: The FIB owner's route fields a hop may report invalid, and its MTU-gap reasons (fib.trace_fib_path).
+FIB_ROUTE_FIELDS = ("admin_distance", "source", "next_hop", "out_intf")
+FIB_MTU_GAP_REASONS = ("malformed_hop_evidence", "egress_interface_not_observed")
 
 AU = ssot.ANALYSIS_UNAVAILABLE
 _PUB = "published"
@@ -172,6 +195,8 @@ LIFECYCLE_BAND_FACTS_BY_BAND: Mapping[str, str] = MappingProxyType(
     {band: name for name, band in LIFECYCLE_BAND_FACTS.items()})
 #: The canonical lifecycle band order (analyze._LIFECYCLE_BAND_RANK), most severe first.
 LIFECYCLE_BAND_ORDER: Tuple[str, ...] = ("Past-LDoS", "Near-LDoS", "Past-EoS", "Active", "Unknown")
+#: The summary field names in canonical band order (the ``LifecycleBand.fact_name`` vocabulary).
+LIFECYCLE_FACT_NAMES: Tuple[str, ...] = tuple(LIFECYCLE_BAND_FACTS_BY_BAND[b] for b in LIFECYCLE_BAND_ORDER)
 NOT_ASSESSED_REASONS: Tuple[str, ...] = ("no_health_rows", "all_insufficient_data", "no_scored_rows")
 PHASE_CLASSIFICATIONS: Tuple[str, ...] = ("sections", "intermediate", "non_section", "unknown")
 CENSUS_KINDS: Tuple[str, ...] = ("absent", "list", "dict", "scalar")
@@ -4186,14 +4211,14 @@ def project_device(snap: Any, host: Any) -> Dict[str, Any]:
     not_collected, never "no impact" or "no link". A host no roster names claims nothing; a host that is not a
     string names no row."""
     ctx = _Ctx(snap)
-    return {"schema": SCHEMA, "engine": _engine(ctx), "device": _device_page(ctx, host)}
+    return {"schema": SCHEMA, "engine": _engine(ctx), "device": _device_page(ctx, host), "vocab": _vocab()}
 
 
 def project_devices(snap: Any, hosts: Any) -> List[Dict[str, Any]]:
     """One ``DeviceDocument`` per host in `hosts` (a list or tuple; anything else names none), in order, over ONE
     shared context: each document equals :func:`project_device` for its host and owns every container in it."""
     ctx = _Ctx(snap)
-    return [{"schema": SCHEMA, "engine": _engine(ctx), "device": _device_page(ctx, host)}
+    return [{"schema": SCHEMA, "engine": _engine(ctx), "device": _device_page(ctx, host), "vocab": _vocab()}
             for host in (hosts if isinstance(hosts, (list, tuple)) else ())]
 
 
@@ -4628,7 +4653,7 @@ def _fib_value(raw: Any) -> Optional[Dict[str, Any]]:
         return (text_record(value, ("host", "match", "next_hop", "out_intf", "source"), ("invalid_route_fields",))
                 and ("invalid_route_fields" not in value or (
                     isinstance(value["invalid_route_fields"], list) and bool(value["invalid_route_fields"])
-                    and all(v in ("admin_distance", "source", "next_hop", "out_intf")
+                    and all(v in FIB_ROUTE_FIELDS
                             for v in value["invalid_route_fields"] if isinstance(v, str))
                     and all(isinstance(v, str) for v in value["invalid_route_fields"]))))
 
@@ -4662,7 +4687,7 @@ def _fib_value(raw: Any) -> Optional[Dict[str, Any]]:
             return None
     for gap in raw["mtu_unobserved_hops"]:
         if not (text_record(gap, ("host", "out_intf"), ("reason",))
-                and ("reason" not in gap or gap["reason"] in ("malformed_hop_evidence", "egress_interface_not_observed"))):
+                and ("reason" not in gap or gap["reason"] in FIB_MTU_GAP_REASONS)):
             return None
     return _copy_schema(raw)
 
@@ -4761,7 +4786,216 @@ def project_path(snap: Any, src_ip: Any, dst_ip: Any) -> Dict[str, Any]:
             "result": result, "hop_evidence": _listing(ctx, state, reason, None, "fib.trace_fib_path:hops evidence",
                                                        evidence, sections=sections, caveats=("path_route_model_only",)),
             "style": style, "legend": _topology_legend()}
-    return {"schema": SCHEMA, "engine": _engine(ctx), "path": path}
+    return {"schema": SCHEMA, "engine": _engine(ctx), "path": path, "vocab": _vocab()}
+
+
+# ---------------------------------------------------------------------------------------------------
+# vocab -- the engine-owned display rank and severity class of every closed vocabulary (G43)
+# ---------------------------------------------------------------------------------------------------
+VOCAB_SCHEMA = "ui_projection_vocab/1"
+#: The severity classes a glyph may draw. ``undetermined`` is the coverage-honesty class: the owner determines
+#: no level (absence, insufficiency, unknown, unassessed, informational), so a glyph draws none -- never ``pass``.
+VOCAB_CLASSES: Tuple[str, ...] = ("pass", "watch", "risk", "critical", "undetermined")
+_C_PASS, _C_WATCH, _C_RISK, _C_CRIT, _C_UND = VOCAB_CLASSES
+_PRESENTATION_OWNER = "cisco_toolkit.ui_projection"
+
+
+def _classed(tokens: Tuple[str, ...], classes: Tuple[str, ...]) -> Dict[str, str]:
+    """Class per token, ``classes`` aligned one-to-one with the vocabulary's own owner tuple ``tokens``.
+
+    A vocabulary that shares spellings with the protocol-assessability receipt's states is never re-typed
+    here: its tokens come only from its owner tuple, so this section dependency names no receipt state.
+    ``strict`` makes a resized owner tuple fail at import instead of shifting a class onto a neighbouring
+    token."""
+    return dict(zip(tokens, classes, strict=True))
+
+
+def _ranked_by(tokens: Tuple[str, ...], ranks: Tuple[int, ...]) -> Tuple[Tuple[str, ...], ...]:
+    """The display order of such a vocabulary from a rank aligned one-to-one with its owner tuple: one group
+    per rank, lowest first, tokens of one rank in the owner tuple's order."""
+    rank_of = dict(zip(tokens, ranks, strict=True))
+    return tuple(tuple(token for token in tokens if rank_of[token] == rank) for rank in sorted(set(ranks)))
+
+
+#: Ranked vocabularies: (name, tokens in schema order, owner of the order, basis, display order, class per
+#: token). A display-order element is a token or a tuple of tokens the owner does not order apart (they share
+#: a rank). The order of an engine-ranked vocabulary IS its local constant, which tests/test_ui_projection*.py
+#: hold equal to the owner's rank table; ``tests/test_ui_projection_vocab.py`` holds every rank and class.
+#: A vocabulary whose tokens share spellings with the receipt's states (collection status, security grade,
+#: coverage state, unknown-evidence source state) states its order and classes through :func:`_ranked_by` and
+#: :func:`_classed`, aligned with its owner tuple; the comment beside each names the tokens in that order.
+_VOCAB_RANKED: Tuple[Tuple[str, Tuple[str, ...], str, str, Tuple[Any, ...], Mapping[str, str]], ...] = (
+    ("health_band", HEALTH_BANDS, "ssot._HEALTH_BAND_ORDER",
+     "rank: the ssot worst-band order (the most severe band present wins, as analyze.compute_executive_brief "
+     "folds it). class: Critical is the owner's top band; Poor is the band the brief grades High, a gating "
+     "severity; Fair needs attention; Good and Excellent are measured acceptable scores.",
+     HEALTH_BANDS, {"Critical": _C_CRIT, "Poor": _C_RISK, "Fair": _C_WATCH, "Good": _C_PASS, "Excellent": _C_PASS}),
+    ("health_band_partition", HEALTH_BANDS + (HEALTH_BAND_NOT_SCORED,), "analyze._APP_BAND_RANK",
+     "rank: the owner's band rank over the health partition, the unscored band last. class: as health_band; "
+     "the unscored band is a collection gap the owner never counts as a band, so it determines no level.",
+     HEALTH_BANDS + (HEALTH_BAND_NOT_SCORED,),
+     {"Critical": _C_CRIT, "Poor": _C_RISK, "Fair": _C_WATCH, "Good": _C_PASS, "Excellent": _C_PASS,
+      HEALTH_BAND_NOT_SCORED: _C_UND}),
+    ("lifecycle_band", LIFECYCLE_BAND_ORDER, "analyze._LIFECYCLE_BAND_RANK",
+     "rank: the owner's band rank, most severe first, Unknown last. class: Past-LDoS is past the last day of "
+     "support; Near-LDoS is inside the owner's warning window; Past-EoS is sold-out hardware still supported; "
+     "Active is a measured current lifecycle; Unknown is the owner's not-determined band.",
+     LIFECYCLE_BAND_ORDER, {"Past-LDoS": _C_CRIT, "Near-LDoS": _C_RISK, "Past-EoS": _C_WATCH, "Active": _C_PASS,
+                            "Unknown": _C_UND}),
+    ("risk_band", DOSSIER_BANDS, "analyze._DOSSIER_BAND_RANK",
+     "rank: the owner's band rank, most severe first, Unassessed last. class: the dossier's risk-index bands "
+     "from Severe down to a measured Low; Unassessed is the owner's no-evidence band, never low risk.",
+     DOSSIER_BANDS, {"Severe": _C_CRIT, "Elevated": _C_RISK, "Guarded": _C_WATCH, "Low": _C_PASS,
+                     "Unassessed": _C_UND}),
+    ("vlan_readiness", VLAN_READINESS, "analyze._VLAN_CUTOVER_READY_RANK",
+     "rank: the owner's worst-first pull-through rank. class: NOT READY gates the cutover; CAUTION needs "
+     "attention; READY is the owner's measured verdict.",
+     VLAN_READINESS, {"NOT READY": _C_RISK, "CAUTION": _C_WATCH, "READY": _C_PASS}),
+    ("readiness_check_status", READINESS_CHECK_STATUSES, "analyze.compute_migration_readiness (status_rank)",
+     "rank: the owner folds a group's checks with pass and info at the same rank below warn below fail; shown "
+     "worst first. class: fail gates; warn needs attention; pass is a measured check; info is an informational "
+     "or not-observable check that determines no level.",
+     ("fail", "warn", ("pass", "info")), {"fail": _C_RISK, "warn": _C_WATCH, "pass": _C_PASS, "info": _C_UND}),
+    ("endpoint_confidence", ENDPOINT_CONFIDENCES, "analyze._EP_CONF",
+     "rank: the owner's confidence score, most confident first, Unknown last. class: the class grades the "
+     "inference's confidence, not the endpoint: a medium-confidence class needs review before a move-group "
+     "assignment; Unknown is the owner's undetermined confidence.",
+     ENDPOINT_CONFIDENCES, {"Inferred-high": _C_PASS, "Inferred-medium": _C_WATCH, "Unknown": _C_UND}),
+    ("collection_status", CC_STATUSES, "analyze.compute_collection_completeness (order)",
+     "rank: the owner's blind-spot order, least evidence first (the owner lists only blind spots, never "
+     "complete). class: a not-collected device determines nothing; a partial device has observed evidence "
+     "that may be incomplete.",
+     CC_STATUSES, _classed(CC_STATUSES, (_C_UND, _C_WATCH))),                 # not collected, partial
+    ("link_op_status", OP_STATUSES, _PRESENTATION_OWNER,
+     "rank: no engine owner orders analyze.compute_cable_map's op_status; this projection shows down first, "
+     "unknown last, as its topology legend does (link_down danger, link_up info, link_unknown muted). class: "
+     "a reported down link is a risk, a reported up link is acceptable, unknown is the owner's coverage-honest "
+     "absence and determines no level.",
+     ("down", "up", "unknown"), {"down": _C_RISK, "up": _C_PASS, "unknown": _C_UND}),
+    ("severity", SEVERITIES, "analyze._APP_SEV_RANK",
+     "rank: the owner's severity rank (analyze._PUNCH_RANK descending, Info at its implicit rank below Low). "
+     "class: Critical is the top tier; High is the other gating tier of the brief's top_gating rule; Medium "
+     "and Low are determined findings that do not gate; Info rows record a coverage gap or information, never "
+     "a finding level.",
+     SEVERITIES, {"Critical": _C_CRIT, "High": _C_RISK, "Medium": _C_WATCH, "Low": _C_WATCH, "Info": _C_UND}),
+    ("impact_severity", IMPACT_SEVERITIES, "analyze.compute_failure_impact (sev_rank)",
+     "rank: the owner's sev_rank, worst first. class: High is a hard partition on removal (an outage class, "
+     "drawn danger and strong by the topology legend); Medium survives only through a backup path (the "
+     "legend's warning); Low is FHRP-covered on every impacted VLAN within the scan; Info is the owner's "
+     "INDETERMINATE or no-impact-within-the-scan result, not a clean bill, so it determines no level.",
+     IMPACT_SEVERITIES, {"High": _C_CRIT, "Medium": _C_WATCH, "Low": _C_PASS, "Info": _C_UND}),
+    ("exposure_state", EXPOSURE_STATES, _PRESENTATION_OWNER,
+     "rank: analyze.compute_device_dossiers names its ax() states without an order; this projection shows "
+     "risk first, na last. class: the states carry their own level; na is the owner's not-assessable axis "
+     "(input absent, malformed or unavailable) and determines no level.",
+     EXPOSURE_STATES, {"risk": _C_RISK, "watch": _C_WATCH, "ok": _C_PASS, "na": _C_UND}),
+    ("security_grade", SEC_GRADES, "parse.parse_security (grade precedence)",
+     "rank: the owner's grade precedence: weak when a high-severity check fails, partial when any check "
+     "fails, hardened otherwise. class: weak is a failed high-severity hardening check; partial needs "
+     "attention; hardened is the owner's verdict over the checks it evaluated.",
+     SEC_GRADES, _classed(SEC_GRADES, (_C_RISK, _C_WATCH, _C_PASS))),        # weak, partial, hardened
+    ("security_check_status", SEC_STATUSES, _PRESENTATION_OWNER,
+     "rank: parse.parse_security names its statuses without an order; this projection shows fail first, na "
+     "last. class: fail is a failed hardening check (its weight is the check's severity); pass is a measured "
+     "check; na is not assessable on this platform or evidence and determines no level.",
+     ("fail", "pass", "na"), {"fail": _C_RISK, "pass": _C_PASS, "na": _C_UND}),
+    ("security_check_severity", SEC_SEVERITIES, _PRESENTATION_OWNER,
+     "rank: parse._SEC_CHECKS weights its checks high, medium, low, with info for checks that carry no "
+     "weight; this projection shows them in that order. class: a high-severity check is the weight that "
+     "makes the grade weak; "
+     "medium and low need attention; info carries no weight and determines no level.",
+     SEC_SEVERITIES, {"high": _C_RISK, "medium": _C_WATCH, "low": _C_WATCH, "info": _C_UND}),
+    ("coverage_state", COVERAGE_STATE_ORDER, "coverage_matrix.COVERAGE_STATE_ORDER",
+     "rank: the owner's evidence-limit precedence for a device rollup, most limited first; it ranks evidence "
+     "limits, not risk or health. class: covered is the matrix producer's published verdict (the "
+     "coverage_matrix_shown_as_published caveat still applies); partial is observed but incomplete evidence; "
+     "every other state is an evidence absence and determines no level.",
+     # not_collected, unverified, unparsed, partial, not_observed, covered
+     COVERAGE_STATE_ORDER, _classed(COVERAGE_STATE_ORDER, (_C_UND, _C_UND, _C_UND, _C_WATCH, _C_UND, _C_PASS))),
+    ("unknown_evidence_state", UNKNOWN_EVIDENCE_STATES, _PRESENTATION_OWNER,
+     "rank: unknown_evidence._assemble names its summary states without an order; this projection shows the "
+     "least complete first. class: only the two states the owner reaches with every source observed "
+     "completely determine a level: no unknowns is acceptable, unresolved unknowns need attention; an "
+     "incomplete or unavailable summary determines no level.",
+     ("unavailable", "incomplete_with_unresolved", "incomplete", "observed_with_unresolved", "observed_no_unknowns"),
+     {"unavailable": _C_UND, "incomplete_with_unresolved": _C_UND, "incomplete": _C_UND,
+      "observed_with_unresolved": _C_WATCH, "observed_no_unknowns": _C_PASS}),
+    ("unknown_evidence_source_state", UE_SOURCE_STATES, _PRESENTATION_OWNER,
+     "rank: unknown_evidence names its source states without an order; this projection shows the least "
+     "observed first. class: observed is a completely observed source; partial needs attention; "
+     "observed_empty does not satisfy the owner's source_complete predicate, so it vouches for no coverage; "
+     "not_collected and malformed are absences and determine no level.",
+     # observed, observed_empty, partial, not_collected, malformed
+     _ranked_by(UE_SOURCE_STATES, (4, 3, 2, 0, 1)),
+     _classed(UE_SOURCE_STATES, (_C_PASS, _C_UND, _C_WATCH, _C_UND, _C_UND))),
+    ("stp_root_election_state", STP_ROOT_ELECTION_STATES, _PRESENTATION_OWNER,
+     "rank: stp_topology names its election states without an order; this projection shows the "
+     "contradiction first, the absence last. class: ambiguous is an observed contradiction between root "
+     "claims that needs attention; published is one consistent root claimant; not_observed is an evidence "
+     "absence and determines no level.",
+     ("ambiguous", "published", "not_observed"), {"ambiguous": _C_WATCH, "published": _C_PASS,
+                                                   "not_observed": _C_UND}),
+)
+#: Every other closed string vocabulary the schema publishes: (name, tokens in schema order, why it carries no
+#: level). Evidence states, reasons, roles, names and presentation tokens are not severities; naming each one
+#: here keeps the catalogue closed, so a vocabulary added to the schema cannot go unclassified.
+_VOCAB_UNRANKED: Tuple[Tuple[str, Tuple[str, ...], str], ...] = (
+    ("evidence_state", STATES, "the projection's fact-state vocabulary (CensusEmbedded.state); the state "
+                               "machinery types it and a page reads the withheld reason, never a level"),
+    ("abstention_state", tuple(ssot.ABSTENTION_STATES), "ssot.abstention_reason's codomain (CensusRow.state, "
+                                                         "ExposureValue.input_state): an evidence state, not a verdict"),
+    ("withheld_state", WITHHELD_STATES, "the withheld branch of every fact: each state names why a value is "
+                                        "absent, never how severe it is"),
+    ("engine_state", ENGINE_STATES, "the raw owner token an envelope keeps beside a projected state"),
+    ("engine_state_owner", ENGINE_STATE_OWNERS, "the owner that produced an engine_state"),
+    ("limitation_id", _ALL_LIMITATION_IDS, "the registered qualifications a value may cite; LIMITATIONS and "
+                                           "DEVICE_LIMITATIONS carry their text and owner"),
+    ("ref_role", REF_ROLES, "the role a snapshot pointer plays in a fact's evidence"),
+    ("census_kind", CENSUS_KINDS, "the shape ssot.compute_schema_census observed for a section"),
+    ("phase_classification", PHASE_CLASSIFICATIONS, "ssot.failed_sections' classification of a failed phase"),
+    ("brief_axis", tuple(AXIS_BASIS), "the executive-brief axis labels (AbsentAxis.axis); an axis carries its "
+                                      "severity in its AxisValue, which the severity vocabulary ranks"),
+    ("not_assessed_reason", NOT_ASSESSED_REASONS, "why ssot.fleet_avg_health found nothing scored"),
+    ("fleet_health_state", FLEET_HEALTH_STATES, "ssot.fleet_avg_health's own state vocabulary"),
+    ("lifecycle_fact_name", LIFECYCLE_FACT_NAMES, "the lifecycle summary field that counts each band"),
+    ("interface_column", IF_COLUMNS, "the interface table's column names"),
+    ("topology_style_token", TOPOLOGY_STYLE_TOKENS, "styled by the topology legend's tone, stroke and weight, "
+                                                    "the module's other presentation owner"),
+    ("topology_glyph", TOPOLOGY_GLYPHS, "the node glyph shape a style names"),
+    ("topology_tone", TOPOLOGY_TONES, "the legend's colour tone; a browser theme chooses the colour"),
+    ("topology_stroke", TOPOLOGY_STROKES, "the legend's stroke style"),
+    ("topology_weight", TOPOLOGY_WEIGHTS, "the legend's stroke weight"),
+    ("dossier_axis", DOSSIER_AXES, "the dossier's exposure axes; each axis carries its state in its ExposureValue"),
+    ("coverage_dimension", COVERAGE_DIMENSIONS, "the coverage matrix's dimension of a row"),
+    ("coverage_verdict_source", COVERAGE_VERDICT_SOURCES, "the owner that produced a coverage verdict"),
+    ("evidence_basis", PUNCH_EVIDENCE_BASES, "how a finding's evidence pointers were produced (record, row or "
+                                             "absence witness); the finding's severity carries its level"),
+    ("evidence_ref_kind", PUNCH_EVIDENCE_REF_KINDS, "the kind of record an evidence pointer names"),
+    ("evidence_ref_role", PUNCH_EVIDENCE_ROLES, "the role an evidence pointer plays for its finding"),
+    ("stp_root_reason", STP_ROOT_REASONS, "why an STP root election reached its state; the state is ranked"),
+    ("address_origin", ADDRESS_ORIGINS, "where a topology source address was observed"),
+    ("fib_invalid_route_field", FIB_ROUTE_FIELDS, "the route fields a FIB hop reports as invalid"),
+    ("fib_mtu_gap_reason", FIB_MTU_GAP_REASONS, "why a FIB hop's MTU was not observed"),
+)
+
+
+def _vocab_title(name: str) -> str:
+    return "Vocab" + "".join(part.capitalize() for part in name.split("_"))
+
+
+def _vocab_order(order: Tuple[Any, ...]) -> Tuple[Tuple[str, ...], ...]:
+    return tuple((group,) if isinstance(group, str) else tuple(group) for group in order)
+
+
+def _vocab() -> Dict[str, Any]:
+    """The constant G43 block, built from new containers on every call."""
+    ranked = {}
+    for name, _tokens, owner, basis, order, classes in _VOCAB_RANKED:
+        items = [{"token": token, "rank": rank, "class": classes[token]}
+                 for rank, group in enumerate(_vocab_order(order)) for token in group]
+        ranked[name] = {"owner": owner, "basis": basis, "items": items}
+    unranked = {name: {"basis": basis, "tokens": list(tokens)} for name, tokens, basis in _VOCAB_UNRANKED}
+    return {"schema": VOCAB_SCHEMA, "classes": list(VOCAB_CLASSES), "ranked": ranked, "unranked": unranked}
 
 
 def project(snap: Any) -> Dict[str, Any]:
@@ -4769,7 +5003,8 @@ def project(snap: Any) -> Dict[str, Any]:
     :func:`project_device`). Pure and total."""
     ctx = _Ctx(snap)
     return {"schema": SCHEMA, "engine": _engine(ctx), "overview": _overview(ctx), "trust": _trust(ctx),
-            "inventory": _inventory(ctx), "findings": _findings(ctx), "topology": _topology(ctx)}
+            "inventory": _inventory(ctx), "findings": _findings(ctx), "topology": _topology(ctx),
+            "vocab": _vocab()}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -5125,9 +5360,9 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
         "failure_impact": _ref("TopologyImpactRowList"), "structural_links": _ref("TopologyStructuralLinkRowList"),
         "limitations": {"type": "array", "minItems": n_lims, "maxItems": n_lims, "items": _ref("Limitation")},
     })
-    defs["DeviceDocument"] = _closed("DeviceDocument", ("schema", "engine", "device"),
+    defs["DeviceDocument"] = _closed("DeviceDocument", ("schema", "engine", "device", "vocab"),
                                      {"schema": {"type": "string", "const": SCHEMA}, "engine": _ref("Engine"),
-                                      "device": _ref("DevicePage")})
+                                      "device": _ref("DevicePage"), "vocab": _ref("Vocab")})
 
 
 def _topology_defs(defs: Dict[str, Any]) -> None:
@@ -5135,8 +5370,8 @@ def _topology_defs(defs: Dict[str, Any]) -> None:
         {"token": _enum(TOPOLOGY_STYLE_TOKENS), "glyph": _enum(TOPOLOGY_GLYPHS), "label": _str()})
     defs["TopologyStyleFact"] = _fact_def("TopologyStyleFact", _ref("TopologyStyleValue"))
     defs["TopologyLegendEntry"] = _closed("TopologyLegendEntry", ("token", "tone", "stroke", "weight", "meaning"),
-        {"token": _enum(TOPOLOGY_STYLE_TOKENS), "tone": _enum(("neutral", "muted", "info", "warning", "danger")),
-         "stroke": _enum(("solid", "dashed", "dotted")), "weight": _enum(("normal", "strong")), "meaning": _str()})
+        {"token": _enum(TOPOLOGY_STYLE_TOKENS), "tone": _enum(TOPOLOGY_TONES),
+         "stroke": _enum(TOPOLOGY_STROKES), "weight": _enum(TOPOLOGY_WEIGHTS), "meaning": _str()})
     defs["TopologyLegend"] = _closed("TopologyLegend", ("schema", "entries", "fallback"),
         {"schema": {"const": TOPOLOGY_STYLE_SCHEMA}, "entries": {
             "type": "array", "minItems": len(TOPOLOGY_STYLE_TOKENS), "maxItems": len(TOPOLOGY_STYLE_TOKENS),
@@ -5179,8 +5414,7 @@ def _topology_defs(defs: Dict[str, Any]) -> None:
     defs["Topology"] = _closed("Topology", tuple(props), props)
     hop_fields = ("host", "match", "next_hop", "out_intf", "source")
     defs["FibHop"] = _closed("FibHop", hop_fields, {**{k: _str() for k in hop_fields},
-        "invalid_route_fields": {"type": "array", "minItems": 1,
-                                 "items": _enum(("admin_distance", "source", "next_hop", "out_intf"))}})
+        "invalid_route_fields": {"type": "array", "minItems": 1, "items": _enum(FIB_ROUTE_FIELDS)}})
     array_hops = {"type": "array", "items": _ref("FibHop")}
     leg_fields = ("host", "match", "next_hop", "out_intf", "leg_status", "drop_evidence", "resolved_hops")
     defs["FibDroppingLeg"] = _closed("FibDroppingLeg", leg_fields,
@@ -5190,7 +5424,7 @@ def _topology_defs(defs: Dict[str, Any]) -> None:
     defs["FibMtuHop"] = _closed("FibMtuHop", ("host", "out_intf", "mtu"),
         {"host": _str(), "out_intf": _str(), "mtu": _nonneg_int()})
     defs["FibMtuGap"] = _closed("FibMtuGap", ("host", "out_intf"),
-        {"host": _str(), "out_intf": _str(), "reason": _enum(("malformed_hop_evidence", "egress_interface_not_observed"))})
+        {"host": _str(), "out_intf": _str(), "reason": _enum(FIB_MTU_GAP_REASONS)})
     defs["FibJumboBlackhole"] = _closed("FibJumboBlackhole", ("host", "out_intf", "mtu", "required"),
         {"host": _str(), "out_intf": _str(), "mtu": _nonneg_int(), "required": _nonneg_int()})
     props = {k: _str() for k in ("src", "dst", "status", "drop_evidence", "mtu_verdict")}
@@ -5212,8 +5446,42 @@ def _topology_defs(defs: Dict[str, Any]) -> None:
     defs["Path"] = _closed("Path", ("query", "result", "hop_evidence", "style", "legend"),
         {"query": _ref("PathQuery"), "result": _ref("FibResultFact"), "hop_evidence": _ref("PathHopEvidenceList"),
          "style": _ref("TopologyStyleFact"), "legend": _ref("TopologyLegend")})
-    defs["PathDocument"] = _closed("PathDocument", ("schema", "engine", "path"),
-        {"schema": {"type": "string", "const": SCHEMA}, "engine": _ref("Engine"), "path": _ref("Path")})
+    defs["PathDocument"] = _closed("PathDocument", ("schema", "engine", "path", "vocab"),
+        {"schema": {"type": "string", "const": SCHEMA}, "engine": _ref("Engine"), "path": _ref("Path"),
+         "vocab": _ref("Vocab")})
+
+
+def _vocab_defs(defs: Dict[str, Any]) -> None:
+    """The G43 block: a closed item schema per ranked vocabulary, its token enum that vocabulary's own."""
+    defs["VocabClass"] = {"title": "VocabClass", "type": "string", "enum": list(VOCAB_CLASSES)}
+    text = {"type": "string", "minLength": 1}
+    ranked: Dict[str, Any] = {}
+    for name, tokens, _owner, _basis, order, classes in _VOCAB_RANKED:
+        groups = _vocab_order(order)
+        ordered = [token for group in groups for token in group]
+        if (sorted(ordered) != sorted(tokens) or len(set(ordered)) != len(tokens) or set(classes) != set(tokens)
+                or not set(classes.values()) <= set(VOCAB_CLASSES)):
+            raise ValueError(f"vocab {name}: its order or classes do not cover its tokens exactly once")
+        item = _vocab_title(name) + "Item"
+        defs[item] = _closed(item, ("token", "rank", "class"),
+                             {"token": _enum(tokens), "class": _ref("VocabClass"),
+                              "rank": {"type": "integer", "minimum": 0, "maximum": len(groups) - 1}})
+        ranked[name] = _closed(_vocab_title(name), ("owner", "basis", "items"),
+                               {"owner": dict(text), "basis": dict(text),
+                                "items": {"type": "array", "minItems": len(tokens), "maxItems": len(tokens),
+                                          "items": _ref(item)}})
+    defs["VocabRanked"] = _closed("VocabRanked", tuple(ranked), ranked)
+    unranked = {name: _closed(_vocab_title(name), ("basis", "tokens"),
+                              {"basis": dict(text), "tokens": {"type": "array", "uniqueItems": True,
+                                                              "items": _enum(tokens)}})
+                for name, tokens, _basis in _VOCAB_UNRANKED}
+    defs["VocabUnranked"] = _closed("VocabUnranked", tuple(unranked), unranked)
+    n_classes = len(VOCAB_CLASSES)
+    defs["Vocab"] = _closed("Vocab", ("schema", "classes", "ranked", "unranked"),
+                            {"schema": {"type": "string", "const": VOCAB_SCHEMA},
+                             "classes": {"type": "array", "minItems": n_classes, "maxItems": n_classes,
+                                         "items": _ref("VocabClass")},
+                             "ranked": _ref("VocabRanked"), "unranked": _ref("VocabUnranked")})
 
 
 def _build_schema() -> Dict[str, Any]:
@@ -5277,8 +5545,7 @@ def _build_schema() -> Dict[str, Any]:
                                "applies_to": {"type": "array", "minItems": 1, "items": _ref("Pointer")}}),
         "LifecycleBand": _closed("LifecycleBand", ("band", "fact_name", "rank"),
                                  {"band": {"type": "string", "enum": list(LIFECYCLE_BAND_ORDER)},
-                                  "fact_name": {"type": "string", "enum": [
-                                      LIFECYCLE_BAND_FACTS_BY_BAND[b] for b in LIFECYCLE_BAND_ORDER]},
+                                  "fact_name": {"type": "string", "enum": list(LIFECYCLE_FACT_NAMES)},
                                   "rank": {"type": "integer", "minimum": 0,
                                            "maximum": len(LIFECYCLE_BAND_ORDER) - 1}}),
     }
@@ -5359,10 +5626,12 @@ def _build_schema() -> Dict[str, Any]:
          "limitations": {"type": "array", "minItems": n_lims, "maxItems": n_lims, "items": _ref("Limitation")}})
     _slice2_defs(defs)
     _topology_defs(defs)
-    root = _closed("UiProjection", ("schema", "engine", "overview", "trust", "inventory", "findings", "topology"),
+    _vocab_defs(defs)
+    root = _closed("UiProjection",
+                   ("schema", "engine", "overview", "trust", "inventory", "findings", "topology", "vocab"),
                    {"schema": {"type": "string", "const": SCHEMA}, "engine": _ref("Engine"),
                     "overview": _ref("Overview"), "trust": _ref("Trust"), "inventory": _ref("Inventory"),
-                    "findings": _ref("Findings"), "topology": _ref("Topology")})
+                    "findings": _ref("Findings"), "topology": _ref("Topology"), "vocab": _ref("Vocab")})
     root["title"] = SCHEMA
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": SCHEMA_ID, **root, "$defs": defs}
 
@@ -5390,4 +5659,6 @@ __all__ = [
     "project_overview", "project_trust", "project_topology", "project_path", "ui_projection_schema",
     "TOPOLOGY_STYLE_SCHEMA", "TOPOLOGY_STYLE_TOKENS", "TOPOLOGY_GLYPHS", "IMPACT_SEVERITIES", "ADDRESS_ORIGINS",
     "IMPACT_INDETERMINATE_PREFIX",
+    "TOPOLOGY_TONES", "TOPOLOGY_STROKES", "TOPOLOGY_WEIGHTS", "FIB_ROUTE_FIELDS", "FIB_MTU_GAP_REASONS",
+    "LIFECYCLE_FACT_NAMES", "VOCAB_SCHEMA", "VOCAB_CLASSES",
 ]
