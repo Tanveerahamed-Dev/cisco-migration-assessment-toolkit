@@ -283,6 +283,22 @@ def test_v4_absence_tokens_are_undetermined_and_nothing_else_is(vocab):
     assert _classes(vocab, "risk_band")["Unassessed"] == UND != _classes(vocab, "risk_band")["Low"]
 
 
+def test_v4_owner_aligned_vocabularies_keep_each_tokens_rank_and_class(vocab):
+    # ui_projection states these four by position against their owner tuples (their tokens share spellings with
+    # the protocol-assessability receipt's states, which a section dependency must not name); a reordered owner
+    # tuple must not shift a rank or a class onto a neighbouring token.
+    pinned = {
+        "collection_status": [("not collected", 0, UND), ("partial", 1, "watch")],
+        "security_grade": [("weak", 0, "risk"), ("partial", 1, "watch"), ("hardened", 2, "pass")],
+        "coverage_state": [("not_collected", 0, UND), ("unverified", 1, UND), ("unparsed", 2, UND),
+                           ("partial", 3, "watch"), ("not_observed", 4, UND), ("covered", 5, "pass")],
+        "unknown_evidence_source_state": [("not_collected", 0, UND), ("malformed", 1, UND), ("partial", 2, "watch"),
+                                          ("observed_empty", 3, UND), ("observed", 4, "pass")],
+    }
+    for name, items in pinned.items():
+        assert [(i["token"], i["rank"], i["class"]) for i in vocab["ranked"][name]["items"]] == items, name
+
+
 def test_v4_class_semantics_cohere_with_the_legend_and_the_gating_rule(vocab):
     legend = {entry["token"]: entry for entry in uip._topology_legend()["entries"]}
     tone_class = {("info", "normal"): "pass", ("warning", "normal"): "watch", ("danger", "normal"): "risk",

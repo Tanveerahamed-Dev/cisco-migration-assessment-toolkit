@@ -103,79 +103,13 @@ export function overviewRollupsFixture(sid = 1) {
     readiness: { groups: { ...groupPage, source_list: { ...groupPage.source_list, caveats: [caveat] } } },
   } };
 }
-// The engine's constant vocabulary block (G43): every closed vocabulary with its display rank and class. Synthetic
-// owner/basis text and an all-undetermined class keep this a fixture, never a copy of the engine's judgement.
-const RANKED_VOCAB_TOKENS: Record<string, readonly string[]> = {
-  collection_status: ["not collected", "partial"],
-  coverage_state: ["not_collected", "unverified", "unparsed", "partial", "not_observed", "covered"],
-  endpoint_confidence: ["Inferred-high", "Inferred-medium", "Unknown"],
-  exposure_state: ["risk", "watch", "ok", "na"],
-  health_band: ["Critical", "Poor", "Fair", "Good", "Excellent"],
-  health_band_partition: ["Critical", "Poor", "Fair", "Good", "Excellent", "Insufficient Data"],
-  impact_severity: ["High", "Medium", "Low", "Info"],
-  lifecycle_band: ["Past-LDoS", "Near-LDoS", "Past-EoS", "Active", "Unknown"],
-  link_op_status: ["up", "down", "unknown"],
-  readiness_check_status: ["pass", "warn", "fail", "info"],
-  risk_band: ["Severe", "Elevated", "Guarded", "Low", "Unassessed"],
-  security_check_severity: ["high", "medium", "low", "info"],
-  security_check_status: ["pass", "fail", "na"],
-  security_grade: ["weak", "partial", "hardened"],
-  severity: ["Critical", "High", "Medium", "Low", "Info"],
-  stp_root_election_state: ["published", "ambiguous", "not_observed"],
-  unknown_evidence_source_state: ["observed", "observed_empty", "partial", "not_collected", "malformed"],
-  unknown_evidence_state: ["observed_no_unknowns", "observed_with_unresolved", "incomplete", "incomplete_with_unresolved", "unavailable"],
-  vlan_readiness: ["NOT READY", "CAUTION", "READY"],
-};
-const UNRANKED_VOCAB_TOKENS: Record<string, readonly string[]> = {
-  abstention_state: ["published", "collected_but_empty", "not_collected", "analysis_unavailable"],
-  address_origin: ["interface_svi", "local_route", "fhrp_host_route"],
-  brief_axis: ["Fleet health", "Migration punch-list", "Application domains", "Cutover sequence", "Hardware lifecycle (EoL)", "Segmentation",
-    "Multicast / timing", "Remediation", "Operational logs", "QoS posture", "Software risk", "Platform capacity", "Asset risk register"],
-  census_kind: ["absent", "list", "dict", "scalar"],
-  coverage_dimension: ["collection", "capture", "parse", "architecture"],
-  coverage_verdict_source: ["collection_completeness", "capture_integrity", "parse_yield", "architecture_coverage"],
-  dossier_axis: ["Health", "Hardware EoL", "Software risk", "Control plane", "Operational logs", "Security posture", "Config hygiene",
-    "Golden drift", "QoS posture", "Physical", "Protocol"],
-  engine_state: ["published", "collected_but_empty", "not_collected", "analysis_unavailable", "not_assessed", "unverified", "measured", "unpublished"],
-  engine_state_owner: ["ssot.abstention_reason", "ssot.fleet_avg_health"],
-  evidence_basis: ["record", "row", "absence"],
-  evidence_ref_kind: ["interface", "acl_line", "route", "config_text", "device_fact", "analysis_row", "adjacency", "absence_witness"],
-  evidence_ref_role: ["subject", "derived_from", "witness"],
-  evidence_state: ["published", "collected_but_empty", "not_collected", "analysis_unavailable", "not_assessed", "unverified"],
-  fib_invalid_route_field: ["admin_distance", "source", "next_hop", "out_intf"],
-  fib_mtu_gap_reason: ["malformed_hop_evidence", "egress_interface_not_observed"],
-  fleet_health_state: ["measured", "not_assessed", "unverified", "unpublished"],
-  interface_column: ["status", "switchport_mode", "vlan", "speed", "duplex", "description", "cdp_neighbor", "neighbor_port", "trunk_allowed_vlans",
-    "trunk_native_vlan", "stp_fwd_vlans", "stp_blk_vlans", "end_host_ip", "end_host_mac", "port_channel", "svi_ip", "vrf"],
-  lifecycle_fact_name: ["n_past_ldos", "n_near", "n_past_eos", "n_active", "n_unknown"],
-  limitation_id: ["census_present_keys_only", "failure_record_written_only_on_failure", "one_hop_failure_attribution", "axis_basis_owned_by_projection",
-    "reconcile_checks_only_with_raw_basis", "measured_zero_mapping", "abstention_addresses_dict_paths_only", "coverage_matrix_shown_as_published",
-    "projection_owned_verdicts", "device_physical_defaults_not_observed", "health_scored_without_security", "health_scored_over_partial_collection",
-    "dossier_band_over_unassessed_axes", "engine_list_capped", "move_group_label_absent", "move_group_endpoints_not_distinct",
-    "migration_readiness_check_scope", "health_band_partition_rows_only", "vlan_cutover_universe", "vlan_field_basis_owned_by_projection",
-    "vlan_readiness_scope", "punch_rows_carry_no_evidence_pointers", "row_selection_by_exact_key", "fleet_lists_exclude_blind_devices",
-    "findings_without_running_config", "device_findings_scope", "topology_scanned_model", "impact_scanned_scope", "path_route_model_only",
-    "deduction_refs_are_subsequence", "routes_in_scope_only", "interface_default_not_observed", "routing_neighbors_empty_is_ambiguous"],
-  not_assessed_reason: ["no_health_rows", "all_insufficient_data", "no_scored_rows"],
-  phase_classification: ["sections", "intermediate", "non_section", "unknown"],
-  ref_role: ["subject", "basis", "failure_record", "witness", "denominator"],
-  stp_root_reason: ["single_claimant", "malformed_root_rows", "multiple_root_identities", "duplicate_bridge_identity", "root_not_collected", "no_root_evidence"],
-  topology_glyph: ["device", "router", "ap", "unknown", "none"],
-  topology_stroke: ["solid", "dashed", "dotted"],
-  topology_style_token: ["observed", "uncollected", "unverified", "not_observed", "analysis_unavailable", "link_up", "link_down", "link_unknown",
-    "structural_link", "structural_bridge", "impact_high", "impact_medium", "impact_low", "impact_info", "path_reached", "path_partial_drop",
-    "path_observed_discard", "path_no_route_observed", "path_lower_bound", "path_withheld"],
-  topology_tone: ["neutral", "muted", "info", "warning", "danger"],
-  topology_weight: ["normal", "strong"],
-  withheld_state: ["collected_but_empty", "not_collected", "analysis_unavailable", "not_assessed", "unverified"],
-};
+// The engine's constant vocabulary block (G43) carries only its envelope here. No frontend source reads `vocab`
+// yet, and the engine owns every token, rank and class (tests/test_ui_projection_vocab.py), so a fixture that
+// re-typed the vocabularies would be a second, unchecked copy of them. A renderer that starts reading the block
+// extends this fixture from the generated contract, not from a hand list.
 export function vocabFixture() {
-  const ranked = Object.fromEntries(Object.entries(RANKED_VOCAB_TOKENS).map(([name, tokens]) => [name, {
-    owner: "synthetic.owner", basis: "Synthetic owner order; every token undetermined",
-    items: tokens.map((token, rank) => ({ token, rank, class: "undetermined" })) }]));
-  const unranked = Object.fromEntries(Object.entries(UNRANKED_VOCAB_TOKENS).map(([name, tokens]) =>
-    [name, { basis: "Synthetic vocabulary that carries no level", tokens: [...tokens] }]));
-  return { schema: "ui_projection_vocab/1", classes: ["pass", "watch", "risk", "critical", "undetermined"], ranked, unranked } as Projection["vocab"];
+  return { schema: "ui_projection_vocab/1", classes: ["pass", "watch", "risk", "critical", "undetermined"], ranked: {},
+    unranked: {} } as unknown as Projection["vocab"];
 }
 export function common(sid: number, view: string) {
   return { schema: "ui_projection_transport/1", projection_schema: "ui_projection/1", view,

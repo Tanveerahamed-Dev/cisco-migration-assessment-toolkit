@@ -4518,10 +4518,32 @@ VOCAB_SCHEMA = "ui_projection_vocab/1"
 VOCAB_CLASSES: Tuple[str, ...] = ("pass", "watch", "risk", "critical", "undetermined")
 _C_PASS, _C_WATCH, _C_RISK, _C_CRIT, _C_UND = VOCAB_CLASSES
 _PRESENTATION_OWNER = "cisco_toolkit.ui_projection"
+
+
+def _classed(tokens: Tuple[str, ...], classes: Tuple[str, ...]) -> Dict[str, str]:
+    """Class per token, ``classes`` aligned one-to-one with the vocabulary's own owner tuple ``tokens``.
+
+    A vocabulary that shares spellings with the protocol-assessability receipt's states is never re-typed
+    here: its tokens come only from its owner tuple, so this section dependency names no receipt state.
+    ``strict`` makes a resized owner tuple fail at import instead of shifting a class onto a neighbouring
+    token."""
+    return dict(zip(tokens, classes, strict=True))
+
+
+def _ranked_by(tokens: Tuple[str, ...], ranks: Tuple[int, ...]) -> Tuple[Tuple[str, ...], ...]:
+    """The display order of such a vocabulary from a rank aligned one-to-one with its owner tuple: one group
+    per rank, lowest first, tokens of one rank in the owner tuple's order."""
+    rank_of = dict(zip(tokens, ranks, strict=True))
+    return tuple(tuple(token for token in tokens if rank_of[token] == rank) for rank in sorted(set(ranks)))
+
+
 #: Ranked vocabularies: (name, tokens in schema order, owner of the order, basis, display order, class per
 #: token). A display-order element is a token or a tuple of tokens the owner does not order apart (they share
 #: a rank). The order of an engine-ranked vocabulary IS its local constant, which tests/test_ui_projection*.py
 #: hold equal to the owner's rank table; ``tests/test_ui_projection_vocab.py`` holds every rank and class.
+#: A vocabulary whose tokens share spellings with the receipt's states (collection status, security grade,
+#: coverage state, unknown-evidence source state) states its order and classes through :func:`_ranked_by` and
+#: :func:`_classed`, aligned with its owner tuple; the comment beside each names the tokens in that order.
 _VOCAB_RANKED: Tuple[Tuple[str, Tuple[str, ...], str, str, Tuple[Any, ...], Mapping[str, str]], ...] = (
     ("health_band", HEALTH_BANDS, "ssot._HEALTH_BAND_ORDER",
      "rank: the ssot worst-band order (the most severe band present wins, as analyze.compute_executive_brief "
@@ -4563,7 +4585,7 @@ _VOCAB_RANKED: Tuple[Tuple[str, Tuple[str, ...], str, str, Tuple[Any, ...], Mapp
      "rank: the owner's blind-spot order, least evidence first (the owner lists only blind spots, never "
      "complete). class: a not-collected device determines nothing; a partial device has observed evidence "
      "that may be incomplete.",
-     CC_STATUSES, {"not collected": _C_UND, "partial": _C_WATCH}),
+     CC_STATUSES, _classed(CC_STATUSES, (_C_UND, _C_WATCH))),                 # not collected, partial
     ("link_op_status", OP_STATUSES, _PRESENTATION_OWNER,
      "rank: no engine owner orders analyze.compute_cable_map's op_status; this projection shows down first, "
      "unknown last, as its topology legend does (link_down danger, link_up info, link_unknown muted). class: "
@@ -4591,7 +4613,7 @@ _VOCAB_RANKED: Tuple[Tuple[str, Tuple[str, ...], str, str, Tuple[Any, ...], Mapp
      "rank: the owner's grade precedence: weak when a high-severity check fails, partial when any check "
      "fails, hardened otherwise. class: weak is a failed high-severity hardening check; partial needs "
      "attention; hardened is the owner's verdict over the checks it evaluated.",
-     SEC_GRADES, {"weak": _C_RISK, "partial": _C_WATCH, "hardened": _C_PASS}),
+     SEC_GRADES, _classed(SEC_GRADES, (_C_RISK, _C_WATCH, _C_PASS))),        # weak, partial, hardened
     ("security_check_status", SEC_STATUSES, _PRESENTATION_OWNER,
      "rank: parse.parse_security names its statuses without an order; this projection shows fail first, na "
      "last. class: fail is a failed hardening check (its weight is the check's severity); pass is a measured "
@@ -4608,8 +4630,8 @@ _VOCAB_RANKED: Tuple[Tuple[str, Tuple[str, ...], str, str, Tuple[Any, ...], Mapp
      "limits, not risk or health. class: covered is the matrix producer's published verdict (the "
      "coverage_matrix_shown_as_published caveat still applies); partial is observed but incomplete evidence; "
      "every other state is an evidence absence and determines no level.",
-     COVERAGE_STATE_ORDER, {"not_collected": _C_UND, "unverified": _C_UND, "unparsed": _C_UND,
-                            "partial": _C_WATCH, "not_observed": _C_UND, "covered": _C_PASS}),
+     # not_collected, unverified, unparsed, partial, not_observed, covered
+     COVERAGE_STATE_ORDER, _classed(COVERAGE_STATE_ORDER, (_C_UND, _C_UND, _C_UND, _C_WATCH, _C_UND, _C_PASS))),
     ("unknown_evidence_state", UNKNOWN_EVIDENCE_STATES, _PRESENTATION_OWNER,
      "rank: unknown_evidence._assemble names its summary states without an order; this projection shows the "
      "least complete first. class: only the two states the owner reaches with every source observed "
@@ -4623,9 +4645,9 @@ _VOCAB_RANKED: Tuple[Tuple[str, Tuple[str, ...], str, str, Tuple[Any, ...], Mapp
      "observed first. class: observed is a completely observed source; partial needs attention; "
      "observed_empty does not satisfy the owner's source_complete predicate, so it vouches for no coverage; "
      "not_collected and malformed are absences and determine no level.",
-     ("not_collected", "malformed", "partial", "observed_empty", "observed"),
-     {"not_collected": _C_UND, "malformed": _C_UND, "partial": _C_WATCH, "observed_empty": _C_UND,
-      "observed": _C_PASS}),
+     # observed, observed_empty, partial, not_collected, malformed
+     _ranked_by(UE_SOURCE_STATES, (4, 3, 2, 0, 1)),
+     _classed(UE_SOURCE_STATES, (_C_PASS, _C_UND, _C_WATCH, _C_UND, _C_UND))),
     ("stp_root_election_state", STP_ROOT_ELECTION_STATES, _PRESENTATION_OWNER,
      "rank: stp_topology names its election states without an order; this projection shows the "
      "contradiction first, the absence last. class: ambiguous is an observed contradiction between root "
