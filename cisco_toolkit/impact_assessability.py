@@ -293,14 +293,26 @@ def unjoinable_rows(rows: Any, fields: Tuple[str, ...]) -> List[int]:
 # ---------------------------------------------------------------------------------------------------
 # the row-level predicates
 # ---------------------------------------------------------------------------------------------------
-def row_hold(rec: Any, toks: Sequence[Any], interfaces: Any) -> Optional[Hold]:
+def run_config_captured(interfaces: Any, host: str) -> Tuple[bool, bool]:
+    """``(the device has an interface record, one of its interfaces carries run_config_observed: true)``: the scan
+    :func:`row_hold` reads for `host`. A pure function of the host and the stored interfaces, so a reader of many rows
+    runs it once per host (:meth:`ImpactSnapshot.captured`)."""
+    ports = interfaces.get(host) if isinstance(interfaces, dict) else None
+    if not isinstance(ports, dict):
+        return False, False
+    return True, any(isinstance(port, dict) and port.get("run_config_observed") is True for port in ports.values())
+
+
+def row_hold(rec: Any, toks: Sequence[Any], interfaces: Any, *,
+             captured: Optional[Callable[[str], Tuple[bool, bool]]] = None) -> Optional[Hold]:
     """The hold on every blast-radius measure of one stored row, with a witness to the evidence that says why. First
     match wins: the producer's INDETERMINATE detail -> no off_scan_gw_vlans (a row older than that marker) -> an
     unreadable off-scan count -> no readable host -> no interface of the row's device carrying
     ``run_config_observed: true`` (its gateway SVIs never reached the simulation; absent is never read as
     captured) -> a positive off-scan count with no VLAN simulated (the INDETERMINATE case, read from the count
     rather than the prose). ``None``: the measures are the producer's (a partial row's are then qualified per value
-    by :func:`measure_withheld`)."""
+    by :func:`measure_withheld`). `captured` answers :func:`run_config_captured` for a host (a per-host memo);
+    without it the scan runs here."""
     if not isinstance(rec, dict):
         return None
     toks = tuple(toks)
@@ -316,10 +328,9 @@ def row_hold(rec: Any, toks: Sequence[Any], interfaces: Any) -> Optional[Hold]:
     host = rec.get("host")
     if not _is_text(host):
         return Hold(UNVERIFIED, R_NO_HOST, [("witness", toks)], "no_host")
-    ports = interfaces.get(host) if isinstance(interfaces, dict) else None
-    if not (isinstance(ports, dict) and any(isinstance(port, dict) and port.get("run_config_observed") is True
-                                            for port in ports.values())):
-        where = ("interfaces", host) if isinstance(ports, dict) else ("interfaces",)
+    has_ports, observed = captured(host) if captured is not None else run_config_captured(interfaces, host)
+    if not observed:
+        where = ("interfaces", host) if has_ports else ("interfaces",)
         return Hold(NOT_COLLECTED, R_NO_RUN_CONFIG, [("witness", where)], "no_run_config")
     simulated_ok, simulated = _count(rec.get("vlans_impacted"))
     if n and not (simulated_ok and simulated):
@@ -563,7 +574,12 @@ class ImpactSnapshot:
     """The stored inputs one snapshot gives the row-level predicates, each read once and only on first use. A caller
     with its own exact-key index or cable-map reading (ui_projection) passes them as zero-argument callables, so
     both readings stay the caller's; otherwise the owner builds its own. `witness_cap` bounds each row's witness list
-    for a reader that renders none (:func:`neighbour_bound`, :func:`duplicate_doubt`); ``None`` keeps every one."""
+    for a reader that renders none (:func:`neighbour_bound`, :func:`duplicate_doubt`); ``None`` keeps every one.
+
+    The two per-host predicates -- the interface running-config scan (:func:`run_config_captured`) and the
+    uncollected-neighbour join (:func:`neighbour_bound`) -- are pure functions of the host and the cached sources, so
+    each runs once per host however many rows name it: R rows naming one host cost one scan of its interfaces and one
+    join over its cables, never R of each."""
 
     def __init__(self, snap: Any, *, rows_by_host: Optional[Callable[[], Mapping[str, Sequence[int]]]] = None,
                  cables: Optional[Callable[[], CableSource]] = None, witness_cap: Optional[int] = None) -> None:
@@ -573,6 +589,8 @@ class ImpactSnapshot:
         self._cables_fn = cables
         self._cables: Optional[CableSource] = None
         self.witness_cap = witness_cap
+        self._captured: Dict[str, Tuple[bool, bool]] = {}
+        self._peers: Dict[str, Optional[Bound]] = {}
 
     def rows_by_host(self) -> Mapping[str, Sequence[int]]:
         if self._rows_by_host is None:
@@ -585,6 +603,21 @@ class ImpactSnapshot:
             self._cables = self._cables_fn() if self._cables_fn is not None else read_cable_source(self.snap)
         return self._cables
 
+    def captured(self, host: str) -> Tuple[bool, bool]:
+        """:func:`run_config_captured` for `host`, scanned once per host."""
+        got = self._captured.get(host)
+        if got is None:
+            got = self._captured[host] = run_config_captured(self.snap.get("interfaces"), host)
+        return got
+
+    def neighbour(self, host: str) -> Optional[Bound]:
+        """:func:`neighbour_bound` for `host`, joined once per host. Each call returns its own copy of the witness
+        list, so no caller can change what another row reads from the cache."""
+        if host not in self._peers:
+            self._peers[host] = neighbour_bound(host, self.cable_source(), witness_cap=self.witness_cap)
+        bound = self._peers[host]
+        return None if bound is None else bound._replace(witnesses=list(bound.witnesses))
+
     def row(self, i: int, raw: Any) -> RowFacts:
         """The facts of stored row `i`: the duplicate doubt, the hold, then the bounds (off-scan first, then the
         neighbour bound, which is read only for a row without a hold)."""
@@ -592,13 +625,13 @@ class ImpactSnapshot:
         host = raw.get("host") if isinstance(raw, dict) else None
         doubt = (duplicate_doubt(raw, self.rows_by_host(), witness_cap=self.witness_cap) if _is_text(host)
                  else None)
-        hold = row_hold(raw, toks, self.snap.get("interfaces"))
+        hold = row_hold(raw, toks, self.snap.get("interfaces"), captured=self.captured)
         bounds: List[Bound] = []
         scan = off_scan_bound(raw, toks)
         if scan is not None:
             bounds.append(scan)
         if hold is None and _is_text(host):
-            peers = neighbour_bound(host, self.cable_source(), witness_cap=self.witness_cap)
+            peers = self.neighbour(host)
             if peers is not None:
                 bounds.append(peers)
         return RowFacts(doubt, hold, tuple(bounds))
@@ -745,8 +778,17 @@ def assessment_document(snap: Any) -> Dict[str, Any]:
             "counts": {k: sum(1 for r in rows if r["assessable"] == k) for k in VERDICTS}}
 
 
+def unavailable_document() -> Dict[str, Any]:
+    """The verdict document a caller substitutes when :func:`assessment_document` could not be computed (the
+    pipeline's phase fallback): it carries no row verdict, so a consumer reads every row as one with no verdict --
+    not assessed, never published by default. ``counts`` is not a census here; ``unavailable`` says so."""
+    return {"schema": SCHEMA, "rows": [], "counts": {k: 0 for k in VERDICTS}, "unavailable": True}
+
+
 #: What a deliverable table writes for a value the owner withholds (never the stored Info or 0).
 NOT_ASSESSED_CELL = "not assessed"
+#: What a ranking appends to a lower-bound row's count it ranks: the count is a floor, not a measurement.
+LOWER_BOUND_MARK = "(lower bound)"
 
 
 def table_value(verdict: RowVerdict, field: str) -> Any:
@@ -777,6 +819,38 @@ def table_detail(verdict: RowVerdict) -> Any:
     return head
 
 
+# ---------------------------------------------------------------------------------------------------
+# keystone rankings (the per-cell decision, not the row verdict)
+# ---------------------------------------------------------------------------------------------------
+def ranking_floor(verdict: RowVerdict) -> Optional[int]:
+    """The stranded count a keystone ranking orders a LOWER-BOUND row by: its readable positive ``stranded``, which
+    the owner publishes as the floor it is (``withholds('stranded')`` is False). A ranker that dropped such a row
+    because its verdict is not ``published`` would rank a smaller measured switch above a switch that strands at
+    least that many. ``None`` for every other row: a published row ranks by its own measurement, and a held,
+    ambiguous or zero-floor row (a bound withholds a zero) is disclosed, never ranked."""
+    if verdict.assessable != LOWER_BOUND or not isinstance(verdict.raw, dict) or verdict.withholds("stranded"):
+        return None
+    ok, n = _count(verdict.raw.get("stranded"))
+    return n if ok and n > 0 else None
+
+
+def ranks(verdict: RowVerdict) -> bool:
+    """Whether a keystone ranking may place the row at all: a published measurement, or a lower bound whose positive
+    stranded floor the owner publishes (:func:`ranking_floor`). Every other row is disclosed with :func:`disclose`."""
+    return verdict.published or ranking_floor(verdict) is not None
+
+
+def ranked_value(verdict: RowVerdict, field: str) -> Any:
+    """What a ranking table writes for `field` of a row it ranks: the stored value on a published row; on a
+    lower-bound row the owner's :func:`table_value` marked as a floor (``"≥ 300 (lower bound)"``, ``"High (lower
+    bound)"``), and :data:`NOT_ASSESSED_CELL` for a value the owner withholds (a band below the worst, a zero)."""
+    value = table_value(verdict, field)
+    if (verdict.assessable == LOWER_BOUND and field in IMPACT_MEASURES and field != "severity"
+            and isinstance(value, str) and value.startswith("≥ ")):
+        return f"{value} {LOWER_BOUND_MARK}"
+    return value
+
+
 def _disclosed(v: RowVerdict) -> str:
     name = v.host if v.host is not None else f"row {v.index}"
     if v.assessable == LOWER_BOUND and isinstance(v.raw, dict) and not v.withholds("stranded"):
@@ -800,10 +874,11 @@ __all__ = [
     "AMBIGUOUS", "ANALYSIS_UNAVAILABLE", "Bound", "CODE_PHRASES", "CableSource", "DELIVERABLE_WITNESS_CAP", "Doubt",
     "Hold", "IMPACT_EDGE_KINDS",
     "IMPACT_FIELDS", "IMPACT_INDETERMINATE_PREFIX", "IMPACT_MEASURES", "IMPACT_SEVERITIES", "IMPACT_WORST",
-    "ImpactSnapshot", "JS_MAX_SAFE_INT", "LOWER_BOUND", "NOT_ASSESSED", "NOT_ASSESSED_CELL", "NOT_COLLECTED",
-    "PUBLISHED", "RowFacts", "RowVerdict", "SCHEMA", "STATE_WORD", "UNVERIFIED", "VERDICTS", "VERDICT_LABELS",
-    "assess_failure_impact", "assessment_document", "bound_state", "detail_withheld", "disclose", "duplicate_doubt",
-    "index_rows", "json_pointer", "make_bound", "measure_withheld", "neighbour_bound", "off_scan_bound",
-    "off_scan_count", "read_cable_source", "readable_cables", "row_hold", "rows_with_verdicts", "table_detail",
-    "table_value", "understatable_count", "understatable_severity", "unjoinable_rows", "unreadable_cables",
+    "ImpactSnapshot", "JS_MAX_SAFE_INT", "LOWER_BOUND", "LOWER_BOUND_MARK", "NOT_ASSESSED", "NOT_ASSESSED_CELL",
+    "NOT_COLLECTED", "PUBLISHED", "RowFacts", "RowVerdict", "SCHEMA", "STATE_WORD", "UNVERIFIED", "VERDICTS",
+    "VERDICT_LABELS", "assess_failure_impact", "assessment_document", "bound_state", "detail_withheld", "disclose",
+    "duplicate_doubt", "index_rows", "json_pointer", "make_bound", "measure_withheld", "neighbour_bound",
+    "off_scan_bound", "off_scan_count", "ranked_value", "ranking_floor", "ranks", "read_cable_source",
+    "readable_cables", "row_hold", "rows_with_verdicts", "run_config_captured", "table_detail", "table_value",
+    "unavailable_document", "understatable_count", "understatable_severity", "unjoinable_rows", "unreadable_cables",
 ]

@@ -11401,12 +11401,13 @@ function cockpitKeystones(){
   // V3.23.81: prefer the Python failure-impact rollup (SNAP.failure_impact[].stranded) so the explorer's
   // keystone blast-radius numbers match the workbook's 'Failure Impact' sheet exactly (one source of truth);
   // fall back to the JS failureImpact engine when the snapshot doesn't carry it (older snapshots / demo).
-  // W33: a stored row ranks only when the ENGINE publishes it (cockpitImpact below); every other switch is left
-  // out of the ranking and disclosed by keystoneCard, never ranked with a 0.
+  // W33: a stored row ranks only when the ENGINE publishes it, or publishes a positive stranded floor for it (a lower
+  // bound, ranked by that floor and marked as one; cockpitImpact below); every other switch is left out of the
+  // ranking and disclosed by keystoneCard, never ranked with a 0.
   const fi=cockpitImpact();
   const blastOf=h=>{ if(fi.rows)return fi.published[h]||0; try{return failureImpact(MODEL,h).hardStranded||0;}catch(e){return 0;} };
   const rows=(MODEL?MODEL.hosts:[]).filter(h=>!fi.rows||(h in fi.published)).map(h=>{const blast=blastOf(h);
-    return {host:h, blast, impl:implBy[h]||0, chains:chainsBy[h]||0, tier:_cockpitTier(h)};})
+    return {host:h, blast, impl:implBy[h]||0, chains:chainsBy[h]||0, tier:_cockpitTier(h), bound:(fi.rows&&fi.lower[h])||""};})
     .filter(r=>r.blast>0||r.impl>0||r.chains>0);
   rows.sort((a,b)=>b.blast-a.blast || b.chains-a.chains || b.impl-a.impl || a.host.localeCompare(b.host));
   return rows;
@@ -11414,23 +11415,27 @@ function cockpitKeystones(){
 /* W33: the engine's verdict on each stored failure-impact row, embedded index-aligned as
    SNAP.failure_impact_assessability by html._slim_for_embed (owner: cisco_toolkit/impact_assessability.py).
    This page holds no assessability rule of its own. {rows:null} when the snapshot carries no rows (the JS engine
-   then ranks, as before); otherwise `published` maps each host the engine publishes to its stranded count, and
-   `held` lists every other stored row (no verdict at all is held too), plus each scanned switch with no stored row
-   (it was not simulated: a blind spot, never a 0). A host that any row holds is never published. */
+   then ranks, as before); otherwise `published` maps each host the engine publishes to its stranded count, and each
+   lower-bound host to the positive stranded floor the engine embedded for it (`floor`; `lower` keeps its reason so
+   the card marks the count as a floor), and `held` lists every other stored row (no verdict at all is held too),
+   plus each scanned switch with no stored row (it was not simulated: a blind spot, never a 0). A host that any row
+   holds is never ranked. */
 function cockpitImpact(){
   const raw=(SNAP&&Array.isArray(SNAP.failure_impact))?SNAP.failure_impact:null;
-  const published=Object.create(null), named=Object.create(null), held=[];
-  if(!raw||!raw.length)return {rows:null,published,held};
+  const published=Object.create(null), lower=Object.create(null), named=Object.create(null), held=[];
+  if(!raw||!raw.length)return {rows:null,published,lower,held};
   const verdicts=(SNAP&&Array.isArray(SNAP.failure_impact_assessability))?SNAP.failure_impact_assessability:[];
   raw.forEach((r,i)=>{
     const host=(r&&typeof r.host==="string")?r.host:"", v=verdicts[i];
     if(host)named[host]=true;
     if(host&&v&&v.assessable==="published")published[host]=(+r.stranded)||0;
+    else if(host&&v&&v.assessable==="lower_bound"&&Number.isInteger(v.floor)&&v.floor>0){
+      published[host]=v.floor; lower[host]=(typeof v.summary==="string"&&v.summary)?v.summary:"lower bound";}
     else held.push({host:host||("row "+i),why:(v&&typeof v.summary==="string")?v.summary:"not assessed — no engine assessability verdict for this row"});
   });
   (MODEL?MODEL.hosts:[]).forEach(h=>{if(!named[h])held.push({host:h,why:"not assessed — the failure-impact simulation has no row for this switch"});});
-  held.forEach(x=>{delete published[x.host];});
-  return {rows:raw,published,held};
+  held.forEach(x=>{delete published[x.host]; delete lower[x.host];});
+  return {rows:raw,published,lower,held};
 }
 function keystoneCard(){
   const ks=cockpitKeystones(), held=cockpitImpact().held; if(!ks.length&&!held.length)return "";
@@ -11440,9 +11445,9 @@ function keystoneCard(){
     const bits=[]; if(r.impl)bits.push(`${r.impl} finding${r.impl===1?"":"s"}`); if(r.chains)bits.push(`${r.chains} SPOF chain${r.chains===1?"":"s"}`);
     return `<div class="rc-row" data-jump="${esc(r.host)}" style="cursor:pointer" title="${esc(r.host)} — jump to its health detail">
       <div class="rc-head"><span class="nm"><span class="mono">${esc(shortName(r.host))}</span> <span class="pill pl-neutral">${esc(r.tier)}</span></span>
-        <span class="sc"><span class="num" data-to="${r.blast}">0</span></span></div>
+        <span class="sc">${r.bound?"≥ ":""}<span class="num" data-to="${r.blast}">0</span></span></div>
       <div class="rc-bar"><i data-rcw="${w}" style="background:var(--crit)"></i></div>
-      <div class="rc-meta">endpoints stranded if it fails${bits.length?` · ${bits.join(" · ")}`:""}</div>
+      <div class="rc-meta">endpoints stranded if it fails${r.bound?` (${esc(r.bound)})`:""}${bits.length?` · ${bits.join(" · ")}`:""}</div>
     </div>`;}).join("");
   // W33: the switches the engine does not publish a blast radius for are named, with why, and never ranked
   const heldLine=held.length?`<div class="rc-meta" style="margin-top:6px"><b>${held.length} switch${held.length===1?"":"es"} not ranked</b> — blast radius not a measurement on this evidence: ${held.slice(0,6).map(x=>`<span class="mono">${esc(shortName(x.host))}</span> (${esc(x.why)})`).join("; ")}${held.length>6?` +${held.length-6} more`:""}</div>`:"";

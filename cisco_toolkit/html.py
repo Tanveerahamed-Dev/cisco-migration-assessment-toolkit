@@ -3456,12 +3456,18 @@ def _slim_for_embed(snap_dict: dict) -> dict:
             r for r in ph
             if not (isinstance(r, dict) and r.get("severity") in ("Info", "OK", None))]
     # W33: the engine owner's verdict on each stored failure-impact row (index-aligned with failure_impact),
-    # computed from the FULL snapshot before its interfaces are slimmed. The explorer's keystone ranking ranks
-    # only a 'published' row and discloses the rest; it holds no assessability rule of its own.
+    # computed from the FULL snapshot before its interfaces are slimmed. The explorer's keystone ranking ranks a
+    # 'published' row by its stranded count and a lower-bound row by the `floor` embedded here (the owner's
+    # published positive stranded floor), and discloses the rest; it holds no assessability rule of its own.
     if isinstance(snap_dict.get("failure_impact"), list):
-        out["failure_impact_assessability"] = [
-            {"assessable": v.assessable, "summary": v.summary}
-            for v in impact_assessability.assess_failure_impact(snap_dict)]
+        verdicts = []
+        for v in impact_assessability.assess_failure_impact(snap_dict):
+            entry: Dict[str, Any] = {"assessable": v.assessable, "summary": v.summary}
+            floor = impact_assessability.ranking_floor(v)
+            if floor is not None:
+                entry["floor"] = floor
+            verdicts.append(entry)
+        out["failure_impact_assessability"] = verdicts
     return out
 
 

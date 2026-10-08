@@ -4871,15 +4871,24 @@ def main():
     # W33: the evidence the failure-impact assessability owner (impact_assessability) reads -- each interface's
     # scoped running-config mark (the only source of a device's gateway SVIs), the stored cable map, and the
     # phase failures so far -- in the snapshot's own shape. The dossier, the Failure Impact and Executive Summary
-    # sheets read it here; every deliverable rendered from snap_dict reads the same sections there.
-    impact_evidence = {
-        "interfaces": {h: {p: {"run_config_observed": getattr(d, "run_config_observed", False) is True}
-                           for p, d in (ports or {}).items()}
-                       for h, ports in (all_interfaces or {}).items()},
-        "cable_map": cable_map,
-        "assessment_integrity": {"failed_phases": [p["phase"] for p in _PHASE_TIMINGS if p.get("ok") is False]}}
-    failure_impact_assessability = impact_assessability.assessment_document(
-        {**impact_evidence, "failure_impact": failure_impact})
+    # sheets read it here; every deliverable rendered from snap_dict reads the same sections there. Built and
+    # assessed inside one guarded phase like every other compute: on a raise the phase records its failure (it
+    # attributes to device_dossiers, ssot.PHASE_SECTIONS), the sheets get no evidence (every row then reads 'not
+    # assessed', never published by default) and the dossier gets the owner's unavailable document (each row
+    # disclosed as having no verdict; its score still reads the stored row, so nothing is lowered).
+    def _failure_impact_assessability():
+        evidence = {
+            "interfaces": {h: {p: {"run_config_observed": getattr(d, "run_config_observed", False) is True}
+                               for p, d in (ports or {}).items()}
+                           for h, ports in (all_interfaces or {}).items()},
+            "cable_map": cable_map,
+            "assessment_integrity": {"failed_phases": [p["phase"] for p in _PHASE_TIMINGS
+                                                       if p.get("ok") is False]}}
+        return evidence, impact_assessability.assessment_document({**evidence, "failure_impact": failure_impact})
+
+    impact_evidence, failure_impact_assessability = _run_phase(
+        "Failure Impact assessability", _failure_impact_assessability,
+        _default=(None, impact_assessability.unavailable_document()))
     _run_phase("Failure Impact assessability sheet", write_failure_impact_sheet, wb, failure_impact,
                impact_evidence)
     from cisco_toolkit.ssot import failed_sections as _dossier_failed_sections

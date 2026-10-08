@@ -443,17 +443,26 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ---------------------------------------------------------------- 4. Keystone devices (light)
     s = slide()
     header(s, "Concentrated dependency", "The switches the fleet depends on")
-    # W33: the engine owner (impact_assessability) decides which stored rows are measurements. Only a PUBLISHED row
-    # ranks; every other row (INDETERMINATE, a pre-marker row, an uncaptured interface running-config, a partial
-    # simulation, an uncollected neighbour, a duplicate host) is disclosed, never read as stranding nobody.
+    # W33: the engine owner (impact_assessability) decides which stored rows are measurements. A PUBLISHED row ranks
+    # by its measurement and a lower-bound row by the positive stranded floor the owner publishes for it (the
+    # per-cell decision, not the row verdict), shown as that floor; every other row (INDETERMINATE, a pre-marker row,
+    # an uncaptured interface running-config, a zero-floor bound, a duplicate host) is disclosed, never read as
+    # stranding nobody.
     _fi_pairs = impact_assessability.rows_with_verdicts(snap)
     fi = [r for r, _v in _fi_pairs]
-    _ks_all = sorted((r for r, v in _fi_pairs if v.published and _as_num(r.get("stranded")) > 0),
-                     key=lambda r: -_as_num(r.get("stranded")))
+
+    def _ks_stranded(pair):
+        floor = impact_assessability.ranking_floor(pair[1])
+        return floor if floor is not None else _as_num(pair[0].get("stranded"))
+
+    _ks_all = sorted(((r, v) for r, v in _fi_pairs
+                      if (v.published and _as_num(r.get("stranded")) > 0)
+                      or impact_assessability.ranking_floor(v) is not None),
+                     key=lambda p: -_ks_stranded(p))
     keystones = _ks_all[:5]
-    # rows with no usable blast radius (audit-3 #7: an off-scan gateway; W33: every row the owner withholds) are
-    # counted, so an INDETERMINATE estate is not mistaken for a well-distributed one (audit-4 #8 false-health).
-    _ks_held = [v for _r, v in _fi_pairs if not v.published]
+    # rows with no usable blast radius (audit-3 #7: an off-scan gateway; W33: every row the owner neither publishes
+    # nor floors) are counted, so an INDETERMINATE estate is not mistaken for a well-distributed one (audit-4 #8).
+    _ks_held = [v for _r, v in _fi_pairs if not impact_assessability.ranks(v)]
     n_indet = len(_ks_held)
     # Truncation disclosure: the top-5 cap was the last silent one on this deck (slides 2, 3, 3b, 6
     # and 7 all breadcrumb their overflow). "Sequence and protect these first" reads as the COMPLETE
@@ -474,14 +483,22 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
            13, _MUTED, False)])
     y = 2.8
     if keystones:
-        for r in keystones:
+        for r, v in keystones:
             stat_w = 1.7
-            text(s, 0.7, y, stat_w, 0.5, [(str(r.get("stranded", 0)), 30, _CRIT, True)])
-            text(s, 0.7, y + 0.55, stat_w, 0.3, [("stranded", 10, _MUTED, False)])
+            if v.published:
+                stat, stat_label = str(r.get("stranded", 0)), "stranded"
+                vlans, hard, detail = r.get("vlans_impacted", 0), r.get("hard", 0), r.get("detail", "")
+            else:   # W33: a lower bound -- each value as the owner publishes it, the count as the floor it is
+                stat, stat_label = impact_assessability.table_value(v, "stranded"), "stranded (lower bound)"
+                vlans, hard = (impact_assessability.table_value(v, "vlans_impacted"),
+                               impact_assessability.table_value(v, "hard"))
+                detail = impact_assessability.table_detail(v)
+            text(s, 0.7, y, stat_w, 0.5, [(str(stat), 30, _CRIT, True)])
+            text(s, 0.7, y + 0.55, stat_w, 0.3, [(stat_label, 10, _MUTED, False)])
             text(s, 2.5, y + 0.05, W - 3.2, 0.7,
                  [[(_clean(str(r.get("host", ""))), 16, _NAVY, True),
-                   (f"   {r.get('vlans_impacted', 0)} VLAN(s) · {r.get('hard', 0)} hard-partitioned", 12, _MUTED, False)],
-                  [(_clean(r.get("detail", "")), 11, _INK, False)]], space=1)
+                   (f"   {vlans} VLAN(s) · {hard} hard-partitioned", 12, _MUTED, False)],
+                  [(_clean(detail), 11, _INK, False)]], space=1)
             y += 0.92
     elif not fi or n_indet:
         # blast radius NOT computed (no failure_impact) or INDETERMINATE (a row the assessability owner does not

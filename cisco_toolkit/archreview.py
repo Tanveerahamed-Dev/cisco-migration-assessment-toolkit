@@ -412,7 +412,10 @@ def compute_architecture_review(snap: dict) -> dict:
     # W33: the engine owner (impact_assessability) decides which stored rows are measurements. A row it does not
     # publish (the producer's INDETERMINATE detail, a row older than its assessability marker, a device whose
     # scoped interface running-config was not captured, a partial simulation, an uncollected neighbour, a
-    # duplicate host) is never graded: its 0 is not "strands nobody", and its count never ranks a keystone.
+    # duplicate host) is never graded as a measurement: its 0 is not "strands nobody". The ranking follows the
+    # owner's per-cell decision, not the row verdict: a lower-bound row whose positive stranded floor the owner
+    # publishes is a keystone at least that large, ranked by that floor and written as one; every other
+    # unpublished row is disclosed, never ranked.
     fi_pairs = impact_assessability.rows_with_verdicts(snap)
     fi = [r for r, _v in fi_pairs]
     # conforms-by-silence guard (matches HIER-2 / RES-3 / L2-2 / L2-3): the old gate was
@@ -424,13 +427,55 @@ def compute_architecture_review(snap: dict) -> dict:
     # that was never collected. `stranded: 0` is a real observed zero on a published row; a MISSING
     # one is not, and neither is a zero on a row the owner withholds.
     fi_measured = [r for r, v in fi_pairs if v.published and r.get("stranded") is not None]
-    fi_withheld = [v for _r, v in fi_pairs if not v.published]
+    fi_withheld = [v for _r, v in fi_pairs if not impact_assessability.ranks(v)]
     _not_graded = (f" {len(fi_withheld)} simulated device(s) are not graded, because their blast radius is not "
                    f"a measurement on this evidence: {impact_assessability.disclose(fi_withheld)}."
                    if fi_withheld else "")
-    keystones = sorted((r for r in fi_measured if _as_int(r.get("stranded")) > 0),
-                       key=lambda r: -_as_int(r.get("stranded")))
-    if not fi_measured:
+
+    def _ks_stranded(pair):
+        """The ranking key: a lower bound's published floor, else the measured count."""
+        floor = impact_assessability.ranking_floor(pair[1])
+        return floor if floor is not None else _as_int(pair[0].get("stranded"))
+
+    def _ks_phrase(pair):
+        r, v = pair
+        if v.published:
+            return f"{r.get('host')} strands {_as_int(r.get('stranded'))} endpoint(s)"
+        return (f"{r.get('host')} strands {impact_assessability.table_value(v, 'stranded')} endpoint(s) "
+                f"({v.summary})")
+
+    keystones = sorted(((r, v) for r, v in fi_pairs
+                        if (v.published and r.get("stranded") is not None and _as_int(r.get("stranded")) > 0)
+                        or impact_assessability.ranking_floor(v) is not None),
+                       key=lambda p: -_ks_stranded(p))
+    if keystones:
+        # Checked first: a lower bound's floor is a keystone finding even when no other row is a measurement.
+        # This names 5 of len(keystones) — 193 on the Meridian reference fleet, 19 on the sample — and without the
+        # tail sentence it reads as the complete keystone set, i.e. "the fleet has five keystones".
+        # A migration that hardens those five leaves the rest unhardened and sequences waves off the
+        # wrong blast-radius population. The band is read off the DESCENDING tail so it can never
+        # overstate a hidden row ("at least the 5th value" would); a floor in the tail is disclosed as one.
+        _tail = keystones[5:]
+        _more = ""
+        if _tail:
+            _hi = _ks_stranded(_tail[0])
+            _lo = _ks_stranded(_tail[-1])
+            _n_floor = sum(1 for _r, v in _tail if not v.published)
+            _more = (f"; and {len(_tail)} further device(s) strand "
+                     + (f"{_lo}-{_hi}" if _lo != _hi else f"{_lo}") + " endpoint(s) each"
+                     + (f" ({_n_floor} of them only as a lower bound)" if _n_floor else ""))
+        add("RES-4", D2, "No keystone single point of failure", "advisory",
+            "Losing " + "; ".join(_ks_phrase(p) for p in keystones[:5]) + _more + "." + _not_graded,
+            "Endpoint dependency is concentrated — these devices ARE the availability budget.",
+            "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with "
+            "the most conservative cutover plan (their waves carry the widest blast radius).",
+            "Availability analysis — single-device blast radius",
+            # Pass the FULL keystone list: pre-cutting at 8 here happens BEFORE add()'s own 20-item
+            # evidence cap, so `evidence_total` never fired for this check and its "+N more" marker
+            # reconciled against 8 instead of the real population. Let the disclosed cap do the
+            # bounding.
+            evidence=[r.get("host") for r, _v in keystones])
+    elif not fi_measured:
         add("RES-4", D2, "No keystone single point of failure", "not-assessable",
             ("The failure-impact simulation is absent from this snapshot."
              if not fi else
@@ -440,31 +485,6 @@ def compute_architecture_review(snap: dict) -> dict:
             "—",
             "Re-run the assessment with the current engine.",
             "Availability analysis — single-device blast radius")
-    elif keystones:
-        # This names 5 of len(keystones) — 193 on the Meridian reference fleet, 19 on the sample — and without the
-        # tail sentence it reads as the complete keystone set, i.e. "the fleet has five keystones".
-        # A migration that hardens those five leaves the rest unhardened and sequences waves off the
-        # wrong blast-radius population. The band is read off the DESCENDING tail so it can never
-        # overstate a hidden row ("at least the 5th value" would).
-        _tail = keystones[5:]
-        _more = ""
-        if _tail:
-            _hi = _as_int(_tail[0].get("stranded"))
-            _lo = _as_int(_tail[-1].get("stranded"))
-            _more = (f"; and {len(_tail)} further device(s) strand "
-                     + (f"{_lo}-{_hi}" if _lo != _hi else f"{_lo}") + " endpoint(s) each")
-        add("RES-4", D2, "No keystone single point of failure", "advisory",
-            "Losing " + "; ".join(f"{r.get('host')} strands {_as_int(r.get('stranded'))} endpoint(s)"
-                                  for r in keystones[:5]) + _more + "." + _not_graded,
-            "Endpoint dependency is concentrated — these devices ARE the availability budget.",
-            "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with "
-            "the most conservative cutover plan (their waves carry the widest blast radius).",
-            "Availability analysis — single-device blast radius",
-            # Pass the FULL keystone list: pre-cutting at 8 here happens BEFORE add()'s own 20-item
-            # evidence cap, so `evidence_total` never fired for this check and its "+N more" marker
-            # reconciled against 8 instead of the real population. Let the disclosed cap do the
-            # bounding.
-            evidence=[r.get("host") for r in keystones])
     elif len(fi_measured) < len(fi):
         # partial coverage is a blind spot, never health — the same rule RES-3 applies to PSU inventory, and
         # the same one W33 applies to a row whose zero the assessability owner does not publish

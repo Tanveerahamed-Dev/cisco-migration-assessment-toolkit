@@ -16,7 +16,9 @@ Three things are pinned here:
    d0e10888 (before W33), and the owner's verdict on each cell must equal the projection's state.
 3. **The engine deliverables** (the workbook's Failure Impact and Executive Summary sheets, the design document, the
    executive deck, the architecture review, the device dossier and the explorer embed) read the same verdict: an
-   INDETERMINATE, held or neighbour-bounded row never renders as Info / no impact / 0, and never ranks as a keystone.
+   INDETERMINATE, held or neighbour-bounded row never renders as Info / no impact / 0, and a held row never ranks as
+   a keystone. Rankings follow the owner's per-cell decision: a lower-bound row whose positive stranded floor the
+   owner publishes ranks by that floor and is written as one. A withheld impact never lowers a dossier's risk.
 
 No test here runs a pipeline.
 """
@@ -29,7 +31,6 @@ import math
 import pathlib
 import re
 import shutil
-import subprocess
 from dataclasses import asdict
 
 import pytest
@@ -128,6 +129,20 @@ def _offscan_fleet():
                     "Gi10": _access("Gi10", 10, "0000.0000.000a"), "Gi20": _access("Gi20", 20, "0000.0000.0014")}}
 
 
+def _keystone_fleet():
+    """The independent review's counterexample (P2-1), from the real producers: `core1` is the only gateway of VLAN 10
+    for `acc1`'s 300 endpoints, so removing it strands all of them (High, 300), and it is cabled to the uncollected
+    router `wan1`, so that count is only a lower bound. `acc1` strands nobody (Info, 0) and faces only an uncollected
+    access point (edge gear), so its row is a published measurement."""
+    acc1 = {"Gi1": _trunk("Gi1", "core1", "Gi1", "10"),
+            "Gi48": _edge("Gi48", "ap1", "Switch", "cisco AIR-AP2802I-E-K9")}
+    acc1.update({f"Gi1/0/{i}": _access(f"Gi1/0/{i}", 10, f"0000.0000.{i:04x}") for i in range(1, 301)})
+    return {"core1": {"Gi1": _trunk("Gi1", "acc1", "Gi1", "10"),
+                      "Gi47": _edge("Gi47", "wan1", "Router", "cisco ISR4331/K9"),
+                      "Vlan10": _svi(10, "10.10.0.1/24")},
+            "acc1": acc1}
+
+
 def _snapshot(interfaces):
     """The real producers' rows over `interfaces`, in the snapshot's own shape."""
     return {"schema": "collect_parse_snapshot/1", "devices": {host: {"hostname": host} for host in interfaces},
@@ -154,6 +169,19 @@ def _node(snap, host):
 @pytest.fixture()
 def mixed():
     return _snapshot(_mixed_fleet())
+
+
+@pytest.fixture()
+def keystone():
+    """The P2-1 counterexample, with its preconditions read back from the real producers."""
+    snap = _snapshot(_keystone_fleet())
+    v = _verdicts(snap)
+    core1, acc1 = v[_k(snap, "core1")], v[_k(snap, "acc1")]
+    assert _node(snap, "wan1")["collected"] is False and _node(snap, "ap1")["kind"] == "ap"
+    assert core1.assessable == ia.LOWER_BOUND and core1.codes == ["uncollected_neighbours"], core1.as_dict()
+    assert (core1.raw["severity"], core1.raw["stranded"]) == ("High", 300), core1.raw
+    assert acc1.published and (acc1.raw["severity"], acc1.raw["stranded"]) == ("Info", 0), acc1.as_dict()
+    return snap
 
 
 # --------------------------------------------------------------------------------------------------
@@ -307,6 +335,30 @@ def test_two_rows_naming_one_host_are_ambiguous_never_picked(mixed):
     # a case variant names another host: the key is exact text
     mixed["failure_impact"][-1]["host"] = "GW"
     assert _verdicts(mixed)[k].assessable == ia.PUBLISHED
+
+
+def test_rankings_follow_the_per_cell_decision_not_the_row_verdict(mixed):
+    """Review P2-1: a lower-bound row whose positive stranded count the owner publishes ranks by that floor and is
+    written as one; a bounded zero, a held row and an ambiguous row never rank; a published row ranks by its own
+    measurement, written as stored."""
+    v = _verdicts(mixed)
+    gw, acc, x1 = (v[_k(mixed, h)] for h in ("gw", "acc", "x1"))
+    assert not gw.withholds("stranded") and ia.ranking_floor(gw) == 1 and ia.ranks(gw)
+    assert ia.ranked_value(gw, "stranded") == "≥ 1 (lower bound)"
+    assert ia.ranked_value(gw, "severity") == "High (lower bound)"
+    assert ia.ranked_value(gw, "backup") == ia.NOT_ASSESSED_CELL           # a bounded zero stays withheld
+    assert acc.withholds("stranded") and ia.ranking_floor(acc) is None and not ia.ranks(acc)
+    assert ia.ranking_floor(x1) is None and not ia.ranks(x1)
+    _node(mixed, "wan")["collected"] = True
+    k = _k(mixed, "gw")
+    gw = _verdicts(mixed)[k]
+    assert gw.published and ia.ranking_floor(gw) is None and ia.ranks(gw)
+    assert ia.ranked_value(gw, "stranded") == 1                             # a measurement is written as stored
+    mixed["failure_impact"].append(copy.deepcopy(mixed["failure_impact"][k]))
+    doubted = [d for d in _verdicts(mixed).values() if d.host == "gw"]
+    assert len(doubted) == 2 and not any(ia.ranks(d) for d in doubted)      # ambiguous never ranks
+    unavailable = ia.unavailable_document()
+    assert unavailable["schema"] == ia.SCHEMA and unavailable["rows"] == [] and unavailable["unavailable"] is True
 
 
 def test_a_failed_section_reads_every_row_not_assessed(mixed):
@@ -482,6 +534,78 @@ def test_a_hostile_cable_list_keeps_verdicts_exact_and_witnesses_bounded(mixed):
     assert "501 uncollected neighbour(s)" in ia.assess_failure_impact(mixed)[k].reasons[0]
 
 
+def _many_rows(n_rows, n_cables):
+    """`n_rows` stored rows naming the one host `h` (each ambiguous, none held) plus one row for `g`. `h` has `n_cables`
+    interfaces, only the last carrying the running-config mark, and is cabled to `n_cables` uncollected switches.
+    Hand-built on purpose: the subject is the owner's cost per host, not a producer's row."""
+    row = {"host": "h", "severity": "High", "vlans_impacted": 1, "stranded": 5, "hard": 1, "backup": 0, "fhrp": 0,
+           "off_scan_gw_vlans": 0, "detail": "VLAN 10: Hard partition (5 ep)"}
+    return {"failure_impact": [dict(row) for _ in range(n_rows)] + [dict(row, host="g")],
+            "interfaces": {"h": {f"Gi{i}": {"run_config_observed": i == n_cables - 1} for i in range(n_cables)},
+                           "g": {"Gi0": {"run_config_observed": True}}},
+            "cable_map": {"nodes": [{"host": "h", "collected": True, "kind": "switch"},
+                                    {"host": "g", "collected": True, "kind": "switch"}]
+                                   + [{"host": f"peer{i}", "collected": False, "kind": "switch"}
+                                      for i in range(n_cables)],
+                          "cables": [{"a": "h", "b": f"peer{i}"} for i in range(n_cables)]}}
+
+
+def test_the_per_host_scans_run_once_however_many_rows_name_the_host(monkeypatch):
+    """Review P2-3: the interface running-config scan and the uncollected-neighbour join are pure functions of the host
+    and the cached sources, so the owner runs each once per host. Recomputing them per row made R rows on one host cost
+    R x (its interfaces + its cables): quadratic on a hostile upload."""
+    calls = {"captured": [], "peers": []}
+    real_captured, real_peers = ia.run_config_captured, ia.neighbour_bound
+
+    def captured(interfaces, host):
+        calls["captured"].append(host)
+        return real_captured(interfaces, host)
+
+    def peers(host, src, **kwargs):
+        calls["peers"].append(host)
+        return real_peers(host, src, **kwargs)
+
+    monkeypatch.setattr(ia, "run_config_captured", captured)
+    monkeypatch.setattr(ia, "neighbour_bound", peers)
+    snap = _many_rows(40, 30)
+    verdicts = ia.assess_failure_impact(snap)
+    assert sorted(calls["captured"]) == ["g", "h"] and sorted(calls["peers"]) == ["g", "h"], calls
+    # the memo changes no verdict: every `h` row is ambiguous and neighbour-bounded, `g` is a measurement
+    assert all(v.codes == ["duplicate_host", "uncollected_neighbours"] for v in verdicts[:40]), verdicts[0].as_dict()
+    assert "30 uncollected neighbour(s)" in verdicts[0].reasons[1] and verdicts[-1].published
+
+
+class _CountingRows(list):
+    """A cable list that counts the owner's indexed reads of its rows (list iteration does not call __getitem__)."""
+
+    def __init__(self, rows):
+        super().__init__(rows)
+        self.reads = 0
+
+    def __getitem__(self, index):
+        self.reads += 1
+        return super().__getitem__(index)
+
+
+def test_the_neighbour_join_reads_one_hosts_cables_once_and_hands_out_copies():
+    """Review P2-3, sized without a clock: the cable rows the join reads stay one host's cables whether 10 or 200 rows
+    name the host (per-row joins read rows x cables), and the memo hands each row its own witness list."""
+    reads = {}
+    for n_rows in (10, 200):
+        snap = _many_rows(n_rows, 50)
+        cables = _CountingRows(snap["cable_map"]["cables"])
+        src = ia.readable_cables(cables, snap["cable_map"]["nodes"])
+        owner = ia.ImpactSnapshot(snap, cables=lambda src=src: src)        # uncapped: every witness kept
+        facts = [owner.row(i, raw) for i, raw in enumerate(snap["failure_impact"])]
+        reads[n_rows] = cables.reads
+        assert all(len(f.bounds[-1].witnesses) == 50 for f in facts[:n_rows]), n_rows
+        assert not facts[-1].bounds, facts[-1]                             # `g` faces no neighbour
+        facts[0].bounds[-1].witnesses.append(("witness", ("tampered",)))  # a caller mutating its own copy ...
+        again = owner.row(1, snap["failure_impact"][1]).bounds[-1].witnesses
+        assert len(again) == 50 and ("witness", ("tampered",)) not in again  # ... never reaches the cache
+    assert reads[10] == reads[200] and 0 < reads[200] <= 2 * 50, reads
+
+
 def _topology(snap):
     return ui.project_topology(snap)["failure_impact"]["items"]
 
@@ -601,25 +725,61 @@ def test_failure_impact_sheet_never_writes_info_or_zero_for_a_withheld_value(mix
         src["detail"]]
 
 
-def test_executive_summary_ranks_only_published_rows(mixed):
+def _summary_text(wb):
+    from cisco_toolkit.excel import EXEC_SUMMARY_SHEET_NAME
+    return "\n".join(str(c.value) for row in wb[EXEC_SUMMARY_SHEET_NAME].iter_rows() for c in row
+                     if c.value is not None)
+
+
+def test_executive_summary_ranks_published_rows_and_lower_bound_floors(mixed):
+    from openpyxl import Workbook
+    from cisco_toolkit.excel import write_executive_summary_sheet
+    gw = _verdicts(mixed)[_k(mixed, "gw")]
+    wb = Workbook()
+    write_executive_summary_sheet(wb, [], [], [], mixed["failure_impact"], impact_evidence=mixed)
+    text = _summary_text(wb)
+    # gw strands at least 1 (a lower bound): ranked by that floor and written as one; acc (a bounded zero) and the
+    # INDETERMINATE x1 / x2 are not ranked, and are named
+    assert f"gw is the top keystone — its loss strands ≥ 1 endpoint(s) ({gw.summary})." in text, text
+    assert "Not ranked — 3 switch(es)" in text and "x1 (" in text and "acc (" in text
+    assert "No switch's blast radius is a measurement" not in text
+    # nothing ranks at all: every zero below is withheld (bounded) or held, so no switch is named a keystone
+    zero = copy.deepcopy(mixed)
+    for row in zero["failure_impact"]:
+        row["stranded"] = 0
+    wb = Workbook()
+    write_executive_summary_sheet(wb, [], [], [], zero["failure_impact"], impact_evidence=zero)
+    text = _summary_text(wb)
+    assert "Not ranked — 4 switch(es)" in text and "top keystone" not in text.lower()
+    assert "No switch's blast radius is a measurement on this evidence (4 not ranked)" in text
+    _node(mixed, "wan")["collected"] = True                           # the control: gw is a measurement
+    wb = Workbook()
+    write_executive_summary_sheet(wb, [], [], [], mixed["failure_impact"], impact_evidence=mixed)
+    text = _summary_text(wb)
+    assert "gw is the top keystone — its loss strands 1 endpoint(s). Harden" in text and "Not ranked — 3" in text
+
+
+def test_executive_summary_never_names_a_measured_zero_over_a_lower_bound_keystone(keystone):
+    """The review's P2-1 counterexample: ranking on the row verdict dropped core1 (High, at least 300 stranded) and
+    named acc1 (Info, 0) the top keystone."""
     from openpyxl import Workbook
     from cisco_toolkit.excel import EXEC_SUMMARY_SHEET_NAME, write_executive_summary_sheet
+    core1 = _verdicts(keystone)[_k(keystone, "core1")]
     wb = Workbook()
-    write_executive_summary_sheet(wb, [], [], [], mixed["failure_impact"], impact_evidence=mixed)
-    text = "\n".join(str(c.value) for row in wb[EXEC_SUMMARY_SHEET_NAME].iter_rows() for c in row
-                     if c.value is not None)
-    assert "Not ranked — 4 switch(es)" in text and "top keystone" not in text.lower()
-    assert "No switch's blast radius is a measurement" in text
-    _node(mixed, "wan")["collected"] = True
-    wb = Workbook()
-    write_executive_summary_sheet(wb, [], [], [], mixed["failure_impact"], impact_evidence=mixed)
-    text = "\n".join(str(c.value) for row in wb[EXEC_SUMMARY_SHEET_NAME].iter_rows() for c in row
-                     if c.value is not None)
-    assert "gw is the top keystone" in text and "Not ranked — 3 switch(es)" in text
+    write_executive_summary_sheet(wb, [], [], [], keystone["failure_impact"], impact_evidence=keystone)
+    text = _summary_text(wb)
+    assert "acc1 is the top keystone" not in text
+    assert f"core1 is the top keystone — its loss strands ≥ 300 endpoint(s) ({core1.summary})." in text, text
+    table = [[c.value for c in row][:5] for row in wb[EXEC_SUMMARY_SHEET_NAME].iter_rows()]
+    table = [row for row in table if isinstance(row[0], int) and row[1] in ("core1", "acc1")]
+    assert table == [[1, "core1", "High (lower bound)", "≥ 300 (lower bound)", "≥ 1 (lower bound)"],
+                     [2, "acc1", "Info", 0, 0]], table
+    assert "Not ranked" not in text                                   # nothing here is withheld
 
 
-def test_architecture_review_never_conforms_over_a_withheld_zero(mixed):
+def test_architecture_review_ranks_a_lower_bound_by_its_floor_and_never_conforms_over_a_withheld_zero(mixed):
     from cisco_toolkit.archreview import compute_architecture_review
+    from impact_fixtures import assessable
 
     def res4(snap):
         return next(c for c in compute_architecture_review(snap)["checks"] if c["id"] == "RES-4")
@@ -629,62 +789,121 @@ def test_architecture_review_never_conforms_over_a_withheld_zero(mixed):
     c = res4(zero)
     assert c["verdict"] == "not-assessable", c                       # INDETERMINATE + bounded zeros: never conforms
     assert "not graded" in c["observed"] and "x1" in c["observed"]
-    c = res4(mixed)                                                  # gw strands 1, but only as a lower bound
-    assert c["verdict"] == "not-assessable" and "strands at least 1 endpoint(s)" in c["observed"], c
+    gw = _verdicts(mixed)[_k(mixed, "gw")]
+    c = res4(mixed)                                                  # gw strands at least 1: a keystone, as a floor
+    assert c["verdict"] == "advisory" and c["evidence"] == ["gw"], c
+    assert c["observed"].startswith(f"Losing gw strands ≥ 1 endpoint(s) ({gw.summary}).")
+    assert "3 simulated device(s) are not graded" in c["observed"] and "x1 (" in c["observed"]
     _node(mixed, "wan")["collected"] = True
     c = res4(mixed)
     assert c["verdict"] == "advisory" and c["evidence"] == ["gw"], c
     assert c["observed"].startswith("Losing gw strands 1 endpoint(s).") and "3 simulated device(s)" in c["observed"]
+    # a floor in the hidden tail is disclosed as one, and the band reads its floor
+    fi = [{"host": f"h{i}", "severity": "High", "stranded": 70 - i, "vlans_impacted": 1,
+           "detail": f"VLAN {i}: Hard partition"} for i in range(7)]
+    snap = assessable({"failure_impact": fi})
+    snap["cable_map"] = {"nodes": [{"host": "rtr", "collected": False, "kind": "router"}],
+                         "cables": [{"a": "h6", "b": "rtr"}]}
+    c = res4(snap)
+    assert c["observed"].startswith("Losing h0 strands 70 endpoint(s); h1 strands 69 endpoint(s);"), c
+    assert c["observed"].endswith("and 2 further device(s) strand 64-65 endpoint(s) each "
+                                  "(1 of them only as a lower bound)."), c
+    assert len(c["evidence"]) == 7
 
 
-def test_design_and_deck_rank_only_published_keystones(mixed, tmp_path):
-    pytest.importorskip("docx")
-    pytest.importorskip("pptx")
+def test_architecture_review_ranks_the_lower_bound_keystone_over_a_measured_zero(keystone):
+    from cisco_toolkit.archreview import compute_architecture_review
+    core1 = _verdicts(keystone)[_k(keystone, "core1")]
+    c = next(c for c in compute_architecture_review(keystone)["checks"] if c["id"] == "RES-4")
+    assert c["verdict"] == "advisory" and c["evidence"] == ["core1"], c
+    assert c["observed"] == f"Losing core1 strands ≥ 300 endpoint(s) ({core1.summary}).", c
+
+
+def _design_text(snap, path):
     from docx import Document
+    from cisco_toolkit.design import write_design_doc_docx
+    write_design_doc_docx(path, snap, "W33")
+    doc = Document(path)
+    return [p.text for p in doc.paragraphs] + [" | ".join(c.text for c in r.cells) for t in doc.tables for r in t.rows]
+
+
+def _deck_text(snap, path):
     from pptx import Presentation
     from cisco_toolkit.deck import write_executive_deck_pptx
-    from cisco_toolkit.design import write_design_doc_docx
+    write_executive_deck_pptx(path, snap, "W33")
+    return "\n".join(sh.text_frame.text for sl in Presentation(path).slides for sh in sl.shapes if sh.has_text_frame)
 
-    def design_text(snap, name):
-        path = str(tmp_path / f"{name}.docx")
-        write_design_doc_docx(path, snap, "W33")
-        doc = Document(path)
-        return [p.text for p in doc.paragraphs] + [" | ".join(c.text for c in r.cells)
-                                                   for t in doc.tables for r in t.rows]
 
-    def deck_text(snap, name):
-        path = str(tmp_path / f"{name}.pptx")
-        write_executive_deck_pptx(path, snap, "W33")
-        return "\n".join(sh.text_frame.text for sl in Presentation(path).slides for sh in sl.shapes
-                         if sh.has_text_frame)
-
-    blocks = design_text(mixed, "held")
-    assert not [b for b in blocks if b.startswith("Concentrated dependency:")]
-    assert [b for b in blocks if b.startswith("Blast radius not a measurement:") and "4 switch(es)" in b]
-    assert "Keystone devices (strand endpoints if lost) | 0" in blocks
-    deck = deck_text(mixed, "held")
-    assert "well distributed" not in deck and "INDETERMINATE — 4 switch(es)" in deck
+def test_design_and_deck_rank_published_rows_and_lower_bound_floors(mixed, tmp_path):
+    pytest.importorskip("docx")
+    pytest.importorskip("pptx")
+    gw = _verdicts(mixed)[_k(mixed, "gw")]
+    blocks = _design_text(mixed, str(tmp_path / "held.docx"))
+    assert [b for b in blocks if b.startswith("Concentrated dependency:") and f"gw (≥ 1 endpoints; {gw.summary})" in b]
+    assert [b for b in blocks if b.startswith("Blast radius not a measurement:") and "3 switch(es)" in b
+            and "x1 (" in b]
+    assert "Keystone devices (strand endpoints if lost) | 1" in blocks
+    assert "…blast radius not a measurement (not ranked; §2.1) | 3" in blocks
+    deck = _deck_text(mixed, str(tmp_path / "held.pptx"))
+    assert "≥ 1" in deck and "stranded (lower bound)" in deck and "3 switch(es) not ranked" in deck
+    assert "well distributed" not in deck and "Blast radius INDETERMINATE — " not in deck
     _node(mixed, "wan")["collected"] = True
-    blocks = design_text(mixed, "ranked")
+    blocks = _design_text(mixed, str(tmp_path / "ranked.docx"))
     assert [b for b in blocks if b.startswith("Concentrated dependency:") and "gw (1 endpoints)" in b]
     assert "Keystone devices (strand endpoints if lost) | 1" in blocks
     assert "…blast radius not a measurement (not ranked; §2.1) | 3" in blocks
-    deck = deck_text(mixed, "ranked")
+    deck = _deck_text(mixed, str(tmp_path / "ranked.pptx"))
     assert "3 switch(es) not ranked" in deck and "well distributed" not in deck
+    assert "stranded (lower bound)" not in deck
+    # nothing ranks: every row is held or a bounded zero, so the slide reads as a coverage gap
+    zero = copy.deepcopy(mixed)
+    _node(zero, "wan")["collected"] = False
+    for row in zero["failure_impact"]:
+        row["stranded"] = 0
+    blocks = _design_text(zero, str(tmp_path / "zero.docx"))
+    assert not [b for b in blocks if b.startswith("Concentrated dependency:")]
+    assert "Keystone devices (strand endpoints if lost) | 0" in blocks
+    deck = _deck_text(zero, str(tmp_path / "zero.pptx"))
+    assert "well distributed" not in deck and "Blast radius INDETERMINATE — 4 switch(es)" in deck
+
+
+def test_design_and_deck_rank_the_lower_bound_keystone(keystone, tmp_path):
+    """The P2-1 counterexample on the two documents: core1 is the keystone, at least 300, never dropped."""
+    pytest.importorskip("docx")
+    pytest.importorskip("pptx")
+    core1 = _verdicts(keystone)[_k(keystone, "core1")]
+    blocks = _design_text(keystone, str(tmp_path / "k.docx"))
+    assert [b for b in blocks if b.startswith("Concentrated dependency:")
+            and f"core1 (≥ 300 endpoints; {core1.summary})" in b and "acc1" not in b]
+    assert "Keystone devices (strand endpoints if lost) | 1" in blocks
+    assert not [b for b in blocks if b.startswith("Blast radius not a measurement:")
+                or b.startswith("…blast radius not a measurement")]
+    deck = _deck_text(keystone, str(tmp_path / "k.pptx"))
+    assert "≥ 300" in deck and "stranded (lower bound)" in deck and core1.raw["detail"] in deck
+    assert "well distributed" not in deck and "not ranked" not in deck and "Blast radius INDETERMINATE" not in deck
+
+
+def _dossiers(snap, lifecycle=None, doc=None):
+    kwargs = {"failure_impact": snap["failure_impact"], "lifecycle_risk": lifecycle}
+    if doc is not None:
+        kwargs["failure_impact_assessability"] = doc
+    return {d["host"]: d for d in analyze.compute_device_dossiers(**kwargs)["per_device"]}
+
+
+#: The dossier fields the impact term scores or drives (the multiplicand, the band and the compound patterns).
+_SCORED = ("impact_score", "impact_severity", "stranded", "vlans_impacted", "exposure_score", "n_na", "risk_index",
+           "risk_band")
 
 
 def test_the_dossier_impact_term_never_reads_a_withheld_row_as_clean(mixed):
-    rows = mixed["failure_impact"]
-    plain = {d["host"]: d for d in analyze.compute_device_dossiers(failure_impact=rows)["per_device"]}
+    plain = _dossiers(mixed)
     assert plain["x1"]["impact_severity"] == "Info" and "impact_assessability" not in plain["x1"]   # unchanged
-    doc = ia.assessment_document(mixed)
-    dd = {d["host"]: d for d in analyze.compute_device_dossiers(
-        failure_impact=rows, failure_impact_assessability=doc)["per_device"]}
+    dd = _dossiers(mixed, doc=ia.assessment_document(mixed))
     for host in ("x1", "x2"):
         d = dd[host]
         assert d["impact_assessability"]["assessable"] == ia.NOT_ASSESSED, d
         assert d["impact_assessability"]["pointer"] == f"/failure_impact/{_k(mixed, host)}"
-        assert d["impact_severity"] == "—" and d["impact_score"] == 1
+        assert all(d[key] == plain[host][key] for key in _SCORED), host      # the score is never moved
         assert "no modeled reachability impact" not in d["verdict"]
         assert d["verdict"] != "No stacked risk — routine migration handling."      # never routine by default
         assert "the blast radius is not assessed" in d["verdict"], d["verdict"]
@@ -697,11 +916,61 @@ def test_the_dossier_impact_term_never_reads_a_withheld_row_as_clean(mixed):
     assert gw["impact_score"] == plain["gw"]["impact_score"]          # a lower bound's High still floors the term
 
 
+_PAST_LDOS = {"per_device": [{"host": "core1", "model": "WS-C3850-48P", "band": "Past-LDoS"}]}
+
+
+def test_a_withheld_impact_never_lowers_dossier_risk(keystone):
+    """Review P2-2 counterexample: a past-LDoS switch whose stored row is High with hundreds stranded, but whose
+    scoped interface running-config was never captured, so the owner holds the row. Before the fix the hold dropped
+    the term to the absent-row floor: impact 1, severity '—', CR-01 gone and the band no longer Severe. The score is
+    the pre-W33 one; the hold is disclosed in the CR-01 basis, the verdict and `impact_assessability`."""
+    k = _k(keystone, "core1")
+    for port in keystone["interfaces"]["core1"].values():
+        port.pop("run_config_observed", None)                    # what html.sparsify_interfaces writes for false
+    doc = ia.assessment_document(keystone)
+    assert doc["rows"][k]["assessable"] == ia.NOT_ASSESSED and doc["rows"][k]["codes"] == ["no_run_config"]
+    plain = _dossiers(keystone, _PAST_LDOS)["core1"]
+    assert [c["code"] for c in plain["compound"]] == ["CR-01"] and plain["compound"][0]["severity"] == "Critical"
+    assert plain["risk_band"] == "Severe" and plain["impact_score"] == 10, plain
+    for supplied, why in ((doc, doc["rows"][k]["why"]),
+                          (ia.unavailable_document(), "no assessability verdict names this device's row")):
+        held = _dossiers(keystone, _PAST_LDOS, supplied)["core1"]
+        assert all(held[key] == plain[key] for key in _SCORED), {key: (held[key], plain[key]) for key in _SCORED}
+        assert [(c["code"], c["severity"]) for c in held["compound"]] == [("CR-01", "Critical")], held["compound"]
+        basis = held["compound"][0]["basis"]
+        assert "unverified" in basis and "300 endpoint(s)" in basis and "the blast radius is not assessed" in basis
+        assert "the blast radius is not assessed" in held["verdict"] and held["verdict"] != plain["verdict"]
+        assert held["impact_assessability"] == {"assessable": ia.NOT_ASSESSED, "why": why,
+                                                "pointer": f"/failure_impact/{k}"}, held["impact_assessability"]
+
+
+def test_a_published_row_scores_and_reads_exactly_as_before(keystone):
+    _node(keystone, "wan1")["collected"] = True                      # core1 is now the producer's measurement
+    plain = _dossiers(keystone, _PAST_LDOS)
+    dd = _dossiers(keystone, _PAST_LDOS, ia.assessment_document(keystone))
+    for host in ("core1", "acc1"):
+        assert dd[host]["impact_assessability"] == {"assessable": ia.PUBLISHED, "why": "",
+                                                    "pointer": f"/failure_impact/{_k(keystone, host)}"}
+        assert {key: value for key, value in dd[host].items() if key != "impact_assessability"} == plain[host]
+
+
+def test_a_lower_bound_row_scores_by_its_floor(keystone):
+    plain = _dossiers(keystone, _PAST_LDOS)["core1"]
+    d = _dossiers(keystone, _PAST_LDOS, ia.assessment_document(keystone))["core1"]
+    assert d["impact_assessability"]["assessable"] == ia.LOWER_BOUND
+    assert all(d[key] == plain[key] for key in _SCORED)
+    assert [c["code"] for c in d["compound"]] == ["CR-01"]
+    assert ("removal strands at least 300 endpoint(s) across at least 1 VLAN(s); the blast radius is only a lower "
+            "bound") in d["compound"][0]["basis"], d["compound"][0]["basis"]
+
+
 def test_the_explorer_embed_carries_the_owners_verdicts(mixed):
     from cisco_toolkit.html import _slim_for_embed
     out = _slim_for_embed(mixed)
-    assert [v["assessable"] for v in out["failure_impact_assessability"]] == [
-        v.assessable for v in ia.assess_failure_impact(mixed)]
+    verdicts = ia.assess_failure_impact(mixed)
+    assert [v["assessable"] for v in out["failure_impact_assessability"]] == [v.assessable for v in verdicts]
+    assert [v.get("floor") for v in out["failure_impact_assessability"]] == [ia.ranking_floor(v) for v in verdicts]
+    assert out["failure_impact_assessability"][_k(mixed, "gw")]["floor"] == 1
     assert "failure_impact_assessability" not in _slim_for_embed({"interfaces": {}})
     json.dumps(out, allow_nan=False)
 
@@ -710,9 +979,10 @@ NODE = shutil.which("node")
 
 
 @pytest.mark.skipif(not NODE, reason="node is not available")
-def test_the_explorer_keystone_card_ranks_only_published_rows(mixed, tmp_path):
-    """Executed, not grepped: the embedded explorer script ranks a stored row only when the engine published it, and
-    names every other switch (a held row, a row without a verdict, a scanned switch without a row) with the reason."""
+def test_the_explorer_keystone_card_ranks_published_rows_and_lower_bound_floors(mixed, keystone, tmp_path):
+    """Executed, not grepped: the embedded explorer script ranks a stored row when the engine published it, or by the
+    positive stranded floor the engine embedded for a lower bound (marked as a floor), and names every other switch
+    (a held row, a row without a verdict, a scanned switch without a row) with the reason."""
     import test_explorer_render_safety as rs                    # the shared DOM stub and script runner
     from cisco_toolkit.html import _slim_for_embed
     driver = """
@@ -722,15 +992,24 @@ def test_the_explorer_keystone_card_ranks_only_published_rows(mixed, tmp_path):
         out[k]={ranked:__EV('cockpitKeystones')().map(r=>[r.host,r.blast]),card:__EV('keystoneCard')()};}
       process.stdout.write(JSON.stringify(out));
     """
+    gw_summary = _verdicts(mixed)[_k(mixed, "gw")].summary
+    core1_summary = _verdicts(keystone)[_k(keystone, "core1")].summary
     held = _slim_for_embed(mixed)
     published = copy.deepcopy(mixed)
     _node(published, "wan")["collected"] = True
     published = _slim_for_embed(published)
     no_verdicts = copy.deepcopy(published)
     del no_verdicts["failure_impact_assessability"]
-    out = rs._run(driver, tmp_path, payload={"held": held, "published": published, "no_verdicts": no_verdicts})
-    assert out["held"]["ranked"] == [], out["held"]
-    assert "4 switches not ranked" in out["held"]["card"] and "x1" in out["held"]["card"]
+    out = rs._run(driver, tmp_path, payload={"held": held, "published": published, "no_verdicts": no_verdicts,
+                                             "keystone": _slim_for_embed(keystone)})
+    assert out["held"]["ranked"] == [["gw", 1]], out["held"]           # the floor ranks; nothing else is published
+    assert '≥ <span class="num" data-to="1">' in out["held"]["card"]
+    assert f"endpoints stranded if it fails ({gw_summary})" in out["held"]["card"]
+    assert "3 switches not ranked" in out["held"]["card"] and "x1" in out["held"]["card"]
     assert out["published"]["ranked"][0] == ["gw", 1], out["published"]
-    assert "3 switches not ranked" in out["published"]["card"]
+    assert "3 switches not ranked" in out["published"]["card"] and "≥ " not in out["published"]["card"]
     assert out["no_verdicts"]["ranked"] == [] and "no engine assessability verdict" in out["no_verdicts"]["card"]
+    assert out["keystone"]["ranked"][0] == ["core1", 300], out["keystone"]
+    assert '≥ <span class="num" data-to="300">' in out["keystone"]["card"]
+    assert f"endpoints stranded if it fails ({core1_summary})" in out["keystone"]["card"]
+    assert "not ranked" not in out["keystone"]["card"]
