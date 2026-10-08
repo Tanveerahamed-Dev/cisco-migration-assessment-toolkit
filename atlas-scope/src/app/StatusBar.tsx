@@ -2,7 +2,7 @@
  * StatusBar.tsx — the permanent honesty line (acceptance B7).
  *
  * It states the denominators on every screen, for the whole life of the investigation: how many
- * devices answered the collector, how many carry a routing table, how many carry an access list,
+ * devices have inventory records, how many carry a routing table, how many carry an access list,
  * how many links have measured centrality. Those figures are the boundary of every claim the rest
  * of the application makes, and a boundary that is one click away is a boundary people forget.
  *
@@ -118,7 +118,7 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
   const undecidable = useMemo(() => aclUndecidability(), []);
   const totalDevices = fabric.devices.length;
   const totalLinks = fabric.links.length;
-  const collected = fabric.devices.filter((d) => d.collected).length;
+  const inventoryRecords = fabric.devices.filter((d) => d.inventoried).length;
 
   const deviceId = useInvestigation((s) => s.deviceId);
   const linkId = useInvestigation((s) => s.linkId);
@@ -258,9 +258,9 @@ export function StatusBar({ stats = null, onOpenCoverage, onOpenCite }: StatusBa
       <div className="sb__group" role="group" aria-label="Collection coverage">
         <span className="sb__key">coverage</span>
         {denominator(
-          "collected",
-          `${collected}/${totalDevices} collected`,
-          `${collected} of ${totalDevices} devices answered the collector. Open the coverage disclosure.`,
+          "inventory",
+          `${inventoryRecords}/${totalDevices} inventory records`,
+          `${inventoryRecords} of ${totalDevices} devices have inventory records. Inventory-record presence does not establish collection completeness. Open the inventory disclosure.`,
         )}
         {denominator(
           "rib",

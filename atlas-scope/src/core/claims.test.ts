@@ -293,6 +293,7 @@ describe("a verdict cannot be quoted without its bounds", () => {
 describe("the coverage line is read from the data", () => {
   it("reports the real numbers", () => {
     const line = T8_coverageLine();
+    expect(line.split(" · ")[0]).toBe(`${fabric.devices.filter((d) => d.inventoried).length}/${fabric.devices.length} inventory records`);
     expect(line).toContain(`RIBs ${fabric.coverage.hostsWithRoutes}/${fabric.devices.length}`);
     expect(line).toContain(`ACLs ${fabric.coverage.hostsWithAcls}/${fabric.devices.length}`);
     expect(line).toContain(fabric.meta.sourceSha256.slice(0, 8));
