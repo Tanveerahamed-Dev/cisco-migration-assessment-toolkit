@@ -7119,6 +7119,16 @@ are not hosted execution, rendered proof or acceptance.
   is runtime, pixel or acceptance evidence. CoverageBar's collector-reach row and missing-evidence
   classifications, per-clause `collected` scope and the partial-only fleet rule remain open.
   B7 stays **FAIL**, alongside the unchanged A3/A6 grades and all prior negative evidence.
+  **W25 continuation of the original W23, 2026-10-08:** The supervisor allocated W23/W24 to
+  Claude's separate coverage work; this B7 branch/PR #615 keeps its history as W25. Hosted
+  `9feff390` passed the full unit suite and old A3/W21 controls, but its new membership mutant
+  remained **MISATTRIBUTED**: the actual 24/27 versus 23/27 assertion failed, while the reporter
+  truncated the source frame before the full required marker. The nine-case baseline and two
+  distinct wording witnesses passed their bounded controls; the full Scope workflow failed and
+  later build/B3/hub gates were skipped. Preserve those results and the initial source-review
+  miss. A short assertion using the same actual/expected values, marker and equality addresses
+  only that diagnostic-frame issue; every strict verifier criterion remains unchanged. Fresh
+  hosted witnesses and complete gates are still required, with no acceptance re-grade.
 - **D2 (FAIL) — two rounds; last on `7c642f10`: BLOCKER.** In the windowed grid (compact density grouped by Device, 369 rows,
   over the 200-row threshold) a focused row scrolled away by the mouse wheel unmounts, focus drops to `<body>`, the grid
   has no tabindex=0 cell, and PageDown/ArrowDown do nothing. A third repair was interrupted (WIP `93f4f5b6`, unverified).

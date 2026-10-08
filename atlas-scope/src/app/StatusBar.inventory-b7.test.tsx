@@ -147,7 +147,9 @@ describe("StatusBar inventory membership without collection conclusions", () => 
     expect(graph.fabric.devices.find((device) => device.host === recordless)).toMatchObject({ inventoried: false, collected: true });
     expect(graph.fabric.devices.filter((device) => device.collected).length).toBeGreaterThan(expected.records);
     const host = mount(graph);
-    expect(inventoryControl(host).textContent, "inventory membership witness").toBe(`${expected.records}/${expected.total} inventory records`);
+    const actual = inventoryControl(host).textContent;
+    const label = `${expected.records}/${expected.total} inventory records`;
+    expect(actual, "inventory membership witness").toBe(label);
     expectMembership(host, graph, expected.records, expected.total);
   });
 
