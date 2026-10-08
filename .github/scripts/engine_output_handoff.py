@@ -228,7 +228,7 @@ def read_regular(path: Path, maximum: int) -> bytes:
 def write_new(path: Path, data: bytes) -> None:
     flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
              | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
-    descriptor = os.open(path, flags, 0o644)
+    descriptor = os.open(path, flags, 0o600)  # owner-only; Git tracks only the executable bit
     try:
         view = memoryview(data)
         while view:
