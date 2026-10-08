@@ -3,7 +3,7 @@ name: webapp-ci
 on:
   push:
     branches: [main]
-    paths: ["webapp/**", "atlas-scope/**", ".design-sync/**", "cisco_toolkit/**", "reference-data/official-sources/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "README.md", "LICENSE", ".gitattributes", "pytest.ini", "tests/golden/**", "tests/synthetic_fixtures.py", "tests/pytest_invocation_reader.py", ".github/workflows/webapp-ci.yml", ".github/scripts/classify_webapp_ci_scope.py", ".github/scripts/frontend_build_handoff.py", ".github/frontend-dependency-plan.json", ".github/scripts/frontend_dependency_prepare.mjs", ".github/scripts/frontend_dependency_prepare.test.mjs", ".github/scripts/frontend_artifact_receive.py", ".github/scripts/frontend_candidate_admit.mjs", ".github/scripts/test_frontend_artifact_receive.py", ".github/scripts/observe_vite_distribution.py", ".github/scripts/test_observe_vite_distribution.py", ".github/scripts/frontend_candidate_materials.py", ".github/scripts/test_frontend_candidate_materials.py", "master-reference/release/pipeline.py", "portable/release_contract.py", "tests/test_webapp_ci_scope.py", "tests/test_frontend_artifact_workflow_contract.py", ".github/scripts/verify_repository_privacy.py"]
+    paths: ["webapp/**", "atlas-scope/**", ".design-sync/**", "cisco_toolkit/**", "reference-data/official-sources/**", "COLLECT_PARSE_V3_23_0.py", "conftest.py", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "README.md", "LICENSE", ".gitattributes", "pytest.ini", "tests/golden/**", "tests/synthetic_fixtures.py", "tests/pytest_invocation_reader.py", ".github/workflows/webapp-ci.yml", ".github/scripts/classify_webapp_ci_scope.py", ".github/scripts/frontend_build_handoff.py", ".github/frontend-dependency-plan.json", ".github/scripts/frontend_dependency_prepare.mjs", ".github/scripts/frontend_dependency_prepare.test.mjs", ".github/scripts/frontend_artifact_receive.py", ".github/scripts/frontend_candidate_admit.mjs", ".github/scripts/test_frontend_artifact_receive.py", ".github/scripts/observe_vite_distribution.py", ".github/scripts/test_observe_vite_distribution.py", ".github/scripts/frontend_candidate_materials.py", ".github/scripts/test_frontend_candidate_materials.py", ".github/scripts/observe_jsonschema_rs_wheel.py", "tests/test_jsonschema_rs_observation.py", "master-reference/release/pipeline.py", "portable/release_contract.py", "portable/atlas_bundle.py", "portable/windows-x64-requirements.lock", "portable/third-party-license-fallbacks.json", "portable/third-party-licenses/jsonschema-rs-LICENSE", "tests/test_webapp_ci_scope.py", "tests/test_frontend_artifact_workflow_contract.py", ".github/scripts/verify_repository_privacy.py"]
   # Required checks from a workflow skipped by a top-level path filter remain Pending forever.
   # Start every PR, then skip individual jobs only after the fail-closed classifier below succeeds.
   # `edited` is required because retargeting a PR changes its three-dot base
@@ -42,6 +42,16 @@ on:
         required: false
         default: false
         type: boolean
+      observe_jsonschema_rs:
+        description: Inspect the selected native Windows wheel as data only
+        required: false
+        default: false
+        type: boolean
+      jsonschema_rs_source_commit:
+        description: Exact full source commit for the native wheel observation
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -76,6 +86,8 @@ jobs:
           WEBAPP_MANUAL_REFRESH_VISUAL_BASELINES: ${{ inputs.refresh_visual_baselines }}
           WEBAPP_MANUAL_FRONTEND_ARTIFACT_SELECTION: ${{ inputs.frontend_artifact_selection }}
           WEBAPP_MANUAL_VITE_DISTRIBUTION_INTEGRITY: ${{ inputs.vite_distribution_integrity }}
+          WEBAPP_MANUAL_OBSERVE_JSONSCHEMA_RS: ${{ inputs.observe_jsonschema_rs }}
+          WEBAPP_MANUAL_JSONSCHEMA_RS_SOURCE_COMMIT: ${{ inputs.jsonschema_rs_source_commit }}
         run: python -I -B .github/scripts/classify_webapp_ci_scope.py --validate-manual-operations
       - name: Classify paths that can affect webapp CI
         id: classify
@@ -205,6 +217,9 @@ jobs:
       - name: Test fixed Vite distribution observation refusals
         working-directory: .
         run: python -I -B -m unittest discover -s .github/scripts -p test_observe_vite_distribution.py
+      - name: Test selected native wheel observation refusals
+        working-directory: .
+        run: python -I -B -m unittest discover -s tests -p test_jsonschema_rs_observation.py
       - name: Prepare the reviewed dependency candidate without changing checkout
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepare_frontend_dependencies }}
         working-directory: .
@@ -244,6 +259,20 @@ jobs:
         with:
           name: vite-distribution-observation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/vite-distribution-observation/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Observe the selected native Windows wheel as data
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.observe_jsonschema_rs }}
+        working-directory: .
+        env:
+          EXPECTED_SOURCE_COMMIT: ${{ inputs.jsonschema_rs_source_commit }}
+        run: python -I -B .github/scripts/observe_jsonschema_rs_wheel.py
+      - name: Preserve native wheel observations and failures
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.observe_jsonschema_rs }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: jsonschema-rs-observation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/jsonschema-rs-observation/
           if-no-files-found: error
           retention-days: 14
       - run: npm ci

@@ -22,15 +22,21 @@ OBSERVE_TEST = "Test fixed Vite distribution observation refusals"
 MATERIAL_TEST = "Test candidate material observation contracts"
 MATERIAL_CHECK = "Check installed Vite bytes and observe the canonical frontend inventory"
 MATERIAL_UPLOAD = "Preserve candidate material observations and failures"
-FLAGS = ("prepare_frontend_dependencies", "receive_frontend_artifact", "observe_vite_distribution", "refresh_visual_baselines")
-DATA = ("frontend_artifact_selection", "vite_distribution_integrity")
+NATIVE_TEST = "Test selected native wheel observation refusals"
+NATIVE_OBSERVE = "Observe the selected native Windows wheel as data"
+NATIVE_UPLOAD = "Preserve native wheel observations and failures"
+FLAGS = ("prepare_frontend_dependencies", "receive_frontend_artifact", "observe_vite_distribution", "refresh_visual_baselines", "observe_jsonschema_rs")
+DATA = ("frontend_artifact_selection", "vite_distribution_integrity", "jsonschema_rs_source_commit")
 REVIEW_PATHS = (
     ".github/scripts/frontend_artifact_receive.py", ".github/scripts/frontend_candidate_admit.mjs",
     ".github/scripts/test_frontend_artifact_receive.py", ".github/scripts/observe_vite_distribution.py",
     ".github/scripts/test_observe_vite_distribution.py", "tests/test_webapp_ci_scope.py",
     "tests/test_frontend_artifact_workflow_contract.py",
     ".github/scripts/frontend_candidate_materials.py", ".github/scripts/test_frontend_candidate_materials.py",
+    ".github/scripts/observe_jsonschema_rs_wheel.py", "tests/test_jsonschema_rs_observation.py",
     "master-reference/release/pipeline.py", "portable/release_contract.py",
+    "portable/atlas_bundle.py", "portable/windows-x64-requirements.lock",
+    "portable/third-party-license-fallbacks.json", "portable/third-party-licenses/jsonschema-rs-LICENSE",
 )
 
 
@@ -141,9 +147,23 @@ def assert_wiring(doc):
     }
     assert front_steps.index(named(front_steps, RECEIVE_TEST)) < front_steps.index(receiver) < front_steps.index(install)
     assert front_steps.index(named(front_steps, OBSERVE_TEST)) < front_steps.index(observer) < front_steps.index(install)
+    native_test = named(front_steps, NATIVE_TEST)
+    assert native_test == {
+        "name": NATIVE_TEST, "working-directory": ".",
+        "run": "python -I -B -m unittest discover -s tests -p test_jsonschema_rs_observation.py",
+    }
+    native = named(front_steps, NATIVE_OBSERVE)
+    assert native == {
+        "name": NATIVE_OBSERVE,
+        "if": "${{ github.event_name == 'workflow_dispatch' && inputs.observe_jsonschema_rs }}",
+        "working-directory": ".", "env": {"EXPECTED_SOURCE_COMMIT": "${{ inputs.jsonschema_rs_source_commit }}"},
+        "run": "python -I -B .github/scripts/observe_jsonschema_rs_wheel.py",
+    }
+    assert front_steps.index(guard) < front_steps.index(native_test) < front_steps.index(native) < front_steps.index(install)
     for name, flag, prefix, command in (
         ("Preserve frontend receiver results and failures", "receive_frontend_artifact", "frontend-artifact-receive", receiver),
         ("Preserve Vite distribution observation and failures", "observe_vite_distribution", "vite-distribution-observation", observer),
+        (NATIVE_UPLOAD, "observe_jsonschema_rs", "jsonschema-rs-observation", native),
     ):
         upload = named(front_steps, name)
         assert upload == {
@@ -161,7 +181,7 @@ def assert_wiring(doc):
                     assert job_name == "frontend" and step is receiver and key == "GH_TOKEN" and value == "${{ github.token }}"
             if step is not receiver:
                 assert "${{ github.token }}" not in step.get("run", "")
-    for step in (preflight, receiver, observer):
+    for step in (preflight, receiver, observer, native):
         assert "${{" not in step["run"], "untrusted input must be passed through env, never inserted into shell source"
     assert all("continue-on-error" not in step for step in front_steps)
     assert_e2e_evidence_wiring(doc)
@@ -208,6 +228,26 @@ def test_wiring_guard_detects_real_privilege_input_scope_and_gate_regressions(mu
         assert_wiring(doc)
 
 
+@pytest.mark.parametrize("mutation", ["missing-check", "optional-controls", "token", "unbound-source", "success-only-evidence", "missing-path"])
+def test_native_observer_wiring_preserves_controls_source_and_failure_evidence(mutation):
+    doc = copy.deepcopy(document())
+    steps = doc["jobs"]["frontend"]["steps"]
+    if mutation == "missing-check":
+        steps.remove(named(steps, NATIVE_OBSERVE))
+    elif mutation == "optional-controls":
+        named(steps, NATIVE_TEST)["if"] = "${{ inputs.observe_jsonschema_rs }}"
+    elif mutation == "token":
+        named(steps, NATIVE_OBSERVE)["env"]["GH_TOKEN"] = "${{ github.token }}"
+    elif mutation == "unbound-source":
+        named(steps, NATIVE_OBSERVE)["env"]["EXPECTED_SOURCE_COMMIT"] = ""
+    elif mutation == "success-only-evidence":
+        named(steps, NATIVE_UPLOAD)["if"] = "${{ success() }}"
+    else:
+        doc["on"]["push"]["paths"].remove(".github/scripts/observe_jsonschema_rs_wheel.py")
+    with pytest.raises(AssertionError):
+        assert_wiring(doc)
+
+
 @pytest.mark.parametrize("mutation", ["missing-check", "optional-control", "success-only-evidence", "before-install"])
 def test_candidate_material_wiring_refuses_missing_optional_or_misordered_evidence(mutation):
     doc = copy.deepcopy(document())
@@ -229,6 +269,15 @@ def test_candidate_material_wiring_refuses_missing_optional_or_misordered_eviden
 
 @pytest.mark.parametrize("owner_path", ["master-reference/release/pipeline.py", "portable/release_contract.py"])
 def test_candidate_material_direct_owner_paths_cannot_fall_out_of_hosted_coverage(owner_path):
+    doc = copy.deepcopy(document())
+    doc["on"]["push"]["paths"].remove(owner_path)
+    with pytest.raises(AssertionError):
+        assert_wiring(doc)
+
+
+@pytest.mark.parametrize("owner_path", ["portable/atlas_bundle.py", "portable/windows-x64-requirements.lock",
+                                        "portable/third-party-license-fallbacks.json", "portable/third-party-licenses/jsonschema-rs-LICENSE"])
+def test_native_observer_direct_owner_paths_cannot_fall_out_of_hosted_coverage(owner_path):
     doc = copy.deepcopy(document())
     doc["on"]["push"]["paths"].remove(owner_path)
     with pytest.raises(AssertionError):
