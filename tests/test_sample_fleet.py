@@ -100,6 +100,7 @@ def test_sample_fleet_carries_engine_subfields_the_superset_check_is_blind_to():
          via the blueprint), so `set(golden) - set(sample)` never requires it.
       2. `verdict` on every ACL finding — a SUB-field inside the existing `acl_line_reachability` key, invisible
          to a top-level-key diff.
+    and a third of the same sub-field class (3. below, `blind_links` on every `failure_impact` row).
     A stale sample now fails HERE (regenerate build_sample.py), not silently."""
     sample = json.loads((ROOT / "webapp" / "sample_data" / "sample_fleet.snapshot.json"
                          ).read_text(encoding="utf-8"))
@@ -110,6 +111,14 @@ def test_sample_fleet_carries_engine_subfields_the_superset_check_is_blind_to():
     assert acl and not missing, (
         "ACL findings must all carry the engine's Verdict ADT `verdict` field (stale sample — regenerate "
         f"build_sample.py); offenders: {missing or 'no ACL findings in the demo'}")
+    # 3. `blind_links` on every `failure_impact` row — a SUB-field the producer writes on every record (W32), whose
+    #    absence the UI projection reads as a row older than the count (its understatable values withheld).
+    impact = sample.get("failure_impact") or []
+    stale = [r.get("host") if isinstance(r, dict) else r for r in impact
+             if not isinstance(r, dict) or "blind_links" not in r]
+    assert impact and not stale, (
+        "failure_impact rows must all carry the engine's per-row `blind_links` count (stale sample — regenerate "
+        f"build_sample.py); offenders: {stale or 'no failure_impact rows in the demo'}")
 
 
 def _sample():

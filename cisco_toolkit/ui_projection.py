@@ -565,7 +565,16 @@ LIMITATIONS += (
                 "of zero is not a measurement of none, and High and positive counts are published as lower bounds "
                 "that cite that count. A withheld row's detail is withheld with its measures unless it is the "
                 "owner's INDETERMINATE disclosure; a partial row's per-VLAN detail stays published as the list of "
-                "what was simulated. A switch the stored cable map cables to a peer it does not show as collected "
+                "what was simulated. A row's blind_links (cited, not shown as a cell) counts the switch's "
+                "inter-switch links with no trunk/STP evidence on either end; the owner leaves them out of every "
+                "forwarding graph, so a VLAN the switch transits only over one was never simulated. A positive "
+                "blind_links bounds the row as a positive off_scan_gw_vlans does and also withholds a detail that "
+                "names no simulated VLAN; with no VLAN simulated, it withholds the row's measures. A stored row "
+                "without blind_links predates that count (the owner then disclosed such links at most for a switch "
+                "it simulated nothing for), so it is bounded the same way, citing the row. Such a link can also hide "
+                "an alternate path, so a removal elsewhere may read worse than it is: a published High or positive "
+                "count is a lower bound against its own row's blind_links, not against other rows'. A switch the "
+                "stored cable map cables to a peer it does not show as collected "
                 "(collected: false and a kind other than ap, phone or endpoint, or a cable end that joins no single "
                 "node) cannot account for endpoints behind that peer: a severity below High, a zero count and a "
                 "detail that names no simulated VLAN are withheld, and High and positive counts are published as "
@@ -4392,6 +4401,23 @@ _R_IMPACT_UNDERSTATED = ("not collected: this severity may understate the blast 
 _R_IMPACT_ZERO_BOUND = ("not collected: this 0 is only a lower bound: {n} VLAN(s) on this switch have an off-scan "
                         "gateway the simulation could not assess (off_scan_gw_vlans), so it is not a measurement of "
                         "none")
+#: analyze.compute_failure_impact's per-row blind_links: the switch's inter-switch links with no trunk/STP evidence on
+#: either end. Each is absent from every forwarding graph out of ignorance, so a VLAN the switch transits only over
+#: one is never simulated for it -- the same understatement as an off-scan VLAN, but invisible in the other fields.
+_R_IMPACT_BLIND_UNREAD = ("unverified: blind_links is not a count, so whether this switch has inter-switch links the "
+                          "simulation could not see cannot be read")
+_R_IMPACT_BLIND_ONLY = ("not collected: {n} inter-switch link(s) of this switch carry no trunk/STP evidence (counted "
+                        "in blind_links) and analyze.compute_failure_impact simulated none of its VLANs, so its "
+                        "severity and counts are not measurements")
+_R_IMPACT_BLIND = ("{n} inter-switch link(s) of this switch carry no trunk/STP evidence on either end (blind_links), "
+                   "so analyze.compute_failure_impact left them out of every forwarding graph and never simulated a "
+                   "VLAN this switch transits only over them")
+_R_IMPACT_BLIND_LEGACY = ("this stored row carries no blind_links, so it predates the producer's per-row count of "
+                          "inter-switch links with no trunk/STP evidence: an engine that old disclosed such links at "
+                          "most in the INDETERMINATE detail of a switch it simulated nothing for, so a switch it "
+                          "simulated in part, or wrote a clean bill for, may have had some, and a VLAN it transits "
+                          "only over them was never simulated")
+_R_IMPACT_BLIND_TAIL = "whether this switch transits a VLAN over those links was never determined"
 #: analyze.compute_cable_map's kinds for an uncollected peer it POSITIVELY identifies as edge gear: its fabric-only
 #: declutter may hide only these, and 'unknown' always stays visible. _node_kind ranks infra first across every
 #: observer (_KIND_RANK puts switch, router and firewall before ap, phone and endpoint) and lets platform evidence
@@ -4415,8 +4441,8 @@ _R_IMPACT_PEERS_UNREAD = ("whether this switch faces an uncollected neighbour ca
 _R_IMPACT_PEER_SEVERITY = ("{word}: {clause}, so this severity may understate the blast radius, and only the worst "
                            "band ({worst}) cannot be understated")
 _R_IMPACT_PEER_ZERO = "{word}: {clause}, so this 0 is only a lower bound, not a measurement of none"
-_R_IMPACT_PEER_DETAIL = ("{word}: {clause}, so this detail, which names no simulated VLAN, is not a clean bill: it was "
-                         "never checked against what lies behind them")
+_R_IMPACT_PEER_DETAIL = "{word}: {clause}, so this detail, which names no simulated VLAN, is not a clean bill: {tail}"
+_R_IMPACT_PEER_TAIL = "it was never checked against what lies behind them"
 #: The leading word of a withheld state's reason.
 _IMPACT_STATE_WORD = {AU: "analysis unavailable", _UV: "unverified", _NC: "not collected"}
 #: A hold on a row's measures: ``(state, reason, witness ref entries)``.
@@ -4430,11 +4456,12 @@ _ImpactBound = Tuple[str, str, str, Optional[str], List[Tuple[str, Sequence[Any]
 def _impact_hold(ctx: _Ctx, row: _Row) -> Optional[_ImpactHold]:
     """The hold on every blast-radius measure of one row, with a witness to the evidence that says why. First match
     wins: the producer's INDETERMINATE detail -> no off_scan_gw_vlans (a row older than that marker) -> an
-    unreadable off-scan count -> no readable host -> no interface of the row's device carrying
-    run_config_observed (its gateway SVIs never reached the simulation; absent is never read as captured) -> a
-    positive off-scan count with no VLAN simulated (the INDETERMINATE case, read from the count rather than the
-    prose). ``None``: the measures are the producer's (a partial row's are then qualified per field by
-    :func:`_impact_pre`)."""
+    unreadable off-scan count -> a blind_links that is present but not a count -> no readable host -> no interface
+    of the row's device carrying run_config_observed (its gateway SVIs never reached the simulation; absent is never
+    read as captured) -> a positive off-scan count with no VLAN simulated -> a positive blind_links with no VLAN
+    simulated (each the INDETERMINATE case, read from the count rather than the prose). ``None``: the measures are
+    the producer's (a partial row's are then qualified per field by :func:`_impact_pre`). An ABSENT blind_links is
+    no hold: the row predates that count, and :func:`_impact_blind` bounds what it may hide."""
     if row.state is not None or not isinstance(row.raw, dict):
         return None
     rec = row.raw
@@ -4446,6 +4473,9 @@ def _impact_hold(ctx: _Ctx, row: _Row) -> Optional[_ImpactHold]:
     ok, n = _count(rec["off_scan_gw_vlans"])
     if not ok:
         return _UV, _R_IMPACT_OFF_SCAN_UNREAD, [("witness", row.toks + ("off_scan_gw_vlans",))]
+    blind_ok, blind = _count(rec["blind_links"]) if "blind_links" in rec else (True, 0)
+    if not blind_ok:
+        return _UV, _R_IMPACT_BLIND_UNREAD, [("witness", row.toks + ("blind_links",))]
     host = rec.get("host")
     if not _is_text(host):
         return _UV, _R_IMPACT_NO_HOST, [("witness", row.toks)]
@@ -4458,6 +4488,8 @@ def _impact_hold(ctx: _Ctx, row: _Row) -> Optional[_ImpactHold]:
     simulated_ok, simulated = _count(rec.get("vlans_impacted"))
     if n and not (simulated_ok and simulated):
         return _NC, _R_IMPACT_OFF_SCAN_ONLY.format(n=n), [("witness", row.toks + ("off_scan_gw_vlans",))]
+    if blind and not (simulated_ok and simulated):
+        return _NC, _R_IMPACT_BLIND_ONLY.format(n=blind), [("witness", row.toks + ("blind_links",))]
     return None
 
 
@@ -4465,6 +4497,27 @@ def _impact_off_scan(row: _Row) -> int:
     """The row's readable, positive off-scan VLAN count (0 otherwise)."""
     ok, n = _count(row.raw.get("off_scan_gw_vlans")) if isinstance(row.raw, dict) else (False, None)
     return n if ok else 0
+
+
+def _impact_blind(row: _Row) -> Optional[_ImpactBound]:
+    """The bound a row's evidence-less inter-switch links put on it. analyze.compute_failure_impact writes
+    ``blind_links`` on every row: the switch's links with no trunk/STP evidence on either end, which it leaves out of
+    every forwarding graph, so a VLAN the switch transits only over one is never simulated for it however many
+    others were. A positive count therefore bounds the row as a positive off_scan_gw_vlans does, and reaches the
+    detail (a detail naming no simulated VLAN is then not a clean bill). A row WITHOUT the field predates the
+    per-row count: the producer before it disclosed such links at most in the INDETERMINATE detail of a switch it
+    simulated nothing for, and the projection cannot tell which engine wrote the row, so an absent count never
+    vouches for a clean bill -- it bounds the row the same way, witnessed by the row itself. A count that is present
+    but unreadable is a hold (:func:`_impact_hold`), never a bound; zero bounds nothing. ``None``: no bound."""
+    if row.state is not None or not isinstance(row.raw, dict):
+        return None
+    if "blind_links" not in row.raw:
+        return _impact_bound(_NC, _R_IMPACT_BLIND_LEGACY, [("witness", row.toks)], _R_IMPACT_BLIND_TAIL)
+    ok, n = _count(row.raw["blind_links"])
+    if not (ok and n):
+        return None
+    return _impact_bound(_NC, _R_IMPACT_BLIND.format(n=n), [("witness", row.toks + ("blind_links",))],
+                         _R_IMPACT_BLIND_TAIL)
 
 
 def _impact_peers(ctx: _Ctx, row: _Row) -> Optional[_ImpactBound]:
@@ -4518,13 +4571,15 @@ def _impact_peers(ctx: _Ctx, row: _Row) -> Optional[_ImpactBound]:
     return _impact_bound(_NC, clause, [("witness", toks + (j,)) for j in hits])
 
 
-def _impact_bound(state: str, clause: str, wit: List[Tuple[str, Sequence[Any]]]) -> _ImpactBound:
-    """One :data:`_ImpactBound` from a neighbour reason clause: it reaches the detail too (a detail naming no
-    simulated VLAN is the producer's clean bill, never checked against what lies behind the neighbour)."""
+def _impact_bound(state: str, clause: str, wit: List[Tuple[str, Sequence[Any]]],
+                  tail: str = _R_IMPACT_PEER_TAIL) -> _ImpactBound:
+    """One :data:`_ImpactBound` from a reason clause (an uncollected neighbour, or evidence-less links): it reaches
+    the detail too (a detail naming no simulated VLAN is the producer's clean bill, and `tail` says what it was never
+    checked against)."""
     word = _IMPACT_STATE_WORD[state]
     return (state, _R_IMPACT_PEER_SEVERITY.format(word=word, clause=clause, worst=_IMPACT_WORST),
             _R_IMPACT_PEER_ZERO.format(word=word, clause=clause),
-            _R_IMPACT_PEER_DETAIL.format(word=word, clause=clause), wit)
+            _R_IMPACT_PEER_DETAIL.format(word=word, clause=clause, tail=tail), wit)
 
 
 def _impact_bound_state(bounds: Sequence[_ImpactBound]) -> str:
@@ -4536,7 +4591,8 @@ def _impact_bound_state(bounds: Sequence[_ImpactBound]) -> str:
 
 def _impact_pre(hold: Optional[_ImpactHold], field: str, bounds: Sequence[_ImpactBound]) -> _Pre:
     """One measure's pre-check: the row's hold (:func:`_impact_hold`), else, on a row with a bound (VLANs it also
-    counts but could not simulate, or an uncollected neighbour, :func:`_impact_peers`), the values that bound cannot
+    counts but could not simulate, inter-switch links with no VLAN evidence or a row older than that count,
+    :func:`_impact_blind`, or an uncollected neighbour, :func:`_impact_peers`), the values that bound cannot
     vouch for: a severity below the worst band (it may understate) and a zero count (a lower bound of zero is not a
     measurement of none). The worst band and a positive count stay published as the lower bounds they are, citing
     each bound's witnesses; a mistyped value falls through to the type check."""
@@ -4563,7 +4619,8 @@ def _impact_detail_pre(hold: Optional[_ImpactHold], bounds: Sequence[_ImpactBoun
     """The detail's pre-check. The producer's INDETERMINATE detail is its own disclosure that the switch could not be
     assessed, never a clean bill, so it stays published. Any other detail is withheld with the row's hold: its text
     ('No reachability impact', or per-VLAN results) states what the held measures could not. On a row without a hold,
-    a bound that reaches the detail (an uncollected neighbour) withholds a detail that names no simulated VLAN (no
+    a bound that reaches the detail (an uncollected neighbour, or evidence-less links, counted or older than the
+    count) withholds a detail that names no simulated VLAN (no
     readable positive vlans_impacted): that is the producer's clean bill. A per-VLAN detail stays published as the
     list of what was simulated, the other cells carrying the lower-bound disclosure; a mistyped detail falls through
     to the type check."""
@@ -4628,10 +4685,14 @@ def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
         wit = [("witness", row.toks + ("off_scan_gw_vlans",))]
         bounds.append((_NC, _R_IMPACT_UNDERSTATED.format(n=off_scan, worst=_IMPACT_WORST),
                        _R_IMPACT_ZERO_BOUND.format(n=off_scan), None, wit))
+    blind = _impact_blind(row)
+    if blind is not None:
+        bounds.append(blind)
     peers = _impact_peers(ctx, row) if hold is None else None
     if peers is not None:
         bounds.append(peers)
-    # every measure of a bounded row cites what bounds it: the off-scan count, each uncollected neighbour's cable
+    # every measure of a bounded row cites what bounds it: the off-scan count, the blind-link count (or the row
+    # itself when it predates that count), each uncollected neighbour's cable
     cite = [w for bound in bounds for w in bound[4]]
     for field in ("host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",
                   "off_scan_gw_vlans", "detail"):
