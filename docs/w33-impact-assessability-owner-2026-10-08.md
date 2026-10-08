@@ -180,6 +180,9 @@ Expected to fail until W31 regenerates, all because the output changed honestly:
 - `tests/test_pipeline_golden.py::test_snapshot_matches_golden`
 - `tests/test_pipeline_golden.py::test_dossiers_do_not_depend_on_the_wall_clock_even_past_the_eol_registry_window`
   (its recompute now passes the verdicts, so it matches the regenerated golden, not the current one)
+- `tests/test_pipeline_golden.py::test_golden_does_not_depend_on_the_wall_clock_past_every_registry_window`
+  (it compares every snapshot section with the committed golden, so it carries the same three changes below;
+  added after the first hosted run on `43f41c80`)
 - `tests/test_sample_fleet.py::test_sample_architecture_review_matches_engine_exactly`
 - `webapp/sample_data/build_sample.py --check`, wherever CI runs it
 

@@ -485,16 +485,18 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     if keystones:
         for r, v in keystones:
             stat_w = 1.7
+            # ``ks_num``/``ks_label``, never ``stat``: a local ``stat`` would rebind the enclosing ``stat()`` slide
+            # helper for the rest of this function (the lifecycle and migration slides below call it).
             if v.published:
-                stat, stat_label = str(r.get("stranded", 0)), "stranded"
+                ks_num, ks_label = str(r.get("stranded", 0)), "stranded"
                 vlans, hard, detail = r.get("vlans_impacted", 0), r.get("hard", 0), r.get("detail", "")
             else:   # W33: a lower bound -- each value as the owner publishes it, the count as the floor it is
-                stat, stat_label = impact_assessability.table_value(v, "stranded"), "stranded (lower bound)"
+                ks_num, ks_label = impact_assessability.table_value(v, "stranded"), "stranded (lower bound)"
                 vlans, hard = (impact_assessability.table_value(v, "vlans_impacted"),
                                impact_assessability.table_value(v, "hard"))
                 detail = impact_assessability.table_detail(v)
-            text(s, 0.7, y, stat_w, 0.5, [(str(stat), 30, _CRIT, True)])
-            text(s, 0.7, y + 0.55, stat_w, 0.3, [(stat_label, 10, _MUTED, False)])
+            text(s, 0.7, y, stat_w, 0.5, [(str(ks_num), 30, _CRIT, True)])
+            text(s, 0.7, y + 0.55, stat_w, 0.3, [(ks_label, 10, _MUTED, False)])
             text(s, 2.5, y + 0.05, W - 3.2, 0.7,
                  [[(_clean(str(r.get("host", ""))), 16, _NAVY, True),
                    (f"   {vlans} VLAN(s) · {hard} hard-partitioned", 12, _MUTED, False)],
