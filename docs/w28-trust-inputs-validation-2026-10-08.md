@@ -170,6 +170,101 @@ That custody enum's token set matches no G43 vocabulary, so `tests/test_ui_proje
 v1 would report it unclassified. `TrustInput.input` reuses the `dossier_axis` token set. Neither
 pin set here is valid for that combination.
 
+## Combined with W23+W24 (main `366d1ab3`)
+
+#617 (W24, G43 vocab) merged as `366d1ab3` (parents `d0e10888`+`70e4f812`, tree `fbb644eb`). This
+branch merged that main with a merge commit and re-pinned on the combined W23+W24+W28 schema. This
+is the second merge described above. The W23+W28 pair (`59e4a53f…`/`ef3906d3…`) and main's W23+W24
+pair (`732c68c3…`/`7f256f80…`) are both superseded.
+
+**Conflicts.**
+- `docs/NOW.md`: board rows and handoff lines.
+- `docs/ssot.md`: both new registry rows are kept, G08 before G43.
+- The pin pair in `webapp/backend/ui_projection_api.py` and the W12b prospective pair in
+  `webapp/tests/test_ui_projection_api.py`: both are replaced by the combined pair below.
+
+`cisco_toolkit/ui_projection.py`, `openapi.ts` and `projectionFixtures.ts` merged cleanly. Before
+the cross-PR edits below, the merged `openapi.ts` delta over main equalled this branch's own delta
+over `d0e10888`, line for line.
+
+**Cross-PR classification (G43 x G08).** W24's catalogue requires every string enum the schema
+publishes to be classified exactly once (`tests/test_ui_projection_vocab.py` v1).
+- `TrustInput.input` has the `dossier_axis` token set, which it shares with
+  `ExposureValue.axis`. That set is already classified unranked, so it needs no change.
+- `TrustInputHost.custody` is a new token set (`TRUST_INPUT_CUSTODY`: collected but empty,
+  not collected, analysis unavailable, unverified). It is named once, as the unranked
+  `trust_input_custody`, after `withheld_state`. Its tokens are the owner tuple itself, so the
+  catalogue entry names no state literal.
+- **Why unranked, not ranked.**
+  - Every token is an absence: it says why an input did not assess a device. Under W24's rule each
+    one would class `undetermined`.
+  - The catalogue refuses a ranked vocabulary whose every class is `undetermined`: v4 requires a
+    ranked vocabulary to determine some level.
+  - No engine owner orders these tokens apart, so a rank would be a presentation order that draws
+    no level.
+  - W24's own precedent: the superset `withheld_state` and `abstention_state` are unranked
+    evidence states, which name why a value is absent and never how severe it is.
+  - A gap's weight is its count, `n` out of `of`, not its custody token. An unranked entry carries
+    no class, so no custody token can draw `pass`.
+- A new test in `tests/test_ui_projection_trust_inputs.py` pins this choice. It requires the tokens
+  to equal the owner tuple, the vocabulary not to be ranked, the tokens to be a strict subset of the
+  withheld states, and the catalogue entry to name `TRUST_INPUT_CUSTODY` (read by AST).
+- **Counts.** The catalogue now holds 19 ranked and 30 unranked vocabularies (main: 19 and 29). A
+  static sweep of the combined schema, mirroring v1, finds 57 string enums in 49 token sets. Each
+  set is classified exactly once; none is doubled, unclassified or invented. No test pins the
+  19/29 counts; only W24's dated note states them, and it stays as its record.
+
+**Delta over main.**
+- Added definitions: `TrustInput`, `TrustInputHost` and `TrustInputHostList`.
+- `Trust` gains the required `inputs` property, and its limitation copies grow from 29 to 30.
+- `LimitationId` grows from 33 to 34 IDs.
+- `VocabUnranked` gains the `trust_input_custody` member. Its `limitation_id` member gains
+  `trust_inputs_scope`, because its tokens are `_ALL_LIMITATION_IDS`.
+- No definition is removed, and the root is unchanged.
+
+**`openapi.ts`.** Two edits go beyond the clean union, both in `UiProjection1_VocabUnranked`:
+- The `limitation_id` tokens gain `"trust_inputs_scope"` after `"path_route_model_only"`, the
+  same union as `UiProjection1_LimitationId`.
+- `trust_input_custody` is inserted, alphabetized, between `topology_weight` and `withheld_state`,
+  as a `readonly (...)[]` union of its four tokens.
+
+The tuple rule is unchanged:
+- the device registry is 18-item tuples in all 20 copies;
+- the Trust registry copies are `readonly Limitation[]` arrays (27);
+- `Trust.inputs` is an 11-item tuple.
+
+A static cross-check, not the generator, found:
+- every string enum of the combined schema appears in the file as its exact union;
+- every `$defs` entry has its `UiProjection1_` component;
+- the `VocabUnranked` (30) and `VocabRanked` (19) members are alphabetized and equal the catalogue,
+  and each unranked entry is rendered exactly;
+- `UiProjection1_LimitationId` equals `_ALL_LIMITATION_IDS` (34).
+
+The hosted `api:check` remains the authority.
+
+**Keywords.** The combined view and list schemas use exactly main's keyword set. No keyword falls
+outside the established domain: `$defs`, `$ref`, `additionalProperties`, `allOf`, `anyOf`,
+`const`, `dependentRequired`, `enum`, `items`, `maxItems`, `maximum`, `minItems`, `minLength`,
+`minimum`, `oneOf`, `pattern`, `properties`, `required`, `title`, `type` and `uniqueItems`.
+
+**Hashes.** These are compact `ensure_ascii` JSON plus LF, in owner key order. They were computed
+statically with `ui_projection_api._native_schema_hash`, with the modules imported from this
+worktree (`__file__` asserted). As a method check, a `git archive` extract of `366d1ab3`
+reproduces main's own pins: view `732c68c3…` and list `7f256f80…`.
+
+The combined W23 + W24 + W28 pins are now in `_NATIVE_SCHEMA_HASHES` and in the W12b prospective
+pair:
+- view: `6aa9a264cf5622d5eb905f5cace25aa612cbb46437a46eed63ae957baad23745`
+- list: `a3021b672f785a76c3d88ae33db58ac487e5fa151d84de69af52949c1cc2df58`
+
+**Local evidence for this merge:**
+- `py_compile`;
+- the static assessability helpers: the hand-list scan, its self-test, receipt-reader
+  classification, and the section-dependency proof with its mutants;
+- the static pin, enum and keyword computations.
+
+No pytest, npm, build or snapshot projection ran.
+
 ## Verification boundary
 
 Local evidence:

@@ -509,7 +509,8 @@ def test_i0_schema_sections_and_vocabularies():
     Draft202012Validator.check_schema(schema)
     d = schema["$defs"]
     assert schema["$id"] == uip.SCHEMA_ID and schema["title"] == uip.SCHEMA
-    assert schema["required"] == ["schema", "engine", "overview", "trust", "inventory", "findings", "topology"]
+    assert schema["required"] == ["schema", "engine", "overview", "trust", "inventory", "findings", "topology",
+                                  "vocab"]
     assert schema["properties"]["inventory"] == {"$ref": "#/$defs/Inventory"}
     assert schema["properties"]["findings"] == {"$ref": "#/$defs/Findings"}
     enums = {"LifecycleBandFact": uip.LIFECYCLE_BAND_ORDER, "RiskBandFact": uip.DOSSIER_BANDS,
@@ -548,7 +549,8 @@ def test_i0_schema_sections_and_vocabularies():
     dev_lims = d["DevicePage"]["properties"]["limitations"]
     assert dev_lims["minItems"] == dev_lims["maxItems"] == len(_device_doc_limitation_ids())
     assert set(uip.DEVICE_CITED_LIMITATIONS) <= {lim["id"] for lim in uip.LIMITATIONS}
-    assert d["DeviceDocument"]["required"] == ["schema", "engine", "device"]
+    assert d["DeviceDocument"]["required"] == ["schema", "engine", "device", "vocab"]
+    assert d["DeviceDocument"]["properties"]["vocab"] == {"$ref": "#/$defs/Vocab"}
     assert "$anchor" not in d["DeviceDocument"]          # Ajv 2020 strict rejects it: address #/$defs/DeviceDocument
     assert d["Cap"]["properties"]["total"] == {"$ref": "#/$defs/WithheldFact"}
     assert d["Cap"]["properties"]["reached"] == {"anyOf": [{"type": "boolean"}, {"type": "null"}]}

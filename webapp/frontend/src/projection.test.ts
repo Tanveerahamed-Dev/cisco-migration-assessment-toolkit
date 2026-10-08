@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPathProjection, loadProjection, loadProjectionPage, requireProjectionPage, sameIdentity } from "./projection";
-import { pathFixture, topologyFixture } from "./test/projectionFixtures";
+import { pathFixture, requireContractVocab, topologyFixture, vocabFixture } from "./test/projectionFixtures";
 
 const identity = { snapshot_id: 4, sha256: `sha256:${"a".repeat(64)}`, bytes: 42, digest_form: "assesshub-store-blob" as const };
 const common = { identity, schema: "ui_projection_transport/1", projection_schema: "ui_projection/1", view: "device", engine: {}, limitations: [] };
@@ -78,5 +78,53 @@ describe("Projection transport custody", () => {
     { offset: -1 }, { returned: 0 }, { has_more: true }, { total: 3 }, { limit: 201 }, { total: Infinity },
   ])("refuses inconsistent paging metadata %j", (change) => {
     expect(() => requireProjectionPage({ ...source.page, ...change } as never)).toThrow(/incomplete|inconsistent/);
+  });
+});
+
+// G43: the synthetic vocabulary block is read from the generated owner component, so these checks name no
+// vocabulary, token or count of their own; they hold the fixture to what that contract declares.
+type MutableVocab = {
+  schema: string; classes: string[];
+  ranked: Record<string, { owner: string; basis: string; items: { token: string; rank: number; class: string }[] }>;
+  unranked: Record<string, { basis: string; tokens: string[] }>;
+} & Record<string, unknown>;
+const editableVocab = () => JSON.parse(JSON.stringify(vocabFixture())) as MutableVocab;
+const firstRanked = (vocab: MutableVocab) => Object.values(vocab.ranked)[0]!;
+const firstUnranked = (vocab: MutableVocab) => Object.values(vocab.unranked)[0]!;
+describe("Synthetic vocabulary block from the generated contract", () => {
+  it("carries every contract vocabulary, each listing its tokens, in a fresh block per call", () => {
+    const vocab = vocabFixture();
+    expect(() => requireContractVocab(vocab)).not.toThrow();
+    expect(Object.keys(vocab.ranked).length).toBeGreaterThan(0);
+    expect(Object.keys(vocab.unranked).length).toBeGreaterThan(0);
+    for (const entry of Object.values(vocab.ranked)) expect(entry.items.length).toBeGreaterThan(0);
+    for (const entry of Object.values(vocab.unranked)) expect(entry.tokens.length).toBeGreaterThan(0);
+    expect(vocab.classes).toContain("undetermined");
+    expect(vocabFixture()).not.toBe(vocab);
+    expect(vocabFixture()).toEqual(vocab);
+  });
+  it("stays out of every transport envelope fixture, as the block stays out of the transport", () => {
+    expect(topologyFixture()).not.toHaveProperty("vocab");
+    expect(pathFixture()).not.toHaveProperty("vocab");
+  });
+  it.each<[string, (vocab: MutableVocab) => void]>([
+    ["omits a ranked vocabulary", (vocab) => { delete vocab.ranked[Object.keys(vocab.ranked)[0]!]; }],
+    ["omits an unranked vocabulary", (vocab) => { delete vocab.unranked[Object.keys(vocab.unranked)[0]!]; }],
+    ["empties a ranked vocabulary", (vocab) => { firstRanked(vocab).items = []; }],
+    ["empties an unranked vocabulary", (vocab) => { firstUnranked(vocab).tokens = []; }],
+    ["drops one ranked token", (vocab) => { firstRanked(vocab).items.pop(); }],
+    ["lists a ranked token twice", (vocab) => { const { items } = firstRanked(vocab); items[items.length - 1] = { ...items[0]! }; }],
+    ["invents a ranked token", (vocab) => { firstRanked(vocab).items[0]!.token = "synthetic-invented-token"; }],
+    ["invents an unranked token", (vocab) => { firstUnranked(vocab).tokens.push("synthetic-invented-token"); }],
+    ["draws a class outside the contract", (vocab) => { firstRanked(vocab).items[0]!.class = "synthetic-invented-class"; }],
+    ["ranks outside its own token count", (vocab) => { const entry = firstRanked(vocab); entry.items[0]!.rank = entry.items.length; }],
+    ["leaves an owner empty", (vocab) => { firstRanked(vocab).owner = ""; }],
+    ["drops a class", (vocab) => { vocab.classes.pop(); }],
+    ["names another schema", (vocab) => { vocab.schema = "synthetic-invented-schema"; }],
+    ["adds a member", (vocab) => { vocab.invented = {}; }],
+  ])("refuses a block that %s", (_label, mutate) => {
+    const vocab = editableVocab();
+    mutate(vocab);
+    expect(() => requireContractVocab(vocab)).toThrow(/^vocabFixture: /);
   });
 });

@@ -1,4 +1,7 @@
 // Hand-authored synthetic HTTP documents for renderer tests. No stored snapshot or customer data.
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import type { Schemas } from "../projection";
 export const published = <T,>(value: T) => ({ state: "published", value, subject: "/synthetic", refs: [], basis: "synthetic.owner" });
 export const withheld = () => ({ state: "not_collected", value: null, reason: "Synthetic input was not collected", subject: "/missing", refs: [], basis: "synthetic.owner" });
 const empty = (pointer: string) => ({ pointer, source_list: { state: "collected_but_empty", reason: "Synthetic source has no rows", subject: pointer, refs: [], basis: "synthetic.owner" }, page: { offset: 0, limit: 25, returned: 0, total: 0, has_more: false, items: [] } });
@@ -103,6 +106,224 @@ export function overviewRollupsFixture(sid = 1) {
           reason: "Synthetic source contains no hosts in this band", subject: "/health_scores", refs: [], basis: "synthetic.owner" } })) },
     readiness: { groups: { ...groupPage, source_list: { ...groupPage.source_list, caveats: [caveat] } } },
   } };
+}
+// The engine's constant vocabulary block (G43). It is a member of the engine's fleet, device and path documents
+// only: no transport envelope carries it (exposing it through the transport is a recorded follow-up), so common()
+// does not attach it. A synthetic block is built from the generated contract that types it: the owner component
+// UiProjection1_Vocab in src/generated/openapi.ts, which the frontend CI job's `npm run api:check` holds byte-equal
+// to a fresh export of the live backend contract. This file names no token: every vocabulary, token and tuple length
+// is read from that contract, so the fixture can neither omit a member nor keep a second, unchecked copy of an engine
+// vocabulary. The contract is tracked, so every consumer of these fixtures can read it (AssessHub Vitest and
+// Playwright, Atlas Scope's typecheck and Vitest); the untracked .generated/openapi.json exists only after an
+// explicit export. Every item takes rank 0 and class "undetermined": a synthetic block that orders nothing apart and
+// draws no level, valid for every vocabulary. An absent contract, a generated shape this reader does not know, or a
+// block that does not cover the contract throws; it never yields an empty block.
+type Vocab = Schemas["UiProjection1_Vocab"];
+interface VocabContract {
+  readonly schema: string;
+  readonly classes: readonly string[];
+  readonly classSlots: number;
+  readonly ranked: ReadonlyMap<string, readonly string[]>;
+  readonly unranked: ReadonlyMap<string, readonly string[]>;
+}
+const VOCAB_CONTRACT_PATH = ["webapp", "frontend", "src", "generated", "openapi.ts"];
+const STRING_LITERAL = String.raw`"(?:[^"\\]|\\.)*"`;
+const LITERAL_UNION = new RegExp(String.raw`^${STRING_LITERAL}(?:\s*\|\s*${STRING_LITERAL})*$`);
+let vocabContractCache: VocabContract | undefined;
+function vocabFailure(detail: string): never {
+  throw new Error(`vocabFixture: ${detail}`);
+}
+function vocabContractSource(): string {
+  // npm, Vitest and Playwright run from a package directory inside the checkout; walk up from there, because a
+  // transformed import.meta.url is not a file URL in every runner (see src/designSyncProps.test.ts).
+  for (let dir = resolve(process.cwd()); ; dir = dirname(dir)) {
+    const candidate = join(dir, ...VOCAB_CONTRACT_PATH);
+    if (existsSync(candidate)) return readFileSync(candidate, "utf8");
+    if (dirname(dir) === dir) return vocabFailure(`no ${VOCAB_CONTRACT_PATH.join("/")} at or above the working directory`);
+  }
+}
+function stringEnd(text: string, open: number): number {
+  for (let i = open + 1; i < text.length; i++) {
+    const ch = text.charAt(i);
+    if (ch === "\\") i++;
+    else if (ch === '"') return i;
+  }
+  return vocabFailure("the generated contract has an unterminated string literal");
+}
+function withoutComments(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    if (text.charAt(i) === '"') {
+      const end = stringEnd(text, i);
+      out += text.slice(i, end + 1);
+      i = end;
+    } else if (text.startsWith("/*", i)) {
+      const end = text.indexOf("*/", i + 2);
+      if (end < 0) return vocabFailure("the generated contract has an unterminated comment");
+      i = end + 1;
+    } else if (text.startsWith("//", i)) {
+      const end = text.indexOf("\n", i);
+      i = end < 0 ? text.length : end - 1;
+    } else out += text.charAt(i);
+  }
+  return out;
+}
+function memberEnd(text: string, from: number, where: string): number {
+  let depth = 0;
+  for (let i = from; i < text.length; i++) {
+    const ch = text.charAt(i);
+    if (ch === '"') i = stringEnd(text, i);
+    else if (ch === "{" || ch === "[" || ch === "(") depth++;
+    else if ((ch === "}" || ch === "]" || ch === ")") && --depth < 0) break;
+    else if (ch === ";" && depth === 0) return i;
+  }
+  return vocabFailure(`${where} does not end as a generated member does`);
+}
+function declared(source: string, name: string): string {
+  const head = `readonly ${name}: `, at = source.indexOf(head);
+  if (at < 0 || source.includes(head, at + 1)) return vocabFailure(`the generated contract declares ${name} ${at < 0 ? "nowhere" : "twice"}`);
+  return source.slice(at + head.length, memberEnd(source, at + head.length, name)).trim();
+}
+function members(type: string, where: string): Map<string, string> {
+  const body = /^\{([\s\S]*)\}$/.exec(type)?.[1];
+  if (body === undefined) return vocabFailure(`${where} is not an object type`);
+  const out = new Map<string, string>();
+  for (let from = 0; body.slice(from).trim(); ) {
+    const stop = memberEnd(body, from, where);
+    const parts = /^\s*readonly (\w+): ([\s\S]+)$/.exec(body.slice(from, stop));
+    const name = parts?.[1], member = parts?.[2];
+    if (name === undefined || member === undefined || out.has(name)) return vocabFailure(`${where} has a member this fixture cannot read`);
+    out.set(name, member.trim());
+    from = stop + 1;
+  }
+  return out;
+}
+function shaped(type: string, names: readonly string[], where: string): Map<string, string> {
+  const found = members(type, where);
+  if (found.size !== names.length || names.some((name) => !found.has(name))) {
+    return vocabFailure(`${where} does not declare exactly the members this fixture builds (${names.join(", ")})`);
+  }
+  return found;
+}
+function memberOf(found: ReadonlyMap<string, string>, name: string, where: string): string {
+  return found.get(name) ?? vocabFailure(`${where} declares no ${name}`);
+}
+function component(type: string, where: string): string {
+  return /^components\["schemas"\]\["(\w+)"\]$/.exec(type)?.[1] ?? vocabFailure(`${where} is not one generated component`);
+}
+function tupleOf(type: string, where: string): { ref: string; slots: number } {
+  const slots = (/^\[([\s\S]*)\]$/.exec(type)?.[1] ?? vocabFailure(`${where} is not a fixed-length tuple`)).split(",")
+    .map((slot) => component(slot.trim(), where));
+  const ref = slots[0];
+  if (ref === undefined || slots.some((other) => other !== ref)) return vocabFailure(`${where} is not a tuple of one component`);
+  return { ref, slots: slots.length };
+}
+function literals(type: string, where: string): string[] {
+  if (!LITERAL_UNION.test(type)) return vocabFailure(`${where} is not a union of string literals`);
+  const tokens = Array.from(type.matchAll(new RegExp(STRING_LITERAL, "g")), (found) => {
+    const token: unknown = JSON.parse(found[0] ?? "null");
+    return typeof token === "string" && token ? token : vocabFailure(`${where} has an empty or undecodable token`);
+  });
+  if (new Set(tokens).size !== tokens.length) return vocabFailure(`${where} repeats a token`);
+  return tokens;
+}
+function vocabContract(): VocabContract {
+  if (vocabContractCache) return vocabContractCache;
+  const source = withoutComments(vocabContractSource());
+  const root = "UiProjection1_Vocab", vocab = shaped(declared(source, root), ["classes", "ranked", "schema", "unranked"], root);
+  const classTuple = tupleOf(memberOf(vocab, "classes", root), `${root}.classes`);
+  const classes = literals(declared(source, classTuple.ref), classTuple.ref);
+  const [schema, ...extra] = literals(memberOf(vocab, "schema", root), `${root}.schema`);
+  if (schema === undefined || extra.length) return vocabFailure(`${root}.schema is not one constant`);
+  const ranked = new Map<string, readonly string[]>(), rankedRef = component(memberOf(vocab, "ranked", root), `${root}.ranked`);
+  for (const [name, entry] of members(declared(source, rankedRef), rankedRef)) {
+    const where = `${rankedRef}.${name}`, shape = shaped(entry, ["basis", "items", "owner"], where);
+    if (memberOf(shape, "basis", where) !== "string" || memberOf(shape, "owner", where) !== "string") vocabFailure(`${where} has non-text owner or basis`);
+    const items = tupleOf(memberOf(shape, "items", where), `${where}.items`);
+    const item = shaped(declared(source, items.ref), ["class", "rank", "token"], items.ref);
+    if (component(memberOf(item, "class", items.ref), `${items.ref}.class`) !== classTuple.ref || memberOf(item, "rank", items.ref) !== "number") {
+      vocabFailure(`${items.ref} does not pair a class of ${classTuple.ref} with a numeric rank`);
+    }
+    const tokens = literals(memberOf(item, "token", items.ref), `${items.ref}.token`);
+    if (tokens.length !== items.slots) vocabFailure(`${where} does not hold each of its tokens exactly once`);
+    ranked.set(name, tokens);
+  }
+  const unranked = new Map<string, readonly string[]>(), unrankedRef = component(memberOf(vocab, "unranked", root), `${root}.unranked`);
+  for (const [name, entry] of members(declared(source, unrankedRef), unrankedRef)) {
+    const where = `${unrankedRef}.${name}`, shape = shaped(entry, ["basis", "tokens"], where);
+    if (memberOf(shape, "basis", where) !== "string") vocabFailure(`${where} has a non-text basis`);
+    const listed = memberOf(shape, "tokens", where);
+    const union = /^readonly \(([\s\S]*)\)\[\]$/.exec(listed)?.[1] ?? /^readonly ("[\s\S]*")\[\]$/.exec(listed)?.[1];
+    unranked.set(name, literals(union ?? vocabFailure(`${where}.tokens is not an array of its tokens`), `${where}.tokens`));
+  }
+  const itemDeclarations = source.match(/readonly UiProjection1_Vocab\w+Item: /g)?.length ?? 0;
+  if (!ranked.size || !unranked.size || itemDeclarations !== ranked.size) {
+    return vocabFailure("the generated contract's vocabularies were not all read");
+  }
+  vocabContractCache = { schema, classes, classSlots: classTuple.slots, ranked, unranked };
+  return vocabContractCache;
+}
+function vocabRecord(value: unknown, keys: readonly string[], where: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return vocabFailure(`${where} is not an object`);
+  const own = Object.keys(value).sort(), wanted = [...keys].sort();
+  if (own.length !== wanted.length || own.some((key, index) => key !== wanted[index])) {
+    return vocabFailure(`${where} does not carry exactly the contract's members`);
+  }
+  return value as Record<string, unknown>;
+}
+function vocabText(value: unknown, where: string): void {
+  if (typeof value !== "string" || !value) vocabFailure(`${where} is not non-empty text`);
+}
+// The runtime half of the type: a block is a Projection["vocab"] only once it carries exactly the contract's
+// vocabularies, each ranked one listing every contract token once with a class of the contract and a rank inside
+// its own token count, each unranked one listing a non-empty set of contract tokens.
+export function requireContractVocab(value: unknown): asserts value is Vocab {
+  const contract = vocabContract();
+  const vocab = vocabRecord(value, ["classes", "ranked", "schema", "unranked"], "the block");
+  if (vocab.schema !== contract.schema) vocabFailure("the block names another schema");
+  const classes = vocab.classes;
+  if (!Array.isArray(classes) || classes.length !== contract.classSlots || new Set(classes).size !== classes.length
+      || classes.some((name) => !contract.classes.includes(name))) vocabFailure("the block's classes are not the contract's");
+  const ranked = vocabRecord(vocab.ranked, [...contract.ranked.keys()], "ranked");
+  for (const [name, tokens] of contract.ranked) {
+    const entry = vocabRecord(ranked[name], ["basis", "items", "owner"], `ranked.${name}`);
+    vocabText(entry.owner, `ranked.${name}.owner`);
+    vocabText(entry.basis, `ranked.${name}.basis`);
+    const items = entry.items, seen = new Set<string>();
+    if (!Array.isArray(items) || items.length !== tokens.length) vocabFailure(`ranked.${name} does not list each contract token once`);
+    for (const item of items as unknown[]) {
+      const row = vocabRecord(item, ["class", "rank", "token"], `ranked.${name} item`);
+      if (typeof row.token !== "string" || !tokens.includes(row.token) || seen.has(row.token)) {
+        vocabFailure(`ranked.${name} lists a token outside its contract or twice`);
+      }
+      seen.add(row.token as string);
+      if (typeof row.rank !== "number" || !Number.isSafeInteger(row.rank) || row.rank < 0 || row.rank >= tokens.length) {
+        vocabFailure(`ranked.${name} ranks a token outside its own token count`);
+      }
+      if (typeof row.class !== "string" || !contract.classes.includes(row.class)) vocabFailure(`ranked.${name} draws a class outside the contract`);
+    }
+  }
+  const unranked = vocabRecord(vocab.unranked, [...contract.unranked.keys()], "unranked");
+  for (const [name, tokens] of contract.unranked) {
+    const entry = vocabRecord(unranked[name], ["basis", "tokens"], `unranked.${name}`);
+    vocabText(entry.basis, `unranked.${name}.basis`);
+    const listed = entry.tokens;
+    if (!Array.isArray(listed) || !listed.length || new Set(listed).size !== listed.length
+        || listed.some((token) => !tokens.includes(token))) vocabFailure(`unranked.${name} is not a non-empty set of contract tokens`);
+  }
+}
+export function vocabFixture(): Vocab {
+  const contract = vocabContract();
+  const block: unknown = {
+    schema: contract.schema, classes: [...contract.classes],
+    ranked: Object.fromEntries(Array.from(contract.ranked, ([name, tokens]) => [name, {
+      owner: "synthetic.owner", basis: `Synthetic basis: no ${name} token is ordered apart or drawn at a level`,
+      items: tokens.map((token) => ({ token, rank: 0, class: "undetermined" })) }])),
+    unranked: Object.fromEntries(Array.from(contract.unranked, ([name, tokens]) => [name, {
+      basis: `Synthetic basis for ${name}`, tokens: [...tokens] }])),
+  };
+  requireContractVocab(block);
+  return block;
 }
 export function common(sid: number, view: string) {
   return { schema: "ui_projection_transport/1", projection_schema: "ui_projection/1", view,

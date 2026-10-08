@@ -174,6 +174,21 @@ def test_registry_is_the_engine_owner_in_its_order():
     assert not [c for c in ast.walk(node.value) if isinstance(c, ast.Constant) and c.value in analyze.DOSSIER_AXIS_INPUTS]
 
 
+def test_custody_is_one_unranked_vocabulary_of_the_g43_catalogue_read_from_its_owner_tuple():
+    """Every custody token names why an input did not assess a device, an absence: the catalogue names the vocabulary
+    once, unranked (no class, so never 'pass'), with its tokens taken from the owner tuple, never restated."""
+    vocab = uip._vocab()
+    assert vocab["unranked"]["trust_input_custody"]["tokens"] == list(uip.TRUST_INPUT_CUSTODY)
+    assert "trust_input_custody" not in vocab["ranked"]
+    assert set(uip.TRUST_INPUT_CUSTODY) < set(uip.WITHHELD_STATES)
+    tree = ast.parse((ROOT / "cisco_toolkit" / "ui_projection.py").read_text(encoding="utf-8"))
+    (node,) = [n for n in tree.body
+               if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", "") == "_VOCAB_UNRANKED"]
+    (entry,) = [e for e in node.value.elts
+                if isinstance(e, ast.Tuple) and ast.literal_eval(e.elts[0]) == "trust_input_custody"]
+    assert ast.unparse(entry.elts[1]) == "TRUST_INPUT_CUSTODY"
+
+
 def test_the_producer_writes_one_exposure_per_registered_axis():
     """compute_device_dossiers names every registered axis, and no other, in its ax()/config_gap() calls."""
     tree = ast.parse(textwrap.dedent(inspect.getsource(analyze.compute_device_dossiers)))

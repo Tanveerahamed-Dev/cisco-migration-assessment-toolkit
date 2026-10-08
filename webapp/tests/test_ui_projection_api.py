@@ -1230,8 +1230,8 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    prospective = {"view": "59e4a53fbc475221a8368a25da0aea618b920bf2a4694657a61b56addffac7ec",
-                   "list": "ef3906d3ae6793f589cf1b1bcbaaa433ff84865a16971a19252683a715852c33"}
+    prospective = {"view": "6aa9a264cf5622d5eb905f5cace25aa612cbb46437a46eed63ae957baad23745",
+                   "list": "a3021b672f785a76c3d88ae33db58ac487e5fa151d84de69af52949c1cc2df58"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)
@@ -1956,3 +1956,38 @@ def test_reaudited_topology_lists_use_native_and_float_views_stay_python(tmp_pat
         assert proof not in topology.headers and proof not in structural.headers
         path = client.get(path_url(sid), params=_PATH_QUERY, headers=headers)
         assert path.status_code == 200 and proof not in path.headers
+
+
+def test_owner_vocab_stays_in_engine_documents_and_out_of_every_transport_envelope(client, sample):
+    """G43: the constant vocab block is an engine-document member only. Every view, path and list envelope keeps
+    exactly its pre-G43 key set, which Atlas Scope's contract-mode loader requires, and refuses a vocab member.
+    Exposing the block through the transport is a recorded follow-up, not an envelope member."""
+    from backend import ui_projection_api as api
+    from pydantic import ValidationError as ModelValidationError
+    sid = seed(client, sample)
+    host = next(iter(sample["devices"]))
+    vocab = owner.project(sample)["vocab"]
+    assert vocab == owner.project({})["vocab"] == owner.project_device(sample, host)["vocab"]
+    raw, _ = client.app.state.store.get_snapshot_blob(sid)
+    assert vocab == owner.project_path(engine.bind_ui_projection_snapshot(raw), **_PATH_QUERY)["vocab"]
+    envelope = {"schema", "projection_schema", "identity", "view", "engine", "limitations"}
+    bodies = {}
+    for view in api.VIEWS:
+        params = {"limit": 2, **({"host": host} if view == "device" else {})}
+        response = client.get(url(sid, view), params=params)
+        assert response.status_code == 200, response.text[:200]
+        bodies[view] = response.json()
+        assert set(bodies[view]) == envelope | {"payload"}, view
+    path = client.get(path_url(sid), params=_PATH_QUERY)
+    assert path.status_code == 200, path.text[:200]
+    assert set(path.json()) == envelope | {"payload"}
+    pointer = next(iter(api.LIST_CATALOG["findings"]))
+    listed = client.get(url(sid, "findings") + "/lists", params={"pointer": pointer, "limit": 2})
+    assert listed.status_code == 200 and set(listed.json()) == envelope | {"list"}
+    assert all("vocab" not in branch["properties"] for branch in api._VIEW_SCHEMA["oneOf"])
+    assert all("vocab" not in branch["properties"] for branch in api._LIST_SCHEMA["oneOf"])
+    assert "vocab" not in api._PATH_SCHEMA["properties"]
+    with pytest.raises(ModelValidationError):
+        api.UiProjectionViewResponse.model_validate({**bodies["overview"], "vocab": deepcopy(vocab)})
+    with pytest.raises(ModelValidationError):
+        api.UiProjectionPathResponse.model_validate({**path.json(), "vocab": deepcopy(vocab)})
