@@ -94,11 +94,37 @@ function Overview({ document }: { document: ViewDocument<"overview"> }) {
   </>;
 }
 
+// One analysis input's gap row, rendered from the contract alone: the ratio sentence appears only when the
+// engine published both counts, and a withheld count or list keeps its own state and reason.
+function InputGap({ row, sid }: { row: Schemas["UiProjection1_TrustInput"]; sid: number }) {
+  const { n, of, hosts } = row;
+  return <article className="projection-list-item" aria-label={`${row.input} analysis input`}>
+    <h3>{row.input}</h3>
+    {n.state === "published" && of.state === "published" && <p>{`${n.value} of ${of.value} inventory devices could not be assessed`}</p>}
+    <FactGrid facts={{ could_not_be_assessed: n, inventory_devices: of }} />
+    {row.sections.length > 0 && <p className="dim">Input sections: {row.sections.join(", ")}</p>}
+    <ListState label={`Devices not assessed by ${row.input}`} source={hosts} />
+    {hosts.items.length > 0 && <details><summary>Devices and custody</summary>
+      <div className="projection-list-items">{hosts.items.map((item) =>
+        <div key={item.host} className="projection-list-item" role="group" aria-label={`${item.host} not assessed by ${row.input}`}>
+          <Link to={deviceUrl(sid, item.host)}>{item.host} ↗</Link>
+          <p>Custody: <StateLabel state={item.custody} /></p>
+          {item.label !== null && <p className="dim">{item.label}</p>}
+          <Pointer pointer={item.pointer} />
+        </div>)}</div>
+    </details>}
+  </article>;
+}
+
 function Trust({ document }: { document: ViewDocument<"trust"> }) {
   const p = document.payload;
   return <>
     <Panel title="Evidence coverage"><FactGrid facts={p.coverage_matrix} />
       <Disclosure>These are the engine's published coverage totals. The full device-by-axis matrix is not included in this view.</Disclosure></Panel>
+    <Panel title="What the analysis could not see">
+      <Disclosure>Each input is one axis of the engine's per-device risk register, not every analysis. The engine publishes each count, device and custody; a withheld count keeps its state and reason and is never shown as zero.</Disclosure>
+      <div className="projection-list-items">{p.inputs.map((row) => <InputGap key={row.input} row={row} sid={document.identity.snapshot_id} />)}</div>
+    </Panel>
     <Panel title="Unknown evidence"><FactGrid facts={{ state: p.unknown_evidence.state, events: p.unknown_evidence.n_events,
       unresolved: p.unknown_evidence.n_unresolved, source_coverage_complete: p.unknown_evidence.source_coverage_complete,
       claim_scope: p.unknown_evidence.claim_scope, note: p.unknown_evidence.note }} /></Panel>
