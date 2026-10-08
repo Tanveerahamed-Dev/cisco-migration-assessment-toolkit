@@ -708,8 +708,9 @@ _R_NO_ROW = "not collected: {section} carries no row for this device"
 _R_DEVICE_NC = ("not collected: collection_completeness lists this device as not collected, so every fact about it "
                 "is a blind spot (ssot.abstention_reason, device scope)")
 _R_AMBIG = "unverified: {n} rows in {section} name this key, so no single row can be chosen"
-_R_UNJOINABLE = ("unverified: {n} row(s) in {section} cannot be joined by exact key (not an object, or a key field "
-                 "that is missing or not text), and any of them could name this device")
+_R_UNJOINABLE_STEM = ("unverified: {n} row(s) in {section} cannot be joined by exact key (not an object, or a key "
+                      "field that is missing or not text), and any of them could name ")
+_R_UNJOINABLE = _R_UNJOINABLE_STEM + "this device"
 _R_PAIR_AMBIG = ("unverified: {n} rows in link_centrality name this unordered host pair (in either orientation), but "
                  "analyze.compute_link_centrality writes one record per pair, so no single row can be chosen")
 _R_NOT_SCORED = ("not assessed: the engine banded this device 'Insufficient Data' (a collection gap or an interface "
@@ -2166,7 +2167,9 @@ def _ssot_block(ctx: _Ctx) -> Dict[str, Any]:
 # analyze.DOSSIER_AXIS_INPUTS, and forces state 'na' whenever the input was not published (its ax()). The register
 # writes a row for every device the devices map names: its host universe includes lifecycle_risk.per_device, which
 # compute_lifecycle_risk writes for every key of the same device-physical map the devices map is built from. No
-# findings-only or sparse section is read for absence here; its absence is never a gap and never clean.
+# findings-only or sparse section is read for absence here; its absence is never a gap and never clean. A register
+# row the exact-key join cannot read (:func:`_unjoinable_rows`) could be any listed device's row, so it withholds
+# every count, the precedent of the strict device selection.
 # ---------------------------------------------------------------------------------------------------
 #: Every analysis input the engine assesses PER DEVICE, with its input sections, in the owner's order: the risk
 #: register's closed axis registry (analyze.DOSSIER_AXIS_INPUTS), imported, never copied.
@@ -2184,6 +2187,8 @@ _R_INPUTS_NO_DEVICE = ("not collected: the inventory names no device (neither th
 _R_INPUTS_NO_REGISTER = ("not collected: the snapshot carries no device_dossiers.per_device, so no device's custody "
                          "of this input is published; only collection blind spots are listed, and an absent device "
                          "is not a clean result")
+_R_INPUTS_UNJOINABLE = _R_UNJOINABLE_STEM + ("any inventory device, so the count of devices this input could not "
+                                             "assess is not verified")
 #: How one inventory device stands before any axis is read: ``(fixed custody, witness pointer, why)`` when the same
 #: custody holds for every input, else ``None`` with the dossier row and its axis index.
 _HostCustody = Tuple[Optional[Tuple[str, str, str]], Optional[Tuple[Tuple[Any, ...], List[Any], Dict[str, List[int]]]]]
@@ -2246,12 +2251,19 @@ def _axis_custody(axis: str, host: _HostCustody) -> Optional[Tuple[str, Optional
 
 def _trust_inputs(ctx: _Ctx) -> List[Dict[str, Any]]:
     """Per analysis input: the inventory devices it could not assess (``hosts``), their count (``n``) and the inventory
-    count they are out of (``of``, the device rows' own reconciled total)."""
+    count they are out of (``of``, the device rows' own reconciled total). A register row the host join cannot read
+    (:func:`_unjoinable_rows`) makes ``hosts`` and ``n`` unverified, with a witness to each such row, while the readable
+    rows' devices stay listed; ``of`` is the inventory's own owner and does not read the register."""
     hosts, dev_keys, _cc_norm = _inventory_universe(ctx)
     dd_toks = ("device_dossiers", "per_device")
     dd_state, dd_reason, dd_raw = _list_state(ctx, dd_toks, ("device_dossiers",))
     readable = dd_state in (_PUB, _CBE)
     index = ctx.index(dd_toks, ("host",)) if readable else {}
+    # The join skips these rows, so the per-device fold never visits them: any could be a conflicting observation of
+    # a listed device. Read as the strict selection reads them: over a published or empty register, and over an
+    # unverified one whose rows can still be read.
+    bad = ctx.unjoinable(dd_toks, ("host",)) if readable or (dd_state == _UV and isinstance(dd_raw, list)) else []
+    unjoinable = _R_INPUTS_UNJOINABLE.format(n=len(bad), section=".".join(dd_toks)) if bad else None
     lifecycle_failed = ctx.abst("lifecycle_risk") == AU
     standing = [(host, _host_custody(ctx, host, dev_keys, index, dd_raw, readable, lifecycle_failed))
                 for host in hosts]
@@ -2272,10 +2284,12 @@ def _trust_inputs(ctx: _Ctx) -> List[Dict[str, Any]]:
         if lost:
             extra += [("basis", ("lifecycle_risk",))] + ctx.failure_entries(("lifecycle_risk",), True)
         failed = _secs_fail(ctx, ("device_dossiers.per_device",) + secs)
+        doubt: Optional[str] = None
         if failed:
             state, reason = failed
         elif not readable:
             state, reason = dd_state, (_R_INPUTS_NO_REGISTER if dd_state == _NC else dd_reason)
+            doubt = unjoinable                  # set only over an unverified register whose rows can be read
         elif not hosts:
             state, reason = _NC, _R_INPUTS_NO_DEVICE
         elif lost:
@@ -2283,12 +2297,18 @@ def _trust_inputs(ctx: _Ctx) -> List[Dict[str, Any]]:
             reason = (ctx.unavailable_reason(("lifecycle_risk",)) + f"; {lost} device(s) have no risk-register "
                       "row, and the phase that guarantees every collected device one failed")
         elif "unreadable" in whys:
-            state = _UV
+            state, doubt = _UV, unjoinable
             reason = (f"unverified: {whys.count('unreadable')} device(s) carry no single readable exposure for this "
                       "input in device_dossiers (a missing, duplicated or malformed row or record), so the count of "
                       "devices it could not assess is not verified")
+        elif unjoinable is not None:
+            state, reason, doubt = _UV, None, unjoinable
         else:
             state, reason = (_PUB, None) if items else (_CBE, _R_INPUTS_ASSESSED)
+        if doubt is not None:
+            # Never a published count or zero: the listed devices stay as data, each unreadable row is witnessed.
+            state, reason = _UV, "; ".join(r for r in (reason, doubt) if r)
+            extra += [("witness", dd_toks + (i,)) for i in bad]
         state, reason = _rolled(ctx, state, reason, secs, ("collection_completeness",))
         of = _inventory_total(ctx, len(hosts))
         if state in (_PUB, _CBE) and of["state"] != _PUB:

@@ -379,6 +379,85 @@ def test_one_unreadable_exposure_withholds_only_its_input(sample, damage):
             assert row == baseline[name], (damage, name)
 
 
+# --------------------------------------------------------------------------------------------------
+# a register row the host join cannot read could be any device's row: never a published count
+# --------------------------------------------------------------------------------------------------
+def _witness(i):
+    return {"pointer": f"/device_dossiers/per_device/{i}", "role": "witness"}
+
+
+def _unjoinable_tail(row, tail):
+    """`row` (a deep copy of a valid register row) made unjoinable by the exact host join."""
+    if tail == "host_null":
+        row["host"] = None
+    elif tail == "host_missing":
+        del row["host"]
+    elif tail == "host_not_text":
+        row["host"] = [row["host"]]
+    else:
+        row = row["exposures"]                     # a list where a row object belongs
+    return row
+
+
+def test_a_clean_register_publishes_every_count_its_zeros_included(sample):
+    """The control: the complete, valid register publishes every count, and at least one input's count is a
+    published zero over an empty list (the case an unjoinable row must withhold). No row is witnessed."""
+    rows = _rows(sample)
+    for axis, row in rows.items():
+        assert row["n"]["state"] == PUB and row["hosts"]["state"] in (PUB, CBE), axis
+        assert row["of"]["state"] == PUB, axis
+        assert not [r for r in row["hosts"]["refs"] + row["n"]["refs"] if r["role"] == "witness"], axis
+    assert [axis for axis, row in rows.items() if (row["n"]["value"], row["hosts"]["state"]) == (0, CBE)]
+
+
+@pytest.mark.parametrize("tail", ["host_null", "host_missing", "host_not_text", "not_a_mapping"])
+def test_an_unjoinable_register_row_withholds_every_count_with_its_witness(sample, tail):
+    """A complete, valid register plus one row the exact host join cannot read. Every inventory device still has one
+    readable row, so the fold alone would publish its counts (a zero where no device was missed); the extra row could
+    be a conflicting observation of any of them. So n and hosts are unverified under every input, never a published
+    count or zero, the row is witnessed, the readable rows' devices stay listed as data, and the inventory
+    denominator, which never reads the register, is unchanged."""
+    baseline = _rows(sample)
+    assert [axis for axis, row in baseline.items() if (row["n"]["state"], row["n"]["value"]) == (PUB, 0)]
+    snap = copy.deepcopy(sample)
+    per_device = snap["device_dossiers"]["per_device"]
+    per_device.append(_unjoinable_tail(copy.deepcopy(per_device[0]), tail))
+    witness = _witness(len(per_device) - 1)
+    for axis, row in _rows(snap).items():
+        assert row["hosts"]["state"] == UV and (row["n"]["state"], row["n"]["value"]) == (UV, None), (tail, axis)
+        assert witness in row["hosts"]["refs"] and witness in row["n"]["refs"], (tail, axis)
+        assert "1 row(s) in device_dossiers.per_device cannot be joined by exact key" in row["hosts"]["reason"]
+        assert row["n"]["reason"] == row["hosts"]["reason"], (tail, axis)
+        assert _items(row) == _items(baseline[axis]), (tail, axis)
+        assert row["of"] == baseline[axis]["of"] and row["of"]["state"] == PUB, (tail, axis)
+
+
+def test_a_device_row_made_unjoinable_is_both_missing_and_witnessed(sample):
+    """The device's own row lost its host: the device has no readable row (unverified, as a missing row is) and the
+    unjoinable row that may be it is witnessed, both reasons kept."""
+    snap = copy.deepcopy(sample)
+    per_device = snap["device_dossiers"]["per_device"]
+    host = per_device[0]["host"]
+    per_device[0]["host"] = None
+    for axis, row in _rows(snap).items():
+        assert row["hosts"]["state"] == UV and (row["n"]["state"], row["n"]["value"]) == (UV, None), axis
+        assert (host, UV, None, "/devices/" + _escape(host)) in _items(row), axis
+        assert "1 device(s)" in row["hosts"]["reason"] and "cannot be joined by exact key" in row["hosts"]["reason"]
+        assert _witness(0) in row["hosts"]["refs"] and _witness(0) in row["n"]["refs"], axis
+
+
+def test_an_unverified_register_still_witnesses_each_unjoinable_row(sample):
+    """A register whose rows are all deep-empty is one the section owner calls empty, so it is unverified; its rows
+    can still be read, and each one the host join cannot read is witnessed (the strict selection's rule)."""
+    snap = copy.deepcopy(sample)
+    snap["device_dossiers"]["per_device"] = [{"host": None, "exposures": []}, {}]
+    for axis, row in _rows(snap).items():
+        assert row["hosts"]["state"] == UV and (row["n"]["state"], row["n"]["value"]) == (UV, None), axis
+        assert "2 row(s) in device_dossiers.per_device cannot be joined" in row["hosts"]["reason"], axis
+        assert _witness(0) in row["hosts"]["refs"] and _witness(1) in row["hosts"]["refs"], axis
+        assert row["hosts"]["items"] == [], axis
+
+
 def test_an_inventory_count_that_disagrees_with_the_rows_withholds_every_count(sample):
     snap = copy.deepcopy(sample)
     snap["collection_completeness"]["summary"]["inventory"] += 1
@@ -462,7 +541,9 @@ def test_every_case_validates_against_the_closed_schema(sample, tmp_path, valida
     malformed["device_dossiers"]["per_device"][0]["exposures"] = "unreadable"
     no_register = copy.deepcopy(blind)
     del no_register["device_dossiers"]
-    cases = [sample, _load(GOLDEN), _real_fleet(tmp_path), blind, failed, missing, malformed, no_register,
+    unjoinable = copy.deepcopy(sample)
+    unjoinable["device_dossiers"]["per_device"] += [{"host": None}, {"exposures": []}, "row", {"host": 7}]
+    cases = [sample, _load(GOLDEN), _real_fleet(tmp_path), blind, failed, missing, malformed, no_register, unjoinable,
              None, [], {}, {"device_dossiers": 5}, {"device_dossiers": {"per_device": [None, 3, {"host": 7}]}},
              {"devices": {"x": {}}, "device_dossiers": {"per_device": [{"host": "x", "exposures": [{"axis": {}}]}]}}]
     for snap in cases:
