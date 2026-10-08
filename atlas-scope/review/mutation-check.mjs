@@ -52,7 +52,7 @@
  *         1 any mutation SURVIVED, was MISATTRIBUTED (red, but not by `killedBy`, or only by an error
  *           message), was INVALID, or its baseline was not green; or an engine the document names has
  *           no mutation
- * A3 strict profiles additionally require complete identical JSON case censuses without skips,
+ * Strict profiles additionally require complete identical JSON case censuses without skips,
  * and the named real assertion in BOTH JSON and the default reporter's source frame. Raw reports,
  * stdout/stderr and a nonpromoting terminal summary survive scratch cleanup under --output.
  * They run only on GitHub-hosted Linux. The default all-mutation selection now also requires
@@ -95,6 +95,37 @@ const CONFIG_SIBLING_INPUTS = [
 
 /** @type {Mutation[]} */
 const MUTATIONS = [
+  /* ── Fabric-list record presence is not a collection outcome (O79 B7, W21) ─────────────── */
+  {
+    id: "b7-collection-wording",
+    engine: "src/fabric3d/FabricA11yTree.tsx",
+    record: "O79 B7 bounded Fabric-list footer (W21)",
+    what: "inventory and topology presence is falsely promoted to complete collection",
+    edits: [{ file: "src/fabric3d/FabricA11yTree.tsx",
+      find: "Inventory and topology presence do not establish collection completeness.",
+      replace: "All devices collected." }],
+    tests: ["src/fabric3d/FabricA11yTree.collection-b7.test.tsx"],
+    killedBy: /collection wording witness: inventory records do not establish collection outcomes[\s\S]*AssertionError: collection wording witness[\s\S]*expect\(/,
+    strictWitness: {
+      testName: "collection wording witness: inventory records do not establish collection outcomes",
+      marker: "collection wording witness",
+    },
+  },
+  {
+    id: "b7-collected-membership",
+    engine: "src/fabric3d/FabricA11yTree.tsx",
+    record: "O79 B7 inventory membership owner (W21)",
+    what: "the legacy collected flag substitutes for actual inventory-record membership",
+    edits: [{ file: "src/fabric3d/FabricA11yTree.tsx",
+      find: "const inventoryRecords = devices.filter((d) => d.inventoried).length;",
+      replace: "const inventoryRecords = devices.filter((d) => d.collected).length;" }],
+    tests: ["src/fabric3d/FabricA11yTree.collection-b7.test.tsx"],
+    killedBy: /inventory membership witness: collected flags cannot change record counts[\s\S]*AssertionError: inventory membership witness[\s\S]*expect\(/,
+    strictWitness: {
+      testName: "inventory membership witness: collected flags cannot change record counts",
+      marker: "inventory membership witness",
+    },
+  },
   /* ── forwarding — src/forwarding/engine.ts (refutation §1; open-issues R17, R19) ─────────────── */
   {
     id: "a3-chosen-path-ignored",
@@ -667,6 +698,8 @@ if (unknown.length > 0) {
 const selected = only.length === 0 ? MUTATIONS : MUTATIONS.filter((m) => only.includes(m.id));
 const strictSelected = selected.filter((m) => m.strictWitness !== undefined);
 const strictMode = strictSelected.length > 0;
+// Preserve the existing A3-only evidence contract; a mixed or B7 selection states its own scope.
+const onlyA3Strict = strictSelected.every((m) => m.id.startsWith("a3-"));
 const need = (/** @type {unknown} */ ok, /** @type {string} */ message) => { if (!ok) throw new Error(message); };
 const sha = (/** @type {Buffer | string} */ bytes) => createHash("sha256").update(bytes).digest("hex");
 const inside = (/** @type {string} */ parent, /** @type {string} */ child) => {
@@ -720,34 +753,37 @@ const saveStrict = () => {
     && strictObservations.every((row) => row.status === "KILLED_BY_DISTINCT_ASSERTION")
     && strictProblems.length === 0 && strictSourceAfterPreserved && strictScratchRestored;
   writeFileSync(join(strictOutput, "summary.json"), `${JSON.stringify({
-    schema: "atlas-scope.a3-refusal-mutations/1", status: complete ? "BOUNDED_SYNTHETIC_WITNESSES_PASS" : "INCOMPLETE_OR_FAILED",
+    schema: onlyA3Strict ? "atlas-scope.a3-refusal-mutations/1" : "atlas-scope.claim-mutations/1",
+    status: complete ? (onlyA3Strict ? "BOUNDED_SYNTHETIC_WITNESSES_PASS" : "BOUNDED_ASSERTION_WITNESSES_PASS") : "INCOMPLETE_OR_FAILED",
     selected: strictSelected.map((m) => ({ id: m.id, tests: m.tests, witness: m.strictWitness })),
     sourceBefore, baselines: strictBaselines, observations: strictObservations, problems: strictProblems,
     checkoutSelectedInputsPreserved: strictSourceAfterPreserved, scratchPristineRestored: strictScratchRestored,
     qualification: false, acceptanceRegrade: false, historicalRedRecreated: false,
-    limits: "Current synthetic engine assertions only; not rendered A3 acceptance, independent archive custody or historical pre-fix execution.",
+    limits: onlyA3Strict
+      ? "Current synthetic engine assertions only; not rendered A3 acceptance, independent archive custody or historical pre-fix execution."
+      : "Current source assertions with their declared fixture boundaries only; not rendered pixels, acceptance, independent archive custody or historical pre-fix execution.",
   }, null, 2)}\n`, { mode: 0o600 });
 };
 
 if (strictMode) {
   need(process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted"
-    && process.platform === "linux", "A3 strict mutation execution requires GitHub-hosted Linux");
+    && process.platform === "linux", "Strict mutation execution requires GitHub-hosted Linux");
   const options = argv.flatMap((value, index) => value === "--output" ? [argv[index + 1]] : []);
-  need(options.length === 1 && typeof options[0] === "string" && isAbsolute(options[0]), "A3 strict profiles require one absolute --output");
+  need(options.length === 1 && typeof options[0] === "string" && isAbsolute(options[0]), "Strict profiles require one absolute --output");
   const output = resolve(/** @type {string} */ (options[0]));
   const runnerTemp = realpathSync(process.env.RUNNER_TEMP ?? "");
   const repo = realpathSync(strictGit("rev-parse", "--show-toplevel").toString().trim());
   need(!existsSync(output) && realpathSync(dirname(output)) === dirname(output) && inside(runnerTemp, output)
-    && !inside(repo, output), "A3 evidence must be a fresh external runner-temp directory");
-  need(!process.env.ATLAS_DATASET_DIR?.trim(), "A3 strict source selection does not admit an external dataset override");
+    && !inside(repo, output), "Strict evidence must be a fresh external runner-temp directory");
+  need(!process.env.ATLAS_DATASET_DIR?.trim(), "Strict source selection does not admit an external dataset override");
   mkdirSync(output, { mode: 0o700 });
   strictOutput = output;
   // An admission failure still leaves a visibly incomplete record beside the caller's log.
   saveStrict();
   const commit = strictGit("rev-parse", "HEAD").toString().trim();
   const tree = strictGit("rev-parse", "HEAD^{tree}").toString().trim();
-  need(/^[0-9a-f]{40}$/.test(commit) && commit === process.env.GITHUB_SHA, "A3 checkout must match the workflow's full SHA");
-  need(strictGit("status", "--porcelain=v1", "--untracked-files=all").length === 0, "A3 checkout must start clean");
+  need(/^[0-9a-f]{40}$/.test(commit) && commit === process.env.GITHUB_SHA, "Strict checkout must match the workflow's full SHA");
+  need(strictGit("status", "--porcelain=v1", "--untracked-files=all").length === 0, "Strict checkout must start clean");
   /** @type {Record<string, unknown>} */
   const inputs = {};
   const packageInputs = new Set([
@@ -759,7 +795,7 @@ if (strictMode) {
   for (const path of paths.sort()) {
     const absolute = join(repo, path);
     const bytes = ordinaryBytes(absolute);
-    need(bytes.equals(strictGit("cat-file", "blob", `${commit}:${path}`)), `A3 input differs from selected Git: ${path}`);
+    need(bytes.equals(strictGit("cat-file", "blob", `${commit}:${path}`)), `Strict input differs from selected Git: ${path}`);
     checkoutInputs.set(absolute, bytes);
     inputs[path] = { bytes: bytes.length, sha256: sha(bytes), gitBlob: strictGit("rev-parse", `${commit}:${path}`).toString().trim() };
   }
@@ -777,7 +813,7 @@ if (strictMode) {
     runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT, job: process.env.GITHUB_JOB,
     runnerEnvironment: process.env.RUNNER_ENVIRONMENT, node: process.version, inputs };
   writeFileSync(join(output, "source-before.json"), `${JSON.stringify(sourceBefore, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  console.log(`A3 SOURCE checkout/tested=${commit} tree=${tree} PR-head=${prHead ?? "not-a-PR"}; evidence=${output}`);
+  console.log(`${onlyA3Strict ? "A3" : "CLAIM"} SOURCE checkout/tested=${commit} tree=${tree} PR-head=${prHead ?? "not-a-PR"}; evidence=${output}`);
   saveStrict();
 }
 

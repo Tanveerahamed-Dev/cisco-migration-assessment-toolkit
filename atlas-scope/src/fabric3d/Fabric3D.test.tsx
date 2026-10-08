@@ -656,9 +656,11 @@ describe("fabric tree", () => {
   it("states the unobserved denominators rather than implying completeness", () => {
     const m = mount(<Fabric3D />);
     const foot = m.container.querySelector(".fabric3d__tree-foot");
-    const uncollected = fabric.devices.filter((d) => !d.collected).length;
+    const inventoried = fabric.devices.filter((d) => d.inventoried).length;
     const unmeasured = fabric.links.filter((l) => l.isBridge === null).length;
-    expect(foot?.textContent).toContain(`${uncollected} not collected`);
+    expect(foot?.textContent).toContain(`${fabric.devices.length} devices, ${fabric.links.length} links.`);
+    expect(foot?.textContent).toContain(`${inventoried} with inventory records; ${fabric.devices.length - inventoried} without inventory records.`);
+    expect(foot?.textContent).toContain("Inventory and topology presence do not establish collection completeness.");
     expect(foot?.textContent).toContain(`${unmeasured} links have no centrality measurement`);
     m.unmount();
   });

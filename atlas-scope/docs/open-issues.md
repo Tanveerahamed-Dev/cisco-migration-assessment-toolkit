@@ -7098,6 +7098,17 @@ are not hosted execution, rendered proof or acceptance.
   prints a bare "0 not collected", telling the reader every host was collected (absence rendered as health). Minors: the
   partial-only fleet rule is unpinned; "not collected" counts different sets on different surfaces; the per-clause device
   scope still keys on the `collected` flag.
+  **W21 preparation, 2026-10-08 (not a re-grade):** A separate branch from merged main `50ab8dcf`
+  addresses only the Fabric-list footer. The compiler's `inventoried` field owns device-record
+  presence; its legacy `collected` flag can be true from that presence alone and cannot establish a
+  collection outcome. Report inventory-record membership and its without-record complement, with
+  an explicit collection-completeness limitation. Real rendered controls and hosted mutations must
+  distinguish these fields, preserve zero/mixed/empty record denominators and retain the existing link
+  centrality disclosure. No new collection-state classifier, compiler family, camera or label
+  layout is imported. StatusBar/CoverageBar, per-clause scope and the broader B7 findings remain
+  open. B2 remains separate because visible bounds need the A5 × B2 layout/orbit witness; a DOM
+  scope assertion alone cannot refute the known overlap. B7 remains **FAIL**, and all historical
+  refutations remain evidence rather than qualification of the new source.
 - **D2 (FAIL) — two rounds; last on `7c642f10`: BLOCKER.** In the windowed grid (compact density grouped by Device, 369 rows,
   over the 200-row threshold) a focused row scrolled away by the mouse wheel unmounts, focus drops to `<body>`, the grid
   has no tabindex=0 cell, and PageDown/ArrowDown do nothing. A third repair was interrupted (WIP `93f4f5b6`, unverified).
