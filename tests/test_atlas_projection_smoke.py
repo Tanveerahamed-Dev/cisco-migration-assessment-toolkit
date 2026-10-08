@@ -36,9 +36,9 @@ def run_projection_smoke(monkeypatch, projection_responses, mutate=None):
         [raw, {"x-snapshot-sha256": hashlib.sha256(raw).hexdigest(), "x-snapshot-bytes": str(len(raw)),
                "x-snapshot-digest-form": "assesshub-store-blob", "cache-control": "no-store"}],
         [{**context, "payload": overview}, {"cache-control": "no-store",
-                                            "x-atlas-native-validation": "jsonschema-rs/0.58.4"}],
+                                            "x-atlas-native-validation": "jsonschema-rs/0.58.5"}],
         [{**context, "list": later}, {"cache-control": "no-store",
-                                      "x-atlas-native-validation": "jsonschema-rs/0.58.4"}],
+                                      "x-atlas-native-validation": "jsonschema-rs/0.58.5"}],
     ]
     if mutate:
         mutate(responses)
@@ -83,6 +83,7 @@ def test_projection_smoke_requires_nonce_before_any_request(monkeypatch):
     "raw_digest", "raw_bytes", "raw_form", "view_binding", "view_schema", "owner_value",
     "source_state", "source_metadata", "page_total", "page_items", "later_rows", "cache",
     "native_missing_view", "native_missing_list", "native_wrong_version", "native_stock",
+    "native_previous_version_view", "native_previous_version_list",
 ])
 def test_projection_smoke_refuses_drift(monkeypatch, projection_responses, mutation):
     def mutate(responses):
@@ -104,6 +105,8 @@ def test_projection_smoke_refuses_drift(monkeypatch, projection_responses, mutat
         elif mutation == "native_missing_view": responses[2][1].pop("x-atlas-native-validation")
         elif mutation == "native_missing_list": responses[3][1].pop("x-atlas-native-validation")
         elif mutation == "native_wrong_version": responses[2][1]["x-atlas-native-validation"] = "jsonschema-rs/0.58.3"
+        elif mutation == "native_previous_version_view": responses[2][1]["x-atlas-native-validation"] = "jsonschema-rs/0.58.4"
+        elif mutation == "native_previous_version_list": responses[3][1]["x-atlas-native-validation"] = "jsonschema-rs/0.58.4"
         elif mutation == "native_stock": responses[2][1]["x-atlas-native-validation"] = "jsonschema/4.26.0"
     with pytest.raises(SystemExit, match="frozen UI projection smoke failed"):
         run_projection_smoke(monkeypatch, projection_responses, mutate)

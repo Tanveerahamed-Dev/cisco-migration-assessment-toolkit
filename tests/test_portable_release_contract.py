@@ -217,16 +217,22 @@ def test_native_package_custody_requires_metadata_extension_and_unchanged_upstre
         changed = [row for row in members if row["path"] != omitted]
         with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
             subject._validate_native_package_members(changed)
-    for field, replacement in (("bytes", 245180), ("sha256", "0" * 64)):
+    for field, replacement in (
+        ("bytes", 245180), ("sha256", "0" * 64),
+        # The previous wheel's actual SBOM is not evidence for this provider version.
+        ("bytes", 245181),
+        ("sha256", "fc02e97118764c2c8e0e67bc1f0fc554cda259a4925e944677894d0792cf6a88"),
+    ):
         changed = copy.deepcopy(members)
         next(row for row in changed if row["path"].endswith(".cyclonedx.json"))[field] = replacement
         with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
             subject._validate_native_package_members(changed)
     # A differently versioned metadata folder cannot satisfy the reviewed provider identity.
-    changed = [{**row, "path": row["path"].replace("0.58.4.dist-info", "0.58.3.dist-info")}
-               for row in members]
-    with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
-        subject._validate_native_package_members(changed)
+    for refused_version in ("0.58.3", "0.58.4"):
+        changed = [{**row, "path": row["path"].replace("0.58.5.dist-info", f"{refused_version}.dist-info")}
+                   for row in members]
+        with pytest.raises(subject.PortableReleaseError, match="native validator runtime evidence"):
+            subject._validate_native_package_members(changed)
 
 
 def test_real_python_manifest_cannot_omit_native_evidence_even_with_reauthored_totals(tmp_path):
@@ -248,15 +254,15 @@ def test_real_python_manifest_cannot_omit_native_evidence_even_with_reauthored_t
 
 def test_native_package_mit_fallback_is_exact_and_does_not_claim_component_license_closure(tmp_path):
     root = Path(__file__).resolve().parents[1]
-    fallback = subject._license_fallbacks(root)["pypi:jsonschema-rs@0.58.4"]
+    fallback = subject._license_fallbacks(root)["pypi:jsonschema-rs@0.58.5"]
     assert fallback["bytes"] == 1075
     assert fallback["sha256"] == "117829c3ca21efb132d81a44b55363d395ab8eea18526873bc828da4c0e5f038"
     assert "Permission is hereby granted" in fallback["content"]
-    assert "f864033d8ae481b5c96985a4ca6990e4375614ac" in fallback["source"]
+    assert "13ab58cf82ab0ae5192762efbfc2850078ccff7a" in fallback["source"]
     assert "not individual Rust component license texts" in fallback["source_identity"]
     assert "not independently verified linked components" in subject.NOTICES_INFERENCE_BOUNDARY
     registry = {"schema": "atlas.portable-license-fallbacks/1", "entries": [{
-        "key": "pypi:jsonschema-rs@0.58.4", "license_file": "LICENSE",
+        "key": "pypi:jsonschema-rs@0.58.5", "license_file": "LICENSE",
         "license_sha256": fallback["sha256"], "source": fallback["source"],
         "source_identity": fallback["source_identity"],
     }]}

@@ -113,8 +113,14 @@ def test_push_filter_and_classifier_share_the_exact_path_policy():
         ".github/scripts/test_observe_vite_distribution.py",
         ".github/scripts/frontend_candidate_materials.py",
         ".github/scripts/test_frontend_candidate_materials.py",
+        ".github/scripts/observe_jsonschema_rs_wheel.py",
+        "tests/test_jsonschema_rs_observation.py",
         "master-reference/release/pipeline.py",
         "portable/release_contract.py",
+        "portable/atlas_bundle.py",
+        "portable/windows-x64-requirements.lock",
+        "portable/third-party-license-fallbacks.json",
+        "portable/third-party-licenses/jsonschema-rs-LICENSE",
         "tests/test_webapp_ci_scope.py",
         "tests/test_frontend_artifact_workflow_contract.py",
     ],
@@ -352,13 +358,13 @@ def test_every_tests_helper_a_webapp_test_imports_engages_webapp_ci():
     assert sorted(path for path in helpers if not SCOPE.path_is_relevant(path)) == []
 
 
-MANUAL_FLAGS = ("prepare_frontend_dependencies", "receive_frontend_artifact", "observe_vite_distribution", "refresh_visual_baselines")
+MANUAL_FLAGS = ("prepare_frontend_dependencies", "receive_frontend_artifact", "observe_vite_distribution", "refresh_visual_baselines", "observe_jsonschema_rs")
 CANONICAL_TEST_SRI = "sha512-" + base64.b64encode(bytes(64)).decode()
 
 
 def _manual_values(operation=None):
     values = {name: "false" for name in MANUAL_FLAGS}
-    values.update(frontend_artifact_selection="", vite_distribution_integrity="")
+    values.update(frontend_artifact_selection="", vite_distribution_integrity="", jsonschema_rs_source_commit="")
     if operation:
         values[operation] = "true"
     if operation == "receive_frontend_artifact":
@@ -366,6 +372,8 @@ def _manual_values(operation=None):
         values["frontend_artifact_selection"] = '{"schema":"frontend-artifact-selection/1","profile":"dependency-candidate"}'
     if operation == "observe_vite_distribution":
         values["vite_distribution_integrity"] = CANONICAL_TEST_SRI
+    if operation == "observe_jsonschema_rs":
+        values["jsonschema_rs_source_commit"] = "a" * 40
     return values
 
 
@@ -384,14 +392,15 @@ def test_manual_preflight_refuses_every_pair_of_operations(first, second):
 
 
 @pytest.mark.parametrize("value", ["", "True", "TRUE", "0", " false", False])
-def test_manual_flags_are_typed_environment_booleans(value):
+@pytest.mark.parametrize("flag", MANUAL_FLAGS)
+def test_manual_flags_are_typed_environment_booleans(value, flag):
     values = _manual_values()
-    values["prepare_frontend_dependencies"] = value
+    values[flag] = value
     with pytest.raises(ValueError):
         SCOPE.validate_manual_operations("workflow_dispatch", values)
 
 
-@pytest.mark.parametrize("field", ["frontend_artifact_selection", "vite_distribution_integrity"])
+@pytest.mark.parametrize("field", ["frontend_artifact_selection", "vite_distribution_integrity", "jsonschema_rs_source_commit"])
 def test_disabled_manual_operation_refuses_even_whitespace_extra_data(field):
     values = _manual_values()
     values[field] = " "
@@ -416,12 +425,24 @@ def test_observer_preflight_requires_canonical_exact_sha512(integrity):
         SCOPE.validate_manual_operations("workflow_dispatch", values)
 
 
+@pytest.mark.parametrize("commit", ["", " ", "a" * 39, "a" * 64, "A" * 40, "g" * 40, "a" * 40 + "\n", False])
+def test_native_observer_preflight_requires_exact_source_commit(commit):
+    values = _manual_values("observe_jsonschema_rs")
+    values["jsonschema_rs_source_commit"] = commit
+    with pytest.raises(ValueError):
+        SCOPE.validate_manual_operations("workflow_dispatch", values)
+
+
 def test_manual_preflight_refuses_cross_operation_payloads_and_wrong_event():
     receive = _manual_values("receive_frontend_artifact")
     receive["vite_distribution_integrity"] = CANONICAL_TEST_SRI
     observe = _manual_values("observe_vite_distribution")
     observe["frontend_artifact_selection"] = '{"unexpected":"payload"}'
-    for values in (receive, observe):
+    native = _manual_values("observe_jsonschema_rs")
+    native["vite_distribution_integrity"] = CANONICAL_TEST_SRI
+    other_with_native_source = _manual_values("observe_vite_distribution")
+    other_with_native_source["jsonschema_rs_source_commit"] = "a" * 40
+    for values in (receive, observe, native, other_with_native_source):
         with pytest.raises(ValueError):
             SCOPE.validate_manual_operations("workflow_dispatch", values)
     with pytest.raises(ValueError, match="workflow_dispatch"):

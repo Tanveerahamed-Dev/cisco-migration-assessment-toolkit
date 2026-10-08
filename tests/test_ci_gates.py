@@ -702,7 +702,7 @@ def test_jsonschema_dependency_contract_rejects_mutations(mutation):
 
 def _assert_native_validator_dependency_contract(owners):
     for owner in owners:
-        for name, pin in (("jsonschema-rs", "jsonschema-rs==0.58.4"),
+        for name, pin in (("jsonschema-rs", "jsonschema-rs==0.58.5"),
                           ("referencing", "referencing==0.37.0")):
             assert [item for item in owner if _requirement_name(item) == name] == [pin], (
                 "native response validation and offline registry require exact direct runtime pins"
@@ -725,7 +725,7 @@ def test_native_validator_and_offline_registry_pins_are_runtime_only():
 @pytest.mark.parametrize("owner", [0, 1, 2])
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "unbounded"])
 def test_native_validator_dependency_contract_rejects_drift(name, owner, mutation):
-    owners = [["jsonschema-rs==0.58.4", "referencing==0.37.0"] for _ in range(3)]
+    owners = [["jsonschema-rs==0.58.5", "referencing==0.37.0"] for _ in range(3)]
     pin = next(item for item in owners[owner] if _requirement_name(item) == name)
     if mutation == "missing":
         owners[owner].remove(pin)
@@ -733,6 +733,14 @@ def test_native_validator_dependency_contract_rejects_drift(name, owner, mutatio
         owners[owner].append(pin)
     else:
         owners[owner][owners[owner].index(pin)] = name + ">=0.1"
+    with pytest.raises(AssertionError):
+        _assert_native_validator_dependency_contract(owners)
+
+
+@pytest.mark.parametrize("owner", [0, 1, 2])
+def test_native_validator_dependency_contract_rejects_immediately_previous_pin(owner):
+    owners = [["jsonschema-rs==0.58.5", "referencing==0.37.0"] for _ in range(3)]
+    owners[owner][0] = "jsonschema-rs==0.58.4"
     with pytest.raises(AssertionError):
         _assert_native_validator_dependency_contract(owners)
 

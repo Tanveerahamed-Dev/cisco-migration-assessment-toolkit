@@ -57,8 +57,14 @@ RELEVANT_PATH_FILTERS = (
     ".github/scripts/test_observe_vite_distribution.py",
     ".github/scripts/frontend_candidate_materials.py",
     ".github/scripts/test_frontend_candidate_materials.py",
+    ".github/scripts/observe_jsonschema_rs_wheel.py",
+    "tests/test_jsonschema_rs_observation.py",
     "master-reference/release/pipeline.py",
     "portable/release_contract.py",
+    "portable/atlas_bundle.py",
+    "portable/windows-x64-requirements.lock",
+    "portable/third-party-license-fallbacks.json",
+    "portable/third-party-licenses/jsonschema-rs-LICENSE",
     "tests/test_webapp_ci_scope.py",
     "tests/test_frontend_artifact_workflow_contract.py",
     ".github/scripts/verify_repository_privacy.py",
@@ -67,9 +73,9 @@ RELEVANT_PATH_FILTERS = (
 _OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z", re.IGNORECASE)
 MANUAL_FLAGS = (
     "prepare_frontend_dependencies", "receive_frontend_artifact",
-    "observe_vite_distribution", "refresh_visual_baselines",
+    "observe_vite_distribution", "refresh_visual_baselines", "observe_jsonschema_rs",
 )
-MANUAL_INPUTS = (*MANUAL_FLAGS, "frontend_artifact_selection", "vite_distribution_integrity")
+MANUAL_INPUTS = (*MANUAL_FLAGS, "frontend_artifact_selection", "vite_distribution_integrity", "jsonschema_rs_source_commit")
 
 
 def validate_manual_operations(event_name: str, values: dict[str, str]) -> str:
@@ -88,6 +94,7 @@ def validate_manual_operations(event_name: str, values: dict[str, str]) -> str:
     operation = selected[0] if selected else "none"
     selection = values["frontend_artifact_selection"]
     integrity = values["vite_distribution_integrity"]
+    native_source = values["jsonschema_rs_source_commit"]
     if operation == "receive_frontend_artifact":
         if not selection or len(selection.encode("utf-8")) > 4096:
             raise ValueError("receipt requires a bounded nonempty selection")
@@ -121,6 +128,11 @@ def validate_manual_operations(event_name: str, values: dict[str, str]) -> str:
             raise ValueError("noncanonical SHA-512 integrity")
     elif integrity:
         raise ValueError("integrity supplied without observation operation")
+    if operation == "observe_jsonschema_rs":
+        if not re.fullmatch(r"[0-9a-f]{40}", native_source):
+            raise ValueError("native observation requires an exact lowercase source commit")
+    elif native_source:
+        raise ValueError("native source supplied without native observation operation")
     return operation
 
 

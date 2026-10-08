@@ -39,7 +39,7 @@ _DEFS = _OWNER["$defs"]
 _MAX_CONSTRUCTION_NODES = 8192
 _NO_RETRIEVAL = Registry()
 _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
-_NATIVE_VERSION = "0.58.4"
+_NATIVE_VERSION = "0.58.5"
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
 # W12 PR-B schema delta independently reviewed: compact ensure_ascii JSON plus LF,
@@ -486,7 +486,7 @@ class _NativeValidationSmoke:
                 headers = [(key, value) for key, value in message.get("headers", [])
                            if key.lower() != b"x-atlas-native-validation"]
                 if trace is not None and trace["complete"] and 200 <= message["status"] < 300:
-                    headers.append((b"x-atlas-native-validation", b"jsonschema-rs/0.58.4"))
+                    headers.append((b"x-atlas-native-validation", b"jsonschema-rs/0.58.5"))
                 message["headers"] = headers
             await send(message)
 

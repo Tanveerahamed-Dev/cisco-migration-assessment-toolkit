@@ -357,8 +357,8 @@ jsonschema==4.26.0 \
     --hash=sha256:0c26707e2efad8aa1bfc5b7ce170f3fccc2e4918ff85989ba9ffa9facb2be326 \
     --hash=sha256:d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce
     # via cyclonedx-python-lib
-jsonschema-rs==0.58.4 \
-    --hash=sha256:803612a214ce5ccb2ceefe87b3cab4711a7d04694479b5a22f82cb509635d9cc
+jsonschema-rs==0.58.5 \
+    --hash=sha256:f1e7d341ba53fc112a5c645f5f71834d9418f360c1d6f422c8c5314e95a65717
     # via cisco-migration-autofill (reviewed cp310-abi3-win_amd64 wheel only)
 jsonschema-specifications==2025.9.1 \
     --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe \
