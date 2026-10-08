@@ -657,8 +657,15 @@ describe("windowing declares itself through ARIA", () => {
     });
     // The rendered window moved; the announced position is still the logical one, so a screen
     // reader is never told "row 12" while the user sits at logical row 500.
-    const firstRendered = body.querySelector<HTMLElement>('[role="row"][aria-rowindex]');
+    const renderedRows = [...body.querySelectorAll<HTMLElement>('[role="row"][aria-rowindex]')];
+    const retained = renderedRows.filter((row) => row.style.position === "absolute");
+    expect(retained).toHaveLength(1);
+    expect(retained[0]!.getAttribute("aria-rowindex")).toBe("2"); // the one off-window roving entry
+    const normalRows = renderedRows.filter((row) => row.style.position !== "absolute");
+    const firstRendered = normalRows[0];
     expect(Number(firstRendered?.getAttribute("aria-rowindex"))).toBeGreaterThan(480);
+    expect(normalRows.length).toBeGreaterThan(1);
+    expect(renderedRows.length).toBeLessThan(200);
     expect(container.querySelector('[role="grid"]')?.getAttribute("aria-rowcount")).toBe("1001");
   });
 

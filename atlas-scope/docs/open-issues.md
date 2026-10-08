@@ -7132,6 +7132,21 @@ are not hosted execution, rendered proof or acceptance.
 - **D2 (FAIL) — two rounds; last on `7c642f10`: BLOCKER.** In the windowed grid (compact density grouped by Device, 369 rows,
   over the 200-row threshold) a focused row scrolled away by the mouse wheel unmounts, focus drops to `<body>`, the grid
   has no tabindex=0 cell, and PageDown/ArrowDown do nothing. A third repair was interrupted (WIP `93f4f5b6`, unverified).
+  **W26 current hosted baseline, 2026-10-08:** Draft #618 source `0a996cde`, actual tested merge
+  `bb8e0368`, Scope run `37791714976` attempt 1, independently reproduces the narrow retention
+  defect on unchanged `a97fdfc9` product inputs. The new eight-case browser probe is **FAIL**:
+  data/group original nodes detach, BODY takes focus and no grid tab stop remains; a query that
+  never entered the grid retains its own focus but loses the default grid stop. Five controls pass,
+  with left-grid/reentry bounded to a header roving state. All 41 phase/image pairs are complete;
+  later keyboard failures follow the lost focus rather than proving a separate PageDown defect.
+  The actual sample has 369 ARIA rows/368 body nodes, not a borrowed historical count. Data rows
+  measure 32px and group rows 30px including borders; preserve normal padding/flow rather than
+  subtracting an assumed 32px for an extra retained group. A first connection-aborted diagnostic
+  read and the single identity-revalidated bounded recovery are both retained. The candidate and
+  strict isolated refutation are still being prepared; no passing candidate or D2 re-grade follows.
+  The fixed historical baseline must be removed from reusable main CI, with current-source
+  binding and fresh checks after re-anchoring to the next owner-merged main. Earlier failures,
+  unverified WIP and broader D2/A3/A6 limits remain.
 - **F6 / F2 (FAIL / UNPROVEN) — two rounds; last on `0adea948`: BLOCKER (F2).** "`npx vitest run` green" is still not shown:
   load timeouts still turn the suite red on a contended host, including two new slices, and the only full-suite run on this
   lineage exited 1. Minor (F6): the harness side of the capture pin has no unit test. A third repair was interrupted (WIP
