@@ -75,6 +75,17 @@ There is **one application**: the `main` branch of this repository on GitHub.
 
 ## Owner decisions
 
+**Decided — Claude and Codex work in parallel on disjoint rows (delegated owner, 2026-10-08).**
+The owner asked Claude to implement in parallel with Codex, not only to supervise.
+- **Claude holds:** W23, device-level G10/G11 on `claude/device-impact-spof`; and W24, G43 vocabulary rank and class on `claude/vocab-rank`.
+- **Codex keeps:** the remaining O79 repairs one PR at a time, with A6 and #604 parked. It then takes the G15 residual (`selections.stp_roots` as a fact list), G08 and G14.
+- **Gap status:** `docs/one-app-contract-gaps-status-2026-10-08.md` reconciles the 2026-09-30 register against `a816bfca`. Eight gaps are already closed.
+- **Process:**
+  - Rule 3 still applies: never edit the other agent's branch.
+  - Each agent independently refutes the other's pull requests.
+  - All verification stays hosted.
+  - The supervisor reviews and merges.
+
 **Decided — W21 merged; jsonschema-rs patch first (delegated owner, 2026-10-08):** #613 merged as `f6f76f2a`, ordered parents `50ab8dcf` and `2df8d5dd`, with exact-head/tested/merged/clean-merge tree `94e6fe7e`. Retire W21. Triage Dependabot #612's jsonschema-rs 0.58.4 to 0.58.5 proposal; this library was previously approved. If portable hashes or other pinned contracts need coordinated updates, use an owned small branch from current main with exact hashes and supersede #612; otherwise hand the bot PR over when green. Then take the next ready O79 repair separately, keeping A6 and #604 parked, followed by G10/G11, G15, G43, G08 and G14. All verification is hosted; the supervisor alone reviews and merges.
 
 **Decided — W20 merged; O79 repairs then coverage gaps (delegated owner, 2026-10-08):** #611 merged as `50ab8dcf`, ordered parents `b3b60237` and `c1603adb`, with exact-head/tested/merged/clean-merge tree `806611e2`. Retire W20 under rule 8. Dependabot already closed #610 after the dated ignore policy merged; no duplicate closeout is needed. Choose the next independently refutable O79 repair by readiness from B2, A5 × B2 composition, B7, D2, F6/F2, E5, C4/D4 and E4. Ship one repair per PR from current main with its own row. When O79 has no ready item, take coverage gaps in order G10/G11, G15, G43, G08 and G14. All verification remains hosted, rule-7 scans precede publication, and the supervisor alone reviews and merges each green head. A6 and #604 stay parked.
