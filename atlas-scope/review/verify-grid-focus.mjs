@@ -1,4 +1,4 @@
-/** W26: actual compact/Device-grouped PriorityQueue baseline, hosted only; no product repair. */
+/** W26: actual compact/Device-grouped PriorityQueue focus witness on the exact current hosted source. */
 import { chromium, expect } from "@playwright/test";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -9,8 +9,7 @@ import { checkBuildFreshness } from "./build-freshness.mjs";
 
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = realpathSync(resolve(PKG, ".."));
-const BASE_PRODUCT = "a97fdfc93fb1bb0c30b2a4b51fa81d2d75fa3aa7";
-const SELF = "atlas-scope/review/verify-grid-focus-baseline.mjs";
+const SELF = "atlas-scope/review/verify-grid-focus.mjs";
 const PORT = 4189, ORIGIN = `http://127.0.0.1:${PORT}`, WAIT_MS = 30000;
 const MAX_BYTES = 16 * 1024 * 1024;
 const SHARED = ["webapp/frontend/src/projectionEmbed.ts", "webapp/frontend/src/generated/openapi.ts", "webapp/frontend/src/test/projectionFixtures.ts"];
@@ -237,31 +236,23 @@ function source(expectedCommit) {
   check(/^[0-9]+$/.test(process.env.GITHUB_RUN_ID ?? "") && /^[1-9][0-9]*$/.test(process.env.GITHUB_RUN_ATTEMPT ?? "")
     && typeof process.env.GITHUB_JOB === "string" && process.env.GITHUB_JOB.length > 0, "hosted run/attempt/job identity required");
   check(git("status", "--porcelain") === "", "selected source checkout is dirty");
-  const baseline = spawnSync("git", ["cat-file", "-t", BASE_PRODUCT], { cwd: REPO, timeout: WAIT_MS, maxBuffer: MAX_BYTES });
-  check(baseline.status === 0 && baseline.stdout.toString("utf8").trim() === "commit", "fixed a97 baseline commit unavailable; require reviewed depth-two parent materialization, no fallback");
   const paths = ["atlas-scope", ...SHARED, "webapp/sample_data/sample_fleet.snapshot.json", ".github/workflows/atlas-scope-ci.yml", ".github/scripts/scope_compile_handoff.py"];
-  const head = entries("HEAD", paths);
+  const head = entries(expectedCommit, paths);
   check(Object.hasOwn(head, SELF) && Object.keys(head).length > 0 && JSON.stringify(head) === JSON.stringify(entries("HEAD", paths, true)), "tracked source/index closure differs");
   const flags = gitBytes("ls-files", "-v", "-z", "--", ...paths).toString("utf8").split("\0").filter(Boolean);
   check(flags.length === Object.keys(head).length && flags.every((row) => row.startsWith("H ")), "hidden or unsupported source index flags");
   const materials = {};
   for (const [path, identity] of Object.entries(head)) {
-    const bytes = ordinary(join(REPO, path)), committed = gitBytes("cat-file", "blob", `HEAD:${path}`);
+    const bytes = ordinary(join(REPO, path)), committed = gitBytes("cat-file", "blob", `${expectedCommit}:${path}`);
     check(bytes.equals(committed), "worktree source differs from its committed blob");
     materials[path] = { ...identity, bytes: bytes.length, sha256: sha(bytes) };
   }
-  const product = ["atlas-scope/src", "atlas-scope/tools", "atlas-scope/contracts", "atlas-scope/public", "atlas-scope/index.html", "atlas-scope/vite.config.ts",
-    "atlas-scope/vitest.config.ts", "atlas-scope/package.json", "atlas-scope/package-lock.json", "atlas-scope/.npmrc",
-    ...SHARED, "webapp/sample_data/sample_fleet.snapshot.json"];
-  const productEntries = (ref) => {
-    const selected = entries(ref, product);
-    // ls-tree does not support glob pathspec magic. Census the complete tracked Scope tree
-    // and select its root configuration family, preserving every path/mode/blob on each side.
-    Object.assign(selected, rootTsconfigFamily(ref));
-    return Object.fromEntries(Object.entries(selected).sort(([a], [b]) => a.localeCompare(b)));
-  };
-  check(JSON.stringify(productEntries(BASE_PRODUCT)) === JSON.stringify(productEntries("HEAD")), "baseline product differs from selected unmodified main");
-  return { commit: expectedCommit, tree: git("rev-parse", "HEAD^{tree}"), productBaseline: BASE_PRODUCT, productInputsEqualBaseline: true,
+  const configurationFamily = rootTsconfigFamily(expectedCommit);
+  const indexFamily = rootTsconfigFamily(expectedCommit, (ref, selected) => entries(ref, selected, true));
+  check(["tsconfig.json", "tsconfig.config.json", "tsconfig.scripts.json"].every((name) => Object.hasOwn(configurationFamily, `atlas-scope/${name}`))
+    && JSON.stringify(configurationFamily) === JSON.stringify(indexFamily), "current configuration family/index closure differs");
+  check(git("rev-parse", "HEAD") === expectedCommit && git("status", "--porcelain") === "", "source changed during current-source binding");
+  return { commit: expectedCommit, tree: git("rev-parse", `${expectedCommit}^{tree}`), configurationFamily, currentSourceOnly: true,
     actualProbeSourceIsHistoricalReplay: false, githubSha: process.env.GITHUB_SHA, prHead: process.env.PR_HEAD_SHA ?? null,
     runId: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT, job: process.env.GITHUB_JOB,
     event: process.env.GITHUB_EVENT_NAME, githubRef: process.env.GITHUB_REF, runner: process.env.RUNNER_ENVIRONMENT,
@@ -405,7 +396,7 @@ export async function main(args = process.argv.slice(2)) {
     const fd = openSync(join(output, name), constants.O_CREAT | constants.O_WRONLY | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try { writeFileSync(fd, raw); } finally { closeSync(fd); }
   };
-  const report = { schema: "atlas-scope.grid-focus-baseline/1", status: "FAIL", expectedCommit, productBaseline: BASE_PRODUCT,
+  const report = { schema: "atlas-scope.grid-focus/1", purpose: "current-source-retention-witness", status: "FAIL", expectedCommit,
     acceptanceRegrade: false, archiveCustody: false, historicalReplay: false, startedAt: new Date().toISOString(), source: null, sourceAfter: null,
     buildFreshness: null, configuredThreshold: 200, sourceRowEstimatePx: 32, cases: CASES.map((id) => ({ id, status: "INCOMPLETE", failures: [], observations: [], tabs: [], pageErrors: [], console: [], forbiddenRequests: [] })), failures: [] };
   let browser, server, before, serverLog = "", reportWritten = false;
@@ -612,7 +603,7 @@ export async function main(args = process.argv.slice(2)) {
     catch (error) { report.failures.push(`closing source: ${String(error)}`); }
     try { write("preview.log", Buffer.from(serverLog)); } catch (error) { report.failures.push(`preview log output: ${String(error)}`); }
     report.status = completeVerdict(report.cases, report.failures); report.finishedAt = new Date().toISOString();
-    reportWritten = save("grid-focus-baseline.json", report);
+    reportWritten = save("grid-focus.json", report);
     if (!reportWritten) report.status = "FAIL";
   }
   console.log(JSON.stringify({ status: report.status, reportWritten, cases: report.cases.map(({ id, status, failures }) => ({ id, status, failures })), failures: report.failures }));

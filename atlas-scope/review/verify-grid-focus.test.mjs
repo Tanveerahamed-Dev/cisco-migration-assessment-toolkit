@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
-import { CASES, beyondWindowFailures, caseEvidenceFailures, completeVerdict, exactArguments, frameFailures, normalWindow, pageDestination, pageFailures, retentionFailures, rootTsconfigFamily } from "./verify-grid-focus-baseline.mjs";
+import { CASES, beyondWindowFailures, caseEvidenceFailures, completeVerdict, exactArguments, frameFailures, normalWindow, pageDestination, pageFailures, retentionFailures, rootTsconfigFamily } from "./verify-grid-focus.mjs";
 
 if (process.env.GITHUB_ACTIONS !== "true" || process.env.RUNNER_ENVIRONMENT !== "github-hosted") throw new Error("pure probe controls run only on GitHub-hosted runners");
 
@@ -47,8 +47,11 @@ test("closed arguments accept one exact source and absolute output only", () => 
 
 test("root tsconfig family uses actual Git tree selection and preserves complete identity changes", () => {
   // Actual hosted Git route: unsupported ls-tree glob magic must fail this positive control.
-  const baseline = rootTsconfigFamily("a97fdfc93fb1bb0c30b2a4b51fa81d2d75fa3aa7");
-  assert.deepEqual(Object.keys(baseline), ["atlas-scope/tsconfig.config.json", "atlas-scope/tsconfig.json", "atlas-scope/tsconfig.scripts.json"]);
+  const selected = process.env.GITHUB_SHA;
+  assert.match(selected ?? "", /^[0-9a-f]{40}$/);
+  const baseline = rootTsconfigFamily(selected);
+  for (const required of ["atlas-scope/tsconfig.config.json", "atlas-scope/tsconfig.json", "atlas-scope/tsconfig.scripts.json"]) assert.ok(Object.hasOwn(baseline, required));
+  assert.ok(Object.keys(baseline).every((path) => /^atlas-scope\/tsconfig[^/]*\.json$/.test(path)));
   assert.deepEqual(rootTsconfigFamily("HEAD"), baseline);
   const select = (tree) => rootTsconfigFamily("synthetic-ref", (ref, paths) => {
     assert.equal(ref, "synthetic-ref"); assert.deepEqual(paths, ["atlas-scope"]); return tree;
