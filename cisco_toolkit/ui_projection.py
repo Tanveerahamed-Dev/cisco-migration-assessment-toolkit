@@ -569,8 +569,10 @@ LIMITATIONS += (
                 "(collected: false and a kind other than ap, phone or endpoint, or a cable end that joins no single "
                 "node) cannot account for endpoints behind that peer: a severity below High, a zero count and a "
                 "detail that names no simulated VLAN are withheld, and High and positive counts are published as "
-                "lower bounds that cite each such cable. Detail lists up to 8 per-VLAN examples and preserves the "
-                "owner's '+N more' disclosure; the row counts retain the full model totals.",
+                "lower bounds that cite each such cable. The owner writes one row per host: two rows naming one "
+                "exact host are each kept and unverified, with a witness to every such row, never picked between, "
+                "and a hold or bound that also applies is carried beside that doubt. Detail lists up to 8 per-VLAN "
+                "examples and preserves the owner's '+N more' disclosure; the row counts retain the full model totals.",
                 ["/topology/failure_impact"]),
     _limitation("path_route_model_only", "fib.trace_fib_path",
                 "This is an offline route-model query, not live traffic proof. It does not model VRF selection, "
@@ -4376,6 +4378,8 @@ _R_IMPACT_OFF_SCAN_UNREAD = ("unverified: off_scan_gw_vlans is not a count, so w
                              "switch's whole blast radius cannot be read")
 _R_IMPACT_NO_HOST = ("unverified: the row names no readable host, so whether its device's interface running-config "
                      "was captured cannot be checked")
+_R_IMPACT_DUP = ("unverified: {n} rows in failure_impact name this exact host, but analyze.compute_failure_impact "
+                 "writes one row per host, so no single row can be chosen")
 _R_IMPACT_NO_RUN_CONFIG = ("not collected: no interface of this device carries run_config_observed: true. build.py "
                            "marks every interface its scoped interface running-config capture ('show running-config "
                            "interface' or '| section ^interface') parsed, and takes SVI gateway addresses (svi_ip) "
@@ -4578,11 +4582,45 @@ def _impact_detail_pre(hold: Optional[_ImpactHold], bounds: Sequence[_ImpactBoun
     return pre
 
 
+def _impact_dup(ctx: _Ctx, raw: Any) -> Optional[_Withheld]:
+    """The doubt on a failure_impact row whose exact host text another row also names. analyze.compute_failure_impact
+    writes one row per host of its network model, so two rows naming one host (an exact copy or a contradicting
+    record) cannot each be the producer's row, and no single one can be chosen (the _R_AMBIG precedent, the same
+    exact-text key the device selection joins by). Row-level, as for a duplicated structural host pair: every such
+    row keeps its index and pointer and withholds each of its cells as unverified, with a witness to every row naming
+    the host, while the list and its other hosts stay published. ``None``: no readable host, or no other row names it."""
+    if not (isinstance(raw, dict) and _is_text(raw.get("host"))):
+        return None
+    same = ctx.index(("failure_impact",), ("host",)).get(raw["host"], [])
+    if len(same) < 2:
+        return None
+    return _UV, _R_IMPACT_DUP.format(n=len(same)), [("witness", ("failure_impact", j)) for j in same]
+
+
+def _ambiguous_pre(dup: _Withheld, inner: Optional[_Pre]) -> _Pre:
+    """A duplicated row's pre-check, in the module's precedence (analysis unavailable, then unverified, then not
+    collected; :func:`_impact_bound_state`, :func:`_topology_style`). The duplicate's unverified state wins over a
+    hold or bound that withholds the cell as not collected, because that hold reads a row no one can say is the
+    producer's; a bound that is analysis_unavailable (a failed cable map) wins over it. Either way the other reason
+    and its witnesses are carried beside, so both negative observations survive (the _selection_rows precedent for a
+    duplicate with a capture gap)."""
+    def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
+        early = inner(raw, row) if inner is not None else None
+        if early is None:
+            return dup
+        more = list(early[2]) if len(early) > 2 else []
+        if early[0] == AU:
+            return AU, f"{early[1]}; {dup[1]}", more + dup[2]
+        return dup[0], f"{dup[1]}; {early[1]}", dup[2] + more
+    return pre
+
+
 def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     """One failure-impact row, shared by the fleet topology and the device page (one builder, one state)."""
     row = _list_row(("failure_impact", i), raw, ("failure_impact",))
     basis = "analyze.compute_failure_impact:failure_impact[]."
     out = {"index": i, "pointer": json_pointer(*row.toks)}
+    dup = _impact_dup(ctx, raw)
     hold = _impact_hold(ctx, row)
     off_scan = _impact_off_scan(row)
     bounds: List[_ImpactBound] = []
@@ -4601,9 +4639,15 @@ def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
         measure = field in _IMPACT_MEASURES
         pre = (_impact_pre(hold, field, bounds) if measure
                else _impact_detail_pre(hold, bounds) if field == "detail" else None)
+        if dup is not None:
+            pre = _ambiguous_pre(dup, pre)
         out[field] = _cell(ctx, row, field, slot, basis + field, vocab=IMPACT_SEVERITIES, pre=pre,
                            caveats=("impact_scanned_scope",), witness=cite if measure else ())
-    out["node_refs"] = _topology_join(ctx, out["host"]["value"])
+    # host withheld by the duplicate doubt (not by a failed section): its join is withheld with it
+    held: Optional[_Withheld] = None
+    if dup is not None and out["host"]["state"] == dup[0] and out["host"].get("reason") == dup[1]:
+        held = dup
+    out["node_refs"] = _topology_join(ctx, out["host"]["value"], held)
     severity = out["severity"]
     # A withheld severity is never styled as a neutral impact band: the withheld-state precedence picks the token.
     out["style"] = _topology_style([out["host"], severity, out["node_refs"]],

@@ -1161,6 +1161,95 @@ def test_m_a_device_with_several_distinct_neighbours_stays_published(sample, doc
 
 
 # --------------------------------------------------------------------------------------------------
+# (n) two rows naming one host: the producer writes one row per host, so neither is chosen, on either surface
+# --------------------------------------------------------------------------------------------------
+IMPACT_CELLS = ("host",) + MEASURES + ("off_scan_gw_vlans", "detail")
+IMPACT_DUP = "unverified: 2 rows in failure_impact name this exact host"
+
+
+@pytest.mark.parametrize("mode", ["exact", "contradictory", "held_copy"])
+def test_n_two_rows_naming_one_host_are_unverified_and_agree_on_both_surfaces(sample, doc_validator,
+                                                                              topology_validator, mode):
+    snap = copy.deepcopy(sample)
+    rows = snap["failure_impact"]
+    first = _naming(rows, "core1", ("host",))[0]
+    src = rows[first]
+    assert src["severity"] == "High" and src["off_scan_gw_vlans"] == 0 and src["hard"] > 0, src
+    extra = copy.deepcopy(src)
+    if mode == "contradictory":                     # the same host, a clean bill instead of a hard partition
+        extra.update(severity="Info", vlans_impacted=0, stranded=0, hard=0, backup=0, fhrp=0,
+                     detail="No reachability impact from removing this switch (within the scan).")
+    elif mode == "held_copy":                       # a copy older than the off-scan marker: its own hold applies too
+        del extra["off_scan_gw_vlans"]
+    rows.append(extra)
+    dup = len(rows) - 1
+    pair = {(f"/failure_impact/{first}", "witness"), (f"/failure_impact/{dup}", "witness")}
+    fleet = _topology(snap, topology_validator)["failure_impact"]
+    assert fleet["state"] == PUB, fleet.get("reason")              # one doubted host never withholds the others
+    assert [it["index"] for it in fleet["items"]] == list(range(len(rows)))
+    for j in (first, dup):
+        row = fleet["items"][j]
+        assert row["pointer"] == f"/failure_impact/{j}"            # each row is kept, at its own index
+        for field in IMPACT_CELLS:
+            fact = row[field]
+            if mode == "held_copy" and j == dup and field == "off_scan_gw_vlans":
+                assert fact["state"] == NC, fact                     # a missing field carries no value to doubt
+                continue
+            assert fact["state"] == UV and fact["value"] is None, (mode, j, field, fact)
+            assert fact["reason"].startswith(IMPACT_DUP), (mode, j, field, fact["reason"])
+            assert pair <= _refs(fact), (mode, j, field)
+        join = row["node_refs"]                                      # nothing is joined for a withheld host
+        assert join["state"] == UV and join["items"] == [] and join["reason"] == row["host"]["reason"], join
+        assert pair <= _refs(join)
+        assert row["style"]["value"]["token"] == "unverified", row["style"]
+    assert {fleet["items"][j]["severity"]["value"] for j in (first, dup)} == {None}    # neither claim is published
+    # unverified wins over a not_collected hold (module precedence); the hold is carried beside, with its witness
+    for field in MEASURES + ("detail",):
+        copy_reason = fleet["items"][dup][field]["reason"]
+        assert ("predates the producer's assessability marker" in copy_reason) == (mode == "held_copy"), copy_reason
+        assert "predates" not in fleet["items"][first][field]["reason"], field
+    # every other host's row is exactly the sample's
+    clean = _topology(sample, topology_validator)["failure_impact"]["items"]
+    for j, row in enumerate(fleet["items"][:len(clean)]):
+        if j != first:
+            assert row == clean[j], j
+    # the device page holds the same two rows, cell for cell, in an unverified selection
+    sel = _page(snap, "core1", doc_validator)["failure_impact"]
+    assert sel["state"] == UV and "2 rows" in sel["reason"], sel
+    assert sel["items"] == [fleet["items"][first], fleet["items"][dup]]
+    # a failed section is analysis_unavailable before any duplicate doubt
+    snap["assessment_integrity"] = {"failure_impact": "failed"}
+    failed = _topology(snap, topology_validator)["failure_impact"]["items"]
+    for j in (first, dup):
+        assert all(failed[j][field]["state"] == AU for field in IMPACT_CELLS), j
+
+
+def test_n_distinct_hosts_stay_published_and_the_key_is_exact_text(sample, doc_validator, topology_validator):
+    """The control: one row per host is the producer's shape, so no sample row is doubted and each device row is its
+    fleet row. The key is the exact host text the device selection joins by, so a case variant is another host."""
+    hosts = [row["host"] for row in sample["failure_impact"]]
+    assert len(set(hosts)) == len(hosts)
+    fleet = _topology(sample, topology_validator)["failure_impact"]["items"]
+    for j, row in enumerate(fleet):
+        assert row["host"]["state"] == PUB, j
+        assert not any("name this exact host" in row[field].get("reason", "") for field in IMPACT_CELLS), j
+    for host in ("core1", "dist1"):
+        sel = _page(sample, host, doc_validator)["failure_impact"]
+        assert sel["state"] == PUB and sel["items"] == [fleet[_naming(sample["failure_impact"], host, ("host",))[0]]]
+    snap = copy.deepcopy(sample)
+    first = _naming(snap["failure_impact"], "core1", ("host",))[0]
+    variant = copy.deepcopy(snap["failure_impact"][first])
+    variant["host"] = "CORE1"
+    snap["failure_impact"].append(variant)
+    items = _topology(snap, topology_validator)["failure_impact"]["items"]
+    assert items[first] == fleet[first]                                  # core1's own row is untouched
+    assert items[-1]["host"]["state"] == PUB and items[-1]["host"]["value"] == "CORE1"
+    assert not any("name this exact host" in items[-1][field].get("reason", "") for field in IMPACT_CELLS)
+    sel = _page(snap, "core1", doc_validator)["failure_impact"]
+    assert sel["state"] == PUB and sel["items"] == [items[first]], sel.get("reason")
+
+
+# --------------------------------------------------------------------------------------------------
 # (e) a failed or malformed source is withheld as such, never an empty page
 # --------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("section, key, mode, want", [

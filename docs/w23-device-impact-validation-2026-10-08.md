@@ -405,22 +405,59 @@ data) now states the rule.
 `test_two_rows_naming_one_device_are_unverified_never_picked_between` already combined the two
 fixtures. It now also pins, in the combined state, both duplicate witnesses and both rows.
 
-**Effect on the sample.** No `link_centrality` pair repeats and no list is malformed, so no sample
-row or selection changes (read with `json.load`).
+**C-4 (same class as C-2): duplicate impact rows on the fleet. Fixed in the shared builder
+`_topology_impact`.** Before this, the device selection marked two rows naming one host
+`unverified` at list level (`unique=True`), but each row's cells, and both fleet rows, kept their
+published values, so the two surfaces disagreed.
 
-**Residuals of the same class (not changed here)**
-- **Duplicate impact rows on the fleet.** The fleet `/topology/failure_impact` list does not flag
-  two rows that name one host. The device page marks that selection `unverified` at list level,
-  but each row's cells keep their published values on both surfaces. A row-level answer in
-  `_topology_impact` must first settle its precedence against the holds and bounds of rounds two
-  and three.
+*The producer.* `analyze.compute_failure_impact` writes one row per host of its network model.
+
+*The rule.* `_impact_dup` mirrors `_structural_dup`. Two or more rows may carry the same exact
+`host` text, the key the device selection joins by, so `Core1` and `core1` are different hosts.
+Then:
+- each row is kept at its own index;
+- every cell is withheld as `unverified` (`host`, the six measures, `off_scan_gw_vlans` and
+  `detail`), with `_R_IMPACT_DUP` and a witness to every row naming the host;
+- `node_refs` is withheld with the host, and no node is joined;
+- the style is `unverified`.
+
+The fleet list stays `published`, and the device selection keeps its list-level `unverified`.
+The device rows equal the fleet rows cell for cell, because one builder makes both.
+
+*Precedence: `unverified` wins over `not_collected`, as `_ambiguous_pre` implements.*
+- A failed `failure_impact` section is `analysis_unavailable` first. A missing field stays
+  `not_collected`, because it carries no value to doubt.
+- A hold or bound that would withhold a cell as `not_collected` loses to the duplicate's
+  `unverified`. That hold reads a row nobody can say is the producer's. This follows the
+  module's order (`analysis_unavailable`, then `unverified`, then `not_collected`:
+  `_impact_bound_state`, `_topology_style`, `_rolled`), and `_selection_rows`, where a duplicate
+  outranks a capture gap.
+- The hold's reason and witnesses are carried beside the doubt, so both negative observations
+  survive.
+- A bound that is `analysis_unavailable` (a failed cable map) wins over the duplicate, with the
+  duplicate carried beside it.
+- The `impact_scanned_scope` text (instance data) states the rule.
+
+*Tests (n).*
+- Exact, contradictory (a clean bill against `High`) and held-copy (no `off_scan_gw_vlans`)
+  duplicates. In each, both rows are withheld and keep their indices, and every other host's
+  fleet row equals the sample's. The device page holds the same two rows cell for cell, and the
+  held copy carries its legacy reason beside the doubt. A failed section stays
+  `analysis_unavailable`.
+- A distinct-hosts control: no sample row is doubted, and a case-variant host (`CORE1`) leaves
+  `core1` untouched.
+
+**Effect on the sample.** No `link_centrality` pair or `failure_impact` host repeats, and no list
+is malformed, so no sample row or selection changes (read with `json.load`).
+
+**Residual of the same class (not changed here)**
 - **Withheld lists drop the fleet qualifier.** `_listing` adds the `_fleet_qualify` caveat and its
   witnesses only to a `published` or `collected_but_empty` list. An `unverified` selection under
   blind spots elsewhere therefore carries neither. This is module-wide.
 
 **Schema and pins.** No limitation ID, property or keyword changed. Only the
-`topology_scanned_model` text changed, and that is instance data. Both hashes were recomputed
-locally with `_native_schema_hash` and are unchanged:
+`topology_scanned_model` and `impact_scanned_scope` texts changed, and those are instance data.
+Both hashes were recomputed locally with `_native_schema_hash` and are unchanged:
 
 - view: `a2fd2b9994569b2fd3a3df72e3410ae1b74ff41c26833a62239514c677f9de32`
 - list: `c47a6ceff24a7392fa9b248ece33b36381f9fd27fc67d3d52ea3d8238a37e0c9`
