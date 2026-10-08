@@ -1899,3 +1899,45 @@ def test_reaudited_topology_lists_use_native_and_float_views_stay_python(tmp_pat
         assert proof not in topology.headers and proof not in structural.headers
         path = client.get(path_url(sid), params=_PATH_QUERY, headers=headers)
         assert path.status_code == 200 and proof not in path.headers
+
+
+def test_whole_document_responses_carry_the_owner_vocab_and_list_pages_do_not(client, sample):
+    """G43: every view and path response carries the owner's constant vocab block beside its payload."""
+    from backend import ui_projection_api as api
+    from pydantic import ValidationError as ModelValidationError
+    sid = seed(client, sample)
+    expected = owner.project(sample)["vocab"]
+    assert expected == owner.project({})["vocab"]                      # constant per code version, never read back
+    host = next(iter(sample["devices"]))
+    bodies = {}
+    for view in api.VIEWS:
+        params = {"limit": 2, **({"host": host} if view == "device" else {})}
+        response = client.get(url(sid, view), params=params)
+        assert response.status_code == 200, response.text[:200]
+        bodies[view] = response.json()
+    path = client.get(path_url(sid), params=_PATH_QUERY)
+    assert path.status_code == 200, path.text[:200]
+    bodies["path"] = path.json()
+    for view, body in bodies.items():
+        assert body["vocab"] == expected, view
+    assert bodies["device"]["vocab"] == owner.project_device(sample, host)["vocab"]
+    pointer = next(iter(api.LIST_CATALOG["findings"]))
+    listed = client.get(url(sid, "findings") + "/lists", params={"pointer": pointer, "limit": 2}).json()
+    assert "vocab" not in listed and set(listed) >= {"list", "engine", "limitations"}
+    for branch in api._VIEW_SCHEMA["oneOf"]:
+        assert branch["properties"]["vocab"] == {"$ref": "#/$defs/Vocab"} and "vocab" in branch["required"]
+    assert api._PATH_SCHEMA["properties"]["vocab"] == {"$ref": "#/$defs/Vocab"}
+    assert "vocab" in api._PATH_SCHEMA["required"]
+    assert all("vocab" not in branch["properties"] for branch in api._LIST_SCHEMA["oneOf"])
+    forged = deepcopy(bodies["overview"])
+    forged["vocab"]["ranked"]["severity"]["items"][0]["class"] = "green"
+    with pytest.raises(ModelValidationError):
+        api.UiProjectionViewResponse.model_validate(forged)
+    missing = deepcopy(bodies["overview"])
+    missing.pop("vocab")
+    with pytest.raises(ModelValidationError):
+        api.UiProjectionViewResponse.model_validate(missing)
+    forged_path = deepcopy(bodies["path"])
+    forged_path.pop("vocab")
+    with pytest.raises(ModelValidationError):
+        api.UiProjectionPathResponse.model_validate(forged_path)
