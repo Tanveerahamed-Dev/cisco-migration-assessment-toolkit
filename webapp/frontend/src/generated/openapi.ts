@@ -8037,7 +8037,6 @@ export interface components {
             readonly schema: "ui_projection_transport/1";
             /** @constant */
             readonly view: "path";
-            readonly vocab: components["schemas"]["UiProjection1_Vocab"];
         };
         readonly UiProjectionViewResponse: {
             readonly engine: components["schemas"]["UiProjection1_Engine"];
@@ -8108,7 +8107,6 @@ export interface components {
             readonly schema: "ui_projection_transport/1";
             /** @constant */
             readonly view: "overview";
-            readonly vocab: components["schemas"]["UiProjection1_Vocab"];
         } | {
             readonly engine: components["schemas"]["UiProjection1_Engine"];
             readonly identity: {
@@ -8244,7 +8242,6 @@ export interface components {
             readonly schema: "ui_projection_transport/1";
             /** @constant */
             readonly view: "trust";
-            readonly vocab: components["schemas"]["UiProjection1_Vocab"];
         } | {
             readonly engine: components["schemas"]["UiProjection1_Engine"];
             readonly identity: {
@@ -8343,7 +8340,6 @@ export interface components {
             readonly schema: "ui_projection_transport/1";
             /** @constant */
             readonly view: "inventory";
-            readonly vocab: components["schemas"]["UiProjection1_Vocab"];
         } | {
             readonly engine: components["schemas"]["UiProjection1_Engine"];
             readonly identity: {
@@ -8399,7 +8395,6 @@ export interface components {
             readonly schema: "ui_projection_transport/1";
             /** @constant */
             readonly view: "findings";
-            readonly vocab: components["schemas"]["UiProjection1_Vocab"];
         } | {
             readonly engine: components["schemas"]["UiProjection1_Engine"];
             readonly identity: {
@@ -8475,7 +8470,6 @@ export interface components {
             readonly schema: "ui_projection_transport/1";
             /** @constant */
             readonly view: "topology";
-            readonly vocab: components["schemas"]["UiProjection1_Vocab"];
         } | {
             readonly engine: components["schemas"]["UiProjection1_Engine"];
             readonly identity: {
@@ -8680,7 +8674,6 @@ export interface components {
             readonly schema: "ui_projection_transport/1";
             /** @constant */
             readonly view: "device";
-            readonly vocab: components["schemas"]["UiProjection1_Vocab"];
         };
         /** ValidationError */
         readonly ValidationError: {

@@ -724,10 +724,7 @@ def _common_schema(view: str) -> dict[str, Any]:
             "engine": {"$ref": "#/$defs/Engine"}, "limitations": deepcopy(registry)}
 
 
-# Whole-document responses carry the owner's constant vocabulary block (G43) beside their payload; paged list
-# responses stay lean, their view document already holds it.
-_VIEW_SCHEMA = {"oneOf": [_closed({**_common_schema(view), "vocab": {"$ref": "#/$defs/Vocab"},
-                                   "payload": _view_schema(_DEFS[name])})
+_VIEW_SCHEMA = {"oneOf": [_closed({**_common_schema(view), "payload": _view_schema(_DEFS[name])})
                            for view, name in VIEWS.items()]}
 _LIST_SCHEMA = {"oneOf": [
     _closed({**_common_schema(view), "list": {
@@ -741,7 +738,7 @@ for _schema in (_VIEW_SCHEMA, _LIST_SCHEMA):
 _VALIDATORS = {"view": _NativeTransportValidator(_VIEW_SCHEMA, "view"),
                "list": _NativeTransportValidator(_LIST_SCHEMA, "list")}
 _PATH_SCHEMA = {
-    **_closed({**_common_schema("path"), "vocab": {"$ref": "#/$defs/Vocab"}, "payload": {"$ref": "#/$defs/Path"}}),
+    **_closed({**_common_schema("path"), "payload": {"$ref": "#/$defs/Path"}}),
     "$defs": _DEFS,
 }
 Draft202012Validator.check_schema(_PATH_SCHEMA)
@@ -876,8 +873,7 @@ def install_routes(app: FastAPI, store: Any) -> None:
         if document["engine"] != main["engine"] or document["path"]["query"] != expected_query:
             raise ValueError("Engine path changed its source or query context")
         response.headers["Cache-Control"] = "no-store"
-        return {**_common_document(main, binding, snapshot_id, "path"), "vocab": document["vocab"],
-                "payload": document["path"]}
+        return {**_common_document(main, binding, snapshot_id, "path"), "payload": document["path"]}
 
     @app.get("/api/snapshots/{snapshot_id}/ui-projection/{view}",
              response_model=UiProjectionViewResponse, operation_id="get_ui_projection_view")
@@ -888,7 +884,7 @@ def install_routes(app: FastAPI, store: Any) -> None:
     ) -> dict[str, Any]:
         document, common = _source_document(store, cache, snapshot_id, view, host)
         response.headers["Cache-Control"] = "no-store"
-        return {**common, "vocab": deepcopy(document["vocab"]), "payload": _page_view(document[view], view, limit)}
+        return {**common, "payload": _page_view(document[view], view, limit)}
 
     @app.get("/api/snapshots/{snapshot_id}/ui-projection/{view}/lists",
              response_model=UiProjectionListResponse, operation_id="get_ui_projection_list")

@@ -81,8 +81,8 @@ describe("Projection transport custody", () => {
   });
 });
 
-// G43: the synthetic vocabulary block is read from the generated contract, so these checks name no vocabulary,
-// token or count of their own; they hold the fixture to what that contract declares.
+// G43: the synthetic vocabulary block is read from the generated owner component, so these checks name no
+// vocabulary, token or count of their own; they hold the fixture to what that contract declares.
 type MutableVocab = {
   schema: string; classes: string[];
   ranked: Record<string, { owner: string; basis: string; items: { token: string; rank: number; class: string }[] }>;
@@ -102,7 +102,10 @@ describe("Synthetic vocabulary block from the generated contract", () => {
     expect(vocab.classes).toContain("undetermined");
     expect(vocabFixture()).not.toBe(vocab);
     expect(vocabFixture()).toEqual(vocab);
-    expect(topologyFixture().vocab).toEqual(vocab);
+  });
+  it("stays out of every transport envelope fixture, as the block stays out of the transport", () => {
+    expect(topologyFixture()).not.toHaveProperty("vocab");
+    expect(pathFixture()).not.toHaveProperty("vocab");
   });
   it.each<[string, (vocab: MutableVocab) => void]>([
     ["omits a ranked vocabulary", (vocab) => { delete vocab.ranked[Object.keys(vocab.ranked)[0]!]; }],

@@ -1,7 +1,7 @@
 // Hand-authored synthetic HTTP documents for renderer tests. No stored snapshot or customer data.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import type { Projection } from "../projection";
+import type { Schemas } from "../projection";
 export const published = <T,>(value: T) => ({ state: "published", value, subject: "/synthetic", refs: [], basis: "synthetic.owner" });
 export const withheld = () => ({ state: "not_collected", value: null, reason: "Synthetic input was not collected", subject: "/missing", refs: [], basis: "synthetic.owner" });
 const empty = (pointer: string) => ({ pointer, source_list: { state: "collected_but_empty", reason: "Synthetic source has no rows", subject: pointer, refs: [], basis: "synthetic.owner" }, page: { offset: 0, limit: 25, returned: 0, total: 0, has_more: false, items: [] } });
@@ -105,16 +105,18 @@ export function overviewRollupsFixture(sid = 1) {
     readiness: { groups: { ...groupPage, source_list: { ...groupPage.source_list, caveats: [caveat] } } },
   } };
 }
-// The engine's constant vocabulary block (G43), built from the generated contract that types this fixture:
-// src/generated/openapi.ts, which the frontend CI job's `npm run api:check` holds byte-equal to a fresh export of the
-// live backend contract. This file names no token: every vocabulary, token and tuple length is read from that
-// contract, so the fixture can neither omit a member nor keep a second, unchecked copy of an engine vocabulary. The
-// contract is tracked, so every consumer of these fixtures can read it (AssessHub Vitest and Playwright, Atlas Scope's
-// typecheck and Vitest); the untracked .generated/openapi.json exists only after an explicit export. Every item takes
-// rank 0 and class "undetermined": a synthetic block that orders nothing apart and draws no level, valid for every
-// vocabulary. An absent contract, a generated shape this reader does not know, or a block that does not cover the
-// contract throws; it never yields an empty block.
-type Vocab = Projection["vocab"];
+// The engine's constant vocabulary block (G43). It is a member of the engine's fleet, device and path documents
+// only: no transport envelope carries it (exposing it through the transport is a recorded follow-up), so common()
+// does not attach it. A synthetic block is built from the generated contract that types it: the owner component
+// UiProjection1_Vocab in src/generated/openapi.ts, which the frontend CI job's `npm run api:check` holds byte-equal
+// to a fresh export of the live backend contract. This file names no token: every vocabulary, token and tuple length
+// is read from that contract, so the fixture can neither omit a member nor keep a second, unchecked copy of an engine
+// vocabulary. The contract is tracked, so every consumer of these fixtures can read it (AssessHub Vitest and
+// Playwright, Atlas Scope's typecheck and Vitest); the untracked .generated/openapi.json exists only after an
+// explicit export. Every item takes rank 0 and class "undetermined": a synthetic block that orders nothing apart and
+// draws no level, valid for every vocabulary. An absent contract, a generated shape this reader does not know, or a
+// block that does not cover the contract throws; it never yields an empty block.
+type Vocab = Schemas["UiProjection1_Vocab"];
 interface VocabContract {
   readonly schema: string;
   readonly classes: readonly string[];
@@ -324,8 +326,7 @@ export function vocabFixture(): Vocab {
 export function common(sid: number, view: string) {
   return { schema: "ui_projection_transport/1", projection_schema: "ui_projection/1", view,
     identity: { snapshot_id: sid, sha256: `sha256:${"a".repeat(64)}`, bytes: 42, digest_form: "assesshub-store-blob" },
-    limitations: [], engine: { script_version: published("synthetic"), snapshot_schema: published("3.23.0"), generated_at: withheld(), collected_at: withheld(), snapshot_schema_supported: true, code_schema_version: "3.23.0" },
-    vocab: vocabFixture() };
+    limitations: [], engine: { script_version: published("synthetic"), snapshot_schema: published("3.23.0"), generated_at: withheld(), collected_at: withheld(), snapshot_schema_supported: true, code_schema_version: "3.23.0" } };
 }
 export function trustFixture(sid = 1) {
   return { ...common(sid, "trust"), payload: {
