@@ -95,6 +95,52 @@ const CONFIG_SIBLING_INPUTS = [
 
 /** @type {Mutation[]} */
 const MUTATIONS = [
+  /* ── Permanent and overlay inventory presence, not collection outcomes (O79 B7, W23) ── */
+  {
+    id: "b7-status-inventory-membership",
+    engine: "src/app/StatusBar.tsx",
+    record: "O79 B7 permanent inventory membership (W23)",
+    what: "a recordless collected node is counted as an inventory record",
+    edits: [{ file: "src/app/StatusBar.tsx",
+      find: "const inventoryRecords = fabric.devices.filter((d) => d.inventoried).length;",
+      replace: "const inventoryRecords = fabric.devices.filter((d) => d.collected).length;" }],
+    tests: ["src/app/StatusBar.inventory-b7.test.tsx"],
+    killedBy: /inventory membership witness: recordless collected nodes do not change inventory counts[\s\S]*AssertionError: inventory membership witness[\s\S]*expect\(/,
+    strictWitness: {
+      testName: "inventory membership witness: recordless collected nodes do not change inventory counts",
+      marker: "inventory membership witness",
+    },
+  },
+  {
+    id: "b7-status-collection-wording",
+    engine: "src/app/StatusBar.tsx",
+    record: "O79 B7 permanent coverage meaning (W23)",
+    what: "inventory presence is promoted to an unsupported collection outcome",
+    edits: [{ file: "src/app/StatusBar.tsx",
+      find: "Inventory-record presence does not establish collection completeness.",
+      replace: "All devices collected." }],
+    tests: ["src/app/StatusBar.inventory-b7.test.tsx"],
+    killedBy: /collection wording witness: absent collection basis is not a collector outcome[\s\S]*AssertionError: collection wording witness[\s\S]*expect\(/,
+    strictWitness: {
+      testName: "collection wording witness: absent collection basis is not a collector outcome",
+      marker: "collection wording witness",
+    },
+  },
+  {
+    id: "b7-overlay-collection-wording",
+    engine: "src/core/claims.ts",
+    record: "O79 B7 shared overlay coverage meaning (W23)",
+    what: "the shared coverage line relabels inventory records as collected devices",
+    edits: [{ file: "src/core/claims.ts",
+      find: "${inventoryRecords}/${total} inventory records · RIBs",
+      replace: "${inventoryRecords}/${total} collected · RIBs" }],
+    tests: ["src/app/StatusBar.inventory-b7.test.tsx"],
+    killedBy: /shared coverage witness: overlays state inventory presence rather than collection outcomes[\s\S]*AssertionError: shared coverage witness[\s\S]*expect\(/,
+    strictWitness: {
+      testName: "shared coverage witness: overlays state inventory presence rather than collection outcomes",
+      marker: "shared coverage witness",
+    },
+  },
   /* ── Fabric-list record presence is not a collection outcome (O79 B7, W21) ─────────────── */
   {
     id: "b7-collection-wording",

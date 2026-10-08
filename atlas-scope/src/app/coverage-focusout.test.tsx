@@ -42,7 +42,7 @@ function mount(): { outside: HTMLButtonElement } {
 const panel = (): Element | null => document.querySelector(".covpanel");
 
 describe("coverage disclosure focus-out", () => {
-  for (const trigger of ["collected", "claim strength"]) {
+  for (const trigger of ["inventory records", "claim strength"]) {
     it(`closes when focus leaves it (opened from "${trigger}")`, () => {
       const { outside } = mount();
       const btn = [...host!.querySelectorAll("button")].find((b) => b.textContent?.includes(trigger));
@@ -72,7 +72,7 @@ describe("coverage disclosure focus-out", () => {
     root = createRoot(host);
     act(() => root!.render(<StatusBar />));
     opener.focus();
-    const btn = [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("collected"))!;
+    const btn = [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("inventory records"))!;
     act(() => btn.click());
     expect(panel()).not.toBeNull();
     opener.remove();
@@ -92,8 +92,8 @@ describe("coverage disclosure focus-out", () => {
   it("stays open while focus moves among the status bar's own triggers", () => {
     mount();
     const buttons = [...host!.querySelectorAll("button")];
-    const collected = buttons.find((b) => b.textContent?.includes("collected"))!;
-    act(() => collected.click());
+    const inventory = buttons.find((b) => b.textContent?.includes("inventory records"))!;
+    act(() => inventory.click());
     const rib = buttons.find((b) => b.textContent?.includes("RIBs"))!;
     act(() => rib.focus());
     expect(panel()).not.toBeNull();

@@ -136,7 +136,7 @@ function statusFigures(): string[] {
     if (hit === undefined) throw new Error(`the status bar renders no figure matching ${re} (read: ${JSON.stringify(figs)})`);
     return hit;
   };
-  return [find(/^\d+\/\d+ collected$/), find(/^RIBs \d+\/\d+/), find(/^ACLs \d+\/\d+$/)];
+  return [find(/^\d+\/\d+ inventory records$/), find(/^RIBs \d+\/\d+/), find(/^ACLs \d+\/\d+$/)];
 }
 
 /** Every open overlay element in the document (portalled to <body>), excluding the status bar's. */
