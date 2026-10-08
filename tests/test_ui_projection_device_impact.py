@@ -289,13 +289,16 @@ def test_two_rows_naming_one_device_are_unverified_never_picked_between(sample, 
     assert [it["index"] for it in sel["items"]] == [first, dup]
     assert "collection gap" not in sel["reason"]
     assert _page(snap, "dist1", doc_validator)["failure_impact"]["state"] == PUB
-    # the duplicate keeps the device's own collection gap, and its witness, beside the ambiguity
+    # the duplicate keeps the device's own collection gap, and its witness, beside the ambiguity: both negative
+    # observations, each with its witnesses, and both stored rows
     snap["collection_completeness"]["devices"] = [
         {"host": "core1", "status": "partial", "data_quality": 75, "missing": ["switchport"]}]
     sel = _page(snap, "core1", doc_validator)["failure_impact"]
     assert sel["state"] == UV and "2 rows" in sel["reason"], sel
     assert "collection gap" in sel["reason"] and "switchport" in sel["reason"], sel["reason"]
-    assert ("/collection_completeness/devices/0/missing", "witness") in _refs(sel)
+    assert {(f"/failure_impact/{first}", "witness"), (f"/failure_impact/{dup}", "witness"),
+            ("/collection_completeness/devices/0/missing", "witness")} <= _refs(sel)
+    assert [it["index"] for it in sel["items"]] == [first, dup]
 
 
 @pytest.mark.parametrize("bad", ["not a row", None, {"severity": "High"}, {"host": 7}, {"host": ["core1"]}])
@@ -326,6 +329,74 @@ def test_an_unreadable_structural_row_makes_every_selection_unverified(sample, d
         assert sel["state"] == UV and "could name this device" in sel["reason"], (host, sel)
         assert (f"/link_centrality/{k}", "witness") in _refs(sel)
         assert [it["index"] for it in sel["items"]] == _naming(snap["link_centrality"], host, ENDS), host
+
+
+def test_a_valid_row_beside_an_unreadable_tail_is_kept_and_the_tail_witnessed(sample, doc_validator,
+                                                                            topology_validator):
+    """The refuter's counterexample: core1's valid row plus a copy of it whose host is null. The valid stored row is
+    kept (the fleet row itself), the selection is unverified for membership with a witness to the tail, and a capture
+    gap is carried beside that doubt with its own witness."""
+    snap = copy.deepcopy(sample)
+    first = _naming(snap["failure_impact"], "core1", ("host",))[0]
+    tail = copy.deepcopy(snap["failure_impact"][first])
+    tail["host"] = None
+    snap["failure_impact"].append(tail)
+    k = len(snap["failure_impact"]) - 1
+    topology = _topology(snap, topology_validator)
+    sel = _page(snap, "core1", doc_validator)["failure_impact"]
+    assert sel["state"] == UV and "1 row(s) in failure_impact cannot be joined" in sel["reason"], sel
+    assert "2 rows" not in sel["reason"]                   # a membership doubt, not a duplicate the join can see
+    assert (f"/failure_impact/{k}", "witness") in _refs(sel)
+    assert sel["items"] == [topology["failure_impact"]["items"][first]]
+    assert all(sel["items"][0][field]["state"] == PUB for field in ("host",) + MEASURES)
+    assert topology["failure_impact"]["items"][k]["host"]["state"] == UV       # the fleet withholds the tail's key
+    # the same device's structural selection reads another list: untouched by this tail
+    assert _page(snap, "core1", doc_validator)["structural_links"]["state"] == PUB
+    # a capture gap is carried beside the membership doubt, each with its witness
+    snap["collection_completeness"]["devices"] = [
+        {"host": "core1", "status": "partial", "data_quality": 75, "missing": ["switchport"]}]
+    sel = _page(snap, "core1", doc_validator)["failure_impact"]
+    assert sel["state"] == UV and "cannot be joined" in sel["reason"] and "switchport" in sel["reason"], sel
+    assert {(f"/failure_impact/{k}", "witness"), ("/collection_completeness/devices/0/missing", "witness")} <= (
+        _refs(sel))
+    assert [it["index"] for it in sel["items"]] == [first]
+    # the control: without the tail, the same device publishes its one row, unqualified
+    clean = _page(sample, "core1", doc_validator)["failure_impact"]
+    assert clean["state"] == PUB and clean["items"] == [topology["failure_impact"]["items"][first]]
+
+
+@pytest.mark.parametrize("source, key, rows, deep_empty", [
+    ("failure_impact", "failure_impact", [None, {"host": None}], True),
+    ("failure_impact", "failure_impact", [{"host": 7, "severity": "High"}], False),
+    ("link_centrality", "structural_links", [None, {"a_host": None, "b_host": None}], True),
+    ("link_centrality", "structural_links", [{"a_host": 7, "b_host": ["core1"], "is_bridge": True}], False),
+])
+def test_a_list_of_only_unreadable_members_is_unverified_with_a_witness_to_each(sample, doc_validator,
+                                                                              topology_validator, source, key, rows,
+                                                                              deep_empty):
+    """Malformed-only input: never 'not simulated' or 'no link' (an absent row), and never a clean absence. Every
+    member is witnessed on each device page and kept, withheld, on the fleet list. The other list is unaffected.
+    A list of deep-empty rows is one the abstention core calls empty: it stays unverified for that reason too."""
+    snap = copy.deepcopy(sample)
+    snap[source] = copy.deepcopy(rows)
+    members = {(f"/{source}/{j}", "witness") for j in range(len(rows))}
+    other = next(s for s in SECTIONS if s != key)
+    for host in ("core1", "podacc1"):
+        page = _page(snap, host, doc_validator)
+        sel = page[key]
+        assert sel["state"] == UV and "cannot be joined" in sel["reason"], (host, sel)
+        assert ("the abstention core calls this list empty" in sel["reason"]) == deep_empty, sel["reason"]
+        assert "an absent row is not 'no impact'" not in sel["reason"], host
+        assert "not proof that the device has no inter-switch link" not in sel["reason"], host
+        assert members <= _refs(sel), (host, sel["refs"])
+        assert sel["items"] == [], host
+        assert page[other]["state"] == PUB and not members & _refs(page[other]), (host, other)   # the control
+    fleet = _topology(snap, topology_validator)[key]
+    assert fleet["state"] == (UV if deep_empty else PUB), fleet.get("reason")
+    assert [it["index"] for it in fleet["items"]] == list(range(len(rows)))
+    for item in fleet["items"]:
+        field = "host" if key == "failure_impact" else "ends"
+        assert item[field]["state"] == UV and item[field]["value"] is None, item[field]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -982,6 +1053,111 @@ def test_l_a_neighbour_the_join_cannot_resolve_fails_closed(topology_validator, 
         assert ("/assessment_integrity/cable_map", "failure_record") in _refs(row["severity"])
     for field in ("host", "off_scan_gw_vlans"):
         assert row[field]["state"] == PUB and row[field]["value"] == src[field], field
+
+
+# --------------------------------------------------------------------------------------------------
+# (m) two rows naming one unordered host pair: the producer writes one record per pair, so neither is chosen
+# --------------------------------------------------------------------------------------------------
+STRUCTURAL_CELLS = ("ends", "betweenness", "is_bridge", "pairs_cut", "rank")
+STRUCTURAL_JOINS = ("a_nodes", "b_nodes", "host_pair_cable_refs")
+
+
+def _pair_row(rows, a, b):
+    """Independent: the index of the one stored link_centrality row naming the unordered pair {a, b}."""
+    hits = [i for i, r in enumerate(rows) if {r["a_host"], r["b_host"]} == {a, b}]
+    assert len(hits) == 1, (a, b, hits)
+    return hits[0]
+
+
+def test_m_the_real_producer_writes_one_record_per_unordered_host_pair():
+    """The invariant the projection relies on, pinned to analyze.compute_link_centrality: CDP seen from both ends of
+    one link, and a second parallel link between the same two switches, still make ONE record for the pair."""
+    interfaces = {"s1": {"Gi1": _trunk("Gi1", "s2", "Gi1", "10"), "Gi2": _trunk("Gi2", "s2", "Gi2", "10"),
+                         "Gi3": _trunk("Gi3", "s3", "Gi1", "10")},
+                  "s2": {"Gi1": _trunk("Gi1", "s1", "Gi1", "10"), "Gi2": _trunk("Gi2", "s1", "Gi2", "10")},
+                  "s3": {"Gi1": _trunk("Gi1", "s1", "Gi3", "10")}}
+    recs = analyze.compute_link_centrality(interfaces)
+    pairs = [frozenset((r["a_host"], r["b_host"])) for r in recs]
+    assert sorted(sorted(p) for p in pairs) == [["s1", "s2"], ["s1", "s3"]], recs
+    assert len(set(pairs)) == len(pairs)
+
+
+@pytest.mark.parametrize("mode", ["exact", "reversed", "contradictory"])
+def test_m_two_rows_naming_one_host_pair_are_unverified_on_both_surfaces(sample, doc_validator,
+                                                                         topology_validator, mode):
+    snap = copy.deepcopy(sample)
+    rows = snap["link_centrality"]
+    first = _pair_row(rows, "core1", "access1")
+    src = rows[first]
+    assert src["is_bridge"] is True and src["pairs_cut"] > 0, src
+    extra = copy.deepcopy(src)
+    if mode == "reversed":
+        extra.update(a_host=src["b_host"], a_port=src["b_port"], b_host=src["a_host"], b_port=src["a_port"])
+    elif mode == "contradictory":
+        extra["is_bridge"] = not src["is_bridge"]
+    rows.append(extra)
+    dup = len(rows) - 1
+    pair = {(f"/link_centrality/{first}", "witness"), (f"/link_centrality/{dup}", "witness")}
+    topology = _topology(snap, topology_validator)
+    fleet = topology["structural_links"]
+    assert fleet["state"] == PUB, fleet.get("reason")         # one doubted pair never withholds the other pairs
+    assert [it["index"] for it in fleet["items"]] == list(range(len(rows)))
+    for j in (first, dup):
+        row = fleet["items"][j]
+        assert row["pointer"] == f"/link_centrality/{j}"     # each row is kept, at its own index
+        for field in STRUCTURAL_CELLS:
+            fact = row[field]
+            assert fact["state"] == UV and fact["value"] is None, (mode, j, field, fact)
+            assert "2 rows in link_centrality name this unordered host pair" in fact["reason"], fact["reason"]
+            assert pair <= _refs(fact), (mode, j, field)
+        for field in STRUCTURAL_JOINS:                       # nothing is joined for withheld ends
+            join = row[field]
+            assert join["state"] == UV and join["items"] == [], (mode, j, field, join)
+            assert join["reason"] == row["ends"]["reason"], (mode, j, field)
+            assert pair <= _refs(join), (mode, j, field)
+        assert row["style"]["value"]["token"] == "unverified", row["style"]
+    # neither contradicting claim is published
+    assert {fleet["items"][j]["is_bridge"]["value"] for j in (first, dup)} == {None}
+    for j, row in enumerate(fleet["items"]):                 # every other pair stays the producer's one record
+        if j in (first, dup):
+            continue
+        assert all(row[field]["state"] == PUB for field in STRUCTURAL_CELLS), (j, row["ends"])
+        assert not pair & _refs(row["ends"]), j
+    # fleet and device agree: both ends' pages hold the same rows, in a published selection
+    for host in ("core1", "access1"):
+        sel = _page(snap, host, doc_validator)["structural_links"]
+        want = _naming(snap["link_centrality"], host, ENDS)
+        assert first in want and dup in want, (host, want)
+        assert sel["state"] == PUB, (host, sel.get("reason"))
+        assert sel["items"] == [fleet["items"][i] for i in want], host
+    # the control: the stored single record for that pair is published, its bridge claim included
+    clean = _topology(sample, topology_validator)["structural_links"]["items"][first]
+    assert all(clean[field]["state"] == PUB for field in STRUCTURAL_CELLS)
+    assert clean["is_bridge"]["value"] is True and clean["style"]["value"]["token"] == "structural_bridge"
+
+
+def test_m_a_device_with_several_distinct_neighbours_stays_published(sample, doc_validator, topology_validator):
+    """Per-device uniqueness would be wrong: a device has one record per neighbour, each a distinct pair."""
+    want = _naming(sample["link_centrality"], "core1", ENDS)
+    pairs = [frozenset((sample["link_centrality"][i]["a_host"], sample["link_centrality"][i]["b_host"]))
+             for i in want]
+    assert len(want) > 2 and len(set(pairs)) == len(pairs), want
+    snap = copy.deepcopy(sample)
+    # one more neighbour: a new pair that shares core1 with every existing one
+    other = next(h for h in sorted(sample["devices"]) if h != "core1" and frozenset(("core1", h)) not in pairs)
+    extra = copy.deepcopy(sample["link_centrality"][want[0]])
+    extra.update(a_host="core1", b_host=other)
+    snap["link_centrality"].append(extra)
+    fleet = _topology(snap, topology_validator)["structural_links"]["items"]
+    for base in (sample, snap):
+        rows = _naming(base["link_centrality"], "core1", ENDS)
+        sel = _page(base, "core1", doc_validator)["structural_links"]
+        assert sel["state"] == PUB and [it["index"] for it in sel["items"]] == rows, sel.get("reason")
+        for item in sel["items"]:
+            assert all(item[field]["state"] == PUB for field in STRUCTURAL_CELLS), item["pointer"]
+            assert not any("unordered host pair" in item[field].get("reason", "") for field in STRUCTURAL_CELLS)
+    assert _page(snap, "core1", doc_validator)["structural_links"]["items"] == [
+        fleet[i] for i in _naming(snap["link_centrality"], "core1", ENDS)]
 
 
 # --------------------------------------------------------------------------------------------------

@@ -335,3 +335,94 @@ before and after this round:
 - list: `c47a6ceff24a7392fa9b248ece33b36381f9fd27fc67d3d52ea3d8238a37e0c9`
 
 No local test, build or projection ran. The hosted gates and the next refutation decide.
+
+## Codex review
+
+Codex posted a read-only refutation of `e174471f` on #616: two P2 findings and a request to combine
+two fixtures. The branch had since moved to `b6b48170`, so each finding was checked against that
+code. This round changes behaviour only. The transport schema and both native pins are unchanged.
+
+**C-1 (P2): unreadable selector members. Already answered in `e3f63cca`; one gap closed here.**
+- `_selection_rows(..., strict=True)` uses `_unjoinable_rows`. A row the exact-key join cannot read
+  (not an object, or a key field that is missing or not text) makes the selection `unverified`,
+  with a witness to each such row. The valid stored rows stay in `items`, and a device capture gap
+  is carried beside the doubt with its own witness.
+- The gap: take a list whose rows are all deep-empty, such as `[null, {"host": null}]`. The
+  abstention core calls that list empty, so its base state was already `unverified`
+  (`_R_OWNER_EMPTY`). The strict check never ran, so no member had a witness. The strict and
+  duplicate checks now also run on an `unverified` list whose rows can still be read, and that
+  state's own reason is kept.
+- What "unaffected" means here: an unreadable member could be any device's row, so every device's
+  selection from that list is qualified. The device's other list is unaffected, and so is a clean
+  snapshot.
+- Existing tests: `test_an_unreadable_impact_row_makes_every_selection_unverified` (five shapes)
+  and `test_an_unreadable_structural_row_makes_every_selection_unverified`.
+- New tests:
+  - `test_a_valid_row_beside_an_unreadable_tail_is_kept_and_the_tail_witnessed`. This is Codex's
+    exact counterexample: `core1`'s valid row plus a copy of it with `host: null`. The test also
+    runs it with a capture gap, and has a clean control.
+  - `test_a_list_of_only_unreadable_members_is_unverified_with_a_witness_to_each`. Both lists,
+    with deep-empty and non-deep-empty members. The device's other list is the control.
+
+**C-2 (P2): duplicate structural host pairs. Fixed in the shared builder `_topology_structural`.**
+
+*The producer.* `analyze._topology_adjacency` keys its edges by `frozenset((a, b))`: the first link
+record wins, and self-loops are dropped. `compute_link_centrality` then writes one record per key. A
+new test pins this with the real producer: two parallel links still make one record.
+
+*The rule.* Two or more stored rows may name the same unordered `{a_host, b_host}` pair (exact
+text, in either orientation, found through `_Ctx.pairs`). Then:
+- each row is kept at its own index;
+- every claim cell is withheld as `unverified` (`ends`, `betweenness`, `is_bridge`, `pairs_cut`
+  and `rank`), with `_R_PAIR_AMBIG` and a witness to every row that names the pair;
+- `a_nodes`, `b_nodes` and `host_pair_cable_refs` are withheld with the ends: the same state,
+  reason and witnesses, and no node is joined;
+- the style is `unverified`.
+
+*Row level, not list level.* The doubt is which record belongs to the pair, not which rows the
+list holds. This follows two precedents:
+- `_resolve`'s `_R_AMBIG`: an ambiguous row is unverified as a whole, with a witness to each
+  candidate;
+- `_topology_join`'s multi-hit: unverified, with a witness to each node.
+
+A list-level state would withhold every other pair. A per-device `unique=True` would wrongly doubt
+a device's several distinct neighbours. The fleet list and the device selection stay `published`,
+because their membership is exact. They agree because one builder makes both.
+
+*Precedence.* A failed `link_centrality` section stays `analysis_unavailable`, and a missing field
+stays `not_collected`: the pre-check runs after both. The `topology_scanned_model` text (instance
+data) now states the rule.
+
+*Tests (m).*
+- The producer pin.
+- Exact, reversed-endpoint and contradictory (`is_bridge` inverted) duplicates. In each, both rows
+  are withheld on the fleet, every other pair stays published, and both ends' device pages hold
+  the same rows.
+- A distinct-neighbours control: the sample's `core1` with its 11 pairs, plus one added neighbour.
+
+**C-3: duplicate impact rows with a capture gap. Verified.** On the duplicate path,
+`_selection_rows` carries `_device_gap`'s reason and witness beside the `_R_AMBIG` doubt.
+`test_two_rows_naming_one_device_are_unverified_never_picked_between` already combined the two
+fixtures. It now also pins, in the combined state, both duplicate witnesses and both rows.
+
+**Effect on the sample.** No `link_centrality` pair repeats and no list is malformed, so no sample
+row or selection changes (read with `json.load`).
+
+**Residuals of the same class (not changed here)**
+- **Duplicate impact rows on the fleet.** The fleet `/topology/failure_impact` list does not flag
+  two rows that name one host. The device page marks that selection `unverified` at list level,
+  but each row's cells keep their published values on both surfaces. A row-level answer in
+  `_topology_impact` must first settle its precedence against the holds and bounds of rounds two
+  and three.
+- **Withheld lists drop the fleet qualifier.** `_listing` adds the `_fleet_qualify` caveat and its
+  witnesses only to a `published` or `collected_but_empty` list. An `unverified` selection under
+  blind spots elsewhere therefore carries neither. This is module-wide.
+
+**Schema and pins.** No limitation ID, property or keyword changed. Only the
+`topology_scanned_model` text changed, and that is instance data. Both hashes were recomputed
+locally with `_native_schema_hash` and are unchanged:
+
+- view: `a2fd2b9994569b2fd3a3df72e3410ae1b74ff41c26833a62239514c677f9de32`
+- list: `c47a6ceff24a7392fa9b248ece33b36381f9fd27fc67d3d52ea3d8238a37e0c9`
+
+No local test, build or projection ran. The hosted gates and the next refutation decide.

@@ -548,8 +548,10 @@ LIMITATIONS += (
     _limitation("topology_scanned_model", "analyze.compute_cable_map; analyze.compute_link_centrality",
                 "The graph describes captured discovery and the scanned host-pair model. A collected node is not "
                 "a health verdict; an up cable is a reported link state, not end-to-end reachability. Structural "
-                "metrics describe host pairs, not individual cable redundancy. Uncollected peers and ambiguous "
-                "endpoint joins remain visible; absent links are not proof of disconnection.", ["/topology"]),
+                "metrics describe host pairs, not individual cable redundancy, and the owner writes one record per "
+                "unordered host pair: two rows naming one pair, in either orientation, are each kept and unverified "
+                "with a witness to every such row, never picked between. Uncollected peers and ambiguous endpoint "
+                "joins remain visible; absent links are not proof of disconnection.", ["/topology"]),
     _limitation("impact_scanned_scope", "analyze.compute_failure_impact",
                 "Impact is limited to the scanned VLAN/carriage model. Stranded endpoints exclude those on the "
                 "removed host itself. Info and zero are not an assessed/healthy result; retain the owner's "
@@ -686,6 +688,8 @@ _R_DEVICE_NC = ("not collected: collection_completeness lists this device as not
 _R_AMBIG = "unverified: {n} rows in {section} name this key, so no single row can be chosen"
 _R_UNJOINABLE = ("unverified: {n} row(s) in {section} cannot be joined by exact key (not an object, or a key field "
                  "that is missing or not text), and any of them could name this device")
+_R_PAIR_AMBIG = ("unverified: {n} rows in link_centrality name this unordered host pair (in either orientation), but "
+                 "analyze.compute_link_centrality writes one record per pair, so no single row can be chosen")
 _R_NOT_SCORED = ("not assessed: the engine banded this device 'Insufficient Data' (a collection gap or an interface "
                  "set it could not parse), so its score is not a measurement (analyze.compute_health_scores)")
 _R_MG = ("not collected: the legacy snapshot's move groups carry no 'group' label (analyze.compute_move_groups), so this value "
@@ -800,6 +804,7 @@ class _Ctx:
         self._abst_dev: Dict[Tuple[str, str], str] = {}
         self._indexes: Dict[Any, Dict[str, List[int]]] = {}
         self._unjoinable: Dict[Any, List[int]] = {}
+        self._pairs: Dict[Any, Dict[FrozenSet[str], List[int]]] = {}
         self._fe: Dict[Tuple[FrozenSet[str], bool], List[Tuple[str, Sequence[Any]]]] = {}
         self._census: Optional[Tuple[Optional[Dict[str, Any]], Optional[str]]] = None
         self._census_counts: Optional[Dict[str, Any]] = None
@@ -1012,6 +1017,19 @@ class _Ctx:
         if key not in self._unjoinable:
             self._unjoinable[key] = _unjoinable_rows(_get(self.s, toks), fields)
         return list(self._unjoinable[key])
+
+    def pairs(self, toks: Tuple[Any, ...], fields: Tuple[str, str]) -> Dict[FrozenSet[str], List[int]]:
+        """Unordered pair of exact texts -> every row index naming it in the two `fields`, in either orientation
+        (one pass, cached). A row whose two fields are not both text names no pair (:func:`_unjoinable_rows`)."""
+        key = (toks, fields)
+        if key not in self._pairs:
+            out: Dict[FrozenSet[str], List[int]] = {}
+            rows = _get(self.s, toks)
+            for i, row in enumerate(rows if isinstance(rows, list) else ()):
+                if isinstance(row, dict) and all(_is_text(row.get(f)) for f in fields):
+                    out.setdefault(frozenset(row[f] for f in fields), []).append(i)
+            self._pairs[key] = out
+        return self._pairs[key]
 
     def blind_rows(self) -> List[int]:
         """Every collection_completeness row listing a device as partial or not collected (the owner's statuses)."""
@@ -3792,7 +3810,9 @@ def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], blo
     gap = _device_gap(ctx, host, toks[0], SELECTION_NEEDS[block], config=config)
     doubts: List[str] = []
     wit: List[Tuple[str, Sequence[Any]]] = []
-    if base in (_PUB, _CBE):
+    # An unverified list whose rows can still be read (the abstention core calls it empty because every row is
+    # deep-empty, or an owner faulted) keeps its own reason; an unreadable member is witnessed there too.
+    if base in (_PUB, _CBE) or (base == _UV and isinstance(raw, list)):
         if unique and len(sel) > 1:
             doubts.append(_R_AMBIG.format(n=len(sel), section=".".join(toks)))
             wit += [("witness", toks + (i,)) for i in sel]
@@ -3801,8 +3821,9 @@ def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], blo
             doubts.append(_R_UNJOINABLE.format(n=len(bad), section=".".join(toks)))
             wit += [("witness", toks + (i,)) for i in bad]
     if doubts:
-        state, reason = _UV, "; ".join(doubts) + (f"; the device also has a collection gap: {gap[0]}"
-                                                  if gap is not None else "")
+        head = [reason] if base == _UV and reason else []
+        state, reason = _UV, "; ".join(head + doubts) + (f"; the device also has a collection gap: {gap[0]}"
+                                                         if gap is not None else "")
         wit += gap[1] if gap is not None else []
     else:
         state, reason, wit = _sel_state(ctx, base, reason, sel, gap, cbe, unique=unique)
@@ -4213,24 +4234,36 @@ def _topology_style(facts: Sequence[Dict[str, Any]], token: str, *, glyph: str =
                      "ui_projection.topology_style/1", "", caveats=("topology_scanned_model",))
 
 
-def _topology_join(ctx: _Ctx, host: Any) -> Dict[str, Any]:
+#: A value withheld with the cell it comes from: ``(state, reason, witness ref entries)``.
+_Withheld = Tuple[str, str, List[Tuple[str, Sequence[Any]]]]
+
+
+def _topology_join(ctx: _Ctx, host: Any, withheld: Optional[_Withheld] = None) -> Dict[str, Any]:
+    """The cable-map nodes with exactly this hostname. With `withheld` the endpoint is withheld with its cell (that
+    state, reason and those witnesses), so no node is joined for a value the row does not publish."""
     toks = ("cable_map", "nodes")
     state, reason, raw = _topology_source(ctx, toks)
     indices = []
-    if isinstance(raw, list) and _is_text(host) and host:
-        indices = ctx.index(toks, ("host",)).get(host, [])
-    if state in (_PUB, _CBE):
-        if not _is_text(host) or not host:
-            state, reason = _UV, "unverified: the endpoint has no nonempty exact hostname"
-        elif len(indices) > 1:
-            state, reason = _UV, "unverified: more than one node has this exact hostname"
-        elif not indices:
-            state, reason = _NC, "not collected: no cable-map node has this exact hostname"
-        else:
-            state = _PUB
+    wit: List[Tuple[str, Sequence[Any]]] = []
+    if withheld is not None:
+        if state in (_PUB, _CBE):
+            state, reason, wit = withheld[0], withheld[1], list(withheld[2])
+    else:
+        if isinstance(raw, list) and _is_text(host) and host:
+            indices = ctx.index(toks, ("host",)).get(host, [])
+        if state in (_PUB, _CBE):
+            if not _is_text(host) or not host:
+                state, reason = _UV, "unverified: the endpoint has no nonempty exact hostname"
+            elif len(indices) > 1:
+                state, reason = _UV, "unverified: more than one node has this exact hostname"
+            elif not indices:
+                state, reason = _NC, "not collected: no cable-map node has this exact hostname"
+            else:
+                state = _PUB
+        wit = [("witness", toks + (i,)) for i in indices]
     return _listing(ctx, state, reason, toks, "ui_projection:exact cable-map hostname join",
                     [{"index": i, "pointer": json_pointer(*toks, i)} for i in indices], sections=("cable_map",),
-                    extra=[("witness", toks + (i,)) for i in indices], caveats=("topology_scanned_model",))
+                    extra=wit, caveats=("topology_scanned_model",))
 
 
 def _topology_node(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
@@ -4266,16 +4299,44 @@ def _topology_cable(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     return out
 
 
+#: The two link_centrality fields that name a structural link's unordered host pair.
+_STRUCTURAL_HOSTS = ("a_host", "b_host")
+
+
+def _structural_dup(ctx: _Ctx, raw: Any) -> Optional[_Withheld]:
+    """The doubt on a link_centrality row whose unordered host pair another row also names (exact text, in either
+    orientation). analyze.compute_link_centrality keys its links by that pair and writes one record per pair, so two
+    rows naming one pair (an exact copy, the reversed orientation, or a contradicting record) cannot each be the
+    producer's record, and no single one can be chosen (the _R_AMBIG precedent). Row-level, not list-level: the doubt
+    is which record is the pair's, never which rows the list holds, so every such row keeps its index and pointer and
+    withholds each of its cells as unverified, with a witness to every row naming the pair, while the list and its
+    other pairs stay published. Distinct pairs that share a host (a device's several neighbours) are never doubted.
+    ``None``: the row names no readable pair, or no other row names it."""
+    if not (isinstance(raw, dict) and all(_is_text(raw.get(f)) for f in _STRUCTURAL_HOSTS)):
+        return None
+    same = ctx.pairs(("link_centrality",), _STRUCTURAL_HOSTS).get(frozenset(raw[f] for f in _STRUCTURAL_HOSTS), [])
+    if len(same) < 2:
+        return None
+    return _UV, _R_PAIR_AMBIG.format(n=len(same)), [("witness", ("link_centrality", j)) for j in same]
+
+
 def _topology_structural(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
+    """One structural-link row, shared by the fleet topology and the device page (one builder, one state)."""
     row = _list_row(("link_centrality", i), raw, ("link_centrality",))
     basis = "analyze.compute_link_centrality:link_centrality[]."
+    dup = _structural_dup(ctx, raw)
+    pre: Optional[_Pre] = (lambda _raw, _row: dup) if dup is not None else None
     out = {"index": i, "pointer": json_pointer(*row.toks),
-           "ends": _cell(ctx, row, None, "structural_ends", basis + "endpoints")}
+           "ends": _cell(ctx, row, None, "structural_ends", basis + "endpoints", pre=pre)}
     for field, slot in (("betweenness", "nonnegative_number"), ("is_bridge", "flag"),
                         ("pairs_cut", "count"), ("rank", "positive_count")):
-        out[field] = _cell(ctx, row, field, slot, basis + field, caveats=("topology_scanned_model",))
+        out[field] = _cell(ctx, row, field, slot, basis + field, pre=pre, caveats=("topology_scanned_model",))
     ends = out["ends"]["value"] or {}
-    out["a_nodes"], out["b_nodes"] = (_topology_join(ctx, ends.get(k)) for k in ("a_host", "b_host"))
+    # ends withheld by the pair doubt (not by a failed section): the joins are withheld with it, never "no hostname"
+    held: Optional[_Withheld] = None
+    if dup is not None and out["ends"]["state"] == dup[0] and out["ends"].get("reason") == dup[1]:
+        held = dup
+    out["a_nodes"], out["b_nodes"] = (_topology_join(ctx, ends.get(k), held) for k in _STRUCTURAL_HOSTS)
     toks = ("cable_map", "cables")
     state, reason, cables = _topology_source(ctx, toks)
     pair = {ends.get("a_host"), ends.get("b_host")}
@@ -4286,7 +4347,8 @@ def _topology_structural(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     out["host_pair_cable_refs"] = _listing(
         ctx, state, reason, toks, "ui_projection:exact unordered host-pair candidates (not per-cable centrality)",
         [{"index": j, "pointer": json_pointer(*toks, j)} for j in hits], sections=("cable_map",),
-        extra=[("witness", toks + (j,)) for j in hits], caveats=("topology_scanned_model",))
+        extra=[("witness", toks + (j,)) for j in hits] + (held[2] if held is not None else []),
+        caveats=("topology_scanned_model",))
     out["style"] = _topology_style([out["ends"], out["is_bridge"], out["a_nodes"], out["b_nodes"]],
                                     "structural_bridge" if out["is_bridge"]["value"] else "structural_link")
     return out
