@@ -177,6 +177,8 @@ def _keystone_hosts(snap: Dict[str, Any], top: int = 8,
 
 #: The wave's blast radius when no switch in it has a row the engine publishes a severity and stranded count for.
 IMPACT_NOT_ASSESSED = summary.IMPACT_NOT_ASSESSED
+#: Why a row with no readable host is disclosed when the projection itself gives no reason for it.
+_R_IMPACT_NO_HOST_TEXT = "its stored host is absent, empty or not text, so it cannot be joined to a switch"
 
 
 def _worst_blast_radius(switches: Set[str], view: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -185,27 +187,35 @@ def _worst_blast_radius(switches: Set[str], view: Dict[str, Any]) -> Optional[Di
 
     A switch whose row the projection withholds (could not simulate, predates its marker, lacks the scoped
     running-config, a band below High or a zero under a partial simulation or an uncollected neighbour, a
-    duplicated host), a switch with no row, and a row that names no readable host (it could be any switch)
-    never become this wave's worst case, and never an Info or a zero. They make the result a lower bound:
-    ``complete`` is false and the detail says which and why. When no switch can be ranked the result is
+    duplicated host), a switch with no row, and a row that names no readable host (an absent or empty host: it
+    could be any switch) never become this wave's worst case, and never an Info or a zero. They make the result a
+    lower bound: ``complete`` is false and the detail says which and why. So does any ranked switch whose counts the
+    projection publishes only as lower bounds, whether or not it is the worst: its true blast radius can exceed what
+    it reads. The worst row itself, when it is such a bound, is flagged by ``summary.impact_entry``
+    (``lower_bound``, and a detail opening ``LOWER BOUND, at least N``). When no switch can be ranked the result is
     ``NOT ASSESSED`` with no counts, never a clean bill. ``None`` only for a wave with no switch."""
     if not switches:
         return None
     # stored order, as before, so a tie keeps the row the plan showed before; the key is the stored host text
     # (switches are str-coerced by _as_hosts), and only a ranked row's published values are read
-    ranked = [row for row in view["rows"] if row["ranked"] and row["key"] in switches]
+    ranked = [row for row in view["rows"] if row["ranked"] and row["key"] and row["key"] in switches]
     covered = {row["key"] for row in ranked}
     unranked = []
     for host in sorted(switches - covered):
         reason = next((row["reason"] for row in view["rows"] if row["key"] == host),
                       view["withheld"] or summary._R_IMPACT_NO_ROW)
         unranked.append((host, reason))
+    # None (no text host) and "" alike name no readable host; a ranked one of them never enters the wave above
     unranked += [(summary.impact_row_label(row) + " (names no readable host, so it could be any switch here)",
-                  row["reason"]) for row in view["rows"] if row["key"] is None]
+                  row["reason"] or _R_IMPACT_NO_HOST_TEXT) for row in view["rows"] if not row["key"]]
+    bounded = [(row["key"], summary.impact_bound_reason(row)) for row in ranked if row["lower_bound"]]
     notes = []
     if unranked:
         notes.append(f"{len(unranked)} switch(es) or row(s) in this wave have no failure-impact row whose severity "
                      "and stranded count the engine publishes: " + summary.impact_disclosure(unranked))
+    if bounded:
+        notes.append(f"{len(bounded)} ranked switch(es) in this wave publish their counts only as lower bounds, so "
+                     "any of them can be larger than it reads: " + summary.impact_disclosure(bounded))
     if view["blind"]:
         notes.append(summary.impact_blind_note(view))
     if ranked:

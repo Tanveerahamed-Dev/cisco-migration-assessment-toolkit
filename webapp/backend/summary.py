@@ -122,16 +122,34 @@ def _count_by(items: List[dict], key: str, order: List[str] | None = None) -> Di
 # failure impact (the keystones below, cutover's worst-case blast radius, the snapshot "Failure impact" tab and
 # the /graph keystone badge) reads that projection through impact_view, so a withheld cell is never shown as a
 # measurement and never feeds a ranking.
+#
+# A PUBLISHED measure can still be a lower bound. On a row the simulation covered only in part (a positive
+# off_scan_gw_vlans) or that the stored cable map shows cabled to an uncollected neighbour (_impact_peers),
+# ui_projection._topology_impact withholds what that bound cannot vouch for (a band below High, a zero) and publishes
+# the worst band and each positive count "as lower bounds", citing every bound's witnesses on every measure (its
+# `cite`, passed to _cell as the cell's witness refs; limitation impact_scanned_scope). That witness ref is the
+# projection's one machine-readable mark of a published lower bound: no other path puts a witness on a published
+# failure-impact measure (_cell adds a pre-check's refs only when it withholds the cell, a failure_impact row carries
+# no row-level extra refs, and failure records carry the role failure_record). So impact_view reads a published
+# measure that cites a witness as "at least" its value, names the bound from the pointers it cites, and every
+# surface shows it as a lower bound, never as an exact measurement.
 
 #: ui_projection's one published state: an envelope carries a ``value`` only in this state. Compared for equality
 #: only, so any other state, an unknown one included, or a cell that is not an envelope, is withheld.
 _PUBLISHED = "published"
 #: ui_projection's state for a list it read and found empty (a published list is never empty).
 _COLLECTED_BUT_EMPTY = "collected_but_empty"
+#: ui_projection's state for a value it cannot read; the state this module reports when the projection itself faults.
+_UNVERIFIED = "unverified"
+#: ui_projection's ref role (REF_ROLES) for the record that says why a value is qualified.
+_WITNESS_ROLE = "witness"
 #: The failure-impact cells, in the order the projection builds them (ui_projection._topology_impact), which is
 #: also the producer's own field order.
 IMPACT_FIELDS = ("host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",
                  "off_scan_gw_vlans", "detail")
+#: The cells that measure the simulated blast radius (ui_projection._IMPACT_MEASURES): the only cells a published
+#: lower bound sits on.
+IMPACT_MEASURES = ("severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp")
 #: A row enters a ranking (the keystones, a wave's worst case) only when the projection publishes all three.
 _IMPACT_RANK_FIELDS = ("host", "severity", "stranded")
 #: What a surface shows where the engine withholds every blast radius it could rank: the cutover module's own
@@ -141,9 +159,11 @@ IMPACT_NOT_ASSESSED = "NOT ASSESSED"
 #: spot: every row was computed over the scanned model without that device's evidence.
 _IMPACT_BLIND_CAVEAT = "fleet_lists_exclude_blind_devices"
 _IMPACT_BLIND_WITNESS = "/collection_completeness/devices/"
-#: The keystone ranking's contract. 2: ranked only from engine-published failure-impact cells (W27). A cached
-#: summary without it was ranked from the raw stored rows and is recomputed on read (app._summary_freshened).
-KEYSTONE_CONTRACT_VERSION = 2
+#: The keystone ranking's contract. 2: ranked only from engine-published failure-impact cells (W27). 3: a ranked
+#: row the engine publishes only as a lower bound is flagged as one (lower_bound, its reasons and pointers), and an
+#: executive_brief.keystones list is no longer read. A cached summary from an older contract is recomputed on read
+#: (app._summary_freshened).
+KEYSTONE_CONTRACT_VERSION = 3
 #: Cap on the names one disclosure sentence lists per reason, so a fleet-wide hold stays one readable sentence.
 _IMPACT_NAME_CAP = 10
 _R_IMPACT_FAULT = ("unverified: the engine failure-impact projection (ui_projection) could not be built for this "
@@ -154,6 +174,21 @@ _R_IMPACT_NO_ROW = ("not collected: no failure_impact row names this switch. ana
                     "impact'")
 _R_IMPACT_BLIND = ("collection_completeness lists {n} device(s) as partial or not collected: every failure-impact row "
                    "was computed without their evidence, and a device the collection never reached has no row")
+_R_IMPACT_NOT_LIST = "unverified: the stored failure_impact section is not a list, so no row can be read"
+#: Why a published measure is only a lower bound, by the kind of record its witness ref points at.
+_R_BOUND_OFF_SCAN = ("{n} VLAN(s) on this switch have an off-scan gateway the simulation could not assess "
+                     "(off_scan_gw_vlans), so it counts only the VLANs whose gateway was scanned")
+_R_BOUND_PEERS = ("the stored cable map cables this switch to a neighbour it does not show as collected ({k} cable "
+                  "row(s)), and the simulation counts only endpoints on scanned switches")
+_R_BOUND_CABLE_MAP = ("whether this switch faces an uncollected neighbour cannot be checked, because the stored cable "
+                      "map cannot be read, and the simulation counts only endpoints on scanned switches")
+_R_BOUND_CITED = "the engine cites {pointer} as a bound on this row"
+#: How the tab marks a published lower bound in place of its bare value (cf. a withheld cell's reason).
+IMPACT_BOUND_MARK = "≥"
+_R_BOUND_LEAD = "a lower bound, not an exact measurement: "
+#: The witness pointers ui_projection._impact_peers cites: one cable row, or the cable list / map it cannot read.
+_IMPACT_CABLE_WITNESS = "/cable_map/cables/"
+_IMPACT_CABLE_LIST_WITNESSES = ("/cable_map/cables", "/cable_map")
 
 #: One projected cell: ``(published, value, reason)``. ``value`` is set only when published; ``reason`` only when not.
 ImpactCell = Tuple[bool, Any, str]
@@ -177,15 +212,19 @@ def impact_view(snap: Dict[str, Any]) -> Dict[str, Any]:
     ``rows``: one entry per projected row, in stored order, each with ``pointer``; ``key``, the stored row's exact
     host text when it is text (used only to say which device a withheld row may describe, never shown as a
     measurement); ``cells``, field -> :data:`ImpactCell`; ``ranked``, true when the list is published and the
-    projection publishes the row's host, severity and stranded count; and ``reason``, why it is not ranked.
-    ``withheld``: the list's own reason when the list is not published (a failed phase, a malformed or absent
-    section, or an owner fault), else "". ``blind``: the blind spots the projection's fleet qualifier cites."""
+    projection publishes the row's host, severity and stranded count; ``reason``, why it is not ranked; and
+    ``lower_bound``, true when the projection publishes any of the row's measures only as a lower bound (a published
+    measure that cites a witness, see the note above), with ``bound_fields`` (those measures), ``bound_pointers``
+    (every witness they cite, in the order cited) and ``bound_reasons`` (one sentence per kind of bound named).
+    ``state``: the list's own projection state (``unverified`` when the projection faults). ``withheld``: the list's
+    own reason when the list is not published (a failed phase, a malformed or absent section, or an owner fault),
+    else "". ``blind``: the blind spots the projection's fleet qualifier cites."""
     try:
         listing = engine.failure_impact_projection(snap)
     except Exception:   # noqa: BLE001 -- the projection is total by contract; a fault withholds every row
         listing = None
     if not isinstance(listing, dict) or not isinstance(listing.get("items"), list):
-        return {"rows": [], "withheld": _R_IMPACT_FAULT, "blind": 0}
+        return {"rows": [], "state": _UNVERIFIED, "withheld": _R_IMPACT_FAULT, "blind": 0}
     items = listing["items"]
     state = listing.get("state")
     withheld = ""
@@ -207,10 +246,52 @@ def impact_view(snap: Dict[str, Any]) -> Dict[str, Any]:
         cells = {field: _impact_cell(item.get(field)) for field in IMPACT_FIELDS}
         held = [cells[f][2] for f in _IMPACT_RANK_FIELDS if not cells[f][0]]
         ranked = not withheld and not held
-        rows.append({"pointer": item["pointer"] if isinstance(item.get("pointer"), str) else "",
-                     "key": key, "cells": cells, "ranked": ranked,
-                     "reason": "" if ranked else (held[0] if held else withheld)})
-    return {"rows": rows, "withheld": withheld, "blind": blind}
+        pointer = item["pointer"] if isinstance(item.get("pointer"), str) else ""
+        bound_fields, bound_pointers, bound_reasons = _impact_bounds(item, cells, pointer)
+        rows.append({"pointer": pointer, "key": key, "cells": cells, "ranked": ranked,
+                     "reason": "" if ranked else (held[0] if held else withheld),
+                     "lower_bound": bool(bound_fields), "bound_fields": bound_fields,
+                     "bound_pointers": bound_pointers, "bound_reasons": bound_reasons})
+    return {"rows": rows, "state": state if isinstance(state, str) and state else _UNVERIFIED,
+            "withheld": withheld, "blind": blind}
+
+
+def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
+                   pointer: str) -> Tuple[Tuple[str, ...], List[str], List[str]]:
+    """The projection's published lower bounds on one row, ``(fields, pointers, reasons)``, read from the projected
+    cells' refs only, never from the stored row. ``fields``: the measures it publishes with a witness ref, each a
+    lower bound and never an exact measurement; ``pointers``: every witness those cells cite, de-duplicated in the
+    order cited; ``reasons``: one sentence per kind of record those pointers name (the row's off-scan count, an
+    uncollected neighbour's cable row, an unreadable cable list or map, anything else by its pointer)."""
+    fields: List[str] = []
+    pointers: List[str] = []
+    for field in IMPACT_MEASURES:
+        fact = item.get(field)
+        if not (cells[field][0] and isinstance(fact, dict)):
+            continue
+        cited = [ref["pointer"] for ref in _as_list(fact.get("refs")) if isinstance(ref, dict)
+                 and ref.get("role") == _WITNESS_ROLE and isinstance(ref.get("pointer"), str)]
+        if not cited:
+            continue
+        fields.append(field)
+        for cite in cited:
+            if cite not in pointers:
+                pointers.append(cite)
+    n_cables = sum(1 for cite in pointers if cite.startswith(_IMPACT_CABLE_WITNESS))
+    reasons: List[str] = []
+    for cite in pointers:
+        if pointer and cite == f"{pointer}/off_scan_gw_vlans":
+            ok, n, _ = cells["off_scan_gw_vlans"]
+            why = _R_BOUND_OFF_SCAN.format(n=n if ok and type(n) is int else "some")
+        elif cite.startswith(_IMPACT_CABLE_WITNESS):
+            why = _R_BOUND_PEERS.format(k=n_cables)
+        elif cite in _IMPACT_CABLE_LIST_WITNESSES:
+            why = _R_BOUND_CABLE_MAP
+        else:
+            why = _R_BOUND_CITED.format(pointer=cite)
+        if why not in reasons:
+            reasons.append(why)
+    return tuple(fields), pointers, reasons
 
 
 def impact_row_label(row: Dict[str, Any]) -> str:
@@ -240,58 +321,85 @@ def impact_rank_key(row: Dict[str, Any]) -> Tuple[int, float]:
     return (_SEV_RANK.get(_hkey(row["cells"]["severity"][1]), 99), -engine.as_num(row["cells"]["stranded"][1]))
 
 
+def impact_bound_reason(row: Dict[str, Any]) -> str:
+    """Why a row's published measures are only lower bounds, as one clause ("" for a row with none)."""
+    return "; ".join(row["bound_reasons"])
+
+
+def impact_bound_cell(value: Any, row: Dict[str, Any]) -> str:
+    """A published lower-bound cell as the tab shows it in place of its bare value, the way a withheld cell shows its
+    reason: ``≥ 42 — a lower bound, not an exact measurement: why``."""
+    return f"{IMPACT_BOUND_MARK} {value} — {_R_BOUND_LEAD}{impact_bound_reason(row)}"
+
+
 def impact_entry(row: Dict[str, Any]) -> Dict[str, Any]:
     """A ranked row in the keystone / blast-radius shape: its published values; a withheld VLAN count is None
-    (rendered as absent), and a withheld detail shows the projection's reason instead of the stored text."""
+    (rendered as absent), and a withheld detail shows the projection's reason instead of the stored text.
+    ``lower_bound`` says whether the engine publishes the row's counts only as lower bounds. When it does, the entry
+    also carries ``lower_bound_reasons`` and ``lower_bound_pointers``, and its detail opens with ``LOWER BOUND, at
+    least N endpoint(s) stranded: why``, so every surface that shows the detail reads the count as "at least N"."""
     cells = row["cells"]
     vlans_ok, vlans, _ = cells["vlans_impacted"]
     detail_ok, detail, detail_reason = cells["detail"]
-    return {"host": cells["host"][1], "severity": cells["severity"][1], "stranded": cells["stranded"][1],
-            "vlans_impacted": vlans if vlans_ok else None, "detail": detail if detail_ok else detail_reason}
+    out = {"host": cells["host"][1], "severity": cells["severity"][1], "stranded": cells["stranded"][1],
+           "vlans_impacted": vlans if vlans_ok else None, "detail": detail if detail_ok else detail_reason,
+           "lower_bound": bool(row["lower_bound"])}
+    if row["lower_bound"]:
+        stranded_ok, stranded, _ = cells["stranded"]
+        counts = f", at least {stranded} endpoint(s) stranded" if stranded_ok else ""
+        out["lower_bound_reasons"] = list(row["bound_reasons"])
+        out["lower_bound_pointers"] = list(row["bound_pointers"])
+        out["detail"] = f"LOWER BOUND{counts}: {impact_bound_reason(row)}. {out['detail']}"
+    return out
+
+
+def _impact_table_cell(row: Dict[str, Any], field: str) -> Any:
+    ok, value, reason = row["cells"][field]
+    if not ok:
+        return reason
+    return impact_bound_cell(value, row) if field in row["bound_fields"] else value
 
 
 def failure_impact_table(snap: Dict[str, Any]) -> Any:
     """The snapshot's "Failure impact" tab: one row per stored row, in stored order, with the producer's fields in
-    :data:`IMPACT_FIELDS` order. A cell the engine projection publishes keeps its value; a withheld cell shows the
-    projection's reason, which opens with its state, instead of the stored Info, zero or clean-bill text. A section
-    that is not a list has no row to project and is returned as stored."""
+    :data:`IMPACT_FIELDS` order. A cell the engine projection publishes keeps its value, unless the projection
+    publishes it only as a lower bound: it then reads ``≥ value`` with why (:func:`impact_bound_cell`). A withheld
+    cell shows the projection's reason, which opens with its state, instead of the stored Info, zero or clean-bill
+    text. A section that is not a list, and an empty list the projection withholds, has no row to show: the tab
+    shows the projection's own disclosure of the list, ``{"state", "reason"}``, never the stored object."""
     raw = snap.get("failure_impact")
-    if not isinstance(raw, list):
-        return raw
     view = impact_view(snap)
+    if not isinstance(raw, list) or (not raw and view["withheld"]):
+        return {"state": view["state"], "reason": view["withheld"] or _R_IMPACT_NOT_LIST}
     if len(view["rows"]) != len(raw):     # an owner fault: withhold every row, never fall back to the raw values
         why = view["withheld"] or _R_IMPACT_FAULT
         return [{field: why for field in IMPACT_FIELDS} for _ in raw]
-    return [{field: (value if ok else reason) for field, (ok, value, reason) in row["cells"].items()}
-            for row in view["rows"]]
+    return [{field: _impact_table_cell(row, field) for field in IMPACT_FIELDS} for row in view["rows"]]
 
 
 def _keystones(snap: Dict[str, Any], top: int = 8,
                view: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """The few devices the fleet most depends on, by migration blast radius.
 
-    Prefer the engine's own executive-brief keystones; else rank the engine-owned failure-impact projection
-    (severity, then stranded endpoints). Only rows whose host, severity and stranded count the projection
-    publishes are ranked: a row it withholds (could not simulate, predates its marker, lacks the scoped
-    running-config, a partial simulation below High, an uncollected neighbour, a duplicated host) is never shown
-    as Info or zero and never ranked. When any row is not ranked, the list is not published, or a blind spot
-    qualifies it, one last ``NOT ASSESSED`` entry with no host says so and why, so an all-withheld fleet never
-    reads as "no keystone"."""
-    eb = snap.get("executive_brief")
-    eb = eb if isinstance(eb, dict) else {}      # a truthy non-dict section must not raise (malformed upload)
-    # Validate each ELEMENT is a dict, not just the container: a keystones list carrying a non-dict (a bare
-    # string/int in a malformed or hostile upload) is otherwise returned verbatim, and a read route then does
-    # k.get("host") on it -> AttributeError -> an unhandled HTTP 500 on /graph (app.py builds its keystone list
-    # from this projection). Filtering to dicts degrades gracefully; an all-garbage list falls through to
-    # failure_impact below, honouring summarize()'s `Every field degrades gracefully` contract.
-    ks = [k for k in eb["keystones"] if isinstance(k, dict)] if isinstance(eb.get("keystones"), list) else []
-    if ks:
-        return ks[:top]
+    Ranked from the engine-owned failure-impact projection alone (severity, then stranded endpoints). Only rows whose
+    host, severity and stranded count the projection publishes are ranked: a row it withholds (could not simulate,
+    predates its marker, lacks the scoped running-config, a partial simulation below High, an uncollected neighbour,
+    a duplicated host) is never shown as Info or zero and never ranked. A ranked row the projection publishes only as
+    a lower bound keeps its measured place and is flagged (:func:`impact_entry`). When any row is not ranked, a
+    lower-bound row below the ones shown could rank among them, the list is not published, or a blind spot qualifies
+    it, one last ``NOT ASSESSED`` entry with no host says so and why, so an all-withheld fleet never reads as "no
+    keystone".
+
+    An ``executive_brief.keystones`` list is never read: no engine producer writes one (compute_executive_brief takes
+    no failure-impact input), so a stored one is uploaded or hand-made, and taking it would bypass every hold the
+    projection applies (summary, the /graph badge and the cutover plan's wave tags all read this function)."""
     view = impact_view(snap) if view is None else view
     # stable sort over the stored order, as before: only the engine's published severity and stranded count rank
     ranked = sorted((row for row in view["rows"] if row["ranked"]), key=impact_rank_key)
     out = [impact_entry(row) for row in ranked[:top]]
     unranked = [(impact_row_label(row), row["reason"]) for row in view["rows"] if not row["ranked"]]
+    # a lower bound's true value can exceed what it reads, so one below the cut could belong above it
+    below = [(impact_row_label(row), impact_bound_reason(row)) for row in ranked[top:] if row["lower_bound"]]
     parts = []
     if view["withheld"] and not view["rows"]:
         parts.append(f"No failure-impact row could be ranked: {view['withheld']}")
@@ -299,6 +407,9 @@ def _keystones(snap: Dict[str, Any], top: int = 8,
         parts.append(f"{len(unranked)} failure-impact row(s) were not ranked because the engine withholds their "
                      "host, severity or stranded count, so any of them could rank above the devices shown: "
                      + impact_disclosure(unranked))
+    if below:
+        parts.append(f"{len(below)} ranked row(s) below the devices shown publish only lower bounds, so any of them "
+                     "could rank among them: " + impact_disclosure(below))
     if view["blind"]:
         parts.append(f"The ranking is a lower bound: {impact_blind_note(view)}")
     if parts:

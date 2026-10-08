@@ -198,13 +198,15 @@ def write_cutover_docx(output_path: str, snap_dict: Dict[str, Any], label: str) 
         if br:
             p = doc.add_paragraph()
             # The plan ranks only engine-published failure-impact cells: a wave it cannot rank is NOT ASSESSED
-            # with no counts (its detail says why), and a withheld VLAN count is absent, never printed as 0.
+            # with no counts (its detail says why), and a withheld VLAN count is absent, never printed as 0. A row
+            # whose counts the engine publishes only as lower bounds prints them as "at least N".
             if br.get("severity") == cutover.IMPACT_NOT_ASSESSED:
                 kv(p, "Worst-case blast radius:", br["detail"])       # opens with NOT ASSESSED and says why
             else:
-                vlans = "—" if br.get("vlans_impacted") is None else br["vlans_impacted"]
+                least = "at least " if br.get("lower_bound") is True else ""
+                vlans = "—" if br.get("vlans_impacted") is None else f"{least}{br['vlans_impacted']}"
                 kv(p, "Worst-case blast radius:",
-                   f"{br['host']} ({br['severity']}) — {br['stranded']} endpoint(s) stranded across "
+                   f"{br['host']} ({br['severity']}) — {least}{br['stranded']} endpoint(s) stranded across "
                    f"{vlans} VLAN(s). {br['detail']}")
         if w.get("keystones"):
             p = doc.add_paragraph()
