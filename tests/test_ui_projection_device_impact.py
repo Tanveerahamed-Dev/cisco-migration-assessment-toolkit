@@ -14,7 +14,9 @@ rows, on the fleet topology and on the device page alike. A row the producer say
 INDETERMINATE detail) withholds its severity and counts rather than show Info and zero as measurements. So does a
 row older than the producer's off_scan_gw_vlans marker, and the row of a device whose scoped interface running-config
 (the only source of its gateway SVIs) was not captured -- held by the one shared row builder, so both surfaces agree.
-A row that simulated only part of its VLANs never shows a band below High, or a zero, as a measurement.
+A held row's detail is held with it, unless it is the producer's own INDETERMINATE disclosure. A row that simulated
+only part of its VLANs, or whose switch the stored cable map cables to a peer the collection never reached (anything
+but positively identified edge gear), never shows a band below High, a zero, or a clean-bill detail as a measurement.
 
 Every value is checked against an INDEPENDENT lookup in the snapshot, never the module's own join.
 """
@@ -128,6 +130,38 @@ def _run_config_observed(snap, host):
                                            for rec in ports.values())
 
 
+#: analyze.compute_cable_map's kinds for POSITIVELY identified edge gear (its _node_kind ranks switch, router and
+#: firewall first across every observer), written out here rather than taken from the module.
+EDGE_KINDS = ("ap", "phone", "endpoint")
+
+
+def _uncollected_peer_cables(snap, host):
+    """Independent: the stored cable rows naming `host` as one end whose far end is not ONE cable-map node shown as
+    collected, or as an uncollected edge-gear node -- the neighbours a scanned-only simulation cannot see behind."""
+    nodes = snap["cable_map"]["nodes"]
+    out = []
+    for j, cable in enumerate(snap["cable_map"]["cables"]):
+        if host not in (cable["a"], cable["b"]):
+            continue
+        far = cable["b"] if cable["a"] == host else cable["a"]
+        same = [node for node in nodes if node.get("host") == far]
+        if len(same) == 1 and (same[0].get("collected") is True or (
+                same[0].get("collected") is False and same[0].get("kind") in EDGE_KINDS)):
+            continue
+        out.append(j)
+    return out
+
+
+def _understatable(src, field):
+    """Independent: a value an uncollected neighbour may understate -- a band below High, a zero count, or a detail
+    that names no simulated VLAN (the producer's clean bill)."""
+    if field == "severity":
+        return src[field] != "High"
+    if field == "detail":
+        return src["vlans_impacted"] == 0 and not src[field].startswith(ui.IMPACT_INDETERMINATE_PREFIX)
+    return field in MEASURES and src[field] == 0
+
+
 # --------------------------------------------------------------------------------------------------
 # the closed schema and the module tables carry both selections
 # --------------------------------------------------------------------------------------------------
@@ -166,7 +200,7 @@ def test_a_simulated_device_selects_exactly_its_fleet_rows(sample, doc_validator
     impact, structural = topology["failure_impact"]["items"], topology["structural_links"]["items"]
     assert [it["index"] for it in impact] == list(range(len(sample["failure_impact"])))
     assert [it["index"] for it in structural] == list(range(len(sample["link_centrality"])))
-    lacking = []
+    lacking, bounded = [], []
     for host in sorted(sample["devices"]):
         page = _page(sample, host, doc_validator)
         rows = _naming(sample["failure_impact"], host, ("host",))
@@ -184,10 +218,24 @@ def test_a_simulated_device_selects_exactly_its_fleet_rows(sample, doc_validator
         row = sel["items"][0]
         assert row["pointer"] == f"/failure_impact/{rows[0]}"
         assert row["host"]["value"] == host
+        src = sample["failure_impact"][rows[0]]
+        # a switch cabled to a peer the collection never reached cannot vouch for a value that peer may understate
+        peers = _uncollected_peer_cables(sample, host)
+        witness = {(f"/cable_map/cables/{j}", "witness") for j in peers}
+        if peers:
+            bounded.append(host)
         for field in ("severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp", "off_scan_gw_vlans", "detail"):
-            assert row[field]["state"] == PUB, (host, field, row[field].get("reason"))
-            assert row[field]["value"] == sample["failure_impact"][rows[0]][field], (host, field)
             assert row[field]["subject"] == f"/failure_impact/{rows[0]}/{field}"
+            if peers and _understatable(src, field):
+                assert row[field]["state"] == NC and row[field]["value"] is None, (host, field, row[field])
+                assert f"cannot account for endpoints behind {len(peers)} uncollected neighbour(s)" in (
+                    row[field]["reason"]), (host, field, row[field]["reason"])
+                assert witness <= _refs(row[field]), (host, field)
+                continue
+            assert row[field]["state"] == PUB, (host, field, row[field].get("reason"))
+            assert row[field]["value"] == src[field], (host, field)
+            if field in MEASURES:                                       # a published lower bound cites each cable
+                assert witness <= _refs(row[field]), (host, field)
         assert "row_selection_by_exact_key" in sel["caveats"]
         want = _naming(sample["link_centrality"], host, ENDS)
         links = page["structural_links"]
@@ -195,6 +243,16 @@ def test_a_simulated_device_selects_exactly_its_fleet_rows(sample, doc_validator
         assert links["subject"] == "/link_centrality"
         assert links["items"] == [structural[i] for i in want], host
     assert lacking and lacking == sorted(set(sample["devices"]) - set(sample["security"]))
+    # The sample's uncollected peers: one AP behind every access switch and another, plus a WAN router, on core2.
+    # The APs are edge gear and bound nothing; the router bounds core2's row. core2 is High, so only its zero
+    # counts are withheld: its band, positive counts and per-VLAN detail stay published as lower bounds.
+    kinds = {n["host"]: n["kind"] for n in sample["cable_map"]["nodes"] if n["collected"] is False}
+    assert sorted(kinds.values()) == ["ap", "ap", "router"], kinds
+    assert bounded == ["core2"], bounded
+    core2 = sample["failure_impact"][_naming(sample["failure_impact"], "core2", ("host",))[0]]
+    assert core2["severity"] == "High" and core2["backup"] == core2["fhrp"] == 0 and core2["vlans_impacted"] > 0
+    assert [kinds[sample["cable_map"]["cables"][j]["b"]] for j in _uncollected_peer_cables(sample, "core2")] == [
+        "router"]
 
 
 def test_d_structural_links_name_the_device_from_either_end_and_nothing_else(sample, doc_validator):
@@ -537,17 +595,22 @@ def test_h_the_off_scan_count_alone_withholds_and_a_bad_count_is_unverified(topo
     for field in MEASURES:
         assert row[field]["state"] == NC and "simulated none" in row[field]["reason"], (field, row[field])
         assert (pointer + "/off_scan_gw_vlans", "witness") in _refs(row[field]), field
+    # the clean-bill prose is not the producer's INDETERMINATE disclosure: it is held with the measures it contradicts
+    detail = row["detail"]
+    assert detail["state"] == NC and detail["value"] is None, detail
+    assert detail["reason"] == row["severity"]["reason"]
+    assert (pointer + "/off_scan_gw_vlans", "witness") in _refs(detail)
     assert row["style"]["value"]["token"] == "not_observed"
     snap["failure_impact"][k]["off_scan_gw_vlans"] = "1"
     row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
     assert row["off_scan_gw_vlans"]["state"] == UV
-    for field in MEASURES:
+    for field in MEASURES + ("detail",):
         assert row[field]["state"] == UV and "off_scan_gw_vlans is not a count" in row[field]["reason"], field
     assert row["style"]["value"]["token"] == "unverified"
-    # the control: a clean bill the producer could fully simulate stays a published Info row
+    # the control: a clean bill the producer could fully simulate stays a published Info row, its detail included
     snap["failure_impact"][k]["off_scan_gw_vlans"] = 0
     row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
-    assert all(row[field]["state"] == PUB for field in MEASURES)
+    assert all(row[field]["state"] == PUB for field in MEASURES + ("detail",))
     assert row["severity"]["value"] == "Info" and row["style"]["value"]["token"] == "impact_info"
 
 
@@ -660,12 +723,16 @@ def test_j_a_device_without_its_scoped_running_config_holds_its_row_on_both_surf
     assert not _run_config_observed(snap, host)
     topology = _topology(snap, topology_validator)
     row = topology["failure_impact"]["items"][k]
-    for field in MEASURES:
+    # the detail too: its per-VLAN results state what the held measures could not (only the producer's own
+    # INDETERMINATE disclosure stays published beside a hold)
+    assert not snap["failure_impact"][k]["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX)
+    for field in MEASURES + ("detail",):
         fact = row[field]
         assert fact["state"] == NC and fact["value"] is None, (field, fact)
         assert "run_config_observed" in fact["reason"] and "svi_ip" in fact["reason"], fact["reason"]
         assert (f"/interfaces/{host}", "witness") in _refs(fact), field
-    for field in ("host", "off_scan_gw_vlans", "detail"):
+    assert row["detail"]["reason"] == row["severity"]["reason"]
+    for field in ("host", "off_scan_gw_vlans"):
         assert row[field]["state"] == PUB and row[field]["value"] == snap["failure_impact"][k][field], field
     assert row["style"]["value"]["token"] == "not_observed"
     # one state on both surfaces: the device page shows the held fleet row, never a second selection gap
@@ -680,13 +747,14 @@ def test_j_a_device_without_its_scoped_running_config_holds_its_row_on_both_surf
     assert _topology(snap, topology_validator)["failure_impact"]["items"][k]["severity"]["state"] == NC
     snap["interfaces"][host][name]["run_config_observed"] = True
     lifted = _topology(snap, topology_validator)["failure_impact"]["items"][k]
-    assert all(lifted[field]["state"] == PUB for field in MEASURES)
+    assert all(lifted[field]["state"] == PUB for field in MEASURES + ("detail",))
     assert lifted["style"]["value"]["token"] == "impact_high"
     # no interface record at all: held, with the interfaces map as the witness
     del snap["interfaces"][host]
     row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
-    assert all(row[field]["state"] == NC for field in MEASURES)
+    assert all(row[field]["state"] == NC for field in MEASURES + ("detail",))
     assert ("/interfaces", "witness") in _refs(row["severity"])
+    assert ("/interfaces", "witness") in _refs(row["detail"])
     # the control the earlier rule got wrong: no security row (no full running-config) holds nothing
     snap = copy.deepcopy(sample)
     del snap["security"][host]
@@ -713,19 +781,207 @@ def test_k_a_row_without_the_off_scan_marker_withholds_its_severity_and_counts(s
     for host in legacy:
         k = _naming(snap["failure_impact"], host, ("host",))[0]
         row = topology["failure_impact"]["items"][k]
-        for field in MEASURES:
+        # the detail is held with the measures: the stored clean bill ("No reachability impact") and the stored
+        # per-VLAN results are what an engine that old wrote without being able to assess them
+        assert not snap["failure_impact"][k]["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX), host
+        for field in MEASURES + ("detail",):
             fact = row[field]
             assert fact["state"] == NC and fact["value"] is None, (host, field, fact)
             assert "predates the producer's assessability marker" in fact["reason"], (host, field, fact["reason"])
             assert (row["pointer"], "witness") in _refs(fact), (host, field)
         assert row["off_scan_gw_vlans"]["state"] == NC
-        assert row["host"]["state"] == row["detail"]["state"] == PUB
+        assert row["host"]["state"] == PUB
         assert row["style"]["value"]["token"] == "not_observed", (host, row["style"])
         sel = _page(snap, host, doc_validator)["failure_impact"]
         assert sel["state"] == PUB and sel["items"] == [row], (host, sel.get("reason"))
-    # the control: a row that carries the marker keeps its measures
+    # the control: a row that carries the marker keeps its measures and its detail
     i = _naming(snap["failure_impact"], "dist1", ("host",))[0]
-    assert all(topology["failure_impact"]["items"][i][field]["state"] == PUB for field in MEASURES)
+    assert all(topology["failure_impact"]["items"][i][field]["state"] == PUB for field in MEASURES + ("detail",))
+    # a legacy row whose detail is the producer's INDETERMINATE disclosure keeps that disclosure published
+    k = _naming(snap["failure_impact"], "podacc1", ("host",))[0]
+    snap["failure_impact"][k]["detail"] = ui.IMPACT_INDETERMINATE_PREFIX + " - a disclosure, not a clean bill."
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    assert row["detail"]["state"] == PUB and row["detail"]["value"] == snap["failure_impact"][k]["detail"]
+    assert all(row[field]["state"] == NC for field in MEASURES)
+
+
+# --------------------------------------------------------------------------------------------------
+# (l) a switch cabled to a peer the collection never reached cannot vouch for a clean or low verdict
+# --------------------------------------------------------------------------------------------------
+def _edge(port, peer, endpoint_type, platform=""):
+    """A CDP-seen trunk to a peer the collection never reached; how the peer advertised itself (its endpoint type
+    and platform) is what analyze.compute_cable_map classifies its node kind from."""
+    return InterfaceData(port=port, status="connected", switchport_mode="Trunk", cdp_neighbor=peer,
+                         neighbor_port="Gi0/1", endpoint_type=endpoint_type, neighbor_platform=platform,
+                         trunk_allowed_vlans="10", stp_fwd_vlans="10", run_config_observed=True)
+
+
+def _downstream_fleet(peer="dsw", endpoint_type="Switch", platform=""):
+    """`gw` gateways VLAN 10 for `acc`, so removing `gw` is a measured hard partition (High). `acc` also trunks down
+    to `peer` and `gw` up to the router `wan`; the collection reached neither. Removing `acc` strands nothing the
+    scan can see, so the producer writes its clean bill for it, whatever hangs behind `peer`."""
+    return {"gw": {"Gi1": _trunk("Gi1", "acc", "Gi1", "10"), "Gi47": _edge("Gi47", "wan", "Router", "cisco ISR4331/K9"),
+                   "Vlan10": _svi(10, "10.10.0.1/24")},
+            "acc": {"Gi1": _trunk("Gi1", "gw", "Gi1", "10"), "Gi10": _access("Gi10", 10, "0000.0000.000a"),
+                    "Gi48": _edge("Gi48", peer, endpoint_type, platform)}}
+
+
+def _downstream(fleet_args=(), host="acc"):
+    """The REAL producers' rows over :func:`_downstream_fleet`, its snapshot, and `host`'s row index and source row."""
+    interfaces = _downstream_fleet(*fleet_args)
+    impact = analyze.compute_failure_impact(interfaces)
+    snap = _impact_snapshot(interfaces, impact)
+    k = next(i for i, row in enumerate(impact) if row["host"] == host)
+    return snap, k, impact[k]
+
+
+def _node(snap, host):
+    same = [n for n in snap["cable_map"]["nodes"] if n["host"] == host]
+    assert len(same) == 1, (host, same)
+    return same[0]
+
+
+def _assert_clean_bill(src):
+    """The producer's clean bill: Info, every count zero, nothing off-scan, no INDETERMINATE disclosure."""
+    assert src["severity"] == "Info" and src["off_scan_gw_vlans"] == 0, src
+    assert all(src[field] == 0 for field in MEASURES[1:]), src
+    assert not src["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX), src
+
+
+def test_l_a_switch_facing_an_uncollected_downstream_switch_withholds_its_clean_bill(doc_validator,
+                                                                                    topology_validator):
+    snap, k, src = _downstream()
+    _assert_clean_bill(src)
+    node = _node(snap, "dsw")
+    assert node["collected"] is False and node["kind"] == "switch", node        # the REAL cable-map producer's node
+    cables = _uncollected_peer_cables(snap, "acc")
+    assert len(cables) == 1
+    witness = (f"/cable_map/cables/{cables[0]}", "witness")
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    for field in MEASURES + ("detail",):
+        fact = row[field]
+        assert fact["state"] == NC and fact["value"] is None, (field, fact)
+        assert "cannot account for endpoints behind 1 uncollected neighbour(s)" in fact["reason"], (field, fact)
+        assert witness in _refs(fact), field
+    assert "may understate" in row["severity"]["reason"]
+    assert all("only a lower bound" in row[field]["reason"] for field in MEASURES[1:])
+    assert "not a clean bill" in row["detail"]["reason"]
+    for field in ("host", "off_scan_gw_vlans"):                         # not measures of the blast radius
+        assert row[field]["state"] == PUB and row[field]["value"] == src[field], field
+    assert row["style"]["value"]["token"] == "not_observed", row["style"]
+    sel = _page(snap, "acc", doc_validator)["failure_impact"]            # one builder, one state on both surfaces
+    assert sel["state"] == PUB and sel["items"] == [row], sel.get("reason")
+    # the control: the same stored row once the cable map shows that peer collected is a published clean bill
+    node["collected"] = True
+    clean = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    assert all(clean[field]["state"] == PUB and clean[field]["value"] == src[field] for field in MEASURES + ("detail",))
+    assert clean["style"]["value"]["token"] == "impact_info"
+    assert not any(witness in _refs(clean[field]) for field in MEASURES)
+
+
+@pytest.mark.parametrize("peer, platform, kind", [
+    ("ap1", "cisco AIR-AP2802I-E-K9", "ap"),
+    ("sep1", "Cisco IP Phone 8865", "phone"),
+])
+def test_l_an_uncollected_edge_gear_peer_bounds_nothing_but_any_other_kind_does(topology_validator, peer,
+                                                                                platform, kind):
+    """analyze.compute_cable_map marks an AP or a phone POSITIVELY as edge gear (platform evidence, ranked below every
+    infrastructure kind across observers): what hangs off it depends on the removed switch's own port, which the
+    producer already excludes from 'stranded'. So it bounds nothing. Every other kind -- or none -- does."""
+    snap, k, src = _downstream((peer, "Switch", platform))
+    _assert_clean_bill(src)
+    node = _node(snap, peer)
+    assert node["collected"] is False and node["kind"] == kind, node           # the REAL producer's classification
+    assert _uncollected_peer_cables(snap, "acc") == []
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    assert all(row[field]["state"] == PUB and row[field]["value"] == src[field] for field in MEASURES + ("detail",))
+    assert row["style"]["value"]["token"] == "impact_info"
+    cable = next(j for j, c in enumerate(snap["cable_map"]["cables"]) if peer in (c["a"], c["b"]))
+    witness = (f"/cable_map/cables/{cable}", "witness")
+    assert not any(witness in _refs(row[field]) for field in MEASURES)
+    # the rule follows the stored kind, never the name: an unknown, missing, unrecognised or collected-device kind
+    # on an uncollected node, or a node that does not say it was collected, bounds the row
+    for mutate in (lambda n: n.update(kind="unknown"), lambda n: n.pop("kind"), lambda n: n.update(kind="AP"),
+                   lambda n: n.update(kind="device"), lambda n: n.pop("collected"),
+                   lambda n: n.update(collected="false")):
+        held = copy.deepcopy(snap)
+        mutate(_node(held, peer))
+        row = _topology(held, topology_validator)["failure_impact"]["items"][k]
+        for field in MEASURES + ("detail",):
+            assert row[field]["state"] == NC, (_node(held, peer), field, row[field])
+            assert "cannot account for endpoints behind 1 uncollected neighbour(s)" in row[field]["reason"], field
+            assert witness in _refs(row[field]), field
+
+
+def test_l_a_high_row_facing_an_uncollected_neighbour_keeps_its_lower_bounds(doc_validator, topology_validator):
+    """High cannot be understated and a positive count is a lower bound, so both stay published, citing the cable;
+    only the zero counts are withheld. The per-VLAN detail lists what was simulated and stays published."""
+    snap, k, src = _downstream(host="gw")
+    assert src["severity"] == "High" and src["hard"] == src["vlans_impacted"] == 1 and src["stranded"] == 1, src
+    assert src["backup"] == src["fhrp"] == 0 and src["off_scan_gw_vlans"] == 0, src
+    node = _node(snap, "wan")
+    assert node["collected"] is False and node["kind"] == "router", node
+    cables = _uncollected_peer_cables(snap, "gw")
+    assert len(cables) == 1
+    witness = (f"/cable_map/cables/{cables[0]}", "witness")
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    for field in ("severity", "vlans_impacted", "stranded", "hard"):
+        fact = row[field]
+        assert fact["state"] == PUB and fact["value"] == src[field], (field, fact)
+        assert witness in _refs(fact) and "impact_scanned_scope" in fact["caveats"], field
+    for field in ("backup", "fhrp"):
+        fact = row[field]
+        assert fact["state"] == NC and "only a lower bound" in fact["reason"], (field, fact)
+        assert "cannot account for endpoints behind 1 uncollected neighbour(s)" in fact["reason"], field
+        assert witness in _refs(fact), field
+    assert row["detail"]["state"] == PUB and row["detail"]["value"] == src["detail"]
+    assert row["style"]["value"]["token"] == "impact_high"
+    sel = _page(snap, "gw", doc_validator)["failure_impact"]
+    assert sel["state"] == PUB and sel["items"] == [row], sel.get("reason")
+
+
+@pytest.mark.parametrize("mode, want", [
+    ("duplicate_node", NC), ("missing_node", NC), ("unreadable_cable", NC), ("malformed_cables", UV),
+    ("absent_cables", NC), ("failed_cable_map", AU),
+])
+def test_l_a_neighbour_the_join_cannot_resolve_fails_closed(topology_validator, mode, want):
+    """Starting from a row the AP rule leaves published, a far end that joins no single node, a cable row the join
+    cannot read (it could name this switch), and a cable list that cannot be read are never assumed collected."""
+    snap, k, src = _downstream(("ap1", "Switch", "cisco AIR-AP2802I-E-K9"))
+    _assert_clean_bill(src)
+    nodes, cables = snap["cable_map"]["nodes"], snap["cable_map"]["cables"]
+    j = next(i for i, c in enumerate(cables) if "ap1" in (c["a"], c["b"]))
+    witness = (f"/cable_map/cables/{j}", "witness")
+    if mode == "duplicate_node":
+        nodes.append(copy.deepcopy(_node(snap, "ap1")))
+    elif mode == "missing_node":
+        nodes.remove(_node(snap, "ap1"))
+    elif mode == "unreadable_cable":
+        cables.append(None)
+        witness = (f"/cable_map/cables/{len(cables) - 1}", "witness")
+    elif mode == "malformed_cables":
+        snap["cable_map"]["cables"] = 7
+        witness = ("/cable_map/cables", "witness")
+    elif mode == "absent_cables":
+        del snap["cable_map"]["cables"]
+        witness = ("/cable_map", "witness")
+    else:
+        snap["assessment_integrity"] = {"cable_map": "failed"}
+        witness = ("/cable_map/cables", "witness")
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    for field in MEASURES + ("detail",):
+        fact = row[field]
+        assert fact["state"] == want and fact["value"] is None, (field, fact)
+        assert witness in _refs(fact), (field, fact["refs"])
+        if mode in ("duplicate_node", "missing_node", "unreadable_cable"):
+            assert "cannot account for endpoints behind 1 uncollected neighbour(s)" in fact["reason"], fact
+            assert "1 of them fail closed" in fact["reason"], fact["reason"]
+        else:
+            assert "cannot be checked" in fact["reason"], fact["reason"]
+    if mode == "failed_cable_map":
+        assert ("/assessment_integrity/cable_map", "failure_record") in _refs(row["severity"])
+    for field in ("host", "off_scan_gw_vlans"):
+        assert row[field]["state"] == PUB and row[field]["value"] == src[field], field
 
 
 # --------------------------------------------------------------------------------------------------

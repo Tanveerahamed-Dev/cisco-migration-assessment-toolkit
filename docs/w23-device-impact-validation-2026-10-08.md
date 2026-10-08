@@ -188,3 +188,150 @@ text changed, and that is instance data. Both hashes were recomputed locally wit
 - list: `c47a6ceff24a7392fa9b248ece33b36381f9fd27fc67d3d52ea3d8238a37e0c9`
 
 No local test, build or projection ran. The hosted gates and the next refutation decide.
+
+## Third refutation round
+
+An independent refuter reviewed head `5a88283b`. This round changes behaviour only. The transport
+schema and both native pins are unchanged. Both fixes live in the shared row builder
+(`_topology_impact` in `cisco_toolkit/ui_projection.py`), so the fleet `/topology/failure_impact`
+row and the device `failure_impact` row keep one state.
+
+**R3-1 (P2): a held row still published a clean-bill detail.**
+- Before this round, the `detail` cell had no pre-check. A row whose measures were held could
+  still publish "No reachability impact from removing this switch (within the scan)." A row is
+  held when no interface carries `run_config_observed`, when a legacy row has no
+  `off_scan_gw_vlans`, when the off-scan count or host cannot be read, or when a positive off-scan
+  count comes with nothing simulated.
+- Now the detail is withheld with the same state, reason and witness as the measures
+  (`_impact_detail_pre`).
+- One exception stays published: a detail that opens with the producer's
+  `IMPACT_INDETERMINATE_PREFIX` ("Blast radius INDETERMINATE"). That text is the producer's own
+  statement that the switch could not be assessed. It is a disclosure, not a clean bill.
+- A partial row keeps its per-VLAN detail published. A partial row simulated some VLANs, counts
+  `off_scan_gw_vlans` above zero, and has no hold. Its detail lists only what was simulated
+  ("VLAN 10: Hard partition ..."), so it claims nothing about the VLANs that were not. The other
+  cells already carry the disclosure: a band below `High` and each zero are withheld, `High` and
+  each positive count cite `off_scan_gw_vlans`, and the `impact_scanned_scope` text says "lower
+  bound".
+- Tests:
+  - (j) and (k) now require the held detail, with the run-config and legacy reasons and witnesses.
+  - (h) requires it for the off-scan-only and unreadable-count holds, and keeps the
+    INDETERMINATE detail published.
+  - (k) also pins a legacy row whose detail is INDETERMINATE: that detail stays published.
+  - (i) still requires the partial row's detail to be published.
+
+**R3-2 (P2): a switch facing an uncollected downstream neighbour got a published clean bill.**
+
+`analyze.compute_failure_impact` simulates only scanned switches. `stranded` counts endpoints on
+other scanned switches, and `off_scan_gw_vlans` counts only VLANs whose gateway is off-scan.
+Endpoints behind a CDP-seen but never-collected switch therefore count nowhere.
+`collection_completeness` lists only inventory devices, so the existing fleet qualifier does not
+see that peer either.
+
+The fix is a selection of stored rows, not a re-simulation (`_impact_peers`):
+- Select the `cable_map.cables` rows that name the row's host exactly as one end. The join is the
+  same exact-text join as `_topology_join`, through the cached `_Ctx.index`.
+- Join each far end to `cable_map.nodes` by exact host.
+- The row is bounded unless that join finds exactly one node, and the node either:
+  - carries `collected: true`; or
+  - carries `collected: false` and a kind the producer positively marks as edge gear.
+
+**Which kinds count, from the producer.** `analyze.compute_cable_map` writes
+`collected = h in all_interfaces`. A collected node gets `kind: "device"`
+(`CABLE_MAP_COLLECTED_KIND`). An uncollected node gets `_node_kind(...)`, which returns one of
+`switch`, `router`, `firewall`, `ap`, `phone`, `endpoint` or `unknown`.
+- `_node_kind` ranks infrastructure first across every observer (`_KIND_RANK`), and platform
+  evidence outranks endpoint type. So a peer is `ap`, `phone` or `endpoint` only when no
+  observer's evidence says switch, router or firewall.
+- The producer comment says a front end may hide only these positively identified kinds, and that
+  `unknown` always stays visible.
+- `build_network_model` refuses CDP-speaking phones and APs as uplinks
+  (`_is_offscan_uplink_port`).
+- What hangs off an AP or a phone depends on the removed switch's own port. The producer already
+  excludes that case by its declared scope: the removed switch's own endpoints move with it.
+
+So `_IMPACT_EDGE_KINDS` = {`ap`, `phone`, `endpoint`} bounds nothing. Every other kind is
+included, because it can carry endpoints or transit: `switch`, `router`, `firewall`, `unknown`,
+a missing or unrecognised kind, or `device` on a node marked uncollected. A node whose
+`collected` is neither `true` nor `false` is included too.
+
+**What a bounded row withholds.** The row cannot account for endpoints behind N uncollected
+neighbour(s). It withholds these cells as `not_collected`, with that reason and a witness to each
+such cable row:
+- a band below `High`;
+- each zero count;
+- a detail that names no simulated VLAN (no readable positive `vlans_impacted`), which is the
+  producer's clean bill.
+
+`High` and positive counts stay published as lower bounds and cite each cable, following the
+partial-row precedent. A per-VLAN detail stays published, as in R3-1. A row bounded by both the
+off-scan count and a neighbour carries both reasons and both witnesses.
+
+**It fails closed.**
+- A far end that joins no node, or more than one node, counts as uncollected. The reason says how
+  many failed closed.
+- A cable row the join cannot read (not an object, or `a`/`b` not text) could name any switch, so
+  it bounds every row (`_Ctx.unjoinable`).
+- A cable list that cannot be read bounds the row with the list's own state:
+  - `analysis_unavailable` for a failed cable-map phase, with its failure record;
+  - `unverified` for a malformed list;
+  - `not_collected` for an absent list.
+
+**Effect on the sample** (`webapp/sample_data/sample_fleet.snapshot.json`, read with `json.load`):
+- It has three uncollected peers:
+  - `AP-floor1`, kind `ap`, cabled to `access1` to `access17`;
+  - `AP-floor3-01`, kind `ap`, cabled to `core2`;
+  - `wan-edge-rtr1.lab`, kind `router`, cabled to `core2` by `/cable_map/cables/35`.
+- Only `core2` changes. Its row is `High`, so the band stays published. So do `vlans_impacted` 3,
+  `stranded` 42, `hard` 3 and the per-VLAN detail. Each measure now cites
+  `/cable_map/cables/35`.
+- `core2`'s `backup` and `fhrp` (both 0) become `not_collected`.
+- Every access switch faces only an AP, so it is unchanged.
+- No sample row is held, so R3-1 changes nothing in the sample.
+
+**Tests.**
+- (a) now derives the bound independently from the stored cable map. It pins `core2` as the only
+  bounded host, and the router as its only bounding peer.
+- Four new (l) tests drive the real `analyze.compute_failure_impact` and
+  `analyze.compute_cable_map`:
+  - An uncollected downstream switch withholds the clean bill on both surfaces. In the control,
+    the same stored row is published once the node reads `collected: true`.
+  - An uncollected AP or phone bounds nothing. Six stored-node mutations each bound the row: kind
+    `unknown`, no kind, kind `AP`, kind `device`, no `collected`, and `collected` as the string
+    `"false"`.
+  - A `High` row facing an uncollected router keeps its band, positive counts and detail. It
+    withholds only its zeros.
+  - Six fail-closed modes: a duplicate node, a missing node, an unreadable cable row, a malformed
+    cable list, an absent cable list, and a failed cable-map phase.
+- The `impact_scanned_scope` text (instance data, not schema) now states both rules.
+
+**Residuals outside this slice (no code here)**
+- **R3-3, producer.** `analyze.compute_failure_impact` counts `blind_links`: inter-switch links
+  with no trunk/STP evidence on either end (`cisco_toolkit/analyze.py:1228` to `1232`). It reports
+  them only in the INDETERMINATE detail of a switch that simulated nothing (`:1305`), and never
+  writes the count into the row. A partially simulated switch can therefore hide evidence-less
+  links. Fixing that needs an engine change, plus a regenerated golden snapshot and sample.
+- **Other surfaces still render raw `failure_impact` rows without these holds.** Located with
+  `git grep`:
+  - `webapp/backend/cutover.py:174`: `_worst_blast_radius`, which sets each wave's
+    `blast_radius` (`:566`);
+  - `webapp/backend/summary.py:116`: `_keystones`, whose fallback sorts raw rows by severity and
+    `stranded` (`:131` onward);
+  - the AssessHub snapshot table: the `("failure_impact", "Failure impact")` tab in
+    `SECTION_LABELS` (`webapp/backend/summary.py:55`), which
+    `GET /api/snapshots/{snapshot_id}/section/{name}` serves raw (`webapp/backend/app.py:3251`);
+  - in the same route, the dossier recompute (`webapp/backend/app.py:3296`), which also passes
+    raw rows to `analyze.compute_device_dossiers`.
+- **A truncated scoped capture.** A scoped interface running-config capture can be cut short. It
+  then marks some interfaces `run_config_observed` while missing SVIs. The projection cannot
+  detect that, because one marked interface lifts the hold.
+
+**Schema and pins.** No limitation ID, property or keyword changed. Only the
+`impact_scanned_scope` text changed, and that is instance data. Both hashes were recomputed
+locally with `_native_schema_hash` on `_VIEW_SCHEMA` and `_LIST_SCHEMA`. They match the pins
+before and after this round:
+
+- view: `a2fd2b9994569b2fd3a3df72e3410ae1b74ff41c26833a62239514c677f9de32`
+- list: `c47a6ceff24a7392fa9b248ece33b36381f9fd27fc67d3d52ea3d8238a37e0c9`
+
+No local test, build or projection ran. The hosted gates and the next refutation decide.
