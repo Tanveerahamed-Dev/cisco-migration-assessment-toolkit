@@ -25,7 +25,9 @@ Slice 2 adds the row screens:
   links and the show command it cites, and nothing it does not publish;
 * :func:`project_device` -- one standalone device page per host (identity, physical, blind-spot record,
   health, lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours, security checks,
-  native-VLAN mismatches, remediation, NRFU cases, and the punch-list rows and endpoints naming it).
+  native-VLAN mismatches, remediation, NRFU cases, the punch-list rows and endpoints naming it, and the stored
+  failure-impact and structural-link rows naming it -- selected, never re-simulated; a device with no
+  simulation row is a blind spot, never "no impact").
 
 A row cell never goes through a dotted path (a hostname can contain a dot): it takes its section's state,
 the owner's device scope, its row join by exact key (two rows naming a key are ``unverified``, never picked
@@ -96,7 +98,7 @@ import ipaddress
 import math
 import re
 from types import MappingProxyType
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
 from cisco_toolkit import ssot
@@ -302,6 +304,12 @@ SELECTION_NEEDS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "native_vlan_mismatches": ("CDP/LLDP neighbors", "switchport"),        # excel.compute_trunk_native_mismatches
     "endpoints": ("interface status", "switchport"),                       # analyze.compute_endpoint_identity
     "findings": ESSENTIAL_LABELS,                                          # analyze.compute_migration_punchlist
+    # analyze.compute_failure_impact simulates over build_network_model: access-VLAN membership from the switchport
+    # parse and inter-switch links from CDP/LLDP (compute_topology_links). It reads no interface-status or
+    # version/inventory field; its SVI, MAC, trunk and STP inputs are not essential captures.
+    "failure_impact": ("switchport", "CDP/LLDP neighbors"),
+    # analyze.compute_link_centrality: CDP/LLDP links between two scanned hosts (_topology_adjacency).
+    "structural_links": ("CDP/LLDP neighbors",),
 })
 #: Every section an analysis phase writes (ssot.PHASE_SECTIONS): its value can be computed from a failed phase's
 #: fallback two hops away, which ssot.failed_sections does not mark.
@@ -579,11 +587,12 @@ DEVICE_CITED_LIMITATIONS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "one_hop_failure_attribution": ("/device/collection", "/device/health", "/device/lifecycle", "/device/dossier",
                                     "/device/coverage", "/device/links", "/device/remediation", "/device/nrfu_cases",
                                     "/device/findings", "/device/endpoints", "/device/move_group", "/device/findings_rollup",
-                                    "/device/coverage_rollup"),
+                                    "/device/coverage_rollup", "/device/failure_impact", "/device/structural_links"),
     "device_findings_scope": ("/device/findings_rollup",),
     "coverage_matrix_shown_as_published": ("/device/coverage", "/device/coverage_rollup"),
     "projection_owned_verdicts": ("/device/health/deductions_cap", "/device/remediation/items", "/device/links",
-                                  "/device/native_vlan_mismatches", "/device/findings", "/device/endpoints"),
+                                  "/device/native_vlan_mismatches", "/device/findings", "/device/endpoints",
+                                  "/device/failure_impact", "/device/structural_links"),
     "device_physical_defaults_not_observed": ("/device/physical",),
     "health_scored_without_security": ("/device/health",),
     "health_scored_over_partial_collection": ("/device/health",),
@@ -591,7 +600,9 @@ DEVICE_CITED_LIMITATIONS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     "engine_list_capped": ("/device/health/deductions", "/device/health/deduction_refs", "/device/remediation/items"),
     "move_group_label_absent": ("/device/remediation/items", "/device/move_group"),
     "row_selection_by_exact_key": ("/device/links", "/device/native_vlan_mismatches", "/device/findings",
-                                   "/device/endpoints"),
+                                   "/device/endpoints", "/device/failure_impact", "/device/structural_links"),
+    "topology_scanned_model": ("/device/failure_impact", "/device/structural_links"),
+    "impact_scanned_scope": ("/device/failure_impact",),
 })
 _LIMITATION_IDS = tuple(lim["id"] for lim in LIMITATIONS)
 _ALL_LIMITATION_IDS = _LIMITATION_IDS + tuple(lim["id"] for lim in DEVICE_LIMITATIONS)
@@ -2440,9 +2451,11 @@ def _cfg_missing(ctx: _Ctx, host: str) -> bool:
 
 def _sel_state(ctx: _Ctx, base: str, reason: Optional[str], selected: Sequence[Any],
                gap: Optional[Tuple[str, List[Tuple[str, Sequence[Any]]]]],
-               cbe: str) -> Tuple[str, Optional[str], List[Tuple[str, Sequence[Any]]]]:
+               cbe: Union[str, Tuple[str, str]]) -> Tuple[str, Optional[str], List[Tuple[str, Sequence[Any]]]]:
     """The state of the rows of one list that name a device: the owner's rows, or an honest absence. A device gap
-    makes the selection not_collected: with rows it may be incomplete, without rows it is no clean result."""
+    makes the selection not_collected: with rows it may be incomplete, without rows it is no clean result. `cbe`
+    names what the producer looked for (an empty selection is collected_but_empty), or is the ``(state, reason)``
+    of an empty selection whose producer can never say "none" for a device (no row is not a clean result)."""
     if base not in (_PUB, _CBE):
         return base, reason, []
     if gap is not None:
@@ -2454,6 +2467,8 @@ def _sel_state(ctx: _Ctx, base: str, reason: Optional[str], selected: Sequence[A
                      "result"), wit
     if selected:
         return _PUB, None, []
+    if isinstance(cbe, tuple):
+        return cbe[0], cbe[1], []
     return _CBE, f"collected but empty: {cbe} (not a blind spot)", []
 
 
@@ -3671,6 +3686,16 @@ _B_IF = "html.snapshot_state:interfaces{}{}."
 _B_SEC = "parse.parse_security:security{}."
 _B_RP = "analyze.compute_remediation_plan:remediation_plan.by_device{}[]."
 _B_NRFU = "nrfu_export.compute_nrfu_commands:nrfu_commands.waves[].devices[].cases[]."
+#: compute_failure_impact writes one row per host of build_network_model (every scanned host). A device with no row
+#: was not simulated: its absence is a blind spot, never "no impact".
+_ABSENT_IMPACT = (_NC, "not collected: the failure-impact simulation (analyze.compute_failure_impact) carries no row "
+                       "for this device, so it was not simulated; an absent row is not 'no impact'")
+#: compute_link_centrality keeps only CDP/LLDP links whose two ends are both scanned hosts (_topology_adjacency), so a
+#: device can be absent for reasons other than having no inter-switch link.
+_ABSENT_STRUCTURAL = (_NC, "not collected: no structural link names this device. The scanned host-pair model "
+                           "(analyze.compute_link_centrality) keeps only CDP/LLDP links whose two ends were both "
+                           "scanned, so an absent row can mean an unscanned or uncollected peer, or CDP/LLDP evidence "
+                           "that was not captured or parsed; it is not proof that the device has no inter-switch link")
 
 
 def _nrfu_marker(raw: Any, _row: _Row) -> Optional[Tuple[str, str]]:
@@ -3707,19 +3732,27 @@ def _interfaces_block(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]]) -
 
 
 def _selection_rows(ctx: _Ctx, host: Any, forced: Optional[Tuple[str, str]], block: str, toks: Tuple[str, ...],
-                    fields: Tuple[str, ...], basis: str, cbe: str, build: Callable[[int, Any], Dict[str, Any]], *,
+                    fields: Tuple[str, ...], basis: str, cbe: Union[str, Tuple[str, str]],
+                    build: Callable[[int, Any], Dict[str, Any]], *,
                     multi: bool = False, base_state: Optional[Tuple[str, Optional[str], Any]] = None,
-                    sections: Optional[Tuple[str, ...]] = None, config: bool = False) -> Dict[str, Any]:
+                    sections: Optional[Tuple[str, ...]] = None, config: bool = False,
+                    unique: bool = False) -> Dict[str, Any]:
     """The rows of one engine list that name this device (selection only; never a count). The device's own gaps
-    (:func:`_device_gap` over the captures :data:`SELECTION_NEEDS` names for `block`) make it not_collected."""
+    (:func:`_device_gap` over the captures :data:`SELECTION_NEEDS` names for `block`) make it not_collected. With
+    `unique` the producer writes at most one row per device, so two rows naming it are unverified (never picked
+    between); `cbe` is as in :func:`_sel_state`."""
     secs = sections or (toks[0],)
     if forced is not None:
         return _listing(ctx, forced[0], forced[1], None, basis, [], bare=True)
     base, reason, raw = base_state or _list_state(ctx, toks, (toks[0],))
     sel = ctx.index(toks, fields, multi).get(host, []) if isinstance(raw, list) and _is_text(host) else []
     items = [build(i, raw[i]) for i in sel]
-    gap = _device_gap(ctx, host, toks[0], SELECTION_NEEDS[block], config=config)
-    state, reason, wit = _sel_state(ctx, base, reason, sel, gap, cbe)
+    if unique and len(sel) > 1 and base in (_PUB, _CBE):
+        state, reason = _UV, _R_AMBIG.format(n=len(sel), section=".".join(toks))
+        wit: List[Tuple[str, Sequence[Any]]] = [("witness", toks + (i,)) for i in sel]
+    else:
+        gap = _device_gap(ctx, host, toks[0], SELECTION_NEEDS[block], config=config)
+        state, reason, wit = _sel_state(ctx, base, reason, sel, gap, cbe)
     return _listing(ctx, state, reason, toks, basis, items, sections=secs, extra=wit,
                     caveats=("row_selection_by_exact_key",))
 
@@ -4030,6 +4063,15 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
             "analyze.compute_endpoint_identity:endpoint_identity",
             "no endpoint was identified on this device",
             lambda i, _rec: {"index": i, "pointer": json_pointer("endpoint_identity", i)}),
+        # G10/G11: the stored fleet rows naming this device, built by the fleet topology's own row builders.
+        "failure_impact": _selection_rows(
+            ctx, host, forced, "failure_impact", ("failure_impact",), ("host",),
+            "analyze.compute_failure_impact:failure_impact", _ABSENT_IMPACT,
+            lambda i, rec: _topology_impact(ctx, i, rec), unique=True),
+        "structural_links": _selection_rows(
+            ctx, host, forced, "structural_links", ("link_centrality",), ("a_host", "b_host"),
+            "analyze.compute_link_centrality:link_centrality", _ABSENT_STRUCTURAL,
+            lambda i, rec: _topology_structural(ctx, i, rec)),
         "limitations": _device_limitations_payload(),
     }
 
@@ -4037,8 +4079,11 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
 def project_device(snap: Any, host: Any) -> Dict[str, Any]:
     """One device page, as a standalone ``DeviceDocument``: identity, physical, blind-spot record, health,
     lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours, security checks, native-VLAN
-    mismatches, remediation, NRFU cases, and the punch-list rows and endpoints that name it. A host no roster
-    names claims nothing; a host that is not a string names no row."""
+    mismatches, remediation, NRFU cases, the punch-list rows and endpoints that name it, and the stored
+    failure-impact row (``failure_impact``) and structural-link rows (``structural_links``, either end) that name it.
+    Those two are the fleet topology rows selected by exact host, never re-simulated; an empty selection is
+    not_collected, never "no impact" or "no link". A host no roster names claims nothing; a host that is not a
+    string names no row."""
     ctx = _Ctx(snap)
     return {"schema": SCHEMA, "engine": _engine(ctx), "device": _device_page(ctx, host)}
 
@@ -4806,7 +4851,8 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     defs["DevicePage"] = _closed("DevicePage", (
         "host", "rosters", "identity", "physical", "collection", "health", "lifecycle", "dossier", "coverage",
         "interfaces", "links", "routes", "routing_neighbors", "security", "native_vlan_mismatches", "remediation",
-        "nrfu_cases", "findings", "endpoints", "limitations", "move_group", "findings_rollup", "coverage_rollup"), {
+        "nrfu_cases", "findings", "endpoints", "limitations", "move_group", "findings_rollup", "coverage_rollup",
+        "failure_impact", "structural_links"), {
         "host": _nullable(_str()),
         "move_group": _ref(_TEXT),
         "findings_rollup": _ref("DeviceFindingsRollup"),
@@ -4842,6 +4888,7 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
         "remediation": _closed("DeviceRemediation", ("banner", "items"),
                                {"banner": _ref(_TEXT), "items": _ref("RemediationRowList")}),
         "nrfu_cases": _ref("NrfuCaseList"), "findings": _ref("RowRefList"), "endpoints": _ref("RowRefList"),
+        "failure_impact": _ref("TopologyImpactRowList"), "structural_links": _ref("TopologyStructuralLinkRowList"),
         "limitations": {"type": "array", "minItems": n_lims, "maxItems": n_lims, "items": _ref("Limitation")},
     })
     defs["DeviceDocument"] = _closed("DeviceDocument", ("schema", "engine", "device"),
