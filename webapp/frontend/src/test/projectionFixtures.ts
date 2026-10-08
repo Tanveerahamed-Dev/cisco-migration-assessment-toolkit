@@ -195,6 +195,41 @@ export function deviceFixture(sid = 1, host = "edge/a~b", findings_rollup = find
     structural_links: blindPage("/structural_links", "Synthetic device is named by no scanned host-pair link; that is not proof of no link"),
   } };
 }
+// Synthetic G10/G11 device selections. A withheld cell or list carries the state, reason and style token
+// the caller supplies; nothing here says how much impact a withheld row has.
+type Held = { state: string; reason: string; token: string };
+const heldCell = (pointer: string, held: Held) => ({ state: held.state, value: null, reason: held.reason, subject: pointer,
+  refs: [{ pointer: `${pointer}/witness`, role: "witness" }], basis: "synthetic.owner:device_selection" });
+const heldList = (subject: string, held: Held) => ({ state: held.state, reason: held.reason, subject, refs: [], basis: "synthetic.owner:device_selection", items: [] });
+export function deviceSelectionPage<T>(pointer: string, items: T[], held?: Omit<Held, "token">) {
+  const page = ownerPage(pointer, items);
+  return held ? { ...page, source_list: { state: held.state, reason: held.reason, subject: pointer, refs: [], basis: "synthetic.owner:device_selection" } } : page;
+}
+export function deviceImpactRowFixture(index = 4, held?: Held) {
+  const pointer = `/failure_impact/${index}`;
+  const base = { index, pointer, host: published("edge/a~b"), node_refs: ownerList([{ index: 0, pointer: "/cable_map/nodes/0" }], "/cable_map/nodes") };
+  if (!held) return { ...base, severity: published("High"), vlans_impacted: published(3), stranded: published(42), hard: published(3),
+    backup: published(0), fhrp: published(0), off_scan_gw_vlans: published(0), detail: published("Synthetic VLAN 10: Hard partition (42 ep)"),
+    style: published({ token: "impact_high", glyph: "none", label: "Synthetic engine high-impact presentation" }) };
+  const cell = heldCell(pointer, held);
+  return { ...base, severity: cell, vlans_impacted: cell, stranded: cell, hard: cell, backup: cell, fhrp: cell, detail: cell,
+    off_scan_gw_vlans: published(2), style: published({ token: held.token, glyph: "none", label: `Synthetic engine ${held.token} presentation` }) };
+}
+export function deviceStructuralRowFixture(index = 2, bridge = true, rank = 1, held?: Held) {
+  const pointer = `/link_centrality/${index}`;
+  if (held) {
+    const cell = heldCell(pointer, held), joins = heldList("/cable_map/nodes", held);
+    return { index, pointer, ends: cell, betweenness: cell, is_bridge: cell, pairs_cut: cell, rank: cell, a_nodes: joins, b_nodes: joins,
+      host_pair_cable_refs: heldList("/cable_map/cables", held), style: published({ token: held.token, glyph: "none", label: `Synthetic engine ${held.token} presentation` }) };
+  }
+  return { index, pointer, ends: published({ a_host: "edge/a~b", a_port: `Gi${index}`, b_host: `synthetic-peer-${index}`, b_port: "Gi9" }),
+    betweenness: published(bridge ? .5 : .125), is_bridge: published(bridge), pairs_cut: published(bridge ? 4 : 0), rank: published(rank),
+    a_nodes: ownerList([{ index: 0, pointer: "/cable_map/nodes/0" }], "/cable_map/nodes"),
+    b_nodes: ownerList([{ index, pointer: `/cable_map/nodes/${index}` }], "/cable_map/nodes"),
+    host_pair_cable_refs: ownerList([{ index, pointer: `/cable_map/cables/${index}` }], "/cable_map/cables"),
+    style: published(bridge ? { token: "structural_bridge", glyph: "none", label: "Synthetic engine bridge presentation" }
+      : { token: "structural_link", glyph: "none", label: "Synthetic engine host-pair link presentation" }) };
+}
 export function findingsFixture(sid = 1, offset = 0) {
   const row = { index: offset === 0 ? 7 : 93, pointer: `/punchlist/${offset === 0 ? 7 : 93}`, ...fields("priority rank severity category wave severity_basis evidence_confidence source_command evidence_basis"),
     title: published(offset === 0 ? "Synthetic finding" : "Next source finding"), detail: published("Synthetic issue detail"), remediation: published("Synthetic owner remediation"), devices: published(["edge/a~b"]),
