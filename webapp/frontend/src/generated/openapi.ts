@@ -1751,6 +1751,7 @@ export interface components {
             readonly engine: components["schemas"]["UiProjection1_Engine"];
             /** @constant */
             readonly schema: "ui_projection/1";
+            readonly vocab: components["schemas"]["UiProjection1_Vocab"];
         };
         /** DeviceFindingsRollup */
         readonly UiProjection1_DeviceFindingsRollup: {
@@ -3412,6 +3413,7 @@ export interface components {
             readonly path: components["schemas"]["UiProjection1_Path"];
             /** @constant */
             readonly schema: "ui_projection/1";
+            readonly vocab: components["schemas"]["UiProjection1_Vocab"];
         };
         /** PathHopEvidence */
         readonly UiProjection1_PathHopEvidence: {
@@ -5967,6 +5969,520 @@ export interface components {
             readonly endpoints: components["schemas"]["UiProjection1_IndexList"] | null;
             readonly gateways: components["schemas"]["UiProjection1_IndexList"] | null;
             readonly stp_roots: readonly components["schemas"]["UiProjection1_Pointer"][] | null;
+        };
+        /** Vocab */
+        readonly UiProjection1_Vocab: {
+            readonly classes: [
+                components["schemas"]["UiProjection1_VocabClass"],
+                components["schemas"]["UiProjection1_VocabClass"],
+                components["schemas"]["UiProjection1_VocabClass"],
+                components["schemas"]["UiProjection1_VocabClass"],
+                components["schemas"]["UiProjection1_VocabClass"]
+            ];
+            readonly ranked: components["schemas"]["UiProjection1_VocabRanked"];
+            /** @constant */
+            readonly schema: "ui_projection_vocab/1";
+            readonly unranked: components["schemas"]["UiProjection1_VocabUnranked"];
+        };
+        /**
+         * VocabClass
+         * @enum {string}
+         */
+        readonly UiProjection1_VocabClass: "pass" | "watch" | "risk" | "critical" | "undetermined";
+        /** VocabCollectionStatusItem */
+        readonly UiProjection1_VocabCollectionStatusItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "not collected" | "partial";
+        };
+        /** VocabCoverageStateItem */
+        readonly UiProjection1_VocabCoverageStateItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "not_collected" | "unverified" | "unparsed" | "partial" | "not_observed" | "covered";
+        };
+        /** VocabEndpointConfidenceItem */
+        readonly UiProjection1_VocabEndpointConfidenceItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "Inferred-high" | "Inferred-medium" | "Unknown";
+        };
+        /** VocabExposureStateItem */
+        readonly UiProjection1_VocabExposureStateItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "risk" | "watch" | "ok" | "na";
+        };
+        /** VocabHealthBandItem */
+        readonly UiProjection1_VocabHealthBandItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "Critical" | "Poor" | "Fair" | "Good" | "Excellent";
+        };
+        /** VocabHealthBandPartitionItem */
+        readonly UiProjection1_VocabHealthBandPartitionItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "Critical" | "Poor" | "Fair" | "Good" | "Excellent" | "Insufficient Data";
+        };
+        /** VocabImpactSeverityItem */
+        readonly UiProjection1_VocabImpactSeverityItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "High" | "Medium" | "Low" | "Info";
+        };
+        /** VocabLifecycleBandItem */
+        readonly UiProjection1_VocabLifecycleBandItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "Past-LDoS" | "Near-LDoS" | "Past-EoS" | "Active" | "Unknown";
+        };
+        /** VocabLinkOpStatusItem */
+        readonly UiProjection1_VocabLinkOpStatusItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "up" | "down" | "unknown";
+        };
+        /** VocabRanked */
+        readonly UiProjection1_VocabRanked: {
+            /** VocabCollectionStatus */
+            readonly collection_status: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabCollectionStatusItem"],
+                    components["schemas"]["UiProjection1_VocabCollectionStatusItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabCoverageState */
+            readonly coverage_state: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabCoverageStateItem"],
+                    components["schemas"]["UiProjection1_VocabCoverageStateItem"],
+                    components["schemas"]["UiProjection1_VocabCoverageStateItem"],
+                    components["schemas"]["UiProjection1_VocabCoverageStateItem"],
+                    components["schemas"]["UiProjection1_VocabCoverageStateItem"],
+                    components["schemas"]["UiProjection1_VocabCoverageStateItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabEndpointConfidence */
+            readonly endpoint_confidence: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabEndpointConfidenceItem"],
+                    components["schemas"]["UiProjection1_VocabEndpointConfidenceItem"],
+                    components["schemas"]["UiProjection1_VocabEndpointConfidenceItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabExposureState */
+            readonly exposure_state: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabExposureStateItem"],
+                    components["schemas"]["UiProjection1_VocabExposureStateItem"],
+                    components["schemas"]["UiProjection1_VocabExposureStateItem"],
+                    components["schemas"]["UiProjection1_VocabExposureStateItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabHealthBand */
+            readonly health_band: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabHealthBandItem"],
+                    components["schemas"]["UiProjection1_VocabHealthBandItem"],
+                    components["schemas"]["UiProjection1_VocabHealthBandItem"],
+                    components["schemas"]["UiProjection1_VocabHealthBandItem"],
+                    components["schemas"]["UiProjection1_VocabHealthBandItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabHealthBandPartition */
+            readonly health_band_partition: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabHealthBandPartitionItem"],
+                    components["schemas"]["UiProjection1_VocabHealthBandPartitionItem"],
+                    components["schemas"]["UiProjection1_VocabHealthBandPartitionItem"],
+                    components["schemas"]["UiProjection1_VocabHealthBandPartitionItem"],
+                    components["schemas"]["UiProjection1_VocabHealthBandPartitionItem"],
+                    components["schemas"]["UiProjection1_VocabHealthBandPartitionItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabImpactSeverity */
+            readonly impact_severity: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabImpactSeverityItem"],
+                    components["schemas"]["UiProjection1_VocabImpactSeverityItem"],
+                    components["schemas"]["UiProjection1_VocabImpactSeverityItem"],
+                    components["schemas"]["UiProjection1_VocabImpactSeverityItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabLifecycleBand */
+            readonly lifecycle_band: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabLifecycleBandItem"],
+                    components["schemas"]["UiProjection1_VocabLifecycleBandItem"],
+                    components["schemas"]["UiProjection1_VocabLifecycleBandItem"],
+                    components["schemas"]["UiProjection1_VocabLifecycleBandItem"],
+                    components["schemas"]["UiProjection1_VocabLifecycleBandItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabLinkOpStatus */
+            readonly link_op_status: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabLinkOpStatusItem"],
+                    components["schemas"]["UiProjection1_VocabLinkOpStatusItem"],
+                    components["schemas"]["UiProjection1_VocabLinkOpStatusItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabReadinessCheckStatus */
+            readonly readiness_check_status: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabReadinessCheckStatusItem"],
+                    components["schemas"]["UiProjection1_VocabReadinessCheckStatusItem"],
+                    components["schemas"]["UiProjection1_VocabReadinessCheckStatusItem"],
+                    components["schemas"]["UiProjection1_VocabReadinessCheckStatusItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabRiskBand */
+            readonly risk_band: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabRiskBandItem"],
+                    components["schemas"]["UiProjection1_VocabRiskBandItem"],
+                    components["schemas"]["UiProjection1_VocabRiskBandItem"],
+                    components["schemas"]["UiProjection1_VocabRiskBandItem"],
+                    components["schemas"]["UiProjection1_VocabRiskBandItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabSecurityCheckSeverity */
+            readonly security_check_severity: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabSecurityCheckSeverityItem"],
+                    components["schemas"]["UiProjection1_VocabSecurityCheckSeverityItem"],
+                    components["schemas"]["UiProjection1_VocabSecurityCheckSeverityItem"],
+                    components["schemas"]["UiProjection1_VocabSecurityCheckSeverityItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabSecurityCheckStatus */
+            readonly security_check_status: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabSecurityCheckStatusItem"],
+                    components["schemas"]["UiProjection1_VocabSecurityCheckStatusItem"],
+                    components["schemas"]["UiProjection1_VocabSecurityCheckStatusItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabSecurityGrade */
+            readonly security_grade: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabSecurityGradeItem"],
+                    components["schemas"]["UiProjection1_VocabSecurityGradeItem"],
+                    components["schemas"]["UiProjection1_VocabSecurityGradeItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabSeverity */
+            readonly severity: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabSeverityItem"],
+                    components["schemas"]["UiProjection1_VocabSeverityItem"],
+                    components["schemas"]["UiProjection1_VocabSeverityItem"],
+                    components["schemas"]["UiProjection1_VocabSeverityItem"],
+                    components["schemas"]["UiProjection1_VocabSeverityItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabStpRootElectionState */
+            readonly stp_root_election_state: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabStpRootElectionStateItem"],
+                    components["schemas"]["UiProjection1_VocabStpRootElectionStateItem"],
+                    components["schemas"]["UiProjection1_VocabStpRootElectionStateItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabUnknownEvidenceSourceState */
+            readonly unknown_evidence_source_state: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabUnknownEvidenceSourceStateItem"],
+                    components["schemas"]["UiProjection1_VocabUnknownEvidenceSourceStateItem"],
+                    components["schemas"]["UiProjection1_VocabUnknownEvidenceSourceStateItem"],
+                    components["schemas"]["UiProjection1_VocabUnknownEvidenceSourceStateItem"],
+                    components["schemas"]["UiProjection1_VocabUnknownEvidenceSourceStateItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabUnknownEvidenceState */
+            readonly unknown_evidence_state: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabUnknownEvidenceStateItem"],
+                    components["schemas"]["UiProjection1_VocabUnknownEvidenceStateItem"],
+                    components["schemas"]["UiProjection1_VocabUnknownEvidenceStateItem"],
+                    components["schemas"]["UiProjection1_VocabUnknownEvidenceStateItem"],
+                    components["schemas"]["UiProjection1_VocabUnknownEvidenceStateItem"]
+                ];
+                readonly owner: string;
+            };
+            /** VocabVlanReadiness */
+            readonly vlan_readiness: {
+                readonly basis: string;
+                readonly items: [
+                    components["schemas"]["UiProjection1_VocabVlanReadinessItem"],
+                    components["schemas"]["UiProjection1_VocabVlanReadinessItem"],
+                    components["schemas"]["UiProjection1_VocabVlanReadinessItem"]
+                ];
+                readonly owner: string;
+            };
+        };
+        /** VocabReadinessCheckStatusItem */
+        readonly UiProjection1_VocabReadinessCheckStatusItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "pass" | "warn" | "fail" | "info";
+        };
+        /** VocabRiskBandItem */
+        readonly UiProjection1_VocabRiskBandItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "Severe" | "Elevated" | "Guarded" | "Low" | "Unassessed";
+        };
+        /** VocabSecurityCheckSeverityItem */
+        readonly UiProjection1_VocabSecurityCheckSeverityItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "high" | "medium" | "low" | "info";
+        };
+        /** VocabSecurityCheckStatusItem */
+        readonly UiProjection1_VocabSecurityCheckStatusItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "pass" | "fail" | "na";
+        };
+        /** VocabSecurityGradeItem */
+        readonly UiProjection1_VocabSecurityGradeItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "weak" | "partial" | "hardened";
+        };
+        /** VocabSeverityItem */
+        readonly UiProjection1_VocabSeverityItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "Critical" | "High" | "Medium" | "Low" | "Info";
+        };
+        /** VocabStpRootElectionStateItem */
+        readonly UiProjection1_VocabStpRootElectionStateItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "published" | "ambiguous" | "not_observed";
+        };
+        /** VocabUnknownEvidenceSourceStateItem */
+        readonly UiProjection1_VocabUnknownEvidenceSourceStateItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "observed" | "observed_empty" | "partial" | "not_collected" | "malformed";
+        };
+        /** VocabUnknownEvidenceStateItem */
+        readonly UiProjection1_VocabUnknownEvidenceStateItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "observed_no_unknowns" | "observed_with_unresolved" | "incomplete" | "incomplete_with_unresolved" | "unavailable";
+        };
+        /** VocabUnranked */
+        readonly UiProjection1_VocabUnranked: {
+            /** VocabAbstentionState */
+            readonly abstention_state: {
+                readonly basis: string;
+                readonly tokens: readonly ("published" | "collected_but_empty" | "not_collected" | "analysis_unavailable")[];
+            };
+            /** VocabAddressOrigin */
+            readonly address_origin: {
+                readonly basis: string;
+                readonly tokens: readonly ("interface_svi" | "local_route" | "fhrp_host_route")[];
+            };
+            /** VocabBriefAxis */
+            readonly brief_axis: {
+                readonly basis: string;
+                readonly tokens: readonly ("Fleet health" | "Migration punch-list" | "Application domains" | "Cutover sequence" | "Hardware lifecycle (EoL)" | "Segmentation" | "Multicast / timing" | "Remediation" | "Operational logs" | "QoS posture" | "Software risk" | "Platform capacity" | "Asset risk register")[];
+            };
+            /** VocabCensusKind */
+            readonly census_kind: {
+                readonly basis: string;
+                readonly tokens: readonly ("absent" | "list" | "dict" | "scalar")[];
+            };
+            /** VocabCoverageDimension */
+            readonly coverage_dimension: {
+                readonly basis: string;
+                readonly tokens: readonly ("collection" | "capture" | "parse" | "architecture")[];
+            };
+            /** VocabCoverageVerdictSource */
+            readonly coverage_verdict_source: {
+                readonly basis: string;
+                readonly tokens: readonly ("collection_completeness" | "capture_integrity" | "parse_yield" | "architecture_coverage")[];
+            };
+            /** VocabDossierAxis */
+            readonly dossier_axis: {
+                readonly basis: string;
+                readonly tokens: readonly ("Health" | "Hardware EoL" | "Software risk" | "Control plane" | "Operational logs" | "Security posture" | "Config hygiene" | "Golden drift" | "QoS posture" | "Physical" | "Protocol")[];
+            };
+            /** VocabEngineState */
+            readonly engine_state: {
+                readonly basis: string;
+                readonly tokens: readonly ("published" | "collected_but_empty" | "not_collected" | "analysis_unavailable" | "not_assessed" | "unverified" | "measured" | "unpublished")[];
+            };
+            /** VocabEngineStateOwner */
+            readonly engine_state_owner: {
+                readonly basis: string;
+                readonly tokens: readonly ("ssot.abstention_reason" | "ssot.fleet_avg_health")[];
+            };
+            /** VocabEvidenceBasis */
+            readonly evidence_basis: {
+                readonly basis: string;
+                readonly tokens: readonly ("record" | "row" | "absence")[];
+            };
+            /** VocabEvidenceRefKind */
+            readonly evidence_ref_kind: {
+                readonly basis: string;
+                readonly tokens: readonly ("interface" | "acl_line" | "route" | "config_text" | "device_fact" | "analysis_row" | "adjacency" | "absence_witness")[];
+            };
+            /** VocabEvidenceRefRole */
+            readonly evidence_ref_role: {
+                readonly basis: string;
+                readonly tokens: readonly ("subject" | "derived_from" | "witness")[];
+            };
+            /** VocabEvidenceState */
+            readonly evidence_state: {
+                readonly basis: string;
+                readonly tokens: readonly ("published" | "collected_but_empty" | "not_collected" | "analysis_unavailable" | "not_assessed" | "unverified")[];
+            };
+            /** VocabFibInvalidRouteField */
+            readonly fib_invalid_route_field: {
+                readonly basis: string;
+                readonly tokens: readonly ("admin_distance" | "source" | "next_hop" | "out_intf")[];
+            };
+            /** VocabFibMtuGapReason */
+            readonly fib_mtu_gap_reason: {
+                readonly basis: string;
+                readonly tokens: readonly ("malformed_hop_evidence" | "egress_interface_not_observed")[];
+            };
+            /** VocabFleetHealthState */
+            readonly fleet_health_state: {
+                readonly basis: string;
+                readonly tokens: readonly ("measured" | "not_assessed" | "unverified" | "unpublished")[];
+            };
+            /** VocabInterfaceColumn */
+            readonly interface_column: {
+                readonly basis: string;
+                readonly tokens: readonly ("status" | "switchport_mode" | "vlan" | "speed" | "duplex" | "description" | "cdp_neighbor" | "neighbor_port" | "trunk_allowed_vlans" | "trunk_native_vlan" | "stp_fwd_vlans" | "stp_blk_vlans" | "end_host_ip" | "end_host_mac" | "port_channel" | "svi_ip" | "vrf")[];
+            };
+            /** VocabLifecycleFactName */
+            readonly lifecycle_fact_name: {
+                readonly basis: string;
+                readonly tokens: readonly ("n_past_ldos" | "n_near" | "n_past_eos" | "n_active" | "n_unknown")[];
+            };
+            /** VocabLimitationId */
+            readonly limitation_id: {
+                readonly basis: string;
+                readonly tokens: readonly ("census_present_keys_only" | "failure_record_written_only_on_failure" | "one_hop_failure_attribution" | "axis_basis_owned_by_projection" | "reconcile_checks_only_with_raw_basis" | "measured_zero_mapping" | "abstention_addresses_dict_paths_only" | "coverage_matrix_shown_as_published" | "projection_owned_verdicts" | "device_physical_defaults_not_observed" | "health_scored_without_security" | "health_scored_over_partial_collection" | "dossier_band_over_unassessed_axes" | "engine_list_capped" | "move_group_label_absent" | "move_group_endpoints_not_distinct" | "migration_readiness_check_scope" | "health_band_partition_rows_only" | "vlan_cutover_universe" | "vlan_field_basis_owned_by_projection" | "vlan_readiness_scope" | "punch_rows_carry_no_evidence_pointers" | "row_selection_by_exact_key" | "fleet_lists_exclude_blind_devices" | "findings_without_running_config" | "device_findings_scope" | "topology_scanned_model" | "impact_scanned_scope" | "path_route_model_only" | "deduction_refs_are_subsequence" | "routes_in_scope_only" | "interface_default_not_observed" | "routing_neighbors_empty_is_ambiguous")[];
+            };
+            /** VocabNotAssessedReason */
+            readonly not_assessed_reason: {
+                readonly basis: string;
+                readonly tokens: readonly ("no_health_rows" | "all_insufficient_data" | "no_scored_rows")[];
+            };
+            /** VocabPhaseClassification */
+            readonly phase_classification: {
+                readonly basis: string;
+                readonly tokens: readonly ("sections" | "intermediate" | "non_section" | "unknown")[];
+            };
+            /** VocabRefRole */
+            readonly ref_role: {
+                readonly basis: string;
+                readonly tokens: readonly ("subject" | "basis" | "failure_record" | "witness" | "denominator")[];
+            };
+            /** VocabStpRootReason */
+            readonly stp_root_reason: {
+                readonly basis: string;
+                readonly tokens: readonly ("single_claimant" | "malformed_root_rows" | "multiple_root_identities" | "duplicate_bridge_identity" | "root_not_collected" | "no_root_evidence")[];
+            };
+            /** VocabTopologyGlyph */
+            readonly topology_glyph: {
+                readonly basis: string;
+                readonly tokens: readonly ("device" | "router" | "ap" | "unknown" | "none")[];
+            };
+            /** VocabTopologyStroke */
+            readonly topology_stroke: {
+                readonly basis: string;
+                readonly tokens: readonly ("solid" | "dashed" | "dotted")[];
+            };
+            /** VocabTopologyStyleToken */
+            readonly topology_style_token: {
+                readonly basis: string;
+                readonly tokens: readonly ("observed" | "uncollected" | "unverified" | "not_observed" | "analysis_unavailable" | "link_up" | "link_down" | "link_unknown" | "structural_link" | "structural_bridge" | "impact_high" | "impact_medium" | "impact_low" | "impact_info" | "path_reached" | "path_partial_drop" | "path_observed_discard" | "path_no_route_observed" | "path_lower_bound" | "path_withheld")[];
+            };
+            /** VocabTopologyTone */
+            readonly topology_tone: {
+                readonly basis: string;
+                readonly tokens: readonly ("neutral" | "muted" | "info" | "warning" | "danger")[];
+            };
+            /** VocabTopologyWeight */
+            readonly topology_weight: {
+                readonly basis: string;
+                readonly tokens: readonly ("normal" | "strong")[];
+            };
+            /** VocabWithheldState */
+            readonly withheld_state: {
+                readonly basis: string;
+                readonly tokens: readonly ("collected_but_empty" | "not_collected" | "analysis_unavailable" | "not_assessed" | "unverified")[];
+            };
+        };
+        /** VocabVlanReadinessItem */
+        readonly UiProjection1_VocabVlanReadinessItem: {
+            readonly class: components["schemas"]["UiProjection1_VocabClass"];
+            readonly rank: number;
+            /** @enum {string} */
+            readonly token: "NOT READY" | "CAUTION" | "READY";
         };
         /** WithheldFact */
         readonly UiProjection1_WithheldFact: {
