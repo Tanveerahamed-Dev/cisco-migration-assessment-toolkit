@@ -503,7 +503,8 @@ export function FabricA11yTree({
     }
   };
 
-  const uncollected = devices.filter((d) => !d.collected).length;
+  // The compiler's inventoried flag means a device record exists, not that collection completed.
+  const inventoryRecords = devices.filter((d) => d.inventoried).length;
   /* Tiers that are collapsed right now and hold devices, so the reader is told what is not listed. */
   const collapsed = model.roots
     .map((k) => model.rows.get(k))
@@ -595,7 +596,8 @@ export function FabricA11yTree({
           mapping was only discoverable by reading this file, so it is now stated to every user and
           wired as the tree's description. Pinned by FabricA11yTree.parity.test.tsx. */}
       <p className="fabric3d__tree-foot">
-        {devices.length} devices, {links.length} links. {uncollected} not collected (topology only).{" "}
+        {devices.length} devices, {links.length} links. {inventoryRecords} with inventory records;{" "}
+        {devices.length - inventoryRecords} without inventory records. Inventory and topology presence do not establish collection completeness.{" "}
         {unmeasured} links have no centrality measurement, so whether cutting them partitions the
         fabric is unknown.
       </p>

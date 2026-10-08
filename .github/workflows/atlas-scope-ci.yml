@@ -87,6 +87,21 @@ jobs:
             ${{ runner.temp }}/a3-refusal-mutations.log
           if-no-files-found: ignore
           retention-days: 14
+      - name: Refute Fabric-list collection and inventory claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          node review/mutation-check.mjs --only b7-collection-wording --only b7-collected-membership --output "${{ runner.temp }}/b7-footer-mutations" 2>&1 | tee "${{ runner.temp }}/b7-footer-mutations.log"
+      - name: Preserve Fabric-list mutation observations
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scope-b7-mutations-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/b7-footer-mutations/
+            ${{ runner.temp }}/b7-footer-mutations.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Standalone build (the bundled sample fleet, dist/)
         run: npm run build
       - name: AssessHub hub build (base /scope/, no compiled dataset, no sourcemaps, dist-hub/)
