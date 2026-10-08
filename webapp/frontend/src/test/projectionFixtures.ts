@@ -2,6 +2,8 @@
 export const published = <T,>(value: T) => ({ state: "published", value, subject: "/synthetic", refs: [], basis: "synthetic.owner" });
 export const withheld = () => ({ state: "not_collected", value: null, reason: "Synthetic input was not collected", subject: "/missing", refs: [], basis: "synthetic.owner" });
 const empty = (pointer: string) => ({ pointer, source_list: { state: "collected_but_empty", reason: "Synthetic source has no rows", subject: pointer, refs: [], basis: "synthetic.owner" }, page: { offset: 0, limit: 25, returned: 0, total: 0, has_more: false, items: [] } });
+// An empty selection whose owner never says "none" for a device: the absence stays a blind spot.
+const blindPage = (pointer: string, reason: string) => ({ ...empty(pointer), source_list: { state: "not_collected", reason, subject: pointer, refs: [], basis: "synthetic.owner" } });
 const fields = (keys: string) => Object.fromEntries(keys.split(" ").map((key) => [key, withheld()]));
 const ownerList = <T,>(items: T[], subject: string) => items.length
   ? { state: "published", subject, refs: [], basis: "synthetic.owner", items }
@@ -189,6 +191,8 @@ export function deviceFixture(sid = 1, host = "edge/a~b", findings_rollup = find
     interfaces: { rows: empty("/interfaces/rows") }, links: empty("/links"), routes: empty("/routes"), routing_neighbors: empty("/routing_neighbors"),
     security: { summary: withheld(), checks: empty("/security/checks") }, native_vlan_mismatches: empty("/native_vlan_mismatches"),
     remediation: { banner: withheld(), items: empty("/remediation/items") }, nrfu_cases: empty("/nrfu_cases"), findings, endpoints: empty("/endpoints"),
+    failure_impact: blindPage("/failure_impact", "Synthetic device has no simulation row; an absent row is not 'no impact'"),
+    structural_links: blindPage("/structural_links", "Synthetic device is named by no scanned host-pair link; that is not proof of no link"),
   } };
 }
 export function findingsFixture(sid = 1, offset = 0) {
