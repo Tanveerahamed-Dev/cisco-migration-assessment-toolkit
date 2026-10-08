@@ -780,8 +780,9 @@ export const isAbsence = (v: unknown): v is Absence =>
 export function T8_coverageLine(): string {
   const c = fabric.coverage;
   const total = fabric.devices.length;
+  const inventoryRecords = fabric.devices.filter((d) => d.inventoried).length;
   return (
-    `${c.devicesInventoried}/${total} collected · RIBs ${c.hostsWithRoutes}/${total} · ` +
+    `${inventoryRecords}/${total} inventory records · RIBs ${c.hostsWithRoutes}/${total} · ` +
     `ACLs ${c.hostsWithAcls}/${total} · link centrality ${c.linksWithCentrality}/${fabric.links.length} · ` +
     `snapshot ${fabric.meta.sourceSha256.slice(0, 8)} ${day(fabric.meta.collectedAt)}`
   );

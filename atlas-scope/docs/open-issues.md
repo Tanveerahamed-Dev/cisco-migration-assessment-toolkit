@@ -7109,6 +7109,16 @@ are not hosted execution, rendered proof or acceptance.
   open. B2 remains separate because visible bounds need the A5 × B2 layout/orbit witness; a DOM
   scope assertion alone cannot refute the known overlap. B7 remains **FAIL**, and all historical
   refutations remain evidence rather than qualification of the new source.
+- **B7 W23 preparation, 2026-10-08 (not a re-grade):** From owner-merged main `a816bfca`,
+  repair only the permanent StatusBar inventory-presence figure and the matching first segment
+  of `T8_coverageLine`, which open overlays must preserve. `inventoried` owns record membership;
+  legacy `collected` can also be true for a recordless cable node and cannot prove that a device
+  answered the collector. Use the existing inventory disclosure without changing its classifier,
+  other coverage figures, callbacks or focus behavior. Real compiler/DOM counterexamples and
+  separate strict membership/wording mutations remain required on GitHub; no authored control
+  is runtime, pixel or acceptance evidence. CoverageBar's collector-reach row and missing-evidence
+  classifications, per-clause `collected` scope and the partial-only fleet rule remain open.
+  B7 stays **FAIL**, alongside the unchanged A3/A6 grades and all prior negative evidence.
 - **D2 (FAIL) — two rounds; last on `7c642f10`: BLOCKER.** In the windowed grid (compact density grouped by Device, 369 rows,
   over the 200-row threshold) a focused row scrolled away by the mouse wheel unmounts, focus drops to `<body>`, the grid
   has no tabindex=0 cell, and PageDown/ArrowDown do nothing. A third repair was interrupted (WIP `93f4f5b6`, unverified).

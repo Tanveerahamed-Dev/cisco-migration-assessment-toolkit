@@ -486,13 +486,14 @@ describe("the theme control", () => {
 /* ── status bar ────────────────────────────────────────────────────────────── */
 
 describe("the status bar states the denominators permanently (acceptance B7)", () => {
-  it("reads every figure from fabric.coverage rather than from a literal", () => {
+  it("reads every figure from its fabric record or coverage owner rather than from a literal", () => {
     const c = mount(<StatusBar />);
     const text = c.textContent ?? "";
     const total = fabric.devices.length;
-    const collected = fabric.devices.filter((d) => d.collected).length;
+    const inventoryRecords = fabric.devices.filter((d) => d.inventoried).length;
 
-    expect(text).toContain(`${collected}/${total} collected`);
+    expect(text).toContain(`${inventoryRecords}/${total} inventory records`);
+    expect(c.querySelector<HTMLButtonElement>("button.sb__cov")?.title).toContain("Inventory-record presence does not establish collection completeness.");
     expect(text).toContain(`RIBs ${fabric.coverage.hostsWithRoutes}/${total}`);
     expect(text).toContain(`ACLs ${fabric.coverage.hostsWithAcls}/${total}`);
     expect(text).toContain(`centrality ${fabric.coverage.linksWithCentrality}/${fabric.links.length}`);
