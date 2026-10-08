@@ -65,7 +65,7 @@ EXPECTED_BUNDLED_PYTHON = {
     "isoduration": "20.11.0",
     "jsonpointer": "3.1.1",
     "jsonschema": "4.26.0",
-    "jsonschema-rs": "0.58.4",
+    "jsonschema-rs": "0.58.5",
     "jsonschema-specifications": "2025.9.1",
     "lark": "1.3.1",
     "lxml": "6.1.3",
@@ -2408,7 +2408,7 @@ def _validate_toolchain_receipt(value: object, runtime_names: list[str]) -> Mapp
         "pyinstaller": PYINSTALLER_VERSION,
         "cyclonedx-python-lib": "11.12.0",
         "jsonschema": "4.26.0",
-        "jsonschema-rs": "0.58.4",
+        "jsonschema-rs": "0.58.5",
         "referencing": "0.37.0",
     }.items():
         if versions.get(name) != expected:

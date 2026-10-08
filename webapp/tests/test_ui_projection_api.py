@@ -1110,7 +1110,7 @@ def native_body(client, sample):
 
 def test_native_transport_pins_provider_schema_and_preserves_public_errors(native_body):
     from backend import ui_projection_api as api
-    assert api.version("jsonschema-rs") == "0.58.4"
+    assert api.version("jsonschema-rs") == "0.58.5"
     assert api._native_schema_hash(api._VIEW_SCHEMA) == api._NATIVE_SCHEMA_HASHES["view"]
     assert api._native_schema_hash(api._LIST_SCHEMA) == api._NATIVE_SCHEMA_HASHES["list"]
     schema = deepcopy(api._VIEW_SCHEMA)
@@ -1472,9 +1472,12 @@ def test_native_schema_version_and_owned_copy_are_checked_before_compilation(mon
     assert api._NativeTransportValidator(changed, "view")._NativeTransportValidator__native is None
     assert api._NativeTransportValidator(api._OWNER, "view")._NativeTransportValidator__native is None
     assert api._NativeTransportValidator(api._VIEW_SCHEMA, "list")._NativeTransportValidator__native is None
-    with monkeypatch.context() as altered:
-        altered.setattr(api, "version", lambda _name: "0.58.3")
-        assert api._NativeTransportValidator(api._VIEW_SCHEMA, "view")._NativeTransportValidator__native is None
+    for refused_version in ("0.58.3", "0.58.4"):
+        with monkeypatch.context() as altered:
+            altered.setattr(api, "version", lambda _name: refused_version)
+            assert api._native_provider() is None
+            assert api._NativeTransportValidator(api._VIEW_SCHEMA, "view")._NativeTransportValidator__native is None
+            assert api._NativeTransportValidator(api._LIST_SCHEMA, "list")._NativeTransportValidator__native is None
     assert calls == []
     assert api._native_schema_hash({"const": "\ud83d\ude00"}) is None
     copied = api.deepcopy
@@ -1670,8 +1673,8 @@ def test_native_smoke_proof_is_request_local_and_requires_complete_validation(tm
                     raise_server_exceptions=False) as client:
         sid = seed(client, sample)
         path = url(sid)
-        assert client.get(path, headers=headers).headers[proof] == "jsonschema-rs/0.58.4"
-        assert client.get(url(sid, "findings") + "/lists?pointer=/rows&limit=200", headers=headers).headers[proof] == "jsonschema-rs/0.58.4"
+        assert client.get(path, headers=headers).headers[proof] == "jsonschema-rs/0.58.5"
+        assert client.get(url(sid, "findings") + "/lists?pointer=/rows&limit=200", headers=headers).headers[proof] == "jsonschema-rs/0.58.5"
         assert proof not in client.get(path).headers
         assert proof not in client.get(path, headers={"X-Atlas-Native-Smoke-Nonce": "wrong"}).headers
         assert proof not in client.get(path, headers=[*headers.items(), *headers.items()]).headers
@@ -1888,7 +1891,7 @@ def test_reaudited_topology_lists_use_native_and_float_views_stay_python(tmp_pat
             response = client.get(url(sid, "topology") + "/lists", params={"pointer": pointer, "limit": 50},
                                   headers=headers)
             assert response.status_code == 200
-            assert response.headers.get(proof) == "jsonschema-rs/0.58.4", pointer
+            assert response.headers.get(proof) == "jsonschema-rs/0.58.5", pointer
         topology = client.get(url(sid, "topology"), params={"limit": 200}, headers=headers)
         structural = client.get(url(sid, "topology") + "/lists", params={"pointer": "/structural_links"},
                                 headers=headers)

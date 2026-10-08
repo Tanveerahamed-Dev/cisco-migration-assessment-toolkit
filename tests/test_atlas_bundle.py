@@ -160,10 +160,10 @@ def test_spec_retains_native_extension_and_reviewed_distribution_metadata():
     assert atlas_bundle.package_metadata_distributions() == ("jsonschema-rs",)
     required = atlas_bundle.native_runtime_files()
     assert "_internal/jsonschema_rs/jsonschema_rs.pyd" in required
-    assert "_internal/jsonschema_rs-0.58.4.dist-info/METADATA" in required
-    assert required["_internal/jsonschema_rs-0.58.4.dist-info/sboms/jsonschema-py.cyclonedx.json"] == {
-        "bytes": 245181,
-        "sha256": "fc02e97118764c2c8e0e67bc1f0fc554cda259a4925e944677894d0792cf6a88",
+    assert "_internal/jsonschema_rs-0.58.5.dist-info/METADATA" in required
+    assert required["_internal/jsonschema_rs-0.58.5.dist-info/sboms/jsonschema-py.cyclonedx.json"] == {
+        "bytes": 244971,
+        "sha256": "ac25eeeb7d5fd575cdc0cb3b77d7111820af0dee296a13b636a04b93c9497ee0",
     }
     spec = ast.parse((ROOT / "portable/atlas.spec").read_text(encoding="utf-8"))
     analysis = next(node for node in ast.walk(spec)
@@ -185,10 +185,10 @@ def test_spec_retains_native_extension_and_reviewed_distribution_metadata():
 def test_native_metadata_selection_preserves_version_and_sbom_without_installer_provenance(tmp_path):
     import importlib.metadata
 
-    destination = "jsonschema_rs-0.58.4.dist-info"
+    destination = "jsonschema_rs-0.58.5.dist-info"
     metadata = tmp_path / destination
     (metadata / "sboms").mkdir(parents=True)
-    (metadata / "METADATA").write_text("Metadata-Version: 2.4\nName: jsonschema-rs\nVersion: 0.58.4\n")
+    (metadata / "METADATA").write_text("Metadata-Version: 2.4\nName: jsonschema-rs\nVersion: 0.58.5\n")
     (metadata / "WHEEL").write_text("Wheel-Version: 1.0\nTag: cp310-abi3-win_amd64\n")
     (metadata / "sboms/jsonschema-py.cyclonedx.json").write_text('{"bomFormat":"CycloneDX"}')
     for name in ("direct_url.json", "INSTALLER", "REQUESTED", "RECORD"):
@@ -202,7 +202,7 @@ def test_native_metadata_selection_preserves_version_and_sbom_without_installer_
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(Path(path).read_bytes())
     distributions = list(importlib.metadata.distributions(path=[str(frozen)]))
-    assert [(item.metadata["Name"], item.version) for item in distributions] == [("jsonschema-rs", "0.58.4")]
+    assert [(item.metadata["Name"], item.version) for item in distributions] == [("jsonschema-rs", "0.58.5")]
     assert not any(b"synthetic-private-build" in path.read_bytes() for path in frozen.rglob("*") if path.is_file())
     for name in expected:
         path = metadata / name
@@ -211,14 +211,15 @@ def test_native_metadata_selection_preserves_version_and_sbom_without_installer_
         with pytest.raises(ValueError, match="metadata file is absent"):
             atlas_bundle.package_metadata_datas(lambda _name: [(str(metadata), destination)])
         path.write_bytes(original)
-    with pytest.raises(ValueError, match="metadata version differs"):
-        atlas_bundle.package_metadata_datas(lambda _name: [(str(metadata), "jsonschema_rs-0.58.3.dist-info")])
+    for refused_version in ("0.58.3", "0.58.4"):
+        with pytest.raises(ValueError, match="metadata version differs"):
+            atlas_bundle.package_metadata_datas(lambda _name: [(str(metadata), f"jsonschema_rs-{refused_version}.dist-info")])
 
 
 def test_validator_metadata_filter_also_closes_upstream_hook_collection():
     original = []
     kept = []
-    for directory in ("jsonschema-4.26.0.dist-info", "jsonschema_rs-0.58.4.dist-info"):
+    for directory in ("jsonschema-4.26.0.dist-info", "jsonschema_rs-0.58.5.dist-info"):
         for name in ("METADATA", "WHEEL", "licenses/COPYING", "sboms/jsonschema-py.cyclonedx.json"):
             row = (directory + "/" + name, "installed/" + name, "DATA")
             original.append(row)

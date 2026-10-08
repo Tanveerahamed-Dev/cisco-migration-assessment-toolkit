@@ -454,13 +454,13 @@ def _smoke_ui_projection(base: str, instance_nonce: str) -> None:
         body, headers = request(prefix + "/ui-projection/overview?limit=1")
         if headers.get("cache-control") != "no-store":
             raise ValueError("projection response is cacheable")
-        if headers.get("x-atlas-native-validation") != "jsonschema-rs/0.58.4":
+        if headers.get("x-atlas-native-validation") != "jsonschema-rs/0.58.5":
             raise ValueError("frozen view did not prove actual native validation")
         equal(json.loads(body), {**context, "payload": expected})
         body, headers = request(prefix + "/ui-projection/overview/lists?pointer=/axes&offset=1&limit=1")
         if headers.get("cache-control") != "no-store":
             raise ValueError("projection list response is cacheable")
-        if headers.get("x-atlas-native-validation") != "jsonschema-rs/0.58.4":
+        if headers.get("x-atlas-native-validation") != "jsonschema-rs/0.58.5":
             raise ValueError("frozen list did not prove actual native validation")
         equal(json.loads(body), {**context, "list": page("axes", 1)})
     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
