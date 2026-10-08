@@ -9,6 +9,7 @@ Failure impact is read from the engine-owned projection (``impact_view``), never
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import engine  # noqa: F401  (also bootstraps sys.path for the cisco_toolkit import below)
@@ -161,9 +162,11 @@ _IMPACT_BLIND_CAVEAT = "fleet_lists_exclude_blind_devices"
 _IMPACT_BLIND_WITNESS = "/collection_completeness/devices/"
 #: The keystone ranking's contract. 2: ranked only from engine-published failure-impact cells (W27). 3: a ranked
 #: row the engine publishes only as a lower bound is flagged as one (lower_bound, its reasons and pointers), and an
-#: executive_brief.keystones list is no longer read. A cached summary from an older contract is recomputed on read
+#: executive_brief.keystones list is no longer read. 4: a cable-row bound is worded by what the projection's own
+#: reason says of it (an uncollected neighbour, or cable evidence that cannot be read or is ambiguous), never as an
+#: uncollected neighbour alone. A cached summary from an older contract is recomputed on read
 #: (app._summary_freshened).
-KEYSTONE_CONTRACT_VERSION = 3
+KEYSTONE_CONTRACT_VERSION = 4
 #: Cap on the names one disclosure sentence lists per reason, so a fleet-wide hold stays one readable sentence.
 _IMPACT_NAME_CAP = 10
 _R_IMPACT_FAULT = ("unverified: the engine failure-impact projection (ui_projection) could not be built for this "
@@ -175,11 +178,22 @@ _R_IMPACT_NO_ROW = ("not collected: no failure_impact row names this switch. ana
 _R_IMPACT_BLIND = ("collection_completeness lists {n} device(s) as partial or not collected: every failure-impact row "
                    "was computed without their evidence, and a device the collection never reached has no row")
 _R_IMPACT_NOT_LIST = "unverified: the stored failure_impact section is not a list, so no row can be read"
-#: Why a published measure is only a lower bound, by the kind of record its witness ref points at.
+#: Why a published measure is only a lower bound, by the kind of record its witness ref points at. A cable-row witness
+#: has three wordings, picked by what the projection's own reason on the row says of it (:func:`_impact_peers_said`):
+#: an uncollected neighbour, cable evidence that cannot be read or is ambiguous, or either (the reason names both
+#: kinds, or no withheld cell on the row states it).
 _R_BOUND_OFF_SCAN = ("{n} VLAN(s) on this switch have an off-scan gateway the simulation could not assess "
                      "(off_scan_gw_vlans), so it counts only the VLANs whose gateway was scanned")
 _R_BOUND_PEERS = ("the stored cable map cables this switch to a neighbour it does not show as collected ({k} cable "
                   "row(s)), and the simulation counts only endpoints on scanned switches")
+_R_BOUND_PEERS_UNREAD = ("the stored cable map has {k} cable row(s) that cannot be read, or whose far end joins no "
+                         "single cable-map node, so each could cable this switch to a neighbour the collection never "
+                         "reached and none is assumed collected, and the simulation counts only endpoints on scanned "
+                         "switches")
+_R_BOUND_PEERS_EITHER = ("the stored cable map has {k} cable row(s) that cable this switch to a neighbour it does not "
+                         "show as collected, or that cannot be read or whose far end joins no single cable-map node "
+                         "and so could; none of them is assumed collected, and the simulation counts only endpoints "
+                         "on scanned switches")
 _R_BOUND_CABLE_MAP = ("whether this switch faces an uncollected neighbour cannot be checked, because the stored cable "
                       "map cannot be read, and the simulation counts only endpoints on scanned switches")
 _R_BOUND_CITED = "the engine cites {pointer} as a bound on this row"
@@ -189,6 +203,14 @@ _R_BOUND_LEAD = "a lower bound, not an exact measurement: "
 #: The witness pointers ui_projection._impact_peers cites: one cable row, or the cable list / map it cannot read.
 _IMPACT_CABLE_WITNESS = "/cable_map/cables/"
 _IMPACT_CABLE_LIST_WITNESSES = ("/cable_map/cables", "/cable_map")
+#: The projection's own words for a cable-row bound (ui_projection._R_IMPACT_PEERS and _R_IMPACT_PEERS_CLOSED), as a
+#: withheld cell of the same row states them: how many neighbours the bound counts, and how many of them fail closed
+#: (a cable row the join cannot read, so it could name this switch, or a far end that joins no single node). The ref a
+#: published measure cites names a cable row but not which kind it is, so the kind is read from these words, never
+#: re-derived from the stored cable rows.
+_IMPACT_PEERS_SAID = re.compile(r"cannot account for endpoints behind (\d+) uncollected neighbour\(s\)")
+_IMPACT_PEERS_CLOSED_SAID = re.compile(r"; (\d+) of them fail closed because their cable row cannot be read or their "
+                                       r"cable end does not join exactly one node")
 
 #: One projected cell: ``(published, value, reason)``. ``value`` is set only when published; ``reason`` only when not.
 ImpactCell = Tuple[bool, Any, str]
@@ -261,8 +283,9 @@ def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
     """The projection's published lower bounds on one row, ``(fields, pointers, reasons)``, read from the projected
     cells' refs only, never from the stored row. ``fields``: the measures it publishes with a witness ref, each a
     lower bound and never an exact measurement; ``pointers``: every witness those cells cite, de-duplicated in the
-    order cited; ``reasons``: one sentence per kind of record those pointers name (the row's off-scan count, an
-    uncollected neighbour's cable row, an unreadable cable list or map, anything else by its pointer)."""
+    order cited; ``reasons``: one sentence per kind of record those pointers name (the row's off-scan count, a cable
+    row worded by what the projection's own reason says of it, an unreadable cable list or map, anything else by its
+    pointer)."""
     fields: List[str] = []
     pointers: List[str] = []
     for field in IMPACT_MEASURES:
@@ -278,13 +301,20 @@ def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
             if cite not in pointers:
                 pointers.append(cite)
     n_cables = sum(1 for cite in pointers if cite.startswith(_IMPACT_CABLE_WITNESS))
+    said = _impact_peers_said(cells) if n_cables else None
+    if said is not None and said[1] == 0 < said[0]:
+        cables_why = _R_BOUND_PEERS                 # the owner names only uncollected neighbours
+    elif said is not None and 0 < said[1] == said[0]:
+        cables_why = _R_BOUND_PEERS_UNREAD          # every one fails closed: unreadable or ambiguous cable evidence
+    else:
+        cables_why = _R_BOUND_PEERS_EITHER          # both kinds, or no withheld cell on the row says which
     reasons: List[str] = []
     for cite in pointers:
         if pointer and cite == f"{pointer}/off_scan_gw_vlans":
             ok, n, _ = cells["off_scan_gw_vlans"]
             why = _R_BOUND_OFF_SCAN.format(n=n if ok and type(n) is int else "some")
         elif cite.startswith(_IMPACT_CABLE_WITNESS):
-            why = _R_BOUND_PEERS.format(k=n_cables)
+            why = cables_why.format(k=n_cables)
         elif cite in _IMPACT_CABLE_LIST_WITNESSES:
             why = _R_BOUND_CABLE_MAP
         else:
@@ -292,6 +322,20 @@ def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
         if why not in reasons:
             reasons.append(why)
     return tuple(fields), pointers, reasons
+
+
+def _impact_peers_said(cells: Dict[str, ImpactCell]) -> Optional[Tuple[int, int]]:
+    """What the projection's own reason on one row says of its cable-row bound: ``(neighbours, of them failing
+    closed)``, read from the first withheld cell whose reason states that bound (:data:`_IMPACT_PEERS_SAID`). The
+    bound withholds a severity below the worst band, each zero count and a clean-bill detail, so a row with any of
+    those carries it. ``None`` when no withheld cell on the row states it (every cell the bound reaches is published
+    as a lower bound): the cited cable rows alone do not say which kind each is."""
+    for ok, _value, reason in cells.values():
+        said = None if ok else _IMPACT_PEERS_SAID.search(reason)
+        if said:
+            closed = _IMPACT_PEERS_CLOSED_SAID.search(reason, said.end())
+            return int(said.group(1)), (int(closed.group(1)) if closed else 0)
+    return None
 
 
 def impact_row_label(row: Dict[str, Any]) -> str:

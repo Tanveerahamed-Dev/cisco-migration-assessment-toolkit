@@ -232,6 +232,13 @@ def test_the_impact_fields_and_tokens_are_the_projections_own(sample):
     # the lower-bound signal: the projection's witness role on its measure cells
     assert summary.IMPACT_MEASURES == ui._IMPACT_MEASURES == MEASURES
     assert summary._WITNESS_ROLE in ui.REF_ROLES
+    # a cable-row bound's kind is read from the projection's own words, in each reason its bound writes: the
+    # neighbours it counts and how many fail closed (unreadable or ambiguous cable evidence)
+    for n, k in ((1, 0), (2, 1), (3, 3)):
+        clause = ui._R_IMPACT_PEERS.format(n=n, closed=ui._R_IMPACT_PEERS_CLOSED.format(k=k) if k else "")
+        for reason in ui._impact_bound(ui._NC, clause, [])[1:4]:
+            assert summary._impact_peers_said({"fhrp": (False, None, reason)}) == (n, k), reason
+    assert summary._impact_peers_said({"fhrp": (True, 0, "")}) is None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -286,6 +293,46 @@ def test_keystones_never_rank_a_clean_bill_an_uncollected_neighbour_bounds():
     # and once wan reads collected too, nothing bounds gw: both rows are exact and render as before
     wan["collected"] = True
     assert summary.summarize(snap)["keystones"] == [_exact(gw), _exact(acc)]
+
+
+def test_an_unreadable_cable_row_is_a_bound_worded_as_unreadable_never_as_an_uncollected_neighbour():
+    """Codex's P3 on #620 (`d48d558a`): ui_projection._impact_peers also cites a cable row it cannot read, because
+    that row could name the switch. The bound and its pointer stay, but its reason is the projection's own: cable
+    evidence that cannot be read or is ambiguous, never "cables this switch to a neighbour it does not show as
+    collected". The real producer's rows with both known peers collected, plus one appended null cable row."""
+    snap = _snapshot(_downstream_fleet())
+    _node(snap, "dsw")["collected"] = True
+    _node(snap, "wan")["collected"] = True
+    raw = _by_host(snap)
+    gw, acc = raw["gw"], raw["acc"]
+    assert gw["severity"] == "High" and gw["stranded"] == 1 and gw["backup"] == 0 and gw["fhrp"] == 0, gw
+    # the control: with both known peers collected nothing bounds either row
+    assert summary.summarize(snap)["keystones"] == [_exact(gw), _exact(acc)]
+    snap["cable_map"]["cables"].append(None)
+    unread = f"/cable_map/cables/{len(snap['cable_map']['cables']) - 1}"
+    k = int(_row_pointer(snap, "gw").rsplit("/", 1)[1])
+    # the projection's own signal: gw's published measures cite the null row, and its withheld zeros say it fails
+    # closed
+    item = ui.project_topology(snap)["failure_impact"]["items"][k]
+    for field in ("severity", "vlans_impacted", "stranded", "hard"):
+        cited = [ref["pointer"] for ref in item[field]["refs"] if ref["role"] == "witness"]
+        assert item[field]["state"] == ui._PUB and cited == [unread], (field, item[field])
+    for field in ("backup", "fhrp"):
+        assert item[field]["state"] == ui._NC and "1 of them fail closed" in item[field]["reason"], item[field]
+    why = summary._R_BOUND_PEERS_UNREAD.format(k=1)
+    rows = {row["key"]: row for row in summary.impact_view(snap)["rows"]}
+    assert rows["gw"]["ranked"] is True and rows["gw"]["lower_bound"] is True
+    assert rows["gw"]["bound_fields"] == ("severity", "vlans_impacted", "stranded", "hard")
+    assert rows["gw"]["bound_pointers"] == [unread] and rows["gw"]["bound_reasons"] == [why]
+    assert summary._R_BOUND_PEERS.format(k=1) not in rows["gw"]["bound_reasons"]
+    # every surface: the keystone keeps gw's measured place, flagged with the unreadable wording; acc is not ranked
+    keystones = summary.summarize(snap)["keystones"]
+    assert keystones[:-1] == [_bound_entry(gw, [unread], [why])]
+    note = keystones[-1]
+    assert note["severity"] == summary.IMPACT_NOT_ASSESSED and note["n_not_ranked"] == 1
+    assert "acc — " in note["detail"] and "1 of them fail closed" in note["detail"], note["detail"]
+    tab = summary.failure_impact_table(snap)
+    assert tab[k]["stranded"] == f"≥ 1 — a lower bound, not an exact measurement: {why}", tab[k]["stranded"]
 
 
 def test_keystones_on_the_sample_keep_their_order_flag_only_core2_and_carry_the_contract(sample):
