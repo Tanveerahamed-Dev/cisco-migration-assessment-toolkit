@@ -11401,17 +11401,39 @@ function cockpitKeystones(){
   // V3.23.81: prefer the Python failure-impact rollup (SNAP.failure_impact[].stranded) so the explorer's
   // keystone blast-radius numbers match the workbook's 'Failure Impact' sheet exactly (one source of truth);
   // fall back to the JS failureImpact engine when the snapshot doesn't carry it (older snapshots / demo).
-  const fiMap={}; ((SNAP&&SNAP.failure_impact)||[]).forEach(r=>{if(r&&r.host)fiMap[r.host]=(+r.stranded)||0;});
-  const havePyFi=Object.keys(fiMap).length>0;
-  const blastOf=h=>{ if(havePyFi)return fiMap[h]||0; try{return failureImpact(MODEL,h).hardStranded||0;}catch(e){return 0;} };
-  const rows=(MODEL?MODEL.hosts:[]).map(h=>{const blast=blastOf(h);
+  // W33: a stored row ranks only when the ENGINE publishes it (cockpitImpact below); every other switch is left
+  // out of the ranking and disclosed by keystoneCard, never ranked with a 0.
+  const fi=cockpitImpact();
+  const blastOf=h=>{ if(fi.rows)return fi.published[h]||0; try{return failureImpact(MODEL,h).hardStranded||0;}catch(e){return 0;} };
+  const rows=(MODEL?MODEL.hosts:[]).filter(h=>!fi.rows||(h in fi.published)).map(h=>{const blast=blastOf(h);
     return {host:h, blast, impl:implBy[h]||0, chains:chainsBy[h]||0, tier:_cockpitTier(h)};})
     .filter(r=>r.blast>0||r.impl>0||r.chains>0);
   rows.sort((a,b)=>b.blast-a.blast || b.chains-a.chains || b.impl-a.impl || a.host.localeCompare(b.host));
   return rows;
 }
+/* W33: the engine's verdict on each stored failure-impact row, embedded index-aligned as
+   SNAP.failure_impact_assessability by html._slim_for_embed (owner: cisco_toolkit/impact_assessability.py).
+   This page holds no assessability rule of its own. {rows:null} when the snapshot carries no rows (the JS engine
+   then ranks, as before); otherwise `published` maps each host the engine publishes to its stranded count, and
+   `held` lists every other stored row (no verdict at all is held too), plus each scanned switch with no stored row
+   (it was not simulated: a blind spot, never a 0). A host that any row holds is never published. */
+function cockpitImpact(){
+  const raw=(SNAP&&Array.isArray(SNAP.failure_impact))?SNAP.failure_impact:null;
+  const published=Object.create(null), named=Object.create(null), held=[];
+  if(!raw||!raw.length)return {rows:null,published,held};
+  const verdicts=(SNAP&&Array.isArray(SNAP.failure_impact_assessability))?SNAP.failure_impact_assessability:[];
+  raw.forEach((r,i)=>{
+    const host=(r&&typeof r.host==="string")?r.host:"", v=verdicts[i];
+    if(host)named[host]=true;
+    if(host&&v&&v.assessable==="published")published[host]=(+r.stranded)||0;
+    else held.push({host:host||("row "+i),why:(v&&typeof v.summary==="string")?v.summary:"not assessed — no engine assessability verdict for this row"});
+  });
+  (MODEL?MODEL.hosts:[]).forEach(h=>{if(!named[h])held.push({host:h,why:"not assessed — the failure-impact simulation has no row for this switch"});});
+  held.forEach(x=>{delete published[x.host];});
+  return {rows:raw,published,held};
+}
 function keystoneCard(){
-  const ks=cockpitKeystones(); if(!ks.length)return "";
+  const ks=cockpitKeystones(), held=cockpitImpact().held; if(!ks.length&&!held.length)return "";
   const top=ks.slice(0,6); const max=Math.max(1,...top.map(r=>r.blast||0));
   const rows=top.map(r=>{
     const w=r.blast?Math.max(4,Math.round(r.blast/max*100)):2;
@@ -11422,9 +11444,11 @@ function keystoneCard(){
       <div class="rc-bar"><i data-rcw="${w}" style="background:var(--crit)"></i></div>
       <div class="rc-meta">endpoints stranded if it fails${bits.length?` · ${bits.join(" · ")}`:""}</div>
     </div>`;}).join("");
+  // W33: the switches the engine does not publish a blast radius for are named, with why, and never ranked
+  const heldLine=held.length?`<div class="rc-meta" style="margin-top:6px"><b>${held.length} switch${held.length===1?"":"es"} not ranked</b> — blast radius not a measurement on this evidence: ${held.slice(0,6).map(x=>`<span class="mono">${esc(shortName(x.host))}</span> (${esc(x.why)})`).join("; ")}${held.length>6?` +${held.length-6} more`:""}</div>`:"";
   return `<div style="margin-top:12px"><div class="kv" style="border:0;padding:0 0 4px"><span class="k">Keystone devices — fix-first</span><span class="v faint">by blast radius</span></div>
     <p class="sub" style="margin:0 0 7px">When every switch scores Critical the score can't prioritise — these are the devices the most endpoints actually depend on. Hardening them (FHRP / a redundant path) collapses the risk fastest. Click to drill in.</p>
-    ${rows}</div>`;
+    ${rows}${heldLine}</div>`;
 }
 /* V3.23.120: the cross-axis migration brief -- one headline per assessment axis, from SNAP.executive_brief.
    Leads the Health view above the Risk cockpit. JS fallback: hidden on a pre-V3.23.120 snapshot. */

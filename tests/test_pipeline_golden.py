@@ -380,7 +380,7 @@ def _golden_dossiers_under_wall_clock(monkeypatch, instant, evidence_date=None, 
     byte/semantic verification fail, whatever the date. Returns (lifecycle_risk, device_dossiers, golden)."""
     from datetime import datetime
 
-    from cisco_toolkit import analyze, eoldb, registry_integrity, ssot
+    from cisco_toolkit import analyze, eoldb, impact_assessability, registry_integrity, ssot
 
     class _PinnedClock(datetime):
         @classmethod
@@ -401,8 +401,11 @@ def _golden_dossiers_under_wall_clock(monkeypatch, instant, evidence_date=None, 
     eoldb._runtime_source_proof.cache_clear()          # the proof is memoized per process
     try:
         lifecycle = analyze.compute_lifecycle_risk(devices, asof=evidence_date)
+        # W33: the pipeline's adapter also passes the failure-impact assessability owner's verdicts over the same
+        # evidence the golden stores (interfaces, cable_map, failure_impact), so the recompute passes them too.
         dossiers = analyze.compute_device_dossiers(
             lifecycle_risk=lifecycle, input_failures=ssot.failed_sections(golden),
+            failure_impact_assessability=impact_assessability.assessment_document(golden),
             **{k: golden.get(k) for k in _DOSSIER_SECTIONS})
     finally:
         monkeypatch.undo()

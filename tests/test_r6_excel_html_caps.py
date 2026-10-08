@@ -30,6 +30,7 @@ openpyxl = pytest.importorskip("openpyxl")
 from openpyxl import Workbook, load_workbook  # noqa: E402
 
 from cisco_toolkit.excel import write_executive_summary_sheet  # noqa: E402
+from impact_fixtures import assessable  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -122,8 +123,10 @@ def test_keystone_table_header_names_the_population_it_ranks(tmp_path):
            for i in range(25)]
           + [{"host": f"u{i}", "severity": "Info", "stranded": None} for i in range(5)]
           + [{"host": f"z{i}", "severity": "Info", "stranded": 0} for i in range(5)])
+    # W33: the rows carry the assessability evidence a real run's rows carry (tests/impact_fixtures.py)
+    snap = assessable({"failure_impact": fi})
     wb = Workbook()
-    write_executive_summary_sheet(wb, [], [], [], fi)
+    write_executive_summary_sheet(wb, [], [], [], snap["failure_impact"], impact_evidence=snap)
     text = "\n".join(_cells(_saved_sheet(wb, tmp_path)))
     assert "Keystone devices" in text                                  # label preserved
     assert "top 10 of 25 device(s) that strand" in text, text[:400]     # 25 = stranded>0 only
@@ -132,10 +135,12 @@ def test_keystone_table_header_names_the_population_it_ranks(tmp_path):
 
 def test_keystone_header_unmarked_when_every_keystone_is_shown(tmp_path):
     fi = [{"host": f"h{i}", "severity": "High", "stranded": 5} for i in range(4)]
+    snap = assessable({"failure_impact": fi})
     wb = Workbook()
-    write_executive_summary_sheet(wb, [], [], [], fi)
+    write_executive_summary_sheet(wb, [], [], [], snap["failure_impact"], impact_evidence=snap)
     text = "\n".join(_cells(_saved_sheet(wb, tmp_path)))
     assert "Keystone devices" in text and "top 10 of" not in text
+    assert "h3" in text                                                # non-vacuity: the four rows ranked
 
 
 # --------------------------------------------------------------------------- #
@@ -219,7 +224,7 @@ def test_res4_keystone_sentence_discloses_the_keystones_it_did_not_name():
     The band is read off the DESCENDING tail (``keystones[5:]``), never "at least the 5th value",
     which would overstate every hidden row."""
     fi = [{"host": f"h{i:03d}", "stranded": 500 - i} for i in range(30)]
-    res = compute_architecture_review({"failure_impact": fi})
+    res = compute_architecture_review(assessable({"failure_impact": fi}))   # W33 evidence (impact_fixtures)
     obs = next(c for c in res["checks"] if c["id"] == "RES-4")["observed"]
     assert obs.count("strands") == 5                                   # 5 still named by name …
     assert len([r for r in fi if r["stranded"] > 0]) == 30             # … of 30 that qualify
@@ -231,9 +236,10 @@ def test_res4_keystone_sentence_discloses_the_keystones_it_did_not_name():
 def test_res4_keystone_sentence_is_silent_when_every_keystone_is_named():
     """Refute the fix: at or below the cap there is no tail, so the sentence must be unchanged."""
     fi = [{"host": f"h{i}", "stranded": 9 - i} for i in range(4)]
-    obs = next(c for c in compute_architecture_review({"failure_impact": fi})["checks"]
+    obs = next(c for c in compute_architecture_review(assessable({"failure_impact": fi}))["checks"]
                if c["id"] == "RES-4")["observed"]
     assert "further device" not in obs, obs
+    assert obs.startswith("Losing h0 strands 9"), obs                  # non-vacuity: the rows were graded
 
 
 def test_l2_1_stp_root_sentence_discloses_the_switches_it_did_not_name():

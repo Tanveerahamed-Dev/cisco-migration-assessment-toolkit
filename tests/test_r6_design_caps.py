@@ -27,6 +27,7 @@ from docx import Document                        # noqa: E402
 from cisco_toolkit.crd import write_crd_docx                    # noqa: E402
 from cisco_toolkit.design import write_design_doc_docx          # noqa: E402
 from cisco_toolkit.engagement import write_engagement_docx      # noqa: E402
+from impact_fixtures import assessable                          # noqa: E402
 
 _GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden", "snapshot.json")
 
@@ -90,6 +91,8 @@ def test_keystone_sentence_names_the_population_section_2_4_counts(tmp_path):
     snap = _golden()
     snap["failure_impact"] = [{"host": f"sw{i:02d}", "severity": "High", "stranded": 100 - i}
                               for i in range(12)]
+    # W33: the hand-built rows carry the assessability evidence a real run's rows carry (tests/impact_fixtures.py)
+    snap = assessable(snap)
     blocks = _render(write_design_doc_docx, snap, tmp_path, "keystone")
     sentence = _find(blocks, "Concentrated dependency:")
     assert sentence, "§2.1 concentrated-dependency sentence missing"

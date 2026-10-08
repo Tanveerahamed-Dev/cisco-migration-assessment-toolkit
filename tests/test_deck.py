@@ -46,10 +46,16 @@ def _rich_snap():
              for i in range(8)],
         "failure_impact": [
             {"host": "core1", "severity": "High", "vlans_impacted": 4, "stranded": 220, "hard": 180,
-             "detail": "VLAN 10 hard partition"},
+             "off_scan_gw_vlans": 0, "detail": "VLAN 10 hard partition"},
             {"host": "core2", "severity": "Medium", "vlans_impacted": 2, "stranded": 40, "hard": 0,
-             "detail": "backup-covered"},
+             "off_scan_gw_vlans": 0, "detail": "backup-covered"},
         ],
+        # W33: the evidence the failure-impact assessability owner reads, so the rows above are the producer's
+        # measurements: the scoped interface running-config mark of each switch, and a cable map with no
+        # uncollected neighbour.
+        "interfaces": {"core1": {"Vlan10": {"run_config_observed": True}},
+                       "core2": {"Vlan20": {"run_config_observed": True}}},
+        "cable_map": {"nodes": [], "cables": []},
         "lifecycle_risk": {"summary": {"n_devices": 12, "by_band": {"Past-EoS": 3, "Near-LDoS": 2, "Active": 7},
                                        "n_past_eos": 3, "n_past_ldos": 0, "n_near": 2, "n_active": 7,
                                        "n_unknown": 0}},

@@ -19,6 +19,7 @@ from cisco_toolkit import __version__
 from cisco_toolkit.analyze import (PROTOCOL_ASSESSABILITY_STATES, _protocol_assessability_conclusion,
                                    compute_current_baseline_gate, normalize_routing_adjacency_state)
 from cisco_toolkit.model import DevicePhysical, InterfaceData
+from cisco_toolkit import impact_assessability   # W33: which stored failure-impact rows are measurements
 from cisco_toolkit.brand_tokens import WORKBOOK_NAVY_HEX
 from cisco_toolkit.protocol_receipt_surfaces import protocol_assurance_surface_payload
 from cisco_toolkit.textutils import is_finite_num, xml_safe as _cv
@@ -3454,6 +3455,13 @@ def _slim_for_embed(snap_dict: dict) -> dict:
         out["physical_health"] = [
             r for r in ph
             if not (isinstance(r, dict) and r.get("severity") in ("Info", "OK", None))]
+    # W33: the engine owner's verdict on each stored failure-impact row (index-aligned with failure_impact),
+    # computed from the FULL snapshot before its interfaces are slimmed. The explorer's keystone ranking ranks
+    # only a 'published' row and discloses the rest; it holds no assessability rule of its own.
+    if isinstance(snap_dict.get("failure_impact"), list):
+        out["failure_impact_assessability"] = [
+            {"assessable": v.assessable, "summary": v.summary}
+            for v in impact_assessability.assess_failure_impact(snap_dict)]
     return out
 
 

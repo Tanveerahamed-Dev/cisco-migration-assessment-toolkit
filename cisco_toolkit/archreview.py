@@ -41,6 +41,7 @@ from cisco_toolkit.docmeta import as_list as _docmeta_as_list
 from cisco_toolkit.textutils import (   # entry deep-sanitize of device text (audit-5) + fail-soft numeric
     NATIVE1_CFG_BASIS, _as_num, bpduguard_state, is_trunk_mode, xml_safe, xml_safe_deep)   # coercion + shared token owners
 from cisco_toolkit.stp_topology import classify_stp_root_election   # the one STP root-election owner (G15)
+from cisco_toolkit import impact_assessability   # W33: which stored failure-impact rows are measurements
 from cisco_toolkit import ssot as _ssot_mod   # Law 1 accessors (canonical facts + segmentation posture)
 
 logger = logging.getLogger(__name__)
@@ -408,15 +409,25 @@ def compute_architecture_review(snap: dict) -> dict:
             "Keep dual feeds through the migration (verify per site during NRFU).",
             "Cisco campus HA design — N+1 power on aggregation nodes")
 
-    fi = [r for r in _as_list(snap.get("failure_impact")) if isinstance(r, dict)]
+    # W33: the engine owner (impact_assessability) decides which stored rows are measurements. A row it does not
+    # publish (the producer's INDETERMINATE detail, a row older than its assessability marker, a device whose
+    # scoped interface running-config was not captured, a partial simulation, an uncollected neighbour, a
+    # duplicate host) is never graded: its 0 is not "strands nobody", and its count never ranks a keystone.
+    fi_pairs = impact_assessability.rows_with_verdicts(snap)
+    fi = [r for r, _v in fi_pairs]
     # conforms-by-silence guard (matches HIER-2 / RES-3 / L2-2 / L2-3): the old gate was
     # `snap.get("failure_impact") is None`, which catches ONLY a literally absent key. A simulation
     # section that is present-but-EMPTY (or a truthy non-list from an uploaded snapshot, which
-    # `_as_list` normalises to []), or rows that carry no `stranded` figure at all, produced an empty
+    # the owner reads as no rows), or rows that carry no `stranded` figure at all, produced an empty
     # keystone set and fell straight through to CONFORMS — asserting "the failure simulation strands
     # no endpoints behind any single device / redundancy absorbs any one device loss" over evidence
-    # that was never collected. `stranded: 0` is a real observed zero; a MISSING one is not.
-    fi_measured = [r for r in fi if r.get("stranded") is not None]
+    # that was never collected. `stranded: 0` is a real observed zero on a published row; a MISSING
+    # one is not, and neither is a zero on a row the owner withholds.
+    fi_measured = [r for r, v in fi_pairs if v.published and r.get("stranded") is not None]
+    fi_withheld = [v for _r, v in fi_pairs if not v.published]
+    _not_graded = (f" {len(fi_withheld)} simulated device(s) are not graded, because their blast radius is not "
+                   f"a measurement on this evidence: {impact_assessability.disclose(fi_withheld)}."
+                   if fi_withheld else "")
     keystones = sorted((r for r in fi_measured if _as_int(r.get("stranded")) > 0),
                        key=lambda r: -_as_int(r.get("stranded")))
     if not fi_measured:
@@ -424,7 +435,8 @@ def compute_architecture_review(snap: dict) -> dict:
             ("The failure-impact simulation is absent from this snapshot."
              if not fi else
              f"The failure-impact section carries {len(fi)} row(s) but none reports a stranded-"
-             "endpoint figure, so single-device blast radius cannot be graded from this evidence."),
+             "endpoint figure that is a measurement, so single-device blast radius cannot be graded from "
+             "this evidence." + _not_graded),
             "—",
             "Re-run the assessment with the current engine.",
             "Availability analysis — single-device blast radius")
@@ -443,7 +455,7 @@ def compute_architecture_review(snap: dict) -> dict:
                      + (f"{_lo}-{_hi}" if _lo != _hi else f"{_lo}") + " endpoint(s) each")
         add("RES-4", D2, "No keystone single point of failure", "advisory",
             "Losing " + "; ".join(f"{r.get('host')} strands {_as_int(r.get('stranded'))} endpoint(s)"
-                                  for r in keystones[:5]) + _more + ".",
+                                  for r in keystones[:5]) + _more + "." + _not_graded,
             "Endpoint dependency is concentrated — these devices ARE the availability budget.",
             "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with "
             "the most conservative cutover plan (their waves carry the widest blast radius).",
@@ -454,12 +466,14 @@ def compute_architecture_review(snap: dict) -> dict:
             # bounding.
             evidence=[r.get("host") for r in keystones])
     elif len(fi_measured) < len(fi):
-        # partial coverage is a blind spot, never health — the same rule RES-3 applies to PSU inventory
+        # partial coverage is a blind spot, never health — the same rule RES-3 applies to PSU inventory, and
+        # the same one W33 applies to a row whose zero the assessability owner does not publish
         add("RES-4", D2, "No keystone single point of failure", "not-assessable",
             f"Only {len(fi_measured)} of {len(fi)} simulated device(s) report a stranded-endpoint "
-            "figure (none of those strands any endpoint); the rest carry no figure, so fleet blast "
-            "radius cannot be graded from this evidence.", "—",
-            "Re-run the assessment with the current engine so every device is simulated.",
+            "figure that is a measurement (none of those strands any endpoint); the rest carry no such "
+            "figure, so fleet blast radius cannot be graded from this evidence." + _not_graded, "—",
+            "Re-run the assessment with the current engine so every device is simulated, and collect the "
+            "evidence each ungraded device is missing.",
             "Availability analysis — single-device blast radius")
     else:
         add("RES-4", D2, "No keystone single point of failure", "conforms",

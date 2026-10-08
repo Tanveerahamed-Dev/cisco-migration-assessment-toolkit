@@ -34,6 +34,7 @@ from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_exce
 from cisco_toolkit.docmeta import as_dict as _as_dict
 from cisco_toolkit.docmeta import as_list as _as_list
 from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep
+from cisco_toolkit import impact_assessability   # W33: which stored failure-impact rows are measurements
 from cisco_toolkit import ssot as _ssot_mod   # Law 1 accessors (canonical facts + segmentation posture)
 
 logger = logging.getLogger(__name__)
@@ -303,7 +304,9 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
     capacity = _R(snap.get("capacity"))
     lifecycle = _D(snap.get("lifecycle_risk"))    # _D: a truthy non-dict -> {} instead of crashing lifecycle.get('per_device')
     vpc = _D(snap.get("vpc"))    # _D: a truthy non-dict -> {} instead of crashing vpc.items() (§1 scale table + §2.4)
-    failure_impact = _R(snap.get("failure_impact"))
+    # W33: (row, verdict) for every stored failure-impact row that is an object -- the engine owner
+    # (impact_assessability) decides which rows are measurements; only those rank as keystones (§2.1 / §2.4).
+    failure_impact_pairs = impact_assessability.rows_with_verdicts(snap)
     punchlist = _R(snap.get("punchlist"))    # _R: dict rows only, AND a truthy non-list -> [] (sorted()/.get() in §4 fallback)
     subnet_intel = _D(snap.get("subnet_intelligence"))    # _D: a truthy non-dict -> {} instead of crashing .get('per_device') (§3.2)
     svc = snap.get("service_map") or {}
@@ -459,8 +462,10 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         ("Core / Distribution (L3)", len(l3_hosts), _capped_join(sorted(l3_hosts), 30) or "—"),
         ("Access (L2-only)", len(l2_hosts), _capped_join(sorted(l2_hosts), 30) or "—"),
     ], widths=[2.2, 0.8, 4.0])
-    # keystone devices (concentrated dependency) from failure_impact
-    keystones_all = [r for r in failure_impact if isinstance(r, dict) and _as_num(r.get("stranded")) > 0]
+    # keystone devices (concentrated dependency) from failure_impact. W33: only a row the assessability owner
+    # PUBLISHES ranks; every other row is disclosed below, never read as stranding nobody.
+    keystones_all = [r for r, v in failure_impact_pairs if v.published and _as_num(r.get("stranded")) > 0]
+    keystones_withheld = [v for _r, v in failure_impact_pairs if not v.published]
     keystones = sorted(keystones_all, key=lambda r: -_as_num(r.get("stranded")))[:5]
     if keystones:
         # Say "the N largest of M", not just the names: §2.4's "Keystone devices (strand endpoints if
@@ -475,6 +480,14 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
                     "first, then work the rest from the workbook's failure-impact evidence."
                     if len(keystones_all) > len(keystones) else
                     " — protect and sequence these first."))
+    if keystones_withheld:
+        # A switch whose blast radius is not a measurement is neither a keystone nor a safe-to-lose box: name it,
+        # with the reason, so it is never sequenced as low-risk by omission.
+        _label_run(doc.add_paragraph(), "Blast radius not a measurement:",
+                   f"{len(keystones_withheld)} switch(es) are not ranked above, because their failure impact "
+                   "cannot be read as a measurement on this evidence: "
+                   + impact_assessability.disclose(keystones_withheld)
+                   + ". Collect the missing evidence before treating them as low-risk.")
 
     doc.add_heading("2.2 Layer-2 domain", level=2)
     # G15: count only the roots the election owner PUBLISHES; a VLAN several collected bridges claim is
@@ -548,7 +561,8 @@ def write_design_doc_docx(output_path: str, snap_dict: dict, label: str) -> None
         # ONE derivation, shared with §2.1's concentrated-dependency sentence (which now says "the 5
         # largest of THIS number") — a recount here is a drift seam between two lines of one document.
         ("Keystone devices (strand endpoints if lost)", len(keystones_all)),
-    ], widths=[4.6, 2.2])
+    ] + ([("…blast radius not a measurement (not ranked; §2.1)", len(keystones_withheld))]
+         if keystones_withheld else []), widths=[4.6, 2.2])
 
     doc.add_heading("2.5 Multicast & timing design", level=2)
     # _as_dict/_as_list at EVERY level: a truthy non-dict service_map.multicast crashes mc.get(...), and a
