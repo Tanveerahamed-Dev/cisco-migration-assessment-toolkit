@@ -414,6 +414,8 @@ def test_hash_and_size_mismatches_are_refused(repo, kind):
     lambda m: m["files"][0].update(bytes=True),
     lambda m: m.update(changed_from_source=[]),
     lambda m: m.update(changed_from_source=["tests/golden/other.json"]),
+    lambda m: m.update(changed_from_source=[1, "tests/golden/snapshot.json"]),
+    lambda m: m.update(changed_from_source=list(reversed(m["changed_from_source"]))),
     lambda m: m.update(allow_golden_shrink="false"),
     lambda m: m["producer"].update(run_id="42"),
     lambda m: m["producer"].update(run_attempt="2"),

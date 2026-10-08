@@ -568,7 +568,8 @@ def admit_manifest(manifest: object, *, source_commit: str, tree: str, run_id: i
              and type(row["bytes"]) is int and 0 < row["bytes"] <= MAX_MEMBER_BYTES,
              f"{row['path']}: malformed manifest digest or size")
     changed = manifest["changed_from_source"]
-    need(isinstance(changed, list) and changed == sorted(set(changed)) and set(changed) <= set(OUTPUT_PATHS),
+    need(isinstance(changed, list) and all(isinstance(path, str) for path in changed)
+         and changed == sorted(set(changed)) and set(changed) <= set(OUTPUT_PATHS),
          "changed_from_source is not a sorted subset of the output set")
     return {row["path"]: row for row in rows}
 
