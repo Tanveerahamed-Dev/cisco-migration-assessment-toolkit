@@ -117,3 +117,74 @@ test, build or validator. The hosted pin and prospective-parity tests confirm th
 
 - view: `a2fd2b9994569b2fd3a3df72e3410ae1b74ff41c26833a62239514c677f9de32`
 - list: `c47a6ceff24a7392fa9b248ece33b36381f9fd27fc67d3d52ea3d8238a37e0c9`
+
+## Second refutation round
+
+An independent refuter reviewed head `e3f63cca`. This round changes behaviour only. The transport
+schema and both native pins are unchanged.
+
+**N1 (P2): a partly simulated row could read as a low verdict.** Take a row that simulated some
+VLANs and also counts `off_scan_gw_vlans` above zero. It covers only its VLANs with an in-scan
+gateway.
+- Its severity is withheld as `not_collected` unless it is `High`, the worst band, which cannot
+  be understated. The reason says the severity may understate the blast radius and gives the
+  off-scan count. The witness is `off_scan_gw_vlans`.
+- The style then follows the withheld-state precedence (`not_observed`). It is never a neutral
+  `impact_low` or `impact_medium`.
+- A zero count is withheld as `not_collected`, because a lower bound of zero is not a
+  measurement of none. Its reason says lower bound, and its witness is `off_scan_gw_vlans`.
+- `High` and each positive count stay published as lower bounds, each citing
+  `off_scan_gw_vlans`. A published fact carries no reason in the closed schema, so the
+  `impact_scanned_scope` text says "lower bound" for them.
+- Tests drive the real `analyze.compute_failure_impact` for three cases: a partial Low row (an
+  FHRP-covered gateway), a partial Medium row (a backup-covered transit) and the High control.
+
+**N2 (P3): the running-config gap keyed on the wrong capture.**
+- `build.py` takes `svi_ip`, the simulation's gateway input, only from the scoped `show
+  running-config interface` or `| section ^interface` capture. It marks every interface that
+  capture parsed with `run_config_observed: true`.
+- The security row comes from the full `show running-config`, which is not that input.
+- The hold now applies when no interface of the device carries `run_config_observed: true`.
+- An absent marker reads as not captured, so the rule fails closed.
+  `html.sparsify_interfaces` drops a false marker, and snapshots that predate the marker
+  carry none.
+
+**N3 (P3): the fleet and device surfaces disagreed.**
+- The hold lives in the shared row builder `_topology_impact`. The fleet
+  `/topology/failure_impact` row and the device row therefore withhold the same severity and
+  counts, with the same reason and an `/interfaces/<host>` witness.
+- The device selection's separate running-config gap (`config=True`) is removed. That leaves
+  one source of truth and no double state.
+
+**Legacy rows.** A row without `off_scan_gw_vlans` predates the producer's assessability marker
+(2026-06-26). Whatever its band, its severity and counts are withheld as `not_collected`, with the
+row itself as witness.
+
+**Effect on the sample.** In `webapp/sample_data/sample_fleet.snapshot.json`:
+- every device carries `run_config_observed`;
+- every row carries `off_scan_gw_vlans` = 0, so no row is partial;
+- so no fleet row changes.
+
+The device `failure_impact` selections of `core2`, `podacc1` and `podacc2` move from
+`not_collected` to `published`. These devices have no security row, but they do have the scoped
+interface capture.
+
+**Residuals not closed here**
+- Rows written between 2026-06-26 and 2026-07-28 carry `off_scan_gw_vlans`, but they predate the
+  blind-trunk INDETERMINATE marker. In that window, a switch whose links all lacked VLAN evidence
+  read "No reachability impact", and the row alone cannot show which engine wrote it.
+- Snapshots written before 2026-08-10 carry no `run_config_observed`, so every one of their rows
+  is held.
+- A device whose gateway capture is missing can also skew other devices' rows: they may see its
+  VLANs as off-scan or as single-gateway. The hold covers only its own row.
+- A row that is not INDETERMINATE but was simulated over evidence-less links carries no marker of
+  that.
+
+**Schema and pins.** No limitation ID, property or keyword changed. Only the `impact_scanned_scope`
+text changed, and that is instance data. Both hashes were recomputed locally with
+`_native_schema_hash` and are unchanged:
+
+- view: `a2fd2b9994569b2fd3a3df72e3410ae1b74ff41c26833a62239514c677f9de32`
+- list: `c47a6ceff24a7392fa9b248ece33b36381f9fd27fc67d3d52ea3d8238a37e0c9`
+
+No local test, build or projection ran. The hosted gates and the next refutation decide.

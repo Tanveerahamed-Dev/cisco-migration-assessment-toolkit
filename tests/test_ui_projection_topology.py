@@ -16,7 +16,9 @@ def snap():
     return {
         "schema": "collect_parse_snapshot/1",
         "devices": {"a/b~c.d": {}, "peer": {}},
-        "interfaces": {"a/b~c.d": {"Vlan1": {"svi_ip": "10.0.0.1/24", "ip_mtu": 1500}},
+        # an svi_ip comes only from the scoped interface running-config capture, which build.py marks
+        # run_config_observed; without the mark the failure-impact row's measures are withheld
+        "interfaces": {"a/b~c.d": {"Vlan1": {"svi_ip": "10.0.0.1/24", "ip_mtu": 1500, "run_config_observed": True}},
                        "peer": {"Gi1": {}}},
         "routes": {"a/b~c.d": [
             {"prefix": "10.0.0.0/24", "source": "connected", "next_hop": "", "out_intf": "Vlan1"},
@@ -397,7 +399,9 @@ def test_failure_impact_preserves_full_counts_and_disclosed_eight_example_detail
                              stp_fwd_vlans="10-19")
     interfaces = {"gateway": {"Gi1": trunk("access")}, "access": {"Gi1": trunk("gateway")}}
     for vid in range(10, 20):
-        interfaces["gateway"][f"Vlan{vid}"] = InterfaceData(port=f"Vlan{vid}", svi_ip=f"10.{vid}.0.1/24")
+        # the scoped interface running-config capture is the only source of svi_ip, and build.py marks what it parsed
+        interfaces["gateway"][f"Vlan{vid}"] = InterfaceData(port=f"Vlan{vid}", svi_ip=f"10.{vid}.0.1/24",
+                                                             run_config_observed=True)
         interfaces["access"][f"Gi{vid}"] = InterfaceData(port=f"Gi{vid}", status="connected",
             switchport_mode="Access", vlan=str(vid), end_host_mac=f"0000.0000.{vid:04x}")
     impact = analyze.compute_failure_impact(interfaces)

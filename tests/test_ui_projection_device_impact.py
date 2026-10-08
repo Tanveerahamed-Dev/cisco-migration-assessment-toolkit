@@ -11,7 +11,10 @@ never re-simulates, and an empty selection is never a clean result:
 
 Both producers compute over every scanned device's evidence, so a blind spot ANYWHERE in the fleet qualifies their
 rows, on the fleet topology and on the device page alike. A row the producer says it could not simulate (its
-INDETERMINATE detail) withholds its severity and counts rather than show Info and zero as measurements.
+INDETERMINATE detail) withholds its severity and counts rather than show Info and zero as measurements. So does a
+row older than the producer's off_scan_gw_vlans marker, and the row of a device whose scoped interface running-config
+(the only source of its gateway SVIs) was not captured -- held by the one shared row builder, so both surfaces agree.
+A row that simulated only part of its VLANs never shows a band below High, or a zero, as a measurement.
 
 Every value is checked against an INDEPENDENT lookup in the snapshot, never the module's own join.
 """
@@ -117,6 +120,14 @@ def _no_interface_parse(snap, host):
     return not (isinstance(row, dict) and row)
 
 
+def _run_config_observed(snap, host):
+    """Independent: some interface of `host` carries ``run_config_observed: true`` -- build.py's mark for the scoped
+    interface running-config capture, the only source of a device's gateway SVI addresses (svi_ip)."""
+    ports = snap.get("interfaces", {}).get(host)
+    return isinstance(ports, dict) and any(isinstance(rec, dict) and rec.get("run_config_observed") is True
+                                           for rec in ports.values())
+
+
 # --------------------------------------------------------------------------------------------------
 # the closed schema and the module tables carry both selections
 # --------------------------------------------------------------------------------------------------
@@ -163,18 +174,18 @@ def test_a_simulated_device_selects_exactly_its_fleet_rows(sample, doc_validator
         sel = page["failure_impact"]
         assert sel["subject"] == "/failure_impact"
         assert sel["items"] == [impact[rows[0]]], host               # the fleet row itself, same pointer and values
-        if host in sample["security"]:
-            assert sel["state"] == PUB, (host, sel.get("reason"))
-        else:
-            # no captured running-config: build.py takes SVI gateways only from it, so this device's own gateway
-            # role never reached the simulation that wrote its row
+        # every sample device carries its scoped interface running-config, the simulation's gateway input
+        assert _run_config_observed(sample, host), host
+        assert sel["state"] == PUB, (host, sel.get("reason"))
+        if host not in sample["security"]:
+            # no full running-config (no security row): that capture is not the simulation's input, so it holds
+            # nothing -- the device's gateway SVIs came from the scoped interface capture it does carry
             lacking.append(host)
-            assert sel["state"] == NC and "security carries no row" in sel["reason"], (host, sel)
-            assert "values may be unreliable" in sel["reason"], sel["reason"]
         row = sel["items"][0]
         assert row["pointer"] == f"/failure_impact/{rows[0]}"
         assert row["host"]["value"] == host
         for field in ("severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp", "off_scan_gw_vlans", "detail"):
+            assert row[field]["state"] == PUB, (host, field, row[field].get("reason"))
             assert row[field]["value"] == sample["failure_impact"][rows[0]][field], (host, field)
             assert row[field]["subject"] == f"/failure_impact/{rows[0]}/{field}"
         assert "row_selection_by_exact_key" in sel["caveats"]
@@ -293,10 +304,11 @@ def test_b_no_device_selection_is_ever_a_clean_absence(sample, monkeypatch):
     for (host, section), sel in pages().items():
         assert sel["state"] == NC and sel["items"] == [], (host, section, sel)
         assert "not a blind spot" not in sel["reason"], (host, section)
+        # the full running-config (the security row) is not a simulation input, so it never gates a selection;
+        # a device's own gateway evidence is held inside its row, never as a second selection state
+        assert "security carries no row" not in sel["reason"], (host, section, sel["reason"])
         if _no_interface_parse(snap, host):
             assert "no interface parse result" in sel["reason"], (host, section, sel["reason"])
-        elif section == "failure_impact" and host not in snap["security"]:
-            assert "security carries no row" in sel["reason"], (host, section, sel["reason"])
         else:
             assert expected[section] in sel["reason"], (host, section, sel["reason"])
     monkeypatch.setattr(ui, "_ABSENT_IMPACT", "no simulation row names this device")
@@ -433,22 +445,32 @@ def test_g_blind_spots_elsewhere_qualify_impact_and_structural_rows_on_both_surf
 # --------------------------------------------------------------------------------------------------
 # (h) a switch the REAL producer could not simulate never shows Info and zero as measurements
 # --------------------------------------------------------------------------------------------------
+# Every interface below carries run_config_observed, as build.py marks each interface its scoped interface
+# running-config capture parsed: the only source of an SVI's gateway address (svi_ip), which the producer reads.
+def _trunk(port, peer, peer_port, vlans="", blocked=""):
+    """A CDP-seen inter-switch trunk allowing `vlans`; STP forwards them here unless `blocked` names them."""
+    return InterfaceData(port=port, status="connected", switchport_mode="Trunk", cdp_neighbor=peer,
+                         neighbor_port=peer_port, endpoint_type="Switch", trunk_allowed_vlans=vlans,
+                         stp_fwd_vlans="" if blocked else vlans, stp_blk_vlans=blocked, run_config_observed=True)
+
+
+def _access(port, vid, mac):
+    return InterfaceData(port=port, status="connected", switchport_mode="Access", vlan=str(vid), end_host_mac=mac,
+                         run_config_observed=True)
+
+
+def _svi(vid, address, fhrp=""):
+    return InterfaceData(port=f"Vlan{vid}", svi_ip=address, hsrp_behavior=fhrp, run_config_observed=True)
+
+
 def _unsimulatable_fleet():
     """Captures the real producer reads, built so that it cannot simulate every switch: `acc` carries VLAN 20,
     whose gateway was never scanned, and nothing it can simulate; `gw` gateways VLAN 10 for `acc` (a measured hard
     partition) and also carries VLAN 20; `x1` and `x2` share a trunk with no VLAN-carriage evidence on either end."""
-    def trunk(peer, vlans=""):
-        return InterfaceData(port="Gi1", status="connected", switchport_mode="Trunk", cdp_neighbor=peer,
-                             neighbor_port="Gi1", endpoint_type="Switch", trunk_allowed_vlans=vlans,
-                             stp_fwd_vlans=vlans)
-
-    def access(port, vid, mac):
-        return InterfaceData(port=port, status="connected", switchport_mode="Access", vlan=str(vid), end_host_mac=mac)
-
-    return {"gw": {"Gi1": trunk("acc", "10,20"), "Vlan10": InterfaceData(port="Vlan10", svi_ip="10.10.0.1/24")},
-            "acc": {"Gi1": trunk("gw", "10,20"), "Gi10": access("Gi10", 10, "0000.0000.000a"),
-                    "Gi20": access("Gi20", 20, "0000.0000.0014")},
-            "x1": {"Gi1": trunk("x2")}, "x2": {"Gi1": trunk("x1")}}
+    return {"gw": {"Gi1": _trunk("Gi1", "acc", "Gi1", "10,20"), "Vlan10": _svi(10, "10.10.0.1/24")},
+            "acc": {"Gi1": _trunk("Gi1", "gw", "Gi1", "10,20"), "Gi10": _access("Gi10", 10, "0000.0000.000a"),
+                    "Gi20": _access("Gi20", 20, "0000.0000.0014")},
+            "x1": {"Gi1": _trunk("Gi1", "x2", "Gi1")}, "x2": {"Gi1": _trunk("Gi1", "x1", "Gi1")}}
 
 
 def _impact_snapshot(interfaces, impact):
@@ -473,6 +495,7 @@ def test_h_an_unsimulated_switch_withholds_its_severity_and_counts(doc_validator
     gw = by_host["gw"]
     assert not gw["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX)
     assert gw["severity"] == "High" and gw["hard"] == gw["vlans_impacted"] == 1 and gw["off_scan_gw_vlans"] == 1
+    assert gw["backup"] == gw["fhrp"] == 0                                # zeros the partial simulation cannot vouch for
     snap = _impact_snapshot(interfaces, impact)
     topology = _topology(snap, topology_validator)
     rows = {row["host"]["value"]: row for row in topology["failure_impact"]["items"]}
@@ -486,10 +509,16 @@ def test_h_an_unsimulated_switch_withholds_its_severity_and_counts(doc_validator
         for field in ("host", "off_scan_gw_vlans", "detail"):
             assert row[field]["state"] == PUB and row[field]["value"] == by_host[host][field], (host, field)
         assert row["style"]["value"]["token"] == "not_observed", (host, row["style"])
-    row = rows["gw"]                     # simulated in part: measured values kept, each citing the off-scan count
+    # simulated in part, at the worst band: High and each positive count are kept as lower bounds; a zero is withheld.
+    # Every measure cites the off-scan count.
+    row = rows["gw"]
     for field in MEASURES:
-        assert row[field]["state"] == PUB and row[field]["value"] == gw[field], field
-        assert (row["pointer"] + "/off_scan_gw_vlans", "witness") in _refs(row[field]), field
+        fact = row[field]
+        assert (row["pointer"] + "/off_scan_gw_vlans", "witness") in _refs(fact), field
+        if field == "severity" or gw[field]:
+            assert fact["state"] == PUB and fact["value"] == gw[field], (field, fact)
+        else:
+            assert fact["state"] == NC and "only a lower bound" in fact["reason"], (field, fact)
     assert row["style"]["value"]["token"] == "impact_high"
     # the device page shows the same rows: a published selection whose row withholds what was not simulated
     for host in ("acc", "gw", "x1"):
@@ -520,6 +549,183 @@ def test_h_the_off_scan_count_alone_withholds_and_a_bad_count_is_unverified(topo
     row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
     assert all(row[field]["state"] == PUB for field in MEASURES)
     assert row["severity"]["value"] == "Info" and row["style"]["value"]["token"] == "impact_info"
+
+
+# --------------------------------------------------------------------------------------------------
+# (i) a row the REAL producer simulated only in part never reads as a clean or low verdict
+# --------------------------------------------------------------------------------------------------
+def _fhrp_fleet():
+    """`g1` and `g2` are FHRP peers gatewaying VLAN 10 for `acc`, so removing either one is FHRP-covered (Low).
+    Both also carry VLAN 20 to `acc`, whose gateway was never scanned."""
+    return {"g1": {"Gi1": _trunk("Gi1", "acc", "Gi1", "10,20"), "Vlan10": _svi(10, "10.10.0.2/24", "Active")},
+            "g2": {"Gi1": _trunk("Gi1", "acc", "Gi2", "10,20"), "Vlan10": _svi(10, "10.10.0.3/24", "Standby")},
+            "acc": {"Gi1": _trunk("Gi1", "g1", "Gi1", "10,20"), "Gi2": _trunk("Gi2", "g2", "Gi1", "10,20"),
+                    "Gi10": _access("Gi10", 10, "0000.0000.000a"), "Gi20": _access("Gi20", 20, "0000.0000.0014")}}
+
+
+def _backup_fleet():
+    """`gw` gateways VLAN 10 for `acc` through the transit `mid`; the direct gw-acc trunk is STP-blocked for VLAN 10,
+    so removing `mid` is backup-covered (Medium) and removing `gw` is a hard partition (High). `gw` and `mid` also
+    carry VLAN 20 to `acc`, whose gateway was never scanned."""
+    return {"gw": {"Gi1": _trunk("Gi1", "mid", "Gi1", "10,20"), "Gi2": _trunk("Gi2", "acc", "Gi2", "10"),
+                   "Vlan10": _svi(10, "10.10.0.1/24")},
+            "mid": {"Gi1": _trunk("Gi1", "gw", "Gi1", "10,20"), "Gi2": _trunk("Gi2", "acc", "Gi1", "10,20")},
+            "acc": {"Gi1": _trunk("Gi1", "mid", "Gi2", "10,20"), "Gi2": _trunk("Gi2", "gw", "Gi2", "10", blocked="10"),
+                    "Gi10": _access("Gi10", 10, "0000.0000.000a"), "Gi20": _access("Gi20", 20, "0000.0000.0014")}}
+
+
+def _partial_row(fleet, host):
+    """The REAL producer's rows over `fleet`, its snapshot, and the index of `host`'s row."""
+    interfaces = fleet()
+    impact = analyze.compute_failure_impact(interfaces)
+    k = next(i for i, row in enumerate(impact) if row["host"] == host)
+    return impact[k], _impact_snapshot(interfaces, impact), k
+
+
+@pytest.mark.parametrize("fleet, host, band, status", [
+    (_fhrp_fleet, "g1", "Low", "fhrp"),
+    (_backup_fleet, "mid", "Medium", "backup"),
+])
+def test_i_a_partly_simulated_row_below_high_withholds_its_band_and_its_zeros(doc_validator, topology_validator,
+                                                                              fleet, host, band, status):
+    src, snap, k = _partial_row(fleet, host)
+    # the producer simulated one VLAN and counted one it could not assess: no INDETERMINATE marker, a low band
+    assert not src["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX), src
+    assert src["severity"] == band and src["off_scan_gw_vlans"] == 1, src
+    assert src["vlans_impacted"] == src[status] == 1, src
+    zeros = sorted(set(MEASURES[1:]) - {"vlans_impacted", status})
+    assert all(src[field] == 0 for field in zeros), src                # stranded, hard and the other status count
+    topology = _topology(snap, topology_validator)
+    row = topology["failure_impact"]["items"][k]
+    off_scan = (row["pointer"] + "/off_scan_gw_vlans", "witness")
+    severity = row["severity"]
+    assert severity["state"] == NC and severity["value"] is None, severity
+    assert "may understate" in severity["reason"] and "1 VLAN(s)" in severity["reason"], severity["reason"]
+    assert off_scan in _refs(severity)
+    assert row["style"]["value"]["token"] == "not_observed", row["style"]   # never the neutral impact_low/medium
+    for field in zeros:
+        fact = row[field]
+        assert fact["state"] == NC and fact["value"] is None, (field, fact)
+        assert "only a lower bound" in fact["reason"] and "1 VLAN(s)" in fact["reason"], (field, fact["reason"])
+        assert off_scan in _refs(fact), field
+    for field in ("vlans_impacted", status):                              # a positive lower bound stays published
+        fact = row[field]
+        assert fact["state"] == PUB and fact["value"] == 1, (field, fact)
+        assert off_scan in _refs(fact) and "impact_scanned_scope" in fact["caveats"], field
+    for field in ("host", "off_scan_gw_vlans", "detail"):
+        assert row[field]["state"] == PUB and row[field]["value"] == src[field], field
+    sel = _page(snap, host, doc_validator)["failure_impact"]            # the device page shows the same row
+    assert sel["state"] == PUB and sel["items"] == [row], sel.get("reason")
+    # the control: the same row with nothing off-scan publishes its band and its zeros as measurements
+    snap["failure_impact"][k]["off_scan_gw_vlans"] = 0
+    clean = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    assert all(clean[field]["state"] == PUB and clean[field]["value"] == src[field] for field in MEASURES)
+    assert clean["style"]["value"]["token"] == "impact_" + band.lower()
+
+
+def test_i_a_partly_simulated_high_row_keeps_its_band(doc_validator, topology_validator):
+    """High cannot be understated: it stays published beside the off-scan count, with the positive counts as lower
+    bounds; the zeros are still withheld."""
+    src, snap, k = _partial_row(_backup_fleet, "gw")
+    assert not src["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX), src
+    assert src["severity"] == "High" and src["off_scan_gw_vlans"] == 1, src
+    assert src["vlans_impacted"] == src["hard"] == 1 and src["stranded"] > 0 and src["backup"] == src["fhrp"] == 0
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    off_scan = (row["pointer"] + "/off_scan_gw_vlans", "witness")
+    for field in ("severity", "vlans_impacted", "stranded", "hard"):
+        fact = row[field]
+        assert fact["state"] == PUB and fact["value"] == src[field], (field, fact)
+        assert off_scan in _refs(fact), field
+    for field in ("backup", "fhrp"):
+        fact = row[field]
+        assert fact["state"] == NC and "only a lower bound" in fact["reason"], (field, fact)
+        assert off_scan in _refs(fact), field
+    assert row["style"]["value"]["token"] == "impact_high"
+    sel = _page(snap, "gw", doc_validator)["failure_impact"]
+    assert sel["state"] == PUB and sel["items"] == [row], sel.get("reason")
+
+
+# --------------------------------------------------------------------------------------------------
+# (j) a device whose gateway evidence was not captured holds its row on both surfaces alike
+# --------------------------------------------------------------------------------------------------
+def test_j_a_device_without_its_scoped_running_config_holds_its_row_on_both_surfaces(sample, doc_validator,
+                                                                                      topology_validator):
+    host = "core1"
+    snap = copy.deepcopy(sample)
+    k = _naming(snap["failure_impact"], host, ("host",))[0]
+    assert snap["failure_impact"][k]["severity"] == "High" and snap["failure_impact"][k]["off_scan_gw_vlans"] == 0
+    assert host in snap["security"]                    # its full running-config is present: that is not the input
+    for port in snap["interfaces"][host].values():
+        port.pop("run_config_observed", None)          # what html.sparsify_interfaces writes for false
+    assert not _run_config_observed(snap, host)
+    topology = _topology(snap, topology_validator)
+    row = topology["failure_impact"]["items"][k]
+    for field in MEASURES:
+        fact = row[field]
+        assert fact["state"] == NC and fact["value"] is None, (field, fact)
+        assert "run_config_observed" in fact["reason"] and "svi_ip" in fact["reason"], fact["reason"]
+        assert (f"/interfaces/{host}", "witness") in _refs(fact), field
+    for field in ("host", "off_scan_gw_vlans", "detail"):
+        assert row[field]["state"] == PUB and row[field]["value"] == snap["failure_impact"][k][field], field
+    assert row["style"]["value"]["token"] == "not_observed"
+    # one state on both surfaces: the device page shows the held fleet row, never a second selection gap
+    sel = _page(snap, host, doc_validator)["failure_impact"]
+    assert sel["state"] == PUB and sel["items"] == [row], sel.get("reason")
+    for other in ("dist1", "access1"):                 # every other device keeps its measured row
+        i = _naming(snap["failure_impact"], other, ("host",))[0]
+        assert all(topology["failure_impact"]["items"][i][field]["state"] == PUB for field in MEASURES), other
+    # a marker that is present but not true reads the same; one observed interface lifts the hold
+    name = next(iter(snap["interfaces"][host]))
+    snap["interfaces"][host][name]["run_config_observed"] = "true"
+    assert _topology(snap, topology_validator)["failure_impact"]["items"][k]["severity"]["state"] == NC
+    snap["interfaces"][host][name]["run_config_observed"] = True
+    lifted = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    assert all(lifted[field]["state"] == PUB for field in MEASURES)
+    assert lifted["style"]["value"]["token"] == "impact_high"
+    # no interface record at all: held, with the interfaces map as the witness
+    del snap["interfaces"][host]
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    assert all(row[field]["state"] == NC for field in MEASURES)
+    assert ("/interfaces", "witness") in _refs(row["severity"])
+    # the control the earlier rule got wrong: no security row (no full running-config) holds nothing
+    snap = copy.deepcopy(sample)
+    del snap["security"][host]
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    assert all(row[field]["state"] == PUB for field in MEASURES)
+    sel = _page(snap, host, doc_validator)["failure_impact"]
+    assert sel["state"] == PUB and sel["items"] == [row], sel.get("reason")
+
+
+# --------------------------------------------------------------------------------------------------
+# (k) a row older than the producer's assessability marker is never a measurement
+# --------------------------------------------------------------------------------------------------
+def test_k_a_row_without_the_off_scan_marker_withholds_its_severity_and_counts(sample, doc_validator,
+                                                                               topology_validator):
+    """Engines before analyze.compute_failure_impact wrote off_scan_gw_vlans (and before they flagged blind trunks
+    INDETERMINATE) wrote 'No reachability impact' with Info and zeros for a switch they could not simulate."""
+    snap = copy.deepcopy(sample)
+    legacy = {"podacc1": "Info", "core1": "High"}        # a stored clean bill, and a stored High
+    for host, band in legacy.items():
+        k = _naming(snap["failure_impact"], host, ("host",))[0]
+        assert snap["failure_impact"][k]["severity"] == band
+        del snap["failure_impact"][k]["off_scan_gw_vlans"]
+    topology = _topology(snap, topology_validator)
+    for host in legacy:
+        k = _naming(snap["failure_impact"], host, ("host",))[0]
+        row = topology["failure_impact"]["items"][k]
+        for field in MEASURES:
+            fact = row[field]
+            assert fact["state"] == NC and fact["value"] is None, (host, field, fact)
+            assert "predates the producer's assessability marker" in fact["reason"], (host, field, fact["reason"])
+            assert (row["pointer"], "witness") in _refs(fact), (host, field)
+        assert row["off_scan_gw_vlans"]["state"] == NC
+        assert row["host"]["state"] == row["detail"]["state"] == PUB
+        assert row["style"]["value"]["token"] == "not_observed", (host, row["style"])
+        sel = _page(snap, host, doc_validator)["failure_impact"]
+        assert sel["state"] == PUB and sel["items"] == [row], (host, sel.get("reason"))
+    # the control: a row that carries the marker keeps its measures
+    i = _naming(snap["failure_impact"], "dist1", ("host",))[0]
+    assert all(topology["failure_impact"]["items"][i][field]["state"] == PUB for field in MEASURES)
 
 
 # --------------------------------------------------------------------------------------------------
