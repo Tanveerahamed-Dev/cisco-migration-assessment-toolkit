@@ -11,7 +11,9 @@ Slice 1 covers two screens:
   scoring state, the executive-brief axes (and the registered axes the brief does not carry), the
   top-gating list, the posture statement, and the lifecycle band partition in its canonical order;
 * ``trust`` -- the live schema census, the failed-phase record, the published coverage matrix, the
-  unknown-evidence summary, the SSOT self-verification, and the projection's own stated limitations;
+  unknown-evidence summary, the SSOT self-verification, the analysis-input gap summary (per input of the
+  engine's per-device risk register: the inventory devices it could not assess, out of the inventory), and
+  the projection's own stated limitations;
 
 plus an ``engine`` block naming the snapshot schema and producer versions.
 
@@ -119,7 +121,7 @@ from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
 from cisco_toolkit import impact_assessability
 from cisco_toolkit import ssot
 from cisco_toolkit.analyze import (
-    PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index,
+    DOSSIER_AXIS_INPUTS, PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index,
 )
 from cisco_toolkit.coverage_matrix import (
     COVERAGE_DIMENSIONS, COVERAGE_STATE_ORDER, COVERAGE_VERDICT_SOURCES, CoverageRowIndex,
@@ -399,7 +401,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         ["/overview/axes", "/overview/absent_axes", "/overview/top_gating", "/overview/posture_statement",
          "/overview/fleet_health/bands", "/overview/readiness/groups",
          "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
-         "/findings/rows", "/findings/total", "/topology"]),
+         "/findings/rows", "/findings/total", "/topology", "/trust/inputs"]),
     _limitation(
         "axis_basis_owned_by_projection", "cisco_toolkit.ui_projection.AXIS_BASIS",
         "analyze.compute_executive_brief publishes no per-axis basis. The axis-to-input table is owned by "
@@ -420,7 +422,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "not call the input incomplete; engine_state keeps the owner's token. An empty text or mapping "
         "stays collected_but_empty.",
         ["/overview/facts", "/overview/lifecycle", "/trust/unknown_evidence", "/trust/ssot/engine_stamp",
-         "/inventory/devices/total"]),
+         "/inventory/devices/total", "/trust/inputs"]),
     _limitation(
         "abstention_addresses_dict_paths_only", "ssot.abstention_reason",
         "The abstention core cannot address an array element. A list item takes its list's state, then its "
@@ -620,6 +622,24 @@ LIMITATIONS += (
                 "an observed discard. Reached paths can still have dropping ECMP legs. MTU evidence is "
                 "IPv4-specific and does not establish IPv6 suitability.", ["/topology/source_addresses"]),
 )
+LIMITATIONS += (
+    _limitation("trust_inputs_scope",
+                "analyze.compute_device_dossiers, analyze.compute_collection_completeness, cisco_toolkit.ui_projection",
+                "The analysis inputs are the engine's per-device risk-register axes and their input sections "
+                "(analyze.DOSSIER_AXIS_INPUTS), not every analysis: a fleet or findings-only section (for example "
+                "cross_layer or l3_forwarding) writes no per-device custody, so no device is counted here, as a gap "
+                "or as clean, from its absence. A device counts as not assessed by an input where its dossier row "
+                "marks that axis 'na'; the device's custody keeps the engine's input state (not collected, analysis "
+                "unavailable, or collected but empty: evidence was read but nothing assessable, such as no "
+                "authoritative lifecycle band). A collection_completeness 'not collected' device is listed under "
+                "every input whatever its dossier says. An assessed axis is the engine's bounded conclusion, not proof "
+                "that every sub-input ran: Protocol concludes when at least one protocol family is assessable, and "
+                "Config hygiene and Physical read an empty screen as clean. Dossier rows are joined by exact host and "
+                "blind spots by their owner's device scope; a missing, duplicated or malformed row makes the count "
+                "unverified, and the denominator is the inventory count the device rows reconcile to. The fold is "
+                "this projection's; nothing is recomputed from raw evidence.",
+                ["/trust/inputs"]),
+)
 #: What a device document cannot claim; addressed inside a ``DeviceDocument``.
 DEVICE_LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
     _limitation(
@@ -727,8 +747,9 @@ _R_NO_ROW = "not collected: {section} carries no row for this device"
 _R_DEVICE_NC = ("not collected: collection_completeness lists this device as not collected, so every fact about it "
                 "is a blind spot (ssot.abstention_reason, device scope)")
 _R_AMBIG = "unverified: {n} rows in {section} name this key, so no single row can be chosen"
-_R_UNJOINABLE = ("unverified: {n} row(s) in {section} cannot be joined by exact key (not an object, or a key field "
-                 "that is missing or not text), and any of them could name this device")
+_R_UNJOINABLE_STEM = ("unverified: {n} row(s) in {section} cannot be joined by exact key (not an object, or a key "
+                      "field that is missing or not text), and any of them could name ")
+_R_UNJOINABLE = _R_UNJOINABLE_STEM + "this device"
 _R_PAIR_AMBIG = ("unverified: {n} rows in link_centrality name this unordered host pair (in either orientation), but "
                  "analyze.compute_link_centrality writes one record per pair, so no single row can be chosen")
 _R_NOT_SCORED = ("not assessed: the engine banded this device 'Insufficient Data' (a collection gap or an interface "
@@ -2188,6 +2209,175 @@ def _ssot_block(ctx: _Ctx) -> Dict[str, Any]:
     return block
 
 
+# ---------------------------------------------------------------------------------------------------
+# trust: the analysis-input gap summary (G08)
+#
+# The engine's per-device custody of each analysis input is the risk register's exposure record: for every device
+# row, analyze.compute_device_dossiers writes exactly one {axis, state, label, input_state} per entry of
+# analyze.DOSSIER_AXIS_INPUTS, and forces state 'na' whenever the input was not published (its ax()). The register
+# writes a row for every device the devices map names: its host universe includes lifecycle_risk.per_device, which
+# compute_lifecycle_risk writes for every key of the same device-physical map the devices map is built from. No
+# findings-only or sparse section is read for absence here; its absence is never a gap and never clean. A register
+# row the exact-key join cannot read (:func:`_unjoinable_rows`) could be any listed device's row, so it withholds
+# every count, the precedent of the strict device selection.
+# ---------------------------------------------------------------------------------------------------
+#: Every analysis input the engine assesses PER DEVICE, with its input sections, in the owner's order: the risk
+#: register's closed axis registry (analyze.DOSSIER_AXIS_INPUTS), imported, never copied.
+TRUST_INPUTS: Mapping[str, Tuple[str, ...]] = MappingProxyType(
+    {axis: tuple(sections) for axis, sections in DOSSIER_AXIS_INPUTS.items()})
+#: Why an input did not assess a listed device: the dossier's input state for an 'na' axis, not_collected for a
+#: collection blind spot, analysis_unavailable or unverified when no single readable exposure exists. Every token is
+#: an absence, so the G43 catalogue (``_VOCAB_UNRANKED``) names it as an unranked vocabulary that draws no level.
+TRUST_INPUT_CUSTODY: Tuple[str, ...] = tuple(s for s in WITHHELD_STATES if s != _NA)
+_B_INPUTS = ("analyze.compute_device_dossiers:device_dossiers.per_device[].exposures[] + "
+             "analyze.compute_collection_completeness:collection_completeness.devices[]")
+_R_INPUTS_ASSESSED = ("collected but empty: every inventory device carries one readable exposure for this input that "
+                      "is not 'na' (not a blind spot)")
+_R_INPUTS_NO_DEVICE = ("not collected: the inventory names no device (neither the devices map nor "
+                       "collection_completeness), so no input assessed anything and a zero would claim nothing")
+_R_INPUTS_NO_REGISTER = ("not collected: the snapshot carries no device_dossiers.per_device, so no device's custody "
+                         "of this input is published; only collection blind spots are listed, and an absent device "
+                         "is not a clean result")
+_R_INPUTS_UNJOINABLE = _R_UNJOINABLE_STEM + ("any inventory device, so the count of devices this input could not "
+                                             "assess is not verified")
+#: How one inventory device stands before any axis is read: ``(fixed custody, witness pointer, why)`` when the same
+#: custody holds for every input, else ``None`` with the dossier row and its axis index.
+_HostCustody = Tuple[Optional[Tuple[str, str, str]], Optional[Tuple[Tuple[Any, ...], List[Any], Dict[str, List[int]]]]]
+
+
+def _host_custody(ctx: _Ctx, host: str, dev_keys: FrozenSet[str], index: Mapping[str, List[int]], raw: Any,
+                  readable: bool, lifecycle_failed: bool) -> _HostCustody:
+    """One inventory device, first match wins: a collection blind spot (every input) -> an unreadable register (no
+    claim) -> no row (unavailable when the lifecycle phase that guarantees every device a row failed, else a
+    contradiction with the producer: unverified) -> two rows naming it -> a row whose exposures cannot be indexed."""
+    i, _row = ctx.cc_row(host)
+    if i is not None and ctx.device_blind("collection_completeness", host):
+        return (_NC, json_pointer("collection_completeness", "devices", i), "blind"), None
+    if not readable:
+        return None, None
+    own = json_pointer("devices", host) if host in dev_keys or i is None else json_pointer(
+        "collection_completeness", "devices", i)
+    rows = index.get(host, [])
+    if not rows:
+        return ((AU, own, "lost") if lifecycle_failed else (_UV, own, "unreadable")), None
+    toks: Tuple[Any, ...] = ("device_dossiers", "per_device", rows[0])
+    if len(rows) > 1:
+        return (_UV, json_pointer(*toks), "unreadable"), None
+    rec = raw[rows[0]]
+    exposures = rec.get("exposures") if isinstance(rec, dict) else None
+    if not isinstance(exposures, list):
+        return (_UV, json_pointer(*toks), "unreadable"), None
+    by_axis: Dict[str, List[int]] = {}
+    for j, exposure in enumerate(exposures):
+        axis = exposure.get("axis") if isinstance(exposure, dict) else None
+        if not _is_text(axis):
+            return (_UV, json_pointer(*toks, "exposures", j), "unreadable"), None
+        by_axis.setdefault(axis, []).append(j)
+    return None, (toks, exposures, by_axis)
+
+
+def _axis_custody(axis: str, host: _HostCustody) -> Optional[Tuple[str, Optional[str], str, str]]:
+    """``(custody, engine label, witness pointer, why)`` when `axis` did not assess the device, ``None`` when it did (or
+    when nothing about the device can be read). Exactly one exposure must name the axis and pass the exposure record
+    check; 'na' over published custody contradicts the producer's rule and is unverified."""
+    fixed, joined = host
+    if fixed is not None:
+        return fixed[0], None, fixed[1], fixed[2]
+    if joined is None:
+        return None
+    toks, exposures, by_axis = joined
+    hits = by_axis.get(axis, [])
+    if len(hits) != 1:
+        return _UV, None, json_pointer(*toks, "exposures"), "unreadable"
+    pointer = json_pointer(*toks, "exposures", hits[0])
+    ok, rec = _typed(exposures[hits[0]], "exposure")
+    if not ok:
+        return _UV, None, pointer, "unreadable"
+    if rec["state"] != "na":
+        return None
+    if rec["input_state"] == _PUB:
+        return _UV, None, pointer, "unreadable"
+    return rec["input_state"], rec["label"], pointer, "exposure"
+
+
+def _trust_inputs(ctx: _Ctx) -> List[Dict[str, Any]]:
+    """Per analysis input: the inventory devices it could not assess (``hosts``), their count (``n``) and the inventory
+    count they are out of (``of``, the device rows' own reconciled total). A register row the host join cannot read
+    (:func:`_unjoinable_rows`) makes ``hosts`` and ``n`` unverified, with a witness to each such row, while the readable
+    rows' devices stay listed; ``of`` is the inventory's own owner and does not read the register."""
+    hosts, dev_keys, _cc_norm = _inventory_universe(ctx)
+    dd_toks = ("device_dossiers", "per_device")
+    dd_state, dd_reason, dd_raw = _list_state(ctx, dd_toks, ("device_dossiers",))
+    readable = dd_state in (_PUB, _CBE)
+    index = ctx.index(dd_toks, ("host",)) if readable else {}
+    # The join skips these rows, so the per-device fold never visits them: any could be a conflicting observation of
+    # a listed device. Read as the strict selection reads them: over a published or empty register, and over an
+    # unverified one whose rows can still be read.
+    bad = ctx.unjoinable(dd_toks, ("host",)) if readable or (dd_state == _UV and isinstance(dd_raw, list)) else []
+    unjoinable = _R_INPUTS_UNJOINABLE.format(n=len(bad), section=".".join(dd_toks)) if bad else None
+    lifecycle_failed = ctx.abst("lifecycle_risk") == AU
+    standing = [(host, _host_custody(ctx, host, dev_keys, index, dd_raw, readable, lifecycle_failed))
+                for host in hosts]
+    out: List[Dict[str, Any]] = []
+    for axis, sections in TRUST_INPUTS.items():
+        secs = tuple(dict.fromkeys(("device_dossiers",) + sections + ("collection_completeness",)))
+        items: List[Dict[str, Any]] = []
+        whys: List[str] = []
+        for host, custody in standing:
+            hit = _axis_custody(axis, custody)
+            if hit is not None:
+                items.append({"host": host, "custody": hit[0], "label": hit[1], "pointer": hit[2]})
+                whys.append(hit[3])
+        extra: List[Tuple[str, Sequence[Any]]] = [("basis", dd_toks),
+                                                  ("basis", ("collection_completeness", "devices"))]
+        extra += [("basis", (s,)) for s in secs if s != "device_dossiers"]
+        lost = whys.count("lost")
+        if lost:
+            extra += [("basis", ("lifecycle_risk",))] + ctx.failure_entries(("lifecycle_risk",), True)
+        failed = _secs_fail(ctx, ("device_dossiers.per_device",) + secs)
+        doubt: Optional[str] = None
+        if failed:
+            state, reason = failed
+        elif not readable:
+            state, reason = dd_state, (_R_INPUTS_NO_REGISTER if dd_state == _NC else dd_reason)
+            doubt = unjoinable                  # set only over an unverified register whose rows can be read
+        elif not hosts:
+            state, reason = _NC, _R_INPUTS_NO_DEVICE
+        elif lost:
+            state = AU
+            reason = (ctx.unavailable_reason(("lifecycle_risk",)) + f"; {lost} device(s) have no risk-register "
+                      "row, and the phase that guarantees every collected device one failed")
+        elif "unreadable" in whys:
+            state, doubt = _UV, unjoinable
+            reason = (f"unverified: {whys.count('unreadable')} device(s) carry no single readable exposure for this "
+                      "input in device_dossiers (a missing, duplicated or malformed row or record), so the count of "
+                      "devices it could not assess is not verified")
+        elif unjoinable is not None:
+            state, reason, doubt = _UV, None, unjoinable
+        else:
+            state, reason = (_PUB, None) if items else (_CBE, _R_INPUTS_ASSESSED)
+        if doubt is not None:
+            # Never a published count or zero: the listed devices stay as data, each unreadable row is witnessed.
+            state, reason = _UV, "; ".join(r for r in (reason, doubt) if r)
+            extra += [("witness", dd_toks + (i,)) for i in bad]
+        state, reason = _rolled(ctx, state, reason, secs, ("collection_completeness",))
+        of = _inventory_total(ctx, len(hosts))
+        if state in (_PUB, _CBE) and of["state"] != _PUB:
+            state, reason = of["state"], (f"{of['reason']}; the inventory denominator is withheld, so the device "
+                                          "universe this list covers is not verified")
+        listed = _listing(ctx, state, reason, None, _B_INPUTS, items, sections=secs, extra=extra,
+                          caveats=("trust_inputs_scope",))
+        refs = [dict(ref) for ref in listed["refs"]] + ctx.refs(
+            [("denominator", ("collection_completeness", "summary", "inventory"))])
+        if listed["state"] in (_PUB, _CBE):
+            n = _envelope(_PUB, len(items), None, refs, _B_INPUTS + " (count)", "",
+                          caveats=listed.get("caveats", ()))
+        else:
+            n = _envelope(listed["state"], None, None, refs, _B_INPUTS + " (count)", listed["reason"])
+        out.append({"input": axis, "sections": list(sections), "n": n, "of": of, "hosts": listed})
+    return out
+
+
 def _limitations_payload() -> List[Dict[str, Any]]:
     return [{"id": lim["id"], "owner": lim["owner"], "text": lim["text"], "applies_to": list(lim["applies_to"])}
             for lim in LIMITATIONS]
@@ -2200,12 +2390,14 @@ def _trust(ctx: _Ctx) -> Dict[str, Any]:
         "coverage_matrix": _coverage_matrix(ctx),
         "unknown_evidence": _unknown_evidence(ctx),
         "ssot": _ssot_block(ctx),
+        "inputs": _trust_inputs(ctx),
         "limitations": _limitations_payload(),
     }
 
 
 def project_trust(snap: Any) -> Dict[str, Any]:
-    """The Trust screen: census, failure record, coverage matrix, unknown evidence, SSOT verification."""
+    """The Trust screen: census, failure record, coverage matrix, unknown evidence, SSOT verification and the
+    analysis-input gap summary."""
     return _trust(_Ctx(snap))
 
 
@@ -3060,7 +3252,9 @@ def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_norm: Mapping[
     return row
 
 
-def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
+def _inventory_universe(ctx: _Ctx) -> Tuple[List[str], FrozenSet[str], Dict[str, List[int]]]:
+    """``(hosts, devices-map keys, blind-spot index)``: the inventory rows' devices, sorted. One owner for the device
+    rows and the analysis-input gaps, so both count the same universe."""
     devices = ctx.s.get("devices")
     dev_keys = frozenset(k for k in devices if _is_text(k)) if isinstance(devices, dict) else frozenset()
     cc_norm = ctx.index(("collection_completeness", "devices"), ("host",), norm=True)
@@ -3069,7 +3263,26 @@ def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
     # a blind spot the devices map names (without case or surrounding space) is that device's row, not a new one;
     # the rest are named by their first row's own spelling
     blind_only = {cc_rows[idx[0]]["host"] for name, idx in cc_norm.items() if name not in dev_norm}
-    hosts = sorted(dev_keys | blind_only)
+    return sorted(dev_keys | blind_only), dev_keys, cc_norm
+
+
+def _inventory_total(ctx: _Ctx, n_rows: int) -> Dict[str, Any]:
+    """The owner's inventory count, published only when it equals the inventory rows' count."""
+    def _matches_rows(_ctx: _Ctx, typed: Any, _zero: bool):
+        if typed == n_rows:
+            return None
+        return (_UV, f"unverified: the inventory rows (the devices map and the collection_completeness blind spots) "
+                     f"number {n_rows}; the owner's inventory count says {typed}", [])
+
+    return _scalar(ctx, "collection_completeness.summary.inventory", "count",
+                   "analyze.compute_collection_completeness:collection_completeness.summary.inventory",
+                   gate=_matches_rows, witness=[("witness", ("executive_brief", "scale", "n_devices")),
+                                                ("witness", ("coverage_matrix", "summary", "n_devices"))],
+                   published_caveats=_brief_caveats(ctx))
+
+
+def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
+    hosts, dev_keys, cc_norm = _inventory_universe(ctx)
     items = [_device_row(ctx, host, dev_keys, cc_norm) for host in hosts]
     base, reason, _raw = _list_state(ctx, ("devices",), ("devices",), want=dict)
     if base in (_PUB, _CBE):
@@ -3079,20 +3292,7 @@ def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
                     "collection_completeness.devices", items, sections=("devices",),
                     rollup=("collection_completeness",),
                     caveats=("row_selection_by_exact_key", "device_physical_defaults_not_observed"))
-    n_rows = len(items)
-
-    def _matches_rows(_ctx: _Ctx, typed: Any, _zero: bool):
-        if typed == n_rows:
-            return None
-        return (_UV, f"unverified: the inventory rows (the devices map and the collection_completeness blind spots) "
-                     f"number {n_rows}; the owner's inventory count says {typed}", [])
-
-    total = _scalar(ctx, "collection_completeness.summary.inventory", "count",
-                    "analyze.compute_collection_completeness:collection_completeness.summary.inventory",
-                    gate=_matches_rows, witness=[("witness", ("executive_brief", "scale", "n_devices")),
-                                                 ("witness", ("coverage_matrix", "summary", "n_devices"))],
-                    published_caveats=_brief_caveats(ctx))
-    return {"total": total, "rows": rows}
+    return {"total": _inventory_total(ctx, len(items)), "rows": rows}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -5059,6 +5259,9 @@ _VOCAB_UNRANKED: Tuple[Tuple[str, Tuple[str, ...], str], ...] = (
                                                          "ExposureValue.input_state): an evidence state, not a verdict"),
     ("withheld_state", WITHHELD_STATES, "the withheld branch of every fact: each state names why a value is "
                                         "absent, never how severe it is"),
+    ("trust_input_custody", TRUST_INPUT_CUSTODY, "why an analysis input did not assess a listed device "
+                                                 "(TrustInputHost.custody): withheld states, each an absence that "
+                                                 "names why, never how severe; the gap's weight is its n out of of"),
     ("engine_state", ENGINE_STATES, "the raw owner token an envelope keeps beside a projected state"),
     ("engine_state_owner", ENGINE_STATE_OWNERS, "the owner that produced an engine_state"),
     ("limitation_id", _ALL_LIMITATION_IDS, "the registered qualifications a value may cite; LIMITATIONS and "
@@ -5735,11 +5938,22 @@ def _build_schema() -> Dict[str, Any]:
          "n_facts": _ref("CountFact"), "n_checked": _ref("CountFact"), "n_violations": _ref("CountFact"),
          "violations": _ref("ViolationList"), "engine_stamp": _ref("StampFact"),
          "stamp_matches_live": _nullable({"type": "boolean"})})
+    defs["TrustInputHost"] = _closed(
+        "TrustInputHost", ("host", "custody", "label", "pointer"),
+        {"host": _str(), "custody": _enum(TRUST_INPUT_CUSTODY), "label": _nullable(_str()),
+         "pointer": _ref("Pointer")})
+    defs["TrustInputHostList"] = _list_def("TrustInputHostList", _ref("TrustInputHost"))
+    defs["TrustInput"] = _closed(
+        "TrustInput", ("input", "sections", "n", "of", "hosts"),
+        {"input": _enum(tuple(TRUST_INPUTS)), "sections": {"type": "array", "items": _str()},
+         "n": _ref("CountFact"), "of": _ref("CountFact"), "hosts": _ref("TrustInputHostList")})
     n_lims = len(LIMITATIONS)
+    n_inputs = len(TRUST_INPUTS)
     defs["Trust"] = _closed(
-        "Trust", ("census", "failures", "coverage_matrix", "unknown_evidence", "ssot", "limitations"),
+        "Trust", ("census", "failures", "coverage_matrix", "unknown_evidence", "ssot", "inputs", "limitations"),
         {"census": _ref("Census"), "failures": _ref("Failures"), "coverage_matrix": _ref("CoverageMatrix"),
          "unknown_evidence": _ref("UnknownEvidence"), "ssot": _ref("Ssot"),
+         "inputs": {"type": "array", "minItems": n_inputs, "maxItems": n_inputs, "items": _ref("TrustInput")},
          "limitations": {"type": "array", "minItems": n_lims, "maxItems": n_lims, "items": _ref("Limitation")}})
     _slice2_defs(defs)
     _topology_defs(defs)

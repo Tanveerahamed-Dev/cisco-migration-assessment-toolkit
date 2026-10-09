@@ -2,7 +2,8 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CoreSnapshot from "./CoreSnapshot";
-import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, findingsRollupFixture, coverageRollupFixture, coverageAxisFixture, published, topologyFixture } from "../test/projectionFixtures";
+import { overviewFixture, overviewRollupsFixture, trustFixture, inventoryFixture, findingsFixture, deviceFixture, findingsRollupFixture, coverageRollupFixture, coverageAxisFixture, published, topologyFixture,
+  deviceSelectionPage, deviceImpactRowFixture, deviceStructuralRowFixture } from "../test/projectionFixtures";
 
 function Harness() {
   const navigate = useNavigate();
@@ -108,6 +109,153 @@ describe("Core snapshot route", () => {
     fireEvent.click(screen.getByRole("link", { name: "Trust" }));
     await screen.findByRole("heading", { name: "Evidence coverage" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+  describe("Trust analysis-input gaps", () => {
+    const scope = { id: "trust_inputs_scope", owner: "synthetic.owner:trust_inputs", applies_to: ["/trust/inputs"],
+      text: "Synthetic scope: the inputs are the engine's per-device register axes, not every analysis" };
+    const evidence = { refs: [{ pointer: "/device_dossiers/per_device", role: "basis" }, { pointer: "/collection_completeness/summary/inventory", role: "denominator" }],
+      basis: "synthetic.owner:trust_inputs" };
+    const count = (value: number) => ({ ...published(value), ...evidence, subject: null, caveats: [scope.id] });
+    const total = (value: number) => ({ ...published(value), subject: "/collection_completeness/summary/inventory", refs: [], basis: "synthetic.owner:inventory" });
+    const held = (state: string, reason: string) => ({ ...evidence, state, value: null, reason, subject: null });
+    const hostList = (state: string, items: object[], reason?: string) => ({ ...evidence, state, subject: null, items,
+      ...(reason ? { reason } : {}), ...(items.length ? { caveats: [scope.id] } : {}) });
+    function serveTrust(rows: Record<string, object>) {
+      const doc = trustFixture();
+      const document = { ...doc, limitations: [scope], payload: { ...doc.payload,
+        inputs: doc.payload.inputs.map((row) => ({ ...row, ...rows[row.input] })) } };
+      return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/ui-projection/trust?")) return new Response(JSON.stringify(document));
+        if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false, href: null }));
+        throw new Error(`Unexpected non-projection request: ${url}`);
+      });
+    }
+    async function openTrust() {
+      show("/snapshots/1?view=trust");
+      await screen.findByRole("heading", { name: "What the analysis could not see" });
+    }
+    const inputRow = (input: string) => within(screen.getByRole("article", { name: `${input} analysis input` }));
+    const factIn = (row: ReturnType<typeof within>, label: string) =>
+      within(row.getByRole("button", { name: `Evidence for ${label}` }).closest(".projection-fact")! as HTMLElement);
+    const ratio = / of \d+ inventory devices could not be assessed/;
+
+    it("renders published input gaps with the supplied ratio, host order, custody labels and evidence pointers", async () => {
+      const hosts = [
+        { host: "edge/a~b", custody: "not_collected", label: null, pointer: "/collection_completeness/devices/3" },
+        { host: "synthetic-dist", custody: "analysis_unavailable", label: "Synthetic engine label: input phase failed", pointer: "/device_dossiers/per_device/2/exposures/1" },
+        { host: "synthetic-core", custody: "collected_but_empty", label: "Synthetic engine label: no authoritative lifecycle band", pointer: "/device_dossiers/per_device/1/exposures/1" },
+      ];
+      const fetcher = serveTrust({
+        "Hardware EoL": { sections: ["lifecycle_risk"], n: count(3), of: total(5), hosts: hostList("published", hosts) },
+        Health: { sections: ["health_scores"], n: count(0), of: total(5),
+          hosts: hostList("collected_but_empty", [], "Synthetic: every inventory device carries one readable exposure") },
+      });
+      await openTrust();
+      const rows = screen.getAllByRole("article").filter((row) => row.getAttribute("aria-label")?.endsWith(" analysis input"));
+      expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(trustFixture().payload.inputs.map(({ input }) => `${input} analysis input`));
+      const eol = inputRow("Hardware EoL");
+      expect(eol.getByText("3 of 5 inventory devices could not be assessed", { exact: true })).toBeInTheDocument();
+      expect(factIn(eol, "could not be assessed").getByText("3", { exact: true })).toBeInTheDocument();
+      expect(factIn(eol, "inventory devices").getByText("5", { exact: true })).toBeInTheDocument();
+      expect(eol.getByText("Input sections: lifecycle_risk", { exact: true })).toBeInTheDocument();
+      fireEvent.click(eol.getByText("Devices and custody", { exact: true }));
+      const listed = eol.getAllByRole("group").filter((node) => node.getAttribute("aria-label")?.endsWith(" not assessed by Hardware EoL"));
+      expect(listed.map((node) => node.getAttribute("aria-label"))).toEqual(hosts.map(({ host }) => `${host} not assessed by Hardware EoL`));
+      const [blind, failed, assessedEmpty] = listed.map((node) => within(node));
+      expect(blind.getByText("Not collected", { exact: true })).toBeInTheDocument();
+      expect(blind.getByText("/collection_completeness/devices/3", { exact: true })).toBeInTheDocument();
+      expect(new URL(blind.getByRole("link", { name: "edge/a~b ↗" }).getAttribute("href")!, "http://localhost").searchParams.get("host")).toBe("edge/a~b");
+      expect(failed.getByText("Analysis unavailable", { exact: true })).toBeInTheDocument();
+      expect(failed.getByText("Synthetic engine label: input phase failed", { exact: true })).toBeInTheDocument();
+      expect(assessedEmpty.getByText("Collected, empty", { exact: true })).toBeInTheDocument();
+      expect(assessedEmpty.getByText("Synthetic engine label: no authoritative lifecycle band", { exact: true })).toBeInTheDocument();
+      expect(assessedEmpty.getByText("/device_dossiers/per_device/1/exposures/1", { exact: true })).toBeInTheDocument();
+      expect(new URL(assessedEmpty.getByRole("link", { name: "synthetic-core ↗" }).getAttribute("href")!, "http://localhost").searchParams.get("view")).toBe("device");
+      fireEvent.click(eol.getByRole("button", { name: "Evidence for Devices not assessed by Hardware EoL" }));
+      let drawer = screen.getByRole("dialog");
+      expect(drawer).toHaveTextContent("synthetic.owner:trust_inputs");
+      expect(drawer).toHaveTextContent("/device_dossiers/per_device");
+      expect(drawer).toHaveTextContent("/collection_completeness/summary/inventory");
+      fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
+      fireEvent.click(eol.getByRole("button", { name: "Qualifications for Devices not assessed by Hardware EoL" }));
+      drawer = screen.getByRole("dialog");
+      expect(drawer).toHaveTextContent(scope.text);
+      fireEvent.click(within(drawer).getByRole("button", { name: "Close evidence" }));
+      const health = inputRow("Health");
+      expect(health.getByText("0 of 5 inventory devices could not be assessed", { exact: true })).toBeInTheDocument();
+      expect(factIn(health, "could not be assessed").getByText("0", { exact: true })).toBeInTheDocument();
+      expect(health.getByText("Collected, empty", { exact: true })).toBeInTheDocument();
+      expect(health.getByText("Synthetic: every inventory device carries one readable exposure", { exact: true })).toBeInTheDocument();
+      expect(health.queryByText("Devices and custody")).not.toBeInTheDocument();
+      expect(health.queryByRole("link")).not.toBeInTheDocument();
+      expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
+    });
+    it.each([
+      ["unverified", "Unverified", "Synthetic: one device carries no single readable exposure for this input"],
+      ["analysis_unavailable", "Analysis unavailable", "Synthetic: the risk-register phase failed"],
+      ["not_collected", "Not collected", "Synthetic: the snapshot carries no risk register"],
+    ] as const)("keeps a %s input count withheld with its reason and never as 0 of N", async (state, label, reason) => {
+      const carried = state === "unverified" ? [{ host: "edge/a~b", custody: "unverified", label: null, pointer: "/devices/edge~1a~0b" }] : [];
+      serveTrust({ Protocol: { n: held(state, reason), of: total(5), hosts: hostList(state, carried, reason) } });
+      await openTrust();
+      const row = inputRow("Protocol");
+      const n = factIn(row, "could not be assessed");
+      expect(n.getByText(label, { exact: true })).toBeInTheDocument();
+      expect(n.getByText(reason, { exact: true })).toBeInTheDocument();
+      expect(n.queryByText("0", { exact: true })).not.toBeInTheDocument();
+      expect(row.getAllByText(reason, { exact: true })).toHaveLength(2);
+      expect(row.queryByText(ratio)).not.toBeInTheDocument();
+      expect(row.queryByText(/^0 of/)).not.toBeInTheDocument();
+      expect(row.queryByText("0", { exact: true })).not.toBeInTheDocument();
+      expect(factIn(row, "inventory devices").getByText("5", { exact: true })).toBeInTheDocument();
+      fireEvent.click(row.getByRole("button", { name: "Evidence for could not be assessed" }));
+      expect(screen.getByRole("dialog")).toHaveTextContent(reason);
+      expect(screen.getByRole("dialog")).toHaveTextContent("synthetic.owner:trust_inputs");
+      fireEvent.click(screen.getByRole("button", { name: "Close evidence" }));
+      if (carried.length) {
+        fireEvent.click(row.getByText("Devices and custody", { exact: true }));
+        const host = within(row.getByRole("group", { name: "edge/a~b not assessed by Protocol" }));
+        expect(host.getByText("Unverified", { exact: true })).toBeInTheDocument();
+        expect(host.getByText("/devices/edge~1a~0b", { exact: true })).toBeInTheDocument();
+      } else {
+        expect(row.queryByText("Devices and custody")).not.toBeInTheDocument();
+        expect(row.queryByRole("link")).not.toBeInTheDocument();
+      }
+    });
+    it("renders every withheld fixture input with its state and reason, never a ratio or a zero", async () => {
+      serveTrust({});
+      await openTrust();
+      for (const { input } of trustFixture().payload.inputs) {
+        const row = inputRow(input);
+        expect(row.getAllByText("Not collected", { exact: true })).toHaveLength(3);
+        expect(row.getAllByText("Synthetic input was not collected", { exact: true })).toHaveLength(2);
+        expect(row.getByText("Synthetic input custody was not collected", { exact: true })).toBeInTheDocument();
+        expect(row.queryByText(ratio)).not.toBeInTheDocument();
+        expect(row.queryByText("0", { exact: true })).not.toBeInTheDocument();
+        expect(row.queryByRole("link")).not.toBeInTheDocument();
+      }
+    });
+    it("shows no ratio while the inventory denominator is withheld", async () => {
+      const denominator = "Synthetic: the owner's inventory count disagrees with the device rows";
+      serveTrust({
+        "Golden drift": { n: held("unverified", "Synthetic: the device universe is not verified"), of: held("unverified", denominator),
+          hosts: hostList("unverified", [], "Synthetic: the device universe is not verified") },
+        "QoS posture": { n: count(3), of: held("unverified", denominator), hosts: hostList("published", [
+          { host: "synthetic-core", custody: "not_collected", label: null, pointer: "/collection_completeness/devices/1" }]) },
+      });
+      await openTrust();
+      for (const input of ["Golden drift", "QoS posture"]) {
+        const row = inputRow(input);
+        const of = factIn(row, "inventory devices");
+        expect(of.getByText("Unverified", { exact: true })).toBeInTheDocument();
+        expect(of.getByText(denominator, { exact: true })).toBeInTheDocument();
+        expect(row.queryByText(ratio)).not.toBeInTheDocument();
+        expect(row.queryByText("0", { exact: true })).not.toBeInTheDocument();
+      }
+      expect(factIn(inputRow("Golden drift"), "could not be assessed").getByText("Synthetic: the device universe is not verified", { exact: true })).toBeInTheDocument();
+      expect(factIn(inputRow("QoS posture"), "could not be assessed").getByText("3", { exact: true })).toBeInTheDocument();
+    });
   });
   it("opens the fifth Topology & Paths tab through the projection without a legacy graph or snapshot fetch", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
@@ -406,6 +554,178 @@ describe("Core snapshot route", () => {
       expect(rollup.queryByText("9", { exact: true })).not.toBeInTheDocument();
       expect(fetcher.mock.calls.filter(([input]) => String(input).includes("/device/lists?"))).toHaveLength(1);
       expect(signal?.aborted).toBe(false);
+    });
+  });
+  describe("device failure impact and structural links", () => {
+    const path = "/snapshots/1?view=device&host=edge%2Fa%7Eb";
+    const MEASURES = ["Severity", "VLANs impacted", "Stranded endpoints", "Hard-partition VLANs", "Backup-covered VLANs", "FHRP-covered VLANs", "Per-VLAN detail"];
+    const CLAIMS = ["Link ends", "Bridge", "Switch pairs severed", "Betweenness", "Betweenness rank"];
+    function serve(changes: Record<string, unknown>) {
+      const document = deviceFixture();
+      const current = { ...document, payload: { ...document.payload, ...changes } };
+      const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/ui-projection/device?")) return new Response(JSON.stringify(current));
+        if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false, href: null }));
+        throw new Error(`Unexpected non-projection request: ${url}`);
+      });
+      return { current, fetcher };
+    }
+    const factIn = (scope: HTMLElement, label: string) =>
+      within(within(scope).getByRole("button", { name: `Evidence for ${label}` }).closest(".projection-fact")! as HTMLElement);
+
+    it("renders published failure-impact values, published zeros and the engine's own row presentation", async () => {
+      const { fetcher } = serve({ failure_impact: deviceSelectionPage("/failure_impact", [deviceImpactRowFixture()]) });
+      show(path);
+      const region = await screen.findByRole("region", { name: "If this device fails" });
+      const row = within(region).getByRole("group", { name: "Failure impact source row 4" });
+      expect(factIn(row, "Severity").getByText("High", { exact: true })).toBeInTheDocument();
+      expect(factIn(row, "VLANs impacted").getByText("3", { exact: true })).toBeInTheDocument();
+      expect(factIn(row, "Stranded endpoints").getByText("42", { exact: true })).toBeInTheDocument();
+      expect(factIn(row, "Hard-partition VLANs").getByText("3", { exact: true })).toBeInTheDocument();
+      expect(factIn(row, "Backup-covered VLANs").getByText("0", { exact: true })).toBeInTheDocument();
+      expect(factIn(row, "FHRP-covered VLANs").getByText("0", { exact: true })).toBeInTheDocument();
+      expect(factIn(row, "Off-scan gateway VLANs").getByText("0", { exact: true })).toBeInTheDocument();
+      expect(factIn(row, "Per-VLAN detail").getByText("Synthetic VLAN 10: Hard partition (42 ep)", { exact: true })).toBeInTheDocument();
+      const presentation = factIn(row, "Engine presentation");
+      expect(presentation.getByText("Synthetic engine high-impact presentation", { exact: true })).toBeInTheDocument();
+      expect(presentation.getByText("impact_high", { exact: true })).toBeInTheDocument();
+      for (const label of MEASURES) expect(factIn(row, label).getByText("Published", { exact: true })).toBeInTheDocument();
+      expect(within(row).queryByText(/^(Not collected|Unverified|Analysis unavailable)$/)).not.toBeInTheDocument();
+      // No page-side tone: the device document carries no legend, and the page invents no severity mapping.
+      expect(region.querySelector('[class*="topology-tone-"]')).toBeNull();
+      fireEvent.click(within(row).getByRole("button", { name: "Evidence for Severity" }));
+      expect(screen.getByRole("dialog")).toHaveTextContent("High");
+      expect(screen.getByRole("dialog")).toHaveTextContent(`sha256:${"a".repeat(64)}`);
+      expect(fetcher.mock.calls.every(([url]) => /ui-projection|scope-view/.test(String(url)))).toBe(true);
+    });
+    it.each([
+      ["not_collected", "Not collected", "not_observed"],
+      ["unverified", "Unverified", "unverified"],
+      ["analysis_unavailable", "Analysis unavailable", "analysis_unavailable"],
+    ] as const)("keeps %s impact cells as engine reasons, never a value, a zero or a clean bill", async (state, label, token) => {
+      const reason = `Synthetic ${state} reason for this row's measures`;
+      serve({ failure_impact: deviceSelectionPage("/failure_impact", [deviceImpactRowFixture(4, { state, reason, token })]) });
+      show(path);
+      const row = await screen.findByRole("group", { name: "Failure impact source row 4" });
+      for (const measure of MEASURES) {
+        const fact = factIn(row, measure);
+        expect(fact.getByText(label, { exact: true })).toBeInTheDocument();
+        expect(fact.getByText(reason, { exact: true })).toBeInTheDocument();
+        expect(fact.queryByText("0", { exact: true })).not.toBeInTheDocument();
+        expect(fact.queryByRole("definition")).not.toBeInTheDocument();
+      }
+      expect(within(row).queryByText(/^(High|Medium|Low|Info)$/)).not.toBeInTheDocument();
+      // The engine presentation's own glyph value may read "none"; the clean-bill wording must not appear anywhere.
+      expect(within(row).queryByText(/no (reachability )?impact/i)).not.toBeInTheDocument();
+      expect(within(row).queryByText(/^impact_/)).not.toBeInTheDocument();
+      expect(factIn(row, "Engine presentation").getByText(token, { exact: true })).toBeInTheDocument();
+      expect(factIn(row, "Off-scan gateway VLANs").getByText("2", { exact: true })).toBeInTheDocument();
+      fireEvent.click(within(row).getByRole("button", { name: "Evidence for Stranded endpoints" }));
+      expect(screen.getByRole("dialog")).toHaveTextContent(reason);
+      expect(screen.getByRole("dialog")).toHaveTextContent("/failure_impact/4/witness");
+    });
+    it("shows the default blind selections as their own engine reasons, not as no impact or no link", async () => {
+      const blind = deviceFixture().payload;
+      serve({});
+      show(path);
+      const impact = within(await screen.findByRole("region", { name: "If this device fails" }));
+      const links = within(screen.getByRole("region", { name: "Structural links" }));
+      for (const [region, source] of [[impact, blind.failure_impact], [links, blind.structural_links]] as const) {
+        expect(region.getByText("Not collected", { exact: true })).toBeInTheDocument();
+        expect(region.getByText(source.source_list.reason, { exact: true })).toBeInTheDocument();
+        expect(region.queryByRole("group", { name: /source row/ })).not.toBeInTheDocument();
+        expect(region.queryByText("0", { exact: true })).not.toBeInTheDocument();
+        expect(region.queryByText(/^none$/i)).not.toBeInTheDocument();
+      }
+      // The only "no impact" wording on the page is the engine's own reason, quoting what an absent row is not.
+      expect(screen.getAllByText(/no impact/i).map((node) => node.textContent)).toEqual([blind.failure_impact.source_list.reason]);
+    });
+    describe.each([
+      { name: "failure_impact", title: "If this device fails" },
+      { name: "structural_links", title: "Structural links" },
+    ] as const)("$title selection state", ({ name, title }) => {
+      it.each([
+        ["not_collected", "Not collected"], ["collected_but_empty", "Collected, empty"],
+        ["analysis_unavailable", "Analysis unavailable"], ["unverified", "Unverified"],
+      ] as const)("renders a %s selection as its own state and reason, not as an empty result", async (state, label) => {
+        const reason = `Synthetic ${state} selection reason`;
+        serve({ [name]: deviceSelectionPage(`/${name}`, [], { state, reason }) });
+        show(path);
+        const region = within(await screen.findByRole("region", { name: title }));
+        expect(region.getByText(label, { exact: true })).toBeInTheDocument();
+        expect(region.getByText(reason, { exact: true })).toBeInTheDocument();
+        for (const other of ["Published", "Not collected", "Collected, empty", "Analysis unavailable", "Unverified"].filter((item) => item !== label)) {
+          expect(region.queryByText(other, { exact: true })).not.toBeInTheDocument();
+        }
+        expect(region.queryByRole("group", { name: /source row/ })).not.toBeInTheDocument();
+        expect(region.queryByText("0", { exact: true })).not.toBeInTheDocument();
+        expect(region.queryByText(/no impact|no link|^none$/i)).not.toBeInTheDocument();
+        fireEvent.click(region.getByRole("button", { name: `Evidence for ${title}` }));
+        expect(screen.getByRole("dialog")).toHaveTextContent(reason);
+      });
+    });
+    it("marks a bridge only through the engine's row presentation and keeps engine row order", async () => {
+      // Engine order is supplied as rank 7 before rank 1; a page-side ranking would reverse it.
+      serve({ structural_links: deviceSelectionPage("/structural_links", [deviceStructuralRowFixture(9, false, 7), deviceStructuralRowFixture(2, true, 1)]) });
+      show(path);
+      const region = await screen.findByRole("region", { name: "Structural links" });
+      expect(within(region).getAllByRole("group", { name: /^Structural link source row / }).map((row) => row.getAttribute("aria-label")))
+        .toEqual(["Structural link source row 9", "Structural link source row 2"]);
+      const bridge = within(region).getByRole("group", { name: "Structural link source row 2" });
+      expect(factIn(bridge, "Engine presentation").getByText("Synthetic engine bridge presentation", { exact: true })).toBeInTheDocument();
+      expect(factIn(bridge, "Engine presentation").getByText("structural_bridge", { exact: true })).toBeInTheDocument();
+      expect(factIn(bridge, "Bridge").getByText("Yes", { exact: true })).toBeInTheDocument();
+      expect(factIn(bridge, "Switch pairs severed").getByText("4", { exact: true })).toBeInTheDocument();
+      expect(factIn(bridge, "Betweenness").getByText("0.5", { exact: true })).toBeInTheDocument();
+      expect(factIn(bridge, "Betweenness rank").getByText("1", { exact: true })).toBeInTheDocument();
+      expect(factIn(bridge, "Link ends").getByText("synthetic-peer-2", { exact: true })).toBeInTheDocument();
+      const link = within(region).getByRole("group", { name: "Structural link source row 9" });
+      expect(factIn(link, "Engine presentation").getByText("structural_link", { exact: true })).toBeInTheDocument();
+      expect(within(link).queryByText("structural_bridge", { exact: true })).not.toBeInTheDocument();
+      expect(within(link).queryByText("Synthetic engine bridge presentation", { exact: true })).not.toBeInTheDocument();
+      expect(factIn(link, "Bridge").getByText("No", { exact: true })).toBeInTheDocument();
+      expect(factIn(link, "Switch pairs severed").getByText("0", { exact: true })).toBeInTheDocument();
+      expect(factIn(link, "Betweenness rank").getByText("7", { exact: true })).toBeInTheDocument();
+      expect(region.querySelector('[class*="topology-tone-"]')).toBeNull();
+    });
+    it("keeps an unverified host pair withheld without a bridge marker, a Yes/No or a zero", async () => {
+      const reason = "Synthetic host pair is named by more than one stored row";
+      serve({ structural_links: deviceSelectionPage("/structural_links", [deviceStructuralRowFixture(3, true, 1, { state: "unverified", reason, token: "unverified" })]) });
+      show(path);
+      const row = await screen.findByRole("group", { name: "Structural link source row 3" });
+      for (const claim of CLAIMS) {
+        const fact = factIn(row, claim);
+        expect(fact.getByText("Unverified", { exact: true })).toBeInTheDocument();
+        expect(fact.getByText(reason, { exact: true })).toBeInTheDocument();
+        expect(fact.queryByRole("definition")).not.toBeInTheDocument();
+      }
+      expect(within(row).queryByText(/^(Yes|No|0)$/)).not.toBeInTheDocument();
+      expect(within(row).queryByText(/structural_(bridge|link)/)).not.toBeInTheDocument();
+      expect(factIn(row, "Engine presentation").getByText("unverified", { exact: true })).toBeInTheDocument();
+    });
+    it("pages the structural selection with the exact device host and the owner's list pointer", async () => {
+      const first = deviceStructuralRowFixture(2, true, 1), second = deviceStructuralRowFixture(5, false, 2);
+      const initial = { ...deviceSelectionPage("/structural_links", [first]), page: { offset: 0, limit: 1, returned: 1, total: 2, has_more: true, items: [first] } };
+      const { current, fetcher } = serve({ structural_links: initial });
+      const next = { ...initial, page: { offset: 1, limit: 1, returned: 1, total: 2, has_more: false, items: [second] } };
+      const { payload: _payload, ...envelope } = current;
+      fetcher.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/device/lists?")) return new Response(JSON.stringify({ ...envelope, list: next }));
+        if (url.includes("/ui-projection/device?")) return new Response(JSON.stringify(current));
+        if (url.endsWith("/scope-view")) return new Response(JSON.stringify({ available: false, href: null }));
+        throw new Error(`Unexpected non-projection request: ${url}`);
+      });
+      show(path);
+      const region = within(await screen.findByRole("region", { name: "Structural links" }));
+      expect(region.getByRole("group", { name: "Structural link source row 2" })).toBeInTheDocument();
+      fireEvent.click(region.getByRole("button", { name: "Next Structural links page" }));
+      expect(await region.findByRole("group", { name: "Structural link source row 5" })).toBeInTheDocument();
+      expect(region.queryByRole("group", { name: "Structural link source row 2" })).not.toBeInTheDocument();
+      const requested = fetcher.mock.calls.map(([input]) => String(input)).find((url) => url.includes("/device/lists?"))!;
+      const query = new URL(requested, "http://localhost").searchParams;
+      expect(query.get("pointer")).toBe("/structural_links"); expect(query.get("offset")).toBe("1"); expect(query.get("host")).toBe("edge/a~b");
     });
   });
   it("keeps Findings compact and expands owner issue/remediation text", async () => {
