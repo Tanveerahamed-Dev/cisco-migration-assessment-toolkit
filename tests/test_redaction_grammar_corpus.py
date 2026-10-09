@@ -11,10 +11,13 @@ show/CSV/chap columns, private-key armor families and TERMINAL WRAPS, which orig
 cross-line '\\s+' patterns used to catch. Every corpus line runs through the REAL producer
 (`redact_collection_dir`) and the REAL verifier (`verify_collection_secret_scrub`) in both directions.
 
-The corpus carries every line all three reviews reported (W60 rounds 0 and 1, W58r2), each with obviously
+The corpus carries every line all four reviews reported (W60 rounds 0, 1 and 2, W58r2), each with obviously
 fake secrets, and ``main_6390b66c``: origin/main's own output for the line, captured by running
 git-archived main (not a frozen copy of its code). `test_never_weaker_than_main_on_any_line` asserts
-every secret main removed stays removed. docs/w60-redaction-grammar-2026-10-09.md records the rules,
+every secret main removed stays removed. Round 3 adds every case the round-2 review reported (its R1
+class: a credential keyword INSIDE a wrapped value read as a clause start; its R3 class: a clause ending
+in a qualifier-shaped value) and the R1 pin matrix -- each dangling clause x {neutral, camelCase-keyword,
+numbered-keyword, keyword+punctuation} value. docs/w60-redaction-grammar-2026-10-09.md records the rules,
 the measured over-redaction and the residual limits.
 """
 import json
@@ -33,7 +36,10 @@ with open(_CORPUS_PATH, encoding="utf-8") as _f:
 MUST_REDACT = CORPUS["must_redact"]
 MUST_KEEP = CORPUS["must_keep"]
 OVER_REDACTED = CORPUS["over_redacted"]
-EVERY_ROW = MUST_REDACT + MUST_KEEP + OVER_REDACTED
+#: Round 3: a secret spelled like a word its line also uses as structure ('snmp-server host X version 2c
+#: host', 'username adm secret 0 secret'): checked by its whole-word count, which must drop.
+QUALIFIER_SHAPED = CORPUS["qualifier_shaped"]
+EVERY_ROW = MUST_REDACT + MUST_KEEP + OVER_REDACTED + QUALIFIER_SHAPED
 
 #: The leaking lines reported against the pre-W60 scrub, verbatim. Each must stay in the corpus.
 W58_LEAKS = (
@@ -76,6 +82,17 @@ ROUND2_REPORTED = (
     "r2-21", "r2-22", "r2-23", "r2-25", "r2-26", "r2-27", "r2-31", "r2-32", "r2-34", "r2-35", "r2-36",
     "r2-39", "r3-01", "r3-02", "r3-03", "r3-04", "r3-05", "r3-06", "r3-07", "r3-08",
 )
+#: Round 3: the round-2 review's report lines (its R1, R2 and R3 examples), each in the corpus by line.
+ROUND3_REPORTED = (
+    "enable secret 0\nSecret99Qz", "snmp-server community\nSecret99Qz RO", " neighbor 192.0.2.1 password\nBgpSecret!77",
+    " ip ospf authentication-key 7\nXyZ_md5KeyQ", "set snmp community\nSecret99Qz authorization read-only",
+    "%PARSER-5-CFGLOG_LOGGEDCMD: User:admin, logged command:username x password 0\nProseWrapQ1",
+    "enable secret 0 none", "crypto isakmp key enc address 203.0.113.9", "username ops password md5 privilege 15",
+    "password: >-\n    FoldedYamlPwQ", "pass: YamlPassAloneQ", "device;user;pass\nr1;admin;CsvSemiPassQ",
+    "<snmp-server><community-config><name>XeYangCommQ</name><permission>ro</permission></community-config>"
+    "</snmp-server>",
+    "echo 'root:LinuxRootPwQ' | chpasswd", "Authorization: Bearer ro",
+)
 _TAIL_PROBE = " Leak99tail"
 #: A listed secret that is a credential-shaped token (letters and a digit, no blank): the context probes
 #: ('community read ', 'password 7') are about ONE row and can recur in another row's legitimate text.
@@ -107,6 +124,11 @@ def _read(capture):
         return handle.read()
 
 
+def _words(secret, text):
+    """Whole-word occurrences of ``secret`` in ``text`` (a qualifier-shaped secret's survival measure)."""
+    return len(re.findall(r"(?<![\w-])" + re.escape(secret) + r"(?![\w-])", text))
+
+
 def _certified(root):
     try:
         rv.verify_collection_secret_scrub(root)
@@ -130,8 +152,17 @@ def test_the_corpus_is_well_formed_and_carries_every_reported_leak():
     review2 = _sources(MUST_REDACT, "w60-review-r2")
     assert len(review2) == 232, "every row of the round-1 review corpus is a must-redact row"
     assert set(ROUND2_REPORTED) <= review2, sorted(set(ROUND2_REPORTED) - review2)
+    # round 3: every case the round-2 review reported (381: leaked, regressed against main, raw-certified or
+    # changed verdict) is a must-redact or qualifier-shaped row, and so is every line its report quotes
+    review3 = _sources(MUST_REDACT + QUALIFIER_SHAPED, "w60-review-r3")
+    assert len(review3) == 381, len(review3)
+    every_line = {row["line"] for row in EVERY_ROW}
+    missing = [line for line in ROUND3_REPORTED if line not in every_line]
+    assert missing == [], missing
+    assert len(_sources(MUST_REDACT, "w60-r3-matrix")) >= 190, "the R1 pin matrix fell out of the corpus"
     sources = {source.split(":")[0] for row in MUST_REDACT for source in row["source"].split()}
-    assert {"w60-builder", "w60-review", "w58r2-review", "w60-review-r2", "w60-r2-wrap"} <= sources, sources
+    assert {"w60-builder", "w60-review", "w58r2-review", "w60-review-r2", "w60-r2-wrap", "w60-review-r3",
+            "w60-r3-matrix"} <= sources, sources
     platforms = {row["platform"] for row in MUST_REDACT}
     for platform in ("ios", "nxos", "asa", "aireos", "iosxr", "eos", "junos", "fortigate", "huawei", "panos",
                      "net-snmp", "rest", "yaml", "pem", "csv", "shell", "wrap"):
@@ -144,6 +175,10 @@ def test_the_corpus_is_well_formed_and_carries_every_reported_leak():
             assert secret in row["line"], (secret, row["line"])   # the sentinel really is in the input
     for row in OVER_REDACTED:
         assert row["note"] and row["expect"] != row["line"], row
+    for row in QUALIFIER_SHAPED:
+        assert row["secrets"] and row["note"] and html._REDACT_PLACEHOLDER in row["expect"], row
+        for secret in row["secrets"]:
+            assert _words(secret, row["line"]) >= 1, row
     for row in EVERY_ROW:
         assert isinstance(row["main_6390b66c"], str), row
 
@@ -174,15 +209,22 @@ def test_over_redaction_is_the_documented_result(row):
 def test_never_weaker_than_main_on_any_line():
     """THE parity differential. ``main_6390b66c`` is main's own output, captured by running git-archived
     origin/main 6390b66c over every corpus line. Every secret main removed must stay removed -- on every
-    row, including the over-redacted and must-keep ones."""
+    row, including the over-redacted and must-keep ones; a qualifier-shaped secret by its whole-word
+    count (main removed an occurrence, so must this scrub)."""
     main_redacted = 0
-    for row in EVERY_ROW:
+    for row in MUST_REDACT + MUST_KEEP + OVER_REDACTED:
         out = html._redact_config_values(row["line"])
         for secret in row.get("secrets", ()):
             if secret in row["line"] and secret not in row["main_6390b66c"]:
                 main_redacted += 1
                 assert secret not in out, (row["source"], secret, out)
-    assert main_redacted >= 400, f"the differential is vacuous: main redacted only {main_redacted} secrets"
+    for row in QUALIFIER_SHAPED:
+        out = html._redact_config_values(row["line"])
+        for secret in row["secrets"]:
+            if _words(secret, row["main_6390b66c"]) < _words(secret, row["line"]):
+                main_redacted += 1
+                assert _words(secret, out) < _words(secret, row["line"]), (row["source"], secret, out)
+    assert main_redacted >= 800, f"the differential is vacuous: main redacted only {main_redacted} secrets"
     # ...and the counterfactual: main LEFT secrets that this scrub removes, so the corpus can tell the two apart.
     main_leaked = [row for row in MUST_REDACT
                    if any(secret in row["main_6390b66c"] for secret in row["secrets"])]
@@ -212,6 +254,19 @@ def test_the_real_scrub_and_verifier_agree_in_both_directions(row, tmp_path):
         "a token after the placeholder was certified: the verifier did not read this credential context")
 
 
+@pytest.mark.parametrize("row", QUALIFIER_SHAPED, ids=_ids(QUALIFIER_SHAPED))
+def test_qualifier_shaped_secrets_lose_their_value_slot(row, tmp_path):
+    """Round 3 (the round-2 review's R3 class): a clause that ends in a qualifier- or keyword-shaped word
+    ends in its VALUE. The word survives where the line also uses it as structure, so the measure is its
+    whole-word count, which must drop; the verifier refuses the raw line and certifies the output."""
+    out = html._redact_config_values(row["line"])
+    assert out == row["expect"]
+    for secret in row["secrets"]:
+        assert _words(secret, out) < _words(secret, row["line"]), (secret, out)
+    assert html._redact_config_values(out) == out
+    assert _refused(row["line"]) and not _refused(out)
+
+
 @pytest.mark.parametrize("row", MUST_KEEP + OVER_REDACTED, ids=_ids(MUST_KEEP + OVER_REDACTED))
 def test_structural_lines_are_certified(row, tmp_path):
     capture = _write_capture(tmp_path, row["line"])
@@ -233,7 +288,7 @@ def test_the_whole_corpus_as_one_capture_is_a_certified_fixpoint():
     out = html._redact_config_values(text)
     assert html._redact_config_values(out) == out
     assert rv._raw_capture_credential_findings(out) == []
-    benign = "\n".join(row["line"] for row in MUST_KEEP + OVER_REDACTED)
+    benign = "\n".join(row["line"] for row in MUST_KEEP + OVER_REDACTED + QUALIFIER_SHAPED)
     survivors = sorted({secret for row in MUST_REDACT for secret in row["secrets"]
                         if _STRONG_SECRET_RE.fullmatch(secret) and secret not in benign and secret in out})
     assert survivors == []
@@ -260,6 +315,12 @@ def test_the_whole_corpus_as_one_capture_is_a_certified_fixpoint():
     "set system root-authentication plain-text-password-value <redacted> Fake99jn",
     "curl -k -u admin:Fake99curl https://192.0.2.1/x",
     " description pw <redacted> Fake99pw",
+    # round 3: a partial value after a dangling clause, a credential table cell, a block-scalar indicator
+    # replaced while its value stays, an authorization scheme's credential spelled like structure
+    " neighbor 192.0.2.1 password\nBgpSecret<redacted>",
+    "Community            Group / Access      context    acl_filter\n<redacted> Fake99cell   network-operator",
+    "password: <redacted>\n    Fake99folded",
+    "Authorization: Bearer ro",
 ])
 def test_residue_beside_a_placeholder_is_refused(line, tmp_path):
     _write_capture(tmp_path, line)
@@ -347,6 +408,13 @@ def test_the_verifier_restates_the_producers_closed_lists():
         "_REDACT_RAW_QUOTED_EXACT": "_SWEEP_RAW_QUOTED_EXACT", "_REDACT_ARGV_OPTIONS": "_SWEEP_ARGV_OPTIONS",
         "_REDACT_CSV_DELIMS": "_CSV_DELIMS", "_REDACT_JOIN_TAIL": "_CRED_JOIN_TAIL",
         "_REDACT_GRAMMAR_MAX_LINE": "_CRED_GRAMMAR_MAX_LINE",
+        # round 3
+        "_REDACT_COMMAND_WORDS": "_SWEEP_COMMAND_WORDS", "_REDACT_CONT_TRAILERS": "_SWEEP_CONT_TRAILERS",
+        "_REDACT_RAW_UNQUOTED_EXACT": "_SWEEP_RAW_UNQUOTED_EXACT", "_REDACT_PROSE_PREV": "_SWEEP_PROSE_PREV",
+        "_REDACT_SWEEP_SCHEMES": "_SWEEP_SCHEMES", "_REDACT_XML_STRUCT_CHILD": "_SWEEP_XML_STRUCT_CHILD",
+        "_REDACT_TABLE_CRED_COLUMNS": "_TABLE_CRED_COLUMNS", "_REDACT_TABLE_ALSO_COLUMNS": "_TABLE_ALSO_COLUMNS",
+        "_REDACT_WRAP_ENC": "_CRED_WRAP_ENC", "_REDACT_CLAUSE_END": "_CRED_CLAUSE_END",
+        "_REDACT_KEY_ENDS": "_CRED_KEY_ENDS", "_REDACT_CLAUSE_LEAD": "_CRED_CLAUSE_LEAD",
         # the credential field-name vocabulary's OWNER (docs/ssot.md) and its restatement
         "_REDACT_SECRET_KEYS": "_SECRET_KEYS",
     }
@@ -378,7 +446,11 @@ def test_the_verifier_restates_the_producers_closed_lists():
         "_REDACT_SNMP_HOST_OPEN_RE": "_SWEEP_SNMP_HOST_OPEN_RE", "_REDACT_NAME_OPEN_RE": "_SWEEP_NAME_OPEN_RE",
         "_REDACT_DANGLE_VOID_LINE_RE": "_SWEEP_DANGLE_VOID_LINE_RE", "_REDACT_PROSE_COMMA_RE": "_SWEEP_PROSE_COMMA_RE",
         "_REDACT_KEY_ID_RE": "_SWEEP_KEY_ID_RE", "_REDACT_KEY_SECRET_LINE_RE": "_SWEEP_KEY_SECRET_LINE_RE",
-        "_REDACT_COMMAND_WORD_RE": "_SWEEP_COMMAND_WORD_RE",
+        "_REDACT_CHPASSWD_RE": "_SWEEP_CHPASSWD_RE", "_REDACT_PGPASS_RE": "_SWEEP_PGPASS_RE",
+        "_REDACT_EXPECT_PROMPT_RE": "_SWEEP_EXPECT_PROMPT_RE", "_REDACT_EXPECT_SEND_RE": "_SWEEP_EXPECT_SEND_RE",
+        "_REDACT_XML_ANY_TAG_RE": "_SWEEP_XML_ANY_TAG_RE", "_REDACT_TABLE_GROUP_RE": "_TABLE_GROUP_RE",
+        "_REDACT_TABLE_WORD_RE": "_TABLE_WORD_RE", "_REDACT_YAML_VALUE_RE": "_YAML_VALUE_RE",
+        "_REDACT_B64_LINE_RE": "_B64_LINE_RE", "_REDACT_CREDENTIAL_SHAPE_RE": "_CREDENTIAL_SHAPE_RE",
         "_REDACT_PEM_BEGIN_RE": "_PEM_BEGIN_RE", "_REDACT_PEM_END_RE": "_PEM_END_RE",
         "_REDACT_PUTTY_PRIVATE_RE": "_PUTTY_PRIVATE_RE",
         "_REDACT_TABLE_END_RE": "_TABLE_END_RE", "_REDACT_FORTI_CONFIG_RE": "_FORTI_CONFIG_RE",
@@ -395,8 +467,8 @@ def test_the_verifier_restates_the_producers_closed_lists():
     for producer, verifier in patterns.items():
         p, v = getattr(html, producer), getattr(rv, verifier)
         assert (p.pattern, p.flags) == (v.pattern, v.flags), (producer, verifier)
-    assert [(p.pattern, n) for p, n in html._REDACT_TABLE_HEADERS] == \
-        [(p.pattern, n) for p, n in rv._TABLE_HEADERS]
+    assert [(p.pattern, n, kind) for p, n, kind in html._REDACT_TABLE_HEADERS] == \
+        [(p.pattern, n, kind) for p, n, kind in rv._TABLE_HEADERS]
 
 
 def test_every_verifier_family_has_a_needle_and_every_needle_is_its_own():
@@ -429,8 +501,11 @@ def test_credential_field_names_derive_from_the_snapshot_owner():
     for name in ("apicPwd", "md5Key", "passwordHash", "Cisco-IOS-XE-snmp:community-config", "ro_communities",
                  "snmpV2Community", "secretValue", "passcode", "authkey"):
         assert html._redact_credential_name(name, True), name
-    for name in ("pass", "pw", "pin", "key", "auth", "authentication"):
+    for name in ("key", "auth", "authentication"):
         assert html._redact_credential_name(name, True) and not html._redact_credential_name(name, False), name
+    for name in ("pass", "pw", "pin"):       # round 3: an unquoted 'pass: X' / 'pass=X' key names a password too
+        assert html._redact_credential_name(name, True) and html._redact_credential_name(name, False), name
+        assert rv._sweep_credential_name(name, True) and rv._sweep_credential_name(name, False), name
     for name in ("name", "username", "permission", "keyId", "passive"):
         assert not html._redact_credential_name(name, True), name
 
@@ -691,3 +766,166 @@ def test_verifier_grammar_fingerprint_stays_importable():
     tuple of compiled patterns that names the verifier's grammar."""
     assert rv._INLINE_SECRET_RES and all(isinstance(p, re.Pattern) for p in rv._INLINE_SECRET_RES)
     assert rv._SWEEP_KW_RE in rv._INLINE_SECRET_RES
+
+
+# ---- round 3: the round-2 review ----
+def test_a_keyword_inside_a_wrapped_value_is_no_clause_start():
+    """R1 (the round-2 review's P1): a wrapped value whose own text holds a keyword ('Secret99Qz',
+    'Password2026x', 'md5KeyQ', 'BgpSecret!77') was read as a clause start, so the producer left it and
+    the verifier, restating the same rule, certified it -- a regression against main on 138 cases. A
+    token starts a clause only when an anchor or keyword begins at its core and covers ALL of it."""
+    for token in ("Secret99Qz", "Password2026x", "Community7Q", "authKeyQ9", "tokenQAbc", "md5KeyQ", "psk4Q",
+                  "apikeyQ", "XyZ_md5KeyQ", "BgpSecret!77", "pw=Q9x"):
+        line = token + " next"
+        masked = html._redact_sweep_masked(line)
+        assert not html._redact_starts_clause(line, masked, 0, len(token)), token
+        assert not rv._sweep_starts_clause(line, rv._sweep_masked(line), 0, len(token)), token
+    for token in ("password", "secret", "key-string", "snmp-server community", "Password:", '"password"'):
+        line = token + " next"
+        assert html._redact_starts_clause(line, html._redact_sweep_masked(line), 0, len(token)), token
+    redact = html._redact_config_values
+    for text in ("enable secret 0\nSecret99Qz", "snmp-server community\nCommunity7Q",
+                 " ip ospf authentication-key 7\nXyZ_md5KeyQ", " neighbor 192.0.2.1 password\nBgpSecret!77",
+                 "        set password ENC\nPassword2026x", "enable secret 0\npw=Q9x"):
+        out = redact(text + "\nhostname next\n")
+        assert out.endswith("\n<redacted>\nhostname next\n"), out
+        assert _refused(text) and not _refused(out), out
+    # the pin matrix in the corpus: every dangling clause x the four value shapes, all must-redact rows
+    shapes = {source.split(":")[1] for row in MUST_REDACT for source in row["source"].split()
+              if source.startswith("w60-r3-matrix:")}
+    assert shapes == {"neutral", "camel", "numbered", "punct"}
+
+
+def test_a_clause_never_ends_in_a_qualifier():
+    """R3: a qualifier (a type digit aside) or a soft stop word that ends the clause -- the line end, or
+    'privilege'/'role'/'authorization' (and, for 'key', 'address'/'hostname') with its operand -- IS the
+    value, as origin/main redacted it; and the clause word is never replaced in its place."""
+    redact = html._redact_config_values
+    for line, expect in (
+            ("enable secret 0 none", "enable secret 0 <redacted>"),
+            ("username adm secret 0 md5", "username adm secret 0 <redacted>"),
+            ("  key-string enc", "  key-string <redacted>"),
+            (" ikev1 pre-shared-key local", " ikev1 pre-shared-key <redacted>"),
+            ("set protocols bgp group G authentication-key version",
+             "set protocols bgp group G authentication-key <redacted>"),
+            ("crypto isakmp key enc address 203.0.113.9", "crypto isakmp key <redacted> address 203.0.113.9"),
+            ("username ops password md5 privilege 15", "username ops password <redacted> privilege 15"),
+            ("username admin password 0 enc role network-admin", "username admin password 0 <redacted> role network-admin"),
+            ("set snmp community none authorization read-only", "set snmp community <redacted> authorization read-only"),
+            ("        set password ENC", "        set password <redacted>")):
+        assert redact(line) == expect, line
+        assert _refused(line) and not _refused(expect), line
+    # ... but a structural word that may END a complete line is not a value, and a wrap still dangles
+    for line in ("ntp server 192.0.2.1 key 1 prefer", " authentication-mode aaa", "mpls ldp password required",
+                 "key config-key ascii", "key config-key password-encrypt",
+                 "interface Vlan10\n vrrp 10 authentication md5\n vrrp 10 ip 10.10.10.254"):
+        assert redact(line) == line, line
+    assert redact("        set password ENC\nFake99fgw\n    next") == "        set password ENC\n<redacted>\n    next"
+
+
+def test_credential_cells_are_values_by_position():
+    """A credential table, chap-secrets or CSV cell is a value by POSITION: a keyword inside it does not end
+    the table (round 2 did, and certified the value), and a row is recognised by its shape, so a later
+    configuration line is never eaten as a row."""
+    redact = html._redact_config_values
+    cases = (
+        ("Keyring      Hostname/Address                            Preshared Key\n\n"
+         "default      203.0.113.9                                 ShowIkeKeyQ1\nKR-1 10.0.0.1 ShowIkeKeyQ2\n"
+         "KR-2 10.0.0.0 255.0.0.0 ShowIkeKeyQ3", ("ShowIkeKeyQ1", "ShowIkeKeyQ2", "ShowIkeKeyQ3")),
+        ("Community            Group / Access      context    acl_filter\n"
+         "---------            --------------      -------    ----------\nSecret99Qz           network-operator",
+         ("Secret99Qz",)),
+        ("SNMP Community Name     Client IP Address    Client IP Mask     Access Mode  Status\n"
+         "MyKey123Q               0.0.0.0              0.0.0.0            Read Only    Enable", ("MyKey123Q",)),
+        ("# client server secret IP\nvpnusr * Cisco_Key1Q *", ("Cisco_Key1Q",)),
+        ("device;user;pass\nr1;admin;CsvSemiPassQ", ("CsvSemiPassQ",)),
+        ("Device    Username   Password       Enable\nr1        admin      TblPwQ1        TblEnQ1",
+         ("TblPwQ1", "TblEnQ1")),
+    )
+    for text, secrets in cases:
+        out = redact(text)
+        assert not any(secret in out for secret in secrets), out
+        assert _refused(text) and not _refused(out) and redact(out) == out, out
+    # a configuration line after a table is not a row: its keyword ends the table and keeps its own clause
+    out = redact("Keyring      Hostname/Address                            Preshared Key\n"
+                 "default      203.0.113.9                                 Fake99psk\n"
+                 "crypto isakmp key\nFake99wrap address 203.0.113.9")
+    assert out.endswith("\ncrypto isakmp key\n<redacted> address 203.0.113.9"), out
+
+
+def test_yaml_blocks_fields_and_wrap_continuations():
+    """A YAML block-scalar indicator is never a value (round 2 replaced it and kept the block); an unquoted
+    'pass' key names a password; a plain scalar continues on more-indented lines; a wrapped value's
+    continuation takes its first token before a clause-trailing word, never chains through a lone
+    placeholder line and never takes a 'key=value' field."""
+    redact = html._redact_config_values
+    for text, secret in (("password: >-\n    Fake99fold", "Fake99fold"), ("password: |\n  Fake99lit", "Fake99lit"),
+                         ("pass: Fake99pass", "Fake99pass"), ("password: abc\n  Fake99plain", "Fake99plain"),
+                         ("snmp-server community " + "C" * 58 + "\nFake99tail RO 99", "Fake99tail"),
+                         ("crypto isakmp key " + "k" * 62 + "\nFake99ike address 203.0.113.9", "Fake99ike")):
+        out = redact(text)
+        assert secret not in out, out
+        assert _refused(text) and not _refused(out), out
+    assert redact("password: >-\n    Fake99fold") == "password: >-\n    <redacted>"
+    text = "DB_PASSWORD=Fake99db\nDB_HOST=10.0.0.5\nDB_USER=fakeadmin\n"
+    assert redact(text) == "DB_PASSWORD=<redacted>\nDB_HOST=10.0.0.5\nDB_USER=fakeadmin\n"
+
+
+def test_round_three_credential_families():
+    """Families neither main nor round 2 covered (the round-2 review's P3 list)."""
+    redact = html._redact_config_values
+    for text, secret in (
+            ("router hsrp\n interface Gi0/0/0/1\n  address-family ipv4\n   hsrp 1\n    authentication Fake99xr",
+             "Fake99xr"),
+            ("    text-authentication Fake99xrv", "Fake99xrv"), (" standby 1 authentication text\nFake99sbt", "Fake99sbt"),
+            (" vrrp 1 authentication text\nFake99vrt", "Fake99vrt"), (" ip nhrp authentication\nFake99nhrp", "Fake99nhrp"),
+            ("<snmp-server><community-config><name>Fake99yang</name><permission>ro</permission>"
+             "</community-config></snmp-server>", "Fake99yang"),
+            ("echo 'root:Fake99chp' | chpasswd", "Fake99chp"),
+            ("ipmitool -I lanplus -H 10.0.0.9 -U admin -P Fake99ipmi chassis status", "Fake99ipmi"),
+            ("net use \\\\srv\\share /user:dom\\ops Fake99netuse", "Fake99netuse"),
+            ("smbclient //srv/share -U ops%Fake99smb", "Fake99smb"),
+            ('expect "assword:"\nsend "Fake99exp\\r"', "Fake99exp"), ("rootpw {SSHA}Fake99sshaHash=", "Fake99sshaHash"),
+            ("bindpw Fake99bind", "Fake99bind"), ("ldap_default_authtok = Fake99tok", "Fake99tok"),
+            ("10.0.0.6:5432:db:dbu:Fake99pg", "Fake99pg"), ("! snmp ro string is Fake99cmt", "Fake99cmt"),
+            (" description ISP circuit; login admin / Fake99desc", "Fake99desc"),
+            ("snmp-server user v3w grpW v3 auth sha Fake99a\n priv aes 256 Fake99p", "Fake99p"),
+            ("Authorization: Bearer ro", None), ("web2:{SHA}Fake99ShaB64abcd=", "Fake99ShaB64abcd")):
+        out = redact(text)
+        assert (secret not in out) if secret else out == "Authorization: Bearer <redacted>", out
+        assert _refused(text) and not _refused(out), out
+
+
+def test_round_three_over_redaction_fixes():
+    """Ordinary show output and configuration the round-2 review measured as newly over-redacted stay
+    byte-identical (the NX-OS rmon default lines keep everything but their trap community)."""
+    redact = html._redact_config_values
+    for line in ("*Oct  9 10:00:02.000: %SSH-5-SSH2_USERAUTH: User 'ops' authentication for SSH2 Session from "
+                 "198.51.100.150 (tty = 0) using crypto cipher 'aes256-gcm', hmac 'hmac-sha2-256' Succeeded",
+                 "      Auth sign: PSK, Auth verify: PSK", "User                          Auth  Priv(enforce) Groups",
+                 "Credentials Caching.............................. Disabled",
+                 "%OSPF-4-NOVALIDKEY: No valid authentication send key is available on interface Vlan10",
+                 " description Uplink (auth via dot1x)", " description Branch VPN (psk tunnel)",
+                 " description Badge reader - password reset kiosk", " authentication open", "Authentication Servers",
+                 "Authentication methods:publickey,keyboard-interactive,password",
+                 "config radius auth add 1 10.1.1.1 1812 ascii <redacted>"):
+        assert redact(line) == line, line
+        assert not _refused(line), line
+    assert redact("rmon event 1 log trap public description FATAL(1) owner PMON@FATAL") == \
+        "rmon event 1 log trap <redacted> description FATAL(1) owner PMON@FATAL"
+    # a syslog line that ends in 'and password' is prose: it does not take the next record's first word
+    text = ("Oct 10 09:00:03: %ASA-3-713167: Remote peer has failed user authentication - check configured "
+            "username and password\nOct 10 09:00:04: %ASA-5-713041: IKE Initiator: New Phase 1")
+    assert redact(text) == text
+
+
+def test_fail_closed_disagreements_now_agree():
+    """Round 2's verifier refused these producer outputs (safe, but it blocked whole runs): the producer now
+    removes the value and the verifier certifies the result."""
+    redact = html._redact_config_values
+    for text, secret in (('{\n  "password":\n    "Secret99Qz"\n}', "Secret99Qz"),
+                         ('password = """Fake99triple"""', "Fake99triple"), ("        set password enc", " enc"),
+                         ("        set password ENC\nXyZ_md5KeyQ", "XyZ_md5KeyQ")):
+        out = redact(text)
+        assert secret not in out, out
+        assert _refused(text) and not _refused(out), out

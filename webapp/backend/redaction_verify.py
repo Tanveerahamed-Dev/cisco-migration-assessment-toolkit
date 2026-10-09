@@ -14,6 +14,7 @@ All reads are bounded, regular-file-only, and container members are never extrac
 from __future__ import annotations
 
 import contextlib
+import bisect
 import hashlib
 import io
 import ipaddress
@@ -243,11 +244,33 @@ _CRED_TOKEN_RE = re.compile(_v(r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:(?!\^C
 _CRED_PEM_ARMOR_RE = re.compile(_v(r"""["']?-{4,5}{h}?BEGIN{h}"""))
 _CRED_ACCESS_NEXT = r"(?:ro|rw|view)(?:{h}|\Z)"
 _CRED_PEER_NEXT = r"(?:address|hostname)(?:{h}|\Z)"
+#: Round 3: a qualifier (type digit aside) or a soft stop word that ends the clause -- the end of the line,
+#: or directly before one of these clause-continuing words -- IS the value (the producer's
+#: ``_REDACT_CLAUSE_END``), and a YAML block-scalar indicator is never one.
+_CRED_CLAUSE_END = r"(?:privilege|role|authorization){H}{S}"
+_CRED_KEY_ENDS = r"address|hostname"
+_CRED_BLOCK_INDICATOR_RE = re.compile(r"[|>][-+0-9]{0,3}")
+#: FortiGate's encrypted-value marker, exactly so: like a type digit, it starts a WRAPPED value when it
+#: ends a line that more lines follow.
+_CRED_WRAP_ENC = "ENC"
+_CRED_FOLLOW_RE = re.compile(_v(r"{H}(?!{h})(?={S})"))
+
+
+def _cred_clause_end(ends: str = "") -> str:
+    return r"(?:(?:" + ends + r"){H}{S}|" + _CRED_CLAUSE_END + r")" if ends else _CRED_CLAUSE_END
+
+
+def _cred_step(step: str, ends: str = "") -> str:
+    """One qualifier of a run: it counts only when another, non-clause-continuing token follows it."""
+    return r"(?:" + step + r"){H}(?={S})(?!" + _cred_clause_end(ends) + r")"
 
 
 #: The families a terminal wrap is followed across: exactly the forms whose origin/main 6390b66c pattern
 #: crossed a line end (the producer's ``_REDACT_SECRET_CROSS``, restated by name).
-_CRED_CROSS_FAMILIES = frozenset({"fortigate set", "snmp host community", "snmp community", "community block", "community prose", "password", "tacacs/radius key", "key-string", "pre-shared-key", "set-key", "key"})
+_CRED_CROSS_FAMILIES = frozenset({"fortigate set", "snmp host community", "snmp community", "community block",
+                                  "community prose", "password", "tacacs/radius key", "key-string", "pre-shared-key",
+                                  "set-key", "key", "nhrp authentication", "fhrp authentication text",
+                                  "aireos radius/tacacs", "aireos user"})
 
 
 class _CredFamily:
@@ -256,32 +279,39 @@ class _CredFamily:
 
     ``artifact`` lists the LINE-START anchors under which the family is also read in shareable
     artifacts (snapshot strings, OOXML text, HTML), where authored prose shares the surface.
-    ``stop_unless``: a stop word followed by this is the VALUE ('community all RO')."""
+    ``stop_unless``: a stop word followed by this is the VALUE ('community all RO'). ``stops`` are HARD
+    (structural even at the end of the line); the prose stop words and ``soft`` are SOFT (a stop only
+    when another token that does not continue the clause follows). ``ends``: the family's own
+    clause-continuing words besides ``_CRED_CLAUSE_END``."""
 
-    __slots__ = ("name", "anchor", "artifact", "qualifiers", "stops", "prose", "address_is_structural",
-                 "value_guard", "stop_unless", "cross")
+    __slots__ = ("name", "anchor", "artifact", "qualifiers", "stops", "soft", "prose", "address_is_structural",
+                 "value_guard", "stop_unless", "cross", "clause_end")
 
     def __init__(self, name: str, anchor: str, qualifiers: Iterable[str] = (), stops: Iterable[str] = (),
                  *, prose: bool = False, artifact: Iterable[str] = (), address_is_structural: bool = False,
-                 run: str = "", value_guard: str = "", stop_unless: str = ""):
+                 run: str = "", value_guard: str = "", stop_unless: str = "", soft: Iterable[str] = (),
+                 ends: str = ""):
         steps = list(qualifiers) + ([r"=>|[:=]|is"] if prose else [])
         self.name = name
-        #: followed across a terminal wrap (`_cred_cross_line_findings`): origin/main's crossing forms
+        #: followed across a terminal wrap (`_cred_cross_line_findings`)
         self.cross = name in _CRED_CROSS_FAMILIES
         self.anchor = re.compile(_v(anchor), re.IGNORECASE)
         self.artifact = tuple(re.compile(pattern, re.IGNORECASE) for pattern in artifact)
         if not run:
-            run = r"(?:(?:" + "|".join(steps) + r")(?:{H}|\Z))*" if steps else r""
+            run = r"(?:" + _cred_step("|".join(steps), ends) + r")*" if steps else r""
         self.qualifiers = re.compile(_v(run), re.IGNORECASE)
-        self.stops = frozenset(word.casefold() for word in stops) | _CRED_PROSE_STOPS
+        soft_words = frozenset(word.casefold() for word in soft)
+        self.stops = frozenset(word.casefold() for word in stops) - soft_words
+        self.soft = (soft_words | _CRED_PROSE_STOPS) - self.stops
         self.prose = prose
         self.address_is_structural = address_is_structural
         self.value_guard = re.compile(_v(value_guard), re.IGNORECASE) if value_guard else None
         self.stop_unless = re.compile(_v(r"{H}" + stop_unless), re.IGNORECASE) if stop_unless else None
+        self.clause_end = re.compile(_v(_cred_clause_end(ends)), re.IGNORECASE)
 
 
 _CRED_COMMUNITY_QUALIFIERS = (
-    r"strings?", r"create", r"delete", r"read", r"write", r"cipher", r"plain", r"clear", r"encrypted",
+    r"strings?", r"read", r"write", r"cipher", r"plain", r"clear", r"encrypted",
     r"(?:name|index|securityname){h}*:", r"accessmode{H}(?:ro|rw)", r"ipaddr{H}{S}+{H}{S}+",
     r"mode{H}(?:enable|disable)", r"[08](?={H}{S})",
 )
@@ -290,20 +320,21 @@ _CRED_COMMUNITY_STOPS = ("name", "names", "list", "complexity-check", "attribute
 
 def _cred_community_run(prose: bool) -> str:
     steps = list(_CRED_COMMUNITY_QUALIFIERS) + ([r"(?:=>|[:=]|is)"] if prose else [])
-    return r"(?:(?:" + "|".join(steps) + r")(?={H}(?!" + _CRED_ACCESS_NEXT + r"){S}){H})*"
+    return (r"(?:(?:create|delete|(?<=snmp-agent{h}community{h})(?:read|write)){H}(?={S})"
+            + r"|(?:" + "|".join(steps) + r")(?={H}(?!" + _CRED_ACCESS_NEXT + r"){S}){H})*")
 
 
 _CRED_KEY_ENCODINGS = r"(?:ENC|encrypted|clear|ascii|hex|cipher|plain|text|--|config-key|password-encrypt)"
 _CRED_KEY_RUN = (
     r"(?:\d{1,10}{H}(?=" + _CRED_HASH + r"(?:{H}|\Z)|--(?:{H}|\Z)))?"
-    r"(?:" + _CRED_HASH + r"(?:{H}|\Z))?"
-    r"(?:" + _CRED_KEY_ENCODINGS + r"(?:{H}|\Z))*"
-    r"(?:" + _CRED_TYPE_THEN_VALUE + r"{H})?"
-    r"(?:" + _CRED_KEY_ENCODINGS + r"(?:{H}|\Z))*")
+    r"(?:" + _cred_step(_CRED_HASH, _CRED_KEY_ENDS) + r")?"
+    r"(?:" + _cred_step(_CRED_KEY_ENCODINGS, _CRED_KEY_ENDS) + r")*"
+    r"(?:" + _CRED_TYPE_THEN_VALUE + r"{H}(?!" + _cred_clause_end(_CRED_KEY_ENDS) + r"))?"
+    r"(?:" + _cred_step(_CRED_KEY_ENCODINGS, _CRED_KEY_ENDS) + r")*")
 _CRED_AUTH_MODE_RUN = (
-    r"(?:(?:" + _CRED_HASH + r"|simple|hmac-sha256)(?:{H}|\Z))?"
+    r"(?:" + _cred_step(_CRED_HASH + r"|simple|hmac-sha256") + r")?"
     r"(?:key-id{H}\d{1,10}{H}|\d{1,10}{H}(?={S}))?"
-    r"(?:(?:cipher|plain|usual|nonstandard)(?:{H}|\Z))*")
+    r"(?:" + _cred_step(r"cipher|plain|usual|nonstandard") + r")*")
 _CRED_IPV6_TEXT = (
     r"(?<![:.\w])(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:"
     r"|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}"
@@ -316,7 +347,7 @@ _CRED_FAMILIES: tuple[_CredFamily, ...] = (
                 r"authentication-key|auth-string|ppk-secret|eap-password|api-key|secret-key|key-string)\d{0,2}",
                 (r"ENC",), artifact=(r"^\s*set\s+(?:passwd|psksecret|password|private-key|passphrase)",)),
     _CredFamily("snmp user auth", r"\bsnmp-server{H}user{H}[^\r\n]{0,200}?{h}auth",
-                (_CRED_HASH, r"clear", r"encrypted"), value_guard=r"\d{1,3}{h}*\Z"),
+                (_CRED_HASH, r"clear", r"encrypted"), value_guard=r"\d{1,3}{h}*\Z", ends=r"priv"),
     _CredFamily("snmp user priv", r"\bsnmp-server{H}user{H}[^\r\n]{0,200}?{h}priv",
                 (r"3?des(?:56)?", r"aes(?:-?(?:128|192|256))?", r"128", r"192", r"256", r"clear", r"encrypted"),
                 value_guard=r"\d{1,3}{h}*\Z"),
@@ -327,7 +358,9 @@ _CRED_FAMILIES: tuple[_CredFamily, ...] = (
     _CredFamily("snmp host community", r"\bsnmp-server{H}host{H}{S}+",
                 (r"vrf{H}{S}+", r"traps?", r"informs?", r"version{H}(?:1|2c)", r"clear", r"encrypted"),
                 ("version", "use-vrf", "filter-vrf", "source-interface", "vrf", "community", "poll",
-                 "udp-port"), address_is_structural=True, artifact=(r"^\s*snmp-server\s+host\s+\S+",)),
+                 "udp-port"), address_is_structural=True, artifact=(r"^\s*snmp-server\s+host\s+\S+",),
+                soft=("version", "use-vrf", "filter-vrf", "source-interface", "vrf", "community", "poll",
+                      "udp-port")),
     _CredFamily("snmp community", r"\b(?:snmp-server|snmp-agent|snmp)(?:{H}[^\r\n]{0,200}?)?{H}community",
                 (), _CRED_COMMUNITY_STOPS, prose=True, run=_cred_community_run(True),
                 stop_unless=_CRED_ACCESS_NEXT, artifact=(r"^\s*snmp-server\s+community",)),
@@ -349,7 +382,8 @@ _CRED_FAMILIES: tuple[_CredFamily, ...] = (
                 ("encryption", "encrypt", "expiration", "expiry", "policy", "recovery", "min-length",
                  "max-length", "minimum-length", "maximum-length", "prompt", "history", "change-type",
                  "format", "aging", "complexity", "strength-check", "keychain", "key-chain", "management",
-                 "encryption-key", "keyboard", "publickey", "option", "rollover", "authentication", "strength"),
+                 "encryption-key", "keyboard", "publickey", "option", "rollover", "authentication", "strength",
+                 "reset", "required"),
                 prose=True,
                 artifact=(r"^\s*(?:enable\s+)?(?:password|secret)",
                           r"^\s*(?:username|user)\s+\S+(?:\s+(?:privilege\s+\d+|role\s+\S+|algorithm-type\s+\S+"
@@ -359,24 +393,27 @@ _CRED_FAMILIES: tuple[_CredFamily, ...] = (
                 run=r"(?:" + _CRED_TYPE_THEN_VALUE + r"{H})?",
                 artifact=(r"^\s*(?:tacacs-server|radius-server)\s+(?:.*?\s)?key",)),
     _CredFamily("key-string", r"\bkey-string",
-                run=r"(?:(?:password|clear|encrypted|ENC)(?:{H}|\Z))*(?:" + _CRED_TYPE_THEN_VALUE + r"{H})?",
+                run=(r"(?:" + _cred_step(r"password|clear|encrypted|ENC") + r")*(?:" + _CRED_TYPE_THEN_VALUE
+                     + r"{H}(?!" + _CRED_CLAUSE_END + r"))?"),
                 artifact=(r"^\s*key-string",)),
     _CredFamily("key-octet-string", r"\bkey-octet-string", run=r"(?:" + _CRED_TYPE_THEN_VALUE + r"{H})?"),
     _CredFamily("pre-shared-key", r"\bpre-shared-key",
                 (r"local", r"remote", r"ascii-text", r"hexadecimal", r"cipher", r"simple", r"plain", r"key",
                  _CRED_TYPE_THEN_VALUE),
                 ("address", "hostname", "key-chain", "keychain", "ckn", "cak", "keyring"),
-                artifact=(r"^\s*pre-shared-key",)),
+                artifact=(r"^\s*pre-shared-key",), soft=("address", "hostname")),
     _CredFamily("shared-key", r"(?<![\w-])shared-key", (r"cipher", r"simple", r"plain", _CRED_TYPE_THEN_VALUE)),
     _CredFamily("macsec cak/ckn", r"\b(?:cak|ckn)"),
     _CredFamily("wpa-psk", r"\bwpa2?-psk", (r"ascii", r"hex", _CRED_TYPE_THEN_VALUE)),
     _CredFamily("set-key", r"\bset-key", (r"ascii", r"hex", _CRED_TYPE_THEN_VALUE)),
     _CredFamily("nhrp authentication", r"\bnhrp{H}authentication", run=r"(?:" + _CRED_TYPE_THEN_VALUE + r"{H})?"),
     _CredFamily("fhrp authentication", r"\b(?:standby|vrrp|glbp)(?:{H}\d+)?(?:{H}peer)?{H}"
-                r"authentication", (r"text", r"md5", r"ietf-md5"), ("key-chain", "key-string", "keychain", "key")),
+                r"authentication", (), ("key-chain", "key-string", "keychain", "key"),
+                run=r"(?:(?:text|md5|ietf-md5)(?:{H}|\Z))*"),
     _CredFamily("block authentication text", r"^{h}*authentication(?={H}text{h})", (r"text",)),
     _CredFamily("authentication-mode", r"\b(?:area-|domain-)?authentication-mode", run=_CRED_AUTH_MODE_RUN,
-                stops=("keychain", "key-chain", "hwtacacs", "radius", "local", "aaa", "password", "scheme")),
+                stops=("keychain", "key-chain", "hwtacacs", "radius", "local", "aaa", "password", "scheme",
+                       "none")),
     _CredFamily("privacy-mode", r"\bprivacy-mode", (r"des56", r"3des", r"aes\d*", r"cipher", r"plain")),
     _CredFamily("ospfv3 ipsec", r"\b(?:authentication|encryption){H}ipsec{H}spi{H}\d+",
                 (r"md5", r"sha1", r"esp", r"aes-cbc", r"3des", r"des", r"null", r"128", r"192", r"256",
@@ -393,9 +430,13 @@ _CRED_FAMILIES: tuple[_CredFamily, ...] = (
                        "rollover", "hash", "label", "storage", "ring", "management", "encryption", "mode",
                        "mypubkey", "pubkey", "pubkey-chain", "server", "algorithm", "algorithms", "recovery",
                        "string", "prefer", "source", "version", "minpoll", "maxpoll", "burst", "iburst", "vrf",
-                       "use-vrf", "rsa", "dsa", "ecdsa", "ed25519", "inbound", "outbound", "format"),
+                       "use-vrf", "rsa", "dsa", "ecdsa", "ed25519", "inbound", "outbound", "format",
+                       "password-encrypt", "ascii"),
                 value_guard=r"\d{1,10}[,;](?={h}|\Z)|-{3,}(?:{h}|\Z)", stop_unless=_CRED_PEER_NEXT,
-                artifact=(r"^\s*crypto\s+isakmp\s+key",)),
+                artifact=(r"^\s*crypto\s+isakmp\s+key",), soft=("version", "local", "remote"),
+                ends=_CRED_KEY_ENDS),
+    _CredFamily("fhrp authentication text",
+                r"\b(?:standby|vrrp|glbp)(?:{H}\d+)?(?:{H}peer)?{H}authentication{H}text"),
 )
 #: A literal every match of a family's anchor contains (compared casefolded, a superset of the anchors'
 #: IGNORECASE matching): a family is skipped on a line holding none of its needles. Speed only.
@@ -414,6 +455,7 @@ _CRED_FAMILY_NEEDLES = {
     "block authentication text": ("authentication",), "authentication-mode": ("authentication-mode",),
     "privacy-mode": ("privacy-mode",), "ospfv3 ipsec": ("ipsec",),
     "eigrp hmac-sha-256": ("hmac-sha-256",), "show standby text": ("string",), "key": ("key",),
+    "fhrp authentication text": ("standby", "vrrp", "glbp"),
 }
 #: Cheap prefilter: a line that names none of these words cannot start any grammar family above.
 _CRED_PREFILTER_RE = re.compile(
@@ -433,9 +475,13 @@ _SWEEP_KEYWORDS = (
     r"(?:login|enable|pap|chap|arap|opap|ms-chap|global){h}*={h}*(?:cleartext|des|crypt)",
     r"^{h}*\d{1,5}{H}(?:md5|sha1|sha|sha256|sha384|sha512|aes128cmac|aes-128-cmac)(?={h}|\Z)",
     r"pin(?={H}(?:\d{1,16}|<redacted>)(?:{h}|\Z))",
-    r"[a-z0-9]{0,64}_(?:pw|pwd|pass|passwd|password|secret|token|key|community|communities|psk|credentials?)",
+    r"[a-z0-9]{0,64}_(?:pw|pwd|pass|passwd|password|secret|token|key|community|communities|psk|credentials?"
+    r"|authtok)",
     r"(?:area-|domain-)?authentication-(?:key(?:id)?|mode)", r"message-digest-key", r"server-key",
     r"encrypted[-_]?password", r"plain-text-password(?:-value)?", r"hello-authentication",
+    r"text-authentication", r"rootpw", r"bindpw",
+    r"priv(?={H}(?:3?des(?:56)?|aes(?:-?(?:128|192|256))?|aes-cbc)(?:{h}|\Z))",
+    r"^{h}*(?-i:authentication)(?={H}(?:(?![:=]){S})+{h}*\Z)",
     r"[a-z0-9]{1,32}(?:-[a-z0-9]{1,32}){0,6}-pwd?",
     r"private[-_]?key", r"secret[-_]?key", r"api[-_]?key", r"pre-?shared-?key", r"key[-_]?string",
     r"key-octet-string", r"community[-_]?(?:string|name|map)", r"pass-phrase", r"privacy-mode",
@@ -453,19 +499,33 @@ _SWEEP_KW_RE = re.compile(_v(
 _SWEEP_VOID_NEXT = {
     "key": frozenset({"chain", "generate", "zeroize", "mypubkey", "pubkey-chain", "pair", "name", "data", "id",
                       "storage", "type", "usage", "change", "size", "lifetime", "identifier", "encipherment",
-                      "agreement"}),
+                      "agreement", "link", "uplink", "vlan"}),
     "password": frozenset({"encryption", "strength-check", "strength", "policy", "expiry", "expiration",
                            "minimum-length", "maximum-length", "min-length", "max-length", "complexity",
                            "history", "aging", "recovery", "prompt", "change-type", "format", "management",
-                           "keyboard"}),
+                           "keyboard", "reset"}),
     "community": frozenset({"complexity-check", "attribute"}),
     "pre-shared-key": frozenset({"key-chain", "keychain"}),
     **dict.fromkeys(("authentication-mode", "area-authentication-mode", "domain-authentication-mode"),
                     frozenset({"hwtacacs", "radius", "local", "aaa", "password", "scheme", "keychain",
                                "key-chain", "none"})),
+    "auth": frozenset({"sign", "verify", "via", "add", "priv(enforce"}),
+    "credentials": frozenset({"caching"}),
+    "psk": frozenset({"tunnel"}),
+    "authentication": frozenset({
+        "open", "periodic", "chap", "pap", "ms-chap", "ms-chap-v2", "eap", "message-digest", "null", "none",
+        "md5", "text", "sha", "sha1", "mode", "key-chain", "keychain", "local", "radius", "tacacs", "tacacs+",
+        "enable", "enabled", "disable", "disabled", "required", "optional", "ipsec", "list", "default",
+        "dot1x", "mab", "peer", "failure", "success", "priority", "order", "keyed-md5", "hmac-md5",
+        "hmac-sha-1", "simple", "plain", "cipher", "level-1", "level-2", "send-only", "check", "multi-auth",
+        "multi-host", "single-host", "multi-domain", "fallback", "event", "timer", "violation",
+        "control-direction", "port-control", "host-mode", "sequence", "authorize", "server", "type",
+        "protocol", "callin", "callout", "optional-auto", "required-auto"}),
 }
 _SWEEP_VOID_PREV = {"community": frozenset({"set", "match", "policy-options", "then", "from"}),
-                    "key": frozenset({"trusted-", "public-", "ssh-", "host-"})}
+                    "key": frozenset({"trusted-", "public-", "ssh-", "host-"}),
+                    "cipher": frozenset({"crypto"}),
+                    "psk": frozenset({"sign", "verify"})}
 _SWEEP_EDGE = "\"'`()[]{}<>;:,."
 _SWEEP_KEEP = "\"'`()[]{};:,."
 _SWEEP_ALLOW = frozenset({
@@ -514,13 +574,16 @@ _SWEEP_ALLOW = frozenset({
     "must", "should", "will", "can", "cannot", "may", "each", "only", "also", "configured", "enabled",
     "disabled", "required", "expired", "changed", "failed", "failure", "mismatch", "invalid", "missing",
     "present", "true", "false", "yes", "off", "unknown", "hidden", "neighbor", "peer", "used", "supplied",
-    "management",
+    "management", "available", "*", "via",
+    "fatal(1", "critical(2", "error(3", "warning(4", "information(5", "pmon@fatal", "pmon@critical",
+    "pmon@error", "pmon@warning", "pmon@info",
     # value-required keywords: a later clause's keyword in a swept tail stays, so its value is still
     # recognised -- and a wrap after it still dangles ('mgmtuser ... password' / '<value>')
     "password", "passwd", "passphrase", "pass-phrase", "secret", "enablesecret", "community", "psk",
     "pre-shared-key", "authentication-key", "message-digest-key", "server-key",
     "bearer", "basic", "digest", "negotiate", "ntlm", "ssws",
 })
+_SWEEP_SCHEMES = frozenset({"bearer", "basic", "ssws", "negotiate", "ntlm"})
 _SWEEP_SLOTS = frozenset({
     "udp-port", "auth-port", "acct-port", "port", "timeout", "retransmit", "level", "privilege", "access",
     "acl", "ro", "rw", "context", "key-id", "spi", "lifetime", "index", "eigrp",
@@ -558,6 +621,10 @@ _SWEEP_XML_RE = re.compile(_v(r"<(?P<tag>[A-Za-z_][\w.:-]*)(?:{H}[^<>\r\n]*)?>(?
 _SWEEP_XML_TAG_RE = re.compile(_v(r"<[A-Za-z_][\w.:-]*(?P<a>{H}[^<>\r\n]*?)/?>"))
 _SWEEP_XML_ATTR_RE = re.compile(_v(
     r"""(?<![\w.:-])(?P<n>[A-Za-z_][\w.:-]{0,127}){h}*={h}*(?P<q>["'])(?P<v>[^"'\r\n]*)(?P=q)"""))
+_SWEEP_XML_ANY_TAG_RE = re.compile(r"<(?P<close>/)?(?P<t>[A-Za-z_][\w.:-]*)[^<>]*?(?P<self>/)?>")
+_SWEEP_XML_STRUCT_CHILD = frozenset({
+    "permission", "access", "view", "acl", "acl-name", "access-list", "ipv4-acl", "ipv6-acl", "mode", "type",
+    "encryption", "encryption-type", "version", "level", "privilege", "vrf", "context", "index"})
 _SWEEP_URL_RE = re.compile(_v(r"(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]*://{S}+"), re.IGNORECASE)
 _SWEEP_QUERY_RE = re.compile(r"(?<=[?&;])(?P<name>[A-Za-z0-9_.-]+)=(?P<v>[^&#;\"'\s]*)")
 _SWEEP_QUERY_NAMES = frozenset({
@@ -571,12 +638,14 @@ _SWEEP_FIRST_TOKEN_RE = re.compile(_v(r"{h}*{S}+"))
 #: Credential field names (restated; the producer derives them from the snapshot owner lists).
 _SWEEP_RAW_TOKEN_EXTRAS = ("pwd", "passcode", "communities", "authkey")
 _SWEEP_RAW_QUOTED_EXACT = frozenset({"pass", "pw", "pin", "key", "auth", "authentication"})
+_SWEEP_RAW_UNQUOTED_EXACT = frozenset({"pass", "pw", "pin"})
 _SWEEP_NAME_STRIP_RE = re.compile(r"[\s_.\-]")
 _SWEEP_QKEY_RE = re.compile(_v(r"""(?P<q>["'])(?P<k>[^"'\\\r\n]{1,128})(?P<c>(?P=q)){h}*:"""))
 _SWEEP_UKEY_RE = re.compile(_v(r"(?<![\w.:/@$-])(?P<k>[A-Za-z_][\w.-]{0,127}){h}*(?:=(?![=>])|:(?![:/]))"))
 _SWEEP_NAME_HINT_RE = re.compile(r"pass|pwd|secret|communit|psk|token|credential|api|priv|key|auth|pin|pw")
-_SWEEP_PROSE_KW_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?P<kw>pw|pwd|pass|creds?|account)(?![A-Za-z0-9_-])", re.IGNORECASE)
+_SWEEP_PROSE_KW_RE = re.compile(_v(
+    r"(?<![A-Za-z0-9])(?P<kw>pw|pwd|pass|creds?|account"
+    r"|string(?={h}*:|{H}is(?:{h}|\Z))|(?:login|username)(?={H}{S}+{h}*/))(?![A-Za-z0-9_-])"), re.IGNORECASE)
 _SWEEP_PROSE_LINE_RE = re.compile(_v(r"^{h}*(?:description(?={h}|\Z)|remark(?={h}|\Z)|!|#|//|/\*)"),
                                   re.IGNORECASE)
 _SWEEP_BANNER_RE = re.compile(_v(
@@ -584,16 +653,28 @@ _SWEEP_BANNER_RE = re.compile(_v(
     r"(?P<d>\^C|{S})"), re.IGNORECASE)
 _SWEEP_ARGV_CMD_RE = re.compile(_v(
     r"(?<![\w.-])(?:[\w.~/-]{0,128}/)?(?P<cmd>curl|sshpass|mysql|mysqldump|mysqladmin|mysqlimport"
-    r"|snmp(?:bulk)?(?:walk|get|getnext|set|trap|inform|table|delta|status|df|netstat|test|usm|vacm))"
-    r"(?={h}|\Z)"))
+    r"|snmp(?:bulk)?(?:walk|get|getnext|set|trap|inform|table|delta|status|df|netstat|test|usm|vacm)"
+    r"|ipmitool|smbclient|net{H}use)"
+    r"(?={h}|\Z)"), re.IGNORECASE)
 _SWEEP_ARGV_OPTIONS = {
     "curl": (("-u", "userinfo"), ("--user", "userinfo"), ("-U", "userinfo"), ("--proxy-user", "userinfo")),
     "sshpass": (("-p", "value"),),
     "mysql": (("-p", "attached"),),
     "snmp": (("-c", "value"), ("-A", "value"), ("-X", "value")),
+    "ipmitool": (("-P", "value"),),
+    "smbclient": (("-U", "userpct"), ("--user", "userpct")),
+    "net": (),
 }
+_SWEEP_CHPASSWD_RE = re.compile(_v(
+    r"(?<![\w.-])[A-Za-z0-9_.-]{1,64}:(?P<v>[^\s:'\"|]+)(?=['\"]?{h}*\|{h}*(?:sudo{H})?chpasswd(?:{h}|\Z))"))
+_SWEEP_PGPASS_RE = re.compile(_v(
+    r"^{h}*(?=[^:\s]*[A-Za-z.*])[^:\s]{1,253}:(?:\d{1,5}|\*):[^:\s]{1,128}:[^:\s]{1,128}:(?P<v>[^:\s]+){h}*\Z"))
+_SWEEP_EXPECT_PROMPT_RE = re.compile(r"^\s*expect\b.*(?:assword|passphrase|secret|community|pin)", re.IGNORECASE)
+_SWEEP_EXPECT_SEND_RE = re.compile(_v(r"^{h}*send(?:{H}--)?{H}\"(?P<v>(?:\\.|[^\"\\\r\n])*?)(?:\\[rn])*\""))
 _SWEEP_CRYPT_RE = re.compile(
-    r"(?<![\w$])\$(?:1|2[abxy]?|5|6|7|8|9|y|gy|apr1|sha1|md5|pbkdf2(?:-sha\d{1,3})?|scrypt)\$[A-Za-z0-9./+=$-]{2,}")
+    r"(?<![\w$])\$(?:1|2[abxy]?|5|6|7|8|9|y|gy|apr1|sha1|md5|pbkdf2(?:-sha\d{1,3})?|scrypt)\$[A-Za-z0-9./+=$-]{2,}"
+    r"|(?<![\w}])\{(?:S?SHA(?:256|384|512)?|S?MD5|CRYPT|PBKDF2(?:-SHA\d{1,3})?|ARGON2[a-z]{0,2})\}[A-Za-z0-9./+=$-]{4,}",
+    re.IGNORECASE)
 _SWEEP_B64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{24,}={0,2}(?![A-Za-z0-9+/_=-])")
 _SWEEP_HEX_RE = re.compile(r"(?<![A-Za-z0-9])[0-9A-Fa-f]{32,}(?![A-Za-z0-9])")
 #: ... and any token in a CLOSED list of credential token formats, whatever its letters
@@ -641,13 +722,40 @@ _SWEEP_SIZE_WORDS = frozenset({"aes", "des", "3des", "aes-cbc"})
 _SWEEP_DANGLE_HINT_RE = re.compile(r"pass|secret|communit|key|psk|auth|priv|-pw|snmp-server")
 _SWEEP_NAME_OPEN_RE = re.compile(_v(r"""(?P<q>["'])(?P<k>[^"'\\\r\n]{1,128})(?P=q){h}*:{h}*\Z"""))
 _SWEEP_SNMP_HOST_OPEN_RE = re.compile(_v(r"\bsnmp-server{H}host(?P<rest>(?:{H}{S}+)*){h}*\Z"), re.IGNORECASE)
-_SWEEP_COMMAND_WORD_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+#: Closed configuration command words (the producer's ``_REDACT_COMMAND_WORDS``) and clause-trailing
+#: words (``_REDACT_CONT_TRAILERS``): exact words, never a shape -- any other word is a wrapped value.
+_SWEEP_COMMAND_WORDS = frozenset({
+    "ntp", "key", "key-string", "key-chain", "accept-lifetime", "send-lifetime", "cryptographic-algorithm",
+    "ip", "ipv6", "interface", "router", "line", "logging", "clock", "aaa", "crypto", "snmp-server", "banner",
+    "hostname", "service", "username", "enable", "end", "exit", "no", "description", "spanning-tree", "vlan",
+    "access-list", "control-plane", "boot", "version", "license", "archive", "alias", "event", "track",
+    "route-map", "policy-map", "class-map", "monitor", "mpls", "vrf", "address-family", "exit-address-family",
+    "neighbor", "network", "redistribute", "shutdown", "switchport", "standby", "vrrp", "tacacs-server",
+    "radius-server", "tacacs", "radius", "login", "transport", "exec-timeout", "privilege", "password",
+    "secret", "authentication", "server", "address", "timeout", "single-connection", "source-interface",
+    "redundancy", "boot-start-marker", "boot-end-marker", "netconf-yang", "restconf", "multilink", "config"})
+_SWEEP_CONT_TRAILERS = frozenset({
+    "ro", "rw", "view", "address", "hostname", "privilege", "role", "encrypted", "pbkdf2", "version",
+    "udp-port", "level", "ipv4", "ipv6", "read-only", "read-write", "authorization", "level-1", "level-2",
+    "priv", "auth", "access", "acl", "vrf"})
 _SWEEP_SNMP_HOST_WORDS = frozenset({"traps", "trap", "informs", "inform", "version", "1", "2c", "clear",
                                     "encrypted", "vrf"})
 _SWEEP_SNMP_USER_RE = re.compile(_v(r"\bsnmp-server{H}user{H}"), re.IGNORECASE)
 _SWEEP_SNMP_AUTHPRIV_RE = re.compile(r"(?<![\w-])(?:auth|priv)(?![\w-])", re.IGNORECASE)
 _SWEEP_DANGLE_VOID_LINE_RE = re.compile(_v(r"^{h}*(?:no|config){H}"), re.IGNORECASE)
-_SWEEP_PROSE_COMMA_RE = re.compile("," + _CRED_H1)
+_SWEEP_PROSE_COMMA_RE = re.compile("," + _CRED_H1 + r"+\Z")
+_CRED_CLAUSE_LEAD = ":;,(\"'`<>{["
+_SWEEP_PROSE_PREV = frozenset({
+    "and", "or", "the", "a", "an", "your", "my", "our", "their", "his", "her", "its", "this", "that", "with",
+    "for", "of", "new", "old", "invalid", "wrong", "bad", "incorrect", "expired"})
+
+
+def _sweep_prose_before(text: str, pos: int, index=None) -> bool:
+    if _SWEEP_PROSE_COMMA_RE.search(text, max(0, pos - 64), pos):
+        return True
+    if index is None:
+        index = _sweep_token_index(text[:pos], _SWEEP_ROW_TOKEN_RE)
+    return _sweep_last_token(text, index, pos).strip(_SWEEP_EDGE).casefold() in _SWEEP_PROSE_PREV
 _SWEEP_WORD_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
 _CRED_JOIN_TAIL = 300
 _CRED_CROSS_NEEDLE_RE = re.compile("|".join(map(re.escape, dict.fromkeys(
@@ -665,12 +773,20 @@ _SWEEP_CONT_EXEMPT = frozenset({
 _PEM_BEGIN_RE = re.compile(r"-{4,5} ?BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)? ?-{4,5}", re.IGNORECASE)
 _PEM_END_RE = re.compile(r"-{4,5} ?END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)? ?-{4,5}", re.IGNORECASE)
 _PUTTY_PRIVATE_RE = re.compile(_v(r"^{h}*Private-Lines:{h}*(?P<n>\d{1,5}){h}*\Z"), re.IGNORECASE)
-_TABLE_HEADERS = tuple((re.compile(_v(pattern), re.IGNORECASE), nxt) for pattern, nxt in (
-    (r"^{h}*(?P<c>Community){h}+(?P<n>Group){h}*/{h}*Access\b", "n"),
-    (r"^{h}*Keyring{h}+Hostname/Address{h}+(?P<c>Preshared{h}Key)\b", None),
-    (r"^{h}*Host{h}+Port{h}+Version{h}+Level{h}+Type{h}+(?P<c>SecName)\b", None),
-    (r"^{h}*(?P<c>SNMP{h}Community{h}Name){h}+(?P<n>Client{h}IP{h}Address)\b", "n"),
+_B64_LINE_RE = re.compile(r"[A-Za-z0-9+/=]+|<redacted>")
+_CREDENTIAL_SHAPE_RE = re.compile(r"(?=[^\r\n]*[A-Za-z])(?=[^\r\n]*\d)")
+_TABLE_HEADERS = tuple((re.compile(_v(pattern), re.IGNORECASE), nxt, kind) for pattern, nxt, kind in (
+    (r"^{h}*(?P<c>Community){h}+(?P<n>Group){h}*/{h}*Access\b", "n", "first"),
+    (r"^{h}*Keyring{h}+Hostname/Address{h}+(?P<c>Preshared{h}Key)\b", None, "isakmp"),
+    (r"^{h}*Host{h}+Port{h}+Version{h}+Level{h}+Type{h}+(?P<c>SecName)\b", None, "host"),
+    (r"^{h}*(?P<c>SNMP{h}Community{h}Name){h}+(?P<n>Client{h}IP{h}Address)\b", "n", "aireos"),
 ))
+_TABLE_GROUP_RE = re.compile(r"[^ \t\r\n]+(?: [^ \t\r\n]+)*")
+_TABLE_WORD_RE = re.compile(r"[A-Z][A-Za-z]*(?:[/_-][A-Za-z]+)*")
+_TABLE_CRED_COLUMNS = frozenset({
+    "password", "passwd", "secret", "community", "psk", "presharedkey", "preshared", "key", "passphrase",
+    "enablesecret", "enablepassword", "sharedsecret", "snmpcommunity", "communitystring", "communityname"})
+_TABLE_ALSO_COLUMNS = frozenset({"enable"})
 _TABLE_END_RE = re.compile(_v(r"^{h}*-{3,}{h}*show{h}"), re.IGNORECASE)
 _DASHES_RE = re.compile(r"-+\Z")
 _FORTI_CONFIG_RE = re.compile(_v(r"^{h}*config{H}(?P<path>[^\r\n]*?){h}*\Z"), re.IGNORECASE)
@@ -682,6 +798,7 @@ _JSON_STRING_RE = re.compile(r'"(?:\\.|[^"\\\r\n])*"')
 _XML_OPEN_RE = re.compile(_v(r"^{h}*<(?P<t>[A-Za-z_][\w.:-]{0,127})(?:{H}[^<>\r\n]*)?(?<!/)>{h}*\Z"))
 _YAML_OPEN_RE = re.compile(_v(
     r"^{h}*(?:-{H})?(?P<k>[A-Za-z_][\w.-]{0,127}){h}*:{h}*(?:[|>][-+0-9]{0,3}{h}*)?\Z"))
+_YAML_VALUE_RE = re.compile(_v(r"^{h}*(?:-{H})?(?P<k>[A-Za-z_][\w.-]{0,127}){h}*:{H}{S}"))
 _CSV_DELIMS = (",", "\t", ";", "|")
 _CSV_FIELD_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _.-]{0,63}")
 _CSV_HEADER_CHARS_RE = re.compile(r"[A-Za-z0-9 _.\-\"'<>,\t;|]+")
@@ -691,7 +808,8 @@ _SWEEP_PREFILTER = re.compile(
     r"pass|secret|communit|key|auth|psk|cipher|plain|ascii|hex|token|bearer|ssws|phash|pwd|cak|ckn|priv|"
     r"cookie|trap|securityname|snmp|nhrp|standby|vrrp|glbp|rmon|environment|command|spi|user|"
     r"groupname:|com2sec|_pw|-pw|credential|pkcs12|----|://|<|sink|cleartext|=\s*des|ldap|lte|pin|"
-    r"curl|mysql|md5|sha|cmac|api|cred|account|crypt|\$|%|\"pw|'pw")   # searched in the CASEFOLDED line
+    r"curl|mysql|md5|sha|cmac|api|cred|account|crypt|\$|%|\"pw|'pw|"
+    r"rootpw|bindpw|authtok|chpasswd|ipmitool|smbclient|net\s+use|:(?:\d{1,5}|\*):|pw")   # the CASEFOLDED line
 _SWEEP_RUN_RE = re.compile(r"[A-Za-z0-9+/_=-]{24}")    # ... or a run long enough to be high-entropy
 
 #: Compatibility for readers that fingerprint "the verifier grammar" (the D10 evidence-retention branch
@@ -704,7 +822,7 @@ _INLINE_SECRET_RES = tuple(
        _SWEEP_DIGEST_LABEL_RE, _SWEEP_PUBKEY_LABEL_RE, _PEM_BEGIN_RE, _PEM_END_RE, _PUTTY_PRIVATE_RE,
        _TABLE_END_RE, _FORTI_CONFIG_RE, _FORTI_END_RE, _FORTI_SET_NAME_RE, _CHAP_HEADER_RE, _JSON_OPEN_RE,
        _XML_OPEN_RE, _YAML_OPEN_RE]
-    + [pattern for pattern, _nxt in _TABLE_HEADERS])
+    + [header[0] for header in _TABLE_HEADERS])
 
 
 def _cred_token(line: str, pos: int) -> tuple[str, int] | None:
@@ -728,6 +846,8 @@ def _cred_value_is_structural(value: str, end: int, family: _CredFamily, line: s
         return True
     if _CRED_PEM_ARMOR_RE.match(line, position):
         return True                                      # a private-key block: the PEM rule owns it
+    if _CRED_BLOCK_INDICATOR_RE.fullmatch(value):
+        return True                                      # a YAML block scalar: the block rule owns it
     if value[:1] in {'"', "'"}:
         return False                                     # a quoted token is always a value
     head = re.split(r"[;,.]", value, maxsplit=1)[0].casefold()
@@ -735,6 +855,15 @@ def _cred_value_is_structural(value: str, end: int, family: _CredFamily, line: s
         # ... unless what follows makes the stop word the value ('community all RO').
         return not (family.stop_unless is not None and value.casefold() == head
                     and family.stop_unless.match(line, end))
+    if head in family.soft:
+        if value.casefold() != head:
+            return True                                  # punctuation directly after: a stop
+        follow = _CRED_FOLLOW_RE.match(line, end)
+        if follow is None:
+            return False                                 # it ends the line: the value
+        if family.stop_unless is not None and family.stop_unless.match(line, end):
+            return False
+        return not family.clause_end.match(line, follow.end())
     if value.endswith(":") and '"' not in value and "'" not in value:   # 'Key name:', 'Data:'
         return True
     if not value.strip("{}[];"):
@@ -745,7 +874,7 @@ def _cred_value_is_structural(value: str, end: int, family: _CredFamily, line: s
 def _cred_is_placeholder(token: str, delim: str = "") -> bool:
     """The placeholder, allowing the punctuation a config or JSON line closes it with (and, inside a
     banner, the banner delimiter the scrub keeps after it)."""
-    token = token.rstrip(";,)}]")
+    token = token.rstrip(";,)}]\"'")
     if delim and token.endswith(delim) and token != delim:
         token = token[:len(token) - len(delim)]
     return token.casefold() == _PLACEHOLDER
@@ -779,8 +908,9 @@ def _cred_clauses(line: str, artifact: bool,
             value, end = token
             if _cred_value_is_structural(value, end, family, line, position):
                 continue
-            if has_next and _CRED_TYPE_DIGIT_RE.fullmatch(value) and not _CRED_WS_RE.sub("", line[end:]):
-                continue                                  # a wrapped value's type digit
+            if (has_next and (_CRED_TYPE_DIGIT_RE.fullmatch(value) or value == _CRED_WRAP_ENC)
+                    and not _CRED_WS_RE.sub("", line[end:])):
+                continue                                  # a wrapped value's type digit (or 'ENC')
             anchor_text = match.group(0)
             keyword_start = match.start() + len(anchor_text) - len(_CRED_WS_RE.split(anchor_text)[-1])
             clauses.append((family, keyword_start, value, end))
@@ -846,7 +976,9 @@ def _sweep_credential_name(name: str, quoted: bool) -> bool:
         return False
     if folded in _SECRET_KEYS or any(token in folded for token in _SECRET_KEY_TOKENS + _SWEEP_RAW_TOKEN_EXTRAS):
         return True
-    return quoted and (folded in _SWEEP_RAW_QUOTED_EXACT or folded.endswith("key"))
+    if not quoted:
+        return folded in _SWEEP_RAW_UNQUOTED_EXACT
+    return folded in _SWEEP_RAW_QUOTED_EXACT or folded.endswith("key")
 
 
 def _sweep_word_end(masked: str, end: int) -> int:
@@ -855,18 +987,35 @@ def _sweep_word_end(masked: str, end: int) -> int:
     return end
 
 
+def _sweep_token_index(text: str, regex: re.Pattern[str]) -> tuple[list[tuple[int, int]], list[int]]:
+    spans = [m.span() for m in regex.finditer(text)]
+    return spans, [start for start, _end in spans]
+
+
+def _sweep_last_token(text: str, index: tuple[list[tuple[int, int]], list[int]], pos: int) -> str:
+    """The last token ``regex.findall(text, 0, pos)`` returns (cut at ``pos``), or "" (the producer's rule)."""
+    spans, starts = index
+    i = bisect.bisect_left(starts, pos) - 1
+    if i < 0:
+        return ""
+    start, end = spans[i]
+    return text[start:min(end, pos)]
+
+
 def _sweep_keyword_anchor(masked: str) -> int | None:
     pos = 0
+    index = None
     while True:
         found = _SWEEP_KW_RE.search(masked, pos)
         if found is None:
             return None
-        word = found.group("kw").casefold()
+        word = found.group("kw").casefold().strip(_CRED_WS_CHARS)
         end = _sweep_word_end(masked, found.end())
         following = _SWEEP_TOKEN_RE.search(masked, end)
         nxt = following.group(0).strip(_SWEEP_EDGE).casefold() if following else ""
-        before = _SWEEP_TOKEN_RE.findall(masked, 0, found.start())
-        prev = before[-1].strip(_SWEEP_EDGE).casefold() if before else ""
+        if index is None:
+            index = _sweep_token_index(masked, _SWEEP_TOKEN_RE)
+        prev = _sweep_last_token(masked, index, found.start()).strip(_SWEEP_EDGE).casefold()
         if (nxt in _SWEEP_VOID_NEXT.get(word, ()) or prev in _SWEEP_VOID_PREV.get(word, ())
                 or (end > found.end() and masked[found.start():end].casefold() in _SWEEP_ALLOW)):
             pos = found.end()
@@ -926,15 +1075,21 @@ def _sweep_anchor(line: str, masked: str, forti: bool, prose: int | None = None,
 
 
 def _sweep_residue(masked: str, anchor: int, delim: str = "") -> bool:
-    """Is any token after the anchor neither structural nor a structural slot's one operand?"""
+    """Is any token after the anchor neither structural nor a structural slot's one operand? (The one
+    token after an authorization scheme is never structural.)"""
     slot = None
+    scheme = False
     for match in _SWEEP_TOKEN_RE.finditer(masked, anchor):
         core = _sweep_token_core(match.group(0), delim)
         if slot is not None and slot.fullmatch(core):
             slot = None
             continue
         ok = _sweep_token_ok(match.group(0), delim)
+        if scheme and core and _PLACEHOLDER not in match.group(0):
+            ok = False
         word = core.casefold()
+        if core:
+            scheme = word in _SWEEP_SCHEMES
         slot = (None if not ok else _SWEEP_SLOT_OPERAND_RE if word in _SWEEP_SLOTS
                 else _SWEEP_NAME_OPERAND_RE if word in _SWEEP_NAME_SLOTS else None)
         if not ok:
@@ -986,6 +1141,7 @@ def _sweep_dangle_tail(line: str) -> tuple[list[str], bool] | None:
         return None
     masked = _sweep_masked(line)
     last, key_id = None, False
+    tokens = rows = None
     for found in _SWEEP_KW_RE.finditer(masked):
         start = run = found.start()
         if start and masked[start - 1] not in _CRED_WS_CHARS and masked[start - 1] not in "-_":
@@ -995,19 +1151,23 @@ def _sweep_dangle_tail(line: str) -> tuple[list[str], bool] | None:
         if run and masked[run - 1] not in _CRED_WS_CHARS:
             continue
         end = _sweep_word_end(masked, found.end())
-        if masked[end:end + 1] == ":":
+        if end > found.end():
+            continue
+        if masked[end:].lstrip(_CRED_WS_CHARS)[:1] in (":", "="):
             continue
         word = found.group("kw").casefold()
         if not _sweep_value_required(word):
             continue
         following = _SWEEP_TOKEN_RE.search(masked, end)
         nxt = following.group(0).strip(_SWEEP_EDGE).casefold() if following else ""
-        before = _SWEEP_TOKEN_RE.findall(masked, 0, start)
-        prev = before[-1].strip(_SWEEP_EDGE).casefold() if before else ""
+        if tokens is None:
+            tokens = _sweep_token_index(masked, _SWEEP_TOKEN_RE)
+            rows = _sweep_token_index(masked, _SWEEP_ROW_TOKEN_RE)
+        prev = _sweep_last_token(masked, tokens, start).strip(_SWEEP_EDGE).casefold()
         if (nxt in _SWEEP_VOID_NEXT.get(word, ()) or prev in _SWEEP_VOID_PREV.get(word, ())
                 or word in _SWEEP_VOID_NEXT.get(prev, ())):
             continue
-        if _SWEEP_PROSE_COMMA_RE.search(masked, 0, start):
+        if _sweep_prose_before(masked, start, rows):
             continue
         last = end
         key_id = (word == "key" and bool(_SWEEP_KEY_ID_RE.match(masked, end))
@@ -1028,19 +1188,30 @@ def _sweep_dangle_tail(line: str) -> tuple[list[str], bool] | None:
     return (cores, key_id) if all(core in _SWEEP_DANGLE_QUALIFIERS for core in cores) else None
 
 
+def _sweep_core_bounds(text: str, start: int, end: int) -> tuple[int, int]:
+    while start < end and text[start] in _SWEEP_EDGE:
+        start += 1
+    while end > start and text[end - 1] in _SWEEP_EDGE:
+        end -= 1
+    return start, end
+
+
 def _sweep_starts_clause(line: str, masked: str, start: int, end: int) -> bool:
-    """A credential clause starts inside ``line[start:end]``: never a wrapped value."""
+    """The token ``line[start:end]`` IS a clause start of its own -- never a wrapped value: XML/JSON
+    structure, or an anchor / keyword that begins at the token's core and covers all of it. POSITIONAL
+    (round 3): a keyword INSIDE the token ('Secret99Qz', 'md5KeyQ') does not exempt it."""
     if line[start:start + 1] in ("<", "{", "["):
         return True
-    if any(family.anchor.match(line, start) for family in _CRED_FAMILIES):
-        return True
-    found = _SWEEP_KW_RE.search(masked, start)
-    if found is not None and found.start() < end:
-        return True
-    for regex, quoted in ((_SWEEP_QKEY_RE, True), (_SWEEP_UKEY_RE, False)):
-        found = regex.search(masked, start)
-        if found is not None and found.start() < end and _sweep_credential_name(found.group("k"), quoted):
+    cs, ce = _sweep_core_bounds(line, start, end)
+    if cs >= ce:
+        return False
+    for family in _CRED_FAMILIES:
+        found = family.anchor.match(line, cs)
+        if found is not None and found.end() >= ce:
             return True
+    found = _SWEEP_KW_RE.match(masked, cs)
+    if found is not None and found.end() >= ce:
+        return True
     return bool(_SWEEP_ARGV_CMD_RE.match(line, start))
 
 
@@ -1056,7 +1227,7 @@ def _sweep_clause_continuation_violation(line: str, kind: str, tail: list[str], 
         if not core:
             continue
         if _PLACEHOLDER in token:
-            return False
+            return not _sweep_token_ok(token)            # residue beside it ('BgpSecret<redacted>')
         folded = core.casefold()
         if kind == "snmp-host":
             if after_vrf:
@@ -1071,7 +1242,7 @@ def _sweep_clause_continuation_violation(line: str, kind: str, tail: list[str], 
             size_cut = False
             continue
         return not (_sweep_value_required(folded) or _sweep_starts_clause(line, masked, match.start(), match.end())
-                    or folded in _SWEEP_CONT_EXEMPT or (key_id and _SWEEP_COMMAND_WORD_RE.fullmatch(core)))
+                    or folded in _SWEEP_CONT_EXEMPT or (key_id and folded in _SWEEP_COMMAND_WORDS))
     return False
 
 
@@ -1104,8 +1275,10 @@ def _cred_cross_line_findings(prev: str, line: str) -> list[str]:
         if needles is not None and not any(needle in folded for needle in needles):
             continue
         for match in family.anchor.finditer(joined, 0, len(tail)):
-            if _SWEEP_PROSE_COMMA_RE.search(joined, 0, match.start()):
+            if _sweep_prose_before(joined, match.start()):
                 continue
+            if match.start() and joined[match.start() - 1] not in _CRED_WS_CHARS + _CRED_CLAUSE_LEAD:
+                continue                                     # an anchor inside a token ('S3cret$Key')
             start = (_CRED_PROSE_START_RE if family.prose else _CRED_PLAIN_START_RE).match(joined, match.end())
             if start is None:
                 continue
@@ -1120,8 +1293,12 @@ def _cred_cross_line_findings(prev: str, line: str) -> list[str]:
                 continue
             if _cred_value_is_structural(value, end, family, joined, position):
                 continue
+            if _PLACEHOLDER in value:
+                if not _sweep_token_ok(value):
+                    kinds.append(f"credential value ({family.name}, wrapped onto the next line)")
+                continue
             core = value.strip(_SWEEP_EDGE).casefold()
-            if (_PLACEHOLDER in value or _sweep_value_required(core) or core in _SWEEP_CONT_EXEMPT
+            if (_sweep_value_required(core) or core in _SWEEP_CONT_EXEMPT
                     or _sweep_starts_clause(line, masked, position - offset, end - offset)):
                 continue
             kinds.append(f"credential value ({family.name}, wrapped onto the next line)")
@@ -1129,17 +1306,25 @@ def _cred_cross_line_findings(prev: str, line: str) -> list[str]:
 
 
 def _sweep_continuation_violation(prev: str, line: str) -> bool:
-    """A one-token line at column 0 after a line that ends with a redacted value must be redacted."""
+    """A column-0 line after a line that holds more than the placeholder and ends with it: its one token
+    (or its first token before a clause-trailing word, ``_SWEEP_CONT_TRAILERS``) must be redacted unless
+    it is structure, a closed command word, a 'key=value' / 'key:' field or a clause of its own."""
     if not line or line[0] in _CRED_WS_CHARS:
         return False
     if not prev.rstrip(_CRED_WS_CHARS + _SWEEP_KEEP).endswith(_PLACEHOLDER):
         return False
+    lone = len(_SWEEP_ROW_TOKEN_RE.findall(prev)) < 2
     tokens = _SWEEP_ROW_TOKEN_RE.findall(line)
-    if len(tokens) != 1:
+    if not tokens or (len(tokens) > 1 and tokens[1].strip(_SWEEP_EDGE).casefold() not in _SWEEP_CONT_TRAILERS):
         return False
     token = tokens[0]
-    return not (_PLACEHOLDER in token or token.casefold() in _SWEEP_CONT_EXEMPT
-                or token.endswith(("#", ">", ":")) or _sweep_token_ok(token) or _SWEEP_COMMAND_WORD_RE.fullmatch(token))
+    folded = token.casefold()
+    if lone and not _CREDENTIAL_SHAPE_RE.search(token):
+        return False
+    return not (_PLACEHOLDER in token or folded in _SWEEP_CONT_EXEMPT or folded in _SWEEP_COMMAND_WORDS
+                or token.endswith(("#", ">", ":")) or _sweep_token_ok(token)
+                or _SWEEP_UKEY_RE.match(token) or _SWEEP_QKEY_RE.match(token)
+                or (len(tokens) > 1 and _sweep_starts_clause(line, _sweep_masked(line), 0, len(token))))
 
 
 def _sweep_join_anchor(prev: str, line: str) -> int | None:
@@ -1178,13 +1363,35 @@ def _sweep_url_findings(line: str) -> list[str]:
     return kinds
 
 
+def _sweep_xml_names_credential(tag: str) -> bool:
+    return bool(_SWEEP_KW_RE.search(tag)) or _sweep_credential_name(tag.rpartition(":")[2], True)
+
+
+def _sweep_xml_parent(line: str, pos: int) -> str | None:
+    stack: list[str] = []
+    for tag in _SWEEP_XML_ANY_TAG_RE.finditer(line, 0, pos):
+        if tag.group("self"):
+            continue
+        name = tag.group("t")
+        if tag.group("close"):
+            if name in stack:
+                del stack[len(stack) - 1 - stack[::-1].index(name):]
+        else:
+            stack.append(name)
+    return stack[-1] if stack else None
+
+
 def _sweep_xml_findings(line: str) -> list[str]:
     kinds = []
     for match in _SWEEP_XML_RE.finditer(line):
         value = _CRED_WS_RE.sub("", match.group("v"))
         tag = match.group("tag")
-        if value and value != _PLACEHOLDER and (
-                _SWEEP_KW_RE.search(tag) or _sweep_credential_name(tag.rpartition(":")[2], True)):
+        if not value or value == _PLACEHOLDER:
+            continue
+        parent = _sweep_xml_parent(line, match.start())
+        if _sweep_xml_names_credential(tag) or (
+                parent is not None and _sweep_xml_names_credential(parent)
+                and tag.rpartition(":")[2].casefold() not in _SWEEP_XML_STRUCT_CHILD):
             kinds.append("credential value (XML element)")
     if "=" in line:
         for tag in _SWEEP_XML_TAG_RE.finditer(line):
@@ -1195,23 +1402,51 @@ def _sweep_xml_findings(line: str) -> list[str]:
     return kinds
 
 
+def _sweep_argv_kind(name: str) -> str:
+    folded = name.casefold()
+    return ("snmp" if folded.startswith("snmp") else "mysql" if folded.startswith("mysql")
+            else "net" if folded.startswith("net") else folded)
+
+
+def _sweep_netuse_structural(token: str) -> bool:
+    core = token.strip(_SWEEP_KEEP)
+    return (not core or core.startswith(("\\\\", "/")) or core == "*" or core == _PLACEHOLDER
+            or bool(re.fullmatch(r"[A-Za-z]:", core)))
+
+
+def _sweep_shell_violation(line: str) -> bool:
+    """'echo user:PASSWORD | chpasswd' and a .pgpass line must carry the placeholder as the password."""
+    if "chpasswd" in line and any(m.group("v") != _PLACEHOLDER for m in _SWEEP_CHPASSWD_RE.finditer(line)):
+        return True
+    if line.count(":") >= 4:
+        found = _SWEEP_PGPASS_RE.match(line)
+        if (found and found.group("v") != _PLACEHOLDER
+                and not _sweep_is_address(line.strip(_CRED_WS_CHARS))):
+            return True
+    return False
+
+
 def _sweep_argv_violation(line: str) -> bool:
     """A credential operand of the closed shell-argument list that is not the placeholder."""
     def bad(text: str, kind: str) -> bool:
         core = text.strip(_SWEEP_KEEP)
-        if kind == "userinfo":
-            if ":" not in core:
+        if kind in ("userinfo", "userpct"):
+            sep = ":" if kind == "userinfo" else "%"
+            if sep not in core:
                 return False
-            core = core.partition(":")[2].strip(_SWEEP_KEEP)
+            core = core.partition(sep)[2].strip(_SWEEP_KEEP)
         return bool(core) and core != _PLACEHOLDER
 
     for command in _SWEEP_ARGV_CMD_RE.finditer(line):
-        name = command.group("cmd")
-        options = _SWEEP_ARGV_OPTIONS["snmp" if name.startswith("snmp") else
-                                      "mysql" if name.startswith("mysql") else name]
+        kind_name = _sweep_argv_kind(command.group("cmd"))
+        options = _SWEEP_ARGV_OPTIONS[kind_name]
         expect = None
         for token in _SWEEP_ROW_TOKEN_RE.finditer(line, command.end()):
             text = token.group(0)
+            if kind_name == "net":
+                if not _sweep_netuse_structural(text) and bad(text, "value"):
+                    return True
+                continue
             if expect is not None:
                 if bad(text, expect):
                     return True
@@ -1233,7 +1468,7 @@ def _sweep_argv_violation(line: str) -> bool:
 
 
 def _sweep_entropy(line: str) -> bool:
-    if "$" in line and _SWEEP_CRYPT_RE.search(line):
+    if ("$" in line or "{" in line) and _SWEEP_CRYPT_RE.search(line):
         return True
     for regex in (_SWEEP_B64_RE, _SWEEP_HEX_RE, _SWEEP_TOKEN_FORMAT_RE):
         for match in regex.finditer(line):
@@ -1256,13 +1491,16 @@ def _sweep_plan(lines: list[str]):
     table: list[Any] = [None] * len(lines)
     forti = [False] * len(lines)
     inside = False
-    putty = 0
+    putty, putty_tail = 0, False
     depth, snmp_depth = 0, None
     for i, line in enumerate(lines):
         spans, pos = [], 0
         if putty:
             pem[i] = "body"
             putty -= 1
+            putty_tail = putty == 0
+        elif putty_tail and _B64_LINE_RE.fullmatch(_CRED_WS_RE.sub("", line)):
+            pem[i] = "body"
         elif inside:
             end = _PEM_END_RE.search(line)
             if end is None:
@@ -1287,18 +1525,22 @@ def _sweep_plan(lines: list[str]):
             break
         if spans:
             pem[i] = spans
+        if pem[i] != "body":
+            putty_tail = False
         if pem[i] != "body" and "private-lines" in low:
             found = _PUTTY_PRIVATE_RE.match(line)
             if found:
                 putty = int(found.group("n"))
                 pem[i] = "header"
         header = None
-        for pattern, nxt in (_TABLE_HEADERS if ("community" in low or "keyring" in low
-                                                  or "secname" in low) else ()):
+        for pattern, nxt, kind in (_TABLE_HEADERS if ("community" in low or "keyring" in low
+                                                    or "secname" in low) else ()):
             found = pattern.match(line)
             if found:
-                header = (found.start("c"), found.start(nxt) if nxt else None)
+                header = (kind, ((found.start("c"), found.start(nxt) if nxt else None),), None, ())
                 break
+        if header is None and pem[i] is None:
+            header = _generic_table_header(line)
         table[i] = header
         config = _FORTI_CONFIG_RE.match(line) if "config" in low else None
         if config:
@@ -1313,22 +1555,100 @@ def _sweep_plan(lines: list[str]):
     return pem, table, forti
 
 
-def _table_row(line: str, banner: str, forti: bool) -> bool:
-    """A row of the open credential table (the producer's rule, restated)."""
+def _generic_table_header(line: str):
+    """A generic credential table header (the producer's strict rule), as a plan entry, or None."""
+    low = line.casefold()
+    if not any(word in low for word in ("pass", "secret", "communit", "psk", "key", "preshared")):
+        return None
+    groups = list(_TABLE_GROUP_RE.finditer(line))
+    if len(groups) < 3:
+        return None
+    names = []
+    for group in groups:
+        words = group.group(0).split(" ")
+        if len(words) > 3 or not all(_TABLE_WORD_RE.fullmatch(word) for word in words):
+            return None
+        names.append(re.sub(r"[/_-]", "", "".join(words)).casefold())
+    strong = [i for i, name in enumerate(names) if name in _TABLE_CRED_COLUMNS]
+    if not strong:
+        return None
+    columns = sorted(set(strong) | {i for i, name in enumerate(names) if name in _TABLE_ALSO_COLUMNS})
+    regions = tuple((groups[i].start(), groups[i + 1].start() if i + 1 < len(groups) else None) for i in columns)
+    return ("generic", regions, len(groups), tuple(columns))
+
+
+def _table_shape(tokens: list[tuple[int, int, str]], table) -> tuple[int, ...] | None:
+    """The credential fields a row's SHAPE selects (the producer's rule, restated), or None."""
+    kind, regions, count, columns = table
+    n = len(tokens)
+    if n < 2:
+        return None
+    if kind == "first":
+        nxt = regions[0][1]
+        if n > 4 or not (tokens[1][0] - tokens[0][1] >= 2
+                         or (nxt is not None and tokens[0][0] < nxt <= tokens[1][0] + 2)):
+            return None
+        return (0,)
+    if kind == "aireos":
+        return (0,) if _SWEEP_IPV4_RE.fullmatch(tokens[1][2]) else None
+    if kind == "isakmp":
+        if n == 3 and (_sweep_is_address(tokens[1][2]) or "." in tokens[1][2]):
+            return (2,)
+        if n == 4 and _sweep_is_address(tokens[1][2]) and _sweep_is_address(tokens[2][2]):
+            return (3,)
+        return None
+    if kind == "host":
+        return tuple(range(5, n)) if n >= 6 and tokens[1][2].isdigit() else None
+    return columns if n == count else None
+
+
+def _table_fields(line: str, tokens: list[tuple[int, int, str]], table):
+    """``(shape, cells)`` -- the producer's rule restated: the shape's fields plus every field overlapping a
+    credential column; a line whose credential column holds the placeholder is a row whatever its shape."""
+    regions = table[1]
+    width = len(line)
+    overlap = [i for i, (a, b, _text) in enumerate(tokens)
+               if any(a < (width if e is None else e) and b > start for start, e in regions)]
+    shape = _table_shape(tokens, table)
+    if shape is None:
+        if not any(_PLACEHOLDER in tokens[i][2] for i in overlap):
+            return None
+        shape = ()
+    return shape, tuple(sorted(set(shape) | set(overlap)))
+
+
+def _table_tokens(line: str) -> list[tuple[int, int, str]]:
+    return [(m.start(), m.end(), m.group(0)) for m in _SWEEP_ROW_TOKEN_RE.finditer(line)]
+
+
+def _table_row(line: str, banner: str, forti: bool, table) -> bool:
+    """A row of the open credential table: its row shape (or a placeholder in its credential column), and no
+    credential anchor OUTSIDE the fields its shape selects."""
     if _TABLE_END_RE.match(line) or _block_open(line) is not None or _CHAP_HEADER_RE.match(line):
         return False
     if not banner and _SWEEP_BANNER_RE.match(line):
         return False
     if any(d in line for d in _CSV_DELIMS) and _csv_header(line) is not None:
         return False
-    if len(_SWEEP_ROW_TOKEN_RE.findall(line)) < 2:
+    tokens = _table_tokens(line)
+    found = _table_fields(line, tokens, table)
+    if found is None:
         return False
-    return _sweep_anchor(line, _sweep_masked(line), forti) is None
+    rest = line
+    for i in found[0]:
+        a, b, _text = tokens[i]
+        rest = rest[:a] + " " * (b - a) + rest[b:]
+    return _sweep_anchor(rest, _sweep_masked(rest), forti) is None
 
 
 def _csv_row(line: str, csv) -> bool:
     delim, count = csv[0], csv[1]
-    return delim in line and count - 1 <= len(_csv_split(line, delim)) <= count + 3
+    if delim not in line:
+        return False
+    fields = len(_csv_split(line, delim))
+    if not count - 1 <= fields <= count + 3:
+        return False
+    return fields == count or _csv_header(line) is None
 
 
 def _pem_findings(lines: list[str], pem: list[Any]) -> list[str]:
@@ -1355,7 +1675,7 @@ def _block_open(line: str):
         if found and _sweep_credential_name(found.group("t").rpartition(":")[2], True):
             return ("xml", found.group("t"), 1)
     if ":" in line:
-        found = _YAML_OPEN_RE.match(line)
+        found = _YAML_OPEN_RE.match(line) or _YAML_VALUE_RE.match(line)
         if found and _sweep_credential_name(found.group("k"), False):
             return ("yaml", found.start("k"))
     return None
@@ -1419,7 +1739,7 @@ def _csv_header(line: str) -> tuple[str, int, frozenset[int]] | None:
             continue
         columns = frozenset(i for i, core in enumerate(cores)
                             if core == _PLACEHOLDER or _SWEEP_KW_RE.search(core)
-                            or _sweep_credential_name(core, False))
+                            or _sweep_credential_name(core, True))
         if columns:
             return (delim, len(cores), columns)
     return None
@@ -1432,20 +1752,25 @@ def _csv_violation(line: str, csv) -> bool:
 
 
 def _chap_row(line: str, banner: str) -> bool:
-    if len(_SWEEP_ROW_TOKEN_RE.findall(line)) < 3:
+    fields = list(_SWEEP_ROW_TOKEN_RE.finditer(line))
+    if len(fields) < 3:
         return False
     if _block_open(line) is not None or (not banner and _SWEEP_BANNER_RE.match(line)) or _CHAP_HEADER_RE.match(line):
         return False
     if any(d in line for d in _CSV_DELIMS) and _csv_header(line) is not None:
         return False
-    return _sweep_anchor(line, _sweep_masked(line), False) is None
+    a, b = fields[2].span()
+    rest = line[:a] + " " * (b - a) + line[b:]
+    return _sweep_anchor(rest, _sweep_masked(rest), False) is None
 
 
 def _chap_violation(line: str) -> bool:
-    if line.lstrip(_CRED_WS_CHARS).startswith("#") or _SWEEP_KW_RE.search(_sweep_masked(line)):
+    """The secret (third) field of a chap-secrets row, by position, must be the placeholder."""
+    if line.lstrip(_CRED_WS_CHARS).startswith("#"):
         return False
     fields = _SWEEP_ROW_TOKEN_RE.findall(line)
-    return len(fields) >= 3 and _PLACEHOLDER not in fields[2] and bool(fields[2].strip(_SWEEP_KEEP))
+    return (len(fields) >= 3 and not (_PLACEHOLDER in fields[2] and _sweep_token_ok(fields[2]))
+            and bool(fields[2].strip(_SWEEP_KEEP)))
 
 
 def _raw_capture_credential_findings(text: str) -> list[str]:
@@ -1466,6 +1791,7 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
     block: Any = None
     csv: Any = None
     chap = False
+    expect = False
     banner = ""
     prev: str | None = None
     for index, line in enumerate(lines):
@@ -1513,7 +1839,7 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
         row = None
         if region is not None and not blank and not all(
                 _DASHES_RE.match(cell) for cell in _SWEEP_ROW_TOKEN_RE.findall(line)):
-            if _table_row(line, banner, forti[index]):
+            if _table_row(line, banner, forti[index], region):
                 row = region
             else:
                 region = None
@@ -1528,19 +1854,23 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
             anchor = 0 if forced else _sweep_anchor(line, masked, forti[index], prose, join)
             if anchor is not None and _sweep_residue(masked, anchor, delim):
                 kinds.append("credential residue after a credential keyword")
-            if "-" in line and _sweep_argv_violation(line):
+            if ("-" in line or "net" in low) and _sweep_argv_violation(line):
                 kinds.append("credential value (shell argument)")
-            if row is not None and anchor is None:
-                start_col, end_col = row
-                for match in _SWEEP_ROW_TOKEN_RE.finditer(masked):
-                    if (match.start() < (len(masked) if end_col is None else end_col) and match.end() > start_col
-                            and _PLACEHOLDER not in match.group(0) and not _DASHES_RE.match(match.group(0))):
-                        kinds.append("credential table column")
+            if ":" in line and _sweep_shell_violation(line):
+                kinds.append("credential value (shell argument)")
             if _sweep_entropy(line):
                 kinds.append("high-entropy token")
             kinds.extend(_credential_line_findings(line, artifact=False, has_next=has_next[index], delim=delim))
+        if row is not None and any(not (_PLACEHOLDER in text and _sweep_token_ok(text)) and not _DASHES_RE.match(text)
+                                   for i, (_a, _b, text) in enumerate(_table_tokens(line))
+                                   if i in (_table_fields(line, _table_tokens(line), row) or ((), ()))[1]):
+            kinds.append("credential table column")       # by position, whatever the cell spells
         if wraps and prev is not None and _sweep_continuation_violation(prev, line):
             kinds.append("credential value (wrapped value)")
+        if expect and not blank:
+            sent = _SWEEP_EXPECT_SEND_RE.match(line)
+            if sent and sent.group("v") not in ("", _PLACEHOLDER):
+                kinds.append("credential value (expect send)")
         if chap and not blank and not line.lstrip(_CRED_WS_CHARS).startswith("#"):
             if _chap_row(line, banner):
                 if _chap_violation(line):
@@ -1576,6 +1906,7 @@ def _raw_capture_credential_findings(text: str) -> list[str]:
         prev = line
         if not blank:
             prev_nb = line
+            expect = bool(_SWEEP_EXPECT_PROMPT_RE.match(line))
     kinds.extend(_independent_credential_findings(text, lines))
     return kinds
 
