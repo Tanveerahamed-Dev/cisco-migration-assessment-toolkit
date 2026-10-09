@@ -17,7 +17,8 @@ Independent peers. T5 needs no third-party server: a raw RFC 4419 responder in t
 the cleartext half of the handshake (version, KEXINIT, GEX request/group), built on W59 PR-1's stdlib wire helpers
 (``tests/ssh_fixture/raw_peer.py``), and records everything the client sends after the group. T2/T3/T4 interoperate
 with W59 PR-1's fixture: an asyncssh server run as a SUBPROCESS from its own hash-pinned virtualenv
-(``tools/requirements-ssh-fixture-test.txt``), launched by PR-1's ``fixture_server`` with PR-1's contract
+(``tools/requirements-ssh-fixture-test.txt``), launched by PR-1's ``fixture_server`` (``tests/ssh_fixture/launcher.py``,
+a helper module, not a test module) with PR-1's contract
 (``ATLAS_SSH_FIXTURE_PYTHON``; ``ATLAS_SSH_FIXTURE_REQUIRED=1`` on the hosted legs makes a missing fixture FAIL
 rather than skip). This module never imports asyncssh, and every fixture profile it relies on is proven on the wire
 (``probe_kexinit``) first.
@@ -58,8 +59,8 @@ from cisco_toolkit import ssh_session as S                         # noqa: E402
 from cisco_toolkit.attestation import SSH_SHA1_ALGORITHM, ssh_sha1_literals  # noqa: E402
 from ssh_fixture.raw_peer import (                                 # noqa: E402
     kexinit_names, kexinit_payload, packet, parse_kexinit, probe_kexinit, read_payload, read_version_line)
+from ssh_fixture.launcher import fixture_server                   # noqa: E402
 from ssh_structural_support import parse_source, shipped_python_files  # noqa: E402
-from test_ssh_session_interop import fixture_server                # noqa: E402
 
 #: RFC 2409 §6.2 Second Oakley Group: the 1024-bit MODP prime (a published RFC constant). A server that
 #: answers group exchange with it is exactly the weak group the legacy floor exists to refuse.
@@ -403,10 +404,12 @@ def test_transport_for_refuses_when_stock_paramiko_already_permits_sha1(monkeypa
         L.transport_for(L.LEGACY_SHA1_PROFILE)
 
 
-def test_p2d_default_permits_sha1_hands_the_owner_copies_with_its_real_signature(monkeypatch):
-    """W59 PR-2 review (P2-d). Catches: the wrapper calling ``ssh_session.permits_sha1`` with a signature it does
-    not have (three positional tables; it takes ``(transport_cls, rsakey_cls=None)``), and the stock classes
-    themselves handed out (only frozen copies of their tables leave the tier)."""
+def test_p2d_default_permits_sha1_hands_the_owner_only_names_with_its_real_signature(monkeypatch):
+    """W59 PR-2 review (P2-d), tightened in review round 3 (P2). Catches: the wrapper calling
+    ``ssh_session.permits_sha1`` with a signature it does not have (three positional tables; it takes
+    ``(transport_cls, rsakey_cls=None)``); the stock classes themselves handed out; and -- round 3 -- any class a
+    stock table maps a name to (a key-exchange engine, a key class) handed out inside a copy. Only the NAMES leave
+    the tier, as frozen tuples, and the owner's answer is the one it gives on the real classes."""
     seen = []
 
     def spy(transport_cls, rsakey_cls=None):
@@ -418,9 +421,15 @@ def test_p2d_default_permits_sha1_hands_the_owner_copies_with_its_real_signature
     assert answer is S.permits_sha1(Transport, RSAKey)
     ((stock_transport, stock_rsakey),) = seen
     assert stock_transport is not Transport and stock_rsakey is not RSAKey
-    assert stock_transport._preferred_kex == tuple(Transport._preferred_kex)
-    assert dict(stock_transport._kex_info) == dict(Transport._kex_info)
-    assert type(stock_transport._kex_info) is MappingProxyType and type(stock_rsakey.HASHES) is MappingProxyType
+    handed = {attr: getattr(stock_transport, attr)
+              for attr in ("_preferred_kex", "_preferred_keys", "_kex_info", "_key_info")}
+    handed["HASHES"] = stock_rsakey.HASHES
+    for attr, names in handed.items():
+        stock = RSAKey.HASHES if attr == "HASHES" else getattr(Transport, attr)
+        assert type(names) is tuple and names == tuple(stock), attr       # the names, in the stock order
+        assert all(type(n) is str for n in names), attr                    # no class or callable crosses
+    assert set(vars(stock_transport)) == {"_preferred_kex", "_preferred_keys", "_kex_info", "_key_info"}
+    assert set(vars(stock_rsakey)) == {"HASHES"}
 
 
 # ========================================================================== T5: the GEX floor ===
@@ -741,6 +750,31 @@ def test_t10_every_sha1_boundary_name_of_the_owner_matches_the_independent_patte
         assert SSH_SHA1_ALGORITHM.match(name), name
     for modern in ("x509v3-rsa2048-sha256", "rsa-sha2-256", "diffie-hellman-group14-sha256", "hmac-sha1"):
         assert not SSH_SHA1_ALGORITHM.match(modern), modern
+
+
+@pytest.mark.parametrize("text,names", [
+    # joined to a neighbour by any non-name character: each was missed by the round-2 delimiter list
+    ("kex=diffie-hellman-group14-sha1", ["diffie-hellman-group14-sha1"]),
+    ("ssh-rsa/ssh-dss", ["ssh-dss", "ssh-rsa"]),
+    ("HostKeyAlgorithms:ssh-rsa", ["ssh-rsa"]),
+    ("HostKeyAlgorithms=+ssh-rsa", ["ssh-rsa"]),
+    ("#ssh-dss*", ["ssh-dss"]),
+    ("kex=gss-gex-sha1-ab/cd==:next", ["gss-gex-sha1-ab/cd=="]),      # a GSS name's base64 tail is part of it
+    # still found where round 2 found it
+    ("negotiated ssh-rsa.", ["ssh-rsa"]),
+    ("ssh-rsa-cert-v01@openssh.com", ["ssh-rsa-cert-v01@openssh.com"]),
+    ("x509v3-ssh-rsa", ["x509v3-ssh-rsa"]),
+    # controls: a longer word that contains a name, and the modern and MAC names, are not SHA-1 SSH names
+    ("rsa-sha2-256", []), ("hmac-sha1", []), ("diffie-hellman-group14-sha256", []), ("id_ssh-rsa", []),
+    ("ssh-rsa.pub", []), ("ssh-rsa2", []), ("x509v3-ssh-rsa2", []), ("ssh-rsa@example.com", []), ("mssh-rsa", []),
+])
+def test_t10_a_sha1_name_is_found_whatever_non_name_character_joins_it(text, names):
+    """W59 PR-2 review round 3 (P3). Mutation caught: the shared SHA-1 name scan splitting string constants on a
+    hand-kept delimiter class, so a name joined to its neighbour by '=', '/', ':' or any other character outside
+    that class was never a literal (``"kex=diffie-hellman-group14-sha1"`` passed T10 and the published claim). A
+    name is now matched as an anchored token bounded by any character that cannot continue it, and a longer word
+    that merely contains one is still not a match."""
+    assert [token for _line, token in ssh_sha1_literals(ast.parse(repr(text)))] == names
 
 
 # ======================================================================= weakness declaration ===

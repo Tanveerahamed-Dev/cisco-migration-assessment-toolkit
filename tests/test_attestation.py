@@ -411,11 +411,16 @@ _VOCAB_SRC = (
 )
 
 
-def _legacy_pkg(tmp_path, monkeypatch, *, legacy_extra="", others=None, vocab=_VOCAB_SRC):
-    """A fake analysis package carrying the REAL legacy_ssh.py (plus a planted suffix), a synthetic
-    vocabulary owner and optional extra modules, and a resolvable fake collector entry module."""
+def _legacy_pkg(tmp_path, monkeypatch, *, legacy_extra="", others=None, vocab=_VOCAB_SRC, legacy_replace=None):
+    """A fake analysis package carrying the REAL legacy_ssh.py (plus a planted suffix, and optionally one exact
+    in-place replacement ``(old, new)`` -- ``old`` must occur exactly once), a synthetic vocabulary owner and optional
+    extra modules, and a resolvable fake collector entry module."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     real = open(os.path.join(ROOT, "cisco_toolkit", "legacy_ssh.py"), encoding="utf-8").read()
+    if legacy_replace is not None:
+        old, new = legacy_replace
+        assert real.count(old) == 1, f"the planted route's anchor no longer occurs exactly once: {old!r}"
+        real = real.replace(old, new)
     files = {"legacy_ssh.py": real + legacy_extra, "clean.py": "X = 1\n"}
     if vocab is not None:
         files["ssh_session.py"] = vocab
@@ -706,8 +711,14 @@ def test_t9_round2_the_closed_allowlists_are_exact_for_the_real_module():
     calls = {}
     for node in _ast.walk(tree):
         if isinstance(node, _ast.Call):
-            calls.setdefault(owners.get(id(node), "<module>"), set()).add(_ast.unparse(node.func))
+            calls.setdefault(owners.get(id(node), "<module>"), set()).add(A.call_signature(node))
+    # W59 PR-2 review round 3 (P2): each site is its FULL signature -- spelling, positional count, keyword names
     assert calls == {k: set(v) for k, v in A._LEGACY_SSH_CALL_SITES.items()}, calls
+    assert not [n for n in _ast.walk(tree) if isinstance(n, (_ast.FunctionDef, _ast.ClassDef)) and n.decorator_list]
+    assert not [n for n in _ast.walk(tree) if isinstance(n, _ast.ClassDef) and n.keywords]
+    # ... and every copy or projection a connection-capable value may be handed to is one the module really uses
+    _found, passes, _tainted, _factories = A.connection_constructor_calls(tree, signatures=True)
+    assert {s for sigs in passes.values() for s in sigs} == A._COPY_CALLS | A._NAME_LIST_CALLS, passes
     assert {n.attr for n in _ast.walk(tree) if isinstance(n, _ast.Attribute)} == A._LEGACY_SSH_ATTRIBUTES
     used = {type(n).__name__ for n in _ast.walk(tree)}
     assert used <= A._LEGACY_SSH_GRAMMAR, used - A._LEGACY_SSH_GRAMMAR
@@ -735,3 +746,128 @@ def test_t9_round2_the_taint_rule_abstains_without_a_connection_capable_binding(
     c = _legacy_claim(pkg, collector)
     assert c["result"] == NOT_EVALUATED, c["detail"]
     assert "the taint fixpoint found 0 connection-capable binding(s)" in c["detail"], c["detail"]
+
+
+# ---------- W59 PR-2 review round 3 (P2): implicit calls through an allowlisted spelling, or a laundering copy ---
+_RETURN = "    return _TRANSPORT_BY_PROFILE[profile]\n"
+_IMPLICIT_CALL_ROUTES = [
+    # sorted() is allowlisted in transport_for, so only its pinned SIGNATURE refuses a key= that calls the class
+    ((_RETURN, "    return sorted(((profile, 22),), key=LegacySHA1Transport)\n"), "",
+     ["calls sorted in transport_for (outside the closed call-site allowlist): sorted(_, key=_)",
+      "transport_for: hands a connection-capable value to sorted() (only a copy may take one"]),
+    (("{sorted(_TRANSPORT_BY_PROFILE)}", "{sorted(_TRANSPORT_BY_PROFILE, key=LegacySHA1Transport)}"), "",
+     ["calls sorted in transport_for (outside the closed call-site allowlist): sorted(_, key=_)",
+      "transport_for: hands a connection-capable value to sorted() (only a copy may take one"]),
+    # ... and the class reached through the frozen mapping that holds it: the copy must not launder its member
+    ((_RETURN, "    return sorted(((profile, 22),), key=_TRANSPORT_BY_PROFILE[profile])\n"), "",
+     ["calls sorted in transport_for (outside the closed call-site allowlist): sorted(_, key=_)",
+      "transport_for: hands a connection-capable value to sorted() (only a copy may take one"]),
+    # a mapping lookup, then a call
+    ((_RETURN, "    return _TRANSPORT_BY_PROFILE[profile]((profile, 22))\n"), "",
+     ["transport_for: calls _TRANSPORT_BY_PROFILE[profile] (a class or callable derived from a paramiko binding"]),
+    # getattr on the mapping
+    ((_RETURN, "    return getattr(_TRANSPORT_BY_PROFILE, 'get')(profile)((profile, 22))\n"), "",
+     ["transport_for: calls getattr(_TRANSPORT_BY_PROFILE, 'get')(profile) (a class or callable derived from a "
+      "paramiko binding", "names getattr (dynamic code"]),
+    # map() and filter() call what they are handed
+    ((_RETURN, "    return tuple(map(_TRANSPORT_BY_PROFILE[profile], ((profile, 22),)))\n"), "",
+     ["transport_for: hands a connection-capable value to map() (only a copy may take one"]),
+    ((_RETURN, "    return tuple(filter(_TRANSPORT_BY_PROFILE[profile], ((profile, 22),)))\n"), "",
+     ["transport_for: hands a connection-capable value to filter() (only a copy may take one"]),
+    # a dict.get lookup, then a call; and the same bound method held in a local first
+    ((_RETURN, "    return _TRANSPORT_BY_PROFILE.get(profile)((profile, 22))\n"), "",
+     ["transport_for: calls _TRANSPORT_BY_PROFILE.get(profile) (a class or callable derived from a paramiko binding",
+      "attribute get (outside the closed attribute allowlist)"]),
+    ((_RETURN, "    pick = _TRANSPORT_BY_PROFILE.get\n    return pick(profile)((profile, 22))\n"), "",
+     ["transport_for: calls pick(profile) (a class or callable derived from a paramiko binding"]),
+    # a `+` copy (one the table rule accepts) keeps its members too
+    (None, "\n\n_EVERY = (LegacySHA1Transport,) + ()\n\n\ndef _first():\n    return _EVERY[0](('192.0.2.1', 22))\n",
+     ["_first: calls _EVERY[0] (a class or callable derived from a paramiko binding"]),
+]
+
+
+@pytest.mark.parametrize("replace,extra,expected", _IMPLICIT_CALL_ROUTES,
+                         ids=["sorted-key-class", "sorted-key-in-allowlisted-site", "sorted-key-via-mapping",
+                              "mapping-lookup-call", "getattr-on-mapping", "map", "filter", "dict-get-call",
+                              "bound-get-alias", "plus-copy"])
+def test_t9_round3_each_implicit_call_route_violates_the_confinement_claim(tmp_path, monkeypatch, replace, extra,
+                                                                          expected):
+    """W59 PR-2 review round 3 (P2). Mutation caught: a one-line edit of the real legacy_ssh.py that makes a class
+    derived from paramiko be called IMPLICITLY -- ``sorted(..., key=LegacySHA1Transport)`` (``Transport(str)`` opens
+    a TCP connection) under the allowlisted ``sorted`` spelling, or the class reached through the frozen
+    ``_TRANSPORT_BY_PROFILE`` mapping (a lookup, ``getattr``, ``map``, ``filter``, ``.get``, a held bound method) or a
+    ``+`` copy. Round 2 keyed the call-site allowlist by the callee's spelling only, and its taint model treated a
+    copy's result as clean, so ``sorted(..., key=_TRANSPORT_BY_PROFILE[profile])`` left the claim at HOLDS. Each route
+    now violates it, and each through the TAINT rule itself (the expected phrases), whatever the call-site and
+    attribute allowlists also say."""
+    pkg, collector = _legacy_pkg(tmp_path, monkeypatch, legacy_extra=extra, legacy_replace=replace)
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED, c["detail"]
+    for phrase in expected:
+        assert phrase in c["detail"], (phrase, c["detail"])
+
+
+def test_t9_round3_a_copy_keeps_its_members_taint_and_only_untainted_contents_are_clean():
+    """W59 PR-2 review round 3 (P2), at the model: a copy (``MappingProxyType``, ``tuple``, ``sorted``,
+    ``dict.fromkeys``, a ``+``) of a display or a mapping that holds a tainted value is tainted; a copy of untainted
+    contents is clean; and the name-list rendering's result is a ``str``, clean by construction."""
+    import ast as _ast
+
+    from cisco_toolkit.attestation import connection_constructor_calls
+
+    src = ("from types import MappingProxyType\nfrom paramiko.transport import Transport\n"
+           "HELD = MappingProxyType({'p': Transport})\nPAIR = tuple((Transport,))\nBOTH = ('a',) + (Transport,)\n"
+           "ORDER = sorted(HELD)\nKEYS = dict.fromkeys(PAIR)\n"
+           "NAMES = MappingProxyType({'p': 'name'})\nWORDS = tuple(('a', 'b'))\nSUM = ('a',) + ('b',)\n"
+           "LISTED = sorted(('b', 'a'))\nRENDERED = ','.join(Transport._preferred_kex)\n"
+           "def build():\n    return HELD['p'](('192.0.2.1', 22))\n")
+    found, passes, tainted, factories = connection_constructor_calls(_ast.parse(src), signatures=True)
+    names = {name for scope, name in tainted if scope == "<module>"}
+    assert {"HELD", "PAIR", "BOTH", "ORDER", "KEYS"} <= names, names
+    assert not {"NAMES", "WORDS", "SUM", "LISTED", "RENDERED"} & names, names
+    assert found == {"build": [("HELD['p']", 1, ())]}, found
+    assert ("','.join", 1, ()) in passes["<module>"], passes
+    assert factories == set(), factories                     # build() calls the class; it returns an instance
+
+
+@pytest.mark.parametrize("text,name", [
+    ("kex=diffie-hellman-group14-sha1", "diffie-hellman-group14-sha1"),
+    ("host-keys/ssh-rsa", "ssh-rsa"),
+    ("HostKeyAlgorithms:ssh-dss", "ssh-dss"),
+])
+def test_t9_round3_a_sha1_name_joined_by_any_non_name_character_is_a_literal(tmp_path, monkeypatch, text, name):
+    """W59 PR-2 review round 3 (P3). Mutation caught: a SHA-1 SSH name in a default-path module joined to its
+    neighbour by '=', '/' or ':' -- the round-2 tokeniser split only on a hand-kept delimiter class, so each of these
+    left the confinement claim at HOLDS. A name is now matched wherever it occurs, bounded by any character that
+    cannot continue it."""
+    pkg, collector = _legacy_pkg(tmp_path, monkeypatch, others={"joined.py": f"OPTION = {text!r}\n"})
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED, c["detail"]
+    assert f"joined.py:1: SSH SHA-1 algorithm literal {name!r} outside the vocabulary owner" in c["detail"], c["detail"]
+
+
+def test_t9_round3_the_method_text_is_rendered_from_the_allowlists(tmp_path, monkeypatch):
+    """W59 PR-2 review round 3 (P3). Mutation caught: the published method restating an allowlist's size or members
+    ("two types names", "five paramiko classes") instead of rendering them, so a widened allowlist kept describing
+    the old one. Every count and list is read from its allowlist, and moves with it."""
+    from cisco_toolkit import attestation as A
+
+    pkg, collector = _legacy_pkg(tmp_path, monkeypatch)
+    method = _legacy_claim(pkg, collector)["method"]
+    assert method == A._legacy_ssh_method()
+    assert f"exact list of {len(A._LEGACY_SSH_IMPORTS_EXACT)} names" in method
+    assert all(name in method for name in A._LEGACY_SSH_IMPORTS_EXACT | A._LEGACY_SSH_IMPORTS_VOCABULARY)
+    assert f"{len(A._LEGACY_SSH_IMPORTS_VOCABULARY)} pinned names" in method
+    assert f"closed list of {sum(len(v) for v in A._LEGACY_SSH_CALL_SITES.values())} call sites" in method
+    assert f"closed list of {len(A._LEGACY_SSH_ATTRIBUTES)};" in method
+    assert f"closed grammar of {len(A._LEGACY_SSH_GRAMMAR)} (none of " in method
+    assert all(A.render_call(s) in method for s in A._COPY_CALLS | A._NAME_LIST_CALLS)
+    assert "two types names" not in method and "five paramiko classes" not in method
+    # widen two allowlists: the text follows them
+    monkeypatch.setattr(A, "_LEGACY_SSH_IMPORTS_EXACT", A._LEGACY_SSH_IMPORTS_EXACT | {"paramiko.client.SSHClient"})
+    monkeypatch.setattr(A, "_LEGACY_SSH_GRAMMAR", A._LEGACY_SSH_GRAMMAR | {"With"})
+    widened = A._legacy_ssh_method()
+    assert "paramiko.client.SSHClient" in widened
+    assert f"exact list of {len(A._LEGACY_SSH_IMPORTS_EXACT)} names" in widened
+    excluded = widened.split("(none of ", 1)[1].split(")", 1)[0].split(", ")
+    assert "With" not in excluded and "For" in excluded, excluded

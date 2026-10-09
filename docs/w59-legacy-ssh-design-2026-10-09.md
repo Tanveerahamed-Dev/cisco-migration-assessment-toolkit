@@ -356,7 +356,10 @@ exactly as follows:
 - **The tier tuples hold plain names and their certificate variants** (§4.1): two key-exchange names, and `ssh-rsa`
   with `ssh-rsa-cert-v01@openssh.com`. PR-2's `_preferred_keys` appends only the plain names.
 - **The probe signature** is `permits_sha1(transport_cls, rsakey_cls=None) -> bool`, called as
-  `permits_sha1(paramiko.Transport, paramiko.RSAKey)`. There is no three-argument form.
+  `permits_sha1(paramiko.Transport, paramiko.RSAKey)`. There is no three-argument form. The tier's own wrapper,
+  `legacy_ssh.default_permits_sha1()`, hands it only the algorithm NAMES of the stock tables: each table is rendered
+  as an SSH name-list (`",".join`, which accepts only `str` members) and split back, so no class a table maps a name to
+  leaves the tier (PR-2 review round 3).
 - **The legacy module's one entry point** is `legacy_ssh.transport_for(profile) -> type`, returning a transport class
   composed as `(ObservingTransportMixin, <legacy paramiko.Transport subclass>)`. The collector's
   `_transport_for_profile` gains exactly that branch. `_open_connection`, `_ObservedSSHClient`, the thread-local
@@ -496,7 +499,7 @@ named the device, and how to opt in (for `refused_legacy_only`) or that the coll
 | Level | Surface | Rule |
 |---|---|---|
 | Device | `devices.json` entry `"ssh_profile": "legacy-sha1"` | The value must be a JSON **string** in `SSH_PROFILES`. A missing key means `"default"`. Any other type or value, including `true` or `"yes"`, is a load error naming the entry by `hostname`/`ip` only, as `load_devices` already does. There are no aliases. |
-| Run | `cisco-assess … --allow-legacy-ssh legacy-sha1=<host>[,<host>…]` | The profile must be a non-default name in `SSH_PROFILES`, and the list must not be empty. Each item must exactly equal one row's `hostname` or `ip`. An item that matches no row is an error before any connection, so a stale name or a typo fails loudly. The flag may be given once. Combined with `--no-collect` it is an argparse error. |
+| Run | `cisco-assess … --allow-legacy-ssh legacy-sha1=<host>[,<host>…]` | The profile must be a non-default name in `SSH_PROFILES`, and the list must not be empty. Each item must exactly equal one row's `hostname` or `ip`. An item that matches no row is an error before any connection, so a stale name or a typo fails loudly. The flag may be given once. Combined with `--no-collect` it is an argparse error. Every consent-bearing row (one that requests a non-default `ssh_profile`, or one the flag names) must carry a hostname that is non-empty and that no other row shares, compared case-insensitively; otherwise the run is refused before any connection, because every consent list and record names a device by its hostname (PR-2 review round 3). |
 
 **Platform check after mapping** (critique P3). `load_devices` silently maps any platform string it does not know to
 `auto` (`plat_map.get(plat_raw.strip().lower(), "auto")`). The check therefore runs on the **mapped** value: a row
@@ -546,7 +549,8 @@ hosts and every name must match.
 - the run's `<output>.incomplete.json` marker, from before the first connection until a verified seal (stage
   `collection_started`; a failed finalization rewrites it with the same block). It is therefore no longer content-free:
   like the run manifest it names devices by hostname, so the Atlas release contract refuses it as a client artifact and
-  the repository ignores `*.incomplete.json` (PR-2 review round 2);
+  the repository ignores `*.incomplete.json` (PR-2 review round 2); the repository privacy verifier and the wheel/sdist
+  audit refuse both carriers, `*.run_manifest.json` and `*.incomplete.json`, by suffix (round 3);
 - the per-device session sidecar (§6.1), which is the **only** source of a device's consent fields in the snapshot.
 
 **Atlas.** `Atlas.exe --allow-live-network --run-engine --devices-file devices.json … --allow-legacy-ssh
@@ -875,8 +879,10 @@ the charter `NO_EGRESS_CHARTER` pairs it, as it pairs `rest_collect.py`, with a 
     only the pinned §4.2 names (the tier tuples by the owner's naming convention), and none the owner itself binds
     through an import statement; paramiko is the only network library;
   - **closed calls:** every explicit call (decorators and class keywords included) is listed under its enclosing def by
-    the exact spelling of its callee (`_LEGACY_SSH_CALL_SITES`), so no channel, session or authentication call, and no
-    call of a runtime-reached object, can be added without widening the list;
+    its full signature -- the callee's spelling, the positional count and the keyword names (`_LEGACY_SSH_CALL_SITES`;
+    review round 3: the spelling alone admitted `sorted(..., key=LegacySHA1Transport)`, an implicit call of the class) --
+    so no channel, session or authentication call, no call of a runtime-reached object and no new argument shape can be
+    added without widening the list;
   - **closed attributes and grammar:** every attribute name is one of a closed list (no `mro`, `__class__`,
     `__dict__`, `__setattr__`, `self.transport` ...), every AST node type is one of a closed grammar (no `with`, `for`,
     `lambda`, comprehension, `yield`, `global`, `del`, walrus ...), and each scope binds a name once and shadows no
@@ -884,18 +890,25 @@ the charter `NO_EGRESS_CHARTER` pairs it, as it pairs `rest_collect.py`, with a 
   - **the T8 taint fixpoint:** the collector's own structural scan (§8 T8), whose one owner is now
     `cisco_toolkit/attestation.py :: connection_constructor_calls`, runs over the module and finds no call of a class
     or callable derived from a paramiko binding (the module's own exception classes derive only from paramiko's
-    exception module, which is not a root) and hands a connection-capable value only to a copy;
+    exception module, which is not a root) and hands a connection-capable value only to a copy or to the name-list
+    rendering. Review round 3: a copy's result keeps its members' taint (`MappingProxyType({profile:
+    LegacySHA1Transport})` is as connection-capable as the class it holds), and so do `+`, a container's bound method
+    and `getattr` on a container, so a lookup, `.get`, `getattr`, `map` or `filter` through the frozen mapping is
+    caught; only a copy of untainted contents is clean, and the name-list rendering's result is a `str`;
   - **no table mutation:** anything rooted in a paramiko binding, and any inherited algorithm table, is used only as a
-    class base or the operand of a copy (`tuple(...)`, `+`, `{**...}`, `MappingProxyType(...)`), and every table it
-    defines is a tuple or a `MappingProxyType`;
+    class base or the operand of a copy (`tuple(...)`, `+`, `{**...}`, `MappingProxyType(...)`, `sorted(...)`,
+    `dict.fromkeys(...)`) or of the name-list rendering (`",".join(...)`), and every table it defines is a tuple or a
+    `MappingProxyType`;
   - **identifier confinement:** across the package walk and the collector entry, SSH SHA-1 algorithm literals appear
-    only in `ssh_session.py`'s vocabulary, the legacy-tier name tuples are read only by `legacy_ssh.py`, and
+    only in `ssh_session.py`'s vocabulary (round 3: a name is matched wherever it occurs in a string, bounded by any
+    character that cannot continue it, so `kex=...`, `a/b` and `k:v` joins are literals too), the legacy-tier name tuples are read only by `legacy_ssh.py`, and
     `hashes.SHA1` appears only in `legacy_ssh.py`.
 - **States:** `HOLDS`; `VIOLATED` naming each offending line or site; `NOT_EVALUATED` when the source is absent or a
   rule had no subject (no table, no tier import, no tainted binding or call, no recognised vocabulary literal, no
   scannable collector entry).
 - **What it does not establish:** it is a static scan. The behaviour of the paramiko code the tier inherits, and calls
-  made implicitly by operators and string formatting on the values the allowlisted code handles, are outside it.
+  made implicitly by operators, iteration and string formatting on the values the allowlisted code handles, are
+  outside it. The method text renders every list and count it states from the allowlist it describes (round 3).
 - `ssh_session.py` imports no network library, so it stays inside the no-egress walk and needs no charter entry.
 
 The same PR fixes two existing restatements of the charter: `_claim_no_egress`'s HOLDS detail hard-coded "excluded by
@@ -966,7 +979,7 @@ In the floating environment, every seam is tested by behaviour.
 | T6 | 2 | **Consent matrix.** Every (row profile, named on the run flag) pair gives the right effective profile. Load errors for a non-string or unknown profile, and for a legacy profile whose **mapped** platform is `auto` (including `"asa"`). A run-flag host that matches no row is an error before any connection. The eligible and mismatch lists are printed and in the manifest before the first connection. `--no-collect` with `--allow-legacy-ssh` is an error. | Truthiness coercion; platform checked before mapping; unmatched names ignored; flag without a host list accepted |
 | T7 | 1 | **netmiko and paramiko seam contract, by behaviour.** A spy proves that `_build_ssh_client` calls `_get_ssh_client_instance`. The observed driver's MRO is (mixin, `CLASS_MAPPER` class). `_ObservedSSHClient.connect` forces `transport_factory`. After a real handshake against the fixture, the sink holds the server lists, the engine name and the group size. The floating environment's stock tables contain no SHA-1 (`permits_sha1` false). Exact versions are asserted only against the lock text. | The hook renamed upstream (simulated); `_parse_newkeys` no longer the handler-table entry (simulated) |
 | T8 | 1, 2 | **Live-safety seam.** `_open_connection` and the autodetect probe (`SSHDetect`) are the only constructors of an SSH connection, by a closed AST taint scan (§4.2), and no connection-capable value is handed to other code outside three named sites. Patching `_open_connection` intercepts the default path (PR-1) and the legacy path (PR-2); a `platform: auto` device also needs `C.SSHDetect` patched, and the probe receives the row's own `port`. This extends `test_collect_parse_live_safety.py`. | A direct `ConnectHandler(...)` or `_observed_driver_for(...)(...)` call in `connect_device`; a class reached through a conditional, a container, a loop target, a walrus, an attribute, a helper argument, `functools.partial` or a string import |
-| T9 | 2 | **Attestation.** `legacy_ssh.py` stays in the no-egress walk with only paramiko permitted, and the no-egress method and detail text, and the doctrine test, derive from the charter. `legacy_ssh_confined` HOLDS on the tree; turns `VIOLATED` under each planted mutation (a store into a paramiko table, a `send_command` call, a SHA-1 literal in another module, a planted network import, each review-round-2 route: a module-level transport, reflection through `mro`, a session call outside the old denylist, a module the vocabulary owner re-exports, and one route per closed rule); keeps its allowlists exact to the real module; and is `NOT_EVALUATED` without the source or with a rule that had no subject. | The hard-coded `rest_collect.py` string restored; the claim reduced to a constant |
+| T9 | 2 | **Attestation.** `legacy_ssh.py` stays in the no-egress walk with only paramiko permitted, and the no-egress method and detail text, and the doctrine test, derive from the charter. `legacy_ssh_confined` HOLDS on the tree; turns `VIOLATED` under each planted mutation (a store into a paramiko table, a `send_command` call, a SHA-1 literal in another module, a planted network import, each review-round-2 route: a module-level transport, reflection through `mro`, a session call outside the old denylist, a module the vocabulary owner re-exports, and one route per closed rule; each review-round-3 implicit-call route: `sorted(..., key=...)` under the allowlisted spelling, and the class reached through the frozen mapping by a lookup, `getattr`, `map`, `filter`, `.get` or a held bound method, or through a `+` copy; and a SHA-1 name joined by `=`, `/` or `:`); keeps its allowlists, copies and method text exact to the real module; and is `NOT_EVALUATED` without the source or with a rule that had no subject. | The hard-coded `rest_collect.py` string restored; the claim reduced to a constant |
 | T10 | 1, 2 | **SHA-1 identifier scope.** Among shipped `.py` files (wheel and bundle denominators, collector included), SSH SHA-1 algorithm literals appear only in `ssh_session.py`'s vocabulary; the legacy-tier name tuples are imported only by `legacy_ssh.py`; `hashes.SHA1` appears only in `legacy_ssh.py`; `hashlib.sha1` appears only there and in the declared git-blob identity sites. | `"ssh-rsa"` added to a default-path module |
 | T11 | 3 | **Audit contract.** The suppression registry has no entry for this ID and the lock pins paramiko 5.0.0. A named-but-unused suppression fails. | Suppression left behind |
 | T12 | 1 | **Offline owner.** Each sidecar maps to the right `ssh_sessions` row for every status in §6.2, including each refusal class, a `pending` record on each profile, and `legacy_unrecorded`. Consent fields come only from the sidecar. A `--no-collect` run's consent block is the offline form with every consent field `null`. A malformed sidecar gives `unknown` with the parse error. An inconsistent observation (engine name SHA-256, `kex_hash_bytes` 20) gives `unknown`. Every label matches §6.3, including the "without opt-in" form. The sidecar's closed schema rejects a hostname, an IP address, a fingerprint and an out-of-grammar name. The banner comment is stripped. | Absent block rendered `modern`; consent read from devices.json; one label for both consent states |

@@ -185,6 +185,55 @@ def test_r2_the_run_flag_refuses_a_row_named_by_ip_whose_hostname_is_empty(hostn
     assert "" not in block["run_flag"]["hosts_named"] and block["named_not_requested"] == ["lab-sw2"], block
 
 
+def _three_rows(**overrides):
+    rows = _rows(**{k: v for k, v in overrides.items() if k in ("r0", "r1")})
+    rows.append({"hostname": "lab-sw3", "ip": "192.0.2.13", "username": "u", "password": "p", "platform": "ios"})
+    rows[2].update(overrides.get("r2", {}))
+    return rows
+
+
+@pytest.mark.parametrize("rows,flag", [
+    # a legacy row (requested, not named) whose hostname another row shares, case-insensitively and exactly
+    (_three_rows(r0={"ssh_profile": LEGACY}, r2={"hostname": "LAB-SW1"}), None),
+    (_three_rows(r0={"ssh_profile": LEGACY}, r2={"hostname": "lab-sw1"}), None),
+    (_three_rows(r0={"ssh_profile": LEGACY}, r2={"hostname": " Lab-Sw1 "}), None),
+    # a default row the flag names (by its unique ip) whose hostname another row shares
+    (_three_rows(r2={"hostname": "Lab-SW1"}), (LEGACY, ("192.0.2.11",))),
+    # a legacy row the flag names, sharing its hostname with a default row
+    (_three_rows(r0={"ssh_profile": LEGACY}, r1={"hostname": "LAB-sw1"}), (LEGACY, ("192.0.2.11",))),
+])
+def test_r3_a_consent_bearing_row_needs_a_hostname_no_other_row_shares(rows, flag):
+    """W59 PR-2 review round 3 (P3). Catches the class round 2 named only one member of: the consent lists, the run
+    flag's recorded hosts and each session record name a device by its HOSTNAME, so a consent-bearing row -- one
+    that requests a non-default ssh_profile, or one the run flag names -- whose hostname another row shares
+    (compared case-insensitively, as a case-insensitive device folder and an operator's reading do) is a consent the
+    record cannot attribute to one device. Refused before any connection, naming the row without its credentials."""
+    with pytest.raises(ValueError, match="share its hostname") as info:
+        C._resolve_ssh_consent(_load(rows), flag)
+    assert "192.0.2.11" in str(info.value) and "password" not in str(info.value)
+
+
+def test_r3_a_consent_bearing_row_with_an_empty_hostname_is_refused_by_the_resolver_itself():
+    """W59 PR-2 review round 3 (P3). The load-time rule (P3-j) is not the only guard: the resolver refuses a legacy
+    row whose hostname is empty even when it never went through ``load_devices``' check (here, cleared after
+    loading)."""
+    devices = _load(_rows(r0={"ssh_profile": LEGACY}))
+    devices[0]["hostname"] = "  "
+    with pytest.raises(ValueError, match="'hostname' is empty") as info:
+        C._resolve_ssh_consent(devices, None)
+    assert "192.0.2.11" in str(info.value) and "password" not in str(info.value)
+
+
+def test_r3_rows_that_bear_no_consent_are_not_this_rules_business():
+    """Negative control for the two tests above: DEFAULT rows that share a hostname (case-insensitively) or have none,
+    named by no flag, still resolve -- with no flag, and with a flag that names a third, uniquely named legacy row."""
+    assert C._resolve_ssh_consent(_load(_three_rows(r1={"hostname": "LAB-SW1"})), None)["devices_eligible"] == []
+    assert C._resolve_ssh_consent(_load(_three_rows(r0={"hostname": ""}, r1={"hostname": ""})), None)["mode"] == "live"
+    rows = _three_rows(r1={"hostname": "LAB-SW1"}, r2={"hostname": "lab-sw9", "ssh_profile": LEGACY})
+    block = C._resolve_ssh_consent(_load(rows), (LEGACY, ("lab-sw9",)))
+    assert block["devices_eligible"] == ["lab-sw9"], block
+
+
 def test_the_flag_constant_is_the_spelling_argparse_registers():
     """The messages and AssessHub boundary use ALLOW_LEGACY_SSH_FLAG; argparse registers the literal
     (so the README-FIELD flag reconciliation can read it). They must be one spelling."""

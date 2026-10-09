@@ -1,8 +1,9 @@
 """W59 PR-1 interop fixture: an independent SSH server (asyncssh) with a fake Cisco exec shell.
 
 RUNS ONLY AS A SUBPROCESS from its own virtualenv, built from the hash-pinned
-``tools/requirements-ssh-fixture-test.txt``. No test module imports this file, and asyncssh never enters the
-test interpreter (tests/test_ssh_session_interop.py holds both rules). The tests reach it over 127.0.0.1.
+``tools/requirements-ssh-fixture-test.txt``, started by ``tests/ssh_fixture/launcher.py``. No test module imports this
+file, and asyncssh never enters the test interpreter (tests/test_ssh_session.py holds both rules). The tests reach it
+over 127.0.0.1.
 
 Why an independent peer (design section 8): if the collector hashed with SHA-256 while naming a SHA-1 method,
 the handshake against a separate SSH implementation would fail -- a paramiko self-peer could not prove that.

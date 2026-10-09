@@ -124,6 +124,11 @@ _FORBIDDEN_SUFFIXES = (
     ".xlsx",
     ".precert.json",
     ".precert-readiness.json",
+    # W59 PR-2 review round 3 (P3): the two on-disk carriers of a run's SSH transport consent block (devices by
+    # their devices.json hostname), refused here exactly as `.github/scripts/verify_repository_privacy.py` refuses
+    # them in the repository: the sealed run manifest and the `.incomplete.json` marker.
+    ".run_manifest.json",
+    ".incomplete.json",
 )
 _EXPECTED_CONSOLE_SCRIPTS = {
     "assesshub": "webapp.backend.serve:main",

@@ -198,14 +198,22 @@ _SSH_VOCABULARY_MODULE = "ssh_session.py"
 #: scope by design (HMAC does not rest on collision resistance; RFC 6194 §3.3). The RFC 6187 X.509
 #: names signing with SHA-1 (``x509v3-ssh-*`` and the draft-era ``x509v3-sign-*``) are host-key names too
 #: (W59 PR-2 review P3-f); ``tests/test_legacy_ssh.py`` holds every name of the owner's SHA-1 boundary to it.
-SSH_SHA1_ALGORITHM = re.compile(
-    r"^(?:diffie-hellman-[a-z0-9-]*-sha1"                      # SHA-1 exchange hash: fixed groups, GEX
-    r"|gss-[a-z0-9-]*-sha1-[A-Za-z0-9+/=]+"                    # GSS-API key exchange over SHA-1
-    r"|ssh-(?:rsa|dss)(?:-cert-v0[01]@openssh\.com)?"          # SHA-1 RSA / DSA host-key signatures
-    r"|x509v3-(?:ssh|sign)-(?:rsa|dss))$")                     # RFC 6187 X.509 SHA-1 host-key signatures
-# A string constant is split into tokens before matching, so a name inside prose or a list literal
-# is still a literal; trailing sentence punctuation is stripped from each token.
-_TOKEN_SPLIT = re.compile(r"[\s,;()\[\]{}<>'\"`|]+")
+_SSH_SHA1_NAME = (r"(?:diffie-hellman-[a-z0-9-]*-sha1"         # SHA-1 exchange hash: fixed groups, GEX
+                  r"|gss-[a-z0-9-]*-sha1-[A-Za-z0-9+/=]+"       # GSS-API key exchange over SHA-1
+                  r"|ssh-(?:rsa|dss)(?:-cert-v0[01]@openssh\.com)?"   # SHA-1 RSA / DSA host-key signatures
+                  r"|x509v3-(?:ssh|sign)-(?:rsa|dss))")         # RFC 6187 X.509 SHA-1 host-key signatures
+SSH_SHA1_ALGORITHM = re.compile("^" + _SSH_SHA1_NAME + "$")
+#: A character that continues an SSH algorithm name: a letter, a digit or '-' (the registered names, RFC 4251 §6),
+#: '@' (which joins a local name to its domain) and '_' (an identifier or file-name character, so ``id_ssh-rsa`` is
+#: another word). A '.' continues a name only when a letter or digit follows it (the domain of a local name), so a
+#: name that ends a sentence is still a name.
+_SSH_NAME_CONTINUES = r"[A-Za-z0-9_@-]"
+#: W59 PR-2 review round 3 (P3): a SHA-1 name is found wherever it occurs in a string constant, anchored at each end
+#: by the string's edge or by ANY character that cannot continue the name -- not by a hand-kept list of delimiters,
+#: so a name joined to its neighbour by '=', '/', ':', '+', '#' or any other non-name character is still a literal.
+#: (A GSS-API name's base64 tail is part of the name, so its '+', '/' and '=' are consumed by the name itself.)
+_SSH_SHA1_IN_TEXT = re.compile("(?<!" + _SSH_NAME_CONTINUES + ")" + _SSH_SHA1_NAME
+                               + "(?!" + _SSH_NAME_CONTINUES + r"|\.[A-Za-z0-9])")
 
 #: Calls the legacy module must never make: anything that sends, executes, authenticates or opens a
 #: session, as a PREFIX class plus the netmiko write family. W59 PR-2 review round 2 (P2): this is no longer the
@@ -236,12 +244,25 @@ _MUTATING_METHODS = frozenset({
     "update", "setdefault", "__setitem__", "__delitem__", "pop", "popitem", "clear",
     "append", "extend", "insert", "remove", "__setattr__", "__delattr__"})
 #: W59 PR-2 review (P2-c): the ONLY uses the legacy module may make of anything rooted in a paramiko binding
-#: (a stock class, one of its tables, a paramiko module): a class BASE, or the operand of a COPY -- ``tuple(...)``,
-#: a ``+`` chain, a ``{**...}`` display or ``MappingProxyType(...)``. Everything else (an alias, a method call, an
-#: unbound ``dict.update(Transport._kex_info, ...)``, ``operator.setitem``, ``type.__setattr__(Transport, ...)``, a
-#: subscript, an argument to any other call) is a violation: an allowlist of copy shapes, not a denylist of
-#: mutation spellings.
-_COPY_CALLS = frozenset({"tuple", "MappingProxyType"})
+#: (a stock class, one of its tables, a paramiko module): a class BASE, the operand of a COPY -- a ``+`` chain, a
+#: ``{**...}`` display or one of :data:`_COPY_CALLS` -- or of a NAME-LIST rendering (:data:`_NAME_LIST_CALLS`).
+#: Everything else (an alias, a method call, an unbound ``dict.update(Transport._kex_info, ...)``,
+#: ``operator.setitem``, ``type.__setattr__(Transport, ...)``, a subscript, an argument to any other call) is a
+#: violation: an allowlist of copy shapes, not a denylist of mutation spellings.
+#:
+#: W59 PR-2 review round 3 (P2): each copy is a full CALL SIGNATURE (:func:`call_signature`: callee spelling, positional
+#: count, sorted keyword names), so ``sorted(x)`` is a copy and ``sorted(x, key=f)``, which calls ``f``, is not. A
+#: copy's RESULT holds its operand's members, so the T8 taint model (:class:`_Env`) carries a tainted member through
+#: it: ``MappingProxyType({profile: LegacySHA1Transport})`` is as connection-capable as the class it holds. Only a
+#: copy of untainted contents is clean.
+_COPY_CALLS = frozenset({
+    ("tuple", 1, ()), ("MappingProxyType", 1, ()), ("sorted", 1, ()), ("dict.fromkeys", 1, ()),
+})
+#: W59 PR-2 review round 3 (P2): the one PROJECTION a connection-capable value may be handed to -- rendering an
+#: algorithm table as an SSH name-list (RFC 4251 §5: comma-separated names, which RFC 4251 §6 forbids to contain a
+#: comma). ``str.join`` accepts only ``str`` members and calls none of them (any other member raises TypeError), so its
+#: result is a ``str`` that cannot carry a class or a callable: the taint model treats it as clean, by construction.
+_NAME_LIST_CALLS = frozenset({("','.join", 1, ())})
 #: W59 PR-2 review (P1-a): the legacy module's CLOSED import allowlist (fully qualified imported names). It replaces
 #: the no-egress walk's view of this one file: anything outside it -- a network library, ``importlib``, ``ctypes``,
 #: ``subprocess`` -- is a violation, and among network libraries only paramiko may appear at all.
@@ -268,23 +289,34 @@ _LEGACY_SSH_IMPORTS_VOCABULARY = frozenset({
     "DEFAULT_PROFILE", "DH_FLOOR_BITS", "LEGACY_SHA1_PROFILE", "SSH_PROFILES", "ObservingTransportMixin",
     "permits_sha1",
 })
-#: W59 PR-2 review round 2 (P2): the legacy module's CLOSED call-site allowlist, ``{qualified enclosing def: callee
-#: spellings}`` (``<module>`` for module level and class bodies). Every call it makes -- an ``ast.Call``, a decorator,
-#: a class keyword -- must be listed under its own enclosing def by the exact source spelling of its callee. Anything
-#: else is a violation: a method of a runtime-reached object (``t.global_request(...)``, ``chan.get_pty()``), a class
-#: derived from paramiko (``LegacySHA1Transport((host, port))`` opens a TCP connection), ``setattr``, ``os.system``.
-#: It replaces the denylist of send-method spellings as the rule that closes the class. With the binding rule below
-#: (one binding per scope, no builtin shadowed), a listed spelling always means the binding it names.
+#: W59 PR-2 review round 2 (P2): the legacy module's CLOSED call-site allowlist, ``{qualified enclosing def: call
+#: signatures}`` (``<module>`` for module level and class bodies). Every call it makes -- an ``ast.Call``, a decorator,
+#: a class keyword -- must be listed under its own enclosing def. Anything else is a violation: a method of a
+#: runtime-reached object (``t.global_request(...)``, ``chan.get_pty()``), a class derived from paramiko
+#: (``LegacySHA1Transport((host, port))`` opens a TCP connection), ``setattr``, ``os.system``. It replaces the
+#: denylist of send-method spellings as the rule that closes the class. With the binding rule below (one binding per
+#: scope, no builtin shadowed), a listed spelling always means the binding it names.
+#:
+#: W59 PR-2 review round 3 (P2): a site is its FULL call signature (:func:`call_signature`), not the callee's spelling
+#: alone -- ``sorted(names)`` is listed, so ``sorted(names, key=LegacySHA1Transport)``, an implicit call of the class
+#: under an allowlisted spelling, is not. A decorator is the call ``("@<spelling>", 1, ())`` (it is handed the def) and
+#: a class keyword ``("<keyword>=<spelling>", 3, ())`` (the metaclass protocol: name, bases, namespace).
 _LEGACY_SSH_CALL_SITES = MappingProxyType({
-    "<module>": frozenset({"ImportError", "MappingProxyType", "_HOST_KEY_RSA_SHA1_CERT.startswith", "dict.fromkeys",
-                           "len", "tuple"}),
-    "WeakGroupRefused.__init__": frozenset({"int", "super", "super().__init__"}),
+    "<module>": frozenset({
+        ("ImportError", 1, ()), ("MappingProxyType", 1, ()), ("_HOST_KEY_RSA_SHA1_CERT.startswith", 1, ()),
+        ("dict.fromkeys", 1, ()), ("len", 1, ()), ("tuple", 1, ())}),
+    "WeakGroupRefused.__init__": frozenset({("int", 1, ()), ("super", 0, ()), ("super().__init__", 1, ())}),
     "LegacyKexGexSHA1._parse_kexdh_gex_group": frozenset({
-        "WeakGroupRefused", "m.asbytes", "prime.bit_length", "probe.get_mpint", "super",
-        "super()._parse_kexdh_gex_group", "type", "type(m)"}),
-    "default_permits_sha1": frozenset({"MappingProxyType", "SimpleNamespace", "bool", "permits_sha1", "tuple"}),
-    "transport_for": frozenset({"LegacyTransportUnavailable", "ValueError", "default_permits_sha1", "isinstance",
-                                "sorted"}),
+        ("WeakGroupRefused", 2, ()), ("m.asbytes", 0, ()), ("prime.bit_length", 0, ()), ("probe.get_mpint", 0, ()),
+        ("super", 0, ()), ("super()._parse_kexdh_gex_group", 1, ()), ("type", 1, ()), ("type(m)", 1, ())}),
+    "_names_of": frozenset({("name_list.split", 1, ()), ("tuple", 1, ())}),
+    "default_permits_sha1": frozenset({
+        ("','.join", 1, ()), ("SimpleNamespace", 0, ("HASHES",)),
+        ("SimpleNamespace", 0, ("_kex_info", "_key_info", "_preferred_kex", "_preferred_keys")),
+        ("_names_of", 1, ()), ("bool", 1, ()), ("permits_sha1", 2, ())}),
+    "transport_for": frozenset({
+        ("LegacyTransportUnavailable", 1, ()), ("ValueError", 1, ()), ("default_permits_sha1", 0, ()),
+        ("isinstance", 2, ()), ("sorted", 1, ())}),
 })
 #: W59 PR-2 review round 2 (P2): the CLOSED attribute allowlist -- every attribute name the legacy module reads or
 #: writes. Reflection (``mro``, ``__class__``, ``__dict__``, ``__setattr__``, ...) and any attribute of a
@@ -292,8 +324,8 @@ _LEGACY_SSH_CALL_SITES = MappingProxyType({
 #: denylist of reflective attributes as the rule that closes the class.
 _LEGACY_SSH_ATTRIBUTES = frozenset({
     "HASHES", "SHA1", "__init__", "_kex_info", "_key_info", "_parse_kexdh_gex_group", "_preferred_kex",
-    "_preferred_keys", "asbytes", "bit_length", "floor_bits", "fromkeys", "get_mpint", "offered_bits", "sha1",
-    "startswith",
+    "_preferred_keys", "asbytes", "bit_length", "floor_bits", "fromkeys", "get_mpint", "join", "offered_bits", "sha1",
+    "split", "startswith",
 })
 #: W59 PR-2 review round 2 (P2): the CLOSED statement and expression grammar of the legacy module, by AST node type
 #: (the forms it uses, plus the comparison, boolean, unary-minus and ``pass`` siblings of those). Deliberately absent: ``with``,
@@ -308,6 +340,14 @@ _LEGACY_SSH_GRAMMAR = frozenset({
     "JoinedStr", "FormattedValue", "BinOp", "Add", "BoolOp", "And", "Or", "UnaryOp", "Not", "USub", "Compare",
     "Eq", "NotEq", "Lt", "LtE", "Gt", "GtE", "In", "NotIn", "Is", "IsNot",
 })
+#: The implicit-call and rebinding forms the comment above names as deliberately absent, by AST node type. Only the
+#: method TEXT reads this: it prints those still absent from :data:`_LEGACY_SSH_GRAMMAR`, so a form admitted to the
+#: grammar drops out of the published sentence instead of being misreported as excluded.
+_GRAMMAR_ROUTES_NAMED = (
+    "With", "AsyncWith", "For", "AsyncFor", "While", "Try", "Match", "AsyncFunctionDef", "Await", "Yield",
+    "YieldFrom", "Lambda", "ListComp", "SetComp", "DictComp", "GeneratorExp", "Global", "Nonlocal", "Delete",
+    "AugAssign", "AnnAssign", "NamedExpr", "Starred", "List", "Set",
+)
 #: The tier's vocabulary names, by the owner's naming convention (``LEGACY_SHA1_TIER_KEX`` /
 #: ``LEGACY_SHA1_TIER_HOST_KEYS``): the names the legacy module imports with this prefix are the tier.
 _LEGACY_TIER_PREFIX = "LEGACY_SHA1_TIER_"
@@ -803,7 +843,14 @@ class _Env:
                 else self.shape(node.value)
             if base is True:
                 return True
-            return self.attrs.get((self.receiver(node.value), node.attr), False)
+            own = self.attrs.get((self.receiver(node.value), node.attr), False)
+            if node.attr in _CONTAINER_OPS:
+                # W59 PR-2 review round 3 (P2): a container's bound method, taken as a value (``pick = table.get``,
+                # ``sorted(..., key=table.get)``), hands back what the container holds when it is called later.
+                held = self.shape(node.value)
+                if isinstance(held, tuple):
+                    own = _join(own, held)
+            return own
         if isinstance(node, ast.Subscript):
             if ast.unparse(node.value) in ("sys.modules", "modules"):
                 key = node.slice
@@ -839,6 +886,10 @@ class _Env:
             return _bag(_join(self.shape(node.key), self.shape(node.value)))
         if isinstance(node, ast.IfExp):
             return _join(self.shape(node.body), self.shape(node.orelse))
+        if isinstance(node, ast.BinOp):
+            # W59 PR-2 review round 3 (P2): ``+`` (a copy the legacy rules accept), ``*``, ``|`` and the set operators
+            # build a container from their operands' members, so a tainted member survives them.
+            return _bag(_join(_elem(self.shape(node.left)), _elem(self.shape(node.right))))
         if isinstance(node, ast.BoolOp):
             out = False
             for v in node.values:
@@ -888,9 +939,14 @@ class _Env:
                 else self.shape(node.args[0])
             if base is True:
                 return True
+            held = self.shape(node.args[0])
             if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
-                return self.attrs.get((self.receiver(node.args[0]), attr.value), False)
-            return _elem(self.shape(node.args[0]))     # a computed attribute name: whatever the object carries
+                own = self.attrs.get((self.receiver(node.args[0]), attr.value), False)
+                if attr.value in _CONTAINER_OPS and isinstance(held, tuple):
+                    own = _join(own, held)             # a container's bound method, as for an attribute read
+                return own
+            # a computed attribute name: whatever the object carries, or a bound method handing it back
+            return _join(held, _elem(held)) if isinstance(held, tuple) else _elem(held)
         if name in ("__import__", "import_module"):
             arg = node.args[0] if node.args else None
             return not (isinstance(arg, ast.Constant) and isinstance(arg.value, str)) \
@@ -904,12 +960,16 @@ class _Env:
             out = _join(out, self.returns.get(id(fn), False))
         if out:
             return out
-        if self.shape(func) is True:
+        callee = self.shape(func)
+        if callee is True:
             return False                           # calling a class builds an instance, which taints nothing
-        if isinstance(func, ast.Attribute) and name in _CONTAINER_OPS:
-            recv = self.shape(func.value)
-            if isinstance(recv, tuple):
-                return _elem(recv)                 # a container operation hands back what the container holds
+        if call_signature(node) in _COPY_CALLS:
+            # W59 PR-2 review round 3 (P2): a copy's result holds its operand's members -- tainted when they are
+            return _bag(_elem(self.shape(node.args[0])))
+        if isinstance(callee, tuple):
+            # a container operation (``table.get(k)``), or a container's bound method held elsewhere and called
+            # later (``pick(k)``, ``getattr(table, "get")(k)``), hands back what the container holds
+            return _elem(callee)
         return False
 
     # ------------------------------------------------------------------------------------------ binding ---
@@ -1041,13 +1101,18 @@ def qualified_owners(tree):
     return owners
 
 
-def connection_constructor_calls(tree):
+def connection_constructor_calls(tree, *, signatures=False):
     """``(constructs, hands_over, tainted, factories)`` over the module `tree`: ``{qualified owner: sorted callee
     sources}`` for every call that constructs through a connection-capable callee (and every ``exec`` / ``eval`` /
     ``compile``), the same for every call a connection-capable value is handed to as an argument (the readers and the
     container operations the shape model follows excepted), the set of tainted binding keys ``(scope, name)``, and the
     names of the defs that return a tainted value. The taint is a fixpoint over the whole module (see the T8 tests
-    and :func:`_claim_legacy_ssh_confined`)."""
+    and :func:`_claim_legacy_ssh_confined`). With `signatures`, each call is keyed by its full
+    :func:`call_signature` instead of its callee's source (a decorator as ``("@<spelling>", 1, ())``), so a caller can
+    tell ``sorted(x)`` from ``sorted(x, key=f)``."""
+    def key(call):
+        return call_signature(call) if signatures else ast.unparse(call.func)
+
     env = _Env(tree)
     for _ in range(64):
         env.changed = False
@@ -1063,22 +1128,23 @@ def connection_constructor_calls(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             for dec in node.decorator_list:
                 if env.shape(dec.func if isinstance(dec, ast.Call) else dec) is True:
-                    found.setdefault(owner, []).append("@" + ast.unparse(dec))
+                    spelled = "@" + ast.unparse(dec)
+                    found.setdefault(owner, []).append((spelled, 1, ()) if signatures else spelled)
         if not isinstance(node, ast.Call):
             continue
         name = env.callee_name(node.func)
         if isinstance(node.func, ast.Name) and name in _DYNAMIC_CODE_CALLS:
-            found.setdefault(owner, []).append(name)
+            found.setdefault(owner, []).append(key(node) if signatures else name)
             continue
         if env.shape(node.func) is True and not (isinstance(node.func, ast.Name) and name in _READERS):
-            found.setdefault(owner, []).append(ast.unparse(node.func))
+            found.setdefault(owner, []).append(key(node))
         if isinstance(node.func, ast.Name) and name in _READERS:
             continue
         if isinstance(node.func, ast.Attribute) and name in _CONTAINER_OPS and isinstance(
                 env.shape(node.func.value), tuple):
             continue
         if any(_any(env.shape(a)) for a in node.args) or any(_any(env.shape(k.value)) for k in node.keywords):
-            passes.setdefault(owner, []).append(ast.unparse(node.func))
+            passes.setdefault(owner, []).append(key(node))
     factories = {n.name for n in ast.walk(tree)
                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and env.returns.get(id(n))}
     return ({o: sorted(c) for o, c in found.items()}, {o: sorted(c) for o, c in passes.items()},
@@ -1090,21 +1156,40 @@ def callee_name(func):
     return _Env.callee_name(func)
 
 
+def call_signature(call):
+    """``(callee source, positional count, sorted keyword names)`` of one ``ast.Call``: the full argument shape the
+    legacy tier's closed call-site allowlist and copy denominator pin (W59 PR-2 review round 3, P2). A ``*iterable``
+    argument counts as a positional and adds ``*`` to the names; a ``**mapping`` argument adds ``**`` (neither is a
+    legal keyword name, so neither can collide with one)."""
+    names = [k.arg if k.arg is not None else "**" for k in call.keywords]
+    if any(isinstance(a, ast.Starred) for a in call.args):
+        names.append("*")
+    return ast.unparse(call.func), len(call.args), tuple(sorted(names))
+
+
+def render_call(signature):
+    """A call signature as readable source: ``("sorted", 1, ("key",))`` -> ``sorted(_, key=_)``."""
+    callee, positional, names = signature
+    starred = "*" in names
+    args = ["_"] * (positional - starred) + ["*_"] * starred
+    args += ["**_" if n == "**" else f"{n}=_" for n in names if n != "*"]
+    return f"{callee}({', '.join(args)})"
+
+
 # ------------------------------------------ legacy SSH tier confinement mechanics (W59) ---
 def ssh_sha1_literals(tree):
-    """``[(lineno, name)]`` for every string token in a parsed module that names an SSH algorithm with
-    a SHA-1 exchange hash or host-key signature (:data:`SSH_SHA1_ALGORITHM`). Docstrings and f-string
-    parts are string constants too, so prose that spells such a name counts — comments do not reach the
-    AST. Shared with ``tests/test_legacy_ssh.py``'s shipped-file scan."""
+    """``[(lineno, name)]`` for every SSH algorithm name with a SHA-1 exchange hash or host-key signature
+    (:data:`SSH_SHA1_ALGORITHM`) that occurs in a string constant of a parsed module, as a token anchored at each end
+    by the string's edge or any character that cannot continue the name (:data:`_SSH_SHA1_IN_TEXT`; W59 PR-2 review
+    round 3). Docstrings and f-string parts are string constants too, so prose that spells such a name counts —
+    comments do not reach the AST. Shared with ``tests/test_legacy_ssh.py``'s shipped-file scan."""
     hits = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Constant) or not isinstance(node.value, (str, bytes)):
             continue
         text = node.value if isinstance(node.value, str) else node.value.decode("latin-1")
-        for token in _TOKEN_SPLIT.split(text):
-            token = token.strip(".:")
-            if token and SSH_SHA1_ALGORITHM.match(token):
-                hits.add((getattr(node, "lineno", 0), token))
+        for match in _SSH_SHA1_IN_TEXT.finditer(text):
+            hits.add((getattr(node, "lineno", 0), match.group(0)))
     return sorted(hits)
 
 
@@ -1209,15 +1294,14 @@ def _maximal_chain(node, parents):
 
 
 def _is_copy_use(chain, parent):
-    """True when ``chain`` is a class base or the operand of a COPY: ``tuple(<chain>)``,
-    ``MappingProxyType(<chain>)``, a ``{**<chain>}`` display, or an operand of ``+``."""
+    """True when ``chain`` is a class base or the operand of a COPY -- the one argument of a call whose full signature
+    is one of :data:`_COPY_CALLS`, a ``{**<chain>}`` display, or an operand of ``+`` -- or of a name-list rendering
+    (:data:`_NAME_LIST_CALLS`)."""
     if isinstance(parent, ast.ClassDef):
         return any(base is chain for base in parent.bases)
     if isinstance(parent, ast.Call):
-        fn = parent.func
-        name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
-        return (name in _COPY_CALLS and fn is not chain and not parent.keywords
-                and len(parent.args) == 1 and parent.args[0] is chain)
+        return (parent.func is not chain and len(parent.args) == 1 and parent.args[0] is chain
+                and call_signature(parent) in _COPY_CALLS | _NAME_LIST_CALLS)
     if isinstance(parent, ast.Dict):
         return any(key is None and value is chain for key, value in zip(parent.keys, parent.values))
     if isinstance(parent, ast.BinOp) and isinstance(parent.op, ast.Add):
@@ -1245,8 +1329,14 @@ def _paramiko_use_violations(tree, pm_names):
             out.append(f"line {chain.lineno}: stores into or deletes {ast.unparse(chain)} (a paramiko table)")
         elif not _is_copy_use(chain, parent):
             out.append(f"line {chain.lineno}: uses {ast.unparse(chain)} other than as a class base or the "
-                       "operand of a copy (tuple(...), +, {**...}, MappingProxyType(...))")
+                       f"operand of a copy ({_copy_forms()})")
     return out
+
+
+def _copy_forms():
+    """The accepted copy and projection forms, rendered from :data:`_COPY_CALLS` and :data:`_NAME_LIST_CALLS`."""
+    return ", ".join(["+", "{**_}"] + [render_call(s) for s in sorted(_COPY_CALLS)]
+                     + [f"the name-list rendering {render_call(s)}" for s in sorted(_NAME_LIST_CALLS)])
 
 
 def _legacy_import_names(node):
@@ -1409,14 +1499,16 @@ def legacy_closure_violations(tree):
     """``(violations, stats)``: W59 PR-2 review round 2 (P2), the CLOSED rules that replace the round-1 denylists.
 
     - every call (an ``ast.Call``, a decorator, a class keyword) is listed in :data:`_LEGACY_SSH_CALL_SITES` under
-      its own enclosing def, by the exact spelling of its callee;
+      its own enclosing def, by its full :func:`call_signature` (W59 PR-2 review round 3: the callee's spelling, the
+      positional count and the keyword names, so an allowlisted spelling cannot take an unlisted ``key=``);
     - every attribute name is in :data:`_LEGACY_SSH_ATTRIBUTES`;
     - every AST node type is in :data:`_LEGACY_SSH_GRAMMAR`;
     - every scope binds each name once and shadows no builtin (:func:`_binding_violations`);
     - the T8 taint fixpoint (:func:`connection_constructor_calls`) finds NO call of a class or callable derived from
       a paramiko binding (the module's own exception classes derive only from paramiko's exception module, which is
       not a root, so raising one is not such a call), and every connection-capable value it finds handed to other
-      code is handed only to a copy (:data:`_COPY_CALLS`).
+      code is handed only to a copy (:data:`_COPY_CALLS`, whose result the fixpoint keeps tainted) or to the
+      name-list rendering (:data:`_NAME_LIST_CALLS`, whose result is a ``str`` by construction).
 
     ``stats`` counts each rule's subject (calls, attributes, nodes, tainted bindings), so the claim can refuse a
     vacuous pass."""
@@ -1426,14 +1518,16 @@ def legacy_closure_violations(tree):
     for node in ast.walk(tree):
         owner = owners.get(id(node), "<module>")
         if isinstance(node, ast.Call):
-            calls.append((owner, ast.unparse(node.func), node.lineno))
+            calls.append((owner, call_signature(node), node.lineno))
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            calls += [(owner, "@" + ast.unparse(d), d.lineno) for d in node.decorator_list]
+            calls += [(owner, ("@" + ast.unparse(d), 1, ()), d.lineno) for d in node.decorator_list]
             if isinstance(node, ast.ClassDef):
-                calls += [(owner, f"{k.arg}=" + ast.unparse(k.value), node.lineno) for k in node.keywords]
-    for owner, callee, lineno in calls:
-        if callee not in _LEGACY_SSH_CALL_SITES.get(owner, frozenset()):
-            violations.append(f"line {lineno}: calls {callee} in {owner} (outside the closed call-site allowlist)")
+                calls += [(owner, (f"{k.arg if k.arg is not None else '**'}=" + ast.unparse(k.value), 3, ()),
+                           node.lineno) for k in node.keywords]
+    for owner, signature, lineno in calls:
+        if signature not in _LEGACY_SSH_CALL_SITES.get(owner, frozenset()):
+            violations.append(f"line {lineno}: calls {signature[0]} in {owner} (outside the closed call-site "
+                              f"allowlist): {render_call(signature)}")
     attrs = [(n.attr, n.lineno) for n in ast.walk(tree) if isinstance(n, ast.Attribute)]
     violations += [f"line {lineno}: attribute {attr} (outside the closed attribute allowlist)"
                    for attr, lineno in attrs if attr not in _LEGACY_SSH_ATTRIBUTES]
@@ -1445,12 +1539,15 @@ def legacy_closure_violations(tree):
     violations += [f"line {line_of.get(id(n), 0)}: {type(n).__name__} construct (outside the closed grammar)"
                    for n in nodes if type(n).__name__ not in _LEGACY_SSH_GRAMMAR]
     violations += _binding_violations(tree)
-    found, passes, tainted, _factories = connection_constructor_calls(tree)
-    violations += [f"{owner}: calls {callee} (a class or callable derived from a paramiko binding: it could open a "
-                   "connection)" for owner, callees in sorted(found.items()) for callee in callees]
-    violations += [f"{owner}: hands a connection-capable value to {callee}() (only a copy may take one: "
-                   f"{', '.join(sorted(_COPY_CALLS))})"
-                   for owner, callees in sorted(passes.items()) for callee in callees if callee not in _COPY_CALLS]
+    found, passes, tainted, _factories = connection_constructor_calls(tree, signatures=True)
+    violations += [f"{owner}: calls {signature[0]} (a class or callable derived from a paramiko binding: it could "
+                   "open a connection)" for owner, signatures in sorted(found.items()) for signature in signatures]
+    sinks = _COPY_CALLS | _NAME_LIST_CALLS
+    violations += [f"{owner}: hands a connection-capable value to {signature[0]}() (only a copy may take one: "
+                   f"{', '.join(render_call(s) for s in sorted(_COPY_CALLS))}; or the name-list rendering "
+                   f"{', '.join(render_call(s) for s in sorted(_NAME_LIST_CALLS))}): {render_call(signature)}"
+                   for owner, signatures in sorted(passes.items()) for signature in signatures
+                   if signature not in sinks]
     stats = {"calls": len(calls), "call_sites": sum(len(v) for v in _LEGACY_SSH_CALL_SITES.values()),
              "attributes": len(attrs), "nodes": len(nodes), "tainted": len(tainted)}
     return sorted(set(violations)), stats
@@ -1502,30 +1599,41 @@ def _collector_source(collector_module):
     return origin if origin and os.path.isfile(origin) else None
 
 
+def _legacy_ssh_method():
+    """The published method text of ``legacy_ssh_confined``. W59 PR-2 review round 3 (P3): every list and count in it
+    is rendered from the allowlist or denominator it describes, never restated."""
+    n_sites = sum(len(v) for v in _LEGACY_SSH_CALL_SITES.values())
+    absent = [n for n in _GRAMMAR_ROUTES_NAMED if n not in _LEGACY_SSH_GRAMMAR]
+    return (f"source/AST scan of {_LEGACY_SSH_MODULE}, the opt-in legacy SSH transport tier (the one module whose "
+            "paramiko imports the no-egress walk permits), by CLOSED allowlists: every import is one of an exact "
+            f"list of {len(_LEGACY_SSH_IMPORTS_EXACT)} names ({', '.join(sorted(_LEGACY_SSH_IMPORTS_EXACT))}) or, "
+            f"from the vocabulary owner {_SSH_VOCABULARY_MODULE}, one of its {len(_LEGACY_SSH_IMPORTS_VOCABULARY)} "
+            f"pinned names ({', '.join(sorted(_LEGACY_SSH_IMPORTS_VOCABULARY))}) or a {_LEGACY_TIER_PREFIX}* tier "
+            "tuple, none of them a name the owner itself binds through an import; no import alias; and paramiko "
+            "is its only network library; every explicit call (decorators and class keywords included) is one of "
+            f"a closed list of {n_sites} call sites, each pinned by its enclosing def and its full signature (the "
+            "callee's spelling, the positional count and the keyword names); every attribute name is one of a "
+            f"closed list of {len(_LEGACY_SSH_ATTRIBUTES)}; every AST node type is one of a closed grammar of "
+            f"{len(_LEGACY_SSH_GRAMMAR)} (none of {', '.join(absent)}); every scope binds each name once and "
+            "shadows no builtin; and the collector's T8 taint fixpoint, run over the module, finds no call of a "
+            "class or callable derived from a paramiko binding and hands a connection-capable value only to a "
+            "copy, whose result it keeps tainted, or to the name-list rendering, whose result is a str. Within "
+            "those: it makes no command/channel/authentication/session call of its own, names no dynamic-code, "
+            f"import-by-name or computed-attribute builtin ({', '.join(sorted(_DYNAMIC_CALLS))}) and no reflective "
+            f"attribute ({', '.join(sorted(_REFLECTIVE_ATTRS))}); anything rooted in a paramiko binding, and any "
+            f"inherited algorithm table, is used only as a class base or the operand of a copy ({_copy_forms()}) "
+            "-- never aliased, called, subscripted, passed to another call, stored into or mutated -- and every "
+            "table it defines is a tuple or a MappingProxyType; and, across the analysis package + the collector "
+            "entry, SSH algorithm names with a SHA-1 exchange hash or host-key signature appear as literals only in "
+            f"{_SSH_VOCABULARY_MODULE} (a name is matched wherever it occurs in a string, bounded by any character "
+            f"that cannot continue it), the legacy-tier vocabulary names (prefix {_LEGACY_TIER_PREFIX}) are read "
+            f"only by {_LEGACY_SSH_MODULE}, and hashes.SHA1 appears only in {_LEGACY_SSH_MODULE}. What a static "
+            "scan does not establish: the behaviour of the paramiko code the tier inherits, and calls made "
+            "implicitly by operators, iteration and string formatting on the values the allowlisted code handles")
+
+
 def _claim_legacy_ssh_confined(toolkit_dir, collector_module):
-    method = (f"source/AST scan of {_LEGACY_SSH_MODULE}, the opt-in legacy SSH transport tier (the one module "
-              "whose paramiko imports the no-egress walk permits), by CLOSED allowlists: every import is one of an "
-              "exact list of names (__future__.annotations, hashlib, two types names, cryptography's hashes, five "
-              "paramiko classes and the vocabulary owner's pinned names; no import alias) and paramiko is its only "
-              "network library; every explicit call (decorators and class keywords included) is one of a closed "
-              "list of call sites, by its enclosing def and the exact spelling of its callee; every attribute name "
-              "is one of a closed list; every AST node type is one of a closed grammar (no with/for/while/try/"
-              "lambda/comprehension/yield/await/global/nonlocal/del/walrus); every scope binds each name once and "
-              "shadows no builtin; and the collector's T8 taint fixpoint, run over the module, finds no call of a "
-              "class or callable derived from a paramiko binding and hands a connection-capable value only to a "
-              "copy. Within those: it makes no command/channel/authentication/session call of its own, names no "
-              "dynamic-code, import-by-name or computed-attribute builtin (getattr, setattr, delattr, eval, exec, "
-              "__import__, ...) and no reflective attribute (mro, __class__, __dict__, __setattr__, "
-              "__getattribute__, ...); anything rooted in a paramiko binding, and any inherited algorithm table, "
-              "is used only as a class base or the operand of a copy (tuple(...), +, {**...}, "
-              "MappingProxyType(...)) -- never aliased, called, subscripted, passed to another call, stored into "
-              "or mutated -- and every table it defines is a tuple or a MappingProxyType; and, across the analysis "
-              "package + the collector entry, SSH algorithm names with a SHA-1 exchange hash or host-key signature "
-              f"appear as literals only in {_SSH_VOCABULARY_MODULE}, the legacy-tier vocabulary names (prefix "
-              f"{_LEGACY_TIER_PREFIX}) are read only by {_LEGACY_SSH_MODULE}, and hashes.SHA1 appears only in "
-              f"{_LEGACY_SSH_MODULE}. What a static scan does not establish: the behaviour of the paramiko code the "
-              "tier inherits, and calls made implicitly by operators and string formatting on the values the "
-              "allowlisted code handles")
+    method = _legacy_ssh_method()
     cid = "legacy_ssh_confined"
     legacy_path = os.path.join(toolkit_dir, _LEGACY_SSH_MODULE)
     if not os.path.isfile(legacy_path):
@@ -1593,7 +1701,8 @@ def _claim_legacy_ssh_confined(toolkit_dir, collector_module):
                   f"inside the closed grammar ({len(_LEGACY_SSH_GRAMMAR)} node types); one binding per name per "
                   f"scope, no builtin shadowed; the taint fixpoint found {stats['tainted']} connection-capable "
                   f"binding(s), "
-                  f"none called and none handed to anything but a copy; no command/channel/authentication/session "
+                  f"none called and none handed to anything but a copy or the name-list rendering; no "
+                  f"command/channel/authentication/session "
                   f"call of its own; paramiko bindings and inherited tables used only as class bases or copied; "
                   f"{n_tables} table(s) defined, each frozen; SHA-1 SSH algorithm literals only in "
                   f"{_SSH_VOCABULARY_MODULE} ({n_vocab} recognised there) across {len(modules)} other "

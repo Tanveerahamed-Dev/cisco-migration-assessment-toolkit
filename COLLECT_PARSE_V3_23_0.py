@@ -1960,6 +1960,44 @@ def _parse_allow_legacy_ssh(value: str) -> Tuple[str, Tuple[str, ...]]:
     return profile, tuple(dict.fromkeys(items))
 
 
+def _hostname_key(d: dict) -> str:
+    """A row's hostname as the consent record compares it: stripped, and case-folded (a device folder on a
+    case-insensitive file system, and an operator's reading of the consent lists, do not tell `SW1` from `sw1`)."""
+    return str(d.get("hostname") or "").strip().casefold()
+
+
+def _consent_attribution_refusal(devices: List[dict], named: List[dict]) -> Optional[str]:
+    """None when every consent-bearing row can be attributed, else the reason to refuse, before any connection.
+
+    W59 PR-2 review round 3 (P3): the consent lists, the run flag's recorded hosts and each session record name a
+    device by its HOSTNAME (``ssh_session.live_consent_block``), so a consent decision about a row is attributable
+    only when that row's hostname is non-empty and unique. Round 2 refused only one member of that class (an empty
+    hostname on a row the flag names by its ip); this is the whole class. A row is CONSENT-BEARING when it requests
+    a non-default ``ssh_profile`` (whether or not the run names it: its ``requested_not_named`` entry is a consent
+    statement too) or the run flag names it (`named`, the rows the flag's items matched); each must have a hostname
+    that is non-empty and shared, case-insensitively, by no other row. Other rows are not this rule's business."""
+    counts: Dict[str, int] = {}
+    for d in devices:
+        key = _hostname_key(d)
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    bearing = [d for d in devices if ssh_session.requested_profile(d) != ssh_session.DEFAULT_PROFILE]
+    bearing += [d for d in named if not any(d is b for b in bearing)]
+    for d in bearing:
+        why = ("requests ssh_profile " + repr(ssh_session.requested_profile(d))
+               if ssh_session.requested_profile(d) != ssh_session.DEFAULT_PROFILE
+               else f"is named on {ALLOW_LEGACY_SSH_FLAG}")
+        key = _hostname_key(d)
+        if not key:
+            return (f"devices.json entry ({_row_ident(d)}) {why} but its 'hostname' is empty; the SSH consent "
+                    f"record names every device by its hostname, so give that row a hostname")
+        if counts[key] > 1:
+            return (f"devices.json entry ({_row_ident(d)}) {why} but {counts[key]} rows share its hostname "
+                    f"(compared case-insensitively); the SSH consent record names every device by its hostname, "
+                    f"so a consent-bearing row needs a hostname no other row shares")
+    return None
+
+
 def _resolve_ssh_consent(devices: List[dict],
                          run_flag: Optional[Tuple[str, Tuple[str, ...]]]) -> dict:
     """Validate the run level against devices.json, annotate each live device with ``d["ssh_consent"]`` and return
@@ -1968,8 +2006,13 @@ def _resolve_ssh_consent(devices: List[dict],
 
     Every run-flag item must equal exactly one row's hostname or ip; an item that matches no row, or more than
     one, is a ValueError raised before any connection, so a stale name or a typo fails loudly. Because each item
-    then identifies exactly one row, the owner's by-identifier match names exactly the rows the operator named."""
+    then identifies exactly one row, the owner's by-identifier match names exactly the rows the operator named.
+
+    Every CONSENT-BEARING row -- one that requests a non-default ``ssh_profile``, or one the run flag names -- must
+    also carry a hostname that is non-empty and that no other row shares, compared case-insensitively (W59 PR-2
+    review round 3, P3; :func:`_consent_attribution_refusal`)."""
     flag = None
+    named = []
     if run_flag:
         run_profile, items = run_flag
         for item in items:
@@ -1982,15 +2025,11 @@ def _resolve_ssh_consent(devices: List[dict],
                 raise ValueError(
                     f"{ALLOW_LEGACY_SSH_FLAG}: {item!r} matches {len(rows)} devices.json rows; name each "
                     f"device by a hostname or ip that identifies exactly one row")
-            # W59 PR-2 review round 2 (P3): the consent block names every device the flag names by its HOSTNAME
-            # (ssh_session.live_consent_block), so a row named by its ip whose hostname is empty would land in the
-            # record as '' -- a consent the record cannot attribute. Refused for the reason a legacy row with an
-            # empty hostname is refused at load time (P3-j), whatever profile the row requests.
-            if not str(rows[0].get("hostname") or "").strip():
-                raise ValueError(
-                    f"{ALLOW_LEGACY_SSH_FLAG}: {item!r} names a devices.json row whose 'hostname' is empty; the "
-                    f"consent record names every device by its hostname, so give that row a hostname")
+            named.append(rows[0])
         flag = {"profile": run_profile, "hosts_named": list(items)}
+    refusal = _consent_attribution_refusal(devices, named)
+    if refusal:
+        raise ValueError(refusal)
     for d in devices:
         d["ssh_consent"] = ssh_session.consent_for(d, flag)
     return ssh_session.live_consent_block(devices, flag)

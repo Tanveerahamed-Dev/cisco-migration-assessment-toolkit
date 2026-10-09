@@ -33,6 +33,12 @@ _DENIED_SUFFIXES = (
     ".xlsx",
     ".precert.json",
     ".precert-readiness.json",
+    # W59 PR-2 review round 3 (P3): the engine's two on-disk carriers of the run's SSH transport consent block,
+    # which names devices by their devices.json hostname -- the sealed run manifest and the `.incomplete.json`
+    # marker written before the first connection. The Atlas release contract refuses both
+    # (portable/release_contract.py :: _forbidden_client_artifact); this repository gate now does too.
+    ".run_manifest.json",
+    ".incomplete.json",
 )
 _ALLOWED_SNAPSHOTS = {
     "tests/golden/snapshot.json",

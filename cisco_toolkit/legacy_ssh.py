@@ -23,8 +23,11 @@ What it never does (each rule is re-derived on every run by ``cisco_toolkit.atte
 ``legacy_ssh_confined`` claim and pinned by ``tests/test_legacy_ssh.py``):
 
 * use a stock paramiko table except to COPY it (``tuple(...)``, a ``+`` chain, a ``{**...}`` display or
-  ``MappingProxyType(...)``): no store into, mutating call on, alias of or method call on anything it imports
-  from paramiko, so it cannot open SHA-1 for every thread and every device;
+  ``MappingProxyType(...)``) or to render its names as an SSH name-list (``",".join(...)``): no store into, mutating
+  call on, alias of or method call on anything it imports from paramiko, so it cannot open SHA-1 for every thread
+  and every device;
+* pass anything taken from paramiko as a call argument except to a copy or a name-list rendering: the vocabulary
+  owner's ``permits_sha1`` gets only the algorithm NAMES of the stock tables, never a class they map a name to;
 * register anything globally (paramiko's ``key_classes`` is an explicit list, so defining a key subclass
   registers nothing);
 * make a command, channel or authentication call of its own: the collector's one factory opens and drives
@@ -32,10 +35,12 @@ What it never does (each rule is re-derived on every run by ``cisco_toolkit.atte
 * restate an SSH algorithm name, or build one: every name, the certificate variant included, comes from
   ``cisco_toolkit.ssh_session``'s vocabulary;
 * step outside its closed lists (W59 PR-2 review round 2): every call it makes is one of a closed list of call
-  sites, every attribute one of a closed list of names and every statement form one of a closed grammar; each
-  scope binds a name once; and the collector's T8 taint fixpoint, run over this module, finds no call of a class
-  derived from paramiko. Adding a call, an attribute or a construct here therefore means widening
-  ``cisco_toolkit.attestation``'s allowlists in the same change, deliberately.
+  sites, each pinned by its full signature (round 3: the positional count and keyword names too, so an allowlisted
+  ``sorted`` cannot take a ``key=``), every attribute one of a closed list of names and every statement form one of
+  a closed grammar; each scope binds a name once; and the collector's T8 taint fixpoint, run over this module, finds
+  no call of a class derived from paramiko, a copy of a table that holds one included. Adding a call, an attribute
+  or a construct here therefore means widening ``cisco_toolkit.attestation``'s allowlists in the same change,
+  deliberately.
 
 The claim is a static scan: it does not establish the behaviour of the paramiko code these classes inherit.
 
@@ -201,20 +206,28 @@ class LegacyTransportUnavailable(RuntimeError):
     """The legacy tier cannot honour consent in this environment (see :func:`default_permits_sha1`)."""
 
 
+def _names_of(name_list: str) -> tuple:
+    """The names of an SSH name-list (RFC 4251 §5: names joined by commas; RFC 4251 §6: no name contains one)."""
+    return tuple(name_list.split(","))
+
+
 def default_permits_sha1() -> bool:
     """True when this environment's STOCK paramiko already negotiates SHA-1 for every device.
 
     That is paramiko older than 5, an install that requested ``netmiko[par4]``, or one installed with
     ``--no-deps``. The one owner of the test is ``cisco_toolkit.ssh_session.permits_sha1(transport_cls,
-    rsakey_cls)``; this wrapper hands it frozen COPIES of paramiko's stock tables (the network-free owner cannot
-    import paramiko itself, and the stock classes are never passed anywhere)."""
+    rsakey_cls)``, which reads only the algorithm NAMES in the tables; this wrapper hands it those names and nothing
+    else (the network-free owner cannot import paramiko itself). Each stock table is rendered as an SSH name-list
+    and split back: ``",".join`` accepts only ``str`` members and calls none of them, so no class a table maps a name
+    to -- a key-exchange engine, a key class -- ever leaves this module (W59 PR-2 review round 3), and the stock
+    classes and their tables are never passed anywhere."""
     stock_transport = SimpleNamespace(
-        _preferred_kex=tuple(Transport._preferred_kex),
-        _preferred_keys=tuple(Transport._preferred_keys),
-        _kex_info=MappingProxyType({**Transport._kex_info}),
-        _key_info=MappingProxyType({**Transport._key_info}),
+        _preferred_kex=_names_of(",".join(Transport._preferred_kex)),
+        _preferred_keys=_names_of(",".join(Transport._preferred_keys)),
+        _kex_info=_names_of(",".join(Transport._kex_info)),
+        _key_info=_names_of(",".join(Transport._key_info)),
     )
-    stock_rsakey = SimpleNamespace(HASHES=MappingProxyType({**RSAKey.HASHES}))
+    stock_rsakey = SimpleNamespace(HASHES=_names_of(",".join(RSAKey.HASHES)))
     return bool(permits_sha1(stock_transport, stock_rsakey))
 
 

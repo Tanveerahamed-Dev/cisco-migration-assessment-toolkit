@@ -1,10 +1,10 @@
 """W59 PR-1 interop: the collector's REAL connection path against an independent SSH peer on 127.0.0.1.
 
 The peer is asyncssh (tests/ssh_fixture/server.py), run as a SUBPROCESS from its own virtualenv built from the
-hash-pinned tools/requirements-ssh-fixture-test.txt; this module never imports asyncssh (design section 8).
-The fixture interpreter's path is read from ATLAS_SSH_FIXTURE_PYTHON. On the legs that provision it the
-workflow also sets ATLAS_SSH_FIXTURE_REQUIRED=1, and then a missing fixture FAILS rather than skips, so the
-interop gate cannot pass vacuously; any other run skips visibly with the reason.
+hash-pinned tools/requirements-ssh-fixture-test.txt by tests/ssh_fixture/launcher.py; this module never imports
+asyncssh (design section 8). The fixture interpreter's path is read from ATLAS_SSH_FIXTURE_PYTHON. On the legs that
+provision it the workflow also sets ATLAS_SSH_FIXTURE_REQUIRED=1, and then a missing fixture FAILS rather than skips,
+so the interop gate cannot pass vacuously; any other run skips visibly with the reason.
 
 The disconnect-race tests (T17) need no third-party peer: tests/ssh_fixture/raw_peer.py is a stdlib RFC 4253
 responder for the cleartext phase. Every fixture profile is proven on the wire (`probe_kexinit`) before a test
@@ -16,73 +16,22 @@ environment to the paramiko-5 answer.
 """
 from __future__ import annotations
 
-import contextlib
 import json
-import os
-import subprocess
-import threading
-import uuid
 from pathlib import Path
 
 import pytest
 
 import COLLECT_PARSE_V3_23_0 as C
 from cisco_toolkit import ssh_session as S
+# The fixture launcher lives in a non-test helper module (W59 PR-2 review round 3), shared with test_legacy_ssh.py.
+from ssh_fixture.launcher import fixture_server
 from ssh_fixture.raw_peer import RawResponder, kexinit_names, probe_kexinit
 
-FIXTURE_PYTHON_ENV = "ATLAS_SSH_FIXTURE_PYTHON"
-FIXTURE_REQUIRED_ENV = "ATLAS_SSH_FIXTURE_REQUIRED"
-SERVER = Path(__file__).resolve().parent / "ssh_fixture" / "server.py"
 _G14_SHA1 = S.LEGACY_SHA1_TIER_KEX[0]
 _RSA_SHA1 = S.LEGACY_SHA1_TIER_HOST_KEYS[0]
 
 
 # --------------------------------------------------------------------------------------------- fixture ---
-def _fixture_python() -> str:
-    path = os.environ.get(FIXTURE_PYTHON_ENV, "")
-    if path and os.path.isfile(path):
-        return path
-    reason = (f"SSH interop fixture not provisioned: set {FIXTURE_PYTHON_ENV} to an interpreter of a virtualenv "
-              f"built from tools/requirements-ssh-fixture-test.txt (pip install --require-hashes --no-deps)")
-    if os.environ.get(FIXTURE_REQUIRED_ENV) == "1":
-        pytest.fail(reason)
-    pytest.skip(reason)
-
-
-def _read_ready(proc: subprocess.Popen, timeout: float) -> int:
-    box = []
-    reader = threading.Thread(target=lambda: box.append(proc.stdout.readline()), daemon=True)
-    reader.start()
-    reader.join(timeout)
-    line = box[0] if box else ""
-    if not line.startswith("READY "):
-        proc.kill()
-        _out, err = proc.communicate(timeout=15)
-        pytest.fail(f"SSH fixture did not start (got {line!r}); stderr tail: {(err or '')[-2000:]}")
-    return int(line.split()[1])
-
-
-@contextlib.contextmanager
-def fixture_server(tmp_path: Path, profile: str, *, expect_file: Path | None = None, password: str = "lab"):
-    log = tmp_path / f"fixture-{profile}-{uuid.uuid4().hex[:8]}.jsonl"
-    cmd = [_fixture_python(), "-I", "-B", str(SERVER), "--profile", profile, "--log", str(log),
-           "--password", password]
-    if expect_file is not None:
-        cmd += ["--expect-file", str(expect_file)]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8")
-    try:
-        yield _read_ready(proc, 90), log
-    finally:
-        with contextlib.suppress(OSError):
-            proc.stdin.close()
-        try:
-            proc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=20)
-
-
 def _events(log: Path, kind: str | None = None) -> list:
     if not log.exists():
         return []
