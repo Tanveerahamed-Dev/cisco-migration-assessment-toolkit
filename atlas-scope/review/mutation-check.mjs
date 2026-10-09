@@ -95,6 +95,16 @@ const CONFIG_SIBLING_INPUTS = [
 
 /** @type {Mutation[]} */
 const MUTATIONS = [
+  {
+    id: "d2-roving-row-retention",
+    engine: "src/panels/DataGrid.tsx",
+    record: "O79 D2 bounded roving-row retention (W26)",
+    what: "the ordinary window drops the original roving occurrence and its sole tabstop",
+    edits: [{ file: "src/panels/DataGrid.tsx", find: "const retainedIndex = focusCell.row - 1;", replace: "const retainedIndex = -1;" }],
+    tests: ["src/panels/DataGrid.window-retention.test.tsx"],
+    killedBy: /retention witness: wheel-window updates keep the original roving cell[\s\S]*AssertionError: d2 retention[\s\S]*expect\(/,
+    strictWitness: { testName: "retention witness: wheel-window updates keep the original roving cell", marker: "d2 retention" },
+  },
   /* ── Permanent and overlay inventory presence, not collection outcomes (O79 B7, W23) ── */
   {
     id: "b7-status-inventory-membership",

@@ -368,6 +368,12 @@ function useRowWindow(
   }, [count, spec, measured, scrollTop]);
 }
 
+type WindowAnchor = "top" | "bottom" | null;
+/** A retained off-window row contributes no flow extent; ordinary rows/padding stay untouched. */
+function retainedRowStyle(anchor: WindowAnchor, offset: number): CSSProperties | undefined {
+  return anchor === null ? undefined : { position: "absolute", insetInline: 0, ...(anchor === "top" ? { top: offset } : { bottom: offset }) };
+}
+
 /**
  * Does this column offer a SORT CONTROL — a thing a reader can operate, by pointer or by key?
  *
@@ -2187,7 +2193,19 @@ export function DataGrid<T>({
     );
   });
 
-  const visible = nodes.slice(win.start, win.end);
+  const retainedIndex = focusCell.row - 1;
+  const visible: { node: GridNode<T>; index: number; anchor: WindowAnchor; offset: number }[] = nodes
+    .slice(win.start, win.end).map((node, i) => ({ node, index: win.start + i, anchor: null, offset: 0 }));
+  // Keep the sole roving occurrence even before the grid is entered or while focus is outside.
+  // One keyed child list preserves its actual DOM/control; no wheel-triggered focus or reveal.
+  if (windowing && retainedIndex >= 0 && retainedIndex < nodes.length && (retainedIndex < win.start || retainedIndex >= win.end)) {
+    const above = retainedIndex < win.start;
+    const retained = { node: nodes[retainedIndex]!, index: retainedIndex, anchor: above ? "top" as const : "bottom" as const,
+      offset: (above ? retainedIndex : nodes.length - retainedIndex - 1) * windowing.rowHeightPx };
+    // Bottom anchoring keeps a variable-height last/group row within the existing body extent.
+    if (above) visible.unshift(retained);
+    else visible.push(retained);
+  }
   const orderId = `${gridId}-order`;
   const describedByAll = [describedBy, orderDescription ? orderId : undefined].filter(Boolean).join(" ");
 
@@ -2294,10 +2312,10 @@ export function DataGrid<T>({
           </div>
         </div>
 
-        <div role="rowgroup" className="ag__body">
+        <div role="rowgroup" className="ag__body" style={{ position: "relative" }}>
           {win.padTop > 0 ? <div role="presentation" style={{ height: `${win.padTop}px` }} /> : null}
-          {visible.map((node, i) => {
-            const r = win.start + i + 1;
+          {visible.map(({ node, index, anchor, offset }) => {
+            const r = index + 1;
             if (node.kind === "group") {
               return (
                 <div
@@ -2305,6 +2323,7 @@ export function DataGrid<T>({
                   role="row"
                   aria-rowindex={r + 1}
                   className="ag__row ag__row--group"
+                  style={retainedRowStyle(anchor, offset)}
                 >
                   {/* aria-expanded lives on the CELL, not the row (A11Y critic, D2): an expandable
                       ROW is treegrid semantics, and on a plain grid's row the state is not reliably
@@ -2350,6 +2369,8 @@ export function DataGrid<T>({
                 selected={batchIds?.has(node.id) ?? false}
                 selectedCol={selectedCol}
                 focusedCol={focusCell.row === r ? focusCell.col : -1}
+                windowAnchor={anchor}
+                windowOffset={offset}
                 handlers={rowHandlers}
               />
             );
@@ -2401,6 +2422,9 @@ interface DataRowProps<T> {
   selectedCol: number | null;
   /** The roving cell's column when it stands in THIS row, else -1. */
   focusedCol: number;
+  /** Primitive placement props keep normal-row memoization stable across scroll commits. */
+  windowAnchor: WindowAnchor;
+  windowOffset: number;
   handlers: RowHandlers<T>;
 }
 
@@ -2429,6 +2453,8 @@ function DataRowImpl<T>({
   selected,
   selectedCol,
   focusedCol,
+  windowAnchor,
+  windowOffset,
   handlers,
 }: DataRowProps<T>): ReactNode {
   const relatedNote = related !== null && related !== "" ? related : null;
@@ -2455,6 +2481,7 @@ function DataRowImpl<T>({
          sentence, so a reader landing on a row learns it there. */
       {...(relatedNote ? { "aria-description": relatedNote } : {})}
       className="ag__row ag__row--data"
+      style={retainedRowStyle(windowAnchor, windowOffset)}
       data-active={active ? "yes" : undefined}
       data-related={related !== null ? "yes" : undefined}
       data-batched={selected ? "yes" : undefined}
