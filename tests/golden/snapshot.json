@@ -14582,7 +14582,8 @@
    "backup": 0,
    "fhrp": 0,
    "off_scan_gw_vlans": 0,
-   "detail": "VLAN 10: Hard partition (2 ep); VLAN 30: Hard partition (1 ep)"
+   "detail": "VLAN 10: Hard partition (2 ep); VLAN 30: Hard partition (1 ep)",
+   "blind_links": 0
   },
   {
    "host": "core2",
@@ -14593,7 +14594,8 @@
    "backup": 0,
    "fhrp": 1,
    "off_scan_gw_vlans": 0,
-   "detail": "VLAN 10: FHRP-covered"
+   "detail": "VLAN 10: FHRP-covered",
+   "blind_links": 0
   },
   {
    "host": "access1",
@@ -14604,7 +14606,8 @@
    "backup": 0,
    "fhrp": 0,
    "off_scan_gw_vlans": 0,
-   "detail": "No reachability impact from removing this switch (within the scan)."
+   "detail": "No reachability impact from removing this switch (within the scan).",
+   "blind_links": 0
   }
  ],
  "link_centrality": [

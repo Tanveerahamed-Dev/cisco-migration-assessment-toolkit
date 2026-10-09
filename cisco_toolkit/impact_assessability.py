@@ -9,6 +9,9 @@ sentence. Several kinds of row are not measurements, and nothing in a row's own 
 * a device whose scoped interface running-config was never captured (no interface carries
   ``run_config_observed: true``) entered the simulation without its own gateway addresses;
 * a row that simulated only some of its VLANs counts the rest in ``off_scan_gw_vlans``;
+* a switch with inter-switch links that carry no trunk/STP evidence on either end (the row's ``blind_links``, W32)
+  never had a VLAN it transits only over them simulated, and a row older than that per-row count cannot say whether
+  it had any;
 * a switch that the stored cable map cables to an uncollected peer able to carry endpoints (anything but
   positively identified edge gear) has endpoints behind that peer which the scanned-only simulation never counted;
 * two rows naming one host cannot both be the producer's row.
@@ -22,9 +25,10 @@ publishes it as "Info / 0 stranded".
 Per stored row the verdict is one of :data:`VERDICTS`:
 
 * ``published``: the row's values are the producer's measurements;
-* ``lower_bound``: a bound applies (off-scan VLANs, an uncollected neighbour, or a cable map that cannot be
-  read). The worst band and each positive count are lower bounds. A band below the worst, a zero count and a
-  detail that names no simulated VLAN are not measurements;
+* ``lower_bound``: a bound applies (off-scan VLANs, evidence-less inter-switch links or a row older than their
+  count, an uncollected neighbour, or a cable map that cannot be read). The worst band and each positive count are
+  lower bounds. A band below the worst, a zero count and a detail that names no simulated VLAN are not
+  measurements;
 * ``not_assessed``: a hold applies, so none of the row's blast-radius values is a measurement. The producer's
   INDETERMINATE detail stays readable as its own disclosure;
 * ``ambiguous``: two or more rows name this exact host, so no single row can be chosen.
@@ -127,8 +131,28 @@ R_PEERS_UNREAD = ("whether this switch faces an uncollected neighbour cannot be 
 R_PEER_SEVERITY = ("{word}: {clause}, so this severity may understate the blast radius, and only the worst "
                    "band ({worst}) cannot be understated")
 R_PEER_ZERO = "{word}: {clause}, so this 0 is only a lower bound, not a measurement of none"
-R_PEER_DETAIL = ("{word}: {clause}, so this detail, which names no simulated VLAN, is not a clean bill: it was "
-                 "never checked against what lies behind them")
+R_PEER_DETAIL = "{word}: {clause}, so this detail, which names no simulated VLAN, is not a clean bill: {tail}"
+#: What a neighbour bound's clean-bill detail was never checked against (the default `tail` of :func:`make_bound`).
+R_PEER_TAIL = "it was never checked against what lies behind them"
+#: analyze.compute_failure_impact's per-row ``blind_links`` (W32): the switch's inter-switch links with no trunk/STP
+#: evidence on either end. Each is absent from every forwarding graph out of ignorance, so a VLAN the switch transits
+#: only over one is never simulated for it -- the same understatement as an off-scan VLAN, but invisible in the
+#: other fields. A row without the field predates the per-row count.
+R_BLIND_UNREAD = ("unverified: blind_links is not a count, so whether this switch has inter-switch links the "
+                  "simulation could not see cannot be read")
+R_BLIND_ONLY = ("not collected: {n} inter-switch link(s) of this switch carry no trunk/STP evidence (counted "
+                "in blind_links) and analyze.compute_failure_impact simulated none of its VLANs, so its "
+                "severity and counts are not measurements")
+R_BLIND = ("{n} inter-switch link(s) of this switch carry no trunk/STP evidence on either end (blind_links), "
+           "so analyze.compute_failure_impact left them out of every forwarding graph and never simulated a "
+           "VLAN this switch transits only over them")
+R_BLIND_LEGACY = ("this stored row carries no blind_links, so it predates the producer's per-row count of "
+                  "inter-switch links with no trunk/STP evidence: an engine that old disclosed such links at "
+                  "most in the INDETERMINATE detail of a switch it simulated nothing for, so a switch it "
+                  "simulated in part, or wrote a clean bill for, may have had some, and a VLAN it transits "
+                  "only over them was never simulated")
+#: What a blind-link bound's clean-bill detail was never checked against.
+R_BLIND_TAIL = "whether this switch transits a VLAN over those links was never determined"
 R_NOT_OBJECT = "unverified: the engine row is not an object, so none of its fields can be read"
 R_SECTION_UNAVAILABLE = ("analysis unavailable: the failure-impact phase failed this run, so none of its rows is a "
                          "measurement")
@@ -151,10 +175,16 @@ CODE_PHRASES: Mapping[str, str] = MappingProxyType({
     "indeterminate": "the simulation could not assess this switch (its detail says why)",
     "legacy_row": "the row predates the engine's assessability marker",
     "off_scan_unreadable": "its off-scan VLAN count cannot be read",
+    "blind_links_unreadable": "its count of inter-switch links without VLAN evidence cannot be read",
     "no_host": "the row names no readable switch",
     "no_run_config": "its interface running-config, the only source of its gateway addresses, was not captured",
     "off_scan_only": "every VLAN on it has a gateway outside the scan ({n} VLAN(s))",
+    "blind_links_only": ("{n} inter-switch link(s) on it carry no VLAN evidence, and none of its VLANs could be "
+                         "simulated"),
     "off_scan_partial": "{n} VLAN(s) on it have a gateway outside the scan that was not simulated",
+    "blind_links": ("{n} inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not "
+                    "simulated"),
+    "blind_links_legacy": "the row predates the engine's count of inter-switch links without VLAN evidence",
     "uncollected_neighbours": "it faces {n} uncollected neighbour(s) that can carry endpoints",
     "neighbours_unreadable": "the cable map cannot be read to check its neighbours",
 })
@@ -307,12 +337,14 @@ def row_hold(rec: Any, toks: Sequence[Any], interfaces: Any, *,
              captured: Optional[Callable[[str], Tuple[bool, bool]]] = None) -> Optional[Hold]:
     """The hold on every blast-radius measure of one stored row, with a witness to the evidence that says why. First
     match wins: the producer's INDETERMINATE detail -> no off_scan_gw_vlans (a row older than that marker) -> an
-    unreadable off-scan count -> no readable host -> no interface of the row's device carrying
-    ``run_config_observed: true`` (its gateway SVIs never reached the simulation; absent is never read as
-    captured) -> a positive off-scan count with no VLAN simulated (the INDETERMINATE case, read from the count
-    rather than the prose). ``None``: the measures are the producer's (a partial row's are then qualified per value
-    by :func:`measure_withheld`). `captured` answers :func:`run_config_captured` for a host (a per-host memo);
-    without it the scan runs here."""
+    unreadable off-scan count -> a ``blind_links`` that is present but not a count -> no readable host -> no
+    interface of the row's device carrying ``run_config_observed: true`` (its gateway SVIs never reached the
+    simulation; absent is never read as captured) -> a positive off-scan count with no VLAN simulated -> a positive
+    ``blind_links`` with no VLAN simulated (each the INDETERMINATE case, read from the count rather than the prose).
+    ``None``: the measures are the producer's (a partial row's are then qualified per value by
+    :func:`measure_withheld`). An ABSENT ``blind_links`` is no hold: the row predates that count, and
+    :func:`blind_bound` bounds what it may hide. `captured` answers :func:`run_config_captured` for a host (a
+    per-host memo); without it the scan runs here."""
     if not isinstance(rec, dict):
         return None
     toks = tuple(toks)
@@ -325,6 +357,9 @@ def row_hold(rec: Any, toks: Sequence[Any], interfaces: Any, *,
     if not ok:
         return Hold(UNVERIFIED, R_OFF_SCAN_UNREAD, [("witness", toks + ("off_scan_gw_vlans",))],
                     "off_scan_unreadable")
+    blind_ok, blind = _count(rec["blind_links"]) if "blind_links" in rec else (True, 0)
+    if not blind_ok:
+        return Hold(UNVERIFIED, R_BLIND_UNREAD, [("witness", toks + ("blind_links",))], "blind_links_unreadable")
     host = rec.get("host")
     if not _is_text(host):
         return Hold(UNVERIFIED, R_NO_HOST, [("witness", toks)], "no_host")
@@ -336,6 +371,9 @@ def row_hold(rec: Any, toks: Sequence[Any], interfaces: Any, *,
     if n and not (simulated_ok and simulated):
         return Hold(NOT_COLLECTED, R_OFF_SCAN_ONLY.format(n=n), [("witness", toks + ("off_scan_gw_vlans",))],
                     "off_scan_only", n)
+    if blind and not (simulated_ok and simulated):
+        return Hold(NOT_COLLECTED, R_BLIND_ONLY.format(n=blind), [("witness", toks + ("blind_links",))],
+                    "blind_links_only", blind)
     return None
 
 
@@ -356,13 +394,37 @@ def off_scan_bound(rec: Any, toks: Sequence[Any]) -> Optional[Bound]:
                  "off_scan_partial", n, R_OFF_SCAN_BOUND.format(n=n))
 
 
-def make_bound(state: str, clause: str, wit: List[Entry], code: str, n: int) -> Bound:
-    """One neighbour :class:`Bound` from a reason clause: it reaches the detail too (a detail naming no simulated VLAN
-    is the producer's clean bill, never checked against what lies behind the neighbour)."""
+def make_bound(state: str, clause: str, wit: List[Entry], code: str, n: int, *, tail: str = R_PEER_TAIL) -> Bound:
+    """One :class:`Bound` from a reason clause (an uncollected neighbour, or evidence-less inter-switch links): it
+    reaches the detail too (a detail naming no simulated VLAN is the producer's clean bill, and `tail` says what it
+    was never checked against)."""
     word = STATE_WORD[state]
     return Bound(state, R_PEER_SEVERITY.format(word=word, clause=clause, worst=IMPACT_WORST),
-                 R_PEER_ZERO.format(word=word, clause=clause), R_PEER_DETAIL.format(word=word, clause=clause), wit,
-                 code, n, f"{word}: {clause}")
+                 R_PEER_ZERO.format(word=word, clause=clause),
+                 R_PEER_DETAIL.format(word=word, clause=clause, tail=tail), wit, code, n, f"{word}: {clause}")
+
+
+def blind_bound(rec: Any, toks: Sequence[Any]) -> Optional[Bound]:
+    """The bound a row's evidence-less inter-switch links put on it (W32). analyze.compute_failure_impact writes
+    ``blind_links`` on every row: the switch's links with no trunk/STP evidence on either end, which it leaves out of
+    every forwarding graph, so a VLAN the switch transits only over one is never simulated for it however many others
+    were. A positive count therefore bounds the row as a positive off_scan_gw_vlans does (:func:`off_scan_bound`),
+    and also reaches the detail (a detail naming no simulated VLAN is then not a clean bill). A row WITHOUT the field
+    predates the per-row count: the producer before it disclosed such links at most in the INDETERMINATE detail of a
+    switch it simulated nothing for, and a row alone cannot say which engine wrote it, so an absent count never
+    vouches for a clean bill -- it bounds the row the same way, witnessed by the row itself. A count that is present
+    but unreadable is a hold (:func:`row_hold`), never a bound; zero bounds nothing. ``None``: no bound."""
+    if not isinstance(rec, dict):
+        return None
+    toks = tuple(toks)
+    if "blind_links" not in rec:
+        return make_bound(NOT_COLLECTED, R_BLIND_LEGACY, [("witness", toks)], "blind_links_legacy", 0,
+                          tail=R_BLIND_TAIL)
+    ok, n = _count(rec["blind_links"])
+    if not (ok and n):
+        return None
+    return make_bound(NOT_COLLECTED, R_BLIND.format(n=n), [("witness", toks + ("blind_links",))], "blind_links", n,
+                      tail=R_BLIND_TAIL)
 
 
 def readable_cables(cables: Sequence[Any], nodes: Optional[Sequence[Any]] = None, *,
@@ -500,9 +562,10 @@ def detail_withheld(hold: Optional[Hold], raw: Any, rec: Any,
     """The detail's withholding. The producer's INDETERMINATE detail is its own disclosure that the switch could not be
     assessed, never a clean bill, so it stays published. Any other detail is withheld with the row's hold: its text
     ('No reachability impact', or per-VLAN results) states what the held measures could not. On a row without a
-    hold, a bound that reaches the detail (an uncollected neighbour) withholds a detail that names no simulated VLAN
-    (no readable positive vlans_impacted): that is the producer's clean bill. A per-VLAN detail stays published as
-    the list of what was simulated; a mistyped detail is left to the caller's type check."""
+    hold, a bound that reaches the detail (an uncollected neighbour, or evidence-less inter-switch links, counted or
+    older than the count) withholds a detail that names no simulated VLAN (no readable positive vlans_impacted):
+    that is the producer's clean bill. A per-VLAN detail stays published as the list of what was simulated; a
+    mistyped detail is left to the caller's type check."""
     if _is_text(raw) and raw.startswith(IMPACT_INDETERMINATE_PREFIX):
         return None
     if hold is not None:
@@ -620,6 +683,7 @@ class ImpactSnapshot:
 
     def row(self, i: int, raw: Any) -> RowFacts:
         """The facts of stored row `i`: the duplicate doubt, the hold, then the bounds (off-scan first, then the
+        evidence-less inter-switch links, both stated beside a hold too so every measure cites them, then the
         neighbour bound, which is read only for a row without a hold)."""
         toks = ("failure_impact", i)
         host = raw.get("host") if isinstance(raw, dict) else None
@@ -630,6 +694,9 @@ class ImpactSnapshot:
         scan = off_scan_bound(raw, toks)
         if scan is not None:
             bounds.append(scan)
+        blind = blind_bound(raw, toks)
+        if blind is not None:
+            bounds.append(blind)
         if hold is None and _is_text(host):
             peers = self.neighbour(host)
             if peers is not None:
@@ -876,7 +943,8 @@ __all__ = [
     "IMPACT_FIELDS", "IMPACT_INDETERMINATE_PREFIX", "IMPACT_MEASURES", "IMPACT_SEVERITIES", "IMPACT_WORST",
     "ImpactSnapshot", "JS_MAX_SAFE_INT", "LOWER_BOUND", "LOWER_BOUND_MARK", "NOT_ASSESSED", "NOT_ASSESSED_CELL",
     "NOT_COLLECTED", "PUBLISHED", "RowFacts", "RowVerdict", "SCHEMA", "STATE_WORD", "UNVERIFIED", "VERDICTS",
-    "VERDICT_LABELS", "assess_failure_impact", "assessment_document", "bound_state", "detail_withheld", "disclose",
+    "VERDICT_LABELS", "assess_failure_impact", "assessment_document", "blind_bound", "bound_state", "detail_withheld",
+    "disclose",
     "duplicate_doubt", "index_rows", "json_pointer", "make_bound", "measure_withheld", "neighbour_bound",
     "off_scan_bound", "off_scan_count", "ranked_value", "ranking_floor", "ranks", "read_cable_source",
     "readable_cables", "row_hold", "rows_with_verdicts", "run_config_captured", "table_detail", "table_value",

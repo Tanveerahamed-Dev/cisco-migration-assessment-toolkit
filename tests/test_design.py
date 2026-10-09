@@ -647,15 +647,15 @@ def test_design_doc_survives_xml_illegal_chars(tmp_path):
     name, and the label arg.
 
     W33: the keystone paragraph ranks only a row the failure-impact assessability owner publishes, so the corrupted
-    row carries the evidence a real run's row carries (its off-scan marker, a running-config-marked interface, a
-    cable map with no uncollected neighbour) -- otherwise it is held, never reaches the paragraph, and this test
-    would pin nothing. Its host is a distinct switch, so the entry sanitizer cannot fold it into core1's row."""
+    row carries the evidence a real run's row carries (its off-scan marker and W32 blind-link count, a
+    running-config-marked interface, a cable map with no uncollected neighbour) -- otherwise it is held or only a
+    lower bound, never reaches the paragraph as '(99 endpoints)', and this test would pin nothing. Its host is a distinct switch, so the entry sanitizer cannot fold it into core1's row."""
     import os
     snap = _snap()
     bad = chr(0xFFFF) + chr(0xFFFE) + chr(0xD800)   # two noncharacters + a lone surrogate (ASCII-safe source)
     snap.setdefault("failure_impact", []).insert(
         0, {"host": "core9" + bad, "stranded": 99, "severity": "High", "vlans_impacted": 3, "off_scan_gw_vlans": 0,
-            "detail": "VLAN 10" + bad})
+            "detail": "VLAN 10" + bad, "blind_links": 0})                 # both of a current producer row's markers
     snap["interfaces"]["core9" + bad] = {"Gi0/0": {"run_config_observed": True}}   # the row's gateway source
     snap["cable_map"] = {"nodes": [], "cables": []}
     snap["interfaces"]["core1"]["Po1"]["cdp_neighbor"] = "dist1" + bad     # direct topology text

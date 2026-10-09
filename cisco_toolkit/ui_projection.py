@@ -592,7 +592,16 @@ LIMITATIONS += (
                 "of zero is not a measurement of none, and High and positive counts are published as lower bounds "
                 "that cite that count. A withheld row's detail is withheld with its measures unless it is the "
                 "owner's INDETERMINATE disclosure; a partial row's per-VLAN detail stays published as the list of "
-                "what was simulated. A switch the stored cable map cables to a peer it does not show as collected "
+                "what was simulated. A row's blind_links (cited, not shown as a cell) counts the switch's "
+                "inter-switch links with no trunk/STP evidence on either end; the owner leaves them out of every "
+                "forwarding graph, so a VLAN the switch transits only over one was never simulated. A positive "
+                "blind_links bounds the row as a positive off_scan_gw_vlans does and also withholds a detail that "
+                "names no simulated VLAN; with no VLAN simulated, it withholds the row's measures. A stored row "
+                "without blind_links predates that count (the owner then disclosed such links at most for a switch "
+                "it simulated nothing for), so it is bounded the same way, citing the row. Such a link can also hide "
+                "an alternate path, so a removal elsewhere may read worse than it is: a published High or positive "
+                "count is a lower bound against its own row's blind_links, not against other rows'. A switch the "
+                "stored cable map cables to a peer it does not show as collected "
                 "(collected: false and a kind other than ap, phone or endpoint, or a cable end that joins no single "
                 "node) cannot account for endpoints behind that peer: a severity below High, a zero count and a "
                 "detail that names no simulated VLAN are withheld, and High and positive counts are published as "
@@ -4465,13 +4474,14 @@ def _ambiguous_pre(dup: _Withheld, inner: Optional[_Pre]) -> _Pre:
 def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     """One failure-impact row, shared by the fleet topology and the device page (one builder, one state). Which of its
     values are measurements is the engine owner's row-level rule (impact_assessability: the duplicate doubt, the
-    hold, then the off-scan and uncollected-neighbour bounds); this builder only carries those facts into the
-    envelopes, in the module's state precedence."""
+    hold, then the off-scan, blind-link and uncollected-neighbour bounds); this builder only carries those facts
+    into the envelopes, in the module's state precedence."""
     row = _list_row(("failure_impact", i), raw, ("failure_impact",))
     basis = "analyze.compute_failure_impact:failure_impact[]."
     out = {"index": i, "pointer": json_pointer(*row.toks)}
     dup, hold, bounds = ctx.impact.row(i, raw)
-    # every measure of a bounded row cites what bounds it: the off-scan count, each uncollected neighbour's cable
+    # every measure of a bounded row cites what bounds it: the off-scan count, the blind-link count (or the row
+    # itself when it predates that count), each uncollected neighbour's cable
     cite = [w for bound in bounds for w in bound[4]]
     for field in ("host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",
                   "off_scan_gw_vlans", "detail"):

@@ -46,13 +46,14 @@ def _rich_snap():
              for i in range(8)],
         "failure_impact": [
             {"host": "core1", "severity": "High", "vlans_impacted": 4, "stranded": 220, "hard": 180,
-             "off_scan_gw_vlans": 0, "detail": "VLAN 10 hard partition"},
+             "off_scan_gw_vlans": 0, "detail": "VLAN 10 hard partition", "blind_links": 0},
             {"host": "core2", "severity": "Medium", "vlans_impacted": 2, "stranded": 40, "hard": 0,
-             "off_scan_gw_vlans": 0, "detail": "backup-covered"},
+             "off_scan_gw_vlans": 0, "detail": "backup-covered", "blind_links": 0},
         ],
         # W33: the evidence the failure-impact assessability owner reads, so the rows above are the producer's
         # measurements: the scoped interface running-config mark of each switch, and a cable map with no
-        # uncollected neighbour.
+        # uncollected neighbour. Each row carries both of a current producer row's markers (off_scan_gw_vlans and
+        # W32's blind_links count); a row without blind_links predates that count and is only a lower bound.
         "interfaces": {"core1": {"Vlan10": {"run_config_observed": True}},
                        "core2": {"Vlan20": {"run_config_observed": True}}},
         "cable_map": {"nodes": [], "cables": []},
@@ -411,7 +412,7 @@ def test_deck_keystone_not_well_distributed_when_blast_radius_blind(tmp_path):
     assert "well distributed" not in tb and "indetermin" in tb.lower()
     snap_clean = _rich_snap()
     snap_clean["failure_impact"] = [{"host": "core1", "severity": "Low", "stranded": 0, "vlans_impacted": 0,
-                                     "off_scan_gw_vlans": 0, "detail": "FHRP-covered"}]
+                                     "off_scan_gw_vlans": 0, "detail": "FHRP-covered", "blind_links": 0}]
     write_executive_deck_pptx(str(tmp_path / "c.pptx"), snap_clean, "clean")
     assert "well distributed" in _deck_text(str(tmp_path / "c.pptx"))
 

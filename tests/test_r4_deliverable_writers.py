@@ -351,13 +351,24 @@ def test_archreview_res4_still_conforms_on_an_observed_zero(sample):
 
     W33: a zero is a real observed zero only on a row the failure-impact assessability owner publishes. The
     sample's core2 faces an uncollected router (wan-edge-rtr1.lab), so its zero is only a lower bound and the
-    fleet must NOT conform; once no switch faces an uncollected neighbour that can carry endpoints, it does."""
+    fleet must NOT conform; once no switch faces an uncollected neighbour that can carry endpoints, it does.
+
+    W32 through the same owner (W45): a row whose stored blind_links is positive (inter-switch links with no VLAN
+    evidence on either end), or absent (a row older than that count), is bounded the same way, read from the stored
+    row and never from a host list. The control therefore also gives every row a count of 0: a fleet whose every
+    inter-switch link carries VLAN evidence."""
     s = copy.deepcopy(sample)
     for r in s["failure_impact"]:
         r["stranded"] = 0
     bounded = _verdict(copy.deepcopy(s), "RES-4")
     assert bounded["verdict"] == "not-assessable", bounded
     assert "core2" in bounded["observed"] and "uncollected neighbour" in bounded["observed"], bounded
+    withheld = [r["host"] for r in s["failure_impact"] if r.get("blind_links", 1) or r["host"] == "core2"]
+    assert f" {len(withheld)} simulated device(s) are not graded" in bounded["observed"], (withheld, bounded)
+    for host in withheld[:5]:                                  # the disclosure names the first five, in stored order
+        assert f"{host} (lower bound" in bounded["observed"], (host, bounded)
+    for r in s["failure_impact"]:
+        r["blind_links"] = 0
     c = _verdict(_drop_cables_to_uncollected_infrastructure(s), "RES-4")
     assert c["verdict"] == "conforms", c
     assert "simulated device(s) report a stranded-endpoint figure" in c["observed"]

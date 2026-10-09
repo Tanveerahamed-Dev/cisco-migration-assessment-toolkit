@@ -1217,7 +1217,28 @@ def compute_failure_impact(all_interfaces: Dict[str, Dict[str, InterfaceData]]) 
     """Migration blast-radius simulation: remove each scanned switch and recompute per-VLAN
     endpoint->gateway reachability. One roll-up record per switch. 'Stranded' counts
     collateral endpoints on OTHER switches (the removed switch's own endpoints migrate with
-    it). Returns records sorted by severity then blast radius."""
+    it). Returns records sorted by severity then blast radius.
+
+    Each record carries, in this order: ``host``, ``severity``, ``vlans_impacted``, ``stranded``,
+    ``hard``, ``backup``, ``fhrp``, ``off_scan_gw_vlans``, ``detail`` and ``blind_links``. The last
+    three say what the simulation could NOT assess, so a consumer never reads Info or a zero as a
+    clean bill by silence:
+
+    * ``off_scan_gw_vlans`` -- VLANs this switch carries or transits whose gateway was not scanned
+      (skipped, never simulated);
+    * ``detail`` -- opens with "Blast radius INDETERMINATE" when nothing at all could be simulated;
+    * ``blind_links`` -- the count of this switch's inter-switch links (both ends scanned) that carry
+      NO trunk/STP evidence on either end (``_link_has_vlan_evidence``). Such a link is absent from
+      every forwarding graph out of ignorance, so a VLAN this switch transits only over it is never
+      simulated for it, however many other VLANs were. It is written on EVERY record, 0 included:
+      before it was, the count reached only the INDETERMINATE detail of a switch that simulated
+      nothing, and a partially simulated switch hid its evidence-less links behind a band and
+      counts that read as measured. A link with only one end's evidence is not counted here
+      (``_link_has_vlan_evidence`` reads it as evidenced), and ``off_scan_links`` (one end not
+      scanned) are not inter-switch links of the model at all.
+
+    ``blind_links`` was appended last, so every earlier field keeps its position, value and the sort
+    below; a stored record without it predates the per-record count."""
     model = build_network_model(all_interfaces)
     results: List[Dict[str, object]] = []
 
@@ -1320,7 +1341,10 @@ def compute_failure_impact(all_interfaces: Dict[str, Dict[str, InterfaceData]]) 
 
         results.append({"host": host, "severity": sev, "vlans_impacted": len(per_vlan),
                         "stranded": total_stranded, "hard": hard, "backup": backup,
-                        "fhrp": fhrp, "off_scan_gw_vlans": off_scan_gw_vlans, "detail": detail})
+                        "fhrp": fhrp, "off_scan_gw_vlans": off_scan_gw_vlans, "detail": detail,
+                        # every record, 0 included: a partially simulated switch must not hide the
+                        # evidence-less links it could not reason about (W32, follow-up F1)
+                        "blind_links": blind_links.get(host, 0)})
 
     sev_rank = {"High": 0, "Medium": 1, "Low": 2, "Info": 3}
     results.sort(key=lambda r: (sev_rank.get(r["severity"], 9), -r["stranded"],

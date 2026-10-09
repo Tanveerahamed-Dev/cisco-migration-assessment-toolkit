@@ -4,7 +4,8 @@
 ``failure_impact`` row is a measurement: the producer's INDETERMINATE detail, a row older than its
 ``off_scan_gw_vlans`` marker, an unreadable off-scan count or host, a device whose scoped interface running-config
 was not captured (``run_config_observed``), a positive off-scan count with nothing simulated, a partial simulation,
-an uncollected neighbour that can carry endpoints (read from the stored cable map), and two rows naming one host.
+W32's per-row ``blind_links`` count (unreadable, alone, positive, or absent on a row older than it; section 4), an
+uncollected neighbour that can carry endpoints (read from the stored cable map), and two rows naming one host.
 It never re-simulates.
 
 Three things are pinned here:
@@ -537,9 +538,11 @@ def test_a_hostile_cable_list_keeps_verdicts_exact_and_witnesses_bounded(mixed):
 def _many_rows(n_rows, n_cables):
     """`n_rows` stored rows naming the one host `h` (each ambiguous, none held) plus one row for `g`. `h` has `n_cables`
     interfaces, only the last carrying the running-config mark, and is cabled to `n_cables` uncollected switches.
-    Hand-built on purpose: the subject is the owner's cost per host, not a producer's row."""
+    Hand-built on purpose: the subject is the owner's cost per host, not a producer's row. Each row carries both of a
+    current producer row's markers (off_scan_gw_vlans and the W32 blind_links count, 0 each), so the only bounds are
+    the ones under test."""
     row = {"host": "h", "severity": "High", "vlans_impacted": 1, "stranded": 5, "hard": 1, "backup": 0, "fhrp": 0,
-           "off_scan_gw_vlans": 0, "detail": "VLAN 10: Hard partition (5 ep)"}
+           "off_scan_gw_vlans": 0, "detail": "VLAN 10: Hard partition (5 ep)", "blind_links": 0}
     return {"failure_impact": [dict(row) for _ in range(n_rows)] + [dict(row, host="g")],
             "interfaces": {"h": {f"Gi{i}": {"run_config_observed": i == n_cables - 1} for i in range(n_cables)},
                            "g": {"Gi0": {"run_config_observed": True}}},
@@ -1013,3 +1016,126 @@ def test_the_explorer_keystone_card_ranks_published_rows_and_lower_bound_floors(
     assert '≥ <span class="num" data-to="300">' in out["keystone"]["card"]
     assert f"endpoints stranded if it fails ({core1_summary})" in out["keystone"]["card"]
     assert "not ranked" not in out["keystone"]["card"]
+
+
+# --------------------------------------------------------------------------------------------------
+# 4. W32's per-row blind-link count is one more owner rule (W45 integration): every surface reads it from here
+# --------------------------------------------------------------------------------------------------
+def _blind_fleet():
+    """W32's fleet (tests/test_ui_projection_device_impact.py::_blind_fleet, copied, not imported). `g1` and `g2` are
+    FHRP peers gatewaying VLAN 10 for `acc` (removing `g1` is FHRP-covered: Low); `g2` is also the sole gateway of
+    VLAN 30 for `acc` (removing it is a hard partition: High). Every trunk among those three carries VLAN evidence.
+    `g1` also trunks to `x` over a link with NO trunk/STP evidence on either end, and `x` has nothing else."""
+    return {"g1": {"Gi1": _trunk("Gi1", "acc", "Gi1", "10"), "Gi9": _trunk("Gi9", "x", "Gi1"),
+                   "Vlan10": _svi(10, "10.10.0.2/24", "Active")},
+            "g2": {"Gi1": _trunk("Gi1", "acc", "Gi2", "10,30"), "Vlan10": _svi(10, "10.10.0.3/24", "Standby"),
+                   "Vlan30": _svi(30, "10.30.0.1/24")},
+            "acc": {"Gi1": _trunk("Gi1", "g1", "Gi1", "10"), "Gi2": _trunk("Gi2", "g2", "Gi1", "10,30"),
+                    "Gi10": _access("Gi10", 10, "0000.0000.000a"), "Gi30": _access("Gi30", 30, "0000.0000.001e")},
+            "x": {"Gi1": _trunk("Gi1", "g1", "Gi9")}}
+
+
+@pytest.fixture()
+def blind():
+    """The REAL producers over :func:`_blind_fleet`, with the counts the producer writes read back."""
+    snap = _snapshot(_blind_fleet())
+    assert {row["host"]: row["blind_links"] for row in snap["failure_impact"]} == {"g1": 1, "g2": 0, "acc": 0, "x": 1}
+    return snap
+
+
+def test_a_positive_blind_link_count_is_an_owner_bound_and_nothing_simulated_is_an_owner_hold(blind):
+    v = _verdicts(blind)
+    g1, g2, acc, x = (v[_k(blind, h)] for h in ("g1", "g2", "acc", "x"))
+    k = _k(blind, "g1")
+    src = blind["failure_impact"][k]
+    assert (src["severity"], src["vlans_impacted"], src["fhrp"]) == ("Low", 1, 1), src
+    assert src["detail"] == "VLAN 10: FHRP-covered", src
+    # g1 simulated in part beside an evidence-less link: a lower bound, decided by the owner, citing the count
+    assert g1.assessable == ia.LOWER_BOUND and g1.codes == ["blind_links"], g1.as_dict()
+    assert g1.why == ia.CODE_PHRASES["blind_links"].format(n=1)
+    assert f"/failure_impact/{k}/blind_links" in g1.pointers
+    assert [f for f in MEASURES if g1.withholds(f)] == ["severity", "stranded", "hard", "backup"]
+    assert not g1.withholds("detail")                          # a per-VLAN detail lists what was simulated
+    bound = g1.facts.bounds[0]
+    assert bound.reason == "not collected: " + ia.R_BLIND.format(n=1) and bound.detail_reason.endswith(ia.R_BLIND_TAIL)
+    assert ia.ranking_floor(g1) is None and not ia.ranks(g1)  # a bounded zero is never a keystone
+    # the fully evidenced controls are measurements
+    assert g2.published and acc.published and g2.codes == acc.codes == []
+    # x simulated nothing: the producer's INDETERMINATE hold wins, and the count is still cited beside it
+    kx = _k(blind, "x")
+    assert x.assessable == ia.NOT_ASSESSED and x.codes == ["indeterminate"], x.as_dict()
+    assert f"/failure_impact/{kx}/blind_links" in x.pointers
+    # the same row without its prose marker: the count alone says nothing was simulated
+    blind["failure_impact"][kx]["detail"] = "No reachability impact from removing this switch (within the scan)."
+    x = _verdicts(blind)[kx]
+    assert x.codes == ["blind_links_only"] and x.facts.hold.reason == ia.R_BLIND_ONLY.format(n=1), x.as_dict()
+    assert all(x.withholds(f) for f in MEASURES + ("detail",))
+    # a count of 0 is the producer's measurement of none: the clean bill is published
+    blind["failure_impact"][kx]["blind_links"] = 0
+    assert _verdicts(blind)[kx].published
+
+
+@pytest.mark.parametrize("bad", ["1", None, -1, True, 1.5, [1]])
+def test_a_blind_link_count_that_is_not_a_count_is_an_owner_hold(blind, bad):
+    k = _k(blind, "g2")
+    blind["failure_impact"][k]["blind_links"] = bad
+    v = _verdicts(blind)[k]
+    assert v.assessable == ia.NOT_ASSESSED and v.codes == ["blind_links_unreadable"], v.as_dict()
+    assert v.facts.hold.state == UV and v.facts.hold.reason == ia.R_BLIND_UNREAD
+    assert f"/failure_impact/{k}/blind_links" in v.pointers
+    assert all(v.withholds(f) for f in MEASURES + ("detail",)) and not v.withholds("host")
+    # an unreadable off-scan count is read first (first match wins)
+    blind["failure_impact"][k]["off_scan_gw_vlans"] = "1"
+    assert _verdicts(blind)[k].codes == ["off_scan_unreadable"]
+
+
+def test_a_row_older_than_the_blind_link_count_is_an_owner_lower_bound(blind):
+    for row in blind["failure_impact"]:
+        del row["blind_links"]
+    v = _verdicts(blind)
+    g2, acc, x = (v[_k(blind, h)] for h in ("g2", "acc", "x"))
+    # High and positive counts stay as lower bounds; the zero and the clean bill are withheld, citing the row itself
+    assert g2.assessable == ia.LOWER_BOUND and g2.codes == ["blind_links_legacy"], g2.as_dict()
+    assert [f for f in MEASURES if g2.withholds(f)] == ["backup"] and ia.ranking_floor(g2) == 1
+    assert g2.facts.bounds[0].witnesses == [("witness", ("failure_impact", _k(blind, "g2")))]
+    assert acc.assessable == ia.LOWER_BOUND and all(acc.withholds(f) for f in MEASURES + ("detail",))
+    assert x.codes == ["indeterminate"]                       # the producer's own disclosure still wins
+    # a row older than the off-scan marker as well keeps that hold, which wins over the bound
+    del blind["failure_impact"][_k(blind, "acc")]["off_scan_gw_vlans"]
+    assert _verdicts(blind)[_k(blind, "acc")].codes == ["legacy_row"]
+
+
+def test_every_owner_consumer_reads_the_blind_link_rule_from_the_owner(blind):
+    """One structural rule, no parallel path: the projection's cells, the workbook sheet, RES-4, the dossier and the
+    explorer embed all follow the owner's verdict on the blind-link-bounded row."""
+    from openpyxl import Workbook
+    from cisco_toolkit.archreview import compute_architecture_review
+    from cisco_toolkit.excel import FAILURE_SHEET_NAME, write_failure_impact_sheet
+    from cisco_toolkit.html import _slim_for_embed
+    k = _k(blind, "g1")
+    g1 = _verdicts(blind)[k]
+    # the projection: each cell withheld exactly when the owner withholds it, with the owner's own bound reasons
+    _assert_cells_follow_the_owner(blind)
+    row = _topology(blind)[k]
+    assert row["severity"]["reason"] == g1.facts.bounds[0].severity_reason
+    assert (f"/failure_impact/{k}/blind_links", "witness") in _refs(row["fhrp"])
+    # the workbook's Failure Impact sheet
+    wb = Workbook()
+    write_failure_impact_sheet(wb, blind["failure_impact"], blind)
+    severity, _h, vlans, stranded, hard, backup, fhrp, detail = {
+        r[1]: r for r in _sheet_rows(wb[FAILURE_SHEET_NAME])}["g1"]
+    assert severity == stranded == hard == backup == ia.NOT_ASSESSED_CELL and vlans == fhrp == "≥ 1"
+    assert detail == ia.table_detail(g1) and detail.startswith("Lower bound") and "VLAN 10: FHRP-covered" in detail
+    # RES-4: g1's bounded zero is disclosed, never graded or ranked
+    c = next(c for c in compute_architecture_review(blind)["checks"] if c["id"] == "RES-4")
+    assert c["verdict"] == "advisory" and c["evidence"] == ["g2"], c
+    assert f"g1 ({g1.summary})" in c["observed"] and "2 simulated device(s) are not graded" in c["observed"], c
+    # the dossier: disclosed as a lower bound, never scored lower
+    plain = _dossiers(blind)["g1"]
+    d = _dossiers(blind, doc=ia.assessment_document(blind))["g1"]
+    assert d["impact_assessability"] == {"assessable": ia.LOWER_BOUND, "why": g1.why, "pointer": f"/failure_impact/{k}"}
+    assert all(d[key] == plain[key] for key in _SCORED)
+    assert "the blast radius is only a lower bound" in d["verdict"], d["verdict"]
+    # the explorer embed
+    embed = _slim_for_embed(blind)["failure_impact_assessability"][k]
+    assert embed == {"assessable": ia.LOWER_BOUND, "summary": g1.summary}, embed
