@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import functools
 import io
 import json
 import os
@@ -169,9 +170,11 @@ def _section_reads(node, functions):
     return sorted(set(lines))
 
 
+@functools.lru_cache(maxsize=None)
 def _scan(root):
     """``(readers, routed)``: every unit that reads the stored section (unit -> lines), and every unit that reaches
-    the owner (it is the owner, names it, or calls something that does, to a fixpoint)."""
+    the owner (it is the owner, names it, or calls something that does, to a fixpoint). Cached per root: the
+    callers only read the result."""
     modules = _module_map(root)
     units, edges, direct, readers = {}, {}, set(), {}
     parsed = {}
@@ -282,8 +285,9 @@ def test_the_ast_scan_sees_every_textual_read_of_the_section():
     reading_modules = {module for module, _name in readers}
     missed = []
     for module, rel in _module_map(str(ROOT)).items():
-        text = _code_text((ROOT / rel).read_text(encoding="utf-8"))
-        if _SECTION_READ_TEXT.search(text) and module not in reading_modules:
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        if (module not in reading_modules and _SECTION_READ_TEXT.search(text)
+                and _SECTION_READ_TEXT.search(_code_text(text))):
             missed.append(rel)
     assert not missed, missed
     # the scan spans all three roots: the pipeline, the engine and AssessHub each read the section
