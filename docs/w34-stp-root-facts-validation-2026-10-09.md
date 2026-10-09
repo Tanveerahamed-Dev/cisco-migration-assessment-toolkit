@@ -1,9 +1,10 @@
 # W34 — stored STP observations in VLAN selections
 
-Status: source/control authoring on `codex/stp-root-facts`, based on owner-merged
-main `fa110851275405c9e89d4b72d498e67a10f1377d`. Hosted execution, generated API
-agreement and the new native audit pins are **not yet verified**. This record must
-be updated with actual source-bound results before a supervisor handoff.
+Status: draft PR #627 on `codex/stp-root-facts`, based on owner-merged main
+`fa110851275405c9e89d4b72d498e67a10f1377d`. The initial hosted diagnostic is
+independently reviewed; this candidate applies its exact generated TypeScript and
+two literal native pins. Complete fresh product/native/runtime qualification is
+**not yet verified**. The failed bootstrap is preserved below.
 
 ## Product boundary
 
@@ -69,9 +70,73 @@ diagnostic transport are not independent archive custody or release acceptance.
   unknown/overwritten/oversized review members, canonical owner serialization,
   exclusive generator modes and workflow failure-evidence/byte-check ordering.
 
-No authored control is described as executed yet. Existing tests are retained;
+These controls were authored before initial publication; actual bootstrap
+execution and its limits are recorded below. Existing tests are retained;
 pointer-only expectations are adapted to the new fact envelope with their
 original counterexamples intact. All runtime/generation/schema calculations
 remain on GitHub. Concurrent Claude projection/native changes must be integrated
 with a reviewed re-pin and wholly fresh gates. W26's owner merge and historical
 focus proof do not qualify this new source.
+
+## Hosted bootstrap and reviewed contract delta
+
+Bootstrap head `567d460ba07cbbeb4efb04a7701822708b35ca92` executed as merge
+`3e623d9c7ab71e669887e88ac513b11eab307433` (ordered `fa110851 + 567d460b`),
+tree `9548139d0427ec4347d84851f195abd8524254fe`. Webapp run `37866614655`,
+attempt 1, frontend job `113614943713` completed **FAILURE** at
+`2026-10-09T00:53:22Z`. Observer controls, actual observation and upload steps
+25–27 succeeded. The controls printed a quiet complete pytest line, with no
+standalone numeric summary. API generation-policy controls printed 10 passes;
+the unchanged canonical byte check then failed because committed types differed.
+Subsequent frontend tests/build/SPA handoff steps 29–33 were skipped, not passes.
+Other bootstrap workflows must retain their own outcomes and failure causes.
+
+The same bootstrap's Linux 3.12 job `113614726646` reports 119 failed, 11,362
+passed, 144 skipped, 1 xfailed, 8 warnings and 26 subtests passed. Backend job
+`113614943625` has the same 119 failed identities; its double-quiet output does
+not print a pass/skip aggregate. The failures are the existing 99 literal-pin,
+native-admission/proof cases and 20 new G15 native controls. The latter receive
+the real transport response and four nested rows, then stop at missing native
+admission before exercising hostile-body parity. No individual passing census
+for the pure G15 controls is printed. These are real failures, not proof that the
+proposed re-pin has passed; every final native/refusal control must execute again.
+
+The selected seven-file diagnostic `11587939852` is named
+`ui-projection-contract-3e623d9c7ab71e669887e88ac513b11eab307433-37866614655-1`.
+Uploader/API size is 385,546 bytes and their reported SHA-256 is
+`2f7b1cf5355cc66ce76f299d916515f279934a15472658722b4ca7153a640b4d`.
+It was independently selected, read once as inert review data, and independently
+reviewed. Both complete before/after ledgers bind the actual tested commit and
+1,714 tracked paths/modes/Git blobs/sizes; no missing, extra or mismatching entry
+was found. No local archive/hash/receipt controller verified those producer hashes.
+
+The canonical TypeScript delta consists only of two new STP definitions and
+`VlanSelections.stp_roots` changing to their FactList. The emitted native view/list
+schemas share 288 equal definitions and preserve the existing page selectors and
+whole-row behavior. New closed records require exactly host, pointer and three
+facts; the published list is nonempty and withheld lists require a reason. Existing
+fact typing/state/paired-owner/ref constraints are reused. No new schema keyword,
+native provider, instance-domain rule or runtime auto-pin is introduced.
+
+Reviewed prospective literal pins from these actual hosted schema bytes:
+
+| Schema | Previous W24 pin | W34 candidate pin |
+|---|---|---|
+| view | `732c68c3d762f2b3d4d0329582bd32f3842567feef9cab20960f6959eef07372` | `16b8095765891cebb3fe94d01d9c3ebfa966f7ead8ae9a139d84499d39b4db34` |
+| list | `7f256f809f1d9e0754a2312579ee6afdfe3ae5e58c2b5dd7b44fbfd32b5369b5` | `bca688bd5a3991c70005e20c68a0be5c2d4f3c58aa6cc2a254a51fcc2a6b8c22` |
+
+This is a current emitted-schema plus source-delta review, not an actual
+old-main/native-schema byte comparison. The observer used npm 11.17.0; it does not
+claim portable's separate tool profile. Native/stock hostile-body parity, the
+unchanged refusal/domain controls, actual packaged native proof, canonical API
+regeneration and every applicable exact-head workflow remain mandatory after
+adoption. None is certified by the proposed hashes or this diagnostic.
+
+Initial source review also rejected a namespace-completeness gap: malformed
+`is_mst` could disappear from a published nonempty selection. The corrected
+source retains the matching original row/marker witnesses and withholds selection
+certainty without changing the owner's election/eligibility rule; falsey malformed
+selected rows have unverified child facts. Failed-source/blind precedence,
+integer-key round trips, unrelated VLANs, legitimate booleans and legacy absence
+have explicit controls. That initial negative and both earlier diagnostic-source
+refusals remain preserved; static source clearance never constituted runtime proof.
