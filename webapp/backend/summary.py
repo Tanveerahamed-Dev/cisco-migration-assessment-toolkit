@@ -159,9 +159,9 @@ _IMPACT_RANK_FIELDS = ("host", "severity", "stranded")
 #: not-assessed token (cutover.GATE_NOT_ASSESSED), which the SPA's chips and the documents colour neutral.
 IMPACT_NOT_ASSESSED = "NOT ASSESSED"
 #: The fleet qualifier ui_projection puts on the failure-impact list while collection_completeness lists a blind
-#: spot: every row was computed over the scanned model without that device's evidence.
-_IMPACT_BLIND_CAVEAT = "fleet_lists_exclude_blind_devices"
-_IMPACT_BLIND_WITNESS = "/collection_completeness/devices/"
+#: spot: every row was computed over the scanned model without that device's evidence. The engine owner reads its
+#: count (impact_assessability.fleet_blind), so the cutover plan and the MOP take the same fact into the wave rule.
+_IMPACT_BLIND_CAVEAT = engine.IMPACT_FLEET_BLIND_CAVEAT
 #: The keystone ranking's contract. 2: ranked only from engine-published failure-impact cells (W27). 3: a ranked
 #: row the engine publishes only as a lower bound is flagged as one (lower_bound, its reasons and pointers), and an
 #: executive_brief.keystones list is no longer read. 4: a cable-row bound is worded by what the projection's own
@@ -179,8 +179,7 @@ _R_IMPACT_NO_REASON = "withheld by the engine projection, which published no rea
 _R_IMPACT_NO_ROW = ("not collected: no failure_impact row names this switch. analyze.compute_failure_impact writes one "
                     "row per scanned host, so its blast radius was never simulated, and an absent row is not 'no "
                     "impact'")
-_R_IMPACT_BLIND = ("collection_completeness lists {n} device(s) as partial or not collected: every failure-impact row "
-                   "was computed without their evidence, and a device the collection never reached has no row")
+_R_IMPACT_BLIND = engine.IMPACT_R_FLEET_BLIND   # the engine owner's words, which the MOP prints too
 _R_IMPACT_NOT_LIST = "unverified: the stored failure_impact section is not a list, so no row can be read"
 #: Why a published measure is only a lower bound, by the kind of record its witness ref points at. A cable-row witness
 #: has three wordings, picked by what the projection's own reason on the row says of it (:func:`_impact_peers_said`):
@@ -264,11 +263,7 @@ def impact_view(snap: Dict[str, Any]) -> Dict[str, Any]:
     withheld = ""
     if state != _PUBLISHED and not (state == _COLLECTED_BUT_EMPTY and not items):
         withheld = _impact_cell(listing)[2]
-    blind = 0
-    if isinstance(listing.get("caveats"), list) and _IMPACT_BLIND_CAVEAT in listing["caveats"]:
-        blind = max(1, sum(1 for ref in _as_list(listing.get("refs")) if isinstance(ref, dict)
-                           and isinstance(ref.get("pointer"), str)
-                           and ref["pointer"].startswith(_IMPACT_BLIND_WITNESS)))
+    blind = engine.failure_impact_fleet_blind(listing)     # the engine owner's reading of the fleet qualifier
     stored = _as_list(snap.get("failure_impact")) if isinstance(snap, dict) else []
     rows: List[Dict[str, Any]] = []
     for item in items:

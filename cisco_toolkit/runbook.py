@@ -2269,12 +2269,14 @@ def write_runbook_docx(
     # lower-bound row by the positive floor the owner publishes for it; every cell is the owner's value (the stored
     # value on a published row, 'High (lower bound)' / '≥ N (lower bound)' on a lower-bound row, 'not assessed' for a
     # value it withholds). A row the owner does not rank (held, doubted, or bounded at zero) follows the ranked rows
-    # and is named below with why, so it never reads as stranding nobody. A published row renders as before.
+    # and is named below with why, so it never reads as stranding nobody. A published row renders as before. The
+    # order is by stranded count or floor alone (stored order on a tie), as the workbook, design, deck, archreview
+    # and ops rankings order it: a lower-bound row's band below the worst is withheld by the owner, so a raw severity
+    # never decides its place.
     def _fi_rank_key(pair):
         rec, verdict = pair
         floor = impact_assessability.ranking_floor(verdict)
-        return (_SEV_ORDER.get(rec.get("severity"), 9),
-                -(floor if floor is not None else _as_num(rec.get("stranded"))))
+        return -(floor if floor is not None else _as_num(rec.get("stranded")))
 
     fi_ranked = sorted((p for p in fi_pairs if impact_assessability.ranks(p[1])), key=_fi_rank_key)
     fi_unranked = [p for p in fi_pairs if not impact_assessability.ranks(p[1])]
