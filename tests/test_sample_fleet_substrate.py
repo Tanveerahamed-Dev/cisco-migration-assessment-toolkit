@@ -22,6 +22,9 @@ What this pins, all through the engine's REAL parsers and producers (no hand-bui
 * the substrate edits only deep copies (tests/synthetic_fixtures.py stays byte-for-byte what it was);
 * the snapshot writer emits LF on every platform -- pinned through main(), not only the helper --
   and `--out` redirects it away from the tracked path;
+* the collection writer emits each capture's exact LF text on every platform, under a simulated Windows
+  newline translation as well, so the engine's byte-hashed source receipts do not depend on the
+  regenerating host -- pinned through main() and through the real BGP baseline producer;
 * every IPv4 literal the substrate adds is RFC 1918 / RFC 5737 (or a mask), and every hostname it
   names is an existing fleet host (client-privacy marker hygiene).
 """
@@ -710,6 +713,130 @@ def test_main_writes_the_snapshot_through_the_lf_writer(tmp_path, monkeypatch):
     raw = out.read_bytes()
     assert b"\r" not in raw
     assert raw.count(b"\n") >= 5  # re-dumped pretty (indent=2), not a copy of the compact blob
+
+
+# --------------------------------------------------------------------------- host-independent collection bytes
+_REAL_OPEN = open
+
+
+def _windows_text_open(seen: list):
+    """An open() that writes text the way Windows text mode does, on ANY host: a text-mode write that leaves
+    `newline` at its default translates every "\\n" to "\\r\\n". Installed as build_sample's module-level
+    `open`, it lets a Linux run of the suite catch a writer that relies on the host's translation (a
+    monkeypatched os.linesep does not reach CPython's C text layer, whose CRLF write translation is fixed when
+    the interpreter is built). The W32/W33 hosted regeneration found exactly that writer: the Windows-built demo
+    carried CRLF receipt hashes in five sections, a hosted Linux rebuild LF ones. `seen` records (path, newline)
+    for every text-mode write; reads pass through untouched."""
+    def fake_open(file, mode="r", buffering=-1, encoding=None, errors=None, newline=None,
+                  closefd=True, opener=None):
+        if "b" not in mode and any(flag in mode for flag in "wax+"):
+            seen.append((os.fspath(file), newline))
+            if newline is None:
+                newline = "\r\n"
+        return _REAL_OPEN(file, mode, buffering, encoding, errors, newline, closefd, opener)
+    return fake_open
+
+
+def test_the_windows_text_simulator_really_translates_a_default_newline_write(tmp_path):
+    """The simulator the next tests rely on is not inert on this host: a default-newline text write through it
+    is CRLF, an explicit LF write is not."""
+    seen = []
+    fake = _windows_text_open(seen)
+    with fake(str(tmp_path / "default.txt"), "w", encoding="utf-8") as f:
+        f.write("a\nb\n")
+    with fake(str(tmp_path / "lf.txt"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("a\nb\n")
+    assert (tmp_path / "default.txt").read_bytes() == b"a\r\nb\r\n"
+    assert (tmp_path / "lf.txt").read_bytes() == b"a\nb\n"
+    assert [newline for _path, newline in seen] == [None, "\n"]
+
+
+def test_collection_writer_emits_the_exact_lf_capture_text_on_every_platform(cols, tmp_path, monkeypatch):
+    """Every capture of the real demo fleet is written as byte-for-byte its UTF-8 text with LF endings, even
+    under Windows newline translation. The engine reads these raw bytes (input_custody.read_bytes) and hashes them
+    into the snapshot's source receipts, so a host-translated write made bgp_configured_peer_baseline,
+    etherchannel_operational_evidence, multichassis_lag_domain_baseline, multichassis_lag_typed_observations and
+    vtp_extended_evidence differ between a Windows build and a hosted Linux one."""
+    seen = []
+    monkeypatch.setattr(bs, "open", _windows_text_open(seen), raising=False)
+    root = tmp_path / "collection"
+    bs._write_collection(str(root), cols)
+    expected = 0
+    for host, (_plat, outs) in cols.items():
+        for cmd, text in outs.items():
+            assert "\r" not in text, (host, cmd)  # the fleet's own text is LF; any CR below is the writer's
+            raw = (root / host / fx.cmd_filename(cmd)).read_bytes()
+            assert b"\r" not in raw, (host, cmd)
+            assert raw == text.encode("utf-8"), (host, cmd)
+            expected += 1
+    assert len(seen) == expected > len(cols)  # every capture went through the writer under test
+    assert {newline for _path, newline in seen} == {"\n"}
+
+
+def test_source_receipts_are_the_lf_capture_hashes_whatever_the_host_newline_translation(cols, tmp_path,
+                                                                                         monkeypatch):
+    """The engine's own source receipts over the demo collection are the same whether the regenerating host's
+    text mode translates newlines or not, and each is the SHA-256 of the LF capture text. Shown through the real
+    BGP configured-peer baseline producer (one of the five sections the CRLF build shifted): its per-host config
+    and runtime receipts, written natively and under the Windows simulator."""
+    import hashlib
+
+    native, _ = _bgp_baseline(cols, str(tmp_path / "native"))
+    monkeypatch.setattr(bs, "open", _windows_text_open([]), raising=False)
+    translated, _ = _bgp_baseline(cols, str(tmp_path / "windows"))
+
+    def receipts(baseline):
+        return {c["switch"]: (c["config_command"], c["config_sha256"], c["runtime_command"], c["runtime_sha256"])
+                for c in baseline["coverage"]}
+
+    assert receipts(translated) == receipts(native)
+
+    def lf(host, cmd):
+        return hashlib.sha256(cols[host][1][cmd].encode("utf-8")).hexdigest() if cmd else ""
+
+    checked = 0
+    for host, (config_cmd, config_sha, runtime_cmd, runtime_sha) in receipts(native).items():
+        if config_sha:
+            assert config_sha == lf(host, config_cmd), (host, config_cmd)
+            checked += 1
+        if runtime_sha:
+            assert runtime_sha == lf(host, runtime_cmd), (host, runtime_cmd)
+            checked += 1
+    # core1's running-config and BGP summary, both multi-line, and most hosts' running-config: not inert.
+    assert receipts(native)["core1"][1] and receipts(native)["core1"][3]
+    assert checked > len(cols) // 2
+
+
+def test_main_hands_the_engine_an_lf_collection_on_every_platform(tmp_path, monkeypatch):
+    """Pinned through main() itself, not only the helper (the E2R2-V5 lesson above): under Windows newline
+    translation every input main() writes for the engine -- each capture and devices.json -- holds no CR, and
+    every text-mode write main() makes declares LF. The pipeline is stubbed and reads what main() wrote before
+    main() removes its work directory; everything main() does around it is real."""
+    texts = {"show version": "line one\nline two\n", "show running-config": "!\nhostname x\nend\n"}
+    seen, captured = [], {}
+
+    def fake_pipeline():
+        argv = sys.argv
+        collection = argv[argv.index("--collection-dir") + 1]
+        for cmd in texts:
+            with _REAL_OPEN(os.path.join(collection, "x", fx.cmd_filename(cmd)), "rb") as f:
+                captured[cmd] = f.read()
+        with _REAL_OPEN(argv[argv.index("--devices-file") + 1], "rb") as f:
+            captured["devices.json"] = f.read()
+        xlsx = argv[argv.index("--output") + 1]
+        with _REAL_OPEN(os.path.splitext(xlsx)[0] + ".snapshot.json", "w", encoding="utf-8", newline="\n") as f:
+            f.write('{"devices": {}, "punchlist": []}')
+
+    monkeypatch.setattr(bs.cp, "main", fake_pipeline)
+    monkeypatch.setattr(bs, "build_collections", lambda: {"x": ("ios", dict(texts))})
+    monkeypatch.setattr(bs, "open", _windows_text_open(seen), raising=False)
+    bs.main(["--out", str(tmp_path / "fleet.json")])
+    assert {cmd: captured[cmd] for cmd in texts} == {cmd: text.encode("utf-8") for cmd, text in texts.items()}
+    assert captured["devices.json"].startswith(b"[") and b"\r" not in captured["devices.json"]
+    assert b"\r" not in (tmp_path / "fleet.json").read_bytes()
+    written = {os.path.basename(path) for path, _newline in seen}
+    assert {fx.cmd_filename(cmd) for cmd in texts} | {"devices.json", "fleet.json"} <= written
+    assert all(newline == "\n" for _path, newline in seen), seen
 
 
 def test_out_option_defaults_to_the_tracked_path(tmp_path):

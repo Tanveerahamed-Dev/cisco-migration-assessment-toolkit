@@ -632,11 +632,16 @@ def _add_forwarding_substrate(cols: dict) -> dict:
 
 
 def _write_collection(root: str, cols: dict) -> None:
+    """Write every capture as its exact UTF-8 text with LF line endings on EVERY platform. The engine reads
+    each capture's raw bytes (cisco_toolkit/input_custody.read_bytes) and its strict protocol owners hash
+    them into the snapshot's source receipts, so a text-mode open() that translated "\\n" to the host's
+    os.linesep (CRLF on Windows) made those receipts -- and the demo's bytes -- depend on the regenerating
+    machine. This is the same LF rule tests/synthetic_fixtures.write_collection applies to the golden."""
     for hostname, (_plat, outputs) in cols.items():
         d = os.path.join(root, hostname)
         os.makedirs(d, exist_ok=True)
         for cmd, text in outputs.items():
-            with open(os.path.join(d, fx.cmd_filename(cmd)), "w", encoding="utf-8") as f:
+            with open(os.path.join(d, fx.cmd_filename(cmd)), "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
 
 
@@ -712,7 +717,9 @@ def main(argv: list = None) -> None:
         collection = os.path.join(work, f"collection_{_SAMPLE_COLLECTION_STAMP}")
         _write_collection(collection, cols)
         dev_file = os.path.join(work, "devices.json")
-        with open(dev_file, "w", encoding="utf-8") as f:
+        # The engine binds this input's bytes too (its devices_file custody record). Compact json.dump emits
+        # no newline today, so LF is declared for the same host-independence rule, not to change any byte.
+        with open(dev_file, "w", encoding="utf-8", newline="\n") as f:
             json.dump(devices, f)
         template = os.path.join(work, "template.xlsx")
         _make_template(template)
