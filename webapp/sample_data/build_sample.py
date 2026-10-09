@@ -42,6 +42,10 @@ _SAMPLE_COLLECTION_STAMP = "20260807_000000"
 # cascade into assessment_integrity: the demo would change with the calendar, not with the engine.
 _SAMPLE_REGISTRY_CLOCK = (f"{_SAMPLE_COLLECTION_STAMP[0:4]}-{_SAMPLE_COLLECTION_STAMP[4:6]}-"
                           f"{_SAMPLE_COLLECTION_STAMP[6:8]}T00:00:00+00:00")
+# That pin is also the demo's collection INSTANT: main() has the engine read the stamp in the pinned clock's own
+# zone (_collection_zone), so the published collected_at is exactly _SAMPLE_REGISTRY_CLOCK on every host. Read
+# in the regenerating host's local zone instead, it took that host's UTC offset (+03:00 on one workstation,
+# +00:00 on a hosted runner) and the demo's bytes changed with the machine, not with the engine.
 
 
 @contextlib.contextmanager
@@ -70,6 +74,19 @@ def _registry_clock(iso: str):
         ri.datetime = real
         for cache in caches:
             cache.cache_clear()
+
+
+@contextlib.contextmanager
+def _collection_zone(tz):
+    """Declare the zone of the demo's collection-directory stamp for one in-process pipeline run: the engine
+    states collected_at in `tz` (COLLECT_PARSE `_COLLECTION_TZ`) instead of the regenerating host's local
+    zone, and the engine's own field default is restored afterwards."""
+    real = cp._COLLECTION_TZ
+    cp._COLLECTION_TZ = tz
+    try:
+        yield tz
+    finally:
+        cp._COLLECTION_TZ = real
 
 # (model line for `show version`, roughly how the EoL KB bands it) — gives lifecycle variety.
 _PLATFORMS = [
@@ -615,11 +632,16 @@ def _add_forwarding_substrate(cols: dict) -> dict:
 
 
 def _write_collection(root: str, cols: dict) -> None:
+    """Write every capture as its exact UTF-8 text with LF line endings on EVERY platform. The engine reads
+    each capture's raw bytes (cisco_toolkit/input_custody.read_bytes) and its strict protocol owners hash
+    them into the snapshot's source receipts, so a text-mode open() that translated "\\n" to the host's
+    os.linesep (CRLF on Windows) made those receipts -- and the demo's bytes -- depend on the regenerating
+    machine. This is the same LF rule tests/synthetic_fixtures.write_collection applies to the golden."""
     for hostname, (_plat, outputs) in cols.items():
         d = os.path.join(root, hostname)
         os.makedirs(d, exist_ok=True)
         for cmd, text in outputs.items():
-            with open(os.path.join(d, fx.cmd_filename(cmd)), "w", encoding="utf-8") as f:
+            with open(os.path.join(d, fx.cmd_filename(cmd)), "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
 
 
@@ -695,7 +717,9 @@ def main(argv: list = None) -> None:
         collection = os.path.join(work, f"collection_{_SAMPLE_COLLECTION_STAMP}")
         _write_collection(collection, cols)
         dev_file = os.path.join(work, "devices.json")
-        with open(dev_file, "w", encoding="utf-8") as f:
+        # The engine binds this input's bytes too (its devices_file custody record). Compact json.dump emits
+        # no newline today, so LF is declared for the same host-independence rule, not to change any byte.
+        with open(dev_file, "w", encoding="utf-8", newline="\n") as f:
             json.dump(devices, f)
         template = os.path.join(work, "template.xlsx")
         _make_template(template)
@@ -713,7 +737,7 @@ def main(argv: list = None) -> None:
                     "--output", out_xlsx, "--workers", "1", "--no-html", "--no-docx",
                     "--no-pptx", "--no-design", "--no-mop"]
         try:
-            with _registry_clock(_SAMPLE_REGISTRY_CLOCK):
+            with _registry_clock(_SAMPLE_REGISTRY_CLOCK) as evidence, _collection_zone(evidence.tzinfo):
                 cp.main()
         finally:
             sys.argv = argv

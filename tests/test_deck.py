@@ -46,10 +46,17 @@ def _rich_snap():
              for i in range(8)],
         "failure_impact": [
             {"host": "core1", "severity": "High", "vlans_impacted": 4, "stranded": 220, "hard": 180,
-             "detail": "VLAN 10 hard partition"},
+             "off_scan_gw_vlans": 0, "detail": "VLAN 10 hard partition", "blind_links": 0},
             {"host": "core2", "severity": "Medium", "vlans_impacted": 2, "stranded": 40, "hard": 0,
-             "detail": "backup-covered"},
+             "off_scan_gw_vlans": 0, "detail": "backup-covered", "blind_links": 0},
         ],
+        # W33: the evidence the failure-impact assessability owner reads, so the rows above are the producer's
+        # measurements: the scoped interface running-config mark of each switch, and a cable map with no
+        # uncollected neighbour. Each row carries both of a current producer row's markers (off_scan_gw_vlans and
+        # W32's blind_links count); a row without blind_links predates that count and is only a lower bound.
+        "interfaces": {"core1": {"Vlan10": {"run_config_observed": True}},
+                       "core2": {"Vlan20": {"run_config_observed": True}}},
+        "cable_map": {"nodes": [], "cables": []},
         "lifecycle_risk": {"summary": {"n_devices": 12, "by_band": {"Past-EoS": 3, "Near-LDoS": 2, "Active": 7},
                                        "n_past_eos": 3, "n_past_ldos": 0, "n_near": 2, "n_active": 7,
                                        "n_unknown": 0}},
@@ -281,14 +288,30 @@ def _deck_text(path):
 def test_deck_survives_xml_illegal_chars(tmp_path):
     """[audit-4 #2 totality] a U+FFFE/U+FFFF/lone-surrogate in any device-derived string aborted the whole
     executive deck at python-pptx save -- the class the workbook/docx are hardened against. _clean (the single
-    text sink) must strip them."""
+    text sink) must strip them.
+
+    W33: the keystone slide renders only a row the failure-impact assessability owner publishes, and a host carrying
+    a lone surrogate is not readable text, so that row is held and never reaches the keystone sink. The keystone row
+    therefore stays published: its host carries the two UTF-8-encodable noncharacters (its interface record follows
+    it, so the running-config evidence still joins), and the lone surrogate rides in its detail line."""
+    from cisco_toolkit import impact_assessability
     snap = _rich_snap()
-    bad = chr(0xFFFF) + chr(0xFFFE) + chr(0xD800)
-    snap["failure_impact"][0]["host"] = snap["failure_impact"][0]["host"] + bad
+    nonchar = chr(0xFFFF) + chr(0xFFFE)
+    bad = nonchar + chr(0xD800)
+    row = snap["failure_impact"][0]
+    row["host"] = row["host"] + nonchar
+    snap["interfaces"][row["host"]] = snap["interfaces"].pop("core1")
+    row["detail"] = row["detail"] + bad
+    assert impact_assessability.assess_failure_impact(snap)[0].published     # non-vacuity: it is a ranked keystone
     snap["executive_brief"]["axes"][0]["headline"] = "61/100 " + bad
     out = str(tmp_path / "d.pptx")
     write_executive_deck_pptx(out, snap, "Meridian" + bad)     # must not raise
-    Presentation(out)                                    # and open
+    txt = _deck_text(out)                                # and open
+    assert "VLAN 10 hard partition" in txt and "core1" in txt, txt[:2000]    # the sanitized keystone host and detail
+    held = _rich_snap()
+    held["failure_impact"][0]["host"] += bad              # an unreadable host: held, named by its row, never rendered
+    write_executive_deck_pptx(str(tmp_path / "h.pptx"), held, "Meridian")
+    assert "row 0 (not assessed" in _deck_text(str(tmp_path / "h.pptx"))
 
 
 def _m0_like_snap():
@@ -389,7 +412,7 @@ def test_deck_keystone_not_well_distributed_when_blast_radius_blind(tmp_path):
     assert "well distributed" not in tb and "indetermin" in tb.lower()
     snap_clean = _rich_snap()
     snap_clean["failure_impact"] = [{"host": "core1", "severity": "Low", "stranded": 0, "vlans_impacted": 0,
-                                     "off_scan_gw_vlans": 0, "detail": "FHRP-covered"}]
+                                     "off_scan_gw_vlans": 0, "detail": "FHRP-covered", "blind_links": 0}]
     write_executive_deck_pptx(str(tmp_path / "c.pptx"), snap_clean, "clean")
     assert "well distributed" in _deck_text(str(tmp_path / "c.pptx"))
 

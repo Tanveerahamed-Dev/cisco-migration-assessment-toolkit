@@ -466,6 +466,9 @@ PHASE_SECTIONS: Dict[str, Tuple[str, ...]] = {
     "FHRP configured-group baseline": ("fhrp_configured_group_baseline", "fhrp_redundancy_domain_baseline"),
     "FHRP redundancy-domain baseline": ("fhrp_redundancy_domain_baseline",),
     "Failure Impact": ("failure_impact",),
+    # W33: the failure-impact row-assessability verdicts are never stored; their one section consumer is the device
+    # risk register's impact term, which then reads the owner's unavailable fallback document.
+    "Failure Impact assessability": ("device_dossiers",),
     "Feature compliance": ("feature_compliance",),
     "Framework coverage": ("framework_coverage",),
     "Golden-config drift": ("golden_drift", "feature_compliance"),

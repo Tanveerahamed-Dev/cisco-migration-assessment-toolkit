@@ -1,10 +1,64 @@
 # W52 / G14: stored cable and VLAN carriage
 
-Status: **reviewed hosted material adopted; final runtime qualification pending.** Base main is
+Status: **main integration reviewed as source only; combined hosted material and qualification pending.**
+Current base is owner-merged W45 `6390b66c1e91e675ebcb52464d60af6f552c9271`.
+The merge preserves G14 and incoming engine/Trust/UI owners. The separate W53
+Scope raw-impact consumer belongs to the supervisor's new Codex thread and is
+not implemented here.
+
+Historical initial base was
 `f797444eb53fb6fd5d3b2a40e0d9281c54e7a332`, the supervisor's W34/#627 merge.
 The merged/head/tested715/clean tree is `4570571f10d86539cd612b61568d91822b4975fc`.
 W34 is retired in this PR's board edit with its complete history retained. Codex did
 not approve or merge it, and no historical G15 result qualifies this changed source.
+
+## W45 main integration and fresh generation boundary
+
+Supervisor #629 merged at 11:16:16Z as `6390b66c`, ordered `f797444e + f6323759`.
+Head, actual merged and clean-merge trees equal `644591ca`. One completed
+Python 3.11 log binds actual tested `536c0365`; its Git commit API joins the same
+ordered parents and tree. That tested object was absent locally, so this is not
+a fabricated local raw-object proof. The full suite reports 11,746 passes,
+279 skips, one xfail, one warning and 26 subtests. All 15 protected contexts,
+CodeQL and six whole workflows succeeded; 29 records comprise 26 successes and
+three inapplicable skips. Root did not approve or merge it.
+
+The combined source preserves main's single earlier Cable map, W33 assessability
+before the Device risk register, W36 UTC/LF sample writer, W28 Trust schema and
+W29/W30 UI. G14 runs once after VLAN cutover with that same cable map and retains
+its phase-failure attribution, stored result, public owner imports and native
+direct-return/refusal controls. Reference registers both derived-truth modules.
+No PR630 product delta or W53 implementation is imported by this merge.
+
+Generated conflicts resolve to **exact main parent baselines**, not constructed
+combined output: both goldens, sample, four Scope JSON members and `GOLDEN_SHA`,
+canonical OpenAPI TypeScript, LF policy, and the literal production/test native
+pair. Incoming dist also remains exact main. These inputs do not yet represent
+the combined G14 source; old parent qualification cannot admit them. Fresh
+GitHub observations must supply the combined schemas, canonical types and LF
+receipts, with independent material review before literal adoption. The normal
+API/native/LF guards remain strict and can refuse this bootstrap.
+
+One fresh hosted Route-A generation is required after source review/publication,
+under the unchanged mandatory controls and shrink refusal. Relative to main's
+stored outputs, expected differences are G14 carriage and its census/module
+metadata, plus ordinary generation timestamps. W45 blind-link/assessability and
+UTC/LF sample facts must remain; every other changed leaf requires explanation.
+Prior c47 output is historical evidence, not the new generation input. Final
+unchanged golden comparison and UTC sample check remain mandatory. New sample
+bytes then require the hosted Scope binding, and changed frontend inputs require
+a new whole-success producer plus the existing hosted frontend receipt route.
+No local generator, schema hash or receiver runs; no guessed combined digest is
+admitted.
+
+Before integration, c5 Distribution job `113790185552` on tested `65a35ace`
+passed 32 frontend files / 432 tests, typechecking and Vite build, then failed
+immutable SPA reproduction: three prior chunks were missing and index.html
+changed. Packaging, installation and later smoke work were skipped. Its
+frontend job separately completed, but its artifact `11612366937` was metadata
+only while whole webapp was pending. No receipt dispatch or dist intake occurred.
+Old7a artifact `11609234411` remains inadmissible under its failed whole producer.
+Neither result qualifies the new combined source; every negative remains.
 
 ## Product contract
 

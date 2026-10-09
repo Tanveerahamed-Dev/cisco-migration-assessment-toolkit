@@ -142,10 +142,17 @@ to run a workstation controller. Its two unresolved findings remain separate fro
 - **Goldens.** Regenerating the current goldens should be byte-identical: the harness pins its
   clocks and strips wall-clock stamps.
 - **Sample.** The sample keeps its wall-clock `generated_at` and `attestation.generated_at`, so its
-  bytes always move. The engine also stamps the sample's `collected_at` with the regenerating host's
-  UTC offset. A workstation in another time zone wrote the committed copy, so the first hosted
-  regeneration moves that offset to `+00:00`. Any other changed section needs an explanation before
-  import.
+  bytes always move. Two other host dependencies are removed by W36 (`claude/sample-collected-at-utc`).
+  `collected_at` is now stated in the zone of the builder's pinned evidence clock, exactly
+  `2026-08-07T00:00:00+00:00` on every host, instead of in the regenerating host's zone. The builder
+  also writes every synthetic capture with LF line endings on every host; the engine hashes the raw
+  capture bytes into source receipts, so a Windows text-mode write used to give CRLF receipts. The
+  committed copy was built on a workstation in another time zone, on Windows. The first hosted
+  regeneration of W36 therefore also changes `collected_at` (from `+03:00`) and the receipt hashes
+  and byte counts of five sections: `bgp_configured_peer_baseline`,
+  `etherchannel_operational_evidence`, `multichassis_lag_domain_baseline`,
+  `multichassis_lag_typed_observations` and `vtp_extended_evidence`. Any other changed section
+  needs an explanation before import.
 - **Atlas Scope.** Every sample regeneration therefore stales Atlas Scope's tracked compiled outputs
   (step 6), as it always has.
 - **First dispatch.** GitHub dispatches a workflow only when its file exists on the default branch,

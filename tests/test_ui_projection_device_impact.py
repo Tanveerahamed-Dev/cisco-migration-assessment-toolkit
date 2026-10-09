@@ -15,8 +15,10 @@ INDETERMINATE detail) withholds its severity and counts rather than show Info an
 row older than the producer's off_scan_gw_vlans marker, and the row of a device whose scoped interface running-config
 (the only source of its gateway SVIs) was not captured -- held by the one shared row builder, so both surfaces agree.
 A held row's detail is held with it, unless it is the producer's own INDETERMINATE disclosure. A row that simulated
-only part of its VLANs, or whose switch the stored cable map cables to a peer the collection never reached (anything
-but positively identified edge gear), never shows a band below High, a zero, or a clean-bill detail as a measurement.
+only part of its VLANs, whose switch has inter-switch links with no VLAN evidence (its blind_links) or whose stored row
+predates that per-row count, or whose switch the stored cable map cables to a peer the collection never reached
+(anything but positively identified edge gear), never shows a band below High, a zero, or a clean-bill detail as a
+measurement.
 
 Every value is checked against an INDEPENDENT lookup in the snapshot, never the module's own join.
 """
@@ -32,6 +34,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from cisco_toolkit import analyze
+from cisco_toolkit import impact_assessability as ia
 from cisco_toolkit import ui_projection as ui
 from cisco_toolkit.model import InterfaceData
 
@@ -162,6 +165,23 @@ def _understatable(src, field):
     return field in MEASURES and src[field] == 0
 
 
+#: How a blind-link bound states its cause, written out here rather than taken from the module: a stored row's
+#: positive count of inter-switch links with no trunk/STP evidence, or a stored row older than that per-row count.
+BLIND_COUNTED = "inter-switch link(s) of this switch carry no trunk/STP evidence"
+BLIND_LEGACY = "this stored row carries no blind_links, so it predates the producer's per-row count"
+
+
+def _blind_bound(src, pointer):
+    """Independent: how a stored row's evidence-less inter-switch links bound it, as ``(reason fragment, witness)``.
+    A row WITHOUT blind_links predates analyze.compute_failure_impact's per-row count and is bounded citing the row
+    itself; a positive count bounds it citing that count; zero bounds nothing (None)."""
+    if "blind_links" not in src:
+        return BLIND_LEGACY, (pointer, "witness")
+    if src["blind_links"]:
+        return f"{src['blind_links']} {BLIND_COUNTED}", (pointer + "/blind_links", "witness")
+    return None
+
+
 # --------------------------------------------------------------------------------------------------
 # the closed schema and the module tables carry both selections
 # --------------------------------------------------------------------------------------------------
@@ -222,19 +242,25 @@ def test_a_simulated_device_selects_exactly_its_fleet_rows(sample, doc_validator
         # a switch cabled to a peer the collection never reached cannot vouch for a value that peer may understate
         peers = _uncollected_peer_cables(sample, host)
         witness = {(f"/cable_map/cables/{j}", "witness") for j in peers}
+        causes = [f"cannot account for endpoints behind {len(peers)} uncollected neighbour(s)"] if peers else []
         if peers:
             bounded.append(host)
+        # nor can a switch with inter-switch links the simulation could not see, or a row older than that count
+        blind = _blind_bound(src, row["pointer"])
+        if blind is not None:
+            causes.append(blind[0])
+            witness.add(blind[1])
         for field in ("severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp", "off_scan_gw_vlans", "detail"):
             assert row[field]["subject"] == f"/failure_impact/{rows[0]}/{field}"
-            if peers and _understatable(src, field):
+            if causes and _understatable(src, field):
                 assert row[field]["state"] == NC and row[field]["value"] is None, (host, field, row[field])
-                assert f"cannot account for endpoints behind {len(peers)} uncollected neighbour(s)" in (
-                    row[field]["reason"]), (host, field, row[field]["reason"])
+                for cause in causes:
+                    assert cause in row[field]["reason"], (host, field, cause, row[field]["reason"])
                 assert witness <= _refs(row[field]), (host, field)
                 continue
             assert row[field]["state"] == PUB, (host, field, row[field].get("reason"))
             assert row[field]["value"] == src[field], (host, field)
-            if field in MEASURES:                                       # a published lower bound cites each cable
+            if field in MEASURES:                       # a published lower bound cites each cable and blind-link bound
                 assert witness <= _refs(row[field]), (host, field)
         assert "row_selection_by_exact_key" in sel["caveats"]
         want = _naming(sample["link_centrality"], host, ENDS)
@@ -245,7 +271,9 @@ def test_a_simulated_device_selects_exactly_its_fleet_rows(sample, doc_validator
     assert lacking and lacking == sorted(set(sample["devices"]) - set(sample["security"]))
     # The sample's uncollected peers: one AP behind every access switch and another, plus a WAN router, on core2.
     # The APs are edge gear and bound nothing; the router bounds core2's row. core2 is High, so only its zero
-    # counts are withheld: its band, positive counts and per-VLAN detail stay published as lower bounds.
+    # counts are withheld: its band, positive counts and per-VLAN detail stay published as lower bounds. A row's own
+    # blind-link bound (a positive stored count, or no count at all) is derived above from the stored row, the same
+    # way, never from a list of hosts; (o) pins the counts the sample must carry.
     kinds = {n["host"]: n["kind"] for n in sample["cable_map"]["nodes"] if n["collected"] is False}
     assert sorted(kinds.values()) == ["ap", "ap", "router"], kinds
     assert bounded == ["core2"], bounded
@@ -348,7 +376,12 @@ def test_a_valid_row_beside_an_unreadable_tail_is_kept_and_the_tail_witnessed(sa
     assert "2 rows" not in sel["reason"]                   # a membership doubt, not a duplicate the join can see
     assert (f"/failure_impact/{k}", "witness") in _refs(sel)
     assert sel["items"] == [topology["failure_impact"]["items"][first]]
-    assert all(sel["items"][0][field]["state"] == PUB for field in ("host",) + MEASURES)
+    # the valid row is not doubted: it is exactly the row the sample projects without the tail (any bound the row
+    # carries of its own, such as a blind-link count, is its own and unchanged), and its key and band are published
+    assert sel["items"][0] == _topology(sample, topology_validator)["failure_impact"]["items"][first]
+    assert sel["items"][0]["host"]["state"] == PUB and sel["items"][0]["severity"]["state"] == PUB
+    assert sel["items"][0]["severity"]["value"] == snap["failure_impact"][first]["severity"] == "High"
+    assert not any("cannot be joined" in sel["items"][0][field].get("reason", "") for field in ("host",) + MEASURES)
     assert topology["failure_impact"]["items"][k]["host"]["state"] == UV       # the fleet withholds the tail's key
     # the same device's structural selection reads another list: untouched by this tail
     assert _page(snap, "core1", doc_validator)["structural_links"]["state"] == PUB
@@ -614,17 +647,21 @@ def test_h_an_unsimulated_switch_withholds_its_severity_and_counts(doc_validator
     impact = analyze.compute_failure_impact(interfaces)               # the REAL producer, never a hand-written row
     by_host = {row["host"]: row for row in impact}
     assert set(by_host) == set(interfaces)
-    # the producer's own disclosure, pinned: both INDETERMINATE branches open with the projection's marker
-    for host, off_scan in (("acc", 1), ("x1", 0), ("x2", 0)):
+    # the producer's own disclosure, pinned: both INDETERMINATE branches open with the projection's marker, and every
+    # row now carries its count of evidence-less inter-switch links (the x1-x2 trunk), zero included
+    for host, off_scan, blind in (("acc", 1, 0), ("x1", 0, 1), ("x2", 0, 1)):
         row = by_host[host]
         assert row["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX), (host, row["detail"])
         assert ("off-scan gateway" in row["detail"]) == bool(off_scan), (host, row["detail"])
+        assert ("carry NO trunk/STP evidence" in row["detail"]) == bool(blind), (host, row["detail"])
         assert row["severity"] == "Info" and row["off_scan_gw_vlans"] == off_scan, row
+        assert row["blind_links"] == blind, row
         assert all(row[f] == 0 for f in MEASURES[1:]), row                # zeros that look like measurements
     gw = by_host["gw"]
     assert not gw["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX)
     assert gw["severity"] == "High" and gw["hard"] == gw["vlans_impacted"] == 1 and gw["off_scan_gw_vlans"] == 1
     assert gw["backup"] == gw["fhrp"] == 0                                # zeros the partial simulation cannot vouch for
+    assert gw["blind_links"] == 0                                         # its one trunk carries VLAN evidence
     snap = _impact_snapshot(interfaces, impact)
     topology = _topology(snap, topology_validator)
     rows = {row["host"]["value"]: row for row in topology["failure_impact"]["items"]}
@@ -723,9 +760,10 @@ def _partial_row(fleet, host):
 def test_i_a_partly_simulated_row_below_high_withholds_its_band_and_its_zeros(doc_validator, topology_validator,
                                                                               fleet, host, band, status):
     src, snap, k = _partial_row(fleet, host)
-    # the producer simulated one VLAN and counted one it could not assess: no INDETERMINATE marker, a low band
+    # the producer simulated one VLAN and counted one it could not assess: no INDETERMINATE marker, a low band; every
+    # trunk carries VLAN evidence, so the off-scan count is the row's only bound
     assert not src["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX), src
-    assert src["severity"] == band and src["off_scan_gw_vlans"] == 1, src
+    assert src["severity"] == band and src["off_scan_gw_vlans"] == 1 and src["blind_links"] == 0, src
     assert src["vlans_impacted"] == src[status] == 1, src
     zeros = sorted(set(MEASURES[1:]) - {"vlans_impacted", status})
     assert all(src[field] == 0 for field in zeros), src                # stranded, hard and the other status count
@@ -762,7 +800,7 @@ def test_i_a_partly_simulated_high_row_keeps_its_band(doc_validator, topology_va
     bounds; the zeros are still withheld."""
     src, snap, k = _partial_row(_backup_fleet, "gw")
     assert not src["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX), src
-    assert src["severity"] == "High" and src["off_scan_gw_vlans"] == 1, src
+    assert src["severity"] == "High" and src["off_scan_gw_vlans"] == 1 and src["blind_links"] == 0, src
     assert src["vlans_impacted"] == src["hard"] == 1 and src["stranded"] > 0 and src["backup"] == src["fhrp"] == 0
     row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
     off_scan = (row["pointer"] + "/off_scan_gw_vlans", "witness")
@@ -809,16 +847,24 @@ def test_j_a_device_without_its_scoped_running_config_holds_its_row_on_both_surf
     # one state on both surfaces: the device page shows the held fleet row, never a second selection gap
     sel = _page(snap, host, doc_validator)["failure_impact"]
     assert sel["state"] == PUB and sel["items"] == [row], sel.get("reason")
-    for other in ("dist1", "access1"):                 # every other device keeps its measured row
-        i = _naming(snap["failure_impact"], other, ("host",))[0]
-        assert all(topology["failure_impact"]["items"][i][field]["state"] == PUB for field in MEASURES), other
+    # every other device keeps exactly the row the unmodified sample projects (its own bounds, if any, included):
+    # the hold is this device's, never the fleet's
+    clean = _topology(sample, topology_validator)["failure_impact"]["items"]
+    for i, other in enumerate(topology["failure_impact"]["items"]):
+        if i != k:
+            assert other == clean[i], i
+            assert not any("run_config_observed" in other[field].get("reason", "") for field in MEASURES), i
     # a marker that is present but not true reads the same; one observed interface lifts the hold
     name = next(iter(snap["interfaces"][host]))
     snap["interfaces"][host][name]["run_config_observed"] = "true"
     assert _topology(snap, topology_validator)["failure_impact"]["items"][k]["severity"]["state"] == NC
     snap["interfaces"][host][name]["run_config_observed"] = True
     lifted = _topology(snap, topology_validator)["failure_impact"]["items"][k]
-    assert all(lifted[field]["state"] == PUB for field in MEASURES + ("detail",))
+    # lifted: the row the unmodified sample projects, with no hold reason left on any cell; High and the per-VLAN
+    # detail are published (a bound the row carries of its own may still withhold a zero, never these)
+    assert lifted == clean[k]
+    assert not any("run_config_observed" in lifted[field].get("reason", "") for field in MEASURES + ("detail",))
+    assert all(lifted[field]["state"] == PUB for field in ("severity", "vlans_impacted", "stranded", "hard", "detail"))
     assert lifted["style"]["value"]["token"] == "impact_high"
     # no interface record at all: held, with the interfaces map as the witness
     del snap["interfaces"][host]
@@ -830,7 +876,9 @@ def test_j_a_device_without_its_scoped_running_config_holds_its_row_on_both_surf
     snap = copy.deepcopy(sample)
     del snap["security"][host]
     row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
-    assert all(row[field]["state"] == PUB for field in MEASURES)
+    assert row == clean[k]
+    assert not any("run_config_observed" in row[field].get("reason", "") for field in MEASURES + ("detail",))
+    assert all(row[field]["state"] == PUB for field in ("severity", "vlans_impacted", "stranded", "hard"))
     sel = _page(snap, host, doc_validator)["failure_impact"]
     assert sel["state"] == PUB and sel["items"] == [row], sel.get("reason")
 
@@ -865,9 +913,13 @@ def test_k_a_row_without_the_off_scan_marker_withholds_its_severity_and_counts(s
         assert row["style"]["value"]["token"] == "not_observed", (host, row["style"])
         sel = _page(snap, host, doc_validator)["failure_impact"]
         assert sel["state"] == PUB and sel["items"] == [row], (host, sel.get("reason"))
-    # the control: a row that carries the marker keeps its measures and its detail
+    # the control: a row that carries the marker is not held: it is exactly the row the unmodified sample projects
+    # (a bound of its own, such as a blind-link count, may still withhold its understatable values, never the marker)
     i = _naming(snap["failure_impact"], "dist1", ("host",))[0]
-    assert all(topology["failure_impact"]["items"][i][field]["state"] == PUB for field in MEASURES + ("detail",))
+    clean = _topology(sample, topology_validator)["failure_impact"]["items"]
+    assert topology["failure_impact"]["items"][i] == clean[i]
+    assert not any("assessability marker" in clean[i][field].get("reason", "") for field in MEASURES + ("detail",))
+    assert all(clean[i][field]["state"] == PUB for field in ("vlans_impacted", "fhrp", "detail")), clean[i]
     # a legacy row whose detail is the producer's INDETERMINATE disclosure keeps that disclosure published
     k = _naming(snap["failure_impact"], "podacc1", ("host",))[0]
     snap["failure_impact"][k]["detail"] = ui.IMPACT_INDETERMINATE_PREFIX + " - a disclosure, not a clean bill."
@@ -913,8 +965,9 @@ def _node(snap, host):
 
 
 def _assert_clean_bill(src):
-    """The producer's clean bill: Info, every count zero, nothing off-scan, no INDETERMINATE disclosure."""
-    assert src["severity"] == "Info" and src["off_scan_gw_vlans"] == 0, src
+    """The producer's clean bill: Info, every count zero, nothing off-scan, no evidence-less inter-switch link, no
+    INDETERMINATE disclosure."""
+    assert src["severity"] == "Info" and src["off_scan_gw_vlans"] == 0 and src["blind_links"] == 0, src
     assert all(src[field] == 0 for field in MEASURES[1:]), src
     assert not src["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX), src
 
@@ -989,7 +1042,7 @@ def test_l_a_high_row_facing_an_uncollected_neighbour_keeps_its_lower_bounds(doc
     only the zero counts are withheld. The per-VLAN detail lists what was simulated and stays published."""
     snap, k, src = _downstream(host="gw")
     assert src["severity"] == "High" and src["hard"] == src["vlans_impacted"] == 1 and src["stranded"] == 1, src
-    assert src["backup"] == src["fhrp"] == 0 and src["off_scan_gw_vlans"] == 0, src
+    assert src["backup"] == src["fhrp"] == 0 and src["off_scan_gw_vlans"] == 0 and src["blind_links"] == 0, src
     node = _node(snap, "wan")
     assert node["collected"] is False and node["kind"] == "router", node
     cables = _uncollected_peer_cables(snap, "gw")
@@ -1203,11 +1256,25 @@ def test_n_two_rows_naming_one_host_are_unverified_and_agree_on_both_surfaces(sa
         assert pair <= _refs(join)
         assert row["style"]["value"]["token"] == "unverified", row["style"]
     assert {fleet["items"][j]["severity"]["value"] for j in (first, dup)} == {None}    # neither claim is published
-    # unverified wins over a not_collected hold (module precedence); the hold is carried beside, with its witness
+    # unverified wins over a not_collected hold (module precedence); the hold is carried beside, with its witness.
+    # The first row is the producer's own: the copy's off-scan-marker hold never leaks into it, and the doubt is the
+    # ONLY thing the duplicate adds to it. Its cell reads the doubt, then exactly the reason the same cell carries
+    # without the duplicate (a bound the row has of its own, such as its blind-link count), or the doubt alone.
+    clean_first = _topology(sample, topology_validator)["failure_impact"]["items"][first]
+    # the doubt is exactly the engine owner's duplicate reason for two rows, never merely text that opens like it
+    dup_reason = ia.R_DUP.format(n=2)
+    assert dup_reason.startswith(IMPACT_DUP + ", ") and "; " not in dup_reason, dup_reason
     for field in MEASURES + ("detail",):
         copy_reason = fleet["items"][dup][field]["reason"]
         assert ("predates the producer's assessability marker" in copy_reason) == (mode == "held_copy"), copy_reason
-        assert "predates" not in fleet["items"][first][field]["reason"], field
+        own = fleet["items"][first][field]["reason"]
+        assert "predates the producer's assessability marker" not in own, (field, own)
+        alone = own.split("; ", 1)[0]
+        assert alone == dup_reason, (field, own)
+        if clean_first[field]["state"] == PUB:
+            assert own == alone, (field, own)
+        else:
+            assert own == f"{alone}; {clean_first[field]['reason']}", (field, own, clean_first[field]["reason"])
     # every other host's row is exactly the sample's
     clean = _topology(sample, topology_validator)["failure_impact"]["items"]
     for j, row in enumerate(fleet["items"][:len(clean)]):
@@ -1247,6 +1314,277 @@ def test_n_distinct_hosts_stay_published_and_the_key_is_exact_text(sample, doc_v
     assert not any("name this exact host" in items[-1][field].get("reason", "") for field in IMPACT_CELLS)
     sel = _page(snap, "core1", doc_validator)["failure_impact"]
     assert sel["state"] == PUB and sel["items"] == [items[first]], sel.get("reason")
+
+
+# --------------------------------------------------------------------------------------------------
+# (o) a switch with inter-switch links the simulation could not see never reads as a clean or low verdict
+# --------------------------------------------------------------------------------------------------
+#: analyze.compute_failure_impact's record fields, in the order it writes them, written out by hand: the per-row
+#: blind-link count was appended last, so every earlier field keeps its position.
+IMPACT_RECORD_FIELDS = ("host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",
+                        "off_scan_gw_vlans", "detail", "blind_links")
+
+
+def _blind_fleet():
+    """`g1` and `g2` are FHRP peers gatewaying VLAN 10 for `acc`, so removing `g1` is FHRP-covered (Low). `g2` is also
+    the sole gateway of VLAN 30 for `acc`, so removing it is a hard partition (High). Every trunk among those three
+    carries VLAN evidence. `g1` also trunks to `x` over a link with NO trunk/STP evidence on either end: the producer
+    leaves it out of every forwarding graph, so whatever `g1` transits over it was never simulated, and `x`, which
+    simulates nothing else, could not be simulated at all.
+
+    `x` also trunks to `y` over a link whose trunk/STP evidence sits on `x`'s end ONLY (VLAN 99, which nothing
+    gateways or uses, so it simulates nothing for anyone). analyze._link_has_vlan_evidence reads one end's evidence as
+    evidenced, so that link is counted on NEITHER end: `x` keeps exactly 1 over its two inter-switch links, and `y`,
+    whose own end carries no evidence at all, counts 0 (W45 refutation: a producer that began counting one-end
+    evidence would raise both)."""
+    return {"g1": {"Gi1": _trunk("Gi1", "acc", "Gi1", "10"), "Gi9": _trunk("Gi9", "x", "Gi1"),
+                   "Vlan10": _svi(10, "10.10.0.2/24", "Active")},
+            "g2": {"Gi1": _trunk("Gi1", "acc", "Gi2", "10,30"), "Vlan10": _svi(10, "10.10.0.3/24", "Standby"),
+                   "Vlan30": _svi(30, "10.30.0.1/24")},
+            "acc": {"Gi1": _trunk("Gi1", "g1", "Gi1", "10"), "Gi2": _trunk("Gi2", "g2", "Gi1", "10,30"),
+                    "Gi10": _access("Gi10", 10, "0000.0000.000a"), "Gi30": _access("Gi30", 30, "0000.0000.001e")},
+            "x": {"Gi1": _trunk("Gi1", "g1", "Gi9"), "Gi2": _trunk("Gi2", "y", "Gi1", "99")},
+            "y": {"Gi1": _trunk("Gi1", "x", "Gi2")}}
+
+
+def _blind_rows():
+    """The REAL producer's rows over :func:`_blind_fleet`, its snapshot, and each host's row index."""
+    interfaces = _blind_fleet()
+    impact = analyze.compute_failure_impact(interfaces)
+    return impact, _impact_snapshot(interfaces, impact), {row["host"]: i for i, row in enumerate(impact)}
+
+
+def test_o_the_producer_writes_the_blind_link_count_on_every_row():
+    impact, _snap, k = _blind_rows()
+    assert set(k) == {"g1", "g2", "acc", "x", "y"}
+    for row in impact:
+        assert tuple(row) == IMPACT_RECORD_FIELDS, row               # appended last; every earlier field in place
+        assert type(row["blind_links"]) is int, row                  # a count, never a flag or a text
+    # the x-y trunk is an inter-switch link of the producer's model (both ends scanned) with trunk/STP evidence on
+    # exactly one end, so the zero it adds below is the rule at work, never a link the model never saw
+    fields = ("stp_fwd_vlans", "stp_blk_vlans", "trunk_allowed_vlans", "trunk_native_vlan")
+    xy = [link for link in analyze.build_network_model(_blind_fleet())["links"] if {link["a"], link["b"]} == {"x", "y"}]
+    assert len(xy) == 1, xy
+    ends = {xy[0]["a"]: xy[0]["da"], xy[0]["b"]: xy[0]["db"]}
+    assert ends["x"].trunk_allowed_vlans == "99" and not any(str(getattr(ends["y"], f) or "").strip() for f in fields)
+    # exact, never a floor: the evidence-less g1-x link counts once on each end; the one-end-evidence x-y link counts
+    # on neither, so x reads 1 (not 2) and y reads 0 (not 1)
+    assert {host: impact[i]["blind_links"] for host, i in k.items()} == {"g1": 1, "g2": 0, "acc": 0, "x": 1, "y": 0}
+    g1, g2, acc, x, y = (impact[k[host]] for host in ("g1", "g2", "acc", "x", "y"))
+    # g1 simulated in part: before the count, nothing in this row said that its link to x was never reasoned about
+    assert (g1["severity"], g1["vlans_impacted"], g1["fhrp"], g1["off_scan_gw_vlans"]) == ("Low", 1, 1, 0), g1
+    assert g1["stranded"] == g1["hard"] == g1["backup"] == 0 and g1["detail"] == "VLAN 10: FHRP-covered", g1
+    # the fully evidenced controls are what they were: a measured High and a clean bill
+    assert (g2["severity"], g2["vlans_impacted"], g2["stranded"], g2["hard"], g2["backup"], g2["fhrp"]) == (
+        "High", 2, 1, 1, 0, 1), g2
+    assert acc["severity"] == "Info" and acc["detail"].startswith("No reachability impact"), acc
+    # x simulated nothing: the producer's own INDETERMINATE disclosure, unchanged, states the same count
+    assert x["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX) and "1 inter-switch link(s)" in x["detail"], x
+    assert x["severity"] == "Info" and x["off_scan_gw_vlans"] == 0, x
+    # y's only link carries evidence (on x's end) and VLAN 99 is simulated for no one: the producer's clean bill
+    assert y["severity"] == "Info" and all(y[f] == 0 for f in MEASURES[1:]) and y["off_scan_gw_vlans"] == 0, y
+    assert y["detail"] == "No reachability impact from removing this switch (within the scan).", y
+    # the sort is unchanged: severity, then stranded, then VLANs, then host
+    assert [row["host"] for row in impact] == ["g2", "g1", "acc", "x", "y"]
+
+
+def test_o_a_partly_simulated_switch_with_an_evidence_less_link_withholds_its_band_and_zeros(doc_validator,
+                                                                                           topology_validator):
+    impact, snap, k = _blind_rows()
+    src = impact[k["g1"]]
+    topology = _topology(snap, topology_validator)
+    row = topology["failure_impact"]["items"][k["g1"]]
+    blind = (row["pointer"] + "/blind_links", "witness")
+    severity = row["severity"]
+    assert severity["state"] == NC and severity["value"] is None, severity
+    assert f"1 {BLIND_COUNTED}" in severity["reason"] and "may understate" in severity["reason"], severity["reason"]
+    assert blind in _refs(severity)
+    assert row["style"]["value"]["token"] == "not_observed", row["style"]   # never the neutral impact_low
+    for field in ("stranded", "hard", "backup"):
+        fact = row[field]
+        assert fact["state"] == NC and fact["value"] is None, (field, fact)
+        assert f"1 {BLIND_COUNTED}" in fact["reason"] and "only a lower bound" in fact["reason"], (field, fact)
+        assert blind in _refs(fact), field
+    for field in ("vlans_impacted", "fhrp"):                              # a positive lower bound stays published
+        fact = row[field]
+        assert fact["state"] == PUB and fact["value"] == 1, (field, fact)
+        assert blind in _refs(fact) and "impact_scanned_scope" in fact["caveats"], field
+    # the per-VLAN detail lists what was simulated and claims nothing about the rest, so it stays published
+    assert row["detail"]["state"] == PUB and row["detail"]["value"] == src["detail"]
+    for field in ("host", "off_scan_gw_vlans"):
+        assert row[field]["state"] == PUB and row[field]["value"] == src[field], field
+    sel = _page(snap, "g1", doc_validator)["failure_impact"]             # one builder, one state on both surfaces
+    assert sel["state"] == PUB and sel["items"] == [row], sel.get("reason")
+    # the controls in the same fleet: every link of g2 and acc carries VLAN evidence, so they publish as measured
+    for host, band in (("g2", "High"), ("acc", "Info")):
+        other = topology["failure_impact"]["items"][k[host]]
+        for field in MEASURES + ("detail",):
+            assert other[field]["state"] == PUB and other[field]["value"] == impact[k[host]][field], (host, field)
+            assert (other["pointer"] + "/blind_links", "witness") not in _refs(other[field]), (host, field)
+        assert other["style"]["value"]["token"] == "impact_" + band.lower(), host
+    # the bound comes from the count: the same stored row with 0 publishes its band and its zeros as measurements
+    snap["failure_impact"][k["g1"]]["blind_links"] = 0
+    clean = _topology(snap, topology_validator)["failure_impact"]["items"][k["g1"]]
+    assert all(clean[f]["state"] == PUB and clean[f]["value"] == src[f] for f in MEASURES + ("detail",))
+    assert clean["style"]["value"]["token"] == "impact_low"
+    # beside a positive off-scan count, both bounds are stated and both counts cited
+    snap["failure_impact"][k["g1"]].update(blind_links=2, off_scan_gw_vlans=1)
+    both = _topology(snap, topology_validator)["failure_impact"]["items"][k["g1"]]
+    assert "off-scan gateway" in both["severity"]["reason"] and f"2 {BLIND_COUNTED}" in both["severity"]["reason"]
+    assert {blind, (row["pointer"] + "/off_scan_gw_vlans", "witness")} <= _refs(both["backup"])
+    assert both["fhrp"]["state"] == PUB and {blind, (row["pointer"] + "/off_scan_gw_vlans", "witness")} <= _refs(
+        both["fhrp"])
+
+
+def test_o_an_unsimulated_switch_keeps_its_indeterminate_hold_and_the_count_alone_holds_too(topology_validator):
+    impact, snap, k = _blind_rows()
+    src = impact[k["x"]]
+    pointer = f"/failure_impact/{k['x']}"
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k["x"]]
+    # unchanged: the producer's INDETERMINATE disclosure holds every measure and stays published itself
+    for field in MEASURES:
+        assert row[field]["state"] == NC and "could not simulate" in row[field]["reason"], (field, row[field])
+        assert (pointer + "/detail", "witness") in _refs(row[field]), field
+    for field in ("host", "off_scan_gw_vlans", "detail"):
+        assert row[field]["state"] == PUB and row[field]["value"] == src[field], field
+    assert row["style"]["value"]["token"] == "not_observed"
+    # the same row without its prose marker: the count still says links went unseen and nothing was simulated, so
+    # the clean-bill prose is held with the measures it contradicts
+    snap["failure_impact"][k["x"]]["detail"] = "No reachability impact from removing this switch (within the scan)."
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k["x"]]
+    for field in MEASURES + ("detail",):
+        fact = row[field]
+        assert fact["state"] == NC and "simulated none of its VLANs" in fact["reason"], (field, fact)
+        assert "1 inter-switch link(s)" in fact["reason"] and (pointer + "/blind_links", "witness") in _refs(fact)
+    assert row["detail"]["reason"] == row["severity"]["reason"]
+    assert row["style"]["value"]["token"] == "not_observed"
+    # the control: with no evidence-less link, that clean bill is the producer's measurement and is published
+    snap["failure_impact"][k["x"]]["blind_links"] = 0
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k["x"]]
+    assert all(row[f]["state"] == PUB for f in MEASURES + ("detail",))
+    assert row["style"]["value"]["token"] == "impact_info"
+
+
+@pytest.mark.parametrize("bad", ["1", None, -1, True, 1.5, [1]])
+def test_o_a_blind_link_count_that_is_not_a_count_is_unverified(topology_validator, bad):
+    """Whether the switch has links the simulation could not see cannot be read: every measure and the detail are
+    unverified, never published beside an unreadable count -- even on a High row that nothing else bounds."""
+    _impact, snap, k = _blind_rows()
+    snap["failure_impact"][k["g2"]]["blind_links"] = bad
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k["g2"]]
+    for field in MEASURES + ("detail",):
+        fact = row[field]
+        assert fact["state"] == UV and "blind_links is not a count" in fact["reason"], (field, fact)
+        assert (f"/failure_impact/{k['g2']}/blind_links", "witness") in _refs(fact), field
+    assert row["host"]["state"] == PUB
+    assert row["style"]["value"]["token"] == "unverified"
+
+
+def test_o_a_row_older_than_the_blind_link_count_never_vouches_for_a_clean_bill(doc_validator, topology_validator):
+    """Before analyze.compute_failure_impact wrote blind_links on every row, it disclosed evidence-less links at most in
+    the INDETERMINATE detail of a switch it simulated nothing for, and a row alone cannot say which engine wrote it.
+    So a stored row without the field never vouches for a band below High, a zero or a clean-bill detail: each is
+    withheld, citing the row itself. High and positive counts stay published as lower bounds, and a per-VLAN detail
+    as the list of what was simulated."""
+    _impact, snap, k = _blind_rows()
+    for stored in snap["failure_impact"]:
+        del stored["blind_links"]
+    items = _topology(snap, topology_validator)["failure_impact"]["items"]
+
+    def withheld(fact, field, *more):
+        assert fact["state"] == NC and fact["value"] is None, (field, fact)
+        assert BLIND_LEGACY in fact["reason"], (field, fact["reason"])
+        assert all(text in fact["reason"] for text in more), (field, more, fact["reason"])
+
+    # the High row (g2): High and its positive counts published citing the row; its zero withheld
+    g2, src = items[k["g2"]], snap["failure_impact"][k["g2"]]
+    witness = (g2["pointer"], "witness")
+    for field in ("severity", "vlans_impacted", "stranded", "hard", "fhrp"):
+        assert g2[field]["state"] == PUB and g2[field]["value"] == src[field], field
+        assert witness in _refs(g2[field]), field
+    withheld(g2["backup"], "backup", "only a lower bound")
+    assert witness in _refs(g2["backup"])
+    assert g2["detail"]["state"] == PUB and g2["detail"]["value"] == src["detail"]
+    assert g2["style"]["value"]["token"] == "impact_high"
+    # the Low row (g1, whose real count was 1): its band and its zeros withheld for the row's age
+    g1 = items[k["g1"]]
+    withheld(g1["severity"], "severity", "may understate")
+    for field in ("stranded", "hard", "backup"):
+        withheld(g1[field], field, "only a lower bound")
+    for field in ("vlans_impacted", "fhrp"):
+        assert g1[field]["state"] == PUB and g1[field]["value"] == 1, field
+    assert g1["detail"]["state"] == PUB
+    assert g1["style"]["value"]["token"] == "not_observed"
+    # the clean bill (acc, whose real count was 0, which the old row cannot show): band, zeros and the
+    # 'No reachability impact' detail all withheld
+    acc, src = items[k["acc"]], snap["failure_impact"][k["acc"]]
+    assert src["detail"].startswith("No reachability impact"), src
+    for field in MEASURES + ("detail",):
+        withheld(acc[field], field)
+        assert (acc["pointer"], "witness") in _refs(acc[field]), field
+    assert "not a clean bill" in acc["detail"]["reason"]
+    for field in ("host", "off_scan_gw_vlans"):
+        assert acc[field]["state"] == PUB and acc[field]["value"] == src[field], field
+    assert acc["style"]["value"]["token"] == "not_observed"
+    sel = _page(snap, "acc", doc_validator)["failure_impact"]            # one builder, one state on both surfaces
+    assert sel["state"] == PUB and sel["items"] == [acc], sel.get("reason")
+    # the producer's own INDETERMINATE disclosure (x) keeps its hold, and its detail stays published
+    x = items[k["x"]]
+    assert all(x[f]["state"] == NC and "could not simulate" in x[f]["reason"] for f in MEASURES), x
+    assert x["detail"]["state"] == PUB
+    # a row older than the off-scan marker as well keeps that hold, which wins over the bound
+    del snap["failure_impact"][k["acc"]]["off_scan_gw_vlans"]
+    older = _topology(snap, topology_validator)["failure_impact"]["items"][k["acc"]]
+    for field in MEASURES + ("detail",):
+        assert older[field]["state"] == NC, field
+        assert older[field]["reason"].startswith("not collected: this stored row carries no off_scan_gw_vlans"), field
+    # the control: the same clean bill carrying both markers (0 each) is published as the measurement it is
+    snap["failure_impact"][k["acc"]].update(off_scan_gw_vlans=0, blind_links=0)
+    clean = _topology(snap, topology_validator)["failure_impact"]["items"][k["acc"]]
+    assert all(clean[f]["state"] == PUB and clean[f]["value"] == src[f] for f in MEASURES + ("detail",))
+    assert clean["style"]["value"]["token"] == "impact_info"
+
+
+def test_o_every_sample_row_carries_the_count_its_evidence_less_links_imply(sample):
+    """The committed sample is the real pipeline's output (webapp/sample_data/build_sample.py), so every row carries
+    blind_links; a row without it is a stale sample, regenerated on the hosted runners, never edited by hand. The
+    count is checked against the sample's own stored evidence, independently of the producer: a stored host pair
+    (link_centrality) whose two interface records both resolve and carry none of the trunk/STP fields the producer
+    reads is an evidence-less link of both its switches, so each counts at least the stored pairs that name it."""
+    rows = sample["failure_impact"]
+    stale = [row.get("host") for row in rows if "blind_links" not in row]
+    assert not stale, ("the sample predates the per-row blind-link count; regenerate it on the hosted runners "
+                       f"(webapp/sample_data/build_sample.py): {stale}")
+    fields = ("stp_fwd_vlans", "stp_blk_vlans", "trunk_allowed_vlans", "trunk_native_vlan")
+
+    def record(host, port):
+        rec = (sample["interfaces"].get(host) or {}).get(port)
+        return rec if isinstance(rec, dict) else None
+
+    def evidenced(end):
+        return any(str(end.get(f) or "").strip() for f in fields)
+
+    floor, one_end = {}, {}
+    for pair in sample["link_centrality"]:
+        ends = [record(pair["a_host"], pair["a_port"]), record(pair["b_host"], pair["b_port"])]
+        if any(end is None for end in ends):
+            continue
+        tally = floor if not any(evidenced(end) for end in ends) else one_end if not all(map(evidenced, ends)) else None
+        if tally is not None:
+            for host in (pair["a_host"], pair["b_host"]):
+                tally[host] = tally.get(host, 0) + 1
+    assert floor, "the sample has no evidence-less stored host pair, so this check would be vacuous"
+    counts = {row["host"]: row["blind_links"] for row in rows}
+    assert len(counts) == len(rows), "a host names two rows, so a per-host count cannot be read"
+    for host, n in sorted(floor.items()):
+        assert type(counts[host]) is int and counts[host] >= n, (host, n, counts[host])
+    # ... and pinned EXACTLY, never only floored (W45 refutation). The stored evidence implies one evidence-less pair,
+    # core1-dist1; core1 also has stored pairs whose trunk/STP evidence sits on one end only, which the producer reads
+    # as evidenced. A producer that began counting those would raise core1 above 1 while every floor above held.
+    assert floor == {"core1": 1, "dist1": 1}, floor
+    assert one_end.get("core1", 0) > 0, ("the sample has no one-end-evidence pair on core1, so the exact pin below "
+                                         f"could not tell a one-end-counting producer apart: {one_end}")
+    assert counts == {**dict.fromkeys(counts, 0), "core1": 1, "dist1": 1}, counts
 
 
 # --------------------------------------------------------------------------------------------------

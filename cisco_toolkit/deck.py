@@ -14,6 +14,7 @@ import os
 
 from cisco_toolkit.textutils import _as_num, xml_safe   # shared XML-illegal-char sanitizer + fail-soft numeric coercion
 from cisco_toolkit.brand_tokens import DECK_NAVY_RGB
+from cisco_toolkit import impact_assessability   # W33: which stored failure-impact rows are measurements
 
 logger = logging.getLogger(__name__)
 
@@ -442,13 +443,27 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
     # ---------------------------------------------------------------- 4. Keystone devices (light)
     s = slide()
     header(s, "Concentrated dependency", "The switches the fleet depends on")
-    fi = sorted(_R(snap.get("failure_impact")),
-                key=lambda r: -_as_num(r.get("stranded")))
-    _ks_all = [r for r in fi if _as_num(r.get("stranded")) > 0]
+    # W33: the engine owner (impact_assessability) decides which stored rows are measurements. A PUBLISHED row ranks
+    # by its measurement and a lower-bound row by the positive stranded floor the owner publishes for it (the
+    # per-cell decision, not the row verdict), shown as that floor; every other row (INDETERMINATE, a pre-marker row,
+    # an uncaptured interface running-config, a zero-floor bound, a duplicate host) is disclosed, never read as
+    # stranding nobody.
+    _fi_pairs = impact_assessability.rows_with_verdicts(snap)
+    fi = [r for r, _v in _fi_pairs]
+
+    def _ks_stranded(pair):
+        floor = impact_assessability.ranking_floor(pair[1])
+        return floor if floor is not None else _as_num(pair[0].get("stranded"))
+
+    _ks_all = sorted(((r, v) for r, v in _fi_pairs
+                      if (v.published and _as_num(r.get("stranded")) > 0)
+                      or impact_assessability.ranking_floor(v) is not None),
+                     key=lambda p: -_ks_stranded(p))
     keystones = _ks_all[:5]
-    # off-scan-gateway records carry no usable blast radius (audit-3 #7); count them so an INDETERMINATE estate
-    # is not mistaken for a well-distributed one (audit-4 #8 false-health).
-    n_indet = sum(1 for r in fi if _as_num(r.get("off_scan_gw_vlans")) > 0)
+    # rows with no usable blast radius (audit-3 #7: an off-scan gateway; W33: every row the owner neither publishes
+    # nor floors) are counted, so an INDETERMINATE estate is not mistaken for a well-distributed one (audit-4 #8).
+    _ks_held = [v for _r, v in _fi_pairs if not impact_assessability.ranks(v)]
+    n_indet = len(_ks_held)
     # Truncation disclosure: the top-5 cap was the last silent one on this deck (slides 2, 3, 3b, 6
     # and 7 all breadcrumb their overflow). "Sequence and protect these first" reads as the COMPLETE
     # keystone set, and on the real fleet 193 switches strand endpoints with the top ten TIED at the
@@ -460,27 +475,44 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
          [("Ranked by migration blast radius — the collateral endpoints stranded if the switch drops "
            "during its move. Sequence and protect these first."
            + (f" Top {len(keystones)} of {len(_ks_all)} switch(es) that strand endpoints shown — full "
-              "ranking in the workbook's Failure-Impact sheet." if _ks_more else ""),
+              "ranking in the workbook's Failure-Impact sheet." if _ks_more else "")
+           # W33: the rows the owner withholds are named in the same intro line (no footnote room below)
+           + (f" {n_indet} switch(es) not ranked — their blast radius is not a measurement on this evidence: "
+              + _ellip(impact_assessability.disclose(_ks_held, limit=3), 220) + "."
+              if keystones and n_indet else ""),
            13, _MUTED, False)])
     y = 2.8
     if keystones:
-        for r in keystones:
+        for r, v in keystones:
             stat_w = 1.7
-            text(s, 0.7, y, stat_w, 0.5, [(str(r.get("stranded", 0)), 30, _CRIT, True)])
-            text(s, 0.7, y + 0.55, stat_w, 0.3, [("stranded", 10, _MUTED, False)])
+            # ``ks_num``/``ks_label``, never ``stat``: a local ``stat`` would rebind the enclosing ``stat()`` slide
+            # helper for the rest of this function (the lifecycle and migration slides below call it).
+            if v.published:
+                ks_num, ks_label = str(r.get("stranded", 0)), "stranded"
+                vlans, hard, detail = r.get("vlans_impacted", 0), r.get("hard", 0), r.get("detail", "")
+            else:   # W33: a lower bound -- each value as the owner publishes it, the count as the floor it is
+                ks_num, ks_label = impact_assessability.table_value(v, "stranded"), "stranded (lower bound)"
+                vlans, hard = (impact_assessability.table_value(v, "vlans_impacted"),
+                               impact_assessability.table_value(v, "hard"))
+                detail = impact_assessability.table_detail(v)
+            text(s, 0.7, y, stat_w, 0.5, [(str(ks_num), 30, _CRIT, True)])
+            text(s, 0.7, y + 0.55, stat_w, 0.3, [(ks_label, 10, _MUTED, False)])
             text(s, 2.5, y + 0.05, W - 3.2, 0.7,
                  [[(_clean(str(r.get("host", ""))), 16, _NAVY, True),
-                   (f"   {r.get('vlans_impacted', 0)} VLAN(s) · {r.get('hard', 0)} hard-partitioned", 12, _MUTED, False)],
-                  [(_clean(r.get("detail", "")), 11, _INK, False)]], space=1)
+                   (f"   {vlans} VLAN(s) · {hard} hard-partitioned", 12, _MUTED, False)],
+                  [(_clean(detail), 11, _INK, False)]], space=1)
             y += 0.92
     elif not fi or n_indet:
-        # blast radius NOT computed (no failure_impact) or INDETERMINATE (off-scan gateways) -> a coverage gap,
-        # NOT a clean bill. Render muted (not _OK green) so a blind estate never reads as 'well distributed'.
+        # blast radius NOT computed (no failure_impact) or INDETERMINATE (a row the assessability owner does not
+        # publish: an off-scan gateway, an uncaptured gateway source, an uncollected neighbour, ...) -> a coverage
+        # gap, NOT a clean bill. Render muted (not _OK green) so a blind estate never reads as 'well distributed'.
         msg = ("Blast radius not assessable — the failure-impact analysis was not computed for this snapshot "
                "(thin or uploaded data). Redundancy is UNKNOWN, not verified well-distributed."
                if not fi else
-               f"Blast radius INDETERMINATE — {n_indet} switch(es) have an off-scan gateway, so their removal "
-               "impact could not be modelled. This is a coverage gap, not a clean bill of distribution.")
+               f"Blast radius INDETERMINATE — {n_indet} switch(es) have no failure impact that is a measurement "
+               "on this evidence, so their removal impact is not known ("
+               + _ellip(impact_assessability.disclose(_ks_held, limit=3), 260)
+               + "). This is a coverage gap, not a clean bill of distribution.")
         text(s, 0.7, y, W - 1.4, 0.9, [(msg, 14, _MUTED, True)])
     else:
         text(s, 0.7, y, W - 1.4, 0.5,
