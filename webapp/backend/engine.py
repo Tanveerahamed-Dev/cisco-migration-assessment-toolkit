@@ -44,6 +44,18 @@ def ui_projection_path(snapshot: Any, src_ip: str, dst_ip: str) -> Dict[str, Any
     return _ui_projection.project_path(snapshot, src_ip, dst_ip)
 
 
+def failure_impact_projection(snapshot: Any) -> Dict[str, Any]:
+    """The engine-owned ``failure_impact`` FactList (``ui_projection/1``) for a stored snapshot.
+
+    Each row is built by the projection's one shared failure-impact row builder, the row the fleet topology and
+    the device page publish, so every cell carries its own state and reason: the producer's INDETERMINATE rows,
+    rows older than its off-scan marker, unreadable counts, a switch without its scoped interface running-config,
+    a partial simulation, an uncollected neighbour and a duplicated host are withheld there, never here. An
+    AssessHub surface that shows or ranks failure impact reads it through this call and never re-derives a value
+    from the raw stored rows. Pure and total by the projection's contract; nothing is re-simulated."""
+    return _ui_projection.project_topology(snapshot)["failure_impact"]
+
+
 def bind_ui_projection_snapshot(raw: bytes) -> Dict[str, Any]:
     """Preserve the exact-byte snapshot custody used by the store's bound reader."""
     return _protocol_assurance.bind_snapshot_json_bytes(raw)
