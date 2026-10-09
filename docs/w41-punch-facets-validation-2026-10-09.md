@@ -108,7 +108,7 @@ slice renders the facets and removes that sentence in the same merge train.
 | An unpublished total was replaced by `len(rows)` | Fixed. `_facet_partition` withholds the owner facets as `unverified` when the total is not published. Two tests cover it: a census fault and a count that is not a count. The `projection_owned_verdicts` text states the rule. |
 | The complete-capture control was self-contradictory | Fixed. The control now sets `config_assessable` true for the patched hosts as well as copying security rows, and asserts their device buckets publish exact counts. |
 | Unpaged device facet with per-row witnesses | Fixed. The per-row witnesses are dropped from the buckets, and the list is paged at `/facets/device` (`LIST_CATALOG["findings"]` is now `/rows`, `/facets/device`). |
-| Stale base and a `docs/NOW.md` conflict with `origin/main` `7d547890` (#620) | Fixed locally. `7d547890` is merged with a merge commit after the fix commit. Both sides' board rows and handoff lines are kept. #620 touches no projection, schema or OpenAPI file, so the pins below are unchanged on the merged tree; that was re-checked statically. No fetch was made, so a later main still needs the same merge. |
+| Stale base and a `docs/NOW.md` conflict with `origin/main` `7d547890` (#620) | Fixed locally. `7d547890` is merged with a merge commit after the fix commit. The board takes main's version (its W27 row and its retirement of the W26 row stand), the W41 row is added, and every handoff line from both sides is kept. #620 touches no projection, schema or OpenAPI file, so the pins below are unchanged on the merged tree; that was re-checked statically. No fetch was made, so a later main still needs the same merge. |
 
 ## Native transport schema re-pin
 
