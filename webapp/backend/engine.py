@@ -56,6 +56,14 @@ def failure_impact_projection(snapshot: Any) -> Dict[str, Any]:
     return _ui_projection.project_topology(snapshot)["failure_impact"]
 
 
+def fleet_blind_spot_rows(snapshot: Any) -> List[int]:
+    """The ``collection_completeness.devices`` rows the projection's fleet qualifier reads as a partial or
+    not-collected device, by index. Every other witness that qualifier cites is a row, list or section it cannot read
+    as one, so a surface wording the qualifier tells the two kinds apart by this one owner, never by re-reading the
+    stored rows."""
+    return _ui_projection.fleet_blind_spot_rows(snapshot)
+
+
 def bind_ui_projection_snapshot(raw: bytes) -> Dict[str, Any]:
     """Preserve the exact-byte snapshot custody used by the store's bound reader."""
     return _protocol_assurance.bind_snapshot_json_bytes(raw)

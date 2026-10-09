@@ -159,18 +159,25 @@ _IMPACT_RANK_FIELDS = ("host", "severity", "stranded")
 #: not-assessed token (cutover.GATE_NOT_ASSESSED), which the SPA's chips and the documents colour neutral.
 IMPACT_NOT_ASSESSED = "NOT ASSESSED"
 #: The fleet qualifier ui_projection puts on the failure-impact list while collection_completeness lists a blind
-#: spot: every row was computed over the scanned model without that device's evidence.
+#: spot: every row was computed over the scanned model without that device's evidence. It also cites a record it
+#: cannot read as a blind spot (a row that is not an object or states no status of its owner's vocabulary, or a list
+#: or section of the wrong type), which its owner would have read as collected; the two kinds are told apart by the
+#: projection's own classifier (engine.fleet_blind_spot_rows), never by re-reading the stored rows.
 _IMPACT_BLIND_CAVEAT = "fleet_lists_exclude_blind_devices"
-_IMPACT_BLIND_WITNESS = "/collection_completeness/devices/"
+#: Every witness the qualifier cites lies under this pointer; one naming a row the classifier reads is a blind device.
+_IMPACT_BLIND_WITNESS = "/collection_completeness"
+_IMPACT_BLIND_ROW = re.compile(r"/collection_completeness/devices/(\d+)")
 #: The keystone ranking's contract. 2: ranked only from engine-published failure-impact cells (W27). 3: a ranked
 #: row the engine publishes only as a lower bound is flagged as one (lower_bound, its reasons and pointers), and an
 #: executive_brief.keystones list is no longer read. 4: a cable-row bound is worded by what the projection's own
 #: reason says of it (an uncollected neighbour, or cable evidence that cannot be read or is ambiguous), never as an
 #: uncollected neighbour alone. 5: a bound from inter-switch links with no trunk/STP evidence (W32, through the
 #: engine owner impact_assessability.blind_bound) is flagged and worded by its witness: the row's blind_links count,
-#: or the row itself when it predates that count. A cached summary from an older contract is recomputed on read
-#: (app._summary_freshened).
-KEYSTONE_CONTRACT_VERSION = 5
+#: or the row itself when it predates that count. 6: the blind-spot note counts only the rows the projection reads as
+#: partial or not collected as such, and words every other record its qualifier cites as one that cannot be read
+#: (W43; W45 and W43 each moved the contract to 5 independently, so the combined contract is 6). A cached summary from
+#: an older contract is recomputed on read (app._summary_freshened).
+KEYSTONE_CONTRACT_VERSION = 6
 #: Cap on the names one disclosure sentence lists per reason, so a fleet-wide hold stays one readable sentence.
 _IMPACT_NAME_CAP = 10
 _R_IMPACT_FAULT = ("unverified: the engine failure-impact projection (ui_projection) could not be built for this "
@@ -181,6 +188,10 @@ _R_IMPACT_NO_ROW = ("not collected: no failure_impact row names this switch. ana
                     "impact'")
 _R_IMPACT_BLIND = ("collection_completeness lists {n} device(s) as partial or not collected: every failure-impact row "
                    "was computed without their evidence, and a device the collection never reached has no row")
+_R_IMPACT_BLIND_UNREAD = ("collection_completeness carries {n} record(s) the engine cannot read as a partial or "
+                          "not-collected device (a row that is not an object or states no status of its owner's "
+                          "vocabulary, or a list or section of the wrong type), and each could be one: a "
+                          "failure-impact row may have been computed without that device's evidence")
 _R_IMPACT_NOT_LIST = "unverified: the stored failure_impact section is not a list, so no row can be read"
 #: Why a published measure is only a lower bound, by the kind of record its witness ref points at. A cable-row witness
 #: has three wordings, picked by what the projection's own reason on the row says of it (:func:`_impact_peers_said`):
@@ -252,23 +263,21 @@ def impact_view(snap: Dict[str, Any]) -> Dict[str, Any]:
     (every witness they cite, in the order cited) and ``bound_reasons`` (one sentence per kind of bound named).
     ``state``: the list's own projection state (``unverified`` when the projection faults). ``withheld``: the list's
     own reason when the list is not published (a failed phase, a malformed or absent section, or an owner fault),
-    else "". ``blind``: the blind spots the projection's fleet qualifier cites."""
+    else "". ``blind``: the blind-spot rows the projection's fleet qualifier cites and reads as partial or not
+    collected; ``blind_unread``: every other record that qualifier cites, which it cannot read as one
+    (:func:`impact_blind_counts`)."""
     try:
         listing = engine.failure_impact_projection(snap)
     except Exception:   # noqa: BLE001 -- the projection is total by contract; a fault withholds every row
         listing = None
     if not isinstance(listing, dict) or not isinstance(listing.get("items"), list):
-        return {"rows": [], "state": _UNVERIFIED, "withheld": _R_IMPACT_FAULT, "blind": 0}
+        return {"rows": [], "state": _UNVERIFIED, "withheld": _R_IMPACT_FAULT, "blind": 0, "blind_unread": 0}
     items = listing["items"]
     state = listing.get("state")
     withheld = ""
     if state != _PUBLISHED and not (state == _COLLECTED_BUT_EMPTY and not items):
         withheld = _impact_cell(listing)[2]
-    blind = 0
-    if isinstance(listing.get("caveats"), list) and _IMPACT_BLIND_CAVEAT in listing["caveats"]:
-        blind = max(1, sum(1 for ref in _as_list(listing.get("refs")) if isinstance(ref, dict)
-                           and isinstance(ref.get("pointer"), str)
-                           and ref["pointer"].startswith(_IMPACT_BLIND_WITNESS)))
+    blind, blind_unread = impact_blind_counts(snap, listing)
     stored = _as_list(snap.get("failure_impact")) if isinstance(snap, dict) else []
     rows: List[Dict[str, Any]] = []
     for item in items:
@@ -287,7 +296,32 @@ def impact_view(snap: Dict[str, Any]) -> Dict[str, Any]:
                      "lower_bound": bool(bound_fields), "bound_fields": bound_fields,
                      "bound_pointers": bound_pointers, "bound_reasons": bound_reasons})
     return {"rows": rows, "state": state if isinstance(state, str) and state else _UNVERIFIED,
-            "withheld": withheld, "blind": blind}
+            "withheld": withheld, "blind": blind, "blind_unread": blind_unread}
+
+
+def impact_blind_counts(snap: Dict[str, Any], listing: Dict[str, Any]) -> Tuple[int, int]:
+    """``(blind, unread)`` for the fleet qualifier on the failure-impact list: of the ``/collection_completeness``
+    witnesses it cites, those naming a row the projection's own classifier reads as a partial or not-collected device
+    (engine.fleet_blind_spot_rows), and every other one (a row, list or section it cannot read as such). ``(0, 0)``
+    without the qualifier. The qualifier with no such witness keeps the earlier reading of one blind device."""
+    if not (isinstance(listing.get("caveats"), list) and _IMPACT_BLIND_CAVEAT in listing["caveats"]):
+        return 0, 0
+    try:
+        readable = set(engine.fleet_blind_spot_rows(snap))
+    except Exception:   # noqa: BLE001 -- total by contract; a fault reads no row as a blind device
+        readable = set()
+    blind = unread = 0
+    for ref in _as_list(listing.get("refs")):
+        pointer = ref.get("pointer") if isinstance(ref, dict) else None
+        if not (isinstance(pointer, str) and (pointer == _IMPACT_BLIND_WITNESS
+                                              or pointer.startswith(_IMPACT_BLIND_WITNESS + "/"))):
+            continue
+        row = _IMPACT_BLIND_ROW.fullmatch(pointer)
+        if row is not None and int(row.group(1)) in readable:
+            blind += 1
+        else:
+            unread += 1
+    return (blind, unread) if blind or unread else (1, 0)
 
 
 def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
@@ -372,8 +406,12 @@ def impact_disclosure(entries: List[Tuple[str, str]]) -> str:
 
 
 def impact_blind_note(view: Dict[str, Any]) -> str:
-    """The projection's fleet qualifier as one clause ("" when the failure-impact list carries none)."""
-    return _R_IMPACT_BLIND.format(n=view["blind"]) if view["blind"] else ""
+    """The projection's fleet qualifier as one clause ("" when the failure-impact list carries none): the blind devices
+    it reads, then the records it cannot read as one, each worded as what it is."""
+    parts = [_R_IMPACT_BLIND.format(n=view["blind"])] if view["blind"] else []
+    if view.get("blind_unread"):
+        parts.append(_R_IMPACT_BLIND_UNREAD.format(n=view["blind_unread"]))
+    return "; ".join(parts)
 
 
 def impact_rank_key(row: Dict[str, Any]) -> Tuple[int, float]:
@@ -470,8 +508,9 @@ def _keystones(snap: Dict[str, Any], top: int = 8,
     if below:
         parts.append(f"{len(below)} ranked row(s) below the devices shown publish only lower bounds, so any of them "
                      "could rank among them: " + impact_disclosure(below))
-    if view["blind"]:
-        parts.append(f"The ranking is a lower bound: {impact_blind_note(view)}")
+    blind_note = impact_blind_note(view)
+    if blind_note:
+        parts.append(f"The ranking is a lower bound: {blind_note}")
     if parts:
         out.append({"host": "", "severity": IMPACT_NOT_ASSESSED, "stranded": None, "vlans_impacted": None,
                     "detail": ". ".join(parts) + ".", "n_not_ranked": len(unranked)})

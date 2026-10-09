@@ -239,7 +239,9 @@ class CableSource(NamedTuple):
     """One reading of the stored cable map. ``state`` is ``None`` when the cable list can be read; otherwise it is
     the withheld state, ``why`` the reason and ``witnesses`` what witnesses it. ``by_end``, ``unjoinable`` (ascending)
     and ``node_index`` are the exact-text joins over the readable lists (``nodes`` is ``None`` when the node list
-    cannot be read, so no far end joins a node); ``unjoinable_set`` is ``unjoinable`` for membership tests."""
+    cannot be read, so no far end joins a node); ``unjoinable_set`` is ``unjoinable`` for membership tests.
+    ``node_unjoinable`` (ascending) are the node rows the host join cannot read (W43/F6): any of them could be a second
+    node for a far end, so while one exists no far end joins exactly one node."""
     state: Optional[str]
     why: str
     witnesses: Tuple[Entry, ...]
@@ -249,6 +251,7 @@ class CableSource(NamedTuple):
     unjoinable: Sequence[int]
     node_index: Mapping[str, Sequence[int]]
     unjoinable_set: FrozenSet[int] = frozenset()
+    node_unjoinable: Sequence[int] = ()
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -430,17 +433,20 @@ def blind_bound(rec: Any, toks: Sequence[Any]) -> Optional[Bound]:
 def readable_cables(cables: Sequence[Any], nodes: Optional[Sequence[Any]] = None, *,
                     by_end: Optional[Mapping[str, Sequence[int]]] = None,
                     unjoinable: Optional[Sequence[int]] = None,
-                    node_index: Optional[Mapping[str, Sequence[int]]] = None) -> CableSource:
+                    node_index: Optional[Mapping[str, Sequence[int]]] = None,
+                    node_unjoinable: Optional[Sequence[int]] = None) -> CableSource:
     """A readable cable list (and the node list, ``None`` when it cannot be read). Joins not supplied by the caller
     are built here with :func:`index_rows` / :func:`unjoinable_rows`."""
     cables = cables if isinstance(cables, list) else []
     nodes = nodes if isinstance(nodes, list) else None
     bad = sorted(set(unjoinable if unjoinable is not None else unjoinable_rows(cables, ("a", "b"))))
+    nbad = (sorted(set(node_unjoinable if node_unjoinable is not None else unjoinable_rows(nodes, ("host",))))
+            if nodes is not None else [])
     return CableSource(
         None, "", (), cables, nodes,
         by_end if by_end is not None else index_rows(cables, ("a", "b")), bad,
         (node_index if node_index is not None else index_rows(nodes, ("host",))) if nodes is not None else {},
-        frozenset(bad))
+        frozenset(bad), nbad)
 
 
 def unreadable_cables(state: str, why: str, witnesses: Sequence[Entry]) -> CableSource:
@@ -460,9 +466,12 @@ def neighbour_bound(host: Any, src: CableSource, *, witness_cap: Optional[int] =
     ``collected: true``, unless that node is ``collected: false`` with a kind the producer positively marks as edge
     gear (:data:`IMPACT_EDGE_KINDS`). It fails closed: a cable row that cannot be read could name the host, a far
     end that joins no single node is never assumed collected, and a cable list that cannot be read bounds the row
-    with that reading's own state. ``None``: no such neighbour (or no readable host).
+    with that reading's own state. A node row the host join cannot read (W43/F6) could be a second node for any far
+    end, so beside one no far end joins exactly one node and every neighbour fails closed, citing those node rows.
+    ``None``: no such neighbour (or no readable host).
 
-    The witnesses are every bounding cable row in ascending index order. A cable row the join cannot read bounds
+    The witnesses are every bounding cable row in ascending index order, then (beside a node row the join cannot
+    read, when a neighbour fails closed) those node rows. A cable row the join cannot read bounds
     EVERY row, so a hostile list of them makes the witnesses grow with rows x cables: `witness_cap` keeps only the
     first ones for a reader that renders no witness list (the counts and reasons are unchanged); the projection
     passes none."""
@@ -473,20 +482,22 @@ def neighbour_bound(host: Any, src: CableSource, *, witness_cap: Optional[int] =
                           "neighbours_unreadable", 0)
     toks = ("cable_map", "cables")
     cables, nodes, bad = src.cables, src.nodes, src.unjoinable_set
+    nbad = list(src.node_unjoinable)         # node rows the host join cannot read: each could be any far end's node
     own: List[int] = []                      # bounding rows the join CAN read, ascending
     peers: Dict[str, bool] = {}              # far end -> whether it fails closed (joins no single node)
     for j in sorted(set(src.by_end.get(host, [])) - bad):
         ends = (cables[j]["a"], cables[j]["b"])
         far = ends[1] if ends[0] == host else ends[0]
         found = src.node_index.get(far, []) if far else []
-        if len(found) == 1 and nodes is not None:
+        single = len(found) == 1 and nodes is not None and not nbad
+        if single:
             node = nodes[found[0]]
             kind = node.get("kind")
             if node.get("collected") is True or (
                     node.get("collected") is False and _is_text(kind) and kind in IMPACT_EDGE_KINDS):
                 continue
         own.append(j)
-        peers[far] = peers.get(far, False) or len(found) != 1
+        peers[far] = peers.get(far, False) or not single
     unreadable = len(src.unjoinable)         # the join cannot read these rows, so each could name this switch
     if not own and not unreadable:
         return None
@@ -499,7 +510,9 @@ def neighbour_bound(host: Any, src: CableSource, *, witness_cap: Optional[int] =
         hits = sorted(own + list(src.unjoinable))
     else:                                    # the first `witness_cap` of the ascending union, without building it
         hits = sorted(own[:witness_cap] + list(src.unjoinable[:witness_cap]))[:witness_cap]
-    return make_bound(NOT_COLLECTED, clause, [("witness", toks + (j,)) for j in hits], "uncollected_neighbours", n)
+    node_hits = _first(nbad, witness_cap) if nbad and any(peers.values()) else []
+    return make_bound(NOT_COLLECTED, clause, [("witness", toks + (j,)) for j in hits]
+                      + [("witness", ("cable_map", "nodes", i)) for i in node_hits], "uncollected_neighbours", n)
 
 
 def duplicate_doubt(raw: Any, rows_by_host: Mapping[str, Sequence[int]], *,
