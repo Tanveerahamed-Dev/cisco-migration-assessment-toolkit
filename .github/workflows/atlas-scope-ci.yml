@@ -14,9 +14,9 @@ name: atlas-scope-ci
 on:
   push:
     branches: [main]
-    paths: ["atlas-scope/**", "webapp/sample_data/sample_fleet.snapshot.json", ".github/workflows/atlas-scope-ci.yml", ".github/scripts/scope_compile_handoff.py", "tests/test_scope_compile_handoff.py"]
+    paths: ["atlas-scope/**", "webapp/sample_data/sample_fleet.snapshot.json", "webapp/frontend/src/projectionEmbed.ts", "webapp/frontend/src/generated/openapi.ts", "webapp/frontend/src/test/projectionFixtures.ts", ".github/workflows/atlas-scope-ci.yml", ".github/scripts/scope_compile_handoff.py", "tests/test_scope_compile_handoff.py"]
   pull_request:
-    paths: ["atlas-scope/**", "webapp/sample_data/sample_fleet.snapshot.json", ".github/workflows/atlas-scope-ci.yml", ".github/scripts/scope_compile_handoff.py", "tests/test_scope_compile_handoff.py"]
+    paths: ["atlas-scope/**", "webapp/sample_data/sample_fleet.snapshot.json", "webapp/frontend/src/projectionEmbed.ts", "webapp/frontend/src/generated/openapi.ts", "webapp/frontend/src/test/projectionFixtures.ts", ".github/workflows/atlas-scope-ci.yml", ".github/scripts/scope_compile_handoff.py", "tests/test_scope_compile_handoff.py"]
   workflow_dispatch:
 
 permissions:
@@ -117,6 +117,21 @@ jobs:
             ${{ runner.temp }}/b7-coverage-mutations.log
           if-no-files-found: ignore
           retention-days: 14
+      - name: Refute roving-row retention under a virtual window
+        shell: bash
+        run: |
+          set -euo pipefail
+          node review/mutation-check.mjs --only d2-roving-row-retention --output "${{ runner.temp }}/d2-grid-retention-mutations" 2>&1 | tee "${{ runner.temp }}/d2-grid-retention-mutations.log"
+      - name: Preserve grid retention mutation observations
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scope-d2-grid-retention-mutations-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/d2-grid-retention-mutations/
+            ${{ runner.temp }}/d2-grid-retention-mutations.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Standalone build (the bundled sample fleet, dist/)
         run: npm run build
       - name: AssessHub hub build (base /scope/, no compiled dataset, no sourcemaps, dist-hub/)
@@ -156,3 +171,22 @@ jobs:
           ATLAS_SCOPE_REQUIRE_HUB_BUILD: "1"
           ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "1"
         run: python -m pytest webapp/tests/test_scope_mount.py -q
+      - name: Refute incomplete grid-focus observations
+        run: node --test review/verify-grid-focus.test.mjs
+      - name: Observe current virtual-scroll focus continuity
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          node review/verify-grid-focus.mjs --expected-commit "${{ github.sha }}" --output "${{ runner.temp }}/grid-focus" 2>&1 | tee "${{ runner.temp }}/grid-focus.log"
+      - name: Preserve grid-focus observations
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scope-grid-focus-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/grid-focus/
+            ${{ runner.temp }}/grid-focus.log
+          if-no-files-found: ignore
+          retention-days: 14
