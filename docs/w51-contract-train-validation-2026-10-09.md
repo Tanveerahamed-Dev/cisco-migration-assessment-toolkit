@@ -186,3 +186,58 @@ list, since a published list carries no reason. The W51 second round pinned the 
 - Every test above is written and has not been run. The hosted gates on the next pushed head are the acceptance
   evidence.
 - Hosted legs other than py3.12 ubuntu were not part of this round's input.
+
+## Integration of the W51 absorb (2026-10-09)
+
+`claude/w51-absorb` (`fdf91385`: W48 `a78d85ed`, W50 `add4b377`, W47 `db93b265`, plus the fix commit for the
+review's findings (a)-(e); record `docs/w51-absorb-validation-2026-10-09.md`) is merged into this train as `2b082c32`,
+on top of the round-1 answers above (`3296626d`).
+
+**Conflicts.** Only `docs/NOW.md` conflicted. The W45 and W46 rows keep #629's newer status. The W28, W29 and W30
+rows take the absorb's "carried by W45" status. `docs/w45-engine-sample-train-2026-10-09.md` auto-merged. Finding (e)
+is then applied to both now that #629's head is on this train: webapp-ci run `37897012004` concluded `cancelled`
+after all six jobs passed, and the succeeded run is `37897790220` on `40ca4d96` (artifact `11600639221`). Both runs,
+their jobs and their artifacts were re-read from the GitHub API.
+
+**Semantic overlap.** `webapp/tests/test_impact_surfaces.py` merged cleanly. This round's `_snapshot` fixtures carry
+the producer's `collection_completeness` record. The absorb's new tests read the stored sample, not `_snapshot`. The
+absorb's wave rule (`engine.wave_blast` with both fleet counts, `zero_bound`, hostless rows observed) was probed as
+pure calls (`cutover.build_plan`, `summary.summarize`, `summary.impact_view`, `impact_assessability.wave_blast`). The
+fixtures were rebuilt from helper source copied out of the test file. No test function was called. Results:
+- every `_snapshot`-based wave keeps the outcome its test asserts;
+- none has a largest count of 0 beside an unranked switch, so `zero_bound` never fires there;
+- the record-less case still words the unread record through `summary._R_IMPACT_BLIND_UNREAD`, which is now the
+  owner's `R_WAVE_FLEET_BLIND_UNREAD` with byte-identical text.
+
+**One defect found and fixed (`webapp/backend/engine.py`, comment only).** W50 added a comment that names
+`tests/test_protocol_assessability.py`. That file's receipt-reader census matches the receipt name anywhere in a
+scanned file, comments included. It therefore counted `engine.py` as an unclassified 19th reader, which would fail
+`test_every_module_that_reads_the_receipt_is_classified_with_a_mechanical_proof`. The comment is reworded on the same
+line; `engine.py` does not read the receipt. With the copied helpers, the census is back to 18 readers, all
+classified, every class proof holds and there are no hand-list sites.
+
+**Static checks on the integrated tree:**
+- every changed `.py` compiles (in memory, `SyntaxWarning` as an error);
+- `ruff check` with the repository's `ruff.toml` is clean;
+- an AST shadow scan finds no nested def rebound in its scope and no name read before its local binding (63 files; a
+  planted control is flagged twice);
+- the AST collection scan of all 36 changed test and conftest files finds 0 problems (a planted control is flagged
+  seven times);
+- a module-attribute scan finds every `alias.attr` the changed files read defined in its module (2,122 reads; only
+  `__file__` reported);
+- the changed frontend files' relative imports all resolve to exported names (65 imports);
+- native pins recomputed with `_native_schema_hash`: view `55bc576f…`, list `ce6e9c45…`, unchanged. As a method
+  check, extracts of `6ad57ed9`, `3296626d` and `fdf91385` reproduce that pair, and `f6323759` reproduces #629's
+  `0553957c…` / `3ee0af7f…`;
+- the offline OpenAPI export is byte-identical to `6ad57ed9`'s (sha256 `0ba06259…`, 331 components, 40 paths), and
+  `openapi.ts` is unchanged since that head, whose hosted `api:check` passed (frontend job `113729028501`);
+- vocab bijection (v1 mirror): 59 string enums in 50 token sets, 19 ranked and 31 unranked, none doubled,
+  unclassified or invented;
+- LF receipts, from the byte-custody helper logic: 183 / 38 / 145 / 1, all equal to the fixture. The effective HEAD
+  and worktree sets are equal, and the full byte-custody helper passes. W50's new `eol=lf` rule for
+  `tests/fixtures/operator_evidence_v1/*.json` lies outside the policy domains;
+- the i12 prefix-slice walk visits 170 functions and finds 60 slices, all reviewed, none stale.
+
+Golden, sample, `atlas-scope/` and `webapp/frontend/dist` are byte-identical to `6ad57ed9`. The frontend source
+changes (W47, W50, the G21 facets), so the tracked dist is stale until the hosted handoff of the pushed head is
+verified and imported.

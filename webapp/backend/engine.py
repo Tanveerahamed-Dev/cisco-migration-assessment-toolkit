@@ -168,7 +168,7 @@ def rehearsal_impacts_view(snapshot: Any, *, source_sha256: str) -> Dict[str, An
         "source_sha256": source_sha256,
         # The owner's word for each withheld state token, sent with the view so the SPA holds no copy of them (a TS
         # literal naming not_collected/analysis_unavailable would read as a hand list of the protocol receipt's
-        # vocabulary, tests/test_protocol_assessability.py); reason phrases and verdict labels are pinned SPA tables.
+        # vocabulary to that receipt's hand-list scanner); reason phrases and verdict labels are pinned SPA tables.
         "state_words": dict(_impact_assessability.STATE_WORD),
         "section_state": _impact_assessability.section_state(snapshot),
         "n_rows_total": len(verdicts),
