@@ -2371,3 +2371,320 @@ def test_compare_append_and_finish_are_cross_process_compare_and_swap(tmp_path):
         if second is not None:
             second.close()
         first.close()
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# W50: a receipt binds failure-impact EVIDENCE; the engine owner's reading of it is display-only and computed live.
+# A stored receipt is re-verified by recomputing it from the bound snapshots on every read, so it binds the after
+# snapshot's stored failure_impact rows raw (cutover_operator_evidence/1, frozen). What each row means is the owner's
+# live ``impacts_view``, returned BESIDE ``receipt`` and never stored, hashed or verified. The frozen digests and the
+# structural boundary are in tests/test_operator_evidence_contract.py. Written for the hosted runners, not run locally.
+# ---------------------------------------------------------------------------------------------------------------
+_V1 = "cutover_operator_evidence/1"
+
+
+def _golden_impact_rows() -> list:
+    """The after snapshot's stored failure_impact objects (_post_change_raw only rewrites collected_at)."""
+    rows = json.loads(_GOLDEN.read_bytes())["failure_impact"]
+    assert isinstance(rows, list)
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _stored_receipt_bytes(store: Store, receipt_id: int) -> tuple[bytes, str]:
+    """The persisted receipt JSON and its receipt_sha256 column, read straight from SQLite."""
+    with store._lock:
+        row = store._conn.execute(
+            "SELECT CAST(receipt_json AS BLOB) AS payload, receipt_sha256 FROM execution_comparisons WHERE id=?",
+            (receipt_id,),
+        ).fetchone()
+    assert row is not None
+    payload = row["payload"]
+    return (payload.tobytes() if isinstance(payload, memoryview) else bytes(payload)), row["receipt_sha256"]
+
+
+def _bind_receipt(client: TestClient) -> tuple[int, int, dict, dict]:
+    before_id, after_id, run = _post_change_pair(client)
+    compared = client.post(
+        f"/api/executions/{run['id']}/compare", json={"after_snapshot_id": after_id},
+    )
+    assert compared.status_code == 200, compared.text
+    return before_id, after_id, run, compared.json()["comparison_receipts"][-1]
+
+
+def test_execution_receipt_binds_raw_evidence_beside_a_live_owner_view(client):
+    _before_id, after_id, _run, row = _bind_receipt(client)
+    comparison = row["receipt"]["comparison"]
+    # the receipt binds the after snapshot's stored rows as raw evidence, under the one frozen contract
+    assert comparison["operator_evidence"]["schema"] == _V1
+    assert comparison["operator_evidence"]["rehearsal"]["impacts"] == _golden_impact_rows()
+    assert "impacts_view" not in comparison and "impacts_view" not in row["receipt"]
+    # beside it: the owner's live reading of exactly the bytes the comparison binds
+    view = row["impacts_view"]
+    after_sha = comparison["comparison_admission"]["source_binding"]["after"]["sha256"]
+    assert view["schema"] == "rehearsal_impacts_view/1"
+    assert view["display_only"] is True and view["available"] is True
+    assert view["source_sha256"] == after_sha
+    snapshot, binding = client.app.state.store.get_bound_snapshot(after_id)
+    assert binding["sha256"] == after_sha
+    assert view == engine.rehearsal_impacts_view(snapshot, source_sha256=after_sha)
+    assert view["n_rows_total"] == len(json.loads(_GOLDEN.read_bytes())["failure_impact"])
+    # golden core2 faces an uncollected neighbour: the owner bounds it, so its stored Low band and zeros are
+    # withheld (never shown as measured) while its positive counts read as floors
+    core2 = next(item for item in view["rows"] if item["host"] == "core2")
+    assert core2["assessable"] == "lower_bound" and core2["state"] == "not_collected", core2
+    assert core2["reasons"] == [{"code": "uncollected_neighbours", "n": 1}], core2
+    assert core2["cells"]["stranded"] == {"kind": "withheld", "text": None, "state": "not_collected"}, core2
+    assert core2["cells"]["fhrp"]["kind"] == "floor" and core2["cells"]["fhrp"]["text"].startswith("≥ "), core2
+    # the same row in the receipt is the raw evidence it binds
+    raw_core2 = next(item for item in comparison["operator_evidence"]["rehearsal"]["impacts"]
+                     if item.get("host") == "core2")
+    assert raw_core2 == next(item for item in _golden_impact_rows() if item.get("host") == "core2")
+
+
+def test_stored_receipt_bytes_and_digests_are_identical_with_and_without_impacts_view(client, monkeypatch):
+    """The display boundary: the stored receipt (its persisted bytes, its receipt_sha256 column, its detached envelope)
+    is the same whether the view is present, different or unavailable, and no read writes it back."""
+    from cisco_toolkit import impact_assessability
+
+    _before_id, _after_id, run, row = _bind_receipt(client)
+    store = client.app.state.store
+    stored_bytes, stored_sha = _stored_receipt_bytes(store, row["id"])
+    assert b"impacts_view" not in stored_bytes
+    assert json.loads(stored_bytes.decode("utf-8")) == row["receipt"]
+    unsigned = {key: value for key, value in row["receipt"].items() if key != "receipt_sha256"}
+    assert row["receipt"]["receipt_sha256"] == stored_sha == row["receipt_sha256"] == _canonical_sha256(unsigned)
+    assert storage_owner._comparison_envelope_valid(row["receipt"]["comparison"])
+    # the response row is exactly the stored row plus the display-only sibling
+    stored_row = store.get_execution(run["id"])["comparisons"][-1]
+    assert {key: value for key, value in row.items() if key != "impacts_view"} == stored_row
+    assert "impacts_view" not in stored_row
+
+    def read() -> dict:
+        response = client.get(f"/api/executions/{run['id']}")
+        assert response.status_code == 200, response.text
+        return response.json()["comparison_receipts"][-1]
+
+    baseline = read()
+    assert baseline["impacts_view"]["available"] is True
+
+    # 1. the owner decides differently (every row held): the reading changes, the receipt still verifies unchanged
+    def hold_everything(rec, toks, *_args, **_kwargs):
+        return impact_assessability.Hold(
+            impact_assessability.UNVERIFIED, "held for the test", [("witness", tuple(toks))], "no_host")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(impact_assessability, "row_hold", hold_everything)
+        reinterpreted = read()
+    assert {item["assessable"] for item in reinterpreted["impacts_view"]["rows"]} == {"not_assessed"}
+    assert reinterpreted["impacts_view"] != baseline["impacts_view"]
+
+    # 2. the reading cannot be computed: explicitly unavailable, never the raw rows
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("owner fault")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(engine, "rehearsal_impacts_view", broken)
+        unavailable = read()
+    assert unavailable["impacts_view"] == engine.rehearsal_impacts_view_unavailable("owner_fault")
+
+    for seen in (baseline, reinterpreted, unavailable):
+        assert {key: value for key, value in seen.items() if key != "impacts_view"} == stored_row
+    assert _stored_receipt_bytes(store, row["id"]) == (stored_bytes, stored_sha)
+
+
+def test_receipt_impacts_view_is_unavailable_never_raw_when_its_evidence_cannot_be_read(monkeypatch):
+    raw = _GOLDEN.read_bytes()
+    snapshot = json.loads(raw)
+    sha = "sha256:" + hashlib.sha256(raw).hexdigest()
+    comparison = {"comparison_admission": {"source_binding": {"after": {"snapshot_id": 7, "sha256": sha}}}}
+    asked = []
+
+    def loader(snapshot_id):
+        asked.append(snapshot_id)
+        return snapshot, {"sha256": sha}
+
+    view = engine.receipt_impacts_view(comparison, loader)
+    assert asked == [7] and view["available"] is True and view["source_sha256"] == sha
+
+    def raises(_snapshot_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    cases = {
+        "snapshot_missing": lambda _snapshot_id: None,
+        "snapshot_mismatch": lambda _snapshot_id: (snapshot, {"sha256": "sha256:" + "0" * 64}),
+        "snapshot_unreadable": raises,
+    }
+    for code, case in cases.items():
+        assert engine.receipt_impacts_view(comparison, case) == {
+            "schema": "rehearsal_impacts_view/1", "display_only": True, "available": False,
+            "code": code, "reason": engine.IMPACTS_VIEW_UNAVAILABLE[code],
+        }, code
+    for unbound in (None, {}, {"comparison_admission": {"source_binding": {}}},
+                    {"comparison_admission": {"source_binding": {"after": {"snapshot_id": "7", "sha256": sha}}}},
+                    {"comparison_admission": {"source_binding": {"after": {"snapshot_id": 7, "sha256": ""}}}}):
+        assert engine.receipt_impacts_view(unbound, loader)["code"] == "binding_unreadable", unbound
+
+    def faulting_owner(*_args, **_kwargs):
+        raise ZeroDivisionError("owner fault")
+
+    monkeypatch.setattr(engine, "rehearsal_impacts_view", faulting_owner)
+    assert engine.receipt_impacts_view(comparison, loader)["code"] == "owner_fault"
+
+
+def test_impacts_view_counts_and_shows_unreadable_rows_and_never_reads_absence_as_zero():
+    snapshot = json.loads(_GOLDEN.read_bytes())
+    stored = len(snapshot["failure_impact"])
+    snapshot["failure_impact"].append("not an object")
+    view = engine.rehearsal_impacts_view(snapshot, source_sha256="sha256:" + "1" * 64)
+    assert view["n_rows_total"] == stored + 1 == len(view["rows"])
+    assert view["n_rows_unreadable"] == 1 and view["unreadable"] == [stored]
+    assert sum(view["counts"].values()) == stored + 1
+    [unreadable] = [item for item in view["rows"] if item["index"] == stored]
+    assert unreadable["host"] is None and unreadable["assessable"] == "not_assessed"
+    assert unreadable["state"] == "unverified" and unreadable["ranked"] is False
+    assert unreadable["reasons"] == [{"code": "row_unreadable", "n": 0}]
+    assert {cell["kind"] for cell in unreadable["cells"].values()} == {"withheld"}
+    assert stored in [item["index"] for item in view["unranked"]]
+    ranked = [item["ranked"] for item in view["rows"]]
+    assert ranked == sorted(ranked, reverse=True)          # every ranked row precedes every unranked one
+
+    absent = dict(snapshot)
+    absent.pop("failure_impact")
+    view = engine.rehearsal_impacts_view(absent, source_sha256="sha256:" + "1" * 64)
+    assert view["section_state"] == "not_collected" and view["rows"] == [] and view["n_rows_total"] == 0
+    assert view["unreadable"] == [] and view["unranked"] == []
+    malformed = {**snapshot, "failure_impact": {"core1": {}}}
+    assert engine.rehearsal_impacts_view(malformed, source_sha256="x")["section_state"] == "unverified"
+    failed = {**snapshot, "assessment_integrity": {"failed_phases": ["Failure Impact"]}}
+    view = engine.rehearsal_impacts_view(failed, source_sha256="x")
+    assert view["section_state"] == "analysis_unavailable"
+    assert {item["state"] for item in view["rows"]} == {"analysis_unavailable"}
+    assert {item["assessable"] for item in view["rows"]} == {"not_assessed"}
+    # W50 round 4 (P3-2): under a failed section the non-object row is worded section_unavailable, not
+    # row_unreadable, yet the census and the list follow the owner's ONE rule (RowVerdict.readable) and agree
+    [failed_unreadable] = [item for item in view["rows"] if item["index"] == stored]
+    assert failed_unreadable["reasons"] == [{"code": "section_unavailable", "n": 0}]
+    assert view["n_rows_unreadable"] == 1 and view["unreadable"] == [stored]
+    # every row of a failed section is unranked, and the disclosure names each of them
+    assert [item["index"] for item in view["unranked"]] == list(range(stored + 1))
+
+
+_SAMPLE = _REPO / "webapp" / "sample_data" / "sample_fleet.snapshot.json"
+#: The SPA's render cap for impacts_view rows (ComparisonDecision.tsx ROW_CAP).
+_SPA_ROW_CAP = 8
+
+
+def test_impacts_view_reads_an_empty_stored_list_as_the_snapshot_tab_does():
+    """W51 round 4 (P3-8): an empty stored failure_impact list carries the engine projection's own disclosure in the
+    view (``empty_disclosure``) exactly as the snapshot's Failure impact tab shows it (summary.failure_impact_table):
+    not collected while the collection record is absent or lists a blind device, so the comparison never reads an
+    empty list as no impact where the tab does not. A list the projection publishes as collected but empty, and a
+    list with rows, carry none."""
+    from backend import summary
+
+    sha = "sha256:" + "3" * 64
+    snapshot = json.loads(_SAMPLE.read_bytes())
+    assert engine.rehearsal_impacts_view(snapshot, source_sha256=sha)["empty_disclosure"] is None   # rows: none
+    clean = {**deepcopy(snapshot), "failure_impact": []}
+    assert summary.failure_impact_table(clean) == []                    # precondition: the tab reads it as empty
+    assert engine.rehearsal_impacts_view(clean, source_sha256=sha)["empty_disclosure"] is None
+    absent = deepcopy(clean)
+    del absent["collection_completeness"]
+    blind = deepcopy(clean)
+    blind["collection_completeness"]["devices"] = [
+        {"host": "ghost1", "status": "not collected", "data_quality": 0, "missing": ["version/inventory"]}]
+    blind["collection_completeness"]["summary"]["inventory"] += 1
+    blind["collection_completeness"]["summary"]["not_collected"] = 1
+    for held in (absent, blind):
+        tab = summary.failure_impact_table(held)
+        view = engine.rehearsal_impacts_view(held, source_sha256=sha)
+        assert view["section_state"] is None and view["n_rows_total"] == 0
+        assert view["empty_disclosure"] == tab and tab["state"] == "not_collected", (view["empty_disclosure"], tab)
+        assert "not a clean result" in view["empty_disclosure"]["reason"]
+    assert "lists 1 device(s)" in engine.rehearsal_impacts_view(blind, source_sha256=sha)["empty_disclosure"]["reason"]
+
+
+def test_impacts_view_names_every_unranked_row_and_only_lays_out_the_owners_decisions():
+    """W50 round 4. P2-B: rows the owner does not rank sort after every ranked row, so a display that caps ``rows``
+    would drop them unnamed; ``unranked`` names each of them, in stored order, whatever the cap. P3-3: every
+    decision in the view is the owner's (``ranking_order``, ``ranks``, ``unranked``, ``cell_reading``,
+    ``RowVerdict.readable``); the view only lays it out."""
+    from cisco_toolkit import impact_assessability as ia
+
+    snapshot = json.loads(_SAMPLE.read_bytes())
+    objects = [row for row in snapshot["failure_impact"] if isinstance(row, dict)]
+    for row in objects[-3:]:             # three rows older than the off-scan marker: held, never ranked
+        row.pop("off_scan_gw_vlans", None)
+    verdicts = ia.assess_failure_impact(snapshot)
+    held = [verdict.index for verdict in verdicts if verdict.assessable == ia.NOT_ASSESSED]
+    assert len(held) >= 3, held
+    assert sum(1 for verdict in verdicts if ia.ranks(verdict)) > _SPA_ROW_CAP     # more ranked rows than the cap
+
+    view = engine.rehearsal_impacts_view(snapshot, source_sha256="sha256:" + "2" * 64)
+    order = [item["index"] for item in view["rows"]]
+    assert order == [verdict.index for verdict in sorted(verdicts, key=ia.ranking_order)]
+    capped = view["rows"][:_SPA_ROW_CAP]
+    assert all(item["ranked"] is True for item in capped)
+    assert not set(held) & {item["index"] for item in capped}        # the cap alone would drop every held row ...
+    disclosed = [item["index"] for item in view["unranked"]]
+    assert disclosed == [verdict.index for verdict in ia.unranked(verdicts)]
+    assert set(held) <= set(disclosed)                                # ... and the disclosure names each of them
+    by_index = {verdict.index: verdict for verdict in verdicts}
+    for item in view["unranked"]:
+        verdict = by_index[item["index"]]
+        assert item == {
+            "index": verdict.index, "host": None if verdict.withholds("host") else verdict.host,
+            "assessable": verdict.assessable, "state": verdict.state,
+            "reasons": [{"code": code, "n": n} for code, n in verdict.code_counts],
+        }, item
+    for item in view["rows"]:
+        verdict = by_index[item["index"]]
+        assert item["ranked"] is ia.ranks(verdict)
+        assert item["cells"] == {field: ia.cell_reading(verdict, field)._asdict()
+                                 for field in ia.CELL_FIELDS}, item["index"]
+    assert view["unreadable"] == [verdict.index for verdict in verdicts if not verdict.readable] == []
+
+
+def test_a_run_mutation_builds_its_impacts_views_after_releasing_the_mutation_lock(client, monkeypatch):
+    """W50 round 4 (P3-7): a war-room mutation (step, check, closeout, event, finish) holds execution.MUTATION_LOCK
+    only for its read-modify-write. Its response's impacts views, which load each receipt's bound after snapshot
+    and run the engine owner, are built after the lock is released, from the same saved record, so the stored run
+    and the response are unchanged."""
+    _before_id, _after_id, run, _row = _bind_receipt(client)
+    baseline = client.get(f"/api/executions/{run['id']}").json()
+    original = engine.receipt_impacts_view
+    held = []
+
+    def watching(comparison, load_bound_snapshot):
+        held.append(execution.MUTATION_LOCK.locked())
+        return original(comparison, load_bound_snapshot)
+
+    monkeypatch.setattr(engine, "receipt_impacts_view", watching)
+    response = client.post(
+        f"/api/executions/{run['id']}/event", json={"kind": "note", "text": "lock scope probe"},
+    )
+    assert response.status_code == 200, response.text
+    assert held == [False], held
+    updated = response.json()
+    assert updated["comparison_receipts"] == baseline["comparison_receipts"]
+    assert updated["events"][-1]["text"] == "lock scope probe"
+    stored = client.app.state.store.get_execution(run["id"])
+    assert stored["state"]["events"][-1]["text"] == "lock scope probe"
+    assert "impacts_view" not in json.dumps(stored["state"]) and all(
+        "impacts_view" not in row for row in stored["comparisons"])
+
+
+def test_trend_pairs_carry_the_view_beside_an_unchanged_comparison(client):
+    campaign = _campaign(client, "trend view", "ENG-TREND-VIEW")
+    first = _upload(client, campaign["id"], "first")
+    second = _upload(client, campaign["id"], "second", _post_change_raw())
+    trend = client.get(f"/api/campaigns/{campaign['id']}/trend")
+    assert trend.status_code == 200, trend.text
+    [pair] = trend.json()["adjacent_comparisons"]
+    direct = client.post("/api/compare", json={"old_id": first, "new_id": second})
+    assert direct.status_code == 200, direct.text
+    assert "impacts_view" not in direct.json()
+    assert pair["comparison"] == direct.json()
+    view = pair["impacts_view"]
+    assert view["available"] is True and view["display_only"] is True
+    assert view["source_sha256"] == pair["comparison"]["comparison_admission"]["source_binding"]["after"]["sha256"]

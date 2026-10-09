@@ -283,3 +283,10 @@ The following were written for hosted execution and were **not run**:
 Still required before merge: all protected exact-head checks, the OpenAPI drift check,
 Vitest/typecheck, including the stricter Scope-hub build, the unchanged hosted 300 ms
 projection gate, and an independent refutation.
+
+## W51 second refutation round (2026-10-09)
+
+The trust inputs read the blind-spot record's one coverage verdict, `_cc_coverage` (read through `_Ctx.cc_coverage`, next to F6's `_cc_universe`) for the gaps their own `collection_completeness` rollup and the inventory total do
+not report: a devices list absent from a section the snapshot carries (published clean before), and a summary that
+counts an unlisted blind spot or cannot be read. Their witnesses are cited even when a device-scope doubt already
+withholds the list; `_R_INPUTS_SCOPE` now names a failed or self-contradictory record among the doubts.

@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { api } from "../api";
 import { loadProjection, type Fact, type Projection, type Schemas, type View, type ViewDocument } from "../projection";
-import { EvidenceProvider, FactView, ListState, StateLabel, ValueText } from "./core/ProjectionEvidence";
+import { EvidenceProvider, FactView, ImpactFactView, ListState, Qualifications, StateLabel, ValueText } from "./core/ProjectionEvidence";
 import { ProjectionList } from "./core/ProjectionList";
 import { TopologyPaths } from "./core/TopologyPaths";
 import "./coreSnapshot.css";
@@ -94,13 +94,25 @@ function Overview({ document }: { document: ViewDocument<"overview"> }) {
   </>;
 }
 
+// A device's custody under an input that could not assess it, worded for that context. Collected-but-empty here means
+// the input's evidence was read but held nothing assessable (the trust_inputs_scope limitation's own words), which the
+// generic "Collected, empty" state label would read as an empty, clean collection. The state and its style are kept.
+const CUSTODY_TEXT: Partial<Record<Schemas["UiProjection1_TrustInputHost"]["custody"], string>> = {
+  collected_but_empty: "Evidence collected, nothing assessable",
+};
+
 // One analysis input's gap row, rendered from the contract alone: the ratio sentence appears only when the
-// engine published both counts, and a withheld count or list keeps its own state and reason.
+// projection published both counts, and a withheld count or list keeps its own state and reason. The sentence states
+// two facts, so it carries both facts' qualifications beside it: the count's, and the inventory denominator's own
+// (ui_projection._inventory_total publishes its own caveats, which the count does not inherit). Each control opens
+// its own fact's caveats.
 function InputGap({ row, sid }: { row: Schemas["UiProjection1_TrustInput"]; sid: number }) {
   const { n, of, hosts } = row;
+  const ratio = n.state === "published" && of.state === "published" ? `${n.value} of ${of.value} inventory devices could not be assessed` : null;
   return <article className="projection-list-item" aria-label={`${row.input} analysis input`}>
     <h3>{row.input}</h3>
-    {n.state === "published" && of.state === "published" && <p>{`${n.value} of ${of.value} inventory devices could not be assessed`}</p>}
+    {ratio !== null && <p className="projection-ratio">{ratio}<Qualifications label={ratio} envelope={n} />
+      <Qualifications label={`the inventory denominator of ${ratio}`} envelope={of} text="Denominator qualifications" /></p>}
     <FactGrid facts={{ could_not_be_assessed: n, inventory_devices: of }} />
     {row.sections.length > 0 && <p className="dim">Input sections: {row.sections.join(", ")}</p>}
     <ListState label={`Devices not assessed by ${row.input}`} source={hosts} />
@@ -108,7 +120,7 @@ function InputGap({ row, sid }: { row: Schemas["UiProjection1_TrustInput"]; sid:
       <div className="projection-list-items">{hosts.items.map((item) =>
         <div key={item.host} className="projection-list-item" role="group" aria-label={`${item.host} not assessed by ${row.input}`}>
           <Link to={deviceUrl(sid, item.host)}>{item.host} ↗</Link>
-          <p>Custody: <StateLabel state={item.custody} /></p>
+          <p>Custody: <StateLabel state={item.custody} text={CUSTODY_TEXT[item.custody]} /></p>
           {item.label !== null && <p className="dim">{item.label}</p>}
           <Pointer pointer={item.pointer} />
         </div>)}</div>
@@ -122,7 +134,7 @@ function Trust({ document }: { document: ViewDocument<"trust"> }) {
     <Panel title="Evidence coverage"><FactGrid facts={p.coverage_matrix} />
       <Disclosure>These are the engine's published coverage totals. The full device-by-axis matrix is not included in this view.</Disclosure></Panel>
     <Panel title="What the analysis could not see">
-      <Disclosure>Each input is one axis of the engine's per-device risk register, not every analysis. The engine publishes each count, device and custody; a withheld count keeps its state and reason and is never shown as zero.</Disclosure>
+      <Disclosure>Each input is one axis of the engine's per-device risk register, not every analysis. The projection counts each input's devices from the engine's per-device custody and shows each device's custody state; nothing is recomputed from raw evidence. A withheld count keeps its state and reason and is never shown as zero.</Disclosure>
       <div className="projection-list-items">{p.inputs.map((row) => <InputGap key={row.input} row={row} sid={document.identity.snapshot_id} />)}</div>
     </Panel>
     <Panel title="Unknown evidence"><FactGrid facts={{ state: p.unknown_evidence.state, events: p.unknown_evidence.n_events,
@@ -169,17 +181,22 @@ function RowRefs({ label, refs }: { label: string; refs: Schemas["UiProjection1_
     {refs.items.map((ref) => <Pointer key={`${ref.index}:${ref.pointer}`} pointer={ref.pointer} />)}</div>;
 }
 
+// The row's cells go through ImpactFactView, the view the fleet topology's failure-impact rows share (one builder,
+// ui_projection._topology_impact): a published measure the engine marks as a minimum (it cites a witness) reads
+// "≥ N" with its reason, never the bare count; an unmarked published value, a published 0 included, stays itself.
 function FailureImpactRow({ row }: { row: Schemas["UiProjection1_TopologyImpactRow"] }) {
+  const cell = (field: "severity" | "vlans_impacted" | "stranded" | "hard" | "backup" | "fhrp" | "off_scan_gw_vlans", label: string) =>
+    <ImpactFactView field={field} label={label} fact={row[field]} row={row.pointer} />;
   return <div role="group" aria-label={`Failure impact source row ${row.index}`}>
     <div className="projection-fact-grid">
       <FactView label="Engine presentation" fact={row.style} compact />
-      <FactView label="Severity" fact={row.severity} compact />
-      <FactView label="VLANs impacted" fact={row.vlans_impacted} compact />
-      <FactView label="Stranded endpoints" fact={row.stranded} compact />
-      <FactView label="Hard-partition VLANs" fact={row.hard} compact />
-      <FactView label="Backup-covered VLANs" fact={row.backup} compact />
-      <FactView label="FHRP-covered VLANs" fact={row.fhrp} compact />
-      <FactView label="Off-scan gateway VLANs" fact={row.off_scan_gw_vlans} compact />
+      {cell("severity", "Severity")}
+      {cell("vlans_impacted", "VLANs impacted")}
+      {cell("stranded", "Stranded endpoints")}
+      {cell("hard", "Hard-partition VLANs")}
+      {cell("backup", "Backup-covered VLANs")}
+      {cell("fhrp", "FHRP-covered VLANs")}
+      {cell("off_scan_gw_vlans", "Off-scan gateway VLANs")}
     </div>
     <FactView label="Per-VLAN detail" fact={row.detail} />
     <details><summary>Row host and topology node join</summary>
@@ -272,10 +289,43 @@ function Finding({ row, sid }: { row: Schemas["UiProjection1_FindingRow"]; sid: 
       {row.evidence_refs_cap && <Cap label="Finding references" cap={row.evidence_refs_cap} />}
       <Pointer pointer={row.pointer} /></details></article>;
 }
+// G21 (W41) publishes the punch-list facet totals (findings.facets): one count per severity and per category, in the
+// engine's vocabulary order, and a paged per-inventory-device list. Each is the engine's own count with its own state,
+// so a withheld total shows its state and reason, never a zero; this page neither counts the rows nor fills a gap.
+//
+// W51 round 4: a published severity or category count can be only a lower bound, and the engine marks it so by the
+// caveat it carries (ui_projection._finding_facets: while a fleet qualification applies -- blind devices, devices
+// without a captured running-config -- or a category's source section is incomplete, "a positive count is a lower
+// bound that carries this caveat"). These are hand copies of those caveat ids, held equal to the owner by
+// tests/test_ui_projection_finding_facets.py. Such a count renders through the shared bound treatment (FactView's
+// lowerBound: "≥ N" with a visible reason), never as a bare exact number. Any other caveat (a one-hop attribution, the
+// device facet's scope note) does not make a count a minimum.
+const FACET_LOWER_BOUND_CAVEATS: readonly string[] = [
+  "fleet_lists_exclude_blind_devices", "findings_without_running_config", "finding_facet_source_incomplete",
+];
+function facetLowerBound(fact: Fact): string | undefined {
+  if (fact.state !== "published") return undefined;
+  const cited = (fact.caveats ?? []).filter((id) => FACET_LOWER_BOUND_CAVEATS.includes(id));
+  return cited.length
+    ? `the engine publishes this count only as a minimum while ${cited.join(", ")} applies (see its Qualifications)`
+    : undefined;
+}
+function FindingFacets({ document }: { document: ViewDocument<"findings"> }) {
+  const facets = document.payload.facets;
+  return <>
+    <Panel title="Findings by severity"><div className="projection-fact-grid">{facets.severity.map((row) =>
+      <FactView key={row.k} label={`${row.k} findings`} fact={row.n} compact lowerBound={facetLowerBound(row.n)} />)}</div></Panel>
+    <Panel title="Findings by category"><div className="projection-fact-grid">{facets.category.map((row) =>
+      <FactView key={row.k} label={`${row.k} findings`} fact={row.n} compact lowerBound={facetLowerBound(row.n)} />)}</div></Panel>
+    <ProjectionList title="Findings by inventory device" document={document} initial={facets.device} renderRow={(row) =>
+      <FactView label={`Findings on ${row.k}`} fact={row.n} compact />} />
+  </>;
+}
 function Findings({ document }: { document: ViewDocument<"findings"> }) {
   const reference = useReference();
   return <><Panel title="Prioritised findings"><FactView label="Engine finding total" fact={document.payload.total} />
-    <Disclosure>Rows retain the engine's order. Severity and category facet totals are not published by this contract.</Disclosure></Panel>
+    <Disclosure>Rows retain the engine's order. The facet totals below are the engine's own counts (G21), each with its own state: a withheld total is not a zero, and a total the engine publishes only as a minimum reads ≥ N.</Disclosure></Panel>
+    <FindingFacets document={document} />
     <ProjectionList title="Findings" reference={reference} document={document} initial={document.payload.rows} renderRow={(row) => <Finding row={row} sid={document.identity.snapshot_id} />} /></>;
 }
 

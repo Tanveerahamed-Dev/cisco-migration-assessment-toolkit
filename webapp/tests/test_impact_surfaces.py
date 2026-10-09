@@ -27,11 +27,18 @@ owner ``cisco_toolkit/impact_assessability.py`` (W33), which also bounds a row b
 (inter-switch links with no trunk/STP evidence) or by its absence (a row older than that count). So the sample rows
 each surface flags are derived from each stored row's own evidence (:func:`_sample_bounds`), never from a host list:
 core2's uncollected router as before, plus every row whose stored count is positive or absent.
+
+W51 (the contract train): the projection's fleet qualifier reads the collection_completeness record through one
+coverage verdict, and a record the snapshot does not carry is a gap of it (no blind spot can be ruled out), so every
+ranking over such a snapshot is a disclosed lower bound and an empty list is not collected. The constructed fixtures
+therefore carry the record the real producer writes for a fully collected fleet (:func:`_complete_record`, bound to
+the producer by a test); a snapshot without it is pinned on its own.
 """
 from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -126,14 +133,30 @@ def _downstream_fleet():
                     "Gi48": _edge("Gi48", "dsw", "Switch")}}
 
 
-def _snapshot(interfaces, waves=()):
+#: The essential captures analyze.compute_collection_completeness tiers a device by (one spelling of each group).
+CAPTURES = ("show interface status", "show interface switchport", "show version", "show cdp neighbors detail")
+
+
+def _complete_record(hosts):
+    """The blind-spot record analyze.compute_collection_completeness writes for a fleet whose every inventory device
+    returned every essential capture: each counted complete, no blind-spot row. Bound to the real producer by
+    test_the_fixture_completeness_record_is_the_real_producers."""
+    n = len(hosts)
+    return {"summary": {"inventory": n, "complete": n, "partial": 0, "not_collected": 0}, "devices": []}
+
+
+def _snapshot(interfaces, waves=(), completeness=True):
     """The REAL producers' rows over `interfaces`, as a stored snapshot carries them, with one hard-cutover wave per
-    ``(group, hosts)``. JSON round-tripped: what the store hands every read route."""
+    ``(group, hosts)``. JSON round-tripped: what the store hands every read route. Every engine run stores the
+    collection_completeness record; W51 reads one the snapshot does not carry as a coverage gap (no blind spot can be
+    ruled out), so the fixture carries the record of a fully collected fleet unless `completeness` is false."""
     snap = {"schema": "collect_parse_snapshot/1", "devices": {host: {"hostname": host} for host in interfaces},
             "interfaces": {host: {port: asdict(row) for port, row in ports.items()}
                            for host, ports in interfaces.items()},
             "failure_impact": analyze.compute_failure_impact(interfaces),
             "cable_map": analyze.compute_cable_map(interfaces), "routes": {}}
+    if completeness:
+        snap["collection_completeness"] = _complete_record(interfaces)
     if waves:
         snap["wave_sequencing"] = [{"group": group, "make_before_break": [], "hard_cutover": list(hosts)}
                                    for group, hosts in waves]
@@ -299,6 +322,82 @@ def test_the_impact_fields_and_tokens_are_the_projections_own(sample):
         ("witness", ("failure_impact", 7, "blind_links"))]
     assert ia.blind_bound({}, ("failure_impact", 7)).witnesses == [("witness", ("failure_impact", 7))]
     assert ia.blind_bound({"blind_links": 0}, ("failure_impact", 7)) is None
+
+
+def test_the_fixture_completeness_record_is_the_real_producers(tmp_path):
+    """The record _snapshot stores is exactly what analyze.compute_collection_completeness writes when every device of
+    each fixture fleet returned every essential capture, never a hand-made shape the projection happens to accept."""
+    capture = tmp_path / "captured.txt"
+    capture.write_text("synthetic captured output\n", encoding="utf-8")
+    for fleet in (_downstream_fleet(), _unsimulatable_fleet()):
+        hosts = list(fleet)
+        record = analyze.compute_collection_completeness(hosts, {h: {c: str(capture) for c in CAPTURES} for h in hosts})
+        assert record == _complete_record(hosts), record
+        assert _snapshot(fleet)["collection_completeness"] == record
+        assert "collection_completeness" not in _snapshot(fleet, completeness=False)
+
+
+# --------------------------------------------------------------------------------------------------
+# the SPA's hand-copied constants (W47 / F8) are their Python owners' own
+# --------------------------------------------------------------------------------------------------
+IMPACT_VALUE_TSX = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "ImpactValue.tsx")
+#: One exported or module-level constant: ``const NAME[: type] = <value>;``. The value runs to the first ``;`` that
+#: ends a line, so a multi-line array literal is read whole.
+_TS_CONST = r"^(?:export\s+)?const\s+{name}\b(?:\s*:[^=\n]+)?\s*=\s*(?P<value>.+?);\s*$"
+_TS_STRING = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
+
+
+def _ts_const(source: str, name: str) -> str:
+    found = re.findall(_TS_CONST.format(name=re.escape(name)), source, re.M | re.S)
+    assert len(found) == 1, f"ImpactValue.tsx must declare `{name}` exactly once, found {len(found)}"
+    return found[0].strip()
+
+
+def _ts_string_array(source: str, name: str):
+    """The constant as a tuple of strings. Fails unless its value is a plain array of double-quoted string literals:
+    a spread, a reference, a template or a computed entry would hide what the SPA actually holds."""
+    value = _ts_const(source, name)
+    assert value.startswith("[") and value.endswith("]"), f"{name} is not an array literal: {value!r}"
+    body = value[1:-1]
+    residue = _TS_STRING.sub("", body)
+    assert re.fullmatch(r"[\s,]*", residue), f"{name} holds something other than string literals: {residue!r}"
+    return tuple(json.loads(f'"{item}"') for item in _TS_STRING.findall(body))
+
+
+def _ts_string(source: str, name: str) -> str:
+    value = _ts_const(source, name)
+    assert _TS_STRING.fullmatch(value), f"{name} is not one string literal: {value!r}"
+    return json.loads(value)
+
+
+def test_the_spa_impact_constants_equal_their_python_owners_in_order():
+    """components/ImpactValue.tsx hand-copies the failure-impact vocabulary. The snapshot tab builds its columns from
+    IMPACT_FIELDS, and the classifier reads IMPACT_MEASURES and IMPACT_SEVERITIES, so a field the engine adds, renames
+    or reorders would be silently dropped or misread by the SPA. Exact equality, in order, with each owner."""
+    source = IMPACT_VALUE_TSX.read_text(encoding="utf-8")
+    assert _ts_string_array(source, "IMPACT_FIELDS") == summary.IMPACT_FIELDS
+    assert _ts_string_array(source, "IMPACT_MEASURES") == summary.IMPACT_MEASURES == ui._IMPACT_MEASURES
+    assert _ts_string_array(source, "IMPACT_SEVERITIES") == ui.IMPACT_SEVERITIES
+    assert _ts_string(source, "IMPACT_NOT_ASSESSED") == summary.IMPACT_NOT_ASSESSED
+    assert _ts_string(source, "IMPACT_BOUND_MARK") == summary.IMPACT_BOUND_MARK
+    # the tab-cell parser strips the backend's own lead (summary._R_BOUND_LEAD, written as "lead: ")
+    assert _ts_string(source, "LOWER_BOUND_LEAD") + ": " == summary._R_BOUND_LEAD
+    # the value columns are the measures plus the off-scan count; host and detail are the text columns
+    assert _ts_const(source, "IMPACT_VALUE_FIELDS") == '[...IMPACT_MEASURES, "off_scan_gw_vlans"]'
+    assert [f for f in summary.IMPACT_FIELDS if f not in summary.IMPACT_MEASURES] == ["host", "off_scan_gw_vlans",
+                                                                                     "detail"]
+
+
+def test_the_spa_constant_reader_is_not_vacuous():
+    """The reader above must see a drift, a spread and a duplicate, or its equality proves nothing."""
+    drifted = 'export const IMPACT_FIELDS: readonly string[] = [\n  "host", "severity",\n];\n'
+    assert _ts_string_array(drifted, "IMPACT_FIELDS") == ("host", "severity") != summary.IMPACT_FIELDS
+    with pytest.raises(AssertionError, match="something other than string literals"):
+        _ts_string_array('export const IMPACT_FIELDS = [...OTHER, "detail"];\n', "IMPACT_FIELDS")
+    with pytest.raises(AssertionError, match="exactly once"):
+        _ts_const('const X = "a";\nconst X = "b";\n', "X")
+    with pytest.raises(AssertionError, match="exactly once"):
+        _ts_const('const IMPACT_FIELDS_OLD = ["a"];\n', "IMPACT_FIELDS")
 
 
 # --------------------------------------------------------------------------------------------------
@@ -669,6 +768,42 @@ def test_a_row_with_an_empty_host_is_disclosed_like_one_with_no_host(host):
     assert f"/failure_impact/{k} (names no readable host, so it could be any switch here)" in br["detail"], br["detail"]
 
 
+def test_a_snapshot_without_a_collection_completeness_record_bounds_every_ranking():
+    """W51: a snapshot that carries no collection_completeness record cannot rule out a blind spot, so the exact
+    control above (gw and acc fully assessed, every cable-map peer collected) keeps its measured values and order, but
+    neither the keystone ranking nor the wave's worst case reads as complete: each says it is a lower bound, worded by
+    the projection's fleet qualifier (no row it cites resolves, so one record that is not there, never a listed
+    blind device, and never, W51 round 4, a record the engine "cannot read"). The same fleet with the record is the
+    exact control of the tests above."""
+    snap = _snapshot(_downstream_fleet(), waves=[("alone", ("gw",))], completeness=False)
+    _node(snap, "dsw")["collected"] = True
+    _node(snap, "wan")["collected"] = True
+    raw = _by_host(snap)
+    assert "fleet_lists_exclude_blind_devices" in ui.project_topology(snap)["failure_impact"]["caveats"]
+    view = summary.impact_view(snap)
+    assert (view["blind"], view["blind_unread"], view["blind_unread_kind"]) == (0, 1, ia.FLEET_UNREAD_ABSENT)
+    blind = summary._R_IMPACT_BLIND_ABSENT
+    assert "cannot read" not in blind and "carries no collection_completeness record" in blind
+    keystones = summary.summarize(snap)["keystones"]
+    assert keystones[:-1] == [_exact(raw["gw"]), _exact(raw["acc"])]        # the measured ranking is unchanged
+    note = keystones[-1]
+    assert note["host"] == "" and note["severity"] == summary.IMPACT_NOT_ASSESSED and note["n_not_ranked"] == 0
+    assert note["detail"] == f"The ranking is a lower bound: {blind}.", note["detail"]
+    br = {w["group"]: w for w in cutover.build_plan(snap)["waves"]}["alone"]["blast_radius"]
+    # the worst row itself is no lower bound (no evidence of its own bounds it), so its counts are not "at least":
+    # the fleet-level gap is what keeps the wave's worst case from being complete
+    assert {k: v for k, v in br.items() if k != "detail"} == {
+        **{k: v for k, v in _exact(raw["gw"]).items() if k != "detail"}, "complete": False, "n_not_ranked": 0}
+    assert br["detail"] == f"{raw['gw']['detail']} — LOWER BOUND, the worst case may be larger: {blind}.", br["detail"]
+    # the control: the same fleet with the producer's record is complete and renders exactly the stored row
+    ctrl = _snapshot(_downstream_fleet(), waves=[("alone", ("gw",))])
+    _node(ctrl, "dsw")["collected"] = True
+    _node(ctrl, "wan")["collected"] = True
+    assert summary.summarize(ctrl)["keystones"] == [_exact(raw["gw"]), _exact(raw["acc"])]
+    assert ({w["group"]: w for w in cutover.build_plan(ctrl)["waves"]}["alone"]["blast_radius"]
+            == {**_exact(raw["gw"]), "complete": True, "n_not_ranked": 0})
+
+
 def test_the_sample_plan_keeps_its_worst_cases_and_a_duplicate_is_never_picked(sample):
     plan = cutover.build_plan(copy.deepcopy(sample))
     assert plan["waves"]
@@ -677,6 +812,7 @@ def test_the_sample_plan_keeps_its_worst_cases_and_a_duplicate_is_never_picked(s
     unranked = set(_sample_unranked(sample))
     with_core2 = [wave for wave in plan["waves"] if "core2" in wave["switches"]]
     assert with_core2 and len(with_core2) < len(plan["waves"])
+    zero_waves = 0
     for wave in plan["waves"]:
         switches = set(wave["switches"])
         assert switches <= set(_by_host(sample)), wave["group"]          # every sample wave switch has its row
@@ -694,6 +830,16 @@ def test_the_sample_plan_keeps_its_worst_cases_and_a_duplicate_is_never_picked(s
         if not not_ranked and not bounded_in:
             assert br == {**_exact(want), "complete": True, "n_not_ranked": 0}, wave["group"]
             continue
+        if max(row["stranded"] for row in ranked_rows if row["host"] in switches) == 0:
+            # W51 (the W48 re-verification): the largest count is a zero beside a switch that is not ranked, a lower
+            # bound of 0, which the owner's wave rule and the MOP read as not assessed; the plan does too (the sample's
+            # dist wave: dist1's zero is withheld, the others publish 0)
+            assert br["severity"] == cutover.IMPACT_NOT_ASSESSED and br["stranded"] is None, (wave["group"], br)
+            assert br["detail"].startswith("NOT ASSESSED: " + ia.R_WAVE_ZERO + ". "), br["detail"]
+            assert br["complete"] is False and br["n_not_ranked"] == len(not_ranked), br
+            assert all(host in br["detail"] for host in not_ranked), (wave["group"], br["detail"])
+            zero_waves += 1
+            continue
         assert {k: v for k, v in br.items() if k != "detail"} == {
             **{k: v for k, v in entry(want).items() if k != "detail"}, "complete": False,
             "n_not_ranked": len(not_ranked)}, wave["group"]
@@ -701,6 +847,7 @@ def test_the_sample_plan_keeps_its_worst_cases_and_a_duplicate_is_never_picked(s
         assert all(host in br["detail"] for host in not_ranked + bounded_in), (wave["group"], br["detail"])
         if "core2" in switches:
             assert "core2 — " + summary._R_BOUND_PEERS.format(k=1) in br["detail"], br["detail"]
+    assert zero_waves, "precondition: the sample has a wave whose largest count is a zero lower bound"
     snap, why = _held_core1(sample, "duplicate")
     wave = next(w for w in cutover.build_plan(snap)["waves"] if "core1" in w["switches"])
     br = wave["blast_radius"]
@@ -766,6 +913,13 @@ def test_the_cutover_document_prints_a_lower_bound_as_at_least(tmp_path, sample)
     (line,) = _blast_lines(ctrl, tmp_path)
     assert f"gw (High) — {g['stranded']} endpoint(s) stranded across {g['vlans_impacted']} VLAN(s)." in line, line
     assert "at least" not in line and "LOWER BOUND" not in line, line
+    # W51: the same control stored without a collection_completeness record keeps its exact counts (nothing of its
+    # own bounds gw's row) but prints the worst case as possibly larger: no blind spot can be ruled out
+    del ctrl["collection_completeness"]
+    (line,) = _blast_lines(ctrl, tmp_path)
+    assert f"gw (High) — {g['stranded']} endpoint(s) stranded across {g['vlans_impacted']} VLAN(s)." in line, line
+    assert "at least" not in line, line
+    assert ("LOWER BOUND, the worst case may be larger: " + summary._R_IMPACT_BLIND_ABSENT) in line, line
 
 
 # --------------------------------------------------------------------------------------------------
@@ -925,19 +1079,33 @@ def test_a_failure_impact_section_that_is_not_a_list_shows_the_projections_discl
 
 def test_a_valid_empty_failure_impact_list_stays_an_empty_table(client):
     """The control: a list the producer wrote empty, which the projection reads as collected but empty, is still the
-    empty table (the tab says "Empty."); only a withheld list becomes a disclosure."""
-    sid = _upload(client, {"devices": {"sw1": {}}, "failure_impact": []})
+    empty table (the tab says "Empty."); only a withheld list becomes a disclosure. The snapshot carries the
+    collection_completeness record every engine run stores (sw1 fully collected): W51 reads a snapshot without one as
+    unable to rule out a blind spot, and an empty list under that gap is withheld (pinned below)."""
+    sid = _upload(client, {"devices": {"sw1": {}}, "failure_impact": [],
+                           "collection_completeness": _complete_record(["sw1"])})
     stored = json.loads(client.get(f"/api/snapshots/{sid}/raw").content)
     assert ui.project_topology(stored)["failure_impact"]["state"] == "collected_but_empty"
     assert client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"] == []
     # an empty list the projection withholds (its phase failed) is disclosed, never an empty clean table
     sid = _upload(client, {"devices": {"sw1": {}}, "failure_impact": [],
+                           "collection_completeness": _complete_record(["sw1"]),
                            "assessment_integrity": {"failure_impact": "failed"}})
     stored = json.loads(client.get(f"/api/snapshots/{sid}/raw").content)
     listing = ui.project_topology(stored)["failure_impact"]
     assert listing["state"] != "collected_but_empty", listing
     data = client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"]
     assert data == {"state": listing["state"], "reason": listing["reason"]}, data
+    # W51: the same empty list in a snapshot that carries no collection_completeness record is not a clean result
+    # (any device could be an uncollected one whose row is missing): not collected, and disclosed like any withheld list
+    sid = _upload(client, {"devices": {"sw1": {}}, "failure_impact": []})
+    stored = json.loads(client.get(f"/api/snapshots/{sid}/raw").content)
+    listing = ui.project_topology(stored)["failure_impact"]
+    assert listing["state"] == "not_collected", listing
+    assert "collection_completeness cannot be read" in listing["reason"], listing["reason"]
+    assert listing["reason"].endswith("an empty list is not a clean result"), listing["reason"]
+    data = client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"]
+    assert data == {"state": "not_collected", "reason": listing["reason"]}, data
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1005,3 +1173,203 @@ def test_the_dossier_recompute_forwards_the_stored_producer_rows_unchanged(clien
     r = client.get(f"/api/snapshots/{sid}/section/device_dossiers")
     assert r.status_code == 200, r.text
     assert seen["failure_impact"] == impact
+
+
+def test_the_blind_spot_note_never_calls_a_record_the_engine_cannot_read_a_blind_device(sample):
+    """W43 (F6): the projection's fleet qualifier also cites a collection_completeness record it cannot read as a
+    blind spot (a row that is not an object or states no status of its owner's vocabulary, or a list or section of
+    the wrong type). Each could be one, so it qualifies the ranking, but it is not a device the owner lists as partial
+    or not collected: the note counts and words the two kinds apart, by the projection's own classifier."""
+    from backend import engine
+    snap = copy.deepcopy(sample)
+    # every case below lists one device outside the devices map (ghost1, then x), which the producer counts in its
+    # inventory; W51 reconciles that count with the roster, so an uncounted one would be a third kind of witness
+    snap["collection_completeness"]["summary"]["inventory"] += 1
+    snap["collection_completeness"]["devices"] = copy.deepcopy(BLIND)            # the control: two readable rows
+    view = summary.impact_view(snap)
+    assert (view["blind"], view["blind_unread"]) == (2, 0)
+    assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND.format(n=2)
+
+    snap["collection_completeness"]["devices"] = [{"host": "x", "status": "complete"}]
+    assert engine.fleet_blind_spot_rows(snap) == [] == ui.fleet_blind_spot_rows(snap)
+    listing = engine.failure_impact_projection(snap)
+    assert "fleet_lists_exclude_blind_devices" in listing["caveats"]               # the engine qualifies the list
+    view = summary.impact_view(snap)
+    assert (view["blind"], view["blind_unread"]) == (0, 1)
+    note = summary.impact_blind_note(view)
+    assert note == summary._R_IMPACT_BLIND_UNREAD.format(n=1), note
+    assert "as partial or not collected:" not in note and "lists 1 device(s)" not in note
+    keystones = summary.summarize(snap)["keystones"]
+    tail = keystones[-1]
+    assert tail["host"] == "" and tail["severity"] == summary.IMPACT_NOT_ASSESSED, tail
+    assert f"The ranking is a lower bound: {note}" in tail["detail"] and "lists 1 device(s)" not in tail["detail"]
+    alone = cutover._worst_blast_radius({"core2"}, view)
+    assert alone["complete"] is False and note in alone["detail"], alone
+
+    snap["collection_completeness"]["devices"] = copy.deepcopy(BLIND) + [None]  # both kinds, each as what it is
+    assert engine.fleet_blind_spot_rows(snap) == [0, 1]
+    view = summary.impact_view(snap)
+    assert (view["blind"], view["blind_unread"]) == (2, 1)
+    assert summary.impact_blind_note(view) == "; ".join(
+        [summary._R_IMPACT_BLIND.format(n=2), summary._R_IMPACT_BLIND_UNREAD.format(n=1)])
+
+    absent = copy.deepcopy(sample)                  # W51: a record the snapshot does not carry is no listed device
+    del absent["collection_completeness"]
+    assert "fleet_lists_exclude_blind_devices" in engine.failure_impact_projection(absent)["caveats"]
+    view = summary.impact_view(absent)
+    assert (view["blind"], view["blind_unread"]) == (0, 1)
+    # W51 round 4: worded as a record that is not there, never as one "the engine cannot read"
+    assert view["blind_unread_kind"] == ia.FLEET_UNREAD_ABSENT
+    assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND_ABSENT
+    assert "lists 1 device(s)" not in summary.impact_blind_note(view)
+    assert "cannot read" not in summary.impact_blind_note(view)
+
+    snap["collection_completeness"]["devices"] = {"core1": {"status": "not collected"}}   # a list it cannot read
+    view = summary.impact_view(snap)
+    assert (view["blind"], view["blind_unread"]) == (0, 1)
+    assert view["blind_unread_kind"] == ia.FLEET_UNREAD_RECORDS
+    assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND_UNREAD.format(n=1)
+
+    # W51 round 4: a failed record is worded as a failed phase, and its failure record (the producer's
+    # {"_unavailable": true} sentinel) is the reason the record is unread, never a second unread record
+    failed = copy.deepcopy(sample)
+    failed["collection_completeness"] = {"_unavailable": True}
+    listing = engine.failure_impact_projection(failed)
+    assert {(r["pointer"], r["role"]) for r in listing["refs"]} >= {
+        ("/collection_completeness", "witness"), ("/collection_completeness/_unavailable", "failure_record")}
+    view = summary.impact_view(failed)
+    assert (view["blind"], view["blind_unread"], view["blind_unread_kind"]) == (0, 1, ia.FLEET_UNREAD_FAILED)
+    assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND_FAILED
+    assert "cannot read" not in summary.impact_blind_note(view) and "carries 2 record(s)" not in str(view)
+
+
+# --------------------------------------------------------------------------------------------------
+# W48 follow-up: the MOP and the cutover plan read ONE wave rule (impact_assessability.wave_blast)
+# --------------------------------------------------------------------------------------------------
+def _published_sample(sample):
+    """The sample with every stored row's evidence a measurement (no inter-switch link without trunk/STP evidence,
+    every uncollected cable-map peer that could carry endpoints shown as collected). Precondition, from the owner:
+    every row is published."""
+    snap = copy.deepcopy(sample)
+    for row in snap["failure_impact"]:
+        row["blind_links"] = 0
+    for node in snap["cable_map"]["nodes"]:
+        if node.get("collected") is False and node.get("kind") not in ia.IMPACT_EDGE_KINDS:
+            node["collected"] = True
+    assert {v.assessable for v in ia.assess_failure_impact(snap)} == {ia.PUBLISHED}
+    return snap
+
+
+@pytest.mark.parametrize("variant", ["published", "hostless", "fleet_caveat", "fleet_unread", "no_cable_map"])
+def test_the_mop_and_the_cutover_plan_agree_on_every_wave(sample, variant):
+    """Refutation P2-2: the cutover plan bounded a wave by a row naming no readable host and by the projection's fleet
+    qualifier (collection_completeness lists a partial or never-collected device) while the MOP printed the same wave
+    as exact. Both now read the engine owner's wave rule: on a fully published fleet both are exact, and a host-less
+    row or a blind spot makes both a lower bound, each saying why in the same words. W51: a collection record the
+    projection cannot read as a blind device (here, one the snapshot does not carry) bounds both too, and both word it
+    as that record, never as a listed device.
+
+    W51 (the W48 re-verification's P2, three times): with NO cable map, the owner bounds every row (whether a switch
+    faces an uncollected neighbour cannot be checked) and the MOP printed '≥ N', but the projection's bound cited
+    ``/cable_map``, which does not resolve, so the witness was dropped and the plan read the same wave as exact. The
+    bound now cites the nearest record that exists (the snapshot root), so both read every wave as not exact. And a
+    largest count that is a zero lower bound is not assessed on both, never '0 endpoint(s) stranded' on the plan."""
+    from cisco_toolkit import mop
+
+    snap = _published_sample(sample)
+    if variant == "hostless":
+        snap["failure_impact"].append(dict(snap["failure_impact"][0], host=None))
+    elif variant == "fleet_caveat":
+        snap["collection_completeness"]["devices"] = copy.deepcopy(BLIND)
+        snap["collection_completeness"]["summary"]["inventory"] += 1        # ghost1 is outside the devices map
+    elif variant == "fleet_unread":
+        del snap["collection_completeness"]
+    elif variant == "no_cable_map":
+        del snap["cable_map"]
+        # precondition from the owner: no row whose host is text is a measurement without the cable map
+        assert ia.PUBLISHED not in {v.assessable for v in ia.assess_failure_impact(snap)}
+    view = summary.impact_view(copy.deepcopy(snap))
+    rows, blind = ia.wave_rows(snap), mop._fleet_blind(snap)
+    assert blind == (view["blind"], view["blind_unread"]) == {"fleet_caveat": (len(BLIND), 0),
+                                                              "fleet_unread": (0, 1)}.get(variant, (0, 0)), blind
+    waves = cutover.build_plan(copy.deepcopy(snap))["waves"]
+    assert waves
+    bounded = 0
+    for wave in waves:
+        br = wave["blast_radius"]
+        mine = mop._blast_for(wave["switches"], rows, blind)
+        assert br["complete"] is (mine.assessable == ia.PUBLISHED) is (variant == "published"), (wave["group"], br)
+        assert br["n_not_ranked"] == mine.n_not_ranked, (wave["group"], br, mine)
+        if variant == "published":
+            assert ia.wave_why(mine) == "" and "LOWER BOUND" not in br["detail"], br
+            continue
+        if mine.assessable == ia.LOWER_BOUND:
+            bounded += 1
+            assert "LOWER BOUND, the worst case may be larger" in br["detail"], br["detail"]
+            assert br["severity"] != summary.IMPACT_NOT_ASSESSED, br
+        else:
+            assert mine.assessable == ia.NOT_ASSESSED, mine
+            assert br["severity"] == summary.IMPACT_NOT_ASSESSED and br["stranded"] is None, br
+            assert (ia.R_WAVE_ZERO in br["detail"]) is mine.zero_bound, (br, mine)
+        why = ia.wave_why(mine)
+        if variant == "no_cable_map":
+            continue
+        if variant == "hostless":
+            assert "names no readable host" in br["detail"] and "name no readable switch" in why, (br, why)
+        else:
+            # W51 round 4: the record the snapshot does not carry is worded as absent on both, never "cannot read"
+            said = (ia.R_WAVE_FLEET_BLIND.format(n=len(BLIND)) if variant == "fleet_caveat"
+                    else ia.R_WAVE_FLEET_ABSENT)
+            assert summary.impact_blind_note(view) == said and said in br["detail"] and said in why, (br, why)
+            if variant == "fleet_unread":
+                assert "as partial or not collected:" not in why + br["detail"], (br, why)
+    if variant != "published":
+        assert bounded, "precondition: at least one wave is a positive lower bound on both"
+    if variant == "no_cable_map":
+        # the plan's bound names the root witness in its own words, never as an empty pointer
+        cored = [w["blast_radius"] for w in waves if w["blast_radius"]["severity"] != summary.IMPACT_NOT_ASSESSED]
+        assert cored and all(summary._R_BOUND_ROOT in br["detail"] for br in cored), cored
+        assert all("the engine cites  as" not in w["blast_radius"]["detail"] for w in waves)
+
+
+def test_the_cutover_plan_reads_a_zero_lower_bound_as_not_assessed(sample):
+    """W51 (the W48 re-verification's P3): a wave whose largest published count is 0 beside a device with no row is a
+    lower bound of 0, which the owner's wave rule (``zero_bound``) and the MOP read as not assessed. The plan now does
+    too: NOT ASSESSED with no counts and the owner's own reason first, never '0 endpoint(s) stranded'. An exact zero
+    (every device published) stays a measured 0."""
+    snap = _published_sample(sample)
+    zeros = [r.key for r in ia.wave_rows(snap) if r.ranked and r.stranded == 0]
+    assert zeros, "precondition: the sample has switches that strand nobody"
+    view = summary.impact_view(copy.deepcopy(snap))
+    br = cutover._worst_blast_radius({zeros[0], "no-such-switch"}, view)
+    assert br["severity"] == summary.IMPACT_NOT_ASSESSED and br["stranded"] is None and br["vlans_impacted"] is None
+    assert br["detail"].startswith("NOT ASSESSED: " + ia.R_WAVE_ZERO + ". "), br["detail"]
+    assert br["complete"] is False and br["n_not_ranked"] == 1, br
+    exact = cutover._worst_blast_radius({zeros[0]}, view)
+    assert exact["complete"] is True and exact["stranded"] == 0, exact
+    assert exact["severity"] != summary.IMPACT_NOT_ASSESSED, exact
+
+
+def test_a_bound_whose_witness_is_absent_cites_the_nearest_record_that_exists(sample):
+    """W51 (the W48 re-verification's P2): every published lower bound cites a witness that resolves. With no cable
+    map the neighbour bound's own witness (``/cable_map``) is absent, so the projection cites the snapshot root ``""``
+    (the nearest record the cable map is missing from) on every bounded measure; with a cable map but no cable list it
+    cites ``/cable_map``; with the list present it cites the list. The summary reads each as a lower bound and words
+    the root witness, so no row the engine owner bounds reads as exact on an AssessHub surface."""
+    for mode, want in (("absent", ""), ("no_list", "/cable_map"), ("not_a_list", "/cable_map/cables")):
+        snap = _published_sample(sample)
+        if mode == "absent":
+            del snap["cable_map"]
+        elif mode == "no_list":
+            del snap["cable_map"]["cables"]
+        else:
+            snap["cable_map"]["cables"] = {"not": "a list"}
+        listing = ui.project_topology(copy.deepcopy(snap))["failure_impact"]
+        core1 = next(item for item in listing["items"] if item["host"].get("value") == "core1")
+        cited = {ref["pointer"] for field in ia.IMPACT_MEASURES for ref in core1[field]["refs"]
+                 if core1[field]["state"] == "published" and ref["role"] == "witness"}
+        assert cited == {want}, (mode, cited)
+        row = next(r for r in summary.impact_view(copy.deepcopy(snap))["rows"] if r["key"] == "core1")
+        assert row["lower_bound"] and row["bound_pointers"] == [want], (mode, row)
+        if mode == "absent":
+            assert row["bound_reasons"] == [summary._R_BOUND_ROOT], row

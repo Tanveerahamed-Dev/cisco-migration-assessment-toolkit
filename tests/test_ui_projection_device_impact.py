@@ -46,10 +46,11 @@ ENDS = ("a_host", "b_host")
 #: The failure-impact cells that measure a simulated blast radius (host, off_scan_gw_vlans and detail do not).
 MEASURES = ("severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp")
 #: The device document's limitations, in document order, written out by hand rather than taken from the module's
-#: own formula: its four own limitations, then each payload limitation a device page cites, in payload order.
+#: own formula: its five own limitations, then each payload limitation a device page cites, in payload order.
 DEVICE_DOC_LIMITATION_IDS = (
     "deduction_refs_are_subsequence", "routes_in_scope_only", "interface_default_not_observed",
-    "routing_neighbors_empty_is_ambiguous", "one_hop_failure_attribution", "coverage_matrix_shown_as_published",
+    "routing_neighbors_empty_is_ambiguous", "routing_peer_resolution_scope", "one_hop_failure_attribution",
+    "coverage_matrix_shown_as_published",
     "projection_owned_verdicts", "device_physical_defaults_not_observed", "health_scored_without_security",
     "health_scored_over_partial_collection", "dossier_band_over_unassessed_axes", "engine_list_capped",
     "move_group_label_absent", "row_selection_by_exact_key", "fleet_lists_exclude_blind_devices",
