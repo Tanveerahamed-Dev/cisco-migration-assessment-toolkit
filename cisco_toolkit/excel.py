@@ -4602,11 +4602,27 @@ def write_software_risk_sheet(wb, sr: dict) -> None:
     s = p.get("summary") or {}
     bands = s.get("train_bands") or {}
     band_txt = ", ".join(f"{k}: {v}" for k, v in bands.items()) or "—"
-    b = ws.cell(1, 1, f"Software risk SCREENING: {s.get('n_findings', 0)} exposed surface(s) on "
-                      f"{s.get('n_config_assessable', 0)} of {s.get('n_devices', 0)} config-assessable "
-                      "device(s), joined to landmark public advisories. This is configuration-evidence "
-                      "screening, NOT a vulnerability scan — validate every running release with the "
-                      "Cisco PSIRT Software Checker.")
+    # W59 PR-1 review (P3-h): one surface is SESSION-evidenced, not configuration-screened. Name it, count it apart
+    # and state its own abstention rule; with no session block the banner is exactly the pre-W59 one.
+    from cisco_toolkit.ssh_session import SURFACE_KIND as _ssh_kind
+    n_ssh = sum(1 for f in finds if isinstance(f, dict) and f.get("kind") == _ssh_kind)
+    has_ssh = bool(n_ssh) or any(isinstance(d, dict) and isinstance(d.get("surfaces"), dict)
+                                 and _ssh_kind in d["surfaces"] for d in pdev)
+    if has_ssh:
+        n_cfg = sum(1 for f in finds if isinstance(f, dict) and f.get("kind") != _ssh_kind)
+        banner = (f"Software risk SCREENING: {n_cfg} exposed configuration surface(s) on "
+                  f"{s.get('n_config_assessable', 0)} of {s.get('n_devices', 0)} config-assessable device(s), "
+                  f"joined to landmark public advisories, plus {n_ssh} session-evidenced {_ssh_kind} finding(s) "
+                  "read from the collector's own sealed SSH session records (no running-config needed; a device "
+                  "without a record of this run reads verify, never closed). The configuration screening is NOT a "
+                  "vulnerability scan — validate every running release with the Cisco PSIRT Software Checker.")
+    else:
+        banner = (f"Software risk SCREENING: {s.get('n_findings', 0)} exposed surface(s) on "
+                  f"{s.get('n_config_assessable', 0)} of {s.get('n_devices', 0)} config-assessable "
+                  "device(s), joined to landmark public advisories. This is configuration-evidence "
+                  "screening, NOT a vulnerability scan — validate every running release with the "
+                  "Cisco PSIRT Software Checker.")
+    b = ws.cell(1, 1, banner)
     b.font = Font(bold=True, color="7030A0", size=10)
     b.alignment = Alignment(horizontal="left", wrap_text=True)
     ws.cell(2, 1, f"Software trains — {band_txt} · {s.get('n_version_known', 0)} of "

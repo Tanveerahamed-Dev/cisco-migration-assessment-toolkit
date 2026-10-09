@@ -40,6 +40,7 @@ _KNOWN_SECTIONS = {
     "physical_health", "l3_forwarding", "fhrp", "trunk_native", "stp_roots", "security",
     "config_hygiene", "lifecycle_risk", "syslog_intelligence", "qos_audit", "software_risk",
     "platform_health", "capacity", "operational_drift", "segmentation",
+    "ssh_sessions",                 # W59: the session-evidenced ssh-legacy-transport surface's owner
 }
 
 

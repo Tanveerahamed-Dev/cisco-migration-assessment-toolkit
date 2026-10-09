@@ -653,9 +653,13 @@ def _write_collection(root: str, cols: dict) -> None:
 # records are mutually consistent:
 #   access4  (12.2 C3560): offers only SHA-1-class kex/host key -> negotiated SHA-1 WITHOUT opt-in (legacy_sha1)
 #   core1:                 offers curve25519 / rsa-sha2-512      -> modern
-#   edge1:                 a FOLDER WITH ONLY THE RECORD (no captures): offers only the RFC 8731 name
-#                          curve25519-sha256 + a PQ hybrid, which paramiko 4.0.0 does not implement -> refused
-#                          (refused_unsupported_modern: a collector gap, not a device weakness)
+#   edge1:                 a FOLDER WITH ONLY THE RECORD (no captures): a common SHA-1 key exchange, but a DSA
+#                          host key only, which paramiko 4.0.0 (DSA removed) cannot verify -> refused at the
+#                          host-key step: refused_legacy_only, an EXPOSED Medium finding ("no profile of this
+#                          collector implements" -- DSA is outside the legacy-sha1 tier). The one paramiko 4 run is
+#                          consistent: it negotiates SHA-1 with access4 and refuses edge1's DSA-only host key.
+#                          The sample thereby pins a refused device's exposed finding on every surface (W59 PR-1
+#                          review P2-b): software risk, punch list, dossier and the collection-integrity deliverables.
 # SHA-1 algorithm names come from the vocabulary owner, never restated here.
 # --------------------------------------------------------------------------- #
 _SSH_EXTRA_DEVICE = {"hostname": "edge1", "ip": "10.0.99.240", "platform": "ios"}
@@ -711,12 +715,16 @@ def _ssh_session_records() -> dict:
                                  "cipher_s2c": "aes256-ctr", "mac_c2s": "hmac-sha2-256", "mac_s2c": "hmac-sha2-256",
                                  "strict_kex": True, "server_software": "SSH-2.0-Cisco-1.25"},
                   "engine_name_agrees": None, "group_size_agrees": None, "dropped": 0}
-    gap_server = {"kex": ["mlkem768x25519-sha256", "curve25519-sha256", "kex-strict-s-v00@openssh.com"],
-                  "host_key": ["ssh-ed25519", "rsa-sha2-512"], "cipher_c2s": ["aes256-gcm@openssh.com"],
-                  "cipher_s2c": ["aes256-gcm@openssh.com"], "mac_c2s": ["hmac-sha2-256-etm@openssh.com"],
-                  "mac_s2c": ["hmac-sha2-256-etm@openssh.com"]}
+    # The DSA host-key name, derived from the vocabulary owner (the one plain SHA-1-class host key outside the
+    # legacy-sha1 tier that is neither a certificate nor an X.509 form) -- never spelled here.
+    dsa_only = [n for n in sorted(S.SHA1_HOST_KEY_NAMES)
+                if n not in S.LEGACY_SHA1_TIER_HOST_KEYS and "cert" not in n and not n.startswith("x509")]
+    if len(dsa_only) != 1:
+        raise SystemExit(f"demo SSH session: expected exactly one plain DSA host-key name, got {dsa_only}")
+    gap_server = {"kex": [g14_sha1], "host_key": dsa_only, "cipher_c2s": ["aes128-ctr"],
+                  "cipher_s2c": ["aes128-ctr"], "mac_c2s": [sha1_mac], "mac_s2c": [sha1_mac]}
     gap_obs = {"kexinit": True, "newkeys": False, "server": gap_server, "client": client, "negotiated": None,
-               "engine_name_agrees": None, "group_size_agrees": None, "dropped": 0}
+               "engine_name_agrees": None, "group_size_agrees": None, "dropped": 0, "errors": 0}
 
     class _IncompatiblePeer(Exception):
         """Stand-in carrying paramiko's exception class NAME (the classifier matches by name)."""
@@ -724,8 +732,10 @@ def _ssh_session_records() -> dict:
     _IncompatiblePeer.__name__ = "IncompatiblePeer"
     observation = S.SessionObservation()
     observation.server, observation.client, observation.kexinit_seen = gap_server, client, True
-    refusal = S.classify_failure(_IncompatiblePeer("Incompatible ssh peer (no acceptable kex algorithm)"),
+    refusal = S.classify_failure(_IncompatiblePeer("Incompatible ssh peer (no acceptable host key)"),
                                  observation)
+    if not refusal or (refusal["category"], refusal["classification"]) != ("host_key", "refused_legacy_only"):
+        raise SystemExit(f"demo SSH session: edge1 must classify as a host-key refused_legacy_only, got {refusal}")
     default_consent = S.consent_for({}, None)
     records = {
         "access4": S.build_record(outcome="established", consent=default_consent, library=lib, attempts=1,

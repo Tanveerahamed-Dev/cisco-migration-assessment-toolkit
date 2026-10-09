@@ -608,6 +608,32 @@ def write_ops_handbook_docx(output_path: str, snap_dict: dict, label: str) -> No
         doc.add_paragraph(
             "Hardware lifecycle: the Lifecycle Risk sheet carries the per-device EoX bands — "
             "review quarterly and feed Past-EoS / Near-LDoS devices into budget planning.")
+    # W59 PR-1 review (P2-b, design section 6.3): the management plane every operator and migration tool will use.
+    # Each device whose collection session was not modern carries the disclosure its sealed session record supports,
+    # worded by the one owner (ssh_session.disclosure_groups / disclosure_sentence). Silent on an older snapshot.
+    _ssh_block = snap.get("ssh_sessions")
+    if isinstance(_ssh_block, dict):
+        from cisco_toolkit.ssh_session import STATUS_MODERN as _SSH_MODERN, disclosure_groups as _ssh_groups
+        _ssh_grouped = _ssh_groups(_ssh_block)
+        _ssh_rows = [r for r in _as_list(_ssh_block.get("rows")) if isinstance(r, dict)]
+        doc.add_heading("5.1 Management-plane SSH transport (collection sessions)", level=2)
+        if _ssh_grouped:
+            doc.add_paragraph(
+                "What the assessment's own SSH sessions negotiated, for every device whose session was not modern "
+                "(exposed findings first). Operations owns closing the exposed ones on the device's SSH server; "
+                "'not recorded' is a blind spot to re-collect, never a modern session; host keys are not verified.")
+            _ssh_cap = 30
+            table(["Finding", "Disclosure", "Devices"],
+                  [[g["finding"] + (f" ({g['severity']})" if g["severity"] else ""), g["label"],
+                    f"{len(g['hosts'])}: " + ", ".join(g["hosts"][:_ssh_cap])
+                    + (f" (+{len(g['hosts']) - _ssh_cap} more)" if len(g["hosts"]) > _ssh_cap else "")]
+                   for g in _ssh_grouped], widths=[1.2, 3.6, 1.9])
+        elif _ssh_rows and all(r.get("status") == _SSH_MODERN for r in _ssh_rows):
+            doc.add_paragraph(f"All {len(_ssh_rows)} recorded collection session(s) negotiated SHA-256 or better; "
+                              "host keys are not verified on any path (Collection Transport sheet).")
+        else:
+            absent("the SSH session disclosure rows", "the phase produced none or failed; re-run the assessment "
+                   "— this is not a statement that any session was modern.")
 
     # ===== 6. Backup & recovery =====
     # Config-backup strategy + cadence, the restore procedure, and — load-bearing — the restore-TEST

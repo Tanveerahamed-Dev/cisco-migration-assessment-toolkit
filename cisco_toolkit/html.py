@@ -4132,7 +4132,13 @@ def _is_raw_capture(filename: str) -> bool:
 
 
 def _ssh_session_record_valid(path: str) -> bool:
-    """True when `path` is a bounded, valid ``ssh_session/1`` record (owner: cisco_toolkit.ssh_session)."""
+    """True when `path` is a bounded, valid ``ssh_session/1`` record (owner: cisco_toolkit.ssh_session).
+
+    What "valid" checks (``ssh_session.validate_record``): the closed key set, enums, library versions, identifiers,
+    small integers and booleans, every algorithm name a member of the recordable vocabulary
+    (``ssh_session.RECORDABLE_ALGORITHM_NAMES``) and the server banner token of the vendor grammar
+    (``ssh_session.SERVER_SOFTWARE_RE``). A device-offered name or banner outside those is never stored (only
+    counted), so a valid record carries no device-controlled free text. Anything else stays NOT COVERED."""
     try:
         if os.path.getsize(path) > 1024 * 1024:
             return False
@@ -4155,7 +4161,8 @@ class _ScrubResult(tuple):
         self = super().__new__(cls, (scanned, changed))
         self.uncovered = tuple(uncovered)
         # W59 PR-1: SSH session records (`_ssh_session.json`) whose closed schema validates: not a capture,
-        # nothing to scrub, and not "uncovered" either -- the schema vouches for every field.
+        # nothing to scrub, and not "uncovered" either. The schema check vouches only for what it checks: closed
+        # keys, enums, versions, small integers, vocabulary-member algorithm names and a vendor-grammar banner.
         self.schema_covered = tuple(schema_covered)
         return self
 

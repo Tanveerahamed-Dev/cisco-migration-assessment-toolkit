@@ -43,7 +43,7 @@ def test_device_dossiers_adapter_maps_ctx_to_explicit_kwargs(monkeypatch):
         physical_health=["ph"], protocol_health=["pr"], move_groups=["mg"],
         protocol_assessability={"pa": 1}, parse_yield={"py": 1},
         input_failures=(frozenset({"qos_audit"}), True),
-        failure_impact_assessability={"fia": 1})
+        failure_impact_assessability={"fia": 1}, ssh_sessions={"ssh": 1})
     out = cp._device_dossiers(ctx)
     assert out is rec["ret"]                 # the adapter returns the compute result verbatim
     assert rec["args"] == ()                 # everything forwarded by keyword -> reorder-proof
@@ -57,6 +57,7 @@ def test_device_dossiers_adapter_maps_ctx_to_explicit_kwargs(monkeypatch):
         "protocol_assessability": {"pa": 1}, "parse_yield": {"py": 1},
         "input_failures": (frozenset({"qos_audit"}), True),
         "failure_impact_assessability": {"fia": 1},                  # W33: the owner's row verdicts
+        "ssh_sessions": {"ssh": 1},                                  # W59: the Software risk axis's session input
     }
 
 
@@ -69,7 +70,7 @@ def test_punchlist_adapter_maps_ctx_to_explicit_kwargs(monkeypatch):
         l2={"l2": 1}, hostname_mismatches=["hm"], drift=["dr"], ptp_readiness=["ptp"],
         media_risks=["mr"], syslog_intelligence={"si": 1}, qos_audit={"qa": 1},
         software_risk={"sw": 1}, platform_health={"pl": 1}, device_dossiers={"dd": 1},
-        all_interfaces={"sw1": {"Vlan10": "iface"}})
+        all_interfaces={"sw1": {"Vlan10": "iface"}}, ssh_sessions={"ssh": 2})
     out = cp._punchlist(ctx)
     assert out is rec["ret"]
     assert rec["args"] == ()
@@ -87,6 +88,8 @@ def test_punchlist_adapter_maps_ctx_to_explicit_kwargs(monkeypatch):
             "ipv6_routing_subject_scope": {},
             # the collected interfaces are the index the SVI folds prove reconstructed keys against
             "interface_index": {"sw1": {"Vlan10": "iface"}},
+            # W59: the session rows the ssh-legacy-transport rows point at
+            "ssh_sessions": {"ssh": 2},
         }
     # no collected interfaces -> no index: the folds keep their row refs, never an unproven pointer
     cp._punchlist(AnalysisContext())

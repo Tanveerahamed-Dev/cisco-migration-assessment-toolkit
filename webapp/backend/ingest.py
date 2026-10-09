@@ -2045,7 +2045,9 @@ def _run_redaction_folder_locked(path: Any, out_dir: Any, redact_collection: boo
                 if schema_covered:
                     scrub_detail += (
                         f"; {len(schema_covered)} SSH session record(s) covered by schema (closed "
-                        "ssh_session/1 schema: algorithm names, versions and enums only)"
+                        "ssh_session/1 field names; algorithm names only from its closed vocabulary; the server "
+                        "banner only in a known vendor's grammar; every other value a short token with no "
+                        "address-, MAC- or serial-shaped text)"
                     )
                 uncovered = staged_scrub_proof.get("uncovered") or []
                 scrub_uncovered_count = len(uncovered)

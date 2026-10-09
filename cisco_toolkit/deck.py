@@ -440,6 +440,40 @@ def write_executive_deck_pptx(output_path: str, snap_dict: dict, label: str) -> 
                  [(f"+ {len(dd) - len(dd_top)} more asset(s) in the Device Risk Register workbook sheet.",
                    11, _MUTED, False, True)])
 
+    # ------------------------------------------------------- 3c. Collection transport (W59 PR-1 review, section 6.3)
+    # The devices whose collection SSH session was not modern, each group with the disclosure its sealed session
+    # record supports, worded by the one owner (ssh_session.disclosure_groups). Data-gated: the slide is for an
+    # EXPOSED management plane, so an older snapshot without the block, or one with no exposed session, adds no slide
+    # (the runbook and operations handbook carry the full per-device disclosure, 'not recorded' included); when the
+    # slide renders, the verify groups ride on it too. Every cap is disclosed.
+    if isinstance(snap.get("ssh_sessions"), dict):
+        from cisco_toolkit.ssh_session import disclosure_groups as _ssh_groups
+        _sg = _ssh_groups(snap.get("ssh_sessions"))
+        if any(g["finding"] == "exposed" for g in _sg):
+            s = slide()
+            header(s, "How the evidence was collected", "SSH transport of the collection sessions")
+            _n_dev = sum(len(g["hosts"]) for g in _sg)
+            _n_exp = sum(len(g["hosts"]) for g in _sg if g["finding"] == "exposed")
+            text(s, 0.7, 1.95, W - 1.4, 0.62,
+                 [[(f"{_n_dev} device(s) not on a modern SSH session  ", 14, _NAVY, True),
+                   (f"· {_n_exp} exposed. Host keys are not verified on any path; 'not recorded' is a blind spot, "
+                    "never a modern session.", 13, _MUTED, False)]])
+            _sg_shown = _sg[:5] if len(_sg) <= 5 else _sg[:4]
+            y = 2.75
+            for g in _sg_shown:
+                _sev = g["severity"] or "Info"
+                chip(s, 0.7, y, g["severity"] or "VERIFY", _SEV_COLOR.get(_sev, _MUTED), w=1.15, h=0.34, size=10)
+                _hosts = g["hosts"]
+                text(s, 2.05, y - 0.04, W - 2.75, 0.8,
+                     [[(_clean(_ellip(g["label"], 170)), 13, _INK, True)],
+                      [(f"{len(_hosts)} device(s): " + ", ".join(_hosts[:6])
+                        + (f" +{len(_hosts) - 6} more" if len(_hosts) > 6 else ""), 11, _MUTED, False)]], space=1)
+                y += 0.84
+            if len(_sg) > len(_sg_shown):
+                text(s, 0.7, y, W - 1.4, 0.3,
+                     [(f"+ {len(_sg) - len(_sg_shown)} more disclosure group(s) — every device is in the workbook's "
+                       "Collection Transport sheet.", 11, _MUTED, False, True)])
+
     # ---------------------------------------------------------------- 4. Keystone devices (light)
     s = slide()
     header(s, "Concentrated dependency", "The switches the fleet depends on")

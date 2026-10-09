@@ -138,7 +138,7 @@ from cisco_toolkit import impact_assessability
 from cisco_toolkit import ssot
 from cisco_toolkit.analyze import (
     DOSSIER_AXIS_INPUTS, PUNCH_CATEGORIES, PUNCH_CATEGORY_SECTION, PUNCH_SEVERITIES, compute_device_findings,
-    compute_punchlist_facets, device_config_capture, vlan_cutover_host_index,
+    compute_punchlist_facets, device_config_capture, punch_row_session_evidenced, vlan_cutover_host_index,
 )
 from cisco_toolkit.coverage_matrix import (
     COVERAGE_DIMENSIONS, COVERAGE_STATE_ORDER, COVERAGE_VERDICT_SOURCES, CoverageRowIndex,
@@ -461,8 +461,9 @@ VLAN_FIELD_BASIS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
 #: The ``compute_migration_punchlist`` inputs that are snapshot sections (its rows roll up over them).
 PUNCHLIST_INPUTS: Tuple[str, ...] = (
     "cross_layer", "security", "config_hygiene", "physical_health", "l3_forwarding", "protocol_health",
-    "health_scores", "move_groups", "syslog_intelligence", "qos_audit", "software_risk", "platform_health",
-    "device_dossiers", "protocol_assessability", "vtp_safety_baseline", "ipv6_routing_adjacency_baseline")
+    "health_scores", "move_groups", "syslog_intelligence", "qos_audit", "software_risk", "ssh_sessions",
+    "platform_health", "device_dossiers", "protocol_assessability", "vtp_safety_baseline",
+    "ipv6_routing_adjacency_baseline")
 #: The snapshot-local identity written by ``compute_move_groups``; legacy rows may lack it.
 MOVE_GROUP_LABEL = "group"
 MOVE_GROUP_UNSCHEDULED = "(unscheduled)"  # analyze.MOVE_GROUP_UNSCHEDULED
@@ -3990,18 +3991,55 @@ def _capture_record(ctx: _Ctx, section: str, host: str) -> Tuple[Any, Any, Optio
     return (*selected[0], None) if selected else (None, None, None)
 
 
+#: W59 PR-1 review (P2-b): what a WITHHELD device finding rollup adds when stored punch-list rows naming the device
+#: rest on its sealed SSH session record (analyze.punch_row_session_evidenced): they need no running-config, so no
+#: capture gap may hide them. The counts stay withheld -- the configuration-derived rows may be missing -- while the
+#: reason states the floor the session evidence proves and every such row is witnessed.
+_R_SESSION_FLOOR = ("; {n} stored finding(s) naming this device rest on its sealed SSH session record and need no "
+                    "running-config (session-evidenced, worst {worst}): at least these apply (the witnessed rows)")
+
+
+def _session_evidenced_floor(raw: Any, host: Any) -> Tuple[str, List[Tuple[str, Sequence[Any]]]]:
+    """``(reason suffix, witness entries)`` for the stored punch-list rows naming `host` that are session-evidenced,
+    or ``("", [])``. The rows naming the device are the owner's fold (``analyze.compute_device_findings``, asked for
+    this one host, so a device outside the devices map -- one refused at collection -- is answered too)."""
+    if not isinstance(raw, list) or not _is_text(host) or not host.strip():
+        return "", []
+    try:
+        fold = compute_device_findings(raw, [host])
+    except _OWNER_FAULTS:
+        return "", []
+    result = (fold.get("per_device") or {}).get(host) if isinstance(fold, dict) and fold.get("problem") is None \
+        else None
+    indices = result.get("indices") if isinstance(result, dict) else None
+    rows = [i for i in (indices if isinstance(indices, list) else [])
+            if type(i) is int and 0 <= i < len(raw) and punch_row_session_evidenced(raw[i])]
+    if not rows:
+        return "", []
+    present = {raw[i].get("severity") for i in rows}
+    worst = next((sev for sev in PUNCH_SEVERITIES if sev in present), "unknown")
+    return (_R_SESSION_FLOOR.format(n=len(rows), worst=worst),
+            [("witness", ("punchlist", i)) for i in rows])
+
+
 def _device_finding_rollup(ctx: _Ctx, host: Any,
                            forced: Optional[_Forced] = None) -> Dict[str, Any]:
-    """Publish the pure owner fold only after scoped input and positive capture custody."""
+    """Publish the pure owner fold only after scoped input and positive capture custody. A rollup withheld for a
+    collection or capture gap still names the session-evidenced findings that do not depend on it
+    (:func:`_session_evidenced_floor`)."""
     sections = ("punchlist",) + PUNCHLIST_INPUTS
     base, reason, _raw = _list_state(ctx, ("punchlist",), ("punchlist",))
     state, reason = _rolled(ctx, base, reason, ("punchlist",), PUNCHLIST_INPUTS)
     witness: List[Tuple[str, Sequence[Any]]] = [("basis", ("punchlist",))]
     values: Dict[str, Any] = {"worst": None, "by_severity": None}
+    floor_wit: List[Tuple[str, Sequence[Any]]] = []
     if forced is not None:
         # a forced state is ``(state, reason)`` or, beside a roster it cannot read, ``(state, reason, witnesses)``
         # (:func:`_roster_join`); its witnesses ride in the row's extra (:func:`_forced_wit`), never in the unpacking
         state, reason = forced[0], forced[1]
+        if state == _NC:
+            suffix, floor_wit = _session_evidenced_floor(_raw, host)
+            reason = (reason or "") + suffix
     elif not _is_text(host) or not host.strip():
         state, reason = _UV, "unverified: no exact device identity selects this finding rollup"
     elif state in (_PUB, _CBE):
@@ -4013,8 +4051,9 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
             witness += scope[2] + (gap[1] if gap else [])
         elif gap is not None:
             why, extra = gap
-            state, reason = _NC, f"not collected: finding counts may be incomplete: {why}"
-            witness += extra
+            suffix, floor_wit = _session_evidenced_floor(_raw, host)
+            state, reason = _NC, f"not collected: finding counts may be incomplete: {why}" + suffix
+            witness += extra + floor_wit
         else:
             software, sw_toks, problem = _capture_record(ctx, "software_risk", host)
             qos, qa_toks = None, None
@@ -4029,7 +4068,9 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
             if problem is not None:
                 state, reason = _UV, problem
             elif capture is False:
-                state, reason = _NC, "not collected: the canonical capture owner reports no running-config"
+                suffix, floor_wit = _session_evidenced_floor(_raw, host)
+                state, reason = _NC, "not collected: the canonical capture owner reports no running-config" + suffix
+                witness += floor_wit
             elif capture is not True:
                 state, reason = _UV, "unverified: running-config capture custody is missing or not an exact boolean"
             elif not isinstance(security, dict) or not security:
@@ -4051,8 +4092,9 @@ def _device_finding_rollup(ctx: _Ctx, host: Any,
                         values = result
                         witness += [("witness", ("punchlist", index)) for index in indices]
     held = None if state in (_PUB, _CBE) else state
-    row = _Row(held, reason, None, values, sections, _forced_wit(forced), basis_refs=forced is None,
-               bare=forced is not None)
+    # a forced row cites only its own extra (bare), so the session-evidenced rows it names ride there
+    row = _Row(held, reason, None, values, sections, _forced_wit(forced) + (floor_wit if forced is not None else []),
+               basis_refs=forced is None, bare=forced is not None)
 
     def empty_worst(raw: Any, _row: _Row) -> Optional[Tuple[str, str]]:
         return (_CBE, "collected but empty: no stored punch-list finding names this captured device; not a clean bill of health") \

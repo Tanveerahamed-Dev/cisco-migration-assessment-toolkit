@@ -8356,6 +8356,38 @@ def _usable_text(value) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
+#: W59 PR-1 review: the snapshot section that holds each device's sealed SSH session row (owner
+#: cisco_toolkit.ssh_session). A punch-list row whose evidence points into it is SESSION-evidenced.
+SESSION_EVIDENCE_SECTION = "ssh_sessions"
+
+
+def punch_row_session_evidenced(row: Any) -> bool:
+    """True when a stored punch-list row cites a device's sealed SSH session row (``/ssh_sessions/rows/<i>``): its
+    finding rests on the collector's own negotiated session, not on any captured configuration, so a missing
+    running-config does not make it incomplete. Total on hostile input (False for anything unreadable)."""
+    refs = row.get("evidence_refs") if isinstance(row, dict) else None
+    prefix = "/" + SESSION_EVIDENCE_SECTION + "/rows/"
+    return any(isinstance(r, dict) and isinstance(r.get("ref"), str) and r["ref"].startswith(prefix)
+               for r in (refs if isinstance(refs, list) else ()))
+
+
+def _per_device_detail(details: List[Tuple[str, str]]) -> str:
+    """One folded punch-list detail that keeps each device's own detail (W59 PR-1 review, P3-c). One distinct detail
+    (however many devices share it) reads as before; several are each attributed to the devices that carry them, in
+    first-seen order, so no device's detail stands in for another's."""
+    order: List[str] = []
+    hosts_of: Dict[str, List[str]] = {}
+    for host, text in details:
+        if text not in hosts_of:
+            order.append(text)
+            hosts_of[text] = []
+        if host and host not in hosts_of[text]:
+            hosts_of[text].append(host)
+    if len(order) <= 1:
+        return order[0] if order else ""
+    return "; ".join(f"{text} [{', '.join(hosts_of[text])}]" if hosts_of[text] else text for text in order)
+
+
 def compute_device_findings(punchlist: Any, hosts: Any) -> dict:
     """Pure, unpersisted partition of stored punch-list rows for exact requested hosts.
 
@@ -8467,7 +8499,8 @@ def compute_migration_punchlist(cross_layer: List[dict],
                                 vtp_safety_subject_scope: Any = None,
                                 ipv6_routing_adjacency_baseline: Optional[dict] = None,
                                 ipv6_routing_subject_scope: Any = None,
-                                interface_index: Optional[dict] = None) -> List[dict]:
+                                interface_index: Optional[dict] = None,
+                                ssh_sessions: Optional[dict] = None) -> List[dict]:
     """NEW-V3.23.63: the consolidated, severity-ranked migration PUNCH-LIST -- one prioritized,
     de-duplicated, per-device, per-wave table that rolls up EVERY actionable finding the run
     produced (cross-layer SPOFs, security gaps, config hygiene, L1/L3 risks, protocol health,
@@ -8480,7 +8513,13 @@ def compute_migration_punchlist(cross_layer: List[dict],
     snapshot; see _PUNCH_EVIDENCE_POLICY). `interface_index` (optional, host -> iterable of interface
     keys) lets folds that only hold a RECONSTRUCTED interface name (an L3/STP gateway SVI rebuilt from a
     VLAN id, an FHRP receipt member, an IPv6 adjacency interface) point at the exact snapshot key; without
-    it those folds keep their row refs and never emit an unproven interface pointer."""
+    it those folds keep their row refs and never emit an unproven interface pointer.
+
+    W59 PR-1 review: `ssh_sessions` (snap['ssh_sessions'], owner cisco_toolkit.ssh_session) is the session evidence
+    the software-risk ``ssh-legacy-transport`` findings were projected from; each such row also points at the exact
+    session row of every device it names (``/ssh_sessions/rows/<i>``), which is what marks it SESSION-evidenced
+    (:func:`punch_row_session_evidenced`). The per-axis folds group by kind AND severity, and keep each device's own
+    detail (P3-c)."""
     wave_of, wave_ordinal = move_group_host_index(move_groups)   # the owner's labels (G13)
     items: List[dict] = []
 
@@ -9040,23 +9079,43 @@ def compute_migration_punchlist(cross_layer: List[dict],
     # index in the UNFILTERED published list); a software-risk row's literal `evidence` line is
     # configuration text; a '(fleet)' row points at the axis' per-device posture rows -- WITNESSES with
     # basis=absence when the producer marks the finding as an absence, device facts otherwise.
-    def _fold_axis(axis, list_key, category, section, skip_kinds=()):
+    # W59 PR-1 review: the session row of each host, for the ssh-legacy-transport rows' own evidence pointer. A host
+    # named by two session rows is ambiguous and gets no pointer (never a guess between them).
+    _ssh_rows = ssh_sessions.get("rows") if isinstance(ssh_sessions, dict) else None
+    _ssh_row_of: Dict[str, Optional[int]] = {}
+    for _j, _r in enumerate(_ssh_rows if isinstance(_ssh_rows, list) else []):
+        _h = _r.get("host") if isinstance(_r, dict) else None
+        if isinstance(_h, str) and _h.strip():
+            _ssh_row_of[_h] = _j if _h not in _ssh_row_of else None
+
+    def _ssh_session_refs(f, rhost):
+        if f.get("kind") != _ssh_session.SURFACE_KIND or rhost is None or _ssh_row_of.get(rhost) is None:
+            return []
+        return _refs(_row_ref(SESSION_EVIDENCE_SECTION, "rows", _ssh_row_of[rhost], host=rhost,
+                              cite=f"{rhost} SSH session record row ({_ssh_session.SURFACE_KIND})"))
+
+    def _fold_axis(axis, list_key, category, section, skip_kinds=(), extra_refs=None):
         # V3.23.171: every axis now emits the common {label, detail} shape (software_risk
         # aliases its surface/why into them), so the fold needs no per-axis adapter.
+        # W59 PR-1 review (P3-c): like findings are grouped by kind AND severity -- one kind can carry several
+        # severities (ssh-legacy-transport: Medium for SHA-1, High below 2048 bits), and the first finding's
+        # severity must never stand for the rest -- and each device keeps its own detail, attributed to it.
         ax = axis if isinstance(axis, dict) else {}
         findings = ax.get(list_key)
         per_device = _evlist(ax.get("per_device"))
-        bykind: Dict[str, dict] = {}
+        bykind: Dict[Tuple[str, str], dict] = {}
         for i, f in enumerate(findings if isinstance(findings, list) else []):
             if not isinstance(f, dict) or f.get("kind") in skip_kinds:
                 continue
             k = f.get("kind") or f.get("label") or ""
             k = k if isinstance(k, str) else str(k)
-            g = bykind.setdefault(k, {"severity": f.get("severity", "Medium"),
-                                      "title": f.get("label") or k,
-                                      "devices": [], "details": [],
-                                      "remediation": f.get("recommendation", ""),
-                                      "refs": [], "absence": False})
+            sev = f.get("severity", "Medium")
+            g = bykind.setdefault((k, sev if isinstance(sev, str) else repr(sev)),
+                                  {"severity": sev,
+                                   "title": f.get("label") or k,
+                                   "devices": [], "details": [],
+                                   "remediation": f.get("recommendation", ""),
+                                   "refs": [], "absence": False})
             raw_host = f.get("host")
             host = raw_host.strip() if isinstance(raw_host, str) else ""
             fleet = host == "(fleet)"
@@ -9064,10 +9123,12 @@ def compute_migration_punchlist(cross_layer: List[dict],
                 g["devices"].append(host)
             d = f.get("detail")
             if d:
-                g["details"].append(str(d))
+                g["details"].append((host if host and not fleet else "", str(d)))
             rhost = host if host and not fleet else None
             g["refs"].extend(_refs(_row_ref(section, list_key, i, host=rhost,
                                             cite=f"{host or 'fleet'} {category} finding row ({k})")))
+            if extra_refs is not None:
+                g["refs"].extend(extra_refs(f, rhost))
             ev = f.get("evidence")
             # Only a VERBATIM configuration line is a config_text record (the producer says which through
             # `evidence_verbatim`); a synthesized evidence description stays on the row ref above.
@@ -9089,7 +9150,7 @@ def compute_migration_punchlist(cross_layer: List[dict],
         for k in sorted(bykind):
             g = bykind[k]
             n_dev = len(set(g["devices"]))
-            detail = (f"{n_dev} device(s). " if n_dev > 1 else "") + (g["details"][0] if g["details"] else "")
+            detail = (f"{n_dev} device(s). " if n_dev > 1 else "") + _per_device_detail(g["details"])
             add(g["severity"], category, g["devices"], g["title"], detail, g["remediation"],
                 refs=g["refs"], ev_basis="absence" if g["absence"] and not g["devices"] else "")
 
@@ -9102,7 +9163,7 @@ def compute_migration_punchlist(cross_layer: List[dict],
     # the punch-list keeps the single CIS action row.
     _SWRISK_CIS_TWINS = ("telnet-vty", "snmp-v2c-rw", "snmp-v2c-ro")
     _fold_axis(software_risk, "findings", "Software exposure", "software_risk",
-               skip_kinds=_SWRISK_CIS_TWINS)
+               skip_kinds=_SWRISK_CIS_TWINS, extra_refs=_ssh_session_refs)
     _fold_axis(platform_health, "findings", "Platform capacity", "platform_health")
 
     # NEW-V3.23.172: compound-risk patterns from the Device Risk Register. These are NOT
@@ -11712,6 +11773,12 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
             "advisories -- not a vulnerability scan. The offline toolkit carries no live advisory "
             "feed: validate every running release with the Cisco PSIRT Software Checker, and read "
             "'exposed' as 'this surface is open', never as 'this release is vulnerable'.")
+    if ssh_proj is not None:
+        # W59 PR-1 review (P3-h): name the one surface that is NOT configuration evidence, and its own abstention rule.
+        note += (f" One surface is session-evidenced, not configuration-screened: {_ssh_session.SURFACE_KIND} is read "
+                 "from the collector's own sealed SSH session record (snap['ssh_sessions']) and needs no running-config, "
+                 "so a device refused at collection keeps it; a device with no record, an unreadable or unknown record, "
+                 "or a collector-gap refusal reads 'verify', never 'closed'.")
     return {"per_device": per_device, "findings": findings, "summary": summary, "note": note}
 
 
@@ -12625,7 +12692,9 @@ _DOSSIER_SEVERE, _DOSSIER_ELEVATED, _DOSSIER_GUARDED = 50, 25, 10
 DOSSIER_AXIS_INPUTS = {
     "Health": ("health_scores",),
     "Hardware EoL": ("lifecycle_risk",),
-    "Software risk": ("software_risk",),
+    # W59 PR-1 review (P3-d): the axis also reads the session-evidenced ssh-legacy-transport surface, whose one owner
+    # is snap['ssh_sessions'] (cisco_toolkit.ssh_session): a failed 'SSH session disclosure' phase withholds the axis.
+    "Software risk": ("software_risk", "ssh_sessions"),
     "Control plane": ("platform_health",),
     "Operational logs": ("syslog_intelligence",),
     "Security posture": ("security", "software_risk", "qos_audit"),
@@ -12636,6 +12705,12 @@ DOSSIER_AXIS_INPUTS = {
     "Protocol": ("protocol_health", "protocol_assessability"),
 }
 DOSSIER_EMPTY_IS_CLEAN = frozenset({"Config hygiene", "Physical"})
+# W59 PR-1 review (P3-h): the dossier names the session-evidenced surface by its kind, never as an "advisory surface"
+# to validate with the PSIRT checker (it is the collector's own negotiated session, not a configuration line).
+_SSH_SURFACE_KIND = _ssh_session.SURFACE_KIND
+_DOSSIER_SSH_LABEL = ("legacy SSH transport negotiated by the collector's own session "
+                      f"({_ssh_session.SURFACE_KIND}; session-evidenced, needs no running-config)")
+
 
 
 def _dossier_hygiene_screened_empty(parse_yield: Any, host: str, hosts: list) -> bool:
@@ -12700,7 +12775,8 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
                             protocol_assessability: Optional[dict] = None,
                             parse_yield: Optional[dict] = None,
                             input_failures: Optional[Tuple[frozenset, bool]] = None,
-                            failure_impact_assessability: Optional[dict] = None) -> dict:
+                            failure_impact_assessability: Optional[dict] = None,
+                            ssh_sessions: Optional[dict] = None) -> dict:
     """NEW-V3.23.172: per-device 360-degree dossier + compound-risk ranking.
     Joins the 11 per-device-capable axes (health / hardware EoL / software risk /
     control-plane capacity / operational logs / CIS posture / config hygiene /
@@ -12724,7 +12800,15 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
     naming the row the term scored. A device with no row keeps the absent-row floor, now disclosed as not assessed,
     never "no modeled reachability impact"; a Low or Guarded verdict over an unmeasured impact says so instead of
     "routine migration handling". Without the argument the term is unchanged (callers that cannot supply the
-    evidence)."""
+    evidence).
+
+    W59 PR-1 review (P2-b): the Software risk axis carries two surfaces with two abstention rules. The configuration
+    surface (http-server / SNMP / Smart Install / telnet / SSHv1 / IKEv1 / small services) is screened from the
+    captured running-config and abstains without one. The SESSION-evidenced ssh-legacy-transport surface is read from
+    the collector's own SSH session record (``ssh_sessions``, via software_risk) and needs no running-config: a
+    device whose config or version was never captured -- one whose SSH negotiation was REFUSED included -- keeps
+    that finding (risk for High, watch for Medium), and the label says the configuration surface was not screened.
+    ``ssh_sessions`` is an input of the axis (DOSSIER_AXIS_INPUTS), so its failed phase withholds the axis."""
     from cisco_toolkit import impact_assessability as _ia
     from cisco_toolkit.ssot import _is_deep_empty
 
@@ -12898,15 +12982,31 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
 
         swr = sw_by.get(host)
         sw_sevs = {f.get("severity") for f in sw_find.get(host, [])}
+        # P2-b / P3-h: the session-evidenced surface keeps its own severities, label and abstention rule
+        ssh_sevs = {f.get("severity") for f in sw_find.get(host, []) if f.get("kind") == _SSH_SURFACE_KIND}
+        cfg_sevs = {f.get("severity") for f in sw_find.get(host, []) if f.get("kind") != _SSH_SURFACE_KIND}
         swb = (swr or {}).get("train_band", "Unknown")
-        if swr is None or (not swr.get("config_assessable")
-                           and str(swr.get("sw_version", "")).startswith("(not")):
+        if ssh_sevs and (swr is None or not swr.get("config_assessable")):
+            # The session record stands without a running-config: checked BEFORE the not-assessable gates, so a
+            # device refused at collection (no captures at all) keeps its exposed finding.
+            ax("Software risk", "risk" if "High" in ssh_sevs or swb == "Replace/Upgrade" else "watch",
+               _DOSSIER_SSH_LABEL + "; configuration advisory surface not screened — no captured running-config"
+               + ("; software train end-of-era" if swb == "Replace/Upgrade" else "")
+               + (f" (software train {swb})" if swb and swb not in ("Unknown", "Replace/Upgrade") else ""))
+        elif swr is None or (not swr.get("config_assessable")
+                             and str(swr.get("sw_version", "")).startswith("(not")):
             ax("Software risk", "na", "not assessable — no config or version evidence", "not_collected")
         elif "High" in sw_sevs or swb == "Replace/Upgrade":
-            ax("Software risk", "risk",
-               "open advisory surface" if "High" in sw_sevs else "software train end-of-era")
+            # without a session-evidenced finding the label is exactly the pre-W59 one
+            ax("Software risk", "risk", "; ".join(
+                (["open advisory surface"] if "High" in cfg_sevs else
+                 ["software train end-of-era"] if swb == "Replace/Upgrade" else
+                 ["advisory surface to validate (PSIRT checker)"] if cfg_sevs else [])
+                + ([_DOSSIER_SSH_LABEL] if ssh_sevs else [])))
         elif sw_sevs or swb == "Verify EoL":
-            ax("Software risk", "watch", "advisory surface to validate (PSIRT checker)")
+            ax("Software risk", "watch", "; ".join(
+                (["advisory surface to validate (PSIRT checker)"] if cfg_sevs or swb == "Verify EoL" else [])
+                + ([_DOSSIER_SSH_LABEL] if ssh_sevs else [])))
         elif not swr.get("config_assessable"):
             # The advisory-SURFACE layer (http-server / SNMP v1-v2c / Smart Install / telnet / SSHv1 /
             # IKEv1 / small services) is screened from the running-config ALONE, and compute_software_risk
@@ -12920,7 +13020,10 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
                "advisory surface not screened — no captured running-config"
                + (f" (software train {swb})" if swb and swb != "Unknown" else ""), "not_collected")
         elif swr.get("config_assessable") is True and swb in ("Unknown", "Current-era"):
-            ax("Software risk", "ok", "no exposed advisory surface flagged")
+            sw_surfaces = swr.get("surfaces") if isinstance(swr.get("surfaces"), dict) else {}
+            ssh_status = sw_surfaces.get(_SSH_SURFACE_KIND)
+            ax("Software risk", "ok", "no exposed advisory surface flagged"
+               + ("; SSH transport not recorded (verify, never closed)" if ssh_status == "verify" else ""))
         else:
             ax("Software risk", "na", "analysis unavailable — unrecognized software assessment", "analysis_unavailable")
 

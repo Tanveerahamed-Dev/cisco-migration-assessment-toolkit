@@ -840,11 +840,15 @@ def verify_shareable_artifacts(snapshot_path: Path, artifacts: Iterable[Path]) -
 
 #: W59 PR-1: the collector's per-device SSH session record. It is a ``.json`` serialisation, so the capture
 #: grammar cannot read it; instead it is recognised by its CLOSED schema and reported as covered by schema
-#: when every key is one of the schema's own field names and every leaf is a bounded integer, a boolean,
-#: null, or a short printable token carrying no address-, MAC- or serial-shaped text. Stated HERE, not
-#: imported: like the capture rule above, this verifier never imports the producer side
-#: (``cisco_toolkit.ssh_session`` owns the schema); ``webapp/tests/test_ssh_session_ingest_redaction.py`` holds
-#: the two statements in agreement over generated and mutated records.
+#: when (1) every key is one of the schema's own field names and every leaf is a bounded integer, a boolean,
+#: null, or a short printable token carrying no address-, MAC- or serial-shaped text; (2) every algorithm-name
+#: position (the offered lists, the negotiated names, a refusal's names) holds a member of the producer's closed
+#: recordable vocabulary; and (3) the server banner token matches the vendor-banner grammar. (2) and (3) are what
+#: keep device-controlled free text -- a crafted name or banner carrying an organisation or host name -- out of a
+#: file this verifier vouches for (review P3-e). Stated HERE, not imported: like the capture rule above, this
+#: verifier never imports the producer side (``cisco_toolkit.ssh_session`` owns the schema);
+#: ``webapp/tests/test_ssh_session_ingest_redaction.py`` holds the two statements in agreement over generated and
+#: mutated records, and holds the restated vocabulary and grammar equal to the owner's.
 SSH_SESSION_RECORD_BASENAME = "_ssh_session.json"
 _SSH_SESSION_RECORD_SCHEMA = "ssh_session/1"
 _SSH_SESSION_RECORD_MAX_BYTES = 1024 * 1024
@@ -858,11 +862,81 @@ _SSH_SESSION_RECORD_KEYS = frozenset({
     "classification", "detail", "offered_group_bits", "names",
 })
 _SSH_SESSION_TOKEN_RE = re.compile(r"^[\x21-\x2b\x2d-\x39\x3b-\x7e]{1,64}$")
+#: The producer's recordable algorithm vocabulary (``ssh_session.RECORDABLE_ALGORITHM_NAMES``), restated as the first
+#: 16 hex digits of each name's SHA-256: membership without importing the producer, and without spelling any SSH
+#: SHA-1 algorithm name in this module (T10 confines those literals to the vocabulary owner).
+_SSH_SESSION_ALGORITHM_NAME_DIGESTS = frozenset({
+    "052e633bab95ab7c", "06ccf5519261a5d9", "06d2fe6718730f6c", "06ed1e256cf053df", "07a7d2fef2151ca6",
+    "07f7ecc094ced89d", "0ab6e4f85bad6fb6", "0f0b1c11008aa4b6", "139ccd8054309b29", "1728423eac104368",
+    "18e1a44535d94365", "1f5890b6aa46f912", "28f9c6dfabef74a1", "2b1f3daf74925668", "2dd9d81de1bc8bd0",
+    "2f92fb0d3ff61a58", "34a41b7a8ace050c", "352a257ca16e1c69", "36825a9d63f0174d", "3ae88fad759947bf",
+    "3b4fb0d8f7e034f6", "4339ee9b2e7eda53", "4c3b6ec495b627d4", "4f7bdc40914020cf", "505021cfd9762d75",
+    "552be8efb772b40a", "5611f4df0d41e7cf", "571f8ff4c960d22d", "5b414b9e55bf3805", "607b352d76231a39",
+    "61c6e04b0f0e4a4a", "6acb92dd0df36e24", "6ca5bff5de161f62", "6ce848a76fc0393a", "6f5a890134440ca7",
+    "723c420de5b63b34", "75992c6f09343f18", "791dfd9b08bbcec4", "79c1319324266d4f", "79eb90d3d4f91349",
+    "858d3a47332a3525", "8b377874513a5631", "8bed3c65de0c6eb3", "8eeec122750083f6", "8f79c1903a4d970f",
+    "9621b539252016e6", "9855948d54208a21", "99384fc07864bfdd", "9c0b246b5aad396a", "9d6a70936b09404a",
+    "9d8d9476e7eae5b3", "a562aedda7c10eb1", "a59ba8d433e2d869", "a7516e29b4cf13f7", "ac7b34741296ec29",
+    "ae0f73b5ee49d482", "ae19ade8f42f02fa", "af65cc47f824b0a4", "b7b50879c4a0fd90", "b972f8c9f1792ede",
+    "c0098481ed39ac60", "c214a9af6f654186", "c3024ba2369e34bf", "c420090876195eba", "c68dd1bc9a0ec67a",
+    "d12abb2bc14c29ad", "d39bf6f51c148b9a", "d3d305e5d443bd4b", "d3f6c8fa4b29c49f", "d4d73b2a25cc9a0e",
+    "d4f6d4172f0271d4", "d689292e28b92b6d", "d8752d00f20ea071", "db422b652b3a4a32", "df519158c8932fe8",
+    "e82862770b20eaa5", "ea1d65a52e1258e6", "ec40975d606b2b55", "ed5ddf4d46cbef7a", "f336e7c1b054c312",
+    "f678454a70734c0c", "fc444b6670ceb6df", "fcea75daab120b43", "fe0b23d2ce52ab25",
+})
+#: The producer's vendor-banner grammar for ``negotiated.server_software`` (``ssh_session.SERVER_SOFTWARE_RE``).
+_SSH_SESSION_SERVER_SOFTWARE_RE = re.compile(
+    r"^SSH-(?:2\.0|1\.99)-(?:Cisco|OpenSSH|dropbear|libssh|AsyncSSH|paramiko|RomSShell|Comware|HUAWEI|ROSSSH)[-_]"
+    r"[0-9]{1,6}(?:\.[0-9]{1,6}){0,3}(?:p[0-9]{1,3})?$")
+_SSH_SESSION_NAME_LIST_SECTIONS = ("client_offered", "server_offered")
+_SSH_SESSION_NEGOTIATED_NAMES = ("kex", "host_key_algorithm", "cipher_c2s", "cipher_s2c", "mac_c2s", "mac_s2c")
+
+
+def _ssh_session_known_name(value: Any) -> bool:
+    """True when `value` is a name of the producer's recordable algorithm vocabulary (by digest)."""
+    if not isinstance(value, str) or not _SSH_SESSION_TOKEN_RE.match(value):
+        return False
+    return hashlib.sha256(value.encode("ascii")).hexdigest()[:16] in _SSH_SESSION_ALGORITHM_NAME_DIGESTS
+
+
+def _ssh_session_positions_conform(doc: dict) -> bool:
+    """The record's device-controlled positions: offered lists, negotiated names and refusal names hold only
+    vocabulary names, and the banner token matches the vendor grammar. Every other leaf is the walk's business."""
+    for section in _SSH_SESSION_NAME_LIST_SECTIONS:
+        block = doc.get(section)
+        if block is None:
+            continue
+        if not isinstance(block, dict):
+            return False
+        for names in block.values():
+            if not isinstance(names, list) or not all(_ssh_session_known_name(n) for n in names):
+                return False
+    negotiated = doc.get("negotiated")
+    if negotiated is not None:
+        if not isinstance(negotiated, dict):
+            return False
+        for key in _SSH_SESSION_NEGOTIATED_NAMES:
+            value = negotiated.get(key)
+            if value is not None and not _ssh_session_known_name(value):
+                return False
+        banner = negotiated.get("server_software")
+        if banner is not None and not (isinstance(banner, str) and _SSH_SESSION_SERVER_SOFTWARE_RE.match(banner)):
+            return False
+    refusal = doc.get("refusal")
+    if refusal is not None:
+        if not isinstance(refusal, dict):
+            return False
+        names = refusal.get("names")
+        if names is not None and (not isinstance(names, list)
+                                  or not all(_ssh_session_known_name(n) for n in names)):
+            return False
+    return True
 
 
 def _ssh_session_record_conforms(raw: bytes) -> bool:
     """True only when ``raw`` is an SSH session record that carries nothing the capture grammar would have
-    to scrub: strict JSON, the declared schema, only the schema's field names, and only safe leaves."""
+    to scrub: strict JSON, the declared schema, only the schema's field names, only safe leaves, and only
+    vocabulary names and a vendor-grammar banner at the device-controlled positions."""
     def _no_constants(_value: str) -> Any:
         raise ValueError("non-standard JSON constant")
 
@@ -901,7 +975,7 @@ def _ssh_session_record_conforms(raw: bytes) -> bool:
                 return False
         else:
             return False                       # floats and anything else are outside the schema
-    return True
+    return _ssh_session_positions_conform(doc)
 
 
 def is_uncoverable_capture(filename: str) -> str:

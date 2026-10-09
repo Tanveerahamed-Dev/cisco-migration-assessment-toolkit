@@ -1392,39 +1392,80 @@ def _ssh_port(devinfo: dict) -> Optional[int]:
     return value
 
 
+#: W59 PR-1 review (P2-a): how one devices.json host's session record stands after this run's pre-connect step.
+#: Only WRITTEN lets the analysis read the folder's sidecar as THIS run's record (``ssh_session.compute_ssh_sessions``
+#: ``run_written``); every other present sidecar reads ``unknown`` ("record not written by this run"), never the
+#: posture an earlier run left behind. A second devices.json row claiming the same folder makes the host's record
+#: ambiguous (CONFLICT) even when the first row wrote it.
+RUN_RECORD_WRITTEN = "written"
+RUN_RECORD_FAILED = "failed"
+RUN_RECORD_CONFLICT = "conflict"
+
+
+def _unlink_stale_session_record(path: str) -> None:
+    """Remove the session record an earlier run left at `path` before this run writes its own (a missing file is
+    fine). Raises when an existing record cannot be removed: the device is then NOT connected, so a stale record can
+    never stand beside a session this run opened (P2-a)."""
+    if os.path.lexists(path):
+        os.unlink(path)
+
+
 def _collect_live_device(devinfo: dict, dev_dir: str, *, claimed: set, lock: Any,
-                         on_record_failure: Callable[[str, str, str], None]) -> Tuple[str, Optional[Dict[str, str]]]:
+                         on_record_failure: Callable[[str, str, str, int], None],
+                         written: Optional[Dict[str, str]] = None) -> Tuple[str, Optional[Dict[str, str]]]:
     """ONE device's live collection: session record, connection, command sweep, disconnect.
 
     W59 PR-1 (design section 6.1): the session record is written `pending` BEFORE connecting, and if it cannot
     be written the device is NOT connected. Two devices.json rows that resolve to the same folder cannot both
-    claim it (the second is refused, never silently overwritten). Returns ``(platform, cmd_to_file)`` with
-    ``cmd_to_file=None`` when the device was not collected. `on_record_failure(host, stage, error_class)`
-    lands a record-write failure in the run manifest's consent block."""
+    claim it (the second is refused, never silently overwritten). A record an earlier run left in the folder is
+    removed first, and a removal that fails leaves the device unconnected (P2-a). `written` (host -> one of
+    RUN_RECORD_*) is where the run learns which sidecars it wrote itself. Returns ``(platform, cmd_to_file)`` with
+    ``cmd_to_file=None`` when the device was not collected. `on_record_failure(host, stage, error_class,
+    replace_attempts)` lands a record-write failure, with the writer's atomic-replace attempt count, in the run
+    manifest's consent block."""
     hostname = devinfo["hostname"]
     platform = devinfo["platform"]
     recorder = _session_recorder_for(devinfo, dev_dir)
     sidecar_key = os.path.normcase(os.path.abspath(recorder.path))
+
+    def _mark(state: str) -> None:
+        if written is None:
+            return
+        with lock:
+            if written.get(hostname) != RUN_RECORD_CONFLICT:
+                written[hostname] = state
+
     with lock:
         duplicate = sidecar_key in claimed
         claimed.add(sidecar_key)
+        if duplicate and written is not None:
+            written[hostname] = RUN_RECORD_CONFLICT
+    stage = "pending"
     try:
         if duplicate:
             raise FileExistsError("another device in this run already claimed this session record")
         port = _ssh_port(devinfo)
         os.makedirs(dev_dir, exist_ok=True)
+        stage = "stale_record_unlink"
+        _unlink_stale_session_record(recorder.path)
+        stage = "pending"
         recorder.write_pending()
     except Exception as e:                                              # noqa: BLE001
-        on_record_failure(hostname, "pending", type(e).__name__)
+        _mark(RUN_RECORD_FAILED)
+        attempts = getattr(e, ssh_session.REPLACE_ATTEMPTS_ATTRIBUTE, 0)
+        on_record_failure(hostname, stage, type(e).__name__,
+                          attempts if isinstance(attempts, int) and not isinstance(attempts, bool) else 0)
         logger.error(f"  [FAIL] {hostname}: the SSH session record could not be written before connecting "
-                     f"({type(e).__name__}: {e}); the device is NOT connected")
+                     f"({stage}: {type(e).__name__}: {e}); the device is NOT connected")
         return platform, None
+    _mark(RUN_RECORD_WRITTEN)
     logger.info(f"  Connecting to {hostname} ({devinfo['ip']}) ...")
     dev, platform = connect_device(devinfo["ip"], hostname, devinfo["username"], devinfo["password"], platform,
                                    session=recorder, port=port)
     for fail in recorder.write_failures:
         if fail.get("stage") != "pending":
-            on_record_failure(hostname, fail.get("stage", "?"), fail.get("error_class", "?"))
+            on_record_failure(hostname, fail.get("stage", "?"), fail.get("error_class", "?"),
+                              fail.get("replace_attempts", 0))
     if not dev:
         logger.error(f"  [FAIL] Skipped {hostname}")
         return platform, None
@@ -1821,6 +1862,9 @@ def load_devices(devices_file: str, allow_prompt: bool = True,
         d["password"] = pw
         plat_raw = (d.get("platform") or d.get("device_type") or d.get("os") or d.get("nos") or "auto")
         d["platform"] = plat_map.get(plat_raw.strip().lower(), "auto")
+        # W59 PR-1 review (P3-j): a present `port` is validated HERE, at load time and on --no-collect too, so an
+        # invalid value fails the run before any connection or session-record write (never silently 22).
+        _ssh_port(d)
 
     # NEW-V3.23.1: prompt securely for any device still lacking a password - but ONLY when
     # attached to a terminal. An unattended/batch run must not block on input, so it keeps the
@@ -4447,12 +4491,16 @@ def main():
             logger.info(f"  [SSH-CONSENT] {_line}")
     _RUN_CUSTODY["ssh_transport_consent"] = _ssh_consent
     _ssh_claimed_sidecars: set = set()
+    # W59 PR-1 review (P2-a): host -> RUN_RECORD_* for every device this live run attempted. Only the sidecars this
+    # run WROTE are read as current posture; any other sidecar in the folder is `unknown`, never a stale `modern`.
+    _ssh_run_records: Dict[str, str] = {}
 
-    def _ssh_record_failure(hostname: str, stage: str, error_class: str) -> None:
+    def _ssh_record_failure(hostname: str, stage: str, error_class: str, replace_attempts: int = 0) -> None:
         with _progress_lock:
             fails = _ssh_consent.setdefault("record_failures", [])
             if isinstance(fails, list):
-                fails.append({"host": hostname, "stage": stage, "error_class": error_class})
+                fails.append({"host": hostname, "stage": stage, "error_class": error_class,
+                              "replace_attempts": replace_attempts})
 
     def collect_one(devinfo):
         hostname = devinfo["hostname"]
@@ -4473,7 +4521,7 @@ def main():
         else:
             platform, cmd_to_file = _collect_live_device(
                 devinfo, dev_dir, claimed=_ssh_claimed_sidecars, lock=_progress_lock,
-                on_record_failure=_ssh_record_failure)
+                on_record_failure=_ssh_record_failure, written=_ssh_run_records)
             if cmd_to_file is None:
                 with _progress_lock:
                     _done_count[0] += 1
@@ -5140,6 +5188,9 @@ def main():
         "SSH session disclosure", ssh_session.compute_ssh_sessions,
         _ssh_session_hosts, _read_ssh_sidecar, live=not args.no_collect, consent=_ssh_consent,
         evidence_path=lambda h: os.path.relpath(_ssh_sidecar_path(h), root_dir).replace("\\", "/"),
+        # P2-a: a live run derives rows only from the records it wrote itself (None offline: every sealed record)
+        run_written=(None if args.no_collect else
+                     sorted(h for h, state in _ssh_run_records.items() if state == RUN_RECORD_WRITTEN)),
         _default={})
     if isinstance(ssh_sessions, dict) and isinstance(ssh_sessions.get("consent"), dict):
         _RUN_CUSTODY["ssh_transport_consent"] = ssh_sessions["consent"]
@@ -5220,7 +5271,8 @@ def main():
         ipv6_routing_adjacency_baseline=ipv6_routing_adjacency_baseline,
         ipv6_routing_subject_scope=ipv6_routing_subject_scope,
         move_groups=move_groups,
-        failure_impact_assessability=failure_impact_assessability)
+        failure_impact_assessability=failure_impact_assessability,
+        ssh_sessions=ssh_sessions)              # W59 PR-1 review (P2-b / P3-d): the Software risk axis's session input
     device_dossiers = _run_phase("Device risk register", _device_dossiers, _actx, _default={})
     # NEW-V3.23.117: lifecycle risk stays its OWN axis (sheet / cockpit / runbook §4.1). V3.23.172
     # compound patterns may also fold a lifecycle band into the punch-list when it stacks with another
@@ -6609,7 +6661,8 @@ def _device_dossiers(ctx: "AnalysisContext") -> dict:
         physical_health=ctx.physical_health, protocol_health=ctx.protocol_health,
         move_groups=ctx.move_groups, protocol_assessability=ctx.protocol_assessability,
         parse_yield=ctx.parse_yield, input_failures=ctx.input_failures,
-        failure_impact_assessability=ctx.failure_impact_assessability)
+        failure_impact_assessability=ctx.failure_impact_assessability,
+        ssh_sessions=ctx.ssh_sessions)
 
 
 def _punchlist(ctx: "AnalysisContext") -> list:
@@ -6629,7 +6682,8 @@ def _punchlist(ctx: "AnalysisContext") -> list:
         vtp_safety_subject_scope=ctx.vtp_safety_subject_scope,
         ipv6_routing_adjacency_baseline=ctx.ipv6_routing_adjacency_baseline,
         ipv6_routing_subject_scope=ctx.ipv6_routing_subject_scope,
-        interface_index=ctx.all_interfaces or None)
+        interface_index=ctx.all_interfaces or None,
+        ssh_sessions=ctx.ssh_sessions)
 
 
 def _executive_brief(ctx: "AnalysisContext") -> dict:

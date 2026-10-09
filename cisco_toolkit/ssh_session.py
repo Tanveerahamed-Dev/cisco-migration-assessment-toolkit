@@ -157,8 +157,13 @@ MODERN_CIPHERS = frozenset({
 })
 
 #: Pseudo-algorithms carried in the kex list (RFC 8308 ``ext-info-*``; strict kex ``kex-strict-*``).
-#: Recorded as offered, ignored when grading.
+#: Ignored when grading. Only the exact names below are ever STORED (a prefix match would let a crafted name such as
+#: ``ext-info-<anything>`` carry free text into the record).
 PSEUDO_KEX_PREFIXES = ("ext-info-", "kex-strict-")
+PSEUDO_KEX_NAMES = frozenset({
+    "ext-info-s", "ext-info-c", "ext-info-in-auth@openssh.com",
+    "kex-strict-s-v00@openssh.com", "kex-strict-c-v00@openssh.com",
+})
 
 #: The SHA-1-class names the key-exchange hash and the host-key signature can carry -- the boundary of the
 #: default path ("no SHA-1 in the key-exchange hash or the host-key signature"). MACs are outside it.
@@ -167,6 +172,14 @@ SHA1_HOST_KEY_NAMES = frozenset(n for n, g in HOST_KEY_VOCABULARY.items() if g =
 SHA1_BOUNDARY_NAMES = SHA1_KEX_NAMES | SHA1_HOST_KEY_NAMES
 #: Every SSH SHA-1 algorithm literal (the T10 identifier-scope scan's denominator).
 SSH_SHA1_ALGORITHM_NAMES = SHA1_BOUNDARY_NAMES | SHA1_MACS
+
+#: W59 PR-1 review (P3-e): every algorithm name a session record may STORE -- the graded vocabularies above plus the
+#: exact pseudo-algorithm names. A name the device offers outside them (a vendor extension, or a crafted name that
+#: carries an organisation or host name) is COUNTED in ``dropped_names`` and never stored, so the record holds no
+#: device-controlled free text. ``validate_record`` enforces it, which is what lets the redaction verifiers report a
+#: valid record as covered by schema.
+RECORDABLE_ALGORITHM_NAMES = (frozenset(KEX_VOCABULARY) | frozenset(HOST_KEY_VOCABULARY) | SHA1_MACS | MD5_MACS
+                              | MODERN_MACS | LEGACY_CIPHERS | MODERN_CIPHERS | PSEUDO_KEX_NAMES)
 
 #: The names W59 PR-2's ``legacy-sha1`` profile appends after every stock algorithm of the same kind (tier 1
 #: only: no 1024-bit group, no DSA). Defined here so the vocabulary has one owner; ``cisco_toolkit.legacy_ssh``
@@ -250,6 +263,16 @@ _VERSION_RE = re.compile(r"^[0-9]{1,4}\.[0-9]{1,4}(?:\.[0-9]{1,4})?(?:(?:a|b|rc)
                          r"(?:\.post[0-9]{1,4})?(?:\.dev[0-9]{1,4})?$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
+#: W59 PR-1 review (P3-e): the server banner's ``SSH-protoversion-softwareversion`` is stored only when the software
+#: version is a known SSH implementation's product token followed by a numeric version (``SSH-2.0-Cisco-1.25``,
+#: ``SSH-2.0-OpenSSH_9.6p1``). Any other softwareversion -- a custom banner, which a device owner can set to an
+#: organisation or host name -- is counted in ``dropped_names`` and stored as null.
+SERVER_SOFTWARE_VENDORS: Tuple[str, ...] = (
+    "Cisco", "OpenSSH", "dropbear", "libssh", "AsyncSSH", "paramiko", "RomSShell", "Comware", "HUAWEI", "ROSSSH")
+SERVER_SOFTWARE_RE = re.compile(
+    r"^SSH-(?:2\.0|1\.99)-(?:" + "|".join(re.escape(v) for v in SERVER_SOFTWARE_VENDORS) + r")[-_]"
+    r"[0-9]{1,6}(?:\.[0-9]{1,6}){0,3}(?:p[0-9]{1,3})?$")
+
 
 def conforming_name(value: Any) -> Optional[str]:
     """``value`` when it is a storable SSH name (RFC 4251 §6 grammar, no IP/MAC-shaped text), else None."""
@@ -258,6 +281,32 @@ def conforming_name(value: Any) -> Optional[str]:
     if _IPV4_IN_TEXT.search(value) or _MAC_IN_TEXT.search(value):
         return None
     return value
+
+
+def recordable_name(value: Any) -> Optional[str]:
+    """``value`` when a session record may store it: a grammar-conforming name of the recordable vocabulary."""
+    name = conforming_name(value)
+    return name if name is not None and name in RECORDABLE_ALGORITHM_NAMES else None
+
+
+def recordable_names(values: Any) -> Tuple[List[str], int]:
+    """(stored names, dropped count) for a list about to enter a record: only vocabulary names are kept, in order;
+    every other entry is counted and never stored."""
+    if isinstance(values, (str, bytes)) or values is None:
+        return [], 0
+    try:
+        items = list(values)
+    except TypeError:
+        return [], 1
+    kept = [n for n in items if recordable_name(n) is not None][:MAX_LIST_LENGTH]
+    return kept, len(items) - len(kept)
+
+
+def server_software_token(value: Any) -> Optional[str]:
+    """``value`` when it is a storable server software token (the vendor-banner grammar), else None."""
+    if not isinstance(value, str) or not SERVER_SOFTWARE_RE.match(value):
+        return None
+    return conforming_name(value)
 
 
 def conforming_version(value: Any) -> Optional[str]:
@@ -291,11 +340,13 @@ def _sanitize_names(values: Any) -> Tuple[List[str], int]:
 
 def server_software_from_banner(banner: Any) -> Tuple[Optional[str], int]:
     """``SSH-protoversion-softwareversion`` only: the free-text comment after the first space
-    (RFC 4253 §4.2) is dropped, so it cannot carry identifying text. Returns (value, dropped count)."""
+    (RFC 4253 §4.2) is dropped, so it cannot carry identifying text, and the softwareversion is kept only when it
+    matches the vendor-banner grammar (:data:`SERVER_SOFTWARE_RE`) -- a custom banner is dropped and counted.
+    Returns (value, dropped count)."""
     if not isinstance(banner, str) or not banner:
         return None, 0
     head = banner.strip().split(" ", 1)[0].split("\t", 1)[0]
-    value = conforming_name(head)
+    value = server_software_token(head)
     return (value, 0) if value is not None else (None, 1)
 
 
@@ -389,7 +440,11 @@ def offline_consent_block() -> Dict[str, Any]:
 
 def live_consent_block(devices: Iterable[Mapping[str, Any]],
                        run_flag: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
-    """The live run's consent block, built BEFORE the first connection. Hosts are keyed by ``hostname``."""
+    """The live run's consent block, built BEFORE the first connection. Hosts are keyed by ``hostname``.
+
+    ``devices_negotiated_sha1`` is ``None`` here: nothing has been negotiated yet, and an empty list would state
+    "no device negotiated SHA-1" before any session ran. :func:`compute_ssh_sessions` fills it from the sealed
+    records; if that phase fails, the run manifest keeps ``None`` (not computed), never ``[]``."""
     requesting, eligible, named_not_req, req_not_named = [], [], [], []
     for row in devices or ():
         if not isinstance(row, Mapping):
@@ -411,7 +466,7 @@ def live_consent_block(devices: Iterable[Mapping[str, Any]],
     return {"mode": "live", "run_flag": flag or {"profile": None, "hosts_named": []},
             "devices_requesting_legacy": sorted(requesting), "devices_eligible": sorted(eligible),
             "named_not_requested": sorted(named_not_req), "requested_not_named": sorted(req_not_named),
-            "devices_negotiated_sha1": [], "record_failures": []}
+            "devices_negotiated_sha1": None, "record_failures": []}
 
 
 def consent_summary_lines(block: Mapping[str, Any]) -> List[str]:
@@ -690,24 +745,65 @@ def _category_from_message(text: str) -> str:
     return "unknown"
 
 
+#: paramiko's deterministic group-exchange refusal (``kex_gex._parse_kexdh_gex_group``, 4.0.0 and 5.0.0): the
+#: server's GEX prime is outside paramiko's 1024-8192-bit window. It is raised as a plain ``SSHException`` (netmiko
+#: then wraps it in a timeout), and the same server answers the same way on every attempt.
+_GEX_OUT_OF_RANGE_RE = re.compile(r"gex p \(don't ask\) is out of range \(([0-9]{1,6}) bits\)")
+
+
+def _gex_out_of_range_bits(chain: Sequence[BaseException]) -> Optional[int]:
+    for e in chain:
+        if not _is_named(e, "SSHException"):
+            continue
+        try:
+            text = str(e)
+        except Exception:                                       # noqa: BLE001 - a hostile __str__ is no evidence
+            continue
+        m = _GEX_OUT_OF_RANGE_RE.search(text)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _list_evidence_usable(snap: Mapping[str, Any]) -> bool:
+    """The recorded KEXINIT lists may decide a refusal only when the observation is complete: both sides' lists
+    recorded, every client list non-empty (an empty one would read as "no common algorithm"), no observation error,
+    and no server name dropped or truncated (the dropped name could have been the common one)."""
+    server, client = snap.get("server"), snap.get("client")
+    if not server or not client:
+        return False
+    if snap.get("errors") != 0 or snap.get("dropped") != 0:
+        return False
+    return all(isinstance(client.get(k), list) and client.get(k) for k in _CLIENT_KEYS)
+
+
 def classify_failure(exc: BaseException, observation: Optional[SessionObservation]) -> Optional[Dict[str, Any]]:
     """Classify a connection failure as a NEGOTIATION REFUSAL (returned dict; never retried) or ``None`` (an
     ordinary connection failure: the existing same-profile retry applies).
 
-    Evidence first: when the sink holds the server's KEXINIT lists, the first category with no common
-    algorithm decides, whatever exception surfaced (netmiko 4.8 turns every ``SSHException`` into
-    ``NetmikoTimeoutException``; a server that sends KEXINIT and then DISCONNECT surfaces as ``EOFError``).
-    Otherwise the exception chain: ``WeakGroupRefused`` -> ``refused_weak_dh``; ``IncompatiblePeer`` ->
-    ``unclassified``. A disconnect before any server KEXINIT carries no evidence and returns ``None``."""
+    Evidence first: when the sink holds the server's KEXINIT lists AND the observation is complete
+    (:func:`_list_evidence_usable`: no observation error, no dropped server name, every client list non-empty), the
+    first category with no common algorithm decides, whatever exception surfaced (netmiko 4.8 turns every
+    ``SSHException`` into ``NetmikoTimeoutException``; a server that sends KEXINIT and then DISCONNECT surfaces as
+    ``EOFError``). Otherwise the exception chain: ``WeakGroupRefused`` or paramiko's deterministic GEX out-of-range
+    ``SSHException`` below 2048 bits -> ``refused_weak_dh``; that GEX refusal above the window or
+    ``IncompatiblePeer`` -> ``unclassified``. A disconnect before any server KEXINIT carries no evidence and
+    returns ``None``."""
     chain = exception_chain(exc)
     weak = next((e for e in chain if _is_named(e, "WeakGroupRefused")), None)
     if weak is not None:
         bits = getattr(weak, "offered_bits", None)
         return _refusal("kex", "refused_weak_dh", "weak_group_refused",
                         bits if _plain_int(bits) and 0 < bits <= 65536 else None, [])
+    gex_bits = _gex_out_of_range_bits(chain)
+    if gex_bits is not None:
+        stored_bits = gex_bits if 0 < gex_bits <= 65536 else None
+        if gex_bits < DH_FLOOR_BITS:
+            return _refusal("kex", "refused_weak_dh", "weak_group_refused", stored_bits, [])
+        return _refusal("kex", "unclassified", "incompatible_peer", stored_bits, [])
     snap = observation.snapshot() if isinstance(observation, SessionObservation) else {}
     server, client = snap.get("server"), snap.get("client")
-    if server and client:
+    if _list_evidence_usable(snap):
         cat = _first_empty_category(server, client)
         if cat == "kex":
             offered = [n for n in server.get("kex", []) if not is_pseudo_kex(n)]
@@ -776,6 +872,7 @@ _CLIENT_KEYS = ("kex", "host_key", "cipher", "mac")
 _SERVER_KEYS = ("kex", "host_key", "cipher_c2s", "cipher_s2c", "mac_c2s", "mac_s2c")
 _NEGOTIATED_KEYS = ("kex", "kex_hash_bytes", "dh_group_bits", "host_key_algorithm", "cipher_c2s",
                     "cipher_s2c", "mac_c2s", "mac_s2c", "strict_kex", "server_software")
+_NEGOTIATED_NAME_KEYS = ("kex", "host_key_algorithm", "cipher_c2s", "cipher_s2c", "mac_c2s", "mac_s2c")
 _OBSERVATION_KEYS = ("kexinit", "newkeys", "engine_name_agrees", "group_size_agrees")
 _HOST_KEY_KEYS = ("policy", "verified")
 _REFUSAL_KEYS = ("category", "classification", "detail", "offered_group_bits", "names")
@@ -787,10 +884,39 @@ def build_record(*, outcome: str, consent: Mapping[str, Any], library: Mapping[s
                  observation: Optional[Mapping[str, Any]] = None,
                  refusal: Optional[Mapping[str, Any]] = None,
                  failure_class: Optional[str] = None) -> Dict[str, Any]:
-    """Assemble one sidecar record from the sink's snapshot. Every string is an enum, a version, an identifier
-    or a grammar-conforming algorithm name; the record holds no hostname, no address and no fingerprint."""
+    """Assemble one sidecar record from the sink's snapshot. Every string is an enum, a version, an identifier,
+    an algorithm name of the recordable vocabulary (:data:`RECORDABLE_ALGORITHM_NAMES`) or a vendor-grammar server
+    banner token; the record holds no hostname, no address, no fingerprint and no device-controlled free text. A
+    name or banner outside those is counted in ``dropped_names`` (with the sink's own grammar drops), never stored.
+    The classifier reads the sink's full lists, so a refusal is still graded on every name the server offered."""
     snap = dict(observation or {})
     server, client, negotiated = snap.get("server"), snap.get("client"), snap.get("negotiated")
+    dropped = [int(snap.get("dropped") or 0)]
+
+    def stored(values: Any) -> List[str]:
+        kept, n = recordable_names(values)
+        dropped[0] += n
+        return kept
+
+    def stored_negotiated(neg: Mapping[str, Any]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for k in _NEGOTIATED_KEYS:
+            value = neg.get(k)
+            if k in _NEGOTIATED_NAME_KEYS:
+                out[k] = recordable_name(value)
+                dropped[0] += int(value is not None and out[k] is None)
+            elif k == "server_software":
+                out[k] = server_software_token(value)
+                dropped[0] += int(value is not None and out[k] is None)
+            else:
+                out[k] = value
+        return out
+
+    def stored_refusal(ref: Mapping[str, Any]) -> Dict[str, Any]:
+        out = {k: ref.get(k) for k in _REFUSAL_KEYS}
+        out["names"] = stored(ref.get("names") or [])
+        return out
+
     rec: Dict[str, Any] = {
         "schema": SIDECAR_SCHEMA,
         "outcome": outcome,
@@ -798,20 +924,19 @@ def build_record(*, outcome: str, consent: Mapping[str, Any], library: Mapping[s
         "platform_source": platform_source if platform_source in PLATFORM_SOURCES else "device_row",
         "consent": {k: consent.get(k) for k in _CONSENT_KEYS},
         "library": {k: library.get(k) for k in _LIBRARY_KEYS},
-        "client_offered": {k: list((client or {}).get(k) or []) for k in _CLIENT_KEYS} if client else None,
-        "server_offered": {k: list((server or {}).get(k) or []) for k in _SERVER_KEYS} if server else None,
-        "negotiated": ({k: negotiated.get(k) for k in _NEGOTIATED_KEYS}
-                       if negotiated and snap.get("newkeys") else None),
+        "client_offered": {k: stored((client or {}).get(k) or []) for k in _CLIENT_KEYS} if client else None,
+        "server_offered": {k: stored((server or {}).get(k) or []) for k in _SERVER_KEYS} if server else None,
+        "negotiated": (stored_negotiated(negotiated) if negotiated and snap.get("newkeys") else None),
         "observation": {
             "kexinit": bool(snap.get("kexinit")), "newkeys": bool(snap.get("newkeys")),
             "engine_name_agrees": snap.get("engine_name_agrees"),
             "group_size_agrees": snap.get("group_size_agrees"),
         },
         "host_key": dict(_HOST_KEY_BLOCK),
-        "refusal": ({k: refusal.get(k) for k in _REFUSAL_KEYS} if refusal else None),
+        "refusal": (stored_refusal(refusal) if refusal else None),
         "failure_class": conforming_identifier(failure_class),
-        "dropped_names": int(snap.get("dropped") or 0),
     }
+    rec["dropped_names"] = dropped[0]
     return rec
 
 
@@ -820,33 +945,51 @@ def render_record(record: Mapping[str, Any]) -> bytes:
     return (json.dumps(record, sort_keys=True, indent=2, ensure_ascii=True) + "\n").encode("ascii")
 
 
-_REPLACE_ATTEMPTS = 4
-_REPLACE_BACKOFF_S = 0.1
+#: W59 PR-1 review (P3-i): the bounded exponential backoff between ``os.replace`` attempts. On Windows the replace
+#: must delete the destination, so it fails while any process (an on-access AV scan, the search indexer, a viewer)
+#: holds it; four tries 0.1 s apart (0.3 s in all) was shorter than an ordinary scan. Seven attempts, 0.05 s doubling
+#: to 1.6 s between them: 3.15 s in all, never unbounded. The attempt count reaches the record failure.
+REPLACE_BACKOFF_S: Tuple[float, ...] = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
+#: The attribute a failed write's exception carries: how many ``os.replace`` attempts were made (0 = the failure
+#: came before the first replace, e.g. the temp file could not be written).
+REPLACE_ATTEMPTS_ATTRIBUTE = "ssh_record_replace_attempts"
 
 
-def write_record_atomic(path: str, record: Mapping[str, Any]) -> None:
-    """Validate, then publish ``path`` atomically (same-directory temp, fsync, ``os.replace`` with a short
-    retry for a transient Windows sharing violation). Raises on any failure -- a sidecar that cannot be
-    written must stop the device, never degrade to a silent in-place write."""
+def write_record_atomic(path: str, record: Mapping[str, Any], *,
+                        replace: Optional[Callable[[str, str], None]] = None,
+                        sleep: Optional[Callable[[float], None]] = None) -> None:
+    """Validate, then publish ``path`` atomically (same-directory temp, fsync, ``os.replace`` retried over the
+    bounded exponential :data:`REPLACE_BACKOFF_S` for a transient Windows sharing violation). Raises on any failure
+    -- a sidecar that cannot be written must stop the device, never degrade to a silent in-place write -- and the
+    raised exception carries :data:`REPLACE_ATTEMPTS_ATTRIBUTE` so the record failure can disclose the retries.
+    ``replace`` / ``sleep`` default to ``os.replace`` / ``time.sleep`` (injectable for tests)."""
+    replace = replace or os.replace
+    sleep = sleep or time.sleep
     errors = validate_record(record)
     if errors:
         raise ValueError("ssh session record fails its closed schema: " + "; ".join(errors[:4]))
     data = render_record(record)
     tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
+    attempts = 0
     try:
         with open(tmp, "wb") as fh:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        for attempt in range(_REPLACE_ATTEMPTS):
+        for delay in REPLACE_BACKOFF_S + (None,):
+            attempts += 1
             try:
-                os.replace(tmp, path)
+                replace(tmp, path)
                 return
             except OSError:
-                if attempt == _REPLACE_ATTEMPTS - 1:
+                if delay is None:
                     raise
-                time.sleep(_REPLACE_BACKOFF_S)
-    except BaseException:
+                sleep(delay)
+    except BaseException as exc:
+        try:
+            setattr(exc, REPLACE_ATTEMPTS_ATTRIBUTE, attempts)
+        except Exception:                                       # noqa: BLE001 - an exception without __dict__
+            pass
         try:
             os.unlink(tmp)
         except OSError:
@@ -869,11 +1012,11 @@ def _int_range(v: Any, lo: int, hi: int, *, nullable: bool = False) -> bool:
 
 
 def _name_list(v: Any) -> bool:
-    return isinstance(v, list) and len(v) <= MAX_LIST_LENGTH and all(conforming_name(x) == x for x in v)
+    return isinstance(v, list) and len(v) <= MAX_LIST_LENGTH and all(recordable_name(x) == x for x in v)
 
 
 def _opt_name(v: Any) -> bool:
-    return v is None or conforming_name(v) == v
+    return v is None or recordable_name(v) == v
 
 
 def _exact_keys(obj: Any, keys: Sequence[str], where: str, errors: List[str]) -> bool:
@@ -888,9 +1031,10 @@ def _exact_keys(obj: Any, keys: Sequence[str], where: str, errors: List[str]) ->
 
 def validate_record(record: Any) -> List[str]:
     """Every violation of the closed ``ssh_session/1`` schema (field paths only, never values). An empty list
-    means the record holds only enums, versions, identifiers, small integers, booleans and RFC 4251
-    grammar-conforming algorithm names -- which is what lets the redaction verifier report it as covered by
-    schema."""
+    means the record holds only enums, library versions, identifiers, small integers, booleans, algorithm names of
+    the recordable vocabulary (:data:`RECORDABLE_ALGORITHM_NAMES`) and a server banner token of the vendor grammar
+    (:data:`SERVER_SOFTWARE_RE`) -- no device-controlled free text. That, and only that, is what the redaction
+    verifiers vouch for when they report a valid record as covered by schema."""
     errors: List[str] = []
     if not _exact_keys(record, _TOP_KEYS, "record", errors):
         return errors
@@ -935,9 +1079,11 @@ def validate_record(record: Any) -> List[str]:
                     errors.append(f"{key}.{k}")
     neg = record["negotiated"]
     if neg is not None and _exact_keys(neg, _NEGOTIATED_KEYS, "negotiated", errors):
-        for k in ("kex", "host_key_algorithm", "cipher_c2s", "cipher_s2c", "mac_c2s", "mac_s2c", "server_software"):
+        for k in _NEGOTIATED_NAME_KEYS:
             if not _opt_name(neg[k]):
                 errors.append(f"negotiated.{k}")
+        if not (neg["server_software"] is None or server_software_token(neg["server_software"]) == neg["server_software"]):
+            errors.append("negotiated.server_software")
         if not _int_range(neg["kex_hash_bytes"], 1, 128, nullable=True):
             errors.append("negotiated.kex_hash_bytes")
         if not _int_range(neg["dh_group_bits"], 1, 65536, nullable=True):
@@ -1023,7 +1169,7 @@ class SessionRecorder:
         self.observation: Optional[SessionObservation] = None
         self._negotiated_snapshot: Optional[Dict[str, Any]] = None
         self.record: Optional[Dict[str, Any]] = None
-        self.write_failures: List[Dict[str, str]] = []
+        self.write_failures: List[Dict[str, Any]] = []
         self._writer = writer or write_record_atomic
 
     @property
@@ -1037,7 +1183,11 @@ class SessionRecorder:
         try:
             self._writer(self.path, record)
         except Exception as exc:
-            self.write_failures.append({"stage": stage, "error_class": type(exc).__name__})
+            attempts = getattr(exc, REPLACE_ATTEMPTS_ATTRIBUTE, 0)
+            self.write_failures.append({
+                "stage": stage, "error_class": type(exc).__name__,
+                # P3-i: how many atomic-replace attempts the writer made before giving up (0: none was reached)
+                "replace_attempts": attempts if _plain_int(attempts) and attempts >= 0 else 0})
             raise
 
     def write_pending(self) -> None:
@@ -1257,21 +1407,37 @@ def _within_legacy_tier(refusal: Mapping[str, Any]) -> bool:
     return bool(names & set(tier))
 
 
+#: W59 PR-1 review (P2-a): the reason a live run gives a sidecar it did not write itself -- a record an earlier run
+#: left in the folder, or one this run wrote for ANOTHER devices.json row that resolves to the same folder. Read as
+#: current posture, a stale ``modern`` record would be absence rendered as health.
+REASON_NOT_WRITTEN_BY_THIS_RUN = "session record not written by this run"
+
+
 def compute_ssh_sessions(hosts: Iterable[str], read_sidecar: Callable[[str], Tuple[Optional[bytes], Optional[str]]],
                          *, live: bool, consent: Optional[Mapping[str, Any]],
-                         evidence_path: Callable[[str], str]) -> Dict[str, Any]:
+                         evidence_path: Callable[[str], str],
+                         run_written: Optional[Iterable[str]] = None) -> Dict[str, Any]:
     """The ``ssh_sessions`` snapshot block (``ssh_session_set/1``): one row per device. ``read_sidecar(host)``
     returns ``(bytes, None)``, ``(None, None)`` when no sidecar exists, or ``(None, reason)`` when one exists
-    but could not be read through custody. Pure on its inputs; never raises for a row."""
+    but could not be read through custody. Pure on its inputs; never raises for a row.
+
+    On a LIVE run a row is derived ONLY from a sidecar this run wrote: ``run_written`` is the set of hosts whose
+    ``pending`` record this run published (and that no second devices.json row claimed). Any other sidecar present
+    in the folder is ``unknown`` with :data:`REASON_NOT_WRITTEN_BY_THIS_RUN`, never its stale posture; an absent one
+    is ``not_recorded`` (or ``legacy_unrecorded`` for a device the run authorized). ``None`` on a live run means
+    nothing was written (fail closed). An offline re-analysis (``live=False``) reads every sealed sidecar."""
     consent_block = dict(consent) if isinstance(consent, Mapping) else (
         offline_consent_block() if not live else live_consent_block(()))
     eligible = consent_block.get("devices_eligible") or ()
+    written = {str(h) for h in (run_written or ()) if isinstance(h, str)}
     rows: List[Dict[str, Any]] = []
     for host in sorted({str(h) for h in hosts or () if str(h)}):
         try:
             data, err = read_sidecar(host)
         except Exception as exc:                                # noqa: BLE001 - one row never breaks the block
             data, err = None, f"session record unreadable ({type(exc).__name__})"
+        if live and host not in written and (data is not None or err is not None):
+            data, err = None, REASON_NOT_WRITTEN_BY_THIS_RUN
         rows.append(derive_row(host, data, evidence=evidence_path(host), live=live,
                                eligible_hosts=eligible, read_error=err))
     by_status = {s: 0 for s in STATUSES}
@@ -1333,6 +1499,44 @@ def software_risk_projection(block: Any) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+_FINDING_ORDER = {FINDING_EXPOSED: 0, FINDING_VERIFY: 1}
+_SEVERITY_ORDER = {"High": 0, "Medium": 1}
+
+
+def disclosure_groups(block: Any) -> List[Dict[str, Any]]:
+    """Design section 6.3, the per-device disclosure the collection-integrity deliverables carry (runbook, operations
+    handbook, executive deck): every ``ssh_sessions`` row whose status is not ``modern``, grouped by its owned label
+    (:func:`disclosure_sentence`, never re-worded by a renderer), worst first: exposed High, exposed Medium, then
+    verify. Each group is ``{finding, severity, label, statuses, hosts}``; ``hosts`` is complete and sorted, so a
+    renderer that shows fewer must say how many it left out. ``[]`` for an absent or malformed block (the caller
+    words that as "not in this snapshot", never as "every session modern"). Total on hostile input: every field is
+    type-checked and nothing here raises."""
+    rows = block.get("rows") if isinstance(block, Mapping) else None
+    groups: Dict[Tuple[str, Optional[str], str], Dict[str, Any]] = {}
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, Mapping) or not isinstance(r.get("host"), str) or not r.get("host"):
+            continue
+        status = r.get("status") if isinstance(r.get("status"), str) else None
+        if status == STATUS_MODERN:
+            continue
+        raw_finding = r.get("finding")
+        finding = raw_finding if isinstance(raw_finding, str) and raw_finding == FINDING_EXPOSED else FINDING_VERIFY
+        raw_sev = r.get("severity")
+        severity = raw_sev if finding == FINDING_EXPOSED and isinstance(raw_sev, str) and raw_sev in _SEVERITY_ORDER \
+            else None
+        raw_label = r.get("label")
+        label = raw_label if isinstance(raw_label, str) and raw_label else "SSH session posture not recorded"
+        g = groups.setdefault((finding, severity, label), {"statuses": set(), "hosts": set()})
+        g["statuses"].add(status or STATUS_UNKNOWN)
+        g["hosts"].add(r["host"])
+    out: List[Dict[str, Any]] = []
+    for key in sorted(groups, key=lambda k: (_FINDING_ORDER.get(k[0], 2), _SEVERITY_ORDER.get(k[1] or "", 2), k[2])):
+        finding, severity, label = key
+        out.append({"finding": finding, "severity": severity, "label": label,
+                    "statuses": sorted(groups[key]["statuses"]), "hosts": sorted(groups[key]["hosts"])})
+    return out
+
+
 def _str_names(container: Any, key: str) -> List[str]:
     values = container.get(key) if isinstance(container, Mapping) else None
     return [v for v in values if isinstance(v, str)] if isinstance(values, list) else []
@@ -1352,4 +1556,4 @@ def _collector_offered_device_lacked(row: Mapping[str, Any]) -> List[str]:
     lacked = [n for n in _str_names(client, "kex") if _kex_is_modern(n) and n not in server_kex]
     lacked += [n for n in _str_names(client, "host_key")
                if host_key_grade(n) == GRADE_MODERN and n not in server_hk]
-    return lacked[:12]
+    return lacked                     # bounded by construction: each recorded list holds at most MAX_LIST_LENGTH

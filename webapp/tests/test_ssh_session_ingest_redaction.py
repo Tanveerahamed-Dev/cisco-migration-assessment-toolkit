@@ -160,6 +160,17 @@ def _mutations():
     yield "float", lambda r: r.update(attempts=1.5)
     yield "deep nesting", lambda r: r.update(library={"a": {"b": {"c": {"d": {"e": 1}}}}})
     yield "wrong schema", lambda r: r.update(schema="ssh_session/2")
+    # W59 PR-1 review (P3-e): grammar-conforming device-controlled text -- an organisation or host name in an offered
+    # name, a refusal name, a negotiated name or a custom banner -- is outside the vocabulary and the banner grammar
+    yield "org name in an offered name", lambda r: r["server_offered"]["kex"].append("acme-corp-hq")
+    yield "org name in a client list", lambda r: r["client_offered"]["mac"].append("acme-mac")
+    yield "org name in a negotiated name", lambda r: r.update(negotiated=dict(
+        r["negotiated"] or _established_record()["negotiated"], cipher_c2s="acme-cipher"))
+    yield "org name in the banner", lambda r: r.update(negotiated=dict(
+        r["negotiated"] or _established_record()["negotiated"], server_software="SSH-2.0-AcmeCorp_1.0"))
+    yield "org name in a refusal name", lambda r: r.update(refusal=dict(
+        r["refusal"] or {"category": "kex", "classification": "unclassified", "detail": "incompatible_peer",
+                         "offered_group_bits": None, "names": []}, names=["acme-corp-hq"]))
 
 
 @pytest.mark.parametrize("label, mutate", list(_mutations()))
@@ -198,3 +209,41 @@ def test_no_record_carries_a_host_key_fingerprint():
         walk(json.loads(text))
         assert not [v for v in values if ":" in v or v.upper().startswith(("SHA256", "MD5"))]
         assert set(record["host_key"]) == {"policy", "verified"}
+
+
+def test_the_verifier_restates_the_owners_vocabulary_and_banner_grammar_exactly():
+    """W59 PR-1 review (P3-e). The verifier never imports the producer, so its restated vocabulary (as digests: the
+    SSH SHA-1 names stay in their one owner) and banner grammar are held equal to the owner's here. Catches: a name
+    added to the producer's vocabulary (or removed) without the verifier, which would either vouch for a name it does
+    not know or refuse a record the producer writes."""
+    import hashlib
+
+    assert rv._SSH_SESSION_ALGORITHM_NAME_DIGESTS == frozenset(
+        hashlib.sha256(n.encode("ascii")).hexdigest()[:16] for n in S.RECORDABLE_ALGORITHM_NAMES)
+    assert rv._SSH_SESSION_SERVER_SOFTWARE_RE.pattern == S.SERVER_SOFTWARE_RE.pattern
+    assert rv._SSH_SESSION_NEGOTIATED_NAMES == S._NEGOTIATED_NAME_KEYS
+    for name in S.RECORDABLE_ALGORITHM_NAMES:
+        assert rv._ssh_session_known_name(name), name
+    assert not rv._ssh_session_known_name("acme-corp-hq")
+
+
+def test_the_producer_never_writes_what_the_verifier_would_refuse():
+    """W59 PR-1 review (P3-e), the producer side of the agreement: a device that offers a crafted name and a custom
+    banner yields a record that stores neither (both counted) and that both statements accept."""
+    obs = S.SessionObservation()
+    obs.server = {"kex": ["ecdh-sha2-nistp256", "acme-corp-hq"], "host_key": ["rsa-sha2-512"],
+                  "cipher_c2s": ["aes128-ctr"], "cipher_s2c": ["aes128-ctr"], "mac_c2s": ["hmac-sha2-256"],
+                  "mac_s2c": ["hmac-sha2-256"]}
+    obs.client = {"kex": ["ecdh-sha2-nistp256"], "host_key": ["rsa-sha2-512"], "cipher": ["aes128-ctr"],
+                  "mac": ["hmac-sha2-256"]}
+    obs.kexinit_seen = True
+    snap = obs.snapshot()
+    snap.update(newkeys=True, negotiated=dict(_established_record()["negotiated"],
+                                              server_software="SSH-2.0-AcmeCorp_1.0"))
+    lib = S.library_block(paramiko_version="5.0.0", netmiko_version="4.8.0", transport_class="ObservedTransport",
+                          default_permits_sha1=False)
+    record = S.build_record(outcome="established", consent=S.consent_for({}), library=lib, attempts=1,
+                            observation=snap)
+    raw = S.render_record(record)
+    assert b"acme" not in raw.lower() and record["dropped_names"] == 2
+    assert S.validate_record(record) == [] and rv._ssh_session_record_conforms(raw)
