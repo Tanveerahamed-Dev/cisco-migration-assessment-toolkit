@@ -1,7 +1,9 @@
 """Synthesize a gated **cutover plan** (run-of-show) from a raw engine snapshot.
 
 This is a *read-only projection*, in the same spirit as ``summary.py`` and ``graph.py`` — it never
-re-runs analysis and never touches ``cisco_toolkit``. The engine already computes the raw migration
+re-runs analysis, and it reaches ``cisco_toolkit`` only through the ``engine`` adapter (the shared
+current-baseline gate, and the failure-impact projection behind each wave's worst-case blast radius,
+read via ``summary.impact_view``). The engine already computes the raw migration
 model (``move_groups``, ``wave_sequencing``, ``migration_readiness`` with per-check pass/warn/fail
 tagged by PPDIOO phase, ``validation_plan.by_wave``, ``remediation_plan.by_device``,
 ``failure_impact``, ``cross_layer``). AssessHub otherwise renders that model as flat tables; this
@@ -160,32 +162,73 @@ def _match_move_group(switches: Set[str], move_groups: List[Dict[str, Any]], gro
     return best
 
 
-def _keystone_hosts(snap: Dict[str, Any], top: int = 8) -> Set[str]:
+def _keystone_hosts(snap: Dict[str, Any], top: int = 8,
+                    view: Optional[Dict[str, Any]] = None) -> Set[str]:
     """The few hosts the fleet most depends on — reuse summary's keystone heuristic (don't re-derive),
-    so the cockpit's keystone list and the plan's per-wave keystones can't drift apart."""
+    so the cockpit's keystone list and the plan's per-wave keystones can't drift apart. Its NOT ASSESSED
+    disclosure names no host, so it never tags a wave."""
     out: Set[str] = set()
-    for k in summary._keystones(snap, top):
+    for k in summary._keystones(snap, top, view):
         host = k.get("host") if isinstance(k, dict) else None
         if host:
             out.add(str(host))   # str(): an unhashable host (a list in a malformed upload) must not 500 set.add
     return out
 
 
-def _worst_blast_radius(switches: Set[str], failure_impact: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The single worst failure-impact row among this wave's switches (severity, then stranded)."""
-    # str(host): switches are stringified (via _as_hosts); an unhashable host (a list) would else 500 the
-    # `in`-a-set membership test -> stored DoS. Coercing keeps well-formed string hosts matching as before.
-    cands = [r for r in failure_impact if str(r.get("host")) in switches]
-    if not cands:
+#: The wave's blast radius when no switch in it has a row the engine publishes a severity and stranded count for.
+IMPACT_NOT_ASSESSED = summary.IMPACT_NOT_ASSESSED
+#: Why a row with no readable host is disclosed when the projection itself gives no reason for it.
+_R_IMPACT_NO_HOST_TEXT = "its stored host is absent, empty or not text, so it cannot be joined to a switch"
+
+
+def _worst_blast_radius(switches: Set[str], view: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The single worst failure-impact row among this wave's switches (severity, then stranded), ranked only
+    from cells the engine projection publishes (``summary.impact_view``).
+
+    A switch whose row the projection withholds (could not simulate, predates its marker, lacks the scoped
+    running-config, a band below High or a zero under a partial simulation or an uncollected neighbour, a
+    duplicated host), a switch with no row, and a row that names no readable host (an absent or empty host: it
+    could be any switch) never become this wave's worst case, and never an Info or a zero. They make the result a
+    lower bound: ``complete`` is false and the detail says which and why. So does any ranked switch whose counts the
+    projection publishes only as lower bounds, whether or not it is the worst: its true blast radius can exceed what
+    it reads. The worst row itself, when it is such a bound, is flagged by ``summary.impact_entry``
+    (``lower_bound``, and a detail opening ``LOWER BOUND, at least N``). When no switch can be ranked the result is
+    ``NOT ASSESSED`` with no counts, never a clean bill. ``None`` only for a wave with no switch."""
+    if not switches:
         return None
-    worst = min(cands, key=lambda r: (_SEV_RANK.get(r.get("severity", ""), 99), -_int(r.get("stranded"))))
-    return {
-        "host": worst.get("host", ""),
-        "severity": worst.get("severity", ""),
-        "stranded": _int(worst.get("stranded")),
-        "vlans_impacted": _int(worst.get("vlans_impacted")),
-        "detail": worst.get("detail", ""),
-    }
+    # stored order, as before, so a tie keeps the row the plan showed before; the key is the stored host text
+    # (switches are str-coerced by _as_hosts), and only a ranked row's published values are read
+    ranked = [row for row in view["rows"] if row["ranked"] and row["key"] and row["key"] in switches]
+    covered = {row["key"] for row in ranked}
+    unranked = []
+    for host in sorted(switches - covered):
+        reason = next((row["reason"] for row in view["rows"] if row["key"] == host),
+                      view["withheld"] or summary._R_IMPACT_NO_ROW)
+        unranked.append((host, reason))
+    # None (no text host) and "" alike name no readable host; a ranked one of them never enters the wave above
+    unranked += [(summary.impact_row_label(row) + " (names no readable host, so it could be any switch here)",
+                  row["reason"] or _R_IMPACT_NO_HOST_TEXT) for row in view["rows"] if not row["key"]]
+    bounded = [(row["key"], summary.impact_bound_reason(row)) for row in ranked if row["lower_bound"]]
+    notes = []
+    if unranked:
+        notes.append(f"{len(unranked)} switch(es) or row(s) in this wave have no failure-impact row whose severity "
+                     "and stranded count the engine publishes: " + summary.impact_disclosure(unranked))
+    if bounded:
+        notes.append(f"{len(bounded)} ranked switch(es) in this wave publish their counts only as lower bounds, so "
+                     "any of them can be larger than it reads: " + summary.impact_disclosure(bounded))
+    if view["blind"]:
+        notes.append(summary.impact_blind_note(view))
+    if ranked:
+        out = summary.impact_entry(min(ranked, key=summary.impact_rank_key))
+        if notes:
+            out["detail"] = (f"{out['detail']} — LOWER BOUND, the worst case may be larger: "
+                             + ". ".join(notes) + ".")
+    else:
+        out = {"host": "", "severity": IMPACT_NOT_ASSESSED, "stranded": None, "vlans_impacted": None,
+               "detail": "NOT ASSESSED: " + ". ".join(notes) + "."}
+    out["complete"] = bool(ranked) and not notes
+    out["n_not_ranked"] = len(unranked)
+    return out
 
 
 def _critical_crosslayer(switches: Set[str], cross_layer: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -488,7 +531,9 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     seq_rows = _rows(snap, "wave_sequencing")
     readiness_by_group = _by_group(_rows(snap, "migration_readiness"))
     move_groups = _rows(snap, "move_groups")
-    failure_impact = _rows(snap, "failure_impact")
+    # The engine-owned failure-impact projection, read once: the per-wave worst case and the keystone tags both
+    # rank only what it publishes (never the raw stored rows, whose Info / zero may be a withheld non-measurement).
+    impact = summary.impact_view(snap)
     cross_layer = _rows(snap, "cross_layer")
     # _as_dict at every level, not `... or {}`: a truthy non-dict remediation_plan/validation_plan (or a
     # non-dict by_device/by_wave) survives `or {}` and 500s the next `.get`/`.items()` -> stored DoS.
@@ -507,7 +552,7 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
     all_baseline_blockers = (
         _all_baseline_blockers(validation_plan) if baseline_integrity_valid else []
     )
-    keystones = _keystone_hosts(snap)
+    keystones = _keystone_hosts(snap, view=impact)
     blind_hosts = _blind_hosts(snap)
 
     waves: List[Dict[str, Any]] = []
@@ -563,7 +608,7 @@ def build_plan(snap: Dict[str, Any]) -> Dict[str, Any]:
             # move_group) 500s list(). _as_list preserves ints (VLAN ids are ints), unlike _as_hosts.
             "gateways": summary._as_list(mg.get("gateways")),
             "spanning_vlans": summary._as_list(mg.get("spanning_vlans")),
-            "blast_radius": _worst_blast_radius(switches, failure_impact),
+            "blast_radius": _worst_blast_radius(switches, impact),
             "keystones": sorted(switches & keystones),
             "n_fail": n_fail,
             "n_warn": n_warn,
