@@ -69,7 +69,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
-| W53 | Atlas Scope consumes the engine-owned failure-impact verdicts | `codex/scope-impact-owner` in managed `scope-impact-owner/engine-defects` | Codex (this parallel chat) | Started from owner-merged #629 main `6390b66c` (2026-10-09). Compiler and device-pane owner-verdict repair in progress; no local tests or builds. | Read the persisted dossier owner; render bounds/holds with reasons; hosted compile-all family; fresh hosted gates; independent review; PR for supervisor merge. |
+| W53 | Atlas Scope consumes the engine-owned failure-impact verdicts | `codex/scope-impact-owner` in managed `scope-impact-owner/engine-defects` | Codex (this parallel chat) | Started from owner-merged #629 main `6390b66c` (2026-10-09). Compiler and device-pane repair committed; independent static review clear; no local tests or builds. | Read the persisted dossier owner; render bounds/holds with reasons; hosted compile-all family; fresh hosted gates; independent review; PR for supervisor merge. |
 | W10b | Atlas Scope O79 repairs and blocked A6 diagnostic | `codex/scope-a6` in `.claude/worktrees/ui-projection-2` | Codex | **A6 diagnostic BLOCKED.** #604 stays open as a parked draft at failed `29ee4816`, with all failed observations and the absent camera-decay series preserved. W16 and W18 bounded repairs are owner-merged; neither re-grades A3/A6. | Do not push, close/delete or resume #604. Other O79 repairs proceed separately from current main by readiness, one repair per PR. Off-path ACL eligibility, other refusal classes and remaining O79 repairs keep their separate evidence and scope. |
 
 ## Owner decisions
@@ -255,6 +255,8 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- 2026-10-09 (Codex, W53): live Git/GitHub confirms #629 owner-merged as main `6390b66c`. Retire W45 and its carried W36/W33/W32/W46/W28/W29/W30 rows, and the already merged W34/#627 row; preserve their dated handoffs. W53 starts separately from that main on `codex/scope-impact-owner`. #630 and G14/#631 stay with their existing holders. No local tests, builds, Graphify or verification controllers; hosted compilation and gates required. This checkpoint is local pending the authorized PR publication.
 
 - **2026-10-09 (Claude, W45 carries main `f797444e` and #628):** On `claude/train-engine-sample` after `01720e5b`, two merge commits make PR #629 carry #627's main and #628, so the engine/sample train and the UI train re-test once together.
   - **Main `f797444e` (#627, W34/G15) as `1c10bd8d`.** Conflicts: this board (W27 dropped as main retired it; W34 added; both handoff blocks kept), `docs/ssot.md` (both new rows kept: W33's owner, then G15's STP observations) and the LF fixture. `ui_projection.py` merged cleanly.
@@ -975,5 +977,3 @@ W1 / #579 has merged; its follow-ups remain with its own holder.
   - `py -3.12 -I -B .github/scripts/verify_repository_privacy.py --root .`
   - a scan of `git log -p origin/main..HEAD` with `cisco_toolkit.distribution_verify._client_marker_patterns()`
   - Gate each step on its exit code; never chain gates with `;`.
-
-- 2026-10-09 (Codex, W53): live Git/GitHub confirms #629 owner-merged as main `6390b66c`. Retire W45 and its carried W36/W33/W32/W46/W28/W29/W30 rows, and the already merged W34/#627 row; preserve their dated handoffs. W53 starts separately from that main on `codex/scope-impact-owner`. #630 and G14/#631 stay with their existing holders. No local tests, builds, Graphify or verification controllers; hosted compilation and gates required. This checkpoint is local pending the authorized PR publication.

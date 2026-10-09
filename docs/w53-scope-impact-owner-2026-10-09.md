@@ -42,6 +42,6 @@ recorded here before completion. Graphify is unverified under the standing hoste
 
 ## Status
 
-Implementation and independent static review in progress. Runtime validation is **not verified**.
+Implementation and independent static review are complete; no unresolved static must-fix finding. Runtime validation is **not verified**. The first privacy scan refused because the index changed during scanning; publication requires a fresh stable-source scan.
 Rule-7 repository privacy, all new commit/per-parent patches, and publication-body marker scans
 are required before every push. Supervisor review and merge remain the closing human action.
