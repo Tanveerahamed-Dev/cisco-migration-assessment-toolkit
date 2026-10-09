@@ -3604,10 +3604,9 @@ _REDACT_SERIAL_KEYS = {"serial_number", "chassis_serial",
                        # is a LIST -- _walk recurses each string item with the same key, so each is redacted.
                        "serial", "ps_serials", "sn"}
 
-# Credential deny-list: conservatively match KNOWN secret-bearing config/output forms
-# (IOS / IOS-XE / NX-OS, case-insensitive) and replace ONLY the secret token with a
-# placeholder, keeping the surrounding keywords as context. Each pattern captures the
-# prefix in group 1 and the secret in group 2; the secret is swapped for "<redacted>".
+# Credential grammar: match KNOWN secret-bearing config/output forms (multi-vendor, case-insensitive;
+# see `_REDACT_SECRET_RES`) and replace ONLY the secret value with a placeholder, keeping the keyword
+# and its qualifiers as context. Each compiled family names the value as group ``v``.
 # Idempotent: re-running over an already-scrubbed string re-captures "<redacted>" and
 # substitutes it for itself. We are deliberately narrow (no blanket token redaction) so
 # non-secret structured fields are never corrupted.
@@ -3617,42 +3616,198 @@ _REDACT_PLACEHOLDER = "<redacted>"
 # ``set passphrase <redacted> horse battery staple"`` and the verifier then blessed the residue
 # because the first token was the placeholder.  Consume one complete shell/config value instead.
 _REDACT_SECRET_VALUE = r"""(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|\S+)"""
-_REDACT_SECRET_RES = [re.compile(prefix + "(" + _REDACT_SECRET_VALUE + ")", re.I) for prefix in (
-    # SNMP community strings: 'snmp-server community <VALUE>' and the bare
-    # 'community <VALUE>' form (host/group/trap lines).
-    r"(snmp-server\s+community\s+)",
-    r"(\bcommunity\s+)",
-    # 'snmp-server host <ip> [vrf X] [traps|informs] version {1|2c} <COMMUNITY>' -- the trap-host community is a
-    # bare positional token with NO 'community' keyword to anchor on, so the two patterns above missed it and it
-    # shipped verbatim under --redact (leak-corpus K4). v3 uses a username (not a secret), so only 1|2c match.
-    r"(snmp-server\s+host\s+\S+\s+(?:vrf\s+\S+\s+)?(?:(?:traps?|informs?)\s+)?version\s+(?:1|2c)\s+)",
-    # Cisco password/secret forms: type-7/type-5 and cleartext, 'enable secret',
-    # and 'username <u> password|secret <VALUE>'. The username token is preserved.
-    r"(\bpassword\s+(?:(?:ENC|\d+)\s+)?)",
-    r"(\bsecret\s+(?:\d+\s+)?)",
-    r"((?:username|user)\s+\S+\s+(?:password|secret)\s+(?:\d+\s+)?)",
-    # Shared keys. Specific forms FIRST so the generic bare 'key' below cannot consume
-    # their qualifier (e.g. 'pre-shared-key local <V>' must not let 'key local' match).
-    # TACACS+/RADIUS server keys, 'key-string <VALUE>' (SNMPv3 / EIGRP / OSPF keychains),
-    # IKE pre-shared keys, and 'crypto isakmp key <VALUE> address ...'.
-    r"((?:tacacs-server|radius-server)\s+(?:host\s+\S+\s+)?key\s+(?:\d+\s+)?)",
-    r"(key-string\s+(?:\d+\s+)?)",
-    r"(pre-shared-key\s+(?:(?:local|remote|ascii-text|hexadecimal)\s+)?(?:\d+\s+)?)",
-    r"(crypto\s+isakmp\s+key\s+(?:\d+\s+)?)",
-    # Generic 'key 7 <hex>' / 'key <cleartext>' (keychain key, OSPF/EIGRP authentication). The optional
-    # inner group absorbs a hash-algorithm label so 'authentication-key|message-digest-key N md5|sha|
-    # hmac-sha <DIGEST>' (NTP/OSPF/EIGRP) redacts the DIGEST after it, not the 'md5'/'sha' token -- the
-    # latter left the real, offline-crackable digest exposed. Anchored on 'key', so a bare IKE 'hash md5'
-    # algorithm choice (no key-id + secret) is never corrupted. The negative lookahead keeps STRUCTURAL
-    # follow-words intact: 'key chain <NAME>' declares a keychain (name is not a secret), and the bare rule
-    # runs AFTER the pre-shared-key rule over the accumulating string, so without the guard it re-fired on
-    # 'pre-shared-key local <redacted>' and mangled the 'local'/'remote' direction qualifier.
-    r"((?<!private-)(?<!shared-)\bkey\s+(?:\d+\s+)?(?:(?:md5|sha\S*|hmac-\S+|cmac-\S+)\s+(?:\d+\s+)?)?)(?!chain\b|local\b|remote\b)",
-    # Non-Cisco vendor config forms: FortiGate 'set passwd|psksecret|password [ENC] <VALUE>' and Junos
-    # 'authentication-key|secret "<VALUE>"' -- 'passwd'/'psksecret' are not the whole words 'password'/'secret',
-    # so the Cisco patterns above miss them.
-    r"(set\s+(?:passwd|psksecret|password|private-key|passphrase)\s+(?:ENC\s+)?)",
-)]
+
+# W60 -- THE CREDENTIAL GRAMMAR. Each family is KEYWORD, then a QUALIFIER SEQUENCE, then the VALUE.
+#
+# The previous deny-list captured "the token right after the keyword" (allowing at most one type
+# digit), so whenever a real configuration put a QUALIFIER there the qualifier was redacted and the
+# credential survived beside the placeholder: 'enable password level 15 X' became
+# 'enable password <redacted> 15 X', 'set-key ascii X 1' became 'set-key <redacted> X 1', Huawei
+# 'password cipher X' became 'password <redacted> X'. The verifier accepted every one of those lines
+# because the first token after the keyword WAS the placeholder (docs/w60-redaction-grammar-2026-10-09.md).
+#
+# So the qualifier grammar is now modelled per keyword family and consumed ATOMICALLY: the whole run
+# of qualifier tokens (level N, type digits, cipher/plain/ascii/hex/ENC, hash labels, read/write, vrf X,
+# traps/informs, version 1|2c, ...) is taken greedily inside a lookahead and can never be handed back
+# to become the "value", and the value is the first token after that run. A qualifier also counts at the
+# end of a line ('key 1' under a keychain is a key ID, not a secret), so a line whose grammar ends after
+# its qualifiers is structural and is left alone. When the token where the value would stand is a
+# structural follow-word ('key chain', 'password encryption', 'Key name:', English prose), nothing is
+# redacted either. Every family is LINE-BOUNDED ([ \t], never \s): the old patterns crossed a newline
+# and redacted the first token of the NEXT line ('ntp trusted-key 1\n...').
+#
+# The independent verifier (webapp.backend.redaction_verify) RESTATES this grammar -- it may not import
+# it -- and fails any line where a recognised family's value is not the placeholder, or where anything
+# but a closed allowlist of structural follow-words follows the placeholder. The two are pinned against
+# each other by the adversarial corpus in tests/fixtures/redaction_grammar_corpus.json.
+_REDACT_HWS = r"[ \t]+"
+_REDACT_EOL = r"(?=[\r\n]|\Z)"
+_REDACT_TYPE = r"(?:10|[0-9])"            # IOS 0/5/6/7/8/9, NX-OS 3, IOS-XR 10
+_REDACT_PROSE_SEP = r"(?:=>|[:=]|is)"     # 'Password : x', 'password => x', 'Enable password is x'
+#: A hash/MAC algorithm LABEL -- a qualifier, never the value. Closed shapes: an open 'sha\S*' would
+#: swallow the digest itself ('hmac-sha-256 ShaDigest...' read 'ShaDigest...' as a label).
+_REDACT_HASH = (r"(?:(?:hmac-|keyed-|ietf-)?(?:md5|sha(?:-?(?:1|224|256|384|512))?)"
+                r"|cmac-aes(?:-?(?:128|256))?|aes-(?:128|256)-cmac)")
+#: A token where the VALUE would stand that is English prose ends the grammar: 'password for user',
+#: 'Do not share your password with anyone', 'key is not exportable'. A credential equal to one of these
+#: words is therefore not recognised -- a documented residual, shared with the verifier.
+_REDACT_PROSE_STOPS = (
+    "a", "an", "the", "to", "for", "with", "of", "in", "on", "at", "by", "from", "and", "or", "not", "no",
+    "is", "are", "was", "were", "be", "been", "being", "must", "should", "shall", "will", "can", "cannot",
+    "may", "might", "has", "have", "had", "this", "that", "these", "those", "it", "its", "as", "if", "when",
+    "which", "who", "you", "your", "our", "their", "all", "any", "every", "each", "only", "also", "here",
+    "there", "than", "so", "but", "into", "via", "per", "without", "within", "none", "configured",
+    "enabled", "disabled", "required", "expired", "failed", "failure", "mismatch", "changed", "set",
+)
+
+
+def _redact_family(anchor: str, qualifiers=(), stops=(), *, prose: bool = False,
+                   value_guard: str = "", flags: int = 0):
+    """Compile one credential family: ANCHOR, an atomic qualifier run, then the value as group ``v``.
+
+    The qualifier run is captured inside a lookahead and re-matched by backreference -- Python 3.10's
+    spelling of an atomic group -- so the engine cannot backtrack into it and redact a qualifier when no
+    value follows."""
+    steps = list(qualifiers) + ([_REDACT_PROSE_SEP] if prose else [])
+    start = r'(?:"?[ \t]*(?:=>|[:=])[ \t]*|[ \t]+)' if prose else _REDACT_HWS
+    run = (start + (r"(?:(?:" + "|".join(steps) + r")(?:" + _REDACT_HWS + "|" + _REDACT_EOL + r"))*"
+                    if steps else ""))
+    stop_words = "|".join(re.escape(w) for w in tuple(stops) + _REDACT_PROSE_STOPS)
+    return re.compile(
+        anchor
+        + r"(?=(?P<q>" + run + r"))(?P=q)"
+        + r"(?!(?:" + stop_words + r")(?=[\s;,.]|\Z))"     # a structural/prose word, not a value
+        + r"(?![^\s\"']*:(?=\s|\Z))"                      # a 'Label:' token ('Key name:', 'Data:')
+        + r"(?![{}\[\];]+(?=\s|\Z))"                       # Junos/brace punctuation
+        + value_guard
+        # The placeholder is taken on its own so a re-run leaves '<redacted>; ## SECRET-DATA' (Junos) and
+        # '"password": <redacted>}' (JSON text) exactly as they are.
+        + r"(?P<v>" + re.escape(_REDACT_PLACEHOLDER) + r"|" + _REDACT_SECRET_VALUE + ")",
+        re.IGNORECASE | flags)
+
+
+_REDACT_KEY_QUALIFIERS = (r"\d+", _REDACT_HASH, r"ENC", r"encrypted",
+                          r"clear", r"ascii", r"hex", r"cipher", r"plain", r"text", r"--", r"config-key",
+                          r"password-encrypt")
+_REDACT_SECRET_RES = [
+    # URL userinfo: 'scp://user:PASS@host/...' (archive path, copy/boot URLs, PKI enrollment url, kron
+    # cli). The password is everything between the first ':' after the user and the LAST '@' of the
+    # authority, so a password containing '@' is still consumed whole. The user name is kept.
+    re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s/:@]+:(?P<v>[^\s/]+)(?=@)", re.IGNORECASE),
+    # FortiGate 'set <secret-attribute> [ENC] <VALUE>'. The attribute set is CLOSED (a name containing
+    # 'key' is not therefore a secret: 'keylife' is a timer).
+    _redact_family(r"\bset[ \t]+(?:passwd|password|psksecret|psksecret-remote|secret|secondary-secret|"
+                   r"tertiary-secret|private-key|passphrase|auth-pwd|priv-pwd|sae-password|key|"
+                   r"authentication-key|auth-string|ppk-secret|eap-password)", (r"ENC",)),
+    # SNMPv3 users: '... auth md5|sha* <AUTH> priv [des|3des|aes [128|192|256]|aes-128] <PRIV> ...'
+    # (IOS, NX-OS, EOS). The algorithm is a qualifier; both passwords are values.
+    _redact_family(r"\bsnmp-server[ \t]+user[ \t]+[^\r\n]*?[ \t]auth", (_REDACT_HASH,)),
+    _redact_family(r"\bsnmp-server[ \t]+user[ \t]+[^\r\n]*?[ \t]priv",
+                   (r"3?des", r"aes(?:-?(?:128|192|256))?", r"128", r"192", r"256")),
+    # AireOS 'config snmp v3user create <u> ro|rw <auth-proto> <priv-proto> <AUTHKEY> <PRIVKEY>'.
+    _redact_family(r"\bconfig[ \t]+snmp[ \t]+v3user[ \t]+create[ \t]+\S+[ \t]+(?:ro|rw)[ \t]+"
+                   r"(?:none|hmacmd5|hmacsha)[ \t]+(?:none|des|aescfb128|aes)"),
+    _redact_family(r"\bconfig[ \t]+snmp[ \t]+v3user[ \t]+create[ \t]+\S+[ \t]+(?:ro|rw)[ \t]+"
+                   r"(?:none|hmacmd5|hmacsha)[ \t]+(?:none|des|aescfb128|aes)[ \t]+\S+"),
+    # 'snmp-server host <host> [vrf X] [traps|informs] [version 1|2c] <COMMUNITY> [udp-port N] [types]'.
+    # The community is POSITIONAL -- no keyword names it. 'version 3 ...' carries a user name and the
+    # NX-OS 'use-vrf'/'source-interface' lines carry no community, so those words end the grammar. An
+    # address in the value slot -- or, on a second redact_snapshot pass, its synthetic pseudonym -- is
+    # the ASA 'host <ifname> <ip> community X' form; the 'community' family below takes its value.
+    _redact_family(r"\bsnmp-server[ \t]+host[ \t]+\S+",
+                   (r"vrf[ \t]+\S+", r"traps?", r"informs?", r"version[ \t]+(?:1|2c)"),
+                   ("version", "use-vrf", "filter-vrf", "source-interface", "vrf", "community", "poll",
+                    "udp-port"),
+                   value_guard=(r"(?!(?:\d{1,3}(?:\.\d{1,3}){3}|" + _REDACT_IP6_RE.pattern
+                                + r"|\S+\.assesshub-redacted\.invalid)(?:/\d{1,3})?(?=\s|\Z))")),
+    # SNMP community -- only in an SNMP context (IOS/NX-OS/ASA 'snmp-server ... community', Junos
+    # 'set snmp community', Huawei 'snmp-agent community read|write [cipher]', AireOS 'config snmp
+    # community create|accessmode|ipaddr ...'), the Junos hierarchical line-start 'community X {', and
+    # the show-output prose forms ('SNMP community string : X', 'Community name: X'). A BGP community
+    # ('set community 65000:1 additive', 'send-community both') is not a credential and is not touched.
+    *(_redact_family(anchor,
+                     (r"strings?", r"create", r"delete", r"read", r"write", r"cipher", r"plain",
+                      r"(?:name|index|securityname)[ \t]*:", r"accessmode[ \t]+(?:ro|rw)",
+                      r"ipaddr[ \t]+\S+[ \t]+\S+", r"mode[ \t]+(?:enable|disable)"),
+                     ("name", "names", "list", "complexity-check"), prose=prose, flags=flags)
+      for anchor, prose, flags in (
+          (r"\b(?:snmp-server|snmp-agent|snmp)(?:[ \t]+[^\r\n]*?)?[ \t]+community", True, 0),
+          # Never a bare 'Community:' (prose=False here, and no ':' lookahead below): that is the BGP
+          # path-attribute label in 'show ip bgp <prefix>' ('Community: 65000:100 no-export').
+          (r"^[ \t]*community", False, re.MULTILINE),
+          (r"\bcommunity(?=[ \t]+strings?\b|[ \t]+(?:name|index|securityname)[ \t]*:)", True, 0),
+      )),
+    # AireOS RADIUS/TACACS+ servers: 'config radius auth add <idx> <ip> <port> ascii|hex <SECRET>'.
+    _redact_family(r"\bconfig[ \t]+(?:radius|tacacs)[ \t]+(?:auth|acct|athr)[ \t]+add[ \t]+\d+[ \t]+\S+"
+                   r"[ \t]+\d+", (r"ascii", r"hex")),
+    # AireOS local users: 'config mgmtuser|netuser add|password <user> <PASSWORD> ...'.
+    _redact_family(r"\bconfig[ \t]+(?:mgmtuser|netuser)[ \t]+(?:add|password)[ \t]+\S+"),
+    # password / passwd / secret / passphrase, including every compound form (area-, domain-, hello-,
+    # lsp-, encrypted-, webauth-http-, ldap-login-, sae-, secondary-...). Qualifiers: 'level N' (IOS
+    # enable, Huawei super), a type digit, a hash label (EOS 'sha512', 'scrypt'), and the vendor
+    # encodings (FortiGate ENC, IOS-XR encrypted/clear, Huawei cipher/plain/simple/irreversible-cipher,
+    # IOS-XR IS-IS hmac-md5/text). ASA puts 'encrypted'/'pbkdf2' AFTER the value; those stay in the tail.
+    _redact_family(r"\b(?:password|passwd|secret|passphrase)(?<!mgmtuser password)(?<!netuser password)",
+                   (r"level[ \t]+\d+", _REDACT_TYPE, _REDACT_HASH, r"scrypt", r"ENC", r"encrypted",
+                    r"clear", r"cipher", r"plain", r"simple", r"irreversible-cipher", r"hashed", r"text"),
+                   ("encryption", "encrypt", "expiration", "expiry", "policy", "recovery", "min-length",
+                    "max-length", "minimum-length", "maximum-length", "prompt", "history", "change-type",
+                    "format", "aging", "complexity", "strength-check", "keychain", "key-chain",
+                    "management", "encryption-key", "keyboard", "publickey"),
+                   prose=True),
+    # Huawei 'snmp-agent target-host ... params securityname [cipher] <COMMUNITY> v2c' (v1/v2c targets
+    # carry the community as the security name).
+    _redact_family(r"\bsecurityname", (r"cipher", r"plain")),
+    # TACACS+/RADIUS server keys (IOS, NX-OS, EOS): any 'key' on a tacacs-server/radius-server line.
+    # Only a single type digit is a qualifier here, so a numeric shared secret is still a value.
+    _redact_family(r"\b(?:tacacs-server|radius-server)[ \t]+(?:[^\r\n]*?[ \t])?key", (r"[0-9]",)),
+    # Keychain / MACsec / IKE key material.
+    _redact_family(r"\bkey-string", (r"[0-9]", r"password", r"clear", r"encrypted")),
+    _redact_family(r"\bkey-octet-string", (r"[0-9]",)),
+    _redact_family(r"\bpre-shared-key",
+                   (r"local", r"remote", r"ascii-text", r"hexadecimal", r"cipher", r"simple", r"plain",
+                    r"[0-9]"),
+                   ("address", "hostname", "key-chain", "keychain", "ckn", "cak", "keyring")),
+    _redact_family(r"(?<![\w-])shared-key", (r"cipher", r"simple", r"plain", r"[0-9]")),
+    _redact_family(r"\b(?:cak|ckn)"),
+    # Wireless PSKs: IOS AP 'wpa-psk ascii|hex [0|7] <PSK>', C9800/AireOS 'set-key ascii|hex [0|8] <PSK>'.
+    _redact_family(r"\bwpa2?-psk", (r"ascii", r"hex", r"[0-9]")),
+    _redact_family(r"\bset-key", (r"ascii", r"hex", r"[0-9]")),
+    # Value-bearing 'authentication' forms: NHRP, HSRP/VRRP/GLBP (IOS, EOS 'peer'), the NX-OS line-start
+    # 'authentication text', and Huawei '[area-|domain-]authentication-mode <alg> [key-id] cipher|plain'.
+    # Never the bare word: '(aaa|dot1x) authentication ...' and 'authentication port-control auto' are
+    # structural and are left alone. A key-chain/key-string/key follow-word hands over to its own family.
+    _redact_family(r"\bnhrp[ \t]+authentication", (r"[0-9]",)),
+    _redact_family(r"\b(?:standby|vrrp|glbp)(?:[ \t]+\d+)?(?:[ \t]+peer)?[ \t]+authentication",
+                   (r"text", r"md5", r"ietf-md5"), ("key-chain", "key-string", "keychain", "key")),
+    _redact_family(r"^[ \t]*authentication(?=[ \t]+text[ \t])", (r"text",), flags=re.MULTILINE),
+    _redact_family(r"\b(?:area-|domain-)?authentication-mode",
+                   (_REDACT_HASH, r"simple", r"plain", r"cipher", r"usual",
+                    r"nonstandard", r"key-id", r"\d+"),
+                   ("keychain", "key-chain", "hwtacacs", "radius", "local", "aaa", "password", "scheme")),
+    _redact_family(r"\bprivacy-mode", (r"des56", r"3des", r"aes\d*", r"cipher", r"plain")),
+    # Inline keys behind an 'authentication' MODE: OSPFv3 'authentication ipsec spi N md5|sha1 [0|7] <KEY>',
+    # EIGRP named-mode 'authentication mode hmac-sha-256 [0|7] <PASSWORD>', and the 'show standby' line
+    # 'Authentication text, string "<KEY>"'.
+    _redact_family(r"\bauthentication[ \t]+ipsec[ \t]+spi[ \t]+\d+", (r"md5", r"sha1", r"[0-9]")),
+    _redact_family(r"\bauthentication[ \t]+mode[ \t]+hmac-sha-256", (r"[0-9]",)),
+    _redact_family(r"\bauthentication[ \t]+text,[ \t]+string"),
+    # The bare 'key' family: keychain 'key 7 <hex>', 'authentication-key|message-digest-key N md5 [7]
+    # <DIGEST>' (NTP/OSPF/EIGRP/BGP), 'crypto isakmp key <PSK> address ...', ASA 'failover key [hex]',
+    # aaa-server 'key', IS-IS 'authentication key', NX-OS 'key config-key password-encrypt <MASTER>',
+    # 'show key chain' 'key 1 -- text "<KEY>"'. 'key 1' alone (a key ID) ends at its qualifier, and the
+    # structural follow-words ('key chain <NAME>', 'Key name:', 'key id is', 'crypto key generate rsa')
+    # end the grammar, as do the NTP server options after 'key <id>' ('ntp server X key 1 prefer') and
+    # a key algorithm ('ssh key rsa 2048'). 'pre-shared-key'/'private-key'/'public-key' belong to their
+    # own families and an EOS 'ssh-key ssh-rsa <PUBLIC KEY>' is not a secret.
+    _redact_family(r"\bkey(?<!private-key)(?<!shared-key)(?<!public-key)(?<!ssh-key)", _REDACT_KEY_QUALIFIERS,
+                   ("chain", "local", "remote", "generate", "zeroize", "import", "export", "id", "name", "data",
+                    "change", "type", "usage", "exchange", "pair", "length", "size", "sizes", "lifetime",
+                    "rollover", "hash", "label", "storage", "ring", "management", "encryption", "mode",
+                    "mypubkey", "pubkey", "pubkey-chain", "server", "algorithm", "algorithms", "recovery",
+                    "string", "prefer", "source", "version", "minpoll", "maxpoll", "burst", "iburst", "vrf", "use-vrf",
+                    "rsa", "dsa", "ecdsa", "ed25519")),   # not prose: 'Key: U - Unicast' is a show legend
+]
 # JSON-VALUE secrets: the controller-REST channels (ACI / ISE / FMC / vManage) and IaC exports store a secret as
 # a VALUE under a key, with no inline keyword for the deny-list regexes above to anchor on. So redact the WHOLE
 # value when its key is a known secret-bearing name. Keys are normalized (lowercased, '_'/'-' stripped) before
@@ -3757,13 +3912,36 @@ def _norm_key(k) -> str:
     return re.sub(r"[_-]", "", str(k or "").lower())
 
 
+def _redact_secret_value(m) -> str:
+    """Keep everything the family matched before its value; replace the value (group ``v``)."""
+    return m.group(0)[:m.start("v") - m.start()] + _REDACT_PLACEHOLDER
+
+
+#: Every family above names one of these words (or '://'), so a line without any of them carries no
+#: credential this grammar can see and is skipped untouched -- most of a 'show tech' capture.
+_REDACT_LINE_PREFILTER = re.compile(
+    r"password|passwd|secret|passphrase|community|key|auth|priv|psk|cak|ckn|config|snmp|securityname|://",
+    re.IGNORECASE)
+
+
 def _redact_config_values(s: str) -> str:
     """Replace known credential / community / key material in a config-or-output string
-    with a placeholder, preserving surrounding context. Conservative (deny-list of
-    compiled regexes, secret-token capture only) and idempotent."""
-    for rx in _REDACT_SECRET_RES:
-        s = rx.sub(r"\g<1>" + _REDACT_PLACEHOLDER, s)
-    return s
+    with a placeholder, preserving surrounding context. Each family consumes its whole
+    qualifier sequence before taking the value (see `_REDACT_SECRET_RES`), so a qualifier is
+    never mistaken for the secret. Idempotent: the placeholder re-matches as its own value.
+
+    Every family is line-bounded, so the text is processed one ``\\n``-separated line at a time
+    and only lines that name a family keyword are run through the grammar; joining on ``\\n``
+    restores the input byte-for-byte everywhere else (``\\r`` stays inside its line)."""
+    if not _REDACT_LINE_PREFILTER.search(s):
+        return s
+    lines = s.split("\n")
+    for index, line in enumerate(lines):
+        if _REDACT_LINE_PREFILTER.search(line):
+            for rx in _REDACT_SECRET_RES:
+                line = rx.sub(_redact_secret_value, line)
+            lines[index] = line
+    return "\n".join(lines)
 
 
 def redact_snapshot(snap: dict) -> dict:

@@ -1,0 +1,2083 @@
+{
+ "about": "W60 adversarial redaction-grammar corpus. Every credential is an obviously fake synthetic value. must_redact: the producer must turn line into expect exactly, no listed secret may survive, the independent verifier must refuse the raw line, certify the scrubbed line, and refuse the scrubbed line with a token appended after the placeholder (unless flags carry 'url'). must_keep: the producer must leave the line byte-identical and the verifier must certify it. See docs/w60-redaction-grammar-2026-10-09.md.",
+ "must_redact": [
+  {
+   "platform": "ios",
+   "line": "enable password level 15 Plain99pw",
+   "expect": "enable password level 15 <redacted>",
+   "secrets": [
+    "Plain99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "enable password level 15 0 Plain99pw",
+   "expect": "enable password level 15 0 <redacted>",
+   "secrets": [
+    "Plain99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "enable password level 7 Plain99pw",
+   "expect": "enable password level 7 <redacted>",
+   "secrets": [
+    "Plain99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "enable secret level 15 0 Plain99pw",
+   "expect": "enable secret level 15 0 <redacted>",
+   "secrets": [
+    "Plain99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " ip nhrp authentication Dmvpn99",
+   "expect": " ip nhrp authentication <redacted>",
+   "secrets": [
+    "Dmvpn99"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " ip nhrp authentication 7 0822455D0A16",
+   "expect": " ip nhrp authentication 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server host 192.0.2.10 public",
+   "expect": "snmp-server host 192.0.2.10 <redacted>",
+   "secrets": [
+    "public"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server host 192.0.2.10 Comm99v1",
+   "expect": "snmp-server host 192.0.2.10 <redacted>",
+   "secrets": [
+    "Comm99v1"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server host 10.1.1.1 traps Comm99v1",
+   "expect": "snmp-server host 10.1.1.1 traps <redacted>",
+   "secrets": [
+    "Comm99v1"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " snmp-server host 10.1.1.1 Comm99v1 snmp",
+   "expect": " snmp-server host 10.1.1.1 <redacted> snmp",
+   "secrets": [
+    "Comm99v1"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " snmp-server host 10.1.1.1 version 1 Comm99v1",
+   "expect": " snmp-server host 10.1.1.1 version 1 <redacted>",
+   "secrets": [
+    "Comm99v1"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server host 10.1.1.1 informs version 2c Comm99v2 udp-port 162",
+   "expect": "snmp-server host 10.1.1.1 informs version 2c <redacted> udp-port 162",
+   "secrets": [
+    "Comm99v2"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server host 10.1.1.1 vrf MGMT traps version 2c Comm99v2 config bgp",
+   "expect": "snmp-server host 10.1.1.1 vrf MGMT traps version 2c <redacted> config bgp",
+   "secrets": [
+    "Comm99v2"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " path scp://admin:Passw0rd99@10.1.1.1/cfg",
+   "expect": " path scp://admin:<redacted>@10.1.1.1/cfg",
+   "secrets": [
+    "Passw0rd99"
+   ],
+   "flags": [
+    "url"
+   ]
+  },
+  {
+   "platform": "ios",
+   "line": "copy ftp://admin:Passw0rd99@10.1.1.1/file flash:",
+   "expect": "copy ftp://admin:<redacted>@10.1.1.1/file flash:",
+   "secrets": [
+    "Passw0rd99"
+   ],
+   "flags": [
+    "url"
+   ]
+  },
+  {
+   "platform": "ios",
+   "line": "boot system tftp://u:Passw0rd99@192.0.2.1/img.bin",
+   "expect": "boot system tftp://u:<redacted>@192.0.2.1/img.bin",
+   "secrets": [
+    "Passw0rd99"
+   ],
+   "flags": [
+    "url"
+   ]
+  },
+  {
+   "platform": "ios",
+   "line": "  enrollment url http://ca:Ca99pw@10.1.1.1/",
+   "expect": "  enrollment url http://ca:<redacted>@10.1.1.1/",
+   "secrets": [
+    "Ca99pw"
+   ],
+   "flags": [
+    "url"
+   ]
+  },
+  {
+   "platform": "ios",
+   "line": "  cli copy running-config ftp://u:Kr99pw@192.0.2.1/b.cfg",
+   "expect": "  cli copy running-config ftp://u:<redacted>@192.0.2.1/b.cfg",
+   "secrets": [
+    "Kr99pw"
+   ],
+   "flags": [
+    "url"
+   ]
+  },
+  {
+   "platform": "ios",
+   "line": " http://user:Pw99@Url@host/path",
+   "expect": " http://user:<redacted>@host/path",
+   "secrets": [
+    "Pw99",
+    "Url"
+   ],
+   "flags": [
+    "url"
+   ]
+  },
+  {
+   "platform": "nxos",
+   "line": " key-octet-string 0123456789ABCDEF0123456789ABCDEF cryptographic-algorithm AES_128_CMAC",
+   "expect": " key-octet-string <redacted> cryptographic-algorithm AES_128_CMAC",
+   "secrets": [
+    "0123456789ABCDEF0123456789ABCDEF"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": " key-octet-string 7 075E731F1A5C4F524D cryptographic-algorithm AES_128_CMAC",
+   "expect": " key-octet-string 7 <redacted> cryptographic-algorithm AES_128_CMAC",
+   "secrets": [
+    "075E731F1A5C4F524D"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "aireos",
+   "line": "config wlan security wpa akm psk set-key ascii Wlc99psk 1",
+   "expect": "config wlan security wpa akm psk set-key ascii <redacted> 1",
+   "secrets": [
+    "Wlc99psk"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "c9800",
+   "line": "  security wpa psk set-key ascii 0 Corp99psk",
+   "expect": "  security wpa psk set-key ascii 0 <redacted>",
+   "secrets": [
+    "Corp99psk"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "show",
+   "line": "Enable password is Prose99pw",
+   "expect": "Enable password is <redacted>",
+   "secrets": [
+    "Prose99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "show",
+   "line": "SNMP community string : Prose99comm",
+   "expect": "SNMP community string : <redacted>",
+   "secrets": [
+    "Prose99comm"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "show",
+   "line": "Password : Prose99pw",
+   "expect": "Password : <redacted>",
+   "secrets": [
+    "Prose99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "show",
+   "line": "password => Prose99pw",
+   "expect": "password => <redacted>",
+   "secrets": [
+    "Prose99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "show",
+   "line": "Password = Prose99pw",
+   "expect": "Password = <redacted>",
+   "secrets": [
+    "Prose99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "show",
+   "line": "password: Prose99pw",
+   "expect": "password: <redacted>",
+   "secrets": [
+    "Prose99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "show",
+   "line": "\"password\": \"Prose99pw\"",
+   "expect": "\"password\": <redacted>",
+   "secrets": [
+    "Prose99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "show",
+   "line": " Community name: Comm99ro",
+   "expect": " Community name: <redacted>",
+   "secrets": [
+    "Comm99ro"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "show",
+   "line": "    key 1 -- text \"Kc99show\"",
+   "expect": "    key 1 -- text <redacted>",
+   "secrets": [
+    "Kc99show"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " local-user admin password cipher Hw99pw",
+   "expect": " local-user admin password cipher <redacted>",
+   "secrets": [
+    "Hw99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " local-user admin password irreversible-cipher $1a$Fake99$hash",
+   "expect": " local-user admin password irreversible-cipher <redacted>",
+   "secrets": [
+    "Fake99"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " super password level 15 cipher Hw99pw",
+   "expect": " super password level 15 cipher <redacted>",
+   "secrets": [
+    "Hw99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " snmp-agent community read Huawei99",
+   "expect": " snmp-agent community read <redacted>",
+   "secrets": [
+    "Huawei99"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " snmp-agent community write cipher Huawei99rw",
+   "expect": " snmp-agent community write cipher <redacted>",
+   "secrets": [
+    "Huawei99rw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " ospf authentication-mode md5 1 cipher Hw99ospf",
+   "expect": " ospf authentication-mode md5 1 cipher <redacted>",
+   "secrets": [
+    "Hw99ospf"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " ospf authentication-mode md5 1 plain Hw99ospf",
+   "expect": " ospf authentication-mode md5 1 plain <redacted>",
+   "secrets": [
+    "Hw99ospf"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " authentication-mode simple plain Hw99vrrp",
+   "expect": " authentication-mode simple plain <redacted>",
+   "secrets": [
+    "Hw99vrrp"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " isis authentication-mode md5 cipher Hw99isis",
+   "expect": " isis authentication-mode md5 cipher <redacted>",
+   "secrets": [
+    "Hw99isis"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " area-authentication-mode hmac-sha256 key-id 1 cipher Hw99area",
+   "expect": " area-authentication-mode hmac-sha256 key-id 1 cipher <redacted>",
+   "secrets": [
+    "Hw99area"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " radius-server shared-key cipher Hw99rad",
+   "expect": " radius-server shared-key cipher <redacted>",
+   "secrets": [
+    "Hw99rad"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " hwtacacs-server shared-key cipher Hw99tac",
+   "expect": " hwtacacs-server shared-key cipher <redacted>",
+   "secrets": [
+    "Hw99tac"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " snmp-agent usm-user v3 u1 authentication-mode sha Hw99Auth privacy-mode aes128 Hw99Priv",
+   "expect": " snmp-agent usm-user v3 u1 authentication-mode sha <redacted> privacy-mode aes128 <redacted>",
+   "secrets": [
+    "Hw99Auth",
+    "Hw99Priv"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " peer 192.0.2.2 password cipher Hw99bgp",
+   "expect": " peer 192.0.2.2 password cipher <redacted>",
+   "secrets": [
+    "Hw99bgp"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " pre-shared-key cipher Hw99ike",
+   "expect": " pre-shared-key cipher <redacted>",
+   "secrets": [
+    "Hw99ike"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " set authentication password cipher Hw99vty",
+   "expect": " set authentication password cipher <redacted>",
+   "secrets": [
+    "Hw99vty"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " vrrp vrid 1 authentication-mode md5 Hw99vrrp",
+   "expect": " vrrp vrid 1 authentication-mode md5 <redacted>",
+   "secrets": [
+    "Hw99vrrp"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "c9800",
+   "line": " mgmtuser username fakeadmin password 0 Ap99pw secret 0 Ap99sec",
+   "expect": " mgmtuser username fakeadmin password 0 <redacted> secret 0 <redacted>",
+   "secrets": [
+    "Ap99pw",
+    "Ap99sec"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "huawei",
+   "line": " snmp-agent target-host trap address udp-domain 10.1.1.1 params securityname cipher Hw99comm v2c",
+   "expect": " snmp-agent target-host trap address udp-domain 10.1.1.1 params securityname cipher <redacted> v2c",
+   "secrets": [
+    "Hw99comm"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " ipv6 ospf authentication ipsec spi 256 sha1 0123456789ABCDEF0123456789ABCDEF01234567",
+   "expect": " ipv6 ospf authentication ipsec spi 256 sha1 <redacted>",
+   "secrets": [
+    "0123456789ABCDEF0123456789ABCDEF01234567"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "  authentication mode hmac-sha-256 0 Eigrp99sha",
+   "expect": "  authentication mode hmac-sha-256 0 <redacted>",
+   "secrets": [
+    "Eigrp99sha"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "show",
+   "line": "  Authentication text, string \"Hsrp99show\"",
+   "expect": "  Authentication text, string <redacted>",
+   "secrets": [
+    "Hsrp99show"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "show",
+   "line": "{\"password\": \"Json99pw\"}",
+   "expect": "{\"password\": <redacted>}",
+   "secrets": [
+    "Json99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "enable secret 9 $9$Fake99salt$Fake99hash",
+   "expect": "enable secret 9 <redacted>",
+   "secrets": [
+    "Fake99salt"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "enable password 7 0822455D0A16",
+   "expect": "enable password 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "username fakeuser privilege 15 secret 9 $9$Fake99salt$hash",
+   "expect": "username fakeuser privilege 15 secret 9 <redacted>",
+   "secrets": [
+    "Fake99salt"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "username fakeuser privilege 15 password 7 0822455D0A16",
+   "expect": "username fakeuser privilege 15 password 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "username fakeuser algorithm-type scrypt secret Plain99pw",
+   "expect": "username fakeuser algorithm-type scrypt secret <redacted>",
+   "secrets": [
+    "Plain99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " password 7 0822455D0A16",
+   "expect": " password 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server community Comm99ro RO",
+   "expect": "snmp-server community <redacted> RO",
+   "secrets": [
+    "Comm99ro"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server community Comm99rw RW 10",
+   "expect": "snmp-server community <redacted> RW 10",
+   "secrets": [
+    "Comm99rw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server community Comm99acl view V1 RO SNMP-ACL",
+   "expect": "snmp-server community <redacted> view V1 RO SNMP-ACL",
+   "secrets": [
+    "Comm99acl"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server user fakeuser fakegroup v3 auth sha Auth99pw priv aes 128 Priv99pw",
+   "expect": "snmp-server user fakeuser fakegroup v3 auth sha <redacted> priv aes 128 <redacted>",
+   "secrets": [
+    "Auth99pw",
+    "Priv99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " ip ospf authentication-key Plain0spf99",
+   "expect": " ip ospf authentication-key <redacted>",
+   "secrets": [
+    "Plain0spf99"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " ip ospf authentication-key 7 0822455D0A16",
+   "expect": " ip ospf authentication-key 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " ip ospf message-digest-key 1 md5 Plain0spf99",
+   "expect": " ip ospf message-digest-key 1 md5 <redacted>",
+   "secrets": [
+    "Plain0spf99"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " ip ospf message-digest-key 1 md5 7 0822455D0A16",
+   "expect": " ip ospf message-digest-key 1 md5 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " standby 1 authentication Hsrp99txt",
+   "expect": " standby 1 authentication <redacted>",
+   "secrets": [
+    "Hsrp99txt"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " standby 1 authentication text Hsrp99txt",
+   "expect": " standby 1 authentication text <redacted>",
+   "secrets": [
+    "Hsrp99txt"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " standby 1 authentication md5 key-string 7 0822455D0A16 timeout 30",
+   "expect": " standby 1 authentication md5 key-string 7 <redacted> timeout 30",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " vrrp 1 authentication text Vrrp99txt",
+   "expect": " vrrp 1 authentication text <redacted>",
+   "secrets": [
+    "Vrrp99txt"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " glbp 1 authentication text Glbp99txt",
+   "expect": " glbp 1 authentication text <redacted>",
+   "secrets": [
+    "Glbp99txt"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " isis password Isis99pw level-2",
+   "expect": " isis password <redacted> level-2",
+   "secrets": [
+    "Isis99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " area-password Area99pw",
+   "expect": " area-password <redacted>",
+   "secrets": [
+    "Area99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " domain-password Dom99pw",
+   "expect": " domain-password <redacted>",
+   "secrets": [
+    "Dom99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " neighbor 10.0.0.1 password 7 0822455D0A16",
+   "expect": " neighbor 10.0.0.1 password 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " neighbor 10.0.0.1 password Bgp99pw",
+   "expect": " neighbor 10.0.0.1 password <redacted>",
+   "secrets": [
+    "Bgp99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "tacacs-server key 7 0822455D0A16",
+   "expect": "tacacs-server key 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "tacacs-server host 10.1.1.1 key Tac99key",
+   "expect": "tacacs-server host 10.1.1.1 key <redacted>",
+   "secrets": [
+    "Tac99key"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "tacacs-server key 12345678",
+   "expect": "tacacs-server key <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "radius-server host 10.1.1.1 auth-port 1812 acct-port 1813 key Rad99key",
+   "expect": "radius-server host 10.1.1.1 auth-port 1812 acct-port 1813 key <redacted>",
+   "secrets": [
+    "Rad99key"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " server-private 10.1.1.1 key Tac99key",
+   "expect": " server-private 10.1.1.1 key <redacted>",
+   "secrets": [
+    "Tac99key"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " pac key 7 0822455D0A16",
+   "expect": " pac key 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " key 7 0822455D0A16",
+   "expect": " key 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "crypto isakmp key Ike99psk address 0.0.0.0 0.0.0.0",
+   "expect": "crypto isakmp key <redacted> address 0.0.0.0 0.0.0.0",
+   "secrets": [
+    "Ike99psk"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " crypto isakmp key 6 Ike99six address 0.0.0.0",
+   "expect": " crypto isakmp key 6 <redacted> address 0.0.0.0",
+   "secrets": [
+    "Ike99six"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " pre-shared-key local Ike99local",
+   "expect": " pre-shared-key local <redacted>",
+   "secrets": [
+    "Ike99local"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "  pre-shared-key address 0.0.0.0 0.0.0.0 key Kr99key",
+   "expect": "  pre-shared-key address 0.0.0.0 0.0.0.0 key <redacted>",
+   "secrets": [
+    "Kr99key"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "   key-string Ks99str",
+   "expect": "   key-string <redacted>",
+   "secrets": [
+    "Ks99str"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "   key-string 7 0822455D0A16",
+   "expect": "   key-string 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " ntp authentication-key 1 md5 Ntp99md5 7",
+   "expect": " ntp authentication-key 1 md5 <redacted> 7",
+   "secrets": [
+    "Ntp99md5"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " ppp chap password 0 Chap99pw",
+   "expect": " ppp chap password 0 <redacted>",
+   "secrets": [
+    "Chap99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " ppp pap sent-username fakeuser password 0 Pap99pw",
+   "expect": " ppp pap sent-username fakeuser password 0 <redacted>",
+   "secrets": [
+    "Pap99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "ip http client password Http99pw",
+   "expect": "ip http client password <redacted>",
+   "secrets": [
+    "Http99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "ip ftp password 7 0822455D0A16",
+   "expect": "ip ftp password 7 <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " bind authenticated dn cn=fake password Ldap99pw",
+   "expect": " bind authenticated dn cn=fake password <redacted>",
+   "secrets": [
+    "Ldap99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "cts sxp default password 0 Sxp99pw",
+   "expect": "cts sxp default password 0 <redacted>",
+   "secrets": [
+    "Sxp99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " wpa-psk ascii 0 Wpa99psk",
+   "expect": " wpa-psk ascii 0 <redacted>",
+   "secrets": [
+    "Wpa99psk"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " wpa2-psk ascii 0 Wpa299psk",
+   "expect": " wpa2-psk ascii 0 <redacted>",
+   "secrets": [
+    "Wpa299psk"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " webauth-http-password Wa99pw",
+   "expect": " webauth-http-password <redacted>",
+   "secrets": [
+    "Wa99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "vtp password Vtp99pw",
+   "expect": "vtp password <redacted>",
+   "secrets": [
+    "Vtp99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " key config-key password-encrypt Master99key",
+   "expect": " key config-key password-encrypt <redacted>",
+   "secrets": [
+    "Master99key"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " l2tp tunnel password Ltp99pw",
+   "expect": " l2tp tunnel password <redacted>",
+   "secrets": [
+    "Ltp99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " mpls ldp neighbor 10.0.0.1 password Ldp99pw",
+   "expect": " mpls ldp neighbor 10.0.0.1 password <redacted>",
+   "secrets": [
+    "Ldp99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": "smtp-server auth user fakeuser password Smtp99pw",
+   "expect": "smtp-server auth user fakeuser password <redacted>",
+   "secrets": [
+    "Smtp99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "ios",
+   "line": " authentication remote pre-share key Ike99rem",
+   "expect": " authentication remote pre-share key <redacted>",
+   "secrets": [
+    "Ike99rem"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": "username admin password 5 $5$Fake99$Fake99hash role network-admin",
+   "expect": "username admin password 5 <redacted> role network-admin",
+   "secrets": [
+    "Fake99"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": "snmp-server user fakeuser network-admin auth md5 0x1a2b3c4d5e6f7a8b9c0d priv 0x99887766554433221100 localizedkey",
+   "expect": "snmp-server user fakeuser network-admin auth md5 <redacted> priv <redacted> localizedkey",
+   "secrets": [
+    "0x1a2b3c4d5e6f7a8b9c0d",
+    "0x99887766554433221100"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": "snmp-server user fakeuser network-admin auth sha Auth99pw priv aes-128 Priv99pw",
+   "expect": "snmp-server user fakeuser network-admin auth sha <redacted> priv aes-128 <redacted>",
+   "secrets": [
+    "Auth99pw",
+    "Priv99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": "snmp-server community Comm99nx group network-operator",
+   "expect": "snmp-server community <redacted> group network-operator",
+   "secrets": [
+    "Comm99nx"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": "snmp-server community Comm99nx use-ipv4acl ACL1",
+   "expect": "snmp-server community <redacted> use-ipv4acl ACL1",
+   "secrets": [
+    "Comm99nx"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": "snmp-server host 10.1.1.1 traps version 2c Comm99nx udp-port 162",
+   "expect": "snmp-server host 10.1.1.1 traps version 2c <redacted> udp-port 162",
+   "secrets": [
+    "Comm99nx"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": "tacacs-server host 10.1.1.1 key 7 \"Tac99nx\"",
+   "expect": "tacacs-server host 10.1.1.1 key 7 <redacted>",
+   "secrets": [
+    "Tac99nx"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": "radius-server host 10.1.1.1 key 7 \"Rad99nx\" authentication accounting",
+   "expect": "radius-server host 10.1.1.1 key 7 <redacted> authentication accounting",
+   "secrets": [
+    "Rad99nx"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": " ip ospf authentication-key 3 Fake99nxospf",
+   "expect": " ip ospf authentication-key 3 <redacted>",
+   "secrets": [
+    "Fake99nxospf"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": "  authentication text Hsrp99nx",
+   "expect": "  authentication text <redacted>",
+   "secrets": [
+    "Hsrp99nx"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "nxos",
+   "line": "  authentication md5 key-string Hsrp99md5",
+   "expect": "  authentication md5 key-string <redacted>",
+   "secrets": [
+    "Hsrp99md5"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": "enable password Fake99enc encrypted",
+   "expect": "enable password <redacted> encrypted",
+   "secrets": [
+    "Fake99enc"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": "enable password Fake99enc pbkdf2",
+   "expect": "enable password <redacted> pbkdf2",
+   "secrets": [
+    "Fake99enc"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": "passwd Fake99telnet encrypted",
+   "expect": "passwd <redacted> encrypted",
+   "secrets": [
+    "Fake99telnet"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": "username fakeadmin password Fake99enc encrypted privilege 15",
+   "expect": "username fakeadmin password <redacted> encrypted privilege 15",
+   "secrets": [
+    "Fake99enc"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": "username fakeadmin password Fake99enc pbkdf2 privilege 15",
+   "expect": "username fakeadmin password <redacted> pbkdf2 privilege 15",
+   "secrets": [
+    "Fake99enc"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": " ikev1 pre-shared-key Ike99asa",
+   "expect": " ikev1 pre-shared-key <redacted>",
+   "secrets": [
+    "Ike99asa"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": " ikev2 remote-authentication pre-shared-key Ike99rem",
+   "expect": " ikev2 remote-authentication pre-shared-key <redacted>",
+   "secrets": [
+    "Ike99rem"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": "snmp-server host inside 10.1.1.1 community Comm99asa version 2c",
+   "expect": "snmp-server host inside 10.1.1.1 community <redacted> version 2c",
+   "secrets": [
+    "Comm99asa"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": "snmp-server host inside 2001:db8::10 community Comm99v6 version 2c",
+   "expect": "snmp-server host inside 2001:db8::10 community <redacted> version 2c",
+   "secrets": [
+    "Comm99v6"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": "failover key Fail99key",
+   "expect": "failover key <redacted>",
+   "secrets": [
+    "Fail99key"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": "failover key hex 0123456789abcdef0123456789abcdef",
+   "expect": "failover key hex <redacted>",
+   "secrets": [
+    "0123456789abcdef0123456789abcdef"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": "  key Aaa99key",
+   "expect": "  key <redacted>",
+   "secrets": [
+    "Aaa99key"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "asa",
+   "line": " ospf message-digest-key 1 md5 Asa99ospf",
+   "expect": " ospf message-digest-key 1 md5 <redacted>",
+   "secrets": [
+    "Asa99ospf"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "aireos",
+   "line": "config radius auth add 1 10.1.1.1 1812 ascii Rad99wlc",
+   "expect": "config radius auth add 1 10.1.1.1 1812 ascii <redacted>",
+   "secrets": [
+    "Rad99wlc"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "aireos",
+   "line": "config tacacs auth add 1 10.1.1.1 49 ascii Tac99wlc",
+   "expect": "config tacacs auth add 1 10.1.1.1 49 ascii <redacted>",
+   "secrets": [
+    "Tac99wlc"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "aireos",
+   "line": "config mgmtuser add fakeadmin Mgmt99pw read-write",
+   "expect": "config mgmtuser add fakeadmin <redacted> read-write",
+   "secrets": [
+    "Mgmt99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "aireos",
+   "line": "config mgmtuser password fakeadmin Mgmt99pw",
+   "expect": "config mgmtuser password fakeadmin <redacted>",
+   "secrets": [
+    "Mgmt99pw"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "aireos",
+   "line": "config snmp community create Comm99wlc",
+   "expect": "config snmp community create <redacted>",
+   "secrets": [
+    "Comm99wlc"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "aireos",
+   "line": "config snmp community accessmode ro Comm99wlc",
+   "expect": "config snmp community accessmode ro <redacted>",
+   "secrets": [
+    "Comm99wlc"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "aireos",
+   "line": "config snmp v3user create fakeuser ro hmacsha aes Auth99wlc Priv99wlc",
+   "expect": "config snmp v3user create fakeuser ro hmacsha aes <redacted> <redacted>",
+   "secrets": [
+    "Auth99wlc",
+    "Priv99wlc"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "aireos",
+   "line": "config wlan security wpa akm psk set-key hex 0123456789abcdef0123 2",
+   "expect": "config wlan security wpa akm psk set-key hex <redacted> 2",
+   "secrets": [
+    "0123456789abcdef0123"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "iosxr",
+   "line": " secret 10 $6$Fake99salt$Fake99hash",
+   "expect": " secret 10 <redacted>",
+   "secrets": [
+    "Fake99salt"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "iosxr",
+   "line": " key-string password 0822455D0A16",
+   "expect": " key-string password <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "iosxr",
+   "line": " key-string clear Kc99clear",
+   "expect": " key-string clear <redacted>",
+   "secrets": [
+    "Kc99clear"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "iosxr",
+   "line": " authentication-key encrypted 0822455D0A16",
+   "expect": " authentication-key encrypted <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "iosxr",
+   "line": " message-digest-key 1 md5 encrypted 0822455D0A16",
+   "expect": " message-digest-key 1 md5 encrypted <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "iosxr",
+   "line": " password encrypted 0822455D0A16",
+   "expect": " password encrypted <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "iosxr",
+   "line": "snmp-server community Comm99xr RO SystemOwner",
+   "expect": "snmp-server community <redacted> RO SystemOwner",
+   "secrets": [
+    "Comm99xr"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "iosxr",
+   "line": " hello-password hmac-md5 encrypted 0822455D0A16",
+   "expect": " hello-password hmac-md5 encrypted <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "iosxr",
+   "line": " lsp-password hmac-md5 encrypted 0822455D0A16 level 2",
+   "expect": " lsp-password hmac-md5 encrypted <redacted> level 2",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "eos",
+   "line": "username fakeadmin privilege 15 role network-admin secret sha512 $6$Fake99salt$hash",
+   "expect": "username fakeadmin privilege 15 role network-admin secret sha512 <redacted>",
+   "secrets": [
+    "Fake99salt"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "eos",
+   "line": "username admin secret sha512 $6$Fake99abc$defghijklmnop",
+   "expect": "username admin secret sha512 <redacted>",
+   "secrets": [
+    "Fake99abc"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "eos",
+   "line": "enable password sha512 $6$Fake99salt$hash",
+   "expect": "enable password sha512 <redacted>",
+   "secrets": [
+    "Fake99salt"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "eos",
+   "line": "aaa root secret sha512 $6$Fake99root$hash",
+   "expect": "aaa root secret sha512 <redacted>",
+   "secrets": [
+    "Fake99root"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "eos",
+   "line": " neighbor 10.0.0.1 password 7 Fake99bgpEOS==",
+   "expect": " neighbor 10.0.0.1 password 7 <redacted>",
+   "secrets": [
+    "Fake99bgpEOS"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "eos",
+   "line": " ip ospf message-digest-key 1 sha256 7 Fake99eos==",
+   "expect": " ip ospf message-digest-key 1 sha256 7 <redacted>",
+   "secrets": [
+    "Fake99eos"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "eos",
+   "line": " isis authentication key 7 Fake99isis== level-2",
+   "expect": " isis authentication key 7 <redacted> level-2",
+   "secrets": [
+    "Fake99isis"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "eos",
+   "line": " vrrp 1 peer authentication text Vrrp99eos",
+   "expect": " vrrp 1 peer authentication text <redacted>",
+   "secrets": [
+    "Vrrp99eos"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "eos",
+   "line": " vrrp 1 peer authentication ietf-md5 key-string 7 Fake99vrrp==",
+   "expect": " vrrp 1 peer authentication ietf-md5 key-string 7 <redacted>",
+   "secrets": [
+    "Fake99vrrp"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "eos",
+   "line": "snmp-server community Comm99eos ro",
+   "expect": "snmp-server community <redacted> ro",
+   "secrets": [
+    "Comm99eos"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": "set system root-authentication encrypted-password \"$6$Fake99salt$Fake99hash\"",
+   "expect": "set system root-authentication encrypted-password <redacted>",
+   "secrets": [
+    "Fake99salt"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": "set system login user fakeadmin authentication encrypted-password \"$6$Fake99$hash\"",
+   "expect": "set system login user fakeadmin authentication encrypted-password <redacted>",
+   "secrets": [
+    "Fake99"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": "            encrypted-password \"$6$Fake99salt$hash\"; ## SECRET-DATA",
+   "expect": "            encrypted-password <redacted>; ## SECRET-DATA",
+   "secrets": [
+    "Fake99salt"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": "set snmp community Publ1c99 authorization read-only",
+   "expect": "set snmp community <redacted> authorization read-only",
+   "secrets": [
+    "Publ1c99"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": "    community Publ1c99 {",
+   "expect": "    community <redacted> {",
+   "secrets": [
+    "Publ1c99"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": "set protocols bgp group EXT authentication-key \"$9$Fake99bgp\"",
+   "expect": "set protocols bgp group EXT authentication-key <redacted>",
+   "secrets": [
+    "Fake99bgp"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": "set protocols ospf area 0 interface ge-0/0/0.0 authentication md5 1 key \"$9$Fake99ospf\"",
+   "expect": "set protocols ospf area 0 interface ge-0/0/0.0 authentication md5 1 key <redacted>",
+   "secrets": [
+    "Fake99ospf"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": "set system radius-server 10.1.1.1 secret \"$9$Fake99rad\"",
+   "expect": "set system radius-server 10.1.1.1 secret <redacted>",
+   "secrets": [
+    "Fake99rad"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": " secret \"$9$Fake99sec\"",
+   "expect": " secret <redacted>",
+   "secrets": [
+    "Fake99sec"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": " pre-shared-key ascii-text \"$9$Fake99ike\"",
+   "expect": " pre-shared-key ascii-text <redacted>",
+   "secrets": [
+    "Fake99ike"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": "set security macsec connectivity-association CA1 pre-shared-key ckn 0123456789abcdef cak Fake99cakfedcba9876",
+   "expect": "set security macsec connectivity-association CA1 pre-shared-key ckn <redacted> cak <redacted>",
+   "secrets": [
+    "0123456789abcdef",
+    "Fake99cak"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "junos",
+   "line": "set protocols isis interface ge-0/0/1.0 level 2 hello-authentication-key \"$9$Fake99isis\"",
+   "expect": "set protocols isis interface ge-0/0/1.0 level 2 hello-authentication-key <redacted>",
+   "secrets": [
+    "Fake99isis"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set password ENC SH2Fake99hashhashhash",
+   "expect": "    set password ENC <redacted>",
+   "secrets": [
+    "Fake99hash"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set passwd ENC Fake99passwd",
+   "expect": "    set passwd ENC <redacted>",
+   "secrets": [
+    "Fake99passwd"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set psksecret ENC Fake99psk",
+   "expect": "    set psksecret ENC <redacted>",
+   "secrets": [
+    "Fake99psk"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set psksecret Fortipsk99",
+   "expect": "    set psksecret <redacted>",
+   "secrets": [
+    "Fortipsk99"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set auth-pwd ENC Fake99auth",
+   "expect": "    set auth-pwd ENC <redacted>",
+   "secrets": [
+    "Fake99auth"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set priv-pwd ENC Fake99priv",
+   "expect": "    set priv-pwd ENC <redacted>",
+   "secrets": [
+    "Fake99priv"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set secret ENC Fake99rad",
+   "expect": "    set secret ENC <redacted>",
+   "secrets": [
+    "Fake99rad"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set secondary-secret ENC Fake99rad2",
+   "expect": "    set secondary-secret ENC <redacted>",
+   "secrets": [
+    "Fake99rad2"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set key ENC Fake99tacacs",
+   "expect": "    set key ENC <redacted>",
+   "secrets": [
+    "Fake99tacacs"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set passphrase \"correct horse battery staple 99\"",
+   "expect": "    set passphrase <redacted>",
+   "secrets": [
+    "horse",
+    "staple"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set sae-password ENC Fake99sae",
+   "expect": "    set sae-password ENC <redacted>",
+   "secrets": [
+    "Fake99sae"
+   ],
+   "flags": []
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set authentication-key ENC Fake99ospf",
+   "expect": "    set authentication-key ENC <redacted>",
+   "secrets": [
+    "Fake99ospf"
+   ],
+   "flags": []
+  }
+ ],
+ "must_keep": [
+  {
+   "platform": "show",
+   "line": " Key name: TP-self-signed-1234"
+  },
+  {
+   "platform": "show",
+   "line": " Key Data:"
+  },
+  {
+   "platform": "show",
+   "line": "  Youngest key id is 1"
+  },
+  {
+   "platform": "show",
+   "line": " Password encryption: enabled"
+  },
+  {
+   "platform": "show",
+   "line": "Last key change: never"
+  },
+  {
+   "platform": "show",
+   "line": " Key is not exportable."
+  },
+  {
+   "platform": "show",
+   "line": " Key Usage: General Purpose Key"
+  },
+  {
+   "platform": "show",
+   "line": "    0 Unknown community name"
+  },
+  {
+   "platform": "show",
+   "line": "    0 Illegal operation for community name supplied"
+  },
+  {
+   "platform": "show",
+   "line": "  Minimum expected Diffie Hellman key size : 2048 bits"
+  },
+  {
+   "platform": "show",
+   "line": "      sa timing: remaining key lifetime (k/sec): (4607999/3540)"
+  },
+  {
+   "platform": "show",
+   "line": "Authentication methods:publickey,keyboard-interactive,password"
+  },
+  {
+   "platform": "show",
+   "line": "Key: U - Unicast, B - Broadcast, M - Multicast"
+  },
+  {
+   "platform": "show",
+   "line": "      Community: 65000:100 no-export"
+  },
+  {
+   "platform": "show",
+   "line": "      Extended Community: RT:65000:1"
+  },
+  {
+   "platform": "show",
+   "line": "    Rollover in progress, 1 neighbor(s) using the old key(s):"
+  },
+  {
+   "platform": "show",
+   "line": "      key id 1 algorithm MD5"
+  },
+  {
+   "platform": "show",
+   "line": "  Subject Key Identifier: 0123456789ABCDEF"
+  },
+  {
+   "platform": "show",
+   "line": "%SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: fake] [Source: 10.1.1.1] [Reason: Bad password for user]"
+  },
+  {
+   "platform": "ios",
+   "line": "service password-encryption"
+  },
+  {
+   "platform": "ios",
+   "line": "password encryption aes"
+  },
+  {
+   "platform": "ios",
+   "line": "feature password encryption aes"
+  },
+  {
+   "platform": "ios",
+   "line": "security passwords min-length 8"
+  },
+  {
+   "platform": "ios",
+   "line": "no service password-recovery"
+  },
+  {
+   "platform": "ios",
+   "line": "key chain OSPF-KC"
+  },
+  {
+   "platform": "ios",
+   "line": " key chain KC macsec"
+  },
+  {
+   "platform": "ios",
+   "line": "  key 01"
+  },
+  {
+   "platform": "ios",
+   "line": "  key 1"
+  },
+  {
+   "platform": "ios",
+   "line": "   cryptographic-algorithm aes-128-cmac"
+  },
+  {
+   "platform": "ios",
+   "line": " mka pre-shared-key key-chain KC"
+  },
+  {
+   "platform": "ios",
+   "line": " standby 1 authentication md5 key-chain HSRP-KC"
+  },
+  {
+   "platform": "ios",
+   "line": " ip ospf authentication message-digest"
+  },
+  {
+   "platform": "ios",
+   "line": " ip ospf authentication key-chain OSPF-KC"
+  },
+  {
+   "platform": "ios",
+   "line": " ip authentication key-chain eigrp 1 EIGRP-KC"
+  },
+  {
+   "platform": "ios",
+   "line": " ip authentication mode eigrp 1 md5"
+  },
+  {
+   "platform": "ios",
+   "line": " authentication mode md5"
+  },
+  {
+   "platform": "ios",
+   "line": " isis authentication mode md5"
+  },
+  {
+   "platform": "ios",
+   "line": " isis authentication key-chain ISIS-KC"
+  },
+  {
+   "platform": "ios",
+   "line": " ip rip authentication key-chain RIPKC"
+  },
+  {
+   "platform": "ios",
+   "line": " authentication port-control auto"
+  },
+  {
+   "platform": "ios",
+   "line": " authentication host-mode multi-auth"
+  },
+  {
+   "platform": "ios",
+   "line": " authentication order mab dot1x"
+  },
+  {
+   "platform": "ios",
+   "line": " authentication priority dot1x mab"
+  },
+  {
+   "platform": "ios",
+   "line": " authentication event fail action next-method"
+  },
+  {
+   "platform": "ios",
+   "line": " authentication timer reauthenticate server"
+  },
+  {
+   "platform": "ios",
+   "line": "aaa authentication login default group tacacs+ local"
+  },
+  {
+   "platform": "ios",
+   "line": " ip http authentication local"
+  },
+  {
+   "platform": "ios",
+   "line": " ntp trusted-key 1"
+  },
+  {
+   "platform": "ios",
+   "line": "ntp authenticate"
+  },
+  {
+   "platform": "ios",
+   "line": " tunnel key 12345"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto key generate rsa modulus 2048"
+  },
+  {
+   "platform": "ios",
+   "line": " crypto keyring KR"
+  },
+  {
+   "platform": "ios",
+   "line": " ip ssh pubkey-chain"
+  },
+  {
+   "platform": "ios",
+   "line": "   key-hash ssh-rsa 8FB4F858DD7E5AFB372780EC653DB371"
+  },
+  {
+   "platform": "ios",
+   "line": " route-map RM permit 10"
+  },
+  {
+   "platform": "ios",
+   "line": " set community 65000:100 additive"
+  },
+  {
+   "platform": "ios",
+   "line": " match community CL-65000"
+  },
+  {
+   "platform": "ios",
+   "line": " neighbor 10.0.0.1 send-community both"
+  },
+  {
+   "platform": "ios",
+   "line": "ip community-list standard CL-65000 permit 65000:100"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server enable traps snmp authentication linkdown linkup coldstart warmstart"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server host 10.1.1.1 version 3 priv fakeuser"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server group FAKEGROUP v3 priv"
+  },
+  {
+   "platform": "ios",
+   "line": "username fakeuser privilege 15 nopassword"
+  },
+  {
+   "platform": "ios",
+   "line": " description link to community college"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto isakmp policy 10"
+  },
+  {
+   "platform": "ios",
+   "line": " hash md5"
+  },
+  {
+   "platform": "ios",
+   "line": " encryption aes-256"
+  },
+  {
+   "platform": "ios",
+   "line": "ip address 10.0.0.1 255.255.255.0"
+  },
+  {
+   "platform": "ios",
+   "line": " ip nhrp network-id 1"
+  },
+  {
+   "platform": "ios",
+   "line": " tunnel protection ipsec profile P"
+  },
+  {
+   "platform": "ios",
+   "line": "archive"
+  },
+  {
+   "platform": "ios",
+   "line": " path flash:archive"
+  },
+  {
+   "platform": "ios",
+   "line": " copy ftp://fakeuser@10.1.1.1/file flash:"
+  },
+  {
+   "platform": "ios",
+   "line": " url http://10.1.1.1:8080/path"
+  },
+  {
+   "platform": "eos",
+   "line": "username fakeadmin ssh-key ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQFake99 fake@host"
+  },
+  {
+   "platform": "ios",
+   "line": "ntp server 10.1.1.1 key 1 prefer"
+  },
+  {
+   "platform": "nxos",
+   "line": "ntp server 10.1.1.1 use-vrf management key 1"
+  },
+  {
+   "platform": "nxos",
+   "line": "ssh key rsa 2048"
+  },
+  {
+   "platform": "iosxe",
+   "line": "ip ssh server algorithm authentication publickey password keyboard"
+  },
+  {
+   "platform": "ios",
+   "line": " ipv6 ospf authentication null"
+  },
+  {
+   "platform": "show",
+   "line": "  Authentication MD5, key-chain \"HSRP-KC\""
+  },
+  {
+   "platform": "nxos",
+   "line": "snmp-server host 10.1.1.1 use-vrf management"
+  },
+  {
+   "platform": "nxos",
+   "line": "snmp-server host 10.1.1.1 source-interface mgmt0"
+  },
+  {
+   "platform": "nxos",
+   "line": "password strength-check"
+  },
+  {
+   "platform": "nxos",
+   "line": "key config-key ascii"
+  },
+  {
+   "platform": "nxos",
+   "line": " authentication md5 key-chain HSRP-KC"
+  },
+  {
+   "platform": "asa",
+   "line": "aaa-server RAD protocol radius"
+  },
+  {
+   "platform": "asa",
+   "line": "snmp-server host inside v4-n00001-h001.assesshub-redacted.invalid community <redacted> version 2c"
+  },
+  {
+   "platform": "asa",
+   "line": "snmp-server enable traps snmp authentication"
+  },
+  {
+   "platform": "junos",
+   "line": "set system authentication-order [ radius password ]"
+  },
+  {
+   "platform": "junos",
+   "line": "set system login password minimum-length 8"
+  },
+  {
+   "platform": "junos",
+   "line": "set policy-options community CNAME members 65000:100"
+  },
+  {
+   "platform": "junos",
+   "line": "set protocols ospf area 0 interface ge-0/0/0.0 authentication-type md5"
+  },
+  {
+   "platform": "huawei",
+   "line": " authentication-mode hwtacacs local"
+  },
+  {
+   "platform": "huawei",
+   "line": " authentication-mode aaa"
+  },
+  {
+   "platform": "huawei",
+   "line": " authentication-mode password"
+  },
+  {
+   "platform": "huawei",
+   "line": " authentication-mode keychain KC1"
+  },
+  {
+   "platform": "huawei",
+   "line": " snmp-agent community complexity-check disable"
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set keylife 86400"
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set name \"fake-admin\""
+  },
+  {
+   "platform": "banner",
+   "line": "Do not share your password with anyone."
+  },
+  {
+   "platform": "banner",
+   "line": "Unauthorized access is prohibited; your password is your responsibility."
+  }
+ ]
+}
