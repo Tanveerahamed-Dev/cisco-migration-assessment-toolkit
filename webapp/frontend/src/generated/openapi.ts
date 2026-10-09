@@ -5155,6 +5155,45 @@ export interface components {
             readonly root_priorities: readonly number[];
             readonly root_priority: number | null;
         };
+        /** StpRootObservation */
+        readonly UiProjection1_StpRootObservation: {
+            readonly host: string;
+            readonly is_root: components["schemas"]["UiProjection1_FlagFact"];
+            readonly pointer: components["schemas"]["UiProjection1_Pointer"];
+            readonly root_address: components["schemas"]["UiProjection1_TextFact"];
+            readonly root_priority: components["schemas"]["UiProjection1_CountFact"];
+        };
+        /** StpRootObservationList */
+        readonly UiProjection1_StpRootObservationList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: [
+                components["schemas"]["UiProjection1_StpRootObservation"],
+                ...components["schemas"]["UiProjection1_StpRootObservation"][]
+            ];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: readonly components["schemas"]["UiProjection1_StpRootObservation"][];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
         /** StpRootReasonFact */
         readonly UiProjection1_StpRootReasonFact: {
             readonly basis: string;
@@ -5968,7 +6007,7 @@ export interface components {
         readonly UiProjection1_VlanSelections: {
             readonly endpoints: components["schemas"]["UiProjection1_IndexList"] | null;
             readonly gateways: components["schemas"]["UiProjection1_IndexList"] | null;
-            readonly stp_roots: readonly components["schemas"]["UiProjection1_Pointer"][] | null;
+            readonly stp_roots: components["schemas"]["UiProjection1_StpRootObservationList"];
         };
         /** Vocab */
         readonly UiProjection1_Vocab: {

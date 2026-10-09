@@ -1651,10 +1651,18 @@ def test_i14_selections_follow_the_owners_key_rules(name, snaps, payloads, docs)
                                     if readable("endpoint_identity") else None)
         assert sel["gateways"] == ([i for i, r in enumerate(l3) if _digit(r.get("vlan")) == vid]
                                    if readable("l3_forwarding") else None)
+        # Membership reads the original row key even when a source failure withholds its displayed VLAN fact.
+        stored_vid = (snap.get("vlan_cutover") or [])[row["index"]]["vlan"]
         want = sorted(_ptr("stp_roots", h, k) for h in roots for k, rec in roots[h].items()
-                      if stp_topology._election_priority(k) == vid
+                      if stp_topology._election_priority(k) == stored_vid
                       and not (isinstance(rec, dict) and rec.get("is_mst")))
-        assert sel["stp_roots"] == (want if readable("stp_roots") else None)
+        observed = sel["stp_roots"]
+        # Known stored pointers can remain as witnesses under a failed source; their facts cannot publish.
+        assert [row["pointer"] for row in observed["items"]] == want
+        if not readable("stp_roots"):
+            assert observed["state"] == srcs["stp_roots"]["state"] and observed["reason"]
+            assert all(fact["state"] != PUB for item in observed["items"]
+                       for field, fact in item.items() if field in ("is_root", "root_address", "root_priority"))
     deps = snap.get("endpoint_dependencies") or {}
     shared = deps.get("shared_ip") or []
     dual = deps.get("dual_homed") or []
@@ -2110,7 +2118,10 @@ def test_i20_selections_carry_their_source_state(snaps, payloads):
     assert vl["selection_sources"]["gateways"]["state"] == NC
     assert vl["rows"]["items"]
     for row in vl["rows"]["items"]:
-        assert row["selections"]["stp_roots"] is None and row["selections"]["gateways"] is None
+        assert row["selections"]["stp_roots"]["state"] == NC
+        assert row["selections"]["stp_roots"]["items"] == []
+        assert row["selections"]["stp_roots"]["reason"]
+        assert row["selections"]["gateways"] is None
         assert isinstance(row["selections"]["endpoints"], list)
     failed = copy.deepcopy(snaps["a"])
     failed["endpoint_dependencies"] = {}

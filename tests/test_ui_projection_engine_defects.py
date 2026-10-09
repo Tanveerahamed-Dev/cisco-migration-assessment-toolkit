@@ -230,7 +230,8 @@ def test_g15_duplicate_owner_vlan_keys_cannot_publish_two_roots(duplicate_key):
     for row in rows:
         for field in STP_FIELDS + ("stp_root", "stp_root_default_election"):
             assert row[field]["state"] == UV and row[field]["value"] is None
-        assert row["selections"]["stp_roots"] == ["/stp_roots/a/10", "/stp_roots/b/10"]
+        assert [r["pointer"] for r in row["selections"]["stp_roots"]["items"]] == [
+            "/stp_roots/a/10", "/stp_roots/b/10"]
 
 
 def _ready_vlan_snapshot(roots, verdict="READY"):
@@ -280,7 +281,9 @@ def test_g15_selection_uses_bounded_ascii_owner_keys_preserves_spelling_and_malf
     snap = _vlan_snapshot(roots)
     row = _vlan(snap)
     assert row["stp_root_state"]["value"] == "ambiguous"
-    assert row["selections"]["stp_roots"] == ["/stp_roots/a/ 00010 ", "/stp_roots/a/10"]
+    assert [r["pointer"] for r in row["selections"]["stp_roots"]["items"]] == [
+        "/stp_roots/a/ 00010 ", "/stp_roots/a/10"]
+    assert row["selections"]["stp_roots"]["state"] == UV
 
 
 def test_g15_failure_overrides_stale_owner_verdict():
@@ -360,7 +363,9 @@ def test_g15_serialized_map_key_collisions_withhold_selections():
     snap = _vlan_snapshot({"a": {10: _root(), "10": _root(claim=False)}})
     inventory = uip.project_inventory(snap)
     assert inventory["vlans"]["selection_sources"]["stp_roots"]["state"] == UV
-    assert inventory["vlans"]["rows"]["items"][0]["selections"]["stp_roots"] is None
+    selected = inventory["vlans"]["rows"]["items"][0]["selections"]["stp_roots"]
+    assert selected["state"] == UV and selected["items"] == []
+    assert "collide" in selected["reason"]
 
 
 @pytest.mark.parametrize("record", [_root(), None])
@@ -370,4 +375,6 @@ def test_g15_unique_integer_keys_and_negative_rows_preserve_serialized_pointer_i
     after = uip.project_inventory(json.loads(json.dumps(snap)))["vlans"]
     assert before == after
     assert before["selection_sources"]["stp_roots"]["state"] in (PUB, CBE)
-    assert before["rows"]["items"][0]["selections"]["stp_roots"] == ["/stp_roots/a/10"]
+    selected = before["rows"]["items"][0]["selections"]["stp_roots"]
+    assert [r["pointer"] for r in selected["items"]] == ["/stp_roots/a/10"]
+    assert selected["state"] == (PUB if isinstance(record, dict) else UV)
