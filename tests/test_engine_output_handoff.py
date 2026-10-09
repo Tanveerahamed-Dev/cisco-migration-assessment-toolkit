@@ -410,9 +410,10 @@ def test_verify_import_binds_the_import_commit_to_the_admitted_bytes(repo):
     _import(repo, outputs)
     (repo / "docs" / "NOW.md").write_bytes(b"# board\n\nimported\n")
     _commit(repo, "board")
-    result, _lines = _receive(repo, api, source_commit=source, verify_import=True)
+    result, lines = _receive(repo, api, source_commit=source, verify_import=True)
     assert result["status"] == handoff.IMPORT_STATUS and result["mode"] == "verify-import"
     assert [row["at_import"] for row in result["outputs"]] == ["admitted"] * len(handoff.OUTPUT_PATHS)
+    assert "import: every output carries the admitted bytes" in lines
     assert result["commits_after_source_touch"] == sorted(["docs/NOW.md", *handoff.OUTPUT_PATHS])
     # Verification emits the receipt only: the bytes are already in the commit it verified.
     assert [p.name for p in _review_dir(repo).iterdir()] == [handoff.RECEIPT_NAME]
@@ -424,9 +425,12 @@ def test_verify_import_reports_an_output_held_at_the_source(repo):
     api = _api(repo, outputs=outputs, source=source)
     held = handoff.OUTPUT_PATHS[2]
     _import(repo, {path: data for path, data in outputs.items() if path != held})
-    result, _lines = _receive(repo, api, source_commit=source, verify_import=True)
+    result, lines = _receive(repo, api, source_commit=source, verify_import=True)
     assert {row["path"]: row["at_import"] for row in result["outputs"]} == {
         **{path: "admitted" for path in handoff.OUTPUT_PATHS}, held: "source"}
+    # A partial import is allowed and is named as partial, never presented as a complete import.
+    assert result["status"] == handoff.IMPORT_STATUS
+    assert f"import: partial; held at the source: {held}" in lines
 
 
 @pytest.mark.parametrize("kind", ["foreign-bytes", "engine-change", "source-is-head", "receipt-of-an-import"])
@@ -682,7 +686,8 @@ def _raw_zip(members: list[dict], *, prefix: bytes = b"", gap: bytes = b"", comm
     """Hand-built archive bytes, so each header field and raw span is exactly what a case states.
 
     A member is a dict of name, method, span (the raw compressed bytes), crc and size (the declared
-    expanded size), optionally flags, local_flags, local_name, extra (central) and descriptor.
+    expanded size), optionally flags, local_flags, local_name, local_sizes, extra (central), comment
+    (central file comment), disk (central disk number), offset (central header offset) and descriptor.
     """
     body = bytearray(prefix)
     central = bytearray()
@@ -691,7 +696,7 @@ def _raw_zip(members: list[dict], *, prefix: bytes = b"", gap: bytes = b"", comm
         crc, size, span = member["crc"], member["size"], member["span"]
         local_name = member.get("local_name", member["name"]).encode("ascii")
         offset = len(body)
-        sizes = (0, 0, 0) if flags & 0x8 else (crc, len(span), size)
+        sizes = member.get("local_sizes", (0, 0, 0) if flags & 0x8 else (crc, len(span), size))
         body += struct.pack("<4s5H3L2H", b"PK\x03\x04", 20, member.get("local_flags", flags), member["method"],
                             0, 0x21, *sizes, len(local_name), 0)
         body += local_name + span
@@ -700,10 +705,11 @@ def _raw_zip(members: list[dict], *, prefix: bytes = b"", gap: bytes = b"", comm
         if index == 0:
             body += gap
         name = member["name"].encode("ascii")
-        extra = member.get("extra", b"")
+        extra, file_comment = member.get("extra", b""), member.get("comment", b"")
         central += struct.pack("<4s6H3L5H2L", b"PK\x01\x02", 0x031E, 20, flags, member["method"], 0, 0x21,
-                               crc, len(span), size, len(name), len(extra), 0, 0, 0, 0o100644 << 16, offset)
-        central += name + extra
+                               crc, len(span), size, len(name), len(extra), len(file_comment),
+                               member.get("disk", 0), 0, 0o100644 << 16, member.get("offset", offset))
+        central += name + extra + file_comment
     start = len(body)
     body += central
     body += struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, len(members), len(members), len(central), start,
@@ -773,6 +779,88 @@ def test_archive_layout_must_tile_exactly_with_agreeing_headers(kind):
         first["extra"] = b"\x0a\x00\x10"
     with pytest.raises(handoff.HandoffRefusal):
         handoff.zip_members(_raw_zip([first, second], **options))
+
+
+# --------------------------------------------------------------------------- ZIP64 end structures (W54 review)
+
+
+def _end_fields(archive: bytes) -> tuple[int, int, int]:
+    """The entry count, central-directory size and central-directory offset of a classic end record."""
+    _signature, _disk, _start, _here, count, size, offset, _comment = struct.unpack("<4s4H2LH", archive[-22:])
+    return count, size, offset
+
+
+def _classic_end(count: int, size: int, offset: int) -> bytes:
+    return struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, count, count, size, offset, 0)
+
+
+def _zip64_end(count: int, size: int, offset: int, record_at: int) -> bytes:
+    """A 56-byte ZIP64 end-of-central-directory record followed by the 20-byte locator naming it."""
+    record = struct.pack("<4sQ2H2L4Q", b"PK\x06\x06", 44, 45, 45, 0, 0, count, count, size, offset)
+    return record + struct.pack("<4sLQL", b"PK\x06\x07", 0, record_at, 1)
+
+
+def _zip64_case(kind: str) -> bytes:
+    member = _member(_deflate(BODY), BODY)
+    base = _raw_zip([member])
+    count, size, offset = _end_fields(base)
+    body = base[:-22]
+    if kind == "hidden-payload":
+        # The reviewed counterexample: the ZIP64 record names a central directory placed after 1000
+        # unexplained bytes, while the classic record's arithmetic still covers them.
+        hidden = b"ARBITRARY HIDDEN PAYLOAD " * 40
+        body = base[:offset] + hidden + base[offset:offset + size]
+        tail = _zip64_end(count, size, offset + len(hidden), len(body))
+        return body + tail + _classic_end(count, len(body) + len(tail) - offset, offset)
+    if kind == "record-without-locator":
+        record = _zip64_end(count, size, offset, len(body))[:56]
+        return body + record + _classic_end(count, size + len(record), offset)
+    if kind == "locator-in-last-extra":
+        # A well-formed private extra field whose payload ends in a ZIP64 record and its locator, so
+        # both sit exactly where a reader looks: immediately before the classic end record.
+        payload = b"\x00" * 8 + _zip64_end(count, size, offset, 0)
+        member["extra"] = struct.pack("<2H", 0x9999, len(payload)) + payload
+        return _raw_zip([member])
+    tail = _zip64_end(count, size, offset, len(body))
+    end = {"spliced": (count, size + len(tail), offset),
+           "count-sentinel": (0xFFFF, size + len(tail), offset),
+           "size-sentinel": (count, 0xFFFFFFFF, offset),
+           "offset-sentinel": (count, size + len(tail), 0xFFFFFFFF)}[kind]
+    return body + tail + _classic_end(*end)
+
+
+@pytest.mark.parametrize("kind", ["spliced", "hidden-payload", "count-sentinel", "size-sentinel",
+                                  "offset-sentinel", "record-without-locator", "locator-in-last-extra"])
+def test_zip64_end_structures_and_sentinels_are_refused(kind):
+    # `spliced` and `hidden-payload` were admitted by the reader that checked only the classic
+    # end-record arithmetic and the ZIP64 extra field; the others were refused only incidentally.
+    with pytest.raises(handoff.HandoffRefusal, match="ZIP64 end"):
+        handoff.zip_members(_zip64_case(kind))
+
+
+@pytest.mark.parametrize("kind,match", [
+    ("file-comment", "carries a file comment"),
+    ("multi-disk", "ZIP64 sentinel or a multi-disk number"),
+    ("sentinel-offset", "ZIP64 sentinel or a multi-disk number"),
+    ("trailing-bytes", "unexplained bytes after its records"),
+    ("descriptor-local-sentinel", "neither zero nor the central directory's"),
+])
+def test_central_directory_is_exactly_its_records(kind, match):
+    member = _member(_deflate(BODY), BODY)
+    if kind == "file-comment":
+        member["comment"] = b"concealed"
+    elif kind == "multi-disk":
+        member["disk"] = 0xFFFF
+    elif kind == "sentinel-offset":
+        member["offset"] = 0xFFFFFFFF
+    elif kind == "descriptor-local-sentinel":
+        member["flags"], member["local_sizes"] = 0x8, (0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF)
+    archive = _raw_zip([member])
+    if kind == "trailing-bytes":
+        count, size, offset = _end_fields(archive)
+        archive = archive[:-22] + b"concealed" + _classic_end(count, size + len(b"concealed"), offset)
+    with pytest.raises(handoff.HandoffRefusal, match=match):
+        handoff.zip_members(archive)
 
 
 # --------------------------------------------------------------------------- hashes and manifest

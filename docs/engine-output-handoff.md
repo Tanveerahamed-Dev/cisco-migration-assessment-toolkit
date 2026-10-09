@@ -74,7 +74,8 @@ and `git`.
    gh run download <receipt run id> --repo Tanveerahamed-Dev/cisco-migration-assessment-toolkit --name engine-output-receipt-<receipt head SHA>-<receipt run id>-<attempt> --dir <fresh scratch directory>
    ```
 
-   Copy each `<scratch>/files/<path>` you import over `<checkout>/<path>`, then:
+   Copy each `<scratch>/files/<path>` you import over `<checkout>/<path>`. A partial import is
+   allowed: you may hold back any output, and it keeps the source's bytes. Then:
 
    ```
    git -C <checkout> hash-object tests/golden/sheet_schema.json tests/golden/snapshot.json webapp/sample_data/sample_fleet.snapshot.json
@@ -88,8 +89,11 @@ and `git`.
    holds the import commit, with the same producer run and source and `-f verify_import=true`. It
    refuses unless the commits after the source touch only the three outputs and top-level
    `docs/*.md`, and every output at the dispatched commit is either the admitted bytes or the
-   source's own. Then the ordinary hosted gates on that commit decide: golden, sample and, when the
-   sample changed, Atlas Scope.
+   source's own. It reports each output separately and never presents a partial import as a
+   complete one: `receipt.json` records each output's `at_import` as `admitted` or `source`, and the
+   log names each and adds the line `import: every output carries the admitted bytes` or
+   `import: partial; held at the source: <paths>`. Then the ordinary hosted gates on that commit
+   decide: golden, sample and, when the sample changed, Atlas Scope.
 
 7. If the sample changed, Atlas Scope's tracked compiled outputs are stale. These are the files
    `atlas-scope/tools/compile-all.mjs` writes, plus `GOLDEN_SHA` in
@@ -123,7 +127,13 @@ The hosted receiver (`receive`, only inside `engine-output-receipt.yml`):
 - Refuses every environment but that workflow's manual dispatch in this repository on a
   GitHub-hosted Linux runner under Python 3.12. A workstation run, a dry run included, is refused
   before any Git, API or archive operation. Its inputs arrive only through the workflow
-  environment; the command line takes no path, run, source or option.
+  environment; the command line takes no path, run, source or option. This check reads GitHub's
+  environment variables, so it stops documented or accidental local execution only. It is not host
+  attestation: a process that deliberately sets those variables on a workstation passes it. That
+  is the same boundary as the frontend receiver (`.github/scripts/frontend_artifact_receive.py`).
+  Such a run still writes only review data under the `RUNNER_TEMP` it was given, never the
+  checkout, carries no approval or release authority, and produces no hosted receipt artifact for
+  step 5 to download.
 - Binds its own checkout the same way as the producer: `HEAD` is the dispatched commit, the index
   hides nothing, and every tracked byte and mode equals the tree, at the start and again before it
   records anything.
@@ -131,14 +141,25 @@ The hosted receiver (`receive`, only inside `engine-output-receipt.yml`):
   or step, and a job outside the hosted `ubuntu-24.04` image.
 - Selects exactly one unexpired artifact by name and requires the downloaded archive's size and
   SHA-256 to match GitHub's record.
-- Decodes every ZIP member from its exact raw span. The end record must be the archive's last bytes
-  (no comment, prefix or suffix). The member records must tile everything before the central
-  directory with no gap or overlap, and local and central headers (names, flags, method, sizes,
-  CRC, data descriptor) must agree. ZIP64, encryption and unsupported flags or compression are
+- Decodes every ZIP member from its exact raw span. The end record must be the archive's last 22
+  bytes (no comment, prefix or suffix), with no multi-disk value and no ZIP64 sentinel (a `0xFFFF`
+  disk or count, a `0xFFFFFFFF` size or offset). No ZIP64 structure is admitted. The 20 bytes
+  before the end record, the only place a reader looks for a ZIP64 locator, must not be one. The
+  central directory is parsed independently of `zipfile`, from the classic end record alone. It
+  must be exactly its declared central file headers, contiguous and abutting the end record, with
+  no ZIP64 end record, locator or other bytes before, between or after them. A header may carry no
+  file comment, multi-disk number or ZIP64 sentinel. `zipfile`'s reading must equal those records
+  field for field. The member records must tile everything before the central directory with no gap
+  or overlap, and local and central headers (names, flags, method, sizes, CRC, data descriptor)
+  must agree. With a data descriptor, the local CRC and sizes must be zero or the central values.
+  ZIP64 extra fields, malformed extra fields, encryption and unsupported flags or compression are
   refused. Each member must expand to exactly its declared size, reach end-of-stream with no
   trailing bytes or second stream, and match its CRC. The member, total, archive, entry-count and
   expansion-ratio caps stay. Only the closed member set is admitted: path traversal, absolute,
-  aliased or duplicate names, links and special files are refused.
+  aliased or duplicate names, links and special files are refused. One residual is accepted, as in
+  the frontend receiver: a well-formed extra field with another tag is admitted, and its payload is
+  opaque bytes inside a declared field. No reader takes such a payload as an end structure, because
+  the locator slot is refused, and the real upload-artifact layout carries no extra field.
 - Requires the manifest's commit and tree to match the source, the closed file list, and every
   member's size and SHA-256. It recomputes `changed_from_source` from the source commit.
 - Applies the same content policy. The canonical marker policy executes only from the admitted Git
@@ -149,7 +170,9 @@ The hosted receiver (`receive`, only inside `engine-output-receipt.yml`):
   size, SHA-256 and Git blob name, and carries `acceptance` and `release_authority` false.
 - With `verify_import`, it writes `receipt.json` only, after proving that every output at the
   dispatched commit is the admitted bytes or the source's and that nothing but the outputs and
-  top-level `docs/*.md` changed since the source.
+  top-level `docs/*.md` changed since the source. A partial import is allowed by design. Each
+  output's `at_import` (`admitted` or `source`) and the `import:` log line state what was imported
+  (step 6).
 
 ## Known properties
 
@@ -205,25 +228,43 @@ GitHub-only rule; hosted CI is their first execution.
    skip-worktree entry hides. A probe of the merged `bind_source` admitted an altered `engine.py`
    behind either flag and, on a Windows filesystem, a same-size edit with its timestamp restored and
    no flag at all. `bind_checkout` now requires the index to equal the source tree with only plain
-   cached entries,
-   re-reads every tracked byte and mode, and refuses untracked compiled Python. The producer runs it
-   before regeneration and twice after, and the receiver at its start and before recording. Tests:
-   the `hides working-tree state`, executable-bit, compiled-Python and `bind_checkout` tests. The
-   timestamp case depends on the filesystem's change-time handling, so it is recorded here rather
-   than pinned by a test.
+   cached entries, re-reads every tracked byte and mode, and refuses untracked compiled Python. The
+   producer runs it before regeneration and twice after, and the receiver at its start and before
+   recording. Tests: the `hides working-tree state`, executable-bit, compiled-Python and
+   `bind_checkout` tests. The timestamp case depends on the filesystem's change-time handling, so
+   it is recorded here rather than pinned by a test.
 3. **ZIP stream closure — fixed.** The merged reader trusted `zipfile`'s declared-size cutoff.
    Probed on synthetic archives, it admitted a STORED `ab` declared as one byte with the CRC of `a`,
    a DEFLATE stream that expands past its declaration, trailing bytes, a second stream, an unfinished
    stream, and leading or trailing archive bytes. `zip_members` now follows the reviewed frontend
    receiver: an exact end record, contiguous member tiling, agreeing local and central headers, no
-   ZIP64, and per-member raw-span decoding to exact size, end-of-stream, no tail and the CRC. All
-   existing caps and member restrictions are kept, plus the reviewed expansion-ratio bound. The
-   layout of a real upload-artifact archive (W45's producer artifact `11594811864`: data descriptors
-   with their signature, zero local sizes, no extra fields, no comment) was read independently with a
-   stdlib header walk, not with repository code, and its synthetic replica is a positive control.
-   Tests: `test_member_stream_must_close_exactly_at_its_declared_size`,
+   ZIP64 extra field, and per-member raw-span decoding to exact size, end-of-stream, no tail and the
+   CRC. All existing caps and member restrictions are kept, plus the reviewed expansion-ratio bound.
+   The layout of a real upload-artifact archive (W45's producer artifact `11594811864`: data
+   descriptors with their signature, zero local sizes, no extra fields, no comment) was read
+   independently with a stdlib header walk, not with repository code, and its synthetic replica is
+   a positive control. Tests: `test_member_stream_must_close_exactly_at_its_declared_size`,
    `test_archive_layout_must_tile_exactly_with_agreeing_headers` and
    `test_raw_span_controls_admit_plain_and_descriptor_members`.
+
+   **Correction after independent review (2026-10-09).** The first version of this fix claimed
+   "no ZIP64", but that was false for ZIP64 end structures. It refused only the ZIP64 extra field
+   (tag `0x0001`) and checked the classic end record's arithmetic, which a ZIP64 end record and
+   locator placed inside the classic central-directory span satisfy. Python's `zipfile` then trusts
+   the ZIP64 record. Probed on synthetic archives, that reader admitted a spliced ZIP64 end record
+   and locator, and 1000 unexplained bytes before the central directory that the ZIP64 record
+   named. It also admitted a central file comment, a `0xFFFF` central disk number and `0xFFFFFFFF`
+   local sizes behind a data descriptor. `zip_members` now refuses every ZIP64 end structure and
+   sentinel structurally, as listed under "What each end checks". It parses the central directory
+   itself and requires `zipfile`'s reading to equal it. `zipfile`'s `NotImplementedError` and
+   `ValueError` on open are now refusals too, not tracebacks. The same probe shows the new reader
+   refusing each case and still admitting the positive controls, a `zipfile`-written archive with
+   directory entries, and the real W45 archive above. That is a pure-function call on downloaded
+   review data, not a test run. Tests:
+   `test_zip64_end_structures_and_sentinels_are_refused` and
+   `test_central_directory_is_exactly_its_records`. Each of their 12 cases fails on the previous
+   reader: 5 because it admitted the archive, 7 because it refused for an unrelated reason that the
+   pinned message does not match.
 4. **Cached marker-policy admission — fixed.** The merged loader imported
    `cisco_toolkit.distribution_verify` and accepted any module whose `__file__` matched. A probe
    admitted both a preloaded same-path module and planted bytecode stamped to the source, even under
@@ -236,11 +277,16 @@ GitHub-only rule; hosted CI is their first execution.
    is not standard library; the hosted ends run 3.12.
 
 Still open: the first hosted dispatch of the receipt workflow (it needs default-branch
-registration), the first hosted execution of every new test, and independent review of this
-change. The merge of #622 was not these concerns' validation, and this record is not either. Two
-sibling producers outside this route still load the marker policy through the import system:
+registration), the first hosted execution of every new test, and an independent re-review of the
+ZIP64 correction (the first independent review found that gap). The merge of #622 was not these
+concerns' validation, and this record is not either. Two sibling producers outside this route
+still load the marker policy through the import system:
 `.github/scripts/frontend_build_handoff.py` and `.github/scripts/scope_compile_handoff.py`. W54
-does not change them; they are a separate follow-up for their own rows.
+does not change them; they are a separate follow-up for their own rows. The reviewed frontend
+receiver's `.github/scripts/frontend_artifact_receive.py :: zip_members` has the same ZIP64 gap: it
+checks only the classic end record's arithmetic and the ZIP64 extra field. A probe of it on a
+synthetic archive admitted 1000 unexplained bytes behind a ZIP64 end record and locator. W54 does
+not change it either; it is a follow-up for that receiver's own row.
 
 ## What it is not
 

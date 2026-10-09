@@ -153,8 +153,16 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _WINDOWS_DEVICES = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
                               *(f"lpt{i}" for i in range(1, 10))})
 _ZIP_END = struct.Struct("<4s4H2LH")
+_ZIP_CENTRAL = struct.Struct("<4s6H3L5H2L")
 _ZIP_LOCAL = struct.Struct("<4s5H3L2H")
 _ZIP_DESCRIPTOR = struct.Struct("<3L")
+# ZIP64 end structures: the end-of-central-directory record and its locator. A reader looks for the
+# locator only in the 20 bytes before the classic end record and then trusts the record it names.
+_ZIP64_END_RECORD = b"PK\x06\x06"
+_ZIP64_END_LOCATOR = b"PK\x06\x07"
+_ZIP64_LOCATOR_SIZE = 20
+_ZIP_SENTINEL_16 = 0xFFFF
+_ZIP_SENTINEL_32 = 0xFFFFFFFF
 
 
 class HandoffRefusal(ValueError):
@@ -764,23 +772,74 @@ def _plain_extra(extra: bytes, name: str) -> None:
         offset += 4 + length
 
 
+def _not_zip64_end(chunk: bytes, where: str) -> None:
+    need(chunk[:4] not in (_ZIP64_END_RECORD, _ZIP64_END_LOCATOR),
+         f"{where} is a ZIP64 end-of-central-directory structure; ZIP64 end structures are refused")
+
+
+def _central_records(data: bytes, offset: int, size: int, count: int) -> list[tuple]:
+    """The central directory parsed independently of zipfile, from the classic end record alone.
+
+    It must be exactly ``count`` contiguous central file headers that tile [offset, offset + size)
+    with nothing before, between or after them: no ZIP64 end record, locator or other bytes. A
+    header carries no file comment, no ZIP64 sentinel size or offset and no multi-disk number.
+    """
+    at, finish = offset, offset + size
+    records = []
+    for index in range(count):
+        _not_zip64_end(data[at:at + 4], f"central directory record {index}")
+        need(at + _ZIP_CENTRAL.size <= finish, "the central directory is truncated")
+        (signature, _made_by, _needed, flags, method, _time, _date, crc, compressed, expanded, name_length,
+         extra_length, comment_length, disk, _internal, external, header) = _ZIP_CENTRAL.unpack_from(data, at)
+        need(signature == b"PK\x01\x02", f"central directory record {index} is not a central file header")
+        need(_ZIP_SENTINEL_32 not in (compressed, expanded, header) and disk == 0,
+             f"central directory record {index} carries a ZIP64 sentinel or a multi-disk number")
+        need(comment_length == 0, f"central directory record {index} carries a file comment")
+        name_start = at + _ZIP_CENTRAL.size
+        extra_start = name_start + name_length
+        at = extra_start + extra_length
+        need(at <= finish, f"central directory record {index} overruns the central directory")
+        try:
+            name = data[name_start:extra_start].decode("utf-8" if flags & 0x800 else "cp437")
+        except UnicodeDecodeError as error:
+            raise HandoffRefusal(f"central directory record {index}: unreadable name") from error
+        records.append((name, flags, method, crc, compressed, expanded, data[extra_start:at], external, header))
+    if at < finish:
+        _not_zip64_end(data[at:at + 4], "the central directory's trailing data")
+    need(at == finish, "the central directory carries unexplained bytes after its records")
+    return records
+
+
 def zip_members(data: bytes) -> dict[str, bytes]:
     """Every regular member of a bounded, unencrypted ZIP, decoded from its exact raw span.
 
-    The end record must be the archive's last 22 bytes (no comment, suffix or multi-disk), the
-    central directory must abut it, and the member records must tile everything before it with no
-    prefix, gap or overlap. Local and central headers must agree; ZIP64, encryption, unsupported
-    flags or compression, links, aliases and special files are refused.
+    The end record must be the archive's last 22 bytes (no comment, suffix, multi-disk value or
+    ZIP64 sentinel) and must not be preceded by a ZIP64 locator. The central directory it names is
+    parsed independently, must be exactly its declared records (no ZIP64 end record or other bytes)
+    and must abut the end record; zipfile's reading must agree with it record for record. The member
+    records must tile everything before the central directory with no prefix, gap or overlap. Local
+    and central headers must agree; every ZIP64 structure, encryption, unsupported flags or
+    compression, links, aliases and special files are refused.
     """
     need(22 <= len(data) <= MAX_ARCHIVE_BYTES, "the artifact archive size is out of bounds")
     end = _ZIP_END.unpack_from(data, len(data) - 22)
     member_area = end[6]
-    need(end[0] == b"PK\x05\x06" and end[1:3] == (0, 0) and end[3] == end[4] and end[7] == 0
-         and end[5] + end[6] == len(data) - 22,
+    need(end[0] == b"PK\x05\x06",
          "the artifact is not a ZIP archive with one exact end record (no comment, prefix, suffix or multi-disk)")
+    # A ZIP64 archive marks the classic fields it overrides with all-ones sentinels and places its
+    # locator immediately before the classic end record; either sends a reader to other values.
+    need(_ZIP_SENTINEL_16 not in end[1:5] and _ZIP_SENTINEL_32 not in end[5:7],
+         "the artifact's end record carries a ZIP64 sentinel count, size or offset; ZIP64 end structures are refused")
+    if len(data) >= 22 + _ZIP64_LOCATOR_SIZE:
+        _not_zip64_end(data[len(data) - 22 - _ZIP64_LOCATOR_SIZE:], "the 20 bytes before the end record")
+    need(end[1:3] == (0, 0) and end[3] == end[4] and end[7] == 0 and end[5] + end[6] == len(data) - 22,
+         "the artifact is not a ZIP archive with one exact end record (no comment, prefix, suffix or multi-disk)")
+    need(0 < end[4] <= MAX_ZIP_ENTRIES, "the artifact member census is out of bounds")
+    records = _central_records(data, end[6], end[5], end[4])
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
-    except (zipfile.BadZipFile, EOFError, OSError, struct.error, UnicodeDecodeError) as error:
+    except (zipfile.BadZipFile, EOFError, OSError, struct.error, UnicodeDecodeError, NotImplementedError,
+            ValueError) as error:
         raise HandoffRefusal("the artifact is not a ZIP archive") from error
     files: dict[str, bytes] = {}
     seen: set[str] = set()
@@ -790,6 +849,9 @@ def zip_members(data: bytes) -> dict[str, bytes]:
         entries = archive.infolist()
         need(0 < len(entries) <= MAX_ZIP_ENTRIES and len(entries) == end[4],
              "the artifact member census is out of bounds")
+        need([(entry.orig_filename, entry.flag_bits, entry.compress_type, entry.CRC, entry.compress_size,
+               entry.file_size, entry.extra, entry.external_attr, entry.header_offset) for entry in entries]
+             == records, "zipfile's reading of the central directory differs from its exact records")
         for entry in entries:
             raw = entry.filename
             need(entry.orig_filename == raw, f"member name {entry.orig_filename!r} was rewritten by the reader")
@@ -831,6 +893,9 @@ def zip_members(data: bytes) -> dict[str, bytes]:
             finish = body + entry.compress_size
             need(finish <= member_area, f"member {name!r}: data overlaps the central directory")
             if entry.flag_bits & 0x8:
+                # The local CRC and sizes are zero (or the central values), never ZIP64 sentinels.
+                need(local[6:9] in ((0, 0, 0), (entry.CRC, entry.compress_size, entry.file_size)),
+                     f"member {name!r}: local sizes or CRC are neither zero nor the central directory's")
                 if data[finish:finish + 4] == b"PK\x07\x08":
                     finish += 4
                 need(finish + _ZIP_DESCRIPTOR.size <= member_area
@@ -1157,6 +1222,11 @@ def receive(root: Path, *, environ=None, api=None, patterns_for=None, out=print)
         if verify_import:
             state += f"; the import commit carries the {row['at_import']} bytes"
         out(f"  {row['path']}: {row['bytes']} bytes, git blob {row['git_blob']}, {state}")
+    if verify_import:
+        # A partial import is allowed: each output is reported as admitted or source, never assumed.
+        held = [row["path"] for row in report if row["at_import"] == "source"]
+        out("import: " + ("every output carries the admitted bytes" if not held else
+                          "partial; held at the source: " + ", ".join(held)))
     out(f"{receipt['status']}: review data only. Nothing here approves, merges or releases; the hosted golden, "
         "sample and Atlas Scope gates on the committed result decide.")
     return receipt
