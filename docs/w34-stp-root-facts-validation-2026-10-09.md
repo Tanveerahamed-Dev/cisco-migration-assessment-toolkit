@@ -233,3 +233,14 @@ No W36 branch, artifact intake or re-bind is authorized to proceed now. Wait for
 the single five-path request on the W45 integration train, with its exact head,
 artifact and new sample identity. Separate sample/receipt-byte claims in peer
 comments are declarations until independently joined to hosted evidence.
+
+The owner merged #620 during this LF update as
+`7d547890f05482145288d8b0a5b9514bb415543b` at `2026-10-09T03:35:53Z`, ordered
+`a06d1d27 + 5da2d9d0`, tree `8c74ff7cee915549cf0657bd93c1aa659a154bed`.
+W34 integrates that main before publication. Its seven incoming non-NOW paths
+remain exact main bytes. Only a webapp test is added, outside LF scope; the
+existing backend changes and unchanged LF rules add/remove no LF-owned path.
+The observed 182 receipt still applies to that membership, while the shared
+backend/app changes require entirely fresh combined-source validation. No prior
+peer or G15 result qualifies the new head. W27 is retired in NOW with both full
+parent histories retained; W36 remains on hold.
