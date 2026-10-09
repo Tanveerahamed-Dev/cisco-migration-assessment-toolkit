@@ -328,7 +328,10 @@ export function vocabFixture(): Vocab {
 export function common(sid: number, view: string) {
   return { schema: "ui_projection_transport/1", projection_schema: "ui_projection/1", view,
     identity: { snapshot_id: sid, sha256: `sha256:${"a".repeat(64)}`, bytes: 42, digest_form: "assesshub-store-blob" },
-    limitations: [], engine: { script_version: published("synthetic"), snapshot_schema: published("3.23.0"), generated_at: withheld(), collected_at: withheld(), snapshot_schema_supported: true, code_schema_version: "3.23.0" } };
+    limitations: [], engine: { script_version: published("synthetic"), snapshot_schema: published("3.23.0"), generated_at: withheld(), collected_at: withheld(), snapshot_schema_supported: true, code_schema_version: "3.23.0",
+      // G41: the engine's own source identity names the same synthetic bytes as this envelope identity.
+      snapshot_sha256: { ...published(`sha256:${"a".repeat(64)}`), subject: null, basis: "synthetic.owner:sha256" },
+      snapshot_bytes: { ...published(42), subject: null, basis: "synthetic.owner:bytes" }, snapshot_digest_form: "exact-parsed-bytes" } };
 }
 export function trustFixture(sid = 1) {
   return { ...common(sid, "trust"), payload: {

@@ -2092,8 +2092,12 @@ export interface components {
             readonly collected_at: components["schemas"]["UiProjection1_TextFact"];
             readonly generated_at: components["schemas"]["UiProjection1_TextFact"];
             readonly script_version: components["schemas"]["UiProjection1_TextFact"];
+            readonly snapshot_bytes: components["schemas"]["UiProjection1_PositiveCountFact"];
+            /** @constant */
+            readonly snapshot_digest_form: "exact-parsed-bytes";
             readonly snapshot_schema: components["schemas"]["UiProjection1_TextFact"];
             readonly snapshot_schema_supported: boolean | null;
+            readonly snapshot_sha256: components["schemas"]["UiProjection1_Sha256Fact"];
         };
         /**
          * EngineState
@@ -4052,6 +4056,34 @@ export interface components {
             readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
             /** @enum {string} */
             readonly value: "Critical" | "High" | "Medium" | "Low" | "Info";
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
+        };
+        /** Sha256Fact */
+        readonly UiProjection1_Sha256Fact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: string;
         } | {
             readonly basis: string;
             readonly caveats?: [

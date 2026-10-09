@@ -13,7 +13,10 @@ Slice 1 covers two screens:
 * ``trust`` -- the live schema census, the failed-phase record, the published coverage matrix, the
   unknown-evidence summary, the SSOT self-verification, and the projection's own stated limitations;
 
-plus an ``engine`` block naming the snapshot schema and producer versions.
+plus an ``engine`` block naming the snapshot schema and producer versions, and (G41) the SHA-256 and byte length of
+the exact bytes the snapshot was parsed from, so every pointer names the byte string it resolves in. Only the reader
+that holds those bytes can bind them (``protocol_assurance.bind_snapshot_json_bytes``); a snapshot handed over already
+parsed names no file (``not_collected``), and the projection never hashes a re-serialisation in its place.
 
 Slice 2 adds the row screens:
 
@@ -124,6 +127,7 @@ from cisco_toolkit.coverage_matrix import (
     COVERAGE_DIMENSIONS, COVERAGE_STATE_ORDER, COVERAGE_VERDICT_SOURCES, CoverageRowIndex,
     compute_device_coverage, index_coverage_rows, match_coverage_cell,
 )
+from cisco_toolkit.protocol_assurance import BoundSnapshot, bound_snapshot_source
 
 SCHEMA = "ui_projection/1"
 SCHEMA_ID = "urn:atlas:schema:ui-projection:1"
@@ -185,6 +189,17 @@ UE_COMPLETE_STATES: Tuple[str, ...] = ("observed_no_unknowns", "observed_with_un
 UE_SOURCE_STATES: Tuple[str, ...] = ("observed", "observed_empty", "partial", "not_collected",
                                      "malformed")                               # unknown_evidence._SOURCE_STATES
 SNAPSHOT_SCHEMA = "collect_parse_snapshot/1"                                    # html.snapshot_state
+#: G41: the one engine owner of a snapshot's source identity. Only protocol_assurance.bind_snapshot_json_bytes,
+#: which parses and hashes ONE byte string, mints the process-local marker this owner reads back (and refuses once
+#: the content changes). A parsed mapping alone names no file, and this module never hashes a re-serialisation.
+SNAPSHOT_IDENTITY_OWNER = "protocol_assurance.bound_snapshot_source"
+#: The owner's digest spelling (protocol_assurance.bind_snapshot_json_bytes): the algorithm, a colon, 64 lowercase hex.
+SNAPSHOT_SHA256_PATTERN = "^sha256:[0-9a-f]{64}$"
+#: The byte form of that digest: the exact byte string the reader parsed into this snapshot, with no newline or
+#: encoding normalisation. A digest is only comparable with another of the same form (docs/ssot.md, the digest of
+#: "one snapshot"). AssessHub parses its persisted store blob, so there it is the same byte string as the
+#: transport's assesshub-store-blob identity; a file reader parses the file as read.
+SNAPSHOT_DIGEST_FORM = "exact-parsed-bytes"
 #: Lifecycle summary field -> band label (ssot lifecycle-band table), and its inverse.
 LIFECYCLE_BAND_FACTS: Mapping[str, str] = MappingProxyType({
     "n_past_ldos": "Past-LDoS", "n_past_eos": "Past-EoS", "n_near": "Near-LDoS", "n_active": "Active",
@@ -694,6 +709,7 @@ _SLOT_RULE = {
     "coverage_cell": "a coverage state of its closed vocabulary",
     "shared_ip": "an {ip, switches, macs} record",
     "evidence_ref": "a closed {kind, host, ref, role, cite} record using the engine's evidence vocabulary",
+    "sha256": "a 'sha256:' digest of 64 lowercase hexadecimal digits",
 }
 
 # Slice 2 reasons (a reason that is not collected_but_empty never says "not a blind spot").
@@ -743,6 +759,16 @@ _R_FLEET_BLIND = ("not collected: collection_completeness lists {n} device(s) as
 _R_FLEET_NO_CONFIG = ("not collected: {n} device(s) in the devices map have no security row (no captured "
                       "running-config), so their configuration-derived rows could not be generated; an empty list is "
                       "not a clean result")
+# G41 (snapshot identity in the engine block).
+_R_SOURCE_UNBOUND = ("not collected: this projection received a parsed snapshot without the exact bytes it was read "
+                     "from, so it names no file. Only the reader that holds those bytes can bind them "
+                     "(protocol_assurance.bind_snapshot_json_bytes); a hash of a re-serialisation would name a "
+                     "different byte string, so none is computed")
+_R_SOURCE_DETACHED = ("unverified: this snapshot was bound to exact bytes, but its content no longer matches them "
+                      "(protocol_assurance.bound_snapshot_source), so it names no file")
+_R_SOURCE_MALFORMED = ("unverified: the source-identity receipt failed this projection's type check (a 'sha256:' digest "
+                       "of 64 lowercase hexadecimal digits and a positive byte count within the browser's exact integer "
+                       "range), so it names no file")
 
 
 def _is_text(value: Any) -> bool:
@@ -842,6 +868,31 @@ class _Ctx:
         self._vlan_hosts: Any = _UNSET
         self._coverage_rows: Any = _UNSET
         self._device_coverage: Dict[str, Optional[Dict[str, Any]]] = {}
+        self._source: Any = _UNSET
+
+    @property
+    def source(self) -> Tuple[str, Optional[str], Optional[int], str]:
+        """G41: ``(state, sha256, bytes, reason)`` of the exact bytes this snapshot object was parsed from, read once
+        from its owner (:data:`SNAPSHOT_IDENTITY_OWNER`), so every document built over this context agrees. A mapping
+        that carries no exact-byte marker is not_collected; a marker its owner no longer verifies (the content changed
+        after binding), an owner fault or a malformed receipt is unverified. Nothing here hashes the snapshot."""
+        if self._source is _UNSET:
+            if not isinstance(self.s, BoundSnapshot):
+                self._source = (_NC, None, None, _R_SOURCE_UNBOUND)
+            else:
+                receipt = self._call(SNAPSHOT_IDENTITY_OWNER, bound_snapshot_source, None)
+                fault = self.faults.get(SNAPSHOT_IDENTITY_OWNER)
+                ok_sha, sha = _typed(receipt.get("sha256") if isinstance(receipt, dict) else None, "sha256")
+                ok_n, size = _typed(receipt.get("bytes") if isinstance(receipt, dict) else None, "positive_count")
+                if fault is not None:
+                    self._source = (_UV, None, None, fault)
+                elif not isinstance(receipt, dict) or receipt.get("source_bound") is not True:
+                    self._source = (_UV, None, None, _R_SOURCE_DETACHED)
+                elif not (ok_sha and ok_n):
+                    self._source = (_UV, None, None, _R_SOURCE_MALFORMED)
+                else:
+                    self._source = (_PUB, sha, size, "")
+        return self._source
 
     @property
     def coverage_rows(self) -> Optional[CoverageRowIndex]:
@@ -1178,6 +1229,8 @@ def _text_list(raw: Any) -> Tuple[bool, Any]:
     return False, None
 
 
+#: :data:`SNAPSHOT_SHA256_PATTERN` without its anchors, for a whole-string match (``$`` would admit a trailing newline).
+_SHA256_RE = re.compile(SNAPSHOT_SHA256_PATTERN[1:-1])
 _FHRP_TEXT = ("proto", "group", "vip")
 _FHRP_MEMBER_TEXT = ("host", "proto", "group", "vip", "role", "vmac")
 
@@ -1258,6 +1311,9 @@ def _typed(raw: Any, slot: str, vocab: Sequence[str] = ()) -> Tuple[bool, Any]:
         return ok, {k: raw[k] for k in fields} if ok else None
     if slot == "text":
         ok = _is_text(raw)
+        return ok, (raw if ok else None)
+    if slot == "sha256":
+        ok = _is_text(raw) and _SHA256_RE.fullmatch(raw) is not None
         return ok, (raw if ok else None)
     if slot == "flag":
         return isinstance(raw, bool), (raw if isinstance(raw, bool) else None)
@@ -2194,11 +2250,19 @@ def _engine(ctx: _Ctx) -> Dict[str, Any]:
     stamp = out["snapshot_schema"]
     out["snapshot_schema_supported"] = (stamp["value"] == SNAPSHOT_SCHEMA) if stamp["state"] == _PUB else None
     out["code_schema_version"] = str(_CODE_SCHEMA_VERSION)
+    # G41: which exact byte string every pointer in this document resolves in. A value the owner computes from those
+    # bytes, not from a snapshot address: no subject and no ref. Both facts share one state and one reason.
+    state, sha, size, reason = ctx.source
+    out["snapshot_sha256"] = _envelope(state, sha, None, [], f"{SNAPSHOT_IDENTITY_OWNER}:sha256", reason)
+    out["snapshot_bytes"] = _envelope(state, size, None, [], f"{SNAPSHOT_IDENTITY_OWNER}:bytes", reason)
+    out["snapshot_digest_form"] = SNAPSHOT_DIGEST_FORM
     return out
 
 
 def project_engine(snap: Any) -> Dict[str, Any]:
-    """Which snapshot schema and producer versions this payload was projected from."""
+    """Which snapshot schema and producer versions this payload was projected from, and (G41) which exact bytes:
+    the SHA-256 and length its owner bound when a reader parsed them (:func:`protocol_assurance.bind_snapshot_json_bytes`),
+    or not_collected for a snapshot handed over already parsed."""
     return _engine(_Ctx(snap))
 
 
@@ -4931,6 +4995,7 @@ def project_path(snap: Any, src_ip: Any, dst_ip: Any) -> Dict[str, Any]:
     from cisco_toolkit import fib
 
     ctx = _Ctx(snap)
+    engine = _engine(ctx)              # G41: the source identity is read before any owner below touches the snapshot
     sections = ("routes", "interfaces", "routing_neighbors", "l3_forwarding")
     hit = _secs_fail(ctx, sections)
     routes = ctx.s.get("routes", _MISSING)
@@ -4970,7 +5035,7 @@ def project_path(snap: Any, src_ip: Any, dst_ip: Any) -> Dict[str, Any]:
             "result": result, "hop_evidence": _listing(ctx, state, reason, None, "fib.trace_fib_path:hops evidence",
                                                        evidence, sections=sections, caveats=("path_route_model_only",)),
             "style": style, "legend": _topology_legend()}
-    return {"schema": SCHEMA, "engine": _engine(ctx), "path": path, "vocab": _vocab()}
+    return {"schema": SCHEMA, "engine": engine, "path": path, "vocab": _vocab()}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -5739,12 +5804,15 @@ def _build_schema() -> Dict[str, Any]:
     defs["CensusRowList"] = _list_def("CensusRowList", _ref("CensusRow"))
     defs["FailureRecordList"] = _list_def("FailureRecordList", _ref("FailureRecordItem"))
     defs["ViolationList"] = _list_def("ViolationList", _str())
+    defs["Sha256Fact"] = _fact_def("Sha256Fact", {"type": "string", "pattern": SNAPSHOT_SHA256_PATTERN})
     defs["Engine"] = _closed(
         "Engine", ("snapshot_schema", "script_version", "generated_at", "collected_at", "snapshot_schema_supported",
-                   "code_schema_version"),
+                   "code_schema_version", "snapshot_sha256", "snapshot_bytes", "snapshot_digest_form"),
         {"snapshot_schema": _ref("TextFact"), "script_version": _ref("TextFact"), "generated_at": _ref("TextFact"),
          "collected_at": _ref("TextFact"), "snapshot_schema_supported": _nullable({"type": "boolean"}),
-         "code_schema_version": _str()})
+         "code_schema_version": _str(), "snapshot_sha256": _ref("Sha256Fact"),
+         "snapshot_bytes": _ref("PositiveCountFact"),
+         "snapshot_digest_form": {"type": "string", "const": SNAPSHOT_DIGEST_FORM}})
     defs["OverviewFacts"] = _closed(
         "OverviewFacts", tuple(ssot.CANONICAL_FACTS),
         {name: _ref("CanonBand" if name == "worst_band" else "CanonScore" if name == "avg_health" else "CanonCount")
@@ -5845,4 +5913,5 @@ __all__ = [
     "IMPACT_INDETERMINATE_PREFIX",
     "TOPOLOGY_TONES", "TOPOLOGY_STROKES", "TOPOLOGY_WEIGHTS", "FIB_ROUTE_FIELDS", "FIB_MTU_GAP_REASONS",
     "LIFECYCLE_FACT_NAMES", "VOCAB_SCHEMA", "VOCAB_CLASSES",
+    "SNAPSHOT_IDENTITY_OWNER", "SNAPSHOT_SHA256_PATTERN", "SNAPSHOT_DIGEST_FORM",
 ]

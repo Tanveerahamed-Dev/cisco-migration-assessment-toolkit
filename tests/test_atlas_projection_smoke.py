@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from cisco_toolkit.protocol_assurance import bind_snapshot_json_bytes
 from cisco_toolkit.ui_projection import project
 from portable import build_atlas
 from webapp.backend.ui_projection_api import _page, _page_view
@@ -17,8 +18,12 @@ from webapp.backend.ui_projection_api import _page, _page_view
 def projection_responses():
     snapshot = json.loads((Path(__file__).resolve().parents[1] / "webapp/sample_data/sample_fleet.snapshot.json").read_text(encoding="utf-8"))
     raw = json.dumps(snapshot, separators=(",", ":")).encode()
-    source = project(snapshot)
+    # The served engine block names the exact served bytes (G41), so the owner expectation binds those bytes too.
+    source = project(bind_snapshot_json_bytes(raw))
     assert len(source["overview"]["axes"]["items"]) > 1
+    assert source["engine"]["snapshot_sha256"]["state"] == source["engine"]["snapshot_bytes"]["state"] == "published"
+    assert source["engine"]["snapshot_sha256"]["value"] == "sha256:" + hashlib.sha256(raw).hexdigest()
+    assert source["engine"]["snapshot_bytes"]["value"] == len(raw)
     context = {"schema": "ui_projection_transport/1", "projection_schema": source["schema"],
                "identity": {"snapshot_id": 7, "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
                             "bytes": len(raw), "digest_form": "assesshub-store-blob"},
@@ -84,12 +89,14 @@ def test_projection_smoke_requires_nonce_before_any_request(monkeypatch):
     "source_state", "source_metadata", "page_total", "page_items", "later_rows", "cache",
     "native_missing_view", "native_missing_list", "native_wrong_version", "native_stock",
     "native_previous_version_view", "native_previous_version_list",
+    "engine_source_digest", "engine_source_bytes", "engine_source_withheld", "list_engine_source_digest",
 ])
 def test_projection_smoke_refuses_drift(monkeypatch, projection_responses, mutation):
     def mutate(responses):
         headers = responses[1][1]
         body = responses[2][0]
         axes = body["payload"]["axes"]
+        source = body["engine"]
         if mutation == "raw_digest": headers["x-snapshot-sha256"] = "0" * 64
         elif mutation == "raw_bytes": headers["x-snapshot-bytes"] = "0"
         elif mutation == "raw_form": headers["x-snapshot-digest-form"] = "invented"
@@ -108,6 +115,17 @@ def test_projection_smoke_refuses_drift(monkeypatch, projection_responses, mutat
         elif mutation == "native_previous_version_view": responses[2][1]["x-atlas-native-validation"] = "jsonschema-rs/0.58.4"
         elif mutation == "native_previous_version_list": responses[3][1]["x-atlas-native-validation"] = "jsonschema-rs/0.58.4"
         elif mutation == "native_stock": responses[2][1]["x-atlas-native-validation"] = "jsonschema/4.26.0"
+        # G41: a served engine block naming other bytes, or none, is not the owner's block over the served bytes.
+        elif mutation == "engine_source_digest": source["snapshot_sha256"]["value"] = "sha256:" + "0" * 64
+        elif mutation == "engine_source_bytes": source["snapshot_bytes"]["value"] += 1
+        elif mutation == "engine_source_withheld":
+            source["snapshot_sha256"] = {"state": "not_collected", "value": None, "subject": None, "refs": [],
+                                         "basis": source["snapshot_sha256"]["basis"], "reason": "withheld"}
+        elif mutation == "list_engine_source_digest":
+            # The view and list contexts share one engine object; change only the later page's copy.
+            listed = deepcopy(responses[3][0]["engine"])
+            listed["snapshot_sha256"]["value"] = "sha256:" + "0" * 64
+            responses[3][0]["engine"] = listed
     with pytest.raises(SystemExit, match="frozen UI projection smoke failed"):
         run_projection_smoke(monkeypatch, projection_responses, mutate)
 

@@ -42,14 +42,15 @@ _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
 _NATIVE_VERSION = "0.58.5"
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
-# W24 (G43 vocab) schema delta on top of W23 (main d0e10888): compact ensure_ascii
-# JSON plus LF, in owner key order. See docs/w24-vocab-validation-2026-10-08.md
-# (prior: docs/w23-device-impact-validation-2026-10-08.md).
+# W37 (G41 engine source identity) schema delta on top of W24 (main a06d1d27):
+# compact ensure_ascii JSON plus LF, in owner key order. See
+# docs/w37-snapshot-identity-validation-2026-10-09.md (prior:
+# docs/w24-vocab-validation-2026-10-08.md).
 # These are audit pins, never populated from the schemas present at runtime.
 # A schema change requires a new equivalence review before changing these pins.
 _NATIVE_SCHEMA_HASHES = MappingProxyType({
-    "view": "732c68c3d762f2b3d4d0329582bd32f3842567feef9cab20960f6959eef07372",
-    "list": "7f256f809f1d9e0754a2312579ee6afdfe3ae5e58c2b5dd7b44fbfd32b5369b5",
+    "view": "f718cd0b4cb32454d61ab2b3c2e6f2364c660eaf1020cf06c7235ed7143e669e",
+    "list": "b514aff49c63661aea7135517cc0e5242f9c6f7959d755a374b4d3b014d01b37",
 })
 _NATIVE_UNSAFE_STRING = re.compile("[\r\n\u2028\u2029\ud800-\udfff]")
 _NATIVE_SMOKE_TRACE: ContextVar[dict[str, bool] | None] = ContextVar("ui_projection_native_smoke", default=None)
@@ -573,6 +574,20 @@ _PROJECTION_VERSION = (
 )
 
 
+def _require_engine_source(document: dict[str, Any], digest: str, size: int) -> None:
+    """A published engine source identity (G41) must name the exact store bytes this cache entry was admitted from.
+
+    The owner publishes it only from the exact-byte marker that ``bind_ui_projection_snapshot`` mints over
+    these same bytes, so both digests are taken over one byte string, not compared across forms. A
+    withheld identity is left exactly as the owner wrote it: the transport never writes an engine fact.
+    """
+    block = document["engine"]
+    for key, expected in (("snapshot_sha256", digest), ("snapshot_bytes", size)):
+        fact = block[key]
+        if fact["state"] == "published" and fact["value"] != expected:
+            raise ValueError("Engine projection names other source bytes than the store read")
+
+
 class _SnapshotProjection:
     def __init__(self) -> None:
         self.lock = Lock()
@@ -614,6 +629,7 @@ class _ProjectionCache:
             _require_json_native(produced)
             document = deepcopy(produced)
             (_DEVICE_VALIDATOR if host is not None else _DOCUMENT_VALIDATOR).validate(document)
+            _require_engine_source(document, digest, len(raw))
             with self.lock:
                 entry.documents[host] = document
             return document
