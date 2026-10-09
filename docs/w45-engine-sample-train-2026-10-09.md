@@ -1,0 +1,161 @@
+# W45 engine/sample integration train (W36 + W33 + W32)
+
+Branch `claude/train-engine-sample`, cut from `origin/main` `a06d1d27` (#622, W31). It carries three open
+Claude pull requests, merged with merge commits in this order, so the goldens and the demo sample are regenerated
+**once** on the hosted runners for the combined engine:
+
+| Order | PR | Row | Branch head | Merge commit |
+|---|---|---|---|---|
+| 1 | #625 | W36 | `claude/sample-collected-at-utc` `44908e59` | `9c6e75a7` |
+| 2 | #624 | W33 | `claude/impact-assessability-owner` `c036b844` | `ee49e8cb` |
+| 3 | #623 | W32 | `claude/impact-blind-links` `0f4455fe` | `f7b890d5` |
+
+No local test, build, engine, pipeline or sample/golden writer ran (owner GitHub-only rule). The local checks
+were static: compilation, an AST shadow scan, the static helpers of `tests/test_protocol_assessability.py`, the
+native schema pins, the byte-custody LF receipts, `ruff check` on the changed files, and `json.load` of tracked
+snapshots. The hosted gates decide.
+
+## Conflicts and how each was resolved
+
+1. **`docs/NOW.md`** (merges 2 and 3). Every row and every handoff line from both sides is kept. The W31 row
+   stays deleted: W33's side retired it under rule 8 (#622 merged as `a06d1d27`), and that retirement line is
+   kept. W45 has its own row and handoff line.
+2. **`cisco_toolkit/ui_projection.py`** (merge 3, authorial). W33 moved every failure-impact row-level rule into
+   the engine owner `cisco_toolkit/impact_assessability.py`, and the projection's `_topology_impact` now reads
+   `ctx.impact.row(i, raw)`. W32 added its blind-link hold and bound to the projection's private rule functions
+   (`_impact_hold`, `_impact_blind`, the `_impact_bound` detail tail), which W33 had deleted. Keeping W32's code
+   would have been a second, parallel hold path that no deliverable reads. So:
+   - the projection keeps W33's code exactly, plus W32's `LIMITATIONS` text and two comment lines;
+   - W32's rule is expressed **in the owner**, so the projection, the Failure Impact and Executive Summary
+     sheets, RES-4, the design document, the deck, the dossier and the explorer embed all read it from one place.
+   No webapp module consumes the owner directly (AssessHub reads the projection), so nothing else needed wiring.
+3. **`docs/ssot.md`** (merged textually, then corrected). W32's registry row cited `ui_projection.py ::
+   _impact_hold / _impact_blind / _impact_peers`, which no longer exist, and `tests/test_ssot_registry.py`
+   requires every cited symbol to resolve. The row now cites the owner (`row_hold / off_scan_bound /
+   blind_bound`) and `_topology_impact`. W33's row names the blind-link rule.
+4. **`tests/fixtures/atlas-r2-byte-custody-policy.v1.json`**: no change needed. The combined tree's LF-scope
+   receipts, recomputed at `f7b890d5` with the test module's own helpers (`_head_paths_matching`,
+   `_transition_byte_owner_paths`, `_path_set_receipt`), equal W33's fixture:
+   - `lf_scope` 182 `68493206…`;
+   - `derived_byte_owner_scope` 38 `ad1a4aa6…`;
+   - `broader_declared_lf_scope` 144 `a5cb2b74…`;
+   - `publisher_byte_scope` 1 `5738a353…`.
+
+   W32 and W36 add no file under an LF rule, and `docs/*.md` is outside it.
+
+`COLLECT_PARSE_V3_23_0.py`, `cisco_toolkit/analyze.py`, `tests/test_pipeline_golden.py`,
+`tests/test_sample_fleet.py` and `tests/golden/snapshot.json` merged cleanly:
+
+- W36 changed `_derive_collected_at`, W33 changed `main()` phase order, and W32 changed `compute_failure_impact`.
+- The merged golden equals W33's golden plus W32's three `blind_links: 0`, leaf for leaf.
+
+## The one structural rule (W32 inside the W33 owner)
+
+`cisco_toolkit/impact_assessability.py`:
+
+- **`row_hold`** has two more holds, in W32's first-match positions:
+  - A `blind_links` that is present but not a count holds the row (`unverified`, code
+    `blind_links_unreadable`). It is checked after the off-scan count and before the host.
+  - A positive count with no VLAN simulated holds the row (`not collected`, code `blind_links_only`). It is
+    checked after off-scan-only.
+- **`blind_bound`** is new. It returns no bound for a zero count. A positive count bounds the row (code
+  `blind_links`) and cites the count. A row with no `blind_links` predates the count and is bounded citing the
+  row itself (code `blind_links_legacy`). `ImpactSnapshot.row` keeps W32's bound order: off-scan, blind links,
+  uncollected neighbours. As before, both of the first two are stated beside a hold, so every measure cites them.
+- **`make_bound`** gains W32's detail `tail`. The neighbour detail renders the same text as before.
+- **Reason texts.** Every W32 reason text (`_R_IMPACT_BLIND*`, `_R_IMPACT_PEER_DETAIL/TAIL`) equals the
+  owner's constant byte for byte, as do the earlier W23 texts (a static AST comparison of 21 constants).
+  The projection's cells therefore carry W32's states, reasons and witnesses.
+- **Phrases.** `CODE_PHRASES` gains a reader-facing phrase for each new code, with no engine internal named.
+
+## Tests: what changed and why each is at least as strict
+
+- **Hand-built current-producer rows carry `blind_links: 0`, as a producer row does:**
+  `tests/impact_fixtures.py :: assessable`, the `_rich_snap` rows and the clean-bill row in `tests/test_deck.py`,
+  the `core9` row in `tests/test_design.py`, and `_many_rows` in `tests/test_impact_assessability.py`. Without
+  the field the owner correctly reads a lower bound (the row predates the count). The subject of each of those
+  tests is something else: a published keystone, a cap, the per-host memo.
+- **New `tests/test_impact_assessability.py` section 4**, on W32's real-producer fleet, pins:
+  - the bound;
+  - the count-alone hold;
+  - the unreadable hold, with six bad values;
+  - the legacy bound;
+  - precedence;
+  - agreement across the projection, the Failure Impact sheet, RES-4, the dossier and the explorer embed.
+- **`tests/test_r4_deliverable_writers.py :: test_archreview_res4_still_conforms_on_an_observed_zero`**:
+  - **Bounded leg** additionally names every row the stored `blind_links` bounds (read from the row, never a
+    host list) and the not-graded count.
+  - **Conform control** is a fleet whose every inter-switch link carries VLAN evidence (`blind_links` 0) and
+    whose every switch faces no uncollected infrastructure. On the regenerated sample, `core1` and `dist1` are
+    bounded by their counts, so the old control would no longer describe "a genuinely redundant fleet".
+- **`tests/test_ui_projection_device_impact.py :: test_n_two_rows_naming_one_host_are_unverified_and_agree_on_both_surfaces`**
+  (the W23 test). Its bare check `"predates" not in <first row reason>` was meant to show that the held copy's
+  off-scan-marker hold never leaks into the producer's own row. It also fired on W32's legitimate blind-link
+  legacy reason ("…predates the producer's per-row count…"), which is the first row's own bound on a stale
+  sample. It is replaced by two checks that are more precise and never weaker:
+  - the marker phrase itself is banned on the first row;
+  - each first-row cell must equal exactly the doubt, or the doubt + `"; "` + the reason the same cell carries
+    on the un-duplicated sample.
+
+  So nothing from the copy, and nothing else, can enter the first row. Only the row's own bound is admitted,
+  verbatim. The test then holds on both the stale and the regenerated sample.
+
+## Static checks on `f7b890d5`
+
+| Check | Result |
+|---|---|
+| `compile()` of all 30 changed `.py` files | pass |
+| AST scan (a name assigned and called in one function that shadows a module or enclosing callable), new versus `origin/main` | 0 findings. Non-vacuous: it reports `('write_executive_deck_pptx', 'stat')` on `43f41c80`'s `deck.py` |
+| `tests/test_protocol_assessability.py` static helpers on the changed non-test files | 0 hand-listed state sites; 18 receipt readers, none unclassified or gone; carrier, derives, rendered and section-dependency proofs pass |
+| Native pins through `_native_schema_hash` | view `732c68c3…`, list `7f256f80…`, equal to main, W33 and W32. The transport schema is unchanged, so `webapp/frontend/src/generated/openapi.ts` needs no change |
+| LF receipts | equal to the fixture (above) |
+| `ruff check` on the changed files | pass |
+
+## Regeneration declaration (written before the hosted run)
+
+**Golden** (`tests/golden/snapshot.json`). The regenerated golden must be byte-identical to the merged committed
+golden: W33's 13 leaves plus W32's 3 `blind_links: 0`. `sheet_schema.json` must be byte-identical.
+
+**Sample** (`webapp/sample_data/sample_fleet.snapshot.json`) versus `origin/main`. Every changed leaf must be in
+one of these classes:
+
+1. **W36** (#625): the wall-clock pair `generated_at` / `attestation.generated_at`; `collected_at`
+   `+03:00` → `+00:00`; the 150 receipt-hash and 71 receipt-byte leaves in the five named evidence sections.
+   Each must equal W36's committed sample exactly.
+2. **W32** (#623): `failure_impact[*].blind_links` added on all 23 rows. W32's own run observed core1 1, dist1 1
+   and the rest 0.
+3. **W33** (#624):
+   - the two attestation module counts (+1);
+   - `impact_assessability` added on all 23 dossiers;
+   - core2's dossier verdict;
+   - core2's RES-4 clause, `≥ 42 … (lower bound — it faces 1 uncollected neighbour(s) …)`.
+4. **W45 interaction** (W33's mechanism applied to W32's bound, for each row whose regenerated `blind_links` is
+   positive; predicted for core1 and dist1, with `why` = `CODE_PHRASES["blind_links"]` for the count):
+   - **Dossier `impact_assessability`:** `{lower_bound, why, /failure_impact/<i>}` for those rows.
+   - **core1** (Severe; CR-01, CR-04 and CR-06 quote the impact):
+     - the measured phrase `removal strands 45 endpoint(s) across 3 VLAN(s)` becomes `removal strands at least
+       45 endpoint(s) across at least 3 VLAN(s); the blast radius is only a lower bound (<why>)`;
+     - this applies in its verdict and in those three `compound[*].basis` strings;
+     - it applies also in the three `punchlist[*].detail` copies of those bases.
+   - **dist1** (Low, single red axis): `removal impacts 2 VLAN(s)` becomes `removal impacts at least 2 VLAN(s);
+     the blast radius is only a lower bound (<why>)` in its verdict.
+   - **RES-4 `observed`:**
+     - core1's clause becomes `core1 strands ≥ 45 endpoint(s) (lower bound — <why>)`;
+     - the text gains ` 1 simulated device(s) are not graded, because their blast radius is not a measurement
+       on this evidence: dist1 (lower bound — <why>).`;
+     - the order, the 14-device 30-39 tail, the verdict (advisory) and the 19-host evidence are unchanged.
+   - **Unchanged:** every score, band, compound code and ordering.
+
+Any leaf outside these classes is a STOP: it is not imported.
+
+## Regeneration evidence
+
+Recorded after the hosted run in the handoff log of `docs/NOW.md` and in the pull request body.
+
+## Not done here
+
+- **Atlas Scope re-bind.** The regenerated sample stales Scope's compiled outputs and `GOLDEN_SHA`;
+  `atlas-scope/` is Codex-held. The supervisor requests it.
+- **Remaining W33 F6 raw-row sites.** These still read raw rows and do not see the blind-link bound: runbook §10,
+  MOP `_blast_for`, ops keystones, the MCP tool, `design_advisor`, and AssessHub `summary` / `cutover`.
+- **W32's F2–F4 producer follow-ups.**
