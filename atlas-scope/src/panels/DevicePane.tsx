@@ -6,7 +6,8 @@
  * what is known about a box. So the organising rule here is narrower than "show the record":
  *
  *   A field we never collected and a field we measured as zero must not be able to render the
- *   same pixels. `orNotObserved` is the only route to the screen for any nullable field, and the
+ *   same pixels. Nullable observations use `orNotObserved`; an owner-held verdict says not
+ *   assessed and retains the owner reason. The
  *   two joins on this surface (interface x physical-health, our blast radius x the snapshot's own
  *   failure_impact) are OUTER joins whose one-sided rows are labelled, never dropped.
  *
@@ -57,6 +58,7 @@ import type {
   AclLine,
   Cite,
   Device,
+  FailureImpact,
   InterfaceRecord,
   Link,
   PhysicalHealth,
@@ -854,45 +856,34 @@ function HealthSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
 
 /* ══ device: failure impact — ours next to theirs ══════════════════════════ */
 
+/** The engine owns admission and bounds. In particular a zero floor is not an exact zero. */
+function impactCount(impact: FailureImpact, value: number | null): ReactNode {
+  if (impact.unavailable !== null || (impact.assessable !== "published" && impact.assessable !== "lower_bound")) {
+    return <span className="dp-certainty">not assessed</span>;
+  }
+  if (impact.assessable === "lower_bound") {
+    return value !== null && value > 0
+      ? `at least ${value.toLocaleString("en-GB")} (lower bound)`
+      : <span className="dp-certainty">not assessed</span>;
+  }
+  return orNotObserved(value, (n) => n.toLocaleString("en-GB"), { what: "impact count", compact: true });
+}
+
+function impactPhrase(impact: FailureImpact, value: number | null, noun: string): string {
+  if (impact.unavailable !== null || (impact.assessable !== "published" && impact.assessable !== "lower_bound") || value === null) {
+    return "not assessed";
+  }
+  if (impact.assessable === "lower_bound") {
+    return value > 0 ? `at least ${plural(value, noun)} (lower bound)` : "not assessed";
+  }
+  return plural(value, noun);
+}
+
 function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c: Cite) => void }): ReactElement {
   const ours = useMemo(() => failureImpact(device.host), [device.host]);
   const theirs = device.impact;
   const eps = ours.strandedEndpoints;
-
-  /* The snapshot's FHRP / backup counts, checked against this device's OWN L3 records. core2's
-     failure_impact read "FHRP covered 0 / Backed up 0" while its Routing tab showed it HSRP Standby
-     on VLAN 10 and Active on VLAN 20 — a zero the pane's own evidence contradicts, drawn as a
-     measurement (2026-09-21 critic, B1). The source value is still shown verbatim; the
-     contradiction is stated beside it, the way the score arithmetic is. */
-  const impactChecks = useMemo(() => {
-    const l3 = l3ByHost.get(device.host) ?? [];
-    const withFhrp = l3.filter((r) => r.fhrp !== null);
-    const fhrpVlans = [...new Set(withFhrp.map((r) => (r.vlan === null ? "(unnumbered)" : String(r.vlan))))];
-    /* A backup gateway is another host holding the same virtual address — read from the L3 records
-       themselves, never from a role word. */
-    const peered = l3.filter((r) => r.vip !== null && fabric.l3.some((o) => o.host !== device.host && o.vip === r.vip));
-    const peeredVlans = [...new Set(peered.map((r) => (r.vlan === null ? "(unnumbered)" : String(r.vlan))))];
-    const out: { field: string; theirs: number; ours: number; detail: string; cites: Cite[] }[] = [];
-    if (theirs !== null && theirs.fhrp !== null && fhrpVlans.length > theirs.fhrp) {
-      out.push({
-        field: "failure_impact.fhrp",
-        theirs: theirs.fhrp,
-        ours: fhrpVlans.length,
-        detail: `this device's own L3 records carry an FHRP group on VLAN ${fhrpVlans.join(", ")} (${withFhrp.map((r) => `${r.fhrp}${r.fhrpRole === null ? "" : ` ${r.fhrpRole}`}`).join(", ")})`,
-        cites: withFhrp.map((r) => r.cite),
-      });
-    }
-    if (theirs !== null && theirs.backup !== null && peeredVlans.length > theirs.backup) {
-      out.push({
-        field: "failure_impact.backup",
-        theirs: theirs.backup,
-        ours: peeredVlans.length,
-        detail: `another collected host holds the same virtual gateway address on VLAN ${peeredVlans.join(", ")}`,
-        cites: peered.map((r) => r.cite),
-      });
-    }
-    return out;
-  }, [device.host, theirs]);
+  const impactCites = theirs === null ? [] : theirs.row === null ? [theirs.cite] : [theirs.row.cite, theirs.cite];
 
   const ourStranded = ours.certainty === "not-determinable" ? null : ours.newlyStranded.length;
   const ourSummary =
@@ -906,9 +897,9 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
   const theirSummary =
     theirs === null
       ? "no failure_impact record"
-      : `${theirs.stranded === null ? "not observed" : plural(theirs.stranded, "endpoint")} across ${
-          theirs.vlans === null ? "not observed" : plural(theirs.vlans, "VLAN")
-        }`;
+      : theirs.unavailable !== null || (theirs.assessable !== "published" && theirs.assessable !== "lower_bound")
+        ? `not assessed: ${theirs.unavailable ?? theirs.why ?? "no readable engine owner verdict"}`
+        : `${impactPhrase(theirs, theirs.stranded, "endpoint")} across ${impactPhrase(theirs, theirs.vlans, "VLAN")}`;
 
   /* "Disagree" is reserved for a qualitative conflict between two OBSERVED answers (one says
      partition, the other says none). An absent side is not an answer: it used to be counted here,
@@ -924,7 +915,7 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
     : oursAbsent && theirsAbsent
       ? "Neither measure exists for this device"
       : theirsAbsent
-        ? "Only our measure exists — the snapshot carries none to compare"
+        ? "Only our measure exists — the engine impact is not assessed"
         : oursAbsent
           ? "Only the snapshot's measure exists — ours could not be computed"
           : "How the two measures compare";
@@ -932,7 +923,7 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
   return (
     <Section
       title="Failure impact"
-      note="Two independent answers to the same question, from different measures. Both are rendered; neither is suppressed."
+      note="Engine-owned failure-impact verdict beside Scope's independent topology measure. Bounds and assessment holds retain the engine's reason."
     >
       <div className="dp-cmp">
         <div className="dp-cmp__col">
@@ -948,33 +939,40 @@ function ImpactSection({ device, onOpenCite }: { device: Device; onOpenCite: (c:
             <EvidenceKv
               rows={[
                 {
-                  k: "Severity",
-                  v: <SeverityMark severity={theirs.severity} compact={false} what="impact severity" />,
+                  k: "Assessment",
+                  v: theirs.unavailable !== null || (theirs.assessable !== "published" && theirs.assessable !== "lower_bound")
+                    ? "not assessed"
+                    : theirs.assessable === "lower_bound" ? "lower bound" : "exact",
                   cite: theirs.cite,
                 },
-                { k: "Endpoints stranded", v: orNotObserved(theirs.stranded, (n) => n.toLocaleString("en-GB"), { what: "stranded endpoints", compact: true }), cite: theirs.cite },
-                { k: "VLANs", v: orNotObserved(theirs.vlans, (n) => String(n), { what: "VLAN count", compact: true }), cite: theirs.cite },
-                { k: "Hard partitions", v: orNotObserved(theirs.hard, (n) => String(n), { what: "hard partitions", compact: true }), cite: theirs.cite },
-                { k: "Backed up", v: orNotObserved(theirs.backup, (n) => String(n), { what: "backed-up VLANs", compact: true }), cite: theirs.cite },
-                { k: "FHRP covered", v: orNotObserved(theirs.fhrp, (n) => String(n), { what: "FHRP-covered VLANs", compact: true }), cite: theirs.cite },
-                { k: "Detail", v: orNotObserved(theirs.detail, (s) => s, { what: "impact detail", compact: true }), wide: true, cite: theirs.cite },
+                {
+                  k: "Severity",
+                  v: theirs.assessable === "published" && theirs.unavailable === null
+                    ? <SeverityMark severity={theirs.severity} compact={false} what="impact severity" />
+                    : <span className="dp-certainty">not assessed</span>,
+                  cite: impactCites,
+                },
+                { k: "Endpoints stranded", v: impactCount(theirs, theirs.stranded), cite: impactCites },
+                { k: "VLANs", v: impactCount(theirs, theirs.vlans), cite: impactCites },
+                { k: "Hard partitions", v: impactCount(theirs, theirs.hard), cite: impactCites },
+                { k: "Backed up", v: impactCount(theirs, theirs.backup), cite: impactCites },
+                { k: "FHRP covered", v: impactCount(theirs, theirs.fhrp), cite: impactCites },
+                ...(theirs.why === null ? [] : [{ k: "Owner reason", v: theirs.why, wide: true, cite: theirs.cite }]),
+                ...(theirs.unavailable === null ? [] : [{ k: "Evidence unavailable", v: theirs.unavailable, wide: true, cite: theirs.cite }]),
+                {
+                  k: theirs.assessable === "published" && theirs.unavailable === null ? "Detail" : "Recorded detail (unverified)",
+                  v: orNotObserved(
+                    theirs.assessable === "published" && theirs.unavailable === null ? theirs.detail : theirs.row?.detail ?? null,
+                    (s) => s,
+                    { what: "recorded impact detail", compact: true },
+                  ),
+                  wide: true,
+                  cite: impactCites,
+                },
               ]}
               onOpenCite={onOpenCite}
             />
           )}
-          {impactChecks.map((c) => (
-            <div key={c.field} className="dp-disagree dp-disagree--live" data-impact-check={c.field}>
-              <p className="dp-disagree__head">{`${c.field} is contradicted by this device's own records`}</p>
-              <p className="dp-disagree__body">
-                {`The snapshot's ${c.field} says ${c.theirs}; ${c.detail} — at least ${c.ours}. Both are shown; neither is suppressed, so the count above is not read as a measurement of zero.`}
-              </p>
-              <p className="dp-disagree__body">
-                {c.cites.map((cite) => (
-                  <CiteButton key={cite} cite={cite} onOpen={onOpenCite} />
-                ))}
-              </p>
-            </div>
-          ))}
         </div>
 
         <div className="dp-cmp__col">

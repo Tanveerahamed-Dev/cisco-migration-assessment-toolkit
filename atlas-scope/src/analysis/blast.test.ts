@@ -195,7 +195,11 @@ describeGolden("failureImpact", () => {
 
   it("carries the engine's own failure_impact record alongside ours", () => {
     const r = failureImpact("core1");
-    expect(r.engine.record?.cite).toBe("failure_impact[host=core1]");
+    // Source derivation: dossier index 0 is core1 and selects failure_impact row 0. The owner
+    // verdict is a lower bound; its source row stays separately inspectable.
+    expect(r.engine.record?.cite).toBe("device_dossiers.per_device[0].impact_assessability");
+    expect(r.engine.record?.row?.cite).toBe("failure_impact[0]");
+    expect(r.engine.record?.assessable).toBe("lower_bound");
     expect(r.engine.basis).toBe("different-measure");
     const leaf = failureImpact("access1");
     // The engine calls a leaf switch a 3-VLAN hard partition (42 endpoints); topology says its

@@ -429,3 +429,45 @@ new privacy exception, copied pattern list or third-party/project import fallbac
 is added. Only touched Ruff and whitespace checks ran locally. Exact-source
 refutation is clear; fresh Python3.10 and every supported matrix/full-source
 result must verify runtime recovery before readiness.
+
+## Integration of owner-merged W53 / main ec289ab0
+
+Supervisor #632 merged at 15:39:37Z as ec289ab0, ordered 6390b66c +60800664,
+with equal head/actual/clean tree9fd8cbf6. Independent merge reconciliation joins
+actual tested07bcb2f5 through one completed Python3.11 checkout log and Git commit
+API; that tested object is absent locally. All15 protected app15368 contexts,
+CodeQL and six whole workflows succeeded, with29 records26success3inapplicable
+skips. Root did not approve or merge. W53 is retired under rule8 here; both full
+parent board histories and every W53 negative remain. The separate W53/Preview
+follow-up implementation is outside this G14 thread.
+
+Only fabric.json and NOW conflicted. Preserve incoming compiler/types/blast/pane,
+all controls, W53 validation record and backend app.py exactly. The compiler's
+new device_dossiers source read and backend privacy signature must remain paired.
+G14 owner/pipeline/projection, canonical types, stored golden/sample, native pins,
+LF receipts and admitted SPA remain unchanged. All146 frontend producer inputs
+have zero incoming main changes; no new SPA or schema literal is invented from
+this companion change, but fresh canonical agreement and immutable rebuild still
+must pass. There is no new Python path in the incoming delta; existing LF guards
+remain strict and must run freshly.
+
+Resolve the generated fabric conflict to the exact129 whole-parent baseline,
+retaining all four Scope outputs and GOLDEN_SHA d015 unchanged as an explicitly
+unqualified bootstrap. The W53 compiler changes impact semantics and source reads;
+the old family cannot qualify that union. Never splice metadata or owner claims.
+Obtain a fresh hosted combined four-member family, bind the actual d015 sample and
+complete current Scope inputs/processors, then independently review real output
+and golden premises before exact-byte adoption. No local compiler/hash/controller,
+new engine regeneration dispatch, artifact intake or expectation relaxation occurs.
+
+Historical129 Python3.10 recovered12039pass/288skip/1xfail/1warning/26subtests;
+its unfiltered default suite includes the old4 failures and new16 authored controls
+without a separately printed20-case receipt. Linux3.12 passed12183/144/1/8/26
+and the real UTC build_sample--check FRESH. Windows completed SUCCESS by API while
+portable full-source was still running at the integration checkpoint. Those and
+all129 component results remain exact-old-source evidence. Require fresh combined
+native/stock/direct-return/STP/LF/default/golden/UTC sample, Scope output/type/unit/
+all10 strict mutations/restoration/build/B3/hub/8pure/8browser, Reference/webapp/
+Distribution/installed/portable and every protected instance/whole workflow plus
+independent final source/base/tested-tree/body/title/protection review. No ready
+handoff or whole-union runtime qualification is claimed at this source stage.
