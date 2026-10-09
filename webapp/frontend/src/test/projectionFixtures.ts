@@ -392,6 +392,36 @@ export function inventoryFixture(sid = 1, findings = findingsRollupFixture("not_
     vlans: { total: published(0), rows: empty("/vlans/rows") }, endpoints: { total: published(0), rows: empty("/endpoints/rows"), shared_ip: empty("/endpoints/shared_ip"), dual_homed: empty("/endpoints/dual_homed") }, uncollected_peers: empty("/uncollected_peers"),
   } };
 }
+export function vlanCarriageFixture(sid = 1) {
+  const base = inventoryFixture(sid);
+  const held = (reason: string) => ({ ...withheld(), reason });
+  const note = "Synthetic missing B-end evidence; no blocked or forwarding claim";
+  const qualifier = { id: "stored_vlan_carriage_scope", owner: "synthetic.owner", applies_to: ["/inventory/vlans/rows"],
+    text: "Synthetic configured carriage is not simultaneous forwarding or data-plane delivery." };
+  const end = (host: string, present: boolean) => ({ host: published(host), port: published("Gi1/0/1"),
+    signal: present ? published("allowed") : held(note), basis: published(present ? "stored_trunk_allowance" : "none") });
+  const cables = [2, 0].map((index) => {
+    const complete = index === 2;
+    const pointer = `/vlan_carriage/rows/${index}`;
+    const relation = { ...(complete ? published("forwarding") : held(note)), subject: `${pointer}/relation`,
+      refs: [{ pointer: `/cable_map/cables/${index}`, role: "witness" }], caveats: [qualifier.id] };
+    const evidence_shape = published(complete ? "both_ends" : "one_end_only");
+    const basis = published(complete ? "stored_trunk_allowance" : "none");
+    const member = { index: 0, pointer: `${pointer}/members/0`, relation, evidence_shape, basis,
+      a: end("synthetic-a", true), b: end("synthetic-b", complete) };
+    return { index, pointer, cable_pointer: `/cable_map/cables/${index}`, relation, evidence_shape, basis,
+      ends: published({ a: "synthetic-a", a_port: "Gi1/0/1", b: "synthetic-b", b_port: "Gi1/0/1", is_pc: false }),
+      members: { ...ownerList([member], `${pointer}/members`), ...(complete ? {} : { state: "not_collected", reason: note }) } };
+  });
+  const carriage = { ...ownerList(cables, "/vlan_carriage/rows"), state: "unverified",
+    reason: "Synthetic supplied carriage census remains incomplete" };
+  const row = { index: 0, pointer: "/vlan_cutover/0",
+    ...fields("name readiness stp_root stp_root_state stp_root_reason stp_root_default_election fhrp gateway_svi_hosts endpoint_count endpoint_mix wave scenario app_domain criticality dependencies cutover_window rollback_owner stp_root_claimants stp_root_identities"),
+    vlan: published(10), selections: { carriage, stp_roots: ownerList([], "/stp_roots"), gateways: null, endpoints: null } };
+  return { ...base, limitations: [...base.limitations, qualifier], payload: { ...base.payload,
+    vlans: { total: published(1), rows: ownerPage("/vlans/rows", [row]) } } };
+}
+
 export function deviceFixture(sid = 1, host = "edge/a~b", findings_rollup = findingsRollupFixture("not_collected"), coverage_rollup = coverageRollupFixture("not_collected")) {
   const cap = { limit: 64, reached: false, total: withheld() };
   // This synthetic published rollup represents three stored rows (High, High, Low).

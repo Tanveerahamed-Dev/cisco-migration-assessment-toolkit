@@ -118,12 +118,18 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Opti
 from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
 from cisco_toolkit import ssot
 from cisco_toolkit.analyze import (
-    PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index,
+    PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index, _canon_host,
 )
 from cisco_toolkit.coverage_matrix import (
     COVERAGE_DIMENSIONS, COVERAGE_STATE_ORDER, COVERAGE_VERDICT_SOURCES, CoverageRowIndex,
     compute_device_coverage, index_coverage_rows, match_coverage_cell,
 )
+from cisco_toolkit.vlan_carriage import (
+    RELATIONS as CARRIAGE_RELATIONS, END_SIGNALS as CARRIAGE_END_SIGNALS,
+    BASES as CARRIAGE_BASES, EVIDENCE_SHAPES as CARRIAGE_EVIDENCE_SHAPES,
+    validate_vlan_carriage, vlan_row_identity, carriage_observation_admission,
+)
+from cisco_toolkit.textutils import normalize_ifname
 
 SCHEMA = "ui_projection/1"
 SCHEMA_ID = "urn:atlas:schema:ui-projection:1"
@@ -530,6 +536,14 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "STP root ownership. Consult the row's STP election state and reason: ambiguity, unobserved roots and "
         "missing legacy verdicts remain unresolved even when readiness is READY. Malformed or duplicate owner verdicts "
         "withhold READY rather than replacing it with another verdict.",
+        ["/inventory/vlans/rows"]),
+    _limitation(
+        "stored_vlan_carriage_scope", "vlan_carriage.compute_vlan_carriage",
+        "Carriage is the stored relation for the supplied cable/member and VLAN-row universe. Typed PVST "
+        "observations are separate captures; mutual trunk allowance is a configured model, not observed STP or "
+        "traffic delivery. One missing end stays not collected. MST has no admitted VLAN mapping here; "
+        "incomplete, misoriented or mixed bundles remain withheld. Neither pointers nor stored-shape validation "
+        "authenticate capture completeness, simultaneous forwarding or data-plane delivery.",
         ["/inventory/vlans/rows"]),
     _limitation(
         "punch_rows_carry_no_evidence_pointers", "analyze.compute_migration_punchlist",
@@ -3404,9 +3418,265 @@ def _vlan_wave_pre(ctx: _Ctx) -> _Pre:
     return pre
 
 
+_B_CARRIAGE = "vlan_carriage.compute_vlan_carriage:vlan_carriage"
+_CARRIAGE_SECTIONS = ("vlan_carriage", "cable_map", "interfaces", "stp_topology_observations", "vlan_cutover")
+_CARRIAGE_CAVEATS = ("stored_vlan_carriage_scope",)
+
+
+def _stored_pointer_tokens(ctx: _Ctx, pointer: str) -> Optional[Tuple[Any, ...]]:
+    """Resolve a validated stored pointer without guessing a missing list/dict namespace."""
+    if pointer == "":
+        return ()
+    if not _is_text(pointer) or not pointer.startswith("/") or re.search(r"~(?![01])", pointer):
+        return None
+    current: Any = ctx.s
+    tokens: List[Any] = []
+    for segment in pointer[1:].split("/"):
+        key = segment.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, list):
+            if not re.fullmatch(r"0|[1-9][0-9]{0,15}", key):
+                return None
+            token: Any = int(key)
+            if token >= len(current):
+                return None
+        elif isinstance(current, dict) and key in current:
+            token = key
+        else:
+            return None
+        tokens.append(token)
+        current = current[token]
+    return tuple(tokens)
+
+
+def _carriage_refs(ctx: _Ctx, pointers: Sequence[str]) -> List[Tuple[str, Sequence[Any]]]:
+    return [("witness", tokens) for pointer in pointers
+            if (tokens := _stored_pointer_tokens(ctx, pointer)) is not None]
+
+
+def _carriage_basis_gaps(ctx: _Ctx, rows: Sequence[Any]) -> List[Tuple[str, Sequence[Any]]]:
+    """Check declared witness identity/type, without re-evaluating an allowance or relation.
+
+    Missing targets are witnessed by the *stored pointer declaration*. They cannot
+    be emitted as resolving source refs or silently removed from a published fact.
+    """
+    bad: List[Tuple[str, Sequence[Any]]] = []
+    interfaces = ctx.s.get("interfaces")
+    host_keys: Dict[str, List[str]] = {}
+    port_keys: Dict[str, Dict[str, List[str]]] = {}
+    for host, records in (interfaces.items() if isinstance(interfaces, dict) else ()):
+        if not _is_text(host):
+            continue
+        host_keys.setdefault(_canon_host(host), []).append(host)
+        port_keys[host] = {}
+        for key in records if isinstance(records, dict) else ():
+            if _is_text(key):
+                port_keys[host].setdefault(normalize_ifname(key), []).append(key)
+    observations: Dict[str, Any] = {}
+
+    def current_observation(host: str) -> Any:
+        if host not in observations:
+            observations[host] = ctx._call("vlan_carriage.carriage_observation_admission",
+                lambda _snap: carriage_observation_admission(_get(ctx.s, ("stp_topology_observations", host))),
+                (_UV, "owner raised", None))
+        return observations[host]
+
+    for row in rows:
+        for mi, member in enumerate(row["members"]):
+            for side in ("a", "b"):
+                end = member[side]
+                if end["state"] != _PUB:
+                    continue
+                toks = ("vlan_carriage", "rows", row["index"], "members", mi, side)
+                host, port = end["host"], end["port"]
+                if (len(host_keys.get(_canon_host(host), [])) != 1
+                        or len(port_keys.get(host, {}).get(normalize_ifname(port), [])) != 1):
+                    bad.append(("witness", toks + ("interface_pointer",)))
+                for ri, pointer in enumerate(end["refs"]):
+                    resolved = _stored_pointer_tokens(ctx, pointer)
+                    value = _get(ctx.s, resolved) if resolved is not None else _MISSING
+                    valid = False
+                    if resolved is not None and len(resolved) >= 2 and resolved[1] == host:
+                        if resolved[0] == "interfaces":
+                            valid = ((len(resolved) == 3 and isinstance(value, dict)) or
+                                     (len(resolved) == 4 and _is_text(value) and bool(value.strip())))
+                            valid = valid and normalize_ifname(resolved[2]) == normalize_ifname(port)
+                        elif resolved[0] == "stp_topology_observations":
+                            valid = ((len(resolved) == 2 or
+                                      (len(resolved) == 4 and resolved[2] == "roles")) and isinstance(value, dict))
+                            admitted_state, _why, admitted = current_observation(host)
+                            valid = valid and admitted is not None and admitted_state not in (_UV, AU)
+                    if not valid:
+                        bad.append(("witness", toks + ("refs", ri)))
+                record_toks = _stored_pointer_tokens(ctx, end["interface_pointer"])
+                record = _get(ctx.s, record_toks) if record_toks is not None else None
+                record_readable = isinstance(record, dict) and all(_is_text(record.get(key, "")) for key in
+                        ("port", "cdp_neighbor", "neighbor_port", "switchport_mode", "trunk_allowed_vlans",
+                         "trunk_native_vlan", "port_channel"))
+                peer = member["b" if side == "a" else "a"]
+                if (not record_readable
+                        or (record.get("port") and normalize_ifname(record["port"]) != normalize_ifname(port))
+                        or (record.get("cdp_neighbor") and _canon_host(record["cdp_neighbor"]) != _canon_host(peer["host"]))
+                        or (record.get("neighbor_port") and (not _is_text(peer["port"])
+                            or normalize_ifname(record["neighbor_port"]) != normalize_ifname(peer["port"])))):
+                    bad.append(("witness", toks + ("interface_pointer",)))
+                if end["basis"] != "typed_pvst":
+                    continue
+                admitted_state, _why, observation = current_observation(host)
+                matches = [(i, value) for i, value in enumerate(observation["roles"])
+                           if value["namespace"] == "pvst_vlan"
+                           and vlan_row_identity({"vlan": value["instance"]}) == row["vlan"]
+                           and normalize_ifname(value["interface"]) == normalize_ifname(port)] if observation else []
+                if (not observation or admitted_state != _PUB or len(matches) != 1
+                        or matches[0][1]["state"] != end["signal"]
+                        or json_pointer("stp_topology_observations", host, "roles", matches[0][0]) not in end["refs"]):
+                    bad.append(("witness", toks + ("refs",)))
+    return bad
+
+
+def _carriage_source(ctx: _Ctx) -> Tuple[Dict[str, Any], Dict[int, List[Any]], Optional[Tuple[str, str]]]:
+    """Validate one stored section and its selected universe once; never recompute carriage."""
+    source, readable = _source(ctx, ("vlan_carriage",), _CARRIAGE_SECTIONS, _B_CARRIAGE, want=dict)
+    raw = ctx.s.get("vlan_carriage")
+    failed = _secs_fail(ctx, _CARRIAGE_SECTIONS)
+    if failed:
+        source.update(state=failed[0], reason=failed[1])
+    if not isinstance(raw, dict):
+        return source, {}, failed
+    valid, why = ctx._call("vlan_carriage.validate_vlan_carriage",
+                           lambda _snap: validate_vlan_carriage(raw), (False, "owner validation raised"))
+    if not valid:
+        if not failed:
+            source.update(state=_UV, reason="unverified: the stored carriage section failed its closed owner contract: "
+                          + _safe_text(str(why)))
+        return source, {}, failed
+    vlans, cables = ctx.s.get("vlan_cutover"), _get(ctx.s, ("cable_map", "cables"))
+    joined = (isinstance(vlans, list) and isinstance(cables, list)
+              and raw["coverage"]["vlan_rows"] == len(vlans)
+              and raw["coverage"]["cable_rows"] == len(cables))
+    index: Dict[int, List[Any]] = {}
+    if joined:
+        for row in raw["rows"]:
+            vi, ci = row["vlan_index"], row["cable_index"]
+            if not (0 <= vi < len(vlans) and 0 <= ci < len(cables)):
+                joined = False
+                break
+            vid = vlan_row_identity(vlans[vi])
+            # This is stored selector consistency, not a root election or a new VLAN universe.
+            if vid != row["vlan"]:
+                joined = False
+                break
+            cable = cables[ci]
+            # Compare stored identities only. Do not orient, repair, range-parse or
+            # derive a replacement relation from current raw interface evidence.
+            claims = row["state"] == _PUB or any(member["state"] == _PUB or
+                         any(member[side]["state"] == _PUB for side in ("a", "b")) for member in row["members"])
+            if claims and (not isinstance(cable, dict)
+                           or any(row["ends"][key] != cable.get(key) for key in row["ends"])
+                           or not isinstance(cable.get("members"), list)
+                           or len(cable["members"]) != len(row["members"])):
+                joined = False
+                break
+            if claims:
+                for mi, member in enumerate(row["members"]):
+                    original = cable["members"][mi]
+                    if (not isinstance(original, dict)
+                            or member["a"]["port"] != original.get("a_port")
+                            or member["b"]["port"] != original.get("b_port")):
+                        joined = False
+                        break
+            if not joined:
+                break
+            index.setdefault(vi, []).append(row)
+    if not joined:
+        if not raw["rows"] and raw["state"] in (_NC, AU) and (
+                raw["coverage"]["vlan_rows"] is None or raw["coverage"]["cable_rows"] is None):
+            if not failed:
+                source.update(state=raw["state"], reason=_safe_text(raw["reason"]))
+            return source, {}, failed
+        if not failed:
+            source.update(state=_UV, reason="unverified: the stored carriage census or VLAN selector does not join "
+                          "the current cable and VLAN rows")
+        return source, {}, failed
+    if not failed and readable:
+        source["state"] = raw["state"]
+        if raw["state"] == _PUB:
+            source.pop("reason", None)
+        else:
+            source["reason"] = _safe_text(raw["reason"])
+    source["refs"].extend(ctx.refs(_carriage_refs(ctx, [issue["pointer"] for issue in raw["issues"]])))
+    missing_basis = _carriage_basis_gaps(ctx, raw["rows"])
+    if missing_basis:
+        if not failed:
+            failed = (_UV, "unverified: stored carriage basis references no longer resolve to unique typed "
+                      "end evidence; no relation is reconstructed")
+            source.update(state=failed[0], reason=failed[1])
+        source["refs"].extend(ctx.refs(missing_basis))
+    return source, index, failed
+
+
+def _carriage_endpoint(ctx: _Ctx, raw: Dict[str, Any], toks: Tuple[Any, ...],
+                       failed: Optional[Tuple[str, str]]) -> Dict[str, Any]:
+    extra = _carriage_refs(ctx, raw["refs"])
+    observed = _list_row(toks, raw, _CARRIAGE_SECTIONS)
+    state = failed or ((raw["state"], raw["reason"]) if raw["state"] != _PUB else None)
+    signal = _Row(*state, toks, raw, _CARRIAGE_SECTIONS, extra) if state else observed
+    if failed:
+        observed = _Row(*failed, toks, raw, _CARRIAGE_SECTIONS, extra)
+    return {"host": _cell(ctx, observed, "host", "text", _B_CARRIAGE + ".rows[].members[].end.host"),
+            "port": _cell(ctx, observed, "port", "text", _B_CARRIAGE + ".rows[].members[].end.port"),
+            "signal": _cell(ctx, signal, "signal", "enum", _B_CARRIAGE + ".rows[].members[].end.signal",
+                            vocab=CARRIAGE_END_SIGNALS, witness=extra, caveats=_CARRIAGE_CAVEATS),
+            "basis": _cell(ctx, observed, "basis", "enum", _B_CARRIAGE + ".rows[].members[].end.basis",
+                           vocab=CARRIAGE_BASES, witness=extra, caveats=_CARRIAGE_CAVEATS)}
+
+
+def _carriage_record(ctx: _Ctx, raw: Dict[str, Any], toks: Tuple[Any, ...],
+                     failed: Optional[Tuple[str, str]], *, member: bool = False) -> Dict[str, Any]:
+    pointers = ([raw["pointer"]] if member else [raw["cable_pointer"], raw["vlan_pointer"]])
+    pointers += [p for end in (raw["a"], raw["b"]) for p in end["refs"]] if member else [
+        p for m in raw["members"] for end in (m["a"], m["b"]) for p in end["refs"]]
+    extra = _carriage_refs(ctx, pointers)
+    state = failed or ((raw["state"], raw["reason"]) if raw["state"] != _PUB else None)
+    held = _Row(*state, toks, raw, _CARRIAGE_SECTIONS, extra) if state else _list_row(toks, raw, _CARRIAGE_SECTIONS)
+    observed = (_Row(*failed, toks, raw, _CARRIAGE_SECTIONS, extra) if failed
+                else _list_row(toks, raw, _CARRIAGE_SECTIONS))
+    out = {"index": raw["index"], "pointer": json_pointer(*toks),
+           "relation": _cell(ctx, held, "relation", "enum", _B_CARRIAGE + ".rows[].relation",
+                             vocab=CARRIAGE_RELATIONS, witness=extra, caveats=_CARRIAGE_CAVEATS),
+           "evidence_shape": _cell(ctx, observed, "evidence_shape", "enum", _B_CARRIAGE + ".rows[].evidence_shape",
+                                   vocab=CARRIAGE_EVIDENCE_SHAPES, witness=extra, caveats=_CARRIAGE_CAVEATS),
+           "basis": _cell(ctx, observed, "basis", "enum", _B_CARRIAGE + ".rows[].basis",
+                          vocab=CARRIAGE_BASES, witness=extra, caveats=_CARRIAGE_CAVEATS)}
+    if member:
+        out.update({side: _carriage_endpoint(ctx, raw[side], toks + (side,), failed) for side in ("a", "b")})
+    else:
+        out["cable_pointer"] = raw["cable_pointer"]
+        out["ends"] = _cell(ctx, observed, "ends", "cable_ends", _B_CARRIAGE + ".rows[].ends", witness=extra)
+        members = [_carriage_record(ctx, value, toks + ("members", i), failed, member=True)
+                   for i, value in enumerate(raw["members"])]
+        out["members"] = _listing(ctx, *(state or (_PUB, None)), toks + ("members",),
+                                   _B_CARRIAGE + ".rows[].members", members, sections=_CARRIAGE_SECTIONS,
+                                   extra=extra, caveats=_CARRIAGE_CAVEATS)
+    return out
+
+
+def _carriage_selection(ctx: _Ctx, source: Dict[str, Any], rows: Sequence[Any],
+                        failed: Optional[Tuple[str, str]], valid_vlan: bool) -> Dict[str, Any]:
+    state, reason = source["state"], source.get("reason")
+    if not valid_vlan and state != AU:
+        state, reason = _UV, "unverified: this VLAN row has no readable carriage selector"
+    items = [_carriage_record(ctx, row, ("vlan_carriage", "rows", row["index"]), failed)
+             for row in rows] if valid_vlan else []
+    result = _listing(ctx, state, reason, ("vlan_carriage", "rows"), _B_CARRIAGE, items,
+                      sections=_CARRIAGE_SECTIONS, caveats=_CARRIAGE_CAVEATS)
+    result["refs"].extend(ref for ref in source["refs"] if ref not in result["refs"])
+    return result
+
+
 def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
     toks = ("vlan_cutover",)
     base, reason, raw = _list_state(ctx, toks, toks)
+    src_carriage, carriage_rows, carriage_failure = _carriage_source(ctx)
     src_roots, ok_roots = _source(ctx, ("stp_roots",), ("stp_roots",), "build.build_stp_roots:stp_roots{}{}", want=dict)
     source_roots = ctx.s.get("stp_roots")
     root_pointers = [json_pointer("stp_roots", host, key)
@@ -3469,6 +3739,8 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
                                   ctx, src_roots, roots.get(vid, ()) if ok else (), ok, toks + (i,),
                                   root_collision, unreadable_root_maps,
                                   sorted(uncertain_namespaces.get(vid, ())) if ok else ()),
+                              "carriage": _carriage_selection(ctx, src_carriage, carriage_rows.get(i, ()),
+                                                               carriage_failure, vlan_row_identity(rec) is not None),
                               "gateways": (list(gateways.get(vid, ())) if ok else []) if ok_gw else None,
                               "endpoints": (list(endpoints.get(vid, ())) if ok else []) if ok_ep else None}
         items.append(item)
@@ -3480,7 +3752,8 @@ def _vlan_rows(ctx: _Ctx) -> Dict[str, Any]:
                    witness=[("witness", ("executive_brief", "scale", "n_vlans"))], caveats=("vlan_cutover_universe",),
                    qualify=qualify)
     return {"total": total, "rows": listing,
-            "selection_sources": {"stp_roots": src_roots, "gateways": src_gw, "endpoints": src_ep}}
+            "selection_sources": {"stp_roots": src_roots, "carriage": src_carriage,
+                                  "gateways": src_gw, "endpoints": src_ep}}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -5227,6 +5500,10 @@ _VOCAB_RANKED: Tuple[Tuple[str, Tuple[str, ...], str, str, Tuple[Any, ...], Mapp
 #: level). Evidence states, reasons, roles, names and presentation tokens are not severities; naming each one
 #: here keeps the catalogue closed, so a vocabulary added to the schema cannot go unclassified.
 _VOCAB_UNRANKED: Tuple[Tuple[str, Tuple[str, ...], str], ...] = (
+    ("carriage_relation", CARRIAGE_RELATIONS, "vlan_carriage.RELATIONS names modeled cable/VLAN relations, not severity or delivery assurance"),
+    ("carriage_end_signal", CARRIAGE_END_SIGNALS, "vlan_carriage.END_SIGNALS names the admitted observation at one cable end"),
+    ("carriage_basis", CARRIAGE_BASES, "vlan_carriage.BASES separates typed PVST, configured allowance and member consensus"),
+    ("carriage_evidence_shape", CARRIAGE_EVIDENCE_SHAPES, "vlan_carriage.EVIDENCE_SHAPES discloses end coverage, not a health grade"),
     ("evidence_state", STATES, "the projection's fact-state vocabulary (CensusEmbedded.state); the state "
                                "machinery types it and a page reads the withheld reason, never a level"),
     ("abstention_state", tuple(ssot.ABSTENTION_STATES), "ssot.abstention_reason's codomain (CensusRow.state, "
@@ -5433,7 +5710,9 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                         ("OpStatusFact", OP_STATUSES), ("EvidenceBasisFact", PUNCH_EVIDENCE_BASES),
                         ("CoverageStateFact", COVERAGE_STATE_ORDER), ("CoverageDimensionFact", COVERAGE_DIMENSIONS),
                         ("CoverageVerdictSourceFact", COVERAGE_VERDICT_SOURCES),
-                        ("StpRootStateFact", STP_ROOT_ELECTION_STATES), ("StpRootReasonFact", STP_ROOT_REASONS)):
+                        ("StpRootStateFact", STP_ROOT_ELECTION_STATES), ("StpRootReasonFact", STP_ROOT_REASONS),
+                        ("CarriageRelationFact", CARRIAGE_RELATIONS), ("CarriageSignalFact", CARRIAGE_END_SIGNALS),
+                        ("CarriageBasisFact", CARRIAGE_BASES), ("CarriageShapeFact", CARRIAGE_EVIDENCE_SHAPES)):
         defs[name] = _fact_def(name, _enum(vocab))
     defs["EvidenceRefValue"] = _closed("EvidenceRefValue", ("kind", "host", "ref", "role", "cite"),
                                        {"kind": _enum(PUNCH_EVIDENCE_REF_KINDS), "host": _nullable(_str()),
@@ -5531,8 +5810,20 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
                                           (("is_root", "FlagFact"), ("root_address", "TextFact"),
                                            ("root_priority", "CountFact")))
     defs["StpRootObservationList"] = _list_def("StpRootObservationList", _ref("StpRootObservation"))
-    defs["VlanSelections"] = _closed("VlanSelections", ("stp_roots", "gateways", "endpoints"),
+    defs["CarriageEnd"] = _row_def("CarriageEnd", {}, (("host", "TextFact"), ("port", "TextFact"),
+                                                      ("signal", "CarriageSignalFact"), ("basis", "CarriageBasisFact")))
+    carriage_cells = (("relation", "CarriageRelationFact"), ("evidence_shape", "CarriageShapeFact"),
+                      ("basis", "CarriageBasisFact"))
+    defs["CarriageMember"] = _row_def("CarriageMember", _indexed(), carriage_cells,
+                                     {"a": _ref("CarriageEnd"), "b": _ref("CarriageEnd")})
+    defs["CarriageMemberList"] = _list_def("CarriageMemberList", _ref("CarriageMember"))
+    defs["CarriageRow"] = _row_def("CarriageRow", {**_indexed(), "cable_pointer": _ref("Pointer")},
+                                  carriage_cells + (("ends", "CableEndsFact"),),
+                                  {"members": _ref("CarriageMemberList")})
+    defs["CarriageList"] = _list_def("CarriageList", _ref("CarriageRow"))
+    defs["VlanSelections"] = _closed("VlanSelections", ("stp_roots", "carriage", "gateways", "endpoints"),
                                      {"stp_roots": _ref("StpRootObservationList"),
+                                      "carriage": _ref("CarriageList"),
                                       "gateways": _nullable(_ref("IndexList")),
                                       "endpoints": _nullable(_ref("IndexList"))})
     defs["VlanRow"] = _row_def("VlanRow", _indexed(),
@@ -5585,7 +5876,7 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
         defs[title] = _list_def(title, _ref(item))
     defs["InventoryDevices"] = _closed("InventoryDevices", ("total", "rows"),
                                        {"total": _ref("CountFact"), "rows": _ref("DeviceRowList")})
-    vlan_sources = ("stp_roots", "gateways", "endpoints")
+    vlan_sources = ("stp_roots", "carriage", "gateways", "endpoints")
     defs["InventoryVlans"] = _closed("InventoryVlans", ("total", "rows", "selection_sources"),
                                      {"total": _ref("CountFact"), "rows": _ref("VlanRowList"),
                                       "selection_sources": _closed("VlanSelectionSources", vlan_sources,

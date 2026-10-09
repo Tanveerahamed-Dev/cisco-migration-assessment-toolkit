@@ -398,6 +398,7 @@ from cisco_toolkit.protocol_assurance import (
 )
 from cisco_toolkit.multichassis_lag import compute_multichassis_lag_domain_baseline
 from cisco_toolkit.stp_topology import compute_stp_topology_baseline
+from cisco_toolkit.vlan_carriage import SOURCES as VLAN_CARRIAGE_SOURCES, compute_vlan_carriage
 from cisco_toolkit.nrfu_export import compute_nrfu_commands   # NEW: four-phase NRFU certification pack (READ-ONLY commands + expected values pre-filled from the snapshot)
 # NEW-V3.23.24 (PHASE 2.7 step 14): the command-output I/O glue. _load_cmd_output +
 # _safe_parse dropped step 28 (build_interfaces, their last monolith user, moved to
@@ -2538,6 +2539,19 @@ def _run_phase(label, fn, *args, _default=None, **kwargs):
     finally:
         _PHASE_TIMINGS.append({"phase": str(label),
                                "seconds": round(time.perf_counter() - _t0, 4), "ok": _ok})
+
+
+def _vlan_carriage_input_failures() -> tuple:
+    """Only attributed input failures, through the existing phase/section owner.
+
+    Unknown/intermediate failures remain in the assessment integrity record; they
+    cannot be relabelled as failures of particular raw interface/STP observations.
+    Per-host capture failures stay in those typed observation records themselves.
+    """
+    from cisco_toolkit.ssot import failed_sections
+    direct, _unattributed = failed_sections({"assessment_integrity": {
+        "failed_phases": [p["phase"] for p in _PHASE_TIMINGS if p.get("ok") is False]}})
+    return tuple(source for source in VLAN_CARRIAGE_SOURCES if source in direct)
 
 
 def _emit_artifact(label: str, path: str, kind: str, fn, *args,
@@ -5040,6 +5054,12 @@ def main():
                               endpoint_identity, application_intelligence,
                               move_groups, _ws_seq, migration_readiness,
                               multicast_intelligence, _default=[])
+    # Stored carriage uses these exact prior results and the ordered VLAN-row universe.
+    # It does not re-elect roots, rebuild cables or alter the legacy simulation predicate.
+    vlan_carriage = _run_phase(
+        "VLAN carriage", compute_vlan_carriage, cable_map, all_interfaces,
+        all_stp_topology_observations, vlan_cutover, _default={},
+        failed_sources=_vlan_carriage_input_failures())
     _run_phase("VLAN Cutover Matrix sheet", write_vlan_cutover_sheet, wb, vlan_cutover)
 
     # Phase 30e: Executive Summary - NEW-V3.23.75 (one-page synthesis, landed as the FIRST workbook tab)
@@ -5277,6 +5297,7 @@ def main():
     snap_dict["application_intelligence"] = application_intelligence  # NEW-V3.23.112 (application-domain synthesis + migration risk; reused from Phase 30d-bis)
     snap_dict["segmentation"] = segmentation                         # NEW-V3.23.118 (L3 isolation posture; reused from Phase 30d-bis2)
     snap_dict["vlan_cutover"] = vlan_cutover                         # MASTER_PLAN §4.3 (per-VLAN cutover matrix; reused from Phase 30d-bis3)
+    snap_dict["vlan_carriage"] = vlan_carriage                       # G14: same stored carriage result, no render-time recomputation
     snap_dict["executive_brief"] = executive_brief                   # NEW-V3.23.120 (cross-axis migration brief; reused from Phase 30e)
     global _ACTIVE_INTEGRITY_SNAPSHOT
     _ACTIVE_INTEGRITY_SNAPSHOT = snap_dict

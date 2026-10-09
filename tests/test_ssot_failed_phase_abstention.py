@@ -75,6 +75,26 @@ def test_t6_a_failed_workbook_sheet_writer_does_not_taint_the_section():
     assert ssot.abstention_reason(_failed(["QoS Audit sheet"], qos_audit={}), "qos_audit") == CBE
 
 
+@pytest.mark.parametrize("phase", ["VLAN carriage", "Cable map", "VLAN cutover matrix"])
+def test_carriage_failed_owner_or_direct_input_cannot_publish_a_populated_or_empty_fallback(phase):
+    for stored in ({}, {"schema": "vlan_carriage/1", "state": "analysis_unavailable", "rows": []}):
+        snap = _failed([phase], vlan_carriage=stored, vpc={})
+        assert ssot.phase_classification(phase) == "sections"
+        assert "vlan_carriage" in ssot.failed_sections(snap)[0]
+        assert ssot.abstention_reason(snap, "vlan_carriage") == AU
+        assert ssot.abstention_reason(snap, "vlan_carriage.rows") == AU
+        assert ssot.abstention_reason(snap, "vpc") == CBE
+
+
+def test_carriage_sheet_or_derived_stp_failure_does_not_invent_a_raw_input_failure():
+    snap = _failed(["VLAN Cutover Matrix sheet", "Cabling Schedule sheet", "STP topology baseline"],
+                   vlan_carriage={"schema": "vlan_carriage/1", "rows": []}, stp_topology_observations={})
+    direct, unattributed = ssot.failed_sections(snap)
+    assert direct == frozenset({"stp_topology_baseline"}) and unattributed is False
+    assert ssot.abstention_reason(snap, "vlan_carriage") == "published"
+    assert ssot.abstention_reason(snap, "stp_topology_observations") == CBE
+
+
 def test_t7_a_failed_intermediate_taints_every_empty_section_but_not_populated_ones():
     snap = _failed(["dependency map"], cross_layer=[], vpc={"sw1": {"role": "primary"}})
     assert ssot.abstention_reason(snap, "cross_layer") == AU

@@ -22,6 +22,13 @@ are a new field in a stored section, a changed value, or a red `test_snapshot_ma
 `test_excel_sheet_schema_matches_golden` on hosted CI. Commit the engine change first: the handoff
 regenerates outputs for one exact commit.
 
+## Bounded review-data route
+
+G14 uses the hosted producer and one ordinary bounded GitHub CLI read of inert output data.
+The legacy `receive --run-id` command, including its dry-run mode, is **not admitted** under
+the GitHub-only rule. The original W31 local-execution and actual ZIP-stream-closure findings
+remain unresolved. Producer hardening and synthetic receiver tests do not establish archive custody.
+
 ## Steps
 
 The commands below suit Windows PowerShell 5.1 as well as other shells: one command per block, with
@@ -50,25 +57,27 @@ an explicit repository.
    gh run watch <run-id> --repo Tanveerahamed-Dev/cisco-migration-assessment-toolkit
    ```
 
-4. In a clean checkout of the same branch at the same commit, verify the artifact without writing:
+4. Require the complete selected attempt and every mandatory job/step to succeed, including
+   `Refute source and policy admission defects before generation`. That step runs both handoff
+   test files without `UPDATE_GOLDEN` before source capture. Independently join the actual
+   checkout, source/tree, commands, before/after ledgers, terminal log and artifact metadata.
+   Select exactly one current artifact by name/run/attempt before one bounded ordinary
+   `gh run download` into a fresh external review directory. Record intent, result and received
+   census. Do not invoke a local receiver, archive/hash/schema controller or engine command.
+   Transport metadata and a CLI read are observations, not authenticated archive custody.
 
-   ```
-   py -3.12 <checkout>/.github/scripts/engine_output_handoff.py receive --run-id <run-id> --dry-run
-   ```
-
-   The report lists, for each output, whether it is byte-identical to `HEAD` and, if not, which
-   top-level keys changed. Every change must be explained by the engine change. Then import:
-
-   ```
-   py -3.12 <checkout>/.github/scripts/engine_output_handoff.py receive --run-id <run-id>
-   ```
-
-   If a board-only commit was added after the dispatch, pass `--source-commit <dispatched SHA>`.
-   The commits after it may touch top-level `docs/*.md` only; anything else is refused.
+   Review the closed output paths and strict JSON as inert data. Explain every semantic delta
+   against the engine change and join the producer ledger to actual Git entries. Then copy only
+   the three reviewed output files into the owned checkout. Never import executable source or
+   reconstruct output digests by hand. A failed control or partial run supplies no admissible
+   review-data result; preserve it and diagnose the source before another execution.
 
 5. Review `git diff`, commit the outputs on their own (cite the run id in the message), run the
-   rule-7 scans, and push. The ordinary hosted gates on that commit decide: golden, sample and,
-   when the sample changed, Atlas Scope.
+   rule-7 scans, and push. The ordinary hosted gates on that commit decide: unchanged golden
+   comparisons, full CI and the actual `python webapp/sample_data/build_sample.py --check`
+   invocation under `TZ=UTC` in Linux 3.12 CI. That command rebuilds the complete sample and
+   compares its owner-defined nonvolatile content; lightweight sample tests alone do not do so.
+   A changed sample also requires fresh Atlas Scope validation.
 
 6. If the sample changed, Atlas Scope's tracked compiled outputs are stale. These are the files
    `atlas-scope/tools/compile-all.mjs` writes, plus `GOLDEN_SHA` in
@@ -83,17 +92,34 @@ The hosted producer (`before` / `after`):
 
 - Binds the dispatched commit to the `expected_source_commit` input, `GITHUB_SHA` and the checkout
   `HEAD`. It requires a clean tracked tree before regeneration.
+- Requires every tree/index entry to be an ordinary file with identical mode/blob identity,
+  stage zero and no hidden flags or content filters. Physically reads every non-output tracked
+  file and checks its Git blob and executable mode, before regeneration and after capture.
+- The complete untracked census includes ignored files. Only six fixed non-executable,
+  ordinary, singly linked setuptools metadata files under
+  `cisco_migration_assessment_toolkit.egg-info/` are admitted: `PKG-INFO`, `SOURCES.txt`,
+  `dependency_links.txt`, `entry_points.txt`, `requires.txt`, `top_level.txt`. Their actual subset,
+  bytes and modes must remain identical. These are bounded installer data, not Git-authenticated
+  program source. The profile is source-derived until an exact hosted census confirms it;
+  unexpected installation output refuses and is not automatically added to the profile.
+- Loads canonical markers from the current physical/Git-equal four-file policy closure in a
+  fresh private namespace, without project module-cache or bytecode fallback. Unadmitted
+  relative project imports refuse. This bounded loader is not a Python sandbox.
 - Runs under the GitHub-hosted Linux image, Python 3.12 and `TZ=UTC`.
 - Refuses any effect outside the closed set: a changed tracked file, a staged change, or an
   untracked file that appeared or vanished.
 - Refuses CR bytes, non-strict JSON (duplicate keys, non-finite numbers, BOM) and the canonical
   client-marker scan. The repository privacy verifier also runs over the regenerated tree.
-- Writes `manifest.json` (`source_commit`, `tree`, `files` with `path`, `sha256` and `bytes`,
+- Writes closed `engine_output_handoff/2` `manifest.json` (`source_commit`, `tree`, complete
+  `source_inputs` and `installer_inputs` ledgers, `files` with `path`, `sha256` and `bytes`,
   `changed_from_source`, the producer run, `allow_golden_shrink`, a nonpromoting status) plus
   `files/<path>`. The workflow uploads them as one artifact, only on success, named
   `engine-output-handoff-<sha>-<run>-<attempt>`.
 
-The local receiver (`receive`):
+Legacy receiver implementation (`receive`, unadmitted and uninvoked for G14):
+
+The following describes implemented checks, not verified actual ZIP-stream closure or authority
+to run a workstation controller. Its two unresolved findings remain separate from producer fixes.
 
 - Refuses a dirty tracked tree, a run from another workflow, event, commit or repository, a failed
   or incomplete run, job or step, and a job outside the hosted `ubuntu-24.04` image.
@@ -108,6 +134,10 @@ The local receiver (`receive`):
   written byte.
 
 ## Known properties
+
+- **Observation limits.** Physical before/after ledgers do not measure transient changes restored
+  between observations. They are producer evidence, not independent release custody. New source
+  controls require execution on the published candidate; source review alone is not a hosted pass.
 
 - **Goldens.** Regenerating the current goldens should be byte-identical: the harness pins its
   clocks and strips wall-clock stamps.
