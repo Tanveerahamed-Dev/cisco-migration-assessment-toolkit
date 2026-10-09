@@ -170,6 +170,21 @@ def test_t6_run_flag_host_matching_two_rows_is_ambiguous():
         C._resolve_ssh_consent(_load(rows), (LEGACY, ("192.0.2.11",)))
 
 
+@pytest.mark.parametrize("hostname", ["", "   "])
+def test_r2_the_run_flag_refuses_a_row_named_by_ip_whose_hostname_is_empty(hostname):
+    """W59 PR-2 review round 2 (P3). Catches: the run flag naming, by its IP, a DEFAULT-profile row with an empty
+    hostname (P3-j refuses an empty hostname only on a legacy row), which put '' into the consent block's
+    ``run_flag.hosts_named`` and ``named_not_requested`` -- a consent the record cannot attribute to any device. The
+    same rows still resolve when the flag does not name the empty-hostname row."""
+    rows = _rows(r0={"hostname": hostname})                      # default profile: loads (P3-j does not apply)
+    devices = _load(rows)
+    with pytest.raises(ValueError, match="hostname") as info:
+        C._resolve_ssh_consent(devices, (LEGACY, ("192.0.2.11",)))
+    assert "192.0.2.11" in str(info.value) and "password" not in str(info.value)
+    block = C._resolve_ssh_consent(_load(_rows(r0={"hostname": hostname})), (LEGACY, ("lab-sw2",)))
+    assert "" not in block["run_flag"]["hosts_named"] and block["named_not_requested"] == ["lab-sw2"], block
+
+
 def test_the_flag_constant_is_the_spelling_argparse_registers():
     """The messages and AssessHub boundary use ALLOW_LEGACY_SSH_FLAG; argparse registers the literal
     (so the README-FIELD flag reconciliation can read it). They must be one spelling."""
@@ -178,24 +193,82 @@ def test_the_flag_constant_is_the_spelling_argparse_registers():
     assert f'ap.add_argument("{C.ALLOW_LEGACY_SSH_FLAG}"' in source
 
 
+_CONSENT_KEY = "ssh_transport_consent"
+#: The collector's exact writers of the consent key into an EXISTING mapping: main() puts the resolved block in
+#: custody once, and replaces it once with the block compute_ssh_sessions completed (devices_negotiated_sha1); the
+#: manifest builder copies it into the sealed metadata.
+_CONSENT_KEY_WRITERS = ["build_run_manifest", "main", "main"]
+#: ... and its exact NEW mappings that carry the key: the `.incomplete.json` marker's payload, once with the custody
+#: block and once with the commitment that replaces an oversized one (W59 PR-2 review round 2, P1: built from a
+#: local value, never stored by subscript).
+_CONSENT_KEY_DISPLAYS = ["_write_incomplete_marker", "_write_incomplete_marker"]
+
+
+def _is_consent_key(node):
+    return isinstance(node, ast.Constant) and node.value == _CONSENT_KEY
+
+
+def _consent_key_sites(tree):
+    """``(writers, displays)`` by qualified enclosing def, over the whole structural class of ways to put the consent
+    key into a mapping. A WRITER stores it into an existing mapping: a subscript store, ``.setdefault`` /
+    ``.__setitem__`` / ``operator.setitem`` with the key as a constant argument, or the key as a keyword of any call
+    (``.update(ssh_transport_consent=...)``, ``dict(..., ssh_transport_consent=...)``). A DISPLAY is a dict display
+    with the key, wherever it appears (assigned to the custody name, handed to ``.update``, or a fresh payload)."""
+    owners = qualified_owners(tree)
+    writers, displays = [], []
+    for n in ast.walk(tree):
+        owner = owners.get(id(n), "<module>")
+        if isinstance(n, ast.Subscript) and isinstance(n.ctx, ast.Store) and _is_consent_key(n.slice):
+            writers.append(owner)
+        elif isinstance(n, ast.Call):
+            name = n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "")
+            if name in ("setdefault", "__setitem__") and n.args and _is_consent_key(n.args[0]):
+                writers.append(owner)
+            elif name == "setitem" and len(n.args) > 1 and _is_consent_key(n.args[1]):
+                writers.append(owner)
+            writers += [owner for k in n.keywords if k.arg == _CONSENT_KEY]
+        elif isinstance(n, ast.Dict) and any(_is_consent_key(k) for k in n.keys if k is not None):
+            displays.append(owner)
+    return sorted(writers), sorted(displays)
+
+
 def test_p2d_the_consent_block_has_one_writer():
     """W59 PR-2 review (P2-d). Catches: a second consent-block writer in the collector (PR-2 once built its own live
     and offline blocks beside PR-1's, with different keys). The collector builds no block itself: it calls the
-    owner, and it puts the block in custody at exactly ONE site."""
+    owner, and it puts the block in custody at exactly ONE site. W59 PR-2 review round 2 (P1): the census stays
+    exact -- the `.incomplete.json` marker builds its consent value in a local and places it only in its own payload
+    display, so it is no writer -- and it now covers every way to put the key into a mapping (see the falsifier)."""
     assert not hasattr(C, "_offline_ssh_consent_block")
     offline = S.offline_consent_block()
     assert offline["mode"] == "offline" and all(v is None for k, v in offline.items() if k != "mode"), offline
     tree = engine_tree()
+    writers, displays = _consent_key_sites(tree)
+    assert writers == _CONSENT_KEY_WRITERS, writers
+    assert displays == _CONSENT_KEY_DISPLAYS, displays
     owners = qualified_owners(tree)
-    writers = [owners.get(id(n)) for n in ast.walk(tree) if isinstance(n, ast.Subscript)
-               and isinstance(n.ctx, ast.Store) and isinstance(n.slice, ast.Constant)
-               and n.slice.value == "ssh_transport_consent"]
-    # main() puts the resolved block in custody once, and replaces it once with the block compute_ssh_sessions
-    # completed (devices_negotiated_sha1); the manifest builder copies it into the sealed metadata.
-    assert sorted(writers) == ["build_run_manifest", "main", "main"], writers
     built = [owners.get(id(n)) for n in ast.walk(tree) if isinstance(n, ast.Dict)
              and any(isinstance(k, ast.Constant) and k.value == "devices_requesting_legacy" for k in n.keys)]
     assert built == [], f"a consent block is still built outside the owner: {built}"
+
+
+@pytest.mark.parametrize("planted", [
+    # the round-1 P3-h shape that broke the census: a subscript store of the key into a payload
+    "def _marker_again(payload, block):\n    payload['ssh_transport_consent'] = {'mode': block.get('mode')}\n",
+    # a second custody writer, by every store form
+    "def _second_writer(block):\n    _RUN_CUSTODY['ssh_transport_consent'] = block\n",
+    "def _second_writer(block):\n    _RUN_CUSTODY.update(ssh_transport_consent=block)\n",
+    "def _second_writer(block):\n    _RUN_CUSTODY.update({'ssh_transport_consent': block})\n",
+    "def _second_writer(block):\n    _RUN_CUSTODY.setdefault('ssh_transport_consent', block)\n",
+    "def _second_writer(block):\n    _RUN_CUSTODY.__setitem__('ssh_transport_consent', block)\n",
+    "import operator\n\ndef _second_writer(block):\n    operator.setitem(_RUN_CUSTODY, 'ssh_transport_consent', block)\n",
+    "def _second_writer(block):\n    global _RUN_CUSTODY\n    _RUN_CUSTODY = {'ssh_transport_consent': block}\n",
+    "def _second_writer(block):\n    return dict(_RUN_CUSTODY, ssh_transport_consent=block)\n",
+])
+def test_p2d_a_new_custody_writer_still_fails_the_census(planted):
+    """W59 PR-2 review round 2 (P1): non-vacuity of the exact census above. Each planted writer, appended to the real
+    collector source, changes the census, so a new custody writer cannot pass it -- whatever the store form."""
+    tree = ast.parse(ENGINE.read_text(encoding="utf-8") + "\n\n" + planted)
+    assert _consent_key_sites(tree) != (_CONSENT_KEY_WRITERS, _CONSENT_KEY_DISPLAYS), planted
 
 
 # ================================================ T6: printed and recorded before connecting ===
@@ -288,6 +361,25 @@ def test_p3h_the_marker_carries_the_consent_and_commits_to_an_oversized_one(tmp_
     assert marker["ssh_transport_consent"] == {"mode": "live", "omitted": "exceeds the marker's size bound",
                                                "sha256": hashlib.sha256(canonical).hexdigest()}
     assert path.stat().st_size <= 64 * 1024
+
+
+def test_r2_the_release_contract_treats_the_marker_as_a_client_artifact():
+    """W59 PR-2 review round 2 (P3). Catches: the `.incomplete.json` marker still classified as a content-free
+    receipt after it began carrying the consent block (devices by hostname). Every leaf suffix under which the
+    collector writes the marker -- read from the engine source, not restated -- is refused by the Atlas release
+    contract's client-artifact classifier, exactly like the run manifest that carries the same block, and is
+    git-ignored like it."""
+    from portable.release_contract import _forbidden_client_artifact
+
+    suffixes = sorted({n.value for n in ast.walk(engine_tree()) if isinstance(n, ast.Constant)
+                       and isinstance(n.value, str) and n.value.endswith(".incomplete.json")})
+    assert suffixes == [".incomplete.json"], suffixes                   # non-vacuity: the writer's own suffix
+    for leaf in [f"Assessment{s}" for s in suffixes] + ["Assessment.run_manifest.json"]:
+        for path in (leaf, f"out/{leaf}", f"_internal/{leaf.upper()}"):
+            assert _forbidden_client_artifact(path), path
+    assert not _forbidden_client_artifact("_internal/cisco_toolkit/data/registry_manifest.json")
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "*.incomplete.json" in gitignore and "*.run_manifest.json" in gitignore
 
 
 def test_t6_unmatched_run_flag_host_stops_before_any_connection(tmp_path, monkeypatch):

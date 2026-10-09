@@ -208,17 +208,28 @@ SSH_SHA1_ALGORITHM = re.compile(
 _TOKEN_SPLIT = re.compile(r"[\s,;()\[\]{}<>'\"`|]+")
 
 #: Calls the legacy module must never make: anything that sends, executes, authenticates or opens a
-#: session. Matched as a PREFIX class plus the netmiko write family, not as one enumerated spelling,
-#: so a new ``send_*`` helper is covered by construction.
+#: session, as a PREFIX class plus the netmiko write family. W59 PR-2 review round 2 (P2): this is no longer the
+#: rule that closes the class -- ``t.global_request(...)``, ``t.renegotiate_keys()`` and ``chan.get_pty()`` walked
+#: past it. The closed call-site allowlist (:data:`_LEGACY_SSH_CALL_SITES`) is; these only NAME the common shapes
+#: in a violation's text.
 _SEND_METHOD_PREFIXES = ("send", "_send", "write_", "exec_", "invoke_", "open_", "auth_", "start_")
 _SEND_METHOD_NAMES = frozenset({
     "connect", "config_mode", "exit_config_mode", "save_config", "commit", "commit_config",
     "enable", "request_port_forward"})
-#: Builtins that run code or import a module by NAME, past every import-statement rule below.
-_DYNAMIC_CALLS = frozenset({"__import__", "eval", "exec", "compile", "getattr", "vars", "globals", "locals"})
-#: Attributes that reach a class's tables or bases by reflection, around every name-based rule here.
+#: Builtins that run code, import a module by NAME, or read or write an attribute by a computed name, past every
+#: import-statement, call and attribute rule below. W59 PR-2 review round 2 (P2): each is a violation wherever its
+#: NAME appears (called, aliased or passed), not only when it is called with a paramiko-rooted argument.
+_DYNAMIC_CALLS = frozenset({"__import__", "eval", "exec", "compile", "getattr", "setattr", "delattr", "vars",
+                            "globals", "locals", "breakpoint", "__builtins__"})
+#: Attributes that reach a class's tables, bases or attribute machinery by reflection, around every name-based rule
+#: here. W59 PR-2 review round 2 (P2): ``mro`` (``setattr(type(t).mro()[-2], n, v)`` widened paramiko's Transport for
+#: every thread), ``__setattr__`` / ``__delattr__`` / ``__getattribute__`` and the descriptor hooks are flagged
+#: outright. The closed attribute allowlist (:data:`_LEGACY_SSH_ATTRIBUTES`) is what closes the class; this set names
+#: the reflective shapes in a violation's text.
 _REFLECTIVE_ATTRS = frozenset({"__dict__", "__bases__", "__base__", "__mro__", "__class__", "__subclasses__",
-                               "__globals__", "__builtins__"})
+                               "__globals__", "__builtins__", "mro", "__setattr__", "__delattr__",
+                               "__getattribute__", "__getattr__", "__new__", "__init_subclass__", "__set_name__",
+                               "__code__", "__closure__", "__func__", "__self__", "__wrapped__"})
 #: An inherited paramiko algorithm table, by attribute name (the stock tuples/dicts the tier extends).
 _TABLE_ATTR = re.compile(r"^(?:_preferred_\w+|_\w+_info|HASHES|key_classes)$")
 _MUTATING_METHODS = frozenset({
@@ -234,11 +245,74 @@ _COPY_CALLS = frozenset({"tuple", "MappingProxyType"})
 #: W59 PR-2 review (P1-a): the legacy module's CLOSED import allowlist (fully qualified imported names). It replaces
 #: the no-egress walk's view of this one file: anything outside it -- a network library, ``importlib``, ``ctypes``,
 #: ``subprocess`` -- is a violation, and among network libraries only paramiko may appear at all.
-_LEGACY_SSH_IMPORTS_EXACT = frozenset({"hashlib", "paramiko", "cryptography.hazmat.primitives.hashes"})
-_LEGACY_SSH_IMPORT_PREFIXES = ("__future__.", "types.", "paramiko.", "cisco_toolkit.ssh_session.", ".ssh_session.")
+#: W59 PR-2 review round 2 (P2): EXACT names only, no prefix. The prefixes ``paramiko.`` and
+#: ``cisco_toolkit.ssh_session.`` admitted anything those modules bind, a re-exported module included
+#: (``from paramiko.transport import socket``, ``from cisco_toolkit.ssh_session import os`` then ``os.system(...)``).
+#: ``tests/test_readonly_and_no_egress.py`` pins the paramiko names from the other side.
+_LEGACY_SSH_IMPORTS_EXACT = frozenset({
+    "__future__.annotations",
+    "hashlib",
+    "types.MappingProxyType", "types.SimpleNamespace",
+    "cryptography.hazmat.primitives.hashes",
+    "paramiko.kex_gex.KexGexSHA256", "paramiko.kex_group14.KexGroup14SHA256", "paramiko.rsakey.RSAKey",
+    "paramiko.ssh_exception.IncompatiblePeer", "paramiko.transport.Transport",
+})
+#: The names the tier may import from the vocabulary owner (``cisco_toolkit.ssh_session``, or ``.ssh_session``
+#: package-relative): the pinned PR-1 / PR-2 interface of the design (§4.2). The non-tier names are listed here; the
+#: tier tuples themselves are admitted by the owner's naming convention (:data:`_LEGACY_TIER_NAME`, the same
+#: derivation :func:`_legacy_tier_names` uses), because this module may not spell a tier name as a string -- the
+#: confinement rule below holds every module but the tier to that. In both cases the name must be one the owner does
+#: NOT bind through an import statement (the owner imports os, json, re, threading, time ...), and the call-site and
+#: attribute allowlists confine whatever is imported to data use.
+_LEGACY_SSH_IMPORTS_VOCABULARY = frozenset({
+    "DEFAULT_PROFILE", "DH_FLOOR_BITS", "LEGACY_SHA1_PROFILE", "SSH_PROFILES", "ObservingTransportMixin",
+    "permits_sha1",
+})
+#: W59 PR-2 review round 2 (P2): the legacy module's CLOSED call-site allowlist, ``{qualified enclosing def: callee
+#: spellings}`` (``<module>`` for module level and class bodies). Every call it makes -- an ``ast.Call``, a decorator,
+#: a class keyword -- must be listed under its own enclosing def by the exact source spelling of its callee. Anything
+#: else is a violation: a method of a runtime-reached object (``t.global_request(...)``, ``chan.get_pty()``), a class
+#: derived from paramiko (``LegacySHA1Transport((host, port))`` opens a TCP connection), ``setattr``, ``os.system``.
+#: It replaces the denylist of send-method spellings as the rule that closes the class. With the binding rule below
+#: (one binding per scope, no builtin shadowed), a listed spelling always means the binding it names.
+_LEGACY_SSH_CALL_SITES = MappingProxyType({
+    "<module>": frozenset({"ImportError", "MappingProxyType", "_HOST_KEY_RSA_SHA1_CERT.startswith", "dict.fromkeys",
+                           "len", "tuple"}),
+    "WeakGroupRefused.__init__": frozenset({"int", "super", "super().__init__"}),
+    "LegacyKexGexSHA1._parse_kexdh_gex_group": frozenset({
+        "WeakGroupRefused", "m.asbytes", "prime.bit_length", "probe.get_mpint", "super",
+        "super()._parse_kexdh_gex_group", "type", "type(m)"}),
+    "default_permits_sha1": frozenset({"MappingProxyType", "SimpleNamespace", "bool", "permits_sha1", "tuple"}),
+    "transport_for": frozenset({"LegacyTransportUnavailable", "ValueError", "default_permits_sha1", "isinstance",
+                                "sorted"}),
+})
+#: W59 PR-2 review round 2 (P2): the CLOSED attribute allowlist -- every attribute name the legacy module reads or
+#: writes. Reflection (``mro``, ``__class__``, ``__dict__``, ``__setattr__``, ...) and any attribute of a
+#: runtime-reached object the tier does not need (``self.transport``, ``t.sock``) fall outside it. It replaces the
+#: denylist of reflective attributes as the rule that closes the class.
+_LEGACY_SSH_ATTRIBUTES = frozenset({
+    "HASHES", "SHA1", "__init__", "_kex_info", "_key_info", "_parse_kexdh_gex_group", "_preferred_kex",
+    "_preferred_keys", "asbytes", "bit_length", "floor_bits", "fromkeys", "get_mpint", "offered_bits", "sha1",
+    "startswith",
+})
+#: W59 PR-2 review round 2 (P2): the CLOSED statement and expression grammar of the legacy module, by AST node type
+#: (the forms it uses, plus the comparison, boolean, unary-minus and ``pass`` siblings of those). Deliberately absent: ``with``,
+#: ``for``, ``while``, ``try``, ``match``, ``async`` / ``await``, ``yield``, ``lambda``, comprehensions, ``global`` /
+#: ``nonlocal``, ``del``, augmented and annotated assignment, the walrus, starred and list / set displays -- each an
+#: implicit call or a rebinding route the call, attribute and binding rules would not see. (A decorator or a class
+#: keyword is an expression, not a node type: the call-site rule treats each as a call.)
+_LEGACY_SSH_GRAMMAR = frozenset({
+    "Module", "Expr", "Pass", "Import", "ImportFrom", "alias", "ClassDef", "FunctionDef", "arguments", "arg",
+    "Assign", "If", "Raise", "Return",
+    "Call", "keyword", "Attribute", "Subscript", "Name", "Load", "Store", "Constant", "Tuple", "Dict", "IfExp",
+    "JoinedStr", "FormattedValue", "BinOp", "Add", "BoolOp", "And", "Or", "UnaryOp", "Not", "USub", "Compare",
+    "Eq", "NotEq", "Lt", "LtE", "Gt", "GtE", "In", "NotIn", "Is", "IsNot",
+})
 #: The tier's vocabulary names, by the owner's naming convention (``LEGACY_SHA1_TIER_KEX`` /
 #: ``LEGACY_SHA1_TIER_HOST_KEYS``): the names the legacy module imports with this prefix are the tier.
 _LEGACY_TIER_PREFIX = "LEGACY_SHA1_TIER_"
+#: A tier-tuple name, by that convention: the prefix and an upper-case constant suffix.
+_LEGACY_TIER_NAME = re.compile("^" + re.escape(_LEGACY_TIER_PREFIX) + "[A-Z0-9_]+$")
 
 
 # --------------------------------------------------------------- mechanics ---
@@ -470,6 +544,552 @@ def _claim_no_llm(toolkit_dir, collector_module):
                   "(analysis package + collector entry)")
 
 
+# ----------------------------- connection taint fixpoint (W59; one owner, shared with the T8 tests) ---
+# W59 PR-1 review (P3-f) built a CLOSED structural taint scan for the collector's one patchable connection factory
+# (T8, tests/test_ssh_session.py, closed in its round 2): every name a netmiko / paramiko import binds is a root, and
+# so is every dynamic route to a name; taint flows through every binding and expression form, names resolve as
+# Python resolves them, and a connection-capable callee may be CALLED, or a connection-capable value HANDED to other
+# code, only at named sites. W59 PR-2 review round 2 (P2) runs the SAME fixpoint inside the published
+# `legacy_ssh_confined` claim, so it moved here verbatim, to the shipped owner, and the tests import it from here
+# (tests/ssh_structural_support.py re-exports it), exactly as tests/test_readonly_and_no_egress.py imports the
+# read-only grammar above: the published claim and the CI guard cannot diverge.
+SSH_CONNECTION_LIBRARIES = ("netmiko", "paramiko")
+
+
+def connection_roots(tree):
+    """Every name an import of netmiko or paramiko binds (a module, the class map, a driver or client class), derived
+    from the import statements, never hand-listed. Exception classes (imported from an exceptions module) construct
+    no connection and are not roots."""
+    roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in SSH_CONNECTION_LIBRARIES:
+                    roots.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            module = node.module or ""
+            if module.split(".")[0] in SSH_CONNECTION_LIBRARIES and not module.endswith(("exceptions", "ssh_exception")):
+                roots.update(alias.asname or alias.name for alias in node.names)
+    return roots
+
+
+# A value's taint SHAPE: False (carries nothing), True (a connection-capable class, callable or module), (_SEQ, (s,
+# ...)) a tuple or list display with one shape per element, or (_BAG, s) any other container whose members have shape s.
+_SEQ, _BAG = "seq", "bag"
+#: calls whose result can be ANY name -- a namespace, an import by string, an evaluated string -- so it is a root
+_DYNAMIC_ROOT_CALLS = frozenset({"__import__", "import_module", "globals", "vars", "locals", "eval"})
+#: calls that execute code from a string: each is a violation by itself, whatever it is handed
+_DYNAMIC_CODE_CALLS = frozenset({"exec", "eval", "compile"})
+#: readers the shape model already follows: handing them a tainted value hands it to no code
+_READERS = frozenset({"type", "getattr", "isinstance", "issubclass", "hasattr"})
+#: container operations that never call what they are given; on an already-tainted container they keep it tainted
+_CONTAINER_OPS = frozenset({"get", "setdefault", "pop", "append", "extend", "insert", "add", "update", "index",
+                            "count", "remove", "discard", "copy", "items", "keys", "values"})
+#: attribute reads that are data, never a class (a class's name, a module's version)
+_DATA_DUNDERS = frozenset({"__name__", "__qualname__", "__module__", "__version__", "__doc__"})
+_FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+
+
+def _any(shape):
+    if shape is True:
+        return True
+    if isinstance(shape, tuple):
+        return _any(shape[1]) if shape[0] == _BAG else any(_any(e) for e in shape[1])
+    return False
+
+
+def _elem(shape):
+    """What iterating, indexing or a container operation on a value of `shape` yields."""
+    if shape is True:
+        return True
+    if isinstance(shape, tuple):
+        if shape[0] == _BAG:
+            return shape[1]
+        out = False
+        for e in shape[1]:
+            out = _join(out, e)
+        return out
+    return False
+
+
+def _join(a, b):
+    if a is True or b is True:
+        return True
+    if not a:
+        return b
+    if not b:
+        return a
+    if a == b:
+        return a
+    if a[0] == b[0] == _SEQ and len(a[1]) == len(b[1]):
+        return (_SEQ, tuple(_join(x, y) for x, y in zip(a[1], b[1])))
+    return (_BAG, _join(_elem(a), _elem(b)))
+
+
+def _bag(shape):
+    return (_BAG, shape) if _any(shape) else False
+
+
+def _target_names(target):
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for e in target.elts:
+            yield from _target_names(e)
+    elif isinstance(target, ast.Starred):
+        yield from _target_names(target.value)
+
+
+class _Scopes:
+    """Python's own name resolution, statically: each function (and lambda) has its locals -- parameters and every
+    name it binds, minus its ``global`` / ``nonlocal`` declarations -- and a name resolves to the innermost enclosing
+    FUNCTION that binds it (class bodies are skipped, as Python skips them), else to the module. A method's first
+    parameter is keyed by its class, so ``self`` in one method is the same object as in another."""
+
+    def __init__(self, tree):
+        self.scope_of, self.parent, self.locals, self.kind, self.self_key = {}, {}, {"<module>": set()}, {}, {}
+        self.defs = {}                                   # binding key of a def/class -> its node
+        self._visit(tree, "<module>")
+
+    def _bound(self, node):
+        out = set()
+        if isinstance(node, _FUNCS):
+            a = node.args
+            out |= {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs}
+            out |= {x.arg for x in (a.vararg, a.kwarg) if x is not None}
+        declared = set()
+        body = [node.body] if isinstance(node, ast.Lambda) else node.body
+        stack = list(body) if isinstance(body, list) else [body]
+        while stack:
+            n = stack.pop()
+            if isinstance(n, (ast.Global, ast.Nonlocal)):
+                declared |= set(n.names)
+                continue
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                out.add(n.name)
+                stack.extend(n.decorator_list)
+                if not isinstance(n, ast.ClassDef):
+                    stack.extend(n.args.defaults + [d for d in n.args.kw_defaults if d is not None])
+                else:
+                    stack.extend(n.bases + [k.value for k in n.keywords])
+                continue                                 # its body is its own scope
+            if isinstance(n, ast.Lambda):
+                stack.extend(n.args.defaults + [d for d in n.args.kw_defaults if d is not None])
+                continue
+            if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                out.add(n.id)
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                out |= {(a.asname or a.name).split(".")[0] for a in n.names}
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                out.add(n.name)
+            stack.extend(ast.iter_child_nodes(n))
+        return out - declared, declared
+
+    def _visit(self, node, scope):
+        for child in ast.iter_child_nodes(node):
+            self.scope_of[id(child)] = scope
+            if isinstance(child, (*_FUNCS, ast.ClassDef)):
+                name = getattr(child, "name", f"<lambda@{child.lineno}:{child.col_offset}>")
+                inner = name if scope == "<module>" else f"{scope}.{name}"
+                if not isinstance(child, ast.Lambda):
+                    where = (scope, name) if self.kind.get(scope) == "class" else self.resolve_name(name, scope)
+                    self.defs.setdefault(where, []).append(child)
+                self.parent[inner] = scope
+                self.kind[inner] = "class" if isinstance(child, ast.ClassDef) else "function"
+                if isinstance(child, ast.ClassDef):
+                    self.locals[inner] = set()
+                    for item in child.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.args.args:
+                            self.self_key[(f"{inner}.{item.name}", item.args.args[0].arg)] = ("<self>", inner)
+                else:
+                    self.locals[inner], _declared = self._bound(child)
+                # decorators, defaults and bases are evaluated in the ENCLOSING scope
+                for sub in (getattr(child, "decorator_list", []) + getattr(child, "bases", [])
+                            + [k.value for k in getattr(child, "keywords", [])]):
+                    self._mark(sub, scope)
+                if isinstance(child, _FUNCS):
+                    for d in child.args.defaults + [d for d in child.args.kw_defaults if d is not None]:
+                        self._mark(d, scope)
+                self._visit_body(child, inner)
+            else:
+                self._visit(child, scope)
+
+    def _mark(self, node, scope):
+        for sub in ast.walk(node):
+            self.scope_of[id(sub)] = scope
+        self._visit(node, scope)
+
+    def _visit_body(self, node, scope):
+        body = [node.body] if isinstance(node, ast.Lambda) else node.body
+        for stmt in body:
+            self.scope_of[id(stmt)] = scope
+            if isinstance(stmt, (*_FUNCS, ast.ClassDef)):
+                wrapper = ast.Module(body=[stmt], type_ignores=[])
+                self._visit(wrapper, scope)
+            else:
+                self._visit(stmt, scope)
+
+    def resolve_name(self, name, scope):
+        """The binding key of `name` read in `scope`."""
+        if (scope, name) in self.self_key:
+            return self.self_key[(scope, name)]
+        s, first = scope, True
+        while s != "<module>":
+            if (self.kind.get(s) == "function" or first) and name in self.locals.get(s, ()):
+                return (s, name)
+            first = False
+            s = self.parent.get(s, "<module>")
+        return ("<module>", name)
+
+    def key(self, node):
+        scope = self.scope_of.get(id(node), "<module>")
+        # a method's first parameter, anywhere inside that method (nested closures included)
+        s = scope
+        while s != "<module>":
+            if (s, node.id) in self.self_key:
+                return self.self_key[(s, node.id)]
+            if node.id in self.locals.get(s, ()) and self.kind.get(s) == "function":
+                break
+            s = self.parent.get(s, "<module>")
+        return self.resolve_name(node.id, scope)
+
+
+class _Env:
+    """Shapes of every binding key, of every (receiver, attribute) store, and of what every def returns."""
+
+    def __init__(self, tree):
+        self.scopes = _Scopes(tree)
+        self.names = {("<module>", name): True for name in connection_roots(tree)}
+        for node in ast.walk(tree):                      # a root bound inside a function is that function's local
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                scope = self.scopes.scope_of.get(id(node), "<module>")
+                for alias in node.names:
+                    bound = (alias.asname or alias.name).split(".")[0]
+                    if bound in connection_roots(ast.Module(body=[node], type_ignores=[])):
+                        self.names[self.scopes.resolve_name(bound, scope)] = True
+        self.attrs, self.returns, self.methods = {}, {}, {}
+        self.changed = False
+
+    def key(self, node):
+        return self.scopes.key(node)
+
+    def receiver(self, node):
+        return self.key(node) if isinstance(node, ast.Name) else ast.unparse(node)
+
+    def put(self, table, key, shape):
+        if not shape:
+            return
+        old = table.get(key, False)
+        new = _join(old, shape)
+        if new != old:
+            table[key] = new
+            self.changed = True
+
+    # ------------------------------------------------------------------------------------------- shapes ---
+    def shape(self, node):
+        if node is None:
+            return False
+        if isinstance(node, ast.Name):
+            key = self.key(node)
+            own = self.names.get(key, False)
+            for (recv, _attr), s in self.attrs.items():
+                if recv == key:                     # an object carrying a tainted attribute, used whole
+                    own = _join(own, _bag(s))
+            return own
+        if isinstance(node, ast.Attribute):
+            if node.attr in _DATA_DUNDERS:
+                return False
+            base = self.names.get(self.key(node.value), False) if isinstance(node.value, ast.Name) \
+                else self.shape(node.value)
+            if base is True:
+                return True
+            return self.attrs.get((self.receiver(node.value), node.attr), False)
+        if isinstance(node, ast.Subscript):
+            if ast.unparse(node.value) in ("sys.modules", "modules"):
+                key = node.slice
+                return not (isinstance(key, ast.Constant) and isinstance(key.value, str)) \
+                    or key.value.split(".")[0] in SSH_CONNECTION_LIBRARIES
+            base = self.shape(node.value)
+            if isinstance(base, tuple) and base[0] == _SEQ and isinstance(node.slice, ast.Constant) \
+                    and isinstance(node.slice.value, int) and -len(base[1]) <= node.slice.value < len(base[1]):
+                return base[1][node.slice.value]
+            return _elem(base)
+        if isinstance(node, (ast.Tuple, ast.List)):
+            if any(isinstance(e, ast.Starred) for e in node.elts):
+                out = False
+                for e in node.elts:
+                    out = _join(out, _elem(self.shape(e.value)) if isinstance(e, ast.Starred) else self.shape(e))
+                return _bag(out)
+            elts = tuple(self.shape(e) for e in node.elts)
+            return (_SEQ, elts) if any(_any(e) for e in elts) else False
+        if isinstance(node, ast.Set):
+            out = False
+            for e in node.elts:
+                out = _join(out, self.shape(e))
+            return _bag(out)
+        if isinstance(node, ast.Dict):
+            out = False
+            for k, v in zip(node.keys, node.values):
+                out = _join(out, self.shape(k) if k is not None else False)
+                out = _join(out, self.shape(v) if k is not None else _elem(self.shape(v)))
+            return _bag(out)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            return _bag(self.shape(node.elt))
+        if isinstance(node, ast.DictComp):
+            return _bag(_join(self.shape(node.key), self.shape(node.value)))
+        if isinstance(node, ast.IfExp):
+            return _join(self.shape(node.body), self.shape(node.orelse))
+        if isinstance(node, ast.BoolOp):
+            out = False
+            for v in node.values:
+                out = _join(out, self.shape(v))
+            return out
+        if isinstance(node, (ast.NamedExpr, ast.Starred, ast.Await, ast.YieldFrom)):
+            return self.shape(node.value)
+        if isinstance(node, ast.Lambda):
+            return True if _any(self.shape(node.body)) else False
+        if isinstance(node, ast.Call):
+            return self.call_shape(node)
+        return False
+
+    @staticmethod
+    def callee_name(func):
+        return func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+
+    def defs_of(self, call):
+        """The defs a call reaches: a resolvable name's own def (a class's ``__init__``), or every method of that
+        name for an attribute call (the receiver's class is not resolved statically, so all of them)."""
+        func = call.func
+        if isinstance(func, ast.Name):
+            for node in self.scopes.defs.get(self.key(func), ()):
+                if isinstance(node, ast.ClassDef):
+                    for item in node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__":
+                            yield item, True
+                else:
+                    yield node, False
+        elif isinstance(func, ast.Attribute):
+            for key, nodes in self.scopes.defs.items():
+                if key[1] == func.attr and self.scopes.kind.get(key[0]) == "class":
+                    for node in nodes:
+                        if not isinstance(node, ast.ClassDef):
+                            yield node, True
+
+    def call_shape(self, node):
+        func = node.func
+        name = self.callee_name(func)
+        if name == "type" and len(node.args) >= 2:
+            return True if _any(self.shape(node.args[1])) else False
+        if name == "getattr" and isinstance(func, ast.Name) and node.args:
+            attr = node.args[1] if len(node.args) >= 2 else None
+            if isinstance(attr, ast.Constant) and attr.value in _DATA_DUNDERS:
+                return False
+            base = self.names.get(self.key(node.args[0]), False) if isinstance(node.args[0], ast.Name) \
+                else self.shape(node.args[0])
+            if base is True:
+                return True
+            if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
+                return self.attrs.get((self.receiver(node.args[0]), attr.value), False)
+            return _elem(self.shape(node.args[0]))     # a computed attribute name: whatever the object carries
+        if name in ("__import__", "import_module"):
+            arg = node.args[0] if node.args else None
+            return not (isinstance(arg, ast.Constant) and isinstance(arg.value, str)) \
+                or arg.value.split(".")[0] in SSH_CONNECTION_LIBRARIES
+        if name in _DYNAMIC_ROOT_CALLS and isinstance(func, ast.Name):
+            return True
+        if name == "partial" and node.args and _any(self.shape(node.args[0])):
+            return True
+        out = False
+        for fn, _method in self.defs_of(node):
+            out = _join(out, self.returns.get(id(fn), False))
+        if out:
+            return out
+        if self.shape(func) is True:
+            return False                           # calling a class builds an instance, which taints nothing
+        if isinstance(func, ast.Attribute) and name in _CONTAINER_OPS:
+            recv = self.shape(func.value)
+            if isinstance(recv, tuple):
+                return _elem(recv)                 # a container operation hands back what the container holds
+        return False
+
+    # ------------------------------------------------------------------------------------------ binding ---
+    def bind(self, target, shape, value=None):
+        if isinstance(target, ast.Name):
+            key = self.key(target)
+            self.put(self.names, key, shape)
+            if isinstance(value, ast.Name):        # an alias of an object carrying tainted attributes
+                src = self.key(value)
+                for (recv, attr), s in list(self.attrs.items()):
+                    if recv == src:
+                        self.put(self.attrs, (key, attr), s)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            starred = any(isinstance(e, ast.Starred) for e in target.elts)
+            if not starred and isinstance(shape, tuple) and shape[0] == _SEQ and len(shape[1]) == len(target.elts):
+                vals = value.elts if isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(
+                    target.elts) else [None] * len(target.elts)
+                for e, s, v in zip(target.elts, shape[1], vals):
+                    self.bind(e, s, v)
+            else:
+                for e in target.elts:
+                    self.bind(e, _bag(_elem(shape)) if isinstance(e, ast.Starred) else _elem(shape))
+        elif isinstance(target, ast.Starred):
+            self.bind(target.value, shape)
+        elif isinstance(target, ast.Attribute):
+            self.put(self.attrs, (self.receiver(target.value), target.attr), shape)
+        elif isinstance(target, ast.Subscript):
+            root = target.value                    # storing into a container taints the container
+            if isinstance(root, ast.Name):
+                self.put(self.names, self.key(root), _bag(shape))
+            elif isinstance(root, ast.Attribute):
+                self.put(self.attrs, (self.receiver(root.value), root.attr), _bag(shape))
+
+    def bind_params(self, fn, call, skip_self):
+        scope = self.scopes.scope_of.get(id(fn.body[0] if isinstance(fn.body, list) else fn.body), None)
+        args = fn.args
+        params = [a.arg for a in args.posonlyargs + args.args]
+        if skip_self and params:
+            params = params[1:]
+
+        def put(param, shape):
+            self.put(self.names, (scope, param), shape)
+
+        for i, a in enumerate(call.args):
+            if isinstance(a, ast.Starred):
+                for q in params[i:]:
+                    put(q, _elem(self.shape(a.value)))
+                if args.vararg is not None:
+                    put(args.vararg.arg, _bag(_elem(self.shape(a.value))))
+                break
+            if i < len(params):
+                put(params[i], self.shape(a))
+            elif args.vararg is not None:
+                put(args.vararg.arg, _bag(self.shape(a)))
+        named = set(params) | {a.arg for a in args.kwonlyargs}
+        for kw in call.keywords:
+            if kw.arg is None:
+                for q in named:
+                    put(q, _elem(self.shape(kw.value)))
+                if args.kwarg is not None:
+                    put(args.kwarg.arg, self.shape(kw.value))
+            elif kw.arg in named:
+                put(kw.arg, self.shape(kw.value))
+            elif args.kwarg is not None:
+                put(args.kwarg.arg, _bag(self.shape(kw.value)))
+
+    def step(self, tree):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                if any(_any(self.shape(b)) for b in list(node.bases) + [k.value for k in node.keywords]):
+                    self.put(self.names, self.scopes.resolve_name(node.name, self.scopes.scope_of.get(
+                        id(node), "<module>")), True)
+            elif isinstance(node, ast.Assign):
+                s = self.shape(node.value)
+                for t in node.targets:
+                    self.bind(t, s, node.value)
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.value is not None:
+                self.bind(node.target, self.shape(node.value), node.value)
+            elif isinstance(node, ast.NamedExpr):
+                self.bind(node.target, self.shape(node.value), node.value)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                self.bind(node.target, _elem(self.shape(node.iter)))
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        self.bind(item.optional_vars, self.shape(item.context_expr))
+            elif isinstance(node, _FUNCS):
+                args = node.args
+                positional = args.posonlyargs + args.args
+                inner = self.scopes.scope_of.get(id(node.body[0] if isinstance(node.body, list) else node.body))
+                for a, d in zip(positional[len(positional) - len(args.defaults):], args.defaults):
+                    self.put(self.names, (inner, a.arg), self.shape(d))
+                for a, d in zip(args.kwonlyargs, args.kw_defaults):
+                    if d is not None:
+                        self.put(self.names, (inner, a.arg), self.shape(d))
+                if not isinstance(node, ast.Lambda):
+                    out = False
+                    stack = list(node.body)
+                    while stack:
+                        r = stack.pop()
+                        if isinstance(r, (*_FUNCS, ast.ClassDef)):
+                            continue                 # a nested def's returns are its own
+                        if isinstance(r, ast.Return) and r.value is not None:
+                            out = _join(out, self.shape(r.value))
+                        elif isinstance(r, (ast.Yield, ast.YieldFrom)) and r.value is not None:
+                            out = _join(out, _bag(self.shape(r.value)))
+                        stack.extend(ast.iter_child_nodes(r))
+                    self.put(self.returns, id(node), out)
+            elif isinstance(node, ast.Call):
+                for fn, skip_self in self.defs_of(node):
+                    self.bind_params(fn, node, skip_self)
+
+
+def qualified_owners(tree):
+    """id(node) -> the qualified name of its innermost enclosing function ('<module>' at module level)."""
+    owners = {}
+
+    def visit(node, qual, in_function):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                inner = f"{qual}.{child.name}" if qual else child.name
+                owners[id(child)] = qual if in_function else (qual or "<module>")
+                visit(child, inner, in_function or not isinstance(child, ast.ClassDef))
+            else:
+                owners[id(child)] = qual if in_function else "<module>"
+                visit(child, qual, in_function)
+
+    visit(tree, "", False)
+    return owners
+
+
+def connection_constructor_calls(tree):
+    """``(constructs, hands_over, tainted, factories)`` over the module `tree`: ``{qualified owner: sorted callee
+    sources}`` for every call that constructs through a connection-capable callee (and every ``exec`` / ``eval`` /
+    ``compile``), the same for every call a connection-capable value is handed to as an argument (the readers and the
+    container operations the shape model follows excepted), the set of tainted binding keys ``(scope, name)``, and the
+    names of the defs that return a tainted value. The taint is a fixpoint over the whole module (see the T8 tests
+    and :func:`_claim_legacy_ssh_confined`)."""
+    env = _Env(tree)
+    for _ in range(64):
+        env.changed = False
+        env.step(tree)
+        if not env.changed:
+            break
+    else:
+        raise AssertionError("the taint fixpoint did not converge")
+    owners = qualified_owners(tree)
+    found, passes = {}, {}
+    for node in ast.walk(tree):
+        owner = owners.get(id(node), "<module>")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for dec in node.decorator_list:
+                if env.shape(dec.func if isinstance(dec, ast.Call) else dec) is True:
+                    found.setdefault(owner, []).append("@" + ast.unparse(dec))
+        if not isinstance(node, ast.Call):
+            continue
+        name = env.callee_name(node.func)
+        if isinstance(node.func, ast.Name) and name in _DYNAMIC_CODE_CALLS:
+            found.setdefault(owner, []).append(name)
+            continue
+        if env.shape(node.func) is True and not (isinstance(node.func, ast.Name) and name in _READERS):
+            found.setdefault(owner, []).append(ast.unparse(node.func))
+        if isinstance(node.func, ast.Name) and name in _READERS:
+            continue
+        if isinstance(node.func, ast.Attribute) and name in _CONTAINER_OPS and isinstance(
+                env.shape(node.func.value), tuple):
+            continue
+        if any(_any(env.shape(a)) for a in node.args) or any(_any(env.shape(k.value)) for k in node.keywords):
+            passes.setdefault(owner, []).append(ast.unparse(node.func))
+    factories = {n.name for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and env.returns.get(id(n))}
+    return ({o: sorted(c) for o, c in found.items()}, {o: sorted(c) for o, c in passes.items()},
+            {key for key, shape in env.names.items() if _any(shape)}, factories)
+
+
+def callee_name(func):
+    """The callee spelling the scan keys a call by (a name, or an attribute's last segment)."""
+    return _Env.callee_name(func)
+
+
 # ------------------------------------------ legacy SSH tier confinement mechanics (W59) ---
 def ssh_sha1_literals(tree):
     """``[(lineno, name)]`` for every string token in a parsed module that names an SSH algorithm with
@@ -629,32 +1249,62 @@ def _paramiko_use_violations(tree, pm_names):
     return out
 
 
-def legacy_import_violations(tree):
-    """W59 PR-2 review (P1-a): every import of the legacy module against its CLOSED allowlist
-    (:data:`_LEGACY_SSH_IMPORTS_EXACT` / :data:`_LEGACY_SSH_IMPORT_PREFIXES`), lazy imports included, and every
-    network-library import (:data:`NETWORK_IMPORTS`) that is not rooted at paramiko. With the no-egress walk's
-    per-file permission, this is what judges the one file whose paramiko imports that walk accepts."""
+def _legacy_import_names(node):
+    """``[(qualified name, alias)]`` for one import statement of the legacy module. The vocabulary owner's
+    package-relative spelling (``from .ssh_session import X``) reads as ``cisco_toolkit.ssh_session.X``; any other
+    relative import keeps its leading dots, so it can never match an allowlisted name."""
+    if isinstance(node, ast.Import):
+        return [(alias.name, alias) for alias in node.names]
+    module = node.module or ""
+    if node.level == 1 and module == _SSH_VOCABULARY_MODULE[:-3]:
+        base = f"cisco_toolkit.{module}"
+    else:
+        base = "." * node.level + module
+    return [(f"{base}.{alias.name}" if base and not base.endswith(".") else f"{base}{alias.name}", alias)
+            for alias in node.names]
+
+
+def owner_import_bound_names(owner_tree):
+    """Every name the vocabulary owner binds through an import statement, anywhere in its module (a module or an
+    object it merely re-exports, such as ``os`` or ``MappingProxyType``)."""
+    return frozenset((alias.asname or alias.name).split(".")[0] for node in ast.walk(owner_tree)
+                     if isinstance(node, (ast.Import, ast.ImportFrom)) for alias in node.names)
+
+
+def legacy_import_violations(tree, owner_import_bound=frozenset()):
+    """W59 PR-2 review (P1-a): every import of the legacy module against its CLOSED allowlist, lazy imports included,
+    and every network-library import (:data:`NETWORK_IMPORTS`) that is not rooted at paramiko. With the no-egress
+    walk's per-file permission, this is what judges the one file whose paramiko imports that walk accepts.
+
+    W59 PR-2 review round 2 (P2): the allowlist is EXACT (:data:`_LEGACY_SSH_IMPORTS_EXACT`), with no prefix through
+    which a module paramiko re-exports could be reached. From the vocabulary owner only the pinned names
+    (:data:`_LEGACY_SSH_IMPORTS_VOCABULARY` and the tier tuples, :data:`_LEGACY_TIER_NAME`) may be imported, and
+    none that the owner itself binds through an import statement (`owner_import_bound`, from
+    :func:`owner_import_bound_names`; ``from cisco_toolkit.ssh_session import os`` then ``os.system(...)``). An
+    import alias (``as``) is a violation, because it is a route around every spelling-based rule here."""
+    vocab_prefix = f"cisco_toolkit.{_SSH_VOCABULARY_MODULE[:-3]}."
     out = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names = [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            base = "." * node.level + (node.module or "")
-            names = [f"{base}.{alias.name}" if base and not base.endswith(".") else f"{base}{alias.name}"
-                     for alias in node.names]
-        else:
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
-        for name in names:
-            if name not in _LEGACY_SSH_IMPORTS_EXACT and not name.startswith(_LEGACY_SSH_IMPORT_PREFIXES):
+        for name, alias in _legacy_import_names(node):
+            leaf = name[len(vocab_prefix):] if name.startswith(vocab_prefix) else None
+            vocab = leaf is not None and (leaf in _LEGACY_SSH_IMPORTS_VOCABULARY or bool(_LEGACY_TIER_NAME.match(leaf)))
+            if name not in _LEGACY_SSH_IMPORTS_EXACT and not vocab:
                 out.append(f"line {node.lineno}: imports {name} (outside the closed import allowlist)")
-            if any(name == net or name.startswith(net + ".") for net in NETWORK_IMPORTS) \
-                    and name.split(".")[0] != "paramiko":
+            if leaf is not None and leaf in owner_import_bound:
+                out.append(f"line {node.lineno}: imports {name}, which the vocabulary owner binds through an import "
+                           "statement (a module or object it only re-exports)")
+            if alias.asname:
+                out.append(f"line {node.lineno}: imports {name} as {alias.asname} (an import alias, a route around "
+                           "every spelling-based rule)")
+            if any(name == net or name.startswith(net + ".") for net in NETWORK_IMPORTS)                     and name.split(".")[0] != "paramiko":
                 out.append(f"line {node.lineno}: imports the network library {name} (only paramiko is "
                            "permitted)")
     return out
 
 
-def legacy_module_violations(tree):
+def legacy_module_violations(tree, owner_import_bound=frozenset()):
     """``(violations, n_tables)`` for the legacy module's own floor: no command/channel/authentication/session
     call of its own and no dynamic import or reflection; a closed import allowlist with paramiko the only network
     library (:func:`legacy_import_violations`); every use of a paramiko binding or of an inherited algorithm table
@@ -669,8 +1319,6 @@ def legacy_module_violations(tree):
             name = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else "")
             if name and (name.startswith(_SEND_METHOD_PREFIXES) or name in _SEND_METHOD_NAMES):
                 violations.append(f"line {node.lineno}: calls {name}() (a send/session method)")
-            if isinstance(fn, ast.Name) and fn.id in _DYNAMIC_CALLS:
-                violations.append(f"line {node.lineno}: calls {fn.id}() (dynamic code, import or lookup)")
             if isinstance(fn, ast.Attribute) and fn.attr in _MUTATING_METHODS:
                 root, attrs = _root_and_attrs(fn.value)
                 if root in pm_names or any(_TABLE_ATTR.match(a) for a in attrs):
@@ -683,6 +1331,11 @@ def legacy_module_violations(tree):
                          and bool(_TABLE_ATTR.match(node.args[1].value)))
                 if root in pm_names or any(_TABLE_ATTR.match(a) for a in attrs) or named:
                     violations.append(f"line {node.lineno}: {fn.id}() on a paramiko table")
+        # W59 PR-2 review round 2 (P2): flagged OUTRIGHT, wherever the name or attribute appears -- called,
+        # aliased or passed -- not only when it is called on a paramiko-rooted target.
+        if isinstance(node, ast.Name) and node.id in _DYNAMIC_CALLS:
+            violations.append(f"line {node.lineno}: names {node.id} (dynamic code, import, or attribute "
+                              "lookup or store by a computed name)")
         if isinstance(node, ast.Attribute) and node.attr in _REFLECTIVE_ATTRS:
             violations.append(f"line {node.lineno}: reflective attribute {node.attr} (a route around the "
                               "table rules)")
@@ -700,8 +1353,107 @@ def legacy_module_violations(tree):
                         violations.append(f"line {node.lineno}: table {target.id} is not a tuple "
                                           "or a MappingProxyType")
     violations += _paramiko_use_violations(tree, pm_names)
-    violations += legacy_import_violations(tree)
+    violations += legacy_import_violations(tree, owner_import_bound)
     return sorted(set(violations)), n_tables
+
+
+def _scope_bindings(body, params=()):
+    """``[(name, lineno)]`` for every name one scope binds: its parameters, and every def, class, import and
+    assignment target in its body, not descending into a nested def or class (each is its own scope)."""
+    out = [(a.arg, getattr(a, "lineno", 0)) for a in params]
+    stack = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.append((node.name, node.lineno))
+            continue
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            out.append((node.id, node.lineno))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            out += [((a.asname or a.name).split(".")[0], node.lineno) for a in node.names]
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            out.append((node.name, node.lineno))
+        stack.extend(ast.iter_child_nodes(node))
+    return out
+
+
+def _binding_violations(tree):
+    """W59 PR-2 review round 2 (P2): every scope of the legacy module (the module, each class body, each def) binds
+    each name ONCE, and no scope binds a builtin's name. A rebinding is how an allowlisted spelling could be made to
+    mean something else (``tuple = LegacySHA1Transport`` then ``tuple((host, port))``, or a parameter ``m`` rebound
+    before ``type(m)(...)``)."""
+    import builtins
+    builtin_names = set(dir(builtins))
+    out = []
+    scopes = [("<module>", tree.body, ())]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            scopes.append((node.name, node.body, ()))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            params = [*a.posonlyargs, *a.args, *a.kwonlyargs, *(x for x in (a.vararg, a.kwarg) if x is not None)]
+            scopes.append((node.name, node.body, params))
+    for scope, body, params in scopes:
+        seen = {}
+        for name, lineno in _scope_bindings(body, params):
+            if name in seen:
+                out.append(f"line {lineno}: rebinds {name} in {scope} (first bound at line {seen[name]})")
+            else:
+                seen[name] = lineno
+            if name in builtin_names:
+                out.append(f"line {lineno}: binds the builtin name {name} in {scope}")
+    return out
+
+
+def legacy_closure_violations(tree):
+    """``(violations, stats)``: W59 PR-2 review round 2 (P2), the CLOSED rules that replace the round-1 denylists.
+
+    - every call (an ``ast.Call``, a decorator, a class keyword) is listed in :data:`_LEGACY_SSH_CALL_SITES` under
+      its own enclosing def, by the exact spelling of its callee;
+    - every attribute name is in :data:`_LEGACY_SSH_ATTRIBUTES`;
+    - every AST node type is in :data:`_LEGACY_SSH_GRAMMAR`;
+    - every scope binds each name once and shadows no builtin (:func:`_binding_violations`);
+    - the T8 taint fixpoint (:func:`connection_constructor_calls`) finds NO call of a class or callable derived from
+      a paramiko binding (the module's own exception classes derive only from paramiko's exception module, which is
+      not a root, so raising one is not such a call), and every connection-capable value it finds handed to other
+      code is handed only to a copy (:data:`_COPY_CALLS`).
+
+    ``stats`` counts each rule's subject (calls, attributes, nodes, tainted bindings), so the claim can refuse a
+    vacuous pass."""
+    owners = qualified_owners(tree)
+    violations = []
+    calls = []
+    for node in ast.walk(tree):
+        owner = owners.get(id(node), "<module>")
+        if isinstance(node, ast.Call):
+            calls.append((owner, ast.unparse(node.func), node.lineno))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            calls += [(owner, "@" + ast.unparse(d), d.lineno) for d in node.decorator_list]
+            if isinstance(node, ast.ClassDef):
+                calls += [(owner, f"{k.arg}=" + ast.unparse(k.value), node.lineno) for k in node.keywords]
+    for owner, callee, lineno in calls:
+        if callee not in _LEGACY_SSH_CALL_SITES.get(owner, frozenset()):
+            violations.append(f"line {lineno}: calls {callee} in {owner} (outside the closed call-site allowlist)")
+    attrs = [(n.attr, n.lineno) for n in ast.walk(tree) if isinstance(n, ast.Attribute)]
+    violations += [f"line {lineno}: attribute {attr} (outside the closed attribute allowlist)"
+                   for attr, lineno in attrs if attr not in _LEGACY_SSH_ATTRIBUTES]
+    nodes, line_of = [], {}
+    for node in ast.walk(tree):                   # breadth-first: a parent is seen before its children
+        nodes.append(node)
+        for child in ast.iter_child_nodes(node):
+            line_of[id(child)] = getattr(child, "lineno", None) or line_of.get(id(node), 0)
+    violations += [f"line {line_of.get(id(n), 0)}: {type(n).__name__} construct (outside the closed grammar)"
+                   for n in nodes if type(n).__name__ not in _LEGACY_SSH_GRAMMAR]
+    violations += _binding_violations(tree)
+    found, passes, tainted, _factories = connection_constructor_calls(tree)
+    violations += [f"{owner}: calls {callee} (a class or callable derived from a paramiko binding: it could open a "
+                   "connection)" for owner, callees in sorted(found.items()) for callee in callees]
+    violations += [f"{owner}: hands a connection-capable value to {callee}() (only a copy may take one: "
+                   f"{', '.join(sorted(_COPY_CALLS))})"
+                   for owner, callees in sorted(passes.items()) for callee in callees if callee not in _COPY_CALLS]
+    stats = {"calls": len(calls), "call_sites": sum(len(v) for v in _LEGACY_SSH_CALL_SITES.values()),
+             "attributes": len(attrs), "nodes": len(nodes), "tainted": len(tainted)}
+    return sorted(set(violations)), stats
 
 
 def _legacy_tier_names(tree):
@@ -752,17 +1504,28 @@ def _collector_source(collector_module):
 
 def _claim_legacy_ssh_confined(toolkit_dir, collector_module):
     method = (f"source/AST scan of {_LEGACY_SSH_MODULE}, the opt-in legacy SSH transport tier (the one module "
-              "whose paramiko imports the no-egress walk permits): its imports are inside a CLOSED allowlist "
-              "(__future__, hashlib, types, cryptography's hashes, paramiko, the vocabulary owner) and paramiko "
-              "is its only network library; it makes no command/channel/authentication/session call of its "
-              "own, no dynamic import or eval and no reflective attribute access; anything rooted in a paramiko "
-              "binding, and any inherited algorithm table, is used only as a class base or the operand of a "
-              "copy (tuple(...), +, {**...}, MappingProxyType(...)) -- never aliased, called, subscripted, "
-              "passed to another call, stored into or mutated -- and every table it defines is a tuple or a "
-              "MappingProxyType; and, across the analysis package + the collector entry, SSH algorithm names "
-              f"with a SHA-1 exchange hash or host-key signature appear as literals only in "
-              f"{_SSH_VOCABULARY_MODULE}, the legacy-tier vocabulary names (prefix {_LEGACY_TIER_PREFIX}) are "
-              f"read only by {_LEGACY_SSH_MODULE}, and hashes.SHA1 appears only in {_LEGACY_SSH_MODULE}")
+              "whose paramiko imports the no-egress walk permits), by CLOSED allowlists: every import is one of an "
+              "exact list of names (__future__.annotations, hashlib, two types names, cryptography's hashes, five "
+              "paramiko classes and the vocabulary owner's pinned names; no import alias) and paramiko is its only "
+              "network library; every explicit call (decorators and class keywords included) is one of a closed "
+              "list of call sites, by its enclosing def and the exact spelling of its callee; every attribute name "
+              "is one of a closed list; every AST node type is one of a closed grammar (no with/for/while/try/"
+              "lambda/comprehension/yield/await/global/nonlocal/del/walrus); every scope binds each name once and "
+              "shadows no builtin; and the collector's T8 taint fixpoint, run over the module, finds no call of a "
+              "class or callable derived from a paramiko binding and hands a connection-capable value only to a "
+              "copy. Within those: it makes no command/channel/authentication/session call of its own, names no "
+              "dynamic-code, import-by-name or computed-attribute builtin (getattr, setattr, delattr, eval, exec, "
+              "__import__, ...) and no reflective attribute (mro, __class__, __dict__, __setattr__, "
+              "__getattribute__, ...); anything rooted in a paramiko binding, and any inherited algorithm table, "
+              "is used only as a class base or the operand of a copy (tuple(...), +, {**...}, "
+              "MappingProxyType(...)) -- never aliased, called, subscripted, passed to another call, stored into "
+              "or mutated -- and every table it defines is a tuple or a MappingProxyType; and, across the analysis "
+              "package + the collector entry, SSH algorithm names with a SHA-1 exchange hash or host-key signature "
+              f"appear as literals only in {_SSH_VOCABULARY_MODULE}, the legacy-tier vocabulary names (prefix "
+              f"{_LEGACY_TIER_PREFIX}) are read only by {_LEGACY_SSH_MODULE}, and hashes.SHA1 appears only in "
+              f"{_LEGACY_SSH_MODULE}. What a static scan does not establish: the behaviour of the paramiko code the "
+              "tier inherits, and calls made implicitly by operators and string formatting on the values the "
+              "allowlisted code handles")
     cid = "legacy_ssh_confined"
     legacy_path = os.path.join(toolkit_dir, _LEGACY_SSH_MODULE)
     if not os.path.isfile(legacy_path):
@@ -772,8 +1535,13 @@ def _claim_legacy_ssh_confined(toolkit_dir, collector_module):
     try:
         legacy_tree = ast.parse(open(legacy_path, encoding="utf-8", errors="replace").read(),
                                 filename=legacy_path)
-        violations, n_tables = legacy_module_violations(legacy_tree)
-        violations = [f"{_LEGACY_SSH_MODULE} {v}" for v in violations]
+        owner_path = os.path.join(toolkit_dir, _SSH_VOCABULARY_MODULE)
+        owner_bound = (owner_import_bound_names(ast.parse(open(owner_path, encoding="utf-8", errors="replace").read(),
+                                                          filename=owner_path))
+                       if os.path.isfile(owner_path) else frozenset())
+        violations, n_tables = legacy_module_violations(legacy_tree, owner_bound)
+        closure, stats = legacy_closure_violations(legacy_tree)
+        violations = [f"{_LEGACY_SSH_MODULE} {v}" for v in sorted(set(violations) | set(closure))]
         # The tier takes every algorithm name from the vocabulary owner; it restates none itself.
         violations += [f"{_LEGACY_SSH_MODULE}:{ln}: SSH SHA-1 algorithm literal {tok!r} outside the "
                        "vocabulary owner" for ln, tok in ssh_sha1_literals(legacy_tree)]
@@ -788,7 +1556,7 @@ def _claim_legacy_ssh_confined(toolkit_dir, collector_module):
             if rel == _SSH_VOCABULARY_MODULE:
                 n_vocab = len(ssh_sha1_literals(tree))
             violations += _confinement_violations(rel, tree, tier_names)
-    except (OSError, SyntaxError, ValueError) as e:
+    except (OSError, SyntaxError, ValueError, AssertionError, RecursionError) as e:
         return _claim(cid, method, NOT_EVALUATED, f"source walk failed: {e!r}")
     if violations:
         return _claim(cid, method, VIOLATED,
@@ -803,6 +1571,11 @@ def _claim_legacy_ssh_confined(toolkit_dir, collector_module):
         return _claim(cid, method, NOT_EVALUATED,
                       f"{_LEGACY_SSH_MODULE} imports no {_LEGACY_TIER_PREFIX}* vocabulary name from "
                       f"{_SSH_VOCABULARY_MODULE} — the tier-confinement rule had no subject")
+    if stats["tainted"] == 0 or stats["calls"] == 0:
+        return _claim(cid, method, NOT_EVALUATED,
+                      f"the taint fixpoint found {stats['tainted']} connection-capable binding(s) and the call-site "
+                      f"rule {stats['calls']} call(s) in {_LEGACY_SSH_MODULE} — a rule with no subject proves "
+                      "nothing (refusing a vacuous pass)")
     if n_vocab == 0:
         return _claim(cid, method, NOT_EVALUATED,
                       f"the SHA-1 algorithm pattern recognised no literal in {_SSH_VOCABULARY_MODULE} "
@@ -815,9 +1588,14 @@ def _claim_legacy_ssh_confined(toolkit_dir, collector_module):
                       "confinement claim is not proven")
     return _claim(cid, method, HOLDS,
                   f"{_LEGACY_SSH_MODULE}: imports inside the closed allowlist, paramiko the only network "
-                  f"library; no command/channel/authentication/session call of its own; paramiko bindings and "
-                  f"inherited tables used only as class bases or copied; {n_tables} table(s) defined, each "
-                  f"frozen; SHA-1 SSH algorithm literals only in "
+                  f"library; every call one of the {stats['call_sites']} allowlisted call sites; every attribute "
+                  f"inside the closed attribute allowlist ({len(_LEGACY_SSH_ATTRIBUTES)} names); every AST node "
+                  f"inside the closed grammar ({len(_LEGACY_SSH_GRAMMAR)} node types); one binding per name per "
+                  f"scope, no builtin shadowed; the taint fixpoint found {stats['tainted']} connection-capable "
+                  f"binding(s), "
+                  f"none called and none handed to anything but a copy; no command/channel/authentication/session "
+                  f"call of its own; paramiko bindings and inherited tables used only as class bases or copied; "
+                  f"{n_tables} table(s) defined, each frozen; SHA-1 SSH algorithm literals only in "
                   f"{_SSH_VOCABULARY_MODULE} ({n_vocab} recognised there) across {len(modules)} other "
                   f"modules (analysis package + collector entry); legacy-tier name(s) "
                   f"{', '.join(sorted(tier_names))} read only by {_LEGACY_SSH_MODULE}; hashes.SHA1 only "

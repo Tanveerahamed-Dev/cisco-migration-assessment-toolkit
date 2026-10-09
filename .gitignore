@@ -61,6 +61,9 @@ topology.dot
 *.snapshot.json
 *.run_manifest.json
 *.phase_timings.json
+# W59 PR-2: the engine's `<output>.incomplete.json` marker carries the run's SSH transport consent block, which
+# names devices by their devices.json hostname (written before the first connection of a live run).
+*.incomplete.json
 *_runbook.docx
 *_design.docx
 *_mop.docx

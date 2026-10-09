@@ -301,6 +301,8 @@ def _engine_tree():
 
 # W59 PR-2 review (P3-e): the structural guard lives in ONE shared helper module, used by this file's T8 and by
 # tests/test_legacy_ssh_consent.py's T8 (W59 PR-1 review P3-f, closed in round 2, moved there verbatim from here).
+# W59 PR-2 review round 2 (P2): the scan itself is now owned by cisco_toolkit.attestation, whose published
+# legacy_ssh_confined claim runs it too; the helper module keeps the collector's site maps and re-exports the scan.
 from ssh_structural_support import (  # noqa: E402  (tests/ is on sys.path: root conftest.py)
     CONNECTION_ARGUMENT_SITES as _CONNECTION_ARGUMENT_SITES,
     CONNECTION_CONSTRUCTOR_SITES as _CONNECTION_CONSTRUCTOR_SITES,

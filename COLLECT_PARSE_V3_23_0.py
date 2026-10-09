@@ -1982,6 +1982,14 @@ def _resolve_ssh_consent(devices: List[dict],
                 raise ValueError(
                     f"{ALLOW_LEGACY_SSH_FLAG}: {item!r} matches {len(rows)} devices.json rows; name each "
                     f"device by a hostname or ip that identifies exactly one row")
+            # W59 PR-2 review round 2 (P3): the consent block names every device the flag names by its HOSTNAME
+            # (ssh_session.live_consent_block), so a row named by its ip whose hostname is empty would land in the
+            # record as '' -- a consent the record cannot attribute. Refused for the reason a legacy row with an
+            # empty hostname is refused at load time (P3-j), whatever profile the row requests.
+            if not str(rows[0].get("hostname") or "").strip():
+                raise ValueError(
+                    f"{ALLOW_LEGACY_SSH_FLAG}: {item!r} names a devices.json row whose 'hostname' is empty; the "
+                    f"consent record names every device by its hostname, so give that row a hostname")
         flag = {"profile": run_profile, "hosts_named": list(items)}
     for d in devices:
         d["ssh_consent"] = ssh_session.consent_for(d, flag)
@@ -2685,12 +2693,19 @@ INCOMPLETE_STAGE_FINALIZATION = "finalization"
 def _write_incomplete_marker(path: str, manifest_path: str,
                              manifest_sealed: bool, *,
                              stage: str = INCOMPLETE_STAGE_FINALIZATION) -> None:
-    """Atomically publish a bounded receipt that can never be read as success. It holds no device text, no
+    """Atomically publish a bounded receipt that can never be read as success. It holds no device output, no
     address and no credential: digests, step names and, since W59 PR-2, the run's SSH transport consent block
-    (``ssh_session`` consent vocabulary; hosts by devices.json hostname only)."""
+    (``ssh_session`` consent vocabulary). That block names devices by their devices.json HOSTNAME, so the marker is
+    no longer content-free: like the run manifest it is a client artifact (``portable.release_contract`` refuses
+    both in a release, W59 PR-2 review round 2)."""
     evidence = (_RUN_CUSTODY.get("evidence") or {}).get("analysis_input") or {}
     consent = _RUN_CUSTODY.get("ssh_transport_consent")
-    payload = {
+    # W59 PR-2 review round 2 (P1): the marker's consent VALUE lives in this local -- the custody block, or below the
+    # commitment that replaces an oversized one -- and is only ever placed into a fresh payload dict display. It is
+    # never stored by subscript, so the collector's census of the custody key's writers stays exact
+    # (tests/test_legacy_ssh_consent.py::test_p2d_the_consent_block_has_one_writer).
+    marker_consent = consent if isinstance(consent, dict) else None
+    base = {
         "schema": 1,
         "status": "incomplete",
         "stage": stage,
@@ -2712,20 +2727,19 @@ def _write_incomplete_marker(path: str, manifest_path: str,
         "raw_evidence": {
             k: evidence.get(k) for k in ("root_name", "n_files", "root_sha256")
         },
-        "ssh_transport_consent": consent if isinstance(consent, dict) else None,
     }
-    encoded = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    if len(encoded.encode("utf-8")) > _INCOMPLETE_MARKER_MAX_BYTES and payload["ssh_transport_consent"]:
+    encoded = json.dumps({**base, "ssh_transport_consent": marker_consent},
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > _INCOMPLETE_MARKER_MAX_BYTES and marker_consent:
         # A fleet whose consent lists alone outgrow the bound keeps a durable COMMITMENT instead: the SHA-256 of the
         # block's canonical bytes at this moment (the sealed manifest's block later adds the negotiated and
         # record-failure fields, so compare it with those two fields reset to their pre-connection values).
-        canonical = json.dumps(consent, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-        payload["ssh_transport_consent"] = {
-            "mode": consent.get("mode"), "omitted": "exceeds the marker's size bound",
-            "sha256": hashlib.sha256(canonical).hexdigest()}
-        encoded = json.dumps(
-            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        canonical = json.dumps(marker_consent, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=True).encode("ascii")
+        marker_consent = {"mode": marker_consent.get("mode"), "omitted": "exceeds the marker's size bound",
+                          "sha256": hashlib.sha256(canonical).hexdigest()}
+        encoded = json.dumps({**base, "ssh_transport_consent": marker_consent},
+                             ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > _INCOMPLETE_MARKER_MAX_BYTES:
         raise ValueError("incomplete marker exceeded its 64 KiB safety bound")
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -4234,20 +4248,24 @@ def main():
                          "nothing is deleted. Idempotent. Rewritten captures will no longer match "
                          "archive hashes recorded at collection time (deliberate). Default off.")
     # Spelled literally (== ALLOW_LEGACY_SSH_FLAG): tests/test_readme_field.py reads the argparse surface
-    # from `add_argument("--flag"` literals, and README-FIELD documents this flag.
+    # from `add_argument("--flag"` literals. README-FIELD gains this flag in W59 PR-3 (design §10); PR-2 adds
+    # only the engine surface. The help text takes the profile names and the group floor from their one owner,
+    # ssh_session (W59 PR-2 review round 2, SSOT Law 1), and restates neither.
+    _legacy_profiles = ", ".join(p for p in ssh_session.SSH_PROFILES if p != ssh_session.DEFAULT_PROFILE)
     ap.add_argument("--allow-legacy-ssh", dest="allow_legacy_ssh", action="append", default=None,
                     metavar="PROFILE=HOST[,HOST...]",
                     help="W59, opt-in, live collection only: the RUN level of the two-level legacy-SSH "
                          "consent. Names the devices (each by its devices.json hostname or ip; every "
-                         "name must match exactly one row) that may use PROFILE (today only "
-                         "legacy-sha1) THIS run. A device uses it only when its devices.json row ALSO "
-                         "sets \"ssh_profile\": \"legacy-sha1\"; every other device stays on the default "
-                         "SSH profile. The legacy profile still prefers SHA-2 and uses SHA-1 only when "
-                         "the device offers nothing stronger; it refuses Diffie-Hellman groups below "
-                         "2048 bits. Eligible hosts are printed and written to disk (the run's "
-                         ".incomplete.json marker) before the first connection, then sealed in the run "
-                         "manifest; every session is disclosed in the snapshot. Give it at most once. "
-                         "Refused on paramiko older than 5 (which permits SHA-1 for every device anyway).")
+                         "name must match exactly one row, and that row must have a hostname) that may use "
+                         f"PROFILE (one of: {_legacy_profiles}) THIS run. A device uses it only when its "
+                         "devices.json row ALSO sets \"ssh_profile\" to that PROFILE; every other device "
+                         "stays on the default SSH profile. The legacy profile still prefers SHA-2 and uses "
+                         "SHA-1 only when the device offers nothing stronger; it refuses Diffie-Hellman "
+                         f"groups below {ssh_session.DH_FLOOR_BITS} bits. Eligible hosts are printed and "
+                         "written to disk (the run's .incomplete.json marker) before the first connection, "
+                         "then sealed in the run manifest; every session is disclosed in the snapshot. Give "
+                         "it at most once. Refused on paramiko older than 5 (which permits SHA-1 for every "
+                         "device anyway).")
     args = ap.parse_args()
 
     if args.fail_on_compare_gate and not args.compare:

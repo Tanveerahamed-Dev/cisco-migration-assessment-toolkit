@@ -462,6 +462,11 @@ def test_legacy_ssh_confined_holds_on_the_real_module(tmp_path, monkeypatch):
     assert c["result"] == HOLDS, c["detail"]
     assert "LEGACY_SHA1_TIER_KEX" in c["detail"] and "legacy_ssh.py" in c["detail"]
     assert "closed allowlist" in c["detail"] and "of its own" in c["detail"]
+    # W59 PR-2 review round 2 (P2): the closed rules each had a subject (non-vacuity is a refusal, never a pass)
+    for phrase in ("allowlisted call sites", "closed attribute allowlist", "closed grammar",
+                   "one binding per name per scope", "connection-capable binding(s), none called"):
+        assert phrase in c["detail"], (phrase, c["detail"])
+    assert "connection-capable binding(s)" in c["detail"] and "found 0 " not in c["detail"]
 
 
 def test_legacy_ssh_confined_is_violated_by_a_store_into_a_paramiko_table(tmp_path, monkeypatch):
@@ -591,3 +596,142 @@ def test_legacy_ssh_confined_allows_a_paramiko_table_only_as_a_copy(tmp_path, mo
     c = _legacy_claim(pkg, collector)
     assert c["result"] == VIOLATED, c["detail"]
     assert "other than as a class base or the operand of a copy" in c["detail"], c["detail"]
+
+
+# ------------------ W59 PR-2 review round 2 (P2): the closed rules, one falsifier per planted route ---
+@pytest.mark.parametrize("plant,expected", [
+    # (a) a module-level Transport given (host, port) opens a TCP connection when the module is imported
+    ("\n\n_PROBE = LegacySHA1Transport(('192.0.2.1', 22))\n",
+     ["<module>: calls LegacySHA1Transport (a class or callable derived from a paramiko binding",
+      "calls LegacySHA1Transport in <module> (outside the closed call-site allowlist)"]),
+    # (b) widening paramiko's stock Transport tables for every thread at runtime, by reflection
+    ("\n\ndef _widen(t, n, v):\n    setattr(type(t).mro()[-2], n, v)\n",
+     ["names setattr (dynamic code", "reflective attribute mro",
+      "attribute mro (outside the closed attribute allowlist)",
+      "calls setattr in _widen (outside the closed call-site allowlist)"]),
+    # (c) session calls the old send-method denylist did not name
+    ("\n\ndef _keepalive(t):\n    return t.global_request('keepalive@openssh.com')\n",
+     ["calls t.global_request in _keepalive (outside the closed call-site allowlist)",
+      "attribute global_request (outside the closed attribute allowlist)"]),
+    ("\n\ndef _rekey(t):\n    return t.renegotiate_keys()\n",
+     ["calls t.renegotiate_keys in _rekey (outside the closed call-site allowlist)",
+      "attribute renegotiate_keys (outside the closed attribute allowlist)"]),
+    ("\n\ndef _pty(chan):\n    return chan.get_pty()\n",
+     ["calls chan.get_pty in _pty (outside the closed call-site allowlist)",
+      "attribute get_pty (outside the closed attribute allowlist)"]),
+    # (d) a module the vocabulary owner itself imports, reached through the old `cisco_toolkit.ssh_session.` prefix
+    ("\n\nfrom cisco_toolkit.ssh_session import os\n\ndef _run():\n    return os.system('true')\n",
+     ["imports cisco_toolkit.ssh_session.os (outside the closed import allowlist)",
+      "calls os.system in _run (outside the closed call-site allowlist)"]),
+])
+def test_t9_round2_each_planted_route_violates_the_confinement_claim(tmp_path, monkeypatch, plant, expected):
+    """W59 PR-2 review round 2 (P2). Mutation caught: the four shapes (a) to (d) the review planted into a copy of the
+    real legacy_ssh.py, each of which left `legacy_ssh_confined` at HOLDS, because the send, reflection and import
+    rules were named subsets. Each now violates the claim through the CLOSED rules (call sites, attributes, imports)
+    and, where it applies, the reused T8 taint fixpoint.
+
+    `no_egress_import_graph` stays HOLDS for these four, and rightly: it is an import-graph claim, none of them adds
+    a network-library import, and its charter pairs legacy_ssh.py with this claim, which is what catches them."""
+    pkg, collector = _legacy_pkg(tmp_path, monkeypatch, legacy_extra=plant)
+    att = _by_id(compute_attestation(toolkit_dir=pkg, collector_module=collector))
+    c = att["legacy_ssh_confined"]
+    assert c["result"] == VIOLATED, c["detail"]
+    for phrase in expected:
+        assert phrase in c["detail"], (phrase, c["detail"])
+    assert att["no_egress_import_graph"]["result"] == HOLDS, att["no_egress_import_graph"]["detail"]
+
+
+@pytest.mark.parametrize("plant,expected", [
+    # the reused T8 taint alone: an allowlisted spelling rebound to a class derived from paramiko
+    ("\n\ntuple = LegacySHA1Transport\n_PROBE = tuple(('192.0.2.1', 22))\n",
+     ["<module>: calls tuple (a class or callable derived from a paramiko binding",
+      "binds the builtin name tuple in <module>"]),
+    # a decorator is a call
+    ("\n\n@LegacySHA1Transport\ndef _decorated():\n    return 1\n",
+     ["calls @LegacySHA1Transport in <module> (outside the closed call-site allowlist)",
+      "<module>: calls @LegacySHA1Transport (a class or callable derived from a paramiko binding"]),
+    # a connection-capable value handed to anything but a copy
+    ("\n\n_N = len(LegacySHA1Transport._preferred_kex)\n",
+     ["<module>: hands a connection-capable value to len() (only a copy may take one"]),
+    # an attribute of a runtime-reached object, and a parameter rebound before an allowlisted spelling uses it
+    ("\n\nclass _Rebound(LegacyKexGexSHA1):\n    def _parse_kexdh_gex_group(self, m):\n        m = self\n"
+     "        return self.transport\n",
+     ["attribute transport (outside the closed attribute allowlist)",
+      "rebinds m in _parse_kexdh_gex_group"]),
+    # an implicit-call statement outside the closed grammar
+    ("\n\ndef _entered(x):\n    with x:\n        return 1\n",
+     ["With construct (outside the closed grammar)"]),
+    # an import alias, and a module paramiko re-exports (the old `paramiko.` prefix admitted it)
+    ("\n\nfrom hashlib import sha256 as digest\n",
+     ["imports hashlib.sha256 as digest (an import alias", "imports hashlib.sha256 (outside the closed import"]),
+    ("\n\nfrom paramiko.transport import socket\n",
+     ["imports paramiko.transport.socket (outside the closed import allowlist)"]),
+])
+def test_t9_round2_each_closed_rule_falsifies_on_its_own_route(tmp_path, monkeypatch, plant, expected):
+    """W59 PR-2 review round 2 (P2). Non-vacuity of each new closed rule: the reused T8 taint fixpoint (a callee
+    rebound to a paramiko-derived class, which the call-site allowlist alone admits by spelling; a decorator; a
+    hand-over to a non-copy), the attribute allowlist, the one-binding rule, the closed grammar, and the exact
+    import allowlist with no alias."""
+    pkg, collector = _legacy_pkg(tmp_path, monkeypatch, legacy_extra=plant)
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED, c["detail"]
+    for phrase in expected:
+        assert phrase in c["detail"], (phrase, c["detail"])
+
+
+def test_t9_round2_a_name_the_vocabulary_owner_only_imports_is_refused(tmp_path, monkeypatch):
+    """W59 PR-2 review round 2 (P2, item 4). The tier tuples are admitted by the owner's naming convention, so the
+    rule also refuses any vocabulary name the OWNER binds through an import statement -- here a module the owner
+    imports under a tier-shaped name, which the naming convention alone would admit."""
+    pkg, collector = _legacy_pkg(
+        tmp_path, monkeypatch, vocab=_VOCAB_SRC + "import os as LEGACY_SHA1_TIER_OS\n",
+        legacy_extra="\n\nfrom cisco_toolkit.ssh_session import LEGACY_SHA1_TIER_OS\n")
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == VIOLATED, c["detail"]
+    assert ("imports cisco_toolkit.ssh_session.LEGACY_SHA1_TIER_OS, which the vocabulary owner binds through an "
+            "import statement") in c["detail"], c["detail"]
+
+
+def test_t9_round2_the_closed_allowlists_are_exact_for_the_real_module():
+    """W59 PR-2 review round 2 (P2). The allowlists are a census of the real module, not a loose superset: every
+    listed call site, attribute and import is one the module really makes, so no stale entry silently pre-admits a
+    future call. The grammar adds only its declared harmless siblings. A deliberate change to the tier changes the
+    allowlist in the same commit."""
+    import ast as _ast
+
+    from cisco_toolkit import attestation as A
+
+    tree = _ast.parse(open(os.path.join(ROOT, "cisco_toolkit", "legacy_ssh.py"), encoding="utf-8").read())
+    owners = A.qualified_owners(tree)
+    calls = {}
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Call):
+            calls.setdefault(owners.get(id(node), "<module>"), set()).add(_ast.unparse(node.func))
+    assert calls == {k: set(v) for k, v in A._LEGACY_SSH_CALL_SITES.items()}, calls
+    assert {n.attr for n in _ast.walk(tree) if isinstance(n, _ast.Attribute)} == A._LEGACY_SSH_ATTRIBUTES
+    used = {type(n).__name__ for n in _ast.walk(tree)}
+    assert used <= A._LEGACY_SSH_GRAMMAR, used - A._LEGACY_SSH_GRAMMAR
+    assert A._LEGACY_SSH_GRAMMAR - used == {"Pass", "And", "USub", "LtE", "GtE", "In", "Is", "IsNot"}, \
+        A._LEGACY_SSH_GRAMMAR - used
+    imported = {name for node in _ast.walk(tree) if isinstance(node, (_ast.Import, _ast.ImportFrom))
+                for name, _alias in A._legacy_import_names(node)}
+    vocab = {n for n in imported if n.startswith("cisco_toolkit.ssh_session.")}
+    assert imported - vocab == A._LEGACY_SSH_IMPORTS_EXACT, imported - vocab
+    leaves = {n.rsplit(".", 1)[1] for n in vocab}
+    assert leaves - A._LEGACY_SSH_IMPORTS_VOCABULARY == {n for n in leaves if A._LEGACY_TIER_NAME.match(n)}
+    assert A._LEGACY_SSH_IMPORTS_VOCABULARY <= leaves
+    assert A.legacy_closure_violations(tree)[0] == [] and A._binding_violations(tree) == []
+
+
+def test_t9_round2_the_taint_rule_abstains_without_a_connection_capable_binding(tmp_path, monkeypatch):
+    """Non-vacuity of the reused T8 fixpoint inside the claim: a legacy module with a frozen table and a tier import
+    but no paramiko class gives the taint rule no subject, so the claim abstains rather than HOLDS."""
+    (tmp_path / "notaint").mkdir()
+    pkg = _fake_pkg(tmp_path / "notaint", {
+        "legacy_ssh.py": "from .ssh_session import LEGACY_SHA1_TIER_KEX\n"
+                         "_preferred_kex = tuple(LEGACY_SHA1_TIER_KEX)\n",
+        "ssh_session.py": _VOCAB_SRC})
+    _pkg, collector = _legacy_pkg(tmp_path / "collector", monkeypatch)
+    c = _legacy_claim(pkg, collector)
+    assert c["result"] == NOT_EVALUATED, c["detail"]
+    assert "the taint fixpoint found 0 connection-capable binding(s)" in c["detail"], c["detail"]

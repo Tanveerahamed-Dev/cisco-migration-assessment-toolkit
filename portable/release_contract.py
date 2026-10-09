@@ -817,6 +817,10 @@ def _forbidden_client_artifact(relative: str) -> bool:
         or "running-config" in leaf
         or "startup-config" in leaf
         or leaf.endswith(".run_manifest.json")
+        # W59 PR-2 review round 2 (P3): the engine's `<output>.incomplete.json` marker is no longer content-free.
+        # Since W59 PR-2 it carries the run's SSH transport consent block, which names devices by their
+        # devices.json hostname, exactly as the run manifest does.
+        or leaf.endswith(".incomplete.json")
         or (leaf.endswith(".snapshot.json") and folded != allowed_snapshot)
         or leaf.endswith(("_redacted.xlsx", "_redacted.docx", "_redacted.pptx"))
     )

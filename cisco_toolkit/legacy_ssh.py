@@ -30,7 +30,14 @@ What it never does (each rule is re-derived on every run by ``cisco_toolkit.atte
 * make a command, channel or authentication call of its own: the collector's one factory opens and drives
   every session;
 * restate an SSH algorithm name, or build one: every name, the certificate variant included, comes from
-  ``cisco_toolkit.ssh_session``'s vocabulary.
+  ``cisco_toolkit.ssh_session``'s vocabulary;
+* step outside its closed lists (W59 PR-2 review round 2): every call it makes is one of a closed list of call
+  sites, every attribute one of a closed list of names and every statement form one of a closed grammar; each
+  scope binds a name once; and the collector's T8 taint fixpoint, run over this module, finds no call of a class
+  derived from paramiko. Adding a call, an attribute or a construct here therefore means widening
+  ``cisco_toolkit.attestation``'s allowlists in the same change, deliberately.
+
+The claim is a static scan: it does not establish the behaviour of the paramiko code these classes inherit.
 
 It imports ``__future__``, ``hashlib``, ``types``, ``cryptography``'s ``hashes`` and paramiko only (plus the
 network-free vocabulary owner) -- a closed allowlist the published claim enforces. It imports no netmiko: the

@@ -80,6 +80,7 @@ _CLIENT_ARTIFACTS = [
     "AcmeBank_Q1.snapshot.json",                    # the parsed estate, every device
     "AcmeBank_Q1.run_manifest.json",                # chain-of-custody for the above
     "AcmeBank_Q1.phase_timings.json",
+    "AcmeBank_Q1.incomplete.json",                  # W59 PR-2: the SSH consent block, devices by hostname
     "AcmeBank_Q1_mop.docx",                         # the change plan
     "AcmeBank_Q1_design.docx",
     "AcmeBank_Q1_crd.docx",
