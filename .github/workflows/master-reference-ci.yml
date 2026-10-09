@@ -45,9 +45,17 @@ jobs:
           master-reference/release
           master-reference/cli
           master-reference/tests
+      # GNU time (/usr/bin/time, apt package `time` on ubuntu-24.04) prints the
+      # step's peak RSS as "Maximum resident set size (kbytes)" on success and
+      # failure alike. The compiler and `cli build` each hold every compiler
+      # record in memory, so their peaks are the measured basis for the release
+      # intake's chunk-census ceiling (W63; release/compiler_bundle.py).
       - name: Compile the exact tracked Git tree
         working-directory: master-reference
-        run: python -m compiler --repo-root .. --output "$RUNNER_TEMP/atlas-compiler"
+        run: |
+          /usr/bin/time -v python -m compiler --repo-root .. --output "$RUNNER_TEMP/atlas-compiler"
+          find "$RUNNER_TEMP/atlas-compiler/chunks" -type f -name '*.json' -printf '%s\n' \
+            | awk '{ n += 1; s += $1 } END { printf "compiler chunk census: chunks=%d bytes=%.0f\n", n, s }'
       - name: Validate every compiler envelope against tracked JSON Schemas
         working-directory: master-reference
         run: python -m compiler.schema_validation --input "$RUNNER_TEMP/atlas-compiler"
@@ -66,6 +74,7 @@ jobs:
       - name: Build the deterministic source-bound artifact family and PDF
         working-directory: master-reference
         run: >-
+          /usr/bin/time -v
           python -m cli build
           --repo-root ..
           --compiler-output "$RUNNER_TEMP/atlas-compiler"

@@ -120,7 +120,19 @@ _LOCAL_SCAN_MAX_TOTAL_BYTES = 512 * 1024 * 1024
 _LOCAL_SCAN_MAX_VALUES = 5_000_000
 _MAX_JS_SAFE_INTEGER = 9_007_199_254_740_991
 _MAX_COMPILER_JSON_BYTES = 32 * 1024 * 1024
-_MAX_COMPILER_CHUNK_BYTES = 2 * 1024 * 1024 * 1024
+# Aggregate resource ceiling on the release intake's local-identity scan: every
+# verified compiler chunk byte plus every identity-depth source blob byte.  It
+# is not a privacy rule and never narrows the scan: the scan stays exhaustive,
+# and a census above this ceiling refuses the build instead of sampling or
+# skipping bytes.  What it bounds is the intake's memory and time, because
+# ``load_compiler_bundle`` keeps the parsed records of every requested group
+# (the release pipeline requests all of them), at about 2.0-2.6 times their
+# canonical JSON bytes in CPython 3.12.  At 3 GiB that is roughly 6.5-8.5 GB of
+# retained records on the 16 GB GitHub-hosted public Linux runner.  Each run's
+# census and the CI step's peak RSS are printed, so the next approach to this
+# ceiling is measured rather than discovered.  Reasoning and estimates:
+# ``docs/w63-compiler-census-headroom-2026-10-09.md``.
+_MAX_COMPILER_CHUNK_BYTES = 3 * 1024 * 1024 * 1024
 _GENERIC_AUTOMATION_USERS = frozenset({"actions", "agent", "build", "builder", "codex", "github", "root", "runner"})
 REQUIRED_GROUPS = frozenset(RECORD_GROUPS)
 _MANIFEST_KEYS = frozenset(
@@ -504,7 +516,10 @@ def _scan_identity_depth_sources(
             raise ReleaseInputError(f"compiler identity-depth source differs from its file record: {item.get('id')}")
         scanned_bytes += len(raw)
         if scanned_bytes > _MAX_COMPILER_CHUNK_BYTES:
-            raise ReleaseInputError("compiler chunk byte census exceeds its bounded privacy-scan limit")
+            raise ReleaseInputError(
+                "compiler identity-depth source byte census exceeds the exhaustive privacy scan's resource ceiling: "
+                f"scanned_bytes={scanned_bytes}; limit={_MAX_COMPILER_CHUNK_BYTES}"
+            )
         try:
             rule = _current_local_identity_rule(raw.decode("utf-8", errors="strict"), contract)
         except (UnicodeError, ValueError):
@@ -1309,6 +1324,10 @@ class CompilerBundle:
     completeness: dict[str, Any]
     records: dict[str, list[dict[str, Any]]]
     input_files: tuple[str, ...]
+    # Operational observation from ``load_compiler_bundle``: the byte census its
+    # exhaustive scan read and the headroom left under the resource ceiling.
+    # Not a release artifact; it never enters a digest or manifest.
+    chunk_census: dict[str, Any] | None = None
 
     @property
     def source_commit(self) -> str:
@@ -1603,6 +1622,7 @@ def load_compiler_bundle(
     input_files = {"manifest.json", completeness_path, graphify_path, architecture_path}
     current_identity_contract = _local_identity_contract(repository_root) if repository_root is not None else None
     scanned_chunk_bytes = 0
+    census_groups: dict[str, dict[str, int]] = {}
     for group_name in sorted(groups):
         group = groups[group_name]
         if (
@@ -1618,6 +1638,7 @@ def load_compiler_bundle(
         ):
             raise ReleaseInputError(f"compiler group is malformed: {group_name}")
         chunks = group["chunks"]
+        group_census = census_groups.setdefault(group_name, {"chunks": 0, "bytes": 0})
         effective_chunk_size = 1 if group_name == "source_text" else chunk_size
         full_chunks, final_chunk_size = divmod(group["record_count"], effective_chunk_size)
         expected_chunk_count = full_chunks + (1 if final_chunk_size else 0)
@@ -1653,8 +1674,14 @@ def load_compiler_bundle(
             )
             input_files.add(relative)
             scanned_chunk_bytes += len(chunk_raw)
+            group_census["chunks"] += 1
+            group_census["bytes"] += len(chunk_raw)
             if scanned_chunk_bytes > _MAX_COMPILER_CHUNK_BYTES:
-                raise ReleaseInputError("compiler chunk byte census exceeds its bounded privacy-scan limit")
+                raise ReleaseInputError(
+                    "compiler chunk byte census exceeds the exhaustive privacy scan's resource ceiling: "
+                    f"scanned_bytes={scanned_chunk_bytes}; limit={_MAX_COMPILER_CHUNK_BYTES}; "
+                    f"group={group_name}; index={expected_index}"
+                )
             if current_identity_contract is not None:
                 try:
                     chunk_text = chunk_raw.decode("utf-8", errors="strict")
@@ -1732,6 +1759,7 @@ def load_compiler_bundle(
             records,
             repository_root,
         )
+    chunk_census_bytes = scanned_chunk_bytes
     seen_ids: dict[str, str] = {}
     for group_name, group_records in sorted(records.items()):
         for item in group_records:
@@ -1929,4 +1957,23 @@ def load_compiler_bundle(
             mapped_lines += 1
     if mapped_lines != structural_gate["actual"] or len(records["lines"]) != structural_gate["expected"]:
         raise ReleaseInputError("compiler line records differ from the structural mapping invariant")
-    return CompilerBundle(root, manifest, completeness, records, tuple(sorted(input_files)))
+    limit = _MAX_COMPILER_CHUNK_BYTES
+    chunk_census = {
+        "local_identity_scan_performed": current_identity_contract is not None,
+        "chunk_count": sum(item["chunks"] for item in census_groups.values()),
+        "chunk_bytes": chunk_census_bytes,
+        "identity_depth_source_bytes": scanned_chunk_bytes - chunk_census_bytes,
+        "scanned_bytes": scanned_chunk_bytes,
+        "limit_bytes": limit,
+        "headroom_bytes": limit - scanned_chunk_bytes,
+        "utilization_percent": round(100 * scanned_chunk_bytes / limit, 2),
+        "groups": {name: dict(census_groups[name]) for name in sorted(census_groups)},
+    }
+    return CompilerBundle(
+        root,
+        manifest,
+        completeness,
+        records,
+        tuple(sorted(input_files)),
+        chunk_census=chunk_census,
+    )

@@ -96,6 +96,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(arguments)
     try:
         if args.command == "build":
+            observations: dict[str, object] = {}
             manifest = build_release(
                 args.repo_root,
                 args.compiler_output,
@@ -103,6 +104,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 pdf_path=args.pdf,
                 generate_pdf=not args.no_pdf and args.pdf is None,
                 enhancement_gap=args.enhancement_gap,
+                observations=observations,
             )
             result = {
                 "ok": True,
@@ -110,6 +112,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 "source_commit": manifest["source_binding"]["source_commit"],
                 "source_tree_digest": manifest["source_binding"]["source_tree_digest"],
                 "output": str(args.output.resolve(strict=True)),
+                "compiler_chunk_census": observations.get("compiler_chunk_census"),
                 "next_gate": "externally sign release-manifest.json only after independent review",
             }
         elif args.command == "sign":

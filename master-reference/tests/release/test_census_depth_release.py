@@ -9,6 +9,7 @@ must carry the declaration's BLOCK category while any file is deferred.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -128,6 +129,59 @@ def test_identity_depth_bytes_get_the_same_local_identity_scan_as_chunked_bytes(
         outcomes[label] = message
     assert "compiler chunk privacy scan failed: rule=local_repository_path" in outcomes["full"]
     assert "compiler identity-depth source privacy scan failed: rule=local_repository_path" in outcomes["identity"]
+
+
+def test_census_reports_every_scanned_byte_and_each_ceiling_refusal_names_its_own_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity_text = "export const clean = 1;\n"
+    repo = _repository(tmp_path, {"atlas-scope/src/app.ts": identity_text})
+    output = tmp_path / "compiler"
+    compile_repository(repo, output)
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    receipts = {
+        name: [int(chunk["bytes"]) for chunk in group["chunks"]] for name, group in manifest["groups"].items()
+    }
+    chunk_bytes = sum(sum(sizes) for sizes in receipts.values())
+    identity_bytes = len(identity_text.encode("utf-8"))
+    scanned_bytes = chunk_bytes + identity_bytes
+    limit = compiler_bundle._MAX_COMPILER_CHUNK_BYTES
+    assert limit == 3 * 1024 * 1024 * 1024
+
+    bundle = compiler_bundle.load_compiler_bundle(output, repository_root=repo)
+    assert bundle.chunk_census == {
+        "local_identity_scan_performed": True,
+        "chunk_count": sum(len(sizes) for sizes in receipts.values()),
+        "chunk_bytes": chunk_bytes,
+        "identity_depth_source_bytes": identity_bytes,
+        "scanned_bytes": scanned_bytes,
+        "limit_bytes": limit,
+        "headroom_bytes": limit - scanned_bytes,
+        "utilization_percent": round(100 * scanned_bytes / limit, 2),
+        "groups": {name: {"chunks": len(sizes), "bytes": sum(sizes)} for name, sizes in sorted(receipts.items())},
+    }
+
+    # One byte under the chunk census: the chunk scan refuses at its last chunk
+    # and names its own census, never skipping the chunk it cannot afford.
+    monkeypatch.setattr(compiler_bundle, "_MAX_COMPILER_CHUNK_BYTES", chunk_bytes - 1)
+    with pytest.raises(ReleaseInputError) as chunk_refusal:
+        compiler_bundle.load_compiler_bundle(output, repository_root=repo)
+    assert re.fullmatch(
+        r"compiler chunk byte census exceeds the exhaustive privacy scan's resource ceiling: "
+        rf"scanned_bytes={chunk_bytes}; limit={chunk_bytes - 1}; group=[a-z_]+; index=\d+",
+        str(chunk_refusal.value),
+    )
+
+    # Exactly the chunk census: every chunk fits, and the identity-depth blob
+    # read after them is what crosses, under its own distinct message.
+    monkeypatch.setattr(compiler_bundle, "_MAX_COMPILER_CHUNK_BYTES", chunk_bytes)
+    with pytest.raises(ReleaseInputError) as identity_refusal:
+        compiler_bundle.load_compiler_bundle(output, repository_root=repo)
+    assert str(identity_refusal.value) == (
+        "compiler identity-depth source byte census exceeds the exhaustive privacy scan's resource ceiling: "
+        f"scanned_bytes={scanned_bytes}; limit={chunk_bytes}"
+    )
 
 
 def _files(output: Path) -> list[dict[str, object]]:
