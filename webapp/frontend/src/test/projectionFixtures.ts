@@ -458,10 +458,23 @@ export function deviceStructuralRowFixture(index = 2, bridge = true, rank = 1, h
     style: published(bridge ? { token: "structural_bridge", glyph: "none", label: "Synthetic engine bridge presentation" }
       : { token: "structural_link", glyph: "none", label: "Synthetic engine host-pair link presentation" }) };
 }
+// G21 facet totals (FindingFacets). The severity and category keys are read from the generated contract (the
+// ranked severity and unranked punch_category vocabularies), so this file keeps no second copy of an engine
+// vocabulary. Owner buckets stay withheld; the device facet is a roster list the view pages like every other
+// primary list (/facets/device), here one synthetic published per-device count.
+export function findingFacetsFixture() {
+  const contract = vocabContract();
+  const keys = (tokens: readonly string[] | undefined, name: string): readonly string[] =>
+    tokens ?? vocabFailure(`the generated contract has no ${name} vocabulary for the finding facets`);
+  const bucket = (k: string) => ({ k, n: withheld() });
+  return { severity: keys(contract.ranked.get("severity"), "severity").map(bucket),
+    category: keys(contract.unranked.get("punch_category"), "punch_category").map(bucket),
+    device: ownerPage("/facets/device", [{ k: "edge/a~b", n: { ...published(1), refs: [{ pointer: "/punchlist", role: "basis" }], caveats: ["device_findings_scope"] } }]) };
+}
 export function findingsFixture(sid = 1, offset = 0) {
   const row = { index: offset === 0 ? 7 : 93, pointer: `/punchlist/${offset === 0 ? 7 : 93}`, ...fields("priority rank severity category wave severity_basis evidence_confidence source_command evidence_basis"),
     title: published(offset === 0 ? "Synthetic finding" : "Next source finding"), detail: published("Synthetic issue detail"), remediation: published("Synthetic owner remediation"), devices: published(["edge/a~b"]),
     evidence_refs: { state: "collected_but_empty", reason: "No synthetic references", items: [], basis: "synthetic.owner", subject: "/punchlist", refs: [] } };
   const rows = { ...empty("/rows"), source_list: { state: "published", basis: "synthetic.owner", subject: "/punchlist", refs: [] }, page: { offset, limit: 1, returned: 1, total: 2, has_more: offset === 0, items: [row] } };
-  return { ...common(sid, "findings"), payload: { total: published(2), headline_axis_index: null, rows } };
+  return { ...common(sid, "findings"), payload: { total: published(2), headline_axis_index: null, rows, facets: findingFacetsFixture() } };
 }

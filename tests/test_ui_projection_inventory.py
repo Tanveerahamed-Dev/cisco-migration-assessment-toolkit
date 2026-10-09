@@ -1589,6 +1589,14 @@ def test_i13_every_published_number_is_the_owners(name, snaps, payloads, docs):
     inventory = payloads[name]["inventory"]
     coverage_counts = {f"/devices/rows/items/{index}/coverage/n_abstained": row["host"]
                        for index, row in enumerate(inventory["devices"]["rows"]["items"])}
+    # G21 facet counts are live folds of the stored rows (no subject, no single witness list): each published one
+    # is recounted here, independently, from the snapshot's punch list by its own key rule.
+    facets = payloads[name]["findings"]["facets"]
+    facet_counts = {f"/facets/{facet}/{index}/n": (facet, bucket["k"])
+                    for facet in ("severity", "category") for index, bucket in enumerate(facets[facet])}
+    # the device facet is a roster list with its own state: its buckets are its items
+    facet_counts.update({f"/facets/device/items/{index}/n": ("device", bucket["k"])
+                         for index, bucket in enumerate(facets["device"]["items"])})
     roots = [(inventory, coverage_counts), (payloads[name]["findings"], {})] + [
         (doc["device"], {"/coverage_rollup/n_abstained": doc["device"]["host"]}) for _host, doc in docs[name]]
     n = 0
@@ -1598,7 +1606,16 @@ def test_i13_every_published_number_is_the_owners(name, snaps, payloads, docs):
             if fact["state"] != PUB or isinstance(value, bool) or not isinstance(value, (int, float)):
                 continue
             n += 1
-            if where in folded_coverage_paths:
+            if root is payloads[name]["findings"] and where in facet_counts:
+                facet, key = facet_counts[where]
+                rows = snap["punchlist"]
+                if facet == "device":
+                    expected = sum(1 for row in rows if key in row["devices"])
+                else:
+                    expected = sum(1 for row in rows if row[facet] == key)
+                assert fact["subject"] is None and type(value) is int and value == expected, (where, value, expected)
+                assert {"pointer": "/punchlist", "role": "basis"} in fact["refs"], where
+            elif where in folded_coverage_paths:
                 assert fact["subject"] is None
                 assert fact["basis"] == "coverage_matrix.compute_device_coverage:stored matrix rows by exact device.n_abstained"
                 assert type(value) is int

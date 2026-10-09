@@ -1311,11 +1311,16 @@ def test_module_imports_only_stdlib_and_the_explicit_projection_owners():
     # tests/test_impact_assessability.py). Trust inputs (G08) admit the dossier's public per-axis input
     # registry by its exact name, so the input list is imported, never copied. G41: the source identity is read
     # from its one owner, the exact-byte marker class and its public receipt reader; the projection itself
-    # never hashes (no hashlib, no json), so it cannot hash a re-serialisation in the owner's place.
+    # never hashes (no hashlib, no json), so it cannot hash a re-serialisation in the owner's place. The G21
+    # finding facets admit the owner's public category vocabulary, its read-only category-to-source-section map
+    # (what a category count was computed over) and its stored-row facet fold, by exact name, beside the
+    # severity owner.
     allowed = {"math", "re", "ipaddress", "__future__:annotations", "types:MappingProxyType", "cisco_toolkit:ssot",
                "cisco_toolkit:impact_assessability",
                "cisco_toolkit:__version__", "cisco_toolkit:fib", "cisco_toolkit.analyze:PUNCH_SEVERITIES",
                "cisco_toolkit.analyze:DOSSIER_AXIS_INPUTS",
+               "cisco_toolkit.analyze:PUNCH_CATEGORIES", "cisco_toolkit.analyze:PUNCH_CATEGORY_SECTION",
+               "cisco_toolkit.analyze:compute_punchlist_facets",
                "cisco_toolkit.analyze:compute_device_findings", "cisco_toolkit.analyze:device_config_capture",
                "cisco_toolkit.analyze:vlan_cutover_host_index", "cisco_toolkit.coverage_matrix:CoverageRowIndex",
                "cisco_toolkit.coverage_matrix:index_coverage_rows", "cisco_toolkit.coverage_matrix:match_coverage_cell",

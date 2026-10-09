@@ -31,7 +31,12 @@ Slice 2 adds the row screens:
   dual-homed lists, and the cable-map peers nobody collected; every list in a stable order with a total
   from its owner, ready to be paged;
 * ``findings`` -- the engine's punch-list rows, with the severity vocabulary, the remediation the engine
-  links and the show command it cites, and nothing it does not publish;
+  links and the show command it cites, and nothing it does not publish; and their facet totals (G21): row
+  counts by severity and by category from the owner's partition of the stored rows
+  (``analyze.compute_punchlist_facets``), admitted only when they place every row exactly once, never claimed
+  complete over a category whose source section (``analyze.PUNCH_CATEGORY_SECTION``) is incomplete, and, as a
+  roster list with its own state, by inventory device from the per-device rollup (the G09 fold), never a
+  second count;
 * :func:`project_device` -- one standalone device page per host (identity, physical, blind-spot record,
   health, lifecycle, dossier, coverage, interfaces, links, routes, routing neighbours with each neighbour's
   collected peer host resolved through the topology's one address index (G17), security checks,
@@ -129,7 +134,8 @@ from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
 from cisco_toolkit import impact_assessability
 from cisco_toolkit import ssot
 from cisco_toolkit.analyze import (
-    DOSSIER_AXIS_INPUTS, PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index,
+    DOSSIER_AXIS_INPUTS, PUNCH_CATEGORIES, PUNCH_CATEGORY_SECTION, PUNCH_SEVERITIES, compute_device_findings,
+    compute_punchlist_facets, device_config_capture, vlan_cutover_host_index,
 )
 from cisco_toolkit.coverage_matrix import (
     COVERAGE_DIMENSIONS, COVERAGE_STATE_ORDER, COVERAGE_VERDICT_SOURCES, CoverageRowIndex,
@@ -195,6 +201,10 @@ JS_MAX_SAFE_INT = 2 ** 53 - 1
 
 # Local copies of engine vocabularies; tests/test_ui_projection.py holds each equal to its owner.
 SEVERITIES: Tuple[str, ...] = PUNCH_SEVERITIES
+#: The punch-list category vocabulary (analyze.PUNCH_CATEGORIES, the evidence-policy keys), in owner order.
+FINDING_CATEGORIES: Tuple[str, ...] = PUNCH_CATEGORIES
+#: The finding facets (G21), in payload order: two owner partitions of the rows, then the per-device rollup.
+FINDING_FACETS: Tuple[str, ...] = ("severity", "category", "device")
 HEALTH_BANDS: Tuple[str, ...] = ("Critical", "Poor", "Fair", "Good", "Excellent")   # ssot health-band order
 COVERAGE_STATES: Tuple[str, ...] = ("covered", "not_collected", "partial", "unverified", "unparsed",
                                     "not_observed")                             # unknown_evidence._COVERAGE_STATES
@@ -477,7 +487,7 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         ["/overview/axes", "/overview/absent_axes", "/overview/top_gating", "/overview/posture_statement",
          "/overview/fleet_health/bands", "/overview/readiness/groups",
          "/inventory/devices", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
-         "/findings/rows", "/findings/total", "/topology", "/trust/inputs"]),
+         "/findings/rows", "/findings/total", "/findings/facets", "/topology", "/trust/inputs"]),
     _limitation(
         "axis_basis_owned_by_projection",
         "cisco_toolkit.ui_projection.AXIS_BASIS, cisco_toolkit.ui_projection.AXIS_UNASSESSED",
@@ -545,12 +555,16 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "violation or an owner fault. On the row screens: the device total's row-count check, the punch-list "
         "priority and rank checks against the producer's rule, a cap's reached flag, the incomplete state of a list "
         "whose input a blind spot, a missing essential capture or a missing security row withheld, the empty "
-        "VLAN-dependency and default-election checks against the gateway SVI and root-bridge records, and the "
-        "completeness claim of the uncollected-peer list.",
+        "VLAN-dependency and default-election checks against the gateway SVI and root-bridge records, the "
+        "completeness claim of the uncollected-peer list, and the finding facets' partition check (a severity or "
+        "category facet is published only when the owner's buckets place every stored row exactly once, each in "
+        "the bucket its own field names, in agreement with the row list and its published total; while that total "
+        "is not published no severity or category count is) and their source-section check against "
+        "analyze.PUNCH_CATEGORY_SECTION.",
         ["/trust/census/embedded/matches_live", "/trust/ssot/stamp_matches_live",
          "/engine/snapshot_schema_supported", "/overview/top_gating", "/overview/absent_axes",
          "/inventory/devices/total", "/inventory/vlans", "/inventory/endpoints", "/inventory/uncollected_peers",
-         "/findings/rows"]),
+         "/findings/rows", "/findings/facets"]),
     _limitation(
         "device_physical_defaults_not_observed", "model.DevicePhysical",
         "The device record defaults its text fields to '' and num_power_supplies, num_modules and total_ports to 0, "
@@ -685,27 +699,34 @@ LIMITATIONS: Tuple[Mapping[str, Any], ...] = (
         "or structural-link row is computed over the scanned model without it, so even a 'no impact' row or a small "
         "pairs-cut count was never checked against that evidence. While any blind spot is listed, a published list "
         "carries this caveat, with a witness ref to each blind-spot row, and an empty one is not_collected, never "
-        "'nothing found'. An executive axis's count of the devices it could not assess, and its denominator, are "
-        "likewise taken over its producer's own devices, which hold only the devices whose evidence that producer "
-        "was given: a device the collection never reached is in neither. While any blind spot is listed, each "
-        "published count and denominator carries this caveat with the same witness refs, and a zero count, a "
-        "count over no device, or an empty denominator is not_collected, never 'none left unassessed'.",
+        "'nothing found'. A finding facet count follows the same rule: a positive severity or category count is a "
+        "lower bound that carries this caveat, and a zero is not_collected. An executive axis's count of the devices "
+        "it could not assess, and its denominator, are likewise taken over its producer's own devices, which hold "
+        "only the devices whose evidence that producer was given: a device the collection never reached is in "
+        "neither. While any blind spot is listed, each published count and denominator carries this caveat with the "
+        "same witness refs, and a zero count, a count over no device, or an empty denominator is not_collected, never "
+        "'none left unassessed'.",
         ["/overview/axes", "/inventory/vlans", "/inventory/endpoints", "/findings/rows", "/findings/total",
-         "/topology/structural_links", "/topology/failure_impact"]),
+         "/findings/facets", "/topology/structural_links", "/topology/failure_impact"]),
     _limitation(
         "findings_without_running_config", "analyze.compute_migration_punchlist",
         "A device in the devices map with no security row (no captured running-config) contributes no "
         "configuration-derived punch-list row (security, configuration hygiene, QoS). While any device lacks one, "
         "published findings carry this caveat, with a witness ref to each such device record, and an empty list is "
-        "not_collected.",
-        ["/findings/rows", "/findings/total"]),
+        "not_collected. A positive severity or category facet count is then a lower bound that carries this caveat, "
+        "and a zero facet count is not_collected.",
+        ["/findings/rows", "/findings/total", "/findings/facets"]),
 )
 LIMITATIONS += (
     _limitation("device_findings_scope", "analyze.compute_device_findings",
                 "Counts cover stored punch-list rows once per named device. A multi-device row contributes "
                 "to each named device, so device totals are not distinct fleet findings. An assessed-empty "
-                "count is not a clean bill of health; capture custody and input qualification remain visible.",
-                ["/inventory/devices/rows"]),
+                "count is not a clean bill of health; capture custody and input qualification remain visible. "
+                "The device finding facet is this rollup summed for each inventory device (the devices map and "
+                "the collection_completeness blind spots), so a row naming no inventory device counts under no "
+                "device key and a multi-device row under each device it names, so the device counts need not sum "
+                "to the row total.",
+                ["/inventory/devices/rows", "/findings/facets/device"]),
     _limitation("topology_scanned_model", "analyze.compute_cable_map; analyze.compute_link_centrality",
                 "The graph describes captured discovery and the scanned host-pair model. A collected node is not "
                 "a health verdict; an up cable is a reported link state, not end-to-end reachability. Structural "
@@ -750,6 +771,15 @@ LIMITATIONS += (
                 "not management suitability or unique source ownership. A scoped no-route observation is not "
                 "an observed discard. Reached paths can still have dropping ECMP legs. MTU evidence is "
                 "IPv4-specific and does not establish IPv6 suitability.", ["/topology/source_addresses"]),
+    _limitation("finding_facet_source_incomplete", "analyze.PUNCH_CATEGORY_SECTION",
+                "The engine folds each punch-list category from one source section (analyze.PUNCH_CATEGORY_SECTION), "
+                "which is not always a punch-list input. While a category's section was not collected, its phase "
+                "failed, or the abstention core could not read it, that category's count cannot be complete: a "
+                "positive count is a lower bound that carries this caveat, with a ref to the section or its failure "
+                "record, and a zero is not_collected, analysis_unavailable or unverified, never a clean result. A row "
+                "of any category can carry any severity, so while any category's section is incomplete every "
+                "severity count follows the same rule.",
+                ["/findings/facets/severity", "/findings/facets/category"]),
 )
 LIMITATIONS += (
     _limitation("trust_inputs_scope",
@@ -1033,6 +1063,7 @@ class _Ctx:
         self._blind_rows: Optional[List[int]] = None
         self._no_config: Optional[List[str]] = None
         self._device_findings: Any = _UNSET
+        self._punch_facets: Any = _UNSET
         self._vlan_hosts: Any = _UNSET
         self._coverage_rows: Any = _UNSET
         self._device_coverage: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -1129,6 +1160,17 @@ class _Ctx:
                 {"problem": "the engine finding fold failed; its partition is unverified", "per_device": {}},
             )
         return self._device_findings
+
+    @property
+    def punch_facets(self) -> Any:
+        """``analyze.compute_punchlist_facets`` over the stored punch list (computed once; ``None`` on a fault)."""
+        if self._punch_facets is _UNSET:
+            self._punch_facets = self._call(
+                "analyze.compute_punchlist_facets",
+                lambda snap: compute_punchlist_facets(snap.get("punchlist")),
+                None,
+            )
+        return self._punch_facets
 
     @property
     def vlan_hosts(self) -> Any:
@@ -3763,8 +3805,9 @@ def _device_row(ctx: _Ctx, host: str, dev_keys: Iterable[str], cc_norm: Mapping[
 
 
 def _inventory_universe(ctx: _Ctx) -> Tuple[List[str], FrozenSet[str], Dict[str, List[int]]]:
-    """``(hosts, devices-map keys, blind-spot index)``: the inventory rows' devices, sorted. One owner for the device
-    rows and the analysis-input gaps, so both count the same universe."""
+    """``(hosts, devices-map keys, blind-spot index)``: the inventory roster, sorted. It is the devices map's text
+    keys plus the collection_completeness blind spots it does not name. One owner for the inventory device rows, the
+    analysis-input gaps (G08) and the device finding facet (G21), so all three count the same universe."""
     devices = ctx.s.get("devices")
     dev_keys = frozenset(k for k in devices if _is_text(k)) if isinstance(devices, dict) else frozenset()
     cc_norm = ctx.index(("collection_completeness", "devices"), ("host",), norm=True)
@@ -3791,17 +3834,23 @@ def _inventory_total(ctx: _Ctx, n_rows: int) -> Dict[str, Any]:
                    published_caveats=_brief_caveats(ctx))
 
 
-def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
-    hosts, dev_keys, cc_norm = _inventory_universe(ctx)
-    items = [_device_row(ctx, host, dev_keys, cc_norm) for host in hosts]
+def _roster_list(ctx: _Ctx, items: List[Any], basis: str, caveats: Sequence[str]) -> Dict[str, Any]:
+    """A list with one item per :func:`_inventory_universe` host, in the roster's own state: the devices map's state,
+    then the collection_completeness rollup. An absent or unreadable devices map is never an empty roster; the
+    inventory rows and the device finding facet share this one state."""
     base, reason, _raw = _list_state(ctx, ("devices",), ("devices",), want=dict)
     if base in (_PUB, _CBE):
         base = _PUB if items else _CBE
-    rows = _listing(ctx, base, reason, ("devices",),
-                    "html.snapshot_state:devices + analyze.compute_collection_completeness:"
-                    "collection_completeness.devices", items, sections=("devices",),
-                    rollup=("collection_completeness",),
-                    caveats=("row_selection_by_exact_key", "device_physical_defaults_not_observed"))
+    return _listing(ctx, base, reason, ("devices",), basis, items, sections=("devices",),
+                    rollup=("collection_completeness",), caveats=caveats)
+
+
+def _device_rows(ctx: _Ctx) -> Dict[str, Any]:
+    hosts, dev_keys, cc_norm = _inventory_universe(ctx)
+    items = [_device_row(ctx, host, dev_keys, cc_norm) for host in hosts]
+    rows = _roster_list(ctx, items, "html.snapshot_state:devices + analyze.compute_collection_completeness:"
+                                    "collection_completeness.devices",
+                        ("row_selection_by_exact_key", "device_physical_defaults_not_observed"))
     return {"total": _inventory_total(ctx, len(items)), "rows": rows}
 
 
@@ -5254,11 +5303,245 @@ def _findings(ctx: _Ctx) -> Dict[str, Any]:
     axes = _get(ctx.s, ("executive_brief", "axes"))
     heads = [k for k, ax in enumerate(axes) if isinstance(ax, dict) and ax.get("axis") == "Migration punch-list"] \
         if isinstance(axes, list) else []
-    return {"total": total, "headline_axis_index": heads[0] if len(heads) == 1 else None, "rows": listing}
+    return {"total": total, "headline_axis_index": heads[0] if len(heads) == 1 else None, "rows": listing,
+            "facets": _finding_facets(ctx, listing, total, raw, qualify)}
+
+
+# ---------------------------------------------------------------------------------------------------
+# findings: facet totals (G21)
+# ---------------------------------------------------------------------------------------------------
+#: The facets the owner partitions, each with its closed vocabulary in owner order (the device facet is the G09 fold).
+_OWNER_FACETS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (("severity", SEVERITIES), ("category", FINDING_CATEGORIES))
+_B_FACET = "analyze.compute_punchlist_facets:stored punch-list rows by {facet}"
+_B_DEVICE_FACET = ("analyze.compute_device_findings:stored punch-list rows by exact device.by_severity, summed "
+                   "(each stored row once per named device)")
+_R_FACET_EMPTY = ("collected but empty: the punch list carries no row, so no {facet} bucket holds a finding (not a "
+                  "blind spot)")
+_R_FACET_ZERO = ("not collected: no stored punch-list row has this {facet}, but the punch list may be incomplete, so "
+                 "this zero is not a clean result: {why}")
+_R_FACET_REFUSED = ("unverified: the engine's {facet} facet fold cannot place every stored punch-list row ({problem}), "
+                    "so no {facet} count is published")
+_R_FACET_UNRECONCILED = ("unverified: the engine's {facet} buckets do not place each of the {n} stored punch-list rows "
+                         "exactly once, in the bucket its own {facet} names{total}, so no {facet} count is published")
+_R_FACET_TOTAL = ("unverified: the punch list's row total is {state}, so the engine's {facet} buckets cannot be "
+                  "reconciled with it and no {facet} count is published")
+_B_DEVICE_FACETS = ("analyze.compute_device_findings:stored punch-list rows per inventory device (the devices map and "
+                    "the collection_completeness blind spots)")
+_R_SOURCE_NONE = ("unverified: the engine names no source section for the {category} findings "
+                  "(analyze.PUNCH_CATEGORY_SECTION), so nothing says what this count was computed over")
+_R_SOURCE_NC = ("not collected: {section}, the section the engine folds the {category} findings from, was not "
+                "collected")
+_R_SOURCE_AU = "{failed} ({section} is the section the engine folds the {category} findings from)"
+_R_SOURCE_ZERO = "{why}, so a zero count of this category is not a clean result"
+_R_SEVERITY_SOURCE_ZERO = ("{words}: no stored punch-list row has this severity, but a row of any category can carry "
+                           "any severity, and these categories are folded from sections that are not complete evidence: "
+                           "{detail}; so this zero is not a clean result")
+#: A category source's withheld state, in the precedence a list rollup gives it (a failure, an owner fault, a blind
+#: spot), with the words a reason opens with.
+_SOURCE_HOLDS: Tuple[Tuple[str, str], ...] = ((AU, "analysis unavailable"), (_UV, "unverified"), (_NC, "not collected"))
+#: ``(state, reason, ref entries)``: why a category's source section keeps its count from being complete.
+_SourceHold = Tuple[str, str, List[Tuple[str, Sequence[Any]]]]
+
+
+def _facet_refs(ctx: _Ctx, listing: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The punch list as the basis, then the row list's own witness and failure-record refs (its fleet
+    qualifications and failed phases). The row list's subject and per-input basis refs stay on the list."""
+    out = ctx.refs([("basis", ("punchlist",))])
+    seen = {(ref["pointer"], ref["role"]) for ref in out}
+    for ref in listing["refs"]:
+        key = (ref["pointer"], ref["role"])
+        if ref["role"] in ("witness", "failure_record") and key not in seen:
+            seen.add(key)
+            out.append({"pointer": ref["pointer"], "role": ref["role"]})
+    return out
+
+
+def _with_refs(ctx: _Ctx, refs: List[Dict[str, str]],
+               entries: Sequence[Tuple[str, Sequence[Any]]]) -> List[Dict[str, str]]:
+    """A fresh copy of `refs`, then each resolving entry it does not already carry."""
+    out = [dict(ref) for ref in refs]
+    seen = {(ref["pointer"], ref["role"]) for ref in out}
+    for ref in ctx.refs(entries):
+        if (ref["pointer"], ref["role"]) not in seen:
+            seen.add((ref["pointer"], ref["role"]))
+            out.append(ref)
+    return out
+
+
+def _category_sources(ctx: _Ctx) -> Dict[str, _SourceHold]:
+    """Category -> its :data:`_SourceHold`, in owner order, for every category whose source section (the engine's
+    ``analyze.PUNCH_CATEGORY_SECTION``) is not complete evidence for its count: the section's phase failed
+    (analysis_unavailable, with its failure records), the abstention core could not read it (unverified, with the
+    owner fault) or it was not collected (not_collected). The whole closed vocabulary is checked, never a hand list
+    of sections, and a category the owner maps to no section is unverified. A complete source is not listed. The
+    held section is cited as a witness of the incompleteness, never as a basis: a lower bound over it stays
+    published, and a basis ref to a failed section belongs only to a value that is itself unavailable."""
+    out: Dict[str, _SourceHold] = {}
+    for category in FINDING_CATEGORIES:
+        section = PUNCH_CATEGORY_SECTION.get(category)
+        if not _is_text(section):
+            out[category] = (_UV, _R_SOURCE_NONE.format(category=category), [])
+            continue
+        token = ctx.abst(section)
+        entries: List[Tuple[str, Sequence[Any]]] = [("witness", (section,))]
+        if token == AU:
+            out[category] = (AU, _R_SOURCE_AU.format(failed=ctx.unavailable_reason((section,)), section=section,
+                                                     category=category),
+                             entries + ctx.failure_entries((section,), True))
+        elif token == _FAULT:
+            out[category] = (_UV, ctx.fault((section,)), entries)
+        elif token == _NC:
+            out[category] = (_NC, _R_SOURCE_NC.format(section=section, category=category), entries)
+    return out
+
+
+def _severity_source_hold(sources: Mapping[str, _SourceHold]) -> Optional[_SourceHold]:
+    """One hold for every severity bucket while any category source is incomplete: a row of any category can carry
+    any severity. Its state is the strongest of the category holds (:data:`_SOURCE_HOLDS` order), its reason names
+    each held category and section state, and its refs are all of theirs."""
+    if not sources:
+        return None
+    states = {state for state, _why, _entries in sources.values()}
+    state, words = next((s, w) for s, w in _SOURCE_HOLDS if s in states)
+    named = dict(_SOURCE_HOLDS)
+    labels = []
+    for category, (held, _why, _entries) in sources.items():
+        section = PUNCH_CATEGORY_SECTION.get(category)
+        labels.append(f"{category} ({section} {named[held]})" if _is_text(section)
+                      else f"{category} (no source section)")
+    entries = [entry for _state, _why, held_entries in sources.values() for entry in held_entries]
+    return state, _R_SEVERITY_SOURCE_ZERO.format(words=words, detail="; ".join(labels)), entries
+
+
+def _facet_partition(ctx: _Ctx, facet: str, keys: Sequence[str], raw: Any,
+                     total: Dict[str, Any]) -> Tuple[str, Optional[str], Optional[Dict[str, List[int]]]]:
+    """``(state, reason, buckets)`` for one owner facet over a published row list. The owner's buckets are
+    admitted only as an exact partition: every key in owner order, every stored row placed exactly once in the
+    bucket its own field names, and as many rows as the row list and its published total. A total that is not
+    published leaves nothing to reconcile with, so the facet is withheld rather than checked against the rows
+    alone. Anything else is unverified; a count is never repaired or recomputed here."""
+    folded = ctx.punch_facets
+    entry = folded.get(facet) if isinstance(folded, dict) else None
+    if not isinstance(entry, dict):
+        fault = ctx.faults.get("analyze.compute_punchlist_facets")
+        return _UV, fault or _R_FACET_REFUSED.format(facet=facet, problem="unreadable owner output"), None
+    problem, buckets = entry.get("problem"), entry.get("indices")
+    if problem is not None or not isinstance(buckets, dict):
+        why = problem if _is_text(problem) else "unreadable owner output"
+        return _UV, _R_FACET_REFUSED.format(facet=facet, problem=why), None
+    if total["state"] != _PUB:
+        return _UV, _R_FACET_TOTAL.format(state=total["state"], facet=facet), None
+    rows = raw if isinstance(raw, list) else []
+    n_rows = len(rows)
+    placed: List[Any] = []
+    agrees = list(buckets) == list(keys)
+    for key in keys if agrees else ():
+        members = buckets.get(key)
+        if not isinstance(members, list):
+            agrees = False
+            break
+        placed.extend(members)
+        agrees = all(type(index) is int and 0 <= index < n_rows and isinstance(rows[index], dict)
+                     and rows[index].get(facet) == key for index in members)
+        if not agrees:
+            break
+    stated = total["value"]
+    if (not agrees or folded.get("n_rows") != n_rows or stated != n_rows
+            or sorted(placed) != list(range(n_rows))):
+        tail = f" (the published row total is {stated})" if stated != n_rows else ""
+        return _UV, _R_FACET_UNRECONCILED.format(facet=facet, n=n_rows, total=tail), None
+    return _PUB, None, buckets
+
+
+def _device_facet(ctx: _Ctx, host: str) -> Dict[str, Any]:
+    """One inventory device's finding count: its per-device rollup (G09, :func:`_device_finding_rollup`) summed
+    over the closed severities. The rollup's state, reason and caveats are kept, so this count and the device's
+    inventory row cannot disagree. Its refs are the rollup's basis, custody and qualification refs; the per-row
+    witnesses (one per stored row naming the device) stay on the inventory row and the device page, so the facet
+    grows with the roster, not with rows times devices."""
+    counts = _device_finding_rollup(ctx, host)["by_severity"]
+    refs = [{"pointer": ref["pointer"], "role": ref["role"]} for ref in counts["refs"]
+            if not (ref["role"] == "witness" and ref["pointer"].startswith(json_pointer("punchlist") + "/"))]
+    if counts["state"] != _PUB:
+        return {"k": host, "n": _envelope(counts["state"], None, None, refs, _B_DEVICE_FACET, counts["reason"])}
+    ok, value = _count(sum(counts["value"].values()))
+    if not ok:
+        return {"k": host, "n": _envelope(_UV, None, None, refs, _B_DEVICE_FACET, _unverified_reason("count"))}
+    return {"k": host, "n": _envelope(_PUB, value, None, refs, _B_DEVICE_FACET, "",
+                                      caveats=counts.get("caveats", ()))}
+
+
+def _finding_facets(ctx: _Ctx, listing: Dict[str, Any], total: Dict[str, Any], raw: Any,
+                    qualify: Sequence[_Qualify]) -> Dict[str, Any]:
+    """G21: the punch-list row counts by severity, by category and by inventory device.
+
+    The severity and category buckets are the owner's partition (``analyze.compute_punchlist_facets``), one per
+    key of the owner's closed vocabulary, in its order. They follow the row list's final state: a missing punch
+    list is not_collected, an empty one collected_but_empty, a failed or unreadable one withheld with the list's
+    own reason. A published list is counted only through :func:`_facet_partition`.
+
+    Two rules keep a count from claiming more than its evidence. A category is folded from one engine section
+    (``analyze.PUNCH_CATEGORY_SECTION``, :func:`_category_sources`), which need not be a punch-list input: while that
+    section failed, could not be read or was not collected, the category's positive count is a lower bound carrying
+    ``finding_facet_source_incomplete`` with a ref to the section or its failure record, and its zero takes the
+    section's state, never a clean result. A row of any category can carry any severity, so while any category's
+    section is incomplete every severity bucket follows the same rule (:func:`_severity_source_hold`). Then, while a
+    fleet qualification applies (blind devices, devices without a captured running-config), a positive count is a
+    lower bound that carries the qualification's caveat and witnesses, and a zero is not_collected.
+
+    The device facet is :func:`_device_facet` per inventory host, never a second fold, in a list that takes the
+    roster's own state (:func:`_roster_list`): an absent or unreadable devices map is withheld, never an empty
+    published roster."""
+    state, reason = listing["state"], listing.get("reason")
+    refs = _facet_refs(ctx, listing)
+    caveats = tuple(cid for cid, _why, _wit in qualify) + _brief_caveats(ctx)
+    why = "; ".join(text.removeprefix("not collected: ") for _cid, text, _wit in qualify)
+    sources = _category_sources(ctx)
+    severity_hold = _severity_source_hold(sources)
+    holds: Dict[str, Dict[str, _SourceHold]] = {
+        "severity": {key: severity_hold for key in SEVERITIES} if severity_hold else {},
+        "category": {key: (held, _R_SOURCE_ZERO.format(why=held_why), entries)
+                     for key, (held, held_why, entries) in sources.items()},
+    }
+    out: Dict[str, Any] = {}
+    for facet, keys in _OWNER_FACETS:
+        basis = _B_FACET.format(facet=facet)
+        f_state, f_reason, buckets = state, reason, None
+        if state == _CBE:
+            f_reason = _R_FACET_EMPTY.format(facet=facet)
+        elif state == _PUB:
+            f_state, f_reason, buckets = _facet_partition(ctx, facet, keys, raw, total)
+        if f_state != _PUB and not f_reason:
+            f_reason = _state_reason(ctx, f_state, "count", ("punchlist",))
+        facet_rows = []
+        for key in keys:
+            hold = holds[facet].get(key)
+            if buckets is None:
+                fact = _envelope(f_state, None, None, _with_refs(ctx, refs, ()), basis, f_reason or "")
+            elif hold is not None:
+                held, held_reason, entries = hold
+                mine = _with_refs(ctx, refs, entries)
+                if buckets[key]:
+                    fact = _envelope(_PUB, len(buckets[key]), None, mine, basis, "",
+                                     caveats=caveats + ("finding_facet_source_incomplete",))
+                else:
+                    fact = _envelope(held, None, None, mine, basis, held_reason)
+            elif not buckets[key] and qualify:
+                fact = _envelope(_NC, None, None, _with_refs(ctx, refs, ()), basis,
+                                 _R_FACET_ZERO.format(facet=facet, why=why))
+            else:
+                fact = _envelope(_PUB, len(buckets[key]), None, _with_refs(ctx, refs, ()), basis, "",
+                                 caveats=caveats)
+            facet_rows.append({"k": key, "n": fact})
+        out[facet] = facet_rows
+    out["device"] = _roster_list(ctx, [_device_facet(ctx, host) for host in _inventory_universe(ctx)[0]],
+                                 _B_DEVICE_FACETS, ("device_findings_scope",))
+    return {facet: out[facet] for facet in FINDING_FACETS}
 
 
 def project_findings(snap: Any) -> Dict[str, Any]:
-    """The Findings screen: the engine's punch-list rows, with the remediation it links and nothing more."""
+    """The Findings screen: the engine's punch-list rows, with the remediation it links, and their facet totals
+    (G21: by severity, category and inventory device) under the same evidence states; nothing more."""
     return _findings(_Ctx(snap))
 
 
@@ -6682,6 +6965,9 @@ _VOCAB_UNRANKED: Tuple[Tuple[str, Tuple[str, ...], str], ...] = (
                                              "absence witness); the finding's severity carries its level"),
     ("evidence_ref_kind", PUNCH_EVIDENCE_REF_KINDS, "the kind of record an evidence pointer names"),
     ("evidence_ref_role", PUNCH_EVIDENCE_ROLES, "the role an evidence pointer plays for its finding"),
+    ("punch_category", FINDING_CATEGORIES, "analyze.PUNCH_CATEGORIES, the punch-list finding categories "
+                                           "(CategoryFacetRow.k): what a finding is about; its severity carries "
+                                           "its level"),
     ("stp_root_reason", STP_ROOT_REASONS, "why an STP root election reached its state; the state is ranked"),
     ("address_origin", ADDRESS_ORIGINS, "where a topology source address was observed"),
     ("fib_invalid_route_field", FIB_ROUTE_FIELDS, "the route fields a FIB hop reports as invalid"),
@@ -7024,9 +7310,24 @@ def _slice2_defs(defs: Dict[str, Any]) -> None:
     defs["Inventory"] = _closed("Inventory", ("devices", "vlans", "endpoints", "uncollected_peers"),
                                 {"devices": _ref("InventoryDevices"), "vlans": _ref("InventoryVlans"),
                                  "endpoints": _ref("InventoryEndpoints"), "uncollected_peers": _ref("PeerList")})
-    defs["Findings"] = _closed("Findings", ("total", "headline_axis_index", "rows"),
+    # G21: one closed bucket per owner vocabulary key, in owner order; the device facet follows the inventory roster.
+    defs["SeverityFacetRow"] = _closed("SeverityFacetRow", ("k", "n"), {"k": _enum(SEVERITIES), "n": _ref("CountFact")})
+    defs["CategoryFacetRow"] = _closed("CategoryFacetRow", ("k", "n"),
+                                       {"k": _enum(FINDING_CATEGORIES), "n": _ref("CountFact")})
+    defs["DeviceFacetRow"] = _closed("DeviceFacetRow", ("k", "n"), {"k": _str(), "n": _ref("CountFact")})
+    # The device facet is a roster list with its own state (an absent roster is withheld, never an empty array), so
+    # the transport pages it like every other primary list.
+    defs["DeviceFacetList"] = _list_def("DeviceFacetList", _ref("DeviceFacetRow"))
+    n_severities, n_categories = len(SEVERITIES), len(FINDING_CATEGORIES)
+    defs["FindingFacets"] = _closed("FindingFacets", FINDING_FACETS, {
+        "severity": {"type": "array", "minItems": n_severities, "maxItems": n_severities,
+                     "items": _ref("SeverityFacetRow")},
+        "category": {"type": "array", "minItems": n_categories, "maxItems": n_categories,
+                     "items": _ref("CategoryFacetRow")},
+        "device": _ref("DeviceFacetList")})
+    defs["Findings"] = _closed("Findings", ("total", "headline_axis_index", "rows", "facets"),
                                {"total": _ref("CountFact"), "headline_axis_index": _nullable(_nonneg_int()),
-                                "rows": _ref("FindingRowList")})
+                                "rows": _ref("FindingRowList"), "facets": _ref("FindingFacets")})
     identity = _closed("DeviceIdentity", IDENTITY_FIELDS, {f: _ref(_TEXT) for f in IDENTITY_FIELDS})
     physical_props = {**{f: _ref("CountFact") for f in DEVICE_PHYSICAL_ZERO_DEFAULTS + ("active_ports",)},
                       **{f: _ref(_TEXT) for f in PHYSICAL_TEXT_FIELDS}}
@@ -7395,4 +7696,5 @@ __all__ = [
     "TOPOLOGY_TONES", "TOPOLOGY_STROKES", "TOPOLOGY_WEIGHTS", "FIB_ROUTE_FIELDS", "FIB_MTU_GAP_REASONS",
     "LIFECYCLE_FACT_NAMES", "VOCAB_SCHEMA", "VOCAB_CLASSES", "NEIGHBOR_ADDRESS_FIELDS",
     "SNAPSHOT_IDENTITY_OWNER", "SNAPSHOT_SHA256_PATTERN", "SNAPSHOT_DIGEST_FORM",
+    "FINDING_CATEGORIES", "FINDING_FACETS",
 ]
