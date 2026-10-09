@@ -605,8 +605,10 @@ function FailureImpactRow({ row, index }: { row: unknown; index: number }) {
   const disclosure = qualified.length > 0 && (
     <button type="button" className="btn ghost impact-row-why" aria-expanded={open} aria-controls={reasonsId}
       onClick={() => setOpen((was) => !was)}>
-      {open ? "Hide reasons" : "Reasons"}
-      <span className="sr-only">{` for ${who}: ${qualified.length} value(s) not measured`}</span>
+      {open ? "Hide reasons" : "Reasons"}{" "}
+      {/* the space stays outside the span: an accessible-name computation trims an inline child's own text, so a
+          leading space inside it would read "Reasonsfor ..." */}
+      <span className="sr-only">{`for ${who}: ${qualified.length} value(s) not measured`}</span>
     </button>
   );
   return (
