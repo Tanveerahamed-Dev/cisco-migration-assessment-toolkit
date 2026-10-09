@@ -924,8 +924,14 @@ def test_operator_evidence_reuses_planning_owners_without_claiming_rehearsal():
             }],
         },
     })
-    assert evidence["schema"] == "cutover_operator_evidence/1"
+    # W50: a new comparison carries the current contract, whose rows are read through the engine owner. This row
+    # predates the producer's off_scan_gw_vlans marker, so the owner holds it: no stored value reads as measured.
+    assert evidence["schema"] == "cutover_operator_evidence/2"
     assert evidence["owns_verdict"] is False
+    [impact] = evidence["rehearsal"]["impacts"]
+    assert impact["host"] == "leaf-a" and impact["assessable"] == "not_assessed" and impact["why"]
+    assert impact["severity"] == impact["stranded"] == "not assessed"
+    assert evidence["rehearsal"]["n_impacts_by_assessable"]["not_assessed"] == 1
     assert evidence["rehearsal"]["status"] == "simulation_only"
     assert evidence["rehearsal"]["assurance_level"] == "not_verified"
     assert "no source-bound operator rehearsal" in evidence["rehearsal"]["note"]

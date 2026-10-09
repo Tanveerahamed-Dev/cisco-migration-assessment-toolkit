@@ -28,6 +28,7 @@ sys.path.insert(0, str(_REPO / "webapp"))
 from backend import engine, execution, storage as storage_owner  # noqa: E402
 from backend.app import create_app  # noqa: E402
 from backend.storage import ExecutionReceiptAuthorityError, Store  # noqa: E402
+from cisco_toolkit import protocol_assurance as _protocol_assurance  # noqa: E402
 from cisco_toolkit.html import compute_cutover_gate  # noqa: E402
 from cisco_toolkit.protocol_assurance import receipt_envelope  # noqa: E402
 from tests.test_compare_cutover_gate_cli import _snapshot as _clean_snapshot  # noqa: E402
@@ -2371,3 +2372,262 @@ def test_compare_append_and_finish_are_cross_process_compare_and_swap(tmp_path):
         if second is not None:
             second.close()
         first.close()
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# W50: rehearsal.impacts is a versioned receipt contract. A new receipt carries cutover_operator_evidence/2, whose
+# failure-impact rows are read through the engine owner (impact_assessability). A receipt stored before W50 carries
+# /1 (raw rows) and keeps re-verifying against the legacy /1 recomputation it declares. A missing or unknown
+# contract is never verified. These tests were written for the hosted runners and not run locally.
+# ---------------------------------------------------------------------------------------------------------------
+_V1 = "cutover_operator_evidence/1"
+_V2 = "cutover_operator_evidence/2"
+_IMPACT_MEASURES = ("severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp")
+
+
+def _golden_impact_rows() -> list:
+    """The after snapshot's stored failure_impact objects (_post_change_raw only rewrites collected_at)."""
+    rows = json.loads(_GOLDEN.read_bytes())["failure_impact"]
+    assert isinstance(rows, list)
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _legacy_v1_shape(comparison: dict) -> dict:
+    """The comparison a pre-W50 writer stored for the same pair, built by hand from the /1 shape: the /1 schema,
+    every stored failure_impact object copied raw into rehearsal.impacts, none of /2's additive keys, and the
+    detached envelope rebuilt over that payload. Nothing else in a comparison depends on the contract."""
+    legacy = deepcopy(comparison)
+    evidence = legacy["operator_evidence"]
+    evidence["schema"] = _V1
+    rehearsal = evidence["rehearsal"]
+    rehearsal["impacts"] = [dict(row) for row in _golden_impact_rows()]
+    rehearsal["n_impacts_total"] = len(rehearsal["impacts"])
+    rehearsal.pop("impacts_owner", None)
+    rehearsal.pop("n_impacts_by_assessable", None)
+    _rehash_complete_comparison(legacy)
+    return legacy
+
+
+def _write_receipt(client: TestClient, monkeypatch, *, writer_contract: str | None = None) -> tuple[int, int, dict]:
+    """Append one execution receipt through the public route. ``writer_contract`` simulates the writer that composed
+    it: /1 is exactly the pre-W50 writer, because the legacy recomputation is that writer's code preserved."""
+    before_id, after_id, run = _post_change_pair(client)
+    with monkeypatch.context() as patch:
+        if writer_contract is not None:
+            patch.setattr(_protocol_assurance, "CUTOVER_OPERATOR_EVIDENCE_SCHEMA", writer_contract)
+        compared = client.post(
+            f"/api/executions/{run['id']}/compare",
+            json={"after_snapshot_id": after_id},
+        )
+    assert compared.status_code == 200, compared.text
+    return before_id, after_id, run
+
+
+def _stored_comparison(client: TestClient, execution_id: int) -> dict:
+    """The one stored comparison, read back through the store: every read re-verifies it under current code."""
+    current = client.app.state.store.get_execution(execution_id)
+    assert current is not None and len(current["comparisons"]) == 1
+    return current["comparisons"][0]["receipt"]["comparison"]
+
+
+def test_v2_execution_receipt_carries_owner_valued_impacts_and_reverifies(client, monkeypatch):
+    before_id, after_id, run = _write_receipt(client, monkeypatch)
+    comparison = _stored_comparison(client, run["id"])
+    evidence = comparison["operator_evidence"]
+    assert evidence["schema"] == _V2 == _protocol_assurance.CUTOVER_OPERATOR_EVIDENCE_SCHEMA
+    impacts = evidence["rehearsal"]["impacts"]
+    golden = _golden_impact_rows()
+    assert len(impacts) == len(golden) > 0
+    assert [row["host"] for row in impacts] == [row.get("host") for row in golden]
+    for row in impacts:
+        assert set(row) == {"host", "assessable", "why", "detail", *_IMPACT_MEASURES}, row
+        assert row["assessable"] in {"published", "lower_bound", "not_assessed", "ambiguous"}, row
+    assert evidence["rehearsal"]["impacts_owner"] == "failure_impact_assessability/1"
+    assert sum(evidence["rehearsal"]["n_impacts_by_assessable"].values()) == len(impacts)
+    # the stored /2 receipt is exactly the current comparison of the pair, and every surface verifies it
+    current = client.post("/api/compare", json={"old_id": before_id, "new_id": after_id})
+    assert current.status_code == 200, current.text
+    assert storage_owner._canonical_json_identity_matches(comparison, current.json())
+    response = client.get(f"/api/executions/{run['id']}")
+    assert response.status_code == 200, response.text
+    assert response.json()["comparison_receipts"][-1]["receipt"]["comparison"]["operator_evidence"][
+        "schema"] == _V2
+
+
+def test_v1_execution_receipt_stored_before_w50_still_verifies(client, monkeypatch):
+    before_id, after_id, run = _write_receipt(client, monkeypatch, writer_contract=_V1)
+    # The writer is back to the current /2 contract; the stored /1 receipt is re-verified under the contract it
+    # declares on this read and on every surface below.
+    assert _protocol_assurance.CUTOVER_OPERATOR_EVIDENCE_SCHEMA == _V2
+    comparison = _stored_comparison(client, run["id"])
+    assert comparison["operator_evidence"]["schema"] == _V1
+    assert comparison["operator_evidence"]["rehearsal"]["impacts"] == _golden_impact_rows()
+    current = client.post("/api/compare", json={"old_id": before_id, "new_id": after_id})
+    assert current.status_code == 200, current.text
+    assert current.json()["operator_evidence"]["schema"] == _V2
+    # the stored receipt is byte-for-byte the legacy shape built by hand from the current comparison
+    assert storage_owner._canonical_json_identity_matches(comparison, _legacy_v1_shape(current.json()))
+    # non-vacuity: recomputed under the current contract alone, this stored receipt would read as mismatched
+    assert not storage_owner._canonical_json_identity_matches(comparison, current.json())
+    for path in (f"/api/executions/{run['id']}", f"/api/snapshots/{before_id}/executions"):
+        response = client.get(path)
+        assert response.status_code == 200, (path, response.text)
+
+
+def test_store_refuses_a_tampered_or_relabelled_v2_receipt_at_append(client):
+    before_id, after_id, run = _post_change_pair(client)
+    store = client.app.state.store
+    original = store.get_execution(run["id"])
+    assert original is not None
+    implementation = execution.implementation_evidence_binding(run)
+    assert implementation["valid"] is True
+    compared = client.post("/api/compare", json={"old_id": before_id, "new_id": after_id})
+    assert compared.status_code == 200, compared.text
+    comparison = compared.json()
+    assert comparison["operator_evidence"]["schema"] == _V2
+
+    def receipt_for(candidate: dict) -> dict:
+        return engine.compact_execution_comparison(
+            candidate,
+            before_snapshot_id=before_id,
+            after_snapshot_id=after_id,
+            after_collected_at=store.get_snapshot(after_id)["collected_at"],
+            implementation_binding=implementation,
+        )
+
+    # Every owner value rewritten back to the stored raw value and presented as a measurement, every digest rebuilt.
+    stripped = deepcopy(comparison)
+    rows = stripped["operator_evidence"]["rehearsal"]["impacts"]
+    golden = _golden_impact_rows()
+    assert len(rows) == len(golden) > 0
+    for row, stored in zip(rows, golden):
+        row.update({field: stored.get(field) for field in _IMPACT_MEASURES})
+        row.update({"assessable": "published", "why": "", "detail": stored.get("detail")})
+    rows[0]["stranded"] = 987654                       # guarantee a difference even if every row were published
+    _rehash_complete_comparison(stripped)
+    assert store.append_execution_comparison_if_unchanged(
+        run["id"], original["_state_json"], receipt_for(stripped)
+    ) == {"status": "comparison_mismatch"}
+
+    # A complete, self-consistent /1 receipt is still refused for a NEW append: writes take only the current contract.
+    assert store.append_execution_comparison_if_unchanged(
+        run["id"], original["_state_json"], receipt_for(_legacy_v1_shape(comparison))
+    ) == {"status": "comparison_mismatch"}
+
+    # An unknown contract over otherwise current content is refused the same way.
+    unknown = deepcopy(comparison)
+    unknown["operator_evidence"]["schema"] = "cutover_operator_evidence/9"
+    _rehash_complete_comparison(unknown)
+    assert store.append_execution_comparison_if_unchanged(
+        run["id"], original["_state_json"], receipt_for(unknown)
+    ) == {"status": "comparison_mismatch"}
+
+    unchanged = store.get_execution(run["id"])
+    assert unchanged is not None and unchanged["comparisons"] == []
+    # control: the untampered current receipt is the one the store accepts
+    assert store.append_execution_comparison_if_unchanged(
+        run["id"], original["_state_json"], receipt_for(comparison)
+    )["status"] == "saved"
+
+
+def _pre_anchor_store_with_one_receipt(
+        database: Path, monkeypatch, *, writer_contract: str | None = None) -> tuple[int, int]:
+    app = create_app(db_path=str(database))
+    with TestClient(app, base_url="http://localhost") as test_client:
+        _before_id, _after_id, run = _write_receipt(
+            test_client, monkeypatch, writer_contract=writer_contract
+        )
+        stored = app.state.store.get_execution(run["id"])
+        assert stored is not None and len(stored["comparisons"]) == 1
+        receipt_id = int(stored["comparisons"][0]["id"])
+    app.state.store.close()
+    return run["id"], receipt_id
+
+
+def _rewrite_pre_anchor_receipt(database: Path, receipt_id: int, mutate) -> None:
+    """Rewrite one stored receipt's comparison in a pre-anchor store with every digest rebuilt (detached envelope,
+    outer receipt hash and its column), so no hash or INTEGER-anchor check can refuse it: only the semantic replay
+    that must pass before a pre-anchor history is sealed on the next open can."""
+    _drop_integer_authority_tables(database)
+    connection = sqlite3.connect(database)
+    try:
+        for (trigger_name,) in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='execution_comparisons'"
+        ).fetchall():
+            connection.execute(f'DROP TRIGGER "{trigger_name}"')    # the store recreates them on open
+        row = connection.execute(
+            "SELECT CAST(receipt_json AS BLOB) FROM execution_comparisons WHERE id=?", (receipt_id,)
+        ).fetchone()
+        receipt = json.loads(bytes(row[0]).decode("utf-8"))
+        mutate(receipt["comparison"])
+        _rehash_complete_comparison(receipt["comparison"])
+        unsigned = dict(receipt)
+        unsigned.pop("receipt_sha256")
+        receipt["receipt_sha256"] = _canonical_sha256(unsigned)
+        connection.execute(
+            "UPDATE execution_comparisons SET receipt_json=?, receipt_sha256=? WHERE id=?",
+            (
+                json.dumps(receipt, separators=(",", ":"), allow_nan=False),
+                receipt["receipt_sha256"],
+                receipt_id,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("writer_contract", [_V1, _V2])
+def test_pre_anchor_rewrite_control_reseals_a_valid_receipt_of_either_contract(
+        tmp_path, monkeypatch, writer_contract):
+    """Control for the two refusals below: the rewrite helper alone (no semantic change) leaves a receipt that the
+    pre-anchor seal accepts, so a refusal there is the mutation's, not the helper's."""
+    database = tmp_path / f"control-{writer_contract.rsplit('/', 1)[-1]}.db"
+    execution_id, receipt_id = _pre_anchor_store_with_one_receipt(
+        database, monkeypatch, writer_contract=writer_contract
+    )
+    _rewrite_pre_anchor_receipt(database, receipt_id, lambda comparison: None)
+    reopened = Store(database)
+    try:
+        restored = reopened.get_execution(execution_id)
+        assert restored is not None and len(restored["comparisons"]) == 1
+        assert restored["comparisons"][0]["receipt"]["comparison"]["operator_evidence"]["schema"] \
+            == writer_contract
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("declaration", ["unknown", "missing", "not_a_string"])
+def test_stored_receipt_with_an_unknown_or_missing_contract_fails_closed(tmp_path, monkeypatch, declaration):
+    database = tmp_path / f"contract-{declaration}.db"
+    _execution_id, receipt_id = _pre_anchor_store_with_one_receipt(database, monkeypatch)
+
+    def mutate(comparison: dict) -> None:
+        evidence = comparison["operator_evidence"]
+        if declaration == "unknown":
+            evidence["schema"] = "cutover_operator_evidence/9"
+        elif declaration == "missing":
+            del evidence["schema"]
+        else:
+            evidence["schema"] = 2
+
+    _rewrite_pre_anchor_receipt(database, receipt_id, mutate)
+    with pytest.raises(
+        ExecutionReceiptAuthorityError, match="operator-evidence contract is missing or unsupported"
+    ):
+        Store(database)
+
+
+def test_stored_v2_receipt_with_tampered_impacts_fails_closed(tmp_path, monkeypatch):
+    database = tmp_path / "tampered-impacts.db"
+    _execution_id, receipt_id = _pre_anchor_store_with_one_receipt(database, monkeypatch)
+
+    def mutate(comparison: dict) -> None:
+        assert comparison["operator_evidence"]["schema"] == _V2
+        impacts = comparison["operator_evidence"]["rehearsal"]["impacts"]
+        assert impacts and impacts[0]["stranded"] != 987654
+        impacts[0].update({"assessable": "published", "why": "", "stranded": 987654})
+
+    _rewrite_pre_anchor_receipt(database, receipt_id, mutate)
+    with pytest.raises(ExecutionReceiptAuthorityError, match="does not match exact-source recomputation"):
+        Store(database)

@@ -725,7 +725,11 @@ export interface ObservedL2FailureEvidence {
 }
 
 export interface CutoverOperatorEvidence {
-  schema: "cutover_operator_evidence/1";
+  /**
+   * /1 (receipts stored before W50) copied each stored failure-impact row raw, so its values were never
+   * bound-checked; /2 writes every row through the engine owner.
+   */
+  schema: "cutover_operator_evidence/1" | "cutover_operator_evidence/2";
   owner: "reference_only_projection" | string;
   owns_verdict: false;
   current_baseline_blocker_export?: {
@@ -756,7 +760,17 @@ export interface CutoverOperatorEvidence {
     assurance_level: "local_safety_preservation" | "not_verified";
     source_owner: string;
     n_impacts_total: number;
+    /**
+     * /1: the stored rows, raw. /2 (W50): `{host, assessable, why, severity, vlans_impacted, stranded, hard,
+     * backup, fhrp, detail}`, where `assessable` is the engine owner's verdict (published, lower_bound,
+     * not_assessed, ambiguous) and each measure is the owner's value: the stored value, a lower bound
+     * ("≥ 45", "High (lower bound)") or "not assessed". Read fields defensively either way.
+     */
     impacts: Array<Record<string, unknown>>;
+    /** /2 only: the owner schema that valued every row. */
+    impacts_owner?: string;
+    /** /2 only: the owner's verdict census over every row, including rows a capped view omits. */
+    n_impacts_by_assessable?: Record<string, number>;
     l2_failure_rehearsal?: L2FailureRehearsal;
     observed_l2_failure_evidence?: ObservedL2FailureEvidence;
     note: string;

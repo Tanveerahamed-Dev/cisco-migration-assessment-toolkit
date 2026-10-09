@@ -337,8 +337,12 @@ def compare_bound_pair(
         old: Dict[str, Any], new: Dict[str, Any], *,
         before_binding: Dict[str, Any], after_binding: Dict[str, Any],
         change_intent: Optional[Dict[str, Any]] = None,
-        l2_failure_trial: Any = None) -> Dict[str, Any]:
-    """Delegate to the presentation-independent canonical comparison composer."""
+        l2_failure_trial: Any = None,
+        operator_evidence_schema: Optional[str] = None) -> Dict[str, Any]:
+    """Delegate to the presentation-independent canonical comparison composer.
+
+    ``operator_evidence_schema`` stays ``None`` for every new comparison (the current contract). Only the stored
+    receipt re-verification passes the contract the stored receipt declares (W50)."""
     return _comparison.compare_bound_pair(
         old,
         new,
@@ -346,7 +350,16 @@ def compare_bound_pair(
         after_binding=after_binding,
         change_intent=change_intent,
         l2_failure_trial=l2_failure_trial,
+        operator_evidence_schema=operator_evidence_schema,
     )
+
+
+def stored_operator_evidence_contract(comparison: Any) -> Optional[str]:
+    """The operator-evidence contract a stored comparison declares, when the engine can recompute it.
+
+    ``None`` means missing, malformed or unknown: the stored receipt is unverified, never defaulted to the current
+    contract (W50)."""
+    return _protocol_assurance.stored_operator_evidence_schema(comparison)
 
 
 def compact_execution_comparison(

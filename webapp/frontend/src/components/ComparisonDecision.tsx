@@ -387,6 +387,123 @@ function ObservedL2Evidence({ value, gate }: {
   );
 }
 
+/** The operator-evidence contracts this view can read (W50). /1 receipts were stored before the engine owner
+ * valued failure-impact rows; /2 rows carry the owner's verdict and owner-valued cells. */
+const OPERATOR_EVIDENCE_V1 = "cutover_operator_evidence/1";
+const OPERATOR_EVIDENCE_V2 = "cutover_operator_evidence/2";
+
+/** Reader-facing chip per engine-owner verdict (impact_assessability.VERDICT_LABELS). A verdict this view does
+ * not know renders as unavailable and its values are withheld, so nothing unknown reads as a measurement. */
+const IMPACT_VERDICT_CHIP: Record<string, { label: string; color: string }> = {
+  published: { label: "PUBLISHED", color: "var(--accent)" },
+  lower_bound: { label: "LOWER BOUND", color: "var(--watch)" },
+  not_assessed: { label: "NOT ASSESSED", color: "var(--text-faint)" },
+  ambiguous: { label: "AMBIGUOUS", color: "var(--text-faint)" },
+};
+
+/** The owner-valued measures of a /2 row, with the workbook's Failure Impact column names. */
+const IMPACT_CELLS: ReadonlyArray<readonly [string, string]> = [
+  ["severity", "severity"],
+  ["stranded", "stranded endpoints"],
+  ["vlans_impacted", "VLANs impacted"],
+  ["hard", "hard partitions"],
+  ["backup", "backup-covered"],
+  ["fhrp", "FHRP-covered"],
+];
+
+/** One owner-valued cell, printed as the owner wrote it: a bound is already "≥ N" / "High (lower bound)" and a
+ * withheld value "not assessed". A value that is neither text nor a finite number is unavailable, never 0. */
+function impactCell(value: unknown): string {
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "unavailable";
+}
+
+function ImpactRowV2({ row }: { row: Record<string, unknown> }) {
+  const verdict = typeof row.assessable === "string" ? IMPACT_VERDICT_CHIP[row.assessable] : undefined;
+  const color = verdict?.color || "var(--text-faint)";
+  const detail = typeof row.detail === "string" && row.detail.trim()
+    ? row.detail
+    : typeof row.why === "string" && row.why.trim() ? row.why : "No detail published.";
+  return (
+    <div data-testid="comparison-rehearsal-row"
+      data-assessable={verdict ? String(row.assessable) : "unavailable"}
+      style={{ borderTop: "1px solid var(--border-faint)", marginTop: 6, paddingTop: 6, fontSize: 11 }}>
+      <div className="row-flex" style={{ gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
+        <b className="mono">{typeof row.host === "string" && row.host ? row.host : "unnamed subject"}</b>
+        <span className="chip" data-testid="comparison-rehearsal-row-verdict"
+          style={{ color, borderColor: color }}>
+          {verdict ? verdict.label : "VERDICT UNAVAILABLE"}
+        </span>
+      </div>
+      <div className="dim" data-testid="comparison-rehearsal-row-values" style={{ marginTop: 2 }}>
+        {IMPACT_CELLS.map(([field, label]) =>
+          `${label}: ${verdict ? impactCell(row[field]) : "unavailable"}`).join(" · ")}
+      </div>
+      <div className="faint" data-testid="comparison-rehearsal-row-detail" style={{ marginTop: 2 }}>
+        {verdict ? detail : "The engine owner's verdict on this row is unavailable; its values are not shown."}
+      </div>
+    </div>
+  );
+}
+
+/** `rehearsal.impacts`, rendered by the contract the payload declares. /2 rows show the owner's verdict and
+ * owner-valued cells; /1 rows were copied raw before bounds were tracked, so they carry a visible note and are
+ * never presented as exact; rows under any other contract are not rendered as values at all. */
+function RehearsalImpacts({ contract, rows, census }: {
+  contract: unknown;
+  rows: Array<Record<string, unknown>>;
+  census?: Record<string, number>;
+}) {
+  if (rows.length === 0) return null;
+  if (contract === OPERATOR_EVIDENCE_V2) {
+    return (
+      <>
+        {census && (
+          <div className="faint" data-testid="comparison-rehearsal-impact-census"
+            style={{ fontSize: 10.5, marginTop: 6 }}>
+            Engine-owner verdicts over every failure-impact row: {Object.entries(IMPACT_VERDICT_CHIP).map(
+              ([key, chip]) => `${typeof census[key] === "number" ? census[key] : "unavailable"} ${chip.label.toLowerCase()}`,
+            ).join(" · ")}
+          </div>
+        )}
+        {rows.map((row, index) => (
+          <ImpactRowV2 key={`${String(row.host || "impact")}|${index}`} row={row} />
+        ))}
+      </>
+    );
+  }
+  if (contract === OPERATOR_EVIDENCE_V1) {
+    return (
+      <>
+        <div role="note" data-testid="comparison-rehearsal-legacy-note"
+          style={{ color: "var(--watch)", fontSize: 10.5, marginTop: 6 }}>
+          Recorded before bounds were tracked: this receipt stores cutover_operator_evidence/1, which copied each
+          failure-impact row as the engine wrote it. A count below may be only a lower bound and a 0 may be a
+          held value, so none of these values is an exact measurement.
+        </div>
+        {rows.map((row, index) => (
+          <div key={`${String(row.host || "impact")}|${index}`} data-testid="comparison-rehearsal-row"
+            data-assessable="recorded_before_bounds"
+            style={{ borderTop: "1px solid var(--border-faint)", marginTop: 6, paddingTop: 6, fontSize: 11 }}>
+            <b className="mono">{String(row.host || "unnamed subject")}</b>
+            <span className="chip" style={{ marginLeft: 6, color: "var(--text-faint)", borderColor: "var(--text-faint)" }}>
+              NOT BOUND-CHECKED
+            </span>
+            <span className="dim"> · as recorded: {String(row.severity || "unrated")} · {String(row.detail || "No detail published.")}</span>
+          </div>
+        ))}
+      </>
+    );
+  }
+  return (
+    <div className="faint" data-testid="comparison-rehearsal-contract-unknown" style={{ fontSize: 10.5, marginTop: 6 }}>
+      These failure-impact rows were published under an unrecognised operator-evidence contract, so their values
+      are unavailable here. The complete JSON export includes them.
+    </div>
+  );
+}
+
 function OperatorEvidence({ value, gate }: {
   value: CompareResponse["operator_evidence"];
   gate?: CutoverGate;
@@ -412,19 +529,14 @@ function OperatorEvidence({ value, gate }: {
           </span>
         </div>
         <div className="dim" style={{ fontSize: 11.5, marginTop: 6 }}>
-          {rehearsal?.note || "No cutover_operator_evidence/1 rehearsal projection was published; rehearsal is not verified."}
+          {rehearsal?.note || "No cutover_operator_evidence rehearsal projection was published; rehearsal is not verified."}
         </div>
         <ObservedL2Evidence
           value={rehearsal?.observed_l2_failure_evidence}
           gate={gate}
         />
-        {impactRows.map((row, index) => (
-          <div key={`${String(row.host || "impact")}|${index}`} data-testid="comparison-rehearsal-row"
-            style={{ borderTop: "1px solid var(--border-faint)", marginTop: 6, paddingTop: 6, fontSize: 11 }}>
-            <b className="mono">{String(row.host || "unnamed subject")}</b>
-            <span className="dim"> · {String(row.severity || "unrated")} · {String(row.detail || "No detail published.")}</span>
-          </div>
-        ))}
+        <RehearsalImpacts contract={value?.schema} rows={impactRows}
+          census={rehearsal?.n_impacts_by_assessable} />
         <CapDisclosure rendered={impactRows.length} total={rehearsal?.n_impacts_total || 0} />
         {l2 && (
           <div data-testid="comparison-l2-rehearsal"
@@ -477,7 +589,7 @@ function OperatorEvidence({ value, gate }: {
           </span>
         </div>
         <div className="dim" style={{ fontSize: 11.5, marginTop: 6 }}>
-          {rollback?.note || "No cutover_operator_evidence/1 rollback projection was published; rollback coverage is not verified."}
+          {rollback?.note || "No cutover_operator_evidence rollback projection was published; rollback coverage is not verified."}
         </div>
         {rollbackRows.map((row, index) => (
           <div key={`${row.group}|${index}`} data-testid="comparison-rollback-row"

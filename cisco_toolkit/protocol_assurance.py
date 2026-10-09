@@ -24,7 +24,18 @@ CHANGE_INTENT_SCHEMA = "cutover_change_intent/1"
 FAMILY_CHANGE_SET_SCHEMA = "protocol_family_change_set/1"
 SUBJECT_BINDING_SCHEMA = "protocol_subject_identity_set/1"
 ADMISSION_SCHEMA = "protocol_comparison_admission/1"
-CUTOVER_OPERATOR_EVIDENCE_SCHEMA = "cutover_operator_evidence/1"
+#: The operator-evidence contract is versioned because AssessHub persists it inside every execution comparison
+#: receipt and re-verifies that receipt against an exact-source recomputation on every read (W50). /1 copied each
+#: stored failure_impact row raw into ``rehearsal.impacts``, so a lower bound read as exact and a held zero as a
+#: measured zero. /2 writes each row through the engine owner (``impact_assessability``). A new comparison carries
+#: the current contract; a stored receipt is re-verified under the contract it declares, and a missing or unknown
+#: declaration is never verified (:func:`stored_operator_evidence_schema`).
+CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1 = "cutover_operator_evidence/1"
+CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V2 = "cutover_operator_evidence/2"
+#: The contract every new comparison carries.
+CUTOVER_OPERATOR_EVIDENCE_SCHEMA = CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V2
+#: Every contract this engine can recompute, so a stored receipt that declares one can still be re-verified.
+CUTOVER_OPERATOR_EVIDENCE_SCHEMAS = (CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1, CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V2)
 PERSISTED_SOURCE = "persisted snapshots.snapshot_json blob"
 OFFLINE_FILE_SOURCE = "exact input snapshot file bytes"
 _COMPARISON_SOURCE_OWNERS = (PERSISTED_SOURCE, OFFLINE_FILE_SOURCE)
@@ -2176,11 +2187,59 @@ def current_baseline_blocker_export(snapshot: Any) -> dict:
     return payload
 
 
+def stored_operator_evidence_schema(comparison: Any) -> Optional[str]:
+    """The operator-evidence contract a stored comparison declares, when this engine can recompute it.
+
+    ``None`` for a comparison without an ``operator_evidence`` object, a missing or non-string ``schema``, or a
+    contract outside :data:`CUTOVER_OPERATOR_EVIDENCE_SCHEMAS`. A verifier must read ``None`` as unverified (fail
+    closed); it never stands for the current contract, so a receipt cannot verify by omitting its version.
+    """
+    evidence = comparison.get("operator_evidence") if isinstance(comparison, dict) else None
+    declared = evidence.get("schema") if isinstance(evidence, dict) else None
+    if type(declared) is not str or declared not in CUTOVER_OPERATOR_EVIDENCE_SCHEMAS:
+        return None
+    return declared
+
+
+def _rehearsal_impacts_v1_legacy(raw_impacts: Any) -> List[dict]:
+    """``rehearsal.impacts`` exactly as ``cutover_operator_evidence/1`` computed it, preserved verbatim (W50).
+
+    It copies every stored ``failure_impact`` object RAW, so a lower bound reads as an exact count and a held zero
+    as a measured zero. It exists only so a receipt stored under /1 keeps re-verifying against its own
+    recomputation; it is selected solely by a stored receipt that declares /1, never for a new comparison.
+    """
+    impacts = [dict(row) for row in raw_impacts
+               if isinstance(row, dict)] if isinstance(raw_impacts, list) else []
+    return impacts
+
+
+def _rehearsal_impacts_v2(snap: Mapping[str, Any]) -> List[dict]:
+    """``rehearsal.impacts`` under ``cutover_operator_evidence/2``: one row per stored ``failure_impact`` object, in
+    stored order, every value read through the engine owner of row assessability.
+
+    ``assessable`` and ``why`` carry the owner's verdict. Each measure is the owner's table value: the stored value
+    on a published row; on a lower-bound row the worst band and each positive count as the lower bounds they are
+    (``"High (lower bound)"``, ``"≥ 45"``); ``"not assessed"`` for a value the owner withholds (a held row's every
+    measure, a bounded band below the worst, a bounded zero). ``detail`` leads with the verdict on a row that is not
+    a measurement. The stored host names the row, as the MCP tool and the workbook do.
+    """
+    from cisco_toolkit import impact_assessability as ia
+
+    rows: List[dict] = []
+    for row, verdict in ia.rows_with_verdicts(snap):
+        item = {"host": row.get("host"), "assessable": verdict.assessable, "why": verdict.why}
+        item.update({field: ia.table_value(verdict, field) for field in ia.IMPACT_MEASURES})
+        item["detail"] = ia.table_detail(verdict)
+        rows.append(item)
+    return rows
+
+
 def cutover_operator_evidence(
         snapshot: Any, *, observed_l2_failure_evidence: Any = None,
         expected_recovery_binding: Any = None, prior_snapshot: Any = None,
         expected_predecessor_collected_at: Any = None,
-        expected_predecessor_binding: Any = None) -> dict:
+        expected_predecessor_binding: Any = None,
+        schema: Optional[str] = None) -> dict:
     """Project existing simulation and rollback owners without inventing rehearsal success.
 
     ``failure_impact`` is an existing bounded simulation projection, not proof that an operator
@@ -2189,7 +2248,15 @@ def cutover_operator_evidence(
     owns rollback planning prose, not execution.  Keeping those distinctions explicit lets decision
     surfaces put the evidence in the right order while withholding a stronger field claim than the
     stored snapshot supports.
+
+    ``schema`` selects the contract (W50). ``None`` is the current contract, which every new comparison carries:
+    ``cutover_operator_evidence/2``, whose ``rehearsal.impacts`` rows are read through the engine owner. Only the
+    re-verification of a stored receipt passes the contract that receipt declares; /1 then recomputes the legacy
+    raw rows. Any other value raises ``ValueError``: an unknown contract is never computed as a known one.
     """
+    contract = CUTOVER_OPERATOR_EVIDENCE_SCHEMA if schema is None else schema
+    if type(contract) is not str or contract not in CUTOVER_OPERATOR_EVIDENCE_SCHEMAS:
+        raise ValueError(f"unsupported operator-evidence contract: {contract!r}")
     snap = _dict(snapshot)
     # Lazy import avoids a module cycle: the rehearsal composer reuses the native delta owners,
     # which in turn consume the shared contracts in this module.
@@ -2201,9 +2268,10 @@ def cutover_operator_evidence(
     l2_rehearsal = compute_l2_failure_rehearsal(
         snapshot, prior_snapshot=prior_snapshot
     )
-    raw_impacts = snap.get("failure_impact")
-    impacts = [dict(row) for row in raw_impacts
-               if isinstance(row, dict)] if isinstance(raw_impacts, list) else []
+    if contract == CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1:
+        impacts = _rehearsal_impacts_v1_legacy(snap.get("failure_impact"))
+    else:
+        impacts = _rehearsal_impacts_v2(snap)
     l2_status = l2_rehearsal.get("status")
     l2_has_projection = l2_status in {"simulation_only", "projected_risk", "current_fault"}
     rehearsal = {
@@ -2225,6 +2293,16 @@ def cutover_operator_evidence(
             "No supported source-bound failure projection or operator rehearsal receipt is present."
         ),
     }
+    if contract == CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V2:
+        # Additive to /2 only, so a /1 recomputation stays byte-identical to what /1 stored. The verdict census
+        # covers every row, including rows a capped presentation does not render.
+        from cisco_toolkit import impact_assessability as ia
+
+        rehearsal["impacts_owner"] = ia.SCHEMA
+        rehearsal["n_impacts_by_assessable"] = {
+            verdict: sum(1 for row in impacts if row.get("assessable") == verdict)
+            for verdict in ia.VERDICTS
+        }
     if observed_l2_failure_evidence is not None:
         observed_validation = validate_observed_l2_failure_evidence(
             observed_l2_failure_evidence,
@@ -2297,7 +2375,7 @@ def cutover_operator_evidence(
         ),
     }
     return {
-        "schema": CUTOVER_OPERATOR_EVIDENCE_SCHEMA,
+        "schema": contract,
         "owner": "reference_only_projection",
         "owns_verdict": False,
         "current_baseline_blocker_export": current_baseline_blocker_export(snapshot),
