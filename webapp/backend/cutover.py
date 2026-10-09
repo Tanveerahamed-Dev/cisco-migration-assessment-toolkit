@@ -181,6 +181,13 @@ IMPACT_NOT_ASSESSED = summary.IMPACT_NOT_ASSESSED
 _R_IMPACT_NO_HOST_TEXT = "its stored host is absent, empty or not text, so it cannot be joined to a switch"
 
 
+def _impact_wave_rows(view: Dict[str, Any]) -> List[Any]:
+    """The projected rows as the engine's wave rule reads them (``engine.WaveRow``): a row ranks when the projection
+    publishes its host, severity and stranded count, and is a lower bound when it publishes a measure only as one."""
+    return [engine.WaveRow(row["key"], row["ranked"], row["lower_bound"],
+                           row["cells"]["stranded"][1] if row["ranked"] else None, row) for row in view["rows"]]
+
+
 def _worst_blast_radius(switches: Set[str], view: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The single worst failure-impact row among this wave's switches (severity, then stranded), ranked only
     from cells the engine projection publishes (``summary.impact_view``).
@@ -193,22 +200,27 @@ def _worst_blast_radius(switches: Set[str], view: Dict[str, Any]) -> Optional[Di
     projection publishes only as lower bounds, whether or not it is the worst: its true blast radius can exceed what
     it reads. The worst row itself, when it is such a bound, is flagged by ``summary.impact_entry``
     (``lower_bound``, and a detail opening ``LOWER BOUND, at least N``). When no switch can be ranked the result is
-    ``NOT ASSESSED`` with no counts, never a clean bill. ``None`` only for a wave with no switch."""
+    ``NOT ASSESSED`` with no counts, never a clean bill. ``None`` only for a wave with no switch.
+
+    W48: which rows rank, which switches are not ranked, which rows name no readable host, which ranked rows are lower
+    bounds and whether the figure is ``complete`` are the engine owner's wave rule (``engine.wave_blast``, which the
+    MOP reads too), applied to the projected rows and the projection's fleet qualifier counts (blind devices and
+    records it cannot read as one); this function picks the worst ranked row and words the disclosure from the
+    projection's own reasons. A wave whose largest count is a zero that is only a lower bound (the owner's
+    ``zero_bound``) is ``NOT ASSESSED`` with no counts, as the MOP prints it, never "0 endpoint(s) stranded"."""
     if not switches:
         return None
     # stored order, as before, so a tie keeps the row the plan showed before; the key is the stored host text
     # (switches are str-coerced by _as_hosts), and only a ranked row's published values are read
-    ranked = [row for row in view["rows"] if row["ranked"] and row["key"] and row["key"] in switches]
-    covered = {row["key"] for row in ranked}
-    unranked = []
-    for host in sorted(switches - covered):
-        reason = next((row["reason"] for row in view["rows"] if row["key"] == host),
-                      view["withheld"] or summary._R_IMPACT_NO_ROW)
-        unranked.append((host, reason))
+    wave = engine.wave_blast(switches, _impact_wave_rows(view), blind=view["blind"],
+                             blind_unread=view["blind_unread"])
+    ranked = [r.row for r in wave.ranked]
+    unranked = [(host, r.row["reason"] if r is not None else view["withheld"] or summary._R_IMPACT_NO_ROW)
+                for host, r in wave.unranked]
     # None (no text host) and "" alike name no readable host; a ranked one of them never enters the wave above
-    unranked += [(summary.impact_row_label(row) + " (names no readable host, so it could be any switch here)",
-                  row["reason"] or _R_IMPACT_NO_HOST_TEXT) for row in view["rows"] if not row["key"]]
-    bounded = [(row["key"], summary.impact_bound_reason(row)) for row in ranked if row["lower_bound"]]
+    unranked += [(summary.impact_row_label(r.row) + " (names no readable host, so it could be any switch here)",
+                  r.row["reason"] or _R_IMPACT_NO_HOST_TEXT) for r in wave.hostless]
+    bounded = [(r.row["key"], summary.impact_bound_reason(r.row)) for r in wave.bounded]
     notes = []
     if unranked:
         notes.append(f"{len(unranked)} switch(es) or row(s) in this wave have no failure-impact row whose severity "
@@ -216,19 +228,23 @@ def _worst_blast_radius(switches: Set[str], view: Dict[str, Any]) -> Optional[Di
     if bounded:
         notes.append(f"{len(bounded)} ranked switch(es) in this wave publish their counts only as lower bounds, so "
                      "any of them can be larger than it reads: " + summary.impact_disclosure(bounded))
-    blind_note = summary.impact_blind_note(view)
+    blind_note = summary.impact_blind_note(view)   # "" unless the fleet qualifier is carried (blind or unread)
     if blind_note:
         notes.append(blind_note)
-    if ranked:
+    if ranked and wave.value is not None and not wave.zero_bound:
         out = summary.impact_entry(min(ranked, key=summary.impact_rank_key))
         if notes:
             out["detail"] = (f"{out['detail']} — LOWER BOUND, the worst case may be larger: "
                              + ". ".join(notes) + ".")
     else:
+        # W51 (the W48 re-verification): the owner's wave rule reads a largest count that is a zero lower bound (or
+        # ranked rows with no readable count) as not assessed, as the MOP prints it, so the plan never shows
+        # "0 endpoint(s) stranded" for such a wave; the owner's own words lead the disclosure
+        lead = [engine.IMPACT_R_WAVE_ZERO if wave.zero_bound else engine.IMPACT_R_WAVE_NONE] if ranked else []
         out = {"host": "", "severity": IMPACT_NOT_ASSESSED, "stranded": None, "vlans_impacted": None,
-               "detail": "NOT ASSESSED: " + ". ".join(notes) + "."}
-    out["complete"] = bool(ranked) and not notes
-    out["n_not_ranked"] = len(unranked)
+               "detail": "NOT ASSESSED: " + ". ".join(lead + notes) + "."}
+    out["complete"] = wave.complete and wave.value is not None
+    out["n_not_ranked"] = wave.n_not_ranked
     return out
 
 

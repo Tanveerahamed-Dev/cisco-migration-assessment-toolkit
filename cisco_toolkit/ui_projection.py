@@ -815,8 +815,12 @@ LIMITATIONS += (
                 "node, which every cable end is while a node row cannot be joined by host) cannot account for "
                 "endpoints behind that peer: a severity below High, a zero count and a "
                 "detail that names no simulated VLAN are withheld, and High and positive counts are published as "
-                "lower bounds that cite each such cable. The owner writes one row per host: two rows naming one "
-                "exact host are each kept and unverified, with a witness to every such row, never picked between, "
+                "lower bounds that cite each such cable. Where the stored cable list cannot be read (absent, "
+                "malformed or from a failed phase), whether a switch faces such a peer cannot be checked, so its row "
+                "is bounded the same way and cites that list, or the nearest record it is missing from: the cable "
+                "map, or the snapshot root when there is no cable map. The owner writes one row per host: two rows "
+                "naming one exact host are each kept and unverified, with a witness to every such row, never picked "
+                "between, "
                 "and a hold or bound that also applies is carried beside that doubt. Detail lists up to 8 per-VLAN "
                 "examples and preserves the owner's '+N more' disclosure; the row counts retain the full model totals.",
                 ["/topology/failure_impact"]),
@@ -7273,6 +7277,24 @@ def _ambiguous_pre(dup: _Withheld, inner: Optional[_Pre]) -> _Pre:
     return pre
 
 
+def _impact_witnessed(ctx: _Ctx, bound: impact_assessability.Bound) -> impact_assessability.Bound:
+    """`bound` with every witness citing a record that resolves (W51; the W48 re-verification's P2, superseding W35's
+    #626). A published lower bound is marked only by the witness refs its measures cite, and :meth:`_Ctx.refs` drops a
+    pointer that does not resolve, so a bound whose witness is absent (a snapshot with no cable map at all, whose
+    unreadable-list bound cites ``/cable_map``) would publish its High and positive counts as exact measurements while
+    the engine owner (the MOP, the runbook) reads them as floors. An absent record is witnessed instead by the nearest
+    record it is missing from, the longest prefix of its address that resolves (the cable map without its list, the
+    snapshot root ``""`` without a cable map), never dropped; a present record, and every other role (a failure
+    record), is cited as given."""
+    def present(toks: Sequence[Any]) -> Tuple[Any, ...]:
+        out = tuple(toks)
+        while out and _get(ctx.s, out) is _MISSING:
+            out = out[:-1]
+        return out
+    witnesses = [(role, present(toks) if role == "witness" else toks) for role, toks in bound.witnesses]
+    return bound._replace(witnesses=witnesses)
+
+
 def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     """One failure-impact row, shared by the fleet topology and the device page (one builder, one state). Which of its
     values are measurements is the engine owner's row-level rule (impact_assessability: the duplicate doubt, the
@@ -7283,7 +7305,9 @@ def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     out = {"index": i, "pointer": json_pointer(*row.toks)}
     dup, hold, bounds = ctx.impact.row(i, raw)
     # every measure of a bounded row cites what bounds it: the off-scan count, the blind-link count (or the row
-    # itself when it predates that count), each uncollected neighbour's cable
+    # itself when it predates that count), each uncollected neighbour's cable, or the cable list that cannot be read.
+    # Each witness resolves (_impact_witnessed), so no bound is published unmarked.
+    bounds = [_impact_witnessed(ctx, bound) for bound in bounds]
     cite = [w for bound in bounds for w in bound[4]]
     for field in ("host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",
                   "off_scan_gw_vlans", "detail"):

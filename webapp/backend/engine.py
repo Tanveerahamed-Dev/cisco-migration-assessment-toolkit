@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # webapp/backend/engine.py -> webapp/backend -> webapp -> <repo root that contains cisco_toolkit>
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -21,6 +21,7 @@ if str(_REPO_ROOT) not in sys.path:
 from cisco_toolkit import analyze as _analyze  # noqa: E402  (after path bootstrap)
 from cisco_toolkit import comparison as _comparison  # noqa: E402
 from cisco_toolkit import html as _html  # noqa: E402
+from cisco_toolkit import impact_assessability as _impact_assessability  # noqa: E402
 from cisco_toolkit.textutils import _as_num as _as_num  # noqa: E402  (shared fail-soft numeric coercion)
 from cisco_toolkit import __version__ as ENGINE_SCHEMA_VERSION  # noqa: E402,F401  (re-exported for the app)
 from cisco_toolkit.precert import schema_compat_status  # noqa: E402  (P3-E2 schema gate)
@@ -62,6 +63,164 @@ def fleet_blind_spot_rows(snapshot: Any) -> List[int]:
     as one, so a surface wording the qualifier tells the two kinds apart by this one owner, never by re-reading the
     stored rows."""
     return _ui_projection.fleet_blind_spot_rows(snapshot)
+
+
+# The engine owner's wave rule (W48 follow-up): how a migration wave's failure-impact rows add up to one worst-case
+# figure, and the projection's fleet qualifier counts it takes (impact_assessability.fleet_blind over the projected
+# list and fleet_blind_spot_rows above: blind devices, and records it cannot read as one). The cutover plan applies
+# the rule the MOP applies, to the projection's rows where the MOP reads the owner's verdicts.
+WaveRow = _impact_assessability.WaveRow
+wave_blast = _impact_assessability.wave_blast
+failure_impact_fleet_blind = _impact_assessability.fleet_blind
+IMPACT_FLEET_BLIND_CAVEAT = _impact_assessability.FLEET_BLIND_CAVEAT
+IMPACT_R_FLEET_BLIND = _impact_assessability.R_WAVE_FLEET_BLIND
+IMPACT_R_FLEET_BLIND_UNREAD = _impact_assessability.R_WAVE_FLEET_BLIND_UNREAD
+IMPACT_R_WAVE_ZERO = _impact_assessability.R_WAVE_ZERO
+IMPACT_R_WAVE_NONE = _impact_assessability.R_WAVE_NONE
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# W50: the live, DISPLAY-ONLY interpretation of the failure-impact rows a comparison binds
+# ---------------------------------------------------------------------------------------------------------------
+#: A comparison's ``operator_evidence.rehearsal.impacts`` binds the after snapshot's stored failure_impact rows as
+#: raw EVIDENCE (protocol_assurance._rehearsal_impact_evidence_v1), because a stored execution receipt is re-verified
+#: by recomputing it on every read and so must never depend on evolving code. What each row MEANS (a measurement, a
+#: lower bound, not assessed, ambiguous) is decided here, at request time, by the engine owner of row assessability
+#: (cisco_toolkit/impact_assessability.py) from the comparison's bound after snapshot. The result is the
+#: ``impacts_view`` an AssessHub response carries BESIDE a comparison (an execution receipt row, a trend pair), never
+#: inside it. It is never stored, never hashed and never an input to receipt verification: the comparison, its
+#: detached envelope and every receipt digest are byte-identical with or without it
+#: (webapp/tests/test_compare_execution_receipts.py, tests/test_operator_evidence_contract.py). Because it is
+#: computed live, a later owner change reinterprets every stored receipt's evidence without touching the receipt.
+REHEARSAL_IMPACTS_VIEW_SCHEMA = "rehearsal_impacts_view/1"
+#: The cells of an impacts_view row: the owner's display cells (every blast-radius measure, then the detail).
+IMPACTS_VIEW_CELLS: Tuple[str, ...] = tuple(_impact_assessability.CELL_FIELDS)
+#: Why an impacts_view is unavailable, by code (closed). An unavailable view never falls back to the raw rows.
+IMPACTS_VIEW_UNAVAILABLE: Dict[str, str] = {
+    "binding_unreadable": (
+        "the comparison names no readable after-snapshot binding (snapshot id and SHA-256), so the evidence "
+        "to interpret cannot be identified"),
+    "snapshot_missing": (
+        "the bound after snapshot is no longer stored, so its failure-impact rows cannot be interpreted"),
+    "snapshot_unreadable": "the bound after snapshot could not be read",
+    "snapshot_mismatch": (
+        "the stored after snapshot's bytes no longer match the SHA-256 the comparison binds, so interpreting "
+        "them would describe different evidence"),
+    "owner_fault": (
+        "the engine owner of row assessability could not interpret the bound evidence"),
+}
+
+
+def rehearsal_impacts_view_unavailable(code: str) -> Dict[str, Any]:
+    """An explicitly unavailable impacts_view (``code`` is a key of :data:`IMPACTS_VIEW_UNAVAILABLE`). DISPLAY ONLY."""
+    return {
+        "schema": REHEARSAL_IMPACTS_VIEW_SCHEMA,
+        "display_only": True,
+        "available": False,
+        "code": code,
+        "reason": IMPACTS_VIEW_UNAVAILABLE[code],
+    }
+
+
+def _impacts_view_disclosed(verdict: Any) -> Dict[str, Any]:
+    """How one row is NAMED wherever the view discloses it: its stored position, the host the owner publishes
+    (``None`` when it withholds it), the verdict, the owner's state and the reason codes with the count each quotes."""
+    return {
+        "index": verdict.index,
+        "host": None if verdict.withholds("host") else verdict.host,
+        "assessable": verdict.assessable,
+        "state": verdict.state,
+        "reasons": [{"code": code, "n": n} for code, n in verdict.code_counts],
+    }
+
+
+def rehearsal_impacts_view(snapshot: Any, *, source_sha256: str) -> Dict[str, Any]:
+    """The engine owner's live interpretation of `snapshot`'s stored failure_impact rows. DISPLAY ONLY (see above).
+
+    `snapshot` must be the comparison's bound after snapshot and `source_sha256` the SHA-256 that comparison binds
+    for it; the caller establishes that binding (:func:`receipt_impacts_view`) and a display shows the view only
+    when the two agree. Every stored row is interpreted, an unreadable one included (the owner holds it). Every
+    decision is the owner's (``cisco_toolkit/impact_assessability.py``); this function only lays it out:
+
+    * ``rows``: each row in the owner's ranking order (``ranking_order``) with its verdict, state and reason codes,
+      whether the owner ranks it (``ranks``) and one cell per :data:`IMPACTS_VIEW_CELLS`, each its ``cell_reading``;
+    * ``unranked``: every row the owner does not rank (``unranked``: held, ambiguous, a withheld or zero floor, an
+      unreadable row), in stored order, so a display that caps ``rows`` still names each of them;
+    * ``unreadable``: the stored position of every row that is not an object (``RowVerdict.readable``), the same rule
+      as ``n_rows_unreadable``, so the census and the list never diverge (a failed section included);
+    * ``n_rows_total`` and ``counts`` (per verdict) census every stored row; ``section_state`` says whether the section
+      itself could be read, so an absent or failed section never reads as no impact; ``state_words`` is the owner's
+      word for each state token (``STATE_WORD``)."""
+    # every reading CALLS the owner through its module alias, the route the W48 guard admits (it does not resolve a
+    # local alias of the module, which would leave this display path unrouted)
+    verdicts = _impact_assessability.assess_failure_impact(snapshot)
+    rows = [{
+        **_impacts_view_disclosed(verdict),
+        "ranked": _impact_assessability.ranks(verdict),
+        "cells": {field: _impact_assessability.cell_reading(verdict, field)._asdict() for field in IMPACTS_VIEW_CELLS},
+    } for verdict in sorted(verdicts, key=_impact_assessability.ranking_order)]
+    unreadable = [verdict.index for verdict in verdicts if not verdict.readable]
+    return {
+        "schema": REHEARSAL_IMPACTS_VIEW_SCHEMA,
+        "display_only": True,
+        "available": True,
+        "owner": _impact_assessability.SCHEMA,
+        "source_sha256": source_sha256,
+        # The owner's word for each withheld state token, sent with the view so the SPA holds no copy of them (a TS
+        # literal naming not_collected/analysis_unavailable would read as a hand list of the protocol receipt's
+        # vocabulary, tests/test_protocol_assessability.py); reason phrases and verdict labels are pinned SPA tables.
+        "state_words": dict(_impact_assessability.STATE_WORD),
+        "section_state": _impact_assessability.section_state(snapshot),
+        "n_rows_total": len(verdicts),
+        "n_rows_unreadable": len(unreadable),
+        "unreadable": unreadable,
+        "counts": {k: sum(1 for verdict in verdicts if verdict.assessable == k) for k in _impact_assessability.VERDICTS},
+        "rows": rows,
+        "unranked": [_impacts_view_disclosed(verdict) for verdict in _impact_assessability.unranked(verdicts)],
+    }
+
+
+def comparison_after_binding(comparison: Any) -> Optional[Tuple[int, str]]:
+    """``(snapshot_id, sha256)`` of the after snapshot a comparison binds (``comparison_admission.source_binding``),
+    whose stored rows its ``operator_evidence.rehearsal.impacts`` copies; ``None`` when it cannot be read."""
+    admission = comparison.get("comparison_admission") if isinstance(comparison, dict) else None
+    binding = admission.get("source_binding") if isinstance(admission, dict) else None
+    after = binding.get("after") if isinstance(binding, dict) else None
+    snapshot_id = after.get("snapshot_id") if isinstance(after, dict) else None
+    sha256 = after.get("sha256") if isinstance(after, dict) else None
+    if type(snapshot_id) is not int or not isinstance(sha256, str) or not sha256:
+        return None
+    return snapshot_id, sha256
+
+
+def receipt_impacts_view(
+        comparison: Any,
+        load_bound_snapshot: Callable[[int], Optional[Tuple[Dict[str, Any], Dict[str, Any]]]]) -> Dict[str, Any]:
+    """The live impacts_view of a STORED comparison: its bound after snapshot is loaded by id
+    (``Store.get_bound_snapshot``) and interpreted only when its stored bytes still carry the SHA-256 the comparison
+    binds. Otherwise the view is explicitly unavailable with its reason, never the raw rows. DISPLAY ONLY: the
+    receipt is read, never written, and nothing here feeds its verification."""
+    bound_after = comparison_after_binding(comparison)
+    if bound_after is None:
+        return rehearsal_impacts_view_unavailable("binding_unreadable")
+    snapshot_id, sha256 = bound_after
+    try:
+        bound = load_bound_snapshot(snapshot_id)
+    except Exception:   # noqa: BLE001 -- a display must degrade to "unavailable", never fail the receipt read
+        return rehearsal_impacts_view_unavailable("snapshot_unreadable")
+    if bound is None:
+        return rehearsal_impacts_view_unavailable("snapshot_missing")
+    snapshot, binding = bound
+    if not isinstance(binding, dict) or binding.get("sha256") != sha256:
+        return rehearsal_impacts_view_unavailable("snapshot_mismatch")
+    return _safe_rehearsal_impacts_view(snapshot, sha256)
+
+
+def _safe_rehearsal_impacts_view(snapshot: Any, sha256: str) -> Dict[str, Any]:
+    try:
+        return rehearsal_impacts_view(snapshot, source_sha256=sha256)
+    except Exception:   # noqa: BLE001 -- the owner is total by contract; a fault is shown as unavailable
+        return rehearsal_impacts_view_unavailable("owner_fault")
 
 
 def bind_ui_projection_snapshot(raw: bytes) -> Dict[str, Any]:
@@ -244,6 +403,9 @@ def _trend_comparison_receipts(
             "before_label": before_binding["label"],
             "after_label": after_binding["label"],
             "comparison": comparison,
+            # DISPLAY ONLY (W50): the owner's live reading of the after snapshot's failure-impact rows, beside the
+            # comparison and never inside it, so the comparison stays exactly the /api/compare document.
+            "impacts_view": _safe_rehearsal_impacts_view(snapshots[index + 1], after_binding["sha256"]),
         })
 
     status = "not_comparable" if coherence_failures else "verified"
@@ -345,8 +507,12 @@ def compare_bound_pair(
         old: Dict[str, Any], new: Dict[str, Any], *,
         before_binding: Dict[str, Any], after_binding: Dict[str, Any],
         change_intent: Optional[Dict[str, Any]] = None,
-        l2_failure_trial: Any = None) -> Dict[str, Any]:
-    """Delegate to the presentation-independent canonical comparison composer."""
+        l2_failure_trial: Any = None,
+        operator_evidence_schema: Optional[str] = None) -> Dict[str, Any]:
+    """Delegate to the presentation-independent canonical comparison composer.
+
+    ``operator_evidence_schema`` stays ``None`` for every new comparison (the current contract). Only the stored
+    receipt re-verification passes the contract the stored receipt declares (W50)."""
     return _comparison.compare_bound_pair(
         old,
         new,
@@ -354,7 +520,16 @@ def compare_bound_pair(
         after_binding=after_binding,
         change_intent=change_intent,
         l2_failure_trial=l2_failure_trial,
+        operator_evidence_schema=operator_evidence_schema,
     )
+
+
+def stored_operator_evidence_contract(comparison: Any) -> Optional[str]:
+    """The operator-evidence contract a stored comparison declares, when the engine can recompute it.
+
+    ``None`` means missing, malformed or unknown: the stored receipt is unverified, never defaulted to the current
+    contract (W50)."""
+    return _protocol_assurance.stored_operator_evidence_schema(comparison)
 
 
 def compact_execution_comparison(

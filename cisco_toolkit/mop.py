@@ -20,6 +20,7 @@ from datetime import datetime
 
 from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_excellence_front, add_glossary, add_inputs_required, add_protocol_assurance_receipt, add_table, add_toc
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list
+from cisco_toolkit import impact_assessability   # W48: which stored failure-impact rows are measurements
 from cisco_toolkit.textutils import _as_num, xml_safe, xml_safe_deep   # entry deep-sanitize of device text (audit-5) + fail-soft numeric coercion
 
 logger = logging.getLogger(__name__)
@@ -278,19 +279,63 @@ def _window_estimate(n_waves: int) -> str:
             "confirm with the change owner and size against each wave's port count and blast radius).")
 
 
-def _blast_for(switches, fi_by_host):
-    """Max endpoints stranded if one of THIS wave's devices is lost mid-move — or None when the
-    failure-impact simulation carries no covering evidence for these switches (coverage-honesty).
+def _blast_for(switches, fi_rows, fi_blind):
+    """Max endpoints stranded if one of THIS wave's devices is lost mid-move, as the engine owner of
+    failure-impact assessability publishes it — or None when no device in the wave has a failure-impact
+    row at all (coverage-honesty).
 
     `max(..., default=0)` over `fi_by_host.get(s, {}).get("stranded")` printed a measured-looking
     **0** for an axis that was never collected, and that 0 is load-bearing TWICE: §x.1's scope row,
     and the quantified "roll back if ... more endpoints than the §x.1 max-blast-radius figure are
     affected" trigger — which a fabricated 0 silently rewrites to "roll back if ANY endpoint is
     affected", i.e. always true in a window whose whole purpose is moving endpoints. An observed
-    `stranded: 0` is still a real 0; only an ABSENT figure abstains."""
-    vals = [_as_num(v) for v in (_as_dict(fi_by_host.get(s)).get("stranded") for s in switches)
-            if v is not None]
-    return max(vals) if vals else None
+    `stranded: 0` on a published row is still a real 0.
+
+    W48: no count is read from the raw row, and the wave rule is the engine owner's
+    (`impact_assessability.wave_blast`, the rule AssessHub's cutover plan reads too). `fi_rows` is every
+    stored row as that rule reads it (`wave_rows`) and `fi_blind` the projection's fleet qualifier as the
+    owner counts it, `(blind devices, records it cannot read as one)` (`_fleet_blind`; None: unknown). The
+    figure is exact only when every device in the wave has a published count, no stored row names no
+    readable host and the collection record shows every device collected.
+    Otherwise it is a lower bound (the largest count or floor), and a lower bound of 0, or no count at all,
+    is not assessed: a zero lower bound is not a measurement, so it never sizes the rollback trigger.
+    Returns the owner's `WaveBlast`."""
+    blind, unread = fi_blind if isinstance(fi_blind, tuple) and len(fi_blind) == 2 else (None, None)
+    wave = impact_assessability.wave_blast(switches, fi_rows, blind=blind, blind_unread=unread)
+    return wave if wave.observed else None
+
+
+def _fleet_blind(snap):
+    """The fleet qualifier on every failure-impact row, as `(blind, unread)`: the partial or never-collected
+    devices the engine projection's fleet caveat names, and the collection records it cannot read as one
+    (W51). ui_projection owns the caveat and its classifier (`fleet_blind_spot_rows`);
+    `impact_assessability.fleet_blind` counts them, as AssessHub's cutover plan does through
+    `summary.impact_view`. None when the projection cannot be built, which the wave rule reads as unknown and
+    never as a complete fleet."""
+    from cisco_toolkit import ui_projection
+    try:
+        listing = ui_projection.project_topology(snap)["failure_impact"]
+        rows = ui_projection.fleet_blind_spot_rows(snap)
+    except Exception:   # noqa: BLE001 -- the projection is total by contract; a fault makes completeness unknown
+        return None
+    return impact_assessability.fleet_blind(listing, rows)
+
+
+def _blast_cell(wave, *, short=False):
+    """What a table writes for a `_blast_for` figure (the caller writes [NOT OBSERVED] for None): the measured
+    count as before; '≥ N (lower bound)' for a positive lower bound; 'not assessed' when no device contributes
+    a count or the largest is a zero lower bound. The long form (§x.1) says why; the short form (the §1
+    overview column) does not."""
+    if wave.assessable == impact_assessability.PUBLISHED:
+        return wave.value
+    if wave.assessable == impact_assessability.LOWER_BOUND:
+        head = f"≥ {wave.value} {impact_assessability.LOWER_BOUND_MARK}"
+        return head if short else f"{head} — the worst case may be larger: {impact_assessability.wave_why(wave)}"
+    if short:
+        return impact_assessability.NOT_ASSESSED_CELL
+    lead = impact_assessability.R_WAVE_ZERO if wave.zero_bound else impact_assessability.R_WAVE_NONE
+    return (f"{impact_assessability.NOT_ASSESSED_CELL} — {lead}: {impact_assessability.wave_why(wave)}. "
+            "Do NOT read this as zero")
 
 
 def _oob_evidence_for(switches, ifaces_all):
@@ -514,7 +559,11 @@ def write_mop_docx(
     current_baseline, _all_baseline_blockers, unbound_baseline_blockers = _current_baseline_context(
         snap.get("validation_plan"), waves)
     current_baseline_verdict = str(current_baseline.get("verdict") or "NOT_ASSESSED").upper()
-    fi_by_host = {d.get("host"): d for d in (_as_dict(r) for r in _as_list(snap.get("failure_impact")))}
+    # W48: the stored failure-impact rows are read through the engine owner of row assessability, never raw: a
+    # row it holds or bounds never sizes a wave's blast radius as a measurement, and the wave rule (a host-less
+    # row, a device with no row, a partial or never-collected device) is the owner's too (see _blast_for).
+    fi_rows = impact_assessability.wave_rows(snap)
+    fi_blind = _fleet_blind(snap)
     rem_items = [_as_dict(r) for r in _as_list(_as_dict(snap.get("remediation_plan")).get("items"))]
     punchlist = [_as_dict(r) for r in _as_list(snap.get("punchlist"))]
 
@@ -626,11 +675,12 @@ def write_mop_docx(
     for name, switches, _kind, _gnames in waves:
         r, seq, _scen, _vi = _join_group_records(_gnames, switches, readiness_by_group, seq_by_group,
                                                  scen_by_group, val_by_wave)
-        blast = _blast_for(switches, fi_by_host)
+        blast = _blast_for(switches, fi_rows, fi_blind)
         rem, pl = _blockers_for(switches)
         ov_rows.append((name, len(switches), r.get("endpoints", "—"),
                         r.get("readiness", "—"), _strategy_cell(seq, _scen),
-                        blast if blast is not None else "[NOT OBSERVED]", len(rem) + len(pl)))
+                        _blast_cell(blast, short=True) if blast is not None else "[NOT OBSERVED]",
+                        len(rem) + len(pl)))
     table(["Wave", "Devices", "Endpoint MACs", "Readiness", "Strategy", "Max blast", "Blockers"],
           ov_rows, widths=[1.5, 0.8, 1.0, 1.2, 1.5, 0.9, 0.9])
 
@@ -806,7 +856,7 @@ def write_mop_docx(
                                                        scen_by_group, val_by_wave)
         playbook = _as_dict(scen.get("playbook"))
         rem, pl = _blockers_for(switches)
-        blast = _blast_for(switches, fi_by_host)
+        blast = _blast_for(switches, fi_rows, fi_blind)
         verdict = r.get("readiness", "—")
 
         # The constituent move-groups this wave covers (a coupled-subwave maps to ONE group; an
@@ -835,7 +885,7 @@ def write_mop_docx(
             ("Blocking / warning checks", f"{r.get('n_fail', 0)} / {r.get('n_warn', 0)}"),
             ("Cutover strategy", strat_cell),
             ("Max blast radius (endpoints stranded if a device is lost mid-move)",
-             blast if blast is not None else
+             _blast_cell(blast) if blast is not None else
              "[NOT OBSERVED] — no failure-impact evidence for this wave's devices; do NOT read this "
              "as zero (it is the threshold the Blast-radius rollback trigger below would size on)"),
             ("Maintenance window", "<DATE> <START>–<END>  ·  owner <NAME>  ·  approver <NAME>"),
@@ -1218,17 +1268,36 @@ def write_mop_docx(
             # figure is [NOT OBSERVED] the clause must be withdrawn, not evaluated against a
             # fabricated 0 — "more than 0 endpoints affected" is true the moment the cutover starts,
             # so the in-window engineer would be reading a trigger that is unconditionally satisfied.
+            # W48: the same holds for a figure the assessability owner does not publish (not assessed,
+            # which includes a zero that is only a lower bound: "more than ≥ 0" is the same always-true
+            # trigger), and a positive lower-bound figure keeps the clause but says the true worst case can
+            # be larger. The three states are the owner's wave rule (impact_assessability.wave_blast).
             ("Blast-radius / outage overrun",
-             ("Roll back if: the observed outage exceeds the approved window, OR more endpoints than "
-              "the §" + f"{wi}.1 max-blast-radius figure are affected."
-              if blast is not None else
-              "Roll back if: the observed outage exceeds the approved window. The §"
+             ("Roll back if: the observed outage exceeds the approved window. The §"
               + f"{wi}.1 max-blast-radius figure is [NOT OBSERVED] (no failure-impact evidence for "
               "this wave's devices), so NO endpoint threshold is derivable from this assessment — "
               "agree an explicit one with the change owner before the window; an absent figure is "
-              "NOT a threshold of zero."),
-             ("sized from §" + f"{wi}.1 — confirm with the change owner" if blast is not None else
-              "[NOT OBSERVED] — the change owner must set this threshold")),
+              "NOT a threshold of zero."
+              if blast is None else
+              "Roll back if: the observed outage exceeds the approved window. The §"
+              + f"{wi}.1 max-blast-radius figure is not assessed (the engine publishes neither a measured "
+              "figure nor a positive lower bound for this wave; §" + f"{wi}.1 says why), so NO endpoint "
+              "threshold is derivable from this assessment — agree an explicit one with the change owner "
+              "before the window; an unassessed figure is NOT a threshold of zero."
+              if blast.assessable == impact_assessability.NOT_ASSESSED else
+              "Roll back if: the observed outage exceeds the approved window, OR more endpoints than "
+              "the §" + f"{wi}.1 max-blast-radius figure are affected."
+              + ("" if blast.assessable == impact_assessability.PUBLISHED else
+                 " That figure is only a lower bound (§" + f"{wi}.1 names the device(s) that keep it from "
+                 "being a measurement), so the true worst case can be larger and this clause can fire "
+                 "before it is reached — confirm the endpoint threshold with the change owner before the "
+                 "window.")),
+             ("[NOT OBSERVED] — the change owner must set this threshold" if blast is None else
+              "not assessed — the change owner must set this threshold"
+              if blast.assessable == impact_assessability.NOT_ASSESSED else
+              "sized from §" + f"{wi}.1 — confirm with the change owner"
+              if blast.assessable == impact_assessability.PUBLISHED else
+              "sized from §" + f"{wi}.1 (a lower bound) — confirm with the change owner")),
             ("Unrecoverable error", "Roll back if: any device err-disables, drops OOB reachability, or "
              "enters a state not covered by this MOP and not resolved within one escalation cycle.",
              "standard AS default — confirm with the change owner"),

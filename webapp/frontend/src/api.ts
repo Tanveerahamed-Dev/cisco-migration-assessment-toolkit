@@ -13,11 +13,57 @@ export interface Summary {
     crit_high: number;
   };
   readiness: Record<"READY" | "CAUTION" | "NOT READY", number>;
-  keystones: Array<Record<string, any>>;
+  keystones: KeystoneEntry[];
+  /** Which keystone ranking produced `keystones` (summary.KEYSTONE_CONTRACT_VERSION); an older cached summary
+   *  is recomputed on read, so the SPA never needs to branch on it. */
+  keystone_contract?: number;
   lifecycle: LifecycleSummary;
   verification?: SnapshotVerification;
   sections: Array<{ key: string; label: string; count: number }>;
 }
+
+/** One failure-impact entry as webapp/backend/summary.py::impact_entry shapes it (W27): a keystone, or a cutover
+ *  wave's worst-case blast radius. Read from the engine-owned projection, so four states reach the SPA and must stay
+ *  distinct (components/ImpactValue.tsx renders every one of them):
+ *  - a measured count (a published 0 stays 0);
+ *  - `lower_bound: true`: the engine publishes this row's counts only as lower bounds ("at least N"), with
+ *    `lower_bound_reasons` and the witness `lower_bound_pointers`;
+ *  - `severity: "NOT ASSESSED"` (summary.IMPACT_NOT_ASSESSED) with null counts: nothing could be ranked, and the
+ *    detail says why; `n_not_ranked` counts the rows the engine withholds;
+ *  - a null count on a ranked entry (today only `vlans_impacted`): the engine withholds that value. It is
+ *    unavailable, never 0. */
+export interface ImpactEntry {
+  host: string;
+  severity: string;
+  stranded: number | null;
+  vlans_impacted: number | null;
+  detail: string;
+  lower_bound?: boolean;
+  lower_bound_reasons?: string[];
+  lower_bound_pointers?: string[];
+  n_not_ranked?: number;
+}
+
+/** A dashboard keystone (summary._keystones). `device` survives only for hand-made legacy shapes. */
+export interface KeystoneEntry extends ImpactEntry {
+  device?: string;
+}
+
+/** A wave's worst-case blast radius (cutover._worst_blast_radius). `complete: false` says the wave's worst case may
+ *  be larger than this entry: a switch in the wave is withheld, has no row, names no readable host, or publishes its
+ *  counts only as lower bounds. */
+export interface BlastRadius extends ImpactEntry {
+  complete?: boolean;
+}
+
+/** One row of the snapshot "Failure impact" tab (summary.failure_impact_table), in summary.IMPACT_FIELDS order. A
+ *  published cell keeps its value; a published lower bound reads `"≥ N — a lower bound, not an exact measurement:
+ *  why"`; a withheld cell is the projection's own reason, which opens with its state. */
+export type FailureImpactTableRow = Record<string, string | number | null>;
+
+/** The tab's payload: the rows, or, for a section that is not a list (or an empty list the projection withholds),
+ *  the projection's own disclosure of the list. */
+export type FailureImpactTable = FailureImpactTableRow[] | { state: string; reason: string };
 
 /** Hardware-lifecycle (EoX) census as projected by webapp/backend/summary.py::_lifecycle.
  *
@@ -756,6 +802,11 @@ export interface CutoverOperatorEvidence {
     assurance_level: "local_safety_preservation" | "not_verified";
     source_owner: string;
     n_impacts_total: number;
+    /**
+     * The after snapshot's stored failure-impact rows bound as raw EVIDENCE (W50): a lower bound's count as the
+     * producer wrote it, a held zero as a zero. Never render these as values; render the engine owner's live
+     * `RehearsalImpactsView` that the response carries beside the comparison.
+     */
     impacts: Array<Record<string, unknown>>;
     l2_failure_rehearsal?: L2FailureRehearsal;
     observed_l2_failure_evidence?: ObservedL2FailureEvidence;
@@ -825,7 +876,82 @@ export interface CampaignAdjacentComparison {
   after_label: string;
   /** Complete server-owned source_bound_cutover_comparison/1 document for this adjacent pair. */
   comparison: CompareResponse;
+  /** W50: the engine owner's live reading of the after snapshot's failure-impact rows. Display only. */
+  impacts_view?: RehearsalImpactsView;
 }
+
+/**
+ * W50: one cell of a `RehearsalImpactsView` row, as the engine owner publishes it (impact_assessability.cell_reading;
+ * its kinds are CELL_KINDS). `published`: a measurement (or the producer's detail the owner still publishes); `floor`:
+ * a lower bound, `text` is the owner's own wording ("≥ 45", "High (lower bound)"); `withheld`: not a measurement,
+ * `state` is the owner's state of that withholding; `unreadable`: the owner publishes the cell but the stored value is
+ * not readable (never a zero). Any other kind is rendered as unrecognised, never guessed at.
+ */
+export interface ImpactsViewCell {
+  kind: "published" | "floor" | "withheld" | "unreadable" | string;
+  text: string | null;
+  state: string | null;
+}
+
+/** W50: how a `RehearsalImpactsView` names one stored failure-impact row wherever it discloses it. */
+export interface ImpactsViewDisclosedRow {
+  /** The stored row's position. */
+  index: number;
+  /** null when the owner withholds the host (an unreadable row, a failed section). */
+  host: string | null;
+  /** The owner's verdict token: published, lower_bound, not_assessed or ambiguous. */
+  assessable: string;
+  /** The owner's state for a non-measurement: not_collected, unverified or analysis_unavailable. */
+  state: string | null;
+  /** Each reason code (a key of the owner's CODE_PHRASES) with the count its phrase quotes. */
+  reasons: Array<{ code: string; n: number }>;
+}
+
+/** W50: one stored failure-impact row, interpreted by the engine owner (cisco_toolkit/impact_assessability.py). */
+export interface ImpactsViewRow extends ImpactsViewDisclosedRow {
+  /** Whether the owner ranks the row (by its measurement or its stranded floor). */
+  ranked: boolean;
+  /** severity, vlans_impacted, stranded, hard, backup, fhrp and detail, each the owner's cell_reading. */
+  cells: Record<string, ImpactsViewCell>;
+}
+
+/**
+ * W50: the engine owner's LIVE, DISPLAY-ONLY interpretation of the failure-impact rows a comparison binds as raw
+ * evidence. AssessHub computes it at request time from the comparison's bound after snapshot and returns it BESIDE
+ * the comparison (an execution receipt row, a trend pair), never inside it: it is never stored, never hashed and
+ * never part of receipt verification. A view is shown only when `source_sha256` equals the after-snapshot SHA-256 the
+ * comparison binds. Rows come in the owner's ranking order.
+ */
+export type RehearsalImpactsView =
+  | {
+    schema: "rehearsal_impacts_view/1";
+    display_only: true;
+    available: true;
+    /** The owner's declared version (impact_assessability.SCHEMA). */
+    owner: string;
+    source_sha256: string;
+    /** The owner's word for each state token (impact_assessability.STATE_WORD). */
+    state_words: Record<string, string>;
+    /** null when the section is a list; otherwise why it cannot be read (never "no impact"). */
+    section_state: string | null;
+    n_rows_total: number;
+    /** How many stored rows are not objects: the owner's one rule (RowVerdict.readable), the same as `unreadable`. */
+    n_rows_unreadable: number;
+    /** The stored position of every row that is not an object, in stored order (never selected by reason code). */
+    unreadable: number[];
+    counts: Record<string, number>;
+    /** Every stored row, in the owner's ranking order (a display may cap these). */
+    rows: ImpactsViewRow[];
+    /** Every row the owner does not rank, in stored order: a capped display names each of these regardless. */
+    unranked: ImpactsViewDisclosedRow[];
+  }
+  | {
+    schema: "rehearsal_impacts_view/1";
+    display_only: true;
+    available: false;
+    code: string;
+    reason: string;
+  };
 
 export interface CampaignAdjacentComparisonStatus {
   schema: "campaign_adjacent_comparison_set/1";
@@ -876,6 +1002,8 @@ export interface StoredExecutionComparisonReceipt {
   cutover_verdict: CutoverGateVerdict;
   created_at: string;
   receipt: ExecutionComparisonReceiptBody;
+  /** W50: the engine owner's live reading of the receipt's bound failure-impact evidence. Display only. */
+  impacts_view?: RehearsalImpactsView;
 }
 
 export interface ExecutionLatestComparison {
@@ -951,7 +1079,7 @@ export interface CutoverWave {
   sequence_note: string;
   gateways: string[];
   spanning_vlans: Array<[number, string, number]>;
-  blast_radius: { host: string; severity: string; stranded: number; vlans_impacted: number; detail: string } | null;
+  blast_radius: BlastRadius | null;
   keystones: string[];
   n_fail: number;
   n_warn: number;

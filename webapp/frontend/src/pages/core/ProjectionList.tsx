@@ -17,18 +17,35 @@ export function ProjectionList<P extends Page>({ title, initial, document, host,
   const referencedRecord = useRef<HTMLDivElement | null>(null);
   const matches = (row: P["page"]["items"][number]) => !!reference && typeof row === "object" && row !== null && "index" in row && "pointer" in row &&
     row.index === reference.index && row.pointer === reference.pointer;
+  // The source the paging state was built for. useState already starts from `initial`, so the effect below resets
+  // and aborts only when the source really changes. Before, its first run also reset and aborted, and React may run a
+  // passive effect after a click that lands between the first commit and that run (a render outside a discrete
+  // event flushes its effects later): the click's page request was aborted and the list snapped back to its first
+  // page, with Next enabled and no error (W29's intermittent paging failure).
+  const source = useRef({ initial, document, host, pointer: reference?.pointer, index: reference?.index });
   useEffect(() => {
-    request.current?.abort();
-    setCurrent(initial); setBusy(false); setError(""); setRequestedOffset(initial.page.offset);
+    const next = { initial, document, host, pointer: reference?.pointer, index: reference?.index };
+    const was = source.current;
+    const changed = was.initial !== next.initial || was.document !== next.document || was.host !== next.host
+      || was.pointer !== next.pointer || was.index !== next.index;
+    source.current = next;
+    if (changed) {
+      request.current?.abort(); request.current = null;
+      setCurrent(initial); setBusy(false); setError(""); setRequestedOffset(initial.page.offset);
+    }
     // A source index is only a search hint, never proof of a projection position. Even
     // on that page both pointer and original index must match before it is highlighted.
-    if (reference && !initial.page.items.some(matches) && initial.page.total > 0) {
+    // A page the user already requested for this source is never overridden by the hint.
+    if (reference && !request.current && !initial.page.items.some(matches) && initial.page.total > 0) {
       const hint = Math.min(Math.floor(reference.index / initial.page.limit) * initial.page.limit,
         Math.floor((initial.page.total - 1) / initial.page.limit) * initial.page.limit);
       if (hint !== initial.page.offset) void page(hint);
     }
-    return () => request.current?.abort();
   }, [initial, document, host, reference?.pointer, reference?.index]);
+  // Unmounting abandons any page still in flight. (Under StrictMode's development remount this also clears the
+  // in-flight marker, so the remounted effect can issue the reference hint again.)
+  useEffect(() => () => { request.current?.abort(); request.current = null; }, []);
+  // `request.current` is the page request in flight, or null: a settled request clears it.
   async function page(offset: number) {
     request.current?.abort();
     const controller = new AbortController(); request.current = controller;
@@ -38,7 +55,10 @@ export function ProjectionList<P extends Page>({ title, initial, document, host,
       if (!controller.signal.aborted) setCurrent(next);
     } catch (error) {
       if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "Page could not be loaded.");
-    } finally { if (!controller.signal.aborted) setBusy(false); }
+    } finally {
+      if (!controller.signal.aborted) setBusy(false);
+      if (request.current === controller) request.current = null;
+    }
   }
   return <section className="panel projection-list" aria-label={title} aria-busy={busy}>
     <h2>{title}</h2><ListState label={title} source={current.source_list} />

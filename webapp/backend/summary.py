@@ -163,11 +163,10 @@ IMPACT_NOT_ASSESSED = "NOT ASSESSED"
 #: cannot read as a blind spot (a row that is not an object or states no status of its owner's vocabulary, or a list
 #: or section of the wrong type), which its owner would have read as collected, and (W51) a record that is absent,
 #: failed or whose summary does not reconcile with its rows or the roster; the two kinds are told apart by the
-#: projection's own classifier (engine.fleet_blind_spot_rows), never by re-reading the stored rows.
-_IMPACT_BLIND_CAVEAT = "fleet_lists_exclude_blind_devices"
-#: Every witness the qualifier cites lies under this pointer; one naming a row the classifier reads is a blind device.
-_IMPACT_BLIND_WITNESS = "/collection_completeness"
-_IMPACT_BLIND_ROW = re.compile(r"/collection_completeness/devices/(\d+)")
+#: projection's own classifier (engine.fleet_blind_spot_rows), never by re-reading the stored rows. The engine owner
+#: reads both counts (impact_assessability.fleet_blind, W48), so the cutover plan and the MOP take the same fact into
+#: the wave rule.
+_IMPACT_BLIND_CAVEAT = engine.IMPACT_FLEET_BLIND_CAVEAT
 #: The keystone ranking's contract. 2: ranked only from engine-published failure-impact cells (W27). 3: a ranked
 #: row the engine publishes only as a lower bound is flagged as one (lower_bound, its reasons and pointers), and an
 #: executive_brief.keystones list is no longer read. 4: a cable-row bound is worded by what the projection's own
@@ -176,9 +175,12 @@ _IMPACT_BLIND_ROW = re.compile(r"/collection_completeness/devices/(\d+)")
 #: engine owner impact_assessability.blind_bound) is flagged and worded by its witness: the row's blind_links count,
 #: or the row itself when it predates that count. 6: the blind-spot note counts only the rows the projection reads as
 #: partial or not collected as such, and words every other record its qualifier cites as one that cannot be read
-#: (W43; W45 and W43 each moved the contract to 5 independently, so the combined contract is 6). A cached summary from
-#: an older contract is recomputed on read (app._summary_freshened).
-KEYSTONE_CONTRACT_VERSION = 6
+#: (W43; W45 and W43 each moved the contract to 5 independently, so the combined contract is 6). 7: a bound whose own
+#: witness is absent (no cable map at all) cites the nearest record that exists, the snapshot root, so its row reads as
+#: a lower bound here as the engine owner and the MOP read it, never as exact, and the root witness is worded (W51,
+#: the W48 re-verification's P2). A cached summary from an older contract is recomputed on read
+#: (app._summary_freshened).
+KEYSTONE_CONTRACT_VERSION = 7
 #: Cap on the names one disclosure sentence lists per reason, so a fleet-wide hold stays one readable sentence.
 _IMPACT_NAME_CAP = 10
 _R_IMPACT_FAULT = ("unverified: the engine failure-impact projection (ui_projection) could not be built for this "
@@ -187,14 +189,8 @@ _R_IMPACT_NO_REASON = "withheld by the engine projection, which published no rea
 _R_IMPACT_NO_ROW = ("not collected: no failure_impact row names this switch. analyze.compute_failure_impact writes one "
                     "row per scanned host, so its blast radius was never simulated, and an absent row is not 'no "
                     "impact'")
-_R_IMPACT_BLIND = ("collection_completeness lists {n} device(s) as partial or not collected: every failure-impact row "
-                   "was computed without their evidence, and a device the collection never reached has no row")
-_R_IMPACT_BLIND_UNREAD = ("collection_completeness carries {n} record(s) the engine cannot read as a partial or "
-                          "not-collected device or as listing every such device (a row that is not an object or "
-                          "states no status of its owner's vocabulary, a list or section of the wrong type, or a "
-                          "record that is absent, failed, or whose summary does not reconcile with its rows or the "
-                          "roster), and each could be or hide one: a failure-impact row may have been computed without "
-                          "that device's evidence")
+_R_IMPACT_BLIND = engine.IMPACT_R_FLEET_BLIND   # the engine owner's words, which the MOP prints too
+_R_IMPACT_BLIND_UNREAD = engine.IMPACT_R_FLEET_BLIND_UNREAD   # likewise (W51's wording, moved into the owner)
 _R_IMPACT_NOT_LIST = "unverified: the stored failure_impact section is not a list, so no row can be read"
 #: Why a published measure is only a lower bound, by the kind of record its witness ref points at. A cable-row witness
 #: has three wordings, picked by what the projection's own reason on the row says of it (:func:`_impact_peers_said`):
@@ -214,6 +210,12 @@ _R_BOUND_PEERS_EITHER = ("the stored cable map has {k} cable row(s) that cable t
                          "on scanned switches")
 _R_BOUND_CABLE_MAP = ("whether this switch faces an uncollected neighbour cannot be checked, because the stored cable "
                       "map cannot be read, and the simulation counts only endpoints on scanned switches")
+#: The snapshot root (""): the projection cites it for a bound whose own witness record is absent, as the nearest
+#: record that exists (ui_projection._impact_witnessed). The only such bound is the neighbour bound of a snapshot that
+#: carries no cable map at all.
+_R_BOUND_ROOT = ("the engine cites the snapshot as a whole, because the record this bound needs is not carried (no "
+                 "cable map), so whether this switch faces an uncollected neighbour cannot be checked, and the "
+                 "simulation counts only endpoints on scanned switches")
 #: The two blind-link bounds of impact_assessability.blind_bound, by their witness: the row's own blind_links count
 #: (a positive count) or the row itself (a row stored before the producer wrote that count).
 _R_BOUND_BLIND = ("this switch has inter-switch links with no trunk/STP evidence on either end (blind_links), and "
@@ -308,25 +310,16 @@ def impact_blind_counts(snap: Dict[str, Any], listing: Dict[str, Any]) -> Tuple[
     (engine.fleet_blind_spot_rows), and every other one (a row, list or section it cannot read as such, or the
     record's summary). ``(0, 0)`` without the qualifier. The qualifier with no such witness is a record the snapshot
     does not carry (W51: the projection's coverage verdict qualifies the list for it, and nothing of it resolves), so
-    it is one record that cannot be read, never a blind device the owner lists."""
+    it is one record that cannot be read, never a blind device the owner lists. The rule is the engine owner's
+    (impact_assessability.fleet_blind, which the MOP's wave rule reads too); this only supplies the classifier."""
     if not (isinstance(listing.get("caveats"), list) and _IMPACT_BLIND_CAVEAT in listing["caveats"]):
         return 0, 0
     try:
-        readable = set(engine.fleet_blind_spot_rows(snap))
+        readable = engine.fleet_blind_spot_rows(snap)
     except Exception:   # noqa: BLE001 -- total by contract; a fault reads no row as a blind device
-        readable = set()
-    blind = unread = 0
-    for ref in _as_list(listing.get("refs")):
-        pointer = ref.get("pointer") if isinstance(ref, dict) else None
-        if not (isinstance(pointer, str) and (pointer == _IMPACT_BLIND_WITNESS
-                                              or pointer.startswith(_IMPACT_BLIND_WITNESS + "/"))):
-            continue
-        row = _IMPACT_BLIND_ROW.fullmatch(pointer)
-        if row is not None and int(row.group(1)) in readable:
-            blind += 1
-        else:
-            unread += 1
-    return (blind, unread) if blind or unread else (0, 1)
+        readable = []
+    counts = engine.failure_impact_fleet_blind(listing, readable)
+    return counts if counts is not None else (0, 1)   # a list the owner cannot read: one record, fail closed
 
 
 def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
@@ -336,7 +329,8 @@ def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
     lower bound and never an exact measurement; ``pointers``: every witness those cells cite, de-duplicated in the
     order cited; ``reasons``: one sentence per kind of record those pointers name (the row's off-scan count, its
     blind_links count or the row itself when it predates that count, a cable row worded by what the projection's own
-    reason says of it, an unreadable cable list or map, anything else by its pointer)."""
+    reason says of it, an unreadable cable list or map, the snapshot root that stands for an absent cable map,
+    anything else by its pointer)."""
     fields: List[str] = []
     pointers: List[str] = []
     for field in IMPACT_MEASURES:
@@ -372,6 +366,8 @@ def _impact_bounds(item: Dict[str, Any], cells: Dict[str, ImpactCell],
             why = cables_why.format(k=n_cables)
         elif cite in _IMPACT_CABLE_LIST_WITNESSES:
             why = _R_BOUND_CABLE_MAP
+        elif cite == "":
+            why = _R_BOUND_ROOT
         else:
             why = _R_BOUND_CITED.format(pointer=cite)
         if why not in reasons:
