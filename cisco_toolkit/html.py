@@ -3604,53 +3604,82 @@ _REDACT_SERIAL_KEYS = {"serial_number", "chassis_serial",
                        # is a LIST -- _walk recurses each string item with the same key, so each is redacted.
                        "serial", "ps_serials", "sn"}
 
-# Credential grammar: match KNOWN secret-bearing config/output forms (multi-vendor, case-insensitive;
-# see `_REDACT_SECRET_RES`) and replace ONLY the secret value with a placeholder, keeping the keyword
-# and its qualifiers as context. Each compiled family names the value as group ``v``.
-# Idempotent: re-running over an already-scrubbed string re-captures "<redacted>" and
-# substitutes it for itself. We are deliberately narrow (no blanket token redaction) so
-# non-secret structured fields are never corrupted.
+# Credential redaction for SHAREABLE text: raw captures (``redact_collection_dir``), every string of a
+# ``--redact`` snapshot (``redact_snapshot``) and every workbook cell (``_make_redactor``) all pass through
+# ONE function, `_redact_config_values`, which runs two passes over every line:
+#
+# 1. the CREDENTIAL GRAMMAR (`_REDACT_SECRET_RES`) -- keyword, qualifier sequence, value -- replaces the
+#    value a known configuration form names, keeping keyword and qualifiers as context; and
+# 2. the RESIDUAL SWEEP (`_redact_sweep_line`) -- after the first credential keyword on a line, EVERY
+#    following token is replaced unless it is in a closed structural allowlist; plus private-key
+#    blocks, URL userinfo, HTTP credential headers, credential table columns and high-entropy tokens.
+#
+# The sweep is the fail-safe half. The grammar alone was a deny-list of value slots, and every value
+# slot it modelled wrongly was a certified leak (docs/w60-redaction-grammar-2026-10-09.md). The sweep
+# inverts that failure direction: a word it does not know is REDACTED, so its errors are over-redaction
+# (a lost value in a shared copy), never a surviving secret. Idempotent: the placeholder is always
+# structural, so a second pass is a no-op. The independent verifier
+# (``webapp.backend.redaction_verify``) restates both passes' guarantees from the same closed lists.
 _REDACT_PLACEHOLDER = "<redacted>"
+
+# ---- ONE lexical model, shared (restated, never imported) by the grammar, the sweep and the verifier.
+#: Characters that SEPARATE tokens inside a line. A line ends ONLY at CR or LF (`_REDACT_LINE_BREAK_RE`);
+#: everything else that is white space anywhere -- VT, FF, the FS..US separators, NEL, NBSP and every
+#: Unicode space, LINE/PARAGRAPH SEPARATOR, a byte-order mark, and a byte that is not UTF-8 (read with
+#: errors="surrogateescape" it arrives as U+DC80..U+DCFF) -- separates tokens. Before this, the scrub
+#: split lines on LF alone and words on ' '/TAB alone while the verifier used str.splitlines() and \s,
+#: so 'enable secret<NBSP>X', 'enable secret<VT>X' and a capture with CR-only line ends leaked through
+#: the gap between the two readings.
+_REDACT_WS = (" \t\x0b\x0c\x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+              "\udc80-\udcff")
+_REDACT_H1 = "[" + _REDACT_WS + "]"
+_REDACT_HWS = _REDACT_H1 + "+"
+_REDACT_NWS = "[^" + _REDACT_WS + "\r\n]"
+_REDACT_NWSQ = "[^" + _REDACT_WS + "\r\n\"']"
+_REDACT_WS_RE = re.compile(_REDACT_HWS)
+_REDACT_LINE_BREAK_RE = re.compile(r"(\r\n|\r|\n)")
+#: The grammar's anchors carry bounded lazy spans; a line longer than this gets the (linear) sweep
+#: only, so one pathological line cannot stall a field run. The verifier applies the same bound.
+_REDACT_GRAMMAR_MAX_LINE = 2048
+
+
+def _g(pattern: str) -> str:
+    """Spell a pattern with ``{H}`` (a separator run), ``{h}`` (one separator), ``{S}`` (one token
+    character) and ``{Q}`` (one token character that is not a quote) from the shared lexical model."""
+    return (pattern.replace("{H}", _REDACT_HWS).replace("{h}", _REDACT_H1)
+            .replace("{S}", _REDACT_NWS).replace("{Q}", _REDACT_NWSQ))
+
+
 # A secret value may be a bare token or a quoted, space-bearing value.  Matching only ``\S+``
 # changed ``set passphrase "correct horse battery staple"`` into
 # ``set passphrase <redacted> horse battery staple"`` and the verifier then blessed the residue
 # because the first token was the placeholder.  Consume one complete shell/config value instead.
-_REDACT_SECRET_VALUE = r"""(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|\S+)"""
+_REDACT_SECRET_VALUE = _g(r"""(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|{S}+)""")
 
 # W60 -- THE CREDENTIAL GRAMMAR. Each family is KEYWORD, then a QUALIFIER SEQUENCE, then the VALUE.
 #
 # The previous deny-list captured "the token right after the keyword" (allowing at most one type
 # digit), so whenever a real configuration put a QUALIFIER there the qualifier was redacted and the
 # credential survived beside the placeholder: 'enable password level 15 X' became
-# 'enable password <redacted> 15 X', 'set-key ascii X 1' became 'set-key <redacted> X 1', Huawei
-# 'password cipher X' became 'password <redacted> X'. The verifier accepted every one of those lines
-# because the first token after the keyword WAS the placeholder (docs/w60-redaction-grammar-2026-10-09.md).
+# 'enable password <redacted> 15 X'. So the qualifier grammar is modelled per keyword family and
+# consumed ATOMICALLY (captured inside a lookahead, re-matched by backreference), and the value is the
+# first token after that run. A qualifier also counts at the end of a line, so a line whose grammar ends
+# after its qualifiers is structural for the GRAMMAR -- the sweep still applies to it.
 #
-# So the qualifier grammar is now modelled per keyword family and consumed ATOMICALLY: the whole run
-# of qualifier tokens (level N, type digits, cipher/plain/ascii/hex/ENC, hash labels, read/write, vrf X,
-# traps/informs, version 1|2c, ...) is taken greedily inside a lookahead and can never be handed back
-# to become the "value", and the value is the first token after that run. A qualifier also counts at the
-# end of a line ('key 1' under a keychain is a key ID, not a secret), so a line whose grammar ends after
-# its qualifiers is structural and is left alone. When the token where the value would stand is a
-# structural follow-word ('key chain', 'password encryption', 'Key name:', English prose), nothing is
-# redacted either. Every family is LINE-BOUNDED ([ \t], never \s): the old patterns crossed a newline
-# and redacted the first token of the NEXT line ('ntp trusted-key 1\n...').
-#
-# The independent verifier (webapp.backend.redaction_verify) RESTATES this grammar -- it may not import
-# it -- and fails any line where a recognised family's value is not the placeholder, or where anything
-# but a closed allowlist of structural follow-words follows the placeholder. The two are pinned against
-# each other by the adversarial corpus in tests/fixtures/redaction_grammar_corpus.json.
-_REDACT_HWS = r"[ \t]+"
+# Numbers are ordered, never a repeatable "any integer" qualifier: W60's first cut let '\d+' repeat in
+# the bare 'key' family, so 'ip ospf authentication-key 12345678' read the whole credential as a
+# qualifier and certified it (a regression against main 6390b66c on 18 numeric-key forms). A key ID is
+# now taken ONLY directly before a hash label or '--', a type digit only when another token follows it,
+# and a bare small integer (0-15) at the end of a 'key' line is a key ID (sweep-allowlisted alike).
 _REDACT_EOL = r"(?=[\r\n]|\Z)"
 _REDACT_TYPE = r"(?:10|[0-9])"            # IOS 0/5/6/7/8/9, NX-OS 3, IOS-XR 10
 _REDACT_PROSE_SEP = r"(?:=>|[:=]|is)"     # 'Password : x', 'password => x', 'Enable password is x'
 #: A hash/MAC algorithm LABEL -- a qualifier, never the value. Closed shapes: an open 'sha\S*' would
 #: swallow the digest itself ('hmac-sha-256 ShaDigest...' read 'ShaDigest...' as a label).
 _REDACT_HASH = (r"(?:(?:hmac-|keyed-|ietf-)?(?:md5|sha(?:-?(?:1|224|256|384|512))?)"
-                r"|cmac-aes(?:-?(?:128|256))?|aes-(?:128|256)-cmac)")
-#: A token where the VALUE would stand that is English prose ends the grammar: 'password for user',
-#: 'Do not share your password with anyone', 'key is not exportable'. A credential equal to one of these
-#: words is therefore not recognised -- a documented residual, shared with the verifier.
+                r"|sha2-(?:224|256|384|512)|cmac-aes(?:-?(?:128|256))?|aes-(?:128|256)-cmac)")
+#: A token where the VALUE would stand that is English prose ends the GRAMMAR clause: 'password for
+#: user', 'Do not share your password with anyone'. The sweep still redacts what follows.
 _REDACT_PROSE_STOPS = (
     "a", "an", "the", "to", "for", "with", "of", "in", "on", "at", "by", "from", "and", "or", "not", "no",
     "is", "are", "was", "were", "be", "been", "being", "must", "should", "shall", "will", "can", "cannot",
@@ -3659,155 +3688,179 @@ _REDACT_PROSE_STOPS = (
     "there", "than", "so", "but", "into", "via", "per", "without", "within", "none", "configured",
     "enabled", "disabled", "required", "expired", "failed", "failure", "mismatch", "changed", "set",
 )
+#: A private-key armor line is never a value: the stateful PEM rule owns its body.
+_REDACT_PEM_GUARD = r"""(?!["']?-----BEGIN[ ])"""
+#: An integer that is a 'type' digit only when a further token follows it on the line.
+_REDACT_TYPE_THEN_VALUE = r"(?:10|[0-9])(?={H}{S})"
 
 
 def _redact_family(anchor: str, qualifiers=(), stops=(), *, prose: bool = False,
-                   value_guard: str = "", flags: int = 0):
+                   value_guard: str = "", flags: int = 0, run: str = ""):
     """Compile one credential family: ANCHOR, an atomic qualifier run, then the value as group ``v``.
 
-    The qualifier run is captured inside a lookahead and re-matched by backreference -- Python 3.10's
-    spelling of an atomic group -- so the engine cannot backtrack into it and redact a qualifier when no
-    value follows."""
+    ``run`` replaces the default "any of ``qualifiers``, repeated" with an ORDERED qualifier model
+    (spelled with the `_g` placeholders). The qualifier run is captured inside a lookahead and
+    re-matched by backreference -- Python 3.10's spelling of an atomic group -- so the engine cannot
+    backtrack into it and redact a qualifier when no value follows."""
     steps = list(qualifiers) + ([_REDACT_PROSE_SEP] if prose else [])
-    start = r'(?:"?[ \t]*(?:=>|[:=])[ \t]*|[ \t]+)' if prose else _REDACT_HWS
-    run = (start + (r"(?:(?:" + "|".join(steps) + r")(?:" + _REDACT_HWS + "|" + _REDACT_EOL + r"))*"
-                    if steps else ""))
+    start = r'(?:"?{h}*(?:=>|[:=]){h}*|{H})' if prose else r"{H}"
+    if not run:
+        run = (r"(?:(?:" + "|".join(steps) + r")(?:{H}|" + _REDACT_EOL + r"))*") if steps else ""
     stop_words = "|".join(re.escape(w) for w in tuple(stops) + _REDACT_PROSE_STOPS)
-    return re.compile(
+    return re.compile(_g(
         anchor
-        + r"(?=(?P<q>" + run + r"))(?P=q)"
-        + r"(?!(?:" + stop_words + r")(?=[\s;,.]|\Z))"     # a structural/prose word, not a value
-        + r"(?![^\s\"']*:(?=\s|\Z))"                      # a 'Label:' token ('Key name:', 'Data:')
-        + r"(?![{}\[\];]+(?=\s|\Z))"                       # Junos/brace punctuation
+        + r"(?=(?P<q>" + start + run + r"))(?P=q)"
+        + r"(?!(?:" + stop_words + r")(?=[;,.]|{h}|\Z))"   # a structural/prose word, not a value
+        + r"(?!{Q}*:(?={h}|\Z))"                           # a 'Label:' token ('Key name:', 'Data:')
+        + r"(?![{}\[\];]+(?={h}|\Z))"                      # Junos/brace punctuation
+        + _REDACT_PEM_GUARD
         + value_guard
         # The placeholder is taken on its own so a re-run leaves '<redacted>; ## SECRET-DATA' (Junos) and
         # '"password": <redacted>}' (JSON text) exactly as they are.
-        + r"(?P<v>" + re.escape(_REDACT_PLACEHOLDER) + r"|" + _REDACT_SECRET_VALUE + ")",
+        + r"(?P<v>" + re.escape(_REDACT_PLACEHOLDER) + r"|" + _REDACT_SECRET_VALUE + ")"),
         re.IGNORECASE | flags)
 
 
-_REDACT_KEY_QUALIFIERS = (r"\d+", _REDACT_HASH, r"ENC", r"encrypted",
-                          r"clear", r"ascii", r"hex", r"cipher", r"plain", r"text", r"--", r"config-key",
-                          r"password-encrypt")
+_REDACT_COMMUNITY_QUALIFIERS = (
+    r"strings?", r"create", r"delete", r"read", r"write", r"cipher", r"plain", r"clear", r"encrypted",
+    r"(?:name|index|securityname){h}*:", r"accessmode{H}(?:ro|rw)", r"ipaddr{H}{S}+{H}{S}+",
+    r"mode{H}(?:enable|disable)", r"[08](?={H}{S})")      # ASA 'community 0|8 <V>'; XR clear|encrypted
+_REDACT_COMMUNITY_STOPS = ("name", "names", "list", "complexity-check")
+#: The bare 'key' family's ORDERED qualifier model (see the numbers note above).
+_REDACT_KEY_ENCODINGS = r"(?:ENC|encrypted|clear|ascii|hex|cipher|plain|text|--|config-key|password-encrypt)"
+_REDACT_KEY_RUN = (
+    r"(?:\d{1,10}{H}(?=" + _REDACT_HASH + r"(?:{H}|\Z)|--(?:{H}|\Z)))?"   # a key ID, only before a label
+    r"(?:" + _REDACT_HASH + r"(?:{H}|" + _REDACT_EOL + r"))?"
+    r"(?:" + _REDACT_KEY_ENCODINGS + r"(?:{H}|" + _REDACT_EOL + r"))*"
+    r"(?:" + _REDACT_TYPE_THEN_VALUE + r"{H})?"
+    r"(?:" + _REDACT_KEY_ENCODINGS + r"(?:{H}|" + _REDACT_EOL + r"))*")
+#: Huawei '[area-|domain-]authentication-mode <alg> [<key-id>] cipher|plain <V>' and 'simple [plain] <V>'.
+_REDACT_AUTH_MODE_RUN = (
+    r"(?:(?:" + _REDACT_HASH + r"|simple|hmac-sha256)(?:{H}|" + _REDACT_EOL + r"))?"
+    r"(?:key-id{H}\d{1,10}{H}|\d{1,10}{H}(?={S}))?"
+    r"(?:(?:cipher|plain|usual|nonstandard)(?:{H}|" + _REDACT_EOL + r"))*")
 _REDACT_SECRET_RES = [
-    # URL userinfo: 'scp://user:PASS@host/...' (archive path, copy/boot URLs, PKI enrollment url, kron
-    # cli). The password is everything between the first ':' after the user and the LAST '@' of the
-    # authority, so a password containing '@' is still consumed whole. The user name is kept.
-    re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s/:@]+:(?P<v>[^\s/]+)(?=@)", re.IGNORECASE),
     # FortiGate 'set <secret-attribute> [ENC] <VALUE>'. The attribute set is CLOSED (a name containing
     # 'key' is not therefore a secret: 'keylife' is a timer).
-    _redact_family(r"\bset[ \t]+(?:passwd|password|psksecret|psksecret-remote|secret|secondary-secret|"
+    _redact_family(r"\bset{H}(?:passwd|password|psksecret|psksecret-remote|secret|secondary-secret|"
                    r"tertiary-secret|private-key|passphrase|auth-pwd|priv-pwd|sae-password|key|"
-                   r"authentication-key|auth-string|ppk-secret|eap-password)", (r"ENC",)),
-    # SNMPv3 users: '... auth md5|sha* <AUTH> priv [des|3des|aes [128|192|256]|aes-128] <PRIV> ...'
-    # (IOS, NX-OS, EOS). The algorithm is a qualifier; both passwords are values.
-    _redact_family(r"\bsnmp-server[ \t]+user[ \t]+[^\r\n]*?[ \t]auth", (_REDACT_HASH,)),
-    _redact_family(r"\bsnmp-server[ \t]+user[ \t]+[^\r\n]*?[ \t]priv",
-                   (r"3?des", r"aes(?:-?(?:128|192|256))?", r"128", r"192", r"256")),
+                   r"authentication-key|auth-string|ppk-secret|eap-password|api-key|secret-key|key-string)",
+                   (r"ENC",)),
+    # SNMPv3 users: '... auth md5|sha* [clear|encrypted] <AUTH> priv [des|des56|3des|aes [128|192|256]]
+    # [clear|encrypted] <PRIV> ...' (IOS, NX-OS, EOS, IOS-XR). Both passwords are values. A 1-3 digit
+    # integer at the line end is a key size cut by a terminal wrap ('priv aes 1' / '28 X'), not the
+    # password: the sweep's continuation rule then sweeps the next line whole.
+    _redact_family(r"\bsnmp-server{H}user{H}[^\r\n]{0,200}?{h}auth",
+                   (_REDACT_HASH, r"clear", r"encrypted"), value_guard=r"(?!\d{1,3}{h}*\Z)"),
+    _redact_family(r"\bsnmp-server{H}user{H}[^\r\n]{0,200}?{h}priv",
+                   (r"3?des(?:56)?", r"aes(?:-?(?:128|192|256))?", r"128", r"192", r"256", r"clear",
+                    r"encrypted"), value_guard=r"(?!\d{1,3}{h}*\Z)"),
     # AireOS 'config snmp v3user create <u> ro|rw <auth-proto> <priv-proto> <AUTHKEY> <PRIVKEY>'.
-    _redact_family(r"\bconfig[ \t]+snmp[ \t]+v3user[ \t]+create[ \t]+\S+[ \t]+(?:ro|rw)[ \t]+"
-                   r"(?:none|hmacmd5|hmacsha)[ \t]+(?:none|des|aescfb128|aes)"),
-    _redact_family(r"\bconfig[ \t]+snmp[ \t]+v3user[ \t]+create[ \t]+\S+[ \t]+(?:ro|rw)[ \t]+"
-                   r"(?:none|hmacmd5|hmacsha)[ \t]+(?:none|des|aescfb128|aes)[ \t]+\S+"),
-    # 'snmp-server host <host> [vrf X] [traps|informs] [version 1|2c] <COMMUNITY> [udp-port N] [types]'.
-    # The community is POSITIONAL -- no keyword names it. 'version 3 ...' carries a user name and the
-    # NX-OS 'use-vrf'/'source-interface' lines carry no community, so those words end the grammar. An
-    # address in the value slot -- or, on a second redact_snapshot pass, its synthetic pseudonym -- is
-    # the ASA 'host <ifname> <ip> community X' form; the 'community' family below takes its value.
-    _redact_family(r"\bsnmp-server[ \t]+host[ \t]+\S+",
-                   (r"vrf[ \t]+\S+", r"traps?", r"informs?", r"version[ \t]+(?:1|2c)"),
+    _redact_family(r"\bconfig{H}snmp{H}v3user{H}create{H}{S}+{H}(?:ro|rw){H}"
+                   r"(?:none|hmacmd5|hmacsha){H}(?:none|des|aescfb128|aes)"),
+    _redact_family(r"\bconfig{H}snmp{H}v3user{H}create{H}{S}+{H}(?:ro|rw){H}"
+                   r"(?:none|hmacmd5|hmacsha){H}(?:none|des|aescfb128|aes){H}{S}+"),
+    # 'snmp-server host <host> [vrf X] [traps|informs] [version 1|2c] [clear|encrypted] <COMMUNITY> ...'.
+    # The community is POSITIONAL. An address (or, on a second redact_snapshot pass, its synthetic
+    # pseudonym) in the value slot is the ASA 'host <ifname> <ip> community X' form.
+    _redact_family(r"\bsnmp-server{H}host{H}{S}+",
+                   (r"vrf{H}{S}+", r"traps?", r"informs?", r"version{H}(?:1|2c)", r"clear", r"encrypted"),
                    ("version", "use-vrf", "filter-vrf", "source-interface", "vrf", "community", "poll",
                     "udp-port"),
                    value_guard=(r"(?!(?:\d{1,3}(?:\.\d{1,3}){3}|" + _REDACT_IP6_RE.pattern
-                                + r"|\S+\.assesshub-redacted\.invalid)(?:/\d{1,3})?(?=\s|\Z))")),
-    # SNMP community -- only in an SNMP context (IOS/NX-OS/ASA 'snmp-server ... community', Junos
-    # 'set snmp community', Huawei 'snmp-agent community read|write [cipher]', AireOS 'config snmp
-    # community create|accessmode|ipaddr ...'), the Junos hierarchical line-start 'community X {', and
-    # the show-output prose forms ('SNMP community string : X', 'Community name: X'). A BGP community
-    # ('set community 65000:1 additive', 'send-community both') is not a credential and is not touched.
-    *(_redact_family(anchor,
-                     (r"strings?", r"create", r"delete", r"read", r"write", r"cipher", r"plain",
-                      r"(?:name|index|securityname)[ \t]*:", r"accessmode[ \t]+(?:ro|rw)",
-                      r"ipaddr[ \t]+\S+[ \t]+\S+", r"mode[ \t]+(?:enable|disable)"),
-                     ("name", "names", "list", "complexity-check"), prose=prose, flags=flags)
-      for anchor, prose, flags in (
-          (r"\b(?:snmp-server|snmp-agent|snmp)(?:[ \t]+[^\r\n]*?)?[ \t]+community", True, 0),
-          # Never a bare 'Community:' (prose=False here, and no ':' lookahead below): that is the BGP
-          # path-attribute label in 'show ip bgp <prefix>' ('Community: 65000:100 no-export').
-          (r"^[ \t]*community", False, re.MULTILINE),
-          (r"\bcommunity(?=[ \t]+strings?\b|[ \t]+(?:name|index|securityname)[ \t]*:)", True, 0),
+                                + r"|{S}+\.assesshub-redacted\.invalid)(?:/\d{1,3})?(?={h}|\Z))")),
+    # SNMP community -- only in an SNMP context, the Junos hierarchical line-start 'community X {', and
+    # the show-output prose forms ('SNMP community string : X', 'Community name: X').
+    *(_redact_family(anchor, _REDACT_COMMUNITY_QUALIFIERS, _REDACT_COMMUNITY_STOPS, prose=prose)
+      for anchor, prose in (
+          (r"\b(?:snmp-server|snmp-agent|snmp)(?:{H}[^\r\n]{0,200}?)?{H}community", True),
+          (r"^{h}*community", False),
+          (r"\bcommunity(?={H}strings?\b|{H}(?:name|index|securityname){h}*:)", True),
       )),
+    # Named community forms: XR/IOS 'community-map <NAME>' (the SNMP community it maps), Junos
+    # 'community-name <V>', PAN-OS 'snmp-community-string <V>', Junos 'trap-group <NAME>' (the trap community).
+    _redact_family(r"\b(?:community-map|community-name|snmp-community-string|trap-group)"),
     # AireOS RADIUS/TACACS+ servers: 'config radius auth add <idx> <ip> <port> ascii|hex <SECRET>'.
-    _redact_family(r"\bconfig[ \t]+(?:radius|tacacs)[ \t]+(?:auth|acct|athr)[ \t]+add[ \t]+\d+[ \t]+\S+"
-                   r"[ \t]+\d+", (r"ascii", r"hex")),
+    _redact_family(r"\bconfig{H}(?:radius|tacacs){H}(?:auth|acct|athr){H}add{H}\d+{H}{S}+{H}\d+",
+                   (r"ascii", r"hex")),
     # AireOS local users: 'config mgmtuser|netuser add|password <user> <PASSWORD> ...'.
-    _redact_family(r"\bconfig[ \t]+(?:mgmtuser|netuser)[ \t]+(?:add|password)[ \t]+\S+"),
-    # password / passwd / secret / passphrase, including every compound form (area-, domain-, hello-,
-    # lsp-, encrypted-, webauth-http-, ldap-login-, sae-, secondary-...). Qualifiers: 'level N' (IOS
-    # enable, Huawei super), a type digit, a hash label (EOS 'sha512', 'scrypt'), and the vendor
-    # encodings (FortiGate ENC, IOS-XR encrypted/clear, Huawei cipher/plain/simple/irreversible-cipher,
-    # IOS-XR IS-IS hmac-md5/text). ASA puts 'encrypted'/'pbkdf2' AFTER the value; those stay in the tail.
-    _redact_family(r"\b(?:password|passwd|secret|passphrase)(?<!mgmtuser password)(?<!netuser password)",
-                   (r"level[ \t]+\d+", _REDACT_TYPE, _REDACT_HASH, r"scrypt", r"ENC", r"encrypted",
-                    r"clear", r"cipher", r"plain", r"simple", r"irreversible-cipher", r"hashed", r"text"),
+    _redact_family(r"\bconfig{H}(?:mgmtuser|netuser){H}(?:add|password){H}{S}+"),
+    # password / passwd / secret / passphrase / pass-phrase, including every compound form. ASA puts
+    # 'encrypted'/'pbkdf2' AFTER the value. MPLS LDP 'password fallback [0|7] <V>' is a value form;
+    # 'password option|required|rollover' is not.
+    _redact_family(r"\b(?:password|passwd|secret|passphrase|pass-phrase|enablesecret)"
+                   r"(?<!mgmtuser password)(?<!netuser password)",
+                   (r"level{H}\d+", _REDACT_TYPE, _REDACT_HASH, r"scrypt", r"ENC", r"encrypted",
+                    r"clear", r"cipher", r"plain", r"simple", r"irreversible-cipher", r"hashed", r"text",
+                    r"fallback"),
                    ("encryption", "encrypt", "expiration", "expiry", "policy", "recovery", "min-length",
                     "max-length", "minimum-length", "maximum-length", "prompt", "history", "change-type",
                     "format", "aging", "complexity", "strength-check", "keychain", "key-chain",
-                    "management", "encryption-key", "keyboard", "publickey"),
+                    "management", "encryption-key", "keyboard", "publickey", "option", "rollover",
+                    "authentication", "strength"),
                    prose=True),
-    # Huawei 'snmp-agent target-host ... params securityname [cipher] <COMMUNITY> v2c' (v1/v2c targets
-    # carry the community as the security name).
+    # Huawei 'snmp-agent target-host ... params securityname [cipher] <COMMUNITY> v2c'.
     _redact_family(r"\bsecurityname", (r"cipher", r"plain")),
     # TACACS+/RADIUS server keys (IOS, NX-OS, EOS): any 'key' on a tacacs-server/radius-server line.
-    # Only a single type digit is a qualifier here, so a numeric shared secret is still a value.
-    _redact_family(r"\b(?:tacacs-server|radius-server)[ \t]+(?:[^\r\n]*?[ \t])?key", (r"[0-9]",)),
+    _redact_family(r"\b(?:tacacs-server|radius-server){H}(?:[^\r\n]{0,200}?{h})?key",
+                   run=r"(?:" + _REDACT_TYPE_THEN_VALUE + r"{H})?"),
     # Keychain / MACsec / IKE key material.
-    _redact_family(r"\bkey-string", (r"[0-9]", r"password", r"clear", r"encrypted")),
-    _redact_family(r"\bkey-octet-string", (r"[0-9]",)),
+    _redact_family(r"\bkey-string", run=(r"(?:(?:password|clear|encrypted|ENC)(?:{H}|" + _REDACT_EOL
+                                         + r"))*(?:" + _REDACT_TYPE_THEN_VALUE + r"{H})?")),
+    _redact_family(r"\bkey-octet-string", run=r"(?:" + _REDACT_TYPE_THEN_VALUE + r"{H})?"),
     _redact_family(r"\bpre-shared-key",
                    (r"local", r"remote", r"ascii-text", r"hexadecimal", r"cipher", r"simple", r"plain",
-                    r"[0-9]"),
+                    r"key", _REDACT_TYPE_THEN_VALUE),
                    ("address", "hostname", "key-chain", "keychain", "ckn", "cak", "keyring")),
-    _redact_family(r"(?<![\w-])shared-key", (r"cipher", r"simple", r"plain", r"[0-9]")),
+    _redact_family(r"(?<![\w-])shared-key", (r"cipher", r"simple", r"plain", _REDACT_TYPE_THEN_VALUE)),
     _redact_family(r"\b(?:cak|ckn)"),
     # Wireless PSKs: IOS AP 'wpa-psk ascii|hex [0|7] <PSK>', C9800/AireOS 'set-key ascii|hex [0|8] <PSK>'.
-    _redact_family(r"\bwpa2?-psk", (r"ascii", r"hex", r"[0-9]")),
-    _redact_family(r"\bset-key", (r"ascii", r"hex", r"[0-9]")),
+    _redact_family(r"\bwpa2?-psk", (r"ascii", r"hex", _REDACT_TYPE_THEN_VALUE)),
+    _redact_family(r"\bset-key", (r"ascii", r"hex", _REDACT_TYPE_THEN_VALUE)),
     # Value-bearing 'authentication' forms: NHRP, HSRP/VRRP/GLBP (IOS, EOS 'peer'), the NX-OS line-start
-    # 'authentication text', and Huawei '[area-|domain-]authentication-mode <alg> [key-id] cipher|plain'.
-    # Never the bare word: '(aaa|dot1x) authentication ...' and 'authentication port-control auto' are
-    # structural and are left alone. A key-chain/key-string/key follow-word hands over to its own family.
-    _redact_family(r"\bnhrp[ \t]+authentication", (r"[0-9]",)),
-    _redact_family(r"\b(?:standby|vrrp|glbp)(?:[ \t]+\d+)?(?:[ \t]+peer)?[ \t]+authentication",
+    # 'authentication text', and Huawei '[area-|domain-]authentication-mode ...'.
+    _redact_family(r"\bnhrp{H}authentication", run=r"(?:" + _REDACT_TYPE_THEN_VALUE + r"{H})?"),
+    _redact_family(r"\b(?:standby|vrrp|glbp)(?:{H}\d+)?(?:{H}peer)?{H}authentication",
                    (r"text", r"md5", r"ietf-md5"), ("key-chain", "key-string", "keychain", "key")),
-    _redact_family(r"^[ \t]*authentication(?=[ \t]+text[ \t])", (r"text",), flags=re.MULTILINE),
-    _redact_family(r"\b(?:area-|domain-)?authentication-mode",
-                   (_REDACT_HASH, r"simple", r"plain", r"cipher", r"usual",
-                    r"nonstandard", r"key-id", r"\d+"),
-                   ("keychain", "key-chain", "hwtacacs", "radius", "local", "aaa", "password", "scheme")),
+    _redact_family(r"^{h}*authentication(?={H}text{h})", (r"text",)),
+    _redact_family(r"\b(?:area-|domain-)?authentication-mode", run=_REDACT_AUTH_MODE_RUN,
+                   stops=("keychain", "key-chain", "hwtacacs", "radius", "local", "aaa", "password",
+                          "scheme")),
     _redact_family(r"\bprivacy-mode", (r"des56", r"3des", r"aes\d*", r"cipher", r"plain")),
-    # Inline keys behind an 'authentication' MODE: OSPFv3 'authentication ipsec spi N md5|sha1 [0|7] <KEY>',
-    # EIGRP named-mode 'authentication mode hmac-sha-256 [0|7] <PASSWORD>', and the 'show standby' line
-    # 'Authentication text, string "<KEY>"'.
-    _redact_family(r"\bauthentication[ \t]+ipsec[ \t]+spi[ \t]+\d+", (r"md5", r"sha1", r"[0-9]")),
-    _redact_family(r"\bauthentication[ \t]+mode[ \t]+hmac-sha-256", (r"[0-9]",)),
-    _redact_family(r"\bauthentication[ \t]+text,[ \t]+string"),
-    # The bare 'key' family: keychain 'key 7 <hex>', 'authentication-key|message-digest-key N md5 [7]
+    # Inline keys behind an 'authentication|encryption ipsec spi N' mode (OSPFv3), EIGRP named-mode
+    # 'authentication mode hmac-sha-256 [0|7] <PASSWORD>', and 'show standby' 'Authentication text, string'.
+    _redact_family(r"\b(?:authentication|encryption){H}ipsec{H}spi{H}\d+",
+                   (r"md5", r"sha1", r"esp", r"aes-cbc", r"3des", r"des", r"null", r"128", r"192", r"256",
+                    _REDACT_TYPE_THEN_VALUE)),
+    _redact_family(r"\bauthentication{H}mode{H}hmac-sha-256", run=r"(?:" + _REDACT_TYPE_THEN_VALUE + r"{H})?"),
+    _redact_family(r"\bauthentication{H}text,{H}string"),
+    # The bare 'key' family: keychain 'key 7 <hex>', 'authentication-key|message-digest-key [N md5] [7]
     # <DIGEST>' (NTP/OSPF/EIGRP/BGP), 'crypto isakmp key <PSK> address ...', ASA 'failover key [hex]',
     # aaa-server 'key', IS-IS 'authentication key', NX-OS 'key config-key password-encrypt <MASTER>',
-    # 'show key chain' 'key 1 -- text "<KEY>"'. 'key 1' alone (a key ID) ends at its qualifier, and the
-    # structural follow-words ('key chain <NAME>', 'Key name:', 'key id is', 'crypto key generate rsa')
-    # end the grammar, as do the NTP server options after 'key <id>' ('ntp server X key 1 prefer') and
-    # a key algorithm ('ssh key rsa 2048'). 'pre-shared-key'/'private-key'/'public-key' belong to their
-    # own families and an EOS 'ssh-key ssh-rsa <PUBLIC KEY>' is not a secret.
-    _redact_family(r"\bkey(?<!private-key)(?<!shared-key)(?<!public-key)(?<!ssh-key)", _REDACT_KEY_QUALIFIERS,
-                   ("chain", "local", "remote", "generate", "zeroize", "import", "export", "id", "name", "data",
-                    "change", "type", "usage", "exchange", "pair", "length", "size", "sizes", "lifetime",
-                    "rollover", "hash", "label", "storage", "ring", "management", "encryption", "mode",
-                    "mypubkey", "pubkey", "pubkey-chain", "server", "algorithm", "algorithms", "recovery",
-                    "string", "prefer", "source", "version", "minpoll", "maxpoll", "burst", "iburst", "vrf", "use-vrf",
-                    "rsa", "dsa", "ecdsa", "ed25519")),   # not prose: 'Key: U - Unicast' is a show legend
+    # 'show key chain' 'key 1 -- text "<KEY>"', 'server-key', 'pac key'. 'key 1' alone (a key ID, 0-15)
+    # and 'Key 1,' (a show-output ID) end the grammar, as do the structural follow-words.
+    _redact_family(r"\bkey(?<!private-key)(?<!shared-key)(?<!public-key)(?<!ssh-key)", run=_REDACT_KEY_RUN,
+                   stops=("chain", "local", "remote", "generate", "zeroize", "import", "export", "id", "name",
+                          "data", "change", "type", "usage", "exchange", "pair", "length", "size", "sizes",
+                          "lifetime", "rollover", "hash", "label", "storage", "ring", "management",
+                          "encryption", "mode", "mypubkey", "pubkey", "pubkey-chain", "server", "algorithm",
+                          "algorithms", "recovery", "string", "prefer", "source", "version", "minpoll",
+                          "maxpoll", "burst", "iburst", "vrf", "use-vrf", "rsa", "dsa", "ecdsa", "ed25519",
+                          "inbound", "outbound"),
+                   value_guard=r"(?!(?:1[0-5]|[0-9]){h}*\Z)(?!\d{1,10}[,;](?={h}|\Z))"),
 ]
+#: Speed only, aligned with `_REDACT_SECRET_RES`: a literal every match of that family's anchor contains
+#: (compared casefolded, a superset of IGNORECASE matching). A family is skipped on a line holding none.
+_REDACT_SECRET_NEEDLES = (
+    ("set",), ("snmp-server",), ("snmp-server",), ("v3user",), ("v3user",), ("snmp-server",),
+    ("community",), ("community",), ("community",),
+    ("community-map", "community-name", "snmp-community-string", "trap-group"), ("config",), ("config",),
+    ("password", "passwd", "secret", "passphrase", "pass-phrase"), ("securityname",), ("-server",),
+    ("key-string",), ("key-octet-string",), ("pre-shared-key",), ("shared-key",), ("cak", "ckn"), ("-psk",),
+    ("set-key",), ("nhrp",), ("standby", "vrrp", "glbp"), ("authentication",), ("authentication-mode",),
+    ("privacy-mode",), ("ipsec",), ("hmac-sha-256",), ("string",), ("key",),
+)
+assert len(_REDACT_SECRET_NEEDLES) == len(_REDACT_SECRET_RES)
 # JSON-VALUE secrets: the controller-REST channels (ACI / ISE / FMC / vManage) and IaC exports store a secret as
 # a VALUE under a key, with no inline keyword for the deny-list regexes above to anchor on. So redact the WHOLE
 # value when its key is a known secret-bearing name. Keys are normalized (lowercased, '_'/'-' stripped) before
@@ -3917,31 +3970,599 @@ def _redact_secret_value(m) -> str:
     return m.group(0)[:m.start("v") - m.start()] + _REDACT_PLACEHOLDER
 
 
-#: Every family above names one of these words (or '://'), so a line without any of them carries no
-#: credential this grammar can see and is skipped untouched -- most of a 'show tech' capture.
+#: Every grammar family names one of these words, so a line without any of them is skipped by the
+#: GRAMMAR (speed only). The sweep has its own, wider filter (`_REDACT_SWEEP_PREFILTER`).
 _REDACT_LINE_PREFILTER = re.compile(
-    r"password|passwd|secret|passphrase|community|key|auth|priv|psk|cak|ckn|config|snmp|securityname|://",
+    r"password|passwd|secret|passphrase|pass-phrase|community|key|auth|priv|psk|cak|ckn|config|snmp|"
+    r"securityname|trap-group|encryption")                 # searched in the CASEFOLDED line
+
+# ---- THE RESIDUAL SWEEP. Every list below is CLOSED, and the verifier restates each one. ----
+#: Credential keywords. A keyword is a whole word: not preceded by a letter or digit (a camelCase hump
+#: also starts a word: 'authPassword', 'apiKey') and not followed by a letter, digit, '_' or '-'
+#: ('password-encryption', 'auth-port' and 'key-chain' are other words). The FIRST keyword occurrence
+#: on a line that is not void (below) anchors the sweep: every token after it is redacted unless it is
+#: structural (`_redact_sweep_token_ok`).
+_REDACT_SWEEP_KEYWORDS = (
+    # HTTP credential headers, JSON-quoted or not ('Authorization: Bearer X', '"X-Auth-Token": "X"')
+    r"(?:proxy-)?authorization(?=\"?{h}*:)", r"(?:set-)?cookie(?=\"?{h}*:)",
+    r"x-[a-z0-9-]*?(?:token|api-?key|auth[a-z0-9-]*|secret|password)(?=\"?{h}*:)",
+    # multi-word anchors whose value carries no keyword of its own
+    r"snmp-server{H}host", r"nhrp{H}authentication",
+    r"(?:standby|vrrp|glbp)(?:{H}\d+)?(?:{H}peer)?{H}authentication",
+    r"authentication{H}(?:text|mode)", r"(?:authentication|encryption){H}ipsec{H}spi",
+    r"rmon{H}event", r"event{H}manager{H}environment", r"cli{H}command",
+    r"(?:user|groupname):(?=[^\r\n]*?security)",
+    # environment-variable style names ('CISCO_REST_PASS', '_email_pw', 'smtp_token')
+    r"[a-z0-9]*_(?:pw|pwd|pass|passwd|password|secret|token|key|community|psk|credentials?)",
+    # compound keywords (before their simple stems)
+    r"(?:area-|domain-)?authentication-(?:key(?:id)?|mode)", r"encrypted[-_]?password",
+    r"private[-_]?key", r"secret[-_]?key", r"api[-_]?key", r"pre-?shared-?key", r"key[-_]?string",
+    r"key-octet-string", r"community[-_]?(?:string|name|map)", r"pass-phrase", r"privacy-mode",
+    # simple keywords
+    r"password", r"passwd", r"passphrase", r"enablesecret", r"secret", r"psksecret", r"psk", r"phash",
+    r"(?:auth|priv)-?pwd", r"community", r"rocommunity6?", r"rwcommunity6?", r"com2sec", r"trap-group",
+    r"securityname", r"createuser", r"key", r"token", r"idtoken", r"bearer", r"ssws", r"auth", r"cipher",
+    r"plain", r"ascii", r"hex", r"set-key", r"cak", r"ckn", r"v3user", r"mgmtuser", r"netuser", r"pkcs12",
+    r"cvauth", r"ingestauth", r"credentials?",
+)
+_REDACT_SWEEP_KW_RE = re.compile(_g(
+    r"(?:(?<![A-Za-z0-9])|(?-i:(?<=[a-z])(?=[A-Z])))(?P<kw>"
+    + "|".join(_REDACT_SWEEP_KEYWORDS) + r")(?![A-Za-z0-9_-])"), re.IGNORECASE)
+#: A keyword followed DIRECTLY by one of these words is structural, not a credential context
+#: ('key chain <NAME>', 'crypto key generate rsa', 'Key name: TP-self-signed', 'password encryption aes').
+_REDACT_SWEEP_VOID_NEXT = {
+    "key": frozenset({"chain", "generate", "zeroize", "mypubkey", "pubkey-chain", "pair", "name", "data", "id",
+                      "storage", "type", "usage", "change", "size", "lifetime", "identifier", "encipherment",
+                      "agreement"}),
+    "password": frozenset({"encryption", "strength-check", "strength", "policy", "expiry", "expiration",
+                           "minimum-length", "maximum-length", "min-length", "max-length", "complexity",
+                           "history", "aging", "recovery", "prompt", "change-type", "format", "management",
+                           "keyboard"}),
+    "community": frozenset({"complexity-check"}),
+    "pre-shared-key": frozenset({"key-chain", "keychain"}),
+    **dict.fromkeys(("authentication-mode", "area-authentication-mode", "domain-authentication-mode"),
+                    frozenset({"hwtacacs", "radius", "local", "aaa", "password", "scheme", "keychain",
+                               "key-chain", "none"})),
+}
+#: ... or preceded DIRECTLY by one of these: an IOS route-map 'set|match community <BGP community>'.
+_REDACT_SWEEP_VOID_PREV = {"community": frozenset({"set", "match"})}
+#: Token characters the allowlist comparison ignores at either end (quotes, brackets, ':', ';', ...).
+_REDACT_SWEEP_EDGE = "\"'`()[]{}<>;:,."
+#: The CLOSED structural allowlist: a token after a credential keyword survives only if it IS one of these
+#: words (exact, casefolded, after `_REDACT_SWEEP_EDGE` is stripped) -- never a prefix or a shape -- or an
+#: IPv4/IPv6 literal, an interface name, a synthetic pseudonym, the placeholder, or pure punctuation.
+_REDACT_SWEEP_ALLOW = frozenset({
+    # small integers (type digits, privilege levels, key IDs, SNMP versions, retries) and key sizes
+    *(str(n) for n in range(16)), "128", "192", "256", "2c",
+    # encodings, hash/cipher labels and qualifier keywords
+    "level", "type", "enc", "encrypted", "clear", "cipher", "plain", "simple", "ascii", "hex", "text",
+    "irreversible-cipher", "hashed", "scrypt", "pbkdf2", "nt-encrypted", "mschap", "localizedkey",
+    "localizedv2key", "auto", "config-key", "password-encrypt", "ascii-text", "hexadecimal", "usual",
+    "nonstandard", "key-id", "md5", "sha", "sha1", "sha-1", "sha2", "sha224", "sha256", "sha384", "sha512",
+    "sha-224", "sha-256", "sha-384", "sha-512", "sha2-224", "sha2-256", "sha2-384", "sha2-512", "hmac-md5",
+    "hmac-sha", "hmac-sha1", "hmac-sha-1", "hmac-sha256", "hmac-sha-256", "hmac-sha384", "hmac-sha-384",
+    "hmac-sha512", "hmac-sha-512", "keyed-md5", "ietf-md5", "cmac-aes", "aes", "aes128", "aes192", "aes256",
+    "aes-128", "aes-192", "aes-256", "aes-cbc", "aescfb128", "des", "des56", "3des", "hmacmd5", "hmacsha",
+    "none", "null", "esp", "ah", "inbound", "outbound", "authenticator", "auth", "priv", "key", "set-key",
+    "key-string", "key-chain", "keychain", "fallback", "--", "authentication-mode", "privacy-mode",
+    "cryptographic-algorithm", "aes-128-cmac", "aes-256-cmac", "aes_128_cmac", "aes_256_cmac", "spi", "lifetime", "bit",
+    "chain",
+    # SNMP access, security models and notification grammar
+    "ro", "rw", "read", "write", "read-only", "read-write", "view", "access", "acl", "ipv4", "ipv6",
+    "version", "v1", "v2c", "v3", "noauth", "authpriv", "authnopriv", "traps", "informs", "trap", "inform",
+    "udp-port", "context", "group", "user", "security", "model", "security-model", "create", "delete",
+    "accessmode", "ipaddr", "mode", "enable", "disable", "string", "strings", "name", "index", "notify",
+    "sdrowner", "systemowner", "lobby-admin", "private-netmanager", "ext-vb", "targets", "clients",
+    "authorization", "members", "description", "owner", "log",
+    "aaa_server", "adslline", "alarms", "atm", "auth-framework", "bfd", "bgp", "bgp4-mib", "bridge",
+    "bstun", "bulkstat", "call-home", "casa", "cbgp2", "ccme", "cef", "cluster", "cnpd", "config",
+    "config-copy", "config-ctid", "cpu", "cts", "dhcp", "dial", "dlsw", "dot1x", "ds1", "dsp", "eigrp",
+    "energywise", "entity", "entity-diag", "entity-qfp", "entity-sensor", "entity-state", "envmon",
+    "errdisable", "ethernet", "ethernet-cfm", "event-manager", "firewall", "flash", "flex-links",
+    "flowmon", "frame-relay", "fru-ctrl", "hsrp", "ike", "ipmobile", "ipmulticast", "ipsec", "ipsla",
+    "isakmp", "isdn", "isis", "l2tun", "l2tun-pseudowire-status", "l2tun-session", "license", "llc2",
+    "local-auth", "mac-notification", "memory", "mpls", "mpls-ldp", "mpls-traffic-eng", "mpls-vpn", "msdp",
+    "mvpn", "nhrp", "ospf", "ospfv3", "pim", "pki", "port-security", "power-ethernet", "pppoe", "pw", "rep",
+    "resource-policy", "rf", "rmon", "rsvp", "rtr", "sdlc", "smart-license", "snmp", "sonet", "srp",
+    "stackwise", "storm-control", "stpx", "stun", "syslog", "transceiver", "trustsec", "tty",
+    "vlan-membership", "vlancreate", "vlandelete", "voice", "vrfmib", "vrrp", "vstack", "vtp", "wireless",
+    "x25", "xgcp",
+    # addresses, servers, routing and AAA structure
+    "address", "host", "hostname", "vrf", "use-vrf", "filter-vrf", "source-interface", "interface", "port",
+    "auth-port", "acct-port", "timeout", "retransmit", "prefer", "minpoll", "maxpoll", "burst", "iburst",
+    "source", "local", "remote", "any", "all", "both", "extended", "standard", "large", "additive",
+    "new-format", "privilege", "role", "network-admin", "network-operator", "vdc-admin", "vdc-operator",
+    "level-1", "level-2", "level-1-2", "authentication", "accounting", "single-connection", "no-xauth",
+    "cak", "ckn", "add", "algorithm", "size", "bits", "secret-data", "##", "value", "import", "export",
+    "rsa", "ec", "ecdsa", "ed25519", "pem", "terminal", "general-keys", "modulus", "id",
+    # prose function words (a credential spelled as one of these is a documented residual)
+    "a", "an", "the", "to", "for", "of", "in", "on", "at", "by", "from", "and", "or", "not", "no", "is",
+    "are", "was", "were", "be", "been", "with", "as", "if", "this", "that", "it", "its", "has", "have",
+    "must", "should", "will", "can", "cannot", "may", "each", "only", "also", "configured", "enabled",
+    "disabled", "required", "expired", "changed", "failed", "failure", "mismatch", "invalid", "missing",
+    "present", "true", "false", "yes", "off", "unknown", "hidden", "neighbor", "peer", "used",
+    # HTTP authorization schemes
+    "bearer", "basic", "digest", "negotiate", "ntlm", "ssws",
+})
+#: Structural words that own ONE following operand when that operand is an integer of at most five
+#: digits ('udp-port 162', 'RO 10', 'timeout 5', 'privilege 15'); any other operand is swept.
+_REDACT_SWEEP_SLOTS = frozenset({
+    "udp-port", "auth-port", "acct-port", "port", "timeout", "retransmit", "level", "privilege", "access",
+    "acl", "ro", "rw", "context", "key-id", "spi", "lifetime", "index",
+})
+#: ... and these own ONE following NAME (a keychain or VRF name is not a credential).
+_REDACT_SWEEP_NAME_SLOTS = frozenset({"key-chain", "keychain", "chain", "vrf", "use-vrf", "filter-vrf"})
+_REDACT_SWEEP_NAME_OPERAND_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,63}")
+_REDACT_SWEEP_SLOT_OPERAND_RE = re.compile(r"\d{1,5}")
+#: Escape sequences that are punctuation inside a JSON or shell string ('...-----\n",').
+_REDACT_SWEEP_ESCAPES = frozenset({"\\n", "\\r", "\\r\\n", "\\t", "\\n\\n"})
+_REDACT_SWEEP_IFACE_RE = re.compile(
+    r"(?:(?:Hundred|Forty|TwentyFive|Ten|Two|Five|Fifty|FourHundred)?Gig(?:abit)?(?:Ethernet|E)"
+    r"|GigabitEthernet|FastEthernet|Ethernet|AppGigabitEthernet|Port-?channel|Bundle-Ether|Loopback"
+    r"|Tunnel|Vlan|Serial|Dialer|BDI|BVI|nve|Virtual-(?:Template|Access)|Management|MgmtEth|mgmt"
+    r"|Gi|Te|Tw|Twe|Fo|Hu|Fa|Eth|Et|Po|Lo|Tu|Vl|Se|Ap"
+    r"|(?:ge|xe|et|fe|gr|lt|irb|ae|lo|fxp|em|me|reth|vlan)-?)\d+(?:[/.:]\d+)*",
     re.IGNORECASE)
+_REDACT_SWEEP_IPV4_RE = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?")
+_REDACT_SWEEP_IPV6_RE = re.compile(r"[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*(?:%[\w.-]+)?(?:/\d{1,3})?")
+_REDACT_SWEEP_SYNTH_RE = re.compile(
+    r"(?:(?:v4-n\d{5}-h\d{3}|v6-\d{8}|mac-\d{12}|serial-\d{6})\.assesshub-redacted\.invalid(?:/\d{1,3})?"
+    r"|contact-\d{6}@assesshub-redacted\.invalid)", re.IGNORECASE)
+#: Spans the keyword search and the token reader never look into, blanked with offsets kept: XML tags
+#: (an element NAMED like a credential is handled whole by `_REDACT_SWEEP_XML_RE`), private-key armor,
+#: and URLs (their userinfo and secret query values are handled by `_redact_sweep_url`).
+_REDACT_SWEEP_MASK_RE = re.compile(_g(
+    r"(?!<redacted>)</?[A-Za-z_][\w.:-]*(?:{H}[^<>\r\n]*)?/?>"
+    r"|-----(?:BEGIN|END)[ A-Z0-9]*-----"
+    r"|(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]*://{S}+"), re.IGNORECASE)
+#: A swept token: a run between separators, '=' and ',' (so 'key=VALUE' and 'key,VALUE' split).
+_REDACT_SWEEP_TOKEN_RE = re.compile("[^" + _REDACT_WS + "\r\n=,]+")
+_REDACT_SWEEP_ROW_TOKEN_RE = re.compile(_REDACT_NWS + "+")
+_REDACT_LEAD_RE = re.compile(_REDACT_H1 + "*")
+_REDACT_SWEEP_XML_RE = re.compile(_g(r"<(?P<tag>[A-Za-z_][\w.:-]*)(?:{H}[^<>\r\n]*)?>(?P<v>(?:<redacted>|[^<\r\n])*)"))
+_REDACT_SWEEP_URL_RE = re.compile(_g(r"(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]*://{S}+"), re.IGNORECASE)
+_REDACT_SWEEP_QUERY_RE = re.compile(r"(?<=[?&;])(?P<name>[A-Za-z0-9_.-]+)=(?P<v>[^&#;\"'\s]*)")
+_REDACT_SWEEP_QUERY_NAMES = frozenset({
+    "sig", "signature", "token", "access_token", "refresh_token", "id_token", "auth", "auth_token",
+    "apikey", "api_key", "api-key", "key", "password", "passwd", "pwd", "pass", "secret", "client_secret",
+    "code", "credential", "x-amz-signature", "x-amz-credential", "x-amz-security-token",
+})
+#: A Junos '## SECRET-DATA' annotation: everything after the statement word is secret.
+_REDACT_SWEEP_SECRET_DATA_RE = re.compile(_g(r"##{h}*SECRET-DATA"), re.IGNORECASE)
+_REDACT_SWEEP_FIRST_TOKEN_RE = re.compile(_g(r"{h}*{S}+"))
+#: A line whose last swept token is one of these ends INSIDE a credential -- a terminal wrap such as
+#: 'snmp-server user u g v3 auth sha X priv aes 1' / '28 Y' -- so the NEXT line is swept whole.
+_REDACT_SWEEP_DANGLING = frozenset({
+    "md5", "sha", "sha1", "sha-1", "sha224", "sha256", "sha384", "sha512", "sha-256", "sha-384", "sha-512",
+    "sha2-256", "sha2-384", "sha2-512", "hmac-md5", "hmac-sha", "hmac-sha1", "hmac-sha-1", "hmac-sha256",
+    "hmac-sha-256", "cipher", "plain", "ascii", "hex", "encrypted", "clear", "enc", "aes", "aes128",
+    "aes192", "aes256", "aes-128", "aes-192", "aes-256", "des", "des56", "3des", "aescfb128", "hmacmd5",
+    "hmacsha",
+})
+#: ... as does a cipher name followed by a number that is not a key size ('aes 1' of a wrapped 'aes 128').
+_REDACT_SWEEP_SIZE_WORDS = frozenset({"aes", "des", "3des", "aes-cbc"})
+#: Speed only: a line that names none of the words above cannot dangle.
+_REDACT_SWEEP_DANGLING_HINT_RE = re.compile(
+    "(?<![a-z0-9_-])(?:" + "|".join(re.escape(word) for word in sorted(_REDACT_SWEEP_DANGLING | _REDACT_SWEEP_SIZE_WORDS, key=len,
+                                                                         reverse=True)) + ")(?![a-z0-9_-])")
+#: High-entropy tokens anywhere on a line: >= 24 base64/base64url characters with a 16+ character
+#: segment free of '-', '_' and '/' that mixes upper case, lower case and digits (a path such as
+#: '/interfaces/core1/Vlan30' is not one), or >= 32 contiguous hex digits ...
+_REDACT_SWEEP_B64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{24,}={0,2}(?![A-Za-z0-9+/_=-])")
+_REDACT_SWEEP_HEX_RE = re.compile(r"(?<![A-Za-z0-9])[0-9A-Fa-f]{32,}(?![A-Za-z0-9])")
+#: ... and any token in a CLOSED list of credential token formats, whatever its letters
+#: (GitHub, GitLab, Slack, Stripe, OpenAI-style, AWS access key IDs, Google API keys, OAuth access, JWT).
+_REDACT_SWEEP_TOKEN_FORMAT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}"
+    r"|xox[abposr]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|[sr]k_live_[A-Za-z0-9]{10,}|sk-[A-Za-z0-9_-]{20,}"
+    r"|A[KS]IA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|ya29\.[A-Za-z0-9_.-]{20,}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*)?)")
 
 
-def _redact_config_values(s: str) -> str:
-    """Replace known credential / community / key material in a config-or-output string
-    with a placeholder, preserving surrounding context. Each family consumes its whole
-    qualifier sequence before taking the value (see `_REDACT_SECRET_RES`), so a qualifier is
-    never mistaken for the secret. Idempotent: the placeholder re-matches as its own value.
+def _redact_entropy_part(part: str) -> bool:
+    """A base64 segment that looks RANDOM: 16+ characters mixing upper case, lower case and digits,
+    whose character classes change at least every 2.5 characters on average. A camelCase identifier
+    ('HDfabricOverallHealth5min', an ACI class in a DN) runs whole words of one case and is not one."""
+    if len(part) < 16 or not (any(c.isupper() for c in part) and any(c.islower() for c in part)
+                              and any(c.isdigit() for c in part)):
+        return False
+    kinds = ["u" if c.isupper() else "l" if c.islower() else "d" if c.isdigit() else "o" for c in part]
+    changes = sum(1 for a, b in zip(kinds, kinds[1:]) if a != b)
+    return len(part) <= 2.5 * (changes + 1)
+#: ... except a digest or fingerprint LABELLED as such directly before it ('sha256: <hex>', 'SHA256 hash
+#: <hex>', '"md5": "<hex>"'), an SSH PUBLIC key after its algorithm name, an interface name, a pseudonym.
+_REDACT_SWEEP_DIGEST_LABEL_RE = re.compile(
+    r"(?:md5|sha-?1|sha-?224|sha-?256|sha-?384|sha-?512|sha2|digest|hash|fingerprint|checksum|thumbprint)"
+    r"[^A-Za-z0-9]{0,4}\Z", re.IGNORECASE)
+_REDACT_SWEEP_PUBKEY_LABEL_RE = re.compile(
+    r"(?:ssh-rsa|ssh-dss|ssh-ed25519|ssh-ed448|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com"
+    r"|sk-ecdsa-sha2-nistp256@openssh\.com)" + _REDACT_HWS + r"\Z", re.IGNORECASE)
+#: ... and, in a ``--redact`` snapshot only, hex under a key that NAMES a digest or an identifier
+#: ('config_sha256', 'baseline_sha256', 'subject_id'): the JSON key is the label. Those values are the
+#: engine's own content bindings and join keys, never device secrets (a credential-named key is
+#: redacted whole before this pass), and replacing them would break every receipt that cites them.
+_REDACT_DIGEST_KEY_RE = re.compile(
+    r"sha1|sha224|sha256|sha384|sha512|md5|digest|hash|fingerprint|checksum|thumbprint|ids?\Z")
+#: Speed only: a line with none of these substrings has nothing for the sweep to anchor on.
+_REDACT_SWEEP_PREFILTER = re.compile(
+    r"pass|secret|communit|key|auth|psk|cipher|plain|ascii|hex|token|bearer|ssws|phash|pwd|cak|ckn|priv|"
+    r"cookie|trap-group|securityname|snmp|nhrp|standby|vrrp|glbp|rmon|environment|command|spi|user|"
+    r"groupname:|com2sec|_pw|credential|pkcs12|-----|://|<")   # searched in the CASEFOLDED line
+_REDACT_SWEEP_RUN_RE = re.compile(r"[A-Za-z0-9+/_=-]{24}")    # ... or a run long enough to be high-entropy
+_REDACT_SURROGATE_RIGHT_RE = re.compile(
+    re.escape(_REDACT_PLACEHOLDER) + "[\udc80-\udcff]+(?=" + re.escape(_REDACT_PLACEHOLDER) + "|[ \t\x0b\x0c"
+    "\x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]|\\Z)")
+_REDACT_SURROGATE_LEFT_RE = re.compile(
+    "(?:(?<=[ \t\x0b\x0c\x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff])|\\A)"
+    "[\udc80-\udcff]+(?=" + re.escape(_REDACT_PLACEHOLDER) + ")")
+_REDACT_PLACEHOLDER_RUN_RE = re.compile("(?:" + re.escape(_REDACT_PLACEHOLDER) + "){2,}")
 
-    Every family is line-bounded, so the text is processed one ``\\n``-separated line at a time
-    and only lines that name a family keyword are run through the grammar; joining on ``\\n``
-    restores the input byte-for-byte everywhere else (``\\r`` stays inside its line)."""
-    if not _REDACT_LINE_PREFILTER.search(s):
+# ---- Stateful (multi-line) rules: private-key blocks, credential table columns, FortiGate SNMP blocks.
+_REDACT_PEM_BEGIN_RE = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----", re.IGNORECASE)
+_REDACT_PEM_END_RE = re.compile(r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----", re.IGNORECASE)
+#: Show-output tables whose column holds a credential (closed list): the header, the group that starts
+#: the credential column, and the group of the column that FOLLOWS it (None: it runs to the line end).
+_REDACT_TABLE_HEADERS = tuple((re.compile(_g(pattern), re.IGNORECASE), nxt) for pattern, nxt in (
+    (r"^{h}*(?P<c>Community){h}+(?P<n>Group){h}*/{h}*Access\b", "n"),                # NX-OS show snmp community
+    (r"^{h}*Keyring{h}+Hostname/Address{h}+(?P<c>Preshared{h}Key)\b", None),          # IOS show crypto isakmp key
+    (r"^{h}*Host{h}+Port{h}+Version{h}+Level{h}+Type{h}+(?P<c>SecName)\b", None),     # NX-OS show snmp host
+    (r"^{h}*(?P<c>SNMP{h}Community{h}Name){h}+(?P<n>Client{h}IP{h}Address)\b", "n"),  # AireOS show snmpcommunity
+))
+#: A credential table ends at another recognised header, a 'show tech' section separator, or the end.
+_REDACT_TABLE_END_RE = re.compile(_g(r"^{h}*-{3,}{h}*show{h}"), re.IGNORECASE)
+_REDACT_DASHES_RE = re.compile(r"-+\Z")
+_REDACT_FORTI_CONFIG_RE = re.compile(_g(r"^{h}*config{H}(?P<path>[^\r\n]*?){h}*\Z"), re.IGNORECASE)
+_REDACT_FORTI_END_RE = re.compile(_g(r"^{h}*end{h}*\Z"), re.IGNORECASE)
+_REDACT_FORTI_SET_NAME_RE = re.compile(_g(r"^{h}*set{H}name(?={h}|\Z)"), re.IGNORECASE)
+
+
+def _redact_line_plan(lines):
+    """Per-line roles of the stateful rules. Every rule here is decided by text the scrub never alters
+    (armor, table headers, 'config'/'end' lines), so the verifier, which decides them on the SCRUBBED
+    text, reaches the same plan.
+
+    Returns ``(pem, table, forti)``: ``pem[i]`` is ``"body"`` or a list of ``(start, end)`` content spans
+    beside armor; ``table[i]`` is ``"header"`` or the ``(start, end)`` credential column of a row (``end``
+    None: to the line end); ``forti[i]`` marks a line inside a FortiGate 'config system snmp community'."""
+    pem, table, forti = [None] * len(lines), [None] * len(lines), [False] * len(lines)
+    inside = False
+    region = None
+    depth, snmp_depth = 0, None
+    for i, line in enumerate(lines):
+        # 1. private-key blocks: a BEGIN with nothing but quotes after it opens a block that runs to its
+        #    END (or to the end of the text); content beside armor on one line is a span of its own.
+        spans, pos = [], 0
+        if inside:
+            end = _REDACT_PEM_END_RE.search(line)
+            if end is None:
+                pem[i] = "body"
+            else:
+                spans.append((0, end.start()))
+                pos, inside = end.end(), False
+        low = line.casefold()                      # the substring gates below are speed only
+        while pem[i] != "body" and "-----" in line:
+            begin = _REDACT_PEM_BEGIN_RE.search(line, pos)
+            if begin is None:
+                break
+            end = _REDACT_PEM_END_RE.search(line, begin.end())
+            if end is not None:
+                spans.append((begin.end(), end.start()))
+                pos = end.end()
+                continue
+            if _REDACT_WS_RE.sub("", line[begin.end():]).strip("\"'"):
+                spans.append((begin.end(), len(line)))      # content after the armor on its own line
+            else:
+                inside = True
+            break
+        if spans:
+            pem[i] = spans
+        # 2. credential table columns
+        header = None
+        for pattern, nxt in (_REDACT_TABLE_HEADERS if ("community" in low or "keyring" in low
+                                                  or "secname" in low) else ()):
+            found = pattern.match(line)
+            if found:
+                header = (found.start("c"), found.start(nxt) if nxt else None)
+                break
+        if header is not None:
+            table[i], region = "header", header
+        elif region is not None:
+            if "show" in low and _REDACT_TABLE_END_RE.match(line):
+                region = None
+            else:
+                table[i] = region
+        # 3. FortiGate 'config system snmp community' blocks (nested 'config ... / end' tracked by depth)
+        config = _REDACT_FORTI_CONFIG_RE.match(line) if "config" in low else None
+        if config:
+            depth += 1
+            if snmp_depth is None and " ".join(config.group("path").split()).casefold() == "system snmp community":
+                snmp_depth = depth
+        elif "end" in low and _REDACT_FORTI_END_RE.match(line):
+            if snmp_depth is not None and depth == snmp_depth:
+                snmp_depth = None
+            depth = max(0, depth - 1)
+        forti[i] = snmp_depth is not None
+    return pem, table, forti
+
+
+def _redact_sweep_is_address(core: str) -> bool:
+    if _REDACT_SWEEP_IPV4_RE.fullmatch(core) or (":" in core and _REDACT_SWEEP_IPV6_RE.fullmatch(core)):
+        try:
+            ipaddress.ip_network(re.sub(r"%[\w.-]+", "", core), strict=False)
+        except ValueError:
+            return False
+        return True
+    return False
+
+
+def _redact_sweep_token_ok(token: str) -> bool:
+    """Is this token (raw text between separators) structural? The ONLY survivors after a keyword."""
+    if _REDACT_PLACEHOLDER in token:
+        return not token.replace(_REDACT_PLACEHOLDER, "").strip(_REDACT_SWEEP_EDGE)
+    core = token.strip(_REDACT_SWEEP_EDGE)
+    if not core or core in _REDACT_SWEEP_ESCAPES or _REDACT_DASHES_RE.match(core):
+        return True                                          # punctuation, an escape, a dash rule
+    return (core.casefold() in _REDACT_SWEEP_ALLOW or _redact_sweep_is_address(core)
+            or bool(_REDACT_SWEEP_IFACE_RE.fullmatch(core)) or bool(_REDACT_SWEEP_SYNTH_RE.fullmatch(core)))
+
+
+def _redact_sweep_bad_tokens(masked: str, anchor: int):
+    """The tokens after ``anchor`` that are not structural; each is replaced by the placeholder."""
+    slot = None
+    for m in _REDACT_SWEEP_TOKEN_RE.finditer(masked, anchor):
+        core = m.group(0).strip(_REDACT_SWEEP_EDGE)
+        if slot is not None and slot.fullmatch(core):
+            slot = None
+            continue
+        ok = _redact_sweep_token_ok(m.group(0))
+        word = core.casefold()
+        slot = (None if not ok else _REDACT_SWEEP_SLOT_OPERAND_RE if word in _REDACT_SWEEP_SLOTS
+                else _REDACT_SWEEP_NAME_OPERAND_RE if word in _REDACT_SWEEP_NAME_SLOTS else None)
+        if not ok:
+            yield m
+
+
+def _redact_sweep_masked(line: str) -> str:
+    return _REDACT_SWEEP_MASK_RE.sub(lambda m: " " * len(m.group(0)), line)
+
+
+def _redact_sweep_anchor(line: str, masked: str, forti: bool):
+    """Where the swept TAIL of a line starts, or None: the end of the first credential keyword that is
+    not void, of the statement word of a Junos '## SECRET-DATA' line, or of a FortiGate SNMP-block
+    'set name' -- whichever comes first."""
+    candidates = []
+    if _REDACT_SWEEP_SECRET_DATA_RE.search(line):
+        first = _REDACT_SWEEP_FIRST_TOKEN_RE.match(line)
+        if first:
+            candidates.append(first.end())
+    if forti:
+        name = _REDACT_FORTI_SET_NAME_RE.match(line)
+        if name:
+            candidates.append(name.end())
+    pos = 0
+    while True:
+        found = _REDACT_SWEEP_KW_RE.search(masked, pos)
+        if found is None:
+            break
+        word = found.group("kw").casefold()
+        following = _REDACT_SWEEP_TOKEN_RE.search(masked, found.end())
+        nxt = following.group(0).strip(_REDACT_SWEEP_EDGE).casefold() if following else ""
+        before = _REDACT_SWEEP_TOKEN_RE.findall(masked, 0, found.start())
+        prev = before[-1].strip(_REDACT_SWEEP_EDGE).casefold() if before else ""
+        if nxt in _REDACT_SWEEP_VOID_NEXT.get(word, ()) or prev in _REDACT_SWEEP_VOID_PREV.get(word, ()):
+            pos = found.end()
+            continue
+        candidates.append(found.end())
+        break
+    return min(candidates) if candidates else None
+
+
+def _redact_sweep_dangles(line: str, forced: bool, forti: bool) -> bool:
+    """Does this (scrubbed) line end inside a credential, so the next line must be swept whole?"""
+    if not _REDACT_SWEEP_DANGLING_HINT_RE.search(line.casefold()):
+        return False
+    masked = _redact_sweep_masked(line)
+    anchor = 0 if forced else _redact_sweep_anchor(line, masked, forti)
+    if anchor is None:
+        return False
+    tokens = [t.strip(_REDACT_SWEEP_EDGE).casefold() for t in _REDACT_SWEEP_TOKEN_RE.findall(masked, anchor)]
+    if not tokens:
+        return False
+    if tokens[-1] in _REDACT_SWEEP_DANGLING:
+        return True
+    return (len(tokens) > 1 and tokens[-2] in _REDACT_SWEEP_SIZE_WORDS and tokens[-1].isdigit()
+            and tokens[-1] not in ("128", "192", "256"))
+
+
+def _redact_replace_spans(line: str, spans) -> str:
+    for start, end in sorted(spans, reverse=True):
+        line = line[:start] + _REDACT_PLACEHOLDER + line[end:]
+    return line
+
+
+def _redact_sweep_url(line: str) -> str:
+    """URL userinfo -- any characters, '/', ':' and '@' included, up to the LAST '@' of the URL token;
+    the user name before the first ':' is kept -- and the values of secret-named query parameters."""
+    def fix(m):
+        scheme, _sep, rest = m.group(0).partition("://")
+        at = rest.rfind("@")
+        if at > 0:
+            userinfo = rest[:at]
+            if ":" in userinfo:
+                user, _colon, secret = userinfo.partition(":")
+                if secret != _REDACT_PLACEHOLDER:
+                    userinfo = user + ":" + _REDACT_PLACEHOLDER
+            elif userinfo != _REDACT_PLACEHOLDER:
+                userinfo = _REDACT_PLACEHOLDER
+            rest = userinfo + rest[at:]
+        rest = _REDACT_SWEEP_QUERY_RE.sub(
+            lambda q: (q.group("name") + "=" + _REDACT_PLACEHOLDER
+                       if q.group("name").casefold() in _REDACT_SWEEP_QUERY_NAMES
+                       and q.group("v") not in ("", _REDACT_PLACEHOLDER) else q.group(0)), rest)
+        return scheme + "://" + rest
+    return _REDACT_SWEEP_URL_RE.sub(fix, line)
+
+
+def _redact_sweep_xml(line: str) -> str:
+    """The whole value of an XML element whose NAME contains a credential keyword."""
+    def fix(m):
+        value = _REDACT_WS_RE.sub("", m.group("v"))
+        if not value or value == _REDACT_PLACEHOLDER or not _REDACT_SWEEP_KW_RE.search(m.group("tag")):
+            return m.group(0)
+        return m.group(0)[:m.start("v") - m.start()] + _REDACT_PLACEHOLDER
+    return _REDACT_SWEEP_XML_RE.sub(fix, line)
+
+
+def _redact_high_entropy_spans(line: str, digest_value: bool):
+    """Spans of high-entropy tokens that are not exempt (see `_REDACT_SWEEP_B64_RE`)."""
+    spans = []
+    for regex in (_REDACT_SWEEP_B64_RE, _REDACT_SWEEP_HEX_RE, _REDACT_SWEEP_TOKEN_FORMAT_RE):
+        for m in regex.finditer(line):
+            text = m.group(0)
+            if regex is _REDACT_SWEEP_B64_RE and not any(
+                    _redact_entropy_part(part) for part in re.split(r"[-_/]", text)):
+                continue
+            head = line[:m.start()]
+            if (_REDACT_SWEEP_IFACE_RE.fullmatch(text) or _REDACT_SWEEP_SYNTH_RE.fullmatch(text)
+                    or _REDACT_SWEEP_DIGEST_LABEL_RE.search(head) or _REDACT_SWEEP_PUBKEY_LABEL_RE.search(head)):
+                continue
+            if digest_value and regex is _REDACT_SWEEP_HEX_RE:
+                continue                                     # hex under a digest/identifier-named key
+            if any(s < m.end() and m.start() < e for s, e in spans):
+                continue
+            spans.append((m.start(), m.end()))
+    return spans
+
+
+def _redact_absorb_surrogates(line: str) -> str:
+    """A non-UTF-8 byte separates tokens, so a credential written in a legacy code page would keep its
+    non-ASCII bytes beside the placeholders that replaced its ASCII runs. Fold such a byte run into an
+    adjacent placeholder when nothing but a placeholder, white space or the line end is on its other
+    side (a byte between a KEYWORD and its value stays: it is the separator)."""
+    if not any("\udc80" <= ch <= "\udcff" for ch in line):
+        return line
+    line = _REDACT_SURROGATE_RIGHT_RE.sub(_REDACT_PLACEHOLDER, line)
+    line = _REDACT_SURROGATE_LEFT_RE.sub("", line)
+    return _REDACT_PLACEHOLDER_RUN_RE.sub(_REDACT_PLACEHOLDER, line)
+
+
+def _redact_sweep_line(line: str, *, forced: bool, region, forti: bool, digest_value: bool) -> str:
+    """The residual sweep of ONE line (after the grammar)."""
+    if "://" in line:
+        line = _redact_sweep_url(line)
+    if "<" in line:
+        line = _redact_sweep_xml(line)
+    masked = _redact_sweep_masked(line)
+    anchor = 0 if forced else _redact_sweep_anchor(line, masked, forti)
+    spans = []
+    if anchor is not None:
+        spans.extend((m.start(), m.end()) for m in _redact_sweep_bad_tokens(masked, anchor))
+    if region is not None:
+        # A credential COLUMN: each replacement keeps the cell's width (padded with spaces), so a re-run
+        # and the verifier find the next column exactly where it was.
+        start, end = region
+        cells = [(m.start(), m.end()) for m in _REDACT_SWEEP_ROW_TOKEN_RE.finditer(masked)
+                 if m.start() < (len(masked) if end is None else end) and m.end() > start
+                 and _REDACT_PLACEHOLDER not in m.group(0) and not _REDACT_DASHES_RE.match(m.group(0))]
+        spans = [(s, e) for s, e in spans if not any(cs < e and s < ce for cs, ce in cells)]
+        for cs, ce in sorted(cells + spans, reverse=True):
+            width = ce - cs if (cs, ce) in cells else 0
+            line = line[:cs] + _REDACT_PLACEHOLDER.ljust(width) + line[ce:]
+        spans = []
+    if spans:
+        line = _redact_replace_spans(line, spans)
+    if _REDACT_SWEEP_B64_RE.search(line) or _REDACT_SWEEP_HEX_RE.search(line):
+        entropy = _redact_high_entropy_spans(line, digest_value)
+        if entropy:
+            line = _redact_replace_spans(line, entropy)
+    return _redact_absorb_surrogates(line)
+
+
+def _redact_config_values(s: str, *, digest_value: bool = False) -> str:
+    """Replace credential material in a shareable text with a placeholder, line by line: the credential
+    GRAMMAR (`_REDACT_SECRET_RES`, value slots of known forms), then the RESIDUAL SWEEP
+    (`_redact_sweep_line`: every non-structural token after the first credential keyword, private-key
+    blocks, URL userinfo, credential headers and table columns, high-entropy tokens). Idempotent.
+
+    Lines are split ONLY on CR/LF and rejoined with their original separators, so everything the scrub
+    does not replace is byte-identical. ``digest_value`` exempts hex runs from the high-entropy rule;
+    only `redact_snapshot` passes it, for a value under a digest- or identifier-named JSON key
+    (`_REDACT_DIGEST_KEY_RE`)."""
+    if not s:
         return s
-    lines = s.split("\n")
+    parts = _REDACT_LINE_BREAK_RE.split(s)
+    lines = parts[0::2]
+    pem, table, forti = _redact_line_plan(lines)
+    forced = False
+    changed = False
+    csv = None
     for index, line in enumerate(lines):
-        if _REDACT_LINE_PREFILTER.search(line):
-            for rx in _REDACT_SECRET_RES:
-                line = rx.sub(_redact_secret_value, line)
-            lines[index] = line
-    return "\n".join(lines)
+        if table[index] == "header":
+            forced, csv = False, None
+            continue
+        if pem[index] == "body":
+            if _REDACT_WS_RE.sub("", line) not in ("", _REDACT_PLACEHOLDER):
+                lines[index] = _REDACT_LEAD_RE.match(line).group(0) + _REDACT_PLACEHOLDER
+                changed = True
+            forced, csv = False, None
+            continue
+        out = line
+        if pem[index]:
+            spans = [(a, b) for a, b in pem[index]
+                     if _REDACT_WS_RE.sub("", out[a:b]) not in ("", _REDACT_PLACEHOLDER)]
+            if spans:
+                out = _redact_replace_spans(out, spans)
+        low = out.casefold()
+        if len(out) <= _REDACT_GRAMMAR_MAX_LINE and _REDACT_LINE_PREFILTER.search(low):
+            for rx, needles in zip(_REDACT_SECRET_RES, _REDACT_SECRET_NEEDLES):
+                if any(needle in low for needle in needles):
+                    scrubbed = rx.sub(_redact_secret_value, out)
+                    if scrubbed != out:
+                        out, low = scrubbed, scrubbed.casefold()
+        if (forced or table[index] is not None or forti[index] or _REDACT_SWEEP_PREFILTER.search(low)
+                or _REDACT_SWEEP_RUN_RE.search(out)):
+            out = _redact_sweep_line(out, forced=forced, region=table[index], forti=forti[index],
+                                     digest_value=digest_value)
+            forced = _redact_sweep_dangles(out, forced, forti[index])
+        else:
+            forced = False
+        if csv is not None:
+            fields = out.split(",")
+            if len(fields) == csv[0]:
+                out = ",".join(_REDACT_LEAD_RE.match(field).group(0) + _REDACT_PLACEHOLDER
+                               if i in csv[1] and _redact_csv_core(field) not in ("", _REDACT_PLACEHOLDER)
+                               else field for i, field in enumerate(fields))
+            else:
+                csv = None
+        if csv is None and "," in out:
+            csv = _redact_csv_header(out)
+        if out != line:
+            lines[index] = out
+            changed = True
+    if not changed:
+        return s
+    parts[0::2] = lines
+    return "".join(parts)
+
+
+#: A CSV header line (decided AFTER the line's own scrub, as the verifier sees it): two or more fields,
+#: each a short identifier or the placeholder, at least one naming a credential (or already redacted).
+#: Following rows with the same field count have those columns replaced ('host,username,password').
+_REDACT_CSV_FIELD_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _.-]{0,63}")
+
+
+def _redact_csv_core(field: str) -> str:
+    return _REDACT_WS_RE.sub(" ", field).strip(" \"'")
+
+
+def _redact_csv_header(line: str):
+    cores = [_redact_csv_core(field) for field in line.split(",")]
+    if len(cores) < 2 or not all(core == _REDACT_PLACEHOLDER or _REDACT_CSV_FIELD_RE.fullmatch(core)
+                                 for core in cores):
+        return None
+    columns = frozenset(i for i, core in enumerate(cores)
+                        if core == _REDACT_PLACEHOLDER or _REDACT_SWEEP_KW_RE.search(core))
+    return (len(cores), columns) if columns else None
 
 
 def redact_snapshot(snap: dict) -> dict:
@@ -4047,11 +4668,11 @@ def redact_snapshot(snap: dict) -> dict:
         out.append(serials(s[cursor:]))
         return "".join(out)
 
-    def _scrub(s):
+    def _scrub(s, digest_value=False):
         # Strip credentials / community / key material first so a secret token is replaced wholesale, THEN
         # pseudonymize any remaining IPv4 / IPv6 / MACs in context. IPv6 is remapped before MAC; the two
         # patterns are mutually exclusive (a MAC has neither 7 colons nor a '::'), so neither corrupts the other.
-        s = _scrub_identity_tokens(_redact_config_values(s))
+        s = _scrub_identity_tokens(_redact_config_values(s, digest_value=digest_value))
         return _REDACT_MAC_RE.sub(_mac, _REDACT_IP6_RE.sub(_ip6, _REDACT_IP_RE.sub(_ip, s)))
 
     def _is_secret_key(key) -> bool:
@@ -4115,7 +4736,7 @@ def redact_snapshot(snap: dict) -> dict:
             if key == "wild": return o   # ACL wildcard mask is not an address; preserve so post-redact L4 eval stays correct
             if o and _is_secret_key(key):
                 return _REDACT_PLACEHOLDER   # a secret stored as a JSON value under a credential-named key
-            return _scrub(o)
+            return _scrub(o, digest_value=bool(_REDACT_DIGEST_KEY_RE.search(_norm_key(key))))
         return o
 
     return _walk(snap)

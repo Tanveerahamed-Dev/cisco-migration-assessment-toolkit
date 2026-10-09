@@ -1,5 +1,6 @@
 {
- "about": "W60 adversarial redaction-grammar corpus. Every credential is an obviously fake synthetic value. must_redact: the producer must turn line into expect exactly, no listed secret may survive, the independent verifier must refuse the raw line, certify the scrubbed line, and refuse the scrubbed line with a token appended after the placeholder (unless flags carry 'url'). must_keep: the producer must leave the line byte-identical and the verifier must certify it. See docs/w60-redaction-grammar-2026-10-09.md.",
+ "about": "W60 adversarial redaction corpus (round 1). Every credential is an obviously fake synthetic value. must_redact: the producer must turn line into expect exactly, no listed secret may survive, the independent verifier must refuse the raw line, certify the scrubbed line, and refuse the scrubbed line with a token appended after the first placeholder unless flags carry 'notail' (that placeholder is not governed by a credential keyword: URL userinfo, a whole high-entropy token, a user name before the keyword). must_keep: left byte-identical and certified. over_redacted: lines with no credential that the fail-safe sweep rewrites anyway; expect pins the documented result. main_6390b66c is origin/main 6390b66c's own _redact_config_values output for the line, captured by running git-archived main; every secret main removed must stay removed. source names the review that reported the line. See docs/w60-redaction-grammar-2026-10-09.md.",
+ "main_ref": "6390b66c1e91e675ebcb52464d60af6f552c9271",
  "must_redact": [
   {
    "platform": "ios",
@@ -8,7 +9,9 @@
    "secrets": [
     "Plain99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder w58r2-review:G06",
+   "main_6390b66c": "enable password <redacted> 15 Plain99pw"
   },
   {
    "platform": "ios",
@@ -17,7 +20,9 @@
    "secrets": [
     "Plain99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "enable password <redacted> 15 0 Plain99pw"
   },
   {
    "platform": "ios",
@@ -26,7 +31,9 @@
    "secrets": [
     "Plain99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "enable password <redacted> 7 Plain99pw"
   },
   {
    "platform": "ios",
@@ -35,7 +42,9 @@
    "secrets": [
     "Plain99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "enable secret <redacted> 15 0 Plain99pw"
   },
   {
    "platform": "ios",
@@ -44,7 +53,9 @@
    "secrets": [
     "Dmvpn99"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder w58r2-review:G07",
+   "main_6390b66c": " ip nhrp authentication Dmvpn99"
   },
   {
    "platform": "ios",
@@ -53,7 +64,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ip nhrp authentication 7 0822455D0A16"
   },
   {
    "platform": "ios",
@@ -62,7 +75,9 @@
    "secrets": [
     "public"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host 192.0.2.10 public"
   },
   {
    "platform": "ios",
@@ -71,7 +86,9 @@
    "secrets": [
     "Comm99v1"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host 192.0.2.10 Comm99v1"
   },
   {
    "platform": "ios",
@@ -80,7 +97,9 @@
    "secrets": [
     "Comm99v1"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host 10.1.1.1 traps Comm99v1"
   },
   {
    "platform": "ios",
@@ -89,7 +108,9 @@
    "secrets": [
     "Comm99v1"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " snmp-server host 10.1.1.1 Comm99v1 snmp"
   },
   {
    "platform": "ios",
@@ -98,7 +119,9 @@
    "secrets": [
     "Comm99v1"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " snmp-server host 10.1.1.1 version 1 <redacted>"
   },
   {
    "platform": "ios",
@@ -107,7 +130,9 @@
    "secrets": [
     "Comm99v2"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host 10.1.1.1 informs version 2c <redacted> udp-port 162"
   },
   {
    "platform": "ios",
@@ -116,7 +141,9 @@
    "secrets": [
     "Comm99v2"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host 10.1.1.1 vrf MGMT traps version 2c <redacted> config bgp"
   },
   {
    "platform": "ios",
@@ -126,8 +153,10 @@
     "Passw0rd99"
    ],
    "flags": [
-    "url"
-   ]
+    "notail"
+   ],
+   "source": "w60-builder",
+   "main_6390b66c": " path scp://admin:Passw0rd99@10.1.1.1/cfg"
   },
   {
    "platform": "ios",
@@ -137,8 +166,10 @@
     "Passw0rd99"
    ],
    "flags": [
-    "url"
-   ]
+    "notail"
+   ],
+   "source": "w60-builder",
+   "main_6390b66c": "copy ftp://admin:Passw0rd99@10.1.1.1/file flash:"
   },
   {
    "platform": "ios",
@@ -148,8 +179,10 @@
     "Passw0rd99"
    ],
    "flags": [
-    "url"
-   ]
+    "notail"
+   ],
+   "source": "w60-builder",
+   "main_6390b66c": "boot system tftp://u:Passw0rd99@192.0.2.1/img.bin"
   },
   {
    "platform": "ios",
@@ -159,8 +192,10 @@
     "Ca99pw"
    ],
    "flags": [
-    "url"
-   ]
+    "notail"
+   ],
+   "source": "w60-builder",
+   "main_6390b66c": "  enrollment url http://ca:Ca99pw@10.1.1.1/"
   },
   {
    "platform": "ios",
@@ -170,8 +205,10 @@
     "Kr99pw"
    ],
    "flags": [
-    "url"
-   ]
+    "notail"
+   ],
+   "source": "w60-builder",
+   "main_6390b66c": "  cli copy running-config ftp://u:Kr99pw@192.0.2.1/b.cfg"
   },
   {
    "platform": "ios",
@@ -182,8 +219,10 @@
     "Url"
    ],
    "flags": [
-    "url"
-   ]
+    "notail"
+   ],
+   "source": "w60-builder",
+   "main_6390b66c": " http://user:Pw99@Url@host/path"
   },
   {
    "platform": "nxos",
@@ -192,7 +231,9 @@
    "secrets": [
     "0123456789ABCDEF0123456789ABCDEF"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " key-octet-string 0123456789ABCDEF0123456789ABCDEF cryptographic-algorithm AES_128_CMAC"
   },
   {
    "platform": "nxos",
@@ -201,7 +242,9 @@
    "secrets": [
     "075E731F1A5C4F524D"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " key-octet-string 7 075E731F1A5C4F524D cryptographic-algorithm AES_128_CMAC"
   },
   {
    "platform": "aireos",
@@ -210,7 +253,9 @@
    "secrets": [
     "Wlc99psk"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "config wlan security wpa akm psk set-key <redacted> Wlc99psk 1"
   },
   {
    "platform": "c9800",
@@ -219,7 +264,9 @@
    "secrets": [
     "Corp99psk"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "  security wpa psk set-key <redacted> 0 Corp99psk"
   },
   {
    "platform": "show",
@@ -228,7 +275,9 @@
    "secrets": [
     "Prose99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "Enable password <redacted> Prose99pw"
   },
   {
    "platform": "show",
@@ -237,7 +286,9 @@
    "secrets": [
     "Prose99comm"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "SNMP community <redacted> : Prose99comm"
   },
   {
    "platform": "show",
@@ -246,7 +297,9 @@
    "secrets": [
     "Prose99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "Password <redacted> Prose99pw"
   },
   {
    "platform": "show",
@@ -255,7 +308,9 @@
    "secrets": [
     "Prose99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "password <redacted> Prose99pw"
   },
   {
    "platform": "show",
@@ -264,7 +319,9 @@
    "secrets": [
     "Prose99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "Password <redacted> Prose99pw"
   },
   {
    "platform": "show",
@@ -273,7 +330,9 @@
    "secrets": [
     "Prose99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "password: Prose99pw"
   },
   {
    "platform": "show",
@@ -282,7 +341,9 @@
    "secrets": [
     "Prose99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "\"password\": \"Prose99pw\""
   },
   {
    "platform": "show",
@@ -291,7 +352,9 @@
    "secrets": [
     "Comm99ro"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " Community <redacted> Comm99ro"
   },
   {
    "platform": "show",
@@ -300,7 +363,9 @@
    "secrets": [
     "Kc99show"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    key 1 <redacted> text \"Kc99show\""
   },
   {
    "platform": "huawei",
@@ -309,7 +374,9 @@
    "secrets": [
     "Hw99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " local-user admin password <redacted> Hw99pw"
   },
   {
    "platform": "huawei",
@@ -318,7 +385,9 @@
    "secrets": [
     "Fake99"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " local-user admin password <redacted> $1a$Fake99$hash"
   },
   {
    "platform": "huawei",
@@ -327,7 +396,9 @@
    "secrets": [
     "Hw99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " super password <redacted> 15 cipher Hw99pw"
   },
   {
    "platform": "huawei",
@@ -336,7 +407,9 @@
    "secrets": [
     "Huawei99"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " snmp-agent community <redacted> Huawei99"
   },
   {
    "platform": "huawei",
@@ -345,7 +418,9 @@
    "secrets": [
     "Huawei99rw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " snmp-agent community <redacted> cipher Huawei99rw"
   },
   {
    "platform": "huawei",
@@ -354,7 +429,9 @@
    "secrets": [
     "Hw99ospf"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ospf authentication-mode md5 1 cipher Hw99ospf"
   },
   {
    "platform": "huawei",
@@ -363,7 +440,9 @@
    "secrets": [
     "Hw99ospf"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ospf authentication-mode md5 1 plain Hw99ospf"
   },
   {
    "platform": "huawei",
@@ -372,7 +451,9 @@
    "secrets": [
     "Hw99vrrp"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " authentication-mode simple plain Hw99vrrp"
   },
   {
    "platform": "huawei",
@@ -381,7 +462,9 @@
    "secrets": [
     "Hw99isis"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " isis authentication-mode md5 cipher Hw99isis"
   },
   {
    "platform": "huawei",
@@ -390,7 +473,9 @@
    "secrets": [
     "Hw99area"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " area-authentication-mode hmac-sha256 key-id 1 cipher Hw99area"
   },
   {
    "platform": "huawei",
@@ -399,7 +484,9 @@
    "secrets": [
     "Hw99rad"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " radius-server shared-key cipher Hw99rad"
   },
   {
    "platform": "huawei",
@@ -408,7 +495,9 @@
    "secrets": [
     "Hw99tac"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " hwtacacs-server shared-key cipher Hw99tac"
   },
   {
    "platform": "huawei",
@@ -418,7 +507,9 @@
     "Hw99Auth",
     "Hw99Priv"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " snmp-agent usm-user v3 u1 authentication-mode sha Hw99Auth privacy-mode aes128 Hw99Priv"
   },
   {
    "platform": "huawei",
@@ -427,7 +518,9 @@
    "secrets": [
     "Hw99bgp"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " peer 192.0.2.2 password <redacted> Hw99bgp"
   },
   {
    "platform": "huawei",
@@ -436,7 +529,9 @@
    "secrets": [
     "Hw99ike"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " pre-shared-key <redacted> Hw99ike"
   },
   {
    "platform": "huawei",
@@ -445,7 +540,9 @@
    "secrets": [
     "Hw99vty"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " set authentication password <redacted> Hw99vty"
   },
   {
    "platform": "huawei",
@@ -454,17 +551,21 @@
    "secrets": [
     "Hw99vrrp"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " vrrp vrid 1 authentication-mode md5 Hw99vrrp"
   },
   {
    "platform": "c9800",
    "line": " mgmtuser username fakeadmin password 0 Ap99pw secret 0 Ap99sec",
-   "expect": " mgmtuser username fakeadmin password 0 <redacted> secret 0 <redacted>",
+   "expect": " mgmtuser <redacted> <redacted> <redacted> 0 <redacted> <redacted> 0 <redacted>",
    "secrets": [
     "Ap99pw",
     "Ap99sec"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " mgmtuser username fakeadmin password 0 <redacted> secret 0 <redacted>"
   },
   {
    "platform": "huawei",
@@ -473,7 +574,9 @@
    "secrets": [
     "Hw99comm"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " snmp-agent target-host trap address udp-domain 10.1.1.1 params securityname cipher Hw99comm v2c"
   },
   {
    "platform": "ios",
@@ -482,7 +585,9 @@
    "secrets": [
     "0123456789ABCDEF0123456789ABCDEF01234567"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ipv6 ospf authentication ipsec spi 256 sha1 0123456789ABCDEF0123456789ABCDEF01234567"
   },
   {
    "platform": "ios",
@@ -491,7 +596,9 @@
    "secrets": [
     "Eigrp99sha"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "  authentication mode hmac-sha-256 0 Eigrp99sha"
   },
   {
    "platform": "show",
@@ -500,7 +607,9 @@
    "secrets": [
     "Hsrp99show"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "  Authentication text, string \"Hsrp99show\""
   },
   {
    "platform": "show",
@@ -509,7 +618,9 @@
    "secrets": [
     "Json99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "{\"password\": \"Json99pw\"}"
   },
   {
    "platform": "ios",
@@ -518,7 +629,9 @@
    "secrets": [
     "Fake99salt"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "enable secret 9 <redacted>"
   },
   {
    "platform": "ios",
@@ -527,7 +640,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "enable password 7 <redacted>"
   },
   {
    "platform": "ios",
@@ -536,7 +651,9 @@
    "secrets": [
     "Fake99salt"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "username fakeuser privilege 15 secret 9 <redacted>"
   },
   {
    "platform": "ios",
@@ -545,7 +662,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "username fakeuser privilege 15 password 7 <redacted>"
   },
   {
    "platform": "ios",
@@ -554,7 +673,9 @@
    "secrets": [
     "Plain99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "username fakeuser algorithm-type scrypt secret <redacted>"
   },
   {
    "platform": "ios",
@@ -563,7 +684,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " password 7 <redacted>"
   },
   {
    "platform": "ios",
@@ -572,7 +695,9 @@
    "secrets": [
     "Comm99ro"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server community <redacted> RO"
   },
   {
    "platform": "ios",
@@ -581,16 +706,20 @@
    "secrets": [
     "Comm99rw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server community <redacted> RW 10"
   },
   {
    "platform": "ios",
    "line": "snmp-server community Comm99acl view V1 RO SNMP-ACL",
-   "expect": "snmp-server community <redacted> view V1 RO SNMP-ACL",
+   "expect": "snmp-server community <redacted> view V1 RO <redacted>",
    "secrets": [
     "Comm99acl"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server community <redacted> view V1 RO SNMP-ACL"
   },
   {
    "platform": "ios",
@@ -600,7 +729,9 @@
     "Auth99pw",
     "Priv99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server user fakeuser fakegroup v3 auth sha Auth99pw priv aes 128 Priv99pw"
   },
   {
    "platform": "ios",
@@ -609,7 +740,9 @@
    "secrets": [
     "Plain0spf99"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ip ospf authentication-key <redacted>"
   },
   {
    "platform": "ios",
@@ -618,7 +751,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ip ospf authentication-key 7 <redacted>"
   },
   {
    "platform": "ios",
@@ -627,7 +762,9 @@
    "secrets": [
     "Plain0spf99"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ip ospf message-digest-key 1 md5 <redacted>"
   },
   {
    "platform": "ios",
@@ -636,7 +773,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ip ospf message-digest-key 1 md5 7 <redacted>"
   },
   {
    "platform": "ios",
@@ -645,7 +784,9 @@
    "secrets": [
     "Hsrp99txt"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " standby 1 authentication Hsrp99txt"
   },
   {
    "platform": "ios",
@@ -654,7 +795,9 @@
    "secrets": [
     "Hsrp99txt"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " standby 1 authentication text Hsrp99txt"
   },
   {
    "platform": "ios",
@@ -663,7 +806,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " standby 1 authentication md5 key-string 7 <redacted> timeout 30"
   },
   {
    "platform": "ios",
@@ -672,7 +817,9 @@
    "secrets": [
     "Vrrp99txt"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " vrrp 1 authentication text Vrrp99txt"
   },
   {
    "platform": "ios",
@@ -681,7 +828,9 @@
    "secrets": [
     "Glbp99txt"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " glbp 1 authentication text Glbp99txt"
   },
   {
    "platform": "ios",
@@ -690,7 +839,9 @@
    "secrets": [
     "Isis99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " isis password <redacted> level-2"
   },
   {
    "platform": "ios",
@@ -699,7 +850,9 @@
    "secrets": [
     "Area99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " area-password <redacted>"
   },
   {
    "platform": "ios",
@@ -708,7 +861,9 @@
    "secrets": [
     "Dom99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " domain-password <redacted>"
   },
   {
    "platform": "ios",
@@ -717,7 +872,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " neighbor 10.0.0.1 password 7 <redacted>"
   },
   {
    "platform": "ios",
@@ -726,7 +883,9 @@
    "secrets": [
     "Bgp99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " neighbor 10.0.0.1 password <redacted>"
   },
   {
    "platform": "ios",
@@ -735,7 +894,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "tacacs-server key 7 <redacted>"
   },
   {
    "platform": "ios",
@@ -744,7 +905,9 @@
    "secrets": [
     "Tac99key"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "tacacs-server host 10.1.1.1 key <redacted>"
   },
   {
    "platform": "ios",
@@ -753,7 +916,9 @@
    "secrets": [
     "12345678"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "tacacs-server key <redacted>"
   },
   {
    "platform": "ios",
@@ -762,7 +927,9 @@
    "secrets": [
     "Rad99key"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "radius-server host 10.1.1.1 auth-port 1812 acct-port 1813 key <redacted>"
   },
   {
    "platform": "ios",
@@ -771,7 +938,9 @@
    "secrets": [
     "Tac99key"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " server-private 10.1.1.1 key <redacted>"
   },
   {
    "platform": "ios",
@@ -780,7 +949,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " pac key 7 <redacted>"
   },
   {
    "platform": "ios",
@@ -789,7 +960,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " key 7 <redacted>"
   },
   {
    "platform": "ios",
@@ -798,7 +971,9 @@
    "secrets": [
     "Ike99psk"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "crypto isakmp key <redacted> address 0.0.0.0 0.0.0.0"
   },
   {
    "platform": "ios",
@@ -807,7 +982,9 @@
    "secrets": [
     "Ike99six"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " crypto isakmp key 6 <redacted> address 0.0.0.0"
   },
   {
    "platform": "ios",
@@ -816,7 +993,9 @@
    "secrets": [
     "Ike99local"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " pre-shared-key local <redacted>"
   },
   {
    "platform": "ios",
@@ -825,7 +1004,9 @@
    "secrets": [
     "Kr99key"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "  pre-shared-key <redacted> 0.0.0.0 0.0.0.0 key <redacted>"
   },
   {
    "platform": "ios",
@@ -834,7 +1015,9 @@
    "secrets": [
     "Ks99str"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "   key-string <redacted>"
   },
   {
    "platform": "ios",
@@ -843,7 +1026,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "   key-string 7 <redacted>"
   },
   {
    "platform": "ios",
@@ -852,7 +1037,9 @@
    "secrets": [
     "Ntp99md5"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ntp authentication-key 1 md5 <redacted> 7"
   },
   {
    "platform": "ios",
@@ -861,7 +1048,9 @@
    "secrets": [
     "Chap99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ppp chap password 0 <redacted>"
   },
   {
    "platform": "ios",
@@ -870,7 +1059,9 @@
    "secrets": [
     "Pap99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ppp pap sent-username fakeuser password 0 <redacted>"
   },
   {
    "platform": "ios",
@@ -879,7 +1070,9 @@
    "secrets": [
     "Http99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "ip http client password <redacted>"
   },
   {
    "platform": "ios",
@@ -888,7 +1081,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "ip ftp password 7 <redacted>"
   },
   {
    "platform": "ios",
@@ -897,7 +1092,9 @@
    "secrets": [
     "Ldap99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " bind authenticated dn cn=fake password <redacted>"
   },
   {
    "platform": "ios",
@@ -906,7 +1103,9 @@
    "secrets": [
     "Sxp99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "cts sxp default password 0 <redacted>"
   },
   {
    "platform": "ios",
@@ -915,7 +1114,9 @@
    "secrets": [
     "Wpa99psk"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " wpa-psk ascii 0 Wpa99psk"
   },
   {
    "platform": "ios",
@@ -924,7 +1125,9 @@
    "secrets": [
     "Wpa299psk"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " wpa2-psk ascii 0 Wpa299psk"
   },
   {
    "platform": "ios",
@@ -933,7 +1136,9 @@
    "secrets": [
     "Wa99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " webauth-http-password <redacted>"
   },
   {
    "platform": "ios",
@@ -942,7 +1147,9 @@
    "secrets": [
     "Vtp99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "vtp password <redacted>"
   },
   {
    "platform": "ios",
@@ -951,7 +1158,9 @@
    "secrets": [
     "Master99key"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " key <redacted> password-encrypt Master99key"
   },
   {
    "platform": "ios",
@@ -960,7 +1169,9 @@
    "secrets": [
     "Ltp99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " l2tp tunnel password <redacted>"
   },
   {
    "platform": "ios",
@@ -969,16 +1180,20 @@
    "secrets": [
     "Ldp99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " mpls ldp neighbor 10.0.0.1 password <redacted>"
   },
   {
    "platform": "ios",
    "line": "smtp-server auth user fakeuser password Smtp99pw",
-   "expect": "smtp-server auth user fakeuser password <redacted>",
+   "expect": "smtp-server auth user <redacted> <redacted> <redacted>",
    "secrets": [
     "Smtp99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "smtp-server auth user fakeuser password <redacted>"
   },
   {
    "platform": "ios",
@@ -987,7 +1202,9 @@
    "secrets": [
     "Ike99rem"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " authentication remote pre-share key <redacted>"
   },
   {
    "platform": "nxos",
@@ -996,7 +1213,9 @@
    "secrets": [
     "Fake99"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "username admin password 5 <redacted> role network-admin"
   },
   {
    "platform": "nxos",
@@ -1006,7 +1225,9 @@
     "0x1a2b3c4d5e6f7a8b9c0d",
     "0x99887766554433221100"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server user fakeuser network-admin auth md5 0x1a2b3c4d5e6f7a8b9c0d priv 0x99887766554433221100 localizedkey"
   },
   {
    "platform": "nxos",
@@ -1016,7 +1237,9 @@
     "Auth99pw",
     "Priv99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server user fakeuser network-admin auth sha Auth99pw priv aes-128 Priv99pw"
   },
   {
    "platform": "nxos",
@@ -1025,16 +1248,20 @@
    "secrets": [
     "Comm99nx"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server community <redacted> group network-operator"
   },
   {
    "platform": "nxos",
    "line": "snmp-server community Comm99nx use-ipv4acl ACL1",
-   "expect": "snmp-server community <redacted> use-ipv4acl ACL1",
+   "expect": "snmp-server community <redacted> <redacted> <redacted>",
    "secrets": [
     "Comm99nx"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server community <redacted> use-ipv4acl ACL1"
   },
   {
    "platform": "nxos",
@@ -1043,7 +1270,9 @@
    "secrets": [
     "Comm99nx"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host 10.1.1.1 traps version 2c <redacted> udp-port 162"
   },
   {
    "platform": "nxos",
@@ -1052,7 +1281,9 @@
    "secrets": [
     "Tac99nx"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "tacacs-server host 10.1.1.1 key 7 <redacted>"
   },
   {
    "platform": "nxos",
@@ -1061,7 +1292,9 @@
    "secrets": [
     "Rad99nx"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "radius-server host 10.1.1.1 key 7 <redacted> authentication accounting"
   },
   {
    "platform": "nxos",
@@ -1070,7 +1303,9 @@
    "secrets": [
     "Fake99nxospf"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ip ospf authentication-key 3 <redacted>"
   },
   {
    "platform": "nxos",
@@ -1079,7 +1314,9 @@
    "secrets": [
     "Hsrp99nx"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "  authentication text Hsrp99nx"
   },
   {
    "platform": "nxos",
@@ -1088,7 +1325,9 @@
    "secrets": [
     "Hsrp99md5"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "  authentication md5 key-string <redacted>"
   },
   {
    "platform": "asa",
@@ -1097,7 +1336,9 @@
    "secrets": [
     "Fake99enc"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "enable password <redacted> encrypted"
   },
   {
    "platform": "asa",
@@ -1106,7 +1347,9 @@
    "secrets": [
     "Fake99enc"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "enable password <redacted> pbkdf2"
   },
   {
    "platform": "asa",
@@ -1115,7 +1358,9 @@
    "secrets": [
     "Fake99telnet"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "passwd Fake99telnet encrypted"
   },
   {
    "platform": "asa",
@@ -1124,7 +1369,9 @@
    "secrets": [
     "Fake99enc"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "username fakeadmin password <redacted> encrypted privilege 15"
   },
   {
    "platform": "asa",
@@ -1133,7 +1380,9 @@
    "secrets": [
     "Fake99enc"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "username fakeadmin password <redacted> pbkdf2 privilege 15"
   },
   {
    "platform": "asa",
@@ -1142,7 +1391,9 @@
    "secrets": [
     "Ike99asa"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ikev1 pre-shared-key <redacted>"
   },
   {
    "platform": "asa",
@@ -1151,25 +1402,31 @@
    "secrets": [
     "Ike99rem"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ikev2 remote-authentication pre-shared-key <redacted>"
   },
   {
    "platform": "asa",
    "line": "snmp-server host inside 10.1.1.1 community Comm99asa version 2c",
-   "expect": "snmp-server host inside 10.1.1.1 community <redacted> version 2c",
+   "expect": "snmp-server host <redacted> 10.1.1.1 <redacted> <redacted> version 2c",
    "secrets": [
     "Comm99asa"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host inside 10.1.1.1 community <redacted> version 2c"
   },
   {
    "platform": "asa",
    "line": "snmp-server host inside 2001:db8::10 community Comm99v6 version 2c",
-   "expect": "snmp-server host inside 2001:db8::10 community <redacted> version 2c",
+   "expect": "snmp-server host <redacted> 2001:db8::10 <redacted> <redacted> version 2c",
    "secrets": [
     "Comm99v6"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host inside 2001:db8::10 community <redacted> version 2c"
   },
   {
    "platform": "asa",
@@ -1178,7 +1435,9 @@
    "secrets": [
     "Fail99key"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "failover key <redacted>"
   },
   {
    "platform": "asa",
@@ -1187,7 +1446,9 @@
    "secrets": [
     "0123456789abcdef0123456789abcdef"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "failover key <redacted> 0123456789abcdef0123456789abcdef"
   },
   {
    "platform": "asa",
@@ -1196,7 +1457,9 @@
    "secrets": [
     "Aaa99key"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "  key <redacted>"
   },
   {
    "platform": "asa",
@@ -1205,43 +1468,53 @@
    "secrets": [
     "Asa99ospf"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ospf message-digest-key 1 md5 <redacted>"
   },
   {
    "platform": "aireos",
    "line": "config radius auth add 1 10.1.1.1 1812 ascii Rad99wlc",
-   "expect": "config radius auth add 1 10.1.1.1 1812 ascii <redacted>",
+   "expect": "config radius auth add 1 10.1.1.1 <redacted> ascii <redacted>",
    "secrets": [
     "Rad99wlc"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "config radius auth add 1 10.1.1.1 1812 ascii Rad99wlc"
   },
   {
    "platform": "aireos",
    "line": "config tacacs auth add 1 10.1.1.1 49 ascii Tac99wlc",
-   "expect": "config tacacs auth add 1 10.1.1.1 49 ascii <redacted>",
+   "expect": "config tacacs auth add 1 10.1.1.1 <redacted> ascii <redacted>",
    "secrets": [
     "Tac99wlc"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "config tacacs auth add 1 10.1.1.1 49 ascii Tac99wlc"
   },
   {
    "platform": "aireos",
    "line": "config mgmtuser add fakeadmin Mgmt99pw read-write",
-   "expect": "config mgmtuser add fakeadmin <redacted> read-write",
+   "expect": "config mgmtuser add <redacted> <redacted> read-write",
    "secrets": [
     "Mgmt99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "config mgmtuser add fakeadmin Mgmt99pw read-write"
   },
   {
    "platform": "aireos",
    "line": "config mgmtuser password fakeadmin Mgmt99pw",
-   "expect": "config mgmtuser password fakeadmin <redacted>",
+   "expect": "config mgmtuser <redacted> <redacted> <redacted>",
    "secrets": [
     "Mgmt99pw"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "config mgmtuser password <redacted> Mgmt99pw"
   },
   {
    "platform": "aireos",
@@ -1250,7 +1523,9 @@
    "secrets": [
     "Comm99wlc"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "config snmp community <redacted> Comm99wlc"
   },
   {
    "platform": "aireos",
@@ -1259,17 +1534,21 @@
    "secrets": [
     "Comm99wlc"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "config snmp community <redacted> ro Comm99wlc"
   },
   {
    "platform": "aireos",
    "line": "config snmp v3user create fakeuser ro hmacsha aes Auth99wlc Priv99wlc",
-   "expect": "config snmp v3user create fakeuser ro hmacsha aes <redacted> <redacted>",
+   "expect": "config snmp v3user create <redacted> ro hmacsha aes <redacted> <redacted>",
    "secrets": [
     "Auth99wlc",
     "Priv99wlc"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "config snmp v3user create fakeuser ro hmacsha aes Auth99wlc Priv99wlc"
   },
   {
    "platform": "aireos",
@@ -1278,7 +1557,9 @@
    "secrets": [
     "0123456789abcdef0123"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "config wlan security wpa akm psk set-key <redacted> 0123456789abcdef0123 2"
   },
   {
    "platform": "iosxr",
@@ -1287,16 +1568,20 @@
    "secrets": [
     "Fake99salt"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " secret 10 <redacted>"
   },
   {
    "platform": "iosxr",
    "line": " key-string password 0822455D0A16",
-   "expect": " key-string password <redacted>",
+   "expect": " key-string <redacted> <redacted>",
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " key-string <redacted> <redacted>"
   },
   {
    "platform": "iosxr",
@@ -1305,7 +1590,9 @@
    "secrets": [
     "Kc99clear"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " key-string <redacted> Kc99clear"
   },
   {
    "platform": "iosxr",
@@ -1314,7 +1601,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " authentication-key <redacted> 0822455D0A16"
   },
   {
    "platform": "iosxr",
@@ -1323,7 +1612,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " message-digest-key 1 md5 <redacted> 0822455D0A16"
   },
   {
    "platform": "iosxr",
@@ -1332,7 +1623,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " password <redacted> 0822455D0A16"
   },
   {
    "platform": "iosxr",
@@ -1341,7 +1634,9 @@
    "secrets": [
     "Comm99xr"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server community <redacted> RO SystemOwner"
   },
   {
    "platform": "iosxr",
@@ -1350,7 +1645,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " hello-password <redacted> encrypted 0822455D0A16"
   },
   {
    "platform": "iosxr",
@@ -1359,7 +1656,9 @@
    "secrets": [
     "0822455D0A16"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " lsp-password <redacted> encrypted 0822455D0A16 level 2"
   },
   {
    "platform": "eos",
@@ -1368,7 +1667,9 @@
    "secrets": [
     "Fake99salt"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "username fakeadmin privilege 15 role network-admin secret <redacted> $6$Fake99salt$hash"
   },
   {
    "platform": "eos",
@@ -1377,7 +1678,9 @@
    "secrets": [
     "Fake99abc"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "username admin secret <redacted> $6$Fake99abc$defghijklmnop"
   },
   {
    "platform": "eos",
@@ -1386,7 +1689,9 @@
    "secrets": [
     "Fake99salt"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "enable password <redacted> $6$Fake99salt$hash"
   },
   {
    "platform": "eos",
@@ -1395,7 +1700,9 @@
    "secrets": [
     "Fake99root"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "aaa root secret <redacted> $6$Fake99root$hash"
   },
   {
    "platform": "eos",
@@ -1404,7 +1711,9 @@
    "secrets": [
     "Fake99bgpEOS"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " neighbor 10.0.0.1 password 7 <redacted>"
   },
   {
    "platform": "eos",
@@ -1413,7 +1722,9 @@
    "secrets": [
     "Fake99eos"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " ip ospf message-digest-key 1 sha256 7 <redacted>"
   },
   {
    "platform": "eos",
@@ -1422,7 +1733,9 @@
    "secrets": [
     "Fake99isis"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " isis authentication key 7 <redacted> level-2"
   },
   {
    "platform": "eos",
@@ -1431,7 +1744,9 @@
    "secrets": [
     "Vrrp99eos"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " vrrp 1 peer authentication text Vrrp99eos"
   },
   {
    "platform": "eos",
@@ -1440,7 +1755,9 @@
    "secrets": [
     "Fake99vrrp"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " vrrp 1 peer authentication ietf-md5 key-string 7 <redacted>"
   },
   {
    "platform": "eos",
@@ -1449,7 +1766,9 @@
    "secrets": [
     "Comm99eos"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server community <redacted> ro"
   },
   {
    "platform": "junos",
@@ -1458,7 +1777,9 @@
    "secrets": [
     "Fake99salt"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "set system root-authentication encrypted-password <redacted>"
   },
   {
    "platform": "junos",
@@ -1467,7 +1788,9 @@
    "secrets": [
     "Fake99"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "set system login user fakeadmin authentication encrypted-password <redacted>"
   },
   {
    "platform": "junos",
@@ -1476,7 +1799,9 @@
    "secrets": [
     "Fake99salt"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "            encrypted-password <redacted>; ## SECRET-DATA"
   },
   {
    "platform": "junos",
@@ -1485,7 +1810,9 @@
    "secrets": [
     "Publ1c99"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "set snmp community <redacted> authorization read-only"
   },
   {
    "platform": "junos",
@@ -1494,7 +1821,9 @@
    "secrets": [
     "Publ1c99"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    community <redacted> {"
   },
   {
    "platform": "junos",
@@ -1503,7 +1832,9 @@
    "secrets": [
     "Fake99bgp"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "set protocols bgp group EXT authentication-key <redacted>"
   },
   {
    "platform": "junos",
@@ -1512,7 +1843,9 @@
    "secrets": [
     "Fake99ospf"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "set protocols ospf area 0 interface ge-0/0/0.0 authentication md5 1 key <redacted>"
   },
   {
    "platform": "junos",
@@ -1521,7 +1854,9 @@
    "secrets": [
     "Fake99rad"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "set system radius-server 10.1.1.1 secret <redacted>"
   },
   {
    "platform": "junos",
@@ -1530,7 +1865,9 @@
    "secrets": [
     "Fake99sec"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " secret <redacted>"
   },
   {
    "platform": "junos",
@@ -1539,7 +1876,9 @@
    "secrets": [
     "Fake99ike"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": " pre-shared-key ascii-text <redacted>"
   },
   {
    "platform": "junos",
@@ -1549,7 +1888,9 @@
     "0123456789abcdef",
     "Fake99cak"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "set security macsec connectivity-association CA1 pre-shared-key <redacted> 0123456789abcdef cak Fake99cakfedcba9876"
   },
   {
    "platform": "junos",
@@ -1558,7 +1899,9 @@
    "secrets": [
     "Fake99isis"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "set protocols isis interface ge-0/0/1.0 level 2 hello-authentication-key <redacted>"
   },
   {
    "platform": "fortigate",
@@ -1567,7 +1910,9 @@
    "secrets": [
     "Fake99hash"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set password ENC <redacted>"
   },
   {
    "platform": "fortigate",
@@ -1576,7 +1921,9 @@
    "secrets": [
     "Fake99passwd"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set passwd ENC <redacted>"
   },
   {
    "platform": "fortigate",
@@ -1585,7 +1932,9 @@
    "secrets": [
     "Fake99psk"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set psksecret ENC <redacted>"
   },
   {
    "platform": "fortigate",
@@ -1594,7 +1943,9 @@
    "secrets": [
     "Fortipsk99"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set psksecret <redacted>"
   },
   {
    "platform": "fortigate",
@@ -1603,7 +1954,9 @@
    "secrets": [
     "Fake99auth"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set auth-pwd ENC Fake99auth"
   },
   {
    "platform": "fortigate",
@@ -1612,7 +1965,9 @@
    "secrets": [
     "Fake99priv"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set priv-pwd ENC Fake99priv"
   },
   {
    "platform": "fortigate",
@@ -1621,7 +1976,9 @@
    "secrets": [
     "Fake99rad"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set secret <redacted> Fake99rad"
   },
   {
    "platform": "fortigate",
@@ -1630,7 +1987,9 @@
    "secrets": [
     "Fake99rad2"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set secondary-secret <redacted> Fake99rad2"
   },
   {
    "platform": "fortigate",
@@ -1639,7 +1998,9 @@
    "secrets": [
     "Fake99tacacs"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set key <redacted> Fake99tacacs"
   },
   {
    "platform": "fortigate",
@@ -1649,7 +2010,9 @@
     "horse",
     "staple"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set passphrase <redacted>"
   },
   {
    "platform": "fortigate",
@@ -1658,7 +2021,9 @@
    "secrets": [
     "Fake99sae"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set sae-password ENC <redacted>"
   },
   {
    "platform": "fortigate",
@@ -1667,417 +2032,3451 @@
    "secrets": [
     "Fake99ospf"
    ],
-   "flags": []
+   "flags": [],
+   "source": "w60-builder",
+   "main_6390b66c": "    set authentication-key <redacted> Fake99ospf"
+  },
+  {
+   "platform": "ios",
+   "line": " ip ospf message-digest-key 1 md5 12345678",
+   "expect": " ip ospf message-digest-key 1 md5 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-ospf-md5-numeric",
+   "main_6390b66c": " ip ospf message-digest-key 1 md5 <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": " ip ospf authentication-key 12345678",
+   "expect": " ip ospf authentication-key <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-ospf-authkey-numeric",
+   "main_6390b66c": " ip ospf authentication-key <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": " ip ospf authentication-key 0 12345678",
+   "expect": " ip ospf authentication-key 0 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-ospf-authkey-0-numeric",
+   "main_6390b66c": " ip ospf authentication-key 0 <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "ntp authentication-key 1 md5 12345678",
+   "expect": "ntp authentication-key 1 md5 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-ntp-key-numeric w60-review:asa-ntp-key-numeric",
+   "main_6390b66c": "ntp authentication-key 1 md5 <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "radius server ISE1\n address ipv4 192.0.2.5 auth-port 1812 acct-port 1813\n key 12345678",
+   "expect": "radius server ISE1\n address ipv4 192.0.2.5 auth-port 1812 acct-port 1813\n key <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-radius-block-key-numeric",
+   "main_6390b66c": "radius server ISE1\n address ipv4 192.0.2.5 auth-port 1812 acct-port 1813\n key <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "tacacs server TAC1\n address ipv4 192.0.2.6\n key 0 12345678",
+   "expect": "tacacs server TAC1\n address ipv4 192.0.2.6\n key 0 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-tacacs-block-key0-numeric",
+   "main_6390b66c": "tacacs server TAC1\n address ipv4 192.0.2.6\n key 0 <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto isakmp key 12345678 address 192.0.2.1",
+   "expect": "crypto isakmp key <redacted> address 192.0.2.1",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-isakmp-key-numeric",
+   "main_6390b66c": "crypto isakmp key 12345678 <redacted> 192.0.2.1"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto isakmp key 0 12345678 address 192.0.2.1",
+   "expect": "crypto isakmp key 0 <redacted> address 192.0.2.1",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-isakmp-key0-numeric",
+   "main_6390b66c": "crypto isakmp key 0 <redacted> address 192.0.2.1"
+  },
+  {
+   "platform": "ios",
+   "line": "aaa server radius dynamic-author\n client 192.0.2.5 server-key 12345678",
+   "expect": "aaa server radius dynamic-author\n client 192.0.2.5 server-key <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-dynauthor-serverkey-numeric",
+   "main_6390b66c": "aaa server radius dynamic-author\n client 192.0.2.5 server-key <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto keyring KR1\n  pre-shared-key address 192.0.2.1 key 12345678",
+   "expect": "crypto keyring KR1\n  pre-shared-key address 192.0.2.1 key <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-keyring-psk-numeric",
+   "main_6390b66c": "crypto keyring KR1\n  pre-shared-key <redacted> 192.0.2.1 key <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "radius server ISE2\n pac key 12345678",
+   "expect": "radius server ISE2\n pac key <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-pac-key-numeric",
+   "main_6390b66c": "radius server ISE2\n pac key <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": " area 1 virtual-link 192.0.2.2 message-digest-key 1 md5 12345678",
+   "expect": " area 1 virtual-link 192.0.2.2 message-digest-key 1 md5 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-virtual-link-md5-numeric",
+   "main_6390b66c": " area 1 virtual-link 192.0.2.2 message-digest-key 1 md5 <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp mib community-map Fake99cmap context CTX1",
+   "expect": "snmp mib community-map <redacted> context <redacted>",
+   "secrets": [
+    "Fake99cmap"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-snmp-mib-community-map",
+   "main_6390b66c": "snmp mib community-map Fake99cmap context CTX1"
+  },
+  {
+   "platform": "ios",
+   "line": "event manager environment _login_password Fake99eem",
+   "expect": "event manager environment <redacted> <redacted>",
+   "secrets": [
+    "Fake99eem"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-eem-env-password",
+   "main_6390b66c": "event manager environment _login_password Fake99eem"
+  },
+  {
+   "platform": "ios",
+   "line": "license smart register idtoken Fake99IdTokenValue",
+   "expect": "license smart register idtoken <redacted>",
+   "secrets": [
+    "Fake99IdTokenValue"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-smart-idtoken",
+   "main_6390b66c": "license smart register idtoken Fake99IdTokenValue"
+  },
+  {
+   "platform": "ios",
+   "line": "mpls ldp password fallback 0 Fake99ldpfb",
+   "expect": "mpls ldp password fallback 0 <redacted>",
+   "secrets": [
+    "Fake99ldpfb"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-ldp-password-fallback",
+   "main_6390b66c": "mpls ldp password <redacted> 0 Fake99ldpfb"
+  },
+  {
+   "platform": "ios",
+   "line": " set session-key inbound esp 256 cipher 0123456789abcdef0123456789abcdef authenticator fedcba9876543210fedcba9876543210",
+   "expect": " set session-key inbound esp 256 cipher <redacted> authenticator <redacted>",
+   "secrets": [
+    "0123456789abcdef0123456789abcdef",
+    "fedcba9876543210fedcba9876543210"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-ipsec-manual-session-key",
+   "main_6390b66c": " set session-key <redacted> esp 256 cipher 0123456789abcdef0123456789abcdef authenticator fedcba9876543210fedcba9876543210"
+  },
+  {
+   "platform": "ios",
+   "line": " ipv6 ospf encryption ipsec spi 1001 esp aes-cbc 128 0123456789ABCDEF0123456789ABCDEF sha1 FEDCBA9876543210FEDCBA9876543210FEDCBA98",
+   "expect": " ipv6 ospf encryption ipsec spi <redacted> esp aes-cbc 128 <redacted> sha1 <redacted>",
+   "secrets": [
+    "0123456789ABCDEF0123456789ABCDEF",
+    "FEDCBA9876543210FEDCBA9876543210FEDCBA98"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-ospfv3-encryption-ipsec",
+   "main_6390b66c": " ipv6 ospf encryption ipsec spi 1001 esp aes-cbc 128 0123456789ABCDEF0123456789ABCDEF sha1 FEDCBA9876543210FEDCBA9876543210FEDCBA98"
+  },
+  {
+   "platform": "ios",
+   "line": "dot1x credentials DC1\n username fakeuser\n password 0 Fake99dot1x",
+   "expect": "dot1x credentials <redacted>\n username fakeuser\n password 0 <redacted>",
+   "secrets": [
+    "Fake99dot1x"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-dot1x-credentials",
+   "main_6390b66c": "dot1x credentials DC1\n username fakeuser\n password 0 <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto pki import TP1 pkcs12 tftp://192.0.2.1/tp.p12 password Fake99p12",
+   "expect": "crypto pki import TP1 pkcs12 tftp://192.0.2.1/tp.p12 <redacted> <redacted>",
+   "secrets": [
+    "Fake99p12"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-pkcs12-import",
+   "main_6390b66c": "crypto pki import TP1 pkcs12 tftp://192.0.2.1/tp.p12 password <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server user fakeuser fakegroup v3 auth sha Fake99authA priv aes 256 Fake99privP",
+   "expect": "snmp-server user fakeuser fakegroup v3 auth sha <redacted> priv aes 256 <redacted>",
+   "secrets": [
+    "Fake99authA",
+    "Fake99privP"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-snmpv3-aes256",
+   "main_6390b66c": "snmp-server user fakeuser fakegroup v3 auth sha Fake99authA priv aes 256 Fake99privP"
+  },
+  {
+   "platform": "ios",
+   "line": " server-private 192.0.2.1 auth-port 1812 acct-port 1813 key 0 Fake99priv",
+   "expect": " server-private 192.0.2.1 auth-port 1812 acct-port 1813 key 0 <redacted>",
+   "secrets": [
+    "Fake99priv"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-server-private-key0",
+   "main_6390b66c": " server-private 192.0.2.1 auth-port 1812 acct-port 1813 key 0 <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": " standby 1 authentication 12345678",
+   "expect": " standby 1 authentication <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-standby-auth-numeric",
+   "main_6390b66c": " standby 1 authentication 12345678"
+  },
+  {
+   "platform": "ios",
+   "line": " neighbor 192.0.2.9 password 12345678",
+   "expect": " neighbor 192.0.2.9 password <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:ios-bgp-password-numeric",
+   "main_6390b66c": " neighbor 192.0.2.9 password <redacted>"
+  },
+  {
+   "platform": "url",
+   "line": "archive\n path scp://admin:Fa/ke99slash@192.0.2.1/cfg",
+   "expect": "archive\n path scp://admin:<redacted>@192.0.2.1/cfg",
+   "secrets": [
+    "Fa/ke99slash",
+    "ke99slash"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review:url-slash-in-password",
+   "main_6390b66c": "archive\n path scp://admin:Fa/ke99slash@192.0.2.1/cfg"
+  },
+  {
+   "platform": "url",
+   "line": "copy ftp://:Fake99anon@192.0.2.1/f flash:",
+   "expect": "copy ftp://:<redacted>@192.0.2.1/f flash:",
+   "secrets": [
+    "Fake99anon"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review:url-empty-user",
+   "main_6390b66c": "copy ftp://:Fake99anon@192.0.2.1/f flash:"
+  },
+  {
+   "platform": "url",
+   "line": "copy ftp://admin@corp.example:Fake99atuser@192.0.2.1/f flash:",
+   "expect": "copy ftp://admin@corp.example:<redacted>@192.0.2.1/f flash:",
+   "secrets": [
+    "Fake99atuser"
+   ],
+   "flags": [],
+   "source": "w60-review:url-at-in-user",
+   "main_6390b66c": "copy ftp://admin@corp.example:Fake99atuser@192.0.2.1/f flash:"
+  },
+  {
+   "platform": "url",
+   "line": "boot system ftp://u:Fake99v6@[2001:db8::1]/img.bin",
+   "expect": "boot system ftp://u:<redacted>@[2001:db8::1]/img.bin",
+   "secrets": [
+    "Fake99v6"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review:url-ipv6-host",
+   "main_6390b66c": "boot system ftp://u:Fake99v6@[2001:db8::1]/img.bin"
+  },
+  {
+   "platform": "url",
+   "line": "copy ftp://admin:Fa:ke99colon@192.0.2.1/f flash:",
+   "expect": "copy ftp://admin:<redacted>@192.0.2.1/f flash:",
+   "secrets": [
+    "Fa:ke99colon",
+    "ke99colon"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review:url-colon-in-password",
+   "main_6390b66c": "copy ftp://admin:Fa:ke99colon@192.0.2.1/f flash:"
+  },
+  {
+   "platform": "url",
+   "line": "ldap://cn=admin,dc=example:Fake99ldapurl@192.0.2.1/",
+   "expect": "ldap://cn=admin,dc=example:<redacted>@192.0.2.1/",
+   "secrets": [
+    "Fake99ldapurl"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review:url-ldap-dn-user",
+   "main_6390b66c": "ldap://cn=admin,dc=example:Fake99ldapurl@192.0.2.1/"
+  },
+  {
+   "platform": "nxos",
+   "line": "ntp authentication-key 2 md5 12345678",
+   "expect": "ntp authentication-key 2 md5 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:nxos-ntp-key-numeric",
+   "main_6390b66c": "ntp authentication-key 2 md5 <redacted>"
+  },
+  {
+   "platform": "nxos",
+   "line": "ldap-server host 192.0.2.1 rootDN \"cn=fake\" password 7 Fake99ldapnx port 389",
+   "expect": "ldap-server host 192.0.2.1 rootDN \"cn=fake\" password 7 <redacted> port 389",
+   "secrets": [
+    "Fake99ldapnx"
+   ],
+   "flags": [],
+   "source": "w60-review:nxos-ldap-rootdn-password",
+   "main_6390b66c": "ldap-server host 192.0.2.1 rootDN \"cn=fake\" password 7 <redacted> port 389"
+  },
+  {
+   "platform": "nxos",
+   "line": "rmon event 1 log trap Fake99rmon description FATAL(1) owner PMON@FATAL",
+   "expect": "rmon event 1 log trap <redacted> description <redacted> owner <redacted>",
+   "secrets": [
+    "Fake99rmon"
+   ],
+   "flags": [],
+   "source": "w60-review:nxos-rmon-trap-community",
+   "main_6390b66c": "rmon event 1 log trap Fake99rmon description FATAL(1) owner PMON@FATAL"
+  },
+  {
+   "platform": "nxos",
+   "line": "Community            Group / Access      context    acl_filter\n---------            --------------      -------    ----------\nFake99nxcomm         network-operator",
+   "expect": "Community            Group / Access      context    acl_filter\n---------            --------------      -------    ----------\n<redacted>           network-operator",
+   "secrets": [
+    "Fake99nxcomm"
+   ],
+   "flags": [],
+   "source": "w60-review:nxos-show-snmp-community-row",
+   "main_6390b66c": "Community            <redacted> / Access      context    acl_filter\n---------            --------------      -------    ----------\nFake99nxcomm         network-operator"
+  },
+  {
+   "platform": "asa",
+   "line": "aaa-server ISE (inside) host 192.0.2.1\n key 12345678",
+   "expect": "aaa-server ISE (inside) host 192.0.2.1\n key <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:asa-aaa-host-key-numeric",
+   "main_6390b66c": "aaa-server ISE (inside) host 192.0.2.1\n key <redacted>"
+  },
+  {
+   "platform": "asa",
+   "line": "aaa-server ISE (inside) host 192.0.2.1 key 12345678",
+   "expect": "aaa-server ISE (inside) host 192.0.2.1 key <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:asa-aaa-host-line-key-numeric",
+   "main_6390b66c": "aaa-server ISE (inside) host 192.0.2.1 key <redacted>"
+  },
+  {
+   "platform": "asa",
+   "line": "snmp-server community 0 12345678",
+   "expect": "snmp-server community 0 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:asa-snmp-community-type0-numeric",
+   "main_6390b66c": "snmp-server community <redacted> 12345678"
+  },
+  {
+   "platform": "asa",
+   "line": "snmp-server community 8 Fake99asaEnc",
+   "expect": "snmp-server community 8 <redacted>",
+   "secrets": [
+    "Fake99asaEnc"
+   ],
+   "flags": [],
+   "source": "w60-review:asa-snmp-community-type8",
+   "main_6390b66c": "snmp-server community <redacted> Fake99asaEnc"
+  },
+  {
+   "platform": "asa",
+   "line": "snmp-server host inside 192.0.2.1 community 0 12345678 version 2c",
+   "expect": "snmp-server host <redacted> 192.0.2.1 <redacted> 0 <redacted> version 2c",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:asa-snmp-host-community-type0-numeric",
+   "main_6390b66c": "snmp-server host inside 192.0.2.1 community <redacted> 12345678 version 2c"
+  },
+  {
+   "platform": "asa",
+   "line": "snmp-server host inside 192.0.2.1 community 8 Fake99asaHost version 2c",
+   "expect": "snmp-server host <redacted> 192.0.2.1 <redacted> 8 <redacted> version 2c",
+   "secrets": [
+    "Fake99asaHost"
+   ],
+   "flags": [],
+   "source": "w60-review:asa-snmp-host-community-type8",
+   "main_6390b66c": "snmp-server host inside 192.0.2.1 community <redacted> Fake99asaHost version 2c"
+  },
+  {
+   "platform": "iosxr",
+   "line": "snmp-server community clear Fake99xr RO",
+   "expect": "snmp-server community clear <redacted> RO",
+   "secrets": [
+    "Fake99xr"
+   ],
+   "flags": [],
+   "source": "w60-review:xr-snmp-community-clear",
+   "main_6390b66c": "snmp-server community <redacted> Fake99xr RO"
+  },
+  {
+   "platform": "iosxr",
+   "line": "snmp-server community encrypted 0822455D0A16 RO",
+   "expect": "snmp-server community encrypted <redacted> RO",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": [],
+   "source": "w60-review:xr-snmp-community-encrypted",
+   "main_6390b66c": "snmp-server community <redacted> 0822455D0A16 RO"
+  },
+  {
+   "platform": "iosxr",
+   "line": "snmp-server community clear 12345678 RO",
+   "expect": "snmp-server community clear <redacted> RO",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:xr-snmp-community-clear-numeric",
+   "main_6390b66c": "snmp-server community <redacted> 12345678 RO"
+  },
+  {
+   "platform": "iosxr",
+   "line": "snmp-server user fakeuser fakegroup v3 auth sha clear Fake99xrA priv aes 128 clear Fake99xrP",
+   "expect": "snmp-server user fakeuser fakegroup v3 auth sha clear <redacted> priv aes 128 clear <redacted>",
+   "secrets": [
+    "Fake99xrA",
+    "Fake99xrP"
+   ],
+   "flags": [],
+   "source": "w60-review:xr-snmpv3-user-clear",
+   "main_6390b66c": "snmp-server user fakeuser fakegroup v3 auth sha clear Fake99xrA priv aes 128 clear Fake99xrP"
+  },
+  {
+   "platform": "iosxr",
+   "line": "snmp-server user fakeuser fakegroup v3 auth md5 encrypted 0822455D0A16 priv des56 encrypted 1511021F0725",
+   "expect": "snmp-server user fakeuser fakegroup v3 auth md5 encrypted <redacted> priv des56 encrypted <redacted>",
+   "secrets": [
+    "0822455D0A16",
+    "1511021F0725"
+   ],
+   "flags": [],
+   "source": "w60-review:xr-snmpv3-user-des56",
+   "main_6390b66c": "snmp-server user fakeuser fakegroup v3 auth md5 encrypted 0822455D0A16 priv des56 encrypted 1511021F0725"
+  },
+  {
+   "platform": "iosxr",
+   "line": "snmp-server host 192.0.2.10 traps version 2c encrypted 0822455D0A16",
+   "expect": "snmp-server host 192.0.2.10 traps version 2c encrypted <redacted>",
+   "secrets": [
+    "0822455D0A16"
+   ],
+   "flags": [],
+   "source": "w60-review:xr-snmp-host-encrypted",
+   "main_6390b66c": "snmp-server host 192.0.2.10 traps version 2c <redacted> 0822455D0A16"
+  },
+  {
+   "platform": "iosxr",
+   "line": "snmp-server host 192.0.2.10 traps version 2c clear Fake99xrh udp-port 162",
+   "expect": "snmp-server host 192.0.2.10 traps version 2c clear <redacted> udp-port 162",
+   "secrets": [
+    "Fake99xrh"
+   ],
+   "flags": [],
+   "source": "w60-review:xr-snmp-host-clear",
+   "main_6390b66c": "snmp-server host 192.0.2.10 traps version 2c <redacted> Fake99xrh udp-port 162"
+  },
+  {
+   "platform": "iosxr",
+   "line": "  authentication-key clear 12345678",
+   "expect": "  authentication-key clear <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:xr-ospf-authkey-clear-numeric",
+   "main_6390b66c": "  authentication-key <redacted> 12345678"
+  },
+  {
+   "platform": "iosxr",
+   "line": "  message-digest-key 1 md5 clear 12345678",
+   "expect": "  message-digest-key 1 md5 clear <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:xr-ospf-mdkey-clear-numeric",
+   "main_6390b66c": "  message-digest-key 1 md5 <redacted> 12345678"
+  },
+  {
+   "platform": "aireos",
+   "line": "config ap mgmtuser add username fakeadmin password Fake99apu enablesecret Fake99aps all",
+   "expect": "config ap mgmtuser add <redacted> <redacted> <redacted> <redacted> <redacted> <redacted> all",
+   "secrets": [
+    "Fake99apu",
+    "Fake99aps"
+   ],
+   "flags": [],
+   "source": "w60-review:aireos-ap-mgmtuser-enablesecret",
+   "main_6390b66c": "config ap mgmtuser add username fakeadmin password <redacted> enablesecret Fake99aps all"
+  },
+  {
+   "platform": "c9800",
+   "line": "radius server WLC-ISE\n address ipv4 192.0.2.7 auth-port 1812 acct-port 1813\n key 0 12345678",
+   "expect": "radius server WLC-ISE\n address ipv4 192.0.2.7 auth-port 1812 acct-port 1813\n key 0 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:c9800-radius-key-numeric",
+   "main_6390b66c": "radius server WLC-ISE\n address ipv4 192.0.2.7 auth-port 1812 acct-port 1813\n key 0 <redacted>"
+  },
+  {
+   "platform": "eos",
+   "line": "daemon TerminAttr\n   exec /usr/bin/TerminAttr -cvaddr=192.0.2.1:9910 -cvauth=key,Fake99cvkey -cvvrf=MGMT -taillogs",
+   "expect": "daemon TerminAttr\n   exec /usr/bin/TerminAttr -cvaddr=192.0.2.1:9910 -cvauth=key,<redacted> <redacted>=<redacted> <redacted>",
+   "secrets": [
+    "Fake99cvkey"
+   ],
+   "flags": [],
+   "source": "w60-review:eos-terminattr-cvauth",
+   "main_6390b66c": "daemon TerminAttr\n   exec /usr/bin/TerminAttr -cvaddr=192.0.2.1:9910 -cvauth=key,Fake99cvkey -cvvrf=MGMT -taillogs"
+  },
+  {
+   "platform": "eos",
+   "line": "   exec /usr/bin/TerminAttr -ingestgrpcurl=192.0.2.1:9910 -ingestauth=key,Fake99ingest -taillogs",
+   "expect": "   exec /usr/bin/TerminAttr -ingestgrpcurl=192.0.2.1:9910 -ingestauth=key,<redacted> <redacted>",
+   "secrets": [
+    "Fake99ingest"
+   ],
+   "flags": [],
+   "source": "w60-review:eos-terminattr-ingestauth",
+   "main_6390b66c": "   exec /usr/bin/TerminAttr -ingestgrpcurl=192.0.2.1:9910 -ingestauth=key,Fake99ingest -taillogs"
+  },
+  {
+   "platform": "eos",
+   "line": "   isis authentication key 0 12345678 level-2",
+   "expect": "   isis authentication key 0 <redacted> level-2",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:eos-isis-key-numeric",
+   "main_6390b66c": "   isis authentication key 0 <redacted> level-2"
+  },
+  {
+   "platform": "eos",
+   "line": "   ip ospf authentication-key 0 12345678",
+   "expect": "   ip ospf authentication-key 0 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:eos-ospf-authkey-numeric",
+   "main_6390b66c": "   ip ospf authentication-key 0 <redacted>"
+  },
+  {
+   "platform": "eos",
+   "line": "snmp-server user fakeuser fakegroup v3 auth sha512 Fake99eosA priv aes256 Fake99eosP",
+   "expect": "snmp-server user fakeuser fakegroup v3 auth sha512 <redacted> priv aes256 <redacted>",
+   "secrets": [
+    "Fake99eosA",
+    "Fake99eosP"
+   ],
+   "flags": [],
+   "source": "w60-review:eos-snmpv3-sha512-aes256",
+   "main_6390b66c": "snmp-server user fakeuser fakegroup v3 auth sha512 Fake99eosA priv aes256 Fake99eosP"
+  },
+  {
+   "platform": "junos",
+   "line": "set system ntp authentication-key 1 type md5 value \"$9$Fake99ntp\"",
+   "expect": "set system ntp authentication-key 1 type md5 value <redacted>",
+   "secrets": [
+    "Fake99ntp"
+   ],
+   "flags": [],
+   "source": "w60-review:junos-ntp-key-value-set",
+   "main_6390b66c": "set system ntp authentication-key 1 <redacted> md5 value \"$9$Fake99ntp\""
+  },
+  {
+   "platform": "junos",
+   "line": "    authentication-key 1 type md5 value \"$9$Fake99ntph\"; ## SECRET-DATA",
+   "expect": "    authentication-key 1 type md5 value <redacted> ## SECRET-DATA",
+   "secrets": [
+    "Fake99ntph"
+   ],
+   "flags": [],
+   "source": "w60-review:junos-ntp-key-value-hier",
+   "main_6390b66c": "    authentication-key 1 <redacted> md5 value \"$9$Fake99ntph\"; ## SECRET-DATA"
+  },
+  {
+   "platform": "junos",
+   "line": "        community-name \"$9$Fake99cn\"; ## SECRET-DATA",
+   "expect": "        community-name <redacted>; ## SECRET-DATA",
+   "secrets": [
+    "Fake99cn"
+   ],
+   "flags": [],
+   "source": "w60-review:junos-community-name-hier",
+   "main_6390b66c": "        community-name \"$9$Fake99cn\"; ## SECRET-DATA"
+  },
+  {
+   "platform": "junos",
+   "line": "set snmp v3 snmp-community IDX1 community-name \"Fake99cn2\"",
+   "expect": "set snmp v3 snmp-community <redacted> <redacted> <redacted>",
+   "secrets": [
+    "Fake99cn2"
+   ],
+   "flags": [],
+   "source": "w60-review:junos-community-name-set",
+   "main_6390b66c": "set snmp v3 snmp-community <redacted> community-name \"Fake99cn2\""
+  },
+  {
+   "platform": "junos",
+   "line": "set snmp trap-group Fake99tg targets 192.0.2.1",
+   "expect": "set snmp trap-group <redacted> targets 192.0.2.1",
+   "secrets": [
+    "Fake99tg"
+   ],
+   "flags": [],
+   "source": "w60-review:junos-trap-group",
+   "main_6390b66c": "set snmp trap-group Fake99tg targets 192.0.2.1"
+  },
+  {
+   "platform": "junos",
+   "line": "<encrypted-password>$6$Fake99xml$hash</encrypted-password>",
+   "expect": "<encrypted-password><redacted></encrypted-password>",
+   "secrets": [
+    "Fake99xml"
+   ],
+   "flags": [],
+   "source": "w60-review:junos-xml-encrypted-password",
+   "main_6390b66c": "<encrypted-password>$6$Fake99xml$hash</encrypted-password>"
+  },
+  {
+   "platform": "junos",
+   "line": "set protocols ospf area 0.0.0.0 interface ge-0/0/0.0 authentication simple-password \"$9$Fake99sp\"",
+   "expect": "set protocols ospf area 0.0.0.0 interface ge-0/0/0.0 authentication simple-password <redacted>",
+   "secrets": [
+    "Fake99sp"
+   ],
+   "flags": [],
+   "source": "w60-review:junos-simple-password",
+   "main_6390b66c": "set protocols ospf area 0.0.0.0 interface ge-0/0/0.0 authentication simple-password <redacted>"
+  },
+  {
+   "platform": "junos",
+   "line": "    \"encrypted-password\" : \"$6$Fake99json$h\",",
+   "expect": "    \"encrypted-password\" : <redacted>,",
+   "secrets": [
+    "Fake99json"
+   ],
+   "flags": [],
+   "source": "w60-review:junos-json-encrypted-password",
+   "main_6390b66c": "    \"encrypted-password\" : \"$6$Fake99json$h\","
+  },
+  {
+   "platform": "fortigate",
+   "line": "config system snmp community\n    edit 1\n        set name \"Fake99snmpcomm\"",
+   "expect": "config system snmp community\n    edit 1\n        set name <redacted>",
+   "secrets": [
+    "Fake99snmpcomm"
+   ],
+   "flags": [],
+   "source": "w60-review:fgt-snmp-community-set-name",
+   "main_6390b66c": "config system snmp community\n    <redacted> 1\n        set name \"Fake99snmpcomm\""
+  },
+  {
+   "platform": "fortigate",
+   "line": "            config md5-keys\n                edit 1\n                    set key-string ENC Fake99md5ks",
+   "expect": "            config md5-keys\n                edit 1\n                    set key-string ENC <redacted>",
+   "secrets": [
+    "Fake99md5ks"
+   ],
+   "flags": [],
+   "source": "w60-review:fgt-ospf-md5-key-string",
+   "main_6390b66c": "            config md5-keys\n                edit 1\n                    set key-string <redacted> Fake99md5ks"
+  },
+  {
+   "platform": "fortigate",
+   "line": "    set private-key \"-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFakePEMBody99AAAABBBBCCCC\n-----END ENCRYPTED PRIVATE KEY-----\"",
+   "expect": "    set private-key \"-----BEGIN ENCRYPTED PRIVATE KEY-----\n<redacted>\n-----END ENCRYPTED PRIVATE KEY-----\"",
+   "secrets": [
+    "MIIFakePEMBody99AAAABBBBCCCC"
+   ],
+   "flags": [],
+   "source": "w60-review:fgt-private-key-pem",
+   "main_6390b66c": "    set private-key <redacted> ENCRYPTED PRIVATE KEY-----\nMIIFakePEMBody99AAAABBBBCCCC\n-----END ENCRYPTED PRIVATE KEY-----\""
+  },
+  {
+   "platform": "fortigate",
+   "line": "        set secret-key ENC Fake99sdnsecret",
+   "expect": "        set secret-key ENC <redacted>",
+   "secrets": [
+    "Fake99sdnsecret"
+   ],
+   "flags": [],
+   "source": "w60-review:fgt-secret-key",
+   "main_6390b66c": "        set secret-key <redacted> Fake99sdnsecret"
+  },
+  {
+   "platform": "fortigate",
+   "line": "        set api-key ENC Fake99fgtapi",
+   "expect": "        set api-key ENC <redacted>",
+   "secrets": [
+    "Fake99fgtapi"
+   ],
+   "flags": [],
+   "source": "w60-review:fgt-api-key",
+   "main_6390b66c": "        set api-key <redacted> Fake99fgtapi"
+  },
+  {
+   "platform": "huawei",
+   "line": " security wpa2 psk pass-phrase cipher Fake99hwpsk aes",
+   "expect": " security wpa2 psk <redacted> cipher <redacted> aes",
+   "secrets": [
+    "Fake99hwpsk"
+   ],
+   "flags": [],
+   "source": "w60-review:hw-wlan-pass-phrase-cipher",
+   "main_6390b66c": " security wpa2 psk pass-phrase cipher Fake99hwpsk aes"
+  },
+  {
+   "platform": "huawei",
+   "line": " security wpa-wpa2 psk pass-phrase Fake99hwpsk2 aes",
+   "expect": " security wpa-wpa2 psk <redacted> <redacted> aes",
+   "secrets": [
+    "Fake99hwpsk2"
+   ],
+   "flags": [],
+   "source": "w60-review:hw-wlan-pass-phrase-plain",
+   "main_6390b66c": " security wpa-wpa2 psk pass-phrase Fake99hwpsk2 aes"
+  },
+  {
+   "platform": "huawei",
+   "line": " sa string-key inbound esp cipher Fake99hwsa",
+   "expect": " sa string-key inbound esp cipher <redacted>",
+   "secrets": [
+    "Fake99hwsa"
+   ],
+   "flags": [],
+   "source": "w60-review:hw-ipsec-sa-string-key",
+   "main_6390b66c": " sa string-key <redacted> esp cipher Fake99hwsa"
+  },
+  {
+   "platform": "huawei",
+   "line": " snmp-agent usm-user v3 fakeuser authentication-mode sha2-256 cipher Fake99hwA privacy-mode aes256 cipher Fake99hwP",
+   "expect": " snmp-agent usm-user v3 fakeuser authentication-mode sha2-256 cipher <redacted> privacy-mode aes256 cipher <redacted>",
+   "secrets": [
+    "Fake99hwA",
+    "Fake99hwP"
+   ],
+   "flags": [],
+   "source": "w60-review:hw-snmpv3-sha2-256",
+   "main_6390b66c": " snmp-agent usm-user v3 fakeuser authentication-mode sha2-256 cipher Fake99hwA privacy-mode aes256 cipher Fake99hwP"
+  },
+  {
+   "platform": "huawei",
+   "line": " ntp-service authentication-keyid 1 authentication-mode md5 cipher Fake99hwntp",
+   "expect": " ntp-service authentication-keyid 1 authentication-mode md5 cipher <redacted>",
+   "secrets": [
+    "Fake99hwntp"
+   ],
+   "flags": [],
+   "source": "w60-review:hw-ntp-keyid",
+   "main_6390b66c": " ntp-service authentication-keyid 1 authentication-mode md5 cipher Fake99hwntp"
+  },
+  {
+   "platform": "panos",
+   "line": "set mgt-config users admin phash $5$Fake99pan$hash",
+   "expect": "set mgt-config users admin phash <redacted>",
+   "secrets": [
+    "Fake99pan"
+   ],
+   "flags": [],
+   "source": "w60-review:pan-phash-admin",
+   "main_6390b66c": "set mgt-config users admin phash $5$Fake99pan$hash"
+  },
+  {
+   "platform": "panos",
+   "line": "set deviceconfig system snmp-setting access-setting version v2c snmp-community-string Fake99pancomm",
+   "expect": "set deviceconfig system snmp-setting access-setting version v2c snmp-community-string <redacted>",
+   "secrets": [
+    "Fake99pancomm"
+   ],
+   "flags": [],
+   "source": "w60-review:pan-snmp-community-string",
+   "main_6390b66c": "set deviceconfig system snmp-setting access-setting version v2c snmp-community-string Fake99pancomm"
+  },
+  {
+   "platform": "panos",
+   "line": "set network ike gateway GW1 authentication pre-shared-key key Fake99panpsk",
+   "expect": "set network ike gateway GW1 authentication pre-shared-key key <redacted>",
+   "secrets": [
+    "Fake99panpsk"
+   ],
+   "flags": [],
+   "source": "w60-review:pan-ike-psk-key",
+   "main_6390b66c": "set network ike gateway GW1 authentication pre-shared-key <redacted> Fake99panpsk"
+  },
+  {
+   "platform": "panos",
+   "line": "set shared local-user-database user fakeuser phash $1$Fake99pl$hash",
+   "expect": "set shared local-user-database user fakeuser phash <redacted>",
+   "secrets": [
+    "Fake99pl"
+   ],
+   "flags": [],
+   "source": "w60-review:pan-local-user-phash",
+   "main_6390b66c": "set shared local-user-database user fakeuser phash $1$Fake99pl$hash"
+  },
+  {
+   "platform": "panos",
+   "line": "set deviceconfig system snmp-setting access-setting version v3 users fakeuser view V1 authpwd Fake99panauth privpwd Fake99panpriv",
+   "expect": "set deviceconfig system snmp-setting access-setting version v3 users fakeuser view V1 authpwd <redacted> <redacted> <redacted>",
+   "secrets": [
+    "Fake99panauth",
+    "Fake99panpriv"
+   ],
+   "flags": [],
+   "source": "w60-review:pan-snmpv3-authpwd",
+   "main_6390b66c": "set deviceconfig system snmp-setting access-setting version v3 users fakeuser view V1 authpwd Fake99panauth privpwd Fake99panpriv"
+  },
+  {
+   "platform": "panos",
+   "line": "set shared server-profile ldap L1 server S1 bind-password Fake99bind",
+   "expect": "set shared server-profile ldap L1 server S1 bind-password <redacted>",
+   "secrets": [
+    "Fake99bind"
+   ],
+   "flags": [],
+   "source": "w60-review:pan-ldap-bind-password",
+   "main_6390b66c": "set shared server-profile ldap L1 server S1 bind-password <redacted>"
+  },
+  {
+   "platform": "pem",
+   "line": "-----BEGIN RSA PRIVATE KEY-----\nMIIEFake99PrivateKeyBodyLineAAAA\n-----END RSA PRIVATE KEY-----",
+   "expect": "-----BEGIN RSA PRIVATE KEY-----\n<redacted>\n-----END RSA PRIVATE KEY-----",
+   "secrets": [
+    "MIIEFake99PrivateKeyBodyLineAAAA"
+   ],
+   "flags": [],
+   "source": "w60-review:pem-rsa-private-key",
+   "main_6390b66c": "-----BEGIN RSA PRIVATE KEY-----\nMIIEFake99PrivateKeyBodyLineAAAA\n-----END RSA PRIVATE KEY-----"
+  },
+  {
+   "platform": "pem",
+   "line": "  \"private_key\": \"-----BEGIN PRIVATE KEY-----\\nMIIEFake99pkjson\\n-----END PRIVATE KEY-----\\n\",",
+   "expect": "  \"private_key\": \"-----BEGIN PRIVATE KEY-----<redacted>-----END PRIVATE KEY-----\\n\",",
+   "secrets": [
+    "MIIEFake99pkjson"
+   ],
+   "flags": [],
+   "source": "w60-review:json-private-key-in-txt",
+   "main_6390b66c": "  \"private_key\": \"-----BEGIN PRIVATE KEY-----\\nMIIEFake99pkjson\\n-----END PRIVATE KEY-----\\n\","
+  },
+  {
+   "platform": "api",
+   "line": "Authorization: Bearer Fake99BearerToken",
+   "expect": "Authorization: Bearer <redacted>",
+   "secrets": [
+    "Fake99BearerToken"
+   ],
+   "flags": [],
+   "source": "w60-review:api-bearer",
+   "main_6390b66c": "Authorization: Bearer Fake99BearerToken"
+  },
+  {
+   "platform": "api",
+   "line": "X-Auth-Token: Fake99DnacToken",
+   "expect": "X-Auth-Token: <redacted>",
+   "secrets": [
+    "Fake99DnacToken"
+   ],
+   "flags": [],
+   "source": "w60-review:api-x-auth-token",
+   "main_6390b66c": "X-Auth-Token: Fake99DnacToken"
+  },
+  {
+   "platform": "api",
+   "line": "X-Cisco-Meraki-API-Key: Fake99MerakiKey",
+   "expect": "X-Cisco-Meraki-API-Key: <redacted>",
+   "secrets": [
+    "Fake99MerakiKey"
+   ],
+   "flags": [],
+   "source": "w60-review:api-meraki-key",
+   "main_6390b66c": "X-Cisco-Meraki-API-Key: Fake99MerakiKey"
+  },
+  {
+   "platform": "api",
+   "line": "api_key = Fake99ApiKey",
+   "expect": "api_key = <redacted>",
+   "secrets": [
+    "Fake99ApiKey"
+   ],
+   "flags": [],
+   "source": "w60-review:api-key-underscore",
+   "main_6390b66c": "api_key = Fake99ApiKey"
+  },
+  {
+   "platform": "api",
+   "line": "    \"apiKey\": \"Fake99ApiKey2\",",
+   "expect": "    \"apiKey\": <redacted>,",
+   "secrets": [
+    "Fake99ApiKey2"
+   ],
+   "flags": [],
+   "source": "w60-review:api-apikey-camel",
+   "main_6390b66c": "    \"apiKey\": \"Fake99ApiKey2\","
+  },
+  {
+   "platform": "api",
+   "line": "token: Fake99Tok",
+   "expect": "token: <redacted>",
+   "secrets": [
+    "Fake99Tok"
+   ],
+   "flags": [],
+   "source": "w60-review:api-token-colon",
+   "main_6390b66c": "token: Fake99Tok"
+  },
+  {
+   "platform": "api",
+   "line": "client_secret=Fake99ClientSecret",
+   "expect": "client_secret=<redacted>",
+   "secrets": [
+    "Fake99ClientSecret"
+   ],
+   "flags": [],
+   "source": "w60-review:api-client-secret-underscore",
+   "main_6390b66c": "client_secret=Fake99ClientSecret"
+  },
+  {
+   "platform": "api",
+   "line": "export CISCO_REST_PASS=Fake99env",
+   "expect": "export CISCO_REST_PASS=<redacted>",
+   "secrets": [
+    "Fake99env"
+   ],
+   "flags": [],
+   "source": "w60-review:api-env-pass",
+   "main_6390b66c": "export CISCO_REST_PASS=Fake99env"
+  },
+  {
+   "platform": "api",
+   "line": "{'username': 'fakeadmin', 'password': 'Fake99repr'}",
+   "expect": "{'username': 'fakeadmin', 'password': <redacted>",
+   "secrets": [
+    "Fake99repr"
+   ],
+   "flags": [],
+   "source": "w60-review:python-repr-password",
+   "main_6390b66c": "{'username': 'fakeadmin', 'password': 'Fake99repr'}"
+  },
+  {
+   "platform": "vpn",
+   "line": "192.0.2.1 192.0.2.2 : PSK \"Fake99swan\"",
+   "expect": "192.0.2.1 192.0.2.2 : PSK <redacted>",
+   "secrets": [
+    "Fake99swan"
+   ],
+   "flags": [],
+   "source": "w60-review:strongswan-psk",
+   "main_6390b66c": "192.0.2.1 192.0.2.2 : PSK \"Fake99swan\""
+  },
+  {
+   "platform": "show",
+   "line": "Notification host: 192.0.2.10\tudp-port: 162\ttype: trap\nuser: Fake99hostcomm\tsecurity model: v2c",
+   "expect": "Notification host: 192.0.2.10\tudp-port: 162\ttype: trap\nuser: <redacted>\tsecurity model: v2c",
+   "secrets": [
+    "Fake99hostcomm"
+   ],
+   "flags": [],
+   "source": "w60-review:show-snmp-host-user",
+   "main_6390b66c": "Notification host: 192.0.2.10\tudp-port: 162\ttype: trap\nuser: Fake99hostcomm\tsecurity model: v2c"
+  },
+  {
+   "platform": "show",
+   "line": "groupname: Fake99grpcomm                     security model:v2c ",
+   "expect": "groupname: <redacted>                     security <redacted> ",
+   "secrets": [
+    "Fake99grpcomm"
+   ],
+   "flags": [],
+   "source": "w60-review:show-snmp-group-groupname",
+   "main_6390b66c": "groupname: Fake99grpcomm                     security model:v2c "
+  },
+  {
+   "platform": "show",
+   "line": "Keyring      Hostname/Address                            Preshared Key\ndefault      192.0.2.1                                    Fake99isakmpkey",
+   "expect": "Keyring      Hostname/Address                            Preshared Key\ndefault      192.0.2.1                                    <redacted>     ",
+   "secrets": [
+    "Fake99isakmpkey"
+   ],
+   "flags": [],
+   "source": "w60-review:show-isakmp-key-row",
+   "main_6390b66c": "Keyring      Hostname/Address                            Preshared Key\n<redacted>      192.0.2.1                                    Fake99isakmpkey"
+  },
+  {
+   "platform": "show",
+   "line": "Key-chain KC1:\n    key 1 -- text \"12345678\"",
+   "expect": "Key-chain KC1:\n    key 1 -- text <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:show-key-chain-numeric",
+   "main_6390b66c": "Key-chain KC1:\n    key 1 <redacted> text \"12345678\""
+  },
+  {
+   "platform": "banner",
+   "line": "banner login ^C\nGuest WiFi key: Fake99bannerkey\n^C",
+   "expect": "banner login ^C\nGuest WiFi key: <redacted>\n^C",
+   "secrets": [
+    "Fake99bannerkey"
+   ],
+   "flags": [],
+   "source": "w60-review:banner-wifi-key",
+   "main_6390b66c": "banner login ^C\nGuest WiFi key: Fake99bannerkey\n^C"
+  },
+  {
+   "platform": "odd",
+   "line": "enable secret\u00a0Fake99nbsp",
+   "expect": "enable secret\u00a0<redacted>",
+   "secrets": [
+    "Fake99nbsp"
+   ],
+   "flags": [],
+   "source": "w60-review:odd-nbsp",
+   "main_6390b66c": "enable secret\u00a0<redacted>"
+  },
+  {
+   "platform": "odd",
+   "line": "enable secret 0\u3000Fake99ideo",
+   "expect": "enable secret 0\u3000<redacted>",
+   "secrets": [
+    "Fake99ideo"
+   ],
+   "flags": [],
+   "source": "w60-review:odd-ideographic-space",
+   "main_6390b66c": "enable secret 0\u3000<redacted>"
+  },
+  {
+   "platform": "odd",
+   "line": "username fakeuser password\t0\tFake99tab",
+   "expect": "username fakeuser password\t0\t<redacted>",
+   "secrets": [
+    "Fake99tab"
+   ],
+   "flags": [],
+   "source": "w60-review:odd-tabs",
+   "main_6390b66c": "username fakeuser password\t0\t<redacted>"
+  },
+  {
+   "platform": "odd",
+   "line": "snmp-server community Fake99crlf RO\r\nenable secret 0 Fake99crlf2\r\n",
+   "expect": "snmp-server community <redacted> RO\r\nenable secret 0 <redacted>\r\n",
+   "secrets": [
+    "Fake99crlf",
+    "Fake99crlf2"
+   ],
+   "flags": [],
+   "source": "w60-review:odd-crlf",
+   "main_6390b66c": "snmp-server community <redacted> RO\r\nenable secret 0 <redacted>\r\n"
+  },
+  {
+   "platform": "odd",
+   "line": "ENABLE SECRET 0 FAKE99UPPER",
+   "expect": "ENABLE SECRET 0 <redacted>",
+   "secrets": [
+    "FAKE99UPPER"
+   ],
+   "flags": [],
+   "source": "w60-review:odd-upper",
+   "main_6390b66c": "ENABLE SECRET 0 <redacted>"
+  },
+  {
+   "platform": "odd",
+   "line": "username fakeuser password 0 F\u00e4ke99\u00fcn\u00ef",
+   "expect": "username fakeuser password 0 <redacted>",
+   "secrets": [
+    "F\u00e4ke99\u00fcn\u00ef"
+   ],
+   "flags": [],
+   "source": "w60-review:odd-unicode-secret",
+   "main_6390b66c": "username fakeuser password 0 <redacted>"
+  },
+  {
+   "platform": "odd",
+   "line": " --More-- \b\b\b\b\b\b\b\b\b        \b\b\b\b\b\b\b\b\benable secret 0 Fake99pager",
+   "expect": " --More-- \b\b\b\b\b\b\b\b\b        \b\b\b\b\b\b\b\b\benable secret 0 <redacted>",
+   "secrets": [
+    "Fake99pager"
+   ],
+   "flags": [],
+   "source": "w60-review:odd-pager-backspaces",
+   "main_6390b66c": " --More-- \b\b\b\b\b\b\b\b\b        \b\b\b\b\b\b\b\b\benable secret 0 <redacted>"
+  },
+  {
+   "platform": "odd",
+   "line": "snmp-server user fakeuser fakegroup v3 auth sha Fake99wrapA priv aes 1\n28 Fake99wrapP",
+   "expect": "snmp-server user fakeuser fakegroup v3 auth sha <redacted> priv aes 1\n<redacted> <redacted>",
+   "secrets": [
+    "Fake99wrapA",
+    "Fake99wrapP"
+   ],
+   "flags": [],
+   "source": "w60-review:odd-terminal-wrap",
+   "main_6390b66c": "snmp-server user fakeuser fakegroup v3 auth sha Fake99wrapA priv aes 1\n28 Fake99wrapP"
+  },
+  {
+   "platform": "odd",
+   "line": "! enable secret 0 Fake99comment",
+   "expect": "! enable secret 0 <redacted>",
+   "secrets": [
+    "Fake99comment"
+   ],
+   "flags": [],
+   "source": "w60-review:odd-comment-secret",
+   "main_6390b66c": "! enable secret 0 <redacted>"
+  },
+  {
+   "platform": "odd",
+   "line": "banner motd ^C wifi password is Fake99banner ^C",
+   "expect": "banner motd ^C wifi password is <redacted> <redacted>",
+   "secrets": [
+    "Fake99banner"
+   ],
+   "flags": [],
+   "source": "w60-review:odd-banner-inline",
+   "main_6390b66c": "banner motd ^C wifi password <redacted> Fake99banner ^C"
+  },
+  {
+   "platform": "odd",
+   "line": "username <redacted> password 0 Fake99ph",
+   "expect": "username <redacted> password 0 <redacted>",
+   "secrets": [
+    "Fake99ph"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w60-review:odd-placeholder-username",
+   "main_6390b66c": "username <redacted> password 0 <redacted>"
+  },
+  {
+   "platform": "odd",
+   "line": "snmp-server user fakeuser fakegroup v3 auth md5 Fake99m1 priv des Fake99d1 access 10",
+   "expect": "snmp-server user fakeuser fakegroup v3 auth md5 <redacted> priv des <redacted> access 10",
+   "secrets": [
+    "Fake99m1",
+    "Fake99d1"
+   ],
+   "flags": [],
+   "source": "w60-review:odd-two-secrets-line",
+   "main_6390b66c": "snmp-server user fakeuser fakegroup v3 auth md5 Fake99m1 priv des Fake99d1 access 10"
+  },
+  {
+   "platform": "odd",
+   "line": "enable secret\u000bFake99vt",
+   "expect": "enable secret\u000b<redacted>",
+   "secrets": [
+    "Fake99vt"
+   ],
+   "flags": [],
+   "source": "w60-review:vt-between",
+   "main_6390b66c": "enable secret\u000b<redacted>"
+  },
+  {
+   "platform": "odd",
+   "line": "enable secret\u2028Fake99ls",
+   "expect": "enable secret\u2028<redacted>",
+   "secrets": [
+    "Fake99ls"
+   ],
+   "flags": [],
+   "source": "w60-review:ls-between",
+   "main_6390b66c": "enable secret\u2028<redacted>"
+  },
+  {
+   "platform": "odd",
+   "line": "enable secret\fFake99ff",
+   "expect": "enable secret\f<redacted>",
+   "secrets": [
+    "Fake99ff"
+   ],
+   "flags": [],
+   "source": "w60-review:ff-between",
+   "main_6390b66c": "enable secret\f<redacted>"
+  },
+  {
+   "platform": "odd",
+   "line": "hostname R1\rsnmp-server community Fake99cr RO\r    community Publ1c99cr {\r  authentication text Fake99crtxt\r",
+   "expect": "hostname R1\rsnmp-server community <redacted> RO\r    community <redacted> {\r  authentication text <redacted>\r",
+   "secrets": [
+    "Fake99cr ",
+    "Publ1c99cr",
+    "Fake99crtxt"
+   ],
+   "flags": [],
+   "source": "w60-review:cr-only-file",
+   "main_6390b66c": "hostname R1\rsnmp-server community <redacted> RO\r    community <redacted> {\r  authentication text Fake99crtxt\r"
+  },
+  {
+   "platform": "ios",
+   "line": "enable secret 0 12345678",
+   "expect": "enable secret 0 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:enable-secret-0-numeric",
+   "main_6390b66c": "enable secret 0 <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "tacacs-server host 192.0.2.1 key 0 12345678",
+   "expect": "tacacs-server host 192.0.2.1 key 0 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:tacacs-host-key0-numeric",
+   "main_6390b66c": "tacacs-server host 192.0.2.1 key 0 <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "key chain KC\n key 1\n  key-string 12345678",
+   "expect": "key chain KC\n key 1\n  key-string <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:keystring-numeric",
+   "main_6390b66c": "key chain KC\n key 1\n  <redacted> <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto isakmp key 12345678 hostname peer1.example",
+   "expect": "crypto isakmp key <redacted> hostname <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:isakmp-key-hostname-numeric",
+   "main_6390b66c": "crypto isakmp key 12345678 <redacted> peer1.example"
+  },
+  {
+   "platform": "ios",
+   "line": "  authentication mode hmac-sha-256 12345678",
+   "expect": "  authentication mode hmac-sha-256 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:eigrp-hmac-numeric",
+   "main_6390b66c": "  authentication mode hmac-sha-256 12345678"
+  },
+  {
+   "platform": "ios",
+   "line": " ip nhrp authentication 12345678",
+   "expect": " ip nhrp authentication <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:nhrp-numeric",
+   "main_6390b66c": " ip nhrp authentication 12345678"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server host 192.0.2.10 version 2c 12345678",
+   "expect": "snmp-server host 192.0.2.10 version 2c <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:snmp-host-numeric-comm",
+   "main_6390b66c": "snmp-server host 192.0.2.10 version 2c <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": " wpa-psk ascii 0 12345678",
+   "expect": " wpa-psk ascii 0 <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:wpa-psk-numeric",
+   "main_6390b66c": " wpa-psk ascii 0 12345678"
+  },
+  {
+   "platform": "ios",
+   "line": " key-string 7 12345678 cryptographic-algorithm aes-128-cmac",
+   "expect": " key-string 7 <redacted> cryptographic-algorithm aes-128-cmac",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:macsec-cak-numeric",
+   "main_6390b66c": " key-string 7 <redacted> cryptographic-algorithm aes-128-cmac"
+  },
+  {
+   "platform": "fortigate",
+   "line": "        set key ENC 12345678",
+   "expect": "        set key ENC <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:fgt-set-key-numeric",
+   "main_6390b66c": "        set key <redacted> 12345678"
+  },
+  {
+   "platform": "junos",
+   "line": "set protocols bgp group G authentication-key 12345678",
+   "expect": "set protocols bgp group G authentication-key <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:junos-auth-key-numeric",
+   "main_6390b66c": "set protocols bgp group G authentication-key <redacted>"
+  },
+  {
+   "platform": "huawei",
+   "line": " radius-server shared-key cipher 12345678",
+   "expect": " radius-server shared-key cipher <redacted>",
+   "secrets": [
+    "12345678"
+   ],
+   "flags": [],
+   "source": "w60-review:hw-shared-key-numeric",
+   "main_6390b66c": " radius-server shared-key cipher 12345678"
+  },
+  {
+   "platform": "show",
+   "line": "*Oct  9 10:00:00.000: %PARSER-5-CFGLOG_LOGGEDCMD: User:fakeadmin  logged command:snmp-server community clear Fake99slog2 RO",
+   "expect": "*Oct  9 10:00:00.000: %PARSER-5-CFGLOG_LOGGEDCMD: User:fakeadmin  logged command:snmp-server community clear <redacted> RO",
+   "secrets": [
+    "Fake99slog2"
+   ],
+   "flags": [],
+   "source": "w60-review:syslog-xr-community-clear",
+   "main_6390b66c": "*Oct  9 10:00:00.000: %PARSER-5-CFGLOG_LOGGEDCMD: User:fakeadmin  logged command:snmp-server community <redacted> Fake99slog2 RO"
+  },
+  {
+   "platform": "show",
+   "line": "%ASA-5-111008: User 'fakeadmin' executed the 'snmp-server community 8 Fake99slog' command.",
+   "expect": "%ASA-5-111008: User 'fakeadmin' executed the 'snmp-server community 8 <redacted> <redacted>",
+   "secrets": [
+    "Fake99slog"
+   ],
+   "flags": [],
+   "source": "w60-review:syslog-asa-community-8",
+   "main_6390b66c": "%ASA-5-111008: User 'fakeadmin' executed the 'snmp-server community <redacted> Fake99slog' command."
+  },
+  {
+   "platform": "show",
+   "line": "*Oct  9 10:00:00.000: %PARSER-5-CFGLOG_LOGGEDCMD: User:fakeadmin  logged command:mpls ldp password fallback 0 Fake99slog5",
+   "expect": "*Oct  9 10:00:00.000: %PARSER-5-CFGLOG_LOGGEDCMD: User:fakeadmin  logged command:mpls ldp password fallback 0 <redacted>",
+   "secrets": [
+    "Fake99slog5"
+   ],
+   "flags": [],
+   "source": "w60-review:syslog-ldp-fallback",
+   "main_6390b66c": "*Oct  9 10:00:00.000: %PARSER-5-CFGLOG_LOGGEDCMD: User:fakeadmin  logged command:mpls ldp password <redacted> 0 Fake99slog5"
+  },
+  {
+   "platform": "odd",
+   "line": "! snmp-server user fakeuser fakegroup v3 auth sha clear Fake99cmtA priv aes 128 clear Fake99cmtP",
+   "expect": "! snmp-server user fakeuser fakegroup v3 auth sha clear <redacted> priv aes 128 clear <redacted>",
+   "secrets": [
+    "Fake99cmtA",
+    "Fake99cmtP"
+   ],
+   "flags": [],
+   "source": "w60-review:comment-xr-snmpv3",
+   "main_6390b66c": "! snmp-server user fakeuser fakegroup v3 auth sha clear Fake99cmtA priv aes 128 clear Fake99cmtP"
+  },
+  {
+   "platform": "ios",
+   "line": " description pre-shared-key key Fake99descpsk",
+   "expect": " description pre-shared-key key <redacted>",
+   "secrets": [
+    "Fake99descpsk"
+   ],
+   "flags": [],
+   "source": "w60-review:description-psk-key",
+   "main_6390b66c": " description pre-shared-key <redacted> Fake99descpsk"
+  },
+  {
+   "platform": "banner",
+   "line": "banner motd ^C\nsa string-key inbound esp cipher Fake99bnr\n^C",
+   "expect": "banner motd ^C\nsa string-key inbound esp cipher <redacted>\n^C",
+   "secrets": [
+    "Fake99bnr"
+   ],
+   "flags": [],
+   "source": "w60-review:banner-body-sa-key",
+   "main_6390b66c": "banner motd ^C\nsa string-key <redacted> esp cipher Fake99bnr\n^C"
+  },
+  {
+   "platform": "ios",
+   "line": "enable password level 15 Shannon2026x",
+   "expect": "enable password level 15 <redacted>",
+   "secrets": [
+    "Shannon2026x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A01",
+   "main_6390b66c": "enable password <redacted> 15 Shannon2026x"
+  },
+  {
+   "platform": "ios",
+   "line": "enable secret level 15 0 Desmond42x",
+   "expect": "enable secret level 15 0 <redacted>",
+   "secrets": [
+    "Desmond42x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A02",
+   "main_6390b66c": "enable secret <redacted> 15 0 Desmond42x"
+  },
+  {
+   "platform": "show",
+   "line": "Enable password is Aesop77x",
+   "expect": "Enable password is <redacted>",
+   "secrets": [
+    "Aesop77x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A03",
+   "main_6390b66c": "Enable password <redacted> Aesop77x"
+  },
+  {
+   "platform": "aireos",
+   "line": "config wlan security wpa akm psk set-key ascii Sharkbait9x 1",
+   "expect": "config wlan security wpa akm psk set-key ascii <redacted> 1",
+   "secrets": [
+    "Sharkbait9x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A04",
+   "main_6390b66c": "config wlan security wpa akm psk set-key <redacted> Sharkbait9x 1"
+  },
+  {
+   "platform": "iosxe",
+   "line": "wlan GUEST 1 GUEST\n security wpa psk set-key ascii 0 Desert44x",
+   "expect": "wlan GUEST 1 GUEST\n security wpa psk set-key ascii 0 <redacted>",
+   "secrets": [
+    "Desert44x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A05",
+   "main_6390b66c": "wlan GUEST 1 GUEST\n security wpa psk set-key <redacted> 0 Desert44x"
+  },
+  {
+   "platform": "huawei",
+   "line": "aaa\n local-user admin password cipher Shamrock5x",
+   "expect": "aaa\n local-user admin password cipher <redacted>",
+   "secrets": [
+    "Shamrock5x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A06",
+   "main_6390b66c": "aaa\n local-user admin password <redacted> Shamrock5x"
+  },
+  {
+   "platform": "huawei",
+   "line": " super password level 15 cipher Destiny8x",
+   "expect": " super password level 15 cipher <redacted>",
+   "secrets": [
+    "Destiny8x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A07",
+   "main_6390b66c": " super password <redacted> 15 cipher Destiny8x"
+  },
+  {
+   "platform": "huawei",
+   "line": " snmp-agent community read Shadow31x",
+   "expect": " snmp-agent community read <redacted>",
+   "secrets": [
+    "Shadow31x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A08",
+   "main_6390b66c": " snmp-agent community <redacted> Shadow31x"
+  },
+  {
+   "platform": "huawei",
+   "line": " snmp-agent community write Design7x acl 2000",
+   "expect": " snmp-agent community write <redacted> acl 2000",
+   "secrets": [
+    "Design7x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A09",
+   "main_6390b66c": " snmp-agent community <redacted> Design7x acl 2000"
+  },
+  {
+   "platform": "ios",
+   "line": "Key-chain OSPF-KC:\n    key 1 -- text \"Shazam12x\"\n        accept lifetime (always valid) - (always valid) [valid now]",
+   "expect": "Key-chain OSPF-KC:\n    key 1 -- text <redacted>\n        accept lifetime (always valid) - (always valid) [valid now]",
+   "secrets": [
+    "Shazam12x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A10",
+   "main_6390b66c": "Key-chain OSPF-KC:\n    key 1 <redacted> text \"Shazam12x\"\n        accept lifetime (always valid) - (always valid) [valid now]"
+  },
+  {
+   "platform": "ios",
+   "line": "Community name: Shasta99x\nCommunity Index: cisco1\nCommunity SecurityName: Shasta99x\nstorage-type: nonvolatile        active",
+   "expect": "Community name: <redacted>\nCommunity Index: <redacted>\nCommunity <redacted> <redacted>\nstorage-type: nonvolatile        active",
+   "secrets": [
+    "Shasta99x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A11",
+   "main_6390b66c": "Community <redacted> Shasta99x\nCommunity <redacted> cisco1\nCommunity <redacted> Shasta99x\nstorage-type: nonvolatile        active"
+  },
+  {
+   "platform": "aireos",
+   "line": "config snmp community create Desk2026x",
+   "expect": "config snmp community create <redacted>",
+   "secrets": [
+    "Desk2026x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A12",
+   "main_6390b66c": "config snmp community <redacted> Desk2026x"
+  },
+  {
+   "platform": "show",
+   "line": "SNMP community string : Aesthetic3x",
+   "expect": "SNMP community string : <redacted>",
+   "secrets": [
+    "Aesthetic3x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A13",
+   "main_6390b66c": "SNMP community <redacted> : Aesthetic3x"
+  },
+  {
+   "platform": "ios",
+   "line": "enable password level 15 48213",
+   "expect": "enable password level 15 <redacted>",
+   "secrets": [
+    "48213"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A14",
+   "main_6390b66c": "enable password <redacted> 15 48213"
+  },
+  {
+   "platform": "ios",
+   "line": "Key-chain K2:\n    key 2 -- text \"90210\"",
+   "expect": "Key-chain K2:\n    key 2 -- text <redacted>",
+   "secrets": [
+    "90210"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A15",
+   "main_6390b66c": "Key-chain K2:\n    key 2 <redacted> text \"90210\""
+  },
+  {
+   "platform": "aireos",
+   "line": "config wlan security wpa akm psk set-key ascii Guest-Password 1",
+   "expect": "config wlan security wpa akm psk set-key ascii <redacted> 1",
+   "secrets": [
+    "Guest-Password"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A16",
+   "main_6390b66c": "config wlan security wpa akm psk set-key <redacted> Guest-Password <redacted>"
+  },
+  {
+   "platform": "aireos",
+   "line": "config wlan security wpa akm psk set-key ascii Office_Key 1",
+   "expect": "config wlan security wpa akm psk set-key ascii <redacted> 1",
+   "secrets": [
+    "Office_Key"
+   ],
+   "flags": [],
+   "source": "w58r2-review:A17",
+   "main_6390b66c": "config wlan security wpa akm psk set-key <redacted> Office_Key 1"
+  },
+  {
+   "platform": "ios",
+   "line": "interface Tunnel0\n ip nhrp authentication Shark99x",
+   "expect": "interface Tunnel0\n ip nhrp authentication <redacted>",
+   "secrets": [
+    "Shark99x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B01",
+   "main_6390b66c": "interface Tunnel0\n ip nhrp authentication Shark99x"
+  },
+  {
+   "platform": "ios",
+   "line": "interface Tunnel0\n ip nhrp authentication 31415926",
+   "expect": "interface Tunnel0\n ip nhrp authentication <redacted>",
+   "secrets": [
+    "31415926"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B02",
+   "main_6390b66c": "interface Tunnel0\n ip nhrp authentication 31415926"
+  },
+  {
+   "platform": "ios",
+   "line": "interface Tunnel0\n ip nhrp authentication fake-key",
+   "expect": "interface Tunnel0\n ip nhrp authentication <redacted>",
+   "secrets": [
+    "fake-key"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B03",
+   "main_6390b66c": "interface Tunnel0\n ip nhrp authentication fake-key"
+  },
+  {
+   "platform": "huawei",
+   "line": "interface Vlanif10\n ospf authentication-mode md5 1 cipher Shadow77x",
+   "expect": "interface Vlanif10\n ospf authentication-mode md5 1 cipher <redacted>",
+   "secrets": [
+    "Shadow77x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B04",
+   "main_6390b66c": "interface Vlanif10\n ospf authentication-mode md5 1 cipher Shadow77x"
+  },
+  {
+   "platform": "huawei",
+   "line": "ospf 1\n area 0.0.0.0\n  area-authentication-mode md5 1 plain Desert13x",
+   "expect": "ospf 1\n area 0.0.0.0\n  area-authentication-mode md5 1 plain <redacted>",
+   "secrets": [
+    "Desert13x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B05",
+   "main_6390b66c": "ospf 1\n area 0.0.0.0\n  area-authentication-mode md5 1 plain Desert13x"
+  },
+  {
+   "platform": "huawei",
+   "line": "ospf 1\n area 0.0.0.0\n  area-authentication-mode simple plain Shark42x",
+   "expect": "ospf 1\n area 0.0.0.0\n  area-authentication-mode simple plain <redacted>",
+   "secrets": [
+    "Shark42x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B06",
+   "main_6390b66c": "ospf 1\n area 0.0.0.0\n  area-authentication-mode simple plain Shark42x"
+  },
+  {
+   "platform": "huawei",
+   "line": "isis 1\n domain-authentication-mode simple plain Aesop42x",
+   "expect": "isis 1\n domain-authentication-mode simple plain <redacted>",
+   "secrets": [
+    "Aesop42x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B07",
+   "main_6390b66c": "isis 1\n domain-authentication-mode simple plain Aesop42x"
+  },
+  {
+   "platform": "nxos",
+   "line": "interface Vlan10\n  hsrp 10\n    authentication text Sharon55x",
+   "expect": "interface Vlan10\n  hsrp 10\n    authentication text <redacted>",
+   "secrets": [
+    "Sharon55x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B08",
+   "main_6390b66c": "interface Vlan10\n  hsrp 10\n    authentication text Sharon55x"
+  },
+  {
+   "platform": "nxos",
+   "line": "interface Vlan20\n  vrrp 20\n    authentication text 27182818",
+   "expect": "interface Vlan20\n  vrrp 20\n    authentication text <redacted>",
+   "secrets": [
+    "27182818"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B09",
+   "main_6390b66c": "interface Vlan20\n  vrrp 20\n    authentication text 27182818"
+  },
+  {
+   "platform": "nxos",
+   "line": "Vlan10 - Group 10 (HSRP-V1) (IPv4)\n  Authentication text \"Sharpie9x\"",
+   "expect": "Vlan10 - Group 10 (HSRP-V1) (IPv4)\n  Authentication text <redacted>",
+   "secrets": [
+    "Sharpie9x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B10",
+   "main_6390b66c": "Vlan10 - Group 10 (HSRP-V1) (IPv4)\n  Authentication text \"Sharpie9x\""
+  },
+  {
+   "platform": "huawei",
+   "line": "interface Vlanif30\n vrrp vrid 1 authentication-mode simple plain Shane77x",
+   "expect": "interface Vlanif30\n vrrp vrid 1 authentication-mode simple plain <redacted>",
+   "secrets": [
+    "Shane77x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B11",
+   "main_6390b66c": "interface Vlanif30\n vrrp vrid 1 authentication-mode simple plain Shane77x"
+  },
+  {
+   "platform": "huawei",
+   "line": "interface GE0/0/1\n isis authentication-mode md5 cipher Shasta5x",
+   "expect": "interface GE0/0/1\n isis authentication-mode md5 cipher <redacted>",
+   "secrets": [
+    "Shasta5x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B12",
+   "main_6390b66c": "interface GE0/0/1\n isis authentication-mode md5 cipher Shasta5x"
+  },
+  {
+   "platform": "nxos",
+   "line": "interface Vlan40\n  hsrp 40\n    authentication text lab-pass-key",
+   "expect": "interface Vlan40\n  hsrp 40\n    authentication text <redacted>",
+   "secrets": [
+    "lab-pass-key"
+   ],
+   "flags": [],
+   "source": "w58r2-review:B13",
+   "main_6390b66c": "interface Vlan40\n  hsrp 40\n    authentication text lab-pass-key"
+  },
+  {
+   "platform": "aireos",
+   "line": "config radius auth add 1 192.0.2.20 1812 ascii FakeRad24x",
+   "expect": "config radius auth add 1 192.0.2.20 <redacted> ascii <redacted>",
+   "secrets": [
+    "FakeRad24x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C01",
+   "main_6390b66c": "config radius auth add 1 192.0.2.20 1812 ascii FakeRad24x"
+  },
+  {
+   "platform": "aireos",
+   "line": "config tacacs auth add 1 192.0.2.21 49 ascii FakeTac25x",
+   "expect": "config tacacs auth add 1 192.0.2.21 <redacted> ascii <redacted>",
+   "secrets": [
+    "FakeTac25x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C02",
+   "main_6390b66c": "config tacacs auth add 1 192.0.2.21 49 ascii FakeTac25x"
+  },
+  {
+   "platform": "aireos",
+   "line": "config snmp v3user create opsuser rw hmacsha aescfb128 FakeAuth26x FakePriv26x",
+   "expect": "config snmp v3user create <redacted> rw hmacsha aescfb128 <redacted> <redacted>",
+   "secrets": [
+    "FakeAuth26x",
+    "FakePriv26x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C03",
+   "main_6390b66c": "config snmp v3user create opsuser rw hmacsha aescfb128 FakeAuth26x FakePriv26x"
+  },
+  {
+   "platform": "aireos",
+   "line": "config mgmtuser add admin2 FakeMgmt27x read-write",
+   "expect": "config mgmtuser add <redacted> <redacted> read-write",
+   "secrets": [
+    "FakeMgmt27x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C04",
+   "main_6390b66c": "config mgmtuser add admin2 FakeMgmt27x read-write"
+  },
+  {
+   "platform": "aireos",
+   "line": "config snmp community accessmode rw FakeComm28x",
+   "expect": "config snmp community accessmode rw <redacted>",
+   "secrets": [
+    "FakeComm28x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C05",
+   "main_6390b66c": "config snmp community <redacted> rw FakeComm28x"
+  },
+  {
+   "platform": "aireos",
+   "line": "config netuser add guest1 FakeNet29x wlan 1 userType guest lifetime 86400",
+   "expect": "config netuser add <redacted> <redacted> <redacted> 1 <redacted> <redacted> lifetime 86400",
+   "secrets": [
+    "FakeNet29x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C06",
+   "main_6390b66c": "config netuser add guest1 FakeNet29x wlan 1 userType guest lifetime 86400"
+  },
+  {
+   "platform": "aireos",
+   "line": "SNMP Community Name Client IP Address Client IP Mask Access Mode Status\n------------------- ----------------- -------------- ----------- --------\nFakeComm30x         0.0.0.0           0.0.0.0        Read Only   Enable",
+   "expect": "SNMP Community Name Client IP Address Client IP Mask Access Mode Status\n------------------- ----------------- -------------- ----------- --------\n<redacted>          0.0.0.0           0.0.0.0        Read Only   Enable",
+   "secrets": [
+    "FakeComm30x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C07",
+   "main_6390b66c": "SNMP Community <redacted> Client IP Address Client IP Mask Access Mode Status\n------------------- ----------------- -------------- ----------- --------\nFakeComm30x         0.0.0.0           0.0.0.0        Read Only   Enable"
+  },
+  {
+   "platform": "ios",
+   "line": "Keyring      Hostname/Address                            Preshared Key\n\ndefault      192.0.2.10                                  FakePsk13x",
+   "expect": "Keyring      Hostname/Address                            Preshared Key\n\ndefault      192.0.2.10                                  <redacted>",
+   "secrets": [
+    "FakePsk13x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C08",
+   "main_6390b66c": "Keyring      Hostname/Address                            Preshared Key\n\n<redacted>      192.0.2.10                                  FakePsk13x"
+  },
+  {
+   "platform": "nxos",
+   "line": "Community            Group / Access      context    acl_filter\n---------            --------------      -------    ----------\nFakeComm33x          network-operator",
+   "expect": "Community            Group / Access      context    acl_filter\n---------            --------------      -------    ----------\n<redacted>           network-operator",
+   "secrets": [
+    "FakeComm33x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C09",
+   "main_6390b66c": "Community            <redacted> / Access      context    acl_filter\n---------            --------------      -------    ----------\nFakeComm33x          network-operator"
+  },
+  {
+   "platform": "nxos",
+   "line": "-------------------------------------------------------------------\nHost                            Port Version  Level  Type   SecName\n-------------------------------------------------------------------\n192.0.2.30                      162  v2c      noauth trap   FakeComm34x",
+   "expect": "-------------------------------------------------------------------\nHost                            Port Version  Level  Type   SecName\n-------------------------------------------------------------------\n192.0.2.30                      162  v2c      noauth trap   <redacted> ",
+   "secrets": [
+    "FakeComm34x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C10",
+   "main_6390b66c": "-------------------------------------------------------------------\nHost                            Port Version  Level  Type   SecName\n-------------------------------------------------------------------\n192.0.2.30                      162  v2c      noauth trap   FakeComm34x"
+  },
+  {
+   "platform": "huawei",
+   "line": "snmp-agent target-host trap address udp-domain 192.0.2.50 params securityname FakeSec39x v2c",
+   "expect": "snmp-agent target-host trap address udp-domain 192.0.2.50 params securityname <redacted> v2c",
+   "secrets": [
+    "FakeSec39x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C11",
+   "main_6390b66c": "snmp-agent target-host trap address udp-domain 192.0.2.50 params securityname FakeSec39x v2c"
+  },
+  {
+   "platform": "junos",
+   "line": "set snmp trap-group FakeTrap45x targets 192.0.2.60",
+   "expect": "set snmp trap-group <redacted> targets 192.0.2.60",
+   "secrets": [
+    "FakeTrap45x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C12",
+   "main_6390b66c": "set snmp trap-group FakeTrap45x targets 192.0.2.60"
+  },
+  {
+   "platform": "panos",
+   "line": "set deviceconfig system snmp-setting access-setting version v2c snmp-community-string FakePan54x",
+   "expect": "set deviceconfig system snmp-setting access-setting version v2c snmp-community-string <redacted>",
+   "secrets": [
+    "FakePan54x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C13",
+   "main_6390b66c": "set deviceconfig system snmp-setting access-setting version v2c snmp-community-string FakePan54x"
+  },
+  {
+   "platform": "panos",
+   "line": "set deviceconfig system snmp-setting access-setting version v3 users opsuser authpwd FakePanA55x privpwd FakePanP55x",
+   "expect": "set deviceconfig system snmp-setting access-setting version v3 users opsuser authpwd <redacted> <redacted> <redacted>",
+   "secrets": [
+    "FakePanA55x",
+    "FakePanP55x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C14",
+   "main_6390b66c": "set deviceconfig system snmp-setting access-setting version v3 users opsuser authpwd FakePanA55x privpwd FakePanP55x"
+  },
+  {
+   "platform": "panos",
+   "line": "access-setting {\n  version {\n    v2c {\n      snmp-community-string FakePan56x;\n    }\n  }\n}",
+   "expect": "access-setting {\n  version {\n    v2c {\n      snmp-community-string <redacted>\n    }\n  }\n}",
+   "secrets": [
+    "FakePan56x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C15",
+   "main_6390b66c": "access-setting {\n  version {\n    v2c {\n      snmp-community-string FakePan56x;\n    }\n  }\n}"
+  },
+  {
+   "platform": "panos",
+   "line": "<v2c><snmp-community-string>FakePan57x</snmp-community-string></v2c>",
+   "expect": "<v2c><snmp-community-string><redacted></snmp-community-string></v2c>",
+   "secrets": [
+    "FakePan57x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C16",
+   "main_6390b66c": "<v2c><snmp-community-string>FakePan57x</snmp-community-string></v2c>"
+  },
+  {
+   "platform": "panos",
+   "line": "<response status = 'success'><result><key>LUFRPT1FakeApiKey58xFakeFake=</key></result></response>",
+   "expect": "<response status = 'success'><result><key><redacted></key></result></response>",
+   "secrets": [
+    "LUFRPT1FakeApiKey58xFakeFake="
+   ],
+   "flags": [],
+   "source": "w58r2-review:C17",
+   "main_6390b66c": "<response status = 'success'><result><key>LUFRPT1FakeApiKey58xFakeFake=</key></result></response>"
+  },
+  {
+   "platform": "arista",
+   "line": "daemon TerminAttr\n   exec /usr/bin/TerminAttr -cvaddr=192.0.2.70:9910 -cvauth=key,FakeCv48x -cvvrf=MGMT\n   no shutdown",
+   "expect": "daemon TerminAttr\n   exec /usr/bin/TerminAttr -cvaddr=192.0.2.70:9910 -cvauth=key,<redacted> <redacted>=<redacted>\n   no shutdown",
+   "secrets": [
+    "FakeCv48x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C18",
+   "main_6390b66c": "daemon TerminAttr\n   exec /usr/bin/TerminAttr -cvaddr=192.0.2.70:9910 -cvauth=key,FakeCv48x -cvvrf=MGMT\n   no shutdown"
+  },
+  {
+   "platform": "iosxr",
+   "line": "snmp-server community-map FakeMap102x context ctx1",
+   "expect": "snmp-server community-map <redacted> context <redacted>",
+   "secrets": [
+    "FakeMap102x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C19",
+   "main_6390b66c": "snmp-server community-map FakeMap102x context ctx1"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp mib community-map FakeMap104x context ctx2",
+   "expect": "snmp mib community-map <redacted> context <redacted>",
+   "secrets": [
+    "FakeMap104x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C20",
+   "main_6390b66c": "snmp mib community-map FakeMap104x context ctx2"
+  },
+  {
+   "platform": "asa",
+   "line": "crypto ca import TP1 pkcs12 FakeP12pw36x",
+   "expect": "crypto ca import TP1 pkcs12 <redacted>",
+   "secrets": [
+    "FakeP12pw36x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C21",
+   "main_6390b66c": "crypto ca import TP1 pkcs12 FakeP12pw36x"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto key import rsa KP pem terminal FakeImp07x",
+   "expect": "crypto key import rsa <redacted> pem terminal <redacted>",
+   "secrets": [
+    "FakeImp07x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C22",
+   "main_6390b66c": "crypto key <redacted> rsa KP pem terminal FakeImp07x"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto key export rsa KP pem terminal 3des FakeExp08x",
+   "expect": "crypto key export rsa <redacted> pem terminal 3des <redacted>",
+   "secrets": [
+    "FakeExp08x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C23",
+   "main_6390b66c": "crypto key <redacted> rsa KP pem terminal 3des FakeExp08x"
+  },
+  {
+   "platform": "ios",
+   "line": "license smart register idtoken ZmFrZVRva2VuMDlGYWtlVG9rZW4wOUZha2U=",
+   "expect": "license smart register idtoken <redacted>=",
+   "secrets": [
+    "ZmFrZVRva2VuMDlGYWtlVG9rZW4wOUZha2U="
+   ],
+   "flags": [],
+   "source": "w58r2-review:C24",
+   "main_6390b66c": "license smart register idtoken ZmFrZVRva2VuMDlGYWtlVG9rZW4wOUZha2U="
+  },
+  {
+   "platform": "ios",
+   "line": "event manager environment _email_pw FakeEem10x",
+   "expect": "event manager environment <redacted> <redacted>",
+   "secrets": [
+    "FakeEem10x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C25",
+   "main_6390b66c": "event manager environment _email_pw FakeEem10x"
+  },
+  {
+   "platform": "rest",
+   "line": "Authorization: Basic RmFrZVVzZXI6RmFrZVBhc3MxNQ==",
+   "expect": "Authorization: Basic <redacted>==",
+   "secrets": [
+    "RmFrZVVzZXI6RmFrZVBhc3MxNQ=="
+   ],
+   "flags": [],
+   "source": "w58r2-review:C26",
+   "main_6390b66c": "Authorization: Basic RmFrZVVzZXI6RmFrZVBhc3MxNQ=="
+  },
+  {
+   "platform": "rest",
+   "line": "Cookie: JSESSIONID=FAKE0123456789ABCDEF16",
+   "expect": "Cookie: <redacted>=<redacted>",
+   "secrets": [
+    "FAKE0123456789ABCDEF16"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C27",
+   "main_6390b66c": "Cookie: JSESSIONID=FAKE0123456789ABCDEF16"
+  },
+  {
+   "platform": "rest",
+   "line": "Authorization: SSWS 00FakeOkta63TokenValue",
+   "expect": "Authorization: SSWS <redacted>",
+   "secrets": [
+    "00FakeOkta63TokenValue"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C28",
+   "main_6390b66c": "Authorization: SSWS 00FakeOkta63TokenValue"
+  },
+  {
+   "platform": "token",
+   "line": "github_pat_11FAKE00000000000000000_FakeTokenValue64abcdefghijklmnopqrstuv",
+   "expect": "<redacted>",
+   "secrets": [
+    "github_pat_11FAKE00000000000000000_FakeTokenValue64abcdefghijklmnopqrstuv"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w58r2-review:C29",
+   "main_6390b66c": "github_pat_11FAKE00000000000000000_FakeTokenValue64abcdefghijklmnopqrstuv"
+  },
+  {
+   "platform": "token",
+   "line": "xoxb-FakeSlackNotAToken-abcdefghij",
+   "expect": "<redacted>",
+   "secrets": [
+    "xoxb-FakeSlackNotAToken-abcdefghij"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w58r2-review:C30",
+   "main_6390b66c": "xoxb-FakeSlackNotAToken-abcdefghij"
+  },
+  {
+   "platform": "url",
+   "line": "https://example.blob.core.windows.net/c/f?sv=2022-11-02&sig=FakeSig66AbCdEf%2Fabc%3D",
+   "expect": "https://example.blob.core.windows.net/c/f?sv=2022-11-02&sig=<redacted>",
+   "secrets": [
+    "FakeSig66AbCdEf"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w58r2-review:C31",
+   "main_6390b66c": "https://example.blob.core.windows.net/c/f?sv=2022-11-02&sig=FakeSig66AbCdEf%2Fabc%3D"
+  },
+  {
+   "platform": "url",
+   "line": "archive\n path ftp://admin:Fake/Pw59x@192.0.2.80/$h",
+   "expect": "archive\n path ftp://admin:<redacted>@192.0.2.80/$h",
+   "secrets": [
+    "Fake/Pw59x"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w58r2-review:C32",
+   "main_6390b66c": "archive\n path ftp://admin:Fake/Pw59x@192.0.2.80/$h"
+  },
+  {
+   "platform": "collector",
+   "line": "$env:CISCO_REST_PASS = 'FakeRest101x'\npython -m cisco_toolkit.rest_collect apic --password-env CISCO_REST_PASS",
+   "expect": "$env:CISCO_REST_PASS = <redacted>\npython -m cisco_toolkit.rest_collect apic --password-env CISCO_REST_PASS",
+   "secrets": [
+    "FakeRest101x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C33",
+   "main_6390b66c": "$env:CISCO_REST_PASS = 'FakeRest101x'\npython -m cisco_toolkit.rest_collect apic --password-env CISCO_REST_PASS"
+  },
+  {
+   "platform": "collector",
+   "line": "set CISCO_REST_PASS=FakeRest102x",
+   "expect": "set CISCO_REST_PASS=<redacted>",
+   "secrets": [
+    "FakeRest102x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C34",
+   "main_6390b66c": "set CISCO_REST_PASS=FakeRest102x"
+  },
+  {
+   "platform": "inventory",
+   "line": "host,username,password,enable_secret\ncore1,admin,FakeCsvPw99x,FakeCsvEn99x",
+   "expect": "host,username,password,<redacted>\ncore1,admin,<redacted>,<redacted>",
+   "secrets": [
+    "FakeCsvPw99x",
+    "FakeCsvEn99x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C35",
+   "main_6390b66c": "host,username,password,enable_secret\ncore1,admin,FakeCsvPw99x,FakeCsvEn99x"
+  },
+  {
+   "platform": "netsnmp",
+   "line": "createUser opsuser SHA FakeAuth69x AES FakePriv69x",
+   "expect": "createUser <redacted> SHA <redacted> AES <redacted>",
+   "secrets": [
+    "FakeAuth69x",
+    "FakePriv69x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C36",
+   "main_6390b66c": "createUser opsuser SHA FakeAuth69x AES FakePriv69x"
+  },
+  {
+   "platform": "fortigate",
+   "line": "config system snmp community\n    edit 1\n        set name \"FakeFgt51x\"\n    next\nend",
+   "expect": "config system snmp community\n    edit 1\n        set name <redacted>\n    next\nend",
+   "secrets": [
+    "FakeFgt51x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C37",
+   "main_6390b66c": "config system snmp community\n    <redacted> 1\n        set name \"FakeFgt51x\"\n    next\nend"
+  },
+  {
+   "platform": "ios",
+   "line": "event manager applet BKP\n action 1.0 cli command \"enable\"\n action 1.1 cli command \"FakeEem2x\"",
+   "expect": "event manager applet BKP\n action 1.0 cli command \"enable\"\n action 1.1 cli command <redacted>",
+   "secrets": [
+    "FakeEem2x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C38",
+   "main_6390b66c": "event manager applet BKP\n action 1.0 cli command \"enable\"\n action 1.1 cli command \"FakeEem2x\""
+  },
+  {
+   "platform": "huawei",
+   "line": " snmp-agent community read Corp-Comm-Key",
+   "expect": " snmp-agent community read <redacted>",
+   "secrets": [
+    "Corp-Comm-Key"
+   ],
+   "flags": [],
+   "source": "w58r2-review:C39",
+   "main_6390b66c": " snmp-agent community <redacted> Corp-Comm-Key"
+  },
+  {
+   "platform": "ios",
+   "line": "dot11 ssid GUEST\n wpa-psk ascii 0 !@#$%^&*",
+   "expect": "dot11 ssid GUEST\n wpa-psk ascii 0 <redacted>",
+   "secrets": [
+    "!@#$%^&*"
+   ],
+   "flags": [],
+   "source": "w58r2-review:D01",
+   "main_6390b66c": "dot11 ssid GUEST\n wpa-psk ascii 0 !@#$%^&*"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server user u2 g2 v3 auth sha !@#$%^&*+ priv aes 128 +*&^%$#@!",
+   "expect": "snmp-server user u2 g2 v3 auth sha <redacted> priv aes 128 <redacted>",
+   "secrets": [
+    "!@#$%^&*+",
+    "+*&^%$#@!"
+   ],
+   "flags": [],
+   "source": "w58r2-review:D02",
+   "main_6390b66c": "snmp-server user u2 g2 v3 auth sha !@#$%^&*+ priv aes 128 +*&^%$#@!"
+  },
+  {
+   "platform": "ios",
+   "line": "radius server R1\n address ipv4 192.0.2.90 auth-port 1812 acct-port 1813\n key 13572468\n automate-tester username probe",
+   "expect": "radius server R1\n address ipv4 192.0.2.90 auth-port 1812 acct-port 1813\n key <redacted>\n automate-tester username probe",
+   "secrets": [
+    "13572468"
+   ],
+   "flags": [],
+   "source": "w58r2-review:E01",
+   "main_6390b66c": "radius server R1\n address ipv4 192.0.2.90 auth-port 1812 acct-port 1813\n key 13572468\n <redacted> username probe"
+  },
+  {
+   "platform": "asa",
+   "line": "aaa-server TAC (inside) host 192.0.2.40\n key 98765432\n timeout 5",
+   "expect": "aaa-server TAC (inside) host 192.0.2.40\n key <redacted>\n timeout 5",
+   "secrets": [
+    "98765432"
+   ],
+   "flags": [],
+   "source": "w58r2-review:E02",
+   "main_6390b66c": "aaa-server TAC (inside) host 192.0.2.40\n key 98765432\n <redacted> 5"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto isakmp client configuration group G\n key 87654321\n dns 192.0.2.1",
+   "expect": "crypto isakmp client configuration group G\n key <redacted>\n dns 192.0.2.1",
+   "secrets": [
+    "87654321"
+   ],
+   "flags": [],
+   "source": "w58r2-review:E03",
+   "main_6390b66c": "crypto isakmp client configuration group G\n key 87654321\n <redacted> 192.0.2.1"
+  },
+  {
+   "platform": "ios",
+   "line": "ntp trusted-key 1\nsnmp-server user opsuser grp v3 auth sha FakeAuthX9 priv aes 128 FakePrivX9",
+   "expect": "ntp trusted-key 1\nsnmp-server user opsuser grp v3 auth sha <redacted> priv aes 128 <redacted>",
+   "secrets": [
+    "FakeAuthX9",
+    "FakePrivX9"
+   ],
+   "flags": [],
+   "source": "w58r2-review:E04",
+   "main_6390b66c": "ntp trusted-key 1\n<redacted> user opsuser grp v3 auth sha FakeAuthX9 priv aes 128 FakePrivX9"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server host 192.0.2.11 traps version 2c clear FakeClear1x",
+   "expect": "snmp-server host 192.0.2.11 traps version 2c clear <redacted>",
+   "secrets": [
+    "FakeClear1x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:E05",
+   "main_6390b66c": "snmp-server host 192.0.2.11 traps version 2c <redacted> FakeClear1x"
+  },
+  {
+   "platform": "latin1",
+   "line": "snmp-server community\udca0FakeLat97x RO",
+   "expect": "snmp-server community\udca0<redacted> RO",
+   "secrets": [
+    "FakeLat97x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:F01",
+   "main_6390b66c": "snmp-server community\udca0FakeLat97x RO"
+  },
+  {
+   "platform": "utf8",
+   "line": "\ufeffsnmp-server host 192.0.2.1 FakeBom98x",
+   "expect": "\ufeffsnmp-server host 192.0.2.1 <redacted>",
+   "secrets": [
+    "FakeBom98x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:F02",
+   "main_6390b66c": "\ufeffsnmp-server host 192.0.2.1 FakeBom98x"
+  },
+  {
+   "platform": "tabs",
+   "line": "snmp-server\thost\t192.0.2.5\tFakeTab17x",
+   "expect": "snmp-server\thost\t192.0.2.5\t<redacted>",
+   "secrets": [
+    "FakeTab17x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:F03",
+   "main_6390b66c": "snmp-server\thost\t192.0.2.5\tFakeTab17x"
+  },
+  {
+   "platform": "crlf",
+   "line": "hostname R1\r\nsnmp-server host 192.0.2.6 FakeCrlf18x\r",
+   "expect": "hostname R1\r\nsnmp-server host 192.0.2.6 <redacted>\r",
+   "secrets": [
+    "FakeCrlf18x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:F04",
+   "main_6390b66c": "hostname R1\r\nsnmp-server host 192.0.2.6 FakeCrlf18x\r"
+  },
+  {
+   "platform": "utf8",
+   "line": "username admin\u00a0password\u00a0FakeNbsp19x",
+   "expect": "username admin\u00a0password\u00a0<redacted>",
+   "secrets": [
+    "FakeNbsp19x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:F05",
+   "main_6390b66c": "username admin\u00a0password\u00a0<redacted>"
+  },
+  {
+   "platform": "vertical",
+   "line": "snmp-server host 192.0.2.7 traps\u000bFakeVt20x",
+   "expect": "snmp-server host 192.0.2.7 traps\u000b<redacted>",
+   "secrets": [
+    "FakeVt20x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:F06",
+   "main_6390b66c": "snmp-server host 192.0.2.7 traps\u000bFakeVt20x"
+  },
+  {
+   "platform": "caps+spaces",
+   "line": "SNMP-SERVER   HOST   192.0.2.8   FakeCaps1x",
+   "expect": "SNMP-SERVER   HOST   192.0.2.8   <redacted>",
+   "secrets": [
+    "FakeCaps1x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:F07",
+   "main_6390b66c": "SNMP-SERVER   HOST   192.0.2.8   FakeCaps1x"
+  },
+  {
+   "platform": "u+2028",
+   "line": "snmp-server host 192.0.2.9 traps\u2028FakeLs2x",
+   "expect": "snmp-server host 192.0.2.9 traps\u2028<redacted>",
+   "secrets": [
+    "FakeLs2x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:F08",
+   "main_6390b66c": "snmp-server host 192.0.2.9 traps\u2028FakeLs2x"
+  },
+  {
+   "platform": "cronly",
+   "line": "hostname R1\rline vty 0 4\r password FakeCrOnly21x\r",
+   "expect": "hostname R1\rline vty 0 4\r password <redacted>\r",
+   "secrets": [
+    "FakeCrOnly21x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:F09",
+   "main_6390b66c": "hostname R1\rline vty 0 4\r password <redacted>\r"
+  },
+  {
+   "platform": "cp1252",
+   "line": " local-user admin password cipher\udca0FakeLat98x",
+   "expect": " local-user admin password cipher\udca0<redacted>",
+   "secrets": [
+    "FakeLat98x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:F10",
+   "main_6390b66c": " local-user admin password <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server community FakeCtl1x RO",
+   "expect": "snmp-server community <redacted> RO",
+   "secrets": [
+    "FakeCtl1x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:G01",
+   "main_6390b66c": "snmp-server community <redacted> RO"
+  },
+  {
+   "platform": "ios",
+   "line": "username admin password <redacted> FakeMid21x",
+   "expect": "username admin password <redacted> <redacted>",
+   "secrets": [
+    "FakeMid21x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:G02",
+   "main_6390b66c": "username admin password <redacted> FakeMid21x"
+  },
+  {
+   "platform": "url",
+   "line": "copy ftp://admin:P@Fake22x@192.0.2.1/x flash:",
+   "expect": "copy ftp://admin:<redacted>@192.0.2.1/x flash:",
+   "secrets": [
+    "P@Fake22x"
+   ],
+   "flags": [
+    "notail"
+   ],
+   "source": "w58r2-review:G03",
+   "main_6390b66c": "copy ftp://admin:P@Fake22x@192.0.2.1/x flash:"
+  },
+  {
+   "platform": "arista",
+   "line": "username admin secret sha512 $6$FakeSalt$FakeHashValue",
+   "expect": "username admin secret sha512 <redacted>",
+   "secrets": [
+    "$6$FakeSalt$FakeHashValue"
+   ],
+   "flags": [],
+   "source": "w58r2-review:G04",
+   "main_6390b66c": "username admin secret <redacted> $6$FakeSalt$FakeHashValue"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server user u3 g3 v3 auth sha FakeAuth70x priv aes 128 FakePriv70x",
+   "expect": "snmp-server user u3 g3 v3 auth sha <redacted> priv aes 128 <redacted>",
+   "secrets": [
+    "FakeAuth70x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:G05",
+   "main_6390b66c": "snmp-server user u3 g3 v3 auth sha FakeAuth70x priv aes 128 FakePriv70x"
+  },
+  {
+   "platform": "show",
+   "line": "  Authentication text, string \"FakeHsrp105x\"",
+   "expect": "  Authentication text, string <redacted>",
+   "secrets": [
+    "FakeHsrp105x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:G08",
+   "main_6390b66c": "  Authentication text, string \"FakeHsrp105x\""
+  },
+  {
+   "platform": "asa",
+   "line": "tunnel-group 192.0.2.3 ipsec-attributes\n ikev1 pre-shared-key FakePsk90x",
+   "expect": "tunnel-group 192.0.2.3 ipsec-attributes\n ikev1 pre-shared-key <redacted>",
+   "secrets": [
+    "FakePsk90x"
+   ],
+   "flags": [],
+   "source": "w58r2-review:G09",
+   "main_6390b66c": "tunnel-group 192.0.2.3 ipsec-attributes\n ikev1 pre-shared-key <redacted>"
+  },
+  {
+   "platform": "pem",
+   "line": "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFakeBody\n-----END ENCRYPTED PRIVATE KEY-----",
+   "expect": "-----BEGIN ENCRYPTED PRIVATE KEY-----\n<redacted>\n-----END ENCRYPTED PRIVATE KEY-----",
+   "secrets": [
+    "MIIFakeBody"
+   ],
+   "flags": [],
+   "source": "w58r2-review:G10",
+   "main_6390b66c": "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFakeBody\n-----END ENCRYPTED PRIVATE KEY-----"
   }
  ],
  "must_keep": [
   {
    "platform": "show",
-   "line": " Key name: TP-self-signed-1234"
+   "line": " Key name: TP-self-signed-1234",
+   "source": "w60-builder",
+   "main_6390b66c": " Key <redacted> TP-self-signed-1234"
   },
   {
    "platform": "show",
-   "line": " Key Data:"
+   "line": " Key Data:",
+   "source": "w60-builder",
+   "main_6390b66c": " Key <redacted>"
   },
   {
    "platform": "show",
-   "line": "  Youngest key id is 1"
+   "line": "  Youngest key id is 1",
+   "source": "w60-builder",
+   "main_6390b66c": "  Youngest key <redacted> is 1"
   },
   {
    "platform": "show",
-   "line": " Password encryption: enabled"
+   "line": " Password encryption: enabled",
+   "source": "w60-builder",
+   "main_6390b66c": " Password <redacted> enabled"
   },
   {
    "platform": "show",
-   "line": "Last key change: never"
+   "line": "Last key change: never",
+   "source": "w60-builder",
+   "main_6390b66c": "Last key <redacted> never"
   },
   {
    "platform": "show",
-   "line": " Key is not exportable."
+   "line": " Key Usage: General Purpose Key",
+   "source": "w60-builder",
+   "main_6390b66c": " Key <redacted> General Purpose Key"
   },
   {
    "platform": "show",
-   "line": " Key Usage: General Purpose Key"
+   "line": "    0 Unknown community name",
+   "source": "w60-builder",
+   "main_6390b66c": "    0 Unknown community <redacted>"
   },
   {
    "platform": "show",
-   "line": "    0 Unknown community name"
+   "line": "  Minimum expected Diffie Hellman key size : 2048 bits",
+   "source": "w60-builder",
+   "main_6390b66c": "  Minimum expected Diffie Hellman key <redacted> : 2048 bits"
   },
   {
    "platform": "show",
-   "line": "    0 Illegal operation for community name supplied"
+   "line": "      sa timing: remaining key lifetime (k/sec): (4607999/3540)",
+   "source": "w60-builder",
+   "main_6390b66c": "      sa timing: remaining key <redacted> (k/sec): (4607999/3540)"
   },
   {
    "platform": "show",
-   "line": "  Minimum expected Diffie Hellman key size : 2048 bits"
+   "line": "Authentication methods:publickey,keyboard-interactive,password",
+   "source": "w60-builder",
+   "main_6390b66c": "Authentication methods:publickey,keyboard-interactive,password"
   },
   {
    "platform": "show",
-   "line": "      sa timing: remaining key lifetime (k/sec): (4607999/3540)"
+   "line": "      key id 1 algorithm MD5",
+   "source": "w60-builder",
+   "main_6390b66c": "      key <redacted> 1 algorithm MD5"
   },
   {
    "platform": "show",
-   "line": "Authentication methods:publickey,keyboard-interactive,password"
+   "line": "  Subject Key Identifier: 0123456789ABCDEF",
+   "source": "w60-builder",
+   "main_6390b66c": "  Subject Key <redacted> 0123456789ABCDEF"
   },
   {
    "platform": "show",
-   "line": "Key: U - Unicast, B - Broadcast, M - Multicast"
-  },
-  {
-   "platform": "show",
-   "line": "      Community: 65000:100 no-export"
-  },
-  {
-   "platform": "show",
-   "line": "      Extended Community: RT:65000:1"
-  },
-  {
-   "platform": "show",
-   "line": "    Rollover in progress, 1 neighbor(s) using the old key(s):"
-  },
-  {
-   "platform": "show",
-   "line": "      key id 1 algorithm MD5"
-  },
-  {
-   "platform": "show",
-   "line": "  Subject Key Identifier: 0123456789ABCDEF"
-  },
-  {
-   "platform": "show",
-   "line": "%SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: fake] [Source: 10.1.1.1] [Reason: Bad password for user]"
+   "line": "%SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: fake] [Source: 10.1.1.1] [Reason: Bad password for user]",
+   "source": "w60-builder",
+   "main_6390b66c": "%SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: fake] [Source: 10.1.1.1] [Reason: Bad password <redacted> user]"
   },
   {
    "platform": "ios",
-   "line": "service password-encryption"
+   "line": "service password-encryption",
+   "source": "w60-builder",
+   "main_6390b66c": "service password-encryption"
   },
   {
    "platform": "ios",
-   "line": "password encryption aes"
+   "line": "password encryption aes",
+   "source": "w60-builder",
+   "main_6390b66c": "password <redacted> aes"
   },
   {
    "platform": "ios",
-   "line": "feature password encryption aes"
+   "line": "feature password encryption aes",
+   "source": "w60-builder w60-review:K-password-encryption-aes-nxos",
+   "main_6390b66c": "feature password <redacted> aes"
   },
   {
    "platform": "ios",
-   "line": "security passwords min-length 8"
+   "line": "security passwords min-length 8",
+   "source": "w60-builder",
+   "main_6390b66c": "security passwords min-length 8"
   },
   {
    "platform": "ios",
-   "line": "no service password-recovery"
+   "line": "no service password-recovery",
+   "source": "w60-builder",
+   "main_6390b66c": "no service password-recovery"
   },
   {
    "platform": "ios",
-   "line": "key chain OSPF-KC"
+   "line": "key chain OSPF-KC",
+   "source": "w60-builder",
+   "main_6390b66c": "key chain OSPF-KC"
   },
   {
    "platform": "ios",
-   "line": " key chain KC macsec"
+   "line": " key chain KC macsec",
+   "source": "w60-builder",
+   "main_6390b66c": " key chain KC macsec"
   },
   {
    "platform": "ios",
-   "line": "  key 01"
+   "line": "  key 1",
+   "source": "w60-builder",
+   "main_6390b66c": "  key <redacted>"
   },
   {
    "platform": "ios",
-   "line": "  key 1"
+   "line": "   cryptographic-algorithm aes-128-cmac",
+   "source": "w60-builder",
+   "main_6390b66c": "   cryptographic-algorithm aes-128-cmac"
   },
   {
    "platform": "ios",
-   "line": "   cryptographic-algorithm aes-128-cmac"
+   "line": " mka pre-shared-key key-chain KC",
+   "source": "w60-builder",
+   "main_6390b66c": " mka pre-shared-key <redacted> KC"
   },
   {
    "platform": "ios",
-   "line": " mka pre-shared-key key-chain KC"
+   "line": " standby 1 authentication md5 key-chain HSRP-KC",
+   "source": "w60-builder",
+   "main_6390b66c": " standby 1 authentication md5 key-chain HSRP-KC"
   },
   {
    "platform": "ios",
-   "line": " standby 1 authentication md5 key-chain HSRP-KC"
+   "line": " ip ospf authentication message-digest",
+   "source": "w60-builder",
+   "main_6390b66c": " ip ospf authentication message-digest"
   },
   {
    "platform": "ios",
-   "line": " ip ospf authentication message-digest"
+   "line": " ip ospf authentication key-chain OSPF-KC",
+   "source": "w60-builder",
+   "main_6390b66c": " ip ospf authentication key-chain OSPF-KC"
   },
   {
    "platform": "ios",
-   "line": " ip ospf authentication key-chain OSPF-KC"
+   "line": " ip authentication key-chain eigrp 1 EIGRP-KC",
+   "source": "w60-builder",
+   "main_6390b66c": " ip authentication key-chain eigrp 1 EIGRP-KC"
   },
   {
    "platform": "ios",
-   "line": " ip authentication key-chain eigrp 1 EIGRP-KC"
+   "line": " ip authentication mode eigrp 1 md5",
+   "source": "w60-builder",
+   "main_6390b66c": " ip authentication mode eigrp 1 md5"
   },
   {
    "platform": "ios",
-   "line": " ip authentication mode eigrp 1 md5"
+   "line": " authentication mode md5",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication mode md5"
   },
   {
    "platform": "ios",
-   "line": " authentication mode md5"
+   "line": " isis authentication mode md5",
+   "source": "w60-builder",
+   "main_6390b66c": " isis authentication mode md5"
   },
   {
    "platform": "ios",
-   "line": " isis authentication mode md5"
+   "line": " isis authentication key-chain ISIS-KC",
+   "source": "w60-builder",
+   "main_6390b66c": " isis authentication key-chain ISIS-KC"
   },
   {
    "platform": "ios",
-   "line": " isis authentication key-chain ISIS-KC"
+   "line": " ip rip authentication key-chain RIPKC",
+   "source": "w60-builder",
+   "main_6390b66c": " ip rip authentication key-chain RIPKC"
   },
   {
    "platform": "ios",
-   "line": " ip rip authentication key-chain RIPKC"
+   "line": " authentication port-control auto",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication port-control auto"
   },
   {
    "platform": "ios",
-   "line": " authentication port-control auto"
+   "line": " authentication host-mode multi-auth",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication host-mode multi-auth"
   },
   {
    "platform": "ios",
-   "line": " authentication host-mode multi-auth"
+   "line": " authentication order mab dot1x",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication order mab dot1x"
   },
   {
    "platform": "ios",
-   "line": " authentication order mab dot1x"
+   "line": " authentication priority dot1x mab",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication priority dot1x mab"
   },
   {
    "platform": "ios",
-   "line": " authentication priority dot1x mab"
+   "line": " authentication event fail action next-method",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication event fail action next-method"
   },
   {
    "platform": "ios",
-   "line": " authentication event fail action next-method"
+   "line": " authentication timer reauthenticate server",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication timer reauthenticate server"
   },
   {
    "platform": "ios",
-   "line": " authentication timer reauthenticate server"
+   "line": "aaa authentication login default group tacacs+ local",
+   "source": "w60-builder",
+   "main_6390b66c": "aaa authentication login default group tacacs+ local"
   },
   {
    "platform": "ios",
-   "line": "aaa authentication login default group tacacs+ local"
+   "line": " ip http authentication local",
+   "source": "w60-builder",
+   "main_6390b66c": " ip http authentication local"
   },
   {
    "platform": "ios",
-   "line": " ip http authentication local"
+   "line": " ntp trusted-key 1",
+   "source": "w60-builder",
+   "main_6390b66c": " ntp trusted-key <redacted>"
   },
   {
    "platform": "ios",
-   "line": " ntp trusted-key 1"
+   "line": "ntp authenticate",
+   "source": "w60-builder",
+   "main_6390b66c": "ntp authenticate"
   },
   {
    "platform": "ios",
-   "line": "ntp authenticate"
+   "line": "crypto key generate rsa modulus 2048",
+   "source": "w60-builder",
+   "main_6390b66c": "crypto key <redacted> rsa modulus 2048"
   },
   {
    "platform": "ios",
-   "line": " tunnel key 12345"
+   "line": " crypto keyring KR",
+   "source": "w60-builder",
+   "main_6390b66c": " crypto keyring KR"
   },
   {
    "platform": "ios",
-   "line": "crypto key generate rsa modulus 2048"
+   "line": " ip ssh pubkey-chain",
+   "source": "w60-builder",
+   "main_6390b66c": " ip ssh pubkey-chain"
   },
   {
    "platform": "ios",
-   "line": " crypto keyring KR"
+   "line": "   key-hash ssh-rsa 8FB4F858DD7E5AFB372780EC653DB371",
+   "source": "w60-builder",
+   "main_6390b66c": "   key-hash ssh-rsa 8FB4F858DD7E5AFB372780EC653DB371"
   },
   {
    "platform": "ios",
-   "line": " ip ssh pubkey-chain"
+   "line": " route-map RM permit 10",
+   "source": "w60-builder",
+   "main_6390b66c": " route-map RM permit 10"
   },
   {
    "platform": "ios",
-   "line": "   key-hash ssh-rsa 8FB4F858DD7E5AFB372780EC653DB371"
+   "line": " set community 65000:100 additive",
+   "source": "w60-builder",
+   "main_6390b66c": " set community <redacted> additive"
   },
   {
    "platform": "ios",
-   "line": " route-map RM permit 10"
+   "line": " match community CL-65000",
+   "source": "w60-builder",
+   "main_6390b66c": " match community <redacted>"
   },
   {
    "platform": "ios",
-   "line": " set community 65000:100 additive"
+   "line": " neighbor 10.0.0.1 send-community both",
+   "source": "w60-builder",
+   "main_6390b66c": " neighbor 10.0.0.1 send-community <redacted>"
   },
   {
    "platform": "ios",
-   "line": " match community CL-65000"
+   "line": "ip community-list standard CL-65000 permit 65000:100",
+   "source": "w60-builder",
+   "main_6390b66c": "ip community-list standard CL-65000 permit 65000:100"
   },
   {
    "platform": "ios",
-   "line": " neighbor 10.0.0.1 send-community both"
+   "line": "snmp-server enable traps snmp authentication linkdown linkup coldstart warmstart",
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server enable traps snmp authentication linkdown linkup coldstart warmstart"
   },
   {
    "platform": "ios",
-   "line": "ip community-list standard CL-65000 permit 65000:100"
+   "line": "snmp-server group FAKEGROUP v3 priv",
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server group FAKEGROUP v3 priv"
   },
   {
    "platform": "ios",
-   "line": "snmp-server enable traps snmp authentication linkdown linkup coldstart warmstart"
+   "line": "username fakeuser privilege 15 nopassword",
+   "source": "w60-builder",
+   "main_6390b66c": "username fakeuser privilege 15 nopassword"
   },
   {
    "platform": "ios",
-   "line": "snmp-server host 10.1.1.1 version 3 priv fakeuser"
+   "line": "crypto isakmp policy 10",
+   "source": "w60-builder",
+   "main_6390b66c": "crypto isakmp policy 10"
   },
   {
    "platform": "ios",
-   "line": "snmp-server group FAKEGROUP v3 priv"
+   "line": " hash md5",
+   "source": "w60-builder",
+   "main_6390b66c": " hash md5"
   },
   {
    "platform": "ios",
-   "line": "username fakeuser privilege 15 nopassword"
+   "line": " encryption aes-256",
+   "source": "w60-builder",
+   "main_6390b66c": " encryption aes-256"
   },
   {
    "platform": "ios",
-   "line": " description link to community college"
+   "line": "ip address 10.0.0.1 255.255.255.0",
+   "source": "w60-builder",
+   "main_6390b66c": "ip address 10.0.0.1 255.255.255.0"
   },
   {
    "platform": "ios",
-   "line": "crypto isakmp policy 10"
+   "line": " ip nhrp network-id 1",
+   "source": "w60-builder",
+   "main_6390b66c": " ip nhrp network-id 1"
   },
   {
    "platform": "ios",
-   "line": " hash md5"
+   "line": " tunnel protection ipsec profile P",
+   "source": "w60-builder",
+   "main_6390b66c": " tunnel protection ipsec profile P"
   },
   {
    "platform": "ios",
-   "line": " encryption aes-256"
+   "line": "archive",
+   "source": "w60-builder",
+   "main_6390b66c": "archive"
   },
   {
    "platform": "ios",
-   "line": "ip address 10.0.0.1 255.255.255.0"
+   "line": " path flash:archive",
+   "source": "w60-builder",
+   "main_6390b66c": " path flash:archive"
   },
   {
    "platform": "ios",
-   "line": " ip nhrp network-id 1"
+   "line": " url http://10.1.1.1:8080/path",
+   "source": "w60-builder",
+   "main_6390b66c": " url http://10.1.1.1:8080/path"
   },
   {
    "platform": "ios",
-   "line": " tunnel protection ipsec profile P"
-  },
-  {
-   "platform": "ios",
-   "line": "archive"
-  },
-  {
-   "platform": "ios",
-   "line": " path flash:archive"
-  },
-  {
-   "platform": "ios",
-   "line": " copy ftp://fakeuser@10.1.1.1/file flash:"
-  },
-  {
-   "platform": "ios",
-   "line": " url http://10.1.1.1:8080/path"
-  },
-  {
-   "platform": "eos",
-   "line": "username fakeadmin ssh-key ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQFake99 fake@host"
-  },
-  {
-   "platform": "ios",
-   "line": "ntp server 10.1.1.1 key 1 prefer"
+   "line": "ntp server 10.1.1.1 key 1 prefer",
+   "source": "w60-builder",
+   "main_6390b66c": "ntp server 10.1.1.1 key 1 <redacted>"
   },
   {
    "platform": "nxos",
-   "line": "ntp server 10.1.1.1 use-vrf management key 1"
-  },
-  {
-   "platform": "nxos",
-   "line": "ssh key rsa 2048"
+   "line": "ntp server 10.1.1.1 use-vrf management key 1",
+   "source": "w60-builder",
+   "main_6390b66c": "ntp server 10.1.1.1 use-vrf management key <redacted>"
   },
   {
    "platform": "iosxe",
-   "line": "ip ssh server algorithm authentication publickey password keyboard"
+   "line": "ip ssh server algorithm authentication publickey password keyboard",
+   "source": "w60-builder",
+   "main_6390b66c": "ip ssh server algorithm authentication publickey password <redacted>"
   },
   {
    "platform": "ios",
-   "line": " ipv6 ospf authentication null"
+   "line": " ipv6 ospf authentication null",
+   "source": "w60-builder",
+   "main_6390b66c": " ipv6 ospf authentication null"
   },
   {
    "platform": "show",
-   "line": "  Authentication MD5, key-chain \"HSRP-KC\""
+   "line": "  Authentication MD5, key-chain \"HSRP-KC\"",
+   "source": "w60-builder",
+   "main_6390b66c": "  Authentication MD5, key-chain \"HSRP-KC\""
   },
   {
    "platform": "nxos",
-   "line": "snmp-server host 10.1.1.1 use-vrf management"
+   "line": "snmp-server host 10.1.1.1 use-vrf management",
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host 10.1.1.1 use-vrf management"
   },
   {
    "platform": "nxos",
-   "line": "snmp-server host 10.1.1.1 source-interface mgmt0"
+   "line": "snmp-server host 10.1.1.1 source-interface mgmt0",
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host 10.1.1.1 source-interface mgmt0"
   },
   {
    "platform": "nxos",
-   "line": "password strength-check"
+   "line": "password strength-check",
+   "source": "w60-builder",
+   "main_6390b66c": "password <redacted>"
   },
   {
    "platform": "nxos",
-   "line": "key config-key ascii"
+   "line": "key config-key ascii",
+   "source": "w60-builder",
+   "main_6390b66c": "key <redacted> ascii"
   },
   {
    "platform": "nxos",
-   "line": " authentication md5 key-chain HSRP-KC"
+   "line": " authentication md5 key-chain HSRP-KC",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication md5 key-chain HSRP-KC"
   },
   {
    "platform": "asa",
-   "line": "aaa-server RAD protocol radius"
+   "line": "aaa-server RAD protocol radius",
+   "source": "w60-builder",
+   "main_6390b66c": "aaa-server RAD protocol radius"
   },
   {
    "platform": "asa",
-   "line": "snmp-server host inside v4-n00001-h001.assesshub-redacted.invalid community <redacted> version 2c"
-  },
-  {
-   "platform": "asa",
-   "line": "snmp-server enable traps snmp authentication"
-  },
-  {
-   "platform": "junos",
-   "line": "set system authentication-order [ radius password ]"
+   "line": "snmp-server enable traps snmp authentication",
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server enable traps snmp authentication"
   },
   {
    "platform": "junos",
-   "line": "set system login password minimum-length 8"
+   "line": "set system authentication-order [ radius password ]",
+   "source": "w60-builder",
+   "main_6390b66c": "set system authentication-order [ radius password <redacted>"
   },
   {
    "platform": "junos",
-   "line": "set policy-options community CNAME members 65000:100"
+   "line": "set system login password minimum-length 8",
+   "source": "w60-builder",
+   "main_6390b66c": "set system login password <redacted> 8"
   },
   {
    "platform": "junos",
-   "line": "set protocols ospf area 0 interface ge-0/0/0.0 authentication-type md5"
+   "line": "set protocols ospf area 0 interface ge-0/0/0.0 authentication-type md5",
+   "source": "w60-builder",
+   "main_6390b66c": "set protocols ospf area 0 interface ge-0/0/0.0 authentication-type md5"
   },
   {
    "platform": "huawei",
-   "line": " authentication-mode hwtacacs local"
+   "line": " authentication-mode hwtacacs local",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication-mode hwtacacs local"
   },
   {
    "platform": "huawei",
-   "line": " authentication-mode aaa"
+   "line": " authentication-mode aaa",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication-mode aaa"
   },
   {
    "platform": "huawei",
-   "line": " authentication-mode password"
+   "line": " authentication-mode password",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication-mode password"
   },
   {
    "platform": "huawei",
-   "line": " authentication-mode keychain KC1"
+   "line": " authentication-mode keychain KC1",
+   "source": "w60-builder",
+   "main_6390b66c": " authentication-mode keychain KC1"
   },
   {
    "platform": "huawei",
-   "line": " snmp-agent community complexity-check disable"
+   "line": " snmp-agent community complexity-check disable",
+   "source": "w60-builder",
+   "main_6390b66c": " snmp-agent community <redacted> disable"
   },
   {
    "platform": "fortigate",
-   "line": "    set keylife 86400"
+   "line": "    set keylife 86400",
+   "source": "w60-builder",
+   "main_6390b66c": "    set keylife 86400"
   },
   {
    "platform": "fortigate",
-   "line": "    set name \"fake-admin\""
+   "line": "    set name \"fake-admin\"",
+   "source": "w60-builder",
+   "main_6390b66c": "    set name \"fake-admin\""
+  },
+  {
+   "platform": "show",
+   "line": "  Simple password authentication enabled",
+   "source": "w60-review:K-ospf-simple-password-show",
+   "main_6390b66c": "  Simple password <redacted> enabled"
+  },
+  {
+   "platform": "show",
+   "line": "    Sending SA: Key 1, Algorithm HMAC-SHA-256 - key chain OSPF-KC",
+   "source": "w60-review:K-ospf-sending-sa",
+   "main_6390b66c": "    Sending SA: Key <redacted> Algorithm HMAC-SHA-256 - key chain OSPF-KC"
+  },
+  {
+   "platform": "nxos",
+   "line": "Community            Group / Access      context    acl_filter",
+   "source": "w60-review:K-nxos-show-snmp-header",
+   "main_6390b66c": "Community            <redacted> / Access      context    acl_filter"
+  },
+  {
+   "platform": "show",
+   "line": "Password strength check is enabled",
+   "source": "w60-review:K-password-strength-show",
+   "main_6390b66c": "Password <redacted> check is enabled"
+  },
+  {
+   "platform": "ios",
+   "line": "mpls ldp password required",
+   "source": "w60-review:K-ldp-password-required",
+   "main_6390b66c": "mpls ldp password <redacted>"
+  },
+  {
+   "platform": "show",
+   "line": "IOS Keys in SECSH format(ssh-rsa, base64 encoded): TP-self-signed-1234",
+   "source": "w60-review:K-ssh-secsh-keys",
+   "main_6390b66c": "IOS Keys in SECSH format(ssh-rsa, base64 encoded): TP-self-signed-1234"
+  },
+  {
+   "platform": "show",
+   "line": "  authentication method:\tPre-Shared Key",
+   "source": "w60-review:K-isakmp-policy-psk",
+   "main_6390b66c": "  authentication method:\tPre-Shared Key"
+  },
+  {
+   "platform": "show",
+   "line": "Authentication Protocol: SHA\nPrivacy Protocol: AES128",
+   "source": "w60-review:K-snmp-user-auth-proto",
+   "main_6390b66c": "Authentication Protocol: SHA\nPrivacy Protocol: AES128"
+  },
+  {
+   "platform": "ios",
+   "line": "ip ssh server algorithm hostkey rsa-sha2-512 rsa-sha2-256",
+   "source": "w60-review:K-ssh-hostkey-alg",
+   "main_6390b66c": "ip ssh server algorithm hostkey rsa-sha2-512 rsa-sha2-256"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto key generate rsa general-keys modulus 2048 label TP1",
+   "source": "w60-review:K-crypto-key-generate",
+   "main_6390b66c": "crypto key <redacted> rsa general-keys modulus 2048 label TP1"
+  },
+  {
+   "platform": "show",
+   "line": "*Oct  9 10:00:00.000: %SYS-5-CONFIG_I: Configured from console by fakeadmin on vty0 (192.0.2.1)",
+   "source": "w60-review:K-syslog-config-i",
+   "main_6390b66c": "*Oct  9 10:00:00.000: %SYS-5-CONFIG_I: Configured from console by fakeadmin on vty0 (192.0.2.1)"
+  },
+  {
+   "platform": "show",
+   "line": "*Oct  9 10:00:00.000: %SNMP-3-AUTHFAIL: Authentication failure for SNMP request from host 192.0.2.1",
+   "source": "w60-review:K-syslog-snmp-authfail",
+   "main_6390b66c": "*Oct  9 10:00:00.000: %SNMP-3-AUTHFAIL: Authentication failure for SNMP request from host 192.0.2.1"
+  },
+  {
+   "platform": "show",
+   "line": "  Message digest authentication enabled\n    Youngest key id is 1",
+   "source": "w60-review:K-ospf-md-auth-enabled",
+   "main_6390b66c": "  Message digest authentication enabled\n    Youngest key <redacted> is 1"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server enable traps config",
+   "source": "w60-review:K-snmp-traps-config",
+   "main_6390b66c": "snmp-server enable traps config"
+  },
+  {
+   "platform": "show",
+   "line": "vPC keep-alive status             : peer is alive",
+   "source": "w60-review:K-vpc-keepalive",
+   "main_6390b66c": "vPC keep-alive status             : peer is alive"
+  },
+  {
+   "platform": "junos",
+   "line": "    authentication-order [ radius password ];",
+   "source": "w60-review:K-junos-auth-order-hier",
+   "main_6390b66c": "    authentication-order [ radius password <redacted>"
+  },
+  {
+   "platform": "junos",
+   "line": "        authentication-type md5;",
+   "source": "w60-review:K-junos-auth-type-hier",
+   "main_6390b66c": "        authentication-type md5;"
+  },
+  {
+   "platform": "show",
+   "line": "  Option Flags: nagle, path mtu capable, md5",
+   "source": "w60-review:K-bgp-option-flags",
+   "main_6390b66c": "  Option Flags: nagle, path mtu capable, md5"
+  },
+  {
+   "platform": "show",
+   "line": "Password expiry warning: 7 days",
+   "source": "w60-review:K-password-expiry",
+   "main_6390b66c": "Password <redacted> warning: 7 days"
+  },
+  {
+   "platform": "eos",
+   "line": "   neighbor 192.0.2.1 send-community extended",
+   "source": "w60-review:K-eos-send-community-ext",
+   "main_6390b66c": "   neighbor 192.0.2.1 send-community <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "ip bgp-community new-format",
+   "source": "w60-review:K-bgp-community-new-format",
+   "main_6390b66c": "ip bgp-community <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server ifindex persist\nsnmp-server trap-source Loopback0",
+   "source": "w60-review:K-snmp-ifindex",
+   "main_6390b66c": "snmp-server ifindex persist\nsnmp-server trap-source Loopback0"
+  },
+  {
+   "platform": "junos",
+   "line": "            authorization read-only;",
+   "source": "w60-review:K-junos-snmp-community-ro",
+   "main_6390b66c": "            authorization read-only;"
+  },
+  {
+   "platform": "show",
+   "line": "  Authentication MD5, key-string",
+   "source": "w60-review:K-hsrp-show-md5-keystring",
+   "main_6390b66c": "  Authentication MD5, key-string"
+  },
+  {
+   "platform": "ios",
+   "line": " keyring local KR1\n authentication remote pre-share",
+   "source": "w60-review:K-ike-profile-keyring",
+   "main_6390b66c": " keyring local KR1\n authentication remote pre-share"
+  },
+  {
+   "platform": "show",
+   "line": "Authentication timeout: 120 secs; Authentication retries: 3\nMinimum expected Diffie Hellman key size : 2048 bits",
+   "source": "w60-review:K-show-ip-ssh",
+   "main_6390b66c": "Authentication timeout: 120 secs; Authentication retries: 3\nMinimum expected Diffie Hellman key <redacted> : 2048 bits"
+  },
+  {
+   "platform": "ios",
+   "line": "crypto ipsec profile P1\n set transform-set TS1\n set ikev2-profile IP1",
+   "source": "w60-review:K-crypto-ipsec-profile",
+   "main_6390b66c": "crypto ipsec profile P1\n set transform-set TS1\n set ikev2-profile IP1"
+  },
+  {
+   "platform": "nxos",
+   "line": "tacacs-server host 192.0.2.1 port 49 timeout 5",
+   "source": "w60-review:K-tacacs-server-host-nokey",
+   "main_6390b66c": "tacacs-server host 192.0.2.1 port 49 timeout 5"
+  }
+ ],
+ "over_redacted": [
+  {
+   "platform": "show",
+   "line": " Key is not exportable.",
+   "expect": " Key is not <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'Key' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": " Key <redacted> not exportable."
+  },
+  {
+   "platform": "show",
+   "line": "    0 Illegal operation for community name supplied",
+   "expect": "    0 Illegal operation for community name <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "    0 Illegal operation for community <redacted> supplied"
+  },
+  {
+   "platform": "show",
+   "line": "Key: U - Unicast, B - Broadcast, M - Multicast",
+   "expect": "Key: <redacted> - <redacted>, <redacted> - <redacted>, <redacted> - <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'Key' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "Key: U - Unicast, B - Broadcast, M - Multicast"
+  },
+  {
+   "platform": "show",
+   "line": "      Community: 65000:100 no-export",
+   "expect": "      Community: <redacted> <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'Community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "      Community: 65000:100 no-export"
+  },
+  {
+   "platform": "show",
+   "line": "      Extended Community: RT:65000:1",
+   "expect": "      Extended Community: <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'Community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "      Extended Community: RT:65000:1"
+  },
+  {
+   "platform": "show",
+   "line": "    Rollover in progress, 1 neighbor(s) using the old key(s):",
+   "expect": "    Rollover in progress, 1 neighbor(s) using the old key<redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'key' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "    Rollover in progress, 1 neighbor(s) using the old key(s):"
+  },
+  {
+   "platform": "ios",
+   "line": "  key 01",
+   "expect": "  key <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'key' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "  key <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": " tunnel key 12345",
+   "expect": " tunnel key <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'key' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": " tunnel key <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server host 10.1.1.1 version 3 priv fakeuser",
+   "expect": "snmp-server host 10.1.1.1 version 3 priv <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'snmp-server host' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host 10.1.1.1 version 3 priv fakeuser"
+  },
+  {
+   "platform": "ios",
+   "line": " description link to community college",
+   "expect": " description link to community <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": " description link to community <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": " copy ftp://fakeuser@10.1.1.1/file flash:",
+   "expect": " copy ftp://<redacted>@10.1.1.1/file flash:",
+   "note": "over-redaction accepted (fail-safe): high-entropy or stateful rule",
+   "source": "w60-builder",
+   "main_6390b66c": " copy ftp://fakeuser@10.1.1.1/file flash:"
+  },
+  {
+   "platform": "eos",
+   "line": "username fakeadmin ssh-key ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQFake99 fake@host",
+   "expect": "username fakeadmin ssh-key <redacted> <redacted> <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'key' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "username fakeadmin ssh-key <redacted> AAAAB3NzaC1yc2EAAAADAQABAAABAQFake99 fake@host"
+  },
+  {
+   "platform": "nxos",
+   "line": "ssh key rsa 2048",
+   "expect": "ssh key rsa <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'key' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "ssh key <redacted> 2048"
+  },
+  {
+   "platform": "asa",
+   "line": "snmp-server host inside v4-n00001-h001.assesshub-redacted.invalid community <redacted> version 2c",
+   "expect": "snmp-server host <redacted> v4-n00001-h001.assesshub-redacted.invalid <redacted> <redacted> version 2c",
+   "note": "over-redaction accepted (fail-safe): after 'snmp-server host' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "snmp-server host inside v4-n00001-h001.assesshub-redacted.invalid community <redacted> version 2c"
+  },
+  {
+   "platform": "junos",
+   "line": "set policy-options community CNAME members 65000:100",
+   "expect": "set policy-options community <redacted> members <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "set policy-options community <redacted> members 65000:100"
   },
   {
    "platform": "banner",
-   "line": "Do not share your password with anyone."
+   "line": "Do not share your password with anyone.",
+   "expect": "Do not share your password with <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'password' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "Do not share your password <redacted> anyone."
   },
   {
    "platform": "banner",
-   "line": "Unauthorized access is prohibited; your password is your responsibility."
+   "line": "Unauthorized access is prohibited; your password is your responsibility.",
+   "expect": "Unauthorized access is prohibited; your password is <redacted> <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'password' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-builder",
+   "main_6390b66c": "Unauthorized access is prohibited; your password <redacted> your responsibility."
+  },
+  {
+   "platform": "show",
+   "line": "  Community attribute sent to this neighbor",
+   "expect": "  Community <redacted> <redacted> to this neighbor",
+   "note": "over-redaction accepted (fail-safe): after 'Community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-bgp-nbr-community-sent",
+   "main_6390b66c": "  Community <redacted> sent to this neighbor"
+  },
+  {
+   "platform": "show",
+   "line": "route-map RM1, permit, sequence 10\n  Set clauses:\n    community 65000:100 additive",
+   "expect": "route-map RM1, permit, sequence 10\n  Set clauses:\n    community <redacted> additive",
+   "note": "over-redaction accepted (fail-safe): after 'community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-route-map-set-community",
+   "main_6390b66c": "route-map RM1, permit, sequence 10\n  Set clauses:\n    community <redacted> additive"
+  },
+  {
+   "platform": "show",
+   "line": "  Match clauses:\n    community (community-list filter): CL-65000",
+   "expect": "  Match clauses:\n    community <redacted> <redacted> <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-route-map-match-community",
+   "main_6390b66c": "  Match clauses:\n    community <redacted> filter): CL-65000"
+  },
+  {
+   "platform": "junos",
+   "line": "    community CNAME members 65000:100;",
+   "expect": "    community <redacted> members <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-junos-policy-community-single",
+   "main_6390b66c": "    community <redacted> members 65000:100;"
+  },
+  {
+   "platform": "junos",
+   "line": "    community CNAME members [ 65000:100 65000:200 ];",
+   "expect": "    community <redacted> members [ <redacted> <redacted> ];",
+   "note": "over-redaction accepted (fail-safe): after 'community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-junos-policy-community-multi",
+   "main_6390b66c": "    community <redacted> members [ 65000:100 65000:200 ];"
+  },
+  {
+   "platform": "show",
+   "line": "      X509v3 Key Usage: A0000000\n        Digital Signature\n        Key Encipherment\n        Key Agreement",
+   "expect": "      X509v3 Key Usage: A0000000\n        Digital Signature\n        Key <redacted>\n        Key <redacted>",
+   "note": "over-redaction accepted (fail-safe): high-entropy or stateful rule",
+   "source": "w60-review:K-pki-key-encipherment",
+   "main_6390b66c": "      X509v3 Key <redacted> A0000000\n        Digital Signature\n        Key <redacted>\n        Key <redacted>"
+  },
+  {
+   "platform": "ios",
+   "line": "snmp-server location Example Community Hall Rack 4",
+   "expect": "snmp-server location Example Community <redacted> <redacted> 4",
+   "note": "over-redaction accepted (fail-safe): after 'Community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-snmp-location-community",
+   "main_6390b66c": "snmp-server location Example Community <redacted> Rack 4"
+  },
+  {
+   "platform": "ios",
+   "line": "mpls ldp password option 1 for LDP-ACL key-chain LDP-KC",
+   "expect": "mpls ldp password <redacted> 1 for <redacted> key-chain LDP-KC",
+   "note": "over-redaction accepted (fail-safe): after 'password' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-ldp-password-option",
+   "main_6390b66c": "mpls ldp password <redacted> 1 for LDP-ACL key-chain LDP-KC"
+  },
+  {
+   "platform": "show",
+   "line": "  Authentication mode is md5,  key-chain is \"EIGRP-KC\"",
+   "expect": "  Authentication mode is md5,  key-chain is <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'Authentication mode' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-eigrp-auth-mode-show",
+   "main_6390b66c": "  Authentication mode is md5,  key-chain is \"EIGRP-KC\""
+  },
+  {
+   "platform": "show",
+   "line": "  RSA Public Key: (2048 bit)",
+   "expect": "  RSA Public Key: <redacted> bit)",
+   "note": "over-redaction accepted (fail-safe): after 'Key' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-rsa-public-key",
+   "main_6390b66c": "  RSA Public Key: (2048 bit)"
+  },
+  {
+   "platform": "show",
+   "line": "Key-chain OSPF-KC:\n    key 1 -- text \"(hidden)\"\n        accept lifetime (always valid) - (always valid) [valid now]",
+   "expect": "Key-chain OSPF-KC:\n    key 1 -- text <redacted>\n        accept lifetime (always valid) - (always valid) [valid now]",
+   "note": "over-redaction accepted (fail-safe): after 'key' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-key-chain-header",
+   "main_6390b66c": "Key-chain OSPF-KC:\n    key 1 <redacted> text \"(hidden)\"\n        accept lifetime (always valid) - (always valid) [valid now]"
+  },
+  {
+   "platform": "show",
+   "line": "      Large Community: 65000:1:1",
+   "expect": "      Large Community: <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'Community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-large-community",
+   "main_6390b66c": "      Large Community: 65000:1:1"
+  },
+  {
+   "platform": "ios",
+   "line": " description to community router",
+   "expect": " description to community <redacted>",
+   "note": "over-redaction accepted (fail-safe): after 'community' the sweep replaces every token its closed allowlist does not name",
+   "source": "w60-review:K-description-community",
+   "main_6390b66c": " description to community <redacted>"
   }
  ]
 }

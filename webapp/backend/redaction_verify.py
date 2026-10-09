@@ -159,30 +159,54 @@ _SECRET_KEY_TOKENS = (
     "password", "passwd", "passphrase", "secret", "community", "psk", "presharedkey",
     "sharedsecret", "token", "apikey", "apisecret", "privatekey", "privkey", "credential",
 )
-#: W60 -- THE CREDENTIAL-LINE GRAMMAR, stated independently of the producer.
+#: W60 -- THE CREDENTIAL CHECKS, stated independently of the producer.
 #:
-#: The rule used to be "the token right after a credential keyword must be the placeholder". The
-#: producer obeyed it by redacting whatever token stood there -- often a QUALIFIER -- so
-#: ``enable password <redacted> 15 Plain99pw`` and ``set-key <redacted> Wlc99psk 1`` certified clean
-#: while the credential sat one token further on. Now each keyword family is parsed as KEYWORD,
-#: QUALIFIER RUN, VALUE, TAIL:
+#: The producer (``cisco_toolkit.html._redact_config_values``) runs two passes over every line of a
+#: raw capture: a credential GRAMMAR that replaces the value of each known form, and a RESIDUAL SWEEP
+#: that, after the first credential keyword of a line, replaces EVERY token that is not in a closed
+#: structural allowlist (plus private-key blocks, URL userinfo, credential headers and table columns,
+#: and high-entropy tokens). This module restates both guarantees -- it may not import them -- and a raw
+#: capture is certified only if every line satisfies BOTH:
 #:
-#: * the qualifier run (``level N``, type digits, cipher/plain/ascii/hex/ENC, hash labels, read/write,
-#:   vrf X, traps/informs, version 1|2c, ...) is consumed greedily; the VALUE is the next token;
-#: * a value that is a structural/prose follow-word (``key chain``, ``password encryption``,
-#:   ``Key name:``, ``password for user``) means the line carries no credential;
-#: * any other value must be the placeholder ("credential value" otherwise); and
-#: * after the placeholder, every token must come from a CLOSED allowlist of structural follow-words
-#:   (``_CRED_TAIL_WORDS``), a slot keyword plus its one operand (``_CRED_TAIL_SLOTS``), an address,
-#:   another placeholder, or a family's own positional operand ("credential residue" otherwise).
+#: * grammar: the value slot of every recognised form is the placeholder ("credential value"); and
+#: * sweep: after the first non-void credential keyword, every token is the placeholder or structural
+#:   ("credential residue"), and no private-key body, URL secret, credential column or high-entropy
+#:   token survives.
 #:
-#: An allowlist, not a denylist of secret shapes: an unknown follow-word REFUSES. That is the
+#: The sweep's allowlist is CLOSED and exact: an unknown word after a keyword REFUSES. That is the
 #: deliberate failure direction -- a refused scrub is re-checked by a person, a certified leak is not.
-#: The producer (``cisco_toolkit.html._REDACT_SECRET_RES``) restates the same grammar; neither imports
-#: the other, and tests/test_redaction_grammar_corpus.py pins them against the same adversarial corpus.
+#: The lexical model (separators, line ends) is the producer's, restated: lines end ONLY at CR/LF; VT,
+#: FF, FS..US, NEL, NBSP and every Unicode space, LINE/PARAGRAPH SEPARATOR, a BOM and a non-UTF-8 byte
+#: (U+DC80..U+DCFF after surrogateescape) separate tokens. tests/test_redaction_grammar_corpus.py pins
+#: every closed list below EQUAL to the producer's and runs the shared adversarial corpus through both.
+_CRED_WS = (" \t\x0b\x0c\x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+            "\udc80-\udcff")
+_CRED_H1 = "[" + _CRED_WS + "]"
+_CRED_HWS = _CRED_H1 + "+"
+_CRED_NWS = "[^" + _CRED_WS + "\r\n]"
+_CRED_NWSQ = "[^" + _CRED_WS + "\r\n\"']"
+_CRED_WS_RE = re.compile(_CRED_HWS)
+_CRED_EDGE_WS_RE = re.compile("^" + _CRED_HWS + "|" + _CRED_HWS + r"\Z")
+_CRED_LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
+#: Lines longer than this are not read by the GRAMMAR (the producer's own bound); the sweep reads all.
+_CRED_GRAMMAR_MAX_LINE = 2048
+
+
+def _v(pattern: str) -> str:
+    """``{H}`` a separator run, ``{h}`` one separator, ``{S}`` a token character, ``{Q}`` a token
+    character that is not a quote -- the lexical model above."""
+    return (pattern.replace("{H}", _CRED_HWS).replace("{h}", _CRED_H1)
+            .replace("{S}", _CRED_NWS).replace("{Q}", _CRED_NWSQ))
+
+
+def _cred_lines(text: str) -> list[str]:
+    return _CRED_LINE_BREAK_RE.split(text)
+
+
 _CRED_HASH = (r"(?:(?:hmac-|keyed-|ietf-)?(?:md5|sha(?:-?(?:1|224|256|384|512))?)"
-              r"|cmac-aes(?:-?(?:128|256))?|aes-(?:128|256)-cmac)")
+              r"|sha2-(?:224|256|384|512)|cmac-aes(?:-?(?:128|256))?|aes-(?:128|256)-cmac)")
 _CRED_TYPE = r"(?:10|[0-9])"
+_CRED_TYPE_THEN_VALUE = r"(?:10|[0-9])(?={H}{S})"
 _CRED_PROSE_STOPS = frozenset({
     "a", "an", "the", "to", "for", "with", "of", "in", "on", "at", "by", "from", "and", "or", "not", "no",
     "is", "are", "was", "were", "be", "been", "being", "must", "should", "shall", "will", "can", "cannot",
@@ -191,202 +215,358 @@ _CRED_PROSE_STOPS = frozenset({
     "there", "than", "so", "but", "into", "via", "per", "without", "within", "none", "configured",
     "enabled", "disabled", "required", "expired", "failed", "failure", "mismatch", "changed", "set",
 })
-_CRED_PROSE_START_RE = re.compile(r'"?[ \t]*(?:=>|[:=])[ \t]*|[ \t]+')
-_CRED_PLAIN_START_RE = re.compile(r"[ \t]+")
-_CRED_TOKEN_RE = re.compile(r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+""")
-_CRED_PLACEHOLDER_RE = re.compile(re.escape(_PLACEHOLDER), re.IGNORECASE)
-_CRED_URL_PASSWORD_RE = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s/:@]+:(?P<value>[^\s/]+)(?=@)", re.IGNORECASE)
+_CRED_PROSE_START_RE = re.compile(_v(r'"?{h}*(?:=>|[:=]){h}*|{H}'))
+_CRED_PLAIN_START_RE = re.compile(_CRED_HWS)
+_CRED_TOKEN_RE = re.compile(_v(r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|{S}+"""))
+_CRED_PEM_ARMOR_RE = re.compile(r"""["']?-----BEGIN """)
 
 
 class _CredFamily:
-    """One keyword family: where it starts, what may stand between keyword and value, and how its
-    tail is read. Plain data; the parse lives in `_credential_line_findings`.
+    """One keyword family of the GRAMMAR: where it starts, what may stand between keyword and value
+    (an alternation repeated, or an ORDERED ``run``), and which values are structural.
 
     ``artifact`` lists the LINE-START anchors under which the family is also read in shareable
-    artifacts (snapshot strings, OOXML text, HTML), where authored prose shares the surface. They
-    restate the line-start coverage this module always had there, and nothing wider; a raw capture
-    is device text and is read with ``anchor`` anywhere in the line."""
+    artifacts (snapshot strings, OOXML text, HTML), where authored prose shares the surface."""
 
     __slots__ = ("name", "anchor", "artifact", "qualifiers", "stops", "prose", "address_is_structural",
-                 "trailing_integer", "integers", "positional_acl")
+                 "value_guard")
 
     def __init__(self, name: str, anchor: str, qualifiers: Iterable[str] = (), stops: Iterable[str] = (),
                  *, prose: bool = False, artifact: Iterable[str] = (), address_is_structural: bool = False,
-                 trailing_integer: bool = False, integers: bool = False, positional_acl: bool = False):
+                 run: str = "", value_guard: str = ""):
         steps = list(qualifiers) + ([r"=>|[:=]|is"] if prose else [])
         self.name = name
-        self.anchor = re.compile(anchor, re.IGNORECASE)
+        self.anchor = re.compile(_v(anchor), re.IGNORECASE)
         self.artifact = tuple(re.compile(pattern, re.IGNORECASE) for pattern in artifact)
-        self.qualifiers = re.compile(
-            r"(?:(?:" + "|".join(steps) + r")(?:[ \t]+|\Z))*" if steps else r"", re.IGNORECASE)
+        if not run:
+            run = r"(?:(?:" + "|".join(steps) + r")(?:{H}|\Z))*" if steps else r""
+        self.qualifiers = re.compile(_v(run), re.IGNORECASE)
         self.stops = frozenset(word.casefold() for word in stops) | _CRED_PROSE_STOPS
         self.prose = prose
         self.address_is_structural = address_is_structural
-        self.trailing_integer = trailing_integer
-        self.integers = integers
-        self.positional_acl = positional_acl
+        self.value_guard = re.compile(_v(value_guard), re.IGNORECASE) if value_guard else None
 
 
 _CRED_COMMUNITY_QUALIFIERS = (
-    r"strings?", r"create", r"delete", r"read", r"write", r"cipher", r"plain",
-    r"(?:name|index|securityname)[ \t]*:", r"accessmode[ \t]+(?:ro|rw)", r"ipaddr[ \t]+\S+[ \t]+\S+",
-    r"mode[ \t]+(?:enable|disable)",
+    r"strings?", r"create", r"delete", r"read", r"write", r"cipher", r"plain", r"clear", r"encrypted",
+    r"(?:name|index|securityname){h}*:", r"accessmode{H}(?:ro|rw)", r"ipaddr{H}{S}+{H}{S}+",
+    r"mode{H}(?:enable|disable)", r"[08](?={H}{S})",
 )
 _CRED_COMMUNITY_STOPS = ("name", "names", "list", "complexity-check")
+_CRED_KEY_ENCODINGS = r"(?:ENC|encrypted|clear|ascii|hex|cipher|plain|text|--|config-key|password-encrypt)"
+_CRED_KEY_RUN = (
+    r"(?:\d{1,10}{H}(?=" + _CRED_HASH + r"(?:{H}|\Z)|--(?:{H}|\Z)))?"
+    r"(?:" + _CRED_HASH + r"(?:{H}|\Z))?"
+    r"(?:" + _CRED_KEY_ENCODINGS + r"(?:{H}|\Z))*"
+    r"(?:" + _CRED_TYPE_THEN_VALUE + r"{H})?"
+    r"(?:" + _CRED_KEY_ENCODINGS + r"(?:{H}|\Z))*")
+_CRED_AUTH_MODE_RUN = (
+    r"(?:(?:" + _CRED_HASH + r"|simple|hmac-sha256)(?:{H}|\Z))?"
+    r"(?:key-id{H}\d{1,10}{H}|\d{1,10}{H}(?={S}))?"
+    r"(?:(?:cipher|plain|usual|nonstandard)(?:{H}|\Z))*")
+_CRED_IPV6_TEXT = (
+    r"(?<![:.\w])(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}"
+    r"|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}"
+    r"|:(?::[0-9A-Fa-f]{1,4}){1,7})(?:%[0-9A-Za-z]+)?(?![:.\w])")
 _CRED_FAMILIES: tuple[_CredFamily, ...] = (
-    _CredFamily("fortigate set", r"\bset[ \t]+(?:passwd|password|psksecret|psksecret-remote|secret|"
+    _CredFamily("fortigate set", r"\bset{H}(?:passwd|password|psksecret|psksecret-remote|secret|"
                 r"secondary-secret|tertiary-secret|private-key|passphrase|auth-pwd|priv-pwd|sae-password|key|"
-                r"authentication-key|auth-string|ppk-secret|eap-password)", (r"ENC",),
-                artifact=(r"^\s*set\s+(?:passwd|psksecret|password|private-key|passphrase)",)),
-    _CredFamily("snmp user auth", r"\bsnmp-server[ \t]+user[ \t]+.*?[ \t]auth", (_CRED_HASH,)),
-    _CredFamily("snmp user priv", r"\bsnmp-server[ \t]+user[ \t]+.*?[ \t]priv",
-                (r"3?des", r"aes(?:-?(?:128|192|256))?", r"128", r"192", r"256")),
-    _CredFamily("aireos v3user auth", r"\bconfig[ \t]+snmp[ \t]+v3user[ \t]+create[ \t]+\S+[ \t]+(?:ro|rw)"
-                r"[ \t]+(?:none|hmacmd5|hmacsha)[ \t]+(?:none|des|aescfb128|aes)"),
-    _CredFamily("aireos v3user priv", r"\bconfig[ \t]+snmp[ \t]+v3user[ \t]+create[ \t]+\S+[ \t]+(?:ro|rw)"
-                r"[ \t]+(?:none|hmacmd5|hmacsha)[ \t]+(?:none|des|aescfb128|aes)[ \t]+\S+"),
-    _CredFamily("snmp host community", r"\bsnmp-server[ \t]+host[ \t]+\S+",
-                (r"vrf[ \t]+\S+", r"traps?", r"informs?", r"version[ \t]+(?:1|2c)"),
+                r"authentication-key|auth-string|ppk-secret|eap-password|api-key|secret-key|key-string)",
+                (r"ENC",), artifact=(r"^\s*set\s+(?:passwd|psksecret|password|private-key|passphrase)",)),
+    _CredFamily("snmp user auth", r"\bsnmp-server{H}user{H}[^\r\n]{0,200}?{h}auth",
+                (_CRED_HASH, r"clear", r"encrypted"), value_guard=r"\d{1,3}{h}*\Z"),
+    _CredFamily("snmp user priv", r"\bsnmp-server{H}user{H}[^\r\n]{0,200}?{h}priv",
+                (r"3?des(?:56)?", r"aes(?:-?(?:128|192|256))?", r"128", r"192", r"256", r"clear", r"encrypted"),
+                value_guard=r"\d{1,3}{h}*\Z"),
+    _CredFamily("aireos v3user auth", r"\bconfig{H}snmp{H}v3user{H}create{H}{S}+{H}(?:ro|rw)"
+                r"{H}(?:none|hmacmd5|hmacsha){H}(?:none|des|aescfb128|aes)"),
+    _CredFamily("aireos v3user priv", r"\bconfig{H}snmp{H}v3user{H}create{H}{S}+{H}(?:ro|rw)"
+                r"{H}(?:none|hmacmd5|hmacsha){H}(?:none|des|aescfb128|aes){H}{S}+"),
+    _CredFamily("snmp host community", r"\bsnmp-server{H}host{H}{S}+",
+                (r"vrf{H}{S}+", r"traps?", r"informs?", r"version{H}(?:1|2c)", r"clear", r"encrypted"),
                 ("version", "use-vrf", "filter-vrf", "source-interface", "vrf", "community", "poll",
                  "udp-port"), address_is_structural=True, artifact=(r"^\s*snmp-server\s+host\s+\S+",)),
-    _CredFamily("snmp community", r"\b(?:snmp-server|snmp-agent|snmp)(?:[ \t]+.*?)?[ \t]+community",
-                _CRED_COMMUNITY_QUALIFIERS, _CRED_COMMUNITY_STOPS, prose=True, integers=True,
-                positional_acl=True, artifact=(r"^\s*snmp-server\s+community",)),
-    # Junos 'community X {'. Not prose: a bare 'Community:' is the BGP path-attribute label in
-    # 'show ip bgp <prefix>' ('Community: 65000:100 no-export'), never a credential.
-    _CredFamily("community block", r"^[ \t]*community", _CRED_COMMUNITY_QUALIFIERS, _CRED_COMMUNITY_STOPS,
-                integers=True, positional_acl=True, artifact=(r"^\s*community",)),
-    # 'SNMP community string : X' / 'Community name: X'.
-    _CredFamily("community prose", r"\bcommunity(?=[ \t]+strings?\b|[ \t]+(?:name|index|securityname)"
-                r"[ \t]*:)", _CRED_COMMUNITY_QUALIFIERS, _CRED_COMMUNITY_STOPS, prose=True, integers=True,
-                positional_acl=True),
-    _CredFamily("aireos radius/tacacs", r"\bconfig[ \t]+(?:radius|tacacs)[ \t]+(?:auth|acct|athr)[ \t]+add"
-                r"[ \t]+\d+[ \t]+\S+[ \t]+\d+", (r"ascii", r"hex")),
-    _CredFamily("aireos user", r"\bconfig[ \t]+(?:mgmtuser|netuser)[ \t]+(?:add|password)[ \t]+\S+"),
-    _CredFamily("password", r"\b(?:password|passwd|secret|passphrase)(?<!mgmtuser password)(?<!netuser password)",
-                (r"level[ \t]+\d+", _CRED_TYPE, _CRED_HASH, r"scrypt", r"ENC", r"encrypted", r"clear",
-                 r"cipher", r"plain", r"simple", r"irreversible-cipher", r"hashed", r"text"),
+    _CredFamily("snmp community", r"\b(?:snmp-server|snmp-agent|snmp)(?:{H}[^\r\n]{0,200}?)?{H}community",
+                _CRED_COMMUNITY_QUALIFIERS, _CRED_COMMUNITY_STOPS, prose=True,
+                artifact=(r"^\s*snmp-server\s+community",)),
+    # Junos 'community X {'. Not prose: a bare 'Community:' is the BGP path-attribute label.
+    _CredFamily("community block", r"^{h}*community", _CRED_COMMUNITY_QUALIFIERS, _CRED_COMMUNITY_STOPS,
+                artifact=(r"^\s*community",)),
+    _CredFamily("community prose", r"\bcommunity(?={H}strings?\b|{H}(?:name|index|securityname){h}*:)",
+                _CRED_COMMUNITY_QUALIFIERS, _CRED_COMMUNITY_STOPS, prose=True),
+    _CredFamily("named community", r"\b(?:community-map|community-name|snmp-community-string|trap-group)"),
+    # The port may already be the placeholder: the sweep replaces it (it is no closed-list word).
+    _CredFamily("aireos radius/tacacs", r"\bconfig{H}(?:radius|tacacs){H}(?:auth|acct|athr){H}add"
+                r"{H}\d+{H}{S}+{H}(?:\d+|<redacted>)", (r"ascii", r"hex")),
+    _CredFamily("aireos user", r"\bconfig{H}(?:mgmtuser|netuser){H}(?:add|password){H}{S}+"),
+    _CredFamily("password", r"\b(?:password|passwd|secret|passphrase|pass-phrase|enablesecret)"
+                r"(?<!mgmtuser password)(?<!netuser password)",
+                (r"level{H}\d+", _CRED_TYPE, _CRED_HASH, r"scrypt", r"ENC", r"encrypted", r"clear",
+                 r"cipher", r"plain", r"simple", r"irreversible-cipher", r"hashed", r"text", r"fallback"),
                 ("encryption", "encrypt", "expiration", "expiry", "policy", "recovery", "min-length",
                  "max-length", "minimum-length", "maximum-length", "prompt", "history", "change-type",
                  "format", "aging", "complexity", "strength-check", "keychain", "key-chain", "management",
-                 "encryption-key", "keyboard", "publickey"),
+                 "encryption-key", "keyboard", "publickey", "option", "rollover", "authentication", "strength"),
                 prose=True,
                 artifact=(r"^\s*(?:enable\s+)?(?:password|secret)",
                           r"^\s*(?:username|user)\s+\S+(?:\s+(?:privilege\s+\d+|role\s+\S+|algorithm-type\s+\S+"
                           r"|view\s+\S+))*\s+(?:password|secret)")),
     _CredFamily("huawei securityname", r"\bsecurityname", (r"cipher", r"plain")),
-    _CredFamily("tacacs/radius key", r"\b(?:tacacs-server|radius-server)[ \t]+(?:.*?[ \t])?key", (r"[0-9]",),
+    _CredFamily("tacacs/radius key", r"\b(?:tacacs-server|radius-server){H}(?:[^\r\n]{0,200}?{h})?key",
+                run=r"(?:" + _CRED_TYPE_THEN_VALUE + r"{H})?",
                 artifact=(r"^\s*(?:tacacs-server|radius-server)\s+(?:.*?\s)?key",)),
-    _CredFamily("key-string", r"\bkey-string", (r"[0-9]", r"password", r"clear", r"encrypted"),
+    _CredFamily("key-string", r"\bkey-string",
+                run=r"(?:(?:password|clear|encrypted|ENC)(?:{H}|\Z))*(?:" + _CRED_TYPE_THEN_VALUE + r"{H})?",
                 artifact=(r"^\s*key-string",)),
-    _CredFamily("key-octet-string", r"\bkey-octet-string", (r"[0-9]",)),
+    _CredFamily("key-octet-string", r"\bkey-octet-string", run=r"(?:" + _CRED_TYPE_THEN_VALUE + r"{H})?"),
     _CredFamily("pre-shared-key", r"\bpre-shared-key",
-                (r"local", r"remote", r"ascii-text", r"hexadecimal", r"cipher", r"simple", r"plain",
-                 r"[0-9]"),
+                (r"local", r"remote", r"ascii-text", r"hexadecimal", r"cipher", r"simple", r"plain", r"key",
+                 _CRED_TYPE_THEN_VALUE),
                 ("address", "hostname", "key-chain", "keychain", "ckn", "cak", "keyring"),
                 artifact=(r"^\s*pre-shared-key",)),
-    _CredFamily("shared-key", r"(?<![\w-])shared-key", (r"cipher", r"simple", r"plain", r"[0-9]")),
+    _CredFamily("shared-key", r"(?<![\w-])shared-key", (r"cipher", r"simple", r"plain", _CRED_TYPE_THEN_VALUE)),
     _CredFamily("macsec cak/ckn", r"\b(?:cak|ckn)"),
-    _CredFamily("wpa-psk", r"\bwpa2?-psk", (r"ascii", r"hex", r"[0-9]")),
-    _CredFamily("set-key", r"\bset-key", (r"ascii", r"hex", r"[0-9]"), trailing_integer=True),
-    _CredFamily("nhrp authentication", r"\bnhrp[ \t]+authentication", (r"[0-9]",)),
-    _CredFamily("fhrp authentication", r"\b(?:standby|vrrp|glbp)(?:[ \t]+\d+)?(?:[ \t]+peer)?[ \t]+"
+    _CredFamily("wpa-psk", r"\bwpa2?-psk", (r"ascii", r"hex", _CRED_TYPE_THEN_VALUE)),
+    _CredFamily("set-key", r"\bset-key", (r"ascii", r"hex", _CRED_TYPE_THEN_VALUE)),
+    _CredFamily("nhrp authentication", r"\bnhrp{H}authentication", run=r"(?:" + _CRED_TYPE_THEN_VALUE + r"{H})?"),
+    _CredFamily("fhrp authentication", r"\b(?:standby|vrrp|glbp)(?:{H}\d+)?(?:{H}peer)?{H}"
                 r"authentication", (r"text", r"md5", r"ietf-md5"), ("key-chain", "key-string", "keychain", "key")),
-    _CredFamily("block authentication text", r"^[ \t]*authentication(?=[ \t]+text[ \t])", (r"text",)),
-    _CredFamily("authentication-mode", r"\b(?:area-|domain-)?authentication-mode",
-                (_CRED_HASH, r"simple", r"plain", r"cipher", r"usual", r"nonstandard", r"key-id", r"\d+"),
-                ("keychain", "key-chain", "hwtacacs", "radius", "local", "aaa", "password", "scheme")),
+    _CredFamily("block authentication text", r"^{h}*authentication(?={H}text{h})", (r"text",)),
+    _CredFamily("authentication-mode", r"\b(?:area-|domain-)?authentication-mode", run=_CRED_AUTH_MODE_RUN,
+                stops=("keychain", "key-chain", "hwtacacs", "radius", "local", "aaa", "password", "scheme")),
     _CredFamily("privacy-mode", r"\bprivacy-mode", (r"des56", r"3des", r"aes\d*", r"cipher", r"plain")),
-    _CredFamily("ospfv3 ipsec authentication", r"\bauthentication[ \t]+ipsec[ \t]+spi[ \t]+\d+",
-                (r"md5", r"sha1", r"[0-9]")),
-    _CredFamily("eigrp hmac-sha-256", r"\bauthentication[ \t]+mode[ \t]+hmac-sha-256", (r"[0-9]",)),
-    _CredFamily("show standby text", r"\bauthentication[ \t]+text,[ \t]+string"),
+    _CredFamily("ospfv3 ipsec", r"\b(?:authentication|encryption){H}ipsec{H}spi{H}\d+",
+                (r"md5", r"sha1", r"esp", r"aes-cbc", r"3des", r"des", r"null", r"128", r"192", r"256",
+                 _CRED_TYPE_THEN_VALUE)),
+    _CredFamily("eigrp hmac-sha-256", r"\bauthentication{H}mode{H}hmac-sha-256",
+                run=r"(?:" + _CRED_TYPE_THEN_VALUE + r"{H})?"),
+    _CredFamily("show standby text", r"\bauthentication{H}text,{H}string"),
     # Not a prose family: 'Key: U - Unicast, B - Broadcast' is the 'show storm-control' legend. An EOS
     # 'ssh-key ssh-rsa <PUBLIC KEY>' is not a secret.
-    _CredFamily("key", r"\bkey(?<!private-key)(?<!shared-key)(?<!public-key)(?<!ssh-key)",
-                (r"\d+", _CRED_HASH, r"ENC", r"encrypted", r"clear", r"ascii", r"hex", r"cipher", r"plain",
-                 r"text", r"--", r"config-key", r"password-encrypt"),
-                ("chain", "local", "remote", "generate", "zeroize", "import", "export", "id", "name", "data",
-                 "change", "type", "usage", "exchange", "pair", "length", "size", "sizes", "lifetime",
-                 "rollover", "hash", "label", "storage", "ring", "management", "encryption", "mode",
-                 "mypubkey", "pubkey", "pubkey-chain", "server", "algorithm", "algorithms", "recovery",
-                 "string", "prefer", "source", "version", "minpoll", "maxpoll", "burst", "iburst", "vrf",
-                 "use-vrf", "rsa", "dsa", "ecdsa", "ed25519"),
-                trailing_integer=True, artifact=(r"^\s*crypto\s+isakmp\s+key",)),
+    _CredFamily("key", r"\bkey(?<!private-key)(?<!shared-key)(?<!public-key)(?<!ssh-key)", run=_CRED_KEY_RUN,
+                stops=("chain", "local", "remote", "generate", "zeroize", "import", "export", "id", "name", "data",
+                       "change", "type", "usage", "exchange", "pair", "length", "size", "sizes", "lifetime",
+                       "rollover", "hash", "label", "storage", "ring", "management", "encryption", "mode",
+                       "mypubkey", "pubkey", "pubkey-chain", "server", "algorithm", "algorithms", "recovery",
+                       "string", "prefer", "source", "version", "minpoll", "maxpoll", "burst", "iburst", "vrf",
+                       "use-vrf", "rsa", "dsa", "ecdsa", "ed25519", "inbound", "outbound"),
+                value_guard=r"(?:1[0-5]|[0-9]){h}*\Z|\d{1,10}[,;](?={h}|\Z)",
+                artifact=(r"^\s*crypto\s+isakmp\s+key",)),
 )
-#: A literal every match of a family's raw-capture anchor contains (compared casefolded, a superset of
-#: the anchors' IGNORECASE matching): a family is skipped on a line holding none of its needles. Speed
-#: only -- the anchor still decides -- and a family with no entry here is never skipped.
+#: A literal every match of a family's anchor contains (compared casefolded, a superset of the anchors'
+#: IGNORECASE matching): a family is skipped on a line holding none of its needles. Speed only.
 _CRED_FAMILY_NEEDLES = {
     "fortigate set": ("set",), "snmp user auth": ("snmp-server",), "snmp user priv": ("snmp-server",),
     "aireos v3user auth": ("v3user",), "aireos v3user priv": ("v3user",),
     "snmp host community": ("snmp-server",), "snmp community": ("community",),
     "community block": ("community",), "community prose": ("community",),
+    "named community": ("community-map", "community-name", "snmp-community-string", "trap-group"),
     "aireos radius/tacacs": ("config",), "aireos user": ("config",),
-    "password": ("password", "passwd", "secret", "passphrase"), "huawei securityname": ("securityname",),
-    "tacacs/radius key": ("-server",), "key-string": ("key-string",),
+    "password": ("password", "passwd", "secret", "passphrase", "pass-phrase"),
+    "huawei securityname": ("securityname",), "tacacs/radius key": ("-server",), "key-string": ("key-string",),
     "key-octet-string": ("key-octet-string",), "pre-shared-key": ("pre-shared-key",),
     "shared-key": ("shared-key",), "macsec cak/ckn": ("cak", "ckn"), "wpa-psk": ("-psk",),
     "set-key": ("set-key",), "nhrp authentication": ("nhrp",), "fhrp authentication": ("standby", "vrrp", "glbp"),
     "block authentication text": ("authentication",), "authentication-mode": ("authentication-mode",),
-    "privacy-mode": ("privacy-mode",), "ospfv3 ipsec authentication": ("ipsec",),
+    "privacy-mode": ("privacy-mode",), "ospfv3 ipsec": ("ipsec",),
     "eigrp hmac-sha-256": ("hmac-sha-256",), "show standby text": ("string",), "key": ("key",),
 }
-#: Cheap prefilter: a line that names none of these words cannot start any family above.
+#: Cheap prefilter: a line that names none of these words cannot start any grammar family above.
 _CRED_PREFILTER_RE = re.compile(
-    r"password|passwd|secret|passphrase|community|key|auth|priv|psk|cak|ckn|config|snmp|securityname|://",
-    re.IGNORECASE)
-#: Structural follow-words that may stand after the placeholder. CLOSED: a word missing here makes the
-#: verifier refuse the line, which is the safe direction (docs/w60-redaction-grammar-2026-10-09.md).
-_CRED_TAIL_WORDS = frozenset({
-    # access levels and owners (IOS/IOS-XR/Junos/AireOS)
-    "read-only", "read-write", "sdrowner", "systemowner", "lobby-admin",
-    # hash/storage markers that FOLLOW the value (ASA, NX-OS SNMPv3)
-    "encrypted", "pbkdf2", "nt-encrypted", "mschap", "hashed", "localizedkey", "localizedv2key", "auto",
-    # SNMPv3 privacy protocols and key sizes
-    "priv", "des", "3des", "aes", "aes-128", "aes-192", "aes-256", "aes128", "aes192", "aes256",
-    "128", "192", "256",
-    # NX-OS RADIUS/TACACS+ host roles, IS-IS levels, crypto isakmp, MACsec
-    "authentication", "accounting", "single-connection", "level-1", "level-2", "level-1-2", "no-xauth",
-    "cak", "ckn",
-    # Junos hierarchy punctuation and the SECRET-DATA annotation
-    "##", "secret-data", "{", "}", "[", "]", ";",
-    # Huawei SNMP target-host security model after the securityname
-    "v1", "v2c", "v3", "private-netmanager", "ext-vb",
-    # SNMP notification types after a trap-host community (IOS-XE, NX-OS)
-    "traps", "informs", "aaa_server", "adslline", "alarms", "atm", "auth-framework", "bfd", "bgp",
-    "bgp4-mib", "bridge", "bstun", "bulkstat", "call-home", "casa", "cbgp2", "ccme", "cef", "cluster",
-    "cnpd", "config", "config-copy", "config-ctid", "cpu", "cts", "dhcp", "dial", "dlsw", "dot1x", "ds1",
-    "dsp", "eigrp", "energywise", "entity", "entity-diag", "entity-qfp", "entity-sensor", "entity-state",
-    "envmon", "errdisable", "ethernet", "ethernet-cfm", "event-manager", "firewall", "flash",
-    "flex-links", "flowmon", "frame-relay", "fru-ctrl", "hsrp", "ike", "ipmobile", "ipmulticast", "ipsec",
-    "ipsla", "isakmp", "isdn", "isis", "l2tun", "l2tun-pseudowire-status", "l2tun-session", "license",
-    "llc2", "local-auth", "mac-notification", "memory", "mpls", "mpls-ldp", "mpls-traffic-eng",
-    "mpls-vpn", "msdp", "mvpn", "nhrp", "ospf", "ospfv3", "pim", "pki", "port-security",
-    "power-ethernet", "pppoe", "pw", "rep", "resource-policy", "rf", "rmon", "rsvp", "rtr", "sdlc",
-    "smart-license", "snmp", "sonet", "srp", "stackwise", "storm-control", "stpx", "stun", "syslog",
-    "transceiver", "trustsec", "tty", "vlan-membership", "vlancreate", "vlandelete", "voice", "vrfmib",
-    "vrrp", "vstack", "vtp", "wireless", "x25", "xgcp",
+    r"password|passwd|secret|passphrase|pass-phrase|community|key|auth|priv|psk|cak|ckn|config|snmp|"
+    r"securityname|trap-group|encryption")                 # searched in the CASEFOLDED line
+
+# ---- THE RESIDUAL-SWEEP GUARANTEE, restated (every list CLOSED and equal to the producer's). ----
+_SWEEP_KEYWORDS = (
+    r"(?:proxy-)?authorization(?=\"?{h}*:)", r"(?:set-)?cookie(?=\"?{h}*:)",
+    r"x-[a-z0-9-]*?(?:token|api-?key|auth[a-z0-9-]*|secret|password)(?=\"?{h}*:)",
+    r"snmp-server{H}host", r"nhrp{H}authentication",
+    r"(?:standby|vrrp|glbp)(?:{H}\d+)?(?:{H}peer)?{H}authentication",
+    r"authentication{H}(?:text|mode)", r"(?:authentication|encryption){H}ipsec{H}spi",
+    r"rmon{H}event", r"event{H}manager{H}environment", r"cli{H}command",
+    r"(?:user|groupname):(?=[^\r\n]*?security)",
+    r"[a-z0-9]*_(?:pw|pwd|pass|passwd|password|secret|token|key|community|psk|credentials?)",
+    r"(?:area-|domain-)?authentication-(?:key(?:id)?|mode)", r"encrypted[-_]?password",
+    r"private[-_]?key", r"secret[-_]?key", r"api[-_]?key", r"pre-?shared-?key", r"key[-_]?string",
+    r"key-octet-string", r"community[-_]?(?:string|name|map)", r"pass-phrase", r"privacy-mode",
+    r"password", r"passwd", r"passphrase", r"enablesecret", r"secret", r"psksecret", r"psk", r"phash",
+    r"(?:auth|priv)-?pwd", r"community", r"rocommunity6?", r"rwcommunity6?", r"com2sec", r"trap-group",
+    r"securityname", r"createuser", r"key", r"token", r"idtoken", r"bearer", r"ssws", r"auth", r"cipher",
+    r"plain", r"ascii", r"hex", r"set-key", r"cak", r"ckn", r"v3user", r"mgmtuser", r"netuser", r"pkcs12",
+    r"cvauth", r"ingestauth", r"credentials?",
+)
+_SWEEP_KW_RE = re.compile(_v(
+    r"(?:(?<![A-Za-z0-9])|(?-i:(?<=[a-z])(?=[A-Z])))(?P<kw>" + "|".join(_SWEEP_KEYWORDS)
+    + r")(?![A-Za-z0-9_-])"), re.IGNORECASE)
+_SWEEP_VOID_NEXT = {
+    "key": frozenset({"chain", "generate", "zeroize", "mypubkey", "pubkey-chain", "pair", "name", "data", "id",
+                      "storage", "type", "usage", "change", "size", "lifetime", "identifier", "encipherment",
+                      "agreement"}),
+    "password": frozenset({"encryption", "strength-check", "strength", "policy", "expiry", "expiration",
+                           "minimum-length", "maximum-length", "min-length", "max-length", "complexity",
+                           "history", "aging", "recovery", "prompt", "change-type", "format", "management",
+                           "keyboard"}),
+    "community": frozenset({"complexity-check"}),
+    "pre-shared-key": frozenset({"key-chain", "keychain"}),
+    **dict.fromkeys(("authentication-mode", "area-authentication-mode", "domain-authentication-mode"),
+                    frozenset({"hwtacacs", "radius", "local", "aaa", "password", "scheme", "keychain",
+                               "key-chain", "none"})),
+}
+_SWEEP_VOID_PREV = {"community": frozenset({"set", "match"})}
+_SWEEP_EDGE = "\"'`()[]{}<>;:,."
+_SWEEP_ALLOW = frozenset({
+    *(str(n) for n in range(16)), "128", "192", "256", "2c",
+    "level", "type", "enc", "encrypted", "clear", "cipher", "plain", "simple", "ascii", "hex", "text",
+    "irreversible-cipher", "hashed", "scrypt", "pbkdf2", "nt-encrypted", "mschap", "localizedkey",
+    "localizedv2key", "auto", "config-key", "password-encrypt", "ascii-text", "hexadecimal", "usual",
+    "nonstandard", "key-id", "md5", "sha", "sha1", "sha-1", "sha2", "sha224", "sha256", "sha384", "sha512",
+    "sha-224", "sha-256", "sha-384", "sha-512", "sha2-224", "sha2-256", "sha2-384", "sha2-512", "hmac-md5",
+    "hmac-sha", "hmac-sha1", "hmac-sha-1", "hmac-sha256", "hmac-sha-256", "hmac-sha384", "hmac-sha-384",
+    "hmac-sha512", "hmac-sha-512", "keyed-md5", "ietf-md5", "cmac-aes", "aes", "aes128", "aes192", "aes256",
+    "aes-128", "aes-192", "aes-256", "aes-cbc", "aescfb128", "des", "des56", "3des", "hmacmd5", "hmacsha",
+    "none", "null", "esp", "ah", "inbound", "outbound", "authenticator", "auth", "priv", "key", "set-key",
+    "key-string", "key-chain", "keychain", "fallback", "--", "authentication-mode", "privacy-mode",
+    "cryptographic-algorithm", "aes-128-cmac", "aes-256-cmac", "aes_128_cmac", "aes_256_cmac", "spi", "lifetime", "bit",
+    "chain",
+    "ro", "rw", "read", "write", "read-only", "read-write", "view", "access", "acl", "ipv4", "ipv6",
+    "version", "v1", "v2c", "v3", "noauth", "authpriv", "authnopriv", "traps", "informs", "trap", "inform",
+    "udp-port", "context", "group", "user", "security", "model", "security-model", "create", "delete",
+    "accessmode", "ipaddr", "mode", "enable", "disable", "string", "strings", "name", "index", "notify",
+    "sdrowner", "systemowner", "lobby-admin", "private-netmanager", "ext-vb", "targets", "clients",
+    "authorization", "members", "description", "owner", "log",
+    "aaa_server", "adslline", "alarms", "atm", "auth-framework", "bfd", "bgp", "bgp4-mib", "bridge",
+    "bstun", "bulkstat", "call-home", "casa", "cbgp2", "ccme", "cef", "cluster", "cnpd", "config",
+    "config-copy", "config-ctid", "cpu", "cts", "dhcp", "dial", "dlsw", "dot1x", "ds1", "dsp", "eigrp",
+    "energywise", "entity", "entity-diag", "entity-qfp", "entity-sensor", "entity-state", "envmon",
+    "errdisable", "ethernet", "ethernet-cfm", "event-manager", "firewall", "flash", "flex-links",
+    "flowmon", "frame-relay", "fru-ctrl", "hsrp", "ike", "ipmobile", "ipmulticast", "ipsec", "ipsla",
+    "isakmp", "isdn", "isis", "l2tun", "l2tun-pseudowire-status", "l2tun-session", "license", "llc2",
+    "local-auth", "mac-notification", "memory", "mpls", "mpls-ldp", "mpls-traffic-eng", "mpls-vpn", "msdp",
+    "mvpn", "nhrp", "ospf", "ospfv3", "pim", "pki", "port-security", "power-ethernet", "pppoe", "pw", "rep",
+    "resource-policy", "rf", "rmon", "rsvp", "rtr", "sdlc", "smart-license", "snmp", "sonet", "srp",
+    "stackwise", "storm-control", "stpx", "stun", "syslog", "transceiver", "trustsec", "tty",
+    "vlan-membership", "vlancreate", "vlandelete", "voice", "vrfmib", "vrrp", "vstack", "vtp", "wireless",
+    "x25", "xgcp",
+    "address", "host", "hostname", "vrf", "use-vrf", "filter-vrf", "source-interface", "interface", "port",
+    "auth-port", "acct-port", "timeout", "retransmit", "prefer", "minpoll", "maxpoll", "burst", "iburst",
+    "source", "local", "remote", "any", "all", "both", "extended", "standard", "large", "additive",
+    "new-format", "privilege", "role", "network-admin", "network-operator", "vdc-admin", "vdc-operator",
+    "level-1", "level-2", "level-1-2", "authentication", "accounting", "single-connection", "no-xauth",
+    "cak", "ckn", "add", "algorithm", "size", "bits", "secret-data", "##", "value", "import", "export",
+    "rsa", "ec", "ecdsa", "ed25519", "pem", "terminal", "general-keys", "modulus", "id",
+    "a", "an", "the", "to", "for", "of", "in", "on", "at", "by", "from", "and", "or", "not", "no", "is",
+    "are", "was", "were", "be", "been", "with", "as", "if", "this", "that", "it", "its", "has", "have",
+    "must", "should", "will", "can", "cannot", "may", "each", "only", "also", "configured", "enabled",
+    "disabled", "required", "expired", "changed", "failed", "failure", "mismatch", "invalid", "missing",
+    "present", "true", "false", "yes", "off", "unknown", "hidden", "neighbor", "peer", "used",
+    "bearer", "basic", "digest", "negotiate", "ntlm", "ssws",
 })
-#: Structural keywords that own exactly ONE following operand (a name, ACL, address, number or level).
-_CRED_TAIL_SLOTS = frozenset({
-    "level", "privilege", "role", "view", "group", "ipv4", "ipv6", "use-acl", "use-ipv4acl",
-    "use-ipv6acl", "access", "address", "hostname", "vrf", "udp-port", "port", "timeout", "engineid",
-    "authorization", "cryptographic-algorithm", "version", "context", "clients", "community", "members",
-    "auth-port", "acct-port", "source-interface", "use-vrf", "filter-vrf", "key-id", "privacy-mode",
-    "authentication-mode",
+_SWEEP_SLOTS = frozenset({
+    "udp-port", "auth-port", "acct-port", "port", "timeout", "retransmit", "level", "privilege", "access",
+    "acl", "ro", "rw", "context", "key-id", "spi", "lifetime", "index",
 })
-_CRED_ACCESS_WORDS = frozenset({"ro", "rw"})
-#: A whole line of free text, a syslog record or a comment: only the cleartext test applies there,
-#: never the tail allowlist (prose follows a credential word in English). A banner body is tracked
-#: separately by `_raw_capture_credential_findings`.
-_CRED_FREE_TEXT_RE = re.compile(
-    r"^\s*(?:[!#]|(?:description|remark|alias|comments?)\b|set\s+(?:description|comments?)\b)"
-    r"|%[A-Z][A-Z0-9_]*-\d-[A-Z0-9_]+:", re.IGNORECASE)
-_CRED_BANNER_RE = re.compile(
-    r"^\s*banner\s+(?:motd|login|exec|incoming|slip-ppp|prompt-timeout|config-save)\b[ \t]*(?P<delim>\^C|\S)?",
+#: ... and these own ONE following NAME (a keychain or VRF name is not a credential).
+_SWEEP_NAME_SLOTS = frozenset({"key-chain", "keychain", "chain", "vrf", "use-vrf", "filter-vrf"})
+_SWEEP_NAME_OPERAND_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,63}")
+_SWEEP_SLOT_OPERAND_RE = re.compile(r"\d{1,5}")
+_SWEEP_ESCAPES = frozenset({"\\n", "\\r", "\\r\\n", "\\t", "\\n\\n"})
+_SWEEP_IFACE_RE = re.compile(
+    r"(?:(?:Hundred|Forty|TwentyFive|Ten|Two|Five|Fifty|FourHundred)?Gig(?:abit)?(?:Ethernet|E)"
+    r"|GigabitEthernet|FastEthernet|Ethernet|AppGigabitEthernet|Port-?channel|Bundle-Ether|Loopback"
+    r"|Tunnel|Vlan|Serial|Dialer|BDI|BVI|nve|Virtual-(?:Template|Access)|Management|MgmtEth|mgmt"
+    r"|Gi|Te|Tw|Twe|Fo|Hu|Fa|Eth|Et|Po|Lo|Tu|Vl|Se|Ap"
+    r"|(?:ge|xe|et|fe|gr|lt|irb|ae|lo|fxp|em|me|reth|vlan)-?)\d+(?:[/.:]\d+)*",
     re.IGNORECASE)
-_CRED_BANNER_MAX_LINES = 400
+_SWEEP_IPV4_RE = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?")
+_SWEEP_IPV6_RE = re.compile(r"[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*(?:%[\w.-]+)?(?:/\d{1,3})?")
+_SWEEP_SYNTH_RE = re.compile(
+    r"(?:(?:v4-n\d{5}-h\d{3}|v6-\d{8}|mac-\d{12}|serial-\d{6})\.assesshub-redacted\.invalid(?:/\d{1,3})?"
+    r"|contact-\d{6}@assesshub-redacted\.invalid)", re.IGNORECASE)
+_SWEEP_MASK_RE = re.compile(_v(
+    r"(?!<redacted>)</?[A-Za-z_][\w.:-]*(?:{H}[^<>\r\n]*)?/?>"
+    r"|-----(?:BEGIN|END)[ A-Z0-9]*-----"
+    r"|(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]*://{S}+"), re.IGNORECASE)
+_SWEEP_TOKEN_RE = re.compile("[^" + _CRED_WS + "\r\n=,]+")
+_SWEEP_ROW_TOKEN_RE = re.compile(_CRED_NWS + "+")
+_SWEEP_XML_RE = re.compile(_v(r"<(?P<tag>[A-Za-z_][\w.:-]*)(?:{H}[^<>\r\n]*)?>(?P<v>(?:<redacted>|[^<\r\n])*)"))
+_SWEEP_URL_RE = re.compile(_v(r"(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]*://{S}+"), re.IGNORECASE)
+_SWEEP_QUERY_RE = re.compile(r"(?<=[?&;])(?P<name>[A-Za-z0-9_.-]+)=(?P<v>[^&#;\"'\s]*)")
+_SWEEP_QUERY_NAMES = frozenset({
+    "sig", "signature", "token", "access_token", "refresh_token", "id_token", "auth", "auth_token",
+    "apikey", "api_key", "api-key", "key", "password", "passwd", "pwd", "pass", "secret", "client_secret",
+    "code", "credential", "x-amz-signature", "x-amz-credential", "x-amz-security-token",
+})
+_SWEEP_SECRET_DATA_RE = re.compile(_v(r"##{h}*SECRET-DATA"), re.IGNORECASE)
+_SWEEP_FIRST_TOKEN_RE = re.compile(_v(r"{h}*{S}+"))
+_SWEEP_DANGLING = frozenset({
+    "md5", "sha", "sha1", "sha-1", "sha224", "sha256", "sha384", "sha512", "sha-256", "sha-384", "sha-512",
+    "sha2-256", "sha2-384", "sha2-512", "hmac-md5", "hmac-sha", "hmac-sha1", "hmac-sha-1", "hmac-sha256",
+    "hmac-sha-256", "cipher", "plain", "ascii", "hex", "encrypted", "clear", "enc", "aes", "aes128",
+    "aes192", "aes256", "aes-128", "aes-192", "aes-256", "des", "des56", "3des", "aescfb128", "hmacmd5",
+    "hmacsha",
+})
+_SWEEP_SIZE_WORDS = frozenset({"aes", "des", "3des", "aes-cbc"})
+_SWEEP_DANGLING_HINT_RE = re.compile(
+    "(?<![a-z0-9_-])(?:" + "|".join(re.escape(word) for word in sorted(_SWEEP_DANGLING | _SWEEP_SIZE_WORDS, key=len,
+                                                                         reverse=True)) + ")(?![a-z0-9_-])")
+_SWEEP_B64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{24,}={0,2}(?![A-Za-z0-9+/_=-])")
+_SWEEP_HEX_RE = re.compile(r"(?<![A-Za-z0-9])[0-9A-Fa-f]{32,}(?![A-Za-z0-9])")
+#: ... and any token in a CLOSED list of credential token formats, whatever its letters
+#: (GitHub, GitLab, Slack, Stripe, OpenAI-style, AWS access key IDs, Google API keys, OAuth access, JWT).
+_SWEEP_TOKEN_FORMAT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}"
+    r"|xox[abposr]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|[sr]k_live_[A-Za-z0-9]{10,}|sk-[A-Za-z0-9_-]{20,}"
+    r"|A[KS]IA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|ya29\.[A-Za-z0-9_.-]{20,}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*)?)")
+
+
+def _sweep_entropy_part(part: str) -> bool:
+    """A base64 segment that looks RANDOM: 16+ characters mixing upper case, lower case and digits,
+    whose character classes change at least every 2.5 characters on average. A camelCase identifier
+    ('HDfabricOverallHealth5min', an ACI class in a DN) runs whole words of one case and is not one."""
+    if len(part) < 16 or not (any(c.isupper() for c in part) and any(c.islower() for c in part)
+                              and any(c.isdigit() for c in part)):
+        return False
+    kinds = ["u" if c.isupper() else "l" if c.islower() else "d" if c.isdigit() else "o" for c in part]
+    changes = sum(1 for a, b in zip(kinds, kinds[1:]) if a != b)
+    return len(part) <= 2.5 * (changes + 1)
+_SWEEP_DIGEST_LABEL_RE = re.compile(
+    r"(?:md5|sha-?1|sha-?224|sha-?256|sha-?384|sha-?512|sha2|digest|hash|fingerprint|checksum|thumbprint)"
+    r"[^A-Za-z0-9]{0,4}\Z", re.IGNORECASE)
+_SWEEP_PUBKEY_LABEL_RE = re.compile(
+    r"(?:ssh-rsa|ssh-dss|ssh-ed25519|ssh-ed448|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com"
+    r"|sk-ecdsa-sha2-nistp256@openssh\.com)" + _CRED_HWS + r"\Z", re.IGNORECASE)
+_PEM_BEGIN_RE = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----", re.IGNORECASE)
+_PEM_END_RE = re.compile(r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----", re.IGNORECASE)
+_TABLE_HEADERS = tuple((re.compile(_v(pattern), re.IGNORECASE), nxt) for pattern, nxt in (
+    (r"^{h}*(?P<c>Community){h}+(?P<n>Group){h}*/{h}*Access\b", "n"),
+    (r"^{h}*Keyring{h}+Hostname/Address{h}+(?P<c>Preshared{h}Key)\b", None),
+    (r"^{h}*Host{h}+Port{h}+Version{h}+Level{h}+Type{h}+(?P<c>SecName)\b", None),
+    (r"^{h}*(?P<c>SNMP{h}Community{h}Name){h}+(?P<n>Client{h}IP{h}Address)\b", "n"),
+))
+_TABLE_END_RE = re.compile(_v(r"^{h}*-{3,}{h}*show{h}"), re.IGNORECASE)
+_DASHES_RE = re.compile(r"-+\Z")
+_FORTI_CONFIG_RE = re.compile(_v(r"^{h}*config{H}(?P<path>[^\r\n]*?){h}*\Z"), re.IGNORECASE)
+_FORTI_END_RE = re.compile(_v(r"^{h}*end{h}*\Z"), re.IGNORECASE)
+_FORTI_SET_NAME_RE = re.compile(_v(r"^{h}*set{H}name(?={h}|\Z)"), re.IGNORECASE)
+#: Speed only: a line holding none of these substrings has no keyword, URL, XML element, armor or
+#: long token, so neither guarantee has anything to read on it (the producer skips it the same way).
+_SWEEP_PREFILTER = re.compile(
+    r"pass|secret|communit|key|auth|psk|cipher|plain|ascii|hex|token|bearer|ssws|phash|pwd|cak|ckn|priv|"
+    r"cookie|trap-group|securityname|snmp|nhrp|standby|vrrp|glbp|rmon|environment|command|spi|user|"
+    r"groupname:|com2sec|_pw|credential|pkcs12|-----|://|<")   # searched in the CASEFOLDED line
+_SWEEP_RUN_RE = re.compile(r"[A-Za-z0-9+/_=-]{24}")    # ... or a run long enough to be high-entropy
+
+#: Compatibility for readers that fingerprint "the verifier grammar" (the D10 evidence-retention branch
+#: digests this tuple at import): every compiled pattern of both restated guarantees, in a fixed order.
+_INLINE_SECRET_RES = tuple(
+    [family.anchor for family in _CRED_FAMILIES] + [family.qualifiers for family in _CRED_FAMILIES]
+    + [_SWEEP_KW_RE, _SWEEP_MASK_RE, _SWEEP_TOKEN_RE, _SWEEP_XML_RE, _SWEEP_URL_RE, _SWEEP_QUERY_RE,
+       _SWEEP_B64_RE, _SWEEP_HEX_RE, _SWEEP_DIGEST_LABEL_RE, _SWEEP_PUBKEY_LABEL_RE, _PEM_BEGIN_RE,
+       _PEM_END_RE, _TABLE_END_RE, _FORTI_CONFIG_RE, _FORTI_END_RE, _FORTI_SET_NAME_RE]
+    + [pattern for pattern, _nxt in _TABLE_HEADERS])
 
 
 def _cred_token(line: str, pos: int) -> tuple[str, int] | None:
@@ -394,8 +574,22 @@ def _cred_token(line: str, pos: int) -> tuple[str, int] | None:
     return (match.group(0), match.end()) if match else None
 
 
-def _cred_value_is_structural(value: str, family: _CredFamily) -> bool:
-    """A follow-word, label or punctuation where the value would stand: the line has no credential."""
+_CRED_ADDRESS_RE = re.compile(_v(r"(?:\d{1,3}(?:\.\d{1,3}){3}|" + _CRED_IPV6_TEXT
+                                   + r"|{S}+\.assesshub-redacted\.invalid)(?:/\d{1,3})?"), re.IGNORECASE)
+
+
+def _cred_is_address(token: str) -> bool:
+    """An address -- or, in a redacted snapshot, its synthetic pseudonym -- in the value slot of
+    'snmp-server host <ifname> <ip> community X' (ASA) is the host. The producer's exact shape."""
+    return bool(_CRED_ADDRESS_RE.fullmatch(token))
+
+
+def _cred_value_is_structural(value: str, family: _CredFamily, line: str, position: int) -> bool:
+    """A follow-word, label, punctuation or armor where the value would stand: no credential here."""
+    if family.value_guard is not None and family.value_guard.match(line, position):
+        return True
+    if _CRED_PEM_ARMOR_RE.match(line, position):
+        return True                                      # a private-key block: the PEM rule owns it
     if value[:1] in {'"', "'"}:
         return False                                     # a quoted token is always a value
     head = re.split(r"[;,.]", value, maxsplit=1)[0].casefold()
@@ -405,17 +599,7 @@ def _cred_value_is_structural(value: str, family: _CredFamily) -> bool:
         return True
     if not value.strip("{}[];"):
         return True
-    # 'snmp-server host <ifname> <ip> community X' (ASA): an address -- or, in a redacted snapshot,
-    # its synthetic pseudonym -- in the value slot is the host, not a community.
     return family.address_is_structural and _cred_is_address(value)
-
-
-def _cred_is_address(token: str) -> bool:
-    try:
-        ipaddress.ip_network(token, strict=False)
-    except ValueError:
-        return bool(_SYNTH_MARKER_RE.fullmatch(token))
-    return True
 
 
 def _cred_is_placeholder(token: str) -> bool:
@@ -424,7 +608,7 @@ def _cred_is_placeholder(token: str) -> bool:
 
 
 def _cred_clauses(line: str, artifact: bool) -> list[tuple[_CredFamily, int, str, int]]:
-    """Every credential clause on the line: (family, keyword start, value token, value end).
+    """Every GRAMMAR clause on the line: (family, keyword start, value token, value end).
 
     A clause whose grammar ends after its qualifiers, or whose value slot holds a structural
     follow-word, carries no credential and is not returned."""
@@ -447,125 +631,302 @@ def _cred_clauses(line: str, artifact: bool) -> list[tuple[_CredFamily, int, str
             if token is None:
                 continue                                  # the grammar ended after its qualifiers
             value, end = token
-            if _cred_value_is_structural(value, family):
+            if _cred_value_is_structural(value, family, line, position):
                 continue
             anchor_text = match.group(0)
-            keyword_start = match.start() + max(anchor_text.rfind(" "), anchor_text.rfind("\t")) + 1
+            keyword_start = match.start() + len(anchor_text) - len(_CRED_WS_RE.split(anchor_text)[-1])
             clauses.append((family, keyword_start, value, end))
     return clauses
 
 
-def _cred_tail_is_structural(line: str, start: int, family: _CredFamily,
-                             nested: list[tuple[int, int]]) -> bool:
-    """Is every token after the placeholder (``line[start:]``) structural?
-
-    Structural means: a word of the closed allowlist, a slot keyword plus its one operand, an address,
-    another placeholder, a family's own positional operand, or a token inside another credential clause
-    on the same line whose own value is the placeholder (``nested``: C9800 'mgmtuser username u password
-    0 <redacted> secret 0 <redacted>', 'auth sha <redacted> priv aes 128 <redacted>')."""
-    tokens = list(_CRED_TOKEN_RE.finditer(line, start))
-    acl_open = False          # one positional ACL operand may follow 'RO|RW' or an 'ipv6 <nacl>' pair
-    index = 0
-    while index < len(tokens):
-        found = tokens[index]
-        token = found.group(0).rstrip(";,").casefold()
-        last = index == len(tokens) - 1
-        index += 1
-        if any(span_start <= found.start() < span_end for span_start, span_end in nested):
-            continue
-        if not token or _cred_is_placeholder(token) or token in _CRED_TAIL_WORDS or _cred_is_address(token):
-            continue
-        if token in _CRED_TAIL_SLOTS:
-            index += 1                                    # the slot's one operand
-            acl_open = family.positional_acl and token == "ipv6"
-            continue
-        if token in _CRED_ACCESS_WORDS:
-            acl_open = family.positional_acl
-            continue
-        if token.isdigit() and (family.integers or (family.trailing_integer and last)):
-            continue
-        if acl_open:
-            acl_open = False                              # the ONE positional ACL operand
-            continue
-        return False
-    return True
-
-
-def _credential_line_findings(line: str, *, artifact: bool, tail_exempt: bool) -> list[str]:
-    """Every credential-grammar violation on one line, as finding kinds (empty = clean).
+def _credential_line_findings(line: str, *, artifact: bool) -> list[str]:
+    """Every GRAMMAR violation on one line: a recognised value slot that is not the placeholder.
 
     ``artifact`` reads only the families' line-start ``artifact`` anchors (a shareable artifact also
-    carries authored prose and generated code); otherwise every family anchor anywhere in the line is
-    read, plus URL userinfo (a raw capture is device text)."""
-    placeholders = [found.start() for found in _CRED_PLACEHOLDER_RE.finditer(line)]
-    if not placeholders and not _CRED_PREFILTER_RE.search(line):
+    carries authored prose and generated code); otherwise every family anchor anywhere in the line."""
+    if len(line) > _CRED_GRAMMAR_MAX_LINE or not _CRED_PREFILTER_RE.search(line.casefold()):
         return []
-    kinds: list[str] = []
-    explained: set[int] = set()
-    if not artifact:
-        for match in _CRED_URL_PASSWORD_RE.finditer(line):
-            if match.group("value").casefold() != _PLACEHOLDER:
-                kinds.append("credential value (URL userinfo)")
-            else:
-                explained.add(match.start("value"))
-    clauses = _cred_clauses(line, artifact)
-    nested = [(keyword_start, end) for _family, keyword_start, value, end in clauses
-              if _cred_is_placeholder(value)]
-    for family, _keyword_start, value, end in clauses:
-        if not _cred_is_placeholder(value):
-            kinds.append(f"credential value ({family.name})")
+    return [f"credential value ({family.name})" for family, _start, value, _end in _cred_clauses(line, artifact)
+            if not _cred_is_placeholder(value)]
+
+
+# ---- the sweep guarantee, line by line ----
+def _sweep_is_address(core: str) -> bool:
+    if _SWEEP_IPV4_RE.fullmatch(core) or (":" in core and _SWEEP_IPV6_RE.fullmatch(core)):
+        try:
+            ipaddress.ip_network(re.sub(r"%[\w.-]+", "", core), strict=False)
+        except ValueError:
+            return False
+        return True
+    return False
+
+
+def _sweep_token_ok(token: str) -> bool:
+    if _PLACEHOLDER in token:
+        return not token.replace(_PLACEHOLDER, "").strip(_SWEEP_EDGE)
+    core = token.strip(_SWEEP_EDGE)
+    if not core or core in _SWEEP_ESCAPES or _DASHES_RE.match(core):
+        return True
+    return (core.casefold() in _SWEEP_ALLOW or _sweep_is_address(core)
+            or bool(_SWEEP_IFACE_RE.fullmatch(core)) or bool(_SWEEP_SYNTH_RE.fullmatch(core)))
+
+
+def _sweep_masked(line: str) -> str:
+    return _SWEEP_MASK_RE.sub(lambda m: " " * len(m.group(0)), line)
+
+
+def _sweep_anchor(line: str, masked: str, forti: bool) -> int | None:
+    candidates = []
+    if _SWEEP_SECRET_DATA_RE.search(line):
+        first = _SWEEP_FIRST_TOKEN_RE.match(line)
+        if first:
+            candidates.append(first.end())
+    if forti:
+        name = _FORTI_SET_NAME_RE.match(line)
+        if name:
+            candidates.append(name.end())
+    pos = 0
+    while True:
+        found = _SWEEP_KW_RE.search(masked, pos)
+        if found is None:
+            break
+        word = found.group("kw").casefold()
+        following = _SWEEP_TOKEN_RE.search(masked, found.end())
+        nxt = following.group(0).strip(_SWEEP_EDGE).casefold() if following else ""
+        before = _SWEEP_TOKEN_RE.findall(masked, 0, found.start())
+        prev = before[-1].strip(_SWEEP_EDGE).casefold() if before else ""
+        if nxt in _SWEEP_VOID_NEXT.get(word, ()) or prev in _SWEEP_VOID_PREV.get(word, ()):
+            pos = found.end()
             continue
-        explained.add(end - len(value))
-        if not tail_exempt and not _cred_tail_is_structural(line, end, family, nested):
-            kinds.append(f"credential residue after the placeholder ({family.name})")
-    if not artifact and any(position not in explained for position in placeholders):
-        # CLOSED WORLD on raw captures: the scrub is the only author of the placeholder there, so a
-        # placeholder that no clause of this grammar explains is a producer/verifier disagreement --
-        # e.g. a pre-W60 'enable password <redacted> 15 X' whose qualifier was taken as the value.
-        kinds.append("placeholder outside the credential grammar")
+        candidates.append(found.end())
+        break
+    return min(candidates) if candidates else None
+
+
+def _sweep_residue(masked: str, anchor: int) -> bool:
+    """Is any token after the anchor neither structural nor a structural slot's one operand?"""
+    slot = None
+    for match in _SWEEP_TOKEN_RE.finditer(masked, anchor):
+        core = match.group(0).strip(_SWEEP_EDGE)
+        if slot is not None and slot.fullmatch(core):
+            slot = None
+            continue
+        ok = _sweep_token_ok(match.group(0))
+        word = core.casefold()
+        slot = (None if not ok else _SWEEP_SLOT_OPERAND_RE if word in _SWEEP_SLOTS
+                else _SWEEP_NAME_OPERAND_RE if word in _SWEEP_NAME_SLOTS else None)
+        if not ok:
+            return True
+    return False
+
+
+def _sweep_dangles(line: str, masked: str, anchor: int | None) -> bool:
+    if anchor is None or not _SWEEP_DANGLING_HINT_RE.search(line.casefold()):
+        return False
+    tokens = [t.strip(_SWEEP_EDGE).casefold() for t in _SWEEP_TOKEN_RE.findall(masked, anchor)]
+    if not tokens:
+        return False
+    if tokens[-1] in _SWEEP_DANGLING:
+        return True
+    return (len(tokens) > 1 and tokens[-2] in _SWEEP_SIZE_WORDS and tokens[-1].isdigit()
+            and tokens[-1] not in ("128", "192", "256"))
+
+
+def _sweep_url_findings(line: str) -> list[str]:
+    kinds = []
+    for match in _SWEEP_URL_RE.finditer(line):
+        rest = match.group(0).partition("://")[2]
+        at = rest.rfind("@")
+        if at > 0:
+            userinfo = rest[:at]
+            secret = userinfo.partition(":")[2] if ":" in userinfo else userinfo
+            if secret != _PLACEHOLDER:
+                kinds.append("credential value (URL userinfo)")
+        for query in _SWEEP_QUERY_RE.finditer(rest):
+            if (query.group("name").casefold() in _SWEEP_QUERY_NAMES
+                    and query.group("v") not in ("", _PLACEHOLDER)):
+                kinds.append("credential value (URL query parameter)")
     return kinds
+
+
+def _sweep_entropy(line: str) -> bool:
+    for regex in (_SWEEP_B64_RE, _SWEEP_HEX_RE, _SWEEP_TOKEN_FORMAT_RE):
+        for match in regex.finditer(line):
+            text = match.group(0)
+            if regex is _SWEEP_B64_RE and not any(
+                    _sweep_entropy_part(part) for part in re.split(r"[-_/]", text)):
+                continue
+            head = line[:match.start()]
+            if (_SWEEP_IFACE_RE.fullmatch(text) or _SWEEP_SYNTH_RE.fullmatch(text)
+                    or _SWEEP_DIGEST_LABEL_RE.search(head) or _SWEEP_PUBKEY_LABEL_RE.search(head)):
+                continue
+            return True
+    return False
+
+
+def _sweep_plan(lines: list[str]):
+    """The stateful roles -- private-key blocks, credential table columns, FortiGate SNMP blocks --
+    restated from the producer's rules; each is decided by text the scrub never alters."""
+    pem: list[Any] = [None] * len(lines)
+    table: list[Any] = [None] * len(lines)
+    forti = [False] * len(lines)
+    inside = False
+    region = None
+    depth, snmp_depth = 0, None
+    for i, line in enumerate(lines):
+        spans, pos = [], 0
+        if inside:
+            end = _PEM_END_RE.search(line)
+            if end is None:
+                pem[i] = "body"
+            else:
+                spans.append((0, end.start()))
+                pos, inside = end.end(), False
+        low = line.casefold()                      # the substring gates below are speed only
+        while pem[i] != "body" and "-----" in line:
+            begin = _PEM_BEGIN_RE.search(line, pos)
+            if begin is None:
+                break
+            end = _PEM_END_RE.search(line, begin.end())
+            if end is not None:
+                spans.append((begin.end(), end.start()))
+                pos = end.end()
+                continue
+            if _CRED_WS_RE.sub("", line[begin.end():]).strip("\"'"):
+                spans.append((begin.end(), len(line)))
+            else:
+                inside = True
+            break
+        if spans:
+            pem[i] = spans
+        header = None
+        for pattern, nxt in (_TABLE_HEADERS if ("community" in low or "keyring" in low
+                                                  or "secname" in low) else ()):
+            found = pattern.match(line)
+            if found:
+                header = (found.start("c"), found.start(nxt) if nxt else None)
+                break
+        if header is not None:
+            table[i], region = "header", header
+        elif region is not None:
+            if "show" in low and _TABLE_END_RE.match(line):
+                region = None
+            else:
+                table[i] = region
+        config = _FORTI_CONFIG_RE.match(line) if "config" in low else None
+        if config:
+            depth += 1
+            if snmp_depth is None and " ".join(config.group("path").split()).casefold() == "system snmp community":
+                snmp_depth = depth
+        elif "end" in low and _FORTI_END_RE.match(line):
+            if snmp_depth is not None and depth == snmp_depth:
+                snmp_depth = None
+            depth = max(0, depth - 1)
+        forti[i] = snmp_depth is not None
+    return pem, table, forti
+
+
+def _pem_findings(lines: list[str], pem: list[Any]) -> list[str]:
+    kinds = []
+    for line, role in zip(lines, pem):
+        if role == "body":
+            if _CRED_WS_RE.sub("", line) not in ("", _PLACEHOLDER):
+                kinds.append("private-key material")
+        elif role:
+            for start, end in role:
+                if _CRED_WS_RE.sub("", line[start:end]) not in ("", _PLACEHOLDER):
+                    kinds.append("private-key material")
+    return kinds
+
+
+_CSV_FIELD_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _.-]{0,63}")
+
+
+def _csv_core(field: str) -> str:
+    return _CRED_WS_RE.sub(" ", field).strip(" \"'")
+
+
+def _csv_header(line: str) -> tuple[int, frozenset[int]] | None:
+    """A CSV header (two or more short identifier fields, one naming a credential or redacted): the
+    rows that follow with the same field count must carry the placeholder in those columns."""
+    cores = [_csv_core(field) for field in line.split(",")]
+    if len(cores) < 2 or not all(core == _PLACEHOLDER or _CSV_FIELD_RE.fullmatch(core) for core in cores):
+        return None
+    columns = frozenset(i for i, core in enumerate(cores) if core == _PLACEHOLDER or _SWEEP_KW_RE.search(core))
+    return (len(cores), columns) if columns else None
 
 
 def _raw_capture_credential_findings(text: str) -> list[str]:
-    """The credential grammar over a whole raw capture, line by line.
+    """Both guarantees over a whole raw capture, line by line (see the block comment above).
 
-    A banner body, a description/remark/comment line and a syslog record are free text: their
-    credential VALUES are still checked, but prose may follow the placeholder there, so the tail
-    allowlist is not applied. A banner whose delimiter never closes stops being exempt after
-    `_CRED_BANNER_MAX_LINES` lines -- a missing delimiter must not switch the tail check off for the
-    rest of the file."""
-    kinds: list[str] = []
-    banner_delim: str | None = None
-    banner_lines = 0
-    for line in text.splitlines():
-        exempt = False
-        if banner_delim is not None:
-            exempt = True
-            banner_lines += 1
-            if banner_delim in line or banner_lines > _CRED_BANNER_MAX_LINES:
-                banner_delim = None
-        else:
-            banner = _CRED_BANNER_RE.match(line)
-            if banner:
-                exempt = True
-                delim = banner.group("delim")
-                # '^C' or one punctuation character opens a multi-line body; an alphanumeric first
-                # character is a one-line banner (ASA 'banner motd <text>').
-                if delim and not delim.isalnum() and delim not in line[banner.end():]:
-                    banner_delim, banner_lines = delim, 0
-        if not exempt and _CRED_FREE_TEXT_RE.search(line):
-            exempt = True
-        kinds.extend(_credential_line_findings(line, artifact=False, tail_exempt=exempt))
+    No line is exempt: a banner body, a description, a comment and a syslog record are swept like
+    any other line, because a credential pasted into prose is still a credential."""
+    lines = _cred_lines(text)
+    pem, table, forti = _sweep_plan(lines)
+    kinds = _pem_findings(lines, pem)
+    forced = False
+    csv = None
+    for index, line in enumerate(lines):
+        if table[index] == "header" or pem[index] == "body":
+            forced, csv = False, None
+            continue
+        if csv is not None:
+            fields = line.split(",")
+            if len(fields) == csv[0]:
+                if any(_csv_core(fields[i]) not in ("", _PLACEHOLDER) for i in csv[1]):
+                    kinds.append("credential table column (CSV)")
+            else:
+                csv = None
+        if csv is None and "," in line:
+            csv = _csv_header(line)
+        low = line.casefold()
+        if not (forced or table[index] is not None or forti[index] or _SWEEP_PREFILTER.search(low)
+                or _SWEEP_RUN_RE.search(line) or _CRED_PREFILTER_RE.search(low)):
+            forced = False
+            continue
+        kinds.extend(_sweep_url_findings(line))
+        for match in _SWEEP_XML_RE.finditer(line):
+            value = _CRED_WS_RE.sub("", match.group("v"))
+            if value and value != _PLACEHOLDER and _SWEEP_KW_RE.search(match.group("tag")):
+                kinds.append("credential value (XML element)")
+        masked = _sweep_masked(line)
+        anchor = 0 if forced else _sweep_anchor(line, masked, forti[index])
+        if anchor is not None and _sweep_residue(masked, anchor):
+            kinds.append("credential residue after a credential keyword")
+        if table[index] is not None:
+            start, end = table[index]
+            for match in _SWEEP_ROW_TOKEN_RE.finditer(masked):
+                if (match.start() < (len(masked) if end is None else end) and match.end() > start
+                        and _PLACEHOLDER not in match.group(0) and not _DASHES_RE.match(match.group(0))):
+                    kinds.append("credential table column")
+        if _sweep_entropy(line):
+            kinds.append("high-entropy token")
+        kinds.extend(_credential_line_findings(line, artifact=False))
+        forced = _sweep_dangles(line, masked, anchor)
     return kinds
 
 
+#: FortiGate secret attributes must carry NOTHING but the placeholder after the attribute (and ENC), or
+#: open a private-key block whose body the PEM rule verifies. Matched per line of `_cred_lines`.
 _STRICT_SECRET_LINE_RES = (
-    re.compile(
-        r"^\s*set\s+(?:passwd|psksecret|password|private-key|passphrase)\s+"
-        r"(?:ENC\s+)?(?P<value>.*?)\s*$",
-        re.IGNORECASE | re.MULTILINE,
-    ),
+    re.compile(_v(r"{h}*set{H}(?:passwd|psksecret|password|private-key|passphrase){H}"
+                  r"(?:ENC{H})?(?P<value>.*?){h}*\Z"), re.IGNORECASE),
 )
+
+
+def _strict_value_ok(value: str) -> bool:
+    value = _CRED_EDGE_WS_RE.sub("", value)
+    if value[:1] in {'"', "'"} and value[-1:] == value[:1] and len(value) > 1:
+        value = value[1:-1]
+    if _PEM_BEGIN_RE.fullmatch(_CRED_EDGE_WS_RE.sub("", value).strip("\"'")):
+        return True
+    tokens = [token for token in _CRED_WS_RE.split(value) if token]
+    return bool(tokens) and all(token.strip("\"'").casefold() == _PLACEHOLDER for token in tokens)
+
+
+def _strict_findings(lines: list[str]) -> list[str]:
+    return ["credential residue" for line in lines for pattern in _STRICT_SECRET_LINE_RES
+            for match in [pattern.match(line)] if match and not _strict_value_ok(match.group("value"))]
 
 
 class RedactionVerificationError(ValueError):
@@ -876,21 +1237,21 @@ def _scan_text(text: str, where: str, leaks: list[str]) -> None:
         _append(leaks, "email address", where)
 
     # Authored prose, generated code and free-text device fields (an interface description that
-    # begins with "password reset ...") share these surfaces, so the grammar reads only lines that
-    # OPEN like the configuration forms (each family's `artifact` anchors), and checks their VALUE
-    # only: the tail allowlist would refuse ordinary prose after a redacted word. The full grammar,
-    # tails included, runs on raw captures in `verify_collection_secret_scrub`; the producer's own
-    # grammar is what closes the residue class here (docs/w60-redaction-grammar-2026-10-09.md).
-    for line in text.splitlines():
-        for kind in _credential_line_findings(line, artifact=True, tail_exempt=True):
+    # begins with "password reset ...") share these surfaces, and the engine writes some of them
+    # AFTER the producer's scrub (the design blueprint is computed from the redacted snapshot), so the
+    # residual-sweep guarantee does not hold here and is not asserted. What is asserted: the grammar's
+    # VALUE slot on lines that OPEN like a configuration form (each family's `artifact` anchors), and
+    # no private-key material -- authored copy never carries private-key armor. The full sweep
+    # guarantee runs on raw captures in `verify_collection_secret_scrub`
+    # (docs/w60-redaction-grammar-2026-10-09.md).
+    lines = _cred_lines(text)
+    for line in lines:
+        for kind in _credential_line_findings(line, artifact=True):
             _append(leaks, kind, where)
-    for pattern in _STRICT_SECRET_LINE_RES:
-        for match in pattern.finditer(text):
-            value = match.group("value").strip()
-            if value[:1] in {'"', "'"} and value[-1:] == value[:1]:
-                value = value[1:-1].strip()
-            if value.casefold() != _PLACEHOLDER:
-                _append(leaks, "credential residue", where)
+    for kind in _pem_findings(lines, _sweep_plan(lines)[0]):
+        _append(leaks, kind, where)
+    for kind in _strict_findings(lines):
+        _append(leaks, kind, where)
 
 
 def _scan_secret_tree(
@@ -1320,13 +1681,8 @@ def verify_collection_secret_scrub(root: Path) -> dict[str, Any]:
             leaks: list[str] = []
             for kind in _raw_capture_credential_findings(text):
                 _append(leaks, kind, str(path.relative_to(root)))
-            for pattern in _STRICT_SECRET_LINE_RES:
-                for match in pattern.finditer(text):
-                    value = match.group("value").strip()
-                    if value[:1] in {'"', "'"} and value[-1:] == value[:1]:
-                        value = value[1:-1].strip()
-                    if value.casefold() != _PLACEHOLDER:
-                        _append(leaks, "credential residue", str(path.relative_to(root)))
+            for kind in _strict_findings(_cred_lines(text)):
+                _append(leaks, kind, str(path.relative_to(root)))
             if leaks:
                 raise RedactionVerificationError(
                     "raw capture secret verification found residue: " + "; ".join(leaks[:8])

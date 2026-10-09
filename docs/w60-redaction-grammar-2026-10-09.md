@@ -1,11 +1,11 @@
-# W60: the redaction credential grammar and its verifier (2026-10-09)
+# W60: shareable redaction -- credential grammar, residual sweep and verifier (2026-10-09)
 
 **This was a privacy defect in shipped redaction.** `Atlas.exe --redact-folder` (whose output is
 meant to be shareable), `--redact-collection` and AssessHub ingest scrub raw captures with
 `cisco_toolkit.html.redact_collection_dir`. That scrub left real credentials in place for a whole class
 of configuration lines, and the independent verifier,
 `webapp.backend.redaction_verify.verify_collection_secret_scrub`, certified those captures as
-scrubbed. The same grammar (`_redact_config_values`) also feeds `redact_snapshot` and the `--redact`
+scrubbed. The same function (`_redact_config_values`) also feeds `redact_snapshot` and the `--redact`
 workbook, so `--redact` deliverables carried the same residue wherever such a line reached them. Treat
 any collection or `--redact` deliverable produced before this change as not credential-safe until it
 has been scrubbed and verified again with this build (see "Captures scrubbed by an older build").
@@ -13,235 +13,218 @@ has been scrubbed and verified again with this build (see "Captures scrubbed by 
 Branch `claude/w60-redaction-grammar` (board row W60). Static and pure-function evidence only: no test,
 build or engine run.
 
-## The defect
+## Round 1: the decision
 
-The scrub was a deny-list of `keyword + optional type digit + ONE token` patterns. It replaced the
-token right after the keyword, even when that token was a **qualifier**. The credential then survived
-one token further on. Separately, several value-bearing forms had no pattern at all. The verifier's
-rule was "the first token after a recognised keyword is the placeholder", so it certified every line
-in the first group, and it never looked at the second.
+The first W60 commit (030472a6) replaced the deny-list with a per-family qualifier GRAMMAR. Two
+independent reviews (W60, and the W58r2 retention scan's corpus) then found 95 and 74 lines that still
+leaked, 18 of them **regressions against `origin/main` 6390b66c** (a numeric key such as
+`ip ospf authentication-key 12345678` was read as a key ID and certified). A grammar is a deny-list of
+value slots: every slot it models wrongly is a certified leak, and its verifier, written as the same
+kind of list, certifies the same leak.
 
-Every line below was produced by the real `redact_collection_dir` and checked by the real
-`verify_collection_secret_scrub` in a scratch folder. The synthetic credentials are fake.
+**Supervisor decision: shareable redaction must FAIL SAFE.** Losing a value in a shared copy is
+acceptable; leaking a secret is not. So round 1 keeps the grammar (fixed, and never weaker than main on
+any corpus line) and adds a RESIDUAL SWEEP whose failure direction is inverted: a word it does not know
+is REDACTED. The verifier checks exactly what the sweep guarantees, from the same closed lists.
 
-| Input line | Before (`origin/main` 6390b66c), certified | After this change |
+## The defect (unchanged history)
+
+The original scrub was a deny-list of `keyword + optional type digit + ONE token` patterns. It replaced
+the token right after the keyword even when that token was a **qualifier**, and the credential
+survived one token further on. Several value-bearing forms had no pattern at all. The verifier's rule
+was "the first token after a recognised keyword is the placeholder", so it certified all of them.
+
+| Input line | `origin/main` 6390b66c (certified) | Round 1 |
 |---|---|---|
 | `enable password level 15 Plain99pw` | `enable password <redacted> 15 Plain99pw` | `enable password level 15 <redacted>` |
-| `enable password level 15 0 Plain99pw` | `enable password <redacted> 15 0 Plain99pw` | `enable password level 15 0 <redacted>` |
 | `enable secret level 15 0 Plain99pw` | `enable secret <redacted> 15 0 Plain99pw` | `enable secret level 15 0 <redacted>` |
 | `username admin secret sha512 $6$...` (EOS) | `username admin secret <redacted> $6$...` | `username admin secret sha512 <redacted>` |
 | `config wlan security wpa akm psk set-key ascii Wlc99psk 1` | `... set-key <redacted> Wlc99psk 1` | `... set-key ascii <redacted> 1` |
-| `wireless security wpa psk set-key ascii 0 Wlc99psk` (C9800) | `... set-key <redacted> 0 Wlc99psk` | `... set-key ascii 0 <redacted>` |
 | `Enable password is Hunter2pw` | `Enable password <redacted> Hunter2pw` | `Enable password is <redacted>` |
 | `SNMP community string : Hunter2pw` | `SNMP community <redacted> : Hunter2pw` | `SNMP community string : <redacted>` |
-| ` local-user admin password cipher Hw99pw` (Huawei) | `... password <redacted> Hw99pw` | `... password cipher <redacted>` |
 | ` super password level 15 cipher Hw99pw` (Huawei) | `... password <redacted> 15 cipher Hw99pw` | `... level 15 cipher <redacted>` |
-| ` snmp-agent community read Huawei99` (Huawei) | `... community <redacted> Huawei99` | `... community read <redacted>` |
-| ` key config-key password-encrypt Master99` | ` key <redacted> password-encrypt Master99` | ` key config-key password-encrypt <redacted>` |
-| ` ip nhrp authentication Dmvpn99` | unchanged (no pattern) | ` ip nhrp authentication <redacted>` |
-| ` ip nhrp authentication 7 0822455D0A16` | unchanged | ` ip nhrp authentication 7 <redacted>` |
+| ` ip nhrp authentication Dmvpn99` | unchanged | ` ip nhrp authentication <redacted>` |
 | `snmp-server host 192.0.2.10 public` | unchanged | `snmp-server host 192.0.2.10 <redacted>` |
-| ` snmp-server host 10.1.1.1 traps Comm99v1` | unchanged | ` snmp-server host 10.1.1.1 traps <redacted>` |
 | ` path scp://admin:Passw0rd99@10.1.1.1/cfg` | unchanged | ` path scp://admin:<redacted>@10.1.1.1/cfg` |
-| `  enrollment url http://ca:Ca99pw@10.1.1.1/` | unchanged | `  enrollment url http://ca:<redacted>@10.1.1.1/` |
-| `  cli copy running-config ftp://u:Kr99pw@1.1.1.1/b.cfg` | unchanged | `  cli copy running-config ftp://u:<redacted>@1.1.1.1/b.cfg` |
-| ` key-octet-string 0123...CDEF cryptographic-algorithm AES_128_CMAC` | unchanged | ` key-octet-string <redacted> cryptographic-algorithm AES_128_CMAC` |
 | ` key-octet-string 7 075E...4D cryptographic-algorithm AES_128_CMAC` | unchanged | ` key-octet-string 7 <redacted> cryptographic-algorithm AES_128_CMAC` |
 | ` ospf authentication-mode md5 1 cipher Hw99ospf` (Huawei) | unchanged | `... md5 1 cipher <redacted>` |
-| ` ospf authentication-mode md5 1 plain Hw99ospf` (Huawei) | unchanged | `... md5 1 plain <redacted>` |
+| ` ip ospf authentication-key 12345678` | ` ip ospf authentication-key <redacted>` | same (W60's first cut leaked it) |
+| `enable secret<VT>Fake99vt` | `enable secret<VT><redacted>` | same (W60's first cut leaked it) |
+| `rmon event 1 log trap Fake99rmon ...` | unchanged | `rmon event 1 log trap <redacted> description <redacted> owner <redacted>` |
+| `logged command:snmp-server community clear Fake99 RO` (syslog) | `... community <redacted> Fake99 RO` | `... community clear <redacted> RO` |
+| `Authorization: Bearer Fake99tok` | unchanged | `Authorization: Bearer <redacted>` |
+| `export CISCO_REST_PASS=Fake99env` | unchanged | `export CISCO_REST_PASS=<redacted>` |
 
-Every "after" line is certified, and every cleartext input line is now refused by the verifier. The
-"before" column was certified in every row. Other rows from the same probe set behave the same way:
-SNMPv3 `auth`/`priv` passwords, `wpa-psk`, HSRP/VRRP/GLBP text keys, Huawei `shared-key cipher` and
-`usm-user`, and IOS-XR `key-string password`.
+## The producer: one function, two passes
 
-## The grammar (producer)
+`cisco_toolkit/html.py :: _redact_config_values` (no new module). Lines are split ONLY on CR/LF and
+rejoined with their original separators, so every byte the scrub does not replace is unchanged.
 
-`cisco_toolkit/html.py :: _REDACT_SECRET_RES` is now a table of **keyword families**. Each family is
-KEYWORD, then a QUALIFIER RUN, then the VALUE (`_redact_family`):
+**Pass 1 -- the credential GRAMMAR** (`_REDACT_SECRET_RES`, `_redact_family`). KEYWORD, an atomic
+QUALIFIER RUN, VALUE, per family: password/secret/passphrase forms, SNMP communities (every SNMP
+context, the Junos block, the show prose forms, `community-map`/`community-name`/`trap-group`), the
+positional trap-host community, SNMPv3 `auth`/`priv`, TACACS+/RADIUS keys, `key-string`,
+`key-octet-string`, `pre-shared-key`, `shared-key`, MACsec, wireless PSKs, NHRP/FHRP/NX-OS text
+authentication, Huawei `authentication-mode`/`privacy-mode`, OSPFv3 `authentication|encryption ipsec
+spi`, EIGRP `hmac-sha-256`, and the bare `key` family. Round-1 fixes:
 
-- **The qualifier run is per family and is consumed atomically.** It is captured inside a lookahead
-  and re-matched by a backreference, which is Python 3.10's spelling of an atomic group. Examples:
-  `level N`, type digits, `sha512`/`scrypt`/hash labels, `ENC`, `encrypted`/`clear`,
-  `cipher`/`plain`/`simple`/`irreversible-cipher`, `ascii`/`hex`, `read`/`write`/`create`,
-  `vrf X`, `traps`/`informs`, `version 1|2c`, key IDs, and the prose separators `:`, `=`, `=>`
-  and `is`. The engine can never hand a qualifier back to become the value. A qualifier also counts at
-  the end of a line, so `key 1` under a keychain or `ntp trusted-key 1` is a key ID and is left alone.
-- **The value is the first token after the run.** It is a quoted string or a bare token, and is
-  replaced whole.
-- **Structural follow-words end the grammar.** Where the value would stand, these mean there is no
-  credential: `key chain X`, `password encryption aes`, `Key name:` (any `Label:` token),
-  `key id is 1`, `crypto key generate rsa`, `ntp server X key 1 prefer`, `ssh key rsa 2048`,
-  `authentication-mode hwtacacs`, `ip ssh server algorithm authentication publickey password keyboard`,
-  and English prose (`password for user`, `Do not share your password with anyone`). EOS
-  `ssh-key ssh-rsa <public key>` is not a secret.
-- **Families.**
-  - Password forms: `password`/`passwd`/`secret`/`passphrase`, with every compound such as `area-`,
-    `domain-`, `hello-`, `lsp-`, `encrypted-` and `webauth-http-`. ASA puts `encrypted`/`pbkdf2`
-    after the value.
-  - SNMP: `snmp-server community` in every SNMP context (IOS/NX-OS/ASA, Junos `set snmp`, Huawei
-    `snmp-agent`, AireOS `config snmp community`, the Junos line-start `community X {`, and the show
-    forms `SNMP community string : X` and `Community name: X`); the positional trap-host community
-    `snmp-server host H [vrf X] [traps|informs] [version 1|2c] <C>`; SNMPv3 `auth`/`priv`; AireOS
-    `v3user`; Huawei `securityname`.
-  - Keys: TACACS+/RADIUS keys, `key-string`, `key-octet-string`, `pre-shared-key`, Huawei
-    `shared-key`, MACsec `cak`/`ckn`, and the bare `key` family (keychains, `authentication-key`,
-    `message-digest-key`, `crypto isakmp key`, `failover key [hex]`, `show key chain`'s
-    `key 1 -- text "X"`).
-  - Wireless: `wpa-psk`/`wpa2-psk`, and AireOS/C9800 `set-key`.
-  - Authentication modes: NHRP, HSRP/VRRP/GLBP (IOS and EOS `peer`), the NX-OS line-start
-    `authentication text`, Huawei `[area-|domain-]authentication-mode` and `privacy-mode`, OSPFv3
-    `authentication ipsec spi N sha1|md5`, EIGRP named-mode `authentication mode hmac-sha-256`, and
-    `show standby`'s `Authentication text, string "X"`.
-  - Vendor and URL forms: AireOS RADIUS/TACACS+ `add` and `mgmtuser`/`netuser`; FortiGate
-    `set <closed attribute set> [ENC]`; URL userinfo (`scheme://user:<redacted>@host`, keeping the
-    user and taking the password up to the last `@`).
-- **Line-bounded.** Every family uses `[ \t]`, never `\s`. The old patterns crossed a newline and
-  redacted the first token of the next line (`ntp trusted-key 1` followed by a newline).
-- **Speed.** The text is processed one `\n` line at a time, and only lines that name a family keyword
-  are run through the table (`_REDACT_LINE_PREFILTER`). Joining on `\n` is byte-exact; `\r` and
-  surrogate-escaped bytes stay inside their line.
+- **Numbers are ordered**, never a repeatable "any integer" qualifier: a key ID only directly before a
+  hash label or `--`, a type digit only when another token follows it, and a bare 0-15 at the end of a
+  `key` line is a key ID. This closes the 18 numeric-key regressions.
+- Added qualifiers: ASA `community 0|8`, IOS-XR `clear|encrypted` (community, host, SNMPv3 user), `des56`,
+  `sha2-224..512`, LDP `fallback`; PAN-OS `pre-shared-key key`; FortiGate `api-key`, `secret-key`,
+  `key-string`. Stop words: LDP `option|rollover`, `authentication`, `strength`, key `inbound|outbound`.
+- A private-key armor token is never a value (the PEM rule owns the block).
+- Grammar anchors carry bounded lazy spans (`{0,200}`) and lines over 2,048 characters skip the grammar
+  (the linear sweep still runs), so a pathological line cannot stall a run.
+
+**Pass 2 -- the RESIDUAL SWEEP** (`_redact_sweep_line`). Every list is CLOSED and restated in the
+verifier; `tests/test_redaction_grammar_corpus.py` pins each pair equal.
+
+1. **Keyword tails.** The FIRST credential keyword on a line (`_REDACT_SWEEP_KEYWORDS`: password,
+   passwd, passphrase, pass-phrase, secret, enablesecret, psk(secret), pre-shared-key, phash,
+   auth/priv-pwd, authpwd/privpwd, community (+ -string/-name/-map, ro/rw-community, com2sec),
+   trap-group, securityname, createuser, key (+ key-string, private-key, secret-key, api-key),
+   token/idtoken/bearer/ssws, auth, cipher/plain/ascii/hex, set-key, cak/ckn, v3user/mgmtuser/netuser,
+   pkcs12, cvauth/ingestauth, credentials, authentication-key/-keyid/-mode, privacy-mode,
+   encrypted-password, environment-variable names `*_pw|*_pwd|*_pass|*_password|*_secret|*_token|*_key`,
+   the HTTP headers `Authorization`/`Cookie`/`X-*-Token`/`X-*-API-Key`, and the multi-word anchors
+   `snmp-server host`, `nhrp authentication`, `standby|vrrp|glbp [N] authentication`,
+   `authentication text|mode`, `... ipsec spi`, `rmon event`, `event manager environment`,
+   `cli command`, `user:`/`groupname:` in `show snmp host|group`). Every token after it is replaced
+   unless it is structural: a word of the closed allowlist `_REDACT_SWEEP_ALLOW` (exact words, never
+   prefixes: encodings and hash labels, SNMP access/model/notification words, address/host/vrf/port
+   words, roles and levels, `0`-`15`, `128|192|256`, `2c`, Junos punctuation, a short list of prose
+   function words and authorization schemes), an IPv4/IPv6 literal, an interface name, a synthetic
+   pseudonym, the placeholder, pure punctuation; or the one integer operand of a slot word
+   (`udp-port 162`, `RO 10`, `timeout 5`) or the one name operand of `key-chain|keychain|chain|vrf|
+   use-vrf|filter-vrf`. A keyword followed directly by a closed VOID word is structural
+   (`key chain|generate|name|data|id|...`, `password encryption|policy|...`, IOS route-map
+   `set|match community`, Huawei `authentication-mode hwtacacs|local|...`, `community complexity-check`,
+   `pre-shared-key key-chain`).
+2. **Private-key blocks** (stateful): `-----BEGIN ... PRIVATE KEY-----` with nothing after it opens a
+   block whose body lines become the placeholder up to the `END` armor (or the end of the text, fail
+   safe); content beside armor on one line (the JSON-escaped `\n` form) becomes the placeholder.
+3. **URL userinfo** with any characters (`/`, `:`, `@`, empty user): everything after the first `:` up to
+   the LAST `@` of the URL token; a userinfo without `:` is replaced whole. Secret-named query values
+   (`sig`, `token`, `access_token`, `api_key`, `password`, ...) too.
+4. **XML elements** whose name contains a credential keyword: the element value.
+5. **Credential columns** of a closed list of show tables (NX-OS `show snmp community` and
+   `show snmp host`, IOS `show crypto isakmp key`, AireOS `show snmpcommunity`) and of CSV files whose
+   header names a credential column; table cells keep their width.
+6. **Junos `## SECRET-DATA`** lines and FortiGate `config system snmp community` / `set name`.
+7. **High-entropy tokens anywhere**: >= 24 base64/base64url characters with a 16+ character segment
+   (split on `-`, `_`, `/`) mixing upper case, lower case and digits whose character classes change at
+   least every 2.5 characters on average; >= 32 contiguous hex digits; and a closed list of credential
+   token formats (GitHub, GitLab, Slack, Stripe, `sk-`, AWS key IDs, Google API keys, OAuth `ya29.`,
+   JWT). **Decided exemptions:** a digest or fingerprint LABELLED as such directly before it
+   (`sha256:`, `SHA256 hash`, `"md5": "`), an SSH public key after its algorithm name, an interface
+   name, a pseudonym; in a `--redact` snapshot, hex under a JSON key that names a digest or an
+   identifier (`*_sha256`, `*digest*`, `*hash*`, `*_id`), because those are the engine's own content
+   bindings and join keys and redacting them breaks every receipt that cites them (a credential-named
+   key is redacted whole before this pass). A path (`/interfaces/core1/Vlan30`) and a camelCase
+   identifier (the ACI class in `topology/HDfabricOverallHealth5min-0`) are not random.
+8. **Terminal wrap**: a line whose last swept token is a cipher/hash/encoding word, or a cipher name
+   plus a number that is not a key size (`priv aes 1`), sweeps the next line whole.
+9. **One lexical model**: lines end only at CR/LF; VT, FF, FS..US, NEL, NBSP and every Unicode space,
+   U+2028/2029, a BOM and a non-UTF-8 byte (U+DC80..U+DCFF) separate tokens -- in the grammar, the sweep
+   and the verifier alike. A non-UTF-8 byte run beside a placeholder is folded into it.
 
 ## The verifier
 
-`webapp/backend/redaction_verify.py` restates the grammar independently (`_CRED_FAMILIES`). It does not
-import the producer, and the producer does not import it. It reads each line as KEYWORD, QUALIFIER
-RUN, VALUE, TAIL.
+`webapp/backend/redaction_verify.py` restates both passes; it does not import the producer.
 
-**Raw captures** (`verify_collection_secret_scrub`, via `_raw_capture_credential_findings`): every
-family anchor anywhere in the line, plus URL userinfo.
+**Raw captures** (`verify_collection_secret_scrub` -> `_raw_capture_credential_findings`): every line,
+no exemptions (banner bodies, descriptions, comments and syslog records are swept like any other
+line). A capture is refused if, on any line:
 
-- **Value:** a recognised value that is not the placeholder is `credential value`.
-- **Tail (closed allowlist):** after the placeholder, every token must be one of:
-  - a structural follow-word (`_CRED_TAIL_WORDS`);
-  - a slot keyword plus its one operand (`_CRED_TAIL_SLOTS`: `level`, `privilege`, `role`, `view`,
-    `ipv6`, `address`, `udp-port`, `version`, `authorization`, `cryptographic-algorithm`, ...);
-  - an address or synthetic pseudonym;
-  - another placeholder;
-  - a token inside another credential clause on the same line whose value is the placeholder
-    (`password 0 <redacted> secret 0 <redacted>`);
-  - one positional ACL after `RO|RW` or `ipv6 <nacl>`;
-  - a family's own integer (a community ACL number, the trailing NTP or `set-key` WLAN digit).
+- a grammar value slot is not the placeholder (`credential value (<family>)`);
+- after the first non-void credential keyword, any token is neither structural nor a slot operand
+  (`credential residue after a credential keyword`) -- the sweep's exact guarantee;
+- a private-key body, URL userinfo/secret query value, credential XML element, table or CSV credential
+  cell, or a high-entropy token is not the placeholder;
+- a FortiGate secret attribute carries anything but placeholders (or private-key armor whose block the
+  PEM rule verifies).
 
-  Anything else is `credential residue after the placeholder`. This is an allowlist, not a denylist of
-  secret shapes. An unknown follow-word **refuses**, which is the deliberate direction: a refused scrub
-  is re-checked by a person, a certified leak is not.
-- **Closed world:** the scrub is the only author of the placeholder in a raw capture. A placeholder that
-  no clause explains is `placeholder outside the credential grammar`.
-- **Free text:** banner bodies (tracked by delimiter, bounded at 400 lines when the delimiter never
-  closes), `description`/`remark`/`alias`/`comment` lines, `!`/`#` comments and syslog records
-  (`%FAC-N-MNEMONIC:`) keep the value check and the closed-world check but skip the tail allowlist,
-  because English follows a credential word there.
+The W60 first cut's tail allowlist, its free-text exemption and its "placeholder outside the grammar"
+rule are gone: the sweep check subsumes them (a pre-W60 output such as
+`enable password <redacted> 15 Plain99pw` is refused because `Plain99pw` follows the keyword).
 
-**Shareable artifacts** (`_scan_text`: snapshot strings, OOXML text, HTML): only the line-start anchors
-the module always checked, now with the same qualifier/stop grammar for the VALUE (`artifact` anchors).
-No tail check and no closed world here, because authored prose, generated code and free-text device
-fields share these surfaces. A description beginning `password reset ...` is redacted by the producer
-and must not refuse a deliverable. The producer's grammar is what closes the residue class on these
-surfaces. The strict FortiGate whole-value rule is unchanged on both paths.
+**Shareable artifacts** (`_scan_text`: snapshot JSON, OOXML text, HTML, text artifacts): the line-start
+value scan as before, plus private-key material. The sweep guarantee is NOT asserted there: the engine
+writes authored prose after the scrub (the design blueprint is computed from the redacted snapshot), so
+the guarantee does not hold on those surfaces and asserting it would refuse every `--redact` run.
+
+`_INLINE_SECRET_RES` is kept as a tuple of every compiled verifier pattern, because the D10
+evidence-retention branch (W58r2) digests it at import time.
 
 ## Corpus and pins
 
-`tests/fixtures/redaction_grammar_corpus.json` holds 183 must-redact lines and 102 must-keep lines. The
-must-redact lines cover IOS/IOS-XE, NX-OS, ASA, AireOS and C9800 WLC, IOS-XR, Arista EOS, Junos,
-FortiGate, Huawei and show-output prose. Each carries its exact expected output and the fake secrets
-that must not survive. `tests/test_redaction_grammar_corpus.py` drives them through the real
-`redact_collection_dir` and `verify_collection_secret_scrub`:
+`tests/fixtures/redaction_grammar_corpus.json`:
 
-- the verifier refuses the raw line and certifies the scrubbed line;
-- it refuses the scrubbed line with `Leak99tail` inserted after the placeholder, which proves the
-  verifier parsed that family rather than passing it by default;
-- the scrub is idempotent;
-- every reported leak line stays in the corpus;
-- every verifier family is exercised by at least one corpus line, with the speed filters on.
+- **408 must-redact** lines: the W60 builder's 183, every line of the W60 review (131) and of the W58r2
+  review corpus (94), across IOS/IOS-XE, NX-OS, ASA, AireOS/C9800, IOS-XR, EOS, Junos, FortiGate,
+  Huawei, PAN-OS, net-snmp, REST/API logs, PEM, URLs, show tables, CSV, and odd encodings. Each carries
+  its exact output and fake secrets; 17 carry `notail` (the first placeholder is not keyword-governed:
+  URL userinfo, a whole high-entropy token, a user name before the keyword).
+- **113 must-keep** lines, byte-identical and certified.
+- **30 over-redacted** lines: must-keep candidates (17 of the builder's 102, 13 of the review's 42) that
+  the fail-safe sweep rewrites; each is pinned to its result with a note. Examples:
+  `Key: U - Unicast, ...` (show storm-control legend), BGP `Community: 65000:100 no-export`, Junos
+  policy `community CNAME members ...`, `tunnel key 12345`, `key 01`, EOS `ssh-key ssh-rsa <public key>`,
+  `snmp-server host X use-vrf management`, prose such as `Do not share your password with anyone.`
+- **`main_6390b66c`** on every row: origin/main's own `_redact_config_values` output, captured by
+  running git-archived 6390b66c (not a frozen copy of its code).
 
-**False-positive pins** (must-keep, byte-identical and certified):
-
-- show-output labels: `Key name: TP-self-signed-1234`, `Key Data:`, `Youngest key id is 1`,
-  `Password encryption: enabled`, `Last key change: never`, `Key: U - Unicast, B - Broadcast`
-  (`show storm-control`), `Community: 65000:100 no-export` (`show ip bgp`), `Unknown community name`;
-- configuration: `service password-encryption`, `password encryption aes`, `key chain X`, `key 01`,
-  `mka pre-shared-key key-chain KC`, `standby 1 authentication md5 key-chain X`, IBNS
-  `authentication port-control auto` / `host-mode` / `order` / `priority`, `ntp trusted-key 1`,
-  `ntp server X key 1 prefer`, `crypto key generate rsa`, `set community 65000:100 additive`,
-  `send-community both`, `snmp-server host X version 3 priv user`, NX-OS `use-vrf` / `source-interface`
-  host lines, Huawei `authentication-mode hwtacacs local`, FortiGate `set keylife 86400`;
-- banner prose.
-
-**Pre-existing exact pins re-checked by pure calls:** every exact `_redact_config_values` assertion in
-`tests/test_redaction_secrets.py`, `tests/test_redact_corpus.py` and `tests/test_redact_collection.py`,
-and the Atlas qualification's synthetic collection, give the same output as before. That includes
-`pre-shared-key local <redacted>`, `key 7 <redacted>`, `... md5 7 <redacted>`,
-`set passphrase <redacted>`, the CP1252 byte-fidelity capture and
-`snmp-server community <redacted> RO`. No existing test expectation was edited.
+**Measured on the corpus** (real `redact_collection_dir` + `verify_collection_secret_scrub` on scratch
+trees): 0 secrets survive; 408/408 raw lines refused; 408/408 scrubbed lines certified; the tail probe
+refused on 391/391 keyword-governed rows; 113/113 must-keep and 30/30 over-redacted lines certified;
+idempotent on every row. **Main parity: of the 146 corpus secrets main 6390b66c removed, the new scrub
+removes 146**; main left a secret in 268 of the 408 must-redact rows, all now removed.
 
 ## What changed downstream
 
-- **Golden and sample: byte-identical by construction.** Neither `tests/test_pipeline_golden.py ::
-  _golden` nor `webapp/sample_data/build_sample.py` runs with `--redact` or `--redact-collection`. No
-  module was added, so the attestation module counts are unchanged, and no import was added.
-- **The engine's synthetic collection** (`tests/synthetic_fixtures.write_collection`): the scrub
-  changes the same 4 lines as before, and the new verifier certifies all 96 captures.
-- **`--redact` deliverable prose.** `redact_snapshot` of the golden snapshot differs from the old
-  output in 22 string leaves, and of the sample in 85. No key or list shape changes, and the credential
-  scan of both results is clean. The differences are less over-redaction, for example
-  `Password encryption service` (a CIS control title, formerly `Password <redacted> service`), BGP
-  community prose, `send-community extended`, `authentication-key mismatch` and
-  `pre-shared key or certificate`. A few prose words are redacted where the old grammar left a
-  neighbour, for example `cleartext password: <redacted>`, where a finding names a local user after a
-  colon.
-- **Engine string constants** (27,893, a proxy for authored deliverable text): the new artifact scan
-  flags 1, a docstring the old scan also flagged; the old scan flagged 2.
-- **Performance** (pure-call timings on this workstation): `redact_snapshot` of the sample takes 2.3 s
-  (was 2.8 s). On a synthetic 31 MB capture where a quarter of the lines are credential lines, the
-  scrub takes 9.2 s (was 8.8 s) and the verifier 14.7 s (was 2.8 s, while checking far less).
+- **Golden and sample: byte-identical by construction.** Neither runs with `--redact` or
+  `--redact-collection`; no module or import was added.
+- **Over-redaction on the golden and sample `--redact` outputs** (`redact_snapshot`, pure calls): the
+  golden snapshot differs from main's redacted output in 45 of 8,974 string leaves (46 strings carry a
+  placeholder, 33 on main), the sample in 208 of 49,488 (178 vs 135); all are engine-authored prose
+  (remediation text, detector titles, design doctrine). Every token main removed from those leaves is
+  still removed except non-secret words main had wrongly taken (`encryption`, `in`, `is`, `strings`,
+  `for`, `or`, `mismatch`). No key or list shape changes; both results certify.
+- **The engine's synthetic collection** (the golden input, 1,052 lines): main changes 4 lines; round 1
+  changes 5 (adds the `show storm-control` legend line), and the new verifier certifies all 96 captures.
+- **Performance** (pure calls, this workstation, noisy): a 210,000-line keyword-dense synthetic capture
+  scrubs in 5.9 s (W60 first cut 2.9 s) and verifies in 5.9 s (4.0 s); `redact_snapshot` of the sample
+  takes 2.5 s (main 3.0 s).
 
-## Residual limits
+## Residual limits (documented, not closed)
 
-These are documented, not closed:
-
-1. **Tabular show output** carries no keyword on the value line, so the grammar cannot see it. This
-   was already true. Examples: NX-OS `show snmp community`, `show crypto isakmp key`, AireOS tables.
-2. **Multi-line values.**
-   - PEM bodies are not recognised (FortiGate `set private-key "-----BEGIN ..."` followed by lines).
-     The verifier refuses the first line, which it already did.
-   - IOS cleartext passwords containing spaces are only partly consumed. The verifier refuses unless
-     the remaining word is itself a credential clause.
-3. **Grammar ambiguity.**
-   - A credential equal to a qualifier or stop word is not recognised: a single digit, `cipher`,
-     `level`, `is`, `for`, ....
-   - A purely numeric value directly after a bare `key` is read as a key ID (keychain `key 12345`,
-     GRE `tunnel key 12345`).
-   - The producer and the verifier read both of these the same way.
-4. **Not modelled:**
-   - EEM `action ... cli command "<text>"`;
-   - OSPFv3 `encryption ipsec spi ... esp ... <KEY>`;
-   - FortiGate `config system snmp community` / `set name "<community>"` (context-dependent).
-     `set community` is not a FortiOS secret form, and the IOS route-map `set community` is
-     deliberately left alone.
-5. **Over-redaction kept:**
-   - The Huawei v3 `securityname` (a user name) is redacted.
-   - A prose word after `password`/`secret` that is not a stop word is still redacted.
-6. **Fail-closed refusals.** An unlisted follow-word after a placeholder refuses the scrub
-   verification. Two cases:
-   - an IOS community ACL name without `RO`/`RW`;
-   - a notification type missing from the list after a trap-host community.
-
-   Extend `_CRED_TAIL_WORDS` / `_CRED_TAIL_SLOTS`, and add the corpus line, with the evidence.
-7. **Shareable artifacts** keep their line-start, value-only scan: residue there is closed by the
-   producer, not re-detected.
-8. **Captures scrubbed by an older build.** The scrub cannot reconstruct a qualifier the old build
-   overwrote. Re-running it leaves, for example, `enable password <redacted> 15 Plain99pw`; the new
-   verifier refuses that file. Re-collect, or hand-scrub the named lines.
-9. `webapp/backend/evidence_retention.secondary_credential_findings` is not on `main`, so it was not
-   exercised here.
+1. **A credential spelled exactly like an allowlisted word** in a tail (`RO`, `1`, `the`, `cipher`, ...)
+   or like a void word right after its keyword survives; so does a slot's integer or name operand.
+2. **Kw-less positional values** outside the closed table/CSV/forms list (an unknown vendor table, a
+   free-form "admin / Fake99" note) are caught only if high-entropy.
+3. **High entropy is a heuristic**: a 24-31 character random token split by `/` into short segments, a
+   low-entropy pasted secret, or a hex secret under a digest/identifier-named snapshot key is missed.
+4. **Over-redaction is real** (see above): engine prose in `--redact` deliverables, show-output legends,
+   BGP/Junos policy communities, keychain IDs above 15, public keys, `rmon`/EEM text. The engine's
+   `--no-collect` re-analysis of a scrubbed folder loses those values.
+5. **Terminal wraps** are recognised only after a cipher/hash/encoding word or a truncated key size.
+6. **Shareable artifacts** keep their line-start, value-only scan plus PEM; the sweep closes residue
+   there, the verifier does not re-detect it.
+7. **Captures scrubbed by an older build** cannot be repaired: the scrub cannot reconstruct an
+   overwritten qualifier. The new verifier refuses such files (`enable password <redacted> 15 X`).
+   Re-collect, or hand-scrub the named lines.
+8. **W58r2 coupling**: `evidence_retention` (not on `main`) fingerprints `_INLINE_SECRET_RES`; the tuple
+   now names the new grammar, so the retention digest changes on merge. Exact-head hosted CI on the
+   merged result is required.
 
 ## Not verified
 
-- No pytest, no engine run, no build. The new test module was AST-checked for collection sanity and
-  linted, and its assertions were re-stated as pure calls in a scratch folder. It has never executed
-  as a test.
-- The full `--redact` pipeline (HTML/XLSX/DOCX certification) was not run. Only the snapshot path and
-  the shareable-text scan were exercised by pure calls.
-- Behaviour on real client captures is not measured. Every input here is synthetic.
+- No pytest, no engine run, no build. The test module was AST-checked and linted, and every assertion
+  in it was re-computed with the production functions in a scratch folder; it has never executed as a
+  test.
+- The full `--redact` pipeline (HTML/XLSX/DOCX certification) was not run; only `redact_snapshot`, the
+  snapshot verifier and the raw-capture path were exercised by pure calls.
+- Real client captures: every input here is synthetic.
 - Hosted CI on every supported interpreter (3.10 to 3.14) is required before merge.
