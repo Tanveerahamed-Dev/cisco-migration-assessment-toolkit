@@ -29,9 +29,9 @@ reported no advisory for paramiko 5.0.0, netmiko 4.8.0 or netmiko 4.7.0.
 **Why the stick is still on paramiko 4.0.0.** netmiko 4.7.0 requires `paramiko<5.0,>=3.5.0`. netmiko 4.8.0
 (2026-09-21) requires `paramiko>=3.5.1` and moves that cap into an opt-in `par4` extra (`paramiko<5.0,>=4.0`).
 A re-lock is therefore possible, but it is a choice. `pyproject.toml` and `requirements.txt` declare
-`netmiko>=4.1,<5`, so a floating (non-Atlas) install already resolves netmiko 4.8.0 / paramiko 5.0.0 and already
-lacks SHA-1. The CI installed-environment audit needs no suppression for that reason. Today only the Atlas stick
-keeps legacy SSH reach.
+`netmiko>=4.1,<5`, so a fresh floating (non-Atlas) install resolves netmiko 4.8.0 / paramiko 5.0.0 and lacks
+SHA-1. For that reason the CI installed-environment audit needs no suppression. Of the supported installs, only
+the hash-locked Atlas stick is guaranteed to keep legacy SSH reach.
 
 **What paramiko 5.0.0 removes** ([changelog](https://www.paramiko.org/changelog.html), 5.0.0, 2026-05-09):
 
