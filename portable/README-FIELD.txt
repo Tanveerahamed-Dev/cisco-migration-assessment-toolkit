@@ -143,7 +143,7 @@ run WITHOUT a receipt can be deleted (a campaign from its own page).
 IN-APP DELETE IS NOT DISPOSAL: a deleted row leaves the app's lists,
 but its bytes can stay readable inside data\assesshub.db (Atlas does
 not make the database overwrite or compact freed space), and the
-start-time copies in data\backups\ (up to three) can still hold it.
+start-time copies in data\backups\ can still hold it.
 There is NO purge in the app, by decision. Disposing of client data
 means removing the whole data\ folder and every other copy listed
 below, outside Atlas (see DISPOSING OF CLIENT DATA).
@@ -183,7 +183,10 @@ single records - receipts are permanent by design.
      Downloads folder), engine logs in the folder an engine run was
      started from, and anything named assesshub_* or atlas_redact_*
      in the temporary folder (%TEMP%). Atlas removes those after each
-     run, but a removal that failed is not reported.
+     run, but a removal that failed is not reported. Also any tmp*
+     file in %TEMP%: an upload larger than 1 MB is spooled there
+     while Atlas reads it, and a power loss or a pulled stick can
+     leave it behind.
      The browser on the laptop: its cache and site data can keep
      pages and data Atlas served. Use a browser profile kept only for
      Atlas and delete that profile, or clear that browser's cache and

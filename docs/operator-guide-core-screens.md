@@ -255,7 +255,7 @@ or empty 3-D view is not a clean bill of health.
   campaign from its own page.
 - **In-app delete is not disposal.** A deleted row leaves AssessHub's lists, but its bytes can
   stay readable inside the database file: AssessHub does not make SQLite overwrite or compact the
-  space it frees. The start-time copies in `backups` (up to three) can still hold the row too.
+  space it frees. The start-time copies in `backups` can still hold the row too.
 - **There is no purge in AssessHub, by decision.** The owner decided on 2026-10-09 to keep
   everything: receipts stay immutable, and AssessHub has no in-app purge. The per-campaign purge
   and retention indicator that `docs/decisions/0007-one-application-direction.md` (D10) had
@@ -284,9 +284,10 @@ CORRUPTION.
 
 ### Disposing of client data (manual, outside AssessHub)
 
-AssessHub keeps everything and has no purge, and an in-app delete is not disposal (section 9).
-Disposal is a deliberate step you take with the operating system, at the end of an engagement and
-only when the client agreement allows it. It is not a repair: for a damaged database, follow CORRUPTION in `portable/README-FIELD.txt`.
+AssessHub has no purge, by decision: a comparison receipt cannot be deleted, and an in-app delete of
+a record without a receipt is not disposal (section 9). Disposal is a deliberate step you take with
+the operating system, at the end of an engagement and only when the client agreement allows it. It
+is not a repair: for a damaged database, follow CORRUPTION in `portable/README-FIELD.txt`.
 Never edit the database or try to remove single records: receipts are immutable by design. On the
 stick the same procedure is in `portable/README-FIELD.txt`, DISPOSING OF CLIENT DATA.
 
@@ -317,7 +318,9 @@ stick the same procedure is in `portable/README-FIELD.txt`, DISPOSING OF CLIENT 
    - **The computer that ran AssessHub:** documents downloaded from it (usually the browser's
      Downloads folder), and anything named `assesshub_*` or `atlas_redact_*` in the system
      temporary folder. AssessHub removes those after each run or download, but a failed removal
-     is not reported.
+     is not reported. Also any `tmp*` file in that temporary folder: an upload or request body
+     larger than 1 MB is spooled there while AssessHub reads it. Those files are removed when the
+     request ends, but a power loss or a pulled stick can leave one behind.
    - **The browser on that computer:** its cache and site data can keep pages and data AssessHub
      served (only a few responses are marked not to be stored). Use a browser profile kept only
      for AssessHub and delete that profile, or clear the browser's cache and site data for the
@@ -421,9 +424,10 @@ correct the prose above when an owner changes.
   atlas-scope/src/app/PreviewLabel.tsx (ACCEPTANCE_GRADE cache, reconciled to the report by
   PreviewLabel.test.tsx) rendered by StatusBar.tsx; webapp/frontend/src/components/ScopePreview.tsx
   ScopeEntryLink (CoreSnapshot.tsx ScopeLink, Snapshot.tsx AtlasScopeLink; aria-describedby on the
-  link) and WithScopePreview (core/TopologyScope.tsx's heading and frame, aria-describedby; contract
-  mode, atlas-scope/src/contract-mode/, renders no status bar); src/scopeEntries.test.ts derives
-  every Scope entry from source and requires one of the two.
+  link names the qualifier and, when the server sends one, an sr-only copy of its detail) and
+  WithScopePreview (core/TopologyScope.tsx's heading and frame, aria-describedby; contract mode,
+  atlas-scope/src/contract-mode/, renders no status bar); src/scopeEntries.test.ts derives every
+  Scope entry from the TypeScript program and checks each one; its header states what it covers.
 - In-app delete is not disposal: app.py delete_campaign, delete_snapshot, delete_execution
   (204 when unreceipted; Campaign.tsx's Delete button); storage.py sets journal_mode DELETE and
   issues neither PRAGMA secure_delete nor VACUUM; _BACKUP_KEEP = 3.
@@ -434,7 +438,10 @@ correct the prose above when an owner changes.
 - Disposal locations: storage.py _BACKUP_DIR; portable/make_stick.ps1 release-backups,
   Atlas.data-handoff, Atlas.incoming/Atlas.previous data moves (Recover-Update), the
   Atlas.failed-* quarantine names, and .Atlas.database-preflight (Invoke-DatabasePreflight; the
-  final cleanup swallows a removal error); COLLECT_PARSE_V3_23_0.py COLLECTION_DIR
+  final cleanup swallows a removal error); app.py's request-body tempfile.SpooledTemporaryFile
+  (max_size 1 MiB, then a tmp* file in the temporary folder; Starlette's UploadFile spools the same
+  way); storage.py rotates only _BACKUP_RE matches, so .partial leftovers and parked copies stay;
+  COLLECT_PARSE_V3_23_0.py COLLECTION_DIR
   ("migration_collection_{}", relative to the working directory unless --collection-dir);
   cisco_toolkit/__init__.py engine_log_path (moves only the log into Atlas/data); app.py sends
   Cache-Control no-store on only a few responses; ingest.py mkdtemp prefixes

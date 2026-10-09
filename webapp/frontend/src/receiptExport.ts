@@ -15,7 +15,10 @@ import type { CampaignAdjacentComparison, CampaignTrendResponse, CompareResponse
                                classified here, so a new display-only reading cannot leak into the file by default.
 
    The type-level checks below fail the type-check when a typed field of a pair or of the trend is neither exported
-   nor listed as display-only. src/receiptExport.test.ts reads the files the two buttons actually produce. */
+   nor listed as display-only, but they see only the hand-written api.ts types: the route itself returns an untyped
+   dict. webapp/tests/test_receipt_export_allowlist.py therefore reads these three arrays as source text and requires
+   them to EQUAL the keys the real trend route returns for a real two-snapshot campaign, so a key the engine adds or
+   drops fails there until it is classified here. src/receiptExport.test.tsx reads the files the two buttons write. */
 
 /** Display-only readings AssessHub serves beside bound documents. Never written to an exported file. */
 export const DISPLAY_ONLY_FIELDS = ["impacts_view"] as const;

@@ -42,13 +42,19 @@ export function WithScopePreview({ children, qualifierId }: { children: ReactNod
 
 // The one link to Atlas Scope: the anchor and its qualifier, side by side, with the qualifier as the link's
 // accessible description. `href` is the caller's already-validated same-hub Scope target (the scope-view
-// capability's href); this component does not choose or rewrite it.
+// capability's href); this component does not choose or rewrite it. A `title` (the server's scope-view detail)
+// stays the pointer tooltip, and because aria-describedby replaces a title as the description, it is ALSO a
+// screen-reader-only description of its own: the link is described by the qualifier and then by that detail.
 export function ScopeEntryLink({ href, title, children }: { href: string; title?: string; children: ReactNode }) {
   const qualifier = useId();
+  const detail = useId();
   return (
     <div className="scope-entry" style={ENTRY_STYLE}>
-      <a className="btn" href={href} title={title} aria-describedby={qualifier}>{children}</a>
+      <a className="btn" href={href} title={title} aria-describedby={title ? `${qualifier} ${detail}` : qualifier}>
+        {children}
+      </a>
       <ScopePreviewTag id={qualifier} />
+      {title ? <span id={detail} className="sr-only">{title}</span> : null}
     </div>
   );
 }

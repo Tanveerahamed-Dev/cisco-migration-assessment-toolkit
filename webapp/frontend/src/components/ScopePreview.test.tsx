@@ -51,10 +51,10 @@ function expectQualified(entry: HTMLElement, where: string) {
   expect(document.querySelectorAll("[data-scope-preview]"), `${where}: one qualifier per entry`).toHaveLength(1);
   // D6: the entry names the qualifier as its accessible description, so a screen reader hears "Preview" and its
   // reason with the entry itself, not only by reading on to the next element.
-  const describedBy = entry.getAttribute("aria-describedby");
-  expect(describedBy, `${where}: the entry carries no aria-describedby`).toBeTruthy();
-  expect(document.getElementById(describedBy!), `${where}: aria-describedby does not name the qualifier`).toBe(tag);
-  expect(entry, `${where}: the accessible description`).toHaveAccessibleDescription(/Preview.*acceptance is not complete/);
+  const describedBy = (entry.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean);
+  expect(describedBy.length, `${where}: the entry carries no aria-describedby`).toBeGreaterThan(0);
+  expect(document.getElementById(describedBy[0]), `${where}: aria-describedby does not name the qualifier first`).toBe(tag);
+  expect(entry, `${where}: the accessible description`).toHaveAccessibleDescription(/^Preview.*acceptance is not complete/);
 }
 
 describe("the Atlas Scope preview qualifier", () => {
@@ -132,6 +132,21 @@ describe("the Atlas Scope preview qualifier", () => {
       const link = await screen.findByRole("link", { name: /Open in Atlas Scope/ });
       expect(link).toHaveAttribute("href", "/scope/snapshots/1/");
       expectQualified(link, "Tools page header");
+    });
+
+    it("is described by the qualifier AND by the server's detail, which aria-describedby would otherwise hide", async () => {
+      const detail = "Atlas Scope hub build is current for this snapshot.";
+      mockScope({ ...AVAILABLE, detail });
+      show();
+      const link = await screen.findByRole("link", { name: /Open in Atlas Scope/ });
+      expectQualified(link, "Tools page header with a detail");
+      expect(link).toHaveAttribute("title", detail);
+      const ids = (link.getAttribute("aria-describedby") ?? "").split(/\s+/);
+      expect(ids).toHaveLength(2);
+      const detailNode = document.getElementById(ids[1])!;
+      expect(detailNode.textContent).toBe(detail);
+      expect(detailNode.classList.contains("sr-only")).toBe(true);
+      expect(link).toHaveAccessibleDescription(/acceptance is not complete.*Atlas Scope hub build is current for this snapshot\.$/);
     });
 
     it("and nowhere when it is not", async () => {
