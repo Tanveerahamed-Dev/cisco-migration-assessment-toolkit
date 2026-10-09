@@ -83,6 +83,7 @@
         "cisco_toolkit/fib.py",
         "cisco_toolkit/fhrp_intent.py",
         "cisco_toolkit/fhrp_redundancy.py",
+        "cisco_toolkit/impact_assessability.py",
         "cisco_toolkit/ipv6_routing.py",
         "cisco_toolkit/l2_rehearsal.py",
         "cisco_toolkit/memory_guard.py",

@@ -116,6 +116,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from cisco_toolkit import __version__ as _CODE_SCHEMA_VERSION
+from cisco_toolkit import impact_assessability
 from cisco_toolkit import ssot
 from cisco_toolkit.analyze import (
     PUNCH_SEVERITIES, compute_device_findings, device_config_capture, vlan_cutover_host_index,
@@ -139,7 +140,8 @@ TOPOLOGY_GLYPHS = ("device", "router", "ap", "unknown", "none")
 TOPOLOGY_TONES = ("neutral", "muted", "info", "warning", "danger")
 TOPOLOGY_STROKES = ("solid", "dashed", "dotted")
 TOPOLOGY_WEIGHTS = ("normal", "strong")
-IMPACT_SEVERITIES = ("High", "Medium", "Low", "Info")          # analyze.compute_failure_impact sev_rank order
+#: The failure-impact owner's bands, worst first (analyze.compute_failure_impact sev_rank order).
+IMPACT_SEVERITIES = impact_assessability.IMPACT_SEVERITIES
 ADDRESS_ORIGINS = ("interface_svi", "local_route", "fhrp_host_route")
 #: The FIB owner's route fields a hop may report invalid, and its MTU-gap reasons (fib.trace_fib_path).
 FIB_ROUTE_FIELDS = ("admin_distance", "source", "next_hop", "out_intf")
@@ -332,8 +334,9 @@ SELECTION_NEEDS: Mapping[str, Tuple[str, ...]] = MappingProxyType({
     # parse and inter-switch links from CDP/LLDP (compute_topology_links). It reads no interface-status or
     # version/inventory field; its MAC, trunk and STP inputs are not essential captures. Its gateways are SVIs with
     # an IP, which build.py takes only from the scoped interface running-config capture (svi_ip), marking each
-    # interface it parsed run_config_observed. The shared row builder checks that per row (_impact_hold), so the
-    # fleet row and the device page hold the same values; the full running-config (the security row) is not it.
+    # interface it parsed run_config_observed. The shared row builder applies that per row (the engine owner's
+    # impact_assessability.row_hold), so the fleet row and the device page hold the same values; the full
+    # running-config (the security row) is not it.
     "failure_impact": ("switchport", "CDP/LLDP neighbors"),
     # analyze.compute_link_centrality: CDP/LLDP links between two scanned hosts (_topology_adjacency).
     "structural_links": ("CDP/LLDP neighbors",),
@@ -842,6 +845,17 @@ class _Ctx:
         self._vlan_hosts: Any = _UNSET
         self._coverage_rows: Any = _UNSET
         self._device_coverage: Dict[str, Optional[Dict[str, Any]]] = {}
+        self._impact: Any = _UNSET
+
+    @property
+    def impact(self) -> impact_assessability.ImpactSnapshot:
+        """The engine owner of failure-impact row assessability over this snapshot. It reads through this context's
+        exact-key index and its envelope reading of the stored cable map, each on first use only."""
+        if self._impact is _UNSET:
+            self._impact = impact_assessability.ImpactSnapshot(
+                self.s, rows_by_host=lambda: self.index(("failure_impact",), ("host",)),
+                cables=lambda: _impact_cable_source(self))
+        return self._impact
 
     @property
     def coverage_rows(self) -> Optional[CoverageRowIndex]:
@@ -4173,8 +4187,8 @@ def _device_page(ctx: _Ctx, host: Any) -> Dict[str, Any]:
         # G10/G11: the stored fleet rows naming this device, built by the fleet topology's own row builders. Both
         # producers compute over every scanned device's evidence, so the fleet's blind spots qualify them (as on the
         # fleet topology lists). A device whose own gateway SVIs never reached the simulation (no scoped interface
-        # running-config) is held inside its row by the shared builder (_impact_hold), never by a second selection
-        # gap: the fleet row and this page show one state.
+        # running-config) is held inside its row by the shared builder (the engine owner's
+        # impact_assessability.row_hold), never by a second selection gap: the fleet row and this page show one state.
         "failure_impact": _selection_rows(
             ctx, host, forced, "failure_impact", ("failure_impact",), ("host",),
             "analyze.compute_failure_impact:failure_impact", _ABSENT_IMPACT,
@@ -4380,250 +4394,59 @@ def _topology_structural(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     return out
 
 
-#: analyze.compute_failure_impact's own opening for a switch whose blast radius it could not simulate (a VLAN it
-#: carries has an off-scan gateway, or its inter-switch links carry no VLAN evidence). Its Info severity and zero
-#: counts are then not measurements. Pinned to the real producer by tests/test_ui_projection_device_impact.py.
-IMPACT_INDETERMINATE_PREFIX = "Blast radius INDETERMINATE"
+#: analyze.compute_failure_impact's own opening for a switch whose blast radius it could not simulate. Owned, with
+#: every row-level assessability rule, by the engine (impact_assessability); re-exported for the projection's
+#: readers. Pinned to the real producer by tests/test_impact_assessability.py.
+IMPACT_INDETERMINATE_PREFIX = impact_assessability.IMPACT_INDETERMINATE_PREFIX
 #: The failure-impact cells that measure the simulated blast radius; host, off_scan_gw_vlans and detail are not.
-_IMPACT_MEASURES = ("severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp")
-#: The producer's worst band (IMPACT_SEVERITIES runs worst first): the one severity a partial simulation cannot
-#: understate.
-_IMPACT_WORST = IMPACT_SEVERITIES[0]
-_R_IMPACT_INDETERMINATE = ("not collected: analyze.compute_failure_impact could not simulate this switch's blast "
-                           "radius (its detail says why), so its severity and counts are not measurements")
-_R_IMPACT_LEGACY = ("not collected: this stored row carries no off_scan_gw_vlans, so it predates the producer's "
-                    "assessability marker (analyze.compute_failure_impact). An engine that old wrote 'No reachability "
-                    "impact' with Info and zero counts for a switch it could not simulate, so this row's severity and "
-                    "counts are not measurements")
-_R_IMPACT_OFF_SCAN_ONLY = ("not collected: every VLAN analyze.compute_failure_impact found on this switch has an "
-                           "off-scan gateway ({n} counted in off_scan_gw_vlans), so it simulated none of them and its "
-                           "severity and counts are not measurements")
-_R_IMPACT_OFF_SCAN_UNREAD = ("unverified: off_scan_gw_vlans is not a count, so whether the simulation covered this "
-                             "switch's whole blast radius cannot be read")
-_R_IMPACT_NO_HOST = ("unverified: the row names no readable host, so whether its device's interface running-config "
-                     "was captured cannot be checked")
-_R_IMPACT_DUP = ("unverified: {n} rows in failure_impact name this exact host, but analyze.compute_failure_impact "
-                 "writes one row per host, so no single row can be chosen")
-_R_IMPACT_NO_RUN_CONFIG = ("not collected: no interface of this device carries run_config_observed: true. build.py "
-                           "marks every interface its scoped interface running-config capture ('show running-config "
-                           "interface' or '| section ^interface') parsed, and takes SVI gateway addresses (svi_ip) "
-                           "only from that capture, so this device's own gateways never reached the simulation and "
-                           "its severity and counts are not measurements. A snapshot that predates the marker, or "
-                           "drops it as false (html.sparsify_interfaces), reads the same: not captured")
-_R_IMPACT_UNDERSTATED = ("not collected: this severity may understate the blast radius: {n} VLAN(s) on this switch "
-                         "have an off-scan gateway the simulation could not assess (off_scan_gw_vlans), and only the "
-                         "worst band ({worst}) cannot be understated")
-_R_IMPACT_ZERO_BOUND = ("not collected: this 0 is only a lower bound: {n} VLAN(s) on this switch have an off-scan "
-                        "gateway the simulation could not assess (off_scan_gw_vlans), so it is not a measurement of "
-                        "none")
-#: analyze.compute_cable_map's kinds for an uncollected peer it POSITIVELY identifies as edge gear: its fabric-only
-#: declutter may hide only these, and 'unknown' always stays visible. _node_kind ranks infra first across every
-#: observer (_KIND_RANK puts switch, router and firewall before ap, phone and endpoint) and lets platform evidence
-#: outrank endpoint type, so a peer carries one of these kinds only when no observer's evidence says switch, router or
-#: firewall; build_network_model likewise never admits a CDP-speaking phone or AP as an uplink
-#: (_is_offscan_uplink_port). What hangs off an AP or a phone depends on the removed switch's own port, the case the
-#: simulation excludes by its declared scope (the removed switch's own endpoints move with it). Every other kind --
-#: switch, router, firewall, unknown, a missing or unrecognised kind, or the collected-device kind on a node marked
-#: uncollected -- can carry endpoints or transit that the scanned model never saw.
-_IMPACT_EDGE_KINDS = frozenset({"ap", "phone", "endpoint"})
-_R_IMPACT_PEERS = ("this row cannot account for endpoints behind {n} uncollected neighbour(s): the stored cable map "
-                   "cables this switch to {n} peer(s) it does not show as collected that can carry endpoints or "
-                   "transit (a cable_map.nodes row with collected: false and a kind other than ap, phone or endpoint, "
-                   "or a cable end that does not join exactly one node){closed}, and analyze.compute_failure_impact "
-                   "counts only endpoints on scanned switches")
-_R_IMPACT_PEERS_CLOSED = ("; {k} of them fail closed because their cable row cannot be read or their cable end does "
-                          "not join exactly one node, so they are never assumed collected")
-_R_IMPACT_PEERS_UNREAD = ("whether this switch faces an uncollected neighbour cannot be checked, because the stored "
-                          "cable map's cables cannot be read ({why}), and analyze.compute_failure_impact counts only "
-                          "endpoints on scanned switches")
-_R_IMPACT_PEER_SEVERITY = ("{word}: {clause}, so this severity may understate the blast radius, and only the worst "
-                           "band ({worst}) cannot be understated")
-_R_IMPACT_PEER_ZERO = "{word}: {clause}, so this 0 is only a lower bound, not a measurement of none"
-_R_IMPACT_PEER_DETAIL = ("{word}: {clause}, so this detail, which names no simulated VLAN, is not a clean bill: it was "
-                         "never checked against what lies behind them")
-#: The leading word of a withheld state's reason.
-_IMPACT_STATE_WORD = {AU: "analysis unavailable", _UV: "unverified", _NC: "not collected"}
-#: A hold on a row's measures: ``(state, reason, witness ref entries)``.
-_ImpactHold = Tuple[str, str, List[Tuple[str, Sequence[Any]]]]
-#: A qualification of a row's understatable values (a severity below the worst band, a zero count and, where it applies,
-#: a detail that names no simulated VLAN): ``(state, severity reason, zero-count reason, detail reason or None,
-#: witness ref entries)``. The witnesses are cited by every measure, the published lower bounds included.
-_ImpactBound = Tuple[str, str, str, Optional[str], List[Tuple[str, Sequence[Any]]]]
+_IMPACT_MEASURES = impact_assessability.IMPACT_MEASURES
 
 
-def _impact_hold(ctx: _Ctx, row: _Row) -> Optional[_ImpactHold]:
-    """The hold on every blast-radius measure of one row, with a witness to the evidence that says why. First match
-    wins: the producer's INDETERMINATE detail -> no off_scan_gw_vlans (a row older than that marker) -> an
-    unreadable off-scan count -> no readable host -> no interface of the row's device carrying
-    run_config_observed (its gateway SVIs never reached the simulation; absent is never read as captured) -> a
-    positive off-scan count with no VLAN simulated (the INDETERMINATE case, read from the count rather than the
-    prose). ``None``: the measures are the producer's (a partial row's are then qualified per field by
-    :func:`_impact_pre`)."""
-    if row.state is not None or not isinstance(row.raw, dict):
-        return None
-    rec = row.raw
-    detail = rec.get("detail")
-    if _is_text(detail) and detail.startswith(IMPACT_INDETERMINATE_PREFIX):
-        return _NC, _R_IMPACT_INDETERMINATE, [("witness", row.toks + ("detail",))]
-    if "off_scan_gw_vlans" not in rec:
-        return _NC, _R_IMPACT_LEGACY, [("witness", row.toks)]
-    ok, n = _count(rec["off_scan_gw_vlans"])
-    if not ok:
-        return _UV, _R_IMPACT_OFF_SCAN_UNREAD, [("witness", row.toks + ("off_scan_gw_vlans",))]
-    host = rec.get("host")
-    if not _is_text(host):
-        return _UV, _R_IMPACT_NO_HOST, [("witness", row.toks)]
-    ifaces = ctx.s.get("interfaces")
-    ports = ifaces.get(host) if isinstance(ifaces, dict) else None
-    if not (isinstance(ports, dict) and any(isinstance(port, dict) and port.get("run_config_observed") is True
-                                            for port in ports.values())):
-        where = ("interfaces", host) if isinstance(ports, dict) else ("interfaces",)
-        return _NC, _R_IMPACT_NO_RUN_CONFIG, [("witness", where)]
-    simulated_ok, simulated = _count(rec.get("vlans_impacted"))
-    if n and not (simulated_ok and simulated):
-        return _NC, _R_IMPACT_OFF_SCAN_ONLY.format(n=n), [("witness", row.toks + ("off_scan_gw_vlans",))]
-    return None
-
-
-def _impact_off_scan(row: _Row) -> int:
-    """The row's readable, positive off-scan VLAN count (0 otherwise)."""
-    ok, n = _count(row.raw.get("off_scan_gw_vlans")) if isinstance(row.raw, dict) else (False, None)
-    return n if ok else 0
-
-
-def _impact_peers(ctx: _Ctx, row: _Row) -> Optional[_ImpactBound]:
-    """The bound an uncollected neighbour puts on one row. analyze.compute_failure_impact simulates only scanned
-    switches, so endpoints behind a peer the collection never reached count nowhere: not as stranded, not as an
-    off-scan VLAN. A SELECTION of stored rows, never a re-simulation: the stored cable_map.cables rows naming the
-    row's host as one end (exact text, as :func:`_topology_join` joins) whose far end joins exactly one
-    cable_map.nodes row that does not carry ``collected: true``, unless that node is ``collected: false`` with a kind
-    the producer positively marks as edge gear (:data:`_IMPACT_EDGE_KINDS`). It fails closed: a cable row that
-    cannot be read could name the host, a far end that joins no single node is never assumed collected, and a cable
-    list that cannot be read bounds the row with that list's own state. ``None``: no such neighbour."""
-    host = row.raw.get("host") if row.state is None and isinstance(row.raw, dict) else None
-    if not _is_text(host):
-        return None
+def _impact_cable_source(ctx: _Ctx) -> impact_assessability.CableSource:
+    """This context's reading of the stored cable map for the owner's neighbour bound
+    (impact_assessability.neighbour_bound). The cable list takes the envelope state every topology list takes; one
+    that cannot be read bounds each row with that state (unavailable and unverified stay, anything else is not
+    collected), that reason, and a witness to the list (or its parent) plus the failure records of a failed cable
+    map. A readable list carries this context's exact-text joins over it, and over the node list when that can be
+    read (otherwise no far end joins a node, so every one fails closed)."""
     toks = ("cable_map", "cables")
     state, reason, cables = _topology_source(ctx, toks)
     if state not in (_PUB, _CBE):
         state = state if state in (AU, _UV) else _NC
         where = toks if _get(ctx.s, toks) is not _MISSING else ("cable_map",)
-        clause = _R_IMPACT_PEERS_UNREAD.format(why=reason or _R_NC)
-        wit = [("witness", where)] + ctx.failure_entries(("cable_map",), state == AU)
-        return _impact_bound(state, clause, wit)
+        return impact_assessability.unreadable_cables(
+            state, reason or _R_NC, [("witness", where)] + ctx.failure_entries(("cable_map",), state == AU))
     ntoks = ("cable_map", "nodes")
     nstate, _nreason, nodes = _topology_source(ctx, ntoks)
-    index = ctx.index(ntoks, ("host",)) if nstate in (_PUB, _CBE) and isinstance(nodes, list) else {}
-    hits: List[int] = []
-    peers: Dict[str, bool] = {}              # far end -> whether it fails closed (joins no single node)
-    unreadable = 0
-    bad = set(ctx.unjoinable(toks, ("a", "b")))
-    for j in sorted(set(ctx.index(toks, ("a", "b")).get(host, [])) | bad):
-        if j in bad:
-            hits.append(j)                   # the join cannot read this row, so it could name this switch
-            unreadable += 1
-            continue
-        ends = (cables[j]["a"], cables[j]["b"])
-        far = ends[1] if ends[0] == host else ends[0]
-        found = index.get(far, []) if far else []
-        if len(found) == 1:
-            node = nodes[found[0]]
-            kind = node.get("kind")
-            if node.get("collected") is True or (
-                    node.get("collected") is False and _is_text(kind) and kind in _IMPACT_EDGE_KINDS):
-                continue
-        hits.append(j)
-        peers[far] = peers.get(far, False) or len(found) != 1
-    if not hits:
-        return None
-    closed = unreadable + sum(peers.values())
-    clause = _R_IMPACT_PEERS.format(n=len(peers) + unreadable,
-                                    closed=_R_IMPACT_PEERS_CLOSED.format(k=closed) if closed else "")
-    return _impact_bound(_NC, clause, [("witness", toks + (j,)) for j in hits])
+    readable = nstate in (_PUB, _CBE) and isinstance(nodes, list)
+    return impact_assessability.readable_cables(
+        cables, nodes if readable else None, by_end=ctx.index(toks, ("a", "b")),
+        unjoinable=ctx.unjoinable(toks, ("a", "b")), node_index=ctx.index(ntoks, ("host",)) if readable else {})
 
 
-def _impact_bound(state: str, clause: str, wit: List[Tuple[str, Sequence[Any]]]) -> _ImpactBound:
-    """One :data:`_ImpactBound` from a neighbour reason clause: it reaches the detail too (a detail naming no
-    simulated VLAN is the producer's clean bill, never checked against what lies behind the neighbour)."""
-    word = _IMPACT_STATE_WORD[state]
-    return (state, _R_IMPACT_PEER_SEVERITY.format(word=word, clause=clause, worst=_IMPACT_WORST),
-            _R_IMPACT_PEER_ZERO.format(word=word, clause=clause),
-            _R_IMPACT_PEER_DETAIL.format(word=word, clause=clause), wit)
-
-
-def _impact_bound_state(bounds: Sequence[_ImpactBound]) -> str:
-    """The withheld state of several bounds: the module's precedence (unavailable, then unverified, then not
-    collected)."""
-    states = {bound[0] for bound in bounds}
-    return AU if AU in states else _UV if _UV in states else _NC
-
-
-def _impact_pre(hold: Optional[_ImpactHold], field: str, bounds: Sequence[_ImpactBound]) -> _Pre:
-    """One measure's pre-check: the row's hold (:func:`_impact_hold`), else, on a row with a bound (VLANs it also
-    counts but could not simulate, or an uncollected neighbour, :func:`_impact_peers`), the values that bound cannot
-    vouch for: a severity below the worst band (it may understate) and a zero count (a lower bound of zero is not a
-    measurement of none). The worst band and a positive count stay published as the lower bounds they are, citing
-    each bound's witnesses; a mistyped value falls through to the type check."""
-    def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
-        if hold is not None:
-            return hold
-        if not bounds:
-            return None
-        if field == "severity":
-            ok, band = _typed(raw, "enum", IMPACT_SEVERITIES)
-            if not (ok and band != _IMPACT_WORST):
-                return None
-            reasons = [bound[1] for bound in bounds]
-        else:
-            ok, value = _count(raw)
-            if not (ok and value == 0):
-                return None
-            reasons = [bound[2] for bound in bounds]
-        return _impact_bound_state(bounds), "; ".join(reasons), [w for bound in bounds for w in bound[4]]
+def _impact_pre(hold: Optional[impact_assessability.Hold], field: str,
+                bounds: Sequence[impact_assessability.Bound]) -> _Pre:
+    """One measure's pre-check, decided by the engine owner (impact_assessability.measure_withheld): the row's hold,
+    else, on a bounded row, a severity below the worst band and a zero count. The worst band and a positive count
+    stay published as lower bounds; a mistyped value falls through to the type check."""
+    def pre(raw: Any, _row: _Row) -> Optional[Tuple[Any, ...]]:
+        return impact_assessability.measure_withheld(hold, field, raw, bounds)
     return pre
 
 
-def _impact_detail_pre(hold: Optional[_ImpactHold], bounds: Sequence[_ImpactBound]) -> _Pre:
-    """The detail's pre-check. The producer's INDETERMINATE detail is its own disclosure that the switch could not be
-    assessed, never a clean bill, so it stays published. Any other detail is withheld with the row's hold: its text
-    ('No reachability impact', or per-VLAN results) states what the held measures could not. On a row without a hold,
-    a bound that reaches the detail (an uncollected neighbour) withholds a detail that names no simulated VLAN (no
-    readable positive vlans_impacted): that is the producer's clean bill. A per-VLAN detail stays published as the
-    list of what was simulated, the other cells carrying the lower-bound disclosure; a mistyped detail falls through
-    to the type check."""
+def _impact_detail_pre(hold: Optional[impact_assessability.Hold],
+                       bounds: Sequence[impact_assessability.Bound]) -> _Pre:
+    """The detail's pre-check, decided by the engine owner (impact_assessability.detail_withheld): the producer's
+    INDETERMINATE disclosure stays published, any other detail is held with the row's hold, and a bound that reaches
+    the detail withholds one that names no simulated VLAN; a mistyped detail falls through to the type check."""
     def pre(raw: Any, row: _Row) -> Optional[Tuple[Any, ...]]:
-        if _is_text(raw) and raw.startswith(IMPACT_INDETERMINATE_PREFIX):
-            return None
-        if hold is not None:
-            return hold
-        reach = [bound for bound in bounds if bound[3] is not None]
-        if not reach or not _is_text(raw):
-            return None
-        ok, simulated = _count(row.raw.get("vlans_impacted")) if isinstance(row.raw, dict) else (False, None)
-        if ok and simulated:
-            return None
-        return _impact_bound_state(reach), "; ".join(bound[3] for bound in reach), [w for b in reach for w in b[4]]
+        return impact_assessability.detail_withheld(hold, raw, row.raw, bounds)
     return pre
-
-
-def _impact_dup(ctx: _Ctx, raw: Any) -> Optional[_Withheld]:
-    """The doubt on a failure_impact row whose exact host text another row also names. analyze.compute_failure_impact
-    writes one row per host of its network model, so two rows naming one host (an exact copy or a contradicting
-    record) cannot each be the producer's row, and no single one can be chosen (the _R_AMBIG precedent, the same
-    exact-text key the device selection joins by). Row-level, as for a duplicated structural host pair: every such
-    row keeps its index and pointer and withholds each of its cells as unverified, with a witness to every row naming
-    the host, while the list and its other hosts stay published. ``None``: no readable host, or no other row names it."""
-    if not (isinstance(raw, dict) and _is_text(raw.get("host"))):
-        return None
-    same = ctx.index(("failure_impact",), ("host",)).get(raw["host"], [])
-    if len(same) < 2:
-        return None
-    return _UV, _R_IMPACT_DUP.format(n=len(same)), [("witness", ("failure_impact", j)) for j in same]
 
 
 def _ambiguous_pre(dup: _Withheld, inner: Optional[_Pre]) -> _Pre:
     """A duplicated row's pre-check, in the module's precedence (analysis unavailable, then unverified, then not
-    collected; :func:`_impact_bound_state`, :func:`_topology_style`). The duplicate's unverified state wins over a
+    collected; impact_assessability.bound_state, :func:`_topology_style`). The duplicate's unverified state wins over a
     hold or bound that withholds the cell as not collected, because that hold reads a row no one can say is the
     producer's; a bound that is analysis_unavailable (a failed cable map) wins over it. Either way the other reason
     and its witnesses are carried beside, so both negative observations survive (the _selection_rows precedent for a
@@ -4640,21 +4463,14 @@ def _ambiguous_pre(dup: _Withheld, inner: Optional[_Pre]) -> _Pre:
 
 
 def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
-    """One failure-impact row, shared by the fleet topology and the device page (one builder, one state)."""
+    """One failure-impact row, shared by the fleet topology and the device page (one builder, one state). Which of its
+    values are measurements is the engine owner's row-level rule (impact_assessability: the duplicate doubt, the
+    hold, then the off-scan and uncollected-neighbour bounds); this builder only carries those facts into the
+    envelopes, in the module's state precedence."""
     row = _list_row(("failure_impact", i), raw, ("failure_impact",))
     basis = "analyze.compute_failure_impact:failure_impact[]."
     out = {"index": i, "pointer": json_pointer(*row.toks)}
-    dup = _impact_dup(ctx, raw)
-    hold = _impact_hold(ctx, row)
-    off_scan = _impact_off_scan(row)
-    bounds: List[_ImpactBound] = []
-    if off_scan:
-        wit = [("witness", row.toks + ("off_scan_gw_vlans",))]
-        bounds.append((_NC, _R_IMPACT_UNDERSTATED.format(n=off_scan, worst=_IMPACT_WORST),
-                       _R_IMPACT_ZERO_BOUND.format(n=off_scan), None, wit))
-    peers = _impact_peers(ctx, row) if hold is None else None
-    if peers is not None:
-        bounds.append(peers)
+    dup, hold, bounds = ctx.impact.row(i, raw)
     # every measure of a bounded row cites what bounds it: the off-scan count, each uncollected neighbour's cable
     cite = [w for bound in bounds for w in bound[4]]
     for field in ("host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",

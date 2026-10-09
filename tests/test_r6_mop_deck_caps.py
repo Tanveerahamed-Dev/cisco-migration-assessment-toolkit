@@ -28,6 +28,7 @@ from pptx import Presentation                                   # noqa: E402
 
 from cisco_toolkit.deck import write_executive_deck_pptx        # noqa: E402
 from cisco_toolkit.mop import write_mop_docx                    # noqa: E402
+from impact_fixtures import assessable                          # noqa: E402
 
 
 # --------------------------------------------------------------------------- helpers
@@ -209,7 +210,8 @@ def test_deck_keystone_slide_discloses_the_switches_below_the_top_five(tmp_path)
     fi = [{"host": f"sw{i:02d}", "severity": "High", "stranded": 100 - i, "vlans_impacted": 2,
            "hard": 1, "detail": f"VLAN {i} hard partition"} for i in range(1, 10)]
     out = str(tmp_path / "deck_keystones.pptx")
-    write_executive_deck_pptx(out, _deck_snap(failure_impact=fi), "Unit fleet")
+    # W33: the rows carry the assessability evidence a real run's rows carry (tests/impact_fixtures.py)
+    write_executive_deck_pptx(out, assessable(_deck_snap(failure_impact=fi)), "Unit fleet")
     txt = _deck_text(out)
 
     assert "sw05" in txt and "sw06" not in txt, "cap moved; retune this test"
@@ -223,8 +225,10 @@ def test_deck_keystone_slide_stays_silent_when_nothing_is_dropped(tmp_path):
     """Negative control: <= 5 stranding switches must render no 'Top N of M' clause."""
     fi = [{"host": f"sw{i}", "stranded": 10 * i, "vlans_impacted": 1, "detail": "d"} for i in range(1, 4)]
     out = str(tmp_path / "deck_keystones_small.pptx")
-    write_executive_deck_pptx(out, _deck_snap(failure_impact=fi), "Unit fleet")
-    assert "switch(es) that strand endpoints shown" not in _deck_text(out)
+    write_executive_deck_pptx(out, assessable(_deck_snap(failure_impact=fi)), "Unit fleet")
+    txt = _deck_text(out)
+    assert "switch(es) that strand endpoints shown" not in txt
+    assert "sw3" in txt                                  # non-vacuity: the three rows did rank (W33 evidence)
 
 
 # --------------------------------------------------------------------------- deck: design decisions

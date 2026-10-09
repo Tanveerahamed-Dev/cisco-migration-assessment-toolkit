@@ -42,7 +42,8 @@ def test_device_dossiers_adapter_maps_ctx_to_explicit_kwargs(monkeypatch):
         all_config_hygiene={"cfg": 1}, all_stp_roots={"stp": 1}, all_vpc={"vpc": 1},
         physical_health=["ph"], protocol_health=["pr"], move_groups=["mg"],
         protocol_assessability={"pa": 1}, parse_yield={"py": 1},
-        input_failures=(frozenset({"qos_audit"}), True))
+        input_failures=(frozenset({"qos_audit"}), True),
+        failure_impact_assessability={"fia": 1})
     out = cp._device_dossiers(ctx)
     assert out is rec["ret"]                 # the adapter returns the compute result verbatim
     assert rec["args"] == ()                 # everything forwarded by keyword -> reorder-proof
@@ -55,6 +56,7 @@ def test_device_dossiers_adapter_maps_ctx_to_explicit_kwargs(monkeypatch):
         "physical_health": ["ph"], "protocol_health": ["pr"], "move_groups": ["mg"],
         "protocol_assessability": {"pa": 1}, "parse_yield": {"py": 1},
         "input_failures": (frozenset({"qos_audit"}), True),
+        "failure_impact_assessability": {"fia": 1},                  # W33: the owner's row verdicts
     }
 
 

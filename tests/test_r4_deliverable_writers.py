@@ -331,13 +331,34 @@ def test_archreview_res4_not_assessable_without_simulation_evidence(sample, muta
     assert _verdict(s, "RES-4")["verdict"] == "not-assessable", label
 
 
+def _drop_cables_to_uncollected_infrastructure(s):
+    """Independent of the owner: remove each stored cable whose far end is a cable-map node shown as uncollected
+    with a kind other than positively identified edge gear (ap / phone / endpoint)."""
+    nodes = {n.get("host"): n for n in s["cable_map"]["nodes"] if isinstance(n, dict)}
+
+    def infra(host):
+        node = nodes.get(host)
+        return node is not None and node.get("collected") is False and node.get("kind") not in ("ap", "phone",
+                                                                                                "endpoint")
+    s["cable_map"]["cables"] = [c for c in s["cable_map"]["cables"]
+                                if not (infra(c.get("a")) or infra(c.get("b")))]
+    return s
+
+
 def test_archreview_res4_still_conforms_on_an_observed_zero(sample):
     """Refute-the-fix: `stranded: 0` is a REAL observed zero. The guard keys on the figure being
-    absent, not on it being falsy, so a genuinely redundant fleet must still earn CONFORMS."""
+    absent, not on it being falsy, so a genuinely redundant fleet must still earn CONFORMS.
+
+    W33: a zero is a real observed zero only on a row the failure-impact assessability owner publishes. The
+    sample's core2 faces an uncollected router (wan-edge-rtr1.lab), so its zero is only a lower bound and the
+    fleet must NOT conform; once no switch faces an uncollected neighbour that can carry endpoints, it does."""
     s = copy.deepcopy(sample)
     for r in s["failure_impact"]:
         r["stranded"] = 0
-    c = _verdict(s, "RES-4")
+    bounded = _verdict(copy.deepcopy(s), "RES-4")
+    assert bounded["verdict"] == "not-assessable", bounded
+    assert "core2" in bounded["observed"] and "uncollected neighbour" in bounded["observed"], bounded
+    c = _verdict(_drop_cables_to_uncollected_infrastructure(s), "RES-4")
     assert c["verdict"] == "conforms", c
     assert "simulated device(s) report a stranded-endpoint figure" in c["observed"]
 

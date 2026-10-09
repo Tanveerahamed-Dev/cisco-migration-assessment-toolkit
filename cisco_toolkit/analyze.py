@@ -12596,7 +12596,8 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
                             move_groups: Optional[list] = None, *,
                             protocol_assessability: Optional[dict] = None,
                             parse_yield: Optional[dict] = None,
-                            input_failures: Optional[Tuple[frozenset, bool]] = None) -> dict:
+                            input_failures: Optional[Tuple[frozenset, bool]] = None,
+                            failure_impact_assessability: Optional[dict] = None) -> dict:
     """NEW-V3.23.172: per-device 360-degree dossier + compound-risk ranking.
     Joins the 11 per-device-capable axes (health / hardware EoL / software risk /
     control-plane capacity / operational logs / CIS posture / config hygiene /
@@ -12607,7 +12608,21 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
     input; absence of evidence is state 'na' (not assessed) and NEVER counts
     toward exposure. Each axis's input_state is custody, independent of its risk state.
     Missing protocol receipts fail closed; only a successful parse receipt proves a sparse
-    hygiene result was screened. Returns {per_device, summary, note}."""
+    hygiene result was screened. Returns {per_device, summary, note}.
+
+    W33: with `failure_impact_assessability` (impact_assessability.assessment_document over the same
+    failure_impact rows) the impact term discloses how far the row is a measurement, and a withheld impact never
+    LOWERS risk. The score always reads the stored row, exactly as without the argument: a lower-bound row's values
+    are floors (its phrase says "at least"); a not-assessed or ambiguous row's stored values still score the term
+    and drive CR-01/04/05/06, while its phrase names them unverified and says why. Dropping them to the absent-row
+    floor would be absence-as-health: a held High row would score low and lose its compound pattern silently. The
+    impact term is the multiplicand, not one of the closed exposure axes (DOSSIER_AXIS_INPUTS), so it is not
+    counted in `n_na`; its custody is `impact_assessability` {assessable, why, pointer} on each dossier, the pointer
+    naming the row the term scored. A device with no row keeps the absent-row floor, now disclosed as not assessed,
+    never "no modeled reachability impact"; a Low or Guarded verdict over an unmeasured impact says so instead of
+    "routine migration handling". Without the argument the term is unchanged (callers that cannot supply the
+    evidence)."""
+    from cisco_toolkit import impact_assessability as _ia
     from cisco_toolkit.ssot import _is_deep_empty
 
     def d(value):
@@ -12615,6 +12630,21 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
 
     def rows(value):
         return value if isinstance(value, list) else []
+
+    # W33: the owner's verdict on the exact row the impact term scores. by_host() below keeps the LAST row naming a
+    # host, so the verdict is read at that row's index (and must name the same host), never at another duplicate.
+    fia_supplied = (isinstance(failure_impact_assessability, dict)
+                    and failure_impact_assessability.get("schema") == _ia.SCHEMA)
+    fia_by_index: Dict[int, dict] = {}
+    for _v in (rows(d(failure_impact_assessability).get("rows")) if fia_supplied else []):
+        _vi = _v.get("index") if isinstance(_v, dict) else None
+        if isinstance(_vi, int) and not isinstance(_vi, bool):
+            fia_by_index.setdefault(_vi, _v)
+    fi_index_by_host = {r["host"]: i for i, r in enumerate(rows(failure_impact))
+                        if isinstance(r, dict) and isinstance(r.get("host"), str) and r["host"]}
+    _fi_unmeasured = {_ia.NOT_ASSESSED: "the blast radius is not assessed",
+                      _ia.AMBIGUOUS: "the blast radius is ambiguous",
+                      _ia.LOWER_BOUND: "the blast radius is only a lower bound"}
 
     def by_host(value, key="host"):
         return {r[key]: r for r in rows(value) if isinstance(r, dict)
@@ -12950,6 +12980,28 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
 
         # -- impact: topology blast radius + control-plane roles -------------
         fir = fi_by.get(host)
+        # W33: with the owner's verdicts supplied, the term discloses how far the row it scores is a measurement. The
+        # SCORE never changes: a withheld impact must never lower risk (a held High row dropped to the absent-row
+        # floor would lose its band and its CR patterns silently). A lower-bound row's values are floors; a
+        # not-assessed or ambiguous row's stored values still score, and are named unverified in the phrase.
+        # `fi_note` is None for a measured row (and without the verdicts).
+        fi_note: Optional[str] = None
+        fi_assessability: Optional[dict] = None
+        if fia_supplied:
+            _idx = fi_index_by_host.get(host) if fir is not None else None
+            _fiv = fia_by_index.get(_idx) if _idx is not None else None
+            if isinstance(_fiv, dict) and _fiv.get("host") != host:
+                _fiv = None                       # a verdict document over other rows names nothing here
+            _fi_state = _fiv.get("assessable") if isinstance(_fiv, dict) else _ia.NOT_ASSESSED
+            _fi_why = (str(_fiv.get("why") or "") if isinstance(_fiv, dict)
+                       else "no failure-impact row names this device" if fir is None
+                       else "no assessability verdict names this device's row")
+            fi_assessability = {"assessable": _fi_state if _fi_state in _ia.VERDICTS else _ia.NOT_ASSESSED,
+                                "why": _fi_why,
+                                "pointer": (_ia.json_pointer("failure_impact", _idx) if _idx is not None else None)}
+            if fi_assessability["assessable"] != _ia.PUBLISHED:
+                fi_note = (_fi_unmeasured[fi_assessability["assessable"]]
+                           + (f" ({_fi_why})" if _fi_why else ""))
         fi_sev = (fir or {}).get("severity", "")
         stranded = _as_num((fir or {}).get("stranded"))
         vlans_imp = _as_num((fir or {}).get("vlans_impacted"))
@@ -12981,6 +13033,21 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
         impact_phrase = (f"removal strands {stranded} endpoint(s) across {vlans_imp} VLAN(s)"
                          if stranded else f"removal impacts {vlans_imp} VLAN(s)" if vlans_imp
                          else "no modeled reachability impact")
+        if fi_note is not None:
+            # W33: never "no modeled reachability impact" over a row that is not a measurement. A lower bound's values
+            # are floors; a held or ambiguous row's stored values still score the term, so they are quoted, as
+            # unverified, wherever the phrase lands (a CR basis, the verdict) -- the score is never silently lowered.
+            if fir is None:
+                impact_phrase = fi_note
+            elif fi_assessability is not None and fi_assessability["assessable"] == _ia.LOWER_BOUND:
+                impact_phrase = ((f"removal strands at least {stranded} endpoint(s) across at least {vlans_imp} "
+                                  "VLAN(s); " if stranded else
+                                  f"removal impacts at least {vlans_imp} VLAN(s); " if vlans_imp else "") + fi_note)
+            else:
+                impact_phrase = ((f"the stored simulation, unverified, has removal stranding {stranded} endpoint(s) "
+                                  f"across {vlans_imp} VLAN(s); " if stranded else
+                                  f"the stored simulation, unverified, has removal impacting {vlans_imp} VLAN(s); "
+                                  if vlans_imp else "") + fi_note)
         if lcb == "Past-LDoS" and fi_sev == "High":
             cr("CR-01", "End-of-support keystone", "Critical",
                f"Hardware is past last-day-of-support AND {impact_phrase} — "
@@ -13061,16 +13128,21 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
                        + f"; {impact_phrase}.")
         elif risk_band == "Guarded":
             verdict = ("Watch items only — " + "; ".join(watch_labels or red_labels or ["minor findings"])
-                       + ".")
+                       + "." + (f" Note: {fi_note}." if fi_note is not None else ""))
         elif n_risk:
             # Low compound risk but a red axis IS present -> not 'routine'. (The band floor above already lifts
             # Critical-health / 2+-axis devices; this covers a lone non-health red axis on an Info-impact box.)
             verdict = ("Single red axis, no compounding — " + "; ".join(red_labels)
                        + f"; {impact_phrase}. Address on its own merits, not as routine.")
+        elif fi_note is not None:
+            # W33: no stacked risk on the axes that WERE assessed, but the blast radius is not a measurement --
+            # never "routine migration handling" by default
+            verdict = (f"No stacked risk on the assessed axes, but {fi_note}; confirm the blast radius before "
+                       "treating this as routine migration handling.")
         else:
             verdict = "No stacked risk — routine migration handling."
 
-        per_device.append({
+        record = {
             "host": host,
             "model": (lcr or {}).get("model", ""), "platform": (lcr or {}).get("platform", ""),
             "sw_version": (lcr or {}).get("sw_version", "") or (swr or {}).get("sw_version", ""),
@@ -13085,7 +13157,10 @@ def compute_device_dossiers(health_scores: Optional[list] = None,
             "exposure_score": exposure_score, "exposures": exposures,
             "n_risk": n_risk, "n_watch": n_watch, "n_na": n_na,
             "compound": compound,
-            "risk_index": risk_index, "risk_band": risk_band, "verdict": verdict})
+            "risk_index": risk_index, "risk_band": risk_band, "verdict": verdict}
+        if fi_assessability is not None:
+            record["impact_assessability"] = fi_assessability   # W33: how the impact term read the row
+        per_device.append(record)
 
     per_device.sort(key=lambda d: (_DOSSIER_BAND_RANK.get(d["risk_band"], 9),
                                    -d["risk_index"], d["host"]))
