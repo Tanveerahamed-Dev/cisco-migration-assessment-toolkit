@@ -1230,8 +1230,8 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    prospective = {"view": "732c68c3d762f2b3d4d0329582bd32f3842567feef9cab20960f6959eef07372",
-                   "list": "7f256f809f1d9e0754a2312579ee6afdfe3ae5e58c2b5dd7b44fbfd32b5369b5"}
+    prospective = {"view": "6aa9a264cf5622d5eb905f5cace25aa612cbb46437a46eed63ae957baad23745",
+                   "list": "a3021b672f785a76c3d88ae33db58ac487e5fa151d84de69af52949c1cc2df58"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)
@@ -1450,6 +1450,63 @@ def test_native_w13_coverage_metadata_list_matches_stock_and_retains_withheld_va
         item["dimension"].update(state="unverified", reason="synthetic withheld")
     else:
         item["dimension"].update(state="unverified", value=None)
+    assert not native.is_valid(body) and not stock.is_valid(body)
+    assert _validation_errors(native, body) == _validation_errors(stock, body)
+
+
+@pytest.mark.parametrize("mutation", ["missing_inputs", "short_inputs", "unknown_input", "extra_row_field", "bool_n",
+                                     "unknown_custody", "missing_pointer", "published_empty_hosts",
+                                     "withheld_without_reason", "unknown_caveat", "missing_sections"])
+def test_native_w28_trust_inputs_match_stock_on_the_real_trust_view_and_refusals(client, sample, mutation):
+    """The analysis-input gap rows ride the real Trust transport unpaged; native and stock admit and refuse alike."""
+    from backend import ui_projection_api as api
+    body = client.get(url(seed(client, sample), "trust")).json()
+    rows = body["payload"]["inputs"]
+    assert [row["input"] for row in rows] == list(owner.TRUST_INPUTS)
+    assert "/inputs" not in api.LIST_CATALOG["trust"]
+    listed = [k for k, row in enumerate(rows) if row["hosts"]["state"] == "published"]
+    assert listed, "the engine-built sample fleet has inputs that could not assess some devices"
+    k = listed[0]
+    assert rows[k]["n"]["value"] == len(rows[k]["hosts"]["items"])
+    schema = deepcopy(api._VIEW_SCHEMA)
+    native = api._NativeTransportValidator(schema, "view")
+    assert native._NativeTransportValidator__native is not None
+    stock = api._stock_validator(schema)
+    assert api._native_instance_allowed(body)
+    assert native.is_valid(body) and stock.is_valid(body)
+    for custody in owner.TRUST_INPUT_CUSTODY:
+        held = deepcopy(body)
+        held["payload"]["inputs"][k]["hosts"]["items"][0]["custody"] = custody
+        assert native.is_valid(held) and stock.is_valid(held)
+    withheld = deepcopy(body)
+    for name in ("n", "hosts"):
+        withheld["payload"]["inputs"][k][name].pop("caveats", None)
+        withheld["payload"]["inputs"][k][name].update(state="unverified", reason="synthetic custody unreadable")
+    withheld["payload"]["inputs"][k]["n"]["value"] = None
+    assert native.is_valid(withheld) and stock.is_valid(withheld)
+    row = rows[k]
+    if mutation == "missing_inputs":
+        del body["payload"]["inputs"]
+    elif mutation == "short_inputs":
+        rows.pop()
+    elif mutation == "unknown_input":
+        row["input"] = "Invented axis"
+    elif mutation == "extra_row_field":
+        row["assurance"] = True
+    elif mutation == "bool_n":
+        row["n"]["value"] = True
+    elif mutation == "unknown_custody":
+        row["hosts"]["items"][0]["custody"] = "published"
+    elif mutation == "missing_pointer":
+        del row["hosts"]["items"][0]["pointer"]
+    elif mutation == "published_empty_hosts":
+        row["hosts"]["items"] = []
+    elif mutation == "withheld_without_reason":
+        row["n"].update(state="not_collected", value=None)
+    elif mutation == "unknown_caveat":
+        row["hosts"]["caveats"] = ["unregistered_scope"]
+    else:
+        del row["sections"]
     assert not native.is_valid(body) and not stock.is_valid(body)
     assert _validation_errors(native, body) == _validation_errors(stock, body)
 
