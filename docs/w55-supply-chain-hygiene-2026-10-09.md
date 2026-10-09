@@ -1,8 +1,8 @@
 # W55 supply-chain and CI hygiene train (2026-10-09)
 
 Branch `claude/supply-chain-hygiene`, cut from `origin/main` `6390b66c` (#629). Items (b) to (e) are four
-independent fixes, one commit each. Item (a) is deferred to an owner decision and changes no file except this
-record. No local test, build, engine, npm or browser run took place (owner GitHub-only rule). The local checks
+independent fixes, one commit each. After the independent review, item (d) gained a second commit with its
+contract test. Item (a) is deferred to an owner decision and changes no file except this record. No local test, build, engine, npm or browser run took place (owner GitHub-only rule). The local checks
 were static: `py_compile`, `ruff`, AST scans, YAML parsing of the edited workflow and Dependabot files, and
 read-only lookups of primary sources (the PyPI JSON API, the OSV API, upstream GitHub releases, pull requests and
 changelogs, the CodeQL alert API, and the job logs of the latest `main` CI run). The hosted gates decide.
@@ -161,8 +161,19 @@ not a semver-major update). The owner can confirm or reverse this.
 Atlas Scope proposals edit `atlas-scope/package.json` and its lock, which the Atlas Scope holder (Codex)
 owns. Master Reference proposals must re-pass its source/lock and release-SBOM contracts (exact Miniflare,
 Sharp and Vinext edges, bounded vendored packages), so they are review input, never merged on a green bump
-alone. No test pinned `dependabot.yml`; its YAML was parsed and every npm directory was checked to hold a
-`package.json` and `package-lock.json`.
+alone.
+
+**Coverage contract (added after independent review).** Before this train, no test pinned `dependabot.yml`,
+so its npm directories were a hand-kept list that a fourth tracked npm project could silently miss.
+`tests/test_frontend_platform_contract.py` now derives the denominator the same way the npm audit test does
+(`_tracked_npm_package_dirs`, from `git ls-files`). `_dependabot_npm_gaps` requires exactly one npm entry per
+directory that holds a tracked npm lockfile and no entry elsewhere. Each entry must follow the shared policy:
+weekly, one group covering every package, and the semver-major ignore. Package-specific owner deferrals are
+deliberately not pinned, because they change with owner decisions. Six mutations must each be detected: a
+missing directory, a duplicate entry, an entry with no tracked lockfile, a dropped semver-major ignore, a
+monthly schedule, and an ungrouped entry. The tests were not run locally (owner GitHub-only rule). A separate
+static restatement of the rule, run on the committed file, found no gap at this head. On `origin/main` it
+reports exactly `atlas-scope` and `master-reference` missing, and it flags every one of the six mutations.
 
 Not changed (recorded only): Dependabot version updates still cover only the root pip manifests. The other
 Python manifests (`master-reference/requirements-release.txt`, `webapp/requirements.txt`,
