@@ -190,7 +190,42 @@ the board. Neither regeneration command reads either, so the declaration is unch
 
 ## Regeneration evidence
 
-Recorded after the hosted run in the handoff log of `docs/NOW.md` and in the pull request body.
+**The run.** `engine-output-handoff.yml` ran 37881624224 (attempt 1, success) on the final source
+`7d8f02a2ca810055e81d1c7d4ddce6418b89ad90` (tree `498e6d30`). Artifact 11594811864 has archive sha256
+`ac7e4401a6e8a4723be6b7251870b57b7dc47bfec2b1a908b5525e9b6881ed2b`. `receive` admitted it, and it is committed as
+`3d9b9831`. The earlier run 37879944000 on `0883db45` predates the main merge and was not imported.
+
+**Golden.** `tests/golden/snapshot.json` and `sheet_schema.json` are byte-identical to the merged tree. A leaf diff
+against main gives 16 leaves:
+
+- 13 are equal to W33's own regenerated golden;
+- 3 are W32's `blind_links: 0`;
+- none is undeclared.
+
+**Sample.** The new `webapp/sample_data/sample_fleet.snapshot.json` is sha256
+`dbc229cfdcd676bb07e99bdace7e26ea429de087715ebf1727064b4e373a26c1`, blob
+`ba869c0efe012af3c74c34162583834325f476b8`, 3,339,333 bytes. A leaf diff against `origin/main` gives 328 changed
+leaves, which is the predicted count. Every leaf is in a declared class, and none is undeclared:
+
+| Class | Leaves |
+|---|---|
+| W36 wall-clock `generated_at` pair | 2 |
+| W36 `collected_at` `+03:00` → `+00:00` | 1 |
+| W36 LF receipt hashes, each equal to W36's committed sample | 150 |
+| W36 LF receipt byte counts, each equal to W36's committed sample and shrunk | 71 |
+| W32 `failure_impact[*].blind_links` added (core1 1, dist1 1, the other 21 rows 0) | 23 |
+| W33 attestation module counts, each +1 | 2 |
+| W33 dossier `impact_assessability`, published | 60 |
+| W33 dossier `impact_assessability`, core2 `lower_bound` (uncollected neighbour) | 3 |
+| W33 core2 dossier verdict | 1 |
+| W33 + W45 interaction: RES-4 `observed`, equal to the exact predicted text | 1 |
+| W45 interaction: core1/dist1 `impact_assessability` `lower_bound` (`blind_links`) | 6 |
+| W45 interaction: core1 verdict, CR-01/04/06 bases and dist1 verdict, each the exact predicted phrase substitution | 5 |
+| W45 interaction: `punchlist` copies of core1's CR bases, each the exact predicted substitution | 3 |
+
+The classifier compared each W36 leaf with W36's committed sample. For each interaction string it checked the old
+text with the measured phrase replaced by the lower-bound phrase. It used the owner's `CODE_PHRASES`, read as
+constants.
 
 ## Not done here
 
