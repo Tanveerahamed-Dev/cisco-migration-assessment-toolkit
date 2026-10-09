@@ -366,6 +366,24 @@ def test_lifecycle_fold_is_dated_by_the_pinned_evidence_date_not_the_wall_clock(
     assert _snap["device_dossiers"] == written["device_dossiers"]          # kept, not stripped
 
 
+def test_published_collected_at_is_exactly_the_engine_derivation_of_the_stamp(golden_run):
+    """F9, real-engine half: the snapshot's collected_at is exactly what the engine's one derivation
+    (COLLECT_PARSE `_derive_collected_at`) states for the run's collection-dir stamp -- no second clock or
+    formatting step sits between the stamp and the published value. This run declares no zone (the plain field
+    door), so the child and this process both read this host's zone; tests/test_sample_fleet_substrate.py
+    proves the demo builder's declared zone turns that same derivation into its pinned evidence clock on every
+    host. `collected_at` is stripped from the golden itself, so this is where its value is pinned."""
+    import COLLECT_PARSE_V3_23_0 as cp
+
+    _snap, xlsx = golden_run
+    with open(os.path.splitext(xlsx)[0] + ".snapshot.json", encoding="utf-8") as f:
+        written = json.load(f)
+    assert cp._COLLECTION_TZ is None
+    derived = cp._derive_collected_at(True, _GOLDEN_COLLECTION_STAMP, _GOLDEN_COLLECTION_STAMP)
+    assert derived[1] is False
+    assert written["collected_at"] == derived[0]
+
+
 # The dossier inputs the pipeline's ctx-adapter (COLLECT_PARSE `_device_dossiers`) passes, by the snapshot key
 # each is published under -- lifecycle_risk excepted: the golden strips it, so it is recomputed below.
 _DOSSIER_SECTIONS = tuple(dict.fromkeys(

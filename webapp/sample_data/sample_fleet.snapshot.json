@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-10-01T22:28:22.439213",
+  "generated_at": "2026-10-09T02:21:19.143550",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -3059,7 +3059,7 @@
       }
     }
   },
-  "collected_at": "2026-08-07T00:00:00+03:00",
+  "collected_at": "2026-08-07T00:00:00+00:00",
   "physical_health": [
     {
       "switch": "access1",
@@ -8488,7 +8488,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8514,7 +8514,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8540,7 +8540,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8566,7 +8566,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8592,7 +8592,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8618,7 +8618,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8644,7 +8644,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8670,7 +8670,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8696,7 +8696,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8722,7 +8722,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8748,7 +8748,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8774,7 +8774,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8800,7 +8800,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8826,7 +8826,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8852,7 +8852,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8878,7 +8878,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8904,7 +8904,7 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "d09fde28df359a810df146aedfb94b5446d313c3e5247bc5a3a070dc01a9fd16",
+        "config_sha256": "62e30d5f79d05899a5e0537fc1966fbc4864f5f8deaa11bb7dbd33ecbc6873da",
         "runtime_sha256": "",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
@@ -8930,8 +8930,8 @@
         "runtime_parsed_count": 1,
         "runtime_rejected_count": 0,
         "runtime_local_as": "65001",
-        "config_sha256": "d8e977f91b0a7990280e4ffc0c217de8070c98c0693bc1761786a49a4efb12c3",
-        "runtime_sha256": "de0a3061bbfc4180a69f1577137e7a1d09aaacf6f8fee57c0426b9921f6ade86",
+        "config_sha256": "963dac47d32eb6a38a3bfab29b006c26c511e3c3da561eedfae6d8f26f0c2be5",
+        "runtime_sha256": "3b569b09e84efe786596933b3770e5fbec37bcabf20b587f4f6e549c0434b57e",
         "projection_sha256": "09db829bdd90fc4830a824456808c21771b676c1a927d92d0ab538ecfd0d6e6b",
         "finding_codes": []
       },
@@ -8982,8 +8982,8 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "ef20165fe5d28ca9c3aab4f44bd000c01edda9cf8596a69bf0afa92b39e0509e",
-        "runtime_sha256": "3fbf4c9e0b60aacc202bf4d924cbba5d42bfb9def5b45dc9fbc1134d200c9ad8",
+        "config_sha256": "72cf649cf0e05b936edd3814f92f842beadbdcbe9760b2d535d69f8fa794dae6",
+        "runtime_sha256": "65624da4b7a7892cdbb8de619f14c2759e84c490bf9cf7021b7faa8d2588c19c",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
       },
@@ -9008,8 +9008,8 @@
         "runtime_parsed_count": 0,
         "runtime_rejected_count": 0,
         "runtime_local_as": "",
-        "config_sha256": "46f7af6c3ecafab1839a1c606d9ddc0786dd6eaa1772a84b1b2a893c15955074",
-        "runtime_sha256": "3fbf4c9e0b60aacc202bf4d924cbba5d42bfb9def5b45dc9fbc1134d200c9ad8",
+        "config_sha256": "6259ff0abe14fb71e237382dccbb1e7ddeb2ecf1e431af32beb95ff7e978413b",
+        "runtime_sha256": "65624da4b7a7892cdbb8de619f14c2759e84c490bf9cf7021b7faa8d2588c19c",
         "projection_sha256": "0c03bf079c3721ad3b5933afbe19d094c392267a7baa2a78b6aff47cfbf9e256",
         "finding_codes": []
       },
@@ -9091,7 +9091,7 @@
         "assessed": 0,
         "not_applicable": 2
       },
-      "baseline_sha256": "23a0c12c6d6e3d08c111f0bc7a618ef77b0440d1207dd334196d93fc30c8103c"
+      "baseline_sha256": "0d59c8bb0f56c7da53d2d8d16dedf4cf30ec778734f900f0a92e3601a04d646d"
     },
     "limitations": [
       "Scope is default/global IPv4 unicast and direct static literal IPv4 peers only.",
@@ -12623,7 +12623,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:f4fc38d62a88a2e06206867b67a1c06f48234f09dbb85462a13ffc0b029dc047"
+            "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -12658,7 +12658,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:da4c09c369f6a793149c4ad78b3b8668a5f037aed55ae25572d28f29e9614d9e"
+            "source_sha256": "sha256:214da9caffccf9f6bdbf95b822f2e38d68adfff334b574c225dc60a3a3c0cd11"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -12693,7 +12693,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:da4c09c369f6a793149c4ad78b3b8668a5f037aed55ae25572d28f29e9614d9e"
+            "source_sha256": "sha256:214da9caffccf9f6bdbf95b822f2e38d68adfff334b574c225dc60a3a3c0cd11"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -12728,7 +12728,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:da4c09c369f6a793149c4ad78b3b8668a5f037aed55ae25572d28f29e9614d9e"
+            "source_sha256": "sha256:214da9caffccf9f6bdbf95b822f2e38d68adfff334b574c225dc60a3a3c0cd11"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -12763,7 +12763,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:f4fc38d62a88a2e06206867b67a1c06f48234f09dbb85462a13ffc0b029dc047"
+            "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -12798,7 +12798,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:f4fc38d62a88a2e06206867b67a1c06f48234f09dbb85462a13ffc0b029dc047"
+            "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -12833,7 +12833,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:f4fc38d62a88a2e06206867b67a1c06f48234f09dbb85462a13ffc0b029dc047"
+            "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -12868,7 +12868,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:f4fc38d62a88a2e06206867b67a1c06f48234f09dbb85462a13ffc0b029dc047"
+            "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -12903,7 +12903,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:f4fc38d62a88a2e06206867b67a1c06f48234f09dbb85462a13ffc0b029dc047"
+            "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -12938,7 +12938,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:f4fc38d62a88a2e06206867b67a1c06f48234f09dbb85462a13ffc0b029dc047"
+            "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -12973,7 +12973,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:f4fc38d62a88a2e06206867b67a1c06f48234f09dbb85462a13ffc0b029dc047"
+            "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -13008,7 +13008,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:f4fc38d62a88a2e06206867b67a1c06f48234f09dbb85462a13ffc0b029dc047"
+            "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -13043,7 +13043,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:f4fc38d62a88a2e06206867b67a1c06f48234f09dbb85462a13ffc0b029dc047"
+            "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -13078,7 +13078,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:f4fc38d62a88a2e06206867b67a1c06f48234f09dbb85462a13ffc0b029dc047"
+            "source_sha256": "sha256:213f4c98536465f67d244eb5e232abb6659043b97e1fbbe0d837f05fd9048e17"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -13113,7 +13113,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:da4c09c369f6a793149c4ad78b3b8668a5f037aed55ae25572d28f29e9614d9e"
+            "source_sha256": "sha256:214da9caffccf9f6bdbf95b822f2e38d68adfff334b574c225dc60a3a3c0cd11"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -13148,7 +13148,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:da4c09c369f6a793149c4ad78b3b8668a5f037aed55ae25572d28f29e9614d9e"
+            "source_sha256": "sha256:214da9caffccf9f6bdbf95b822f2e38d68adfff334b574c225dc60a3a3c0cd11"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -13183,7 +13183,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:da4c09c369f6a793149c4ad78b3b8668a5f037aed55ae25572d28f29e9614d9e"
+            "source_sha256": "sha256:214da9caffccf9f6bdbf95b822f2e38d68adfff334b574c225dc60a3a3c0cd11"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -13218,7 +13218,7 @@
             "candidate_count": 3,
             "parsed_count": 3,
             "rejected_count": 0,
-            "source_sha256": "sha256:a52949fdf72a26c79cbff5b0a8df074a4ef116cc240bc812d8e04f3c28c4bf7d"
+            "source_sha256": "sha256:843bd55d3ddf68f03a3c6671a2bf486b155528f87127605f0b8a80d9eb9132f9"
           },
           "show running-config": {
             "capture_status": "incomplete",
@@ -13253,7 +13253,7 @@
             "candidate_count": 2,
             "parsed_count": 2,
             "rejected_count": 0,
-            "source_sha256": "sha256:c43b6186b0b755f073ec6952424d01fdba80258de23a04985a1a5bd27665b49f"
+            "source_sha256": "sha256:08d0a361a1e61544d4b836efd1b277e536f125256d9b29543f42c06ce77213dd"
           },
           "show running-config": {
             "capture_status": "not_observed",
@@ -13288,7 +13288,7 @@
             "candidate_count": 2,
             "parsed_count": 2,
             "rejected_count": 0,
-            "source_sha256": "sha256:f2a140085f1b5bb495abcb887217cc4f8aacd17e277b1324feba937fe27fbdd4"
+            "source_sha256": "sha256:6fcab9532594f03272c2a359a6c2c17d6cfcbb1f32f8ca3b8ac8b668cd58ada7"
           },
           "show running-config": {
             "capture_status": "ok",
@@ -13296,7 +13296,7 @@
             "candidate_count": 0,
             "parsed_count": 0,
             "rejected_count": 0,
-            "source_sha256": "sha256:ef20165fe5d28ca9c3aab4f44bd000c01edda9cf8596a69bf0afa92b39e0509e"
+            "source_sha256": "sha256:72cf649cf0e05b936edd3814f92f842beadbdcbe9760b2d535d69f8fa794dae6"
           }
         },
         "projection_sha256": "sha256:33b2571f6c035f7490f04b85b7b352b62611a3fbd84e72578a210c061b122856",
@@ -13323,7 +13323,7 @@
             "candidate_count": 2,
             "parsed_count": 2,
             "rejected_count": 0,
-            "source_sha256": "sha256:f2a140085f1b5bb495abcb887217cc4f8aacd17e277b1324feba937fe27fbdd4"
+            "source_sha256": "sha256:6fcab9532594f03272c2a359a6c2c17d6cfcbb1f32f8ca3b8ac8b668cd58ada7"
           },
           "show running-config": {
             "capture_status": "ok",
@@ -13331,7 +13331,7 @@
             "candidate_count": 0,
             "parsed_count": 0,
             "rejected_count": 0,
-            "source_sha256": "sha256:46f7af6c3ecafab1839a1c606d9ddc0786dd6eaa1772a84b1b2a893c15955074"
+            "source_sha256": "sha256:6259ff0abe14fb71e237382dccbb1e7ddeb2ecf1e431af32beb95ff7e978413b"
           }
         },
         "projection_sha256": "sha256:1327e4191aaf550ff62e7a70b7b81e12703489494f63df672b440ec0006391d2",
@@ -13358,7 +13358,7 @@
             "candidate_count": 2,
             "parsed_count": 2,
             "rejected_count": 0,
-            "source_sha256": "sha256:408eb380603c90c0c63d6accd75667b1419605f9d4d0bc2a9203ebda425a8817"
+            "source_sha256": "sha256:04a2e30ac23eafc36d5e489b287a7d6f5fce056dc4686d3aad95bacfdedcbef6"
           },
           "show running-config": {
             "capture_status": "not_observed",
@@ -13393,7 +13393,7 @@
             "candidate_count": 2,
             "parsed_count": 2,
             "rejected_count": 0,
-            "source_sha256": "sha256:408eb380603c90c0c63d6accd75667b1419605f9d4d0bc2a9203ebda425a8817"
+            "source_sha256": "sha256:04a2e30ac23eafc36d5e489b287a7d6f5fce056dc4686d3aad95bacfdedcbef6"
           },
           "show running-config": {
             "capture_status": "not_observed",
@@ -13424,7 +13424,7 @@
         "unsafe": 0,
         "not_verified": 23
       },
-      "baseline_sha256": "bcc845a0e2081f7d6029c506fd06d650d2409f93ef1cea5c0036a9b5614cb6ea"
+      "baseline_sha256": "271fd6cf8e4235f9b03524121d83f278407f09213f73e1709237272c979f0791"
     },
     "limitations": [
       "IOS/IOS-XE and NX-OS text variants are supported only when all three exact command captures have unique integrity-ok receipts.",
@@ -18461,8 +18461,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:513d4cfa1c59440c2f828acd9407e92803f67231fd6f808ef06817917dd7d8a0",
-            "bytes": 396
+            "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -18475,18 +18475,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:5619d9b2bca4cb89ed7f5e4397376d110bfeb5d1883050fae3a9eb98a8d76c2c",
-            "bytes": 414
+            "source_sha256": "sha256:5bdf14005c7798965c268283ca0ffc07520d3e6ee1be81ae07b03540f4ca3df3",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:ad296a0787c9f2ebde80d99736b6812d07638dddcd4733ee5a8bf0b2e387b5ab",
+        "source_sha256": "sha256:4d3cb20cf0ac99362b18b0e72dcab9fc653c77cfa3e4f8235e9dc1ea5dd395ac",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -18518,8 +18518,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:c0ecc6e1284b6857e44844163eb3a9bc2844b07d211a04b486c6336fc7e617fb",
-            "bytes": 396
+            "source_sha256": "sha256:f5f0101b009311f76f3a95b1624d74165b008f304397cdbc45aef003d3a9ef97",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -18532,18 +18532,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:d90574f035a534590281f600acf07606dfa3936513ee11012a6a89a86337b7fd",
-            "bytes": 414
+            "source_sha256": "sha256:bb5d57076f97776c854127b97fbba7a59623202d83bcb93b063f79db0b85c6b9",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:66ac0a62f1b90fcbddc56eb5a9845e0552dfe2911e507f6a242a06f5a62a66a3",
+        "source_sha256": "sha256:ed74eaaf6c4a9ea8c6cd3c08dfb604cc6147cadb9c8566775e17209eae3a9c65",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -18575,8 +18575,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:c0ecc6e1284b6857e44844163eb3a9bc2844b07d211a04b486c6336fc7e617fb",
-            "bytes": 396
+            "source_sha256": "sha256:f5f0101b009311f76f3a95b1624d74165b008f304397cdbc45aef003d3a9ef97",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -18589,18 +18589,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:d90574f035a534590281f600acf07606dfa3936513ee11012a6a89a86337b7fd",
-            "bytes": 414
+            "source_sha256": "sha256:bb5d57076f97776c854127b97fbba7a59623202d83bcb93b063f79db0b85c6b9",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:66ac0a62f1b90fcbddc56eb5a9845e0552dfe2911e507f6a242a06f5a62a66a3",
+        "source_sha256": "sha256:ed74eaaf6c4a9ea8c6cd3c08dfb604cc6147cadb9c8566775e17209eae3a9c65",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -18632,8 +18632,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:c0ecc6e1284b6857e44844163eb3a9bc2844b07d211a04b486c6336fc7e617fb",
-            "bytes": 396
+            "source_sha256": "sha256:f5f0101b009311f76f3a95b1624d74165b008f304397cdbc45aef003d3a9ef97",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -18646,18 +18646,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:d90574f035a534590281f600acf07606dfa3936513ee11012a6a89a86337b7fd",
-            "bytes": 414
+            "source_sha256": "sha256:bb5d57076f97776c854127b97fbba7a59623202d83bcb93b063f79db0b85c6b9",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:66ac0a62f1b90fcbddc56eb5a9845e0552dfe2911e507f6a242a06f5a62a66a3",
+        "source_sha256": "sha256:ed74eaaf6c4a9ea8c6cd3c08dfb604cc6147cadb9c8566775e17209eae3a9c65",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -18689,8 +18689,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:513d4cfa1c59440c2f828acd9407e92803f67231fd6f808ef06817917dd7d8a0",
-            "bytes": 396
+            "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -18703,18 +18703,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:301d189b76de48e3fe66afdea121edfe0af826c222e3418c72b102639d165ace",
-            "bytes": 586
+            "source_sha256": "sha256:7d6b9b691a472c80ea5104ff07d3c89ef5431a18ff5e101fe8d8eec1c7e5ebdf",
+            "bytes": 579
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:568799adc192481ecd5a18eefc05fbb81d9468e0d3199c65cab713910d9db644",
-            "bytes": 956
+            "source_sha256": "sha256:8e2a047ff8333dfeb70eb038a786fbfb02e23d6a8bc663ba30a6fef200f5a935",
+            "bytes": 938
           }
         ],
-        "source_sha256": "sha256:5a5a1547982c49a8ed08206896e4d05c7b575982c6f1b1203cc64a5a955e71a8",
+        "source_sha256": "sha256:39df145bbc4daba38316923ed18b747e1b8177a34b5fe349a3e7b65acffdba77",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -18746,8 +18746,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:513d4cfa1c59440c2f828acd9407e92803f67231fd6f808ef06817917dd7d8a0",
-            "bytes": 396
+            "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -18760,18 +18760,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:301d189b76de48e3fe66afdea121edfe0af826c222e3418c72b102639d165ace",
-            "bytes": 586
+            "source_sha256": "sha256:7d6b9b691a472c80ea5104ff07d3c89ef5431a18ff5e101fe8d8eec1c7e5ebdf",
+            "bytes": 579
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:568799adc192481ecd5a18eefc05fbb81d9468e0d3199c65cab713910d9db644",
-            "bytes": 956
+            "source_sha256": "sha256:8e2a047ff8333dfeb70eb038a786fbfb02e23d6a8bc663ba30a6fef200f5a935",
+            "bytes": 938
           }
         ],
-        "source_sha256": "sha256:5a5a1547982c49a8ed08206896e4d05c7b575982c6f1b1203cc64a5a955e71a8",
+        "source_sha256": "sha256:39df145bbc4daba38316923ed18b747e1b8177a34b5fe349a3e7b65acffdba77",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -18803,8 +18803,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:513d4cfa1c59440c2f828acd9407e92803f67231fd6f808ef06817917dd7d8a0",
-            "bytes": 396
+            "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -18817,18 +18817,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:301d189b76de48e3fe66afdea121edfe0af826c222e3418c72b102639d165ace",
-            "bytes": 586
+            "source_sha256": "sha256:7d6b9b691a472c80ea5104ff07d3c89ef5431a18ff5e101fe8d8eec1c7e5ebdf",
+            "bytes": 579
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:568799adc192481ecd5a18eefc05fbb81d9468e0d3199c65cab713910d9db644",
-            "bytes": 956
+            "source_sha256": "sha256:8e2a047ff8333dfeb70eb038a786fbfb02e23d6a8bc663ba30a6fef200f5a935",
+            "bytes": 938
           }
         ],
-        "source_sha256": "sha256:5a5a1547982c49a8ed08206896e4d05c7b575982c6f1b1203cc64a5a955e71a8",
+        "source_sha256": "sha256:39df145bbc4daba38316923ed18b747e1b8177a34b5fe349a3e7b65acffdba77",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -18860,8 +18860,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:513d4cfa1c59440c2f828acd9407e92803f67231fd6f808ef06817917dd7d8a0",
-            "bytes": 396
+            "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -18874,18 +18874,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:301d189b76de48e3fe66afdea121edfe0af826c222e3418c72b102639d165ace",
-            "bytes": 586
+            "source_sha256": "sha256:7d6b9b691a472c80ea5104ff07d3c89ef5431a18ff5e101fe8d8eec1c7e5ebdf",
+            "bytes": 579
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:568799adc192481ecd5a18eefc05fbb81d9468e0d3199c65cab713910d9db644",
-            "bytes": 956
+            "source_sha256": "sha256:8e2a047ff8333dfeb70eb038a786fbfb02e23d6a8bc663ba30a6fef200f5a935",
+            "bytes": 938
           }
         ],
-        "source_sha256": "sha256:5a5a1547982c49a8ed08206896e4d05c7b575982c6f1b1203cc64a5a955e71a8",
+        "source_sha256": "sha256:39df145bbc4daba38316923ed18b747e1b8177a34b5fe349a3e7b65acffdba77",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -18917,8 +18917,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:513d4cfa1c59440c2f828acd9407e92803f67231fd6f808ef06817917dd7d8a0",
-            "bytes": 396
+            "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -18931,18 +18931,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:301d189b76de48e3fe66afdea121edfe0af826c222e3418c72b102639d165ace",
-            "bytes": 586
+            "source_sha256": "sha256:7d6b9b691a472c80ea5104ff07d3c89ef5431a18ff5e101fe8d8eec1c7e5ebdf",
+            "bytes": 579
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:568799adc192481ecd5a18eefc05fbb81d9468e0d3199c65cab713910d9db644",
-            "bytes": 956
+            "source_sha256": "sha256:8e2a047ff8333dfeb70eb038a786fbfb02e23d6a8bc663ba30a6fef200f5a935",
+            "bytes": 938
           }
         ],
-        "source_sha256": "sha256:5a5a1547982c49a8ed08206896e4d05c7b575982c6f1b1203cc64a5a955e71a8",
+        "source_sha256": "sha256:39df145bbc4daba38316923ed18b747e1b8177a34b5fe349a3e7b65acffdba77",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -18974,8 +18974,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:513d4cfa1c59440c2f828acd9407e92803f67231fd6f808ef06817917dd7d8a0",
-            "bytes": 396
+            "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -18988,18 +18988,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:5619d9b2bca4cb89ed7f5e4397376d110bfeb5d1883050fae3a9eb98a8d76c2c",
-            "bytes": 414
+            "source_sha256": "sha256:5bdf14005c7798965c268283ca0ffc07520d3e6ee1be81ae07b03540f4ca3df3",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:ad296a0787c9f2ebde80d99736b6812d07638dddcd4733ee5a8bf0b2e387b5ab",
+        "source_sha256": "sha256:4d3cb20cf0ac99362b18b0e72dcab9fc653c77cfa3e4f8235e9dc1ea5dd395ac",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -19031,8 +19031,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:513d4cfa1c59440c2f828acd9407e92803f67231fd6f808ef06817917dd7d8a0",
-            "bytes": 396
+            "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -19045,18 +19045,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:5619d9b2bca4cb89ed7f5e4397376d110bfeb5d1883050fae3a9eb98a8d76c2c",
-            "bytes": 414
+            "source_sha256": "sha256:5bdf14005c7798965c268283ca0ffc07520d3e6ee1be81ae07b03540f4ca3df3",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:ad296a0787c9f2ebde80d99736b6812d07638dddcd4733ee5a8bf0b2e387b5ab",
+        "source_sha256": "sha256:4d3cb20cf0ac99362b18b0e72dcab9fc653c77cfa3e4f8235e9dc1ea5dd395ac",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -19088,8 +19088,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:513d4cfa1c59440c2f828acd9407e92803f67231fd6f808ef06817917dd7d8a0",
-            "bytes": 396
+            "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -19102,18 +19102,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:5619d9b2bca4cb89ed7f5e4397376d110bfeb5d1883050fae3a9eb98a8d76c2c",
-            "bytes": 414
+            "source_sha256": "sha256:5bdf14005c7798965c268283ca0ffc07520d3e6ee1be81ae07b03540f4ca3df3",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:ad296a0787c9f2ebde80d99736b6812d07638dddcd4733ee5a8bf0b2e387b5ab",
+        "source_sha256": "sha256:4d3cb20cf0ac99362b18b0e72dcab9fc653c77cfa3e4f8235e9dc1ea5dd395ac",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -19145,8 +19145,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:513d4cfa1c59440c2f828acd9407e92803f67231fd6f808ef06817917dd7d8a0",
-            "bytes": 396
+            "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -19159,18 +19159,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:5619d9b2bca4cb89ed7f5e4397376d110bfeb5d1883050fae3a9eb98a8d76c2c",
-            "bytes": 414
+            "source_sha256": "sha256:5bdf14005c7798965c268283ca0ffc07520d3e6ee1be81ae07b03540f4ca3df3",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:ad296a0787c9f2ebde80d99736b6812d07638dddcd4733ee5a8bf0b2e387b5ab",
+        "source_sha256": "sha256:4d3cb20cf0ac99362b18b0e72dcab9fc653c77cfa3e4f8235e9dc1ea5dd395ac",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -19202,8 +19202,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:513d4cfa1c59440c2f828acd9407e92803f67231fd6f808ef06817917dd7d8a0",
-            "bytes": 396
+            "source_sha256": "sha256:32ab1b3dad8afc2adb5d8591922571e95f6cd440c94cf98d20bf4c050ae55698",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -19216,18 +19216,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:5619d9b2bca4cb89ed7f5e4397376d110bfeb5d1883050fae3a9eb98a8d76c2c",
-            "bytes": 414
+            "source_sha256": "sha256:5bdf14005c7798965c268283ca0ffc07520d3e6ee1be81ae07b03540f4ca3df3",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:ad296a0787c9f2ebde80d99736b6812d07638dddcd4733ee5a8bf0b2e387b5ab",
+        "source_sha256": "sha256:4d3cb20cf0ac99362b18b0e72dcab9fc653c77cfa3e4f8235e9dc1ea5dd395ac",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -19259,8 +19259,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:c0ecc6e1284b6857e44844163eb3a9bc2844b07d211a04b486c6336fc7e617fb",
-            "bytes": 396
+            "source_sha256": "sha256:f5f0101b009311f76f3a95b1624d74165b008f304397cdbc45aef003d3a9ef97",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -19273,18 +19273,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:d90574f035a534590281f600acf07606dfa3936513ee11012a6a89a86337b7fd",
-            "bytes": 414
+            "source_sha256": "sha256:bb5d57076f97776c854127b97fbba7a59623202d83bcb93b063f79db0b85c6b9",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:66ac0a62f1b90fcbddc56eb5a9845e0552dfe2911e507f6a242a06f5a62a66a3",
+        "source_sha256": "sha256:ed74eaaf6c4a9ea8c6cd3c08dfb604cc6147cadb9c8566775e17209eae3a9c65",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -19316,8 +19316,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:c0ecc6e1284b6857e44844163eb3a9bc2844b07d211a04b486c6336fc7e617fb",
-            "bytes": 396
+            "source_sha256": "sha256:f5f0101b009311f76f3a95b1624d74165b008f304397cdbc45aef003d3a9ef97",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -19330,18 +19330,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:d90574f035a534590281f600acf07606dfa3936513ee11012a6a89a86337b7fd",
-            "bytes": 414
+            "source_sha256": "sha256:bb5d57076f97776c854127b97fbba7a59623202d83bcb93b063f79db0b85c6b9",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:66ac0a62f1b90fcbddc56eb5a9845e0552dfe2911e507f6a242a06f5a62a66a3",
+        "source_sha256": "sha256:ed74eaaf6c4a9ea8c6cd3c08dfb604cc6147cadb9c8566775e17209eae3a9c65",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -19373,8 +19373,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:c0ecc6e1284b6857e44844163eb3a9bc2844b07d211a04b486c6336fc7e617fb",
-            "bytes": 396
+            "source_sha256": "sha256:f5f0101b009311f76f3a95b1624d74165b008f304397cdbc45aef003d3a9ef97",
+            "bytes": 382
           },
           {
             "role": "partner",
@@ -19387,18 +19387,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:d90574f035a534590281f600acf07606dfa3936513ee11012a6a89a86337b7fd",
-            "bytes": 414
+            "source_sha256": "sha256:bb5d57076f97776c854127b97fbba7a59623202d83bcb93b063f79db0b85c6b9",
+            "bytes": 409
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:43716b81fb23c540458d9c9539bb1734edeedf6ff7783d27119fbb4814f0d973",
-            "bytes": 312
+            "source_sha256": "sha256:7fdda45c12255ab65f2e90c61ca38606be129ee9357ad48bc7acbd18eeed6d3e",
+            "bytes": 306
           }
         ],
-        "source_sha256": "sha256:66ac0a62f1b90fcbddc56eb5a9845e0552dfe2911e507f6a242a06f5a62a66a3",
+        "source_sha256": "sha256:ed74eaaf6c4a9ea8c6cd3c08dfb604cc6147cadb9c8566775e17209eae3a9c65",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -19416,8 +19416,8 @@
             "role": "summary",
             "command": "show etherchannel summary",
             "capture_status": "ok",
-            "source_sha256": "sha256:8a50cec204aa63fd06b427f94b87a5e7c6416d8c01632605e790cdb243af9b32",
-            "bytes": 347
+            "source_sha256": "sha256:402888b00b7f2ece0fcd5bf949b322ec492c3909e409b5c8e998b5844142f048",
+            "bytes": 339
           },
           {
             "role": "full_config",
@@ -19430,8 +19430,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:6cbb67d800dea09d45d8e197261b9c876a879d382f0f8384bb09fc1cc1514e49",
-            "bytes": 1270
+            "source_sha256": "sha256:aaded278efab37b947d52cfaffbc47f49f6f33749add877ee5e80816c0c880bc",
+            "bytes": 1223
           },
           {
             "role": "partner",
@@ -19444,18 +19444,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:f883241a0984dac3b260f6c259235b3bcaada03375474a0b0c03bb88e5042247",
-            "bytes": 567
+            "source_sha256": "sha256:d37c1ff0ab311d59396195ce580cc6132944a7cd191fcff018f6aa39e1f74631",
+            "bytes": 560
           },
           {
             "role": "interface_counters",
             "command": "show interfaces",
             "capture_status": "ok",
-            "source_sha256": "sha256:f69bee91b066409d4c05ca029031cfb954db2da9602e62df28d30e1d168c5022",
-            "bytes": 638
+            "source_sha256": "sha256:3a999b0d9e4d324a8a85ccc914e1263b04e572b94c62c16b24d949bc8f6084e3",
+            "bytes": 626
           }
         ],
-        "source_sha256": "sha256:73f52b1c23f2c7c0baa77bc38f55413a045a085d0be70b1b626e5be4caad37a6",
+        "source_sha256": "sha256:c864ee4cb5bb3638bedefff76a6513f8ae93a9a728a7e1e4617ec064d7e3aeb0",
         "projection_sha256": "sha256:e244936d9f321f13f77b7a65089d80ded7437b26ef4e0ebc295760303a73b867",
         "finding_codes": [
           "config_scope_mismatch",
@@ -19481,8 +19481,8 @@
             "role": "summary",
             "command": "show port-channel summary",
             "capture_status": "ok",
-            "source_sha256": "sha256:46764267649888d896b11161fdd683b9ea46d6eb9665efe14326f5f6d4a70d83",
-            "bytes": 388
+            "source_sha256": "sha256:2f2a252a336f6c0298ae30b354690481125d95c5a96d26870892207ee1614fc1",
+            "bytes": 381
           },
           {
             "role": "full_config",
@@ -19495,8 +19495,8 @@
             "role": "scoped_config",
             "command": "show running-config interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:09232965d237bef34cf7ddeacec1e775d6ea2ccfe1eb0ae738f7ab9449a6dadb",
-            "bytes": 525
+            "source_sha256": "sha256:fe4e599105f4eef9739d70edeebd35a59c398b1482f3ebb5e002f31c08eac1f8",
+            "bytes": 502
           },
           {
             "role": "partner",
@@ -19509,18 +19509,18 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:f7ec820d9ff9ed3216784514a4373ce053234e456a8cdb1d4c2b7aec74b11626",
-            "bytes": 460
+            "source_sha256": "sha256:6fd757a6a11ca0a97b55f826fb2b4323eae65d372b87549eb5989bc2c80a5163",
+            "bytes": 454
           },
           {
             "role": "interface_counters",
             "command": "show interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:80c33516f712b8d88a928be7026eb8d5d799420a70bf8ecd4a3d35bef0f94195",
-            "bytes": 217
+            "source_sha256": "sha256:e24c9aeaf77ef0068056c579eb9ea272b3392303104f75d78a7eedd66022dffb",
+            "bytes": 211
           }
         ],
-        "source_sha256": "sha256:f2a449ae83eebe2f730e85570e7bb2b4bf8108435c59f784889f10e6a52537bf",
+        "source_sha256": "sha256:cdee67800f3e28c67420cc37bb8dc980f12c61919c253209f5bcdde15559bd10",
         "projection_sha256": "sha256:729ef1b82864202dc29813bdcbb11f732570a5a1b399a71acc8aa9da98e0beae",
         "finding_codes": [
           "config_scope_mismatch",
@@ -19546,22 +19546,22 @@
             "role": "summary",
             "command": "show etherchannel summary",
             "capture_status": "ok",
-            "source_sha256": "sha256:8a50cec204aa63fd06b427f94b87a5e7c6416d8c01632605e790cdb243af9b32",
-            "bytes": 347
+            "source_sha256": "sha256:402888b00b7f2ece0fcd5bf949b322ec492c3909e409b5c8e998b5844142f048",
+            "bytes": 339
           },
           {
             "role": "full_config",
             "command": "show running-config",
             "capture_status": "ok",
-            "source_sha256": "sha256:ef20165fe5d28ca9c3aab4f44bd000c01edda9cf8596a69bf0afa92b39e0509e",
-            "bytes": 589
+            "source_sha256": "sha256:72cf649cf0e05b936edd3814f92f842beadbdcbe9760b2d535d69f8fa794dae6",
+            "bytes": 561
           },
           {
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:ba0894420f2b0898dc1dc86468aaaea1ce6241bbfd1c4ae7eb97f75bd31d69f2",
-            "bytes": 914
+            "source_sha256": "sha256:34341009c6028c8af78ecf259b0619d8088e6e23bba8ad874ccf6e5ed6bb35e4",
+            "bytes": 879
           },
           {
             "role": "partner",
@@ -19574,8 +19574,8 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:a090924d1f864729066ddcf7fecc2da64baef689772cc43d02d155b581c361cd",
-            "bytes": 567
+            "source_sha256": "sha256:879d8d974a14544065f3080b8016fa8065a609eeb4b6a686587c17dbc13eaa7b",
+            "bytes": 560
           },
           {
             "role": "interface_counters",
@@ -19585,7 +19585,7 @@
             "bytes": 0
           }
         ],
-        "source_sha256": "sha256:68210c1829a37dff1737400ab25c5fe4e0e384b6e36da1270c671f3312986a35",
+        "source_sha256": "sha256:d297f558903053b6579e9c94f44a91196267db25857e10cf00a929dbe8ec0a12",
         "projection_sha256": "sha256:a293de7edcb636f1c3e5d2c3bffc2d7684971f198568ff0ff89b4e0de35d14d6",
         "finding_codes": [
           "config_scope_mismatch",
@@ -19611,22 +19611,22 @@
             "role": "summary",
             "command": "show etherchannel summary",
             "capture_status": "ok",
-            "source_sha256": "sha256:8a50cec204aa63fd06b427f94b87a5e7c6416d8c01632605e790cdb243af9b32",
-            "bytes": 347
+            "source_sha256": "sha256:402888b00b7f2ece0fcd5bf949b322ec492c3909e409b5c8e998b5844142f048",
+            "bytes": 339
           },
           {
             "role": "full_config",
             "command": "show running-config",
             "capture_status": "ok",
-            "source_sha256": "sha256:46f7af6c3ecafab1839a1c606d9ddc0786dd6eaa1772a84b1b2a893c15955074",
-            "bytes": 553
+            "source_sha256": "sha256:6259ff0abe14fb71e237382dccbb1e7ddeb2ecf1e431af32beb95ff7e978413b",
+            "bytes": 526
           },
           {
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:e4178ffe20d1a5c4287bef26563bff7d8cb96479d69626dd8e701100c55dd1b2",
-            "bytes": 888
+            "source_sha256": "sha256:4b6d33ba8c36c701f3d118f34db63b6c8cb974e1fdd0d47cfe74e0aea2188cdc",
+            "bytes": 854
           },
           {
             "role": "partner",
@@ -19639,8 +19639,8 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:b73d250a3b6683bb6d91dabf837b946056f60be482e2aaf259a5e984bf418f26",
-            "bytes": 567
+            "source_sha256": "sha256:80be50a94524b69a7158a0daae81e39548d6886cf4c988a7d8c3de245b2fb2a1",
+            "bytes": 560
           },
           {
             "role": "interface_counters",
@@ -19650,7 +19650,7 @@
             "bytes": 0
           }
         ],
-        "source_sha256": "sha256:7692727ac975afae383cf347ef115f88738abf8cd82dc9a9f94b83286b1417d3",
+        "source_sha256": "sha256:1d53bdd5e0ec2d2661b4dc9962b27991eb8babf29ed5ffb77b87f795ead52591",
         "projection_sha256": "sha256:f187929b13d69df34f484d346b28347afadc060d13e104b07d2a5be41fc8cf60",
         "finding_codes": [
           "config_scope_mismatch",
@@ -19690,8 +19690,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:d5200d7058036c7a90a44771feb5adcfbe22b26882054ece6d01bdc2f60ede8c",
-            "bytes": 462
+            "source_sha256": "sha256:19fc872b7e4f192a6cbcce9576dc7e367cd0b8c608cc8088165f0dd59a340f2b",
+            "bytes": 446
           },
           {
             "role": "partner",
@@ -19704,8 +19704,8 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:35e82870244599b1f576104dd51fd3185250520290eea8311ccf9a8e120cd546",
-            "bytes": 411
+            "source_sha256": "sha256:b8bea96f584c6ea7006753bd632154b96f09604b6366f2d38ea4e9f0f4012270",
+            "bytes": 406
           },
           {
             "role": "interface_counters",
@@ -19715,7 +19715,7 @@
             "bytes": 0
           }
         ],
-        "source_sha256": "sha256:297f9620cd032175cf234aa1b8c1fa3c71bfb034ccf85ba10432ba23aa49dc01",
+        "source_sha256": "sha256:a11940675e587a8226d2c7232d46938355faaaf592704947b53e856141342c1f",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -19747,8 +19747,8 @@
             "role": "scoped_config",
             "command": "show running-config | section ^interface",
             "capture_status": "ok",
-            "source_sha256": "sha256:d5200d7058036c7a90a44771feb5adcfbe22b26882054ece6d01bdc2f60ede8c",
-            "bytes": 462
+            "source_sha256": "sha256:19fc872b7e4f192a6cbcce9576dc7e367cd0b8c608cc8088165f0dd59a340f2b",
+            "bytes": 446
           },
           {
             "role": "partner",
@@ -19761,8 +19761,8 @@
             "role": "interface_status",
             "command": "show interface status",
             "capture_status": "ok",
-            "source_sha256": "sha256:35e82870244599b1f576104dd51fd3185250520290eea8311ccf9a8e120cd546",
-            "bytes": 411
+            "source_sha256": "sha256:b8bea96f584c6ea7006753bd632154b96f09604b6366f2d38ea4e9f0f4012270",
+            "bytes": 406
           },
           {
             "role": "interface_counters",
@@ -19772,7 +19772,7 @@
             "bytes": 0
           }
         ],
-        "source_sha256": "sha256:297f9620cd032175cf234aa1b8c1fa3c71bfb034ccf85ba10432ba23aa49dc01",
+        "source_sha256": "sha256:a11940675e587a8226d2c7232d46938355faaaf592704947b53e856141342c1f",
         "projection_sha256": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "finding_codes": [
           "absence_not_verified"
@@ -19803,7 +19803,7 @@
         "not_verified": 23,
         "not_applicable": 0
       },
-      "evidence_sha256": "sha256:e482d8a3679587ffe67c757653c3c9415322397a058635be7439b2fad3f5ec9d"
+      "evidence_sha256": "sha256:3c3692c6319ff2df145cbca83c5e39f022002ad4c56e56332e96e5541e402d72"
     },
     "limitations": [
       "Only Cisco IOS/IOS-XE and NX-OS show-text variants are implemented; no other vendor parity is inferred.",
@@ -44905,7 +44905,7 @@
           "schema": "multichassis_lag_typed_source_receipt/1",
           "capture_status": "incomplete",
           "projection_custody": "current_run_source_bound",
-          "source_sha256": "sha256:75487fc19dfea1bf347d5aa2e645ab265ddeecc6468ddbcbda5ed1512166778a",
+          "source_sha256": "sha256:49b0125fa25572a77e3c6294c00477763480b69a2f1b261b1cde5ad67a39074d",
           "owner_version": "raw-producer-1",
           "commands": [
             "show mlag"
@@ -45096,7 +45096,7 @@
             "source_bound": true,
             "capture_status": "incomplete",
             "projection_custody": "current_run_source_bound",
-            "source_sha256": "sha256:75487fc19dfea1bf347d5aa2e645ab265ddeecc6468ddbcbda5ed1512166778a",
+            "source_sha256": "sha256:49b0125fa25572a77e3c6294c00477763480b69a2f1b261b1cde5ad67a39074d",
             "owner_version": "raw-producer-1",
             "commands": [
               "show mlag"
@@ -45127,7 +45127,7 @@
         "n_local_subjects": 1,
         "n_in_scope": 0,
         "n_not_verified": 1,
-        "scope_sha256": "sha256:2a607b2b39678c6fb99b10fd4ed88a204fbd52638e5e2bd9387a3e1e5cf7caab"
+        "scope_sha256": "sha256:a63886b9dba4aaf62e6779cef3c36e0a5ac39b1f1bdc5a3b03b710426a876ae5"
       },
       "limitations": [
         "Catalog presence and parser availability are not runtime support evidence.",
@@ -45171,7 +45171,7 @@
           "source_bound": true,
           "capture_status": "incomplete",
           "projection_custody": "current_run_source_bound",
-          "source_sha256": "sha256:75487fc19dfea1bf347d5aa2e645ab265ddeecc6468ddbcbda5ed1512166778a",
+          "source_sha256": "sha256:49b0125fa25572a77e3c6294c00477763480b69a2f1b261b1cde5ad67a39074d",
           "owner_version": "raw-producer-1",
           "commands": [
             "show mlag"
@@ -45223,7 +45223,7 @@
         "degraded": 1,
         "not_verified": 0
       },
-      "baseline_sha256": "sha256:0c945c52840a15495f32f2c8258dac8569d850cab9c845603a9a720710309a9d"
+      "baseline_sha256": "sha256:509377d023ea1493ff6324b75b5c67ef4a519e9ffe9d22f445c1453a436d9a93"
     },
     "limitations": [
       "Catalog presence and parser availability are not runtime support evidence.",
@@ -59168,7 +59168,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-10-01T19:28:22.324145+00:00",
+    "generated_at": "2026-10-09T02:21:18.879234+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",

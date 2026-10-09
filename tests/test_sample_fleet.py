@@ -58,6 +58,45 @@ def test_committed_registry_health_is_judged_at_the_demo_evidence_date():
         assert health["freshness_status"] == "fresh", (name, health["freshness_status"])
 
 
+def test_committed_collected_at_is_the_demo_evidence_clock():
+    """The committed demo states its collection instant as build_sample's pinned evidence clock, byte for byte:
+    not the offset of whichever machine last regenerated it (F9: a workstation build wrote +03:00)."""
+    from webapp.sample_data.build_sample import _SAMPLE_REGISTRY_CLOCK
+
+    assert _sample()["collected_at"] == _SAMPLE_REGISTRY_CLOCK
+
+
+def test_committed_source_receipts_are_the_lf_capture_hashes():
+    """The committed demo's byte-bound source receipts were taken over its captures' exact LF text, not over
+    whatever newline translation the regenerating host applied. A Windows build whose collection writer let text
+    mode translate newlines carried CRLF receipt hashes and byte counts in five sections
+    (bgp_configured_peer_baseline, etherchannel_operational_evidence, multichassis_lag_domain_baseline,
+    multichassis_lag_typed_observations, vtp_extended_evidence; W36). Exact for the BGP baseline's per-host
+    receipts, and a class guard over every 64-hex value anywhere in the demo: none is the hash of a CRLF capture.
+    Costs one in-memory build_collections(): no pipeline run."""
+    import hashlib
+    import re
+
+    from webapp.sample_data.build_sample import build_collections
+
+    cols = build_collections()
+    lf = {host: {cmd: hashlib.sha256(text.encode("utf-8")).hexdigest() for cmd, text in outs.items()}
+          for host, (_plat, outs) in cols.items()}
+    crlf = {hashlib.sha256(text.replace("\n", "\r\n").encode("utf-8")).hexdigest()
+            for _host, (_plat, outs) in cols.items() for text in outs.values() if "\n" in text}
+    sample = _sample()
+    checked = 0
+    for cov in sample["bgp_configured_peer_baseline"]["coverage"]:
+        for command_key, sha_key in (("config_command", "config_sha256"), ("runtime_command", "runtime_sha256")):
+            if cov[sha_key]:
+                assert cov[sha_key] == lf[cov["switch"]][cov[command_key]], (cov["switch"], cov[command_key])
+                checked += 1
+    assert checked > len(cols) // 2  # most hosts' running-config at least: the exact half is not inert
+    found = set(re.findall(r"[0-9a-f]{64}", json.dumps(sample)))
+    assert not found & crlf, sorted(found & crlf)[:5]
+    assert found & {sha for per_host in lf.values() for sha in per_host.values()}  # LF receipts are present
+
+
 def test_sample_freshness_keeps_lifecycle_and_design_sections_and_detects_wording_drift(tmp_path):
     from webapp.sample_data.build_sample import _freshness_drift, _strip_volatile
 
