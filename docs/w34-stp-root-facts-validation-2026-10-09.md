@@ -140,3 +140,26 @@ selected rows have unverified child facts. Failed-source/blind precedence,
 integer-key round trips, unrelated VLANs, legitimate booleans and legacy absence
 have explicit controls. That initial negative and both earlier diagnostic-source
 refusals remain preserved; static source clearance never constituted runtime proof.
+
+## Main integration before contract publication
+
+Before the local contract correction `56d80d68` was published, the supervisor
+merged W31/#622 as `a06d1d27a1ee190597683630636f2099105378c8` at
+`2026-10-09T01:28:25Z`. Its raw parents are `fa110851 + 95320428`, and the
+reviewed/head/merged/clean tree is `da6ee09cfbbd517874e3b67e7514b126f9028596`.
+W34 integrates that main with a merge commit. Only NOW required conflict
+resolution; every parent handoff remains. SSOT combines both owners automatically.
+The incoming eight paths are the engine-output helper/workflow/docs/tests and
+runner census; STP product, schema, generator and native-input code are unchanged.
+This source-family equality preserves the reviewed proposed pin/type delta, not
+qualification of the changed complete source. All gates must run on the combined
+head; no stale-base push or body edit occurred before reconciliation.
+
+Codex's independently reviewed W31 source findings remain unresolved in that
+merged tree: the local receipt route violates the hosted-only boundary; hidden
+index states are not closed by status alone; declared ZIP lengths do not close
+actual streams; and matching module paths do not bind executable marker-policy
+bytes. Those counterexamples remain unexecuted and the owner merge does not
+waive them. G15 uses none of that receiver. Future G14 generation/adoption needs
+an admissible reviewed hosted route and fresh exact-source/output verification;
+the documented local receiver and dry-run remain prohibited.
