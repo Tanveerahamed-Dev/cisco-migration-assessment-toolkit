@@ -330,8 +330,12 @@ export function common(sid: number, view: string) {
     identity: { snapshot_id: sid, sha256: `sha256:${"a".repeat(64)}`, bytes: 42, digest_form: "assesshub-store-blob" },
     limitations: [], engine: { script_version: published("synthetic"), snapshot_schema: published("3.23.0"), generated_at: withheld(), collected_at: withheld(), snapshot_schema_supported: true, code_schema_version: "3.23.0" } };
 }
+// The engine's per-device analysis inputs (analyze.DOSSIER_AXIS_INPUTS order); each synthetic row is withheld.
+const TRUST_INPUTS = "Health|Hardware EoL|Software risk|Control plane|Operational logs|Security posture|Config hygiene|Golden drift|QoS posture|Physical|Protocol";
+const trustInputs = () => TRUST_INPUTS.split("|").map((input) => ({ input, sections: ["synthetic_section"], n: withheld(), of: withheld(),
+  hosts: { state: "not_collected", reason: "Synthetic input custody was not collected", subject: null, refs: [], basis: "synthetic.owner", items: [] } }));
 export function trustFixture(sid = 1) {
-  return { ...common(sid, "trust"), payload: {
+  return { ...common(sid, "trust"), payload: { inputs: trustInputs(),
     coverage_matrix: fields("n_devices n_axes n_rows n_covered n_abstained by_state note"),
     unknown_evidence: { ...fields("state n_events n_unresolved source_coverage_complete claim_scope note"), sources: empty("/unknown_evidence/sources") },
     ssot: { ...fields("verified n_facts n_checked n_violations engine_stamp"), stamp_matches_live: null, violations: empty("/ssot/violations") },
