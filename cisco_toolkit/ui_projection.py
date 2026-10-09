@@ -3890,10 +3890,24 @@ def _joins(ctx: _Ctx, host: Any, forced: Optional[_Forced] = None) -> Dict[str, 
                               key_field="host", host=host, absent=_ABSENT_LIFECYCLE, forced=forced),
         "dossier": _resolve(ctx, ("device_dossiers", "per_device"), ("device_dossiers",), key=host,
                             key_field="host", host=host, absent=_ABSENT_DOSSIER, forced=forced),
-        "collection": _resolve(ctx, ("collection_completeness", "devices"), ("collection_completeness",),
-                               key=host, key_field="host", norm=True,
-                               absent=_ABSENT_CC if in_devices else _ABSENT_CC_PEER, forced=forced),
+        "collection": _collection_join(ctx, host, in_devices, forced),
     }
+
+
+def _collection_join(ctx: _Ctx, host: Any, in_devices: bool, forced: Optional[_Forced]) -> _Row:
+    """The device's blind-spot row (:func:`_joins`). A device the devices map carries that no row names is "not a
+    blind spot" (:data:`_ABSENT_CC`) only while the record itself can be trusted to list every blind spot: W51 round 4
+    holds that absence to the device scope's own doubt (:meth:`_Ctx.scope_doubt`, the record's coverage verdict), so a
+    record its own summary contradicts (it counts a partial or not-collected device its list does not carry), or whose
+    summary cannot be read, makes the absence unverified with the doubt's reason and witnesses, as every other field of
+    the device already reads. A row that names the device is evidence of non-collection and is joined as before."""
+    row = _resolve(ctx, _CC_ROWS, ("collection_completeness",), key=host, key_field="host", norm=True,
+                   absent=_ABSENT_CC if in_devices else _ABSENT_CC_PEER, forced=forced)
+    if in_devices and forced is None and row.state == _ABSENT_CC[0] and row.reason == _ABSENT_CC[1]:
+        doubt = ctx.scope_doubt(host)
+        if doubt is not None:
+            return _Row(_UV, doubt[0], None, None, row.sections, doubt[1], basis_refs=False)
+    return row
 
 
 def _row_pointer(row: _Row) -> Optional[str]:

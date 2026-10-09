@@ -63,8 +63,18 @@ _BARREL_HELPER_EXPORTS = frozenset(
 # static design-sync card would require maintaining a second fictional semantic receipt outside the
 # server-owned contract, so Campaign and Execution reuse it directly without publishing it as a
 # standalone design-system component.
+# ImpactValue and ImpactLowerBoundTag (W47, src/components/ImpactValue.tsx) are likewise internal value primitives,
+# not cards: each renders one failure-impact value in the state the engine owner already decided (a measurement, a
+# lower bound, NOT ASSESSED or unavailable, with the owner's own reason), so a standalone card would need a second,
+# fictional copy of the owner's state and reason vocabulary outside the server-owned contract. They reach the Design
+# library only inside a public card that feeds them real provider data -- CutoverPlanner's GatedRunOfShow wave cards
+# render every worst-case blast radius through them -- and the reviewed 21-card visual contract
+# (webapp/frontend/visual-e2e/design-cards.visual.spec.ts, with its hosted windows-2025 pixel baselines) covers them
+# there. Promoting either to a card would need its own hosted-captured baselines and a new visual contract.
 _DELIBERATE_SOURCE_ONLY_COMPONENTS = frozenset({
     "ComparisonDecision",
+    "ImpactLowerBoundTag",
+    "ImpactValue",
     "ObservedL2TrialInput",
     "Topology3D",
 })

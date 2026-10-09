@@ -934,6 +934,10 @@ export type RehearsalImpactsView =
     state_words: Record<string, string>;
     /** null when the section is a list; otherwise why it cannot be read (never "no impact"). */
     section_state: string | null;
+    /** W51 round 4: for an EMPTY stored list, the engine projection's own disclosure when it withholds that list (the
+     *  snapshot Failure impact tab's reading: not collected while the collection record is absent or lists a blind
+     *  device); null when the list holds rows or is published as collected but empty. Absent from an older server. */
+    empty_disclosure?: { state: string; reason: string } | null;
     n_rows_total: number;
     /** How many stored rows are not objects: the owner's one rule (RowVerdict.readable), the same as `unreadable`. */
     n_rows_unreadable: number;

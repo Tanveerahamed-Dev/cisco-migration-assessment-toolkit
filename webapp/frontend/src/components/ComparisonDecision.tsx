@@ -151,12 +151,21 @@ function downloadCompleteJson(value: CompareResponse, filename: string) {
 const COMPLETE_EXPORT_NOTE = "Complete JSON export includes all received rows.";
 
 /** `exportNote` says what the complete JSON export holds of these rows; the default is true only where the rows
- * rendered are the comparison's own rows (the export is the comparison, `downloadCompleteJson`). */
+ * rendered are the comparison's own rows (the export is the comparison, `downloadCompleteJson`). A `total` of null is
+ * a count nobody published (W51 round 4): it reads "unavailable", never a 0 that would claim there is nothing. */
 function CapDisclosure({ rendered, total, exportNote = COMPLETE_EXPORT_NOTE }: {
   rendered: number;
-  total: number;
+  total: number | null;
   exportNote?: string;
 }) {
+  if (total === null) {
+    return (
+      <div className="faint" data-testid="comparison-cap-disclosure" data-total="unavailable"
+        style={{ fontSize: 10.5, marginTop: 7 }}>
+        Rendered: {rendered} · Total: unavailable · Omitted: unavailable. {exportNote}
+      </div>
+    );
+  }
   const omitted = Math.max(0, total - rendered);
   return (
     <div className="faint" data-testid="comparison-cap-disclosure" style={{ fontSize: 10.5, marginTop: 7 }}>
@@ -578,12 +587,17 @@ function ImpactsViewRowItem({ row, words }: { row: ImpactsViewRow; words: StateW
 function RehearsalImpacts({ view, boundSha256, evidenceRows }: {
   view?: RehearsalImpactsView | null;
   boundSha256?: string;
-  evidenceRows: number;
+  /** The rehearsal's published count of bound rows; null when no rehearsal projection publishes one. */
+  evidenceRows: number | null;
 }) {
   const live = (
     <div className="faint" data-testid="comparison-rehearsal-impact-live" style={{ fontSize: 10.5, marginTop: 6 }}>
       Failure-impact interpretation is computed live by the engine owner from the bound evidence; it is not part of
-      this comparison or of any receipt. The {evidenceRows} bound row(s) are in the complete JSON export as raw evidence.
+      this comparison or of any receipt.{" "}
+      {evidenceRows === null
+        ? "How many rows it binds is unavailable: no rehearsal projection published that count (n_impacts_total), "
+          + "so this is not a statement that it binds none."
+        : `The ${evidenceRows} bound row(s) are in the complete JSON export as raw evidence.`}
     </div>
   );
   // A view under a schema this page does not read is unrecognised: none of its values is shown, whatever it holds.
@@ -634,6 +648,13 @@ function RehearsalImpacts({ view, boundSha256, evidenceRows }: {
   // Every row the owner does not rank (held, ambiguous, a withheld or zero floor, unreadable). They sort after every
   // ranked row, so the cap below would drop them without a name; each is named here whatever the cap.
   const unranked = Array.isArray(view.unranked) ? view.unranked : null;
+  // W51 round 4: an empty stored list reads as the snapshot's Failure impact tab reads it. The view carries the engine
+  // projection's own disclosure when it withholds the empty list (not collected while the collection record is absent
+  // or lists a blind device); null means the projection publishes it as collected but empty. A view without the field
+  // (an older server) cannot say which, so the empty list is never worded as a finding of no impact.
+  const emptyHeld = asRecord(view.empty_disclosure);
+  const emptyReason = typeof emptyHeld.reason === "string" && emptyHeld.reason ? emptyHeld.reason : null;
+  const emptyWord = emptyReason !== null ? impactStateWord(emptyHeld.state ?? "unverified", words) : null;
   return (
     <>
       {live}
@@ -643,11 +664,22 @@ function RehearsalImpacts({ view, boundSha256, evidenceRows }: {
           this is not a finding of no impact.
         </div>
       )}
-      {!sectionState && total === 0 && (
-        <div className="faint" data-testid="comparison-rehearsal-impact-empty" style={{ fontSize: 11, marginTop: 6 }}>
-          The bound evidence stores no failure-impact rows.
+      {!sectionState && total === 0 && (emptyReason !== null ? (
+        <div data-testid="comparison-rehearsal-impact-empty" data-impact-empty="withheld"
+          style={{ color: "var(--watch)", fontSize: 11, marginTop: 6 }}>
+          The bound evidence stores no failure-impact rows, and this is not a finding of no impact ({emptyWord}):{" "}
+          {emptyReason}
         </div>
-      )}
+      ) : (
+        <div className="faint" data-testid="comparison-rehearsal-impact-empty"
+          data-impact-empty={view.empty_disclosure === null ? "collected_but_empty" : "unqualified"}
+          style={{ fontSize: 11, marginTop: 6 }}>
+          The bound evidence stores no failure-impact rows.
+          {view.empty_disclosure === null ? "" : " This view does not say whether the collection reached every device,"
+            + " so this is not a finding of no impact; the after snapshot's Failure impact tab says whether its"
+            + " collection record leaves the list not collected."}
+        </div>
+      ))}
       {total > 0 && (
         <div className="faint" data-testid="comparison-rehearsal-impact-census" style={{ fontSize: 10.5, marginTop: 6 }}>
           Engine-owner verdicts over {unreadable > 0 ? `all ${total} stored rows (${unreadable} unreadable)` : `every one of the ${total} stored rows`}:{" "}
@@ -708,7 +740,10 @@ function OperatorEvidence({ value, gate, impactsView, boundSha256 }: {
 }) {
   const rehearsal = value?.rehearsal;
   const rollback = value?.rollback;
-  const evidenceRows = rehearsal && typeof rehearsal.n_impacts_total === "number" ? rehearsal.n_impacts_total : 0;
+  // A count nobody published is unavailable, never 0 (W51 round 4): an absent rehearsal, or one whose n_impacts_total is
+  // not a non-negative whole number, says nothing about how many rows the comparison binds.
+  const published = rehearsal?.n_impacts_total;
+  const evidenceRows = typeof published === "number" && Number.isInteger(published) && published >= 0 ? published : null;
   const l2 = rehearsal?.l2_failure_rehearsal;
   const l2Rows = (l2?.scenarios || []).slice(0, ROW_CAP);
   const rollbackRows = (rollback?.plans || []).slice(0, ROW_CAP);

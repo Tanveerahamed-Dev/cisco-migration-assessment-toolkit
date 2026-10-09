@@ -885,6 +885,32 @@ describe("Core snapshot route", () => {
     expect(within(device).getByRole("button", { name: "Evidence for Findings on edge/a~b" })).toBeInTheDocument();
     expect(within(device).getByText("1")).toBeInTheDocument();
   });
+  it("renders a facet count the engine publishes only as a minimum as ≥ N, never as a bare exact count (W51 round 4)", async () => {
+    // ui_projection._finding_facets: under a fleet qualification a positive severity or category count is a lower bound
+    // that carries the qualification's caveat; a one-hop attribution caveat alone does not make it one
+    const doc = findingsFixture();
+    const facetRows = (rows: readonly { k: string }[]) => rows as Array<{ k: string; n: unknown }>;
+    const [bounded, plain] = facetRows(doc.payload.facets.severity);
+    bounded.n = { ...published(3), caveats: ["fleet_lists_exclude_blind_devices"] };
+    plain.n = { ...published(2), caveats: ["one_hop_failure_attribution"] };
+    const [category] = facetRows(doc.payload.facets.category);
+    category.n = { ...published(4), caveats: ["finding_facet_source_incomplete"] };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/findings?") ? doc : { available: false })));
+    show("/snapshots/1?view=findings");
+    await screen.findByText("Synthetic finding");
+    const severity = screen.getByRole("heading", { name: "Findings by severity" }).closest("section") as HTMLElement;
+    const boundFact = within(severity).getByRole("button", { name: `Evidence for ${bounded.k} findings` }).closest(".projection-fact") as HTMLElement;
+    expect(within(boundFact).getByText("≥ 3")).toBeInTheDocument();
+    expect(boundFact.querySelector('[data-impact="lower_bound_reason"]')).toHaveTextContent(
+      "At least 3: a lower bound, not an exact measurement. Why: the engine publishes this count only as a minimum while fleet_lists_exclude_blind_devices applies");
+    expect(within(boundFact).queryByText("3")).not.toBeInTheDocument();
+    const plainFact = within(severity).getByRole("button", { name: `Evidence for ${plain.k} findings` }).closest(".projection-fact") as HTMLElement;
+    expect(within(plainFact).getByText("2")).toBeInTheDocument();
+    expect(plainFact.querySelector('[data-impact="lower_bound_reason"]')).toBeNull();
+    const categories = screen.getByRole("heading", { name: "Findings by category" }).closest("section") as HTMLElement;
+    const categoryFact = within(categories).getByRole("button", { name: `Evidence for ${category.k} findings` }).closest(".projection-fact") as HTMLElement;
+    expect(within(categoryFact).getByText("≥ 4")).toBeInTheDocument();
+  });
   it("rejects a reference bound to another source without showing its rows", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(String(input).includes("/findings?") ? findingsFixture() : { available: false })));
     show(`/snapshots/1?view=findings&source=sha256:${"b".repeat(64)}&source_bytes=42&ref=/punchlist/7&row=7`);

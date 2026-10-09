@@ -286,3 +286,64 @@ Only the 5 verified generated members are imported: `index.html`, `assets/index-
 `assets/index-DGaCRfa4.css`, `assets/Topology3D-B-untAXO.js` and `assets/react-force-graph-3d-BlVMPyfx.js`. The four
 superseded files inside the owned dist directory are removed, and each indexed blob equals its member. No source,
 test, package or lock changes. This is review input: the new head must reproduce these bytes in fresh hosted gates.
+
+## Fix round 4: the two hosted failures on `ad9aba07` and the three-lens review (2026-10-09)
+
+**Hosted evidence.** Every Python test leg on `ad9aba07` failed the same two tests and nothing else. The legs are
+py3.10, py3.11, py3.12, py3.13 and py3.14 on ubuntu-latest, and py3.12 on windows-latest. The py3.11 job
+`113782171837` reports 2 failed and 12,369 passed. The six job logs were read one at a time, never aggregated. An
+independent three-lens review had predicted both failures, and it found the further items below. They are fixed
+here.
+
+| Item | Where | Fix |
+| --- | --- | --- |
+| P1-1 | `cisco_toolkit/impact_assessability.py` | The owner no longer imports `re`. A `/collection_completeness/devices/<n>` witness is parsed by `_fleet_blind_row`: `str.startswith` on the prefix plus `str.isdecimal()` on the whole tail, then `int()`. This is the same set of tails that `(\d+)` `fullmatch` accepted. The import guard is unchanged. |
+| P1-2 | `tests/test_design_sync_no_client_data.py` | W47's `ImpactValue` and `ImpactLowerBoundTag` are recorded as deliberate source-only components, with the reason (below). They were the only missing exports. |
+| P2-1 | `ui_projection._collection_join` (called by `_joins`) | Some devices-map devices have no blind-spot row. For them, the absence is read as "not a blind spot" (`_ABSENT_CC`) only while `ctx.scope_doubt(host)` raises no doubt. Otherwise the collection row is unverified, with the doubt's own reason and witnesses. A row that names the device is joined as before. |
+| P2-2 | `tests/test_ui_projection_inventory.py` | Open gaps move from `CAP_SITES` to `OPEN_CAP_SITES`. i12 unions the two, holds them disjoint, and refuses any `exempt:` value that calls itself open. A ratchet holds the open set exactly. |
+| P3-1 | `impact_assessability.fleet_blind` | Only `witness` refs are counted. A `failure_record` ref is the reason a record is unread, not a second unread record, so the sentinel case now reads `(0, 1)`, not `(0, 2)`. |
+| P3-2 | owner phrases; `summary`; `KEYSTONE_CONTRACT_VERSION` 8 | `fleet_blind` returns a `FleetBlind`, which is still exactly the pair `(blind, unread)` and carries an `unread_kind` of absent, failed or unreadable. `fleet_unread_phrase` words each kind as what it is: `R_WAVE_FLEET_ABSENT`, `R_WAVE_FLEET_FAILED`, or `R_WAVE_FLEET_BLIND_UNREAD`, which no longer lists "absent" or "failed". The MOP (`mop._blast_for`), the cutover plan and `summary.impact_blind_note` all read it. The summary text changed, so `KEYSTONE_CONTRACT_VERSION` is now 8. |
+| P3-3 | `tests/test_dossier_input_state.py` | `assert pending == {}` is now a ratchet. |
+| P3-4 | `CAP_SITES` justifications | These details were wrongly marked "never read": the punch-list fold (`_fold_axis`) copies each kind's first `detail` into the published `punchlist[].detail`. The detail states the full count before the cut for `flapping[:5]`, `naked_voice[:6]` (with " …"), `policy_maps[:5]`, `with_qos[:5]` and `without_qos[:5]`, so these stay exempt with corrected wording. `dangling[:5]` (undefined-policy-ref) states neither the count nor the cut, so it is **OPEN**. `example[:220]`, `top_messages` and the summary host previews are not folded, so they stay "never read". |
+| P3-5 | `ImpactValue.tsx` `Explained`; `styles.css` | Escape now sets `data-dismissed`. The `:focus-visible` reveal yields to it, so the reason hides while keyboard focus stays on the button. Activating the button again, or leaving it, clears the flag. The comments now match this behaviour. |
+| P3-6 | `ComparisonDecision.tsx` | An absent or non-integer `n_impacts_total` is now `null`, not 0. The live line says the count is unavailable, and `CapDisclosure` reads "Total: unavailable · Omitted: unavailable". |
+| P3-7 | `CoreSnapshot.tsx` `FindingFacets` | A published severity or category count can carry `fleet_lists_exclude_blind_devices`, `findings_without_running_config` or `finding_facet_source_incomplete`. These are the owner's lower-bound caveats in `_finding_facets`. Such a count renders through FactView's `lowerBound`, as "≥ N" with a visible reason. `one_hop_failure_attribution` and the device facet's `device_findings_scope` do not make a count a lower bound. |
+| P3-8 | `engine._impacts_view_empty_disclosure`; `ComparisonDecision.tsx` | The impacts view gains `empty_disclosure`. For an empty stored list, this is the projection's own `{state, reason}`, equal to what `summary.failure_impact_table` shows. The SPA words a withheld empty list as "not a finding of no impact (not collected): reason". A view without the field (an older server) is qualified, never clean. |
+
+**Why the two W47 primitives are internal, not cards.** Each one renders a single failure-impact value in a state the
+engine owner has already decided, with the owner's own reason. A standalone card would need a second, fictional copy of
+that vocabulary outside the server-owned contract. That is the rule already applied to `ComparisonDecision`. The
+primitives do reach the Design library inside a public card fed by provider data: CutoverPlanner's `GatedRunOfShow`
+renders every worst-case blast radius through them. The reviewed visual contract pins exactly 21 cards and 42 hosted
+windows-2025 baselines (`design-cards.visual.spec.ts`), so it covers them there. Making either primitive a card would
+need its own hosted-captured baselines, which this round cannot produce. Registering them only partly would break the
+pinned visual contract.
+
+**Open cap follow-ups (ratcheted, not fixed here; each fix changes persisted engine output):**
+- `analyze.compute_application_intelligence` `vlans_sorted[:40]`. This entry predates W51.
+- `analyze.compute_qos_audit` `dangling[:5]`, found by the P3-4 re-review.
+
+The P2-2 instruction named only the first entry for the ratchet. The P3-4 re-review then added the second, under that
+item's own rule ("file it as OPEN rather than exempt").
+
+**Not changed: the projection's own absent-record reason.** `ui_projection._R_CC_UNREAD` still reads "collection_completeness cannot be read (not collected: …)"
+for a record the snapshot does not carry. It is the projection's coverage-state text, which the owner phrases now cite
+in spirit but do not import. Rewording it would move projection reason texts that other tests pin, so it is left for a
+follow-up.
+
+**Static checks (no test function called, no npm or build).**
+- Compile and lint: `py_compile` and ruff pass on every changed Python file, and the AST shadow scan finds 0.
+- Collection-sanity scan of the 7 changed test files: no duplicate names, parametrize names or unknown fixtures. Its
+  only flags are three stdlib `datetime` names that it cannot resolve through the C module.
+- Copied helpers and pure calls reproduced every new test's assertions. They covered the P2-1 contradiction cases and
+  the clean control, `fleet_blind` kinds and wording, copy and pickle of `FleetBlind`, `empty_disclosure` equal to the
+  tab, the i12 walk (0 unreviewed, 0 stale, `registered == ENGINE_LIST_CAPS`), the barrel coverage (0 missing, 0 stale)
+  and F8's owner and SPA caveat equality.
+- Golden and stored sample: `project`, `project_device` for every device, `cutover.build_plan` and `mop._fleet_blind`
+  have the same digests as before. `summary.summarize` also matches once its `keystone_contract` is set back to 7.
+- Native pins: view `55bc576f…` and list `ce6e9c45…` recompute equal to the pins on an archive of `ad9aba07` (the method
+  check) and on this tree. The schema is unchanged, so `openapi.ts` and the vocab bijection are untouched.
+- No tracked path was added or removed, so the LF path-set receipts are unchanged.
+
+**Not verified here.** No Python test, Vitest, tsc or build ran. The new TypeScript and Vitest cases rely on the hosted
+frontend job, and the Python cases on the hosted test legs.

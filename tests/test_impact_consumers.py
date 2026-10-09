@@ -1612,6 +1612,50 @@ def test_fleet_blind_reads_the_projections_fleet_qualifier(sample):
     assert ia.fleet_blind(None, []) is None and ia.fleet_blind({"items": "not a list"}, []) is None
 
 
+def test_fleet_blind_words_each_unread_record_as_what_it_is(sample):
+    """W51 round 4: the records the qualifier cites but the projection cannot read as a blind device are told apart
+    by what they are -- a record the snapshot does not carry, a record whose phase failed, records it carries but
+    cannot read -- and each is worded as that (never an absent record as one "the engine cannot read"). A failed
+    record's ``failure_record`` ref (here the producer's ``{"_unavailable": true}`` sentinel) is why it is unread, never
+    a second unread record; the counts the wave rule reads are otherwise unchanged."""
+    from cisco_toolkit import mop, ui_projection
+
+    def read(snap):
+        listing = ui_projection.project_topology(snap)["failure_impact"]
+        return listing, ia.fleet_blind(listing, ui_projection.fleet_blind_spot_rows(snap))
+
+    absent = copy.deepcopy(sample)
+    del absent["collection_completeness"]
+    failed = copy.deepcopy(sample)
+    failed["collection_completeness"] = {"_unavailable": True}
+    unread = copy.deepcopy(sample)
+    unread["collection_completeness"]["devices"] = [None]
+    unread["collection_completeness"]["summary"]["inventory"] += 1
+    expect = {"absent": (absent, (0, 1), ia.FLEET_UNREAD_ABSENT, ia.R_WAVE_FLEET_ABSENT),
+              "failed": (failed, (0, 1), ia.FLEET_UNREAD_FAILED, ia.R_WAVE_FLEET_FAILED),
+              "unread": (unread, (0, 1), ia.FLEET_UNREAD_RECORDS, ia.R_WAVE_FLEET_BLIND_UNREAD.format(n=1))}
+    for name, (snap, pair, kind, said) in expect.items():
+        listing, blind = read(snap)
+        assert isinstance(blind, ia.FleetBlind) and blind == pair and blind.unread_kind == kind, (name, blind)
+        assert ia.fleet_unread_phrase(blind[1], blind.unread_kind) == said, name
+        wave = mop._blast_for(["core1"], ia.wave_rows(snap), blind)
+        assert wave.unread_kind == kind and said in ia.wave_why(wave), (name, ia.wave_why(wave))
+        assert copy.deepcopy(blind) == pair and copy.deepcopy(blind).unread_kind == kind, name
+    # the failure record is cited but never counted: the sentinel's witness alone is the one unread record
+    listing, _blind = read(failed)
+    roles = {(r["pointer"], r["role"]) for r in listing["refs"]}
+    assert ("/collection_completeness/_unavailable", "failure_record") in roles, roles
+    # only an absent record is worded without "cannot read"; no wording names an absent record as carried
+    assert "cannot read" not in ia.R_WAVE_FLEET_ABSENT and "cannot read" not in ia.R_WAVE_FLEET_FAILED
+    assert "absent" not in ia.R_WAVE_FLEET_BLIND_UNREAD and "failed" not in ia.R_WAVE_FLEET_BLIND_UNREAD
+    # the clean control and a plain pair carry no kind; an unknown kind words as records it cannot read
+    assert read(copy.deepcopy(sample))[1].unread_kind is None
+    plain = ia.wave_blast(["core1"], ia.wave_rows(absent), blind=0, blind_unread=1)
+    assert plain.unread_kind is None and ia.R_WAVE_FLEET_BLIND_UNREAD.format(n=1) in ia.wave_why(plain)
+    assert ia.wave_blast(["core1"], [], blind=0, blind_unread=0, unread_kind="absent").unread_kind is None
+    assert ia.fleet_unread_phrase(2, "bogus") == ia.R_WAVE_FLEET_BLIND_UNREAD.format(n=2)
+
+
 # --- the consumer W48 STOPPED on (persisted output; see _RAW_RATCHET) ---------------------------------------------
 _STOPPED = pytest.mark.xfail(
     strict=True, raises=AssertionError,

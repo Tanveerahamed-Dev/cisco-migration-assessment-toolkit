@@ -213,7 +213,7 @@ def _worst_blast_radius(switches: Set[str], view: Dict[str, Any]) -> Optional[Di
     # stored order, as before, so a tie keeps the row the plan showed before; the key is the stored host text
     # (switches are str-coerced by _as_hosts), and only a ranked row's published values are read
     wave = engine.wave_blast(switches, _impact_wave_rows(view), blind=view["blind"],
-                             blind_unread=view["blind_unread"])
+                             blind_unread=view["blind_unread"], unread_kind=view.get("blind_unread_kind"))
     ranked = [r.row for r in wave.ranked]
     unranked = [(host, r.row["reason"] if r is not None else view["withheld"] or summary._R_IMPACT_NO_ROW)
                 for host, r in wave.unranked]

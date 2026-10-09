@@ -312,6 +312,45 @@ describe("ComparisonDecision failure-impact rows through the engine owner's live
     expect(screen.queryByTestId("comparison-rehearsal-impact-census")).not.toBeInTheDocument();
   });
 
+  it("reads an empty stored list as the snapshot tab does, never as a finding of no impact (W51 round 4)", () => {
+    // the engine projection's own disclosure of an empty list it withholds (webapp.backend.engine
+    // ._impacts_view_empty_disclosure, the snapshot Failure impact tab's {state, reason}); synthetic wording here
+    const reason = "not collected: collection_completeness lists 1 device(s) as partial or not collected, so an empty "
+      + "list is not a clean result; their uncollected evidence could add rows";
+    const first = render(<ComparisonDecision value={compareWith([])}
+      impactsView={viewOf([], { empty_disclosure: { state: "not_collected", reason } })} />);
+    const held = screen.getByTestId("comparison-rehearsal-impact-empty");
+    expect(held).toHaveAttribute("data-impact-empty", "withheld");
+    expect(held).toHaveTextContent("this is not a finding of no impact (not collected)");
+    expect(held).toHaveTextContent(reason);
+    first.unmount();
+    // published as collected but empty (null): the plain statement, unqualified by anything it does not know
+    const second = render(<ComparisonDecision value={compareWith([])} impactsView={viewOf([], { empty_disclosure: null })} />);
+    const clean = screen.getByTestId("comparison-rehearsal-impact-empty");
+    expect(clean).toHaveAttribute("data-impact-empty", "collected_but_empty");
+    expect(clean.textContent).toBe("The bound evidence stores no failure-impact rows.");
+    second.unmount();
+    // a view without the field (an older server) cannot say which, so the empty list is qualified, never clean
+    render(<ComparisonDecision value={compareWith([])} impactsView={viewOf([])} />);
+    const unknown = screen.getByTestId("comparison-rehearsal-impact-empty");
+    expect(unknown).toHaveAttribute("data-impact-empty", "unqualified");
+    expect(unknown).toHaveTextContent("this is not a finding of no impact");
+  });
+
+  it("says a bound-row count nobody published is unavailable, never 0 (W51 round 4)", () => {
+    const value = compareWith();
+    const evidence = (value as unknown as { operator_evidence: { rehearsal: Record<string, unknown> } })
+      .operator_evidence.rehearsal;
+    delete evidence.n_impacts_total;
+    render(<ComparisonDecision value={value} />);
+    const live = screen.getByTestId("comparison-rehearsal-impact-live");
+    expect(live).toHaveTextContent("How many rows it binds is unavailable");
+    expect(live).not.toHaveTextContent("0 bound row(s)");
+    expect(impactCap()).toHaveAttribute("data-total", "unavailable");
+    expect(impactCap()).toHaveTextContent("Rendered: 0 · Total: unavailable · Omitted: unavailable.");
+    expect(impactCap()).not.toHaveTextContent("Total: 0");
+  });
+
   it("caps rendering in the owner's ranking order and discloses the rest", () => {
     const rows = Array.from({ length: 10 }, (_unused, index): ImpactsViewRow => ({
       ...MEASURED_ACCESS1, index, host: `access${index}`,

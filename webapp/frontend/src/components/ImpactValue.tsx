@@ -27,7 +27,8 @@ import type { ImpactEntry } from "../api";
    Every state but measured carries a reason, and the reason is never hover-only. By default the value is a toggletip:
    a non-submitting <button> whose accessible name is its state text and whose accessible description is its reason
    (aria-describedby). The reason is shown in place while the button has keyboard focus, or after it is activated (a
-   click, a tap, Enter or Space; Escape or leaving it hides it again). It carries no `title`, so the reason is never
+   click, a tap, Enter or Space; Escape hides it, even while keyboard focus stays on the button, and so does leaving
+   it). It carries no `title`, so the reason is never
    read twice and never replaces the state text as the name. A caller that makes the reason reachable itself asks for
    `reasonShown`: the core pages' FactView (a visible reason line), a disclosure that shows its reason beside the value,
    and the snapshot "Failure impact" tab, whose rows each carry one disclosure listing their qualified cells' reasons
@@ -206,27 +207,38 @@ export function impactStateText(state: ImpactValueState): string {
  *  like the text it replaces, whose name is its state text (`face`) and whose description is its reason. The reason is
  *  visually hidden until the button has keyboard focus or has been activated, and is then shown in place. A click or
  *  tap also focuses the button (Safari does not focus a clicked button), so Escape and leaving it behave the same for
- *  every input. It has no `title`: with a description present, a title would read the reason twice or stand in for
- *  the state text as the name. With `reasonShown`, the caller makes the reason reachable itself, so the value is a
- *  plain span that is neither a tab stop nor described twice, and its `title` stays for a pointer user's hover. */
+ *  every input. Escape hides the reason even while keyboard focus stays on the button (W51 round 4): it marks the
+ *  button dismissed (`data-dismissed`), which the focus-visible reveal in styles.css yields to, until focus leaves and
+ *  comes back or the button is activated again. It has no `title`: with a description present, a title would read
+ *  the reason twice or stand in for the state text as the name. With `reasonShown`, the caller makes the reason
+ *  reachable itself, so the value is a plain span that is neither a tab stop nor described twice, and its `title`
+ *  stays for a pointer user's hover. */
 function Explained({ kind, className, face, why, reasonShown }: {
   kind: string; className: string; face: ReactNode; why: string; reasonShown: boolean;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
   if (reasonShown) return <span className={className} data-impact={kind} title={why}>{face}</span>;
   const toggle = (event: MouseEvent<HTMLButtonElement>) => {
     event.currentTarget.focus();
+    setDismissed(false);
     setOpen((was) => !was);
   };
   const dismiss = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === "Escape") setOpen(false);
+    if (event.key !== "Escape") return;
+    setOpen(false);
+    setDismissed(true);
+  };
+  const leave = () => {
+    setOpen(false);
+    setDismissed(false);
   };
   return (
     <span className="impact-explained">
       <button type="button" className={`impact-toggletip ${className}`} data-impact={kind}
-        data-open={open ? "true" : undefined} aria-describedby={id}
-        onClick={toggle} onKeyDown={dismiss} onBlur={() => setOpen(false)}>
+        data-open={open ? "true" : undefined} data-dismissed={dismissed ? "true" : undefined} aria-describedby={id}
+        onClick={toggle} onKeyDown={dismiss} onBlur={leave}>
         {face}
       </button>
       <span id={id} className="impact-why">{why}</span>

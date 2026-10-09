@@ -182,6 +182,33 @@ describe("<ImpactValue>", () => {
     expect(bound).not.toHaveAttribute("data-open");
   });
 
+  it("lets Escape hide the reason while keyboard focus stays on the toggletip (W51 round 4)", () => {
+    shown({ kind: "lower_bound", value: 42, why: WHY });
+    const bound = screen.getByRole("button", { name: "At least 42" });
+    // keyboard focus alone reveals the reason (styles.css :focus-visible); Escape marks the button dismissed, which
+    // that reveal yields to, while focus stays where it is
+    bound.focus();
+    expect(bound).toHaveFocus();
+    expect(bound).not.toHaveAttribute("data-dismissed");
+    fireEvent.keyDown(bound, { key: "Escape" });
+    expect(bound).toHaveFocus();
+    expect(bound).toHaveAttribute("data-dismissed", "true");
+    expect(bound).not.toHaveAttribute("data-open");
+    // the description stays for assistive tech: dismissing hides the visible reason only
+    expect(bound).toHaveAccessibleDescription(`At least 42: a lower bound, not an exact measurement. Why: ${WHY}.`);
+    // another key does not undo it; activating the button again, or leaving and coming back, does
+    fireEvent.keyDown(bound, { key: "Tab" });
+    expect(bound).toHaveAttribute("data-dismissed", "true");
+    fireEvent.click(bound);
+    expect(bound).not.toHaveAttribute("data-dismissed");
+    expect(bound).toHaveAttribute("data-open", "true");
+    fireEvent.keyDown(bound, { key: "Escape" });
+    expect(bound).toHaveAttribute("data-dismissed", "true");
+    fireEvent.blur(bound);
+    expect(bound).not.toHaveAttribute("data-dismissed");
+    expect(bound).not.toHaveAttribute("data-open");
+  });
+
   it("never submits a form it sits in", () => {
     const submit = vi.fn((event: Event) => event.preventDefault());
     render(<form onSubmit={(event) => submit(event.nativeEvent)}><ImpactValue state={{ kind: "not_assessed", why: HELD }} /></form>);

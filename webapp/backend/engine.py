@@ -72,9 +72,14 @@ def fleet_blind_spot_rows(snapshot: Any) -> List[int]:
 WaveRow = _impact_assessability.WaveRow
 wave_blast = _impact_assessability.wave_blast
 failure_impact_fleet_blind = _impact_assessability.fleet_blind
+FleetBlind = _impact_assessability.FleetBlind
+#: How the unread records are worded, by what they are (W51 round 4: a record that is absent, failed or unreadable).
+failure_impact_fleet_unread_phrase = _impact_assessability.fleet_unread_phrase
 IMPACT_FLEET_BLIND_CAVEAT = _impact_assessability.FLEET_BLIND_CAVEAT
 IMPACT_R_FLEET_BLIND = _impact_assessability.R_WAVE_FLEET_BLIND
 IMPACT_R_FLEET_BLIND_UNREAD = _impact_assessability.R_WAVE_FLEET_BLIND_UNREAD
+IMPACT_R_FLEET_ABSENT = _impact_assessability.R_WAVE_FLEET_ABSENT
+IMPACT_R_FLEET_FAILED = _impact_assessability.R_WAVE_FLEET_FAILED
 IMPACT_R_WAVE_ZERO = _impact_assessability.R_WAVE_ZERO
 IMPACT_R_WAVE_NONE = _impact_assessability.R_WAVE_NONE
 
@@ -134,6 +139,32 @@ def _impacts_view_disclosed(verdict: Any) -> Dict[str, Any]:
     }
 
 
+#: Why an empty stored list is withheld when the projection states no reason (summary._R_IMPACT_NO_REASON's words).
+_IMPACTS_VIEW_EMPTY_NO_REASON = "withheld by the engine projection, which published no reason"
+
+
+def _impacts_view_empty_disclosure(snapshot: Any, n_rows: int) -> Optional[Dict[str, str]]:
+    """W51 round 4: for an EMPTY stored failure_impact list, the engine projection's own disclosure of it,
+    ``{"state", "reason"}``, exactly as the snapshot's Failure impact tab reads the same list
+    (summary.failure_impact_table: the projected list's state and reason whenever the projection does not publish the
+    empty list as collected but empty -- for instance not_collected while the collection record is absent or lists a
+    partial or not-collected device, so an empty list is never a clean result). ``None`` when the stored list holds
+    rows, or the projection publishes the empty list as collected but empty. A projection fault is unverified."""
+    if n_rows:
+        return None
+    try:
+        listing = failure_impact_projection(snapshot)
+    except Exception as exc:   # noqa: BLE001 -- total by contract; a fault is never read as a clean empty list
+        return {"state": "unverified",
+                "reason": f"unverified: the engine failure-impact projection faulted ({type(exc).__name__})"}
+    state = listing.get("state") if isinstance(listing, dict) else None
+    if state in ("published", "collected_but_empty"):
+        return None
+    reason = listing.get("reason") if isinstance(listing, dict) else None
+    return {"state": state if isinstance(state, str) and state else "unverified",
+            "reason": reason if isinstance(reason, str) and reason.strip() else _IMPACTS_VIEW_EMPTY_NO_REASON}
+
+
 def rehearsal_impacts_view(snapshot: Any, *, source_sha256: str) -> Dict[str, Any]:
     """The engine owner's live interpretation of `snapshot`'s stored failure_impact rows. DISPLAY ONLY (see above).
 
@@ -150,7 +181,10 @@ def rehearsal_impacts_view(snapshot: Any, *, source_sha256: str) -> Dict[str, An
       as ``n_rows_unreadable``, so the census and the list never diverge (a failed section included);
     * ``n_rows_total`` and ``counts`` (per verdict) census every stored row; ``section_state`` says whether the section
       itself could be read, so an absent or failed section never reads as no impact; ``state_words`` is the owner's
-      word for each state token (``STATE_WORD``)."""
+      word for each state token (``STATE_WORD``);
+    * ``empty_disclosure`` (W51 round 4): for an empty stored list, the engine projection's own ``{state, reason}``
+      when it withholds that list (:func:`_impacts_view_empty_disclosure`, the snapshot tab's reading), else null, so
+      an empty list under an absent or blind collection record never reads as no impact here either."""
     # every reading CALLS the owner through its module alias, the route the W48 guard admits (it does not resolve a
     # local alias of the module, which would leave this display path unrouted)
     verdicts = _impact_assessability.assess_failure_impact(snapshot)
@@ -171,6 +205,7 @@ def rehearsal_impacts_view(snapshot: Any, *, source_sha256: str) -> Dict[str, An
         # vocabulary to that receipt's hand-list scanner); reason phrases and verdict labels are pinned SPA tables.
         "state_words": dict(_impact_assessability.STATE_WORD),
         "section_state": _impact_assessability.section_state(snapshot),
+        "empty_disclosure": _impacts_view_empty_disclosure(snapshot, len(verdicts)),
         "n_rows_total": len(verdicts),
         "n_rows_unreadable": len(unreadable),
         "unreadable": unreadable,

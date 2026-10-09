@@ -301,14 +301,17 @@ def _blast_for(switches, fi_rows, fi_blind):
     is not assessed: a zero lower bound is not a measurement, so it never sizes the rollback trigger.
     Returns the owner's `WaveBlast`."""
     blind, unread = fi_blind if isinstance(fi_blind, tuple) and len(fi_blind) == 2 else (None, None)
-    wave = impact_assessability.wave_blast(switches, fi_rows, blind=blind, blind_unread=unread)
+    # what the unread records are, for the owner's wording only (a plain pair words them as records it cannot read)
+    kind = fi_blind.unread_kind if isinstance(fi_blind, impact_assessability.FleetBlind) else None
+    wave = impact_assessability.wave_blast(switches, fi_rows, blind=blind, blind_unread=unread, unread_kind=kind)
     return wave if wave.observed else None
 
 
 def _fleet_blind(snap):
     """The fleet qualifier on every failure-impact row, as `(blind, unread)`: the partial or never-collected
     devices the engine projection's fleet caveat names, and the collection records it cannot read as one
-    (W51). ui_projection owns the caveat and its classifier (`fleet_blind_spot_rows`);
+    (W51), as the owner's `FleetBlind` (which also says what the unread records are: absent, failed or
+    unreadable). ui_projection owns the caveat and its classifier (`fleet_blind_spot_rows`);
     `impact_assessability.fleet_blind` counts them, as AssessHub's cutover plan does through
     `summary.impact_view`. None when the projection cannot be built, which the wave rule reads as unknown and
     never as a complete fleet."""

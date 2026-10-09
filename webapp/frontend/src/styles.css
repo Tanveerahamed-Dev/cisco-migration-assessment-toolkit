@@ -240,12 +240,13 @@ label.field span { display: block; font-size: 12px; color: var(--text-dim); marg
 .impact-unavailable { color: var(--text-faint); font-style: italic; font-weight: 500; white-space: nowrap; cursor: help; }
 /* A state's reason is never hover-only: the toggletip button is described by .impact-why, which is visually hidden
    but read by assistive tech, and shown in place, in the normal flow, while the button has keyboard focus or after it
-   is activated (a click, a tap, Enter or Space; Escape or leaving it hides it). In the flow rather than floating, it
-   is never clipped by a scrolling table. */
+   is activated (a click, a tap, Enter or Space; Escape or leaving it hides it). Escape marks the button
+   [data-dismissed], which the keyboard-focus reveal yields to, so Escape hides the reason while focus stays on the
+   button. In the flow rather than floating, it is never clipped by a scrolling table. */
 .impact-explained { display: inline; }
 .impact-why { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
   clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-.impact-toggletip:focus-visible + .impact-why,
+.impact-toggletip:focus-visible:not([data-dismissed]) + .impact-why,
 .impact-toggletip[data-open] + .impact-why {
   position: static; display: block; width: auto; height: auto; max-width: 42ch; margin: 4px 0 0; overflow: visible;
   clip: auto; white-space: normal; text-align: left; font: 400 11px/1.4 var(--sans); font-style: normal;

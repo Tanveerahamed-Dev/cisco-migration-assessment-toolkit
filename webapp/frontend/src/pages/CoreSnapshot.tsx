@@ -292,13 +292,31 @@ function Finding({ row, sid }: { row: Schemas["UiProjection1_FindingRow"]; sid: 
 // G21 (W41) publishes the punch-list facet totals (findings.facets): one count per severity and per category, in the
 // engine's vocabulary order, and a paged per-inventory-device list. Each is the engine's own count with its own state,
 // so a withheld total shows its state and reason, never a zero; this page neither counts the rows nor fills a gap.
+//
+// W51 round 4: a published severity or category count can be only a lower bound, and the engine marks it so by the
+// caveat it carries (ui_projection._finding_facets: while a fleet qualification applies -- blind devices, devices
+// without a captured running-config -- or a category's source section is incomplete, "a positive count is a lower
+// bound that carries this caveat"). These are hand copies of those caveat ids, held equal to the owner by
+// tests/test_ui_projection_finding_facets.py. Such a count renders through the shared bound treatment (FactView's
+// lowerBound: "≥ N" with a visible reason), never as a bare exact number. Any other caveat (a one-hop attribution, the
+// device facet's scope note) does not make a count a minimum.
+const FACET_LOWER_BOUND_CAVEATS: readonly string[] = [
+  "fleet_lists_exclude_blind_devices", "findings_without_running_config", "finding_facet_source_incomplete",
+];
+function facetLowerBound(fact: Fact): string | undefined {
+  if (fact.state !== "published") return undefined;
+  const cited = (fact.caveats ?? []).filter((id) => FACET_LOWER_BOUND_CAVEATS.includes(id));
+  return cited.length
+    ? `the engine publishes this count only as a minimum while ${cited.join(", ")} applies (see its Qualifications)`
+    : undefined;
+}
 function FindingFacets({ document }: { document: ViewDocument<"findings"> }) {
   const facets = document.payload.facets;
   return <>
     <Panel title="Findings by severity"><div className="projection-fact-grid">{facets.severity.map((row) =>
-      <FactView key={row.k} label={`${row.k} findings`} fact={row.n} compact />)}</div></Panel>
+      <FactView key={row.k} label={`${row.k} findings`} fact={row.n} compact lowerBound={facetLowerBound(row.n)} />)}</div></Panel>
     <Panel title="Findings by category"><div className="projection-fact-grid">{facets.category.map((row) =>
-      <FactView key={row.k} label={`${row.k} findings`} fact={row.n} compact />)}</div></Panel>
+      <FactView key={row.k} label={`${row.k} findings`} fact={row.n} compact lowerBound={facetLowerBound(row.n)} />)}</div></Panel>
     <ProjectionList title="Findings by inventory device" document={document} initial={facets.device} renderRow={(row) =>
       <FactView label={`Findings on ${row.k}`} fact={row.n} compact />} />
   </>;
@@ -306,7 +324,7 @@ function FindingFacets({ document }: { document: ViewDocument<"findings"> }) {
 function Findings({ document }: { document: ViewDocument<"findings"> }) {
   const reference = useReference();
   return <><Panel title="Prioritised findings"><FactView label="Engine finding total" fact={document.payload.total} />
-    <Disclosure>Rows retain the engine's order. The facet totals below are the engine's own counts (G21), each with its own state: a withheld total is not a zero.</Disclosure></Panel>
+    <Disclosure>Rows retain the engine's order. The facet totals below are the engine's own counts (G21), each with its own state: a withheld total is not a zero, and a total the engine publishes only as a minimum reads ≥ N.</Disclosure></Panel>
     <FindingFacets document={document} />
     <ProjectionList title="Findings" reference={reference} document={document} initial={document.payload.rows} renderRow={(row) => <Finding row={row} sid={document.identity.snapshot_id} />} /></>;
 }

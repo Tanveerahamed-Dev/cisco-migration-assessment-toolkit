@@ -2574,6 +2574,36 @@ _SAMPLE = _REPO / "webapp" / "sample_data" / "sample_fleet.snapshot.json"
 _SPA_ROW_CAP = 8
 
 
+def test_impacts_view_reads_an_empty_stored_list_as_the_snapshot_tab_does():
+    """W51 round 4 (P3-8): an empty stored failure_impact list carries the engine projection's own disclosure in the
+    view (``empty_disclosure``) exactly as the snapshot's Failure impact tab shows it (summary.failure_impact_table):
+    not collected while the collection record is absent or lists a blind device, so the comparison never reads an
+    empty list as no impact where the tab does not. A list the projection publishes as collected but empty, and a
+    list with rows, carry none."""
+    from backend import summary
+
+    sha = "sha256:" + "3" * 64
+    snapshot = json.loads(_SAMPLE.read_bytes())
+    assert engine.rehearsal_impacts_view(snapshot, source_sha256=sha)["empty_disclosure"] is None   # rows: none
+    clean = {**deepcopy(snapshot), "failure_impact": []}
+    assert summary.failure_impact_table(clean) == []                    # precondition: the tab reads it as empty
+    assert engine.rehearsal_impacts_view(clean, source_sha256=sha)["empty_disclosure"] is None
+    absent = deepcopy(clean)
+    del absent["collection_completeness"]
+    blind = deepcopy(clean)
+    blind["collection_completeness"]["devices"] = [
+        {"host": "ghost1", "status": "not collected", "data_quality": 0, "missing": ["version/inventory"]}]
+    blind["collection_completeness"]["summary"]["inventory"] += 1
+    blind["collection_completeness"]["summary"]["not_collected"] = 1
+    for held in (absent, blind):
+        tab = summary.failure_impact_table(held)
+        view = engine.rehearsal_impacts_view(held, source_sha256=sha)
+        assert view["section_state"] is None and view["n_rows_total"] == 0
+        assert view["empty_disclosure"] == tab and tab["state"] == "not_collected", (view["empty_disclosure"], tab)
+        assert "not a clean result" in view["empty_disclosure"]["reason"]
+    assert "lists 1 device(s)" in engine.rehearsal_impacts_view(blind, source_sha256=sha)["empty_disclosure"]["reason"]
+
+
 def test_impacts_view_names_every_unranked_row_and_only_lays_out_the_owners_decisions():
     """W50 round 4. P2-B: rows the owner does not rank sort after every ranked row, so a display that caps ``rows``
     would drop them unnamed; ``unranked`` names each of them, in stored order, whatever the cap. P3-3: every

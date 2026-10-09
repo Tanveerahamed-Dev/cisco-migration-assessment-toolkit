@@ -772,16 +772,18 @@ def test_a_snapshot_without_a_collection_completeness_record_bounds_every_rankin
     """W51: a snapshot that carries no collection_completeness record cannot rule out a blind spot, so the exact
     control above (gw and acc fully assessed, every cable-map peer collected) keeps its measured values and order, but
     neither the keystone ranking nor the wave's worst case reads as complete: each says it is a lower bound, worded by
-    the projection's fleet qualifier (no row it cites resolves, so one record the engine cannot read, never a listed
-    blind device). The same fleet with the record is the exact control of the tests above."""
+    the projection's fleet qualifier (no row it cites resolves, so one record that is not there, never a listed
+    blind device, and never, W51 round 4, a record the engine "cannot read"). The same fleet with the record is the
+    exact control of the tests above."""
     snap = _snapshot(_downstream_fleet(), waves=[("alone", ("gw",))], completeness=False)
     _node(snap, "dsw")["collected"] = True
     _node(snap, "wan")["collected"] = True
     raw = _by_host(snap)
     assert "fleet_lists_exclude_blind_devices" in ui.project_topology(snap)["failure_impact"]["caveats"]
     view = summary.impact_view(snap)
-    assert (view["blind"], view["blind_unread"]) == (0, 1)
-    blind = summary._R_IMPACT_BLIND_UNREAD.format(n=1)
+    assert (view["blind"], view["blind_unread"], view["blind_unread_kind"]) == (0, 1, ia.FLEET_UNREAD_ABSENT)
+    blind = summary._R_IMPACT_BLIND_ABSENT
+    assert "cannot read" not in blind and "carries no collection_completeness record" in blind
     keystones = summary.summarize(snap)["keystones"]
     assert keystones[:-1] == [_exact(raw["gw"]), _exact(raw["acc"])]        # the measured ranking is unchanged
     note = keystones[-1]
@@ -917,7 +919,7 @@ def test_the_cutover_document_prints_a_lower_bound_as_at_least(tmp_path, sample)
     (line,) = _blast_lines(ctrl, tmp_path)
     assert f"gw (High) — {g['stranded']} endpoint(s) stranded across {g['vlans_impacted']} VLAN(s)." in line, line
     assert "at least" not in line, line
-    assert ("LOWER BOUND, the worst case may be larger: " + summary._R_IMPACT_BLIND_UNREAD.format(n=1)) in line, line
+    assert ("LOWER BOUND, the worst case may be larger: " + summary._R_IMPACT_BLIND_ABSENT) in line, line
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1216,13 +1218,29 @@ def test_the_blind_spot_note_never_calls_a_record_the_engine_cannot_read_a_blind
     assert "fleet_lists_exclude_blind_devices" in engine.failure_impact_projection(absent)["caveats"]
     view = summary.impact_view(absent)
     assert (view["blind"], view["blind_unread"]) == (0, 1)
-    assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND_UNREAD.format(n=1)
+    # W51 round 4: worded as a record that is not there, never as one "the engine cannot read"
+    assert view["blind_unread_kind"] == ia.FLEET_UNREAD_ABSENT
+    assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND_ABSENT
     assert "lists 1 device(s)" not in summary.impact_blind_note(view)
+    assert "cannot read" not in summary.impact_blind_note(view)
 
     snap["collection_completeness"]["devices"] = {"core1": {"status": "not collected"}}   # a list it cannot read
     view = summary.impact_view(snap)
     assert (view["blind"], view["blind_unread"]) == (0, 1)
+    assert view["blind_unread_kind"] == ia.FLEET_UNREAD_RECORDS
     assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND_UNREAD.format(n=1)
+
+    # W51 round 4: a failed record is worded as a failed phase, and its failure record (the producer's
+    # {"_unavailable": true} sentinel) is the reason the record is unread, never a second unread record
+    failed = copy.deepcopy(sample)
+    failed["collection_completeness"] = {"_unavailable": True}
+    listing = engine.failure_impact_projection(failed)
+    assert {(r["pointer"], r["role"]) for r in listing["refs"]} >= {
+        ("/collection_completeness", "witness"), ("/collection_completeness/_unavailable", "failure_record")}
+    view = summary.impact_view(failed)
+    assert (view["blind"], view["blind_unread"], view["blind_unread_kind"]) == (0, 1, ia.FLEET_UNREAD_FAILED)
+    assert summary.impact_blind_note(view) == summary._R_IMPACT_BLIND_FAILED
+    assert "cannot read" not in summary.impact_blind_note(view) and "carries 2 record(s)" not in str(view)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1299,8 +1317,9 @@ def test_the_mop_and_the_cutover_plan_agree_on_every_wave(sample, variant):
         if variant == "hostless":
             assert "names no readable host" in br["detail"] and "name no readable switch" in why, (br, why)
         else:
+            # W51 round 4: the record the snapshot does not carry is worded as absent on both, never "cannot read"
             said = (ia.R_WAVE_FLEET_BLIND.format(n=len(BLIND)) if variant == "fleet_caveat"
-                    else ia.R_WAVE_FLEET_BLIND_UNREAD.format(n=1))
+                    else ia.R_WAVE_FLEET_ABSENT)
             assert summary.impact_blind_note(view) == said and said in br["detail"] and said in why, (br, why)
             if variant == "fleet_unread":
                 assert "as partial or not collected:" not in why + br["detail"], (br, why)

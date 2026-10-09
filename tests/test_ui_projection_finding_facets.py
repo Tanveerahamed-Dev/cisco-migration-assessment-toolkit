@@ -760,3 +760,70 @@ def test_f7_an_unreadable_devices_map_is_unverified_and_blind_spots_stay_listed(
     assert [bucket["k"] for bucket in device_list["items"]] == ["ghost"]            # the roster it can read
     assert device_list["items"][0]["n"]["state"] == NC
     _findings_validator().validate(findings)
+
+
+# --------------------------------------------------------------------------------------------------
+# F8 -- the SPA renders a count the owner publishes only as a lower bound as one (W51 round 4, P3-7)
+# --------------------------------------------------------------------------------------------------
+_CORE_SNAPSHOT_TSX = ROOT / "webapp" / "frontend" / "src" / "pages" / "CoreSnapshot.tsx"
+#: A published facet count carries it whenever the run recorded a failure, and it does not make the count a minimum.
+_NOT_A_BOUND = "one_hop_failure_attribution"
+
+
+def _spa_bound_caveats():
+    """CoreSnapshot.tsx's FACET_LOWER_BOUND_CAVEATS, the caveat ids it renders as a lower bound ("≥ N")."""
+    import re
+    text = _CORE_SNAPSHOT_TSX.read_text(encoding="utf-8")
+    found = re.findall(r"const FACET_LOWER_BOUND_CAVEATS: readonly string\[\] = \[(.*?)\];", text, re.S)
+    assert len(found) == 1, "CoreSnapshot.tsx must declare FACET_LOWER_BOUND_CAVEATS exactly once"
+    ids = re.findall(r'"([^"]*)"', found[0])
+    assert len(ids) == len(set(ids)) and ids, ids
+    return set(ids)
+
+
+def _owner_bound_caveats():
+    """The caveat ids ui_projection._finding_facets puts on a published severity or category count it can publish
+    only as a lower bound, read from the owner's source: every fleet qualification of the findings list
+    (_fleet_qualify's appended caveat ids) and the category source hold."""
+    import ast
+    import inspect
+    import textwrap
+    ids = set()
+    for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(uip._fleet_qualify)))):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "append"
+                and node.args and isinstance(node.args[0], ast.Tuple)):
+            head = node.args[0].elts[0]
+            assert isinstance(head, ast.Constant) and isinstance(head.value, str), ast.dump(head)
+            ids.add(head.value)
+    assert f'"{SOURCE_CAVEAT}"' in inspect.getsource(uip._finding_facets)
+    return ids | {SOURCE_CAVEAT}
+
+
+def test_f8_the_spa_reads_exactly_the_owners_lower_bound_caveats():
+    """The SPA's hand copy equals the owner's lower-bound caveats, and none of the caveats the owner puts on a count
+    that is NOT a minimum is in it. Behaviourally: on each qualified fixture every published positive count carries one
+    of them, and every caveat a published count carries is one of them or the one-hop attribution."""
+    owner = _owner_bound_caveats()
+    assert owner == {"fleet_lists_exclude_blind_devices", "findings_without_running_config", SOURCE_CAVEAT}
+    assert _spa_bound_caveats() == owner
+    assert _NOT_A_BOUND not in owner and "device_findings_scope" not in owner
+
+    configless = _snapshot(_rows())
+    del configless["security"]["edgeB"]
+    blind = _snapshot(_rows())
+    blind["collection_completeness"]["devices"] = [
+        {"host": "ghost", "status": "not collected", "missing": ["interface status"], "data_quality": 0}]
+    blind["collection_completeness"]["summary"]["inventory"] += 1
+    for snap in (configless, blind):
+        facets = _facets(snap)
+        published = [bucket["n"] for facet, _keys in OWNER_FACETS for bucket in facets[facet]
+                     if bucket["n"]["state"] == PUB]
+        assert published, "precondition: a qualified fixture still publishes positive counts"
+        for n in published:
+            assert set(n["caveats"]) & owner, n
+            assert set(n["caveats"]) <= owner | {_NOT_A_BOUND}, n
+    # the clean control: nothing qualifies, so no published count carries a lower-bound caveat
+    clean = _facets(_snapshot(_rows()))
+    for facet, _keys in OWNER_FACETS:
+        for bucket in clean[facet]:
+            assert not set(bucket["n"].get("caveats", ())) & owner, (facet, bucket)
