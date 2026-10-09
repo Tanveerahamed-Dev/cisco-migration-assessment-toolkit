@@ -1,7 +1,7 @@
 # W53: Atlas Scope failure-impact owner consumption
 
 Scope starts from owner-merged main `6390b66c` (#629), on `codex/scope-impact-owner`.
-This work changes Scope only. The projection counterparts remain on `claude/train-contract`
+This work changes Scope and its AssessHub mount privacy guard only. The projection counterparts remain on `claude/train-contract`
 (#630), and G14/#631 remains with the main Codex chat. Coordination is recorded in
 #630 comment `6080011056`.
 
@@ -86,3 +86,19 @@ was still in progress. That unfinished gate remains cancelled, not passed or tra
 The first same-head webapp run `37926913419` was cancelled when the PR-body update
 triggered replacement run `37927021756`. All of these observations remain in Actions.
 Fresh final-head complete gates and supervisor review remain required.
+
+## Required mount privacy companion
+
+Superseded webapp run `37928476860` at `aa322d2e` has observed backend
+assertion failures at `test_scope_mount.py:1847` and `:1888`, before its terminal
+workflow cancellation. These are assertion failures, not merely cancellation evidence.
+The source-citation privacy signature's `app._SCOPE_SNAPSHOT_SECTIONS` must equal
+the canonical compiler's `SECTIONS_READ`; the latter now reads `device_dossiers`.
+Add that one root to the backend's Scope-only tuple. Quoting, shape/template filters,
+JSON-pointer recognition, strict equality tests and exact uncited-residual controls stay
+unchanged. This necessary privacy companion changes no projection schema, analysis fact
+or native pin, and neither #630 nor G14/#631 is edited. Independent source review is clear.
+
+The `95c6085e` Scope suite passes the unit step and proceeds into mount validation;
+it does not qualify the missing mount companion. Its complete terminal result remains in
+Actions. A fresh final-head run must pass all Scope and broader gates after this correction.
