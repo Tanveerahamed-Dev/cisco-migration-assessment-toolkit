@@ -626,8 +626,13 @@ def test_cutover_robust_to_malformed_snapshot():
     wave = plan["waves"][0]
     assert wave["gate"] == "NO-GO"               # the string-host Critical cross-layer still gates
     assert wave["critical_crosslayer"]
-    assert wave["blast_radius"]["stranded"] == 0          # None coerced, not crashed
-    assert wave["blast_radius"]["vlans_impacted"] == 3    # "3" coerced
+    # W27: not crashed, and not coerced either. The row predates the producer's off_scan_gw_vlans marker and its
+    # counts are not counts, so the engine failure-impact projection withholds them; the plan reads only what the
+    # projection publishes, so a None is never shown as 0 stranded and a "3" never as 3 VLANs.
+    br = wave["blast_radius"]
+    assert br["severity"] == cutover.IMPACT_NOT_ASSESSED and br["complete"] is False
+    assert br["stranded"] is None and br["vlans_impacted"] is None
+    assert "sw1" in br["detail"] and "off_scan_gw_vlans" in br["detail"]
 
 
 def test_deliverables(client):
