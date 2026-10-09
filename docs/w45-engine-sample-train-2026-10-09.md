@@ -227,6 +227,133 @@ The classifier compared each W36 leaf with W36's committed sample. For each inte
 text with the measured phrase replaced by the lower-bound phrase. It used the owner's `CODE_PHRASES`, read as
 constants.
 
+## Carrying main `f797444e` (#627) and #628 (W46)
+
+On 2026-10-09 this train merged main `f797444e` (#627, Codex W34/G15: per-device VLAN STP root facts in
+`selections.stp_roots`) as `1c10bd8d`, then #628 (`origin/claude/train-ui` at `30e425bb`: W28 `trust.inputs`, W29,
+W30 and a dist import) as `bc37c587`. Both are merge commits, so the two trains re-test once together.
+
+**Conflicts and resolutions.**
+- `docs/NOW.md` (both merges): every active row and handoff line is kept, except the W27 and W31 rows, which main
+  retired under rule 8 (#620 and #622 merged).
+- `docs/ssot.md` (main): both new registry rows are kept, W33's failure-impact assessability owner first, then G15's
+  stored STP observations.
+- `tests/fixtures/atlas-r2-byte-custody-policy.v1.json` (main): both sides added one LF-scoped path, so the receipts
+  are recomputed (below).
+- `tests/test_ui_projection.py` (#628): both admission comments are kept. The auto-merged `allowed` set already holds
+  both `cisco_toolkit:impact_assessability` and `cisco_toolkit.analyze:DOSSIER_AXIS_INPUTS`.
+- `webapp/backend/ui_projection_api.py` and the W12b prospective pair in `webapp/tests/test_ui_projection_api.py`
+  (#628): both replaced by the combined pair.
+
+`cisco_toolkit/ui_projection.py`, `openapi.ts`, `projectionFixtures.ts` and `CoreSnapshot.tsx` merged cleanly.
+
+**Combined schema.** HEAD's owner schema equals the merge base. Main changes `StpRootObservation`,
+`StpRootObservationList` and `VlanSelections`; #628 changes `LimitationId`, `Trust`, `TrustInput`, `TrustInputHost`,
+`TrustInputHostList` and `VocabUnranked`. No definition is changed by both, the root is unchanged, and every combined
+definition equals the one parent that changed it. The view/list keyword set is unchanged (`$defs`, `$ref`,
+`additionalProperties`, `allOf`, `anyOf`, `const`, `dependentRequired`, `enum`, `items`, `maxItems`, `maximum`,
+`minItems`, `minLength`, `minimum`, `oneOf`, `pattern`, `properties`, `required`, `title`, `type`, `uniqueItems`).
+
+**Native pins.** Computed once, statically, with `ui_projection_api._native_schema_hash` on `_VIEW_SCHEMA` and
+`_LIST_SCHEMA`, with the worktree's modules imported (`__file__` asserted):
+- view: `0553957c7d4e6e535420488d0aec799db5e319c0942154e6729ab7b5d45fccb4`
+- list: `3ee0af7f1686050821ed29878b1785eac3a5ca3ee482b35af55561c770a659df`
+
+Method check: `git archive` extracts reproduce each parent's committed pins: `01720e5b` and `7d547890` give view
+`732c68c3…` / list `7f256f80…`, `f797444e` gives `16b80957…` / `bca688bd…`, and `30e425bb` gives `6aa9a264…` /
+`a3021b67…`. The pair is in `_NATIVE_SCHEMA_HASHES` and in the W12b prospective pair.
+
+**`openapi.ts`.** The merged file is the union of the two hand edits. A py -3.12 cross-check exported the app's
+OpenAPI offline (`export_ui_projection_openapi.export_schema`) for the combined tree and for each parent. It relies on
+openapi-typescript 7.13.0 (`--immutable --alphabetize --array-length`) emitting each component as a function of that
+component's JSON alone, with references kept by name. It found 0 problems:
+- all 313 components are present, and each TS block equals the hosted-checked block of a parent whose component JSON
+  is identical (304 from main, 9 from #628);
+- the paths, operations and other non-component JSON is identical in every export, and so is each non-component TS
+  section;
+- the component order agrees with every parent's generator order;
+- the members and optionality of all 282 `UiProjection1_` object components match the combined JSON;
+- all 51 distinct string-enum unions are present.
+
+The tuple/array rule is therefore inherited unchanged. The hosted `api:check` remains the authority.
+
+**Vocab.** A static mirror of `tests/test_ui_projection_vocab.py` v1 (re-implemented; no test function called) on
+the combined `ui_projection_schema()` and `_vocab()` finds 57 string enums in 49 token sets, 19 ranked and 30
+unranked. None is doubled, unclassified or invented. G15 adds no string enum; W28's `trust_input_custody` is already
+classified.
+
+**Fixtures.** `projectionFixtures.ts` is #628's blob (`b0c125dc`), which carries W28's `trust.inputs`. G15 needs no
+fixture change: main did not touch the file, and the inventory fixture's `vlans.rows` page is empty, so
+`selections.stp_roots` is never instantiated.
+
+**LF receipts** (`tests/fixtures/atlas-r2-byte-custody-policy.v1.json`), recomputed for the merged tree with the
+pure helper logic of `test_byte_bound_checkout_owners_are_lf_exactly_attributed`:
+
+| Scope | `01720e5b` | `f797444e` | Combined |
+|---|---|---|---|
+| `lf_scope` | 182 `68493206…` | 182 `3dfb75b9…` | 183 `57245ec1b063200468a0234602a114660aa38ee2e00e0bdfaf368611a8254a93` |
+| `derived_byte_owner_scope` | 38 `ad1a4aa6…` | 38 | 38 (unchanged) |
+| `broader_declared_lf_scope` | 144 `a5cb2b74…` | 144 `1d005cc1…` | 145 `01f4dc994f7750e727a3f7dc06c1e56df19e1fdf83c013fb1baa0753017e1929` |
+| `publisher_byte_scope` | 1 `5738a353…` | 1 | 1 (unchanged) |
+
+The added paths over the base are `cisco_toolkit/impact_assessability.py` (W33) and
+`webapp/backend/observe_ui_projection_contract.py` (#627). The same helper reproduces the committed receipts of
+`7d547890`, `01720e5b`, `f797444e` and `30e425bb`.
+
+**Sample and Atlas Scope.** Neither #627 nor #628 changes snapshot-producing code. Their only engine file is
+`cisco_toolkit/ui_projection.py`, which no producer imports: neither `COLLECT_PARSE_V3_23_0.py`,
+`webapp/sample_data/` nor any other `cisco_toolkit` module; `impact_assessability.py` imports only `ssot`. The merged
+tree's sample (blob `ba869c0e…`, sha256 `dbc229cf…a26c1`), `tests/golden/`, `atlas-scope/` and every engine file
+other than `ui_projection.py` are byte-identical to `01720e5b`.
+
+**Dist.** The tracked dist is #628's import, built from `f309ed61`. `frontend_build_handoff.py` binds
+`webapp/frontend/**` (excluding `dist/`) plus its five processing inputs. Against `30e425bb` the merged tree differs in
+six of them:
+- `webapp/frontend/src/generated/openapi.ts` (types only);
+- `webapp/frontend/scripts/generate-api-types.mjs`, `generation-policy.mjs` and `generation-policy.test.mjs` (not
+  in the Vite graph);
+- `.github/workflows/webapp-ci.yml` and `.github/scripts/classify_webapp_ci_scope.py`.
+
+No bundled source changes, so the rebuild was expected to be byte-identical, but the binding is input-based. The
+hosted `frontend-dist-handoff-<sha>-<run>-<attempt>` of the pushed head decided it.
+
+**Dist handoff evidence (no import).** After the rule-7 scans, `31d9b5b9` was pushed. Webapp-ci run `37897012004`
+(pull_request, attempt 1) and its frontend job `113710626305` succeeded. That job ran api:check ("Generated API types
+match the actual app schema"), Vitest (32 files) and the build. The handoff was verified as the W29/W46 precedent
+requires:
+- **Expected record, selected from Git before the archive was read.** It is the tested merge `7eb1868a` (parents
+  `f797444e` + `31d9b5b9`), whose tree `bcf4ff84` equals the head tree, with 146 committed inputs. Six inputs
+  differ from `f309ed61`'s.
+- **Archive.** Artifact `11601230589`, `frontend-dist-handoff-31d9b5b938c291a62b8276a65890d1fe1e00c6c3-37897012004-1`,
+  562,004 bytes, sha256 `4f4f2aa223a03d3595bb6b040df9e53a8ac7779c67556f82c55e7d9ca4b603a7`. This equals the API
+  digest and the job-log upload digest.
+- **Closed seven-file inventory:** `source-before.json`, `handoff.json` and 5 dist members. There are no directory,
+  duplicate, absolute or parent paths, and `handoff.json` has a closed key set.
+- **Source records.** Both equal the expected record. `github_head` is `31d9b5b9`, with run `37897012004`, attempt 1.
+- **Non-promoting fields hold:** `GENERATED_INPUT_FOR_REVIEW_ONLY`, `release_authority` false,
+  `final_source_rebuild_required` true.
+- **Toolchain.** Node v24.19.0 and npm 11.17.0 equal the job log's environment details, and the member census
+  equals the vite build log.
+- **Members.** The 5 member hashes and sizes pass, as do the canonical path-aware marker policy and the index asset
+  links. Every asset is reachable from `index.html`.
+- **Negative controls are refused:** one altered input hash, a wrong npm version, and `f309ed61`'s tested-merge
+  record.
+
+All 5 members (`index.html`, `index-Cd6jS7wb.css`, `index-Cxzz7hwX.js`, `Topology3D-DpMNQuyH.js`,
+`react-force-graph-3d-DarJyKca.js`) are byte-identical to the tracked dist, which is #628's import. No dist path
+changes and nothing is imported. The handoff is review input; the final head must still reproduce these bytes in
+fresh hosted gates.
+
+**Static checks on `bc37c587`:**
+- every changed `.py` compiles;
+- an AST shadow scan finds no nested `def` rebound in its scope and no shadowed name read before its local binding.
+  On the pre-`a38d11b1` deck, the scan does flag W33's `stat`;
+- the protocol-assessability static helpers: the hand-list scan finds no site, 18 receipt readers are all classified,
+  and the reader-class proofs hold, including the section-dependency proof on `ui_projection.py`;
+- the pin, schema-union, OpenAPI, vocab and LF computations above.
+
+No pytest, Vitest, npm, build or engine run.
+
 ## Not done here
 
 - **Atlas Scope re-bind.** The regenerated sample stales Scope's compiled outputs and `GOLDEN_SHA`;

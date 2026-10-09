@@ -43,11 +43,23 @@ def _escape(token):
     return str(token).replace("~", "~0").replace("/", "~1")
 
 
+def _labels(section):
+    """Every failure label the SSOT owner attributes to `section` (looked up, never hand-written)."""
+    labels = sorted(label for label, sections in ssot.PHASE_SECTIONS.items() if section in sections)
+    assert labels, section
+    return labels
+
+
 def _label(section):
-    """The failure label the SSOT owner attributes to `section` (looked up, never hand-written)."""
-    labels = [label for label, sections in ssot.PHASE_SECTIONS.items() if section in sections]
+    """The one failure label the SSOT owner attributes to `section`."""
+    labels = _labels(section)
     assert len(labels) == 1, (section, labels)
     return labels[0]
+
+
+# The register section has more than one attributed phase (the risk register itself, and W33's failure-impact
+# assessability, whose verdicts feed the register's impact term). A failure of ANY of them must withhold the inputs.
+_REGISTER_FAILURE_LABELS = _labels("device_dossiers")
 
 
 def _universe(snap):
@@ -330,9 +342,14 @@ def test_a_missing_register_row_under_a_failed_lifecycle_phase_is_unavailable(sa
 # --------------------------------------------------------------------------------------------------
 # failed and malformed inputs
 # --------------------------------------------------------------------------------------------------
-def test_a_failed_register_phase_withholds_every_input_with_its_failure_record(sample):
+def test_the_register_section_names_every_phase_that_feeds_it():
+    assert "Device risk register" in _REGISTER_FAILURE_LABELS, _REGISTER_FAILURE_LABELS
+
+
+@pytest.mark.parametrize("label", _REGISTER_FAILURE_LABELS)
+def test_a_failed_register_phase_withholds_every_input_with_its_failure_record(sample, label):
     snap = copy.deepcopy(sample)
-    snap["assessment_integrity"] = {"failed_phases": [_label("device_dossiers")]}
+    snap["assessment_integrity"] = {"failed_phases": [label]}
     record = {"pointer": "/assessment_integrity/failed_phases/0", "role": "failure_record"}
     for axis, row in _rows(snap).items():
         assert row["hosts"]["state"] == AU and (row["n"]["state"], row["n"]["value"]) == (AU, None), axis
@@ -577,8 +594,11 @@ def test_receipt_row_states_never_reach_the_gap_summary(sample, monkeypatch):
 # --------------------------------------------------------------------------------------------------
 def test_every_case_validates_against_the_closed_schema(sample, tmp_path, validator):
     blind, _host = _with_blind(sample)
-    failed = copy.deepcopy(sample)
-    failed["assessment_integrity"] = {"failed_phases": [_label("device_dossiers")]}
+    failed_cases = []
+    for label in _REGISTER_FAILURE_LABELS:
+        failed = copy.deepcopy(sample)
+        failed["assessment_integrity"] = {"failed_phases": [label]}
+        failed_cases.append(failed)
     missing = copy.deepcopy(sample)
     missing["device_dossiers"]["per_device"].pop(0)
     malformed = copy.deepcopy(sample)
@@ -587,7 +607,8 @@ def test_every_case_validates_against_the_closed_schema(sample, tmp_path, valida
     del no_register["device_dossiers"]
     unjoinable = copy.deepcopy(sample)
     unjoinable["device_dossiers"]["per_device"] += [{"host": None}, {"exposures": []}, "row", {"host": 7}]
-    cases = [sample, _load(GOLDEN), _real_fleet(tmp_path), blind, failed, missing, malformed, no_register, unjoinable,
+    cases = [sample, _load(GOLDEN), _real_fleet(tmp_path), blind, *failed_cases, missing, malformed, no_register,
+             unjoinable,
              None, [], {}, {"device_dossiers": 5}, {"device_dossiers": {"per_device": [None, 3, {"host": 7}]}},
              {"devices": {"x": {}}, "device_dossiers": {"per_device": [{"host": "x", "exposures": [{"axis": {}}]}]}}]
     for snap in cases:

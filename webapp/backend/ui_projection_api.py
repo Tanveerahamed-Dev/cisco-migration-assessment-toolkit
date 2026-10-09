@@ -44,7 +44,8 @@ _NATIVE_VERSION = "0.58.5"
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
 # W51 contract train: the combined schema of main f797444e (W34 / G15 stored STP
 # facts, pins 16b80957.../bca688bd...), #629 + #628 (W28 trust inputs, pins
-# 6aa9a264.../a3021b67...) and the G41 + G17 + G16 + G05 + G21 + G24 deltas
+# 6aa9a264.../a3021b67...; #629 at f6323759 carries both, pins 0553957c.../3ee0af7f...)
+# and the G41 + G17 + G16 + G05 + G21 + G24 deltas
 # (W37-W42): compact ensure_ascii JSON plus LF, in owner key order. Re-pinned once
 # on the combined schema; every parent's extract reproduces its own committed pins.
 # Reviewed delta in the W51 pull request (against predicted main: 20 definitions
