@@ -1,7 +1,7 @@
 {
   "schema": "collect_parse_snapshot/1",
   "script_version": "V3.23.0",
-  "generated_at": "2026-10-09T02:21:19.143550",
+  "generated_at": "2026-10-09T03:58:02.808315",
   "devices": {
     "core1": {
       "hostname": "core1",
@@ -48999,7 +48999,7 @@
       ],
       "wave": "Group 1",
       "title": "CR-01: End-of-support keystone",
-      "detail": "Hardware is past last-day-of-support AND removal strands 45 endpoint(s) across 3 VLAN(s) \u2014 an unsupportable box the network cannot lose.",
+      "detail": "Hardware is past last-day-of-support AND removal strands at least 45 endpoint(s) across at least 3 VLAN(s); the blast radius is only a lower bound (1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated) \u2014 an unsupportable box the network cannot lose.",
       "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
       "evidence_basis": "row",
       "evidence_refs": [
@@ -49244,7 +49244,7 @@
       ],
       "wave": "Group 1",
       "title": "CR-04: Open advisory surface on a high-impact asset",
-      "detail": "Config-evidenced advisory surface is open AND removal strands 45 endpoint(s) across 3 VLAN(s) \u2014 validate with the Cisco PSIRT Software Checker before the window.",
+      "detail": "Config-evidenced advisory surface is open AND removal strands at least 45 endpoint(s) across at least 3 VLAN(s); the blast radius is only a lower bound (1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated) \u2014 validate with the Cisco PSIRT Software Checker before the window.",
       "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
       "evidence_basis": "row",
       "evidence_refs": [
@@ -52176,7 +52176,7 @@
       ],
       "wave": "Group 1",
       "title": "CR-06: Layered config debt on a critical asset",
-      "detail": "3 config-truth axes are off-baseline AND removal strands 45 endpoint(s) across 3 VLAN(s) \u2014 drift on the box you can least afford to misjudge.",
+      "detail": "3 config-truth axes are off-baseline AND removal strands at least 45 endpoint(s) across at least 3 VLAN(s); the blast radius is only a lower bound (1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated) \u2014 drift on the box you can least afford to misjudge.",
       "remediation": "Stacked independent risks on one asset \u2014 clear at least one leg before this device's migration window.",
       "evidence_basis": "row",
       "evidence_refs": [
@@ -59168,7 +59168,7 @@
   },
   "attestation": {
     "schema": "attestation/1",
-    "generated_at": "2026-10-09T02:21:18.879234+00:00",
+    "generated_at": "2026-10-09T03:58:02.650218+00:00",
     "claims": [
       {
         "id": "read_only_command_surface",
@@ -59180,7 +59180,7 @@
         "id": "no_egress_import_graph",
         "method": "RECURSIVE AST import-walk (every subpackage, any nesting depth, lazy imports included) over the analysis package for network libraries; charter exclusion(s): rest_collect.py (the opt-in REST collector is covered by its own GET-only claim); documented exception(s), subtracted AFTER the scan and named in the result: none \u2014 the package is clean without subtracting anything",
         "result": "HOLDS",
-        "detail": "0 unexplained network-library imports across 100 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
+        "detail": "0 unexplained network-library imports across 101 analysis modules (recursive walk; excluded by charter: rest_collect.py; no documented exception was needed)"
       },
       {
         "id": "rest_collect_get_only",
@@ -59192,7 +59192,7 @@
         "id": "no_llm_runtime",
         "method": "AST import-walk over the analysis package (rest_collect.py included) + the collector entry module for LLM/GenAI SDK imports \u2014 the pipeline is deterministic and air-gapped, no model call at runtime",
         "result": "HOLDS",
-        "detail": "0 LLM/GenAI SDK imports across 102 modules (analysis package + collector entry)"
+        "detail": "0 LLM/GenAI SDK imports across 103 modules (analysis package + collector entry)"
       }
     ]
   },
@@ -67220,7 +67220,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (34 ep); VLAN 30: Hard partition (11 ep); VLAN 20: Hard partition"
+      "detail": "VLAN 10: Hard partition (34 ep); VLAN 30: Hard partition (11 ep); VLAN 20: Hard partition",
+      "blind_links": 1
     },
     {
       "host": "access1",
@@ -67231,7 +67232,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (32 ep); VLAN 30: Hard partition (10 ep); VLAN 20: Hard partition"
+      "detail": "VLAN 10: Hard partition (32 ep); VLAN 30: Hard partition (10 ep); VLAN 20: Hard partition",
+      "blind_links": 0
     },
     {
       "host": "core2",
@@ -67242,7 +67244,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (32 ep); VLAN 30: Hard partition (10 ep); VLAN 20: Hard partition"
+      "detail": "VLAN 10: Hard partition (32 ep); VLAN 30: Hard partition (10 ep); VLAN 20: Hard partition",
+      "blind_links": 0
     },
     {
       "host": "access13",
@@ -67253,7 +67256,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)",
+      "blind_links": 0
     },
     {
       "host": "access14",
@@ -67264,7 +67268,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)",
+      "blind_links": 0
     },
     {
       "host": "access15",
@@ -67275,7 +67280,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)",
+      "blind_links": 0
     },
     {
       "host": "access16",
@@ -67286,7 +67292,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)",
+      "blind_links": 0
     },
     {
       "host": "access17",
@@ -67297,7 +67304,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)",
+      "blind_links": 0
     },
     {
       "host": "access2",
@@ -67308,7 +67316,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)",
+      "blind_links": 0
     },
     {
       "host": "access3",
@@ -67319,7 +67328,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)",
+      "blind_links": 0
     },
     {
       "host": "access4",
@@ -67330,7 +67340,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)",
+      "blind_links": 0
     },
     {
       "host": "access5",
@@ -67341,7 +67352,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)",
+      "blind_links": 0
     },
     {
       "host": "access6",
@@ -67352,7 +67364,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 30: Hard partition (9 ep)",
+      "blind_links": 0
     },
     {
       "host": "access10",
@@ -67363,7 +67376,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition",
+      "blind_links": 0
     },
     {
       "host": "access11",
@@ -67374,7 +67388,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition",
+      "blind_links": 0
     },
     {
       "host": "access12",
@@ -67385,7 +67400,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition",
+      "blind_links": 0
     },
     {
       "host": "access7",
@@ -67396,7 +67412,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition",
+      "blind_links": 0
     },
     {
       "host": "access8",
@@ -67407,7 +67424,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition",
+      "blind_links": 0
     },
     {
       "host": "access9",
@@ -67418,7 +67436,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition"
+      "detail": "VLAN 10: Hard partition (30 ep); VLAN 20: Hard partition",
+      "blind_links": 0
     },
     {
       "host": "dist1",
@@ -67429,7 +67448,8 @@
       "backup": 0,
       "fhrp": 2,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 40: FHRP-covered; VLAN 41: FHRP-covered"
+      "detail": "VLAN 40: FHRP-covered; VLAN 41: FHRP-covered",
+      "blind_links": 1
     },
     {
       "host": "dist2",
@@ -67440,7 +67460,8 @@
       "backup": 0,
       "fhrp": 2,
       "off_scan_gw_vlans": 0,
-      "detail": "VLAN 40: FHRP-covered; VLAN 41: FHRP-covered"
+      "detail": "VLAN 40: FHRP-covered; VLAN 41: FHRP-covered",
+      "blind_links": 0
     },
     {
       "host": "podacc1",
@@ -67451,7 +67472,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "No reachability impact from removing this switch (within the scan)."
+      "detail": "No reachability impact from removing this switch (within the scan).",
+      "blind_links": 0
     },
     {
       "host": "podacc2",
@@ -67462,7 +67484,8 @@
       "backup": 0,
       "fhrp": 0,
       "off_scan_gw_vlans": 0,
-      "detail": "No reachability impact from removing this switch (within the scan)."
+      "detail": "No reachability impact from removing this switch (within the scan).",
+      "blind_links": 0
     }
   ],
   "link_centrality": [
@@ -70819,7 +70842,7 @@
             "code": "CR-01",
             "title": "End-of-support keystone",
             "severity": "Critical",
-            "basis": "Hardware is past last-day-of-support AND removal strands 45 endpoint(s) across 3 VLAN(s) \u2014 an unsupportable box the network cannot lose."
+            "basis": "Hardware is past last-day-of-support AND removal strands at least 45 endpoint(s) across at least 3 VLAN(s); the blast radius is only a lower bound (1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated) \u2014 an unsupportable box the network cannot lose."
           },
           {
             "code": "CR-02",
@@ -70837,18 +70860,23 @@
             "code": "CR-04",
             "title": "Open advisory surface on a high-impact asset",
             "severity": "High",
-            "basis": "Config-evidenced advisory surface is open AND removal strands 45 endpoint(s) across 3 VLAN(s) \u2014 validate with the Cisco PSIRT Software Checker before the window."
+            "basis": "Config-evidenced advisory surface is open AND removal strands at least 45 endpoint(s) across at least 3 VLAN(s); the blast radius is only a lower bound (1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated) \u2014 validate with the Cisco PSIRT Software Checker before the window."
           },
           {
             "code": "CR-06",
             "title": "Layered config debt on a critical asset",
             "severity": "Medium",
-            "basis": "3 config-truth axes are off-baseline AND removal strands 45 endpoint(s) across 3 VLAN(s) \u2014 drift on the box you can least afford to misjudge."
+            "basis": "3 config-truth axes are off-baseline AND removal strands at least 45 endpoint(s) across at least 3 VLAN(s); the blast radius is only a lower bound (1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated) \u2014 drift on the box you can least afford to misjudge."
           }
         ],
         "risk_index": 100,
         "risk_band": "Severe",
-        "verdict": "Stabilize or replace before migration \u2014 health Critical (3/100); hardware Past LDoS; open advisory surface; removal strands 45 endpoint(s) across 3 VLAN(s)."
+        "verdict": "Stabilize or replace before migration \u2014 health Critical (3/100); hardware Past LDoS; open advisory surface; removal strands at least 45 endpoint(s) across at least 3 VLAN(s); the blast radius is only a lower bound (1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated).",
+        "impact_assessability": {
+          "assessable": "lower_bound",
+          "why": "1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated",
+          "pointer": "/failure_impact/0"
+        }
       },
       {
         "host": "access13",
@@ -70951,7 +70979,12 @@
         ],
         "risk_index": 64,
         "risk_band": "Severe",
-        "verdict": "Stabilize or replace before migration \u2014 health Critical (24/100); software train end-of-era; 2 port(s) err-disabled / high error rate; removal strands 39 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Stabilize or replace before migration \u2014 health Critical (24/100); software train end-of-era; 2 port(s) err-disabled / high error rate; removal strands 39 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/3"
+        }
       },
       {
         "host": "access15",
@@ -71047,7 +71080,12 @@
         "compound": [],
         "risk_index": 64,
         "risk_band": "Severe",
-        "verdict": "Stabilize or replace before migration \u2014 health Critical (24/100); 2 port(s) err-disabled / high error rate; removal strands 39 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Stabilize or replace before migration \u2014 health Critical (24/100); 2 port(s) err-disabled / high error rate; removal strands 39 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/5"
+        }
       },
       {
         "host": "access16",
@@ -71150,7 +71188,12 @@
         ],
         "risk_index": 64,
         "risk_band": "Severe",
-        "verdict": "Stabilize or replace before migration \u2014 health Critical (24/100); software train end-of-era; 2 port(s) err-disabled / high error rate; removal strands 39 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Stabilize or replace before migration \u2014 health Critical (24/100); software train end-of-era; 2 port(s) err-disabled / high error rate; removal strands 39 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/6"
+        }
       },
       {
         "host": "access1",
@@ -71246,7 +71289,12 @@
         "compound": [],
         "risk_index": 48,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 health Poor (40/100); hardware past end-of-sale; advisory surface to validate (PSIRT checker); removal strands 42 endpoint(s) across 3 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 health Poor (40/100); hardware past end-of-sale; advisory surface to validate (PSIRT checker); removal strands 42 endpoint(s) across 3 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/1"
+        }
       },
       {
         "host": "access10",
@@ -71349,7 +71397,12 @@
         ],
         "risk_index": 48,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 software train end-of-era; health Poor (58/100); operational events to review in the logs; removal strands 30 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 software train end-of-era; health Poor (58/100); operational events to review in the logs; removal strands 30 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/13"
+        }
       },
       {
         "host": "access12",
@@ -71445,7 +71498,12 @@
         "compound": [],
         "risk_index": 48,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 health Poor (58/100); hardware past end-of-sale; advisory surface to validate (PSIRT checker); removal strands 30 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 health Poor (58/100); hardware past end-of-sale; advisory surface to validate (PSIRT checker); removal strands 30 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/15"
+        }
       },
       {
         "host": "access14",
@@ -71541,7 +71599,12 @@
         "compound": [],
         "risk_index": 48,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 health Critical (24/100); 2 port(s) err-disabled / high error rate; operational events to review in the logs; removal strands 39 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 health Critical (24/100); 2 port(s) err-disabled / high error rate; operational events to review in the logs; removal strands 39 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/4"
+        }
       },
       {
         "host": "access17",
@@ -71637,7 +71700,12 @@
         "compound": [],
         "risk_index": 48,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 health Critical (24/100); 2 port(s) err-disabled / high error rate; operational events to review in the logs; removal strands 39 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 health Critical (24/100); 2 port(s) err-disabled / high error rate; operational events to review in the logs; removal strands 39 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/7"
+        }
       },
       {
         "host": "access3",
@@ -71733,7 +71801,12 @@
         "compound": [],
         "risk_index": 48,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 health Poor (40/100); hardware past end-of-sale; advisory surface to validate (PSIRT checker); removal strands 39 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 health Poor (40/100); hardware past end-of-sale; advisory surface to validate (PSIRT checker); removal strands 39 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/9"
+        }
       },
       {
         "host": "access4",
@@ -71836,7 +71909,12 @@
         ],
         "risk_index": 48,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 software train end-of-era; health Poor (40/100); operational events to review in the logs; removal strands 39 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 software train end-of-era; health Poor (40/100); operational events to review in the logs; removal strands 39 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/10"
+        }
       },
       {
         "host": "access6",
@@ -71932,7 +72010,12 @@
         "compound": [],
         "risk_index": 48,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 health Poor (40/100); hardware past end-of-sale; advisory surface to validate (PSIRT checker); removal strands 39 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 health Poor (40/100); hardware past end-of-sale; advisory surface to validate (PSIRT checker); removal strands 39 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/12"
+        }
       },
       {
         "host": "access7",
@@ -72035,7 +72118,12 @@
         ],
         "risk_index": 48,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 software train end-of-era; health Poor (58/100); operational events to review in the logs; removal strands 30 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 software train end-of-era; health Poor (58/100); operational events to review in the logs; removal strands 30 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/16"
+        }
       },
       {
         "host": "access9",
@@ -72131,7 +72219,12 @@
         "compound": [],
         "risk_index": 48,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 health Poor (58/100); hardware past end-of-sale; advisory surface to validate (PSIRT checker); removal strands 30 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 health Poor (58/100); hardware past end-of-sale; advisory surface to validate (PSIRT checker); removal strands 30 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/18"
+        }
       },
       {
         "host": "access11",
@@ -72227,7 +72320,12 @@
         "compound": [],
         "risk_index": 32,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 health Poor (58/100); operational events to review in the logs; 6 CIS check(s) failing; removal strands 30 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 health Poor (58/100); operational events to review in the logs; 6 CIS check(s) failing; removal strands 30 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/14"
+        }
       },
       {
         "host": "access2",
@@ -72323,7 +72421,12 @@
         "compound": [],
         "risk_index": 32,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 health Poor (40/100); operational events to review in the logs; 6 CIS check(s) failing; removal strands 39 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 health Poor (40/100); operational events to review in the logs; 6 CIS check(s) failing; removal strands 39 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/8"
+        }
       },
       {
         "host": "access5",
@@ -72419,7 +72522,12 @@
         "compound": [],
         "risk_index": 32,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 health Poor (40/100); operational events to review in the logs; 6 CIS check(s) failing; removal strands 39 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 health Poor (40/100); operational events to review in the logs; 6 CIS check(s) failing; removal strands 39 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/11"
+        }
       },
       {
         "host": "access8",
@@ -72515,7 +72623,12 @@
         "compound": [],
         "risk_index": 32,
         "risk_band": "Elevated",
-        "verdict": "Remediate inside the migration plan \u2014 health Poor (58/100); operational events to review in the logs; 6 CIS check(s) failing; removal strands 30 endpoint(s) across 2 VLAN(s)."
+        "verdict": "Remediate inside the migration plan \u2014 health Poor (58/100); operational events to review in the logs; 6 CIS check(s) failing; removal strands 30 endpoint(s) across 2 VLAN(s).",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/17"
+        }
       },
       {
         "host": "dist1",
@@ -72611,7 +72724,12 @@
         "compound": [],
         "risk_index": 8,
         "risk_band": "Low",
-        "verdict": "Single red axis, no compounding \u2014 1 required directive(s) missing (50% compliant); removal impacts 2 VLAN(s). Address on its own merits, not as routine."
+        "verdict": "Single red axis, no compounding \u2014 1 required directive(s) missing (50% compliant); removal impacts at least 2 VLAN(s); the blast radius is only a lower bound (1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated). Address on its own merits, not as routine.",
+        "impact_assessability": {
+          "assessable": "lower_bound",
+          "why": "1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated",
+          "pointer": "/failure_impact/19"
+        }
       },
       {
         "host": "dist2",
@@ -72707,7 +72825,12 @@
         "compound": [],
         "risk_index": 8,
         "risk_band": "Low",
-        "verdict": "Single red axis, no compounding \u2014 1 required directive(s) missing (50% compliant); removal impacts 2 VLAN(s). Address on its own merits, not as routine."
+        "verdict": "Single red axis, no compounding \u2014 1 required directive(s) missing (50% compliant); removal impacts 2 VLAN(s). Address on its own merits, not as routine.",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/20"
+        }
       },
       {
         "host": "core2",
@@ -72803,7 +72926,12 @@
         "compound": [],
         "risk_index": 0,
         "risk_band": "Low",
-        "verdict": "No stacked risk \u2014 routine migration handling."
+        "verdict": "No stacked risk on the assessed axes, but the blast radius is only a lower bound (it faces 1 uncollected neighbour(s) that can carry endpoints); confirm the blast radius before treating this as routine migration handling.",
+        "impact_assessability": {
+          "assessable": "lower_bound",
+          "why": "it faces 1 uncollected neighbour(s) that can carry endpoints",
+          "pointer": "/failure_impact/2"
+        }
       },
       {
         "host": "podacc1",
@@ -72899,7 +73027,12 @@
         "compound": [],
         "risk_index": 0,
         "risk_band": "Low",
-        "verdict": "No stacked risk \u2014 routine migration handling."
+        "verdict": "No stacked risk \u2014 routine migration handling.",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/21"
+        }
       },
       {
         "host": "podacc2",
@@ -72995,7 +73128,12 @@
         "compound": [],
         "risk_index": 0,
         "risk_band": "Low",
-        "verdict": "No stacked risk \u2014 routine migration handling."
+        "verdict": "No stacked risk \u2014 routine migration handling.",
+        "impact_assessability": {
+          "assessable": "published",
+          "why": "",
+          "pointer": "/failure_impact/22"
+        }
       }
     ],
     "summary": {
@@ -73187,7 +73325,7 @@
         "domain": "Resiliency & availability",
         "title": "No keystone single point of failure",
         "verdict": "advisory",
-        "observed": "Losing core1 strands 45 endpoint(s); access1 strands 42 endpoint(s); core2 strands 42 endpoint(s); access13 strands 39 endpoint(s); access14 strands 39 endpoint(s); and 14 further device(s) strand 30-39 endpoint(s) each.",
+        "observed": "Losing core1 strands \u2265 45 endpoint(s) (lower bound \u2014 1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated); access1 strands 42 endpoint(s); core2 strands \u2265 42 endpoint(s) (lower bound \u2014 it faces 1 uncollected neighbour(s) that can carry endpoints); access13 strands 39 endpoint(s); access14 strands 39 endpoint(s); and 14 further device(s) strand 30-39 endpoint(s) each. 1 simulated device(s) are not graded, because their blast radius is not a measurement on this evidence: dist1 (lower bound \u2014 1 inter-switch link(s) on it carry no VLAN evidence, so what it carries over them was not simulated).",
         "implication": "Endpoint dependency is concentrated \u2014 these devices ARE the availability budget.",
         "recommendation": "Verify each keystone's redundancy (uplinks, power, supervisor) and sequence them with the most conservative cutover plan (their waves carry the widest blast radius).",
         "reference": "Availability analysis \u2014 single-device blast radius",
