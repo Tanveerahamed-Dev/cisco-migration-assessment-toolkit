@@ -285,7 +285,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 # 'from openpyxl.cell.cell import MergedCell' dropped (step 26): its only user,
 # append_interface_rows, moved to cisco_toolkit.excel.
@@ -462,6 +462,7 @@ from cisco_toolkit.excel import (
     write_syslog_intelligence_sheet,                             # NEW-V3.23.164 (NOS-style operational log analysis)
     write_qos_audit_sheet,                                       # NEW-V3.23.165 (configured QoS posture + doctrine findings)
     write_software_risk_sheet,                                   # NEW-V3.23.166 (advisory-surface screening + train lifecycle)
+    write_collection_transport_sheet,                            # W59 PR-1 (per-device SSH session disclosure)
     write_platform_health_sheet,                                 # NEW-V3.23.167 (control-plane CPU/memory capacity screening)
     write_device_risk_sheet,                                     # NEW-V3.23.172 (per-asset compound-risk register)
     write_lifecycle_risk_sheet,                                  # NEW-V3.23.117 (hardware EoL / end-of-support)
@@ -483,6 +484,7 @@ from cisco_toolkit.external_import import (normalize_rows, read_inventory_csv,
 # the in-memory dict API (compute_capture_integrity) remains the module's direct-use surface.
 from cisco_toolkit.capture_integrity import (compute_capture_integrity_from_paths,
                                              load_capture_meta, CAPTURE_META_FILENAME)
+from cisco_toolkit import ssh_session                                # W59 PR-1 (SSH session disclosure owner)
 from cisco_toolkit.traffic_assurance import (
     TRAFFIC_ASSURANCE_OWNER, TRAFFIC_ASSURANCE_SET_SCHEMA,
     TRAFFIC_EVIDENCE_CUSTODY_SCHEMA, assess_flows, build_traffic_evidence_custody,
@@ -550,8 +552,14 @@ from cisco_toolkit.ops import write_ops_handbook_docx                # NEW-V3.23
 # EVERYTHING - so genuine UserWarning / RuntimeWarning signals surface.
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+# W59 PR-1: the collector builds every SSH connection through ONE factory (`_open_connection`, below), so
+# it imports netmiko's class map rather than `ConnectHandler`. Deliberately NO `ConnectHandler` name in
+# this module: a test that still patches `C.ConnectHandler` then fails loudly (monkeypatch raises on a
+# missing attribute) instead of silently letting a real connection through.
 try:
-    from netmiko import ConnectHandler
+    import netmiko as _netmiko
+    import paramiko as _paramiko
+    from netmiko.ssh_dispatcher import CLASS_MAPPER as _NETMIKO_CLASS_MAPPER
 except ImportError:
     print("ERROR: netmiko not installed. Run: python3 -m pip install netmiko paramiko")
     sys.exit(1)
@@ -1154,22 +1162,165 @@ def _is_auth_error(exc) -> bool:
     m = str(exc).lower()  # fallback if the class isn't importable
     return "authentication" in m or "auth failed" in m or "bad password" in m
 
-def connect_device(ip, hostname, username, password, platform):
+
+# -----------------------------------------------------------------------------
+# W59 PR-1: ONE connection factory, an observed transport on the default path.
+#
+# paramiko frees the key-exchange engine at NEWKEYS, before `connect()` returns, so what a session actually
+# negotiated can only be recorded from INSIDE the transport (cisco_toolkit/ssh_session.py, design §4.3).
+# netmiko 4.7/4.8 build their client through `_build_ssh_client()` -> `_get_ssh_client_instance()`, and
+# paramiko's `SSHClient.connect` takes a `transport_factory` (since 2.12); neither the IOS nor the NX-OS
+# driver overrides the hook. So the collector:
+#   * composes `ObservedTransport` = (ObservingTransportMixin, paramiko.Transport) -- no algorithm table,
+#     the negotiation is byte-for-byte stock paramiko;
+#   * subclasses the netmiko driver per (device_type, transport class) to return an `_ObservedSSHClient`;
+#   * hands the per-connection recorder to that hook through a THREAD-LOCAL set only for the duration of the
+#     driver constructor (netmiko's `__init__` takes no extra kwargs), and the client's transport factory
+#     binds the attempt's sink to the transport INSTANCE -- the key exchange runs in paramiko's own thread,
+#     which never reads the thread-local, so a ThreadPoolExecutor run cannot mix two devices' observations.
+# `_open_connection` is the ONLY constructor of a netmiko connection in this module (structurally tested);
+# the live-safety tests patch that one name.
+# -----------------------------------------------------------------------------
+ObservedTransport = type("ObservedTransport", (ssh_session.ObservingTransportMixin, _paramiko.Transport), {})
+
+_SESSION_HANDOFF = threading.local()
+
+
+class _ObservedSSHClient(_paramiko.SSHClient):
+    """A paramiko client whose ``connect()`` forces the observing transport for THIS connection and writes the
+    established-session record after authentication and BEFORE returning -- i.e. before netmiko opens the
+    shell, runs its session preparation, or the collector sends `TERMINAL_SETUP_CMDS`."""
+
+    def __init__(self, recorder, transport_cls):
+        super().__init__()
+        self._ssh_recorder = recorder
+        self._ssh_transport_cls = transport_cls
+
+    def connect(self, *args, **kwargs):
+        recorder, transport_cls = self._ssh_recorder, self._ssh_transport_cls
+        observation = recorder.observation
+
+        def _transport_factory(sock, **factory_kwargs):
+            # paramiko 4.0.0 passes the GSSAPI arguments, 5.0.0 does not: forward whatever arrives.
+            transport = transport_cls(sock, **factory_kwargs)
+            ssh_session.bind_observation(transport, observation)
+            return transport
+
+        kwargs["transport_factory"] = _transport_factory
+        result = super().connect(*args, **kwargs)
+        try:
+            recorder.complete_established()
+        except ssh_session.SessionRecordError:
+            try:
+                self.close()
+            except Exception as e:                                      # noqa: BLE001
+                logger.debug(f"closing the unrecorded SSH session failed (ignored): {e}")
+            raise
+        return result
+
+
+class _ObservedClientMixin:
+    """Mixed in FRONT of the netmiko driver class: its only change is which paramiko client is built."""
+
+    def _get_ssh_client_instance(self):
+        handoff = getattr(_SESSION_HANDOFF, "value", None)
+        if handoff is None:
+            raise RuntimeError("observed netmiko driver constructed outside _open_connection(); refusing to "
+                               "open an unrecorded SSH session")
+        recorder, transport_cls = handoff
+        return _ObservedSSHClient(recorder, transport_cls)
+
+
+_OBSERVED_DRIVERS: Dict[Tuple[str, type], type] = {}
+_OBSERVED_DRIVERS_LOCK = threading.Lock()
+
+
+def _observed_driver_for(platform: str, transport_cls: type) -> type:
+    """The netmiko driver class for `platform`, with the observed client hook mixed in. Cached per
+    (device_type, transport class)."""
+    device_type = NETMIKO_TYPE.get(platform, "cisco_ios")
+    key = (device_type, transport_cls)
+    with _OBSERVED_DRIVERS_LOCK:
+        cls = _OBSERVED_DRIVERS.get(key)
+        if cls is None:
+            base = _NETMIKO_CLASS_MAPPER[device_type]
+            cls = type("Observed" + base.__name__, (_ObservedClientMixin, base), {})
+            _OBSERVED_DRIVERS[key] = cls
+        return cls
+
+
+def _transport_for_profile(profile: str) -> type:
+    """The transport class for one device's EFFECTIVE profile. PR-1 ships the default path only; the legacy
+    branch (a lazily imported `cisco_toolkit.legacy_ssh`) arrives with W59 PR-2."""
+    if profile == ssh_session.DEFAULT_PROFILE:
+        return ObservedTransport
+    raise ValueError(f"SSH profile {profile!r} is not available in this build (legacy SSH is W59 PR-2)")
+
+
+def _open_connection(kwargs: dict, platform: str, profile: str, recorder) -> Any:
+    """THE connection factory: the only place this module constructs a netmiko connection."""
+    transport_cls = _transport_for_profile(profile)
+    driver = _observed_driver_for(platform, transport_cls)
+    _SESSION_HANDOFF.value = (recorder, transport_cls)
+    try:
+        return driver(**kwargs)
+    finally:
+        _SESSION_HANDOFF.value = None
+
+
+_SSH_LIBRARY_BLOCK: Optional[dict] = None
+
+
+def _ssh_library_block() -> dict:
+    """The `library` block of every session record: versions, transport class and the stock-table SHA-1 probe
+    (recorded only in PR-1; the post-re-lock refusal is W59 PR-3)."""
+    global _SSH_LIBRARY_BLOCK
+    if _SSH_LIBRARY_BLOCK is None:
+        _SSH_LIBRARY_BLOCK = ssh_session.library_block(
+            paramiko_version=getattr(_paramiko, "__version__", None),
+            netmiko_version=getattr(_netmiko, "__version__", None),
+            transport_class=ObservedTransport.__name__,
+            default_permits_sha1=ssh_session.permits_sha1(_paramiko.Transport,
+                                                          getattr(_paramiko, "RSAKey", None)))
+    return dict(_SSH_LIBRARY_BLOCK)
+
+
+def _session_recorder_for(devinfo: dict, dev_dir: Optional[str]):
+    """A per-device recorder: its sidecar under `dev_dir` (None = in memory only)."""
+    path = os.path.join(dev_dir, ssh_session.SIDECAR_FILENAME) if dev_dir else None
+    return ssh_session.SessionRecorder(
+        path, consent=ssh_session.consent_for(devinfo, None), library=_ssh_library_block(),
+        platform_source="autodetect" if devinfo.get("platform") in ("auto", "") else "device_row")
+
+
+def connect_device(ip, hostname, username, password, platform, session=None, port=None):
+    """Open one device's SSH session through `_open_connection`, recording what it negotiated.
+
+    `session` is the device's `ssh_session.SessionRecorder` (collect_one passes one whose sidecar was written
+    `pending` BEFORE this call); None records in memory only. A NEGOTIATION REFUSAL is classified from the
+    observed server lists and is never retried (design §4.4); an authentication failure is never retried; any
+    other failure keeps the existing same-profile retry."""
+    recorder = session or ssh_session.SessionRecorder(
+        None, consent=ssh_session.consent_for({"hostname": hostname, "ip": ip}, None),
+        library=_ssh_library_block())
     resolved = platform
     if platform in ("auto", ""):                       # CHANGED-V3.23.1: detect once,
         resolved = autodetect_platform(ip, username, password)  # not per retry
+        recorder.platform_source = "autodetect"        # the autodetect probe itself is not observed (§4.2)
     attempts = max(1, CONNECT_MAX_ATTEMPTS)
     last_err = None
     for attempt in range(1, attempts + 1):
+        observation = recorder.begin_attempt()
         try:
             logger.info(f"Connecting to {hostname} ({ip}) [{resolved}] "
                         f"(attempt {attempt}/{attempts}) ...")
-            dev = ConnectHandler(
-                device_type=NETMIKO_TYPE.get(resolved, "cisco_ios"),
-                host=ip, username=username, password=password,
-                timeout=120, conn_timeout=30, auth_timeout=30,
-                global_delay_factor=3, fast_cli=False,
-            )
+            conn_kwargs = dict(device_type=NETMIKO_TYPE.get(resolved, "cisco_ios"),
+                               host=ip, username=username, password=password,
+                               timeout=120, conn_timeout=30, auth_timeout=30,
+                               global_delay_factor=3, fast_cli=False)
+            if port is not None:
+                conn_kwargs["port"] = port      # W59 PR-1: optional devices.json `port` (default 22)
+            dev = _open_connection(conn_kwargs, resolved, recorder.effective_profile, recorder)
             # Session setup. A FAILURE here is not cosmetic (review 2026-07-28 #11): it was swallowed
             # by a bare `except Exception: pass` with no log and no record, yet it changes what every
             # later capture MEANS. Under a TACACS+ command-authorization policy that denies `terminal *`
@@ -1201,18 +1352,90 @@ def connect_device(ip, hostname, username, password, platform):
                                f"{hostname} connection ({e}); the sidecar will not carry it")
             logger.info(f"[OK] Connected to {hostname}")
             return dev, resolved
+        except ssh_session.SessionRecordError as e:
+            # The session authenticated but its record could not be written: the client already closed the
+            # transport, no command was sent, and the sealed sidecar stays `pending` (design §6.1 step 2).
+            # Never retried -- a second session would cross the same unrecorded path.
+            logger.error(f"[FAIL] {hostname}: {e}; session closed before any command, not retrying")
+            return None, resolved
         except Exception as e:
             last_err = e
             if _is_auth_error(e):                       # don't retry bad credentials
+                recorder.finish_failure("auth_failed", e)
                 logger.error(f"[FAIL] Authentication failed to {hostname}: {e} (not retrying)")
+                return None, resolved
+            refusal = ssh_session.classify_failure(e, observation)
+            if refusal is not None:
+                # W59: a deterministic negotiation refusal. Retrying cannot change the answer (the profile never
+                # changes between attempts), and it is never retried over a weaker profile either.
+                recorder.finish_failure("negotiation_refused", e, refusal)
+                logger.error(f"[REFUSED] {hostname}: SSH negotiation refused ({refusal['classification']}): "
+                             f"{ssh_session.refusal_message(refusal, recorder.consent)} (not retrying)")
                 return None, resolved
             if attempt < attempts:
                 wait = CONNECT_BACKOFF_BASE * attempt
                 logger.warning(f"[RETRY] Connect to {hostname} failed "
                                f"(attempt {attempt}/{attempts}): {e}; retrying in {wait:.0f}s ...")
                 time.sleep(wait)
+    recorder.finish_failure("connect_failed", last_err)
     logger.error(f"[FAIL] Connection failed to {hostname} after {attempts} attempt(s): {last_err}")
     return None, resolved
+
+def _ssh_port(devinfo: dict) -> Optional[int]:
+    """W59 PR-1: an optional devices.json ``port`` (an integer 1-65535); absent means netmiko's default (22).
+    A present but invalid value is refused loudly rather than silently replaced by 22."""
+    if devinfo.get("port") in (None, ""):
+        return None
+    value = devinfo.get("port")
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
+        raise ValueError(f"devices.json entry {devinfo.get('hostname')!r}: 'port' must be an integer 1-65535")
+    return value
+
+
+def _collect_live_device(devinfo: dict, dev_dir: str, *, claimed: set, lock: Any,
+                         on_record_failure: Callable[[str, str, str], None]) -> Tuple[str, Optional[Dict[str, str]]]:
+    """ONE device's live collection: session record, connection, command sweep, disconnect.
+
+    W59 PR-1 (design section 6.1): the session record is written `pending` BEFORE connecting, and if it cannot
+    be written the device is NOT connected. Two devices.json rows that resolve to the same folder cannot both
+    claim it (the second is refused, never silently overwritten). Returns ``(platform, cmd_to_file)`` with
+    ``cmd_to_file=None`` when the device was not collected. `on_record_failure(host, stage, error_class)`
+    lands a record-write failure in the run manifest's consent block."""
+    hostname = devinfo["hostname"]
+    platform = devinfo["platform"]
+    recorder = _session_recorder_for(devinfo, dev_dir)
+    sidecar_key = os.path.normcase(os.path.abspath(recorder.path))
+    with lock:
+        duplicate = sidecar_key in claimed
+        claimed.add(sidecar_key)
+    try:
+        if duplicate:
+            raise FileExistsError("another device in this run already claimed this session record")
+        port = _ssh_port(devinfo)
+        os.makedirs(dev_dir, exist_ok=True)
+        recorder.write_pending()
+    except Exception as e:                                              # noqa: BLE001
+        on_record_failure(hostname, "pending", type(e).__name__)
+        logger.error(f"  [FAIL] {hostname}: the SSH session record could not be written before connecting "
+                     f"({type(e).__name__}: {e}); the device is NOT connected")
+        return platform, None
+    logger.info(f"  Connecting to {hostname} ({devinfo['ip']}) ...")
+    dev, platform = connect_device(devinfo["ip"], hostname, devinfo["username"], devinfo["password"], platform,
+                                   session=recorder, port=port)
+    for fail in recorder.write_failures:
+        if fail.get("stage") != "pending":
+            on_record_failure(hostname, fail.get("stage", "?"), fail.get("error_class", "?"))
+    if not dev:
+        logger.error(f"  [FAIL] Skipped {hostname}")
+        return platform, None
+    try:
+        return platform, collect(hostname, platform, dev, dev_dir)
+    finally:
+        try:
+            dev.disconnect()
+        except Exception:                                               # noqa: BLE001
+            pass
+
 
 _SLOW_CMDS = {"show running-config", "show cdp neighbors detail",
               "show lldp neighbors detail", "show mac address-table",
@@ -2177,10 +2400,25 @@ def _register_artifact(path: str, *, kind: str = "", source: str = "") -> dict:
 
 
 def _evidence_records(all_cmd_to_files: Dict[str, Dict[str, str]], root_dir: str,
-                      *, _bindings_out: Optional[List[dict]] = None) -> dict:
-    """Hash the exact raw files analysis consumed, including capture-integrity sidecars."""
+                      *, _bindings_out: Optional[List[dict]] = None,
+                      session_hosts: Iterable[str] = ()) -> dict:
+    """Hash the exact raw files analysis consumed, including capture-integrity sidecars.
+
+    W59 PR-1: every device's SSH session sidecar (`_ssh_session.json`) is sealed too -- for every host in
+    `session_hosts` (the whole devices.json, so a REFUSED device, which never enters `all_cmd_to_files`,
+    keeps its sealed record) as well as every host in the command map."""
     root = os.path.abspath(root_dir)
     by_path: Dict[str, dict] = {}
+    for host in sorted({str(h) for h in (session_hosts or ()) if str(h)} | set(all_cmd_to_files or {})):
+        mapping = (all_cmd_to_files or {}).get(host) or {}
+        paths = list(mapping.values())
+        device_dir = os.path.dirname(os.path.abspath(paths[0])) if paths else \
+            os.path.join(root, safe_fs_name(str(host)))
+        ssh_sidecar = os.path.join(device_dir, ssh_session.SIDECAR_FILENAME)
+        if os.path.isfile(ssh_sidecar):
+            rec = by_path.setdefault(ssh_sidecar, {"hosts": set(), "commands": set()})
+            rec["hosts"].add(str(host))
+            rec["commands"].add(ssh_session.CUSTODY_ROLE)
     for host, mapping in sorted((all_cmd_to_files or {}).items()):
         for command, raw_path in sorted((mapping or {}).items()):
             p = os.path.abspath(raw_path)
@@ -2374,6 +2612,10 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict,
                                   list(state.get("excluded_stale_outputs") or []),
         "artifact_registry": {"mode": "exact-current-run", "n_artifacts": len(artifacts)},
     }
+    # W59 PR-1: the SSH transport consent block (recorded before the first connection on a live run; the
+    # offline form, every consent field null, on --no-collect). Library callers without it publish none.
+    if isinstance(state.get("ssh_transport_consent"), dict):
+        meta["ssh_transport_consent"] = state["ssh_transport_consent"]
     return _manifest.build_manifest(meta, artifacts, steps)
 
 
@@ -4178,11 +4420,27 @@ def main():
     _progress_lock = threading.Lock()
     _done_count    = [0]
 
+    # W59 PR-1: the SSH transport consent block, PRINTED and RECORDED before the first connection of a live run
+    # (design §5); a --no-collect re-analysis records the offline form, every consent field null, so it never
+    # states a consent it did not observe. The same object travels into the run manifest and the snapshot's
+    # ssh_sessions block.
+    if args.no_collect:
+        _ssh_consent = ssh_session.offline_consent_block()
+    else:
+        _ssh_consent = ssh_session.live_consent_block(devices, None)
+        for _line in ssh_session.consent_summary_lines(_ssh_consent):
+            logger.info(f"  [SSH-CONSENT] {_line}")
+    _RUN_CUSTODY["ssh_transport_consent"] = _ssh_consent
+    _ssh_claimed_sidecars: set = set()
+
+    def _ssh_record_failure(hostname: str, stage: str, error_class: str) -> None:
+        with _progress_lock:
+            fails = _ssh_consent.setdefault("record_failures", [])
+            if isinstance(fails, list):
+                fails.append({"host": hostname, "stage": stage, "error_class": error_class})
+
     def collect_one(devinfo):
-        ip       = devinfo["ip"]
         hostname = devinfo["hostname"]
-        username = devinfo["username"]
-        password = devinfo["password"]
         platform = devinfo["platform"]
         safe_host = safe_fs_name(hostname)
         dev_dir   = os.path.join(root_dir, safe_host)
@@ -4198,19 +4456,14 @@ def main():
                 fpath = os.path.join(dev_dir, fn)
                 if os.path.isfile(fpath): cmd_to_file[cmd] = fpath
         else:
-            logger.info(f"  Connecting to {hostname} ({ip}) ...")
-            dev, platform = connect_device(ip, hostname, username, password, platform)
-            if not dev:
-                logger.error(f"  [FAIL] Skipped {hostname}")
+            platform, cmd_to_file = _collect_live_device(
+                devinfo, dev_dir, claimed=_ssh_claimed_sidecars, lock=_progress_lock,
+                on_record_failure=_ssh_record_failure)
+            if cmd_to_file is None:
                 with _progress_lock:
                     _done_count[0] += 1
                     logger.info(f"  Progress: {_done_count[0]}/{len(devices)} devices done")
                 return hostname, platform, None
-            try:
-                cmd_to_file = collect(hostname, platform, dev, dev_dir)
-            finally:
-                try: dev.disconnect()
-                except Exception: pass
 
         # V14.12: correct the platform from the actually-collected output. Union collection
         # means both command forms are present; whichever returned real (non-error) output
@@ -4264,10 +4517,13 @@ def main():
 
     # Bind the evidence BEFORE the first parser (global ARP below).  Finalization re-hashes the
     # same finite path set and refuses success if any byte changed while analysis was in flight.
+    # W59 PR-1: every devices.json host's SSH session sidecar joins the sealed set (a refused device never
+    # enters all_cmd_to_files, and its record is exactly the evidence its finding rests on).
+    _ssh_session_hosts = [str(d.get("hostname") or "") for d in devices if str(d.get("hostname") or "")]
     try:
         raw_bindings: List[dict] = []
         _RUN_CUSTODY["evidence"]["analysis_input"] = _evidence_records(
-            all_cmd_to_files, root_dir, _bindings_out=raw_bindings)
+            all_cmd_to_files, root_dir, _bindings_out=raw_bindings, session_hosts=_ssh_session_hosts)
         _RUN_CUSTODY["raw_evidence_bindings"] = raw_bindings
         raw_input_custody.bind_files(raw_bindings)
         rebound_meta = []
@@ -4850,9 +5106,31 @@ def main():
                                      all_syslogs, _default={})
     qos_audit = _run_phase("QoS audit", compute_qos_audit,
                            all_run_configs, sorted(all_syslogs), _default={})
+    # W59 PR-1: SSH session disclosure -- one row per devices.json host, read ONLY from the sealed per-device
+    # session record (`_ssh_session.json`, bound above), never from the current devices.json or command line.
+    # The software-risk `ssh-legacy-transport` surface is a projection of this one owner.
+    def _ssh_sidecar_path(host: str) -> str:
+        return os.path.join(root_dir, safe_fs_name(str(host)), ssh_session.SIDECAR_FILENAME)
+
+    def _read_ssh_sidecar(host: str):
+        p = _ssh_sidecar_path(host)
+        if not os.path.isfile(p):
+            return None, None
+        try:
+            return raw_input_custody.read_bytes(p), None
+        except Exception as exc:                                        # noqa: BLE001 - row reads unknown
+            return None, f"session record failed its custody read ({type(exc).__name__})"
+
+    ssh_sessions = _run_phase(
+        "SSH session disclosure", ssh_session.compute_ssh_sessions,
+        _ssh_session_hosts, _read_ssh_sidecar, live=not args.no_collect, consent=_ssh_consent,
+        evidence_path=lambda h: os.path.relpath(_ssh_sidecar_path(h), root_dir).replace("\\", "/"),
+        _default={})
+    if isinstance(ssh_sessions, dict) and isinstance(ssh_sessions.get("consent"), dict):
+        _RUN_CUSTODY["ssh_transport_consent"] = ssh_sessions["consent"]
     software_risk = _run_phase("Software risk screening", compute_software_risk,
                                all_run_configs, _dev_lifecycle, _dev_platform,
-                               sorted(all_syslogs), _default={})
+                               sorted(all_syslogs), _default={}, ssh_sessions=ssh_sessions)
     platform_health = _run_phase("Platform health", compute_platform_health,
                                  all_platform_metrics, _default={})
     # NEW-V3.23.172: golden-drift is COMPUTED here (hoisted from its Phase 30d-quinquies slot, the
@@ -5001,6 +5279,9 @@ def main():
     # Presentation remains in the historic slot; the decision input itself was computed once before
     # Protocol/Readiness above.
     _run_phase("Capture Integrity sheet", write_capture_integrity_sheet, wb, capture_integrity)
+    # W59 PR-1: one row per device -- what its SSH session negotiated (kex, host key, ciphers, MACs) and
+    # under which consent; MAC/cipher posture is disclosed here and raises no finding (decision 5).
+    _run_phase("Collection Transport sheet", write_collection_transport_sheet, wb, ssh_sessions)
     # Compact positive custody for the route/config evidence Traffic Assurance consumes. The owner combines
     # actual command presence, capture integrity and parser-yield telemetry; raw paths/bodies never enter it.
     parse_yield = parse_yield_report()
@@ -5229,6 +5510,7 @@ def main():
     snap_dict["golden_drift"] = golden_drift                         # NEW-V3.23.146 (per-device config drift vs baseline; reused from Phase 30d-quinquies)
     snap_dict["syslog_intelligence"] = syslog_intelligence           # NEW-V3.23.164 (NOS-style operational log analysis; reused from Phase 30d-sexies)
     snap_dict["qos_audit"] = qos_audit                               # NEW-V3.23.165 (configured QoS posture + doctrine findings; reused from Phase 30d-septies)
+    snap_dict["ssh_sessions"] = ssh_sessions                         # W59 PR-1 (SSH session disclosure; owner cisco_toolkit.ssh_session)
     snap_dict["software_risk"] = software_risk                       # NEW-V3.23.166 (advisory-surface screening + train lifecycle; reused from Phase 30d-octies)
     snap_dict["platform_health"] = platform_health                   # NEW-V3.23.167 (control-plane CPU/memory capacity screening; reused from Phase 30d-nonies)
     snap_dict["collection_completeness"] = collection_completeness   # NEW-V3.23.109 (pre-assessment blind-spot report; reused from Phase 27d)
@@ -5675,6 +5957,7 @@ def main():
     _actx.snap_dict = snap_dict
     _actx.snap_path = snap_path
     _actx.all_cmd_to_files = all_cmd_to_files
+    _actx.ssh_session_hosts = _ssh_session_hosts           # W59 PR-1: sealed session-sidecar host set
     _actx.wb = wb
     _actx.protocol_assurance_receipt_enabled = True
     _actx.protocol_assurance_export_path = (
@@ -5796,9 +6079,11 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
             "pre-analysis binding: %s", detail)
 
     all_cmd_to_files = getattr(ctx, "all_cmd_to_files", {}) or {}
+    # W59 PR-1: the same session-sidecar host set the pre-analysis binding sealed, so the two path sets match.
+    ssh_session_hosts = list(getattr(ctx, "ssh_session_hosts", ()) or ())
     before_redaction = None
     try:
-        before_redaction = _evidence_records(all_cmd_to_files, root_dir)
+        before_redaction = _evidence_records(all_cmd_to_files, root_dir, session_hosts=ssh_session_hosts)
         bound = (_RUN_CUSTODY.get("evidence") or {}).get("analysis_input")
         if bound is None:
             if all_cmd_to_files:
@@ -5865,6 +6150,8 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
                     verifier_files=collection_proof["files"],
                     verifier_sha256=collection_proof["sha256"],
                     verifier_uncovered=_uncovered,
+                    # W59 PR-1: SSH session records the verifier's closed-schema check vouches for.
+                    verifier_schema_covered=list(collection_proof.get("schema_covered") or []),
                 )
                 if _uncovered:
                     _log_redaction_coverage_gap("verifier", _uncovered)
@@ -5881,7 +6168,7 @@ def _stage_finalize(ctx: "AnalysisContext") -> FinalizationResult:
                     "  Raw capture redaction verification FAILED: %s", exc
                 )
     try:
-        after_redaction = _evidence_records(all_cmd_to_files, root_dir)
+        after_redaction = _evidence_records(all_cmd_to_files, root_dir, session_hosts=ssh_session_hosts)
         _RUN_CUSTODY["evidence"]["after_redaction"] = after_redaction
         if not getattr(args, "redact_collection", False) and \
                 before_redaction is not None and after_redaction != before_redaction:

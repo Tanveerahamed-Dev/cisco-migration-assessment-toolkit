@@ -4673,6 +4673,83 @@ def write_software_risk_sheet(wb, sr: dict) -> None:
                 f"bands {band_txt}")
 
 
+COLLECTION_TRANSPORT_SHEET_NAME = "Collection Transport"   # W59 PR-1 (per-device SSH session disclosure)
+
+COLLECTION_TRANSPORT_COLUMNS = (
+    "Device", "Status", "Finding", "Severity", "Disclosure", "Key exchange", "Exchange hash (bytes)",
+    "DH group (bits)", "Host-key algorithm", "Cipher c2s / s2c", "MAC c2s / s2c", "Legacy MAC/cipher",
+    "Strict kex", "Host key verified", "Outcome", "Attempts", "Device profile", "Named on run flag",
+    "Effective profile", "Library", "Evidence")
+
+
+def write_collection_transport_sheet(wb, ssh_sessions: dict) -> None:
+    """Write 'Collection Transport' from snap['ssh_sessions'] (owner cisco_toolkit.ssh_session): one row per
+    device -- what its SSH session negotiated (key exchange, host-key algorithm, ciphers and MACs in both
+    directions) and under which consent, read only from the sealed per-device session record. A device with
+    no record reads 'not recorded', never 'modern'; MAC/cipher posture is disclosed and raises no finding."""
+    ws = _new_sheet(wb, COLLECTION_TRANSPORT_SHEET_NAME)
+    p = ssh_sessions if isinstance(ssh_sessions, dict) else {}
+    rows = _sec_rows(p.get("rows"))
+    s = p.get("summary") if isinstance(p.get("summary"), dict) else {}
+    by = s.get("by_status") if isinstance(s.get("by_status"), dict) else {}
+    b = ws.cell(1, 1, "Collection transport — what each device's SSH session actually negotiated, read from its "
+                      "sealed session record. Host keys are NOT verified on any path; a device without a record is "
+                      "'not recorded', never 'modern'. CI-validated, not field-validated.")
+    b.font = Font(bold=True, color="7030A0", size=10)
+    b.alignment = Alignment(horizontal="left", wrap_text=True)
+    counts = ", ".join(f"{k}: {v}" for k, v in sorted(by.items()) if v) or "no session rows"
+    ws.cell(2, 1, f"{s.get('n_devices', len(rows))} device(s) · {s.get('mode', '?')} collection · "
+                  f"{s.get('n_exposed', 0)} exposed · {s.get('n_verify', 0)} verify · "
+                  f"{s.get('n_closed', 0)} closed · {counts}").font = Font(size=10)
+    hdr_row = 4
+    for i, h in enumerate(COLLECTION_TRANSPORT_COLUMNS, 1):
+        c = ws.cell(hdr_row, i, h)
+        c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.fill = PatternFill("solid", fgColor="7030A0")
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.freeze_panes = ws.cell(hdr_row + 1, 2)
+    DAT = Font(name="Calibri", size=10)
+    MONO = Font(name="Consolas", size=9)
+    FIND = {"exposed": "F4CCCC", "verify": "EFEFEF", "closed": "C6EFCE"}
+
+    def _yn(v):
+        return "yes" if v is True else ("no" if v is False else "—")
+
+    r = hdr_row + 1
+    for row in rows:
+        neg = row.get("negotiated") if isinstance(row.get("negotiated"), dict) else {}
+        lib = row.get("library") if isinstance(row.get("library"), dict) else {}
+        vals = [
+            row.get("host"), row.get("status"), row.get("finding"), row.get("severity") or "—",
+            row.get("label") or "—", neg.get("kex") or "—", neg.get("kex_hash_bytes"),
+            neg.get("dh_group_bits"), neg.get("host_key_algorithm") or "—",
+            f"{neg.get('cipher_c2s') or '—'} / {neg.get('cipher_s2c') or '—'}",
+            f"{neg.get('mac_c2s') or '—'} / {neg.get('mac_s2c') or '—'}",
+            _yn(row.get("legacy_mac_or_cipher")), _yn(row.get("strict_kex")), _yn(row.get("host_key_verified")),
+            row.get("outcome") or "—", row.get("attempts"), row.get("device_profile") or "—",
+            _yn(row.get("named_on_run_flag")), row.get("effective_profile") or "—",
+            (f"paramiko {lib.get('paramiko') or '?'}, netmiko {lib.get('netmiko') or '?'}, "
+             f"stock tables permit SHA-1: {_yn(lib.get('default_permits_sha1'))}") if lib else "—",
+            row.get("evidence") or "—",
+        ]
+        for col, v in enumerate(vals, 1):
+            c = ws.cell(r, col, v)
+            c.font = MONO if col in (6, 9, 10, 11, 21) else DAT
+            c.alignment = Alignment(horizontal="left", vertical="top", wrap_text=col in (5, 20))
+            if col == 3 and v in FIND:
+                c.fill = PatternFill("solid", fgColor=FIND[v])
+            if col == 4 and v in _AXIS_SEV_FILL:
+                c.fill = PatternFill("solid", fgColor=_AXIS_SEV_FILL[v])
+        r += 1
+    if not rows:
+        ws.cell(r, 1, "No SSH session rows (the session-disclosure phase produced none).").font = DAT
+    widths = [20, 22, 10, 10, 60, 30, 12, 10, 22, 28, 30, 10, 9, 10, 18, 9, 14, 10, 14, 40, 30]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    logger.info(f"  [OK] '{COLLECTION_TRANSPORT_SHEET_NAME}' sheet: {len(rows)} device(s), "
+                f"{s.get('n_exposed', 0)} exposed")
+
+
 PLATFORM_HEALTH_SHEET_NAME = "Platform Health"   # NEW-V3.23.167 (control-plane CPU/memory capacity)
 
 def write_platform_health_sheet(wb, ph: dict) -> None:

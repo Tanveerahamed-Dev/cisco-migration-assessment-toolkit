@@ -170,7 +170,15 @@ _REQUIRED_COMMAND_LISTS = {
     "COMMANDS_CLOUD",
     "COMMANDS_FORTINET",
 }
-_COLLECTION_SIDECARS = ("device_info.json", "command_index.json", "_capture_meta.json")
+_COLLECTION_SIDECARS = ("device_info.json", "command_index.json", "_capture_meta.json", "_ssh_session.json")
+
+
+def test_collection_sidecar_restatement_matches_its_owner() -> None:
+    """W59 PR-1: this tuple restates `capture_integrity.COLLECTION_SIDECAR_BASENAMES`; a new sidecar added to
+    the owner without an ignore rule would be commit-visible client evidence."""
+    from cisco_toolkit.capture_integrity import COLLECTION_SIDECAR_BASENAMES
+
+    assert set(_COLLECTION_SIDECARS) == set(COLLECTION_SIDECAR_BASENAMES)
 
 
 def _git() -> str:

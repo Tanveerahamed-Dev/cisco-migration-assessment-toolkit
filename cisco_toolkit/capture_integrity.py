@@ -19,6 +19,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from .input_custody import read_text as read_custodied_text
+from .ssh_session import SIDECAR_FILENAME as _SSH_SESSION_FILENAME
 
 # Live-collect sidecar (Plan A / Tier-2 #6): collect() persists {command: "timing_fallback"}
 # per device dir for every capture that fell back to netmiko send_command_timing (prompt
@@ -27,6 +28,14 @@ from .input_custody import read_text as read_custodied_text
 # by construction: a collection with NO meta file (everything collected before this
 # feature) simply makes no prompt-verification claim.
 CAPTURE_META_FILENAME = "_capture_meta.json"
+
+# W59 PR-1: the ONE owner tuple of every per-device collection sidecar basename the collector can write
+# beside the captures. `tools/audit_wheel.py :: _COLLECTION_SIDECAR_BASENAMES` and
+# `tests/test_r8_client_evidence_is_ignored.py :: _COLLECTION_SIDECARS` restate it and reconcile to it by
+# test; `.gitignore` ignores each one under an arbitrary root. The SSH session record's basename is owned by
+# `ssh_session.SIDECAR_FILENAME`.
+COLLECTION_SIDECAR_BASENAMES = ("device_info.json", "command_index.json", CAPTURE_META_FILENAME,
+                                _SSH_SESSION_FILENAME)
 
 # A pager prompt at the tail (paging not disabled / capture cut): '--More--', ' --More-- ',
 # '--More(35%)--', '-- More --', '<--- More --->' — case-insensitive.

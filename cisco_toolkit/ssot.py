@@ -495,6 +495,7 @@ PHASE_SECTIONS: Dict[str, Tuple[str, ...]] = {
     "Score Sensitivity": ("score_sensitivity",),
     "Segmentation audit": ("segmentation",),
     "Service map": ("service_map",),
+    "SSH session disclosure": ("ssh_sessions",),
     "Software risk screening": ("software_risk",),
     "State assertion pack": ("state_assertions",),
     "Subnet intelligence": ("subnet_intelligence",),

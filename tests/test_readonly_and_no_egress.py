@@ -146,7 +146,9 @@ def test_ssh_wire_carries_only_show_plus_the_terminal_setup_commands(tmp_path, m
     every device — the mechanism that put the other channel's strings on the wire in the first place.
     """
     dev = _RecordingDev()
-    monkeypatch.setattr(C, "ConnectHandler", lambda **kw: dev)
+    # W59 PR-1: the collector constructs every connection through ONE factory; patching it intercepts
+    # the whole connection path (C.ConnectHandler no longer exists, so a stale patch fails loudly).
+    monkeypatch.setattr(C, "_open_connection", lambda kwargs, platform, profile, recorder: dev)
     conn, _ = C.connect_device("10.0.0.1", "SW1", "u", "p", "ios")
     assert conn is dev
     for i, plat in enumerate(("ios", "nxos")):

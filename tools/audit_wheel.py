@@ -95,11 +95,14 @@ _FORBIDDEN_SEGMENTS = frozenset(
     }
 )
 
+# Restates cisco_toolkit.capture_integrity.COLLECTION_SIDECAR_BASENAMES (this auditor reads archives and
+# must not import the package it audits); tests/test_ssh_session.py reconciles the two.
 _COLLECTION_SIDECAR_BASENAMES = frozenset(
     {
         "device_info.json",
         "command_index.json",
         "_capture_meta.json",
+        "_ssh_session.json",
     }
 )
 

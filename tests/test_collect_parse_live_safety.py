@@ -98,7 +98,9 @@ def test_terminal_setup_failure_is_logged_and_recorded(tmp_path, monkeypatch, ca
     import logging
 
     dev = _TacacsDeniesTerminalDev()
-    monkeypatch.setattr(C, "ConnectHandler", lambda **kw: dev)
+    # W59 PR-1: the collector constructs every connection through ONE factory; patching it intercepts
+    # the whole connection path (C.ConnectHandler no longer exists, so a stale patch fails loudly).
+    monkeypatch.setattr(C, "_open_connection", lambda kwargs, platform, profile, recorder: dev)
     with caplog.at_level(logging.WARNING, logger=C.logger.name):
         conn, _ = C.connect_device("10.0.0.1", "SW1", "u", "p", "ios")
 
@@ -127,7 +129,9 @@ def test_successful_terminal_setup_records_nothing(tmp_path, monkeypatch):
             return "ok\nrow\nrow\n"
 
     dev = _Ok()
-    monkeypatch.setattr(C, "ConnectHandler", lambda **kw: dev)
+    # W59 PR-1: the collector constructs every connection through ONE factory; patching it intercepts
+    # the whole connection path (C.ConnectHandler no longer exists, so a stale patch fails loudly).
+    monkeypatch.setattr(C, "_open_connection", lambda kwargs, platform, profile, recorder: dev)
     conn, _ = C.connect_device("10.0.0.1", "SW1", "u", "p", "ios")
     assert getattr(conn, C.TERMINAL_SETUP_ATTR) == {}
     dev_dir = tmp_path / "SW1"

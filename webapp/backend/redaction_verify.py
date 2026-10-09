@@ -838,6 +838,72 @@ def verify_shareable_artifacts(snapshot_path: Path, artifacts: Iterable[Path]) -
     return 0
 
 
+#: W59 PR-1: the collector's per-device SSH session record. It is a ``.json`` serialisation, so the capture
+#: grammar cannot read it; instead it is recognised by its CLOSED schema and reported as covered by schema
+#: when every key is one of the schema's own field names and every leaf is a bounded integer, a boolean,
+#: null, or a short printable token carrying no address-, MAC- or serial-shaped text. Stated HERE, not
+#: imported: like the capture rule above, this verifier never imports the producer side
+#: (``cisco_toolkit.ssh_session`` owns the schema); ``webapp/tests/test_ssh_session_ingest_redaction.py`` holds
+#: the two statements in agreement over generated and mutated records.
+SSH_SESSION_RECORD_BASENAME = "_ssh_session.json"
+_SSH_SESSION_RECORD_SCHEMA = "ssh_session/1"
+_SSH_SESSION_RECORD_MAX_BYTES = 1024 * 1024
+_SSH_SESSION_RECORD_KEYS = frozenset({
+    "schema", "outcome", "attempts", "platform_source", "consent", "library", "client_offered",
+    "server_offered", "negotiated", "observation", "host_key", "refusal", "failure_class", "dropped_names",
+    "device_profile", "run_flag_profile", "named_on_run_flag", "effective_profile", "paramiko", "netmiko",
+    "transport_class", "default_permits_sha1", "kex", "cipher", "mac", "cipher_c2s", "cipher_s2c", "mac_c2s",
+    "mac_s2c", "kex_hash_bytes", "dh_group_bits", "host_key_algorithm", "strict_kex", "server_software",
+    "kexinit", "newkeys", "engine_name_agrees", "group_size_agrees", "policy", "verified", "category",
+    "classification", "detail", "offered_group_bits", "names",
+})
+_SSH_SESSION_TOKEN_RE = re.compile(r"^[\x21-\x2b\x2d-\x39\x3b-\x7e]{1,64}$")
+
+
+def _ssh_session_record_conforms(raw: bytes) -> bool:
+    """True only when ``raw`` is an SSH session record that carries nothing the capture grammar would have
+    to scrub: strict JSON, the declared schema, only the schema's field names, and only safe leaves."""
+    def _no_constants(_value: str) -> Any:
+        raise ValueError("non-standard JSON constant")
+
+    try:
+        # _json_no_duplicates raises RedactionVerificationError, a ValueError subclass.
+        doc = json.loads(raw.decode("utf-8"), object_pairs_hook=_json_no_duplicates,
+                         parse_constant=_no_constants)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return False
+    if not isinstance(doc, dict) or doc.get("schema") != _SSH_SESSION_RECORD_SCHEMA:
+        return False
+    stack: list[tuple[Any, int]] = [(doc, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > 4:
+            return False
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key not in _SSH_SESSION_RECORD_KEYS:
+                    return False
+                stack.append((value, depth + 1))
+        elif isinstance(node, list):
+            if len(node) > 64:
+                return False
+            stack.extend((value, depth + 1) for value in node)
+        elif node is None or isinstance(node, bool):
+            continue
+        elif isinstance(node, int):
+            if not 0 <= node <= 1_000_000:
+                return False
+        elif isinstance(node, str):
+            if not _SSH_SESSION_TOKEN_RE.match(node):
+                return False
+            if (_IPV4_CANDIDATE_RE.search(node) or _IPV6_CANDIDATE_RE.search(node)
+                    or _MAC_RE.search(node) or _CISCO_SERIAL_RE.search(node)):
+                return False
+        else:
+            return False                       # floats and anything else are outside the schema
+    return True
+
+
 def is_uncoverable_capture(filename: str) -> str:
     """Why ``filename`` is outside the raw-capture secret grammar, or "" if it is a capture.
 
@@ -899,6 +965,7 @@ def verify_collection_secret_scrub(root: Path) -> dict[str, Any]:
 
     rows: list[tuple[str, int, str]] = []
     uncovered: list[tuple[str, str]] = []
+    schema_covered: list[str] = []
 
     def walk_error(exc: OSError) -> None:
         raise RedactionVerificationError(
@@ -923,6 +990,15 @@ def verify_collection_secret_scrub(root: Path) -> dict[str, Any]:
             path = directory / filename
             rel = path.relative_to(root).as_posix()
             why = is_uncoverable_capture(filename)
+            if why and filename == SSH_SESSION_RECORD_BASENAME:
+                # W59 PR-1: covered by its closed schema, or NOT COVERED exactly like any other file.
+                with _verified_open(path) as handle:
+                    record = _read_all_bounded(handle, _SSH_SESSION_RECORD_MAX_BYTES, path.name)
+                if _ssh_session_record_conforms(record):
+                    schema_covered.append(rel)
+                    continue
+                why = ("an SSH session record that does not conform to its closed schema - the capture "
+                       "grammar cannot read it and its schema cannot vouch for it")
             if why:
                 uncovered.append((rel, why))
                 continue
@@ -961,8 +1037,11 @@ def verify_collection_secret_scrub(root: Path) -> dict[str, Any]:
                + ", ".join(rel for rel, _why in sorted(uncovered)[:8]) + ")" if uncovered else "")
         )
     uncovered.sort()
-    encoded = json.dumps([rows, uncovered], separators=(",", ":"),
-                         ensure_ascii=True).encode("ascii")
+    schema_covered.sort()
+    # The schema-covered list joins the digest only when non-empty, so a proof over a collection without
+    # session records keeps its pre-W59 digest.
+    payload: list[Any] = [rows, uncovered] + ([schema_covered] if schema_covered else [])
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
     return {
         "files": len(rows),
         "sha256": hashlib.sha256(encoded).hexdigest(),
@@ -970,4 +1049,7 @@ def verify_collection_secret_scrub(root: Path) -> dict[str, Any]:
         # print "verified" over a folder where N files were never looked at, because `uncovered`
         # is bound into `sha256` and is right there in the same dict.
         "uncovered": [{"file": rel, "reason": why} for rel, why in uncovered],
+        # W59 PR-1: SSH session records the closed schema vouches for (not scanned as captures, not
+        # NOT COVERED either). Bound into `sha256` above.
+        "schema_covered": list(schema_covered),
     }

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a c
 from typing import Any, Dict, List, Optional, Tuple
 
 from cisco_toolkit import portdb, protocol_kb
+from cisco_toolkit import ssh_session as _ssh_session   # W59 PR-1 (ssh-legacy-transport surface owner)
 from cisco_toolkit.bgp_intent import validate_bgp_configured_peer_baseline
 from cisco_toolkit.fhrp_intent import validate_fhrp_configured_group_baseline
 from cisco_toolkit.fhrp_redundancy import (
@@ -11459,6 +11460,12 @@ _SWRISK_SURFACE_KB: Dict[str, tuple] = {
         "Legacy diagnostic services expose information and reflection primitives for no "
         "operational benefit on a modern network.",
         "Remove 'service finger' / 'ip rcmd ...' / TCP-UDP small-servers."),
+    # W59 PR-1: a SESSION-evidenced surface, not a config line. Its status is PROJECTED from the one owner
+    # (snap['ssh_sessions'], cisco_toolkit.ssh_session); the severity here is the default and each finding
+    # carries its row's own (Medium for SHA-1, High below 2048 bits). Wording owned by ssh_session.
+    _ssh_session.SURFACE_KIND: (
+        _ssh_session.SURFACE_LABEL, "Medium", [],
+        _ssh_session.SURFACE_WHY, _ssh_session.SURFACE_RECOMMENDATION),
 }
 
 # train prefix tables: (match fn input = sw_version string, platform hint) -> (train, band, note)
@@ -11515,7 +11522,8 @@ def _swrisk_train(sw: str, platform: str) -> tuple:
 def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
                           devices: Optional[Dict[str, dict]] = None,
                           platforms: Optional[Dict[str, dict]] = None,
-                          all_hosts: Optional[List[str]] = None) -> dict:
+                          all_hosts: Optional[List[str]] = None,
+                          ssh_sessions: Optional[dict] = None) -> dict:
     """NEW-V3.23.166: the NOS 'software risk analysis' pillar, offline-honest. From the captured
     full running-configs: attack-surface SCREENING (exposed web UI / SNMP v1-v2c / Smart Install /
     telnet / SSHv1 / IKEv1 / small services) joined to a curated landmark-advisory KB -- the claim
@@ -11523,12 +11531,20 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
     per-release vulnerability verdict. From `devices` ({host:{model,sw_version}}) + `platforms`
     ({host:{platform}}): cautious software-TRAIN lifecycle bands (replace / verify / current-era)
     with verify-with-Cisco wording. A device without evidence for a layer is DECLARED not
-    assessable for that layer. Pure on its inputs; deterministic; never raises."""
+    assessable for that layer. Pure on its inputs; deterministic; never raises.
+
+    W59 PR-1: when ``ssh_sessions`` (snap['ssh_sessions'], owner cisco_toolkit.ssh_session) is passed, every
+    host also carries the SESSION-evidenced ``ssh-legacy-transport`` surface, projected from that one owner:
+    ``exposed`` (a finding, Medium for SHA-1 / High below 2048 bits), ``closed`` (modern) or ``verify`` (no
+    record, unknown, a collector gap -- absence is never health). A host the block has no row for, or a
+    failed block, reads ``verify``. Hosts the block names join the denominator, so a device REFUSED at
+    collection (no captures at all) keeps its finding. ``None`` (direct callers) adds no surface."""
     from collections import Counter
     rc = run_configs or {}
     dv = devices or {}
     pf = platforms or {}
-    hosts = sorted(set(all_hosts or []) | set(rc) | set(dv))
+    ssh_proj = _ssh_session.software_risk_projection(ssh_sessions) if ssh_sessions is not None else None
+    hosts = sorted(set(all_hosts or []) | set(rc) | set(dv) | set(ssh_proj or {}))
     per_device: List[dict] = []
     findings: List[dict] = []
 
@@ -11610,6 +11626,21 @@ def compute_software_risk(run_configs: Optional[Dict[str, str]] = None,
                     "label": label, "detail": why,
                     "evidence": evidence,
                     "evidence_verbatim": evidence in config_lines,
+                    "advisories": [{"id": a, "cve": c, "note": n} for a, c, n in advs],
+                    "why": why, "recommendation": fix})
+        if ssh_proj is not None:
+            kind = _ssh_session.SURFACE_KIND
+            proj = ssh_proj.get(host) or {"finding": "verify", "severity": None,
+                                          "evidence": "SSH session posture not recorded"}
+            surfaces[kind] = proj["finding"]
+            if proj["finding"] == "exposed":
+                label, sev, advs, why, fix = _SWRISK_SURFACE_KB[kind]
+                sev = proj.get("severity") if proj.get("severity") in _SEV_RANK else sev
+                findings.append({
+                    "host": host, "kind": kind, "surface": label, "severity": sev,
+                    "label": label, "detail": proj.get("label") or why,   # the row's two-fact sentence
+                    "evidence": proj.get("evidence") or "",
+                    "evidence_verbatim": False,       # a session observation, never a configuration line
                     "advisories": [{"id": a, "cve": c, "note": n} for a, c, n in advs],
                     "why": why, "recommendation": fix})
         per_device.append({
