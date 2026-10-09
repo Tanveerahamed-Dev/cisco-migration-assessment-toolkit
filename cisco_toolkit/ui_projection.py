@@ -593,10 +593,14 @@ LIMITATIONS += (
                 "(collected: false and a kind other than ap, phone or endpoint, or a cable end that joins no single "
                 "node) cannot account for endpoints behind that peer: a severity below High, a zero count and a "
                 "detail that names no simulated VLAN are withheld, and High and positive counts are published as "
-                "lower bounds that cite each such cable. The owner writes one row per host: two rows naming one "
-                "exact host are each kept and unverified, with a witness to every such row, never picked between, "
-                "and a hold or bound that also applies is carried beside that doubt. Detail lists up to 8 per-VLAN "
-                "examples and preserves the owner's '+N more' disclosure; the row counts retain the full model totals.",
+                "lower bounds that cite each such cable. Where the stored cable list cannot be read (absent, "
+                "malformed or from a failed phase), whether a switch faces such a peer cannot be checked, so its row "
+                "is bounded the same way and cites that list, or the nearest record it is missing from: the cable "
+                "map, or the snapshot root when there is no cable map. The owner writes one row per host: two rows "
+                "naming one exact host are each kept and unverified, with a witness to every such row, never picked "
+                "between, and a hold or bound that also applies is carried beside that doubt. Detail lists up to 8 "
+                "per-VLAN examples and preserves the owner's '+N more' disclosure; the row counts retain the full "
+                "model totals.",
                 ["/topology/failure_impact"]),
     _limitation("path_route_model_only", "fib.trace_fib_path",
                 "This is an offline route-model query, not live traffic proof. It does not model VRF selection, "
@@ -4499,7 +4503,8 @@ def _impact_peers(ctx: _Ctx, row: _Row) -> Optional[_ImpactBound]:
     cable_map.nodes row that does not carry ``collected: true``, unless that node is ``collected: false`` with a kind
     the producer positively marks as edge gear (:data:`_IMPACT_EDGE_KINDS`). It fails closed: a cable row that
     cannot be read could name the host, a far end that joins no single node is never assumed collected, and a cable
-    list that cannot be read bounds the row with that list's own state. ``None``: no such neighbour."""
+    list that cannot be read bounds the row with that list's own state, citing the list (an absent one is witnessed
+    by the nearest record it is missing from, :func:`_witnessed`). ``None``: no such neighbour."""
     host = row.raw.get("host") if row.state is None and isinstance(row.raw, dict) else None
     if not _is_text(host):
         return None
@@ -4507,9 +4512,8 @@ def _impact_peers(ctx: _Ctx, row: _Row) -> Optional[_ImpactBound]:
     state, reason, cables = _topology_source(ctx, toks)
     if state not in (_PUB, _CBE):
         state = state if state in (AU, _UV) else _NC
-        where = toks if _get(ctx.s, toks) is not _MISSING else ("cable_map",)
         clause = _R_IMPACT_PEERS_UNREAD.format(why=reason or _R_NC)
-        wit = [("witness", where)] + ctx.failure_entries(("cable_map",), state == AU)
+        wit = [("witness", toks)] + ctx.failure_entries(("cable_map",), state == AU)
         return _impact_bound(state, clause, wit)
     ntoks = ("cable_map", "nodes")
     nstate, _nreason, nodes = _topology_source(ctx, ntoks)
@@ -4549,6 +4553,24 @@ def _impact_bound(state: str, clause: str, wit: List[Tuple[str, Sequence[Any]]])
     return (state, _R_IMPACT_PEER_SEVERITY.format(word=word, clause=clause, worst=_IMPACT_WORST),
             _R_IMPACT_PEER_ZERO.format(word=word, clause=clause),
             _R_IMPACT_PEER_DETAIL.format(word=word, clause=clause), wit)
+
+
+def _witnessed(ctx: _Ctx, bound: _ImpactBound) -> _ImpactBound:
+    """`bound` with every witness citing a record that resolves. A published lower bound is marked only by the
+    witness refs its measures cite, and :meth:`_Ctx.refs` drops a pointer that does not resolve, so a bound whose
+    witness is absent (no stored cable map at all) would publish its lower bounds as exact measurements. An absent
+    record is witnessed instead by the nearest record it is missing from, the longest prefix of its address that
+    resolves (the cable map without its cable list, the snapshot root ``""`` without a cable map), never dropped:
+    analyze's absence_witness convention, where a device's interface map witnesses its missing trunk table. A
+    present record is cited as given, and so is every other role (a failure record)."""
+    def present(toks: Sequence[Any]) -> Tuple[Any, ...]:
+        out = tuple(toks)
+        while out and _get(ctx.s, out) is _MISSING:
+            out = out[:-1]
+        return out
+    state, severity, zero, detail, wit = bound
+    return (state, severity, zero, detail,
+            [(role, present(toks) if role == "witness" else toks) for role, toks in wit])
 
 
 def _impact_bound_state(bounds: Sequence[_ImpactBound]) -> str:
@@ -4655,7 +4677,9 @@ def _topology_impact(ctx: _Ctx, i: int, raw: Any) -> Dict[str, Any]:
     peers = _impact_peers(ctx, row) if hold is None else None
     if peers is not None:
         bounds.append(peers)
-    # every measure of a bounded row cites what bounds it: the off-scan count, each uncollected neighbour's cable
+    # every measure of a bounded row cites what bounds it: the off-scan count, each uncollected neighbour's cable, or
+    # the cable list that cannot be read. Each witness resolves (_witnessed), so no bound is published unmarked.
+    bounds = [_witnessed(ctx, bound) for bound in bounds]
     cite = [w for bound in bounds for w in bound[4]]
     for field in ("host", "severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp",
                   "off_scan_gw_vlans", "detail"):

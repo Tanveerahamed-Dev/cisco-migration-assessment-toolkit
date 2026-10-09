@@ -104,6 +104,27 @@ def _refs(fact):
     return {(r["pointer"], r["role"]) for r in fact["refs"]}
 
 
+_MISSING = object()
+
+
+def _resolve(doc, pointer):
+    """An independent RFC 6901 resolver (``""`` is the whole document): ``_MISSING`` when it does not resolve."""
+    if pointer == "":
+        return doc
+    if not isinstance(pointer, str) or not pointer.startswith("/"):
+        return _MISSING
+    cur = doc
+    for raw in pointer[1:].split("/"):
+        tok = raw.replace("~1", "/").replace("~0", "~")
+        if isinstance(cur, dict) and tok in cur:
+            cur = cur[tok]
+        elif isinstance(cur, list) and tok.isdigit() and int(tok) < len(cur):
+            cur = cur[int(tok)]
+        else:
+            return _MISSING
+    return cur
+
+
 def _facts(obj, where=""):
     """``(document pointer, fact-or-factlist)`` for every envelope under `obj`."""
     if isinstance(obj, dict):
@@ -1013,11 +1034,13 @@ def test_l_a_high_row_facing_an_uncollected_neighbour_keeps_its_lower_bounds(doc
 
 @pytest.mark.parametrize("mode, want", [
     ("duplicate_node", NC), ("missing_node", NC), ("unreadable_cable", NC), ("malformed_cables", UV),
-    ("absent_cables", NC), ("failed_cable_map", AU),
+    ("absent_cables", NC), ("absent_cable_map", NC), ("null_cable_map", NC), ("failed_cable_map", AU),
 ])
 def test_l_a_neighbour_the_join_cannot_resolve_fails_closed(topology_validator, mode, want):
     """Starting from a row the AP rule leaves published, a far end that joins no single node, a cable row the join
-    cannot read (it could name this switch), and a cable list that cannot be read are never assumed collected."""
+    cannot read (it could name this switch), and a cable list that cannot be read are never assumed collected. A
+    cable list that is absent is witnessed by the record it is missing from: the cable map, or the snapshot root
+    when there is no cable map at all (a pointer to nothing would be dropped, and the bound with it)."""
     snap, k, src = _downstream(("ap1", "Switch", "cisco AIR-AP2802I-E-K9"))
     _assert_clean_bill(src)
     nodes, cables = snap["cable_map"]["nodes"], snap["cable_map"]["cables"]
@@ -1036,9 +1059,16 @@ def test_l_a_neighbour_the_join_cannot_resolve_fails_closed(topology_validator, 
     elif mode == "absent_cables":
         del snap["cable_map"]["cables"]
         witness = ("/cable_map", "witness")
+    elif mode == "absent_cable_map":
+        del snap["cable_map"]
+        witness = ("", "witness")
+    elif mode == "null_cable_map":
+        snap["cable_map"] = None
+        witness = ("/cable_map", "witness")
     else:
         snap["assessment_integrity"] = {"cable_map": "failed"}
         witness = ("/cable_map/cables", "witness")
+    assert _resolve(snap, witness[0]) is not _MISSING, witness
     row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
     for field in MEASURES + ("detail",):
         fact = row[field]
@@ -1053,6 +1083,102 @@ def test_l_a_neighbour_the_join_cannot_resolve_fails_closed(topology_validator, 
         assert ("/assessment_integrity/cable_map", "failure_record") in _refs(row["severity"])
     for field in ("host", "off_scan_gw_vlans"):
         assert row[field]["state"] == PUB and row[field]["value"] == src[field], field
+
+
+@pytest.mark.parametrize("mode, pointer", [
+    ("absent_cable_map", ""), ("null_cable_map", "/cable_map"), ("cable_map_without_cables", "/cable_map"),
+])
+def test_l_a_high_row_without_a_readable_cable_list_still_marks_its_lower_bounds(doc_validator, topology_validator,
+                                                                                mode, pointer):
+    """F7: High and a positive count on a row the projection cannot check against the stored cable map are only
+    lower bounds, and the witness their cells cite is the one machine-readable mark of that. With no cable map at all
+    the cable list has no address of its own, so the record it is missing from (the snapshot root) is cited instead,
+    never a pointer that resolves to nothing: that one would be dropped, and the lower bounds would read as exact."""
+    snap, k, src = _downstream(host="gw")                        # the REAL producers' rows
+    assert src["severity"] == "High" and src["hard"] == src["vlans_impacted"] == 1 and src["stranded"] == 1, src
+    assert src["backup"] == src["fhrp"] == 0 and src["off_scan_gw_vlans"] == 0, src
+    cables = _uncollected_peer_cables(snap, "gw")
+    assert len(cables) == 1
+    # the control: with the stored cable map readable, the same row cites the uncollected router's cable, unchanged
+    control = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    for field in MEASURES:
+        refs = _refs(control[field])
+        assert (f"/cable_map/cables/{cables[0]}", "witness") in refs, (field, refs)
+        assert not {("", "witness"), ("/cable_map", "witness")} & refs, (field, refs)
+    if mode == "absent_cable_map":
+        del snap["cable_map"]
+    elif mode == "null_cable_map":
+        snap["cable_map"] = None
+    else:
+        del snap["cable_map"]["cables"]
+    witness = (pointer, "witness")
+    assert _resolve(snap, pointer) is not _MISSING, pointer         # independently: the cited record exists
+    row = _topology(snap, topology_validator)["failure_impact"]["items"][k]
+    for field in ("severity", "vlans_impacted", "stranded", "hard"):
+        fact = row[field]
+        assert fact["state"] == PUB and fact["value"] == src[field], (field, fact)
+        assert witness in _refs(fact) and "impact_scanned_scope" in fact["caveats"], (field, fact["refs"])
+    for field in ("backup", "fhrp"):
+        fact = row[field]
+        assert fact["state"] == NC and fact["value"] is None, (field, fact)
+        assert "only a lower bound" in fact["reason"] and "cannot be checked" in fact["reason"], fact["reason"]
+        assert witness in _refs(fact), (field, fact["refs"])
+    assert row["detail"]["state"] == PUB and row["detail"]["value"] == src["detail"]   # it lists what was simulated
+    for where, fact in _facts(row):
+        for ref in fact["refs"]:
+            assert _resolve(snap, ref["pointer"]) is not _MISSING, (where, ref)
+    sel = _page(snap, "gw", doc_validator)["failure_impact"]          # one builder, one state on both surfaces
+    assert sel["state"] == PUB and sel["items"] == [row], sel.get("reason")
+
+
+@pytest.mark.parametrize("mode", ["present", "absent_cable_map", "cable_map_without_cables"])
+def test_l_a_measure_cites_a_witness_exactly_when_a_bound_applies(sample, topology_validator, mode):
+    """F7 over every row of the real sample: a failure-impact measure cites a witness exactly when the row is bounded
+    (an off-scan count, a cable to an uncollected neighbour, or a cable list that cannot be read), and each one
+    resolves. A published measure with no witness is an exact measurement; one that cites a witness is a lower bound.
+    The bound is derived here independently of the module."""
+    snap = copy.deepcopy(sample)
+    unread = None
+    if mode == "absent_cable_map":
+        del snap["cable_map"]
+        unread = ""
+    elif mode == "cable_map_without_cables":
+        del snap["cable_map"]["cables"]
+        unread = "/cable_map"
+    items = _topology(snap, topology_validator)["failure_impact"]["items"]
+    assert len(items) == len(snap["failure_impact"]) > 0
+    bounded = exact = lower = 0
+    for k, src in enumerate(snap["failure_impact"]):
+        row = items[k]
+        assert row["pointer"] == f"/failure_impact/{k}"
+        assert _run_config_observed(snap, src["host"]) and "off_scan_gw_vlans" in src, src   # no row hold applies
+        assert not src["detail"].startswith(ui.IMPACT_INDETERMINATE_PREFIX), src
+        peers = ({unread} if unread is not None
+                 else {f"/cable_map/cables/{j}" for j in _uncollected_peer_cables(snap, src["host"])})
+        wits = peers | ({f"/failure_impact/{k}/off_scan_gw_vlans"} if src["off_scan_gw_vlans"] else set())
+        bounded += bool(wits)
+        for field in MEASURES + ("detail",):
+            fact = row[field]
+            for ref in fact["refs"]:
+                assert _resolve(snap, ref["pointer"]) is not _MISSING, (src["host"], field, ref)
+            cited = {p for p, role in _refs(fact) if role == "witness"}
+            # the detail is never a measure: it cites a bound only where it is withheld as the producer's clean bill
+            reach = wits if field in MEASURES else peers
+            held = bool(reach) and _understatable(src, field)
+            assert fact["state"] == (NC if held else PUB), (src["host"], field, fact)
+            assert cited == (reach if (field in MEASURES or held) else set()), (src["host"], field, cited, reach)
+            if field in MEASURES and not held:
+                assert fact["value"] == src[field], (src["host"], field, fact)
+                if cited:
+                    lower += 1
+                else:
+                    exact += 1
+    if unread is None:
+        # the sample's cable map bounds only core2 (it faces the uncollected router); every other row is exact
+        assert bounded == 1 and exact > 0 and lower > 0, (bounded, exact, lower)
+    else:
+        # no row can be checked against a cable list that cannot be read: no measure is published as exact
+        assert bounded == len(items) and exact == 0 and lower > 0, (bounded, exact, lower)
 
 
 # --------------------------------------------------------------------------------------------------
