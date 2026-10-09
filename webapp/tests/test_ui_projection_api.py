@@ -165,6 +165,30 @@ def test_all_pages_preserve_original_indices_and_pointers(client, sample):
     assert collected == original["items"][:6]
 
 
+def test_findings_cross_layer_rows_page_as_an_owner_list(client, sample):
+    """G24: the engine's cross-layer rows are a second primary Findings list, paged whole with their host joins."""
+    from backend.ui_projection_api import LIST_CATALOG
+    # W51: G21's device facet (/facets/device) is the other primary Findings list on the combined schema.
+    assert LIST_CATALOG["findings"] == {"/rows": "FindingRowList", "/facets/device": "DeviceFacetList",
+                                        "/cross_layer": "CrossLayerRowList"}
+    sid = seed(client, sample)
+    original = owner.project(sample)["findings"]["cross_layer"]
+    assert original["state"] == "published" and len(original["items"]) == len(sample["cross_layer"]) > 4
+    view = client.get(url(sid, "findings"), params={"limit": 2})
+    assert view.status_code == 200, view.text[:200]
+    paged = view.json()["payload"]["cross_layer"]
+    assert paged["pointer"] == "/cross_layer"
+    assert paged["source_list"] == {k: v for k, v in original.items() if k != "items"}
+    assert paged["page"]["items"] == original["items"][:2] and paged["page"]["total"] == len(original["items"])
+    part = client.get(url(sid, "findings") + "/lists", params={"pointer": "/cross_layer", "offset": 3, "limit": 2})
+    assert part.status_code == 200, part.text[:200]
+    listed = part.json()["list"]
+    assert listed["pointer"] == "/cross_layer" and listed["page"]["items"] == original["items"][3:5]
+    host = listed["page"]["items"][0]["hosts"]["items"][0]
+    assert {"host", "device", "deduction_ref", "deduction"} <= set(host)
+    assert host["deduction_ref"]["state"] == "published" and host["deduction_ref"]["value"]["ref"] == "/cross_layer/3"
+
+
 @pytest.mark.parametrize("state", owner.STATES)
 def test_all_six_states_and_withheld_nonempty_lists_survive(client, sample, monkeypatch, state):
     sid = seed(client)
@@ -1575,7 +1599,8 @@ def test_native_w41_finding_facets_match_stock_on_the_real_findings_view_and_ref
     body = client.get(url(sid, "findings"), params={"limit": 2}).json()
     facets = body["payload"]["facets"]
     source = owner.project(sample)["findings"]["facets"]
-    assert list(api.LIST_CATALOG["findings"]) == ["/rows", "/facets/device"]     # the owner partitions never page
+    # the owner partitions never page; G24's /cross_layer is the third primary Findings list (W51 combined schema)
+    assert list(api.LIST_CATALOG["findings"]) == ["/rows", "/facets/device", "/cross_layer"]
     assert (facets["severity"], facets["category"]) == (source["severity"], source["category"])
     assert facets["device"] == api._page(source["device"], "/facets/device", 0, 2)
     assert facets["device"]["page"]["total"] == len(source["device"]["items"]) == len(sample["devices"])

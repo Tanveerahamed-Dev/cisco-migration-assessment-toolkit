@@ -1752,6 +1752,89 @@ export interface components {
             readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
             readonly value: null;
         };
+        /** CrossLayerHostRow */
+        readonly UiProjection1_CrossLayerHostRow: {
+            readonly deduction: components["schemas"]["UiProjection1_TextFact"];
+            readonly deduction_ref: components["schemas"]["UiProjection1_EvidenceRefFact"];
+            readonly device: components["schemas"]["UiProjection1_PointerFact"];
+            readonly host: components["schemas"]["UiProjection1_TextFact"];
+            readonly index: number;
+            readonly pointer: components["schemas"]["UiProjection1_Pointer"];
+        };
+        /** CrossLayerHostRowList */
+        readonly UiProjection1_CrossLayerHostRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: [
+                components["schemas"]["UiProjection1_CrossLayerHostRow"],
+                ...components["schemas"]["UiProjection1_CrossLayerHostRow"][]
+            ];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: readonly components["schemas"]["UiProjection1_CrossLayerHostRow"][];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** CrossLayerRow */
+        readonly UiProjection1_CrossLayerRow: {
+            readonly detail: components["schemas"]["UiProjection1_TextFact"];
+            readonly hosts: components["schemas"]["UiProjection1_CrossLayerHostRowList"];
+            readonly id: components["schemas"]["UiProjection1_TextFact"];
+            readonly index: number;
+            readonly layers: components["schemas"]["UiProjection1_TextFact"];
+            readonly pointer: components["schemas"]["UiProjection1_Pointer"];
+            readonly recommendation: components["schemas"]["UiProjection1_TextFact"];
+            readonly severity: components["schemas"]["UiProjection1_SeverityFact"];
+            readonly title: components["schemas"]["UiProjection1_TextFact"];
+        };
+        /** CrossLayerRowList */
+        readonly UiProjection1_CrossLayerRowList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: [
+                components["schemas"]["UiProjection1_CrossLayerRow"],
+                ...components["schemas"]["UiProjection1_CrossLayerRow"][]
+            ];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly items: readonly components["schemas"]["UiProjection1_CrossLayerRow"][];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
         /** DeviceCoverageRollup */
         readonly UiProjection1_DeviceCoverageRollup: {
             readonly n_abstained: components["schemas"]["UiProjection1_CountFact"];
@@ -2621,6 +2704,7 @@ export interface components {
         };
         /** Findings */
         readonly UiProjection1_Findings: {
+            readonly cross_layer: components["schemas"]["UiProjection1_CrossLayerRowList"];
             readonly facets: components["schemas"]["UiProjection1_FindingFacets"];
             readonly headline_axis_index: number | null;
             readonly rows: components["schemas"]["UiProjection1_FindingRowList"];
@@ -3155,6 +3239,18 @@ export interface components {
             readonly pointer: string;
             readonly source_list: components["schemas"]["UiProjection1_Source_CoverageList"];
         };
+        readonly UiProjection1_Page_CrossLayerRowList: {
+            readonly page: {
+                readonly has_more: boolean;
+                readonly items: readonly components["schemas"]["UiProjection1_CrossLayerRow"][];
+                readonly limit: number;
+                readonly offset: number;
+                readonly returned: number;
+                readonly total: number;
+            };
+            readonly pointer: string;
+            readonly source_list: components["schemas"]["UiProjection1_Source_CrossLayerRowList"];
+        };
         readonly UiProjection1_Page_DeviceFacetList: {
             readonly page: {
                 readonly has_more: boolean;
@@ -3638,6 +3734,34 @@ export interface components {
         };
         /** Pointer */
         readonly UiProjection1_Pointer: string;
+        /** PointerFact */
+        readonly UiProjection1_PointerFact: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: components["schemas"]["UiProjection1_Pointer"];
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+            readonly value: null;
+        };
         /** PositiveCountFact */
         readonly UiProjection1_PositiveCountFact: {
             readonly basis: string;
@@ -4381,6 +4505,32 @@ export interface components {
         };
         /** CoverageList */
         readonly UiProjection1_Source_CoverageList: {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            /** @constant */
+            readonly state: "published";
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        } | {
+            readonly basis: string;
+            readonly caveats?: [
+                components["schemas"]["UiProjection1_LimitationId"],
+                ...components["schemas"]["UiProjection1_LimitationId"][]
+            ];
+            readonly engine_state?: components["schemas"]["UiProjection1_EngineState"];
+            readonly engine_state_owner?: components["schemas"]["UiProjection1_EngineStateOwner"];
+            readonly reason: string;
+            readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
+            readonly state: components["schemas"]["UiProjection1_WithheldState"];
+            readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** CrossLayerRowList */
+        readonly UiProjection1_Source_CrossLayerRowList: {
             readonly basis: string;
             readonly caveats?: [
                 components["schemas"]["UiProjection1_LimitationId"],
@@ -7060,6 +7210,26 @@ export interface components {
                 readonly snapshot_id: number;
             };
             readonly limitations: readonly components["schemas"]["UiProjection1_Limitation"][];
+            readonly list: components["schemas"]["UiProjection1_Page_CrossLayerRowList"] & {
+                /** @constant */
+                readonly pointer?: "/cross_layer";
+            };
+            /** @constant */
+            readonly projection_schema: "ui_projection/1";
+            /** @constant */
+            readonly schema: "ui_projection_transport/1";
+            /** @constant */
+            readonly view: "findings";
+        } | {
+            readonly engine: components["schemas"]["UiProjection1_Engine"];
+            readonly identity: {
+                readonly bytes: number;
+                /** @constant */
+                readonly digest_form: "assesshub-store-blob";
+                readonly sha256: string;
+                readonly snapshot_id: number;
+            };
+            readonly limitations: readonly components["schemas"]["UiProjection1_Limitation"][];
             readonly list: components["schemas"]["UiProjection1_Page_TopologyNodeRowList"] & {
                 /** @constant */
                 readonly pointer?: "/nodes";
@@ -8056,6 +8226,10 @@ export interface components {
             readonly limitations: readonly components["schemas"]["UiProjection1_Limitation"][];
             /** Findings */
             readonly payload: {
+                readonly cross_layer: components["schemas"]["UiProjection1_Page_CrossLayerRowList"] & {
+                    /** @constant */
+                    readonly pointer?: "/cross_layer";
+                };
                 /** FindingFacets */
                 readonly facets: {
                     readonly category: [

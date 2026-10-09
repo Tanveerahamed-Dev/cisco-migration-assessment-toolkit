@@ -476,5 +476,6 @@ export function findingsFixture(sid = 1, offset = 0) {
     title: published(offset === 0 ? "Synthetic finding" : "Next source finding"), detail: published("Synthetic issue detail"), remediation: published("Synthetic owner remediation"), devices: published(["edge/a~b"]),
     evidence_refs: { state: "collected_but_empty", reason: "No synthetic references", items: [], basis: "synthetic.owner", subject: "/punchlist", refs: [] } };
   const rows = { ...empty("/rows"), source_list: { state: "published", basis: "synthetic.owner", subject: "/punchlist", refs: [] }, page: { offset, limit: 1, returned: 1, total: 2, has_more: offset === 0, items: [row] } };
-  return { ...common(sid, "findings"), payload: { total: published(2), headline_axis_index: null, rows, facets: findingFacetsFixture() } };
+  // G24: the engine's cross-layer correlation rows travel beside the punch-list rows; this synthetic source has none.
+  return { ...common(sid, "findings"), payload: { total: published(2), headline_axis_index: null, rows, facets: findingFacetsFixture(), cross_layer: empty("/cross_layer") } };
 }

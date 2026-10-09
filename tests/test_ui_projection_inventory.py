@@ -1372,6 +1372,12 @@ CAP_SITES = {
     ("analyze.compute_failure_impact", "pv[:8]"):
         "exempt: detail prose says '+N more' in-band; full model counts remain separate and the projection discloses the 8-example cap",
     ("analyze._fmt_endpoint_mix", "items[:limit]"): "exempt: endpoint_mix says '+N more' in-band",
+    # G24 (findings.cross_layer names analyze.compute_cross_layer_correlations): both cut only the prose of a detail
+    # the projection publishes verbatim; each says '(+N more)' in-band and the row's title states the full count.
+    ("analyze.compute_cross_layer_correlations", "pos[:12]"):
+        "exempt: the CL-06 detail says '(+N more)' in-band; its title states the full port-channel count",
+    ("analyze._vlan_list_summary", "vids[:cap]"):
+        "exempt: the CL-02 detail says '(+N more)' in-band; its title states the full VLAN count",
     ("analyze._classify_endpoint", "desc.strip()[:32]"):
         "exempt: a quoted fragment inside the evidence prose; the full description is on the interface record",
     ("analyze._classify_endpoint", "plat.strip()[:24]"): "exempt: a quoted fragment inside the evidence prose",
