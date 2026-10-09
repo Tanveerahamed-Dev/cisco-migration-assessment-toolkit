@@ -29,6 +29,7 @@ from docx import Document                     # noqa: E402
 
 from cisco_toolkit.runbook import write_runbook_docx    # noqa: E402
 from cisco_toolkit.ops import write_ops_handbook_docx   # noqa: E402
+from impact_fixtures import assessable                  # noqa: E402
 
 _GOLDEN = os.path.join(os.path.dirname(__file__), "golden", "snapshot.json")
 _SAMPLE = os.path.join(os.path.dirname(__file__), os.pardir, "webapp", "sample_data",
@@ -401,7 +402,9 @@ def _o_keystones(g, _s):
     fi = [r for r in snap["failure_impact"] if isinstance(r, dict) and (r.get("stranded") or 0) > 0]
     assert fi, "golden must carry a real endpoint-stranding failure-impact row"
     snap["failure_impact"] = _grow(fi, 20)
-    return snap, 20
+    # W48: §2.1 ranks through the assessability owner, so each replicated row carries the evidence a real run's row
+    # carries (tests/impact_fixtures.py); the subject here is the display cap, not the withholding.
+    return assessable(snap), 20
 
 
 def _o_detections(g, _s):
@@ -463,7 +466,7 @@ def test_ops_facts_expose_the_pre_cap_keystone_total(golden):
     snap = copy.deepcopy(golden)
     fi = [r for r in snap["failure_impact"] if isinstance(r, dict) and (r.get("stranded") or 0) > 0]
     snap["failure_impact"] = _grow(fi, 20)
-    ev = _facts(snap)
+    ev = _facts(assessable(snap))           # W48: the rows carry a real run's assessability evidence
     assert len(ev["keystones"]) == 5
     assert ev["n_keystones"] == 20
 
