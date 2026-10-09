@@ -1233,6 +1233,46 @@ def test_native_w12a_closed_rollups_match_stock_on_valid_and_rejected_shapes(nat
     assert _validation_errors(native, altered) == _validation_errors(stock, altered)
 
 
+@pytest.mark.parametrize("mutation", ["missing_block", "missing_of", "extra_key", "bool_count", "negative_count",
+                                      "withheld_value", "published_reason"])
+def test_native_g05_axis_unassessed_matches_stock_on_valid_and_rejected_shapes(native_body, mutation):
+    """W40: each overview axis row carries its closed could-not-assess block on the real transport shape."""
+    from backend import ui_projection_api as api
+
+    def fact(value, **extra):
+        return {"state": "published", "value": value, "subject": None, "refs": [], "basis": "synthetic.owner",
+                **extra}
+
+    schema = deepcopy(api._VIEW_SCHEMA)
+    native = api._NativeTransportValidator(schema, "view")
+    assert native._NativeTransportValidator__native is not None
+    stock = api._stock_validator(schema)
+    rows = native_body["payload"]["axes"]["page"]["items"]
+    assert rows and all(set(row["unassessed"]) == {"n", "of"} for row in rows)
+    assert any(row["unassessed"]["n"]["state"] == "published" for row in rows)
+    assert any(row["unassessed"]["n"]["state"] == "not_collected" for row in rows)
+    assert native.is_valid(native_body) and stock.is_valid(native_body)
+    altered = deepcopy(native_body)
+    row = altered["payload"]["axes"]["page"]["items"][0]
+    block = row["unassessed"]
+    if mutation == "missing_block":
+        del row["unassessed"]
+    elif mutation == "missing_of":
+        del block["of"]
+    elif mutation == "extra_key":
+        block["total"] = deepcopy(block["of"])
+    elif mutation == "bool_count":
+        block["n"] = fact(True)
+    elif mutation == "negative_count":
+        block["n"] = fact(-1)
+    elif mutation == "withheld_value":
+        block["n"] = {**fact(0), "state": "not_collected", "reason": "synthetic withheld count"}
+    else:
+        block["of"] = fact(1, reason="a published count carries no reason")
+    assert not native.is_valid(altered) and not stock.is_valid(altered)
+    assert _validation_errors(native, altered) == _validation_errors(stock, altered)
+
+
 @pytest.mark.parametrize("surface", ["inventory", "inventory_list", "device"])
 @pytest.mark.parametrize("mutation", ["missing_rollup", "missing_severity", "extra_severity", "bool_count",
                                      "fractional_count", "negative_count", "oversized_count", "unknown_worst", "extra_rollup",

@@ -1144,6 +1144,7 @@ export interface components {
             readonly basis_sections: readonly string[];
             readonly fact: components["schemas"]["UiProjection1_AxisFact"];
             readonly index: number;
+            readonly unassessed: components["schemas"]["UiProjection1_AxisUnassessed"];
         };
         /** AxisList */
         readonly UiProjection1_AxisList: {
@@ -1175,6 +1176,11 @@ export interface components {
             readonly refs: readonly components["schemas"]["UiProjection1_Ref"][];
             readonly state: components["schemas"]["UiProjection1_WithheldState"];
             readonly subject: components["schemas"]["UiProjection1_Pointer"] | null;
+        };
+        /** AxisUnassessed */
+        readonly UiProjection1_AxisUnassessed: {
+            readonly n: components["schemas"]["UiProjection1_CountFact"];
+            readonly of: components["schemas"]["UiProjection1_CountFact"];
         };
         /** AxisValue */
         readonly UiProjection1_AxisValue: {
