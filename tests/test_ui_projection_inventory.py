@@ -557,9 +557,11 @@ def test_i0_schema_sections_and_vocabularies():
     assert d["DeviceDocument"]["properties"]["schema"]["const"] == uip.SCHEMA
     for name in ("Inventory", "Findings", "DevicePage", "DeviceRow", "VlanRow", "EndpointRow", "FindingRow",
                  "DualHomedRow", "InterfaceRow", "CableRow", "RouteRow", "NeighborRow", "RemediationRow",
-                 "NrfuCaseRow", "Cap", "RowRef", "FhrpValue", "FhrpMember", "CoverageItem", "DeviceCoverageRollup"):
+                 "NrfuCaseRow", "Cap", "RowRef", "FhrpValue", "FhrpMember", "CoverageItem", "DeviceCoverageRollup",
+                 "VlanGatewayRow", "VlanSelections"):
         assert d[name]["type"] == "object" and d[name]["additionalProperties"] is False, name
-    for name in ("DeviceRowList", "VlanRowList", "EndpointRowList", "FindingRowList", "SharedIpList",
+    for name in ("DeviceRowList", "VlanRowList", "VlanGatewayRowList", "EndpointRowList", "FindingRowList",
+                 "SharedIpList",
                  "DualHomedList", "PeerList", "InterfaceRowList", "CableRowList", "RouteRowList",
                  "NeighborGroupList", "NeighborRowList", "SecurityCheckList", "TrunkNativeList",
                  "RemediationRowList", "NrfuCaseList", "RowRefList", "TextItemList", "ExposureList",
@@ -1370,6 +1372,76 @@ CAP_SITES = {
     ("analyze.compute_failure_impact", "pv[:8]"):
         "exempt: detail prose says '+N more' in-band; full model counts remain separate and the projection discloses the 8-example cap",
     ("analyze._fmt_endpoint_mix", "items[:limit]"): "exempt: endpoint_mix says '+N more' in-band",
+    # G24 (findings.cross_layer names analyze.compute_cross_layer_correlations): both cut only the prose of a detail
+    # the projection publishes verbatim; each says '(+N more)' in-band and the row's title states the full count.
+    ("analyze.compute_cross_layer_correlations", "pos[:12]"):
+        "exempt: the CL-06 detail says '(+N more)' in-band; its title states the full port-channel count",
+    ("analyze._vlan_list_summary", "vids[:cap]"):
+        "exempt: the CL-02 detail says '(+N more)' in-band; its title states the full VLAN count",
+    # G05 (W40, overview.axes[].unassessed) names these producers: AXIS_UNASSESSED as the owners of each axis's
+    # could-not-assess count, AXIS_UNASSESSED_ABSENT (prose) as producers that store none. From the first the projection
+    # reads only a summary count, n_devices and one per-device field, each over the full per-device list (len() before
+    # any cut); from the second (application intelligence, segmentation) it reads nothing.
+    ("analyze.compute_syslog_intelligence", "not_collected[:20]"):
+        "exempt: summary.hosts_not_collected, a host preview never read; n_not_collected is the full list's len()",
+    ("analyze.compute_syslog_intelligence", "example[:220]"):
+        "exempt: a detection's example log line, which the projection never reads",
+    # W51 round 4 (P3-4): a qos_audit finding's and a syslog detection's `detail` is NOT unread: the punch-list fold
+    # (analyze.compute_migration_punchlist._fold_axis) copies the first detail of each kind into punchlist[].detail,
+    # which the projection publishes. Each entry below was re-reviewed on that basis: a cut that states the full count
+    # in-band before the cut is disclosed; one that does not is an OPEN_CAP_SITES entry, not an exemption.
+    ("analyze.compute_syslog_intelligence", "flapping[:5]"):
+        "exempt: interface names quoted in a link-flap detection's detail, which the punch-list fold copies into "
+        "punchlist[].detail (published); the detail states the full interface count in-band before the cut",
+    ("analyze.compute_syslog_intelligence", "sorted(msg_count.items(), key=lambda kv: (-kv[1], kv[0]))[:6]"):
+        "exempt: per_device[].top_messages; of a per-device row the projection reads only its collected flag",
+    ("analyze.compute_platform_health", "not_collected[:20]"):
+        "exempt: summary.hosts_not_collected, a host preview never read; the Unknown band counts every per-device row",
+    ("analyze.compute_qos_audit", "not_assessable[:20]"):
+        "exempt: summary.hosts_not_assessable, a host preview never read; n_not_assessable is the full list's len()",
+    ("analyze.compute_qos_audit", "naked_voice[:6]"):
+        "exempt: voice ports quoted in a finding's detail, which the punch-list fold copies into punchlist[].detail "
+        "(published); the detail states the full port count in-band and marks the cut with ' …'",
+    ("analyze.compute_qos_audit", "q['policy_maps'][:5]"):
+        "exempt: policy-map names quoted in a finding's detail, which the punch-list fold copies into "
+        "punchlist[].detail (published); the detail states the full policy-map count in-band before the cut",
+    ("analyze.compute_qos_audit", "with_qos[:5]"):
+        "exempt: hosts quoted in the fleet mixed-posture finding's detail, which the punch-list fold copies into "
+        "punchlist[].detail (published); the detail states both full device counts in-band before the cut",
+    ("analyze.compute_qos_audit", "without_qos[:5]"):
+        "exempt: hosts quoted in the fleet mixed-posture finding's detail, which the punch-list fold copies into "
+        "punchlist[].detail (published); the detail states both full device counts in-band before the cut",
+    ("analyze.compute_software_risk", "sorted(not_assessable)[:20]"):
+        "exempt: summary.hosts_config_not_assessable, a host preview never read; its count is the full list's len()",
+    ("analyze.compute_segmentation", "exposed_oncrit[:8]"):
+        "exempt: domain names in a segmentation risk's detail prose (its title states the full count); never read",
+    ("analyze.compute_application_intelligence", "sorted({f.get('category', '') for f in hi_find})[:5]"):
+        "exempt: categories quoted in a domain risk's prose, after the full count; never read",
+    ("analyze.compute_application_intelligence",
+     "[{'group': g.get('group', ''), 'name': g.get('name', ''), 'category': g.get('category', '')} "
+     "for g in dom_groups][:20]"):
+        "exempt: domains[].media_groups, which no projected value and no producer the projection reads consumes",
+    ("analyze.compute_application_intelligence", "parts[:3]"):
+        "exempt: the first three octets of a querier IP, a /24 grouping key, not a value",
+    ("analyze.compute_application_intelligence", "qh[:6]"):
+        "exempt: querier switches of a cross-domain risk row and its prose; never read",
+    ("analyze.compute_application_intelligence", "sorted(ips)[:6]"):
+        "exempt: querier IPs of a cross-domain risk row and of its prose (which states the full count); never read",
+    ("analyze.compute_application_intelligence", "sorted(q_sub_hosts[v][sub])[:6]"):
+        "exempt: querier switches of a cross-domain risk row; never read",
+    ("analyze.compute_application_intelligence", "k['neighbors'][:8]"):
+        "exempt: coupled domains quoted in the keystone risk's prose, after the full count; never read",
+    ("analyze.compute_application_intelligence", "d['neighbors'][:8]"):
+        "exempt: coupled domains quoted in an on-air coupling risk's prose, after the full count; never read",
+    ("analyze.compute_application_intelligence", "nbr[:3]"):
+        "exempt: coupled domains quoted in a cutover-order rationale, after the full count; never read",
+    ("analyze.compute_application_intelligence",
+     "sorted((r for r in cross if r.get('kind') not in _dep_kinds), key=_csort)[:55]"):
+        "exempt: cross_domain_risks (and summary.n_cross_domain_risks, its len()); neither is read by the projection "
+        "or by compute_executive_brief, whose application-domain headlines the projection publishes",
+    ("analyze.compute_application_intelligence", "sorted(_deps + _querier, key=_csort)[:60]"):
+        "exempt: cross_domain_risks (and summary.n_cross_domain_risks, its len()); neither is read by the projection "
+        "or by compute_executive_brief, whose application-domain headlines the projection publishes",
     ("analyze._classify_endpoint", "desc.strip()[:32]"):
         "exempt: a quoted fragment inside the evidence prose; the full description is on the interface record",
     ("analyze._classify_endpoint", "plat.strip()[:24]"): "exempt: a quoted fragment inside the evidence prose",
@@ -1382,14 +1454,20 @@ CAP_SITES = {
         "exempt: a length bound on a VTP row's source-key text, which is not projected",
     ("nrfu_export.compute_nrfu_commands", "up[:12]"): "exempt: the NRFU expected text says '+N more' in-band",
     ("nrfu_export._port_key", "p[:2]"): "exempt: a port-name sort key, not a value",
-    ("excel._parse_track", "line.strip()[:40]"): "exempt: l3_forwarding values are not projected (only row indices)",
-    ("excel._track_summary", "tr['objects'][:6]"): "exempt: l3_forwarding values are not projected (only row indices)",
+    ("excel._parse_track", "line.strip()[:40]"):
+        "exempt: a tracked object's description never reaches the stored tracking text the G16 gateway rows project",
+    ("excel._track_summary", "tr['objects'][:6]"):
+        "exempt: the tracking text states the full object count in-band ('N obj') before at most 6 object states",
     ("excel._xls_cell_value", "v[:_XLSX_MAX_CELL - len(note)]"): "exempt: the workbook cell writer, not the snapshot",
     ("analyze.compute_lifecycle_risk", "str(x or '')[:10]"): "exempt: the ISO date part of a timestamp",
     ("analyze.compute_lifecycle_risk", "str(s)[:10]"): "exempt: the ISO date part of a timestamp",
     ("analyze.compute_lifecycle_risk", "_retrieved_at[:10]"):
         "exempt: the retained registry retrieval date used to judge lifecycle freshness, not a projected list",
     ("parse.parse_security", "raw[:1]"): "exempt: a first-character test, not a value",
+    # G17 cites the running-config interface parser as the owner of the address index's IPv4-only interface source
+    ("parse.parse_run_config_interfaces", "line[:1]"): "exempt: a first-character (indentation) test, not a value",
+    ("parse._global_forwarding_gate_evidence", "raw[:1]"): "exempt: a first-character (indentation) test, not a value",
+    ("parse._asa_global_forwarding_bindings", "raw[:1]"): "exempt: a first-character (indentation) test, not a value",
     ("analyze.compute_cable_map", "badges[:3]"): "exempt: badges are not projected",
     ("analyze.compute_device_dossiers",
      "[d['host'] for d in per_device if d['risk_band'] in ('Severe', 'Elevated')][:3]"):
@@ -1401,6 +1479,29 @@ CAP_SITES = {
     ("analyze.compute_device_dossiers", "watch_labels[:max(0, 3 - len(red_labels))]"):
         "exempt: the dossier verdict prose is not projected",
 }
+#: W51 round 4 (P2-2): the prefix slices whose cut reaches a value the projection publishes WITHOUT disclosing it. They
+#: are OPEN follow-ups (docs/NOW.md), never reviewed exemptions: i12 unions them into the reviewed walk so it stays
+#: closed, but they are held apart from CAP_SITES, and the ratchet below holds the set exactly, so closing one or
+#: finding a new one fails until this list (and the NOW.md follow-up) is updated. Neither is fixed here: each fix
+#: changes persisted engine output.
+OPEN_CAP_SITES = {
+    # pre-existing on main and only made visible by G05 naming this producer: compute_vlan_cutover_matrix maps each
+    # VLAN's application domain (vlan_cutover[].app_domain, and the highest tier as criticality) from this capped
+    # domains[].vlans list, which the projection publishes. A domain with more than 40 VLANs (domains[].vlan_count
+    # above len(vlans)) leaves VLAN 41 onward with an empty app_domain the projection reads as "no application domain
+    # maps this VLAN". Neither the stored sample nor the golden reaches the cap (largest domain: 5 VLANs).
+    ("analyze.compute_application_intelligence", "vlans_sorted[:40]"):
+        "OPEN: domains[].vlans feeds vlan_cutover[].app_domain/criticality through compute_vlan_cutover_matrix; a cut "
+        "domain (vlan_count above len(vlans)) is not disclosed",
+    # found by the P3-4 re-review: the undefined-policy-ref finding names at most five dangling service-policy
+    # references and states neither their count nor the cut, and the punch-list fold copies that detail into
+    # punchlist[].detail, which the projection publishes, so a sixth reference is silently absent from a published fact.
+    ("analyze.compute_qos_audit", "dangling[:5]"):
+        "OPEN: the undefined-policy-ref detail names at most five dangling policies with no count and no cut marker; "
+        "the punch-list fold copies it into punchlist[].detail (published)",
+}
+
+
 def _producer_roots():
     """Every ``<module>.<function>`` this projection names as an owner (its basis strings and limitation owners)."""
     import importlib
@@ -1442,8 +1543,14 @@ def test_i12_every_engine_cap_is_registered_or_reviewed():
     hits, seen = _prefix_slices()
     assert len(seen) > 20 and ("cisco_toolkit.analyze", "_classify_endpoint") in seen    # the walk is transitive
     assert ("cisco_toolkit.fib", "trace_fib_path") in seen  # the new path owner participates in the same guard
-    assert hits - set(CAP_SITES) == set(), "unreviewed prefix slice(s): register a cap or an exemption"
-    assert set(CAP_SITES) - hits == set(), "a reviewed slice no longer exists: drop it"
+    # an open gap is never filed as a reviewed exemption (W51 round 4, P2-2): the two lists are disjoint, and no
+    # exemption calls itself open
+    assert not set(CAP_SITES) & set(OPEN_CAP_SITES)
+    assert not [v for v in CAP_SITES.values() if "OPEN" in v], "file an open gap in OPEN_CAP_SITES, not as exempt"
+    assert all(v.startswith("OPEN:") for v in OPEN_CAP_SITES.values())
+    reviewed = set(CAP_SITES) | set(OPEN_CAP_SITES)
+    assert hits - reviewed == set(), "unreviewed prefix slice(s): register a cap, an exemption or an open gap"
+    assert reviewed - hits == set(), "a reviewed slice no longer exists: drop it"
     registered = {v for v in CAP_SITES.values() if not v.startswith("exempt:")}
     assert registered == set(uip.ENGINE_LIST_CAPS)
     for (fn, text), key in CAP_SITES.items():
@@ -1456,6 +1563,13 @@ def test_i12_every_engine_cap_is_registered_or_reviewed():
     default = clip.args.defaults[names.index("n") - (len(names) - len(clip.args.defaults))]
     assert ast.literal_eval(default) == uip.ENGINE_LIST_CAPS["punchlist[].detail"]
     assert uip.PUNCH_DETAIL_CLIP_MARKER in _str_constants(clip)
+
+
+def test_i12_open_cap_sites_are_ratcheted():
+    """W51 round 4 (P2-2): the open cap gaps are exactly these. Closing one (an engine change or a projection
+    disclosure) or finding a new one fails here until OPEN_CAP_SITES and the docs/NOW.md follow-up are updated."""
+    assert set(OPEN_CAP_SITES) == {("analyze.compute_application_intelligence", "vlans_sorted[:40]"),
+                                   ("analyze.compute_qos_audit", "dangling[:5]")}
 
 
 def test_i12_readiness_ipv6_subject_preview_keeps_its_exact_omission_and_source_disclosure():
@@ -1581,6 +1695,14 @@ def test_i13_every_published_number_is_the_owners(name, snaps, payloads, docs):
     inventory = payloads[name]["inventory"]
     coverage_counts = {f"/devices/rows/items/{index}/coverage/n_abstained": row["host"]
                        for index, row in enumerate(inventory["devices"]["rows"]["items"])}
+    # G21 facet counts are live folds of the stored rows (no subject, no single witness list): each published one
+    # is recounted here, independently, from the snapshot's punch list by its own key rule.
+    facets = payloads[name]["findings"]["facets"]
+    facet_counts = {f"/facets/{facet}/{index}/n": (facet, bucket["k"])
+                    for facet in ("severity", "category") for index, bucket in enumerate(facets[facet])}
+    # the device facet is a roster list with its own state: its buckets are its items
+    facet_counts.update({f"/facets/device/items/{index}/n": ("device", bucket["k"])
+                         for index, bucket in enumerate(facets["device"]["items"])})
     roots = [(inventory, coverage_counts), (payloads[name]["findings"], {})] + [
         (doc["device"], {"/coverage_rollup/n_abstained": doc["device"]["host"]}) for _host, doc in docs[name]]
     n = 0
@@ -1590,7 +1712,16 @@ def test_i13_every_published_number_is_the_owners(name, snaps, payloads, docs):
             if fact["state"] != PUB or isinstance(value, bool) or not isinstance(value, (int, float)):
                 continue
             n += 1
-            if where in folded_coverage_paths:
+            if root is payloads[name]["findings"] and where in facet_counts:
+                facet, key = facet_counts[where]
+                rows = snap["punchlist"]
+                if facet == "device":
+                    expected = sum(1 for row in rows if key in row["devices"])
+                else:
+                    expected = sum(1 for row in rows if row[facet] == key)
+                assert fact["subject"] is None and type(value) is int and value == expected, (where, value, expected)
+                assert {"pointer": "/punchlist", "role": "basis"} in fact["refs"], where
+            elif where in folded_coverage_paths:
                 assert fact["subject"] is None
                 assert fact["basis"] == "coverage_matrix.compute_device_coverage:stored matrix rows by exact device.n_abstained"
                 assert type(value) is int
@@ -1649,8 +1780,13 @@ def test_i14_selections_follow_the_owners_key_rules(name, snaps, payloads, docs)
         sel = row["selections"]
         assert sel["endpoints"] == ([i for i, r in enumerate(eps) if _digit(r.get("vlan")) == vid]
                                     if readable("endpoint_identity") else None)
-        assert sel["gateways"] == ([i for i, r in enumerate(l3) if _digit(r.get("vlan")) == vid]
-                                   if readable("l3_forwarding") else None)
+        # G16: the gateway selection is a fact list carrying its own state; its rows are the same exact-key selection
+        gateways = sel["gateways"]
+        want_gw = [i for i, r in enumerate(l3) if _digit(r.get("vlan")) == vid] if readable("l3_forwarding") else []
+        assert [it["index"] for it in gateways["items"]] == want_gw
+        assert all(it["pointer"] == _ptr("l3_forwarding", it["index"]) for it in gateways["items"])
+        if not readable("l3_forwarding"):
+            assert gateways["state"] not in (PUB, CBE) and gateways["reason"]
         # Membership reads the original row key even when a source failure withholds its displayed VLAN fact.
         stored_vid = (snap.get("vlan_cutover") or [])[row["index"]]["vlan"]
         want = sorted(_ptr("stp_roots", h, k) for h in roots for k, rec in roots[h].items()
@@ -2091,6 +2227,49 @@ def test_i19_two_blind_spot_rows_for_one_device_are_unverified(snaps):
     assert _sv(inv["total"]) == (PUB, 24)
 
 
+_R_SCOPE_HEAD = "unverified: whether collection_completeness lists this device as partial or not collected cannot be read"
+
+
+@pytest.mark.parametrize("contradiction", ("partial", "not_collected", "unreadable_count"))
+def test_i19_a_record_its_own_summary_contradicts_never_reads_a_device_as_collected(snaps, contradiction):
+    """W51 round 4 (P2-1): a device the devices map carries and no blind-spot row names is "collected but empty ...
+    not a blind spot" only while the record can be trusted to list every blind spot. A record whose own summary counts
+    a partial or not-collected device its list does not carry (or whose count cannot be read) doubts every device: the
+    collection block of the device page (status, data_quality, missing) and every inventory row's collection_status
+    are unverified with the device scope's own reason and a witness to the summary, as every other field of the device
+    already reads -- never a published "not a blind spot" beside fields that doubt it. The clean record is the
+    control."""
+    clean = copy.deepcopy(snaps["a"])
+    assert clean["collection_completeness"]["devices"] == []                       # precondition: no blind spot
+    for row in uip.project_inventory(clean)["devices"]["rows"]["items"]:
+        assert row["collection_status"]["state"] == CBE and "not a blind spot" in row["collection_status"]["reason"]
+    page = uip.project_device(clean, "core1")["device"]
+    for f in ("status", "data_quality", "missing"):
+        assert page["collection"][f]["state"] == CBE, f
+
+    snap = copy.deepcopy(snaps["a"])
+    summary = snap["collection_completeness"]["summary"]
+    if contradiction == "unreadable_count":
+        summary["partial"] = "one"
+    else:
+        summary[contradiction] = 1
+    summary_witness = {"pointer": "/collection_completeness/summary", "role": "witness"}
+    rows = uip.project_inventory(snap)["devices"]["rows"]["items"]
+    assert sorted(r["host"] for r in rows) == sorted(snap["devices"])
+    for row in rows:
+        status = row["collection_status"]
+        assert status["state"] == UV and status["reason"].startswith(_R_SCOPE_HEAD), (row["host"], status)
+        assert "not a blind spot" not in status["reason"] and summary_witness in status["refs"], row["host"]
+        assert row["rows"]["collection"] is None
+    page = uip.project_device(snap, "core1")["device"]
+    for f in ("status", "data_quality", "missing"):
+        fact = page["collection"][f]
+        assert fact["state"] == UV and fact["reason"].startswith(_R_SCOPE_HEAD), (f, fact)
+        assert summary_witness in fact["refs"], f
+        # the collection block now reads as the device's other fields do, from the one device-scope doubt
+        assert fact["reason"] == page["identity"]["model"]["reason"], f
+
+
 def test_i19_ambiguous_headline_and_unreadable_peer_flags(snaps, payloads):
     snap = copy.deepcopy(snaps["a"])
     axes = snap["executive_brief"]["axes"]
@@ -2130,7 +2309,9 @@ def test_i20_selections_carry_their_source_state(snaps, payloads):
         assert row["selections"]["stp_roots"]["state"] == NC
         assert row["selections"]["stp_roots"]["items"] == []
         assert row["selections"]["stp_roots"]["reason"]
-        assert row["selections"]["gateways"] is None
+        # G16: the gateway fact list says why it is empty instead of a null, never a clean 'no gateway'
+        gateways = row["selections"]["gateways"]
+        assert gateways["state"] == NC and gateways["items"] == [] and gateways["reason"].startswith("not collected")
         assert isinstance(row["selections"]["endpoints"], list)
     failed = copy.deepcopy(snaps["a"])
     failed["endpoint_dependencies"] = {}

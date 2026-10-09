@@ -16,7 +16,9 @@ const versions = { projection_schema: PROJECTION_SCHEMA, style_schema: TOPOLOGY_
 const target = { list: "nodes", row: { index: 0, pointer: "/cable_map/nodes/0" } } as const;
 const text = { state: "published", value: "synthetic", subject: null, basis: "synthetic", refs: [] } as const;
 const engine: ProjectionEngine = { code_schema_version: "synthetic", collected_at: text, generated_at: text,
-  script_version: text, snapshot_schema: text, snapshot_schema_supported: true };
+  script_version: text, snapshot_schema: text, snapshot_schema_supported: true,
+  snapshot_sha256: { ...text, value: `sha256:${"3".repeat(64)}` }, snapshot_bytes: { ...text, value: 123 },
+  snapshot_digest_form: "exact-parsed-bytes" };
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -138,6 +140,10 @@ describe("independently fetched context comparison", () => {
     const reordered = Object.fromEntries(Object.entries(engine).reverse()) as ProjectionEngine;
     expect(await projectionContextDigest(reordered, [], webcrypto.subtle)).toBe(original);
     expect(await projectionContextDigest({ ...engine, code_schema_version: "different" }, [], webcrypto.subtle)).not.toBe(original);
+    // G41: the engine block names its source bytes, so a context from other bytes never shares this digest.
+    expect(await projectionContextDigest({ ...engine, snapshot_sha256: { ...text, value: `sha256:${"4".repeat(64)}` } },
+      [], webcrypto.subtle)).not.toBe(original);
+    expect(await projectionContextDigest({ ...engine, snapshot_bytes: { ...text, value: 124 } }, [], webcrypto.subtle)).not.toBe(original);
     expect(original).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
   it("refuses missing browser crypto rather than inventing a comparison digest", async () => {

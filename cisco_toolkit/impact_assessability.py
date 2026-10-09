@@ -22,6 +22,17 @@ row builder (the fleet topology and the device page) and every engine deliverabl
 rows or ranks keystones from them consume it. A row therefore cannot be withheld on a screen while a document
 publishes it as "Info / 0 stranded".
 
+It also owns the WAVE rule (:func:`wave_blast`): how a migration wave's rows add up to one worst-case figure. The
+figure is exact only when every device of the wave has a row that is a measurement, no stored row names no readable
+host, and the projection carries no fleet qualifier (no partial or never-collected device, and no collection record
+it cannot read as one). Otherwise it is a lower bound, and a lower bound of 0 is not assessed. The MOP
+(``mop._blast_for``) applies it to this module's own verdicts and the AssessHub cutover plan
+(``cutover._worst_blast_radius``) to the projection's rows, which the projection builds from those verdicts and whose
+every bound cites a witness that resolves (``ui_projection._impact_witnessed``). So both classify a wave by one rule;
+they are still two readings of the rows, not one computation, and their agreement is pinned per variant (a fully
+published fleet, a row naming no host, a blind spot, an unreadable collection record, no cable map, a zero lower
+bound: ``webapp/tests/test_impact_surfaces.py``), not guaranteed for an input those pins do not cover.
+
 Per stored row the verdict is one of :data:`VERDICTS`:
 
 * ``published``: the row's values are the producer's measurements;
@@ -239,7 +250,9 @@ class CableSource(NamedTuple):
     """One reading of the stored cable map. ``state`` is ``None`` when the cable list can be read; otherwise it is
     the withheld state, ``why`` the reason and ``witnesses`` what witnesses it. ``by_end``, ``unjoinable`` (ascending)
     and ``node_index`` are the exact-text joins over the readable lists (``nodes`` is ``None`` when the node list
-    cannot be read, so no far end joins a node); ``unjoinable_set`` is ``unjoinable`` for membership tests."""
+    cannot be read, so no far end joins a node); ``unjoinable_set`` is ``unjoinable`` for membership tests.
+    ``node_unjoinable`` (ascending) are the node rows the host join cannot read (W43/F6): any of them could be a second
+    node for a far end, so while one exists no far end joins exactly one node."""
     state: Optional[str]
     why: str
     witnesses: Tuple[Entry, ...]
@@ -249,6 +262,7 @@ class CableSource(NamedTuple):
     unjoinable: Sequence[int]
     node_index: Mapping[str, Sequence[int]]
     unjoinable_set: FrozenSet[int] = frozenset()
+    node_unjoinable: Sequence[int] = ()
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -430,17 +444,20 @@ def blind_bound(rec: Any, toks: Sequence[Any]) -> Optional[Bound]:
 def readable_cables(cables: Sequence[Any], nodes: Optional[Sequence[Any]] = None, *,
                     by_end: Optional[Mapping[str, Sequence[int]]] = None,
                     unjoinable: Optional[Sequence[int]] = None,
-                    node_index: Optional[Mapping[str, Sequence[int]]] = None) -> CableSource:
+                    node_index: Optional[Mapping[str, Sequence[int]]] = None,
+                    node_unjoinable: Optional[Sequence[int]] = None) -> CableSource:
     """A readable cable list (and the node list, ``None`` when it cannot be read). Joins not supplied by the caller
     are built here with :func:`index_rows` / :func:`unjoinable_rows`."""
     cables = cables if isinstance(cables, list) else []
     nodes = nodes if isinstance(nodes, list) else None
     bad = sorted(set(unjoinable if unjoinable is not None else unjoinable_rows(cables, ("a", "b"))))
+    nbad = (sorted(set(node_unjoinable if node_unjoinable is not None else unjoinable_rows(nodes, ("host",))))
+            if nodes is not None else [])
     return CableSource(
         None, "", (), cables, nodes,
         by_end if by_end is not None else index_rows(cables, ("a", "b")), bad,
         (node_index if node_index is not None else index_rows(nodes, ("host",))) if nodes is not None else {},
-        frozenset(bad))
+        frozenset(bad), nbad)
 
 
 def unreadable_cables(state: str, why: str, witnesses: Sequence[Entry]) -> CableSource:
@@ -460,9 +477,12 @@ def neighbour_bound(host: Any, src: CableSource, *, witness_cap: Optional[int] =
     ``collected: true``, unless that node is ``collected: false`` with a kind the producer positively marks as edge
     gear (:data:`IMPACT_EDGE_KINDS`). It fails closed: a cable row that cannot be read could name the host, a far
     end that joins no single node is never assumed collected, and a cable list that cannot be read bounds the row
-    with that reading's own state. ``None``: no such neighbour (or no readable host).
+    with that reading's own state. A node row the host join cannot read (W43/F6) could be a second node for any far
+    end, so beside one no far end joins exactly one node and every neighbour fails closed, citing those node rows.
+    ``None``: no such neighbour (or no readable host).
 
-    The witnesses are every bounding cable row in ascending index order. A cable row the join cannot read bounds
+    The witnesses are every bounding cable row in ascending index order, then (beside a node row the join cannot
+    read, when a neighbour fails closed) those node rows. A cable row the join cannot read bounds
     EVERY row, so a hostile list of them makes the witnesses grow with rows x cables: `witness_cap` keeps only the
     first ones for a reader that renders no witness list (the counts and reasons are unchanged); the projection
     passes none."""
@@ -473,20 +493,22 @@ def neighbour_bound(host: Any, src: CableSource, *, witness_cap: Optional[int] =
                           "neighbours_unreadable", 0)
     toks = ("cable_map", "cables")
     cables, nodes, bad = src.cables, src.nodes, src.unjoinable_set
+    nbad = list(src.node_unjoinable)         # node rows the host join cannot read: each could be any far end's node
     own: List[int] = []                      # bounding rows the join CAN read, ascending
     peers: Dict[str, bool] = {}              # far end -> whether it fails closed (joins no single node)
     for j in sorted(set(src.by_end.get(host, [])) - bad):
         ends = (cables[j]["a"], cables[j]["b"])
         far = ends[1] if ends[0] == host else ends[0]
         found = src.node_index.get(far, []) if far else []
-        if len(found) == 1 and nodes is not None:
+        single = len(found) == 1 and nodes is not None and not nbad
+        if single:
             node = nodes[found[0]]
             kind = node.get("kind")
             if node.get("collected") is True or (
                     node.get("collected") is False and _is_text(kind) and kind in IMPACT_EDGE_KINDS):
                 continue
         own.append(j)
-        peers[far] = peers.get(far, False) or len(found) != 1
+        peers[far] = peers.get(far, False) or not single
     unreadable = len(src.unjoinable)         # the join cannot read these rows, so each could name this switch
     if not own and not unreadable:
         return None
@@ -499,7 +521,9 @@ def neighbour_bound(host: Any, src: CableSource, *, witness_cap: Optional[int] =
         hits = sorted(own + list(src.unjoinable))
     else:                                    # the first `witness_cap` of the ascending union, without building it
         hits = sorted(own[:witness_cap] + list(src.unjoinable[:witness_cap]))[:witness_cap]
-    return make_bound(NOT_COLLECTED, clause, [("witness", toks + (j,)) for j in hits], "uncollected_neighbours", n)
+    node_hits = _first(nbad, witness_cap) if nbad and any(peers.values()) else []
+    return make_bound(NOT_COLLECTED, clause, [("witness", toks + (j,)) for j in hits]
+                      + [("witness", ("cable_map", "nodes", i)) for i in node_hits], "uncollected_neighbours", n)
 
 
 def duplicate_doubt(raw: Any, rows_by_host: Mapping[str, Sequence[int]], *,
@@ -759,6 +783,61 @@ class RowVerdict:
         return self.assessable == PUBLISHED
 
     @property
+    def readable(self) -> bool:
+        """Whether the stored row is an object, so its fields can be read at all. The one rule for an UNREADABLE
+        row: it holds whatever the verdict or reason codes say (a failed section words a non-object row as
+        ``section_unavailable``, not ``row_unreadable``), so a census of unreadable rows and a list of them read
+        this, never a reason code (W50)."""
+        return isinstance(self.raw, dict)
+
+    @property
+    def code_counts(self) -> List[Tuple[str, int]]:
+        """``(code, n)`` per reason, in :attr:`codes` order: each stable reason identifier (a key of
+        :data:`CODE_PHRASES`) with the count its phrase quotes (0 where it quotes none). A display that words the
+        reasons itself reads these (W50: AssessHub's live ``impacts_view`` of an execution receipt's bound evidence,
+        whose phrase table is held equal to :data:`CODE_PHRASES`)."""
+        return list(self._ns)
+
+    @property
+    def state(self) -> Optional[str]:
+        """The owner's withheld state of the row as a whole: ``None`` for a measurement; otherwise
+        :data:`ANALYSIS_UNAVAILABLE`, :data:`UNVERIFIED` or :data:`NOT_COLLECTED`, read in the verdict's own
+        precedence (a failed section or owner fault, an unreadable row, a duplicated host, the hold, then the bounds
+        by :func:`bound_state`). It keeps those three states apart for a reader that would otherwise collapse every
+        non-measurement into "not assessed"."""
+        if self.assessable == PUBLISHED:
+            return None
+        if self._section is not None:
+            return self._section[0]
+        if not isinstance(self.raw, dict):
+            return UNVERIFIED
+        if self.facts.doubt is not None:
+            return self.facts.doubt.state
+        if self.facts.hold is not None:
+            return self.facts.hold.state
+        return bound_state(self.facts.bounds)
+
+    def withheld_state(self, field: str) -> Optional[str]:
+        """The state of the owner's withholding of `field` (``None`` when :meth:`withholds` is False): the state the
+        projection gives that cell, from the same rule :meth:`withholds` applies."""
+        if not self.withholds(field):
+            return None
+        if self._section is not None:
+            return self._section[0]
+        if not isinstance(self.raw, dict):
+            return UNVERIFIED
+        if self.facts.doubt is not None:
+            return self.facts.doubt.state
+        hold, bounds = self.facts.hold, self.facts.bounds
+        if field in IMPACT_MEASURES:
+            found = measure_withheld(hold, field, self.raw.get(field), bounds)
+        elif field == "detail":
+            found = detail_withheld(hold, self.raw.get("detail"), self.raw, bounds)
+        else:
+            found = None
+        return found[0] if found is not None else UNVERIFIED
+
+    @property
     def why(self) -> str:
         """The reader-facing reasons alone (``""`` for a measurement), one phrase per reason code."""
         return "; ".join(CODE_PHRASES[code].format(n=n) for code, n in self._ns)
@@ -831,10 +910,34 @@ def assess_failure_impact(snap: Any) -> List[RowVerdict]:
     return out
 
 
+def section_state(snap: Any) -> Optional[str]:
+    """The withheld state of the stored ``failure_impact`` section as a whole, for a reader that must tell "no row"
+    from "no readable section": ``None`` when the section is a list (each row then carries its own verdict, and an
+    empty list holds no row); :data:`ANALYSIS_UNAVAILABLE` when its phase failed this run (its rows, if any, are each
+    not assessed); :data:`UNVERIFIED` when the abstention owner faults or the section is present but not a list;
+    :data:`NOT_COLLECTED` when it is absent. Never "none found": an absent or unreadable section is not a zero."""
+    s = snap if isinstance(snap, dict) else {}
+    token = _abst(s, "failure_impact")
+    if token == ANALYSIS_UNAVAILABLE:
+        return ANALYSIS_UNAVAILABLE
+    if token == _FAULT:
+        return UNVERIFIED
+    if isinstance(s.get("failure_impact"), list):
+        return None
+    return NOT_COLLECTED if token == NOT_COLLECTED else UNVERIFIED
+
+
+def count_value(raw: Any) -> Optional[int]:
+    """A stored count as the integer the owner reads it as (a non-bool integer, or an integral finite float, in
+    [0, 2**53-1]), else ``None``: a value that is not a readable count is never a zero."""
+    ok, n = _count(raw)
+    return n if ok else None
+
+
 def rows_with_verdicts(snap: Any) -> List[Tuple[Dict[str, Any], RowVerdict]]:
     """``(row, verdict)`` for every stored row that is an object, in stored order: the pairs a deliverable renders
     or ranks from."""
-    return [(v.raw, v) for v in assess_failure_impact(snap) if isinstance(v.raw, dict)]
+    return [(v.raw, v) for v in assess_failure_impact(snap) if v.readable]
 
 
 def assessment_document(snap: Any) -> Dict[str, Any]:
@@ -873,6 +976,54 @@ def table_value(verdict: RowVerdict, field: str) -> Any:
     return raw
 
 
+#: How a display may read one cell of a row (:func:`cell_reading`): the stored value is a measurement (or the
+#: producer's detail the owner still publishes), the owner's lower bound, withheld, or not a readable value of its kind.
+CELL_PUBLISHED = "published"
+CELL_FLOOR = "floor"
+CELL_WITHHELD = "withheld"
+CELL_UNREADABLE = "unreadable"
+CELL_KINDS: Tuple[str, ...] = (CELL_PUBLISHED, CELL_FLOOR, CELL_WITHHELD, CELL_UNREADABLE)
+#: The cells :func:`cell_reading` reads: every blast-radius measure, then the producer's detail.
+CELL_FIELDS: Tuple[str, ...] = IMPACT_MEASURES + ("detail",)
+
+
+class CellReading(NamedTuple):
+    """One cell as the owner publishes it to a display that words it itself. ``kind`` is one of :data:`CELL_KINDS`;
+    ``text`` is the display text for a published value or a floor (the owner's own :func:`table_value` wording,
+    ``"≥ 45"`` / ``"High (lower bound)"``) and ``None`` otherwise; ``state`` is the state of a withholding
+    (:meth:`RowVerdict.withheld_state`) and ``None`` otherwise."""
+    kind: str
+    text: Optional[str]
+    state: Optional[str]
+
+
+def cell_reading(verdict: RowVerdict, field: str) -> CellReading:
+    """How a display reads `field` (one of :data:`CELL_FIELDS`) of the verdict's row (W50). The owner decides, the
+    display only words it: a cell the owner withholds is :data:`CELL_WITHHELD` with its state; on a lower-bound row a
+    published measure is :data:`CELL_FLOOR` with :func:`table_value`'s text; a published value that is not readable as
+    its kind (a band outside :data:`IMPACT_SEVERITIES`, a count :func:`count_value` cannot read, a detail that is not
+    non-blank text) is :data:`CELL_UNREADABLE`, never a zero; anything else is :data:`CELL_PUBLISHED` with its text."""
+    if field not in CELL_FIELDS:
+        raise ValueError(f"not a failure-impact display cell: {field!r}")
+    if verdict.withholds(field):
+        return CellReading(CELL_WITHHELD, None, verdict.withheld_state(field))
+    raw = verdict.raw.get(field) if isinstance(verdict.raw, dict) else None
+    floor = verdict.assessable == LOWER_BOUND and field in IMPACT_MEASURES
+    text: Any
+    if field == "detail":
+        readable, text = _is_text(raw) and bool(raw.strip()), raw
+    elif field == "severity":
+        readable = isinstance(raw, str) and raw in IMPACT_SEVERITIES
+        text = table_value(verdict, field) if floor else raw
+    else:
+        ok, n = _count(raw)
+        readable = ok
+        text = table_value(verdict, field) if floor else str(n)
+    if not readable or not isinstance(text, str):
+        return CellReading(CELL_UNREADABLE, None, None)
+    return CellReading(CELL_FLOOR if floor else CELL_PUBLISHED, text, None)
+
+
 def table_detail(verdict: RowVerdict) -> Any:
     """The detail a deliverable table writes: the producer's detail on a published row; otherwise the verdict and why,
     followed by the producer's detail where the owner still publishes it (its INDETERMINATE disclosure, or a partial
@@ -907,6 +1058,28 @@ def ranks(verdict: RowVerdict) -> bool:
     return verdict.published or ranking_floor(verdict) is not None
 
 
+def ranking_order(verdict: RowVerdict) -> Tuple[int, int, int]:
+    """The sort key of a display that lists EVERY row in ranking order (W50): each row :func:`ranks` places, by its
+    stranded floor (:func:`ranking_floor`) or its measured count, largest first; then a ranked row with no readable
+    count; then every row it does not rank (each of those is also in :func:`unranked`, which a capped display names in
+    full). Stored order breaks every tie."""
+    if not ranks(verdict):
+        return 2, 0, verdict.index
+    floor = ranking_floor(verdict)
+    if floor is not None:
+        return 0, -floor, verdict.index
+    ok, n = _count(verdict.raw.get("stranded")) if isinstance(verdict.raw, dict) else (False, None)
+    return (0, -n, verdict.index) if ok else (1, 0, verdict.index)
+
+
+def unranked(verdicts: Sequence[RowVerdict]) -> List[RowVerdict]:
+    """The rows a ranking must DISCLOSE rather than place, in stored order: every row :func:`ranks` refuses (held,
+    ambiguous, a lower bound whose stranded floor is withheld or zero, an unreadable row, a failed section). These are
+    the rows :func:`disclose` names; a display that caps its ranked list names every one of them regardless of the
+    cap, because they sort after every ranked row (:func:`ranking_order`)."""
+    return [v for v in verdicts if not ranks(v)]
+
+
 def ranked_value(verdict: RowVerdict, field: str) -> Any:
     """What a ranking table writes for `field` of a row it ranks: the stored value on a published row; on a
     lower-bound row the owner's :func:`table_value` marked as a floor (``"≥ 300 (lower bound)"``, ``"High (lower
@@ -937,16 +1110,303 @@ def disclose(verdicts: Sequence[RowVerdict], limit: int = 5) -> str:
     return "; ".join(shown) + (f"; +{more} more" if more > 0 else "")
 
 
+# ---------------------------------------------------------------------------------------------------
+# one migration wave's blast radius: the MOP (mop._blast_for) and the AssessHub cutover plan
+# (cutover._worst_blast_radius) read this one rule
+# ---------------------------------------------------------------------------------------------------
+#: ui_projection's fleet qualifier on its failure_impact list while collection_completeness cannot show every inventory
+#: device collected (W51: the record's one coverage verdict, ``ui_projection._cc_coverage``), and the pointer under
+#: which every ``/collection_completeness`` witness it cites lies. A witness naming a devices row the projection's own
+#: classifier reads as a partial or not-collected device (``ui_projection.fleet_blind_spot_rows``) is a blind device;
+#: every other one is a record the projection cannot read as one (a row, list, section or summary of the wrong shape
+#: or that does not reconcile). Only the qualifier's ``witness`` refs are counted: a ``failure_record`` ref (a failed
+#: phase's record, such as the ``{"_unavailable": true}`` sentinel's ``/collection_completeness/_unavailable``) is the
+#: reason a record is unread, not a second record (W51 round 4). :func:`fleet_blind` reads them from a projected list
+#: and that classifier's rows; the projection stays their owner and this module never imports it.
+FLEET_BLIND_CAVEAT = "fleet_lists_exclude_blind_devices"
+FLEET_BLIND_WITNESS = "/collection_completeness"
+_FLEET_BLIND_ROW_PREFIX = FLEET_BLIND_WITNESS + "/devices/"
+#: Where a failed phase's failure record lies on the qualified list (``ui_projection._Ctx.failure_entries``): the
+#: record's own sentinel or the run's integrity record.
+_FLEET_FAILURE_RECORDS = (FLEET_BLIND_WITNESS, "/assessment_integrity")
+#: What the records a fleet qualifier cites, and the projection cannot read as a blind device, are
+#: (:attr:`FleetBlind.unread_kind`), so every reader words them as what they are, never one as another (W51 round 4):
+#: a record the snapshot does not carry (no witness under it resolves), a record whose phase failed (the qualifier
+#: cites its failure record), or records it carries but cannot read as one (a row, list, section or summary).
+FLEET_UNREAD_ABSENT, FLEET_UNREAD_FAILED, FLEET_UNREAD_RECORDS = "absent", "failed", "unreadable"
+FLEET_UNREAD_KINDS: Tuple[str, ...] = (FLEET_UNREAD_ABSENT, FLEET_UNREAD_FAILED, FLEET_UNREAD_RECORDS)
+
+R_WAVE_FLEET_BLIND = ("collection_completeness lists {n} device(s) as partial or not collected: every failure-impact "
+                      "row was computed without their evidence, and a device the collection never reached has no row")
+R_WAVE_FLEET_BLIND_UNREAD = ("collection_completeness carries {n} record(s) the engine cannot read as a partial or "
+                             "not-collected device or as listing every such device (a row that is not an object or "
+                             "states no status of its owner's vocabulary, a device list that is missing or null in its "
+                             "section, a list or section of the wrong type, or a summary that cannot be read or does not "
+                             "reconcile with its rows or the roster), and each could be or hide one: a failure-impact "
+                             "row may have been computed without that device's evidence")
+#: A record the snapshot does not carry (the projection's coverage verdict reads it as not collected: no collection
+#: blind spot can be ruled out). Never worded as a record the engine "cannot read": there is no record.
+R_WAVE_FLEET_ABSENT = ("this snapshot carries no collection_completeness record, so whether the collection reached "
+                       "every device cannot be shown and no partial or not-collected device can be ruled out: a "
+                       "failure-impact row may have been computed without such a device's evidence")
+#: A record whose phase failed (the projection's coverage verdict reads it as analysis unavailable, citing its failure
+#: record): whatever it holds is the phase's fallback, not evidence of a fully collected fleet.
+R_WAVE_FLEET_FAILED = ("the phase that computes collection_completeness failed this run, so the record holds only its "
+                       "fallback and whether the collection reached every device cannot be shown: a failure-impact "
+                       "row may have been computed without a partial or not-collected device's evidence")
+R_WAVE_FLEET_UNREAD = ("whether the collection reached every device cannot be read (the engine's failure-impact "
+                       "projection could not be built), so no failure-impact row is known to cover the whole fleet")
+R_WAVE_NO_ROW = "{n} device(s) with no failure-impact row, so their removal was never simulated ({names})"
+R_WAVE_NO_FIGURE = "{n} row(s) with no readable stranded figure ({names})"
+R_WAVE_HOSTLESS = ("{n} failure-impact row(s) name no readable switch, so each could describe any device in this "
+                   "wave: {names}")
+#: Why a wave figure that is not assessed is not one: no device contributes a count, or the largest is a zero floor.
+R_WAVE_NONE = ("no device in this wave has a stranded count the engine publishes as a measurement or as a positive "
+               "lower bound")
+R_WAVE_ZERO = ("the largest stranded count the engine publishes for this wave is 0, and here it is only a lower bound, "
+               "which is not a measurement of none")
+
+
+class WaveRow(NamedTuple):
+    """One stored failure-impact row as the wave rule reads it. ``key``: the stored row's exact host text (``None`` or
+    ``""`` names no readable host, so the row could describe any device in a wave). ``ranked``: the reader may place
+    the row (the owner's own rows: its stranded count is published as a measurement or as a positive floor; a reader
+    that orders by severity, such as the cutover plan, also needs its band). ``lower_bound``: a ranked row whose counts
+    are only floors. ``stranded``: a ranked row's published count or floor. ``row``: the reader's handle (a
+    :class:`RowVerdict` for :func:`wave_rows`, a projected row for the cutover plan)."""
+    key: Optional[str]
+    ranked: bool
+    lower_bound: bool
+    stranded: Any
+    row: Any
+
+
+class WaveBlast(NamedTuple):
+    """One wave's blast radius (:func:`wave_blast`).
+
+    ``assessable``: :data:`PUBLISHED` when ``complete`` (every device of the wave has a ranked row that is not a lower
+    bound, no row names no readable host, and the collection reached every device); else :data:`LOWER_BOUND` when the
+    largest count or floor is positive; else :data:`NOT_ASSESSED` (no device contributes a count, or the largest is a
+    zero that is only a lower bound, which is not a measurement of none). ``value``: the largest published stranded
+    count or floor (``None`` when no ranked row has one). ``ranked`` (stored order), ``unranked`` (``(device, its
+    first row or None)``, by device), ``hostless`` and ``bounded`` are the rows behind it; ``blind`` is the fleet's
+    partial or never-collected device count and ``blind_unread`` the collection records the projection cannot read as
+    one (:func:`fleet_blind`; ``None`` for either: unknown, which fails closed). ``unread_kind``: what those records
+    are (:attr:`FleetBlind.unread_kind`), for wording only (:func:`fleet_unread_phrase`); ``None`` words them as
+    records the engine cannot read."""
+    assessable: str
+    value: Optional[int]
+    complete: bool
+    ranked: Tuple[WaveRow, ...]
+    unranked: Tuple[Tuple[str, Optional[WaveRow]], ...]
+    hostless: Tuple[WaveRow, ...]
+    bounded: Tuple[WaveRow, ...]
+    blind: Optional[int]
+    blind_unread: Optional[int]
+    unread_kind: Optional[str] = None
+
+    @property
+    def n_not_ranked(self) -> int:
+        """The devices with no ranked row plus the rows that name no readable host."""
+        return len(self.unranked) + len(self.hostless)
+
+    @property
+    def observed(self) -> bool:
+        """Whether any failure-impact row could describe a device of the wave: a row naming one of them, or a row that
+        names no readable host and so could describe any of them (W51, the W48 re-verification: such a wave is not
+        assessed, with the row named, never unobserved)."""
+        return (bool(self.ranked) or bool(self.hostless)
+                or any(row is not None for _device, row in self.unranked))
+
+    @property
+    def zero_bound(self) -> bool:
+        """The largest count is a zero that is only a lower bound (not assessed, never a threshold of zero)."""
+        return not self.complete and self.value == 0
+
+
+def wave_row(verdict: RowVerdict) -> WaveRow:
+    """A stored row as the wave rule reads it, from the owner's verdict: a published row ranks by its readable
+    stranded count, a lower-bound row by the positive floor the owner publishes (:func:`ranking_floor`), and a held,
+    ambiguous or zero-floored row does not rank."""
+    raw = verdict.raw if isinstance(verdict.raw, dict) else {}
+    if verdict.published:
+        ok, n = _count(raw.get("stranded"))
+        return WaveRow(verdict.host, ok, False, n if ok else None, verdict)
+    floor = ranking_floor(verdict)
+    return WaveRow(verdict.host, floor is not None, verdict.assessable == LOWER_BOUND, floor, verdict)
+
+
+def wave_rows(snap: Any) -> List[WaveRow]:
+    """Every stored row of `snap` as the wave rule reads it (:func:`wave_row`), aligned with the stored list."""
+    return [wave_row(v) for v in assess_failure_impact(snap)]
+
+
+class FleetBlind(tuple):
+    """:func:`fleet_blind`'s reading of the fleet qualifier: exactly the pair ``(blind, unread)`` (it compares,
+    unpacks and indexes as that pair, so every reader of the two counts reads them unchanged), plus ``unread_kind``:
+    what the ``unread`` records are, one of :data:`FLEET_UNREAD_KINDS` (``None`` when there are none). The kind is
+    for wording only (:func:`fleet_unread_phrase`); the wave rule reads the counts."""
+
+    def __new__(cls, blind: int, unread: int, unread_kind: Optional[str] = None) -> "FleetBlind":
+        self = super().__new__(cls, (blind, unread))
+        self.unread_kind = unread_kind if unread and unread_kind in FLEET_UNREAD_KINDS else None
+        return self
+
+    def __getnewargs__(self) -> Tuple[int, int, Optional[str]]:     # copy and pickle rebuild the same reading
+        return self[0], self[1], self.unread_kind
+
+
+def _fleet_blind_row(pointer: str) -> Optional[int]:
+    """The devices row a ``/collection_completeness/devices/<n>`` witness names, or ``None`` for any other pointer
+    (the whole tail must be decimal digits, as RFC 6901 writes an array index)."""
+    tail = pointer[len(_FLEET_BLIND_ROW_PREFIX):] if pointer.startswith(_FLEET_BLIND_ROW_PREFIX) else ""
+    return int(tail) if tail.isdecimal() else None
+
+
+def fleet_blind(listing: Any, blind_rows: Any) -> Optional[FleetBlind]:
+    """``(blind, unread)`` (a :class:`FleetBlind`) for the projection's fleet qualifier on a projected failure_impact
+    list (``ui_projection.project_topology(snap)['failure_impact']``), given the devices rows the projection's own
+    classifier reads as a partial or not-collected device (``ui_projection.fleet_blind_spot_rows(snap)``): of the
+    :data:`FLEET_BLIND_WITNESS` ``witness`` refs the qualifier cites, those naming such a row, and every other one (a
+    row, list, section or summary it cannot read as one). A ``failure_record`` ref is never counted (W51 round 4: it is
+    why a record is unread, not a second record); while the qualifier cites one, the record's phase failed, so at least
+    one record is unread and its kind is :data:`FLEET_UNREAD_FAILED`. ``(0, 0)`` when the list carries no
+    :data:`FLEET_BLIND_CAVEAT`; the qualifier with no such witness and no failure record is a record the snapshot does
+    not carry, so ``(0, 1)`` of kind :data:`FLEET_UNREAD_ABSENT`: one record that is not there, never a blind device.
+    Any other unread witness is of kind :data:`FLEET_UNREAD_RECORDS`. `blind_rows` that is not a list of row indices
+    reads no row as a blind device (every witness is then unread). ``None`` when `listing` is not a projected list,
+    which the wave rule reads as unknown and fails closed on."""
+    if not isinstance(listing, dict) or not isinstance(listing.get("items"), list):
+        return None
+    caveats = listing.get("caveats")
+    if not (isinstance(caveats, list) and FLEET_BLIND_CAVEAT in caveats):
+        return FleetBlind(0, 0)
+    readable = ({i for i in blind_rows if isinstance(i, int) and not isinstance(i, bool)}
+                if isinstance(blind_rows, (list, tuple)) else set())
+    blind = unread = 0
+    failed = False
+    for ref in (listing.get("refs") if isinstance(listing.get("refs"), list) else []):
+        pointer = ref.get("pointer") if isinstance(ref, dict) else None
+        role = ref.get("role") if isinstance(ref, dict) else None
+        if not isinstance(pointer, str):
+            continue
+        if role == "failure_record":
+            failed = failed or any(pointer == root or pointer.startswith(root + "/")
+                                   for root in _FLEET_FAILURE_RECORDS)
+            continue
+        if role != "witness" or not (pointer == FLEET_BLIND_WITNESS
+                                     or pointer.startswith(FLEET_BLIND_WITNESS + "/")):
+            continue
+        if _fleet_blind_row(pointer) in readable:
+            blind += 1
+        else:
+            unread += 1
+    if failed:
+        return FleetBlind(blind, max(unread, 1), FLEET_UNREAD_FAILED)
+    if unread:
+        return FleetBlind(blind, unread, FLEET_UNREAD_RECORDS)
+    return FleetBlind(blind, 0) if blind else FleetBlind(0, 1, FLEET_UNREAD_ABSENT)
+
+
+def fleet_unread_phrase(n: int, kind: Any = None) -> str:
+    """How every reader words `n` collection records the fleet qualifier cites but the projection cannot read as a
+    blind device, by what they are (:attr:`FleetBlind.unread_kind`): a record the snapshot does not carry
+    (:data:`R_WAVE_FLEET_ABSENT`), a record whose phase failed (:data:`R_WAVE_FLEET_FAILED`), or, for any other or no
+    kind, records it carries but cannot read (:data:`R_WAVE_FLEET_BLIND_UNREAD`)."""
+    if kind == FLEET_UNREAD_ABSENT:
+        return R_WAVE_FLEET_ABSENT
+    if kind == FLEET_UNREAD_FAILED:
+        return R_WAVE_FLEET_FAILED
+    return R_WAVE_FLEET_BLIND_UNREAD.format(n=n)
+
+
+def wave_blast(switches: Any, rows: Sequence[WaveRow], *, blind: Any, blind_unread: Any,
+               unread_kind: Any = None) -> WaveBlast:
+    """One wave's blast radius over `rows` (every stored row, as :func:`wave_rows` or a reader's own reading gives
+    them). A device of the wave (each non-empty text in `switches`) is covered by a ranked row naming it exactly.
+    The figure is exact only when every device is covered by a row that is not a lower bound, no stored row names
+    no readable host (such a row could describe any device here), and both fleet counts (:func:`fleet_blind`: `blind`
+    devices, `blind_unread` records) are readable zeros. Neither count has a default (W51, the W48 re-verification):
+    a caller states the fleet, and ``None`` or any other unreadable value means unknown, which is never exact.
+    Otherwise the largest count or floor is a lower bound, and a lower bound of 0, or no count at all, is not
+    assessed. `unread_kind` (:attr:`FleetBlind.unread_kind`) words the unread records and decides nothing; it is kept
+    only beside a positive readable `blind_unread`. Pure; never re-simulates."""
+    members = {s for s in (switches if isinstance(switches, (list, tuple, set, frozenset)) else ())
+               if isinstance(s, str) and s}
+    rows = [r for r in rows if isinstance(r, WaveRow)]
+    ranked = tuple(r for r in rows if r.ranked and r.key and r.key in members)
+    covered = {r.key for r in ranked}
+    first: Dict[str, WaveRow] = {}
+    for r in rows:
+        if isinstance(r.key, str) and r.key:
+            first.setdefault(r.key, r)
+    unranked = tuple((device, first.get(device)) for device in sorted(members - covered))
+    hostless = tuple(r for r in rows if not r.key)
+    bounded = tuple(r for r in ranked if r.lower_bound)
+    blind_ok, n_blind = _count(blind)
+    unread_ok, n_unread = _count(blind_unread)
+    counts = [n for ok, n in (_count(r.stranded) for r in ranked) if ok]
+    value = max(counts) if counts else None
+    complete = (bool(ranked) and not (unranked or hostless or bounded)
+                and blind_ok and n_blind == 0 and unread_ok and n_unread == 0)
+    assessable = (PUBLISHED if complete and value is not None else LOWER_BOUND if not complete and value
+                  else NOT_ASSESSED)
+    kind = unread_kind if unread_ok and n_unread and unread_kind in FLEET_UNREAD_KINDS else None
+    return WaveBlast(assessable, value, complete, ranked, unranked, hostless, bounded,
+                     n_blind if blind_ok else None, n_unread if unread_ok else None, kind)
+
+
+def _names(names: Sequence[str], limit: int) -> str:
+    return ", ".join(names[:limit]) + (f"; +{len(names) - limit} more" if len(names) > limit else "")
+
+
+def wave_why(wave: WaveBlast, *, limit: int = 5) -> str:
+    """Why a wave figure over the owner's own rows (:func:`wave_rows`) is not exact, as one reader-facing phrase (""
+    when it is): each lower-bound or unranked row with its verdict (:func:`disclose`), the devices with no row, the
+    published rows with no readable stranded figure, the rows that name no readable host, and the fleet qualifier
+    (its blind devices, then the records it cannot read as one, each worded as what it is by
+    :func:`fleet_unread_phrase`, in the words and order AssessHub's cutover plan prints them)."""
+    def verdict(r: Optional[WaveRow]) -> Optional[RowVerdict]:
+        return r.row if r is not None and isinstance(r.row, RowVerdict) else None
+
+    named = [verdict(r) for r in wave.bounded] + [verdict(r) for _device, r in wave.unranked]
+    unpublished = [v for v in named if v is not None and not v.published]
+    no_figure = [device for device, r in wave.unranked if verdict(r) is not None and verdict(r).published]
+    missing = [device for device, r in wave.unranked if r is None]
+    parts = []
+    if unpublished:
+        parts.append(disclose(unpublished, limit))
+    if missing:
+        parts.append(R_WAVE_NO_ROW.format(n=len(missing), names=_names(missing, limit)))
+    if no_figure:
+        parts.append(R_WAVE_NO_FIGURE.format(n=len(no_figure), names=_names(no_figure, limit)))
+    if wave.hostless:
+        hostless = [f"{json_pointer('failure_impact', v.index)} ({v.summary})" if v is not None else "a row"
+                    for v in (verdict(r) for r in wave.hostless)]
+        parts.append(R_WAVE_HOSTLESS.format(n=len(hostless), names=_names(hostless, limit)))
+    if wave.blind is None or wave.blind_unread is None:
+        parts.append(R_WAVE_FLEET_UNREAD)
+    else:
+        if wave.blind:
+            parts.append(R_WAVE_FLEET_BLIND.format(n=wave.blind))
+        if wave.blind_unread:
+            parts.append(fleet_unread_phrase(wave.blind_unread, wave.unread_kind))
+    return "; ".join(parts)
+
+
 __all__ = [
-    "AMBIGUOUS", "ANALYSIS_UNAVAILABLE", "Bound", "CODE_PHRASES", "CableSource", "DELIVERABLE_WITNESS_CAP", "Doubt",
-    "Hold", "IMPACT_EDGE_KINDS",
-    "IMPACT_FIELDS", "IMPACT_INDETERMINATE_PREFIX", "IMPACT_MEASURES", "IMPACT_SEVERITIES", "IMPACT_WORST",
-    "ImpactSnapshot", "JS_MAX_SAFE_INT", "LOWER_BOUND", "LOWER_BOUND_MARK", "NOT_ASSESSED", "NOT_ASSESSED_CELL",
-    "NOT_COLLECTED", "PUBLISHED", "RowFacts", "RowVerdict", "SCHEMA", "STATE_WORD", "UNVERIFIED", "VERDICTS",
-    "VERDICT_LABELS", "assess_failure_impact", "assessment_document", "blind_bound", "bound_state", "detail_withheld",
-    "disclose",
-    "duplicate_doubt", "index_rows", "json_pointer", "make_bound", "measure_withheld", "neighbour_bound",
-    "off_scan_bound", "off_scan_count", "ranked_value", "ranking_floor", "ranks", "read_cable_source",
-    "readable_cables", "row_hold", "rows_with_verdicts", "run_config_captured", "table_detail", "table_value",
-    "unavailable_document", "understatable_count", "understatable_severity", "unjoinable_rows", "unreadable_cables",
+    "AMBIGUOUS", "ANALYSIS_UNAVAILABLE", "Bound", "CELL_FIELDS", "CELL_FLOOR", "CELL_KINDS", "CELL_PUBLISHED",
+    "CELL_UNREADABLE", "CELL_WITHHELD", "CODE_PHRASES", "CableSource", "CellReading", "DELIVERABLE_WITNESS_CAP",
+    "Doubt", "FLEET_BLIND_CAVEAT", "FLEET_BLIND_WITNESS", "FLEET_UNREAD_ABSENT", "FLEET_UNREAD_FAILED",
+    "FLEET_UNREAD_KINDS", "FLEET_UNREAD_RECORDS", "FleetBlind", "Hold", "IMPACT_EDGE_KINDS", "IMPACT_FIELDS",
+    "IMPACT_INDETERMINATE_PREFIX", "IMPACT_MEASURES", "IMPACT_SEVERITIES", "IMPACT_WORST", "ImpactSnapshot",
+    "JS_MAX_SAFE_INT", "LOWER_BOUND", "LOWER_BOUND_MARK", "NOT_ASSESSED", "NOT_ASSESSED_CELL", "NOT_COLLECTED",
+    "PUBLISHED", "RowFacts", "RowVerdict", "SCHEMA", "STATE_WORD", "UNVERIFIED", "VERDICTS", "VERDICT_LABELS",
+    "WaveBlast", "WaveRow", "assess_failure_impact", "assessment_document", "blind_bound", "bound_state",
+    "cell_reading", "count_value", "detail_withheld", "disclose", "duplicate_doubt", "fleet_blind", "fleet_unread_phrase", "index_rows",
+    "json_pointer", "make_bound", "measure_withheld", "neighbour_bound", "off_scan_bound", "off_scan_count",
+    "ranked_value", "ranking_floor", "ranking_order", "ranks", "read_cable_source", "readable_cables", "row_hold",
+    "rows_with_verdicts", "run_config_captured", "section_state", "table_detail", "table_value",
+    "unavailable_document", "understatable_count", "understatable_severity", "unjoinable_rows", "unranked",
+    "unreadable_cables", "wave_blast", "wave_row", "wave_rows", "wave_why",
 ]

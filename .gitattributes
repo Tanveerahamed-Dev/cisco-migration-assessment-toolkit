@@ -96,6 +96,10 @@ tests/fixtures/*.sql text eol=lf
 # core.autocrlf=true checks out the committed form instead of tripping that refusal.
 webapp/sample_data/*.json text eol=lf
 
+# The frozen operator-evidence corpus (W50): tests/test_operator_evidence_contract.py pins each fixture's SHA-256 and
+# the receipt digests computed over its exact bytes. Pin LF so a core.autocrlf=true checkout reads the committed form.
+tests/fixtures/operator_evidence_v1/*.json text eol=lf
+
 # Cloudflare parses this tracked deployment contract byte-for-byte. Pin LF so
 # Windows and Linux builds feed the same header rules into the Sites archive.
 master-reference/public/_headers text eol=lf

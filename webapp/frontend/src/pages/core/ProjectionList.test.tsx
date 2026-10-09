@@ -1,3 +1,4 @@
+import { useLayoutEffect } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectionList } from "./ProjectionList";
@@ -40,6 +41,26 @@ describe("Projection paging", () => {
     render(<ProjectionList title="Findings" document={document} initial={source} reference={{ index: 8, pointer: "/other/8" }} renderRow={() => <p>Different row</p>} />);
     expect(screen.queryByLabelText("Referenced record")).not.toBeInTheDocument();
     expect(screen.getByText(/Reference only/)).toBeInTheDocument();
+  });
+  it("keeps a page requested before the list's first effect runs: no reset to the first page, no aborted request", async () => {
+    // W29's intermittent paging failure: React can flush a mount's passive effect after a click that lands between
+    // the first commit and that flush. The list's effect then reset its state and aborted the click's request: Next
+    // stayed enabled, the first page stayed shown, and no error appeared. A sibling's layout effect runs in that exact
+    // window (after the list's DOM is committed, before its passive effect), so this reproduces it deterministically.
+    const next = { ...initial, page: { ...initial.page, offset: 1, items: [{ index: 9, pointer: "/punchlist/9" }] } };
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ...document, list: next })));
+    function ClickNextBeforeEffects() {
+      useLayoutEffect(() => { screen.getByRole("button", { name: "Next Findings page" }).click(); }, []);
+      return null;
+    }
+    render(<><ProjectionList title="Findings" document={document} initial={initial}
+      renderRow={(row) => <p>{typeof row === "object" && row !== null && "index" in row ? `Source ${row.index}` : "row"}</p>} />
+      <ClickNextBeforeEffects /></>);
+    expect(await screen.findByText("Source 9")).toBeInTheDocument();
+    expect(screen.queryByText("Source 8")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(new URL(String(fetcher.mock.calls[0][0]), "http://localhost").searchParams.get("offset")).toBe("1");
   });
   it("uses a bounded page hint for a sparse source index and discloses a missing exact record", async () => {
     const next = { ...initial, page: { ...initial.page, offset: 2, has_more: false, items: [{ index: 500, pointer: "/punchlist/500" }] } };

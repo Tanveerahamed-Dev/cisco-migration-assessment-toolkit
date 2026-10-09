@@ -318,7 +318,8 @@ No bundled source changes, so the rebuild was expected to be byte-identical, but
 hosted `frontend-dist-handoff-<sha>-<run>-<attempt>` of the pushed head decided it.
 
 **Dist handoff evidence (no import).** After the rule-7 scans, `31d9b5b9` was pushed. Webapp-ci run `37897012004`
-(pull_request, attempt 1) and its frontend job `113710626305` succeeded. That job ran api:check ("Generated API types
+(pull_request, attempt 1) ran all six jobs to success, its frontend job `113710626305` among them, but the run itself
+concluded `cancelled` by concurrency (corrected below). That job ran api:check ("Generated API types
 match the actual app schema"), Vitest (32 files) and the build. The handoff was verified as the W29/W46 precedent
 requires:
 - **Expected record, selected from Git before the archive was read.** It is the tested merge `7eb1868a` (parents
@@ -380,3 +381,23 @@ No pytest, Vitest, npm, build or engine run.
   `impact_view`, and `webapp/backend/cutover.py` reads `summary.impact_view`. This train carries them onto the owner's
   blind-link rule, and `webapp/tests/test_impact_surfaces.py` pins that.
 - **W32's F2–F4 producer follow-ups.**
+
+## Correction carried by the W51 absorb (2026-10-09)
+
+#629's head `40ca4d96` adds a "Dist handoff evidence" record, plus a W45 board line, saying that webapp-ci run
+`37897012004` (pull_request, on `31d9b5b9`) succeeded. Its six jobs, the frontend job `113710626305` among them, did
+pass. The run itself concluded `cancelled`, by concurrency, so it is not a succeeded run.
+
+The handoff evidence that holds is artifact `11600639221`
+(`frontend-dist-handoff-40ca4d969b42cccf5d7bb35f7a1c1037e0ac9c05-37897790220-1`, 562,008 bytes). It comes from run
+`37897790220` on `40ca4d96`, which concluded `success` with all six jobs passing. `40ca4d96` differs from
+`31d9b5b9` only in two docs, so the bound frontend inputs are the same.
+
+When #629's head is merged into the contract train, its record and board line should cite that run and artifact and
+say "cancelled" for `37897012004`. The run states were read from the GitHub API; the artifact was not downloaded or
+re-verified here. (`docs/w51-absorb-validation-2026-10-09.md`, finding (e).)
+
+Applied at the W51 integration merge, which brings #629's head `f6323759` and this absorb together: the paragraph
+above and the W45 board row now say `cancelled` for `37897012004` and name run `37897790220` / artifact
+`11600639221`. The integrator re-read both runs, their six jobs and their artifacts from the GitHub API. The W51 train
+takes its own hosted dist handoff on its own head, so neither W45 artifact is imported by it.

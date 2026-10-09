@@ -117,10 +117,22 @@ def test_view_preserves_owner_data_and_exact_store_identity(client, sample, view
     assert body["identity"] == {"snapshot_id": sid, "sha256": "sha256:" + hashlib.sha256(blob).hexdigest(),
                                 "bytes": len(blob), "digest_form": "assesshub-store-blob"}
     assert body["identity"]["sha256"] == binding["sha256"]
-    snapshot = json.loads(blob)
+    # The owner document is projected from the same exact-byte binding the transport uses; a bare json.loads of
+    # the blob would name no file (G41), so its engine block could not equal the served one.
+    snapshot = engine.bind_ui_projection_snapshot(blob)
     document = owner.project_device(snapshot, params["host"]) if view == "device" else owner.project(snapshot)
     assert body["projection_schema"] == document["schema"]
     assert body["engine"] == document["engine"]
+    # G41: the engine block names the very bytes the store served, in the owner's exact-parsed-bytes form.
+    assert body["engine"]["snapshot_sha256"] == {
+        "state": "published", "value": "sha256:" + hashlib.sha256(blob).hexdigest(), "subject": None, "refs": [],
+        "basis": "protocol_assurance.bound_snapshot_source:sha256"}
+    assert body["engine"]["snapshot_bytes"] == {
+        "state": "published", "value": len(blob), "subject": None, "refs": [],
+        "basis": "protocol_assurance.bound_snapshot_source:bytes"}
+    assert body["engine"]["snapshot_digest_form"] == owner.SNAPSHOT_DIGEST_FORM == "exact-parsed-bytes"
+    assert body["engine"]["snapshot_sha256"]["value"] == body["identity"]["sha256"]
+    assert body["engine"]["snapshot_bytes"]["value"] == body["identity"]["bytes"]
     assert body["limitations"] == (document["device"]["limitations"] if view == "device" else document["trust"]["limitations"])
     rebuilt = deepcopy(body["payload"])
     for pointer in LIST_CATALOG[view]:
@@ -151,6 +163,30 @@ def test_all_pages_preserve_original_indices_and_pointers(client, sample):
         assert part["page"]["has_more"] == (offset + len(part["page"]["items"]) < len(original["items"]))
         collected.extend(part["page"]["items"])
     assert collected == original["items"][:6]
+
+
+def test_findings_cross_layer_rows_page_as_an_owner_list(client, sample):
+    """G24: the engine's cross-layer rows are a second primary Findings list, paged whole with their host joins."""
+    from backend.ui_projection_api import LIST_CATALOG
+    # W51: G21's device facet (/facets/device) is the other primary Findings list on the combined schema.
+    assert LIST_CATALOG["findings"] == {"/rows": "FindingRowList", "/facets/device": "DeviceFacetList",
+                                        "/cross_layer": "CrossLayerRowList"}
+    sid = seed(client, sample)
+    original = owner.project(sample)["findings"]["cross_layer"]
+    assert original["state"] == "published" and len(original["items"]) == len(sample["cross_layer"]) > 4
+    view = client.get(url(sid, "findings"), params={"limit": 2})
+    assert view.status_code == 200, view.text[:200]
+    paged = view.json()["payload"]["cross_layer"]
+    assert paged["pointer"] == "/cross_layer"
+    assert paged["source_list"] == {k: v for k, v in original.items() if k != "items"}
+    assert paged["page"]["items"] == original["items"][:2] and paged["page"]["total"] == len(original["items"])
+    part = client.get(url(sid, "findings") + "/lists", params={"pointer": "/cross_layer", "offset": 3, "limit": 2})
+    assert part.status_code == 200, part.text[:200]
+    listed = part.json()["list"]
+    assert listed["pointer"] == "/cross_layer" and listed["page"]["items"] == original["items"][3:5]
+    host = listed["page"]["items"][0]["hosts"]["items"][0]
+    assert {"host", "device", "deduction_ref", "deduction"} <= set(host)
+    assert host["deduction_ref"]["state"] == "published" and host["deduction_ref"]["value"]["ref"] == "/cross_layer/3"
 
 
 @pytest.mark.parametrize("state", owner.STATES)
@@ -1483,6 +1519,46 @@ def test_native_w12a_closed_rollups_match_stock_on_valid_and_rejected_shapes(nat
     assert _validation_errors(native, altered) == _validation_errors(stock, altered)
 
 
+@pytest.mark.parametrize("mutation", ["missing_block", "missing_of", "extra_key", "bool_count", "negative_count",
+                                      "withheld_value", "published_reason"])
+def test_native_g05_axis_unassessed_matches_stock_on_valid_and_rejected_shapes(native_body, mutation):
+    """W40: each overview axis row carries its closed could-not-assess block on the real transport shape."""
+    from backend import ui_projection_api as api
+
+    def fact(value, **extra):
+        return {"state": "published", "value": value, "subject": None, "refs": [], "basis": "synthetic.owner",
+                **extra}
+
+    schema = deepcopy(api._VIEW_SCHEMA)
+    native = api._NativeTransportValidator(schema, "view")
+    assert native._NativeTransportValidator__native is not None
+    stock = api._stock_validator(schema)
+    rows = native_body["payload"]["axes"]["page"]["items"]
+    assert rows and all(set(row["unassessed"]) == {"n", "of"} for row in rows)
+    assert any(row["unassessed"]["n"]["state"] == "published" for row in rows)
+    assert any(row["unassessed"]["n"]["state"] == "not_collected" for row in rows)
+    assert native.is_valid(native_body) and stock.is_valid(native_body)
+    altered = deepcopy(native_body)
+    row = altered["payload"]["axes"]["page"]["items"][0]
+    block = row["unassessed"]
+    if mutation == "missing_block":
+        del row["unassessed"]
+    elif mutation == "missing_of":
+        del block["of"]
+    elif mutation == "extra_key":
+        block["total"] = deepcopy(block["of"])
+    elif mutation == "bool_count":
+        block["n"] = fact(True)
+    elif mutation == "negative_count":
+        block["n"] = fact(-1)
+    elif mutation == "withheld_value":
+        block["n"] = {**fact(0), "state": "not_collected", "reason": "synthetic withheld count"}
+    else:
+        block["of"] = fact(1, reason="a published count carries no reason")
+    assert not native.is_valid(altered) and not stock.is_valid(altered)
+    assert _validation_errors(native, altered) == _validation_errors(stock, altered)
+
+
 @pytest.mark.parametrize("surface", ["inventory", "inventory_list", "device"])
 @pytest.mark.parametrize("mutation", ["missing_rollup", "missing_severity", "extra_severity", "bool_count",
                                      "fractional_count", "negative_count", "oversized_count", "unknown_worst", "extra_rollup",
@@ -1492,9 +1568,9 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    # Literal pair from the independently reviewed combined bb hosted observation.
-    prospective = {"view": "d45dce8142ccbe7ec7eac4f02acea929c2b66b95202c1e716f35b0c3722a21b6",
-                   "list": "0cb8d956c3924ac2eb3d66efc8a40defb40f4f248a44cd3fd3b6efd2c09ec1b8"}
+    # Exact main-DDAC pair is a bootstrap; fresh combined hosted observation remains required.
+    prospective = {"view": "55bc576fc901e8088f2dc677eb9ac78c13f45ec0b95b8242c503c9bfb983d381",
+                   "list": "ce6e9c453f3f63c697cb90bd0a994bf06f2e3e7e4a251211c38b3aec35484058"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)
@@ -1770,6 +1846,96 @@ def test_native_w28_trust_inputs_match_stock_on_the_real_trust_view_and_refusals
         row["hosts"]["caveats"] = ["unregistered_scope"]
     else:
         del row["sections"]
+    assert not native.is_valid(body) and not stock.is_valid(body)
+    assert _validation_errors(native, body) == _validation_errors(stock, body)
+
+
+@pytest.mark.parametrize("mutation", ["missing_facets", "extra_facet", "short_severity", "long_category",
+                                      "foreign_category", "foreign_severity", "device_key_type", "device_bare_array",
+                                      "bool_count", "negative_count", "oversized_count", "withheld_value",
+                                      "missing_reason", "extra_bucket_field", "unknown_caveat"])
+def test_native_w41_finding_facets_match_stock_on_the_real_findings_view_and_refusals(client, sample, mutation):
+    """G21 facets ride the real findings view: the owner partitions whole, the device roster list paged like every
+    other primary list; native acceptance and every refusal match stock."""
+    from backend import ui_projection_api as api
+    sid = seed(client, sample)
+    body = client.get(url(sid, "findings"), params={"limit": 2}).json()
+    facets = body["payload"]["facets"]
+    source = owner.project(sample)["findings"]["facets"]
+    # the owner partitions never page; G24's /cross_layer is the third primary Findings list (W51 combined schema)
+    assert list(api.LIST_CATALOG["findings"]) == ["/rows", "/facets/device", "/cross_layer"]
+    assert (facets["severity"], facets["category"]) == (source["severity"], source["category"])
+    assert facets["device"] == api._page(source["device"], "/facets/device", 0, 2)
+    assert facets["device"]["page"]["total"] == len(source["device"]["items"]) == len(sample["devices"])
+    assert [bucket["k"] for bucket in facets["severity"]] == list(owner.SEVERITIES)
+    assert [bucket["k"] for bucket in facets["category"]] == list(owner.FINDING_CATEGORIES)
+    # the stored sample has configless devices: positive counts publish as lower bounds, zeros stay withheld
+    assert {bucket["n"]["state"] for bucket in facets["severity"]} == {"published", "not_collected"}
+    schema = deepcopy(api._VIEW_SCHEMA)
+    native = api._NativeTransportValidator(schema, "view")
+    assert native._NativeTransportValidator__native is not None
+    stock = api._stock_validator(schema)
+    assert api._native_instance_allowed(body)
+    assert native.is_valid(body) and stock.is_valid(body)
+    severity, category, device = facets["severity"], facets["category"], facets["device"]
+    count = next(bucket["n"] for bucket in severity if bucket["n"]["state"] == "published")
+    held = next(bucket["n"] for bucket in severity + category if bucket["n"]["state"] != "published")
+    # the source-section caveat is a registered limitation both validators admit on a published count
+    sourced = deepcopy(body)
+    next(bucket["n"] for bucket in sourced["payload"]["facets"]["severity"]
+         if bucket["n"]["state"] == "published")["caveats"] = ["finding_facet_source_incomplete"]
+    assert native.is_valid(sourced) and stock.is_valid(sourced)
+    if mutation == "missing_facets":
+        del body["payload"]["facets"]
+    elif mutation == "extra_facet":
+        facets["wave"] = []
+    elif mutation == "short_severity":
+        severity.pop()
+    elif mutation == "long_category":
+        category.append(deepcopy(category[0]))
+    elif mutation == "foreign_category":
+        category[0]["k"] = "Legacy name"
+    elif mutation == "foreign_severity":
+        severity[0]["k"] = "Severe"
+    elif mutation == "device_key_type":
+        device["page"]["items"][0]["k"] = 7
+    elif mutation == "device_bare_array":
+        facets["device"] = device["page"]["items"]                             # a roster with no state is refused
+    elif mutation == "bool_count":
+        count["value"] = True
+    elif mutation == "negative_count":
+        count["value"] = -1
+    elif mutation == "oversized_count":
+        count["value"] = 2**53
+    elif mutation == "withheld_value":
+        count.update(state="not_collected", reason="synthetic withheld")
+    elif mutation == "missing_reason":
+        del held["reason"]
+    elif mutation == "extra_bucket_field":
+        severity[0]["pointer"] = "/punchlist"
+    else:
+        count["caveats"] = ["unregistered_scope"]
+    assert not native.is_valid(body) and not stock.is_valid(body)
+    assert _validation_errors(native, body) == _validation_errors(stock, body)
+
+
+def test_native_w41_device_facet_list_pages_are_the_owner_roster_and_match_stock(client, sample):
+    """The device facet's later pages come from the list route, in roster order, natively validated like stock."""
+    from backend import ui_projection_api as api
+    sid = seed(client, sample)
+    source = owner.project(sample)["findings"]["facets"]["device"]
+    response = client.get(url(sid, "findings") + "/lists", params={"pointer": "/facets/device", "offset": 2, "limit": 2})
+    assert response.status_code == 200, response.text[:200]
+    body = response.json()
+    assert body["list"] == api._page(source, "/facets/device", 2, 2)
+    assert [bucket["k"] for bucket in body["list"]["page"]["items"]] == sorted(sample["devices"])[2:4]
+    schema = deepcopy(api._LIST_SCHEMA)
+    native = api._NativeTransportValidator(schema, "list")
+    assert native._NativeTransportValidator__native is not None
+    stock = api._stock_validator(schema)
+    assert api._native_instance_allowed(body)
+    assert native.is_valid(body) and stock.is_valid(body)
+    body["list"]["page"]["items"][0]["n"]["value"] = -1
     assert not native.is_valid(body) and not stock.is_valid(body)
     assert _validation_errors(native, body) == _validation_errors(stock, body)
 
@@ -2254,3 +2420,90 @@ def test_owner_vocab_stays_in_engine_documents_and_out_of_every_transport_envelo
         api.UiProjectionViewResponse.model_validate({**bodies["overview"], "vocab": deepcopy(vocab)})
     with pytest.raises(ModelValidationError):
         api.UiProjectionPathResponse.model_validate({**path.json(), "vocab": deepcopy(vocab)})
+
+
+def test_engine_source_identity_names_the_served_bytes_on_every_view_list_and_path(client, sample):
+    """G41: every response's engine block names the exact store bytes its envelope identity names. The identity
+    rides inside the existing engine member, so no envelope gains a key (the test above pins the key sets)."""
+    from backend import ui_projection_api as api
+    # One digest spelling on both sides of the envelope: the store identity and the engine owner's fact.
+    assert api._IDENTITY["properties"]["sha256"]["pattern"] == owner.SNAPSHOT_SHA256_PATTERN
+    sid = seed(client, sample)
+    blob, binding = client.app.state.store.get_snapshot_blob(sid)
+    digest = "sha256:" + hashlib.sha256(blob).hexdigest()
+    host = next(iter(sample["devices"]))
+    bodies = []
+    for view in api.VIEWS:
+        params = {"limit": 1, **({"host": host} if view == "device" else {})}
+        response = client.get(url(sid, view), params=params)
+        assert response.status_code == 200, response.text[:200]
+        bodies.append(response.json())
+        pointer = next(iter(api.LIST_CATALOG[view]))
+        listed = client.get(url(sid, view) + "/lists", params={**params, "pointer": pointer})
+        assert listed.status_code == 200, listed.text[:200]
+        bodies.append(listed.json())
+    path = client.get(path_url(sid), params=_PATH_QUERY)
+    assert path.status_code == 200, path.text[:200]
+    bodies.append(path.json())
+    assert len(bodies) == 2 * len(api.VIEWS) + 1
+    for body in bodies:
+        source = body["engine"]
+        assert (source["snapshot_sha256"]["state"], source["snapshot_sha256"]["value"]) == ("published", digest)
+        assert (source["snapshot_bytes"]["state"], source["snapshot_bytes"]["value"]) == ("published", len(blob))
+        assert source["snapshot_digest_form"] == owner.SNAPSHOT_DIGEST_FORM
+        assert body["identity"]["sha256"] == digest == binding["sha256"]
+        assert body["identity"]["bytes"] == len(blob) == binding["bytes"]
+        assert source == bodies[0]["engine"]
+
+
+@pytest.mark.parametrize("forgery", ["equal_content_other_bytes", "digest", "byte_count"])
+def test_transport_refuses_an_engine_identity_naming_other_bytes_and_retries(client, monkeypatch, forgery):
+    """A published engine identity that names any byte string other than the admitted store blob is refused before
+    caching, even when that other byte string parses to the same JSON content: the identity names a file, not a value."""
+    sid = seed(client, {"devices": {"edge": {}}, "script_version": "3.23.0"})
+    blob, _binding = client.app.state.store.get_snapshot_blob(sid)
+    other_bytes = blob + b"\n"                        # valid JSON, equal content, a different byte string
+    assert json.loads(other_bytes) == json.loads(blob) and other_bytes != blob
+    project = engine.ui_projection
+    produced = []
+
+    def forged(snapshot, host=None):
+        if forgery == "equal_content_other_bytes":
+            document = project(engine.bind_ui_projection_snapshot(other_bytes), host)
+        else:
+            document = project(snapshot, host)
+            if forgery == "digest":
+                document["engine"]["snapshot_sha256"]["value"] = "sha256:" + "0" * 64
+            else:
+                document["engine"]["snapshot_bytes"]["value"] += 1
+        produced.append(document)
+        return document
+
+    with monkeypatch.context() as changed:
+        changed.setattr(engine, "ui_projection", forged)
+        with pytest.raises(ValueError, match="names other source bytes than the store read"):
+            client.get(url(sid))
+    # The refused document was schema-valid and published; only its source binding was wrong.
+    assert len(produced) == 1
+    assert Draft202012Validator(owner.ui_projection_schema()).is_valid(produced[0])
+    assert {produced[0]["engine"][key]["state"] for key in ("snapshot_sha256", "snapshot_bytes")} == {"published"}
+    accepted = client.get(url(sid))                   # a refused admission is never cached
+    assert accepted.status_code == 200, accepted.text[:200]
+    body = accepted.json()
+    assert body["engine"]["snapshot_sha256"]["value"] == body["identity"]["sha256"]
+    assert body["engine"]["snapshot_bytes"]["value"] == body["identity"]["bytes"] == len(blob)
+
+
+def test_transport_serves_a_withheld_engine_identity_exactly_as_the_owner_wrote_it(client, sample, monkeypatch):
+    """The transport never writes an engine fact: a producer document that names no file keeps its withheld identity
+    beside the envelope's store identity, rather than being filled in from the store binding."""
+    sid = seed(client)
+    document = owner.project(sample)                  # handed over already parsed: the owner names no file
+    assert [document["engine"][key]["state"] for key in ("snapshot_sha256", "snapshot_bytes")] == ["not_collected"] * 2
+    monkeypatch.setattr(engine, "ui_projection", lambda *args: document)
+    response = client.get(url(sid))
+    assert response.status_code == 200, response.text[:200]
+    body = response.json()
+    assert body["engine"] == document["engine"]
+    assert body["engine"]["snapshot_sha256"]["value"] is None and body["engine"]["snapshot_bytes"]["value"] is None
+    assert body["identity"]["bytes"] > 0

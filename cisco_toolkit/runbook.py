@@ -30,6 +30,7 @@ from cisco_toolkit.docmeta import add_acceptance, add_document_control, add_exce
 from cisco_toolkit.docmeta import as_dict as _as_dict, as_list as _as_list   # shared snapshot-section coercers (ops.py uses the same): a truthy non-dict/non-list section must degrade, not crash
 from cisco_toolkit.textutils import _as_num   # fail-soft numeric coercion of device-derived leaf counts
 from cisco_toolkit.analyze import _protocol_assessability_conclusion
+from cisco_toolkit import impact_assessability   # W48: which stored failure-impact rows are measurements
 
 
 def _pa_conclusion(state) -> str:
@@ -299,7 +300,9 @@ def write_runbook_docx(
     ws = _R(snap_dict.get("wave_sequencing"))
     cross_layer = _R(snap_dict.get("cross_layer"))
     punchlist = _R(snap_dict.get("punchlist"))
-    failure_impact = _R(snap_dict.get("failure_impact"))
+    # W48: the stored failure-impact rows are read through the engine owner of row assessability, never raw (§10):
+    # a row it holds or bounds is never printed or ranked as a measurement.
+    fi_pairs = impact_assessability.rows_with_verdicts(snap_dict)
     link_centrality = _R(snap_dict.get("link_centrality"))
     gw = _gateways(snap_dict)
     ep_total, ep_per_vlan, ep_per_switch = _endpoint_census(snap_dict)
@@ -2262,17 +2265,41 @@ def write_runbook_docx(
         "Per-switch migration blast radius from the removal simulation, ranked by stranded endpoints. "
         "Structural exposure (who depends on the element) is separated from live fault state, which "
         f"is {_CONF_UNKNOWN} until validated.")
-    fi_rows = [[r.get("host"), r.get("severity"), r.get("vlans_impacted"), r.get("stranded"),
-                r.get("hard"), r.get("backup"), r.get("fhrp")]
-               for r in sorted(failure_impact,
-                               key=lambda r: (_SEV_ORDER.get(r.get("severity"), 9),
-                                              -_as_num(r.get("stranded"))))[:15]]
+    # W48: ranked through the engine owner of row assessability. A published row ranks by its stranded count and a
+    # lower-bound row by the positive floor the owner publishes for it; every cell is the owner's value (the stored
+    # value on a published row, 'High (lower bound)' / '≥ N (lower bound)' on a lower-bound row, 'not assessed' for a
+    # value it withholds). A row the owner does not rank (held, doubted, or bounded at zero) follows the ranked rows
+    # and is named below with why, so it never reads as stranding nobody. A published row renders as before. The
+    # order is by stranded count or floor alone (stored order on a tie), as the workbook, design, deck, archreview
+    # and ops rankings order it: a lower-bound row's band below the worst is withheld by the owner, so a raw severity
+    # never decides its place.
+    def _fi_rank_key(pair):
+        rec, verdict = pair
+        floor = impact_assessability.ranking_floor(verdict)
+        return -(floor if floor is not None else _as_num(rec.get("stranded")))
+
+    fi_ranked = sorted((p for p in fi_pairs if impact_assessability.ranks(p[1])), key=_fi_rank_key)
+    fi_unranked = [p for p in fi_pairs if not impact_assessability.ranks(p[1])]
+    fi_rows = [[rec.get("host")] + [impact_assessability.ranked_value(verdict, field) for field in
+                                    ("severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp")]
+               for rec, verdict in (fi_ranked + fi_unranked)[:15]]
     if fi_rows:
         table(["Switch (remove/migrate)", "Severity", "VLANs", "Stranded eps", "Hard",
                "Backup-covered", "FHRP-covered"], fi_rows, widths=[3.0, 1.0, 0.8, 1.1, 0.8, 1.2, 1.2])
-        _disclose(doc, len(failure_impact), 15, "switch blast-radius row(s)", "Failure Impact",
+        _disclose(doc, len(fi_pairs), 15, "switch blast-radius row(s)", "Failure Impact",
                   "This is the Risk Register: the simulation covers every in-scope switch, and the "
                   "rows below the cut still strand endpoints when they move.")
+    fi_bounded = [verdict for _rec, verdict in fi_ranked if not verdict.published]
+    if fi_bounded:
+        doc.add_paragraph(
+            f"{len(fi_bounded)} ranked switch(es) publish their counts only as lower bounds, so each can be larger "
+            f"than it reads: {impact_assessability.disclose(fi_bounded)}.")
+    if fi_unranked:
+        doc.add_paragraph(
+            f"{len(fi_unranked)} switch(es) are not ranked above, because their failure impact is not a "
+            "measurement on this evidence: "
+            + impact_assessability.disclose([verdict for _rec, verdict in fi_unranked])
+            + ". Collect the missing evidence before treating them as low-risk.")
 
     # NEW-V3.23.174: §10.1 -- the per-asset compound-risk register (compute_device_dossiers).
     # The structural table above answers "who depends on this box"; the register answers the

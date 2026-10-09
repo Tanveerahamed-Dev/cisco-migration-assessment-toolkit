@@ -292,10 +292,12 @@ def test_call_sites_pass_every_new_argument():
     import test_pipeline_golden as golden
 
     signature = inspect.signature(A.compute_device_dossiers)
-    # W33 ratchet, not an exemption list to grow: the AssessHub section recompute (webapp/backend/app.py, held by
-    # W27) does not pass the engine owner's failure-impact verdicts yet, so it still reads the pre-W33 impact term.
-    # The equality below fails the day it passes the argument too, and this entry must then be deleted.
-    pending = {"webapp/backend/app.py": {"failure_impact_assessability"}}
+    # W33's ratchet closed by W48: the AssessHub section recompute (webapp/backend/app.py) now passes the engine
+    # owner's failure-impact verdicts too, so every call site passes every argument. Keep this empty: a call site
+    # that drops an argument is a regression, not a new pending entry.
+    pending: dict = {}
+    # the ratchet itself (W51 round 4): an entry here would silently excuse a call site that drops an argument
+    assert pending == {}, "a call site that drops an argument is a regression; fix it instead of excusing it"
     for filename in ("COLLECT_PARSE_V3_23_0.py", "webapp/backend/app.py"):
         tree = ast.parse(Path(filename).read_text(encoding="utf-8"))
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)

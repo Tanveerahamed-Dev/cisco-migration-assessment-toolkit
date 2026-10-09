@@ -519,3 +519,64 @@ Distribution/installed/portable and all protected instances/whole workflows,
 then independent final source/base/tested-tree/body/title/protection review.
 No compiler consumer change, handler fallback, test/cap/baseline relaxation,
 W53/Preview-label implementation or ready/merge/release promotion occurs here.
+
+## Integration of owner-merged W51 / main ddac90e3
+
+Supervisor #630 merged17:36:24Z as ddac90e3, ordered ec289ab0 +3c5207a3,
+with equal head/merged/clean tree5fb2b9c7. Actual tested5f11c24e is bound by one
+completed peer Python3.11 log and Git commit API; its raw object is absent locally.
+That log reports12378passes279skips3xfails1warning26subtests. All15protected
+app15368 contexts, CodeQL and six whole attempt1 workflows passed,29records
+26success3inapplicable skips. Root did not approve/merge. Retire W37-W44/W47/
+W48/W50/W51 under rule8, retaining both full histories and all earlier retirements.
+
+The incoming train spans94 paths; sixteen shared changed paths include three
+same old-asset deletions. Preserve both complete products: G14 stored owner,
+one pipeline phase/persistence, exactpublic imports, carriage helpers/cells/closed
+shapes/vocabulary/controls/UI; main G16 gateway FactList/one scan/FHRP qualifier,
+G15 scope-doubt witnesses, G41 bound source identity, G05/G21/G24/F6 and W48/W50
+qualified consumer/receipt behavior. Main F10 capture, atomic and fallback writers
+retain no newline translation. The G14 synthetic carriage fixture uses the merged
+not-collected gateway FactList shape; it never substitutes an empty published list
+for its old null. Import both fixture controls. Only current G16 prose saying
+carriage is absent is corrected: its reader does not yet use stored G14 carriage
+to narrow fleet-wide gaps. Its proof algorithm remains unchanged and its known
+failed-sole-cable/STP-to-publishedFalse P2 stays OPEN/source-derived/unexecuted.
+The old peer description's Scope-unchanged claim remains a preserved contradiction,
+not a fact copied into this integration record.
+
+Preserve original conflicts and raw index/AUTO_MERGE externally. Absent old hashed
+rename-source paths were not physical files; initial conflict-copy reported that
+literal lookup failure. The first whole-dist restore refused unmerged obsolete
+rename entries; source edits were already saved but unstaged. Resolve only those
+five exact obsolete index entries, with verified owned-workspace paths, then take
+ONEcomplete main dist family and canonicalTS as unqualified bootstrap. Never merge
+minified bundle contents, combine asset families, handmerge schema digests or
+execute local schema/generator/receiver logic. Production and prospective pin
+owners use the same exactmain55bc/ce6e pair as declared bootstrap, with equality/
+mutations/parity stillstrict. A fresh hosted observer/canonical generator must
+establish combined-schema values before exact reviewed re-pin/type adoption.
+
+All146old SPA inputs no longer close the combined profile (the source-only map
+finds149). Neither parent's dist qualifies this union. After a fresh whole-success
+webapp producer, independently select its exactsource artifact and invoke only the
+existing HOSTED frontend receipt route once;review actual receipt/Gitpatch before
+one bounded ordinary data intake. No old receipt transfer or local ZIP/controller.
+Current golden/sample/Scope family and hardened Route-A owners remain G14's bytes.
+New folds are mostly ephemeral; changed node-unjoinability can reach assessment
+and stored device_dossiers. Fresh defaultgolden/realUTCsample checks must decide
+actual stored drift. Use existing hosted Route-A generation only if drift needs
+that edit data; no invented blanket regeneration wait or locally computed output.
+
+Historical20c recovered111Scope failures at255files7600pass27skip/all10mutants/
+builds/B3/hub/8pure8browser, with currentnative/API/LF/default/UTC/Reference/support
+closures. At main discovery, old20c Windows/Coverage/fullsource stillprogress and
+binary had metadata success. All those results remain old-source only. Incoming
+.gitattributes and source/tests may change LF membership: observe fresh hosted
+receipts after actual guards, never guess/handmerge. Preserve privacy patterns,
+source/path/schema/architecture guards, caps/thresholds/timeouts and everynegative.
+Independent merged-source review and new actual prepublication privacy/all12 raw
+history/text bindings precede publication; all combined exact-head runtime and
+current strict protected/wholeworkflow/final review gates precede readiness.
+No W53/Preview implementation, local runtime/compiler/hash/controller, new manual
+run or data intake, test waiver, signing/release/device/vault action occurs here.

@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Fact, Identity, Limitation, SourceList, State } from "../../projection";
+import { ImpactValue, impactBoundText, projectionImpactBound } from "../../components/ImpactValue";
 
 // Core-page implementation detail: these renderers require the active source-bound projection
 // context and are not standalone components in the public Design component library.
@@ -13,8 +14,10 @@ type Selection = { label: string; envelope: Envelope };
 type EvidenceContextValue = { open: (selection: Selection) => void; limitations: readonly Limitation[] };
 const EvidenceContext = createContext<EvidenceContextValue>({ open: () => {}, limitations: [] });
 
-export function StateLabel({ state }: { state: State }) {
-  return <span className={`projection-state state-${state}`}>{STATE_LABEL[state]}</span>;
+// `text` lets a caller word a state for its context (a device's custody under an input it could not assess) while
+// keeping the state's own style token; it never changes which state is shown.
+export function StateLabel({ state, text }: { state: State; text?: string }) {
+  return <span className={`projection-state state-${state}`}>{text ?? STATE_LABEL[state]}</span>;
 }
 
 // Presentation only: values have already been typed by the generated owner schema. No HTML,
@@ -41,11 +44,16 @@ function Caveats({ envelope }: { envelope: Envelope }) {
   })}</ul>;
 }
 
-function Qualifications({ label, envelope }: { label: string; envelope: Envelope }) {
+// `text` names the control when one sentence carries more than one fact's qualifications (a ratio's count and its
+// denominator): its visible text and its accessible name both start with it, so the controls stay distinguishable.
+// `label` is what the opened drawer is titled; each control opens its own fact's caveats, never a merged copy.
+export function Qualifications({ label, envelope, text = "Qualifications" }: {
+  label: string; envelope: Envelope; text?: string;
+}) {
   const { open } = useContext(EvidenceContext);
   if (!envelope.caveats?.length) return null;
   return <button type="button" className="projection-qualifications" onClick={() => open({ label, envelope })}
-    aria-label={`Qualifications for ${label}`}>Qualifications ({envelope.caveats.length})</button>;
+    aria-label={`${text} for ${label}`}>{text} ({envelope.caveats.length})</button>;
 }
 
 export function EnvelopeEvidence({ label, envelope }: { label: string; envelope: Envelope }) {
@@ -54,14 +62,35 @@ export function EnvelopeEvidence({ label, envelope }: { label: string; envelope:
     aria-label={`Evidence for ${label}`}>Evidence ↗</button>;
 }
 
-export function FactView({ label, fact, compact = false }: { label: string; fact: Fact; compact?: boolean }) {
+// `lowerBound` is passed only by ImpactFactView below, which knows the owner marks this fact as a minimum (a
+// failure-impact measure citing a witness, components/ImpactValue.tsx::projectionImpactBound). It is never inferred
+// here: a witness ref on another fact means something else, and a published zero stays a zero. A lower bound's reason
+// is a visible line, as a withheld state's reason is, so it never depends on a hover.
+export function FactView({ label, fact, compact = false, lowerBound }: {
+  label: string; fact: Fact; compact?: boolean; lowerBound?: string;
+}) {
+  const bound = fact.state === "published" && lowerBound !== undefined
+    && (typeof fact.value === "number" || typeof fact.value === "string") ? fact.value : null;
   return <div className={`projection-fact${compact ? " compact" : ""}`}>
     <div className="projection-fact-label">{label}<EnvelopeEvidence label={label} envelope={fact} /></div>
-    <div className="projection-fact-value">{fact.state === "published" ? <ValueText value={fact.value} /> : <span aria-hidden="true">—</span>}</div>
+    <div className="projection-fact-value">{fact.state === "published"
+      ? bound !== null ? <ImpactValue state={{ kind: "lower_bound", value: bound, why: lowerBound ?? "" }} reasonShown /> : <ValueText value={fact.value} />
+      : <span aria-hidden="true">—</span>}</div>
     <StateLabel state={fact.state} />
     {fact.state !== "published" && <p className="projection-reason">{fact.reason}</p>}
+    {bound !== null && <p className="projection-reason" data-impact="lower_bound_reason">{impactBoundText(bound, lowerBound ?? "")}</p>}
     <Qualifications label={label} envelope={fact} />
   </div>;
+}
+
+// One cell of a failure-impact row (ui_projection._topology_impact). The fleet topology list and the device page are
+// built by that one builder, so they render through this one view: a published measure the engine marks as a minimum
+// reads "≥ N" with its reason on both, and every other cell is a plain FactView. `row` is the row's own pointer, so a
+// witness on the row itself or on one of its cells is named as such.
+export function ImpactFactView({ field, label, fact, row, compact = true }: {
+  field: string; label: string; fact: Fact; row: string; compact?: boolean;
+}) {
+  return <FactView label={label} fact={fact} compact={compact} lowerBound={projectionImpactBound(field, fact, row)} />;
 }
 
 export function ListState({ label, source }: { label: string; source: SourceList }) {
