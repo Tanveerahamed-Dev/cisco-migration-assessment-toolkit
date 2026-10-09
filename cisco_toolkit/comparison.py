@@ -184,12 +184,17 @@ def compare_bound_pair(
         before_binding: Dict[str, Any], after_binding: Dict[str, Any],
         change_intent: Optional[Dict[str, Any]] = None,
         path_intents: Optional[List[Dict[str, Any]]] = None,
-        l2_failure_trial: Any = None) -> Dict[str, Any]:
+        l2_failure_trial: Any = None,
+        operator_evidence_schema: Optional[str] = None) -> Dict[str, Any]:
     """Compose one canonical source-bound cutover comparison.
 
     The returned mapping deliberately keeps every legacy snapshot-delta field at the top level.
     Admission, expected-change reconciliation, native protocol-family changes, precertification,
     the sole cutover gate, operator evidence, and the detached receipt envelope are additive.
+
+    ``operator_evidence_schema`` (W50) is ``None`` for every new comparison, which then carries the current
+    operator-evidence contract. Only the re-verification of a stored receipt passes the contract that receipt
+    declares (``protocol_assurance.stored_operator_evidence_schema``); an unknown contract raises ``ValueError``.
     """
     schema = _schema_compat([old, new])
     source_binding = {
@@ -246,6 +251,7 @@ def compare_bound_pair(
         prior_snapshot=old,
         expected_predecessor_collected_at=old.get("collected_at"),
         expected_predecessor_binding=before_binding,
+        schema=operator_evidence_schema,
     )
     decision_input_authority = _mint_cutover_decision_input_authority(
         delta=delta,

@@ -33,6 +33,12 @@ Three things are pinned here:
    not a route. The owner, the projection and AssessHub's surfaces pass by that property, not by name. The only
    named entries are a RATCHET of the consumers W48 stopped on because their output is persisted (see each entry): a
    new raw reader fails, and fixing a ratchet entry fails until the entry and its strict ``xfail`` below are deleted.
+   W50 narrowed the ``protocol_assurance`` entry to the one frozen EVIDENCE binder (``_rehearsal_impact_evidence_v1``):
+   an execution receipt is re-verified by recomputing it on every read, so it binds the rows raw and must never
+   consult the evolving owner, while every presentation of those rows goes through the owner at display time
+   (AssessHub's live ``impacts_view``). That entry stays a raw reader by design and is pinned to the binder alone; any
+   other raw reader in the module still fails. The receipt-recompute closure check (W50) reads its own conservative
+   resolver (:func:`_graph`), not this guard.
 
    The line check is the scanner's independent cross-check, line by line: every line where the tokenizer sees the
    section name (a NAME token, or a string literal that is exactly it; comments and docstrings are neither) must hold
@@ -115,18 +121,19 @@ _COLLECTION = (ast.Tuple, ast.List, ast.Set)
 #: supervisor for a hosted regeneration (docs/w48-impact-consumers-validation-2026-10-09.md). Keyed by
 #: (module, unit), a unit named as the guard names it (``f``, ``C.m``, ``f.inner``). Each has a strict xfail in part 2.
 #: Delete the entry when its consumer reads the owner.
+#: The one exception is the protocol_assurance entry (W50): a frozen evidence binder that must stay raw, pinned to
+#: that single function and checked by a behavioural test of the display path instead of an xfail.
 _RAW_RATCHET = {
     ("cisco_toolkit.design_advisor", "_signals"): (
         "nobackup_high counts raw High rows with a raw zero backup, so a lower-bound or held row's withheld zero "
         "is counted as a measured no-backup device. Its text and count are stored in the snapshot's "
         "design_blueprint (decisions[topology-triangles-not-squares-rings].evidence.summary and "
         "tradeoff_scorecard[availability].evidence), so the fix needs a hosted sample regeneration."),
-    ("cisco_toolkit.protocol_assurance", "cutover_operator_evidence"): (
-        "rehearsal.impacts copies whole raw rows into the cutover_operator_evidence/1 payload, which AssessHub's "
-        "ComparisonDecision renders (severity, detail). That payload is persisted inside every execution "
-        "comparison receipt and re-verified against an exact-source recomputation on every read "
-        "(webapp/backend/storage.py), so changing it invalidates stored receipts: it needs a supervisor-routed "
-        "contract change, not a silent edit."),
+    # Allowlisted for the frozen evidence binder ONLY (W50): no other protocol_assurance function may read the rows
+    # (test_only_the_frozen_binder_reads_the_rows_raw_and_the_display_path_reaches_the_owner).
+    ("cisco_toolkit.protocol_assurance", "_rehearsal_impact_evidence_v1"): (
+        "binds raw evidence for recompute-on-read receipts; presentation goes through the owner at display time "
+        "(W50)"),
 }
 
 
@@ -743,6 +750,127 @@ def _scan(root):
                 routed.add(key)
                 changed = True
     return ({k: sorted(v) for k, v in readers.items()}, routed, occurrences, {k: sorted(v) for k, v in why.items()})
+
+
+# --- the receipt-recompute closure resolver (W50; read only by tests/test_operator_evidence_contract.py) ------------
+# The W48 guard above (:func:`_scan`) admits a reader only on a CALL route, so an extra route there would admit a raw
+# reader. The W50 closure check needs the opposite bias: a missed route would hide an owner dependency of a receipt
+# recomputation. So it keeps its own conservative resolver -- the first W48 guard's (``e7c00e12``), with W50's
+# constructor routes and owner references -- over its own top-level unit split (:func:`_graph_units`), and shares only
+# the module map, import resolution and alias table with the guard.
+class _Graph(NamedTuple):
+    """The resolved unit graph of one tree (see :func:`_graph`)."""
+    units: dict          # (module, name) -> (node, kind)
+    edges: dict          # unit -> the units it names, resolved (calls, references, dispatch tables, self.method)
+    direct: frozenset    # units that are the owner, or name it through a resolved import alias
+    constructs: dict     # unit -> every method of each project class it names (a constructor runs its methods)
+    owner_refs: frozenset  # units naming the owner by an unaliased dotted path or importing it by any spelling
+
+
+def _graph_units(tree):
+    """(unit name, node, kind) for each top-level function, each method of a top-level class, and each module-level
+    assignment to a plain name (a dispatch table routes through it). A nested function belongs to its enclosing
+    unit, so every edge it has is that unit's (conservative for a closure)."""
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield node.name, node, "function"
+        elif isinstance(node, ast.ClassDef):
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    yield f"{node.name}.{sub.name}", sub, "method"
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    yield target.id, node.value, "data"
+
+
+@functools.lru_cache(maxsize=None)
+def _graph(root):
+    """The resolved unit graph of the scanned tree under `root`, built once per root (callers only read it).
+
+    ``edges`` and ``direct`` (a unit that is the owner or names it through a resolved import alias) plus the extra,
+    conservative ``constructs`` and ``owner_refs`` routes are what the W50 receipt-closure check reads
+    (``tests/test_operator_evidence_contract.py``); the W48 guard does not read this graph (see the note above)."""
+    modules = _module_map(root)
+    units, edges, direct = {}, {}, set()
+    constructs, owner_refs = {}, set()
+    classes = {}
+    parsed = {}
+    for module, rel in modules.items():
+        with open(os.path.join(root, rel), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=rel)
+        parsed[module] = (rel, tree, _aliases(module, rel, tree, modules))
+        for name, node, kind in _graph_units(tree):
+            units[(module, name)] = (node, kind)
+            if kind == "method":
+                classes.setdefault((module, name.split(".")[0]), set()).add((module, name))
+    for module, (rel, tree, aliases) in parsed.items():
+        own = {name for (m, name) in units if m == module}
+        for (m, name), (node, _kind) in units.items():
+            if m != module:
+                continue
+            unit = (module, name)
+            if module == OWNER:
+                direct.add(unit)
+            cls = name.split(".")[0] if "." in name else None
+            out, built = set(), set()
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                    if sub.id in own:
+                        out.add((module, sub.id))
+                    built |= classes.get((module, sub.id), set())
+                    bound = aliases.get(sub.id)
+                    if bound and bound[0] == "name":
+                        out.add((bound[1], bound[2]))
+                        built |= classes.get((bound[1], bound[2]), set())
+                        if bound[1] == OWNER:
+                            direct.add(unit)
+                    elif bound and bound[1] == OWNER:
+                        direct.add(unit)
+                elif isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
+                    bound = aliases.get(sub.value.id)
+                    if bound and bound[0] == "module":
+                        out.add((bound[1], sub.attr))
+                        built |= classes.get((bound[1], sub.attr), set())
+                        if bound[1] == OWNER:
+                            direct.add(unit)
+                    elif sub.value.id in ("self", "cls") and cls:
+                        out.add((module, f"{cls}.{sub.attr}"))
+                elif isinstance(sub, ast.ImportFrom):
+                    source = _resolve_from(module, rel, sub)
+                    if source == OWNER or any(f"{source}.{a.name}" == OWNER for a in sub.names):
+                        direct.add(unit)
+                if isinstance(sub, ast.Attribute) and sub.attr == OWNER.rpartition(".")[2]:
+                    owner_refs.add(unit)
+                elif isinstance(sub, ast.Import) and any(a.name == OWNER for a in sub.names):
+                    owner_refs.add(unit)
+            edges[unit] = {e for e in out if e in units and e != unit}
+            constructs[unit] = {e for e in built if e in units and e != unit}
+    return _Graph(units, edges, frozenset(direct), constructs, frozenset(owner_refs))
+
+
+def _closure(graph, roots):
+    """Every unit reachable from `roots` along resolved edges and constructor routes: unit -> the unit it was reached
+    from (``None`` for a root), breadth-first so each recorded path is a shortest one."""
+    parent = {root: None for root in roots}
+    queue = list(roots)
+    while queue:
+        unit = queue.pop(0)
+        for target in sorted(graph.edges.get(unit, set()) | graph.constructs.get(unit, set())):
+            if target not in parent:
+                parent[target] = unit
+                queue.append(target)
+    return parent
+
+
+def _path(parent, unit):
+    """The recorded route to `unit`, root first, as ``module:name`` strings."""
+    path = []
+    while unit is not None:
+        path.append(f"{unit[0]}:{unit[1]}")
+        unit = parent[unit]
+    return " -> ".join(reversed(path))
 
 
 def _raw(root):
@@ -1429,7 +1557,7 @@ def test_fleet_blind_reads_the_projections_fleet_qualifier(sample):
     assert ia.fleet_blind(None, []) is None and ia.fleet_blind({"items": "not a list"}, []) is None
 
 
-# --- the two consumers W48 STOPPED on (persisted output; see _RAW_RATCHET) -----------------------------------------
+# --- the consumer W48 STOPPED on (persisted output; see _RAW_RATCHET) ---------------------------------------------
 _STOPPED = pytest.mark.xfail(
     strict=True, raises=AssertionError,
     reason="W48 STOP: persisted output, routed to the supervisor for a hosted regeneration (see _RAW_RATCHET). "
@@ -1449,14 +1577,116 @@ def test_design_advisor_never_counts_a_withheld_zero_as_a_measured_no_backup_dev
     assert _signals(snap)["nobackup_high"] == measured
 
 
-@_STOPPED
+# --- protocol_assurance: the frozen evidence binder; presentation through the owner at display time (W50) --------
+# W48 stopped here because rehearsal.impacts is persisted in every AssessHub execution receipt and re-verified by
+# recomputation on every read. W50: the receipt binds the stored rows as raw EVIDENCE through one frozen binder that
+# never consults the owner (its bytes are frozen in tests/test_operator_evidence_contract.py), and every presentation
+# of those rows is the owner's live reading at display time (webapp.backend.engine.rehearsal_impacts_view, the API's
+# display-only impacts_view). The former strict xfail is now this check of the display path.
 @pytest.mark.parametrize("variant", ["bounded", "held"])
-def test_cutover_operator_evidence_carries_the_owner_values_for_core1(variant, request):
+def test_receipt_impact_rows_are_bound_raw_and_presented_only_through_the_owner(variant, request):
     from cisco_toolkit.protocol_assurance import cutover_operator_evidence
+    from webapp.backend import engine as web_engine
     snap = request.getfixturevalue(variant)
-    _row, verdict = _core1(snap)
-    impacts = [r for r in cutover_operator_evidence(snap)["rehearsal"]["impacts"] if r.get("host") == "core1"]
-    assert len(impacts) == 1, impacts
-    assert impacts[0].get("assessable") == verdict.assessable, impacts[0]
-    assert impacts[0].get("severity") == ia.table_value(verdict, "severity"), impacts[0]
-    assert impacts[0].get("stranded") == ia.table_value(verdict, "stranded"), impacts[0]
+    row, verdict = _core1(snap)
+    # the receipt binds core1's stored row as evidence, raw ...
+    assert [r for r in cutover_operator_evidence(snap)["rehearsal"]["impacts"] if r.get("host") == "core1"] == [row]
+    # ... and the display reads it through the owner, live
+    view = web_engine.rehearsal_impacts_view(snap, source_sha256="sha256:" + "0" * 64)
+    assert view["display_only"] is True and view["available"] is True and view["owner"] == ia.SCHEMA
+    items = [r for r in view["rows"] if r["host"] == "core1"]
+    assert len(items) == 1, items
+    item = items[0]
+    assert item["assessable"] == verdict.assessable and item["state"] == verdict.state, item
+    assert item["reasons"] == [{"code": code, "n": n} for code, n in verdict.code_counts], item
+    for field in ia.IMPACT_MEASURES:
+        cell = item["cells"][field]
+        assert cell == ia.cell_reading(verdict, field)._asdict(), (field, cell)     # the owner decides; W50 r4
+        if verdict.withholds(field):
+            assert cell == {"kind": "withheld", "text": None, "state": verdict.withheld_state(field)}, (field, cell)
+        else:
+            assert cell["text"] == str(ia.table_value(verdict, field)), (field, cell)
+    assert item["cells"]["backup"]["kind"] == "withheld"      # core1's stored 0 is never presented as a measured 0
+    disclosed = [entry for entry in view["unranked"] if entry["index"] == verdict.index]
+    if variant == "bounded":
+        assert item["cells"]["stranded"] == {"kind": "floor", "text": f"≥ {row['stranded']}", "state": None}, item
+        assert item["ranked"] is True and view["rows"][0]["host"] == "core1"     # its floor of 45 leads
+        assert disclosed == []
+    else:
+        assert item["assessable"] == ia.NOT_ASSESSED and item["ranked"] is False, item
+        assert item["state"] == ia.NOT_COLLECTED and item["reasons"] == [{"code": "legacy_row", "n": 0}], item
+        # a held row is named in the owner's unranked disclosure, whatever cap a display puts on the ranked rows
+        assert disclosed == [{key: item[key] for key in ("index", "host", "assessable", "state", "reasons")}]
+
+
+_FROZEN_ROWS = ROOT / "tests" / "fixtures" / "operator_evidence_v1" / "after-rows.json"
+
+
+@pytest.mark.parametrize("variant", ["bounded", "held", "frozen_rows"])
+def test_the_owners_display_accessors_follow_its_own_rules(variant, request):
+    """W50 round 4 (P3-3): the display path only formats; every reading is an owner accessor, and each agrees with
+    the owner's own rules on the sample, a held row and the frozen corpus's odd-typed and non-object rows:
+    ``cell_reading`` (withheld exactly when ``withholds``; a floor only on a lower bound, worded by ``table_value``;
+    an unreadable value never a zero), ``RowVerdict.readable`` (the row is an object), ``unranked`` (exactly the
+    rows ``ranks`` refuses, in stored order) and ``ranking_order`` (every ranked row first, largest floor or count
+    first)."""
+    snap = json.loads(_FROZEN_ROWS.read_text(encoding="utf-8")) if variant == "frozen_rows" else \
+        request.getfixturevalue(variant)
+    verdicts = ia.assess_failure_impact(snap)
+    assert verdicts
+    for verdict in verdicts:
+        assert verdict.readable is isinstance(verdict.raw, dict)
+        for field in ia.CELL_FIELDS:
+            reading = ia.cell_reading(verdict, field)
+            assert reading.kind in ia.CELL_KINDS, reading
+            if verdict.withholds(field):
+                assert reading == (ia.CELL_WITHHELD, None, verdict.withheld_state(field)), (field, reading)
+            elif reading.kind == ia.CELL_FLOOR:
+                assert verdict.assessable == ia.LOWER_BOUND and field in ia.IMPACT_MEASURES, reading
+                assert reading.text == ia.table_value(verdict, field), reading
+            elif reading.kind == ia.CELL_PUBLISHED:
+                assert isinstance(reading.text, str) and reading.text.strip() and reading.state is None, reading
+                raw = verdict.raw[field]
+                if field == "severity":
+                    assert reading.text == raw and raw in ia.IMPACT_SEVERITIES, reading
+                elif field != "detail":
+                    assert reading.text == str(ia.count_value(raw)), reading     # the owner's count, never "None"
+            else:
+                assert reading == (ia.CELL_UNREADABLE, None, None), reading
+    with pytest.raises(ValueError):
+        ia.cell_reading(verdicts[0], "host")
+    assert [v.index for v in ia.unranked(verdicts)] == [v.index for v in verdicts if not ia.ranks(v)]
+    ordered = sorted(verdicts, key=ia.ranking_order)
+    flags = [ia.ranks(v) for v in ordered]
+    assert flags == sorted(flags, reverse=True)
+    counts = [ia.ranking_order(v)[1] for v in ordered if ia.ranking_order(v)[0] == 0]
+    assert counts == sorted(counts), counts                 # largest floor or measured count first
+    if variant == "frozen_rows":
+        assert {v.index for v in verdicts if not v.readable} == {2, 4, 5, 6, 7}
+        assert all(not ia.ranks(v) for v in verdicts if not v.readable)
+
+
+def test_only_the_frozen_binder_reads_the_rows_raw_and_the_display_path_reaches_the_owner():
+    """The protocol_assurance ratchet entry excuses the frozen evidence binder and nothing else: it is the module's
+    only reader of the stored section, every other unit there stays subject to the guard, and the display path that
+    presents the bound rows is routed to the owner."""
+    readers, routed, _occ, _why = _scan(str(ROOT))
+    assert {name for (module, name) in readers if module == "cisco_toolkit.protocol_assurance"} == {
+        "_rehearsal_impact_evidence_v1"}
+    assert [unit for unit in _RAW_RATCHET if unit[0] == "cisco_toolkit.protocol_assurance"] == [
+        ("cisco_toolkit.protocol_assurance", "_rehearsal_impact_evidence_v1")]
+    for unit in ("rehearsal_impacts_view", "receipt_impacts_view", "_trend_comparison_receipts"):
+        assert ("webapp.backend.engine", unit) in routed, unit
+
+
+def test_the_guard_still_flags_a_second_raw_presenter_beside_the_binder(tmp_path):
+    """Non-vacuity for the narrowed entry: on a synthetic tree, a second protocol_assurance function that presents the
+    rows raw is flagged even though the binder beside it is excused by the ratchet."""
+    _write(tmp_path, "cisco_toolkit/__init__.py", "")
+    _write(tmp_path, "cisco_toolkit/impact_assessability.py", "def rows_with_verdicts(snap):\n    return []\n")
+    _write(tmp_path, "cisco_toolkit/protocol_assurance.py",
+           "def _rehearsal_impact_evidence_v1(snap):\n    return list(snap.get('failure_impact') or [])\n"
+           "def presenter(snap):\n    return [r.get('stranded') for r in snap['failure_impact']]\n")
+    readers, routed, _occ, _why = _scan(str(tmp_path))
+    flagged = {unit for unit in readers if unit not in routed and unit not in _RAW_RATCHET}
+    assert flagged == {("cisco_toolkit.protocol_assurance", "presenter")}, flagged

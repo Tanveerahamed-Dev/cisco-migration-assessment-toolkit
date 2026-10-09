@@ -3670,14 +3670,46 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
         }
 
     # -- execution runs (war room) ------------------------------------------
+    def _receipts_with_impacts_views(rows: List[Any]) -> List[Any]:
+        """The stored comparison receipt rows, each shallow-copied with a DISPLAY-ONLY ``impacts_view`` sibling (W50).
+
+        A receipt binds its after snapshot's failure-impact rows as raw evidence and is re-verified by recomputation
+        on every read, so it never carries their interpretation. ``impacts_view`` is that interpretation, computed
+        live by the engine owner from the receipt's bound after snapshot (``engine.receipt_impacts_view``). It sits
+        BESIDE ``receipt``: the stored row, its receipt bytes and every digest are untouched, it is never written
+        back, and the PIR export (which reads ``rec["comparisons"]`` directly) never sees it."""
+        views: Dict[Any, Dict[str, Any]] = {}
+        out: List[Any] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                out.append(row)
+                continue
+            receipt = row.get("receipt")
+            comparison = receipt.get("comparison") if isinstance(receipt, dict) else None
+            key = engine.comparison_after_binding(comparison)
+            if key not in views:
+                views[key] = engine.receipt_impacts_view(comparison, store.get_bound_snapshot)
+            out.append({**row, "impacts_view": views[key]})
+        return out
+
     def _execution_view(rec: Dict[str, Any], state: Dict[str, Any] | None = None) -> Dict[str, Any]:
         view = execution.with_progress(
             rec["id"], rec["snapshot_id"], state if state is not None else rec["state"])
-        view["comparison_receipts"] = list(rec.get("comparisons") or [])
+        view["comparison_receipts"] = _receipts_with_impacts_views(list(rec.get("comparisons") or []))
         return view
 
     def _mutate_execution(execution_id: int, fn) -> Dict[str, Any]:
-        """Atomic read-modify-write on one run's state; returns the updated derived state."""
+        """Atomic read-modify-write on one run's state; returns the updated derived state.
+
+        Only the read-modify-write holds ``execution.MUTATION_LOCK``. The response view is built AFTER the lock is
+        released (W50): it loads each receipt's bound after snapshot and runs the engine owner over it
+        (``_receipts_with_impacts_views``), which must never serialize the war room. It is built from the record this
+        call just read and saved, exactly as before, so neither what is stored nor what is returned changes."""
+        saved_rec = _mutate_execution_locked(execution_id, fn)
+        return _execution_view(saved_rec, saved_rec["state"])
+
+    def _mutate_execution_locked(execution_id: int, fn) -> Dict[str, Any]:
+        """The locked half of :func:`_mutate_execution`: read, apply `fn`, save; returns the saved record."""
         with execution.MUTATION_LOCK:
             rec = store.get_execution(execution_id)
             if not rec:
@@ -3713,7 +3745,7 @@ def create_app(db_path: str | None = None, dist_dir: str | os.PathLike | None = 
                     "Execution comparison authority could not be revalidated from its persisted "
                     "receipt and exact source rows; the mutation was refused.",
                 )
-            return _execution_view(rec, rec["state"])
+            return rec
 
     @app.post("/api/snapshots/{snapshot_id}/executions", status_code=201)
     def start_execution(snapshot_id: RowId, body: ExecutionIn) -> Dict[str, Any]:

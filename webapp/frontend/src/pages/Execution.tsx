@@ -687,6 +687,7 @@ export default function ExecutionPage() {
       {latestComparison ? (
         <ComparisonDecision
           value={latestComparison}
+          impactsView={latestStored?.impacts_view}
           exportFilename={`execution-${eid}-comparison-receipt-${latestStored?.id || "latest"}.json`}
         />
       ) : comparisonPolicy ? (
