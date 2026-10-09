@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router";
 import {
   api,
   gateColor,
+  type BlastRadius,
   type Campaign,
   type CutoverChangeIntentInput,
   type CurrentBaselineBlocker,
@@ -25,6 +26,7 @@ import ObservedL2TrialInput, {
   observedL2TrialRequest,
 } from "./ObservedL2TrialInput";
 import type { ObservedL2TrialDraft } from "./ObservedL2TrialInput";
+import { ImpactLowerBoundTag, ImpactValue, impactEntryValue, isImpactNotAssessed } from "./ImpactValue";
 import { CountUp, ErrorBox, SegBar, SevChip, SkelLines, useAsync } from "./ui";
 
 /* The cutover-plan panel: a gated, pilot-first run-of-show synthesized server-side from the
@@ -249,6 +251,38 @@ function CurrentBaselinePanel({
   );
 }
 
+const WORST_CASE_BOUND_WHY = "The wave's worst case may be larger than shown: a switch in this wave has a blast "
+  + "radius the engine withholds or publishes only as a lower bound. The detail below names each one and why.";
+
+/* A wave's worst-case blast radius (cutover._worst_blast_radius), ranked only from engine-published failure-impact
+   cells (W27). Every count goes through ImpactValue: a lower bound reads "≥ N", a wave nothing could be ranked in
+   reads NOT ASSESSED, and a withheld VLAN count reads unavailable, so none of them can render as a 0 or a blank.
+   `complete: false`, or a lower-bound worst row, tags the heading: the true worst case can exceed this one. The
+   cutover document (cutover_docx) prints the same entry with the same reading. */
+function WorstCase({ br }: { br: BlastRadius }) {
+  const notAssessed = isImpactNotAssessed(br);
+  const stranded = impactEntryValue(br, "stranded");
+  const vlans = impactEntryValue(br, "vlans_impacted");
+  const bounded = !notAssessed && (br.lower_bound === true || br.complete === false);
+  return (
+    <div>
+      <div className="lbl" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--text-faint)", marginBottom: 4 }}>
+        Worst-case blast radius{bounded && <ImpactLowerBoundTag why={WORST_CASE_BOUND_WHY} />}
+      </div>
+      {notAssessed ? (
+        <div style={{ fontSize: 13 }}>
+          <span className="faint">no switch ranked</span> · <SevChip sev={br.severity} /> · endpoints stranded <b><ImpactValue state={stranded} /></b> · VLANs <b><ImpactValue state={vlans} /></b>
+        </div>
+      ) : (
+        <div style={{ fontSize: 13 }}>
+          {br.host ? <b className="mono">{br.host}</b> : <span className="faint">no readable host</span>} · <SevChip sev={br.severity} /> · <b><ImpactValue state={stranded} /></b> endpoints stranded across <b><ImpactValue state={vlans} /></b> VLAN(s)
+        </div>
+      )}
+      <div className="dim" style={{ fontSize: 12, marginTop: 3 }}>{br.detail}</div>
+    </div>
+  );
+}
+
 function WaveCard({ w, i }: { w: CutoverWave; i: number }) {
   const [open, setOpen] = useState(false);
   const split: Record<string, number> = {};
@@ -286,15 +320,7 @@ function WaveCard({ w, i }: { w: CutoverWave; i: number }) {
       )}
 
       <div className="grid cols-2" style={{ marginTop: 12, gap: 12 }}>
-        {br && (
-          <div>
-            <div className="lbl" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--text-faint)", marginBottom: 4 }}>Worst-case blast radius</div>
-            <div style={{ fontSize: 13 }}>
-              <b className="mono">{br.host}</b> · <SevChip sev={br.severity} /> · <b>{br.stranded}</b> endpoints stranded across <b>{br.vlans_impacted}</b> VLAN(s)
-            </div>
-            <div className="dim" style={{ fontSize: 12, marginTop: 3 }}>{br.detail}</div>
-          </div>
-        )}
+        {br && <WorstCase br={br} />}
         {w.keystones.length > 0 && (
           <div>
             <div className="lbl" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--text-faint)", marginBottom: 4 }}>Keystone devices in this wave</div>
@@ -514,6 +540,7 @@ function PlannerExecutionComparison({ run, onReceiptBound }: {
       {latestComparison ? (
         <ComparisonDecision
           value={latestComparison}
+          impactsView={latestStored?.impacts_view}
           exportFilename={`execution-${execution.id}-comparison-receipt-${latestStored?.id || "latest"}.json`}
         />
       ) : policy ? (

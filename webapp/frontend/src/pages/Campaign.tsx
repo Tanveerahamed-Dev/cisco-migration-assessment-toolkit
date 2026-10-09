@@ -273,7 +273,7 @@ function TrendCanonicalReceipts({ value, campaignId }: {
                 {" · "}{gate.l2_rehearsal_not_verified || 0} not verified
               </div>
             )}
-            <ComparisonDecision value={entry.comparison}
+            <ComparisonDecision value={entry.comparison} impactsView={entry.impacts_view}
               exportFilename={`atlas-campaign-${campaignId}-${entry.from}-${entry.to}-comparison.json`} />
           </details>
         );

@@ -1,0 +1,138 @@
+{
+ "schema": "collect_parse_snapshot/1",
+ "script_version": "V3.23.0",
+ "collected_at": "2026-01-05T08:00:00+00:00",
+ "devices": {
+  "fx-core-a": {
+   "hostname": "fx-core-a",
+   "platform": "ios",
+   "model": "C9500-24Y4C",
+   "sw_version": "17.9.4"
+  },
+  "fx-acc-b": {
+   "hostname": "fx-acc-b",
+   "platform": "ios",
+   "model": "C9300-48P",
+   "sw_version": "17.9.4"
+  },
+  "fx-acc-c": {
+   "hostname": "fx-acc-c",
+   "platform": "nxos",
+   "model": "N9K-C93180YC-FX",
+   "sw_version": "10.2(5)"
+  }
+ },
+ "interfaces": {
+  "fx-core-a": {
+   "Te1/0/1": {
+    "port": "Te1/0/1",
+    "status": "connected",
+    "description": "to-fx-acc-b",
+    "run_config_observed": true
+   },
+   "Te1/0/2": {
+    "port": "Te1/0/2",
+    "status": "connected",
+    "description": "to-fx-acc-c",
+    "run_config_observed": true
+   }
+  },
+  "fx-acc-b": {
+   "Gi1/0/48": {
+    "port": "Gi1/0/48",
+    "status": "connected",
+    "run_config_observed": true
+   }
+  },
+  "fx-acc-c": {
+   "Eth1/1": {
+    "port": "Eth1/1",
+    "status": "connected"
+   }
+  }
+ },
+ "cable_map": {
+  "nodes": [
+   {
+    "host": "fx-core-a",
+    "collected": true,
+    "kind": "device"
+   },
+   {
+    "host": "fx-acc-b",
+    "collected": true,
+    "kind": "device"
+   },
+   {
+    "host": "fx-acc-c",
+    "collected": true,
+    "kind": "device"
+   },
+   {
+    "host": "fx-peer-x",
+    "collected": false,
+    "kind": "switch"
+   }
+  ],
+  "cables": [
+   {
+    "a": "fx-core-a",
+    "a_port": "Te1/0/1",
+    "b": "fx-acc-b",
+    "b_port": "Gi1/0/48"
+   },
+   {
+    "a": "fx-core-a",
+    "a_port": "Te1/0/2",
+    "b": "fx-acc-c",
+    "b_port": "Eth1/1"
+   },
+   {
+    "a": "fx-acc-b",
+    "a_port": "Gi1/0/1",
+    "b": "fx-peer-x",
+    "b_port": "Gi0/1"
+   }
+  ]
+ },
+ "migration_scenarios": {
+  "per_group": [
+   {
+    "group": "Group 1",
+    "recommended_scenario": "phased",
+    "playbook": {
+     "rollback": "Re-enable the original uplinks and restore the saved configuration."
+    }
+   },
+   {
+    "group": "Group 2",
+    "recommended_scenario": "hard_cutover",
+    "playbook": {}
+   }
+  ]
+ },
+ "failure_impact": [
+  {
+   "host": "fx-core-a",
+   "severity": "High",
+   "vlans_impacted": 3,
+   "stranded": 45,
+   "hard": 3,
+   "backup": 0,
+   "fhrp": 0,
+   "off_scan_gw_vlans": 0,
+   "blind_links": 1,
+   "detail": "VLAN 10: Hard partition (34 ep); VLAN 30: Hard partition (11 ep)"
+  },
+  {
+   "host": "fx-acc-b",
+   "severity": "Info",
+   "vlans_impacted": 0,
+   "stranded": 0,
+   "hard": 0,
+   "backup": 0,
+   "fhrp": 0,
+   "detail": "No reachability impact"
+  }
+ ]
+}

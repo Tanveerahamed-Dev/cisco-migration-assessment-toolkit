@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Link, useParams } from "react-router";
 import {
   api,
@@ -14,6 +14,15 @@ import {
   Summary,
 } from "../api";
 import { Bars, CountUp, ErrorBox, Gauge, Loading, SegBar, SevChip, SkelLines, SkelTable, useAsync } from "../components/ui";
+import {
+  IMPACT_FIELDS,
+  ImpactValue,
+  impactEntryValue,
+  impactReasonText,
+  impactStateText,
+  impactTableCell,
+  isImpactNotAssessed,
+} from "../components/ImpactValue";
 import TopologyGraph from "../components/TopologyGraph";
 import CableMap from "../components/CableMap";
 import CutoverPlanner from "../components/CutoverPlanner";
@@ -507,7 +516,138 @@ function SectionPane({ snapId, name }: { snapId: number; name: string }) {
     const list = d[ENGINE_PRIMARY[name]];
     return <div><SummaryStrip summary={d.summary} /><GenericTable data={Array.isArray(list) ? list : d} /></div>;
   }
+  if (name === "failure_impact") return <FailureImpactPane data={d} />;
   return <GenericTable data={d} />;
+}
+
+/* ---------- the snapshot "Failure impact" tab (summary.failure_impact_table, W27) ----------
+   Every row is the engine-owned projection's, in the producer's field order. The generic table showed each cell as
+   truncated text: a lower bound as a string that happened to open with "≥", and a withheld cell as its reason, with
+   nothing to tell either from a measurement, and it dropped the ninth column (detail) under its column cap. Here each
+   value column goes through ImpactValue (≥ N, NOT ASSESSED or unavailable, never a bare 0 for a withheld cell), all
+   nine columns show, and the host and detail stay text. A section the projection cannot list arrives as its own
+   disclosure, {state, reason}, and reads NOT ASSESSED with that reason.
+
+   A row key outside IMPACT_FIELDS is never dropped silently: the table names it in a visible note above the rows.
+   Its values are not rendered, deliberately: this pane cannot classify a column it does not know (a new measure could
+   carry a lower bound or a withheld reason), and a bare value there could read as a measurement. The note says the
+   column exists and that its values are not shown, so the gap is visible; the in-repo guard against the skew is
+   webapp/tests/test_impact_surfaces.py, which holds IMPACT_FIELDS equal to summary.IMPACT_FIELDS.
+
+   A value's reason is reachable without one tab stop per cell: each row carries at most one disclosure (see
+   FailureImpactRow). */
+function unrecognisedImpactColumns(rows: readonly unknown[]): string[] {
+  const seen: string[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    for (const key of Object.keys(row)) if (!IMPACT_FIELDS.includes(key) && !seen.includes(key)) seen.push(key);
+  }
+  return seen;
+}
+
+function FailureImpactPane({ data }: { data: unknown }) {
+  if (Array.isArray(data)) {
+    if (data.length === 0) return <div className="faint" style={{ fontSize: 13 }}>Empty.</div>;
+    const unknown = unrecognisedImpactColumns(data);
+    return (
+      <div>
+        {unknown.length > 0 && (
+          <div className="dim" role="note" data-impact="unrecognised_columns" style={{ fontSize: 12, marginBottom: 8 }}>
+            <ImpactValue state={{ kind: "not_assessed", why: "This screen does not know these columns, so it does not classify or show their values." }} />{" "}
+            {unknown.length} unrecognised column(s) in the failure-impact rows, not shown here: <span className="mono">{unknown.join(", ")}</span>.
+            This screen knows only the engine's {IMPACT_FIELDS.length} failure-impact fields.
+          </div>
+        )}
+        <div style={{ overflow: "auto" }}>
+          <table className="tbl">
+            <thead><tr>{IMPACT_FIELDS.map((f) => <th key={f}>{f}</th>)}</tr></thead>
+            <tbody>
+              {data.slice(0, ROW_CAP).map((r: any, i: number) => (
+                <FailureImpactRow key={`${cell(r?.host)}|${i}`} row={r} index={i} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <TruncNote shown={ROW_CAP} total={data.length} />
+      </div>
+    );
+  }
+  const held = data && typeof data === "object" ? (data as { state?: unknown; reason?: unknown }) : null;
+  if (held && typeof held.state === "string" && typeof held.reason === "string") {
+    // The reason is visible text beside the tag, so the tag is neither a tab stop nor a second copy of it.
+    return (
+      <div style={{ fontSize: 13 }}>
+        <ImpactValue state={{ kind: "not_assessed", why: held.reason }} reasonShown />{" "}
+        <span className="dim">No failure-impact row can be shown ({held.state.replaceAll("_", " ")}): {held.reason}</span>
+      </div>
+    );
+  }
+  return <GenericTable data={data} />;
+}
+
+/** One row of the Failure impact tab. Each value cell shows its state as text (≥ N, NOT ASSESSED, unavailable) but is
+ *  not a tab stop of its own: at ROW_CAP rows, an all-held fleet would otherwise put about 1,200 stops before the next
+ *  control. The row carries at most ONE: a disclosure button in its host cell, the SPA's aria-expanded pattern (as
+ *  CutoverPlanner's evidence toggle), which reveals, in a row beneath it, the reason of each of the row's values that is
+ *  not a measurement, named by its column and its state. A row whose values are all measured has nothing to disclose
+ *  and no tab stop. Each cell keeps its reason as a `title` for a pointer user's hover. */
+function FailureImpactRow({ row, index }: { row: unknown; index: number }) {
+  const [open, setOpen] = useState(false);
+  const reasonsId = useId();
+  const r: Record<string, unknown> = row && typeof row === "object" && !Array.isArray(row)
+    ? (row as Record<string, unknown>) : {};
+  const qualified = IMPACT_FIELDS.flatMap((field) => {
+    const state = impactTableCell(field, r[field]);
+    return state && state.kind !== "measured" ? [{ field, state }] : [];
+  });
+  const host = r.host;
+  const who = typeof host === "string" && host.trim() ? truncate(host.trim(), 40) : `row ${index + 1}`;
+  const disclosure = qualified.length > 0 && (
+    <button type="button" className="btn ghost impact-row-why" aria-expanded={open} aria-controls={reasonsId}
+      onClick={() => setOpen((was) => !was)}>
+      {open ? "Hide reasons" : "Reasons"}{" "}
+      {/* the space stays outside the span: an accessible-name computation trims an inline child's own text, so a
+          leading space inside it would read "Reasonsfor ..." */}
+      <span className="sr-only">{`for ${who}: ${qualified.length} value(s) not measured`}</span>
+    </button>
+  );
+  return (
+    <>
+      <tr className="row-reveal" style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}>
+        {IMPACT_FIELDS.map((f) => {
+          const v = r[f];
+          const state = impactTableCell(f, v);
+          if (!state) {
+            return (
+              <td key={f} title={cell(v)}>
+                {truncate(cell(v))}
+                {f === "host" && disclosure && <>{" "}{disclosure}</>}
+              </td>
+            );
+          }
+          return (
+            <td key={f} className={f === "severity" ? undefined : "num"}>
+              <ImpactValue state={state} reasonShown
+                format={f === "severity" ? (sev) => <SevChip sev={String(sev)} /> : undefined} />
+            </td>
+          );
+        })}
+      </tr>
+      {qualified.length > 0 && (
+        <tr id={reasonsId} className="impact-reasons" hidden={!open}>
+          <td colSpan={IMPACT_FIELDS.length}>
+            <ul aria-label={`Why ${who}'s values are not measurements`}>
+              {qualified.map(({ field, state }) => (
+                <li key={field} data-impact-reason={field}>
+                  <span className="mono">{field}</span> ({impactStateText(state)}): {impactReasonText(state)}
+                </li>
+              ))}
+            </ul>
+          </td>
+        </tr>
+      )}
+    </>
+  );
 }
 
 /* ---------- Device Risk Register (V3.23.174) ---------- */
@@ -693,11 +833,40 @@ function RiskRegisterPanel({ snapId }: { snapId: number }) {
   );
 }
 
+/** The device cell of the keystone list's NOT ASSESSED disclosure entry, which names no host. */
+function notRankedLabel(n: unknown): string {
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? `${n} row(s) not ranked` : "ranking qualified";
+}
+
+/* An empty keystone list is not a finding. summary._keystones ranks every row whose host, severity and stranded count
+   the engine publishes and lists the top ones; any row it cannot rank, a lower bound below the cut, a withheld list or a
+   blind spot adds a NOT ASSESSED disclosure entry. So an empty list means only that there was no failure-impact row to
+   rank (the engine's list was collected but empty): nothing was compared, and "no single switch dominates" was never
+   computed. The summary carries no list state beside `keystones`, so this panel cannot quote the projection's own state
+   and reason (a backend follow-up); it says what the empty list does and does not mean, and its tag reads NOT ASSESSED.
+   A summary with no keystone list at all is a different state: there is nothing to read, so its tag reads
+   "unavailable", the same word its text uses, never NOT ASSESSED (the P3-4 decision). */
+const KEYSTONES_EMPTY_WHY =
+  "No keystone ranking was computed: the summary carries no failure-impact row to rank, so no switch was compared. "
+  + "This is not a finding that no single switch dominates the fleet's dependency graph.";
+const KEYSTONES_ABSENT_WHY =
+  "Keystone ranking unavailable: this snapshot's summary carries no keystone list, so nothing about which switches the "
+  + "fleet depends on can be said here.";
+
 function Keystones({ meta }: { meta: SnapshotMeta }) {
-  const ks = meta.summary.keystones || [];
+  const listed = meta.summary.keystones;
+  const ks = Array.isArray(listed) ? listed : [];
   if (!ks.length) {
-    return <EmptyPanel title="Keystone devices · fleet depends on these most"
-      note="No keystone devices flagged — no single switch dominates the fleet's dependency graph." />;
+    const absent = !Array.isArray(listed);
+    const why = absent ? KEYSTONES_ABSENT_WHY : KEYSTONES_EMPTY_WHY;
+    return (
+      <div className="panel" data-keystones={absent ? "unavailable" : "not_ranked"}>
+        <h3>Keystone devices · fleet depends on these most</h3>
+        <div className="faint" style={{ fontSize: 12 }}>
+          <ImpactValue state={absent ? { kind: "unavailable", why } : { kind: "not_assessed", why }} reasonShown /> {why}
+        </div>
+      </div>
+    );
   }
   return (
     <div className="panel">
@@ -705,12 +874,18 @@ function Keystones({ meta }: { meta: SnapshotMeta }) {
       <table className="tbl">
         <thead><tr><th>Device</th><th>Severity</th><th className="num">Stranded</th><th className="num">VLANs</th><th>Impact</th></tr></thead>
         <tbody>
+          {/* W27 keystones (summary._keystones): counts go through ImpactValue, so a lower bound reads "≥ N", the
+              NOT ASSESSED disclosure entry reads NOT ASSESSED, and a withheld VLAN count reads unavailable. None of
+              them can render as a measured number, a 0 or a blank. */}
           {ks.map((k, i) => (
             <tr key={k.host || k.device || i} className="row-reveal" style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
-              <td className="mono"><b>{k.host || k.device || "—"}</b></td>
+              <td className="mono">
+                {k.host || k.device ? <b>{k.host || k.device}</b>
+                  : isImpactNotAssessed(k) ? <span className="faint">{notRankedLabel(k.n_not_ranked)}</span> : <b>—</b>}
+              </td>
               <td>{k.severity ? <SevChip sev={k.severity} /> : "—"}</td>
-              <td className="num">{k.stranded ?? "—"}</td>
-              <td className="num">{k.vlans_impacted ?? "—"}</td>
+              <td className="num"><ImpactValue state={impactEntryValue(k, "stranded")} /></td>
+              <td className="num"><ImpactValue state={impactEntryValue(k, "vlans_impacted")} /></td>
               <td className="dim" title={k.detail} style={{ maxWidth: 380 }}>{truncate(k.detail || "", 120)}</td>
             </tr>
           ))}

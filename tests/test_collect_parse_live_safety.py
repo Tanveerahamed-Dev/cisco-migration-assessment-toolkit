@@ -11,14 +11,28 @@ customer device, and their safety properties are the same family: never write, n
 controller, never put a credential where a bystander can read it, and never let a transport failure be
 rendered as an observation. (#9 — the controller-REST strings that were being typed at device exec prompts —
 is pinned in tests/test_readonly_and_no_egress.py, next to the doctrine sentence it falsified.)
+
+W44/F10 adds the evidence-BYTES half of that family: what both doors store must be what the session or
+controller delivered, byte for byte, whichever host collects it. A default text-mode write turned every "\\n"
+into "\\r\\n" on a Windows collecting host, and the engine reads, hashes and parses the stored bytes with no
+newline translation, so the raw-evidence receipts and the parser input depended on the collecting host. The
+tests below simulate Windows text-mode translation on ANY host, so they fail on the pre-fix writers on Linux
+and on Windows alike.
 """
+import ast
+import copy
+import hashlib
+import inspect
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 
 import pytest
+
+import synthetic_fixtures as fx
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -27,7 +41,7 @@ if ROOT not in sys.path:
 import COLLECT_PARSE_V3_23_0 as C          # noqa: E402
 from cisco_toolkit import rest_collect as R  # noqa: E402
 from cisco_toolkit.capture_integrity import CAPTURE_META_FILENAME  # noqa: E402
-from cisco_toolkit.cmdio import cmd_capture_state                  # noqa: E402
+from cisco_toolkit.cmdio import _load_cmd_output, cmd_capture_state  # noqa: E402
 
 
 def _meta(dev_dir):
@@ -375,3 +389,325 @@ def test_ise_ers_pagination_still_follows_a_genuine_multi_page_list(monkeypatch,
     assert len(calls) == 2, "both real pages must still be read"
     export = json.load(open(os.path.join(str(tmp_path), "ers_config_node.txt"), encoding="utf-8"))
     assert len(export["resources"]) == 2 and written
+
+
+# ===================================== W44/F10: the stored evidence bytes do not depend on the host ===
+_REAL_OPEN = open
+
+
+def _windows_text_open(seen: list):
+    """An ``open`` that writes text the way Windows text mode does, on ANY host.
+
+    A text-mode write that leaves ``newline`` at its default translates every "\\n" to os.linesep, which is
+    "\\r\\n" on Windows. A monkeypatched ``os.linesep`` does not reach CPython's C text layer, so the translation
+    is reproduced by turning a default ``newline`` into "\\r\\n", which is what a Windows build does with it.
+    Installed as a collector module's ``open``, it makes a Linux run fail on a writer that relies on the host's
+    translation, exactly as a Windows run does. ``seen`` records ``(path, newline)`` for every text-mode write;
+    binary opens and reads pass through untouched and unrecorded. (The idea of the W36 demo-writer simulator,
+    copied rather than imported so this file stands alone.)"""
+    def fake_open(file, mode="r", buffering=-1, encoding=None, errors=None, newline=None,
+                  closefd=True, opener=None):
+        if "b" not in mode and any(flag in mode for flag in "wax+"):
+            seen.append((file if isinstance(file, int) else os.fspath(file), newline))
+            if newline is None:
+                newline = "\r\n"
+        return _REAL_OPEN(file, mode, buffering, encoding, errors, newline, closefd, opener)
+    return fake_open
+
+
+def _read(path) -> bytes:
+    with _REAL_OPEN(path, "rb") as fh:
+        return fh.read()
+
+
+def _published(seen) -> set:
+    """Final paths of the recorded writes (`_write_json_atomic` writes `<path>.<pid>.tmp`, then renames it)."""
+    out = set()
+    for path, _newline in seen:
+        m = re.fullmatch(r"(.+)\.\d+\.tmp", str(path))
+        out.add(os.path.abspath(m.group(1) if m else str(path)))
+    return out
+
+
+def _files_under(root) -> set:
+    return {os.path.abspath(os.path.join(d, f)) for d, _dirs, files in os.walk(str(root)) for f in files}
+
+
+def test_the_windows_text_simulator_really_translates_on_this_host(tmp_path):
+    """The simulator every F10 test relies on is not inert here: a default-newline write through it is CRLF (and
+    a delivered "\\r\\n" becomes "\\r\\r\\n", the doubled form the pre-fix collector stored), while an explicit
+    no-translation write stores the text verbatim."""
+    seen = []
+    fake = _windows_text_open(seen)
+    with fake(str(tmp_path / "default.txt"), "w", encoding="utf-8") as f:
+        f.write("a\nb\r\nc")
+    with fake(str(tmp_path / "verbatim.txt"), "w", encoding="utf-8", newline="") as f:
+        f.write("a\nb\r\nc")
+    with fake(str(tmp_path / "default.txt"), "rb") as f:            # a read passes through, unrecorded
+        assert f.read() == b"a\r\nb\r\r\nc"
+    assert _read(tmp_path / "verbatim.txt") == b"a\nb\r\nc"
+    assert seen == [(str(tmp_path / "default.txt"), None), (str(tmp_path / "verbatim.txt"), "")]
+
+
+class _FixedAnswerDev:
+    """A healthy device session. Every command answers a fixed multi-line LF text (what netmiko's default
+    line-feed normalisation delivers); VERBATIM answers with the raw "\\r\\n" and lone "\\r" a session with that
+    normalisation disabled would deliver; SLOW needs the timing fallback, so the capture-metadata sidecar -- bound
+    raw evidence as well -- is written too."""
+
+    VERBATIM = "show inventory"
+    SLOW = "show vlan brief"
+
+    @classmethod
+    def answer(cls, cmd):
+        if cmd == cls.VERBATIM:
+            return 'NAME: "Chassis", DESCR: "synthetic"\r\nPID: C9300-24T, VID: V01\rend of record\n'
+        return f"{cmd}\nrow 1 of {cmd}\nrow 2 of {cmd}\n"
+
+    def send_command(self, cmd, read_timeout=None):
+        if cmd == self.SLOW:
+            raise TimeoutError("pattern not detected in output")
+        return self.answer(cmd)
+
+    def send_command_timing(self, cmd, read_timeout=None):
+        return self.answer(cmd)
+
+    def clear_buffer(self, *a, **kw):
+        return ""
+
+
+def test_live_collector_stores_exactly_the_session_bytes_under_windows_translation(tmp_path, monkeypatch):
+    """F10, SSH door: every capture is byte-for-byte the session's text encoded UTF-8 -- a "\\n" stays "\\n", a
+    delivered "\\r\\n" stays "\\r\\n" (never "\\r\\r\\n") -- and every JSON file the collector writes beside the
+    captures (the capture-metadata sidecar, the archive index, the device info) is the dump's own LF bytes, under
+    Windows text-mode translation. Every file in the device directory came through a write that declared no
+    translation, so no writer escapes the check by living on another code path."""
+    seen = []
+    monkeypatch.setattr(C, "open", _windows_text_open(seen), raising=False)
+    dev = _FixedAnswerDev()
+    dev_dir = tmp_path / "SW1"
+    paths = C.collect("SW1", "ios", dev, str(dev_dir), archive_all_output=True)
+
+    assert dev.VERBATIM in paths and dev.SLOW in paths and len(paths) > 10
+    for cmd, path in paths.items():
+        assert _read(path) == dev.answer(cmd).encode("utf-8"), cmd
+    verbatim = _read(paths[dev.VERBATIM])
+    assert verbatim.count(b"\r\n") == 1 and b"\r\r\n" not in verbatim
+
+    meta = {dev.SLOW: "timing_fallback"}
+    assert _read(dev_dir / CAPTURE_META_FILENAME) == \
+        json.dumps(meta, indent=2, ensure_ascii=False).encode("utf-8")
+    index = _read(dev_dir / "command_index.json")
+    assert b"\r" not in index
+    rows = json.loads(index)["commands"]
+    assert sorted(row["command"] for row in rows) == sorted(paths)
+    for row in rows:
+        expected = dev.answer(row["command"]).encode("utf-8")
+        assert (row["bytes"], row["sha256"]) == (len(expected), hashlib.sha256(expected).hexdigest()), \
+            row["command"]
+    info = _read(dev_dir / "device_info.json")
+    assert b"\r" not in info and b"\n" in info
+
+    assert seen and {newline for _path, newline in seen} == {""}, sorted({n for _p, n in seen}, key=repr)
+    assert _files_under(dev_dir) == _published(seen)
+
+
+def test_raw_evidence_receipts_are_the_session_bytes_whatever_the_collecting_host(tmp_path, monkeypatch):
+    """F10 at the custody layer: `_evidence_records` -- the producer of the run's raw-evidence receipts, which
+    `input_custody` then enforces on every parser read -- gives the SAME receipts for a collection written
+    natively and one written under Windows text-mode translation, each the size/SHA-256 of the delivered bytes;
+    the capture-metadata sidecar is one of those receipts. The parsers are handed the session's own text."""
+    dev = _FixedAnswerDev()
+    native_root, windows_root = tmp_path / "native", tmp_path / "windows"
+    native = C.collect("SW1", "ios", dev, str(native_root / "SW1"))
+    monkeypatch.setattr(C, "open", _windows_text_open([]), raising=False)
+    translated = C.collect("SW1", "ios", dev, str(windows_root / "SW1"))
+
+    a = C._evidence_records({"SW1": native}, str(native_root))
+    b = C._evidence_records({"SW1": translated}, str(windows_root))
+    assert a["files"] == b["files"] and a["root_sha256"] == b["root_sha256"]
+    rows = {row["path"]: row for row in b["files"]}
+    assert len(rows) == len(set(translated.values())) + 1           # every capture, plus the sidecar
+    for cmd, path in translated.items():
+        expected = dev.answer(cmd).encode("utf-8")
+        row = rows["SW1/" + os.path.basename(path)]
+        assert (row["size"], row["sha256"]) == (len(expected), hashlib.sha256(expected).hexdigest()), cmd
+    assert rows["SW1/" + CAPTURE_META_FILENAME]["commands"] == ["<capture-metadata>"]
+
+    assert _load_cmd_output(translated, "show running-config") == dev.answer("show running-config")
+    assert _load_cmd_output(translated, dev.VERBATIM) == dev.answer(dev.VERBATIM)
+
+
+@pytest.mark.parametrize("host", sorted(fx.COLLECTIONS))
+def test_live_collector_writes_the_golden_fixture_bytes_on_every_host(host, tmp_path, monkeypatch):
+    """Fed the real golden fixture text (tests/synthetic_fixtures.py, the collection behind
+    tests/golden/snapshot.json): a session answering each command with the fixture's capture is stored by the
+    live collector, under Windows text-mode translation, as exactly the bytes the golden's own writer stores, and
+    the custody producer's receipts over the two collections are identical. Before F10 a Windows live collection
+    of the very devices the golden models carried different receipts than the golden."""
+    platform, outputs = fx.COLLECTIONS[host]
+    assert not any("\r" in text for text in outputs.values())       # any CR below would be the writer's
+    refused = "% Invalid input detected at '^' marker.\n"
+
+    class _Replay:
+        def __init__(self):
+            self.asked = []
+
+        def send_command(self, cmd, read_timeout=None):
+            self.asked.append(cmd)
+            return outputs.get(cmd, refused)
+
+        def send_command_timing(self, cmd, read_timeout=None):     # pragma: no cover - never needed
+            return outputs.get(cmd, refused)
+
+    dev = _Replay()
+    monkeypatch.setattr(C, "open", _windows_text_open([]), raising=False)
+    live_root = tmp_path / "live"
+    live = C.collect(host, platform, dev, str(live_root / host))
+    golden_root = fx.write_collection(str(tmp_path / "golden"))
+
+    issued = sorted(cmd for cmd in outputs if cmd in dev.asked)
+    assert issued == sorted(cmd for cmd in outputs if cmd in live)   # every fixture answer was stored
+    assert len(issued) > len(outputs) // 2 and any(outputs[cmd].count("\n") > 2 for cmd in issued)
+    golden = {cmd: os.path.join(golden_root, host, fx.cmd_filename(cmd)) for cmd in issued}
+    for cmd in issued:
+        assert _read(live[cmd]) == _read(golden[cmd]) == outputs[cmd].encode("utf-8"), cmd
+
+    live_receipts = C._evidence_records({host: {cmd: live[cmd] for cmd in issued}}, str(live_root))
+    golden_receipts = C._evidence_records({host: golden}, golden_root)
+    assert live_receipts["files"] == golden_receipts["files"]
+    assert live_receipts["root_sha256"] == golden_receipts["root_sha256"]
+
+
+_REST_BODY = {
+    "imdata": [{"fabricNode": {"attributes": {"id": "101", "name": "leaf-101", "fabricSt": "active"}}}],
+    "items": [{"name": "FTD-01", "model": "Secure Firewall 3105"}],
+    "data": [{"host-name": "BR01", "system-ip": "10.0.0.1", "reachability": "reachable"}],
+    "response": [{"hostname": "ise-pan-1", "roles": ["PrimaryAdmin"], "nodeStatus": "Connected"}],
+}
+
+
+class _UniversalLogin:
+    """One login response every controller door accepts: vManage reads a non-HTML body, FMC takes its token and
+    DOMAINS from the headers, APIC only closes it (ISE has no login request)."""
+    headers = {"X-auth-access-token": "TOK", "DOMAINS": json.dumps([{"name": "Global", "uuid": "dom-1"}])}
+
+    def read(self):
+        return b"OK"
+
+    def close(self):
+        pass
+
+
+def test_every_controller_collector_stores_host_independent_json(tmp_path, monkeypatch):
+    """F10, REST door, over the live `CONTROLLER_COLLECTORS` denominator rather than a hand-kept list: under
+    Windows text-mode translation every export each registered collector writes -- ISE's consolidated ERS export
+    and FMC's merged pages included -- is exactly ``json.dumps(obj, indent=2)`` encoded UTF-8, with LF line breaks
+    on every host. These exports are a re-serialisation of the parsed response, never the controller's wire
+    bytes; what F10 pins is that the re-serialisation does not depend on the collecting host."""
+    def fake_get_json(opener, url, headers=None, timeout=30):
+        if "/ers/config/node/" in url:                               # ISE ERS per-id detail
+            return {"ers-node-data": {"name": "ise-pan-1", "nodeServiceTypes": "Session"}}
+        if "/ers/config/node" in url:                                # ISE ERS list (a single page)
+            return {"SearchResult": {"total": 1, "resources": [{"id": "n1", "name": "ise-pan-1"}]}}
+        return copy.deepcopy(_REST_BODY)
+
+    monkeypatch.setattr(R, "_post", lambda *a, **k: _UniversalLogin())
+    monkeypatch.setattr(R, "_get_text",
+                        lambda opener, url, headers=None, timeout=30: "XSRF" if "client/token" in url else None)
+    monkeypatch.setattr(R, "_get_json", fake_get_json)
+    expected, real_write = {}, R._write
+
+    def recording_write(out_dir, cmd, obj):
+        path = real_write(out_dir, cmd, obj)
+        expected[os.path.abspath(path)] = json.dumps(obj, indent=2).encode("utf-8")
+        return path
+
+    monkeypatch.setattr(R, "_write", recording_write)
+    seen = []
+    monkeypatch.setattr(R, "open", _windows_text_open(seen), raising=False)
+
+    fabrics = {name: collect(f"https://{name}.example", "ro", "pw", str(tmp_path / name))
+               for name, collect in R.CONTROLLER_COLLECTORS.items()}
+    assert fabrics and all(fabrics.values()), {name: len(files) for name, files in fabrics.items()}
+    assert any(path.endswith("ers_config_node.txt") for path in fabrics["ise"])    # the second ISE write site
+
+    written = sorted(os.path.abspath(path) for files in fabrics.values() for path in files)
+    assert written == sorted(expected)
+    for path in written:
+        raw = _read(path)
+        assert raw == expected[path], path
+        assert b"\r" not in raw and raw.count(b"\n") >= 5, path      # multi-line: the simulator had work to do
+    assert {newline for _path, newline in seen} == {""}
+    assert _files_under(tmp_path) == _published(seen) == set(written)
+
+
+_TRANSLATING_OPENERS = ("open", "builtins.open", "io.open", "os.fdopen")
+
+
+def _text_writes_without_a_newline_policy(source: str):
+    """``(text_writes, offenders)`` for one module's source. A text write is a call of a newline-translating
+    writer -- builtin/``io`` ``open`` or ``os.fdopen`` in a write mode, or ``Path.write_text`` -- and an offender
+    is one that does not pin ``newline`` to "" or "\\n". A mode that is not a string literal is an offender too:
+    a write whose translation is chosen at runtime cannot be shown host-independent."""
+    writes, offenders = 0, []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        name = ast.unparse(node.func)
+        kw = {k.arg: k.value for k in node.keywords if k.arg}
+        if name in _TRANSLATING_OPENERS:
+            mode = kw.get("mode", node.args[1] if len(node.args) > 1 else None)
+            if mode is None:
+                continue                                             # default "r": a read
+            if not (isinstance(mode, ast.Constant) and isinstance(mode.value, str)):
+                offenders.append((node.lineno, name, "mode is not a literal"))
+                continue
+            if "b" in mode.value or not set(mode.value) & set("wax+"):
+                continue                                             # binary, or a text read
+            newline = kw.get("newline", node.args[5] if len(node.args) > 5 else None)
+        elif isinstance(node.func, ast.Attribute) and node.func.attr == "write_text":
+            newline = kw.get("newline", node.args[3] if len(node.args) > 3 else None)
+        else:
+            continue
+        writes += 1
+        if not (isinstance(newline, ast.Constant) and newline.value in ("", "\n")):
+            offenders.append((node.lineno, name, "newline unset" if newline is None else ast.unparse(newline)))
+    return writes, offenders
+
+
+def test_the_newline_policy_check_flags_the_pre_fix_writer_shapes():
+    """The structural check below is not vacuous: it flags the exact pre-F10 writer shapes (and an unprovable
+    runtime mode) and passes the fixed ones, binary writes and reads."""
+    planted = (
+        'open(p, "w", encoding="utf-8")\n'                            # 1 the pre-fix capture / export writer
+        'os.fdopen(fd, "a")\n'                                        # 2
+        'Path(p).write_text(s, encoding="utf-8")\n'                   # 3
+        'open(p, "w", -1, "utf-8", None, None)\n'                     # 4 newline passed positionally, unset
+        'open(p, mode)\n'                                             # 5 unprovable
+        'open(p, "w", encoding="utf-8", newline="")\n'
+        'open(p, "w", newline="\\n")\n'
+        'open(p, "w", -1, "utf-8", None, "")\n'
+        'open(p, "wb")\n'
+        'open(p, encoding="utf-8")\n'
+        'open(p, "r", encoding="utf-8")\n'
+    )
+    writes, offenders = _text_writes_without_a_newline_policy(planted)
+    assert writes == 7
+    assert sorted(line for line, _name, _why in offenders) == [1, 2, 3, 4, 5]
+
+
+def test_every_live_collector_text_write_pins_no_newline_translation():
+    """The class, not the call sites: every text-mode write in every module hosting a live collector -- derived
+    from the live denominators (`collect` for SSH, `CONTROLLER_COLLECTORS` for REST), not from a list of file
+    names -- declares newline="" (or "\\n"), so a writer added later cannot reintroduce host translation
+    unnoticed. (The behavioural tests above prove the bytes; this one stops the next writer.)"""
+    ssh_module = inspect.getsourcefile(C.collect)
+    modules = {ssh_module} | {inspect.getsourcefile(fn) for fn in R.CONTROLLER_COLLECTORS.values()}
+    assert len(modules) >= 2, modules                                # the SSH entry module and rest_collect
+    for path in sorted(modules):
+        with _REAL_OPEN(path, encoding="utf-8") as fh:
+            writes, offenders = _text_writes_without_a_newline_policy(fh.read())
+        name = os.path.basename(path)
+        assert writes >= 1, f"{name}: no text write found -- the scan is looking at nothing"
+        assert not offenders, f"{name}: text write(s) left to host newline translation: {offenders}"
