@@ -211,12 +211,17 @@ describe("Snapshot cockpit", () => {
 
   // Unit 10: a data-gated panel with nothing to show renders a designed empty state (a real .panel
   // with a message) instead of silently vanishing — here Keystones, since the fixture has no
-  // summary.keystones at all.
+  // summary.keystones at all. W47 (P3-4): the message says the ranking is unavailable; it never
+  // claims "no keystone devices" or "no single switch dominates" from a list that is not there.
   it("Unit 10: an empty section renders a designed empty state instead of vanishing (return null)", async () => {
     mockFetch(meta(72));
     renderSnap();
     await screen.findByRole("heading", { name: "Demo Fleet" });
-    expect(await screen.findByText(/No keystone devices flagged/)).toBeInTheDocument();
+    const note = await screen.findByText(/Keystone ranking unavailable: this snapshot's summary carries no keystone list/);
+    const panel = note.closest(".panel") as HTMLElement;
+    expect(within(panel).getByRole("heading", { name: /Keystone devices/ })).toBeInTheDocument();
+    expect(panel.querySelector('[data-impact="not_assessed"]')).toHaveTextContent("NOT ASSESSED");
+    expect(within(panel).queryByText(/No keystone devices flagged|dominates the fleet's dependency graph\.?$/)).toBeNull();
   });
 
   // Unit 12: the explorer toggle announces its expanded/collapsed state non-visually.
@@ -765,6 +770,48 @@ describe("Snapshot cockpit · failure-impact engine states (W27)", () => {
     const core1 = rowOf(panel, "core1");
     expect(within(core1).getByText("45")).toHaveAttribute("data-impact", "measured");
     expect(core1.querySelector('[data-impact="lower_bound"]')).toBeNull();
+  });
+
+  it("keystones: an empty ranking reads NOT ASSESSED, never 'no single switch dominates'", async () => {
+    // summary._keystones lists every rankable row and discloses every other one, so [] means there was no
+    // failure-impact row to rank (a collected-but-empty list): nothing was compared, and dominance was never computed.
+    mockImpact({ keystone_contract: 4, keystones: [] });
+    renderSnap();
+    const panel = await keystonePanel();
+    expect(panel.querySelector('[data-impact="not_assessed"]')).toHaveTextContent("NOT ASSESSED");
+    expect(panel).toHaveTextContent(/No keystone ranking was computed: the summary carries no failure-impact row to rank/);
+    expect(panel).toHaveTextContent(/This is not a finding that no single switch dominates/);
+    expect(within(panel).queryByText(/No keystone devices flagged/)).toBeNull();
+    expect(panel.querySelector("table")).toBeNull();
+    expect(within(panel).queryByText("0")).toBeNull();
+  });
+
+  it("the Failure impact tab: a row key outside the engine's fields is disclosed, never dropped silently", async () => {
+    mockImpact({ sections: [{ key: "failure_impact", label: "Failure impact", count: 1 }] }, [
+      { host: "core1", severity: "High", vlans_impacted: 4, stranded: 45, hard: 4, backup: 0, fhrp: 0,
+        off_scan_gw_vlans: 0, detail: "VLAN 20: Hard partition", future_measure: 7 },
+    ]);
+    renderSnap();
+    const panel = await screen.findByRole("tabpanel", { name: /Failure impact/ });
+    await within(panel).findByText("core1");
+    const note = panel.querySelector('[data-impact="unrecognised_columns"]') as HTMLElement;
+    expect(note).not.toBeNull();
+    expect(note).toHaveTextContent(/1 unrecognised column\(s\) in the failure-impact rows, not shown here: future_measure/);
+    expect(note.querySelector('[data-impact="not_assessed"]')).not.toBeNull();
+    // its value is not shown as a bare number in a column this screen cannot classify
+    expect(within(panel).queryByText("7")).toBeNull();
+    expect(Array.from(panel.querySelectorAll("th")).map((th) => th.textContent)).not.toContain("future_measure");
+  });
+
+  it("the Failure impact tab: rows with only the engine's fields carry no unrecognised-column note", async () => {
+    mockImpact({ sections: [{ key: "failure_impact", label: "Failure impact", count: 1 }] }, [
+      { host: "core1", severity: "High", vlans_impacted: 4, stranded: 45, hard: 4, backup: 0, fhrp: 0,
+        off_scan_gw_vlans: 0, detail: "VLAN 20: Hard partition" },
+    ]);
+    renderSnap();
+    const panel = await screen.findByRole("tabpanel", { name: /Failure impact/ });
+    await within(panel).findByText("core1");
+    expect(panel.querySelector('[data-impact="unrecognised_columns"]')).toBeNull();
   });
 
   it("the Failure impact tab: ≥ N for a lower bound, NOT ASSESSED for a held cell, a published 0 stays 0", async () => {

@@ -588,7 +588,9 @@ describe("CutoverPlanner worst-case blast radius (W27 engine states)", () => {
     expect(bounds).toHaveLength(2);
     expect(bounds[0]).toHaveTextContent("≥ 42");
     expect(bounds[0].getAttribute("title")).toMatch(/At least 42: a lower bound, not an exact measurement/);
-    expect(bounds[0]).toHaveTextContent(WHY);                       // screen-reader text names why
+    // why is reachable without a hover: the value takes focus and is described by its reason, shown on focus
+    expect(bounds[0]).toHaveAttribute("tabindex", "0");
+    expect(document.getElementById(bounds[0].getAttribute("aria-describedby")!)).toHaveTextContent(WHY);
     expect(bounds[1]).toHaveTextContent("≥ 3");
     expect(card.querySelector('[data-impact="measured"]')).toBeNull();
     expect(card.querySelector('[data-impact="lower_bound_tag"]')).toHaveAttribute("title", expect.stringMatching(/may be larger/));

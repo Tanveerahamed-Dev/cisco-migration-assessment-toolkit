@@ -22,10 +22,14 @@ No local test, type-check, build, browser or Playwright run took place; the owne
 - `impactTableCell(field, value)` reads one tab cell (`summary.failure_impact_table`). A `≥`-led cell is parsed as
   `summary.impact_bound_cell` writes it. Any other string in a value column is the projection's own reason, so it is
   not assessed.
-- `projectionImpactBound(field, fact)` reads the projection's own mark on a core-page failure-impact row: a published
-  measure (`summary.IMPACT_MEASURES`) that cites a `witness` ref. This is the mark `summary._impact_bounds` reads. It
-  is applied only to the failure-impact list, because a witness ref on any other projection fact means something else
-  (the existing FactView test pins a published 0 with a witness as 0).
+- `projectionImpactBound(field, fact, rowPointer)` reads the projection's own mark on a core-page failure-impact row:
+  a published measure (`summary.IMPACT_MEASURES`) that cites a `witness` ref. This is the mark `summary._impact_bounds`
+  reads. It is applied only to failure-impact rows, because a witness ref on any other projection fact means something
+  else (the existing FactView test pins a published 0 with a witness as 0). It names each cited witness relative to the
+  row: the row's own record, one of the row's cells, or another record by its pointer.
+- `pages/core/ProjectionEvidence.tsx` `ImpactFactView` is the one view for a failure-impact row cell on the core pages.
+  The fleet topology rows and the device page rows both come from `ui_projection._topology_impact`, and both render
+  through it.
 - `<ImpactValue state>` renders the four states, and `<ImpactLowerBoundTag>` tags a figure that is a lower bound as a
   whole.
 
@@ -35,9 +39,16 @@ published 0 stays 0.
 | State | Shows | Accessible explanation |
 |---|---|---|
 | measured | the value, in an unstyled span | none needed |
-| lower bound | `≥ N`, with a dashed underline (`.impact-bound`) | `title` and screen-reader text: "At least N: a lower bound, not an exact measurement (why)" |
-| not assessed | the neutral, hatched `NOT ASSESSED` tag (`.impact-na`) | `title` and screen-reader text carry the engine's reason |
-| unavailable | faint italic `unavailable` (`.impact-unavailable`) | `title` and screen-reader text: withheld, "not a measured 0" |
+| lower bound | `≥ N`, with a dashed underline (`.impact-bound`) | "At least N: a lower bound, not an exact measurement. Why: …" |
+| not assessed | the neutral, hatched `NOT ASSESSED` tag (`.impact-na`) | the engine's reason |
+| unavailable | faint italic `unavailable` (`.impact-unavailable`) | withheld, "not a measured 0" |
+
+The explanation is never hover-only (fix round, P3-1). In tables and sentences the value is focusable (`tabIndex=0`;
+a click or tap focuses it). It is described through `aria-describedby` by a `.impact-why` element. That element is
+visually hidden but read by assistive tech, and shown in place, in the normal flow, while the value has focus. Being in
+the flow, it is never clipped by a scrolling table. On the core pages (`FactView`), a lower bound's explanation is a
+visible `.projection-reason` line, as a withheld state's reason already is. The `title` stays for a pointer user's hover.
+Text, not colour, carries every state.
 
 The CSS in `styles.css` uses existing tokens only, and no colour of health. The hatch is the one the core projection
 already uses for a withheld state (`coreSnapshot.css .projection-state`). `theme.css` is untouched, because it is
@@ -70,9 +81,12 @@ Located by grep across `webapp/frontend/src` for `stranded`, `vlans_impacted`, `
      bound.
    - The `{state, reason}` disclosure of an unlistable section reads NOT ASSESSED, with the reason visible.
 4. **Core topology failure-impact rows:** `pages/core/TopologyPaths.tsx`, `RowFacts`, in the evidence list and the
-   record inspector, through `pages/core/ProjectionEvidence.tsx` `FactView`'s new optional `lowerBound` prop.
-   - A published measure citing a witness reads `≥ N`.
+   record inspector, through `ImpactFactView` and `FactView`'s optional `lowerBound` prop.
+   - A published measure citing a witness reads `≥ N`, with its reason as a visible line.
    - Withheld cells already showed their state label and reason, so they are unchanged.
+5. **Core device page failure-impact row (W29, fix round P1):** `pages/CoreSnapshot.tsx`, `FailureImpactRow` under
+   "If this device fails". Its six measures and the off-scan count go through the same `ImpactFactView`. The original
+   slice missed it: W29 was not yet on main, and this doc wrongly said no SPA surface rendered the device selection.
 
 **Types.** `api.ts` gains `ImpactEntry`, `KeystoneEntry`, `BlastRadius`, `FailureImpactTableRow` and
 `FailureImpactTable`, and `Summary.keystone_contract`. `Summary.keystones` (was `Record<string, any>[]`) and
@@ -105,8 +119,66 @@ response is in the generated contract.
 - `pages/core/TopologyPaths.test.tsx`: a witness on the severity and stranded measures reads `≥`. A witness on
   `off_scan_gw_vlans` does not, and unbounded zeros stay zeros, in both the list and the inspector.
 
+- Fix round:
+  - `pages/CoreSnapshot.test.tsx`: a W29 device row whose measures cite a witness renders `≥ 42`, `≥ High` and `≥ 3`
+    with a visible reason naming "this row's off_scan_gw_vlans cell"; its held zeros keep their reason, and the
+    off-scan count stays plain. The existing unbounded row is the negative control: a published 42 with no witness
+    has no lower-bound treatment. The Trust cases cover the W46 items, and the paging test is deterministic.
+  - `pages/core/TopologyPaths.test.tsx`: the realistic bounded row (four `≥` measures, two held zeros, one plain 0),
+    plus the list-gate case.
+  - `components/ImpactValue.test.tsx`: row-relative witness wording (the row itself, a row cell, another record, a
+    look-alike pointer of another row); focus, `aria-describedby` and tap focus for every qualified state and the tag;
+    `reasonShown` is neither focusable nor described twice.
+  - `pages/Snapshot.test.tsx`: an empty keystone list reads NOT ASSESSED and never "no single switch dominates"; an
+    absent list reads unavailable (Unit 10); an unknown tab column is disclosed and its value is not shown, with a
+    control that has no note.
+  - `pages/core/ProjectionList.test.tsx`: the deterministic reproduction of the paging race.
+  - `webapp/tests/test_impact_surfaces.py`: the constant reconcile guard and its non-vacuity test.
+
 Each new assertion would fail on the previous source. The old card and table printed the bare count (`42`), a blank or
 "—" for null, and the tab's reason text with no state marker.
+
+## Fix round after independent review (2026-10-09)
+
+The W46 UI train (#628: W28, W29, W30) was merged into this branch first, so the W29 device page is covered. Only
+`docs/NOW.md` conflicted; every row and handoff line from both sides is kept. Everything below is source and tests
+only, and was written without running any of it (owner rule).
+
+| Finding | Resolution |
+|---|---|
+| P1: the device page showed a lower bound as a plain number | Fixed. `CoreSnapshot.tsx` `FailureImpactRow` routes its measures and off-scan count through `ImpactFactView`, the one view `TopologyPaths` also uses, so both projection surfaces share one rule. |
+| P2: hand-copied owner constants with no reconcile guard | Fixed. `webapp/tests/test_impact_surfaces.py::test_the_spa_impact_constants_equal_their_python_owners_in_order` reads `ImpactValue.tsx` and requires exact, ordered equality with `summary.IMPACT_FIELDS`, `summary.IMPACT_MEASURES` (and `ui_projection._IMPACT_MEASURES`), `ui_projection.IMPACT_SEVERITIES`, `summary.IMPACT_NOT_ASSESSED`, `summary.IMPACT_BOUND_MARK` and `summary._R_BOUND_LEAD`. The reader refuses a spread or computed entry, and a non-vacuity test proves it sees drift. |
+| P2: `FailureImpactPane` dropped an unknown row key | Fixed by disclosure. A visible note names every key outside `IMPACT_FIELDS` and says its values are not shown. Its values are deliberately not rendered: the pane cannot classify a column it does not know, and a bare value could read as a measurement. |
+| P3-1: hover-only reasons | Fixed, as described under the table above. `ImpactLowerBoundTag` gets the same treatment. |
+| P3-2: unrealistic fixture | Fixed. The topology test builds the bounded row as `_topology_impact` emits it: every measure cites the witness, the zero counts are withheld with the bound's zero reason, and the non-measures cite none. A new test puts a witness-carrying, measure-named fact on a node row and shows it stays plain, while the same fact on a failure-impact row is a bound. That exercises the list gate itself. |
+| P3-3: generic bound wording | Fixed, with one part rejected with evidence. Summary surfaces already show the backend's own reasons (`lower_bound_reasons`, the tab cell's text). On the core pages the projection publishes no reason on a published cell, so the wording names each witness relative to the row: "this row's own record (/failure_impact/i)", "this row's off_scan_gw_vlans cell (…)", or "the record at …". A row-level bound, such as the one #629 proposes, therefore reads accurately without depending on #629. Rejected: borrowing a withheld sibling cell's reason. `_topology_impact` cites the bound's witnesses on every measure whatever its state (`ui_projection.py` `_cell(..., witness=cite if measure else ())`, and `_cell` appends `witness` to the refs in every state). So a measure withheld for another cause (a missing key, a mistyped value) cites them too, and its reason would not explain the bound. |
+| P3-4: an empty keystone list read as healthy | Fixed in the SPA, with a backend follow-up. `summary._keystones` lists every rankable row and adds a NOT ASSESSED entry for any unranked row, any lower bound below the cut, a withheld list or a blind spot. So `keystones: []` arises only when there is no failure-impact row to rank. A real "no dominant switch" result is never computed. The panel now reads NOT ASSESSED: no ranking was computed, which is not a finding that no switch dominates. A summary with no keystone list says the ranking is unavailable. **Backend follow-up:** the summary carries no failure-impact list state beside `keystones` (`impact_view`'s `state` and `withheld` are dropped), so the panel cannot quote the projection's own state and reason. Carrying them would let it. |
+
+**W46 review items, added on the supervisor's instruction:**
+- The `hostList` fixture now attaches the `trust_inputs_scope` caveat to a published or collected-but-empty list even
+  when it is empty, as `ui_projection._listing`'s `kept` rule does. The Health case asserts the qualification control
+  on the count, on the ratio sentence and on the list.
+- The ratio sentence carries the count's qualifications control beside it (`InputGap`; the control is now exported
+  from `ProjectionEvidence.tsx`).
+- A device the input could not assess, whose custody is collected but empty, reads "Evidence collected, nothing
+  assessable", the limitation's own meaning. The state and its style are kept (`StateLabel`'s new optional `text`).
+- The vacuous guard is fixed: `ratio` is now `/inventory devices could not be assessed/`, so a sentence rendered over
+  a withheld count or denominator ("3 of null …") fails the tests that forbid it.
+- The Trust disclosure now says the projection counts each input's devices from the engine's per-device custody. It
+  no longer says the engine publishes each count.
+- **W29 flaky paging test (webapp-ci run 37883394667).** The cause was established statically: a component race,
+  not a test-only artifact. The paging state starts from `initial` through `useState`. `ProjectionList`'s reset
+  effect still ran on mount, aborting `request.current` and resetting to `initial`. A render outside a discrete event
+  (here, the fetched document arriving) commits the DOM but flushes passive effects later. A click landing in that
+  window started the page request, and the late mount effect then aborted it and reset the list. The result is
+  exactly the observed state: Next enabled, `aria-busy` false, the first page shown and no error. Whether the click
+  lands first depends on macrotask ordering, hence 1 in 453. Fix: the effect now resets and aborts only when its
+  source (`initial`, `document`, `host`, the reference) really changed. A user's in-flight request is never
+  overridden by the reference hint, and unmount aborts through its own effect. The test now holds the page response,
+  asserts the request is in flight (`aria-busy` true, Next disabled), releases it inside `act` and asserts the next
+  page; there are no sleeps or retries. A new `ProjectionList` test reproduces the window deterministically: a
+  sibling's layout effect clicks Next after the list's DOM is committed and before its passive effect runs. It fails
+  on the old effect.
 
 ## Not verified here
 
@@ -115,10 +187,10 @@ Each new assertion would fail on the previous source. The old card and table pri
 - Pixel baselines. The design-sync demo plan (`.design-sync/providers/sample-data.ts`) carries only measured
   blast-radius values with no W27 flags, and a measured value renders in an unstyled span. So the CutoverPlanner card
   should be pixel-identical, but no capture confirmed it.
-- Screen-reader output was not checked with assistive technology. The text is in `.sr-only` spans and `title`s.
+- Screen-reader and touch behaviour were not checked with assistive technology or a touch device. The reason is in
+  an `aria-describedby` target and a focus reveal (or a visible line on the core pages), and the `title` remains.
 
 ## Residuals outside this slice
 
 - `atlas-scope/` renders failure impact in its own embed and is not touched here (owner rule).
-- The device page payload carries a `failure_impact` selection (W23), but no SPA surface renders it yet.
 - Engine-rendered deliverables still read raw rows (W27's recorded F5).

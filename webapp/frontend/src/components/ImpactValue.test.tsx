@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import {
   IMPACT_FIELDS,
   IMPACT_NOT_ASSESSED,
+  ImpactLowerBoundTag,
   ImpactValue,
   impactEntryValue,
   impactTableCell,
@@ -30,6 +31,12 @@ const disclosure = {
 };
 
 const shown = (state: ImpactValueState) => render(<ImpactValue state={state} />).container;
+/** The element a value's aria-describedby names: its reason, reachable by focus and by assistive tech. */
+const reasonOf = (value: Element) => {
+  const id = value.getAttribute("aria-describedby");
+  expect(id).toBeTruthy();
+  return document.getElementById(id!);
+};
 
 describe("impact value classification (one rule for every surface)", () => {
   it("reads a keystone or worst-case count in its engine state, never coercing it", () => {
@@ -78,6 +85,27 @@ describe("impact value classification (one rule for every surface)", () => {
     }
     expect(projectionImpactBound("stranded", { state: "not_collected", value: null, refs: [witness], reason: HELD })).toBeUndefined();
   });
+
+  it("names each cited witness relative to the row it bounds, including a bound whose witness is the row itself", () => {
+    const row = "/failure_impact/3";
+    const citing = (...pointers: string[]) => ({ state: "published", value: 42, basis: "x", subject: `${row}/stranded`,
+      refs: [{ pointer: `${row}/stranded`, role: "subject" }, ...pointers.map((pointer) => ({ pointer, role: "witness" }))] });
+    // a row-level bound (its witness is the row's own pointer) never reads as a bound cited by some other record
+    const own = projectionImpactBound("stranded", citing(row), row)!;
+    expect(own).toContain(`this row's own record (${row})`);
+    expect(own).toMatch(/only as a minimum/);
+    expect(own).not.toMatch(/the record at/);
+    expect(projectionImpactBound("stranded", citing(`${row}/off_scan_gw_vlans`), row))
+      .toContain(`this row's off_scan_gw_vlans cell (${row}/off_scan_gw_vlans)`);
+    expect(projectionImpactBound("stranded", citing("/cable_map/cables/35"), row)).toContain("the record at /cable_map/cables/35");
+    // each witness once, in the order cited; the subject ref is not a witness
+    const both = projectionImpactBound("stranded", citing(`${row}/off_scan_gw_vlans`, "/cable_map/cables/35", "/cable_map/cables/35"), row)!;
+    expect(both.indexOf("off_scan_gw_vlans")).toBeLessThan(both.indexOf("/cable_map/cables/35"));
+    expect(both.split("/cable_map/cables/35")).toHaveLength(2);
+    expect(both).not.toContain(`${row}/stranded`);
+    // a similar-looking pointer of another row is not this row's cell
+    expect(projectionImpactBound("stranded", citing("/failure_impact/30"), row)).toContain("the record at /failure_impact/30");
+  });
 });
 
 describe("<ImpactValue>", () => {
@@ -88,8 +116,43 @@ describe("<ImpactValue>", () => {
     expect(bound).toHaveClass("impact-bound");
     expect(bound).toHaveTextContent("≥ 42");
     expect(bound.getAttribute("title")).toMatch(/^At least 42: a lower bound, not an exact measurement/);
-    expect(bound.querySelector(".sr-only")).toHaveTextContent(/At least 42: a lower bound, not an exact measurement/);
-    expect(bound.querySelector(".sr-only")).toHaveTextContent(WHY);
+    expect(bound.querySelector(".sr-only")).toHaveTextContent("At least 42");
+    // the reason is not hover-only: the value takes focus (a tap focuses it) and is described by the reason
+    expect(bound).toHaveAttribute("tabindex", "0");
+    const reason = reasonOf(bound);
+    expect(reason).toHaveTextContent(/At least 42: a lower bound, not an exact measurement/);
+    expect(reason).toHaveTextContent(WHY);
+    expect(reason).toHaveClass("impact-why");
+    fireEvent.click(bound);
+    expect(bound).toHaveFocus();
+  });
+
+  it("gives every qualified state a reachable reason, and keeps text, not colour, as the signal", () => {
+    for (const [state, face] of [
+      [{ kind: "not_assessed", why: HELD }, IMPACT_NOT_ASSESSED],
+      [{ kind: "unavailable", why: "Withheld by the engine" }, "unavailable"],
+    ] as const) {
+      const view = shown(state);
+      const value = view.querySelector(`[data-impact="${state.kind}"]`)!;
+      expect(value.firstChild?.textContent).toBe(face);
+      expect(value).toHaveAttribute("tabindex", "0");
+      expect(reasonOf(value)).toHaveTextContent(state.why);
+      view.remove();
+    }
+    const tag = render(<ImpactLowerBoundTag why="the wave's worst case may be larger" />).container
+      .querySelector('[data-impact="lower_bound_tag"]')!;
+    expect(tag).toHaveTextContent("lower bound");
+    expect(tag).toHaveAttribute("tabindex", "0");
+    expect(reasonOf(tag)).toHaveTextContent("the wave's worst case may be larger");
+  });
+
+  it("with reasonShown, leaves the reason to the caller's visible text: not focusable, not described twice", () => {
+    const view = render(<ImpactValue state={{ kind: "lower_bound", value: 42, why: WHY }} reasonShown />).container;
+    const bound = view.querySelector('[data-impact="lower_bound"]')!;
+    expect(bound).toHaveTextContent("≥ 42");
+    expect(bound).not.toHaveAttribute("tabindex");
+    expect(bound).not.toHaveAttribute("aria-describedby");
+    expect(view.querySelector(".impact-why")).toBeNull();
   });
 
   it("renders NOT ASSESSED as the neutral tag, never as 0 or a blank", () => {

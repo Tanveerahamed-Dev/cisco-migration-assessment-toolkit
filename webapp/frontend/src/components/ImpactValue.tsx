@@ -1,12 +1,13 @@
-import type { ReactNode } from "react";
+import { useId, type MouseEvent, type ReactNode } from "react";
 import type { ImpactEntry } from "../api";
 
 /* ---- engine failure-impact values: one renderer for the whole class (W47 / F8) ----
 
    The backend reads failure impact from the engine-owned projection (webapp/backend/summary.py::impact_view, W27),
    so a failure-impact or keystone value reaches the SPA in one of four states. Every surface that shows one (the
-   dashboard keystones, a cutover wave's worst-case blast radius, the snapshot "Failure impact" tab, and the core
-   topology's failure-impact rows) classifies it here and renders it with <ImpactValue>, so the states cannot drift
+   dashboard keystones, a cutover wave's worst-case blast radius, the snapshot "Failure impact" tab, and the
+   failure-impact rows of the core topology and the core device page, which share one projection row builder,
+   ui_projection._topology_impact) classifies it here and renders it with <ImpactValue>, so the states cannot drift
    apart from one screen to the next:
 
      measured      a published value, shown as itself. A published 0 stays 0.
@@ -21,7 +22,15 @@ import type { ImpactEntry } from "../api";
                    as "unavailable", which is distinct from 0.
 
    Classification only reads what the backend owner already decided. It never re-derives a bound, and it never coerces
-   a value: a count that is not a finite number is unavailable, never read as a number. */
+   a value: a count that is not a finite number is unavailable, never read as a number.
+
+   Every state but measured carries a reason, and the reason is never hover-only: the value is focusable and names its
+   reason through aria-describedby, and the reason is shown in place while the value has focus (a tap focuses it).
+   A caller that already shows the reason as visible text (the core pages' FactView) asks for `reasonShown`.
+
+   The constants below are hand copies of their Python owners. webapp/tests/test_impact_surfaces.py reads this file and
+   requires each to equal its owner exactly, in order, so a renamed, added or reordered engine field fails a test
+   instead of being silently dropped here. */
 
 /** summary.IMPACT_NOT_ASSESSED (cutover.GATE_NOT_ASSESSED): the severity of an entry that ranks nothing. */
 export const IMPACT_NOT_ASSESSED = "NOT ASSESSED";
@@ -110,12 +119,29 @@ export function impactTableCell(field: string, value: unknown): ImpactValueState
   return UNAVAILABLE;
 }
 
+/** How one cited witness pointer reads beside the failure-impact row it bounds: the row's own record, one of the row's
+ *  own cells, or another record, always with its pointer. A bound whose witness is the row itself (a row-level bound)
+ *  therefore reads as the row's own record, never as "a bound cited by another record". */
+function witnessText(pointer: string, rowPointer: string | undefined): string {
+  if (rowPointer && pointer === rowPointer) return `this row's own record (${pointer})`;
+  if (rowPointer && pointer.startsWith(`${rowPointer}/`)) {
+    return `this row's ${pointer.slice(rowPointer.length + 1).split("/").join(" ")} cell (${pointer})`;
+  }
+  return `the record at ${pointer}`;
+}
+
 /** The projection's own mark of a published lower bound on one failure-impact row cell: a published measure that
  *  cites a witness ref (ui_projection._topology_impact passes every bound's witnesses to each measure, and no other
  *  path puts a witness on a published failure-impact measure; summary._impact_bounds reads the same mark). Returns
- *  why, naming the cited pointers, or ``undefined`` when the cell is not a published lower bound. Only for rows of the
- *  failure-impact list: a witness ref on another projection fact means something else. */
-export function projectionImpactBound(field: string, fact: unknown): string | undefined {
+ *  why, naming each cited witness relative to the row (pass the row's `pointer` so a witness on the row itself, or on
+ *  one of its cells, says so), or ``undefined`` when the cell is not a published lower bound. Only for rows of the
+ *  failure-impact list: a witness ref on another projection fact means something else.
+ *
+ *  The projection publishes no reason text on a published cell, so this names the evidence rather than paraphrasing
+ *  it. It deliberately does not borrow a withheld sibling cell's reason: _topology_impact cites the bound's witnesses on
+ *  every measure whatever its state, so a measure withheld for another cause (a missing key, a mistyped value) cites
+ *  them too, and its reason would not explain this bound. */
+export function projectionImpactBound(field: string, fact: unknown, rowPointer?: string): string | undefined {
   if (!IMPACT_MEASURES.includes(field) || !fact || typeof fact !== "object") return undefined;
   const { state, refs } = fact as { state?: unknown; refs?: unknown };
   if (state !== "published" || !Array.isArray(refs)) return undefined;
@@ -124,54 +150,71 @@ export function projectionImpactBound(field: string, fact: unknown): string | un
     const { role, pointer } = (ref && typeof ref === "object" ? ref : {}) as { role?: unknown; pointer?: unknown };
     if (role === "witness" && typeof pointer === "string" && !cited.includes(pointer)) cited.push(pointer);
   }
-  return cited.length ? `the engine cites ${cited.join(", ")} as a bound on this row` : undefined;
+  if (!cited.length) return undefined;
+  const named = cited.map((pointer) => witnessText(pointer, rowPointer || undefined));
+  return `the engine publishes this value only as a minimum, citing ${named.join("; ")} as what bounds it`;
 }
 
-/** What a lower bound says, for its tooltip and its screen-reader text. */
+/** What a lower bound says, for its tooltip, its focus-revealed reason and its visible reason line. */
 export function impactBoundText(value: number | string, why: string): string {
-  return `At least ${value}: ${LOWER_BOUND_LEAD}${why ? ` (${why})` : ""}.`;
+  const said = why.trim().replace(/\.+$/, "");
+  return `At least ${value}: ${LOWER_BOUND_LEAD}${said ? `. Why: ${said}` : ""}.`;
+}
+
+/** Focus the value on a click or tap, so a touch user reaches the reason the same way a keyboard user does. */
+const focusOnTap = (event: MouseEvent<HTMLSpanElement>) => event.currentTarget.focus();
+
+/** A value with a reason that is never hover-only. By default the value is focusable and names its reason through
+ *  aria-describedby; the reason is visually hidden until the value has focus, and then shown in place. With
+ *  `reasonShown`, the caller shows the reason as visible text, so the value is neither focusable nor described twice.
+ *  The `title` stays for a pointer user's hover. */
+function Explained({ kind, className, face, why, reasonShown }: {
+  kind: string; className: string; face: ReactNode; why: string; reasonShown: boolean;
+}) {
+  const id = useId();
+  if (reasonShown) return <span className={className} data-impact={kind} title={why}>{face}</span>;
+  return (
+    <span className="impact-explained">
+      <span className={className} data-impact={kind} title={why} tabIndex={0} aria-describedby={id} onClick={focusOnTap}>
+        {face}
+      </span>
+      <span id={id} className="impact-why">{why}</span>
+    </span>
+  );
 }
 
 /** One failure-impact value in its state. `format` renders a published value (a severity as its chip); a lower bound
- *  keeps the ≥ mark in front of it. */
-export function ImpactValue({ state, format }: {
-  state: ImpactValueState; format?: (value: number | string) => ReactNode;
+ *  keeps the ≥ mark in front of it. Text, never colour alone, carries the state: "≥", NOT ASSESSED, "unavailable". */
+export function ImpactValue({ state, format, reasonShown = false }: {
+  state: ImpactValueState; format?: (value: number | string) => ReactNode; reasonShown?: boolean;
 }) {
   const show = (value: number | string): ReactNode => (format ? format(value) : String(value));
   switch (state.kind) {
     case "measured":
       return <span data-impact="measured">{show(state.value)}</span>;
     case "lower_bound": {
-      const said = impactBoundText(state.value, state.why);
-      return (
-        <span className="impact-bound" data-impact="lower_bound" title={said}>
+      const face = (
+        <>
           <span aria-hidden="true">
             {format ? <>{IMPACT_BOUND_MARK} {format(state.value)}</> : `${IMPACT_BOUND_MARK} ${state.value}`}
           </span>
-          <span className="sr-only">{said}</span>
-        </span>
+          <span className="sr-only">{`At least ${state.value}`}</span>
+        </>
       );
+      return <Explained kind="lower_bound" className="impact-bound" face={face}
+        why={impactBoundText(state.value, state.why)} reasonShown={reasonShown} />;
     }
     case "not_assessed":
-      return (
-        <span className="impact-na" data-impact="not_assessed" title={state.why}>
-          {IMPACT_NOT_ASSESSED}<span className="sr-only">: {state.why}</span>
-        </span>
-      );
+      return <Explained kind="not_assessed" className="impact-na" face={IMPACT_NOT_ASSESSED} why={state.why}
+        reasonShown={reasonShown} />;
     default:
-      return (
-        <span className="impact-unavailable" data-impact="unavailable" title={state.why}>
-          unavailable<span className="sr-only">: {state.why}</span>
-        </span>
-      );
+      return <Explained kind="unavailable" className="impact-unavailable" face="unavailable" why={state.why}
+        reasonShown={reasonShown} />;
   }
 }
 
-/** A heading tag for a figure that is only a lower bound as a whole (a wave's worst case that may be larger). */
+/** A heading tag for a figure that is only a lower bound as a whole (a wave's worst case that may be larger). Its
+ *  reason is reachable the same way as a value's. */
 export function ImpactLowerBoundTag({ why }: { why: string }) {
-  return (
-    <span className="impact-tag" data-impact="lower_bound_tag" title={why}>
-      lower bound<span className="sr-only">: {why}</span>
-    </span>
-  );
+  return <Explained kind="lower_bound_tag" className="impact-tag" face="lower bound" why={why} reasonShown={false} />;
 }

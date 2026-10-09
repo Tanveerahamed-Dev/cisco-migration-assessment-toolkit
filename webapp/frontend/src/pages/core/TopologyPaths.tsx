@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { loadPathProjection, ProjectionContextError, type Fact, type PathProjection, type SourceList } from "../../projection";
 import { ApiError } from "../../api";
-import { projectionImpactBound } from "../../components/ImpactValue";
-import { FactView, ListState, ValueText } from "./ProjectionEvidence";
+import { FactView, ImpactFactView, ListState, ValueText } from "./ProjectionEvidence";
 import { ProjectionList } from "./ProjectionList";
 import { TopologyDiagram } from "./TopologyDiagram";
 import { TopologyScope } from "./TopologyScope";
@@ -20,12 +19,15 @@ type NestedEvidence = SourceList & { readonly items: readonly ({ readonly index?
 function fieldLabel(name: string) { return name.replaceAll("_", " "); }
 function RowFacts({ row, list }: { row: TopologyRow; list: TopologyListName }) {
   // Every fact here is a typed engine field. This merely selects envelope fields for display;
-  // it does not classify their values or construct a replacement for a withheld fact. The one
-  // owner mark it forwards is a failure-impact lower bound: a published measure that cites a
-  // witness (projectionImpactBound), shown as "≥ N" like every other failure-impact surface.
+  // it does not classify their values or construct a replacement for a withheld fact. A
+  // failure-impact row goes through ImpactFactView, the view the device page's rows share
+  // (one row builder, ui_projection._topology_impact), so the owner's lower-bound mark (a
+  // published measure citing a witness) reads "≥ N" here as on every failure-impact surface.
+  // A witness on a fact of any other list means something else and stays a plain FactView.
   const facts = Object.entries(row).filter(([, value]) => typeof value === "object" && value !== null && "value" in value) as [string, Fact][];
-  return <div className="projection-fact-grid">{facts.map(([name, fact]) => <FactView key={name} label={fieldLabel(name)} fact={fact} compact
-    lowerBound={list === "failure_impact" ? projectionImpactBound(name, fact) : undefined} />)}</div>;
+  return <div className="projection-fact-grid">{facts.map(([name, fact]) => list === "failure_impact"
+    ? <ImpactFactView key={name} field={name} label={fieldLabel(name)} fact={fact} row={row.pointer} />
+    : <FactView key={name} label={fieldLabel(name)} fact={fact} compact />)}</div>;
 }
 function RowEvidence({ row }: { row: TopologyRow }) {
   const lists = Object.entries(row).filter(([, value]) => typeof value === "object" && value !== null && "items" in value) as [string, NestedEvidence][];

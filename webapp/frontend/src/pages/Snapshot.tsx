@@ -524,12 +524,35 @@ function SectionPane({ snapId, name }: { snapId: number; name: string }) {
    nothing to tell either from a measurement, and it dropped the ninth column (detail) under its column cap. Here each
    value column goes through ImpactValue (≥ N, NOT ASSESSED or unavailable, never a bare 0 for a withheld cell), all
    nine columns show, and the host and detail stay text. A section the projection cannot list arrives as its own
-   disclosure, {state, reason}, and reads NOT ASSESSED with that reason. */
+   disclosure, {state, reason}, and reads NOT ASSESSED with that reason.
+
+   A row key outside IMPACT_FIELDS is never dropped silently: the table names it in a visible note above the rows.
+   Its values are not rendered, deliberately: this pane cannot classify a column it does not know (a new measure could
+   carry a lower bound or a withheld reason), and a bare value there could read as a measurement. The note says the
+   column exists and that its values are not shown, so the gap is visible; the in-repo guard against the skew is
+   webapp/tests/test_impact_surfaces.py, which holds IMPACT_FIELDS equal to summary.IMPACT_FIELDS. */
+function unrecognisedImpactColumns(rows: readonly unknown[]): string[] {
+  const seen: string[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    for (const key of Object.keys(row)) if (!IMPACT_FIELDS.includes(key) && !seen.includes(key)) seen.push(key);
+  }
+  return seen;
+}
+
 function FailureImpactPane({ data }: { data: unknown }) {
   if (Array.isArray(data)) {
     if (data.length === 0) return <div className="faint" style={{ fontSize: 13 }}>Empty.</div>;
+    const unknown = unrecognisedImpactColumns(data);
     return (
       <div>
+        {unknown.length > 0 && (
+          <div className="dim" role="note" data-impact="unrecognised_columns" style={{ fontSize: 12, marginBottom: 8 }}>
+            <ImpactValue state={{ kind: "not_assessed", why: "This screen does not know these columns, so it does not classify or show their values." }} />{" "}
+            {unknown.length} unrecognised column(s) in the failure-impact rows, not shown here: <span className="mono">{unknown.join(", ")}</span>.
+            This screen knows only the engine's {IMPACT_FIELDS.length} failure-impact fields.
+          </div>
+        )}
         <div style={{ overflow: "auto" }}>
           <table className="tbl">
             <thead><tr>{IMPACT_FIELDS.map((f) => <th key={f}>{f}</th>)}</tr></thead>
@@ -755,11 +778,33 @@ function notRankedLabel(n: unknown): string {
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? `${n} row(s) not ranked` : "ranking qualified";
 }
 
+/* An empty keystone list is not a finding. summary._keystones ranks every row whose host, severity and stranded count
+   the engine publishes and lists the top ones; any row it cannot rank, a lower bound below the cut, a withheld list or a
+   blind spot adds a NOT ASSESSED disclosure entry. So an empty list means only that there was no failure-impact row to
+   rank (the engine's list was collected but empty): nothing was compared, and "no single switch dominates" was never
+   computed. The summary carries no list state beside `keystones`, so this panel cannot quote the projection's own state
+   and reason (a backend follow-up); it says what the empty list does and does not mean. A summary with no keystone
+   list at all says so. */
+const KEYSTONES_EMPTY_WHY =
+  "No keystone ranking was computed: the summary carries no failure-impact row to rank, so no switch was compared. "
+  + "This is not a finding that no single switch dominates the fleet's dependency graph.";
+const KEYSTONES_ABSENT_WHY =
+  "Keystone ranking unavailable: this snapshot's summary carries no keystone list, so nothing about which switches the "
+  + "fleet depends on can be said here.";
+
 function Keystones({ meta }: { meta: SnapshotMeta }) {
-  const ks = meta.summary.keystones || [];
+  const listed = meta.summary.keystones;
+  const ks = Array.isArray(listed) ? listed : [];
   if (!ks.length) {
-    return <EmptyPanel title="Keystone devices · fleet depends on these most"
-      note="No keystone devices flagged — no single switch dominates the fleet's dependency graph." />;
+    const why = Array.isArray(listed) ? KEYSTONES_EMPTY_WHY : KEYSTONES_ABSENT_WHY;
+    return (
+      <div className="panel" data-keystones="not_ranked">
+        <h3>Keystone devices · fleet depends on these most</h3>
+        <div className="faint" style={{ fontSize: 12 }}>
+          <ImpactValue state={{ kind: "not_assessed", why }} reasonShown /> {why}
+        </div>
+      </div>
+    );
   }
   return (
     <div className="panel">
