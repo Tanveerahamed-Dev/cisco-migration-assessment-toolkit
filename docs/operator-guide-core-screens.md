@@ -119,8 +119,10 @@ evidence) and **Peers**: cable-map neighbours that the collection did not collec
 
 The prioritised findings, in the engine's own order, with the engine's finding total. Each
 finding shows its severity, priority and devices (linked), and opens to the issue, the
-remediation and the evidence references. On `main` this view publishes no severity or category
-facet totals; the screen says so.
+remediation and the evidence references. Below the list, **Findings by severity**, **Findings by
+category** and **Findings by inventory device** give the engine's own facet totals. A withheld
+total keeps its state and reason and is never a zero, and a total the engine publishes only as a
+minimum reads `≥ N` (section 5).
 
 ### Topology & Paths
 
@@ -169,9 +171,15 @@ The engine never turns missing evidence into a clean result. The screens show fo
   bound: the true impact can be larger. This happens, for example, when the switch has
   inter-switch links without trunk or STP evidence, an off-scan gateway, or a cabled neighbour
   that was not collected. A severity below High and a zero count are withheld in that case.
-  - On the core screens the value shows as published. Its **Evidence** lists a reference with
-    the role `witness`, and its qualification explains the rule. Read it as "at least".
+  - On the core screens (the Device page's **If this device fails** rows and the failure-impact
+    list under Topology & Paths) it reads `≥ N`, with its reason on a line below it. Its
+    **Evidence** lists a reference with the role `witness`, and its qualification explains the
+    rule.
+  - A **Findings** facet total that the engine publishes only as a minimum also reads `≥ N`.
   - The Tools page **Failure impact** tab prints it as `≥ N` with the reason.
+  - In the cutover plan, a wave's worst-case blast radius reads `≥ N` for a lower bound,
+    `NOT ASSESSED` when nothing in the wave could be ranked or its largest count is only a zero
+    lower bound, and unavailable for a withheld count. None of them reads as 0.
   - The keystone list and the cutover plan describe it as "LOWER BOUND, at least N endpoint(s)
     stranded", with the reason.
 - **Unavailable.** **Analysis unavailable** means that analysis step failed in this run.
@@ -226,6 +234,12 @@ or empty 3-D view is not a clean bill of health.
   - A new run can be successful only when its latest receipt is PASS.
   - A run that predates receipts is shown as legacy and cannot be backfilled.
   - The Post-Implementation Review comes only from an execution run.
+- **Failure impact on a receipt.** When a comparison receipt binds failure-impact rows (its
+  rehearsal evidence), the execution run and **Adjacent canonical cutover receipts** show them
+  only as the engine reads them live from the bound after snapshot. A lower bound, a value that
+  was not assessed and an unreadable row each stay distinct from a measurement and from 0. That
+  reading is for display: it is not part of the receipt, and the JSON export holds only the bound
+  evidence. **Compare two waves** does not supply this reading.
 
 ## 9. Records you cannot delete, and why there is no purge
 
@@ -334,21 +348,13 @@ REDACTION, before anything leaves the site.
 - On the stick, a live collection also needs `--allow-live-network` before `--run-engine`.
   `portable/README-FIELD.txt` has the exact command.
 
-## Arriving with the next release (not on `main` yet)
-
-Open pull request #630 (an integration train, not merged on 2026-10-09) carries several changes
-to these screens. If it merges as proposed, two of them change what you see:
-
-- The Findings view shows severity, category and per-device facets.
-- The core screens mark a lower bound, NOT ASSESSED and unavailable values distinctly.
-
-Until #630 merges, this guide describes `main`. Update this section when it does.
-
 <!--
 Owners behind each statement (verified on origin/main 6390b66c, 2026-10-09; section 12 and the
 corrections from the W56 review re-verified the same day; the preview labels, section 9's no-purge
-decision and section 10's disposal procedure added by W62 on main ec289ab0, 2026-10-09). This
-block is for maintainers; correct the prose above when an owner changes.
+decision and section 10's disposal procedure added by W62 on main ec289ab0, 2026-10-09; the
+Findings facets, the lower-bound readings and the receipt failure-impact reading that #630 merged
+added by the W62 integration on main ddac90e3, 2026-10-09). This block is for maintainers;
+correct the prose above when an owner changes.
 - One door, --run-engine, loopback-only frozen bind: webapp/backend/serve.py (ENGINE_SENTINEL,
   _run_engine, main: numeric-loopback refusal when frozen); ingest._engine_argv; pyproject.toml
   [project.scripts] assesshub, cisco-assess.
@@ -411,6 +417,13 @@ block is for maintainers; correct the prose above when an owner changes.
   webapp/backend/ingest.py (both engine invocations pass --no-collect);
   cisco_toolkit/attestation.py is_read_only_command; cisco_toolkit/rest_collect.py module
   docstring; portable/README-FIELD.txt OFFLINE / LIVE NETWORK BOUNDARY.
-- Next release: PR #630 (W41 G21 punch-list facets; W47 F8 distinct lower-bound, NOT ASSESSED and
-  unavailable rendering), open and unmerged on 2026-10-09.
+- Merged with #630 (ddac90e3): Findings facets: CoreSnapshot.tsx FindingFacets and
+  FACET_LOWER_BOUND_CAVEATS (ui_projection._finding_facets). Lower-bound readings:
+  core/ProjectionEvidence.tsx FactView lowerBound and ImpactFactView
+  (components/ImpactValue.tsx projectionImpactBound), CoreSnapshot.tsx FailureImpactRow,
+  core/TopologyPaths.tsx RowFacts; cutover worst case: components/CutoverPlanner.tsx WorstCase,
+  webapp/backend/cutover.py _worst_blast_radius (engine.wave_blast). Receipt failure impact:
+  webapp/backend/app.py _receipts_with_impacts_views, engine.receipt_impacts_view,
+  components/ComparisonDecision.tsx RehearsalImpacts (unavailable without a supplied view),
+  pages/Execution.tsx and pages/Campaign.tsx impactsView.
 -->

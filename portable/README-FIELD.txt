@@ -53,12 +53,13 @@ limits that apply to it.
 
 LOWER BOUNDS. Some failure-impact counts are only a floor: the true
 impact can be larger, for example behind a neighbour the collection
-did not reach. On the Device page such a value looks ordinary, but
-its Evidence lists a witness reference: read it as "at least". The
-Failure impact tab under Tools and downloads spells it out, and the
-cutover plan writes LOWER BOUND, at least N. NOT ASSESSED in the
-cutover plan or the keystone list marks what could not be ranked -
-never a clean result.
+did not reach. On the Device page and in Topology & Paths such a
+count reads >= N, with the reason on a line below it, and its
+Evidence lists a witness reference. A Findings total that the engine
+publishes only as a minimum also reads >= N. The Failure impact tab
+under Tools and downloads spells it out, and the cutover plan writes
+LOWER BOUND, at least N. NOT ASSESSED in the cutover plan or the
+keystone list marks what could not be ranked - never a clean result.
 
 ATLAS SCOPE (THE 3-D VIEW OF A SNAPSHOT)
 ----------------------------------------
