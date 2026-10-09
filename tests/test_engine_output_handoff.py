@@ -6,6 +6,7 @@ the same checkouts with an explicit hosted environment. One round trip proves th
 """
 from __future__ import annotations
 
+import builtins
 import copy
 import hashlib
 import importlib.util
@@ -13,6 +14,7 @@ import io
 import json
 import os
 from pathlib import Path
+import py_compile
 import stat
 import subprocess
 import sys
@@ -108,6 +110,14 @@ def _manifest(root: Path, outputs: dict, source: str, run_id: int = RUN_ID, atte
     return {
         "schema": handoff.MANIFEST_SCHEMA, "source_commit": source,
         "tree": _git(root, "rev-parse", source + "^{tree}"),
+        "source_inputs": {
+            path: {"mode": _git(root, "ls-tree", source, "--", path).split()[0],
+                   "blob": _git(root, "rev-parse", source + ":" + path),
+                   "bytes": len(_blob(root, source, path)), "sha256": _sha(_blob(root, source, path))}
+            for path in _git(root, "ls-tree", "-r", "--name-only", source).splitlines()
+            if path not in handoff.OUTPUT_PATHS
+        },
+        "installer_inputs": {},
         "files": [{"path": p, "sha256": _sha(outputs[p]), "bytes": len(outputs[p])} for p in handoff.OUTPUT_PATHS],
         "changed_from_source": sorted(p for p in handoff.OUTPUT_PATHS if outputs[p] != _blob(root, source, p)),
         "producer": {"workflow": handoff.WORKFLOW, "run_id": str(run_id), "run_attempt": str(attempt),
@@ -404,7 +414,7 @@ def test_hash_and_size_mismatches_are_refused(repo, kind):
 @pytest.mark.parametrize("mutation", [
     lambda m: m.update(extra=True),
     lambda m: m.pop("status"),
-    lambda m: m.update(schema="engine_output_handoff/2"),
+    lambda m: m.update(schema="engine_output_handoff/1"),
     lambda m: m.update(status="APPROVED"),
     lambda m: m.update(release_authority=True),
     lambda m: m["files"].reverse(),
@@ -424,6 +434,15 @@ def test_hash_and_size_mismatches_are_refused(repo, kind):
     lambda m: m["producer"].update(python="3.11.9"),
     lambda m: m["producer"].update(runner_os="Windows"),
     lambda m: m["producer"].update(extra=1),
+    lambda m: m["source_inputs"].pop("engine.py"),
+    lambda m: m["source_inputs"]["engine.py"].update(bytes=True),
+    lambda m: m["source_inputs"]["engine.py"].update(sha256="0" * 64),
+    lambda m: m["source_inputs"]["engine.py"].update(extra=True),
+    lambda m: m["installer_inputs"].update({"untracked.py": {"mode": 420, "bytes": 1, "sha256": "0" * 64}}),
+    lambda m: m["installer_inputs"].update({handoff.INSTALLER_ROOT + "PKG-INFO":
+                                         {"mode": 493, "bytes": 1, "sha256": "0" * 64}}),
+    lambda m: m["installer_inputs"].update({handoff.INSTALLER_ROOT + "PKG-INFO":
+                                         {"mode": 420, "bytes": True, "sha256": "0" * 64}}),
 ])
 def test_malformed_or_promoting_manifest_is_refused(repo, mutation):
     with pytest.raises(handoff.HandoffRefusal):
@@ -597,9 +616,173 @@ def test_marker_policy_loads_from_this_checkout_and_restores_sys_path():
 def test_marker_policy_refuses_another_checkouts_owner(tmp_path):
     # The canonical owner is already imported from this repository, so a foreign root cannot supply it.
     identity, contents = sys.path, list(sys.path)
-    with pytest.raises(handoff.HandoffRefusal, match="did not load from this checkout"):
+    with pytest.raises(handoff.HandoffRefusal, match="git rev-parse failed"):
         handoff.marker_patterns_for(tmp_path)
     assert sys.path is identity and sys.path == contents
+
+
+def test_marker_policy_ignores_a_cached_same_path_impostor(monkeypatch):
+    name = "cisco_toolkit.distribution_verify"
+    fake = SimpleNamespace(__file__=str(ROOT / "cisco_toolkit" / "distribution_verify.py"),
+                           _marker_patterns_for=lambda _path: ())
+    monkeypatch.setitem(sys.modules, name, fake)
+    before = {key for key in sys.modules if key.startswith("_atlas_engine_marker_")}
+    path_identity, path_contents = sys.path, list(sys.path)
+    policy = handoff.marker_patterns_for(ROOT)
+    assert len(policy(handoff.OUTPUT_PATHS[0])) == 12
+    assert any(pattern.search("al" + "jazeera") for pattern in policy(handoff.OUTPUT_PATHS[0]))
+    assert sys.modules[name] is fake
+    assert sys.path is path_identity and sys.path == path_contents
+    assert {key for key in sys.modules if key.startswith("_atlas_engine_marker_")} == before
+
+
+def _policy_checkout(repo):
+    for _suffix, path in handoff.MARKER_CLOSURE:
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / path).read_bytes())
+    _commit(repo, "admitted marker sources")
+
+
+def test_marker_policy_uses_admitted_bytes_instead_of_bytecode(repo, tmp_path):
+    _policy_checkout(repo)
+    real = repo / "cisco_toolkit" / "distribution_verify.py"
+    poison = tmp_path / "poison.py"
+    poison.write_text("def _marker_patterns_for(name): return ()\n", encoding="utf-8")
+    cache = Path(importlib.util.cache_from_source(str(real)))
+    cache.parent.mkdir()
+    py_compile.compile(str(poison), cfile=str(cache), dfile=str(real), doraise=True,
+                       invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+    # The hostile cache is usable by the ordinary loader; merely creating an
+    # irrelevant filename would not establish this negative control.
+    spec = importlib.util.spec_from_file_location("marker_cache_positive_control", real)
+    assert spec and spec.loader
+    ordinary = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ordinary)
+    assert ordinary._marker_patterns_for(handoff.OUTPUT_PATHS[0]) == ()
+    policy = handoff.marker_patterns_for(repo)
+    assert any(pattern.search("al" + "jazeera") for pattern in policy(handoff.OUTPUT_PATHS[0]))
+    assert Path(policy.__code__.co_filename) == repo / "cisco_toolkit" / "distribution_verify.py"
+
+
+def test_marker_policy_refuses_physical_code_drift(repo):
+    _policy_checkout(repo)
+    (repo / "cisco_toolkit" / "distribution_verify.py").write_bytes(
+        b"def _marker_patterns_for(name): return ()\n"
+    )
+    with pytest.raises(handoff.HandoffRefusal, match="closure bytes differ"):
+        handoff.marker_patterns_for(repo)
+
+
+def test_marker_policy_cannot_import_an_unadmitted_project_sibling(repo):
+    _policy_checkout(repo)
+    target = repo / "cisco_toolkit" / "distribution_verify.py"
+    target.write_bytes(target.read_bytes() + b"\nfrom .surprise import marker_override\n")
+    (repo / "cisco_toolkit" / "surprise.py").write_bytes(b"marker_override = ()\n")
+    _commit(repo, "unadmitted policy import")
+    with pytest.raises(handoff.HandoffRefusal, match="relative import escaped"):
+        handoff.marker_patterns_for(repo)
+
+
+@pytest.mark.parametrize("poison_kind", ["cached", "project"])
+def test_marker_only_toml_import_never_uses_cache_or_project_code(repo, tmp_path, monkeypatch, poison_kind):
+    _policy_checkout(repo)
+    if poison_kind == "cached":
+        poison = SimpleNamespace(loads=lambda _text: pytest.fail("cached TOML capability was used"))
+        for name in ("tomllib", "tomli"):
+            monkeypatch.setitem(sys.modules, name, poison)
+    else:
+        for name in ("tomllib", "tomli"):
+            (tmp_path / f"{name}.py").write_text("raise AssertionError('project TOML code executed')\n", encoding="utf-8")
+            monkeypatch.delitem(sys.modules, name, raising=False)
+        monkeypatch.syspath_prepend(str(tmp_path))
+    # Exercise the missing-stdlib condition on every hosted interpreter, including
+    # the actual Python 3.10 leg. No foreign TOML provider is needed by marker rules.
+    monkeypatch.setattr(sys, "stdlib_module_names", sys.stdlib_module_names - {"tomllib"})
+    attempts = []
+    original_import = builtins.__import__
+
+    def observe_import(name, *args, **kwargs):
+        if name.split(".", 1)[0] in ("tomllib", "tomli"):
+            attempts.append(name)
+            raise AssertionError("marker loader attempted a real TOML import")
+        return original_import(name, *args, **kwargs)
+
+    # Override only the helper's view of builtins, not the process-global importer.
+    monkeypatch.setattr(handoff, "builtins", SimpleNamespace(**{**vars(builtins), "__import__": observe_import}))
+    identity, contents = sys.path, list(sys.path)
+    before = {name for name in sys.modules if name.startswith("_atlas_engine_marker_")}
+    policy = handoff.marker_patterns_for(repo)
+    for output in handoff.OUTPUT_PATHS:
+        actual = policy(output)
+        assert len(actual) == 12
+        assert [(rule.pattern, rule.flags) for rule in actual] == [(rule.pattern, rule.flags) for rule in POLICY(output)]
+    # Preserve the existing path-specific policy, not just the JSON-output profile:
+    # only immediate minified JS assets omit the canonical bare-initials rule.
+    for path, count, bare_initials in (
+        ("webapp/frontend/dist/assets/index-reviewed.js", 11, False),
+        ("release-root/webapp/frontend/dist/assets/index-reviewed.js", 11, False),
+        ("webapp/frontend/dist/assets/nested/index-reviewed.js", 12, True),
+        ("webapp/frontend/dist/assets/index-reviewed.css", 12, True),
+    ):
+        actual = policy(path)
+        assert len(actual) == count
+        assert [(rule.pattern, rule.flags) for rule in actual] == [(rule.pattern, rule.flags) for rule in POLICY(path)]
+        assert any(rule.search("a" + "j") for rule in actual) is bare_initials
+        assert any(rule.search("al" + "jazeera") for rule in actual)
+    assert attempts == []
+    assert sys.path is identity and sys.path == contents
+    assert {name for name in sys.modules if name.startswith("_atlas_engine_marker_")} == before
+    for name in ("tomllib", "tomli"):
+        if poison_kind == "cached":
+            assert sys.modules[name] is poison
+        else:
+            assert name not in sys.modules
+
+
+@pytest.mark.parametrize("statement", [
+    "import tomli", "import tomllib._parser", "from tomllib import loads",
+    "__import__('tomllib', dict(globals()), None, None, 0)",
+    "__import__('tomllib', globals(), None, None, None)",
+    "__import__('tomllib', globals(), None, None, False)",
+])
+def test_marker_only_toml_boundary_refuses_other_import_forms(repo, statement):
+    _policy_checkout(repo)
+    target = repo / "cisco_toolkit" / "distribution_verify.py"
+    target.write_bytes(target.read_bytes() + b"\n" + statement.encode("utf-8") + b"\n")
+    _commit(repo, "unsupported TOML import form")
+    with pytest.raises(handoff.HandoffRefusal, match="TOML import is outside"):
+        handoff.marker_patterns_for(repo)
+
+
+def test_marker_only_toml_boundary_refuses_another_admitted_caller(repo):
+    _policy_checkout(repo)
+    target = repo / "cisco_toolkit" / "registry_integrity.py"
+    target.write_bytes(target.read_bytes() + b"\nimport tomllib\n")
+    _commit(repo, "TOML import by another closure member")
+    with pytest.raises(handoff.HandoffRefusal, match="TOML import is outside"):
+        handoff.marker_patterns_for(repo)
+
+
+@pytest.mark.parametrize("expression", [
+    "tomllib.loads('value = 1')", "getattr(tomllib, 'loads')", "hasattr(tomllib, 'loads')",
+    "getattr(tomllib, 'loads', None)", "tomllib.__dict__", "bool(tomllib)", "tomllib()",
+])
+def test_marker_policy_refuses_toml_capability_even_after_namespace_cleanup(repo, expression):
+    _policy_checkout(repo)
+    target = repo / "cisco_toolkit" / "distribution_verify.py"
+    target.write_bytes(target.read_bytes() + (
+        "\n_original_markers = _marker_patterns_for\n"
+        "def _marker_patterns_for(name):\n"
+        f"    {expression}\n"
+        "    return _original_markers(name)\n"
+    ).encode("utf-8"))
+    _commit(repo, "future marker dependency on TOML is outside profile")
+    before = {name for name in sys.modules if name.startswith("_atlas_engine_marker_")}
+    policy = handoff.marker_patterns_for(repo)
+    assert {name for name in sys.modules if name.startswith("_atlas_engine_marker_")} == before
+    with pytest.raises(handoff.HandoffRefusal, match="TOML capability is unavailable"):
+        policy(handoff.OUTPUT_PATHS[0])
 
 
 # --------------------------------------------------------------------------- hosted producer phases
@@ -658,6 +841,26 @@ def test_producer_reports_byte_identical_regeneration(repo, produced):
     assert [row["sha256"] for row in manifest["files"]] == [_sha(_blob(repo, "HEAD", p)) for p in handoff.OUTPUT_PATHS]
 
 
+@pytest.mark.parametrize("changed", [{"GITHUB_RUN_ID": "42"}, {"GITHUB_RUN_ATTEMPT": "2"}])
+def test_producer_cannot_relabel_another_same_source_run_or_attempt(repo, produced, changed):
+    produced.regenerate(_regenerated())
+    with pytest.raises(handoff.HandoffRefusal, match="run, attempt or interpreter changed"):
+        handoff.phase_after(repo, produced.state, produced.output, environ=_hosted(repo, **changed), patterns_for=POLICY)
+    assert not produced.output.exists()
+
+
+def test_producer_cannot_hide_an_output_mode_change_beside_expected_byte_changes(repo, produced):
+    if os.name == "nt":
+        pytest.skip("executable mode is a hosted Linux producer property")
+    produced.regenerate(_regenerated())
+    target = repo / handoff.OUTPUT_PATHS[0]
+    target.chmod(0o755)
+    assert target.read_bytes() != _blob(repo, "HEAD", handoff.OUTPUT_PATHS[0])
+    with pytest.raises(handoff.HandoffRefusal, match="output executable mode"):
+        produced.after()
+    assert not produced.output.exists()
+
+
 @pytest.mark.parametrize("kind", ["tracked-outside-set", "new-untracked", "staged", "output-deleted",
                                   "output-crlf", "head-moved", "marker"])
 def test_producer_refuses_effects_outside_the_closed_set(repo, produced, kind):
@@ -683,12 +886,126 @@ def test_producer_refuses_effects_outside_the_closed_set(repo, produced, kind):
 
 def test_producer_refuses_a_removed_untracked_file(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
-    (repo / "build.log").write_bytes(b"installer residue\n")
+    metadata = repo / handoff.INSTALLER_ROOT / "PKG-INFO"
+    metadata.parent.mkdir()
+    metadata.write_bytes(b"Metadata-Version: 2.4\nName: cisco-migration-assessment-toolkit\n")
     env, state = _hosted(repo), tmp_path / "state"
     handoff.phase_before(repo, state, environ=env)
-    (repo / "build.log").unlink()
+    metadata.unlink()
     with pytest.raises(handoff.HandoffRefusal, match="untracked file set"):
         handoff.phase_after(repo, state, tmp_path / "handoff", environ=env, patterns_for=POLICY)
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_producer_refuses_hidden_index_flags_before_generation(repo, tmp_path, monkeypatch, flag):
+    monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    _git(repo, "update-index", flag, "engine.py")
+    (repo / "engine.py").write_bytes(b"VALUE = 2\n")
+    assert _git(repo, "diff", "--name-only", "HEAD") == ""
+    with pytest.raises(handoff.HandoffRefusal, match="hidden or non-cached flags"):
+        handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+    assert not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_producer_refuses_hidden_source_after_generation(repo, produced, flag):
+    produced.regenerate(_regenerated())
+    _git(repo, "update-index", flag, "engine.py")
+    (repo / "engine.py").write_bytes(b"VALUE = 2\n")
+    assert "engine.py" not in _git(repo, "diff", "--name-only", "HEAD").splitlines()
+    with pytest.raises(handoff.HandoffRefusal, match="hidden or non-cached flags"):
+        produced.after()
+    assert not produced.output.exists()
+
+
+def test_physical_source_ledger_refuses_same_size_same_mtime_drift(repo, produced):
+    produced.regenerate(_regenerated())
+    source = repo / "engine.py"
+    before = source.stat()
+    source.write_bytes(b"VALUE = 2\n")
+    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert source.stat().st_size == before.st_size
+    assert source.read_bytes() != _blob(repo, "HEAD", "engine.py")
+    with pytest.raises(handoff.HandoffRefusal, match="physical source bytes"):
+        handoff.source_inputs(repo, _git(repo, "rev-parse", "HEAD"))
+
+
+def test_source_ledger_has_every_non_output_file(repo, produced):
+    before = json.loads((produced.state / "source-before.json").read_bytes())
+    assert set(before["inputs"]) == {"engine.py", "docs/NOW.md"}
+    for path in before["inputs"]:
+        raw = _blob(repo, "HEAD", path)
+        assert before["inputs"][path] == {
+            "mode": "100644", "blob": _git(repo, "rev-parse", "HEAD:" + path),
+            "bytes": len(raw), "sha256": _sha(raw),
+        }
+    produced.regenerate(_regenerated())
+    manifest = produced.after()
+    assert manifest["source_inputs"] == before["inputs"]
+    assert manifest["installer_inputs"] == {}
+
+
+@pytest.mark.parametrize("path", ["build.log", "shadow.py", "cisco_toolkit/__pycache__/shadow.pyc",
+                                  "shadow.pth", "shadow.pyd", "shadow.dll",
+                                  handoff.INSTALLER_ROOT + "unexpected.txt",
+                                  handoff.INSTALLER_ROOT + "nested/PKG-INFO"])
+def test_producer_refuses_unadmitted_preexisting_inputs(repo, tmp_path, monkeypatch, path):
+    monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"unadmitted")
+    with pytest.raises(handoff.HandoffRefusal, match="unadmitted untracked"):
+        handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+    assert not (tmp_path / "state").exists()
+
+
+def test_installer_metadata_is_bound_as_data_not_git_source(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    path = handoff.INSTALLER_ROOT + "PKG-INFO"
+    target = repo / path
+    target.parent.mkdir()
+    raw = b"Metadata-Version: 2.4\nName: cisco-migration-assessment-toolkit\n"
+    target.write_bytes(raw)
+    state = tmp_path / "state"
+    record = handoff.phase_before(repo, state, environ=_hosted(repo))
+    assert path not in record["inputs"] and record["untracked"] == [path]
+    assert record["installer_inputs"][path]["bytes"] == len(raw)
+    assert record["installer_inputs"][path]["sha256"] == _sha(raw)
+    target.write_bytes(raw + b"changed")
+    with pytest.raises(handoff.HandoffRefusal, match="installer metadata bytes"):
+        handoff.phase_after(repo, state, tmp_path / "handoff", environ=_hosted(repo), patterns_for=POLICY)
+
+
+def test_source_filters_are_refused_before_content_conversion(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    (repo / ".gitattributes").write_bytes(b"engine.py filter=unadmitted\n")
+    _commit(repo, "filter attribute")
+    with pytest.raises(handoff.HandoffRefusal, match="unsupported filter"):
+        handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "executable"])
+def test_installer_metadata_cannot_supply_linked_or_executable_inputs(repo, tmp_path, monkeypatch, kind):
+    monkeypatch.setattr(handoff, "platform", SimpleNamespace(python_version=lambda: "3.12.11"))
+    target = repo / handoff.INSTALLER_ROOT / "PKG-INFO"
+    target.parent.mkdir()
+    outside = tmp_path / "installer-source"
+    outside.write_bytes(b"Metadata-Version: 2.4\n")
+    if kind == "symlink":
+        _symlink_or_skip(target, outside)
+    elif kind == "hardlink":
+        try:
+            os.link(outside, target)
+        except (OSError, NotImplementedError) as error:
+            pytest.skip(f"hard links unavailable: {error}")
+    else:
+        if os.name == "nt":
+            pytest.skip("executable mode is a hosted Linux producer property")
+        target.write_bytes(outside.read_bytes())
+        target.chmod(0o755)
+    with pytest.raises(handoff.HandoffRefusal):
+        handoff.phase_before(repo, tmp_path / "state", environ=_hosted(repo))
+    assert not (tmp_path / "state").exists()
 
 
 @pytest.mark.parametrize("changes", [

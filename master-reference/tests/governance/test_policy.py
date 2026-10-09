@@ -317,6 +317,7 @@ def test_protocol_evidence_owners_are_derived_truth() -> None:
             "cisco_toolkit/protocol_deltas.py",
             "cisco_toolkit/protocol_receipt_surfaces.py",
             "cisco_toolkit/stp_topology.py",
+            "cisco_toolkit/vlan_carriage.py",
             "cisco_toolkit/vtp_extended.py",
             "cisco_toolkit/vtp_safety.py",
         )

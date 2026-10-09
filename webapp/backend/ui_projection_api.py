@@ -42,6 +42,8 @@ _RESOLVER_TYPE = type(_NO_RETRIEVAL.resolver())
 _NATIVE_VERSION = "0.58.5"
 # Independent review pin for the private legacy resolver interface below.
 _LEGACY_RESOLVER_REVIEWED_VERSION = "4.26.0"
+# W52: exact main-DDAC pair is an unqualified bootstrap for the combined G14/W51 schema.
+# Both literal owners must be replaced only after independent review of fresh hosted schema output.
 # W51 contract train: the combined schema of main f797444e (W34 / G15 stored STP
 # facts, pins 16b80957.../bca688bd...), #629 + #628 (W28 trust inputs, pins
 # 6aa9a264.../a3021b67...; #629 at f6323759 carries both, pins 0553957c.../3ee0af7f...)

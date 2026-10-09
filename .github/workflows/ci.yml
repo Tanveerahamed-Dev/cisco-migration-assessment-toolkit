@@ -108,6 +108,11 @@ jobs:
           ATLAS_SCOPE_REQUIRE_REAL_TOOLCHAIN: "1"
           ATLAS_SCOPE_REQUIRE_MARKUP_ORACLE: "0"
         run: python -m pytest
+      - name: Reproduce the complete committed sample under UTC
+        if: matrix.os == 'ubuntu-24.04' && matrix.python-version == '3.12'
+        env:
+          TZ: UTC
+        run: python webapp/sample_data/build_sample.py --check
 
   typecheck:
     name: mypy
