@@ -181,8 +181,8 @@ _SCOPE_COMPILED_MODEL_SIGNATURE = tuple(
 # literals (`interfaces.${host}.${port}`), which never match. Pinned to SECTIONS_READ and to the
 # compiler's real output, member by member, by webapp/tests/test_scope_mount.py.
 _SCOPE_SNAPSHOT_SECTIONS = (
-    "acl_line_reachability", "acls", "cable_map", "cross_layer", "devices", "endpoint_identity",
-    "failure_impact", "health_scores", "interfaces", "l3_forwarding", "link_centrality",
+    "acl_line_reachability", "acls", "cable_map", "cross_layer", "devices", "device_dossiers",
+    "endpoint_identity", "failure_impact", "health_scores", "interfaces", "l3_forwarding", "link_centrality",
     "object_groups", "overlay", "physical_health", "protocol_assessability", "protocol_health",
     "punchlist", "routes", "routing_neighbors",
 )

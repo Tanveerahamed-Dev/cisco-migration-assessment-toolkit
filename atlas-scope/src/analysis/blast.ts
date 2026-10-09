@@ -911,7 +911,7 @@ export interface EngineImpactComparison {
     | "both-none"
     | "engine-impact-only"
     | "ours-impact-only"
-    /** The engine holds no record, or holds one with nothing observed in it. */
+    /** The owner holds the assessment, its evidence is unavailable, or no admitted impact count exists. */
     | "engine-silent"
     /** We could not compute a blast radius at all — distinct from computing "none". */
     | "ours-not-determined";
@@ -1260,10 +1260,23 @@ export function failureImpact(hostId: string, graph?: TopologyGraph): HostFailur
 
 export function compareEngineImpact(device: Device | null, ourStranded: string[] | null): EngineImpactComparison {
   const record = device?.impact ?? null;
-  const note =
+  const basisNote =
     "The engine's failure_impact counts VLAN-scoped endpoints from its own L2 analysis; ours counts endpoint records " +
     "on hosts separated in the topology graph. The two measure different things, so a numeric gap is not a contradiction — " +
     "a qualitative gap (one says partition, the other says none) is.";
+  const admitted = record !== null && record.unavailable === null &&
+    (record.assessable === "published" || record.assessable === "lower_bound");
+  const reason = record?.unavailable ?? record?.why;
+  const note = `${basisNote} ${!admitted
+    ? `The engine impact is not assessed${reason ? `: ${reason}` : ": no readable owner verdict is available"}. A held row is not a finding of no impact.`
+    : record.assessable === "lower_bound"
+      ? `The engine counts are lower bounds, not exact totals; a positive bound confirms some impact, while a zero floor cannot establish no impact.${reason ? ` Owner reason: ${reason}` : ""}`
+      : `The engine owner publishes this assessment as exact.${reason ? ` Owner reason: ${reason}` : ""}`}`;
+  // Raw row values are retained for inspection, but only the persisted owner's admitted result
+  // can participate in a comparison. A held 0 must never become a measured "none".
+  if (!admitted) {
+    return { record, basis: "different-measure", qualitative: "engine-silent", note };
+  }
   if (record === null || (record.stranded === null && record.hard === null)) {
     return { record, basis: "different-measure", qualitative: "engine-silent", note };
   }
@@ -1276,7 +1289,7 @@ export function compareEngineImpact(device: Device | null, ourStranded: string[]
      positive count is a positive observation on its own; but "no impact" needs BOTH counts present
      and zero, otherwise the engine was silent on the half that could have said otherwise. */
   const engineImpact = (record.stranded ?? 0) > 0 || (record.hard ?? 0) > 0;
-  if (!engineImpact && (record.stranded === null || record.hard === null)) {
+  if (!engineImpact && (record.assessable === "lower_bound" || record.stranded === null || record.hard === null)) {
     return { record, basis: "different-measure", qualitative: "engine-silent", note };
   }
   const oursImpact = ourStranded.length > 0;
