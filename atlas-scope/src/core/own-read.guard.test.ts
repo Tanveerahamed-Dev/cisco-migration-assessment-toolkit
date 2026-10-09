@@ -403,6 +403,7 @@ describe("a name-keyed dictionary is read only through core/own.ts", () => {
     ["fabric.findings[].evidenceBasis", "refused outside the engine contract (E_EVIDENCE_CONTRACT)"],
     ["fabric.findings[].evidenceRefs[].kind", "refused outside the engine contract (E_EVIDENCE_CONTRACT)"],
     ["fabric.findings[].evidenceRefs[].role", "refused outside the engine contract (E_EVIDENCE_CONTRACT)"],
+    ["fabric.devices[].impact.assessable", "ownedImpact admits only the four persisted owner states; unknown or unreadable verdicts become null and hold all measures (compile-impact-owner.test.ts: unknown verdict)"],
     ["fabric.evidenceRecords[].type", "computed by the compiler from the JSON type, never read from the snapshot"],
   ]);
 

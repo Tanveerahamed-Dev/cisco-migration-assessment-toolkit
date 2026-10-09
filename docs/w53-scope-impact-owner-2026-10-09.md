@@ -65,3 +65,24 @@ exact pointer/host admission and raw-detail disclosure. No assertion or gate is 
 Supervisor review and merge follow the latest exact-head results on
 [PR #632](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/632).
 Coordination remains on #630; its branch and the G14/#631 branch were not edited.
+
+## Preserved hosted failure and correction
+
+Fresh Scope run `37926913407` / job `113808427143` at `aa322d2e`
+passed compiler export/capture, typecheck and the committed four-file reproduction checks.
+Vitest completed with **1 failed / 7,597 passed / 27 skipped**, across 255 files.
+The failure is `own-read.guard.test.ts:411`: its derived closed-vocabulary census
+now finds `fabric.devices[].impact.assessable`, while `ENFORCED_AT_COMPILE` has
+no classification for that new field. The compiler already holds unknown owner verdicts
+as null, and the compiler counterexample exercises that behavior. Register that enforcement
+rationale while keeping the derived census assertion, all controls, limits and timeouts intact.
+No data/golden expectation, compiler predicate or sample changes for this correction.
+The subsequent mutation, build, mount and browser steps were skipped and remain unverified
+on that failed head; the other passing tests do not close the workflow.
+
+Bootstrap Windows run `37925731741` at superseded `60bf94d8` was explicitly
+cancelled to release the final-head workflow: its build job had passed, its full source gate
+was still in progress. That unfinished gate remains cancelled, not passed or transferred.
+The first same-head webapp run `37926913419` was cancelled when the PR-body update
+triggered replacement run `37927021756`. All of these observations remain in Actions.
+Fresh final-head complete gates and supervisor review remain required.
