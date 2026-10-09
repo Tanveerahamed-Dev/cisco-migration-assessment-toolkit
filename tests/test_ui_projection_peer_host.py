@@ -352,6 +352,10 @@ def test_two_owning_devices_are_unverified_with_every_observation_a_witness(doc_
     snap["devices"]["r3"] = {"hostname": "r3"}
     snap["interfaces"]["r3"] = {"Gi2": {"svi_ip": "192.0.2.2 255.255.255.252", "run_config_observed": True}}
     assert _engine_owners(snap, "192.0.2.2") == ["r2", "r3"]
+    # the producer counts r3 in its inventory; W51 reconciles that count with the roster, so the fixture counts it
+    # (the record left uncounted is pinned below as the gap it is)
+    uncounted = copy.deepcopy(snap)
+    _counted(snap, complete=1)
     peers = _peers(snap, doc_validator)
     for fact in (peers["ospf"][0], peers["bgp"][0]):
         assert (fact["state"], fact["value"]) == (UV, None)
@@ -360,6 +364,15 @@ def test_two_owning_devices_are_unverified_with_every_observation_a_witness(doc_
         assert "caveats" not in fact
     # the other neighbour is untouched by the duplicate
     assert peers["ospf"][1]["state"] == CBE
+    # W51: with r3 left out of the record's inventory count the record does not reconcile with the roster. Two owners
+    # stay unverified whatever the coverage, but the address no device carries is no longer a clean "not resolved":
+    # it is not collected, citing the count that does not reconcile
+    peers = _peers(uncounted, doc_validator)
+    for fact in (peers["ospf"][0], peers["bgp"][0]):
+        assert (fact["state"], fact["value"]) == (UV, None)
+        assert _refs(fact, "witness") == {"/interfaces/r2/Gi1/svi_ip", "/interfaces/r3/Gi2/svi_ip"}
+        assert "caveats" not in fact
+    _assert_gaps(peers["ospf"][1], 1, ABSENT_TAIL, {"/collection_completeness/summary/inventory"})
 
 
 def test_an_address_on_this_device_is_unverified_alone_or_with_another_owner(doc_validator):
@@ -425,7 +438,7 @@ def test_an_owner_whose_rival_capture_did_not_parse_is_not_published(doc_validat
     """The review's counterexample: r2 carries the neighbour's address on Vlan99 in VRF MGMT; r3, the real adjacency,
     holds it in the global table, but r3's interface running-config capture did not parse. Over the complete control
     (r3 captured, with another address) r2 is published; with r3's capture missing the same r2 is withheld."""
-    def fleet(r3_captured):
+    def fleet(r3_captured, counted=True):
         snap = _base()
         snap["routing_neighbors"]["r1"]["ospf"][0]["address"] = "10.0.0.2"
         snap["interfaces"]["r2"]["Vlan99"] = {"svi_ip": "10.0.0.2 255.255.255.0", "vrf": "MGMT",
@@ -434,6 +447,10 @@ def test_an_owner_whose_rival_capture_did_not_parse_is_not_published(doc_validat
         snap["interfaces"]["r3"] = {"Gi0/1": {"status": "connected"}}
         if r3_captured:
             snap["interfaces"]["r3"]["Gi0/1"].update(svi_ip="10.9.9.3 255.255.255.0", run_config_observed=True)
+        if counted:
+            # r3 is an inventory device the producer counts (its essential captures came back either way; only its
+            # interface running-config differs): W51 reconciles that count with the roster
+            _counted(snap, complete=1)
         return snap
 
     complete = _peers(fleet(True), doc_validator)["ospf"][0]
@@ -444,6 +461,12 @@ def test_an_owner_whose_rival_capture_did_not_parse_is_not_published(doc_validat
     gap = _peers(snap, doc_validator)["ospf"][0]
     assert (gap["state"], gap["value"]) != (complete["state"], complete["value"])
     _assert_gaps(gap, 1, OWNER_TAIL, {"/interfaces/r2/Vlan99/svi_ip", "/interfaces/r3"})
+    # W51: the complete control with r3 left out of the record's inventory count -- a record that does not reconcile
+    # with the roster, so the roster may miss a device that is a second owner -- withholds the same r2, citing the
+    # count
+    uncounted = _peers(fleet(True, counted=False), doc_validator)["ospf"][0]
+    _assert_gaps(uncounted, 1, OWNER_TAIL,
+                 {"/interfaces/r2/Vlan99/svi_ip", "/collection_completeness/summary/inventory"})
 
 
 def _counted(snap, **extra):

@@ -27,6 +27,12 @@ owner ``cisco_toolkit/impact_assessability.py`` (W33), which also bounds a row b
 (inter-switch links with no trunk/STP evidence) or by its absence (a row older than that count). So the sample rows
 each surface flags are derived from each stored row's own evidence (:func:`_sample_bounds`), never from a host list:
 core2's uncollected router as before, plus every row whose stored count is positive or absent.
+
+W51 (the contract train): the projection's fleet qualifier reads the collection_completeness record through one
+coverage verdict, and a record the snapshot does not carry is a gap of it (no blind spot can be ruled out), so every
+ranking over such a snapshot is a disclosed lower bound and an empty list is not collected. The constructed fixtures
+therefore carry the record the real producer writes for a fully collected fleet (:func:`_complete_record`, bound to
+the producer by a test); a snapshot without it is pinned on its own.
 """
 from __future__ import annotations
 
@@ -126,14 +132,30 @@ def _downstream_fleet():
                     "Gi48": _edge("Gi48", "dsw", "Switch")}}
 
 
-def _snapshot(interfaces, waves=()):
+#: The essential captures analyze.compute_collection_completeness tiers a device by (one spelling of each group).
+CAPTURES = ("show interface status", "show interface switchport", "show version", "show cdp neighbors detail")
+
+
+def _complete_record(hosts):
+    """The blind-spot record analyze.compute_collection_completeness writes for a fleet whose every inventory device
+    returned every essential capture: each counted complete, no blind-spot row. Bound to the real producer by
+    test_the_fixture_completeness_record_is_the_real_producers."""
+    n = len(hosts)
+    return {"summary": {"inventory": n, "complete": n, "partial": 0, "not_collected": 0}, "devices": []}
+
+
+def _snapshot(interfaces, waves=(), completeness=True):
     """The REAL producers' rows over `interfaces`, as a stored snapshot carries them, with one hard-cutover wave per
-    ``(group, hosts)``. JSON round-tripped: what the store hands every read route."""
+    ``(group, hosts)``. JSON round-tripped: what the store hands every read route. Every engine run stores the
+    collection_completeness record; W51 reads one the snapshot does not carry as a coverage gap (no blind spot can be
+    ruled out), so the fixture carries the record of a fully collected fleet unless `completeness` is false."""
     snap = {"schema": "collect_parse_snapshot/1", "devices": {host: {"hostname": host} for host in interfaces},
             "interfaces": {host: {port: asdict(row) for port, row in ports.items()}
                            for host, ports in interfaces.items()},
             "failure_impact": analyze.compute_failure_impact(interfaces),
             "cable_map": analyze.compute_cable_map(interfaces), "routes": {}}
+    if completeness:
+        snap["collection_completeness"] = _complete_record(interfaces)
     if waves:
         snap["wave_sequencing"] = [{"group": group, "make_before_break": [], "hard_cutover": list(hosts)}
                                    for group, hosts in waves]
@@ -299,6 +321,19 @@ def test_the_impact_fields_and_tokens_are_the_projections_own(sample):
         ("witness", ("failure_impact", 7, "blind_links"))]
     assert ia.blind_bound({}, ("failure_impact", 7)).witnesses == [("witness", ("failure_impact", 7))]
     assert ia.blind_bound({"blind_links": 0}, ("failure_impact", 7)) is None
+
+
+def test_the_fixture_completeness_record_is_the_real_producers(tmp_path):
+    """The record _snapshot stores is exactly what analyze.compute_collection_completeness writes when every device of
+    each fixture fleet returned every essential capture, never a hand-made shape the projection happens to accept."""
+    capture = tmp_path / "captured.txt"
+    capture.write_text("synthetic captured output\n", encoding="utf-8")
+    for fleet in (_downstream_fleet(), _unsimulatable_fleet()):
+        hosts = list(fleet)
+        record = analyze.compute_collection_completeness(hosts, {h: {c: str(capture) for c in CAPTURES} for h in hosts})
+        assert record == _complete_record(hosts), record
+        assert _snapshot(fleet)["collection_completeness"] == record
+        assert "collection_completeness" not in _snapshot(fleet, completeness=False)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -669,6 +704,40 @@ def test_a_row_with_an_empty_host_is_disclosed_like_one_with_no_host(host):
     assert f"/failure_impact/{k} (names no readable host, so it could be any switch here)" in br["detail"], br["detail"]
 
 
+def test_a_snapshot_without_a_collection_completeness_record_bounds_every_ranking():
+    """W51: a snapshot that carries no collection_completeness record cannot rule out a blind spot, so the exact
+    control above (gw and acc fully assessed, every cable-map peer collected) keeps its measured values and order, but
+    neither the keystone ranking nor the wave's worst case reads as complete: each says it is a lower bound, worded by
+    the projection's fleet qualifier (no row it cites resolves, so one record the engine cannot read, never a listed
+    blind device). The same fleet with the record is the exact control of the tests above."""
+    snap = _snapshot(_downstream_fleet(), waves=[("alone", ("gw",))], completeness=False)
+    _node(snap, "dsw")["collected"] = True
+    _node(snap, "wan")["collected"] = True
+    raw = _by_host(snap)
+    assert "fleet_lists_exclude_blind_devices" in ui.project_topology(snap)["failure_impact"]["caveats"]
+    view = summary.impact_view(snap)
+    assert (view["blind"], view["blind_unread"]) == (0, 1)
+    blind = summary._R_IMPACT_BLIND_UNREAD.format(n=1)
+    keystones = summary.summarize(snap)["keystones"]
+    assert keystones[:-1] == [_exact(raw["gw"]), _exact(raw["acc"])]        # the measured ranking is unchanged
+    note = keystones[-1]
+    assert note["host"] == "" and note["severity"] == summary.IMPACT_NOT_ASSESSED and note["n_not_ranked"] == 0
+    assert note["detail"] == f"The ranking is a lower bound: {blind}.", note["detail"]
+    br = {w["group"]: w for w in cutover.build_plan(snap)["waves"]}["alone"]["blast_radius"]
+    # the worst row itself is no lower bound (no evidence of its own bounds it), so its counts are not "at least":
+    # the fleet-level gap is what keeps the wave's worst case from being complete
+    assert {k: v for k, v in br.items() if k != "detail"} == {
+        **{k: v for k, v in _exact(raw["gw"]).items() if k != "detail"}, "complete": False, "n_not_ranked": 0}
+    assert br["detail"] == f"{raw['gw']['detail']} — LOWER BOUND, the worst case may be larger: {blind}.", br["detail"]
+    # the control: the same fleet with the producer's record is complete and renders exactly the stored row
+    ctrl = _snapshot(_downstream_fleet(), waves=[("alone", ("gw",))])
+    _node(ctrl, "dsw")["collected"] = True
+    _node(ctrl, "wan")["collected"] = True
+    assert summary.summarize(ctrl)["keystones"] == [_exact(raw["gw"]), _exact(raw["acc"])]
+    assert ({w["group"]: w for w in cutover.build_plan(ctrl)["waves"]}["alone"]["blast_radius"]
+            == {**_exact(raw["gw"]), "complete": True, "n_not_ranked": 0})
+
+
 def test_the_sample_plan_keeps_its_worst_cases_and_a_duplicate_is_never_picked(sample):
     plan = cutover.build_plan(copy.deepcopy(sample))
     assert plan["waves"]
@@ -766,6 +835,13 @@ def test_the_cutover_document_prints_a_lower_bound_as_at_least(tmp_path, sample)
     (line,) = _blast_lines(ctrl, tmp_path)
     assert f"gw (High) — {g['stranded']} endpoint(s) stranded across {g['vlans_impacted']} VLAN(s)." in line, line
     assert "at least" not in line and "LOWER BOUND" not in line, line
+    # W51: the same control stored without a collection_completeness record keeps its exact counts (nothing of its
+    # own bounds gw's row) but prints the worst case as possibly larger: no blind spot can be ruled out
+    del ctrl["collection_completeness"]
+    (line,) = _blast_lines(ctrl, tmp_path)
+    assert f"gw (High) — {g['stranded']} endpoint(s) stranded across {g['vlans_impacted']} VLAN(s)." in line, line
+    assert "at least" not in line, line
+    assert ("LOWER BOUND, the worst case may be larger: " + summary._R_IMPACT_BLIND_UNREAD.format(n=1)) in line, line
 
 
 # --------------------------------------------------------------------------------------------------
@@ -925,19 +1001,33 @@ def test_a_failure_impact_section_that_is_not_a_list_shows_the_projections_discl
 
 def test_a_valid_empty_failure_impact_list_stays_an_empty_table(client):
     """The control: a list the producer wrote empty, which the projection reads as collected but empty, is still the
-    empty table (the tab says "Empty."); only a withheld list becomes a disclosure."""
-    sid = _upload(client, {"devices": {"sw1": {}}, "failure_impact": []})
+    empty table (the tab says "Empty."); only a withheld list becomes a disclosure. The snapshot carries the
+    collection_completeness record every engine run stores (sw1 fully collected): W51 reads a snapshot without one as
+    unable to rule out a blind spot, and an empty list under that gap is withheld (pinned below)."""
+    sid = _upload(client, {"devices": {"sw1": {}}, "failure_impact": [],
+                           "collection_completeness": _complete_record(["sw1"])})
     stored = json.loads(client.get(f"/api/snapshots/{sid}/raw").content)
     assert ui.project_topology(stored)["failure_impact"]["state"] == "collected_but_empty"
     assert client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"] == []
     # an empty list the projection withholds (its phase failed) is disclosed, never an empty clean table
     sid = _upload(client, {"devices": {"sw1": {}}, "failure_impact": [],
+                           "collection_completeness": _complete_record(["sw1"]),
                            "assessment_integrity": {"failure_impact": "failed"}})
     stored = json.loads(client.get(f"/api/snapshots/{sid}/raw").content)
     listing = ui.project_topology(stored)["failure_impact"]
     assert listing["state"] != "collected_but_empty", listing
     data = client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"]
     assert data == {"state": listing["state"], "reason": listing["reason"]}, data
+    # W51: the same empty list in a snapshot that carries no collection_completeness record is not a clean result
+    # (any device could be an uncollected one whose row is missing): not collected, and disclosed like any withheld list
+    sid = _upload(client, {"devices": {"sw1": {}}, "failure_impact": []})
+    stored = json.loads(client.get(f"/api/snapshots/{sid}/raw").content)
+    listing = ui.project_topology(stored)["failure_impact"]
+    assert listing["state"] == "not_collected", listing
+    assert "collection_completeness cannot be read" in listing["reason"], listing["reason"]
+    assert listing["reason"].endswith("an empty list is not a clean result"), listing["reason"]
+    data = client.get(f"/api/snapshots/{sid}/section/failure_impact").json()["data"]
+    assert data == {"state": "not_collected", "reason": listing["reason"]}, data
 
 
 # --------------------------------------------------------------------------------------------------

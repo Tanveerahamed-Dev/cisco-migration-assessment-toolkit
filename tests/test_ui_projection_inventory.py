@@ -1378,6 +1378,72 @@ CAP_SITES = {
         "exempt: the CL-06 detail says '(+N more)' in-band; its title states the full port-channel count",
     ("analyze._vlan_list_summary", "vids[:cap]"):
         "exempt: the CL-02 detail says '(+N more)' in-band; its title states the full VLAN count",
+    # G05 (W40, overview.axes[].unassessed) names these producers: AXIS_UNASSESSED as the owners of each axis's
+    # could-not-assess count, AXIS_UNASSESSED_ABSENT (prose) as producers that store none. From the first the projection
+    # reads only a summary count, n_devices and one per-device field, each over the full per-device list (len() before
+    # any cut); from the second (application intelligence, segmentation) it reads nothing.
+    ("analyze.compute_syslog_intelligence", "not_collected[:20]"):
+        "exempt: summary.hosts_not_collected, a host preview never read; n_not_collected is the full list's len()",
+    ("analyze.compute_syslog_intelligence", "example[:220]"):
+        "exempt: a detection's example log line, which the projection never reads",
+    ("analyze.compute_syslog_intelligence", "flapping[:5]"):
+        "exempt: interface names quoted in a link-flap detection's detail prose, which the projection never reads",
+    ("analyze.compute_syslog_intelligence", "sorted(msg_count.items(), key=lambda kv: (-kv[1], kv[0]))[:6]"):
+        "exempt: per_device[].top_messages; of a per-device row the projection reads only its collected flag",
+    ("analyze.compute_platform_health", "not_collected[:20]"):
+        "exempt: summary.hosts_not_collected, a host preview never read; the Unknown band counts every per-device row",
+    ("analyze.compute_qos_audit", "not_assessable[:20]"):
+        "exempt: summary.hosts_not_assessable, a host preview never read; n_not_assessable is the full list's len()",
+    ("analyze.compute_qos_audit", "naked_voice[:6]"):
+        "exempt: voice ports quoted in a finding's detail prose, after the full count; the projection never reads it",
+    ("analyze.compute_qos_audit", "q['policy_maps'][:5]"):
+        "exempt: policy-map names quoted in a finding's detail prose, after the full count; never read",
+    ("analyze.compute_qos_audit", "dangling[:5]"):
+        "exempt: policy names quoted in a finding's detail prose, which the projection never reads",
+    ("analyze.compute_qos_audit", "with_qos[:5]"):
+        "exempt: hosts quoted in the fleet mixed-posture finding, which states both full counts in-band; never read",
+    ("analyze.compute_qos_audit", "without_qos[:5]"):
+        "exempt: hosts quoted in the fleet mixed-posture finding, which states both full counts in-band; never read",
+    ("analyze.compute_software_risk", "sorted(not_assessable)[:20]"):
+        "exempt: summary.hosts_config_not_assessable, a host preview never read; its count is the full list's len()",
+    ("analyze.compute_segmentation", "exposed_oncrit[:8]"):
+        "exempt: domain names in a segmentation risk's detail prose (its title states the full count); never read",
+    ("analyze.compute_application_intelligence", "sorted({f.get('category', '') for f in hi_find})[:5]"):
+        "exempt: categories quoted in a domain risk's prose, after the full count; never read",
+    ("analyze.compute_application_intelligence",
+     "[{'group': g.get('group', ''), 'name': g.get('name', ''), 'category': g.get('category', '')} "
+     "for g in dom_groups][:20]"):
+        "exempt: domains[].media_groups, which no projected value and no producer the projection reads consumes",
+    ("analyze.compute_application_intelligence", "parts[:3]"):
+        "exempt: the first three octets of a querier IP, a /24 grouping key, not a value",
+    ("analyze.compute_application_intelligence", "qh[:6]"):
+        "exempt: querier switches of a cross-domain risk row and its prose; never read",
+    ("analyze.compute_application_intelligence", "sorted(ips)[:6]"):
+        "exempt: querier IPs of a cross-domain risk row and of its prose (which states the full count); never read",
+    ("analyze.compute_application_intelligence", "sorted(q_sub_hosts[v][sub])[:6]"):
+        "exempt: querier switches of a cross-domain risk row; never read",
+    ("analyze.compute_application_intelligence", "k['neighbors'][:8]"):
+        "exempt: coupled domains quoted in the keystone risk's prose, after the full count; never read",
+    ("analyze.compute_application_intelligence", "d['neighbors'][:8]"):
+        "exempt: coupled domains quoted in an on-air coupling risk's prose, after the full count; never read",
+    ("analyze.compute_application_intelligence", "nbr[:3]"):
+        "exempt: coupled domains quoted in a cutover-order rationale, after the full count; never read",
+    ("analyze.compute_application_intelligence",
+     "sorted((r for r in cross if r.get('kind') not in _dep_kinds), key=_csort)[:55]"):
+        "exempt: cross_domain_risks (and summary.n_cross_domain_risks, its len()); neither is read by the projection "
+        "or by compute_executive_brief, whose application-domain headlines the projection publishes",
+    ("analyze.compute_application_intelligence", "sorted(_deps + _querier, key=_csort)[:60]"):
+        "exempt: cross_domain_risks (and summary.n_cross_domain_risks, its len()); neither is read by the projection "
+        "or by compute_executive_brief, whose application-domain headlines the projection publishes",
+    # NOT a clean exemption -- an open follow-up, pre-existing on main and only made visible by G05 naming this
+    # producer: compute_vlan_cutover_matrix maps each VLAN's application domain (vlan_cutover[].app_domain, and the
+    # highest tier as criticality) from this capped domains[].vlans list, which the projection publishes. A domain with
+    # more than 40 VLANs (domains[].vlan_count above len(vlans)) leaves VLAN 41 onward with an empty app_domain the
+    # projection reads as "no application domain maps this VLAN". Neither the stored sample nor the golden reaches the
+    # cap (largest domain: 5 VLANs). Closing it needs a projection disclosure or an engine change (follow-up, W51).
+    ("analyze.compute_application_intelligence", "vlans_sorted[:40]"):
+        "exempt: OPEN FOLLOW-UP, not a clean exemption: domains[].vlans feeds vlan_cutover[].app_domain/criticality "
+        "through compute_vlan_cutover_matrix; a cut domain (vlan_count above len(vlans)) is not yet disclosed",
     ("analyze._classify_endpoint", "desc.strip()[:32]"):
         "exempt: a quoted fragment inside the evidence prose; the full description is on the interface record",
     ("analyze._classify_endpoint", "plat.strip()[:24]"): "exempt: a quoted fragment inside the evidence prose",

@@ -772,9 +772,11 @@ def _scoped_routed(**fields):
 
 def _scoped_secondary(snap):
     # another VLAN's SVI holds a secondary address in VLAN 30's subnet; its VRF was never read (no running-config
-    # capture of it), so no VRF tells the two apart
+    # capture of it), so no VRF tells the two apart. The stored record carries no VRF text: html.sparsify_interfaces
+    # drops InterfaceData's '' default, so the key is absent, never null (the sample has always stored it that way);
+    # with run_config_observed cleared, _port_vrf then reads its VRF as unreadable
     svi = snap["interfaces"]["core2"]["Vlan20"]
-    assert svi["vrf"] is None
+    assert svi.get("vrf", "") == "", svi
     svi.update(svi_ips=svi["svi_ip"] + ";10.0.30.5 255.255.255.0", run_config_observed=False)
     return UV, _ptr("interfaces", "core2", "Vlan20"), "hold an address in this VLAN's gateway subnet"
 
