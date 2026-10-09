@@ -2376,13 +2376,16 @@ def test_compare_append_and_finish_are_cross_process_compare_and_swap(tmp_path):
 
 # ---------------------------------------------------------------------------------------------------------------
 # W50: rehearsal.impacts is a versioned receipt contract. A new receipt carries cutover_operator_evidence/2, whose
-# failure-impact rows are read through the engine owner (impact_assessability). A receipt stored before W50 carries
-# /1 (raw rows) and keeps re-verifying against the legacy /1 recomputation it declares. A missing or unknown
-# contract is never verified. These tests were written for the hosted runners and not run locally.
+# failure-impact rows bind the engine owner's decisions (impact_assessability: verdict token, reason codes, the
+# stored value or an explicit withheld marker) and none of its prose. A receipt stored before W50 carries /1 (raw
+# rows) and keeps re-verifying against the frozen /1 recomputation it declares. A missing or unknown contract is
+# never verified. The byte anchors (frozen /1 and pinned /2 digests) are engine-level, in
+# tests/test_operator_evidence_contract.py. These tests were written for the hosted runners and not run locally.
 # ---------------------------------------------------------------------------------------------------------------
 _V1 = "cutover_operator_evidence/1"
 _V2 = "cutover_operator_evidence/2"
 _IMPACT_MEASURES = ("severity", "vlans_impacted", "stranded", "hard", "backup", "fhrp")
+_V2_ROW_KEYS = {"index", "host", "assessable", "reason_codes", "detail", *_IMPACT_MEASURES}
 
 
 def _golden_impact_rows() -> list:
@@ -2438,10 +2441,14 @@ def test_v2_execution_receipt_carries_owner_valued_impacts_and_reverifies(client
     impacts = evidence["rehearsal"]["impacts"]
     golden = _golden_impact_rows()
     assert len(impacts) == len(golden) > 0
-    assert [row["host"] for row in impacts] == [row.get("host") for row in golden]
+    # ranked by the owner's stranded floor, each row naming its stored position
+    assert sorted(row["index"] for row in impacts) == list(range(len(golden)))
+    assert all(row["host"] == golden[row["index"]].get("host") for row in impacts)
     for row in impacts:
-        assert set(row) == {"host", "assessable", "why", "detail", *_IMPACT_MEASURES}, row
+        assert set(row) == _V2_ROW_KEYS, row
         assert row["assessable"] in {"published", "lower_bound", "not_assessed", "ambiguous"}, row
+        assert all(isinstance(entry.get("code"), str) and isinstance(entry.get("n"), int)
+                   for entry in row["reason_codes"]), row
     assert evidence["rehearsal"]["impacts_owner"] == "failure_impact_assessability/1"
     assert sum(evidence["rehearsal"]["n_impacts_by_assessable"].values()) == len(impacts)
     # the stored /2 receipt is exactly the current comparison of the pair, and every surface verifies it
@@ -2465,7 +2472,9 @@ def test_v1_execution_receipt_stored_before_w50_still_verifies(client, monkeypat
     current = client.post("/api/compare", json={"old_id": before_id, "new_id": after_id})
     assert current.status_code == 200, current.text
     assert current.json()["operator_evidence"]["schema"] == _V2
-    # the stored receipt is byte-for-byte the legacy shape built by hand from the current comparison
+    # Structural check: the stored receipt equals the /1 shape built by hand (raw golden rows, no /2 key) around the
+    # current comparison. It shares the current payload, so it is not the byte anchor: the frozen pre-W50 /1
+    # digests in tests/test_operator_evidence_contract.py are.
     assert storage_owner._canonical_json_identity_matches(comparison, _legacy_v1_shape(current.json()))
     # non-vacuity: recomputed under the current contract alone, this stored receipt would read as mismatched
     assert not storage_owner._canonical_json_identity_matches(comparison, current.json())
@@ -2495,14 +2504,16 @@ def test_store_refuses_a_tampered_or_relabelled_v2_receipt_at_append(client):
             implementation_binding=implementation,
         )
 
-    # Every owner value rewritten back to the stored raw value and presented as a measurement, every digest rebuilt.
+    # Every owner decision rewritten back to the stored raw value and presented as a measurement (no reason code, no
+    # withheld marker), every digest rebuilt.
     stripped = deepcopy(comparison)
     rows = stripped["operator_evidence"]["rehearsal"]["impacts"]
     golden = _golden_impact_rows()
     assert len(rows) == len(golden) > 0
-    for row, stored in zip(rows, golden):
+    for row in rows:
+        stored = golden[row["index"]]
         row.update({field: stored.get(field) for field in _IMPACT_MEASURES})
-        row.update({"assessable": "published", "why": "", "detail": stored.get("detail")})
+        row.update({"assessable": "published", "reason_codes": [], "detail": stored.get("detail")})
     rows[0]["stranded"] = 987654                       # guarantee a difference even if every row were published
     _rehash_complete_comparison(stripped)
     assert store.append_execution_comparison_if_unchanged(
@@ -2626,7 +2637,7 @@ def test_stored_v2_receipt_with_tampered_impacts_fails_closed(tmp_path, monkeypa
         assert comparison["operator_evidence"]["schema"] == _V2
         impacts = comparison["operator_evidence"]["rehearsal"]["impacts"]
         assert impacts and impacts[0]["stranded"] != 987654
-        impacts[0].update({"assessable": "published", "why": "", "stranded": 987654})
+        impacts[0].update({"assessable": "published", "reason_codes": [], "stranded": 987654})
 
     _rewrite_pre_anchor_receipt(database, receipt_id, mutate)
     with pytest.raises(ExecutionReceiptAuthorityError, match="does not match exact-source recomputation"):

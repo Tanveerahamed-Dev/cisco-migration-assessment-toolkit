@@ -19,9 +19,10 @@ Two things are pinned here:
    admitted by that property, not by name. The only named entries are a RATCHET of the consumers W48 stopped on
    because their output is persisted (see each entry): a new raw reader fails, and fixing a ratchet entry fails
    until the entry and its strict ``xfail`` below are deleted. W50 removed ``protocol_assurance`` from it by
-   versioning the receipt contract: new comparisons carry ``cutover_operator_evidence/2`` (owner-valued rows), and
-   the raw ``/1`` row copy survives only as ``_rehearsal_impacts_v1_legacy``, which receives the rows and is selected
-   solely by a stored receipt that declares ``/1`` (pinned in part 2, since this guard is per function).
+   versioning the receipt contract: new comparisons carry ``cutover_operator_evidence/2`` (rows that bind the owner's
+   decisions), and the raw ``/1`` row copy survives only as ``_rehearsal_impacts_v1_legacy``, which receives the rows
+   and is selected solely by a stored receipt that declares ``/1`` (pinned in tests/test_operator_evidence_contract.py,
+   since this guard is per function).
 
    Granularity is the function: a function that reaches the owner for one value could still print another raw
    value. The guard closes the class the W33/W48 sites belonged to -- a consumer with no route to the owner at
@@ -563,88 +564,21 @@ def test_design_advisor_never_counts_a_withheld_zero_as_a_measured_no_backup_dev
 
 # --- protocol_assurance.cutover_operator_evidence: the versioned receipt contract (W50) ---------------------------
 # W48 stopped here because rehearsal.impacts is persisted in every AssessHub execution receipt and re-verified on
-# every read. W50 versions the contract: a new comparison carries cutover_operator_evidence/2 (owner-valued rows);
-# a stored /1 receipt re-verifies against the legacy raw-row recomputation, selected only by its declared /1.
+# every read. W50 versions the contract: a new comparison carries cutover_operator_evidence/2, whose rows bind the
+# owner's decisions (verdict token, reason codes, the stored value or an explicit withheld marker) and none of its
+# prose; a stored /1 receipt re-verifies against the frozen raw-row recomputation, selected only by its declared /1.
+# The contract itself (frozen /1 and pinned /2 digests, the owner's version, the dispatch) is pinned in
+# tests/test_operator_evidence_contract.py.
 @pytest.mark.parametrize("variant", ["bounded", "held"])
 def test_cutover_operator_evidence_carries_the_owner_values_for_core1(variant, request):
-    from cisco_toolkit.protocol_assurance import cutover_operator_evidence
+    from cisco_toolkit.protocol_assurance import IMPACT_CELL_WITHHELD, cutover_operator_evidence
     snap = request.getfixturevalue(variant)
     _row, verdict = _core1(snap)
     impacts = [r for r in cutover_operator_evidence(snap)["rehearsal"]["impacts"] if r.get("host") == "core1"]
     assert len(impacts) == 1, impacts
     assert impacts[0].get("assessable") == verdict.assessable, impacts[0]
-    assert impacts[0].get("severity") == ia.table_value(verdict, "severity"), impacts[0]
-    assert impacts[0].get("stranded") == ia.table_value(verdict, "stranded"), impacts[0]
-
-
-def _v2_core1(snap):
-    from cisco_toolkit import protocol_assurance as pa
-    evidence = pa.cutover_operator_evidence(snap)
-    assert evidence["schema"] == pa.CUTOVER_OPERATOR_EVIDENCE_SCHEMA == pa.CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V2
-    rows = [r for r in evidence["rehearsal"]["impacts"] if r.get("host") == "core1"]
-    assert len(rows) == 1, rows
-    return evidence, rows[0]
-
-
-def test_v2_receipt_impacts_carry_core1_as_the_lower_bound_it_is(bounded):
-    row, verdict = _core1(bounded)
-    evidence, item = _v2_core1(bounded)
-    assert item["assessable"] == ia.LOWER_BOUND and item["why"] == verdict.why and item["why"], item
-    assert item["stranded"] == f"≥ {row['stranded']}", item                 # /1 stored the raw 45 as exact
-    assert item["severity"] == f"{row['severity']} (lower bound)", item
-    for field in ia.IMPACT_MEASURES:
-        assert item[field] == ia.table_value(verdict, field), (field, item)
-    assert item["backup"] == ia.NOT_ASSESSED_CELL, item                        # a bounded zero is not a measured 0
-    assert item["detail"] == ia.table_detail(verdict) and item["detail"] != row["detail"], item
-    assert set(item) == {"host", "assessable", "why", "detail", *ia.IMPACT_MEASURES}, item
-    rehearsal = evidence["rehearsal"]
-    assert rehearsal["impacts_owner"] == ia.SCHEMA
-    assert rehearsal["n_impacts_total"] == len(ia.rows_with_verdicts(bounded))
-    assert rehearsal["n_impacts_by_assessable"] == {
-        k: sum(1 for _r, v in ia.rows_with_verdicts(bounded) if v.assessable == k) for k in ia.VERDICTS}
-    assert rehearsal["n_impacts_by_assessable"][ia.LOWER_BOUND] >= 1
-
-
-def test_v2_receipt_impacts_carry_a_held_core1_as_not_assessed(held):
-    row, verdict = _core1(held)
-    _evidence, item = _v2_core1(held)
-    assert item["assessable"] == ia.NOT_ASSESSED and item["why"] == verdict.why, item
-    assert all(item[field] == ia.NOT_ASSESSED_CELL for field in ia.IMPACT_MEASURES), item
-    assert row["detail"] not in item["detail"] and item["detail"] == ia.table_detail(verdict), item
-
-
-@pytest.mark.parametrize("variant", ["bounded", "held"])
-def test_the_legacy_v1_recomputation_is_the_verbatim_raw_row_copy_and_only_on_request(variant, request):
-    """A stored /1 receipt keeps re-verifying only if /1 still recomputes byte-for-byte what /1 stored: every stored
-    object row copied raw, the pre-W50 rehearsal keys and nothing the owner added. It is reachable only by naming
-    /1 explicitly; the default is /2, and an unknown or missing-type contract is refused, never computed."""
-    from cisco_toolkit import protocol_assurance as pa
-    snap = request.getfixturevalue(variant)
-    legacy = pa.cutover_operator_evidence(snap, schema=pa.CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1)
-    assert legacy["schema"] == "cutover_operator_evidence/1"
-    rehearsal = legacy["rehearsal"]
-    assert rehearsal["impacts"] == [dict(r) for r in snap["failure_impact"] if isinstance(r, dict)]
-    assert set(rehearsal) == {"status", "assurance_level", "source_owner", "n_impacts_total", "impacts",
-                              "l2_failure_rehearsal", "note"}, sorted(rehearsal)
-    current = pa.cutover_operator_evidence(snap)
-    assert current["schema"] == "cutover_operator_evidence/2"
-    # everything but the versioned impacts block is shared, so the gate recomputes identically under either
-    for key in ("owner", "owns_verdict", "current_baseline_blocker_export", "rollback"):
-        assert legacy[key] == current[key], key
-    for key in ("status", "assurance_level", "source_owner", "n_impacts_total", "l2_failure_rehearsal", "note"):
-        assert rehearsal[key] == current["rehearsal"][key], key
-    for unknown in ("cutover_operator_evidence/3", "cutover_operator_evidence/0", "", 2, ["cutover_operator_evidence/2"]):
-        with pytest.raises(ValueError, match="unsupported operator-evidence contract"):
-            pa.cutover_operator_evidence(snap, schema=unknown)
-
-
-def test_a_stored_comparison_names_its_contract_or_reads_as_unverified():
-    from cisco_toolkit import protocol_assurance as pa
-    v1, v2 = pa.CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1, pa.CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V2
-    assert pa.stored_operator_evidence_schema({"operator_evidence": {"schema": v1}}) == v1
-    assert pa.stored_operator_evidence_schema({"operator_evidence": {"schema": v2}}) == v2
-    for stored in (None, [], {}, {"operator_evidence": None}, {"operator_evidence": {}},
-                   {"operator_evidence": {"schema": None}}, {"operator_evidence": {"schema": "cutover_operator_evidence/3"}},
-                   {"operator_evidence": {"schema": "cutover_operator_evidence"}}, {"operator_evidence": {"schema": 1}},
-                   {"operator_evidence": [{"schema": v2}]}):
-        assert pa.stored_operator_evidence_schema(stored) is None, stored
+    assert impacts[0].get("reason_codes") == [{"code": c, "n": n} for c, n in verdict.code_counts], impacts[0]
+    for field in ("severity", "stranded", "backup"):
+        expected = dict(IMPACT_CELL_WITHHELD) if verdict.withholds(field) else verdict.raw.get(field)
+        assert impacts[0].get(field) == expected, (field, impacts[0])
+    assert impacts[0]["backup"] == dict(IMPACT_CELL_WITHHELD)    # core1's zero is never bound as a measured 0

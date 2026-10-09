@@ -46,6 +46,10 @@ from typing import Any, Callable, Dict, FrozenSet, List, Mapping, NamedTuple, Op
 
 from cisco_toolkit import ssot
 
+#: The owner's declared output version: bump it whenever what the owner DECIDES changes (a verdict, a reason code or
+#: its count, a withheld cell, a ranking), never for a rewording. ``protocol_assurance`` binds it in every
+#: ``cutover_operator_evidence/2`` receipt (``impacts_owner``); tests/test_operator_evidence_contract.py pins the
+#: decisions to it, so a semantic change without a bump fails there.
 SCHEMA = "failure_impact_assessability/1"
 
 PUBLISHED = "published"
@@ -757,6 +761,14 @@ class RowVerdict:
     @property
     def published(self) -> bool:
         return self.assessable == PUBLISHED
+
+    @property
+    def code_counts(self) -> List[Tuple[str, int]]:
+        """``(code, n)`` per reason, in :attr:`codes` order: each stable reason identifier (a key of
+        :data:`CODE_PHRASES`) with the count its phrase quotes (0 where it quotes none). A consumer that persists a
+        verdict binds these, never the reader-facing prose, so rewording a phrase never changes what it stored (W50:
+        ``protocol_assurance`` ``cutover_operator_evidence/2``)."""
+        return list(self._ns)
 
     @property
     def why(self) -> str:

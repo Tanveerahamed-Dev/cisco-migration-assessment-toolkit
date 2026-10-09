@@ -727,7 +727,7 @@ export interface ObservedL2FailureEvidence {
 export interface CutoverOperatorEvidence {
   /**
    * /1 (receipts stored before W50) copied each stored failure-impact row raw, so its values were never
-   * bound-checked; /2 writes every row through the engine owner.
+   * bound-checked; /2 binds every row's engine-owner decisions (verdict, reason codes, withheld cells).
    */
   schema: "cutover_operator_evidence/1" | "cutover_operator_evidence/2";
   owner: "reference_only_projection" | string;
@@ -761,13 +761,16 @@ export interface CutoverOperatorEvidence {
     source_owner: string;
     n_impacts_total: number;
     /**
-     * /1: the stored rows, raw. /2 (W50): `{host, assessable, why, severity, vlans_impacted, stranded, hard,
-     * backup, fhrp, detail}`, where `assessable` is the engine owner's verdict (published, lower_bound,
-     * not_assessed, ambiguous) and each measure is the owner's value: the stored value, a lower bound
-     * ("≥ 45", "High (lower bound)") or "not assessed". Read fields defensively either way.
+     * /1: the stored rows, raw. /2 (W50): `{index, host, assessable, reason_codes, severity, vlans_impacted,
+     * stranded, hard, backup, fhrp, detail}`, bound decisions only and no prose. `index` is the stored row's
+     * position; `assessable` is the engine owner's verdict token (published, lower_bound, not_assessed,
+     * ambiguous); `reason_codes` is `[{code, n}]`, each a stable owner reason code with the count it quotes; each
+     * measure and `detail` is the stored value when the owner publishes it, else `{withheld: true}`. On a
+     * lower_bound row a published band or count is a floor. Rows are ranked by the owner's stranded floor, then
+     * the rows it does not rank in stored order. Read fields defensively either way.
      */
     impacts: Array<Record<string, unknown>>;
-    /** /2 only: the owner schema that valued every row. */
+    /** /2 only: the owner's declared semantic version (impact_assessability.SCHEMA) that decided every row. */
     impacts_owner?: string;
     /** /2 only: the owner's verdict census over every row, including rows a capped view omits. */
     n_impacts_by_assessable?: Record<string, number>;

@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from types import MappingProxyType
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
 SUPPORT_PROFILE_SCHEMA = "protocol_support_profile/1"
@@ -27,9 +28,12 @@ ADMISSION_SCHEMA = "protocol_comparison_admission/1"
 #: The operator-evidence contract is versioned because AssessHub persists it inside every execution comparison
 #: receipt and re-verifies that receipt against an exact-source recomputation on every read (W50). /1 copied each
 #: stored failure_impact row raw into ``rehearsal.impacts``, so a lower bound read as exact and a held zero as a
-#: measured zero. /2 writes each row through the engine owner (``impact_assessability``). A new comparison carries
-#: the current contract; a stored receipt is re-verified under the contract it declares, and a missing or unknown
-#: declaration is never verified (:func:`stored_operator_evidence_schema`).
+#: measured zero. /2 binds each row's stable semantics as the engine owner (``impact_assessability``) decides them:
+#: the verdict token, the reason CODES and each measure's stored value or an explicit withheld marker. It binds no
+#: prose and no rendering rule, so rewording the owner never changes a stored receipt (:func:`_rehearsal_impacts_v2`).
+#: A new comparison carries the current contract; a stored receipt is re-verified under the contract it declares,
+#: and a missing or unknown declaration is never verified (:func:`stored_operator_evidence_schema`). The dispatch
+#: :data:`_REHEARSAL_IMPACTS_BY_CONTRACT` is the one place a contract selects its computation.
 CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1 = "cutover_operator_evidence/1"
 CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V2 = "cutover_operator_evidence/2"
 #: The contract every new comparison carries.
@@ -2206,32 +2210,97 @@ def _rehearsal_impacts_v1_legacy(raw_impacts: Any) -> List[dict]:
 
     It copies every stored ``failure_impact`` object RAW, so a lower bound reads as an exact count and a held zero
     as a measured zero. It exists only so a receipt stored under /1 keeps re-verifying against its own
-    recomputation; it is selected solely by a stored receipt that declares /1, never for a new comparison.
+    recomputation; its one call site is the /1 entry of :data:`_REHEARSAL_IMPACTS_BY_CONTRACT`, selected solely by a
+    stored receipt that declares /1, never for a new comparison. Frozen: its bytes are pinned to the pre-W50 engine
+    by ``tests/test_operator_evidence_contract.py``.
     """
     impacts = [dict(row) for row in raw_impacts
                if isinstance(row, dict)] if isinstance(raw_impacts, list) else []
     return impacts
 
 
-def _rehearsal_impacts_v2(snap: Mapping[str, Any]) -> List[dict]:
-    """``rehearsal.impacts`` under ``cutover_operator_evidence/2``: one row per stored ``failure_impact`` object, in
-    stored order, every value read through the engine owner of row assessability.
+#: The /2 cell value of a measure or detail the engine owner withholds: an explicit marker, never the stored value
+#: (a held Info or 0 is not a measurement) and never ``null`` (a published row may store a null).
+IMPACT_CELL_WITHHELD: Mapping[str, Any] = MappingProxyType({"withheld": True})
 
-    ``assessable`` and ``why`` carry the owner's verdict. Each measure is the owner's table value: the stored value
-    on a published row; on a lower-bound row the worst band and each positive count as the lower bounds they are
-    (``"High (lower bound)"``, ``"≥ 45"``); ``"not assessed"`` for a value the owner withholds (a held row's every
-    measure, a bounded band below the worst, a bounded zero). ``detail`` leads with the verdict on a row that is not
-    a measurement. The stored host names the row, as the MCP tool and the workbook do.
+
+def _impact_rank_number(value: Any) -> Any:
+    """A published row's stored ``stranded`` as its /2 sort key: a finite non-bool number, else 0. Ordering only:
+    the row's ``stranded`` cell still binds the stored value exactly as the owner publishes it."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return 0
+    return value
+
+
+def _rehearsal_impacts_v2(snap: Mapping[str, Any]) -> Tuple[List[dict], Dict[str, Any]]:
+    """``rehearsal.impacts`` under ``cutover_operator_evidence/2`` and the keys /2 adds to ``rehearsal``.
+
+    One BOUND row per stored ``failure_impact`` object, each value a stable semantic the engine owner of row
+    assessability decides (``impact_assessability``), never its prose or its rendering rules:
+
+    * ``index`` (the stored row's position) and ``host`` (the stored host, which names the row as the MCP tool and
+      the workbook do);
+    * ``assessable``, the owner's verdict token (``published``, ``lower_bound``, ``not_assessed``, ``ambiguous``);
+    * ``reason_codes``, ``[{code, n}]`` in the owner's order (``RowVerdict.code_counts``): each a stable key of
+      ``CODE_PHRASES`` with the count its phrase quotes;
+    * each of ``severity``, ``vlans_impacted``, ``stranded``, ``hard``, ``backup``, ``fhrp`` and ``detail``: the stored
+      value exactly when the owner publishes it, else :data:`IMPACT_CELL_WITHHELD`. On a ``lower_bound`` row a
+      published band or count is the floor it is; the verdict says so, the cell carries the stored value.
+
+    Order: the rows the owner ranks (``ranks``) first, by their stranded floor (``ranking_floor``) or measured
+    count, largest first, ties in stored order; then every row it does not rank, in stored order. A capped view
+    therefore shows the largest floors first, never producer order.
+
+    The owner's reader-facing words (``why``, ``table_value``, ``table_detail``, ``CODE_PHRASES``) are deliberately
+    NOT bound: a stored receipt is re-verified by recomputation on every read, so a bound phrase would turn every
+    later rewording into a mismatch. A display resolves the codes and cells at render time. ``impacts_owner`` binds
+    the owner's declared semantic version (``ia.SCHEMA``), which the owner bumps when what it decides changes; the
+    pinned /2 digests then require a /3 (``tests/test_operator_evidence_contract.py``).
     """
     from cisco_toolkit import impact_assessability as ia
 
+    def cell(verdict: Any, field: str) -> Any:
+        return dict(IMPACT_CELL_WITHHELD) if verdict.withholds(field) else verdict.raw.get(field)
+
+    def order(pair: Tuple[dict, Any]) -> Tuple[int, Any, int]:
+        row, verdict = pair
+        if not ia.ranks(verdict):
+            return 1, 0, verdict.index
+        floor = ia.ranking_floor(verdict)
+        return 0, -(floor if floor is not None else _impact_rank_number(row.get("stranded"))), verdict.index
+
     rows: List[dict] = []
-    for row, verdict in ia.rows_with_verdicts(snap):
-        item = {"host": row.get("host"), "assessable": verdict.assessable, "why": verdict.why}
-        item.update({field: ia.table_value(verdict, field) for field in ia.IMPACT_MEASURES})
-        item["detail"] = ia.table_detail(verdict)
+    for row, verdict in sorted(ia.rows_with_verdicts(snap), key=order):
+        item: Dict[str, Any] = {
+            "index": verdict.index,
+            "host": row.get("host"),
+            "assessable": verdict.assessable,
+            "reason_codes": [{"code": code, "n": n} for code, n in verdict.code_counts],
+        }
+        item.update({field: cell(verdict, field) for field in ia.IMPACT_MEASURES})
+        item["detail"] = cell(verdict, "detail")
         rows.append(item)
-    return rows
+    # The verdict census covers every row, including rows a capped presentation does not render.
+    added = {
+        "impacts_owner": ia.SCHEMA,
+        "n_impacts_by_assessable": {
+            verdict: sum(1 for row in rows if row["assessable"] == verdict) for verdict in ia.VERDICTS},
+    }
+    return rows, added
+
+
+#: The one place an operator-evidence contract selects its ``rehearsal.impacts`` computation (W50): contract ->
+#: ``snapshot -> (rows, keys that contract adds to rehearsal)``. /1 adds no key, so a /1 recomputation stays
+#: byte-identical to what /1 stored. A contract outside this table is never computed: :func:`cutover_operator_evidence`
+#: raises before reaching it. Its keys are :data:`CUTOVER_OPERATOR_EVIDENCE_SCHEMAS` (pinned by a test).
+_REHEARSAL_IMPACTS_BY_CONTRACT: Mapping[str, Callable[[Mapping[str, Any]], Tuple[List[dict], Dict[str, Any]]]] = \
+    MappingProxyType({
+        CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1: lambda snap: (
+            _rehearsal_impacts_v1_legacy(snap.get("failure_impact")), {}),
+        CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V2: _rehearsal_impacts_v2,
+    })
 
 
 def cutover_operator_evidence(
@@ -2250,12 +2319,13 @@ def cutover_operator_evidence(
     stored snapshot supports.
 
     ``schema`` selects the contract (W50). ``None`` is the current contract, which every new comparison carries:
-    ``cutover_operator_evidence/2``, whose ``rehearsal.impacts`` rows are read through the engine owner. Only the
-    re-verification of a stored receipt passes the contract that receipt declares; /1 then recomputes the legacy
-    raw rows. Any other value raises ``ValueError``: an unknown contract is never computed as a known one.
+    ``cutover_operator_evidence/2``, whose ``rehearsal.impacts`` rows bind the engine owner's stable semantics
+    (:func:`_rehearsal_impacts_v2`). Only the re-verification of a stored receipt passes the contract that receipt
+    declares; /1 then recomputes the legacy raw rows. Any other value raises ``ValueError``: the explicit dispatch
+    (:data:`_REHEARSAL_IMPACTS_BY_CONTRACT`) never computes an unknown contract as a known one.
     """
     contract = CUTOVER_OPERATOR_EVIDENCE_SCHEMA if schema is None else schema
-    if type(contract) is not str or contract not in CUTOVER_OPERATOR_EVIDENCE_SCHEMAS:
+    if type(contract) is not str or contract not in _REHEARSAL_IMPACTS_BY_CONTRACT:
         raise ValueError(f"unsupported operator-evidence contract: {contract!r}")
     snap = _dict(snapshot)
     # Lazy import avoids a module cycle: the rehearsal composer reuses the native delta owners,
@@ -2268,10 +2338,7 @@ def cutover_operator_evidence(
     l2_rehearsal = compute_l2_failure_rehearsal(
         snapshot, prior_snapshot=prior_snapshot
     )
-    if contract == CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V1:
-        impacts = _rehearsal_impacts_v1_legacy(snap.get("failure_impact"))
-    else:
-        impacts = _rehearsal_impacts_v2(snap)
+    impacts, contract_keys = _REHEARSAL_IMPACTS_BY_CONTRACT[contract](snap)
     l2_status = l2_rehearsal.get("status")
     l2_has_projection = l2_status in {"simulation_only", "projected_risk", "current_fault"}
     rehearsal = {
@@ -2293,16 +2360,8 @@ def cutover_operator_evidence(
             "No supported source-bound failure projection or operator rehearsal receipt is present."
         ),
     }
-    if contract == CUTOVER_OPERATOR_EVIDENCE_SCHEMA_V2:
-        # Additive to /2 only, so a /1 recomputation stays byte-identical to what /1 stored. The verdict census
-        # covers every row, including rows a capped presentation does not render.
-        from cisco_toolkit import impact_assessability as ia
-
-        rehearsal["impacts_owner"] = ia.SCHEMA
-        rehearsal["n_impacts_by_assessable"] = {
-            verdict: sum(1 for row in impacts if row.get("assessable") == verdict)
-            for verdict in ia.VERDICTS
-        }
+    # The keys the selected contract adds (none for /1, so a /1 recomputation stays byte-identical to what /1 stored).
+    rehearsal.update(contract_keys)
     if observed_l2_failure_evidence is not None:
         observed_validation = validate_observed_l2_failure_evidence(
             observed_l2_failure_evidence,

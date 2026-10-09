@@ -387,12 +387,14 @@ function ObservedL2Evidence({ value, gate }: {
   );
 }
 
-/** The operator-evidence contracts this view can read (W50). /1 receipts were stored before the engine owner
- * valued failure-impact rows; /2 rows carry the owner's verdict and owner-valued cells. */
+/** The operator-evidence contracts this view can read (W50). /1 receipts were stored before the engine owner decided
+ * failure-impact rows. /2 rows bind only the owner's decisions: a verdict token, reason codes and, per cell, the
+ * stored value or an explicit withheld marker. /2 binds no prose, so a later owner rewording never invalidates a
+ * stored receipt; this view resolves the words at render time. */
 const OPERATOR_EVIDENCE_V1 = "cutover_operator_evidence/1";
 const OPERATOR_EVIDENCE_V2 = "cutover_operator_evidence/2";
 
-/** Reader-facing chip per engine-owner verdict (impact_assessability.VERDICT_LABELS). A verdict this view does
+/** Reader-facing chip per engine-owner verdict token (impact_assessability.VERDICTS). A verdict this view does
  * not know renders as unavailable and its values are withheld, so nothing unknown reads as a measurement. */
 const IMPACT_VERDICT_CHIP: Record<string, { label: string; color: string }> = {
   published: { label: "PUBLISHED", color: "var(--accent)" },
@@ -401,7 +403,13 @@ const IMPACT_VERDICT_CHIP: Record<string, { label: string; color: string }> = {
   ambiguous: { label: "AMBIGUOUS", color: "var(--text-faint)" },
 };
 
-/** The owner-valued measures of a /2 row, with the workbook's Failure Impact column names. */
+/** An own entry of `table`, so a prototype key ("constructor", "toString", "__proto__") never matches. This is
+ * `Object.hasOwn`'s check in its ES5 form: `Object.hasOwn` is ES2022 and this project's TypeScript lib is ES2021. */
+function ownEntry<T>(table: Record<string, T>, key: unknown): T | undefined {
+  return typeof key === "string" && Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
+}
+
+/** The measures of a /2 row, with the workbook's Failure Impact column names. */
 const IMPACT_CELLS: ReadonlyArray<readonly [string, string]> = [
   ["severity", "severity"],
   ["stranded", "stranded endpoints"],
@@ -411,23 +419,54 @@ const IMPACT_CELLS: ReadonlyArray<readonly [string, string]> = [
   ["fhrp", "FHRP-covered"],
 ];
 
-/** One owner-valued cell, printed as the owner wrote it: a bound is already "≥ N" / "High (lower bound)" and a
- * withheld value "not assessed". A value that is neither text nor a finite number is unavailable, never 0. */
-function impactCell(value: unknown): string {
-  if (typeof value === "string" && value.trim()) return value;
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return "unavailable";
+/** A /2 cell the engine owner withholds (protocol_assurance.IMPACT_CELL_WITHHELD): never a stored value, never 0. */
+function isWithheld(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    && (value as Record<string, unknown>).withheld === true;
+}
+
+/** One /2 cell in words, resolved from the bound verdict and value: a withheld cell reads "not assessed"; on a
+ * lower-bound row the band and each count are the floors they are ("High (lower bound)", "≥ 45"); a published row
+ * prints its measurement. A value of the wrong type is unavailable, never 0, and a row that is not a measurement
+ * never prints a value. */
+function impactCell(assessable: string, field: string, value: unknown): string {
+  if (isWithheld(value)) return "not assessed";
+  if (assessable === "lower_bound") {
+    if (field === "severity") {
+      return typeof value === "string" && value.trim() ? `${value} (lower bound)` : "unavailable";
+    }
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? `≥ ${value}` : "unavailable";
+  }
+  if (assessable === "published") {
+    if (typeof value === "string" && value.trim()) return value;
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    return "unavailable";
+  }
+  return "not assessed";
+}
+
+/** The owner's reason codes, each a stable identifier with the count it quotes ("blind links ×1"). The receipt binds
+ * codes rather than the owner's phrases; every engine deliverable prints the owner's phrase for each code. */
+function impactReasons(value: unknown): string {
+  if (!Array.isArray(value)) return "unavailable";
+  return value.map((entry) => {
+    const record: Record<string, unknown> = typeof entry === "object" && entry !== null ? entry : {};
+    const code = typeof record.code === "string" && record.code.trim()
+      ? record.code.replaceAll("_", " ") : "unreadable reason";
+    const n = typeof record.n === "number" && Number.isSafeInteger(record.n) && record.n > 0 ? ` ×${record.n}` : "";
+    return code + n;
+  }).join("; ");
 }
 
 function ImpactRowV2({ row }: { row: Record<string, unknown> }) {
-  const verdict = typeof row.assessable === "string" ? IMPACT_VERDICT_CHIP[row.assessable] : undefined;
+  const verdict = ownEntry(IMPACT_VERDICT_CHIP, row.assessable);
+  const assessable = verdict ? String(row.assessable) : "unavailable";
   const color = verdict?.color || "var(--text-faint)";
-  const detail = typeof row.detail === "string" && row.detail.trim()
-    ? row.detail
-    : typeof row.why === "string" && row.why.trim() ? row.why : "No detail published.";
+  const detail = isWithheld(row.detail)
+    ? "Producer detail withheld: the engine owner does not publish it as a measurement for this row."
+    : typeof row.detail === "string" && row.detail.trim() ? `Producer detail: ${row.detail}` : "No producer detail published.";
   return (
-    <div data-testid="comparison-rehearsal-row"
-      data-assessable={verdict ? String(row.assessable) : "unavailable"}
+    <div data-testid="comparison-rehearsal-row" data-assessable={assessable}
       style={{ borderTop: "1px solid var(--border-faint)", marginTop: 6, paddingTop: 6, fontSize: 11 }}>
       <div className="row-flex" style={{ gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
         <b className="mono">{typeof row.host === "string" && row.host ? row.host : "unnamed subject"}</b>
@@ -435,10 +474,15 @@ function ImpactRowV2({ row }: { row: Record<string, unknown> }) {
           style={{ color, borderColor: color }}>
           {verdict ? verdict.label : "VERDICT UNAVAILABLE"}
         </span>
+        {verdict && assessable !== "published" && (
+          <span className="faint" data-testid="comparison-rehearsal-row-reasons">
+            engine-owner reason: {impactReasons(row.reason_codes)}
+          </span>
+        )}
       </div>
       <div className="dim" data-testid="comparison-rehearsal-row-values" style={{ marginTop: 2 }}>
         {IMPACT_CELLS.map(([field, label]) =>
-          `${label}: ${verdict ? impactCell(row[field]) : "unavailable"}`).join(" · ")}
+          `${label}: ${verdict ? impactCell(assessable, field, row[field]) : "unavailable"}`).join(" · ")}
       </div>
       <div className="faint" data-testid="comparison-rehearsal-row-detail" style={{ marginTop: 2 }}>
         {verdict ? detail : "The engine owner's verdict on this row is unavailable; its values are not shown."}
@@ -447,9 +491,9 @@ function ImpactRowV2({ row }: { row: Record<string, unknown> }) {
   );
 }
 
-/** `rehearsal.impacts`, rendered by the contract the payload declares. /2 rows show the owner's verdict and
- * owner-valued cells; /1 rows were copied raw before bounds were tracked, so they carry a visible note and are
- * never presented as exact; rows under any other contract are not rendered as values at all. */
+/** `rehearsal.impacts`, rendered by the contract the payload declares. /2 rows show the owner's verdict, reasons and
+ * cells in the owner's ranking order; /1 rows were copied raw before bounds were tracked, so they carry a visible
+ * note and are never presented as exact; rows under any other contract are not rendered as values at all. */
 function RehearsalImpacts({ contract, rows, census }: {
   contract: unknown;
   rows: Array<Record<string, unknown>>;
@@ -467,6 +511,9 @@ function RehearsalImpacts({ contract, rows, census }: {
             ).join(" · ")}
           </div>
         )}
+        <div className="faint" data-testid="comparison-rehearsal-impact-order" style={{ fontSize: 10.5, marginTop: 4 }}>
+          Ranked by the engine owner's stranded-endpoint floor; rows it does not rank follow in stored order.
+        </div>
         {rows.map((row, index) => (
           <ImpactRowV2 key={`${String(row.host || "impact")}|${index}`} row={row} />
         ))}
@@ -511,6 +558,7 @@ function OperatorEvidence({ value, gate }: {
   const rehearsal = value?.rehearsal;
   const rollback = value?.rollback;
   const impactRows = (rehearsal?.impacts || []).slice(0, ROW_CAP);
+  const impactContractKnown = value?.schema === OPERATOR_EVIDENCE_V1 || value?.schema === OPERATOR_EVIDENCE_V2;
   const l2 = rehearsal?.l2_failure_rehearsal;
   const l2Rows = (l2?.scenarios || []).slice(0, ROW_CAP);
   const rollbackRows = (rollback?.plans || []).slice(0, ROW_CAP);
@@ -537,7 +585,9 @@ function OperatorEvidence({ value, gate }: {
         />
         <RehearsalImpacts contract={value?.schema} rows={impactRows}
           census={rehearsal?.n_impacts_by_assessable} />
-        <CapDisclosure rendered={impactRows.length} total={rehearsal?.n_impacts_total || 0} />
+        {/* Rows under an unrecognised contract are withheld above, so none of them is rendered. */}
+        <CapDisclosure rendered={impactContractKnown ? impactRows.length : 0}
+          total={rehearsal?.n_impacts_total || 0} />
         {l2 && (
           <div data-testid="comparison-l2-rehearsal"
             style={{ borderTop: "1px solid var(--border-faint)", marginTop: 8, paddingTop: 8 }}>
