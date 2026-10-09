@@ -1174,6 +1174,116 @@ def test_native_refuses_unsupported_instances_before_acceptance(native_body):
     assert api._native_instance_allowed({"okay": [True, False, None, 2**53 - 1, -(2**53 - 1), "\U0001f600"]})
 
 
+@pytest.fixture
+def stp_fact_snapshot():
+    from cisco_toolkit import analyze
+    roots = {
+        "claim-a": {"10": {"is_root": True, "root_address": "aaaa.0000.0001", "root_priority": 32778}},
+        "claim-b": {"10": {"is_root": True, "root_address": "aaaa.0000.0001", "root_priority": 32778}},
+        "default": {"10": {"is_root": False, "root_address": "", "root_priority": None}},
+        "malformed": {"10": {"is_root": "false", "root_address": "aaaa.0000.0001", "root_priority": 32778}},
+    }
+    return {"stp_roots": roots, "vlan_cutover": analyze.compute_vlan_cutover_matrix({}, roots)}
+
+
+def test_stp_facts_travel_whole_in_vlan_pages_without_expanding_list_selectors(client, stp_fact_snapshot):
+    from backend import ui_projection_api as api
+    expected = owner.project_inventory(stp_fact_snapshot)["vlans"]["rows"]["items"][0]
+    original = deepcopy(stp_fact_snapshot)
+    sid = seed(client, stp_fact_snapshot)
+    view = client.get(url(sid, "inventory"), params={"limit": 1})
+    page = client.get(url(sid, "inventory") + "/lists", params={"pointer": "/vlans/rows", "limit": 1})
+    assert view.status_code == page.status_code == 200
+    assert view.json()["payload"]["vlans"]["rows"]["page"]["items"] == [expected]
+    assert page.json()["list"]["page"]["items"] == [expected]
+    claims = {item["host"]: item for item in expected["selections"]["stp_roots"]["items"]}
+    assert claims["claim-a"]["is_root"]["value"] is claims["claim-b"]["is_root"]["value"] is True
+    assert claims["default"]["is_root"]["state"] == "not_collected"
+    assert claims["default"]["is_root"]["value"] is None
+    assert claims["malformed"]["is_root"]["state"] == "unverified"
+    assert claims["malformed"]["is_root"]["value"] is None
+    assert expected["stp_root_state"]["value"] == "ambiguous"
+    assert expected["stp_root"]["state"] == "unverified"
+    assert not any("selections" in pointer for pointer in api.LIST_CATALOG["inventory"])
+    for pointer in ("/vlans/rows/0/selections/stp_roots", "/vlans/rows/items/0/selections/stp_roots"):
+        refused = client.get(url(sid, "inventory") + "/lists", params={"pointer": pointer})
+        assert refused.status_code == 422
+    assert stp_fact_snapshot == original
+
+
+@pytest.mark.parametrize("surface", ["view", "list"])
+@pytest.mark.parametrize("mutation", ["old_pointer_array", "missing_flag", "string_flag", "withheld_false",
+                                     "missing_reason", "extra_field", "boolean_priority", "negative_priority",
+                                     "unknown_state", "missing_items"])
+def test_native_stp_nested_facts_match_stock_on_valid_and_hostile_bodies(client, stp_fact_snapshot, surface, mutation):
+    from backend import ui_projection_api as api
+    sid = seed(client, stp_fact_snapshot)
+    path = url(sid, "inventory") + ("/lists" if surface == "list" else "")
+    params = {"limit": 1, **({"pointer": "/vlans/rows"} if surface == "list" else {})}
+    response = client.get(path, params=params)
+    assert response.status_code == 200
+    body = response.json()
+
+    def selections(document):
+        rows = document["list"] if surface == "list" else document["payload"]["vlans"]["rows"]
+        return rows["page"]["items"][0]["selections"]
+
+    assert len(selections(body)["stp_roots"]["items"]) == 4
+    schema = deepcopy(api._LIST_SCHEMA if surface == "list" else api._VIEW_SCHEMA)
+    validator = api._NativeTransportValidator(schema, surface)
+    native = validator._NativeTransportValidator__native
+    assert native is not None  # Literal reviewed pins, never calculated/admitted by this test.
+    results = []
+    exceptions = []
+
+    class Observed:
+        def is_valid(self, value):
+            try:
+                accepted = native.is_valid(value)
+            except Exception as error:
+                exceptions.append(repr(error))
+                raise
+            results.append(accepted)
+            return accepted
+
+    validator._NativeTransportValidator__native = Observed()
+    stock = api._stock_validator(schema)
+    assert api._native_instance_allowed(body)
+    assert validator.is_valid(body) and stock.is_valid(body)
+    # Wrapper success alone can be stock fallback after native False/an exception.
+    assert exceptions == []
+    assert len(results) == 1 and results[0] is True
+    bad = deepcopy(body)
+    listing = selections(bad)["stp_roots"]
+    first = listing["items"][0]
+    if mutation == "old_pointer_array":
+        selections(bad)["stp_roots"] = [first["pointer"]]
+    elif mutation == "missing_flag":
+        del first["is_root"]
+    elif mutation == "string_flag":
+        first["is_root"]["value"] = "true"
+    elif mutation == "withheld_false":
+        next(item for item in listing["items"] if item["host"] == "default")["is_root"]["value"] = False
+    elif mutation == "missing_reason":
+        del next(item for item in listing["items"] if item["host"] == "malformed")["is_root"]["reason"]
+    elif mutation == "extra_field":
+        first["re_elected_root"] = "claim-a"
+    elif mutation == "boolean_priority":
+        first["root_priority"]["value"] = True
+    elif mutation == "negative_priority":
+        first["root_priority"]["value"] = -1
+    elif mutation == "unknown_state":
+        first["is_root"]["state"] = "assumed"
+    else:
+        del listing["items"]
+    assert not validator.is_valid(bad) and not stock.is_valid(bad)
+    assert exceptions == []
+    assert len(results) == 2 and results[1] is False
+    assert _validation_errors(validator, bad) == _validation_errors(stock, bad)
+    assert exceptions == []
+    assert len(results) == 3 and results[2] is False
+
+
 @pytest.mark.parametrize("mutation", ["missing_readiness", "boolean_count", "host_not_list", "missing_band",
                                      "extra_group_field", "unknown_check_status", "missing_check_phase"])
 def test_native_w12a_closed_rollups_match_stock_on_valid_and_rejected_shapes(native_body, mutation):
@@ -1230,8 +1340,8 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    prospective = {"view": "732c68c3d762f2b3d4d0329582bd32f3842567feef9cab20960f6959eef07372",
-                   "list": "7f256f809f1d9e0754a2312579ee6afdfe3ae5e58c2b5dd7b44fbfd32b5369b5"}
+    prospective = {"view": "16b8095765891cebb3fe94d01d9c3ebfa966f7ead8ae9a139d84499d39b4db34",
+                   "list": "bca688bd5a3991c70005e20c68a0be5c2d4f3c58aa6cc2a254a51fcc2a6b8c22"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)

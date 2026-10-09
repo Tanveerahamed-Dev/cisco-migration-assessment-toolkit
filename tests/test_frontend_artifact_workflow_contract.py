@@ -25,6 +25,9 @@ MATERIAL_UPLOAD = "Preserve candidate material observations and failures"
 NATIVE_TEST = "Test selected native wheel observation refusals"
 NATIVE_OBSERVE = "Observe the selected native Windows wheel as data"
 NATIVE_UPLOAD = "Preserve native wheel observations and failures"
+CONTRACT_TEST = "Test contract review source and output refusals"
+CONTRACT_OBSERVE = "Observe canonical API and native schemas without changing source"
+CONTRACT_UPLOAD = "Preserve contract review material and failures"
 FLAGS = ("prepare_frontend_dependencies", "receive_frontend_artifact", "observe_vite_distribution", "refresh_visual_baselines", "observe_jsonschema_rs")
 DATA = ("frontend_artifact_selection", "vite_distribution_integrity", "jsonschema_rs_source_commit")
 REVIEW_PATHS = (
@@ -34,6 +37,7 @@ REVIEW_PATHS = (
     "tests/test_frontend_artifact_workflow_contract.py",
     ".github/scripts/frontend_candidate_materials.py", ".github/scripts/test_frontend_candidate_materials.py",
     ".github/scripts/observe_jsonschema_rs_wheel.py", "tests/test_jsonschema_rs_observation.py",
+    "webapp/backend/observe_ui_projection_contract.py", "tests/test_ui_projection_contract_observation.py",
     "master-reference/release/pipeline.py", "portable/release_contract.py",
     "portable/atlas_bundle.py", "portable/windows-x64-requirements.lock",
     "portable/third-party-license-fallbacks.json", "portable/third-party-licenses/jsonschema-rs-LICENSE",
@@ -125,6 +129,27 @@ def assert_wiring(doc):
     }
     assert (ordinary_order[0] < front_steps.index(material_test) < front_steps.index(material_check)
             < front_steps.index(material_upload) < ordinary_order[1])
+    contract_test = named(front_steps, CONTRACT_TEST)
+    contract_observe = named(front_steps, CONTRACT_OBSERVE)
+    contract_upload = named(front_steps, CONTRACT_UPLOAD)
+    assert contract_test == {
+        "name": CONTRACT_TEST, "working-directory": ".",
+        "run": "python -I -B -m pytest tests/test_ui_projection_contract_observation.py -q",
+    }
+    assert contract_observe == {
+        "name": CONTRACT_OBSERVE, "working-directory": ".",
+        "run": "python -I -B webapp/backend/observe_ui_projection_contract.py",
+    }
+    assert contract_upload == {
+        "name": CONTRACT_UPLOAD, "if": "${{ always() }}", "uses": UPLOAD,
+        "with": {
+            "name": "ui-projection-contract-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path": "${{ runner.temp }}/ui-projection-contract/",
+            "if-no-files-found": "error", "retention-days": 14,
+        },
+    }
+    assert (front_steps.index(material_upload) < front_steps.index(contract_test)
+            < front_steps.index(contract_observe) < front_steps.index(contract_upload) < ordinary_order[1])
     before = named(front_steps, "Bind immutable frontend inputs before the SPA build")
     after = named(front_steps, "Verify privacy and capture the generated SPA for review")
     assert front_steps.index(before) < ordinary_order[-1] < front_steps.index(after)
@@ -271,6 +296,27 @@ def test_candidate_material_wiring_refuses_missing_optional_or_misordered_eviden
 def test_candidate_material_direct_owner_paths_cannot_fall_out_of_hosted_coverage(owner_path):
     doc = copy.deepcopy(document())
     doc["on"]["push"]["paths"].remove(owner_path)
+    with pytest.raises(AssertionError):
+        assert_wiring(doc)
+
+
+@pytest.mark.parametrize("mutation", ["after-check", "optional", "waived", "success-only-upload", "missing-path"])
+def test_contract_observation_never_replaces_or_follows_the_blocking_byte_check(mutation):
+    doc = copy.deepcopy(document())
+    steps = doc["jobs"]["frontend"]["steps"]
+    observe = named(steps, CONTRACT_OBSERVE)
+    if mutation == "after-check":
+        steps.remove(observe)
+        check = next(step for step in steps if step.get("run") == "npm run api:check")
+        steps.insert(steps.index(check) + 1, observe)
+    elif mutation == "optional":
+        observe["if"] = "${{ github.event_name == 'workflow_dispatch' }}"
+    elif mutation == "waived":
+        next(step for step in steps if step.get("run") == "npm run api:check")["continue-on-error"] = True
+    elif mutation == "success-only-upload":
+        named(steps, CONTRACT_UPLOAD)["if"] = "${{ success() }}"
+    else:
+        doc["on"]["push"]["paths"].remove("webapp/backend/observe_ui_projection_contract.py")
     with pytest.raises(AssertionError):
         assert_wiring(doc)
 

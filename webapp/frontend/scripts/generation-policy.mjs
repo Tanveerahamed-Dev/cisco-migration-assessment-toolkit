@@ -1,3 +1,10 @@
+export function generationMode(args) {
+  if (args.length === 0) return "generate";
+  if (args.length === 1 && args[0] === "--check") return "check";
+  if (args.length === 1 && args[0] === "--review") return "review";
+  throw new Error("Expected no argument, --check, or --review exclusively");
+}
+
 export function requireLocalReferences(value) {
   if (!value || typeof value !== "object") return;
   if ("externalValue" in value) throw new Error("API generation forbids externalValue resource loading");
