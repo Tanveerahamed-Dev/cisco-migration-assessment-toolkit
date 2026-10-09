@@ -183,3 +183,24 @@ and test loading follow that owner. Architecture policy/allowlists and all
 conformance checks remain unchanged. No diagnostic, schema, pin or generated-type
 logic is altered by this relocation. Fresh Reference compilation, observer
 execution and all other gates must verify the corrected combined source.
+
+## Native-return proof correction after the passing wrapper suite
+
+On `6471d7d9` / tested `3aaf9131`, the current frontend and whole six-job webapp
+workflow pass; the unfiltered backend command reaches 100% with all three Scope
+flags enabled and no printed numeric aggregate. Independent review nevertheless
+found a narrower proof boundary in the 20 new G15 cases: their observer recorded
+that native validation was called, then asserted effective-wrapper/stock parity.
+The wrapper intentionally falls back to Python when native returns false or
+raises. Thus that success establishes construction, invocation and wrapper
+behavior, but could mask a native rejection/exception on the valid nested body.
+This is a source-derived test-proof gap, not an observed product/native failure;
+the passing job results remain recorded with this limit.
+
+The same 20 cases now record each actual native return and any exception before
+re-raising. They require literal `True` for the valid body, literal `False` for
+each hostile body (including the public-error comparison), and no exception.
+Identity checks avoid treating 1/0 as the native Boolean result. No production
+fallback, domain, schema, provider, literal pin, generated type, case or guard is
+changed. Fresh hosted execution must establish this stronger acceptance/refusal
+proof; no old passing receipt supplies it.

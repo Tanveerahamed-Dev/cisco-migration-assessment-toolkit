@@ -1233,18 +1233,26 @@ def test_native_stp_nested_facts_match_stock_on_valid_and_hostile_bodies(client,
     validator = api._NativeTransportValidator(schema, surface)
     native = validator._NativeTransportValidator__native
     assert native is not None  # Literal reviewed pins, never calculated/admitted by this test.
-    calls = []
+    results = []
+    exceptions = []
 
     class Observed:
         def is_valid(self, value):
-            calls.append(True)
-            return native.is_valid(value)
+            try:
+                accepted = native.is_valid(value)
+            except Exception as error:
+                exceptions.append(repr(error))
+                raise
+            results.append(accepted)
+            return accepted
 
     validator._NativeTransportValidator__native = Observed()
     stock = api._stock_validator(schema)
     assert api._native_instance_allowed(body)
     assert validator.is_valid(body) and stock.is_valid(body)
-    assert calls == [True]
+    # Wrapper success alone can be stock fallback after native False/an exception.
+    assert exceptions == []
+    assert len(results) == 1 and results[0] is True
     bad = deepcopy(body)
     listing = selections(bad)["stp_roots"]
     first = listing["items"][0]
@@ -1269,8 +1277,11 @@ def test_native_stp_nested_facts_match_stock_on_valid_and_hostile_bodies(client,
     else:
         del listing["items"]
     assert not validator.is_valid(bad) and not stock.is_valid(bad)
-    assert len(calls) >= 2
+    assert exceptions == []
+    assert len(results) == 2 and results[1] is False
     assert _validation_errors(validator, bad) == _validation_errors(stock, bad)
+    assert exceptions == []
+    assert len(results) == 3 and results[2] is False
 
 
 @pytest.mark.parametrize("mutation", ["missing_readiness", "boolean_count", "host_not_list", "missing_band",
