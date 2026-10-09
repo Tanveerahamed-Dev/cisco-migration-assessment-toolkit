@@ -69,7 +69,7 @@ There is **one application**: the `main` branch of this repository on GitHub.
 
 | # | Workstream | Branch | Held by | Status (as of) | Next step |
 |---|---|---|---|---|---|
-| W53 | Atlas Scope consumes the engine-owned failure-impact verdicts | `codex/scope-impact-owner` in managed `scope-impact-owner/engine-defects` | Codex (this parallel chat) | Started from owner-merged #629 main `6390b66c` (2026-10-09). Compiler and device-pane repair committed; independent static review clear; no local tests or builds. | Read the persisted dossier owner; render bounds/holds with reasons; hosted compile-all family; fresh hosted gates; independent review; PR for supervisor merge. |
+| W53 | Atlas Scope consumes the engine-owned failure-impact verdicts | `codex/scope-impact-owner` in managed `scope-impact-owner/engine-defects` | Codex (this parallel chat) | PR #632, from #629 main `6390b66c` (2026-10-09). Compiler/pane/comparison repairs and independent static review complete. Hosted run `37925731720` exported the four-file family (artifact `11613958434`) and passed typecheck; copied review-input outputs change only fabric. Sample and GOLDEN_SHA unchanged. Latest exact-head gates are recorded on #632. | Supervisor reviews final-head hosted gates and independent review, then merges #632. Projection #630 and G14/#631 retain their holders. |
 | W10b | Atlas Scope O79 repairs and blocked A6 diagnostic | `codex/scope-a6` in `.claude/worktrees/ui-projection-2` | Codex | **A6 diagnostic BLOCKED.** #604 stays open as a parked draft at failed `29ee4816`, with all failed observations and the absent camera-decay series preserved. W16 and W18 bounded repairs are owner-merged; neither re-grades A3/A6. | Do not push, close/delete or resume #604. Other O79 repairs proceed separately from current main by readiness, one repair per PR. Off-path ACL eligibility, other refusal classes and remaining O79 repairs keep their separate evidence and scope. |
 
 ## Owner decisions
@@ -255,6 +255,8 @@ history, not an implementation queue. No storage, Site access, deployment or
 protected-PR change is part of the resumed W6 scope.
 
 ## Handoff log (newest first)
+
+- 2026-10-09 (Codex, W53): PR #632 publishes `60bf94d8` after a stable-source privacy PASS and a 12-pattern scan of both new commits, every per-parent patch and publication bodies. Hosted Scope run `37925731720` / job `113804081241` exported the four-file family, captured it successfully, uploaded artifact `11613958434`, and passed typecheck. The family is copied as review input; Git reports only fabric changed. No local tests/builds/Graphify/receipt controllers. Fresh hosted output reproduction and all applicable final-head gates remain required; latest results live on #632. The first privacy scan's index-change refusal is preserved. Supervisor merge is the closing human gate.
 
 - 2026-10-09 (Codex, W53): live Git/GitHub confirms #629 owner-merged as main `6390b66c`. Retire W45 and its carried W36/W33/W32/W46/W28/W29/W30 rows, and the already merged W34/#627 row; preserve their dated handoffs. W53 starts separately from that main on `codex/scope-impact-owner`. #630 and G14/#631 stay with their existing holders. No local tests, builds, Graphify or verification controllers; hosted compilation and gates required. This checkpoint is local pending the authorized PR publication.
 

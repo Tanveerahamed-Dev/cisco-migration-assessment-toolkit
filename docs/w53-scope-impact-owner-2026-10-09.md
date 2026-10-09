@@ -37,11 +37,31 @@ the full applicable gates; artifact capture alone is not validation or merge aut
 
 The engine-built sample is unchanged. Its existing `GOLDEN_SHA` remains unchanged.
 Any moving expectation must be justified by the persisted verdict and the selected source
-row, never by weakening a gate. Hosted results and the final supervisor handoff will be
-recorded here before completion. Graphify is unverified under the standing hosted-only rule.
+row, never by weakening a gate. Hosted export evidence and the supervisor handoff are recorded below; final-head results live on #632. Graphify is unverified under the standing hosted-only rule.
 
 ## Status
 
 Implementation and independent static review are complete; no unresolved static must-fix finding. Runtime validation is **not verified**. The first privacy scan refused because the index changed during scanning; publication requires a fresh stable-source scan.
 Rule-7 repository privacy, all new commit/per-parent patches, and publication-body marker scans
 are required before every push. Supervisor review and merge remain the closing human action.
+
+## Hosted export and supervisor handoff
+
+PR #632 publishes `60bf94d8`. Scope run `37925731720` / job `113804081241`
+passed export, source-bound capture, upload and typecheck. Artifact `11613958434`
+(`scope-compiler-handoff-60bf94d88dc4d642e75d159bb8b214b253dfc481-37925731720-1`)
+records tested merge `4a7908b4` and the unchanged sample digest `dbc229cfdcd676bb07e99bdace7e26ea429de087715ebf1727064b4e373a26c1`.
+All four members were copied as review input using the owner output paths. Git reports a change
+only in fabric; no sample or GOLDEN_SHA edit is made. No local receipt/controller verification
+is claimed. The final hosted reproduction gate must independently reproduce every committed
+member, and all applicable gates must pass on the final head. The bootstrap unit/freshness run
+and any failed or cancelled observations remain visible in the Actions history; an export or
+typecheck PASS does not qualify those later gates.
+
+Independent applied-source review found no unresolved must-fix after resolving both-source
+metric citations and the held clean-bill detail leak. Compiler, real-pane and comparison
+counterexamples cover exact zero, lower-bound positive/zero, holds, unavailable ownership,
+exact pointer/host admission and raw-detail disclosure. No assertion or gate is relaxed.
+Supervisor review and merge follow the latest exact-head results on
+[PR #632](https://github.com/Tanveerahamed-Dev/cisco-migration-assessment-toolkit/pull/632).
+Coordination remains on #630; its branch and the G14/#631 branch were not edited.
