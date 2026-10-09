@@ -8,8 +8,34 @@ routing-protocol + security/config** picture into decision-ready outputs for a
 network migration. It answers the three questions an assessment must: **what's
 the current state, where is the migration risk, and what do I fix first.**
 
-Every run produces two self-contained, **offline / air-gapped** deliverables —
-no live network needed to read them:
+## The one application
+
+This repository is **one application**, and **AssessHub** is its door:
+
+- **AssessHub** ([`webapp/`](webapp/README.md)) is the web application where an
+  assessment is read and run. It holds the campaigns, the core assessment screens,
+  comparison, the cutover plan, execution runs and document downloads. Section
+  [AssessHub — the one door](#assesshub--the-one-door) below covers it.
+- **Atlas.exe** ([`portable/`](portable/README-FIELD.txt)) is the same application
+  packaged as one Windows folder for a USB stick. Double-clicked, it serves AssessHub
+  on the loopback address. Run as `Atlas.exe --run-engine <engine arguments>`, it *is*
+  the engine command line, so the stick carries no separate engine program. See
+  [Atlas — the portable field app](#atlas--the-portable-field-app).
+- **The engine** (`COLLECT_PARSE_V3_23_0.py` + `cisco_toolkit/`, command `cisco-assess`)
+  owns every analysis fact. The screens render what it published.
+- **Atlas Scope** ([`atlas-scope/`](atlas-scope/README.md)) is a 3-D investigation view
+  that AssessHub serves at `/scope`. It is an integrated **preview**, not an accepted
+  product: its [acceptance report](atlas-scope/docs/acceptance-report.md) (graded
+  2026-10-02/03) records 24 of 39 acceptance criteria failing.
+
+How to read the core screens, including how they show missing evidence, is in the
+[operator guide](docs/operator-guide-core-screens.md).
+
+## What an assessment run produces
+
+Every assessment run writes a self-contained, **offline / air-gapped** deliverable set
+(listed under [Inputs & outputs](#inputs--outputs)) — no live network is needed to read
+it. The two to open first:
 
 - a **multi-sheet Excel workbook** (30+ tabs) that opens on a one-page
   **Executive Summary**: fleet posture, the punch-list breakdown, the
@@ -42,8 +68,11 @@ consolidated severity-ranked **migration punch-list**, and a blast-radius
 | [`COLLECT_PARSE_V3_23_0.py`](COLLECT_PARSE_V3_23_0.py) | The toolkit — collects over SSH (netmiko), parses, scores health, computes migration readiness, and writes the workbook + explorer. |
 | [`COLLECT_PARSE_V3_23_0.md`](COLLECT_PARSE_V3_23_0.md) | Documentation for the current version (health scoring, the 10-check readiness checklist, the HTML Health mode) plus the change log. |
 | [`cisco_toolkit/blast_radius_explorer.html`](cisco_toolkit/blast_radius_explorer.html) | The interactive single-file explorer that renders a collected snapshot — topology graph plus 14 analysis modes (Blast radius, Path trace, Compare, Flow, **Health** w/ the Risk cockpit, Protocols, Cross-Layer, Causal Flow, Waves, Apps, Review, Design, Cable Map, 3D). The live snapshot is baked into a copy of this template on every run. (Lives inside the package so it ships in a wheel.) |
-| [`compass_artifact_..._markdown1.md`](compass_artifact_wf-4178d659-b124-4412-9854-fc7bea5b9094_text_markdown1.md) | Design playbook — best-practice layout, color, and interaction redesign for the Explorer. |
-| [`compass_artifact_..._markdown.md`](compass_artifact_wf-6d4cf577-c82e-4281-8744-55bdc473f75d_text_markdown.md) | Hardening playbook — parsing robustness, collection, scoring validation, and an accessible Explorer. |
+| [`cisco_toolkit/`](cisco_toolkit/) | The engine package: parsers, analysis, the coverage-honest projection the screens read (`ui_projection.py`), and every deliverable writer. |
+| [`webapp/`](webapp/README.md) | AssessHub, the one door: the FastAPI backend and the React app, with a prebuilt copy of the app and a synthetic demo snapshot. |
+| [`portable/`](portable/README-FIELD.txt) | Atlas, the portable Windows build, and `README-FIELD.txt`, the field guide that ships on the stick. |
+| [`atlas-scope/`](atlas-scope/README.md) | Atlas Scope, the 3-D investigation view AssessHub serves at `/scope` (preview). |
+| [`docs/operator-guide-core-screens.md`](docs/operator-guide-core-screens.md) | How to read the AssessHub core screens, receipts, data locations and backups. |
 
 ## Requirements
 
@@ -243,6 +272,14 @@ Passwords resolve in this order:
 Authentication failures are **never** retried (this avoids account lockout);
 transient connection/timeout failures are retried with backoff.
 
+**Collection is read-only.** Only a live collection that you start connects to a device. Apart
+from the session's own paging settings (`terminal length 0`, `terminal width 511`), the SSH
+collector types only `show` commands that pass a whole-string read-only check — no command
+chaining, no redirection, and only output filters after a pipe. The opt-in controller REST
+collectors send only GET requests apart from the login; on a controller the read-only guarantee
+comes from the account's read-only role, so use a dedicated read-only account. Offline analysis
+(`--no-collect`) and every AssessHub upload or ingest never connect to a device.
+
 ### Secrets at rest — the raw collection directory
 
 The collection directory holds the devices' **verbatim output**, running-configs
@@ -305,46 +342,121 @@ switch / IP / MAC; filter by VLAN. The modes:
 The explorer is a single self-contained file (no server, no external assets) and
 runs fully offline — safe to email or open from a USB stick.
 
-## AssessHub — the web platform
+## AssessHub — the one door
 
-[`webapp/`](webapp/README.md) layers a served, full-stack platform over the engine — **purely
-additive** (the engine and its golden test contract are untouched). Where the CLI produces one
-assessment, AssessHub manages the whole migration *campaign*:
+[`webapp/`](webapp/README.md) is the web application over the engine. Where one engine run
+produces one assessment, AssessHub keeps the whole migration *campaign* in a local SQLite
+database and is where an assessment is read, compared, planned and executed.
 
-- **Campaigns & waves** — snapshots stored in SQLite, tracked over time with trajectory verdicts
-  and pairwise compare; the **risk cockpit**, the **Device Risk Register** (per-asset compound
-  risk, ranked, with compound-pattern chips), a native **force-directed fleet topology**, 20+
-  detail sections (including the syslog / QoS / software-risk / platform-health axes), and the
-  deep explorer embedded per snapshot.
-- **Two ways in** — upload a finished `*.snapshot.json`, or upload a **ZIP of raw show-command
-  outputs** and the real engine pipeline runs server-side.
-- **Gated cutover planner** — per-wave Go / Conditional-Go / No-Go gates, pilot-first sequencing,
-  maintenance-window estimates, and a PPDIOO run-of-show per wave.
-- **Execution console (war room)** — run the change window live: timestamped step check-off,
-  validation PASS/FAIL against captured baselines, wave closeouts, a deviation scribe log, and a
-  derived change-management outcome.
-- **Deliverables on demand** — Engagement Workflow & Plan of Record / CRD / Runbook / Design
-  Document / Architecture Review & Conformance Report / MOP / Executive Deck via the engine's own
-  writers, plus the Cutover Plan, the NRFU/Acceptance Test Plan, and the **Post-Implementation
-  Review / as-executed record** for any execution run.
-- **Gate board** — per-wave T-minus sign-offs (commit → checkpoint → readiness → go/no-go →
-  window → hypercare exit) recorded on the campaign page; decisions feed back into the
-  Engagement Workflow & Plan of Record's "Gate record (as signed)" section.
-- **Ask the engineer** — the senior-engineer architecture review on every snapshot page:
-  A–F conformance grade, deterministic question chips (*where do we start · what blocks the
-  migration · how resilient is the fabric · judge every domain · what couldn't you assess*),
-  and per-domain drill-down — rendering the same verdict object as the DOCX report, the
-  workbook scorecard sheet and the explorer ☑ Review mode. Older snapshots get the review
-  computed server-side by the same engine function.
+**Start it.** The built web app ships inside the distribution, so no Node toolchain is needed
+to run it:
 
 ```bash
-pip install -r webapp/requirements.txt
-cd webapp/frontend && npm install && npm run build && cd ../..
-python -m uvicorn backend.app:app --app-dir webapp --port 8000   # http://127.0.0.1:8000
+pip install .
+assesshub            # serves http://127.0.0.1:8000 and opens the browser
+assesshub --selftest # checks the assets that would otherwise degrade silently
 ```
 
-Open the page and click **"Open a sample fleet"** — a bundled 23-device demo, no network needed.
-Full docs in [`webapp/README.md`](webapp/README.md).
+From a checkout, `python -m webapp.backend.serve` is the same entry. With no token configured,
+AssessHub answers loopback clients only; any other access needs `ASSESSHUB_TOKEN` and TLS (see
+*Access model* in [`webapp/README.md`](webapp/README.md)). Click **Open a sample fleet** for the
+bundled synthetic demo — no network needed.
+
+**Getting evidence in.** On a campaign page, add a wave by uploading a finished
+`*.snapshot.json`, a **ZIP of raw `show`-command outputs**, or a collection folder on the
+AssessHub machine. For a ZIP or folder, AssessHub runs the real engine offline over the files
+(`--no-collect`); it never connects to a device. The raw files are staged in a temporary folder
+that is removed after the run, and AssessHub stores the resulting snapshot, not the raw captures.
+
+**The core screens.** A snapshot opens on five views — **Overview, Trust, Inventory, Findings,
+Topology & Paths** — plus a **Device** page for any device, which includes **If this device
+fails** (its stored failure-impact rows) and **Structural links**. Every value on these screens
+carries its evidence state: a value the engine withheld reads *Not collected*, *Not assessed*, *Analysis
+unavailable* or *Unverified* with the engine's reason, never zero or healthy. **Trust** says what
+the analysis could not see. The [operator guide](docs/operator-guide-core-screens.md) walks
+through each screen, including how a lower bound reads.
+
+**Tools and downloads** keeps the earlier snapshot page: the Device Risk Register, the keystone
+devices, **Ask the engineer** (the architecture review), the design blueprint, the causal flow,
+the **cutover plan** (per-wave GO / CONDITIONAL GO / NO-GO gates and a run-of-show), the document
+downloads, the fleet topology, the cable map, the embedded explorer and the detail-section tabs.
+The engine's documents come from the engine's own writers. The Cutover Plan and the NRFU /
+Acceptance Test Plan are generated only by AssessHub, and the Post-Implementation Review only
+from an execution run.
+
+**Compare, cutover and execution receipts.**
+
+- **Compare two waves** on a campaign page shows the engine's cutover gate for that pair; it is
+  not stored. The campaign trajectory shows the server's decision for each adjacent pair.
+- An **execution run** (the war room) starts from the cutover plan. **Bind post-change
+  evidence** checks a newer snapshot against the run and appends an **immutable comparison
+  receipt**; a new run can be successful only when its latest receipt is PASS.
+- The **gate board** records per-wave sign-offs (commit → checkpoint → readiness review →
+  go / no-go → window → hypercare exit).
+
+**Records that cannot be deleted.** AssessHub refuses (HTTP 409) to delete a snapshot a receipt
+names, an execution run that holds a receipt, or a campaign that contains one. A **per-campaign
+purge is not implemented yet**: it was decided in
+[ADR 0007](docs/decisions/0007-one-application-direction.md) (D10) together with retention of
+scrubbed raw evidence, and neither exists today.
+
+**Where the data lives.** `Atlas.exe` keeps its database in `Atlas\data\assesshub.db`; a
+checkout uses `webapp/data/assesshub.db`; an installed `assesshub` uses the user's
+application-data folder. `--db` or `ASSESSHUB_DB` selects another file. At every start the store
+is integrity-checked and, when it changed, copied to a `backups` folder beside it; the newest 3
+copies are kept.
+
+**Redaction is command-line only.** AssessHub downloads are not redacted. For a share-safe set
+use the engine's `--redact`, or on the stick `Atlas.exe --redact-folder` (next section).
+
+**Atlas Scope (preview).** On a snapshot's page, **Open in Atlas Scope** opens the same stored
+snapshot at `/scope/snapshots/<id>/`, and **Topology & Paths** can embed it as a 3-D view. It is
+read-only and an integrated preview; its acceptance report records 24 of 39 criteria failing,
+so confirm what it shows on the core screens. In a checkout the link appears only when Atlas
+Scope's hub build exists ([`atlas-scope/README.md`](atlas-scope/README.md)).
+
+## Atlas — the portable field app
+
+[`portable/`](portable/README-FIELD.txt) builds Atlas, the whole application as one Windows
+folder that runs from a USB stick without an installed Python. `Atlas.exe` is the one door:
+
+- Double-clicked, it serves AssessHub on `127.0.0.1` and opens the browser. The portable build
+  binds loopback only.
+- `Atlas.exe --run-engine <engine arguments>` runs the engine command line in the same program.
+- `Atlas.exe --selftest` checks the stick before an engagement (expect `SELFTEST: PASS`).
+- `Atlas.exe --redact-folder <collection> --out <empty folder>` renders a redacted deliverable
+  set; `--redact-collection` also scrubs secrets from the raw captures in place, and
+  `--reuse-out` re-renders into a folder that already holds a set.
+- `Atlas.exe --verify-manifest <run_manifest.json>` re-checks a delivered set.
+
+Everything Atlas stores lives in `Atlas\data\`, the only writable folder; an update replaces
+the rest. A live SSH collection from the stick also needs `--allow-live-network` before
+`--run-engine`. The field discipline (first run, loss of stick, corruption and restore, eject,
+redaction limits, update and rollback) is in
+[`portable/README-FIELD.txt`](portable/README-FIELD.txt), which ships on the stick.
+
+<!--
+Owners behind "The one application", "AssessHub — the one door", "Atlas — the portable field app"
+and "Collection is read-only" (verified on origin/main 6390b66c, 2026-10-09). Each statement is a
+cache of these owners; correct the prose when one changes. Per-statement detail is in the owner
+block at the end of docs/operator-guide-core-screens.md.
+- One door and --run-engine: webapp/backend/serve.py (module docstring, ENGINE_SENTINEL, _run_engine,
+  _resolve_db, loopback-only frozen bind in main, argparse flags); pyproject.toml [project.scripts].
+- Core screens and Tools page: webapp/frontend/src/App.tsx, pages/CoreSnapshot.tsx,
+  pages/core/*.tsx, pages/Snapshot.tsx; state labels in pages/core/ProjectionEvidence.tsx.
+- Ingest: webapp/backend/ingest.py run_collection_zip / run_collection_folder (--no-collect, temp
+  workdir removed).
+- Receipts and deletion refusals: webapp/backend/app.py compare, compare_execution, delete_* (409);
+  webapp/backend/storage.py delete_*_if_unreceipted; pages/Execution.tsx (PASS rule).
+- Purge not implemented: no purge/retention route in webapp/backend; ADR 0007 D10.
+- Data and backups: webapp/backend/app.py _platform_default_db; storage.py _BACKUP_DIR,
+  _BACKUP_KEEP.
+- Redaction: no redaction route in webapp/backend/app.py; serve.py --redact-folder family.
+- Atlas Scope preview count: atlas-scope/docs/acceptance-report.md, Verdict.
+- Gate board steps: cisco_toolkit/engagement.py GATE_SEQUENCE. Cutover gates: webapp/backend/cutover.py.
+- Collection safety: COLLECT_PARSE_V3_23_0.py TERMINAL_SETUP_CMDS, is_ssh_wire_command;
+  cisco_toolkit/rest_collect.py docstring; webapp/backend/ingest.py (--no-collect only).
+-->
 
 ## Health score & migration readiness
 

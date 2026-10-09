@@ -8,14 +8,61 @@ FIRST RUN / EVERY ENGAGEMENT START
 ----------------------------------
 1. Plug in, open the  Atlas\  folder on the stick.
 2. Run:  Atlas.exe --selftest        -> expect "SELFTEST: PASS".
-3. Double-click Atlas.exe. It starts the cockpit and opens your browser.
-   Keep the console window open; closing it stops Atlas.
+3. Double-click Atlas.exe. It starts AssessHub (the app) and opens
+   your browser. Keep the console window open; closing it stops Atlas.
 Everything the app stores lives in  Atlas\data\  beside the exe. That is
 the ONLY writable folder - updates replace everything else wholesale.
+Atlas is also the engine itself. With --run-engine in front of the
+engine's own arguments, Atlas.exe runs the assessment engine instead
+of the app (see OFFLINE / LIVE NETWORK BOUNDARY). There is no second
+engine program on the stick.
+
+READING A SNAPSHOT (THE CORE SCREENS)
+-------------------------------------
+Open a campaign, then a snapshot. Five views run across the top:
+  Overview          fleet posture, health and lifecycle bands,
+                    gating items, move-group readiness.
+  Trust             what the analysis could NOT see: for each
+                    analysis input, how many devices it could not
+                    assess, and which. Read it before you quote any
+                    number to the client.
+  Inventory         devices, VLANs, endpoints, uncollected peers.
+  Findings          the prioritised findings, in the engine's order.
+  Topology & Paths  the map, the 3-D view (see ATLAS SCOPE), and an
+                    IP path question answered from the stored route
+                    model - nothing is sent on the network.
+Click any device name for its Device page. Two of its panels come
+straight from the engine's stored rows, in the engine's order:
+  "If this device fails"  the severity, VLANs impacted and stranded
+                          endpoints the engine found for its loss.
+  "Structural links"      its links, whether each is a bridge, and
+                          which switch pairs it would sever.
+The page does not simulate, rank or fill in either one.
+"Tools and downloads" (top right of a snapshot) holds the cutover
+plan, the documents and the older full snapshot page.
+
+EVERY VALUE CARRIES A STATE. A dash with a label is NOT zero and NOT
+healthy - read the label and the reason under it:
+  Not collected         a blind spot: the evidence was never captured.
+  Collected, empty      captured, and nothing of that kind was there.
+  Not assessed          the engine had nothing it could judge.
+  Analysis unavailable  that analysis step failed in this run.
+  Unverified            a value exists but failed a check.
+The Evidence button beside a value opens its source records and the
+limits that apply to it.
+
+LOWER BOUNDS. Some failure-impact counts are only a floor: the true
+impact can be larger, for example behind a neighbour the collection
+did not reach. On the Device page such a value looks ordinary, but
+its Evidence lists a witness reference: read it as "at least". The
+Failure impact tab under Tools and downloads spells it out, and the
+cutover plan writes LOWER BOUND, at least N. NOT ASSESSED in the
+cutover plan or the keystone list marks what could not be ranked -
+never a clean result.
 
 ATLAS SCOPE (THE 3-D VIEW OF A SNAPSHOT)
 ----------------------------------------
-On a snapshot's page in the cockpit, click "Open in Atlas Scope". The
+On a snapshot's page in the app, click "Open in Atlas Scope". The
 same snapshot opens as a 3-D investigation view in the same browser, at
 /scope/snapshots/<id>/ on the Atlas address. The view reads that
 snapshot from Atlas when the page opens: nothing is copied off the
@@ -28,6 +75,10 @@ damaged or incomplete: update it (see UPDATE).
 The view draws what the collection recorded. A device, link or finding
 the collection did not see is simply not there - an empty or quiet
 view is NOT a clean bill of health.
+The same view also opens inside Topology & Paths as 3-D investigation.
+Atlas Scope is a PREVIEW: it has not passed its acceptance review. Use
+it to look around, and check anything it shows on the core screens
+before you act on it or repeat it to the client.
 
 LOSS OF STICK (prepare BEFORE the first engagement)
 ---------------------------------------------------
@@ -73,6 +124,19 @@ Never delete data\ to "fix" a problem - it is the client's evidence.
 A boot saying "cannot open the store" is NOT corruption - usually Atlas
 is already running in another window. Close it and start again.
 
+WHAT ATLAS KEEPS, AND WHAT IT WILL NOT DELETE
+---------------------------------------------
+Atlas keeps snapshots, not raw captures. A ZIP or folder you ingest is
+copied to this computer's temporary folder for the engine run, and
+that copy is removed afterwards; your collection folder is only read.
+The ingest never connects to a device.
+An execution run that binds its post-change snapshot makes a
+comparison receipt: a permanent decision record. Atlas refuses to
+delete a snapshot a receipt names, an execution run that holds one,
+or a campaign that contains one. There is NO per-campaign purge yet,
+so that data stays in data\assesshub.db and in data\backups\.
+Documents downloaded from the app are NOT redacted (see REDACTION).
+
 EJECT DISCIPLINE
 ----------------
 1. Close the Atlas console window (Ctrl+C or the X).
@@ -89,6 +153,8 @@ REDACTION - BEFORE ANYTHING LEAVES THE SITE
 -------------------------------------------
 Deliverables carry client IPs/MACs/serials. --redact pseudonymizes them
 across the whole output set (snapshot, workbook, explorer).
+Redaction exists ONLY as a command. Documents you download from the
+app's pages are NOT redacted.
 
 Run this as ONE line (nothing else needs to be on the stick):
   Atlas.exe --redact-folder <collection folder> --out <D:\share>
