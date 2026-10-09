@@ -1230,8 +1230,8 @@ def test_native_w12b_device_rollups_match_stock_on_views_lists_and_refusals(clie
     """The new nested record is admitted natively on real transport shapes, including list rows."""
     from backend import ui_projection_api as api
     # Independently selected prospective pins let parity run before production pins change.
-    prospective = {"view": "4643eba4c8eaf44fd4c3b9905da2b8439f0c5375cf944a24be40e0f7fd27c580",
-                   "list": "3fdc738d246a42ad3789bd9ede7353b9ddc4c0bdcd8dcd522bdd55aaf7845f16"}
+    prospective = {"view": "9f59334b1e828c4dbc7be2597800799389a55fe8826a939c0d54585aff10e7fd",
+                   "list": "7f7682f6edc67a141c926f721b5586de653fa11c35b2d3c9bc22e978e017760b"}
     assert {kind: api._native_schema_hash(schema) for kind, schema in
             (("view", api._VIEW_SCHEMA), ("list", api._LIST_SCHEMA))} == prospective
     monkeypatch.setattr(api, "_NATIVE_SCHEMA_HASHES", prospective)
@@ -1455,17 +1455,21 @@ def test_native_w13_coverage_metadata_list_matches_stock_and_retains_withheld_va
 
 
 @pytest.mark.parametrize("mutation", ["missing_facets", "extra_facet", "short_severity", "long_category",
-                                      "foreign_category", "foreign_severity", "device_key_type", "bool_count",
-                                      "negative_count", "oversized_count", "withheld_value", "missing_reason",
-                                      "extra_bucket_field", "unknown_caveat"])
+                                      "foreign_category", "foreign_severity", "device_key_type", "device_bare_array",
+                                      "bool_count", "negative_count", "oversized_count", "withheld_value",
+                                      "missing_reason", "extra_bucket_field", "unknown_caveat"])
 def test_native_w41_finding_facets_match_stock_on_the_real_findings_view_and_refusals(client, sample, mutation):
-    """G21 facets ride the real, unpaged findings view; native acceptance and every refusal match stock."""
+    """G21 facets ride the real findings view: the owner partitions whole, the device roster list paged like every
+    other primary list; native acceptance and every refusal match stock."""
     from backend import ui_projection_api as api
     sid = seed(client, sample)
     body = client.get(url(sid, "findings"), params={"limit": 2}).json()
     facets = body["payload"]["facets"]
-    assert facets == owner.project(sample)["findings"]["facets"]
-    assert "/facets" not in api.LIST_CATALOG["findings"]                 # whole owner facets, never pages
+    source = owner.project(sample)["findings"]["facets"]
+    assert list(api.LIST_CATALOG["findings"]) == ["/rows", "/facets/device"]     # the owner partitions never page
+    assert (facets["severity"], facets["category"]) == (source["severity"], source["category"])
+    assert facets["device"] == api._page(source["device"], "/facets/device", 0, 2)
+    assert facets["device"]["page"]["total"] == len(source["device"]["items"]) == len(sample["devices"])
     assert [bucket["k"] for bucket in facets["severity"]] == list(owner.SEVERITIES)
     assert [bucket["k"] for bucket in facets["category"]] == list(owner.FINDING_CATEGORIES)
     # the stored sample has configless devices: positive counts publish as lower bounds, zeros stay withheld
@@ -1479,6 +1483,11 @@ def test_native_w41_finding_facets_match_stock_on_the_real_findings_view_and_ref
     severity, category, device = facets["severity"], facets["category"], facets["device"]
     count = next(bucket["n"] for bucket in severity if bucket["n"]["state"] == "published")
     held = next(bucket["n"] for bucket in severity + category if bucket["n"]["state"] != "published")
+    # the source-section caveat is a registered limitation both validators admit on a published count
+    sourced = deepcopy(body)
+    next(bucket["n"] for bucket in sourced["payload"]["facets"]["severity"]
+         if bucket["n"]["state"] == "published")["caveats"] = ["finding_facet_source_incomplete"]
+    assert native.is_valid(sourced) and stock.is_valid(sourced)
     if mutation == "missing_facets":
         del body["payload"]["facets"]
     elif mutation == "extra_facet":
@@ -1492,7 +1501,9 @@ def test_native_w41_finding_facets_match_stock_on_the_real_findings_view_and_ref
     elif mutation == "foreign_severity":
         severity[0]["k"] = "Severe"
     elif mutation == "device_key_type":
-        device[0]["k"] = 7
+        device["page"]["items"][0]["k"] = 7
+    elif mutation == "device_bare_array":
+        facets["device"] = device["page"]["items"]                             # a roster with no state is refused
     elif mutation == "bool_count":
         count["value"] = True
     elif mutation == "negative_count":
@@ -1507,6 +1518,27 @@ def test_native_w41_finding_facets_match_stock_on_the_real_findings_view_and_ref
         severity[0]["pointer"] = "/punchlist"
     else:
         count["caveats"] = ["unregistered_scope"]
+    assert not native.is_valid(body) and not stock.is_valid(body)
+    assert _validation_errors(native, body) == _validation_errors(stock, body)
+
+
+def test_native_w41_device_facet_list_pages_are_the_owner_roster_and_match_stock(client, sample):
+    """The device facet's later pages come from the list route, in roster order, natively validated like stock."""
+    from backend import ui_projection_api as api
+    sid = seed(client, sample)
+    source = owner.project(sample)["findings"]["facets"]["device"]
+    response = client.get(url(sid, "findings") + "/lists", params={"pointer": "/facets/device", "offset": 2, "limit": 2})
+    assert response.status_code == 200, response.text[:200]
+    body = response.json()
+    assert body["list"] == api._page(source, "/facets/device", 2, 2)
+    assert [bucket["k"] for bucket in body["list"]["page"]["items"]] == sorted(sample["devices"])[2:4]
+    schema = deepcopy(api._LIST_SCHEMA)
+    native = api._NativeTransportValidator(schema, "list")
+    assert native._NativeTransportValidator__native is not None
+    stock = api._stock_validator(schema)
+    assert api._native_instance_allowed(body)
+    assert native.is_valid(body) and stock.is_valid(body)
+    body["list"]["page"]["items"][0]["n"]["value"] = -1
     assert not native.is_valid(body) and not stock.is_valid(body)
     assert _validation_errors(native, body) == _validation_errors(stock, body)
 

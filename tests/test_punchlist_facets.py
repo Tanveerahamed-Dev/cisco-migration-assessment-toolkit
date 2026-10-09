@@ -5,6 +5,7 @@ fold itself. The stored engine-built sample fleet and the committed golden snaps
 """
 from collections import Counter
 from copy import deepcopy
+import inspect
 import json
 import os
 
@@ -52,6 +53,23 @@ def test_category_vocabulary_is_the_evidence_policy_and_the_producer_emittable_s
     assert len(set(PUNCH_CATEGORIES)) == len(PUNCH_CATEGORIES)
     assert set(PUNCH_CATEGORIES) == emittable_categories()   # derived from the producer's AST, not a hand list
     assert set(analyze._PUNCH_CATEGORY_SECTION) <= set(PUNCH_CATEGORIES)
+
+
+def test_every_category_names_the_published_section_it_is_folded_from():
+    """G21 reads a category count's completeness from its source section, so the map must be TOTAL over the closed
+    vocabulary: a new category cannot ship without naming the section its count is computed over."""
+    assert set(analyze.PUNCH_CATEGORY_SECTION) == set(PUNCH_CATEGORIES) == emittable_categories()
+    assert dict(analyze.PUNCH_CATEGORY_SECTION) == analyze._PUNCH_CATEGORY_SECTION       # one table, a read-only view
+    with pytest.raises(TypeError):
+        analyze.PUNCH_CATEGORY_SECTION["Coverage"] = "devices"                          # consumers cannot rewrite it
+    golden = _stored(STORED[1])
+    unpublished = {category: section for category, section in analyze.PUNCH_CATEGORY_SECTION.items()
+                   if section not in golden}
+    assert not unpublished, unpublished                    # every source is a section a real pipeline run publishes
+    # Coverage rows are written by compute_operational_drift and folded through operational_drift, like False-health
+    assert '"category": "Coverage"' in inspect.getsource(analyze.compute_operational_drift)
+    assert analyze.PUNCH_CATEGORY_SECTION["Coverage"] == analyze.PUNCH_CATEGORY_SECTION["False-health"] == \
+        "operational_drift"
 
 
 @pytest.mark.parametrize("path", STORED, ids=("sample_fleet", "golden"))

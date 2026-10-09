@@ -418,7 +418,8 @@ export function deviceFixture(sid = 1, host = "edge/a~b", findings_rollup = find
 }
 // G21 facet totals (FindingFacets). The severity and category keys are read from the generated contract (the
 // ranked severity and unranked punch_category vocabularies), so this file keeps no second copy of an engine
-// vocabulary. Owner buckets stay withheld; the one device bucket is a synthetic published per-device count.
+// vocabulary. Owner buckets stay withheld; the device facet is a roster list the view pages like every other
+// primary list (/facets/device), here one synthetic published per-device count.
 export function findingFacetsFixture() {
   const contract = vocabContract();
   const keys = (tokens: readonly string[] | undefined, name: string): readonly string[] =>
@@ -426,7 +427,7 @@ export function findingFacetsFixture() {
   const bucket = (k: string) => ({ k, n: withheld() });
   return { severity: keys(contract.ranked.get("severity"), "severity").map(bucket),
     category: keys(contract.unranked.get("punch_category"), "punch_category").map(bucket),
-    device: [{ k: "edge/a~b", n: { ...published(1), refs: [{ pointer: "/punchlist/7", role: "witness" }], caveats: ["device_findings_scope"] } }] };
+    device: ownerPage("/facets/device", [{ k: "edge/a~b", n: { ...published(1), refs: [{ pointer: "/punchlist", role: "basis" }], caveats: ["device_findings_scope"] } }]) };
 }
 export function findingsFixture(sid = 1, offset = 0) {
   const row = { index: offset === 0 ? 7 : 93, pointer: `/punchlist/${offset === 0 ? 7 : 93}`, ...fields("priority rank severity category wave severity_basis evidence_confidence source_command evidence_basis"),

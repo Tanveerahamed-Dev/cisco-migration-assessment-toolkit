@@ -13,7 +13,8 @@ import json
 import re
 from functools import lru_cache
 from dataclasses import dataclass, field as _dcfield   # aliased: 'field' is a common loop var elsewhere (avoids F402 shadowing)
-from typing import Any, Dict, List, Optional, Tuple
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from cisco_toolkit import portdb, protocol_kb
 from cisco_toolkit.bgp_intent import validate_bgp_configured_peer_baseline
@@ -8080,7 +8081,10 @@ PUNCH_CATEGORIES: Tuple[str, ...] = tuple(_PUNCH_EVIDENCE_POLICY)
 # (its input row's host / port is not a name -- direct-call or poisoned input; every real-producer fold
 # emits a row ref), the one row constructor points at this SECTION with role derived_from and a cite that
 # says it is a section, not the row. tests/test_engine_contract_projection.py pins coverage against
-# _PUNCH_EVIDENCE_POLICY and publication against a real pipeline snapshot.
+# _PUNCH_EVIDENCE_POLICY and publication against a real pipeline snapshot. The map is TOTAL over
+# PUNCH_CATEGORIES (tests/test_punchlist_facets.py), absence-only Coverage included: compute_operational_drift
+# writes those rows and they fold through operational_drift. An absence row never takes the section fallback
+# above, so Coverage's entry changes no row; it names the evidence a Coverage count was computed over (G21).
 _PUNCH_CATEGORY_SECTION: Dict[str, str] = {
     "Cross-layer": "cross_layer",
     "Security": "security",
@@ -8098,6 +8102,7 @@ _PUNCH_CATEGORY_SECTION: Dict[str, str] = {
     "Link L1": "link_phy",
     "Inventory": "devices",
     "False-health": "operational_drift",
+    "Coverage": "operational_drift",
     "Timing/PTP": "service_map",
     "Multicast/Media": "multicast_intelligence",
     "Operational logs": "syslog_intelligence",
@@ -8106,6 +8111,9 @@ _PUNCH_CATEGORY_SECTION: Dict[str, str] = {
     "Platform capacity": "platform_health",
     "Compound risk": "device_dossiers",
 }
+# Read-only public view of that map (category -> source section), for consumers that must say what a category
+# count was computed over (the G21 finding facets); the private dict stays the producer's one table.
+PUNCH_CATEGORY_SECTION: Mapping[str, str] = MappingProxyType(_PUNCH_CATEGORY_SECTION)
 
 # parse_security check ids whose FAIL means a hardening line is MISSING (parse.py: "Absence-of-a-control
 # -> fail"). Their per-host security record is a WITNESS that the config was read and the line was not
