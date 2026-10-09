@@ -1471,10 +1471,17 @@ def test_release_family_is_deterministic_and_explicitly_unsigned(tmp_path: Path)
         (repo / "master-reference" / "content" / "delivery-governance.json").read_text(encoding="utf-8")
     )
     enhancement_gap = governance["gaps"][0]["id"]
-    manifest_a = build_release(repo, compiler, first, enhancement_gap=enhancement_gap)
+    observations: dict[str, object] = {}
+    manifest_a = build_release(repo, compiler, first, enhancement_gap=enhancement_gap, observations=observations)
     manifest_b = build_release(repo, compiler, second, enhancement_gap=enhancement_gap)
 
+    # The census is reported to the caller only: the family built with the
+    # observation sink equals the family built without it.
     assert manifest_a == manifest_b
+    census = observations["compiler_chunk_census"]
+    assert census == compiler_bundle.load_compiler_bundle(compiler, repository_root=repo).chunk_census
+    assert census["scanned_bytes"] > 0
+    assert census["headroom_bytes"] == census["limit_bytes"] - census["scanned_bytes"]
     assert manifest_a["release_status"] == "unsigned_preview_incomplete"
     assert manifest_a["publication_status"] == "not_authorized"
     assert manifest_a["gates"]["pdf"] == "pending_external_renderer"
