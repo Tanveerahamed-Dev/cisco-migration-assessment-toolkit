@@ -44,6 +44,10 @@ _RUNNER_JOBS = {
         "projection-performance": ("Projection HTTP performance · opt-in measurement", _MATRIX_RUNNER),
         "installed-transition-runtime": ("Installed transition runtime · pinned Windows profile", "windows-2025"),
     },
+    # Manual, review-only engine-output regeneration (docs/engine-output-handoff.md); never a required check.
+    "engine-output-handoff.yml": {
+        "regenerate": ("Regenerate engine outputs for review (manual)", _LINUX_IMAGE),
+    },
     "master-reference-ci.yml": {
         "verify": ("Exact-source compiler, reference, and release contracts", _LINUX_IMAGE),
     },
@@ -158,7 +162,7 @@ def _assert_hosted_runner_contract(documents: dict, required_contexts: list[str]
             linux_selectors += runner == _LINUX_IMAGE
             if (filename, job_id) != ("ci.yml", "test"):
                 direct_names.append(job["name"])
-    assert linux_selectors == 16
+    assert linux_selectors == 17
     test_job = documents["ci.yml"]["jobs"]["test"]
     matrix = test_job["strategy"]["matrix"]
     legs = [
