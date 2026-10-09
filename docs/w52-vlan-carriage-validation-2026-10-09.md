@@ -1,6 +1,6 @@
 # W52 / G14: stored cable and VLAN carriage
 
-Status: **main integration reviewed as source only; combined hosted material and qualification pending.**
+Status: **combined hosted material reviewed and adopted; fresh runtime qualification pending.**
 Current base is owner-merged W45 `6390b66c1e91e675ebcb52464d60af6f552c9271`.
 The merge preserves G14 and incoming engine/Trust/UI owners. The separate W53
 Scope raw-impact consumer belongs to the supervisor's new Codex thread and is
@@ -281,3 +281,67 @@ golden-expectation edit is indicated by the data review, and neither G14 carriag
 facts nor the queued raw-impact qualification consumer are imported into Scope by
 this rebind. Fresh complete Scope execution, whole-webapp recovery, then a new
 admissible hosted frontend receipt and committed distribution are still required.
+
+## Combined bb hosted material and correction
+
+Published merge `bb2981af`, ordered `c5e03040 + 6390b66c`, has tree `25bc7d43`.
+Actual PR tested `26a0ca35` is ordered `6390b66c + bb2981af` with the same tree.
+Canonical privacy passed before commit. The complete pre-push twelve-rule scan
+covers four new raw commits, five every-parent patches and 21 publication surfaces.
+Eight raw matches in inherited minified assets were adjudicated under unchanged
+canonical policy, with zero unresolved/retained findings or errors. Thus
+`raw_scan_clean=false` and `policy_clear=true`; no new exception was created.
+
+Fresh early LF job `113802910558` failed once at the existing receipt assertion
+(0.41 seconds). It printed LF184 with
+`dae7e0e6c78cf180935bc97b447e4de3a19259e952de42063b257a9781b43928` and broader146
+with `15fe42cc622f7110bb0bd5b8131519eb365cb22f8245275f4ba75caa2087ffdc`.
+Only those two observed pairs change. Later publisher/attribute/owner-digest/byte
+checks, full suite and UTC sample check were skipped; all remain required.
+
+Manual engine run `37925393797` / job `113802994561` completed on bb itself:
+210 mandatory source/policy controls, two generation-mode golden writers with
+shrink disabled, actual UTC sample generation, privacy/capture and upload passed.
+Artifact `11613324695` was independently selected and received once as inert data.
+All 1,729 Git input entries, current policy and bounded installer records were
+joined. The workbook schema is unchanged. Compared with main639, golden/sample
+changes are only carriage, its census, two module counts and the sample's two
+ordinary generation timestamps. W45 blind links, dossier assessability,
+architecture/punch-list values, all existing protocol receipts and UTC collected_at
+stay unchanged. The complete carriage sections equal the prior G14 values:
+golden18 pairs (4 published, 3 not-collected, 11 unverified); sample220
+(33 published, 84 not-collected, 103 unverified), including 14 forwarding and
+19 not-carried. Both sections remain unverified with incomplete input census.
+
+The exact received sample is 3,782,932 bytes; its producer-declared SHA256 is
+`d015e974606ca78d623f1e9547df82e9a316708506be3438f59151342a22026a`.
+It requires a new hosted Scope binding. No local hash, compiler or custody
+controller ran, and no old Scope receipt qualifies these bytes.
+
+Frontend job `113802849236` completed the contract observer, then failed actual
+API agreement after its ten generation-policy controls passed. Unit/build/SPA
+steps were skipped. Diagnostic `11613249556` was independently selected and read
+once; all 1,732 before/after Git entries match, and both source records are equal.
+The exact TypeScript delta is 231 additions and two deletions. All 300 native
+definitions agree with their actual emitted OpenAPI components; the nine carriage
+definitions stay closed. Independent review supports copying the exact canonical
+TypeScript and adopting the observed view
+`d45dce8142ccbe7ec7eac4f02acea929c2b66b95202c1e716f35b0c3722a21b6` and list
+`0cb8d956c3924ac2eb3d66efc8a40defb40f4f248a44cd3fd3b6efd2c09ec1b8`
+literals in both production and the independent test owner. Equality, mutations,
+native/stock and direct-return controls remain unchanged; no runtime auto-pin.
+
+Distribution job `113802910539` independently failed its real TypeScript-barrel
+unit guard: one failure and 453 passes in 32 files, with missing carriage types
+and resulting implicit-any diagnostics. This differs from c5's later immutable
+build failure: bb's standalone build/reproduction/package tail did not run.
+E2E job `113802849057` reports server exit2 and no uploadable results; no child
+diagnostic proves its cause. A type-failure connection is only a hypothesis.
+The source correction must recover these gates through fresh execution.
+
+Only the reviewed three engine JSON files, canonical TS, both native literal
+owners, two LF receipt pairs and owned records change. Sample/golden comparison,
+complete LF/native/stock controls and all fresh whole workflows remain pending.
+New Scope and admissible frontend receipt/dist work remain mandatory; W53's raw
+consumer is still exclusively the separate thread. No archive custody, acceptance
+or ready handoff follows from this material adoption.
