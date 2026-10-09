@@ -644,6 +644,37 @@ def test_registry_clock_is_the_demo_evidence_date(tmp_path, monkeypatch):
     assert ri.datetime is real_datetime  # the real clock is restored after the run
 
 
+def test_demo_collected_at_is_the_pinned_evidence_clock_on_every_host(tmp_path, monkeypatch):
+    """F9: the demo's collected_at took the regenerating host's UTC offset (+03:00 on one workstation, +00:00 on
+    a hosted runner), so its bytes changed with the machine. main() now declares the stamp's zone -- the zone of
+    its pinned evidence clock -- around the run, and the engine's OWN derivation over the exact --collection-dir
+    main() hands it yields exactly _SAMPLE_REGISTRY_CLOCK under every host zone. The pipeline is stubbed;
+    main()'s declaration and the engine derivation are real. That the full engine publishes this derivation
+    unchanged is pinned on a real run in tests/test_pipeline_golden.py."""
+    from test_lifecycle_provenance import _host_local
+
+    seen = []
+
+    def fake_pipeline():
+        argv = sys.argv
+        assert "--no-collect" in argv
+        collection = argv[argv.index("--collection-dir") + 1]
+        # main()'s own call shape: _derive_collected_at(args.no_collect, args.collection_dir, root_dir), where
+        # root_dir is the --collection-dir when one is given.
+        seen.append(bs.cp._derive_collected_at(True, collection, collection))
+        xlsx = argv[argv.index("--output") + 1]
+        with open(os.path.splitext(xlsx)[0] + ".snapshot.json", "w", encoding="utf-8", newline="\n") as f:
+            f.write('{"devices": {}, "punchlist": []}')
+
+    monkeypatch.setattr(bs.cp, "main", fake_pipeline)
+    monkeypatch.setattr(bs, "build_collections", lambda: {"x": ("ios", {"show version": "v\n"})})
+    for hours in (3, -5, 0):
+        monkeypatch.setattr(bs.cp, "datetime", _host_local(hours))
+        bs.main(["--out", str(tmp_path / f"fleet_{hours + 12}.json")])
+    assert seen == [(bs._SAMPLE_REGISTRY_CLOCK, False)] * 3
+    assert bs.cp._COLLECTION_TZ is None  # the engine's field default is restored after the run
+
+
 def test_volatile_strip_keeps_the_now_deterministic_registry_age():
     snap = {"generated_at": "t", "attestation": {"generated_at": "t", "x": 1},
             "data_authorities": {"eol": {"source_age_days": 7.4, "freshness_status": "fresh"}}}

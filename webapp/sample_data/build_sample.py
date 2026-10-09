@@ -42,6 +42,10 @@ _SAMPLE_COLLECTION_STAMP = "20260807_000000"
 # cascade into assessment_integrity: the demo would change with the calendar, not with the engine.
 _SAMPLE_REGISTRY_CLOCK = (f"{_SAMPLE_COLLECTION_STAMP[0:4]}-{_SAMPLE_COLLECTION_STAMP[4:6]}-"
                           f"{_SAMPLE_COLLECTION_STAMP[6:8]}T00:00:00+00:00")
+# That pin is also the demo's collection INSTANT: main() has the engine read the stamp in the pinned clock's own
+# zone (_collection_zone), so the published collected_at is exactly _SAMPLE_REGISTRY_CLOCK on every host. Read
+# in the regenerating host's local zone instead, it took that host's UTC offset (+03:00 on one workstation,
+# +00:00 on a hosted runner) and the demo's bytes changed with the machine, not with the engine.
 
 
 @contextlib.contextmanager
@@ -70,6 +74,19 @@ def _registry_clock(iso: str):
         ri.datetime = real
         for cache in caches:
             cache.cache_clear()
+
+
+@contextlib.contextmanager
+def _collection_zone(tz):
+    """Declare the zone of the demo's collection-directory stamp for one in-process pipeline run: the engine
+    states collected_at in `tz` (COLLECT_PARSE `_COLLECTION_TZ`) instead of the regenerating host's local
+    zone, and the engine's own field default is restored afterwards."""
+    real = cp._COLLECTION_TZ
+    cp._COLLECTION_TZ = tz
+    try:
+        yield tz
+    finally:
+        cp._COLLECTION_TZ = real
 
 # (model line for `show version`, roughly how the EoL KB bands it) — gives lifecycle variety.
 _PLATFORMS = [
@@ -713,7 +730,7 @@ def main(argv: list = None) -> None:
                     "--output", out_xlsx, "--workers", "1", "--no-html", "--no-docx",
                     "--no-pptx", "--no-design", "--no-mop"]
         try:
-            with _registry_clock(_SAMPLE_REGISTRY_CLOCK):
+            with _registry_clock(_SAMPLE_REGISTRY_CLOCK) as evidence, _collection_zone(evidence.tzinfo):
                 cp.main()
         finally:
             sys.argv = argv

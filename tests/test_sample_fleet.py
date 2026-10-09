@@ -11,6 +11,8 @@ import json
 import pathlib
 from copy import deepcopy
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
@@ -56,6 +58,19 @@ def test_committed_registry_health_is_judged_at_the_demo_evidence_date():
         age = round((evidence - retrieved).total_seconds() / 86_400, 6)
         assert health["source_age_days"] == age, (name, health["source_age_days"], age)
         assert health["freshness_status"] == "fresh", (name, health["freshness_status"])
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "F9 ratchet: the committed demo still carries the +03:00 offset of the workstation that last regenerated "
+    "it. build_sample.py now states collected_at in its pinned evidence clock's zone, so the next (hosted, W31) "
+    "regeneration writes exactly _SAMPLE_REGISTRY_CLOCK; that regeneration must delete this marker, and strict "
+    "mode fails the unexpected pass until it does."))
+def test_committed_collected_at_is_the_demo_evidence_clock():
+    """The committed demo states its collection instant as build_sample's pinned evidence clock, byte for byte:
+    not the offset of whichever machine last regenerated it."""
+    from webapp.sample_data.build_sample import _SAMPLE_REGISTRY_CLOCK
+
+    assert _sample()["collected_at"] == _SAMPLE_REGISTRY_CLOCK
 
 
 def test_sample_freshness_keeps_lifecycle_and_design_sections_and_detects_wording_drift(tmp_path):

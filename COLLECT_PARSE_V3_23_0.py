@@ -2376,6 +2376,18 @@ def build_run_manifest(out_xlsx: str, snap_dict: dict,
     return _manifest.build_manifest(meta, artifacts, steps)
 
 
+# The zone `collected_at` is STATED in; None = this host's local zone (the field default, unchanged). A live
+# run names its collection directory from this host's local wall clock (`stamp` in main(), via
+# datetime.now().strftime) and that stamp records no offset, so on the collecting host the only honest reading
+# of it is the host's own zone: re-reading every field stamp as UTC would shift each re-analysed instant by the
+# collecting host's offset, and an east-of-UTC capture could then read as collected AFTER its own upload. A
+# caller that DECLARES the zone of its evidence stamp pins this for one in-process run -- the engine-built demo
+# fleet (webapp/sample_data/build_sample.py) pins the zone of its pinned evidence clock (UTC), the same
+# in-process seam pattern as its registry clock -- and collected_at is then a pure function of the stamp: the
+# same bytes on every host, whatever its TZ.
+_COLLECTION_TZ = None
+
+
 def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
     """Provenance: the instant the EVIDENCE was collected (NOT wall-clock-at-regen). Returns
     (iso_datetime, defaulted). A live run stamps now() -- collection IS happening now. A
@@ -2383,19 +2395,24 @@ def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
     evidence reproduces the original lifecycle bands + cover date byte-for-byte: first from the
     `YYYYMMDD_HHMMSS` stamp in the collection-dir name (how every run names its dir), else the
     earliest member-file mtime, else -- last resort -- now() flagged `defaulted=True` so the caller
-    can disclose that the collection date was unknown. Pure read; no side effects."""
+    can disclose that the collection date was unknown. Every branch states its instant with an explicit
+    offset: in `_COLLECTION_TZ` when a caller declared it (a dir stamp is then read AS that zone's wall
+    clock; now() and an mtime are true instants rendered in it), else in this host's local zone.
+    Pure read; no side effects."""
+    zone = _COLLECTION_TZ
+
+    def _now():
+        return datetime.now(zone) if zone is not None else datetime.now().astimezone()
+
     if not no_collect:
-        return datetime.now().astimezone().isoformat(), False
+        return _now().isoformat(), False
     base = os.path.basename(os.path.normpath(collection_dir or root_dir or ""))
     m = re.search(r"(\d{8})_(\d{6})", base)
     if m:
         try:
-            return (
-                datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
-                .astimezone()
-                .isoformat(),
-                False,
-            )
+            wall = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+            stated = wall.replace(tzinfo=zone) if zone is not None else wall.astimezone()
+            return stated.isoformat(), False
         except ValueError:
             pass
     d = collection_dir or root_dir or ""
@@ -2403,10 +2420,13 @@ def _derive_collected_at(no_collect: bool, collection_dir: str, root_dir: str):
         mtimes = [os.path.getmtime(os.path.join(dp, f))
                   for dp, _dirs, files in os.walk(d) for f in files]
         if mtimes:
-            return datetime.fromtimestamp(min(mtimes)).astimezone().isoformat(), False
+            first = min(mtimes)
+            stated = (datetime.fromtimestamp(first, zone) if zone is not None
+                      else datetime.fromtimestamp(first).astimezone())
+            return stated.isoformat(), False
     except OSError:
         pass
-    return datetime.now().astimezone().isoformat(), True
+    return _now().isoformat(), True
 
 # =============================================================================
 # V3.15.0 ADDITIONS - new analysis outputs (Tier 1) + new collection (Tier 2).
